@@ -19,7 +19,7 @@ pub enum IssuerOrder {
     MalformedCompletionArrivesLast,
 }
 
-async fn await_fetch(
+pub(super) async fn await_fetch(
     fetch: &mut HeldIssuerFetch,
     primary: std::pin::Pin<&mut impl Future<Output = ConformanceResult<u16>>>,
 ) -> ConformanceResult<()> {

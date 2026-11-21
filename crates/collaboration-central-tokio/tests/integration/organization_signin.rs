@@ -16,6 +16,7 @@ mod rollback;
 mod setup;
 mod stamp_trace;
 mod support;
+mod trust_trace;
 
 mod carry_edges;
 mod metadata;

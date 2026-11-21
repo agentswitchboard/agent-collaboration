@@ -21,6 +21,7 @@ mod metadata;
 mod route_boundaries;
 mod setup;
 mod stamp_trace;
+mod trust_trace;
 
 mod engine_admin;
 mod engine_admin_support;

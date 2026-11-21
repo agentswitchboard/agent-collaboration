@@ -271,3 +271,12 @@ pub use stamp_trace::StampTrace;
 
 mod issuer_order;
 pub use issuer_order::{IssuerOrder, IssuerOrderHost, prove_issuer_completion_order};
+
+mod issuer_trace;
+mod standing_trace;
+mod trust_trace;
+pub use issuer_trace::{
+    IssuerProbe, IssuerProbeKey, IssuerTracePlan, ScriptedKeyReply, prove_issuer_trace,
+};
+pub use standing_trace::{StandingProbe, StandingSample, prove_standing_trace};
+pub use trust_trace::TrustTraceHost;
