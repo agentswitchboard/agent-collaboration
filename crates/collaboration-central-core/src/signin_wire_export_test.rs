@@ -57,6 +57,11 @@ fn contract_directory() -> PathBuf {
 fn central_signin_types_match_generated_serde_wire() {
     let artifact = contract_directory().join("central-sign-in.ts");
     let exported = specta_typescript::Typescript::default()
+        .header(concat!(
+            "// Phase suffixes are from Central's perspective.\n",
+            "// Parse replies from Central as _Serialize. Send requests assignable to _Deserialize.\n",
+            "// Use the unsuffixed type when there are no separate phase aliases.",
+        ))
         .export(&signin_wire_types(), specta_serde::PhasesFormat)
         .expect("export Central Sign-in wire types");
 
@@ -171,9 +176,11 @@ declare const grant: Extract<Wire.MachineTokenDecision_Serialize, { result: "gra
             "--ignoreConfig",
             "--strict",
             "--exactOptionalPropertyTypes",
+            "--noUncheckedIndexedAccess",
+            "--verbatimModuleSyntax",
             "--noEmit",
             "--target",
-            "es2022",
+            "es2024",
             "--module",
             "nodenext",
             "--skipLibCheck",
