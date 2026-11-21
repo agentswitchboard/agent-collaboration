@@ -5,6 +5,7 @@ import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   WorkerdStorage,
+  C2EvictionError,
   centralTestBundle,
   centralLinkTestBundle,
   workerdSignInPlanSchema,
@@ -131,15 +132,16 @@ async function answer(line: string): Promise<unknown> {
             `C2_ORDINARY_ACCEPT_PROBE ${JSON.stringify({
               stage: "eviction",
               disposition:
-                error instanceof Error &&
-                error.message ===
-                  "Timed out waiting to evict Durable Object: it still has active references."
+                error instanceof C2EvictionError && error.reason === "activeReferences"
                   ? "active-references"
                   : "unclassified-eviction-failure",
               events: witness.snapshot(),
             })}\n`,
           );
-        throw error;
+        return {
+          answer: "c2EvictionFailed",
+          reason: error instanceof C2EvictionError ? error.reason : "platformFailure",
+        };
       }
       return { answer: "c2Evicted", organization: parsed.data.c2Evict };
     }

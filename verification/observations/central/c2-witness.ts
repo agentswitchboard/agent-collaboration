@@ -91,6 +91,50 @@ export class C2WitnessRecorder {
   private readonly instances = new Map<string, string>();
 
   private readonly changes = new EventEmitter();
+  private readonly deliveryByObject = new Map<string, AbortController>();
+  private readonly deliverySignal = new WeakMap<Parameters<V4FetchHandler>[0], AbortSignal>();
+
+  // Eviction cancels this object's observer acknowledgements before Workerd
+  // waits for references. Queued deliveries receive a refusal until eviction
+  // settles. Fencing never makes a request to the object.
+  cancelDeliveriesForEviction(objectId: string): () => void {
+    this.deliveryFor(objectId).abort();
+    return () => {
+      this.deliveryByObject.delete(objectId);
+    };
+  }
+
+  private deliveryFor(objectId: string): AbortController {
+    let delivery = this.deliveryByObject.get(objectId);
+    if (delivery === undefined) {
+      delivery = new AbortController();
+      this.deliveryByObject.set(objectId, delivery);
+    }
+    return delivery;
+  }
+
+  readonly deliver: V4FetchHandler = async (request, runtime): Promise<Response> => {
+    if (request.url !== "https://c2-witness.test/record") return this.observe(request, runtime);
+    const target = common.safeParse(
+      await request
+        .clone()
+        .json()
+        .catch(() => undefined),
+    );
+    if (!target.success) return new Response(null, { status: 400 });
+    const signal = this.deliveryFor(target.data.objectId).signal;
+    if (signal.aborted) return new Response(null, { status: 503 });
+
+    this.deliverySignal.set(request, signal);
+    const cancel = Promise.withResolvers<Response>();
+    const refuse = (): void => cancel.resolve(new Response(null, { status: 503 }));
+    signal.addEventListener("abort", refuse, { once: true });
+    try {
+      return await Promise.race([this.observe(request, runtime), cancel.promise]);
+    } finally {
+      signal.removeEventListener("abort", refuse);
+    }
+  };
   private heldDiagnostic:
     | (HeldDiagnostic & {
         remaining: number;
@@ -172,6 +216,8 @@ export class C2WitnessRecorder {
     } catch {
       return new Response(null, { status: 400 });
     }
+    const signal = this.deliverySignal.get(request);
+    if (signal?.aborted) return new Response(null, { status: 503 });
     const parsed = c2EventSchema.safeParse(input);
     if (!parsed.success) return new Response(null, { status: 400 });
     const event = parsed.data;
@@ -187,8 +233,11 @@ export class C2WitnessRecorder {
       if (gate.remaining === 0) {
         gate.correlationId = event.correlationId;
         this.changes.emit("changed");
+        signal?.addEventListener("abort", gate.release, { once: true });
         await gate.wait;
+        signal?.removeEventListener("abort", gate.release);
         this.heldDiagnostic = undefined;
+        if (signal?.aborted) return new Response(null, { status: 503 });
         if (gate.disposition === "refuse") {
           gate.refused = true;
           this.changes.emit("changed");
@@ -228,8 +277,21 @@ export class CentralObject extends original.CentralObject {
     const witnessEnv = new Proxy(env, { get(target, property, receiver) {
       return property === 'TEST_C2_WITNESS' ? witnessBinding : Reflect.get(target, property, receiver);
     }});
-    super(state, witnessEnv);
-    this.witnessState = state;
+    const witnessWork = new Set();
+    const trackWitnessWork = owner => new Proxy(owner, { get(target, property) {
+      if (property === 'waitUntil') return promise => {
+        witnessWork.add(promise);
+        const settled = () => witnessWork.delete(promise);
+        void promise.then(settled, settled);
+        target.waitUntil(promise);
+      };
+      const value = Reflect.get(target, property, target);
+      return typeof value === 'function' ? value.bind(target) : value;
+    }});
+    const trackingState = trackWitnessWork(state);
+    super(trackingState, witnessEnv);
+    this.witnessState = trackingState;
+    this.witnessWork = witnessWork;
     this.witnessBinding = binding;
     this.enqueueWitness = enqueue;
     this.waitForWitness(async () => {
@@ -253,6 +315,10 @@ export class CentralObject extends original.CentralObject {
     });
   }
   async fetch(request) {
+    if (request.method === 'POST' && request.url === 'https://c2-witness-control.test/before-eviction') {
+      while (this.witnessWork.size !== 0) await Promise.allSettled(this.witnessWork);
+      return new Response(null, {status:204});
+    }
     const response = await super.fetch(request);
     if (response.status === 101) this.recordWitness({kind:'upgrade',
       attachments:this.witnessState.getWebSockets().map(socket => socket.deserializeAttachment())});

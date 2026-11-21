@@ -208,7 +208,7 @@ function workerOptions(bundle: WorkerdBundle): V4WorkerOptions {
     durableObjects,
     ...(bundle.c2Witness === undefined
       ? {}
-      : { serviceBindings: { TEST_C2_WITNESS: bundle.c2Witness.observe } }),
+      : { serviceBindings: { TEST_C2_WITNESS: bundle.c2Witness.deliver } }),
     outboundService: (): never => {
       throw new Error("unexpected external workerd fetch");
     },
@@ -241,14 +241,36 @@ async function resolvePersistenceRoot(directory: string | undefined): Promise<st
   return directory;
 }
 
+export type C2EvictionCause =
+  | "activeReferences"
+  | "platformFailure"
+  | "namespaceUnavailable"
+  | "witnessDrainFailed";
+
+export class C2EvictionError extends Error {
+  readonly reason: C2EvictionCause;
+
+  constructor(reason: C2EvictionCause) {
+    super(reason);
+    this.reason = reason;
+  }
+}
+
 export class WorkerdStorage {
   readonly origin: string;
   private readonly runtime: Miniflare;
   private readonly temporaryRoot: string | undefined;
-  private constructor(origin: string, runtime: Miniflare, temporaryRoot: string | undefined) {
+  private readonly c2Witness: C2WitnessRecorder | undefined;
+  private constructor(
+    origin: string,
+    runtime: Miniflare,
+    temporaryRoot: string | undefined,
+    c2Witness: C2WitnessRecorder | undefined,
+  ) {
     this.origin = origin;
     this.runtime = runtime;
     this.temporaryRoot = temporaryRoot;
+    this.c2Witness = c2Witness;
   }
 
   static async start(
@@ -334,7 +356,7 @@ export class WorkerdStorage {
         [8787, 8788, 19741, 19742, 19743].includes(Number(ready.port))
       )
         throw new Error("workerd did not bind a permitted loopback port");
-      return new WorkerdStorage(ready.origin, runtime, temporaryRoot);
+      return new WorkerdStorage(ready.origin, runtime, temporaryRoot, bundle.c2Witness);
     } catch (error: unknown) {
       const failures: unknown[] = [error];
       try {
@@ -383,9 +405,66 @@ export class WorkerdStorage {
   }
 
   async evictCentral(organization: string): Promise<void> {
-    await this.runtime.unsafeEvictDurableObject("verification-central", "CentralObject", {
-      name: z.uuidv7().parse(organization),
-      webSockets: "hibernate",
-    });
+    const name = z.uuidv7().parse(organization);
+    let resumeDelivery: (() => void) | undefined;
+    if (this.c2Witness !== undefined) {
+      let stub: unknown;
+      try {
+        // Miniflare's replacement-type utility erases the namespace methods.
+        const namespace: unknown = await this.runtime.getDurableObjectNamespace(
+          "CENTRAL",
+          "verification-central",
+        );
+        if (
+          typeof namespace !== "object" ||
+          namespace === null ||
+          !("idFromName" in namespace) ||
+          typeof namespace.idFromName !== "function" ||
+          !("get" in namespace) ||
+          typeof namespace.get !== "function"
+        )
+          throw new C2EvictionError("namespaceUnavailable");
+        const objectId: unknown = namespace.idFromName(name);
+        stub = namespace.get(objectId);
+        resumeDelivery = this.c2Witness.cancelDeliveriesForEviction(String(objectId));
+      } catch {
+        throw new C2EvictionError("namespaceUnavailable");
+      }
+      try {
+        if (
+          typeof stub !== "object" ||
+          stub === null ||
+          !("fetch" in stub) ||
+          typeof stub.fetch !== "function"
+        )
+          throw new C2EvictionError("witnessDrainFailed");
+        const drained: unknown = await stub.fetch(
+          "https://c2-witness-control.test/before-eviction",
+          {
+            method: "POST",
+            signal: AbortSignal.timeout(5000),
+          },
+        );
+        if (!z.object({ status: z.literal(204) }).safeParse(drained).success)
+          throw new C2EvictionError("witnessDrainFailed");
+      } catch {
+        resumeDelivery?.();
+        throw new C2EvictionError("witnessDrainFailed");
+      }
+    }
+    try {
+      await this.runtime.unsafeEvictDurableObject("verification-central", "CentralObject", {
+        name,
+        webSockets: "hibernate",
+      });
+    } catch (error) {
+      const activeReferences =
+        error instanceof Error &&
+        error.message ===
+          "Timed out waiting to evict Durable Object: it still has active references.";
+      throw new C2EvictionError(activeReferences ? "activeReferences" : "platformFailure");
+    } finally {
+      resumeDelivery?.();
+    }
   }
 }
