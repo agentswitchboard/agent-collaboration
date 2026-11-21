@@ -18,12 +18,20 @@ pub struct DecideDeviceLogin {
     pub label: MachineLabel,
     pub allowed_workspaces: AllowedWorkspaces,
     #[serde(deserialize_with = "nullable_nonnegative_unix_seconds")]
-    #[schemars(required, schema_with = "Option::<UnixSeconds>::json_schema", extend("minimum" = 0))]
+    #[schemars(required, schema_with = "nullable_nonnegative_unix_seconds_schema")]
     pub approver_second_factor_at: Option<UnixSeconds>,
     #[serde(deserialize_with = "nonnegative_unix_seconds")]
-    #[schemars(with = "UnixSeconds", extend("minimum" = 0))]
+    #[schemars(with = "i64", range(min = 0))]
     pub code_expires_at: UnixSeconds,
 }
+fn nullable_nonnegative_unix_seconds_schema(
+    generator: &mut schemars::SchemaGenerator,
+) -> schemars::Schema {
+    let mut seconds = i64::json_schema(generator);
+    seconds.insert("minimum".into(), 0.into());
+    schemars::json_schema!({"anyOf": [seconds, {"type": "null"}]})
+}
+
 fn nonnegative_unix_seconds<'de, D: Deserializer<'de>>(
     deserializer: D,
 ) -> Result<UnixSeconds, D::Error> {
@@ -97,10 +105,10 @@ pub enum MachineTokenDecision {
         machine_id: MachineId,
         enrollment_id: EnrollmentId,
         #[serde(deserialize_with = "nonnegative_unix_seconds")]
-        #[schemars(with = "UnixSeconds", extend("minimum" = 0))]
+        #[schemars(with = "i64", range(min = 0))]
         decided_at: UnixSeconds,
         #[serde(deserialize_with = "nonnegative_unix_seconds")]
-        #[schemars(with = "UnixSeconds", extend("minimum" = 0))]
+        #[schemars(with = "i64", range(min = 0))]
         grant_expires_at: UnixSeconds,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         superseded: Option<EndedMachineClient>,

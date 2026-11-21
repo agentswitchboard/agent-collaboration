@@ -21,7 +21,7 @@ pub struct TextValidationError {
 }
 
 macro_rules! bounded_text {
-    ($name:ident, $field:literal, $min:expr, $max:expr, $trim:expr, $reject_c0:expr) => {
+    ($name:ident, $field:literal, $min:expr, $max:expr, $trim:expr, $reject_c0:expr $(, all_of_type = $all_of_type:literal)?) => {
         #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
         #[serde(try_from = "String", into = "String")]
         pub struct $name(String);
@@ -36,7 +36,7 @@ macro_rules! bounded_text {
                 }
                 if $reject_c0 {
                     schema.insert("allOf".into(), serde_json::json!([
-                        {"pattern": format!("^{PERMITTED_CONTROL_TEXT}$(?![\\s\\S])")}
+                        {"pattern": format!("^{PERMITTED_CONTROL_TEXT}$(?![\\s\\S])") $(, "type": $all_of_type)?}
                     ]));
                 }
                 schema
@@ -77,7 +77,15 @@ bounded_text!(TrailText, "text", 1, MAX_MESSAGE_TEXT_BYTES, false, true);
 bounded_text!(DropReason, "reason", 1, MAX_MESSAGE_TEXT_BYTES, false, true);
 bounded_text!(TrailTag, "tag", 1, MAX_NAME_BYTES, true, true);
 bounded_text!(MarkdownText, "text", 1, MAX_MESSAGE_TEXT_BYTES, false, true);
-bounded_text!(MachineLabel, "machineLabel", 1, MAX_NAME_BYTES, true, true);
+bounded_text!(
+    MachineLabel,
+    "machineLabel",
+    1,
+    MAX_NAME_BYTES,
+    true,
+    true,
+    all_of_type = "string"
+);
 
 #[cfg(test)]
 mod tests {
