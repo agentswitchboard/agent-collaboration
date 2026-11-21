@@ -1,17 +1,8 @@
 //! Checked Central alarm and timed-list rows read on the owning executor.
 use central_engine_model::{DueListKind, DueListQuery, DueRow, InstanceKey};
 use central_storage::{CorruptReason, EngineAlarmTimes, SafeInteger, StoreFailure};
-use sqlx::{ColumnIndex, Database, Decode, Encode, Executor, IntoArguments, Type};
-
-/// An owning Central transaction lends the repository an executor.
-/// The host retains responsibility for begin, commit and physical alarm writes.
-pub trait CentralTransaction {
-    type Database: Database;
-
-    fn executor(&mut self) -> impl Executor<'_, Database = Self::Database>;
-
-    fn rows_affected(result: <Self::Database as Database>::QueryResult) -> u64;
-}
+use fleet_lent_transaction::CentralTransaction;
+use sqlx::{ColumnIndex, Database, Decode, Encode, IntoArguments, Type};
 
 #[derive(sqlx::FromRow)]
 struct StoredAlarmInputs {

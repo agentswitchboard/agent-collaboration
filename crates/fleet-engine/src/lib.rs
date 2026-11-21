@@ -24,4 +24,4 @@ pub use engine::store_adapter::{
 };
 
 mod central_queries;
-pub use central_queries::{CentralTransaction, read_alarm_inputs, read_timed_due_rows};
+pub use central_queries::{read_alarm_inputs, read_timed_due_rows};

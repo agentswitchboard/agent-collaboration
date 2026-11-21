@@ -28,6 +28,7 @@ pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 3] = [
         ],
     ),
 ];
+pub(super) const LENT_TRANSACTION: &str = "fleet-lent-transaction";
 const FLEET_RPC: &str = "fleet-rpc";
 const WORKSPACE_SERVICE: &str = "fleet-workspace-service";
 const CENTRAL_CORE: &str = "collaboration-central-core";
@@ -88,6 +89,7 @@ pub(super) const MAIL_LAYER: (&str, &[&str]) = (
         "central-engine-model",
         "central-storage",
         "fleet-contracts",
+        LENT_TRANSACTION,
         "fleet-engine",
         "fleet-runtime-ports",
         "fleet-workspace-access",
@@ -123,6 +125,7 @@ pub(super) const ENGINE_EDGES: &[&str] = &[
     "central-engine-model",
     "central-storage",
     "fleet-contracts",
+    LENT_TRANSACTION,
     "fleet-runtime",
     "fleet-runtime-ports",
     "workspace-model",
@@ -297,6 +300,7 @@ pub(super) fn check_boundaries(
         graph,
         FLEET_DIRECTORY,
         &[
+            LENT_TRANSACTION,
             FLEET_ACCESS,
             FLEET_ENGINE,
             FLEET_MAIL,
@@ -442,7 +446,8 @@ fn check_package_targets(root: &Path, package: &str) -> Result<(), Box<dyn std::
     check_package_tree(root, package, None)?;
     if matches!(
         package,
-        WORKSPACE_SERVICE
+        LENT_TRANSACTION
+            | WORKSPACE_SERVICE
             | FLEET_ACCESS
             | FLEET_DIRECTORY
             | FLEET_ENGINE
@@ -517,6 +522,14 @@ fn check_tree_output(
         let Some(name) = identity.split_whitespace().next() else {
             continue;
         };
+        if package == LENT_TRANSACTION {
+            if name.starts_with("sqlx-") && name != "sqlx-core" {
+                return Err(
+                    format!("{LENT_TRANSACTION} reaches SQLx backend or tooling {name}").into(),
+                );
+            }
+            continue;
+        }
         if package == CENTRAL_WORKER {
             if matches!(name, "sqlx-sqlite" | "libsqlite3-sys") {
                 return Err(format!("R1: Cloudflare reaches stock SQLite through {name}").into());
@@ -755,6 +768,21 @@ fn graph(edges: &[(&str, &str, DependencyKind)]) -> NonDevDependencyGraph {
     graph
 }
 #[test]
+fn lent_transaction_allows_sqlx_without_a_backend() {
+    let neutral = "fleet-lent-transaction v1\nsqlx v0.9\nsqlx-core v0.9";
+    assert!(check_tree_output(neutral, &[], LENT_TRANSACTION).is_ok());
+    for backend in [
+        "sqlx-sqlite",
+        "sqlx-postgres",
+        "sqlx-mysql",
+        "sqlx-durable-object",
+    ] {
+        let with_backend = format!("{neutral}\n{backend} v0.9");
+        assert!(check_tree_output(&with_backend, &[], LENT_TRANSACTION).is_err());
+    }
+}
+
+#[test]
 fn pure_rules_reject_unlisted_workspace_and_transitive_external_effects() {
     for kind in [DependencyKind::Normal, DependencyKind::Build] {
         assert!(check_boundaries(&graph(&[("workspace-rules", "unlisted-host", kind)])).is_err());
@@ -766,6 +794,9 @@ fn pure_rules_reject_unlisted_workspace_and_transitive_external_effects() {
             .is_err()
         );
         assert!(check_boundaries(&graph(&[("workspace-rules", "sqlx-sqlite", kind)])).is_err());
+        assert!(
+            check_boundaries(&graph(&[("fleet-runtime-ports", LENT_TRANSACTION, kind)])).is_err()
+        );
     }
     assert!(
         check_boundaries(&graph(&[

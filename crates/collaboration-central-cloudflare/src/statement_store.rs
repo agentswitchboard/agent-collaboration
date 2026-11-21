@@ -249,7 +249,7 @@ impl<'a, T> WorkerTransaction<'a, T> {
     }
 }
 
-impl<T> fleet_engine::CentralTransaction for WorkerTransaction<'_, T>
+impl<T> fleet_lent_transaction::CentralTransaction for WorkerTransaction<'_, T>
 where
     for<'executor> &'executor T: sqlx_core::executor::Executor<'executor, Database = Do>,
 {
@@ -497,26 +497,13 @@ pub(crate) async fn write_stamp(
     write: fleet_signin::stamp_store::StampWrite,
     policy: AlarmPolicy,
 ) -> Result<BatchOutcome, StoreFailure> {
-    use fleet_signin::stamp_store::{StampTransaction, StampWriteStop};
-    use sqlx_durable_object::DoQueryResult;
-
-    struct DoStampTransaction<'transaction>(&'transaction DoTransaction);
-
-    impl StampTransaction for DoStampTransaction<'_> {
-        type Database = Do;
-        fn executor(&mut self) -> impl sqlx_core::executor::Executor<'_, Database = Do> {
-            self.0
-        }
-        fn rows_affected(result: DoQueryResult) -> u64 {
-            result.rows_affected()
-        }
-    }
+    use fleet_signin::stamp_store::StampWriteStop;
 
     let alarm = OwnedAlarmUpdate::Engine(central_storage::EngineAlarmPlan::Recompute);
     let result = connection
         .transaction(move |transaction| async move {
             let rows = write
-                .apply(&mut DoStampTransaction(&transaction))
+                .apply(&mut WorkerTransaction::new(&transaction))
                 .await
                 .map_err(|stop| match stop {
                     StampWriteStop::Guard {

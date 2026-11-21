@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT\n  MIN(CASE WHEN due_lane = 'on_grid' THEN due_at_ms END) AS \"on_grid_due?: i64\",\n  MIN(CASE WHEN due_lane = 'legacy' THEN due_at_ms END) AS \"legacy_due?: i64\"\nFROM engine_due_rows\nWHERE contributes_to_alarm = 1\n  AND (SELECT COUNT(*) FROM signin_organization_identity) = 1;\n",
+  "query": "SELECT\n  MIN(CASE WHEN due_lane = 'on_grid' THEN due_at_ms END) AS \"on_grid_due?: i64\",\n  MIN(CASE WHEN due_lane = 'legacy' THEN due_at_ms END) AS \"legacy_due?: i64\"\nFROM engine_due_rows\nWHERE contributes_to_alarm = 1\n  AND EXISTS (SELECT 1 FROM signin_provisioned_for_engine);\n",
   "describe": {
     "columns": [
       {
@@ -24,5 +24,5 @@
       false
     ]
   },
-  "hash": "27e765d873b850e49ca014d3d748e16f08de8295a3874d61cc50d2ffcd6078df"
+  "hash": "e6816f559c5fcd2f468f67fa8da68febbc7f3cadf8eae8e8c852c75220b123e5"
 }

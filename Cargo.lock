@@ -1422,6 +1422,7 @@ dependencies = [
  "fleet-contracts",
  "fleet-engine",
  "fleet-identity-protocol",
+ "fleet-lent-transaction",
  "fleet-mail",
  "fleet-rpc",
  "fleet-runtime",
@@ -1542,6 +1543,7 @@ dependencies = [
  "fleet-contracts",
  "fleet-engine",
  "fleet-identity-protocol",
+ "fleet-lent-transaction",
  "fleet-mail",
  "fleet-rpc",
  "fleet-runtime",
@@ -2440,6 +2442,7 @@ dependencies = [
  "central-storage",
  "chrono",
  "fleet-contracts",
+ "fleet-lent-transaction",
  "fleet-runtime",
  "fleet-runtime-ports",
  "fleet-storage-schema",
@@ -2464,6 +2467,13 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "fleet-lent-transaction"
+version = "0.1.157"
+dependencies = [
+ "sqlx",
 ]
 
 [[package]]
@@ -2582,6 +2592,7 @@ dependencies = [
  "chrono",
  "fleet-contracts",
  "fleet-identity-protocol",
+ "fleet-lent-transaction",
  "fleet-runtime",
  "fleet-runtime-ports",
  "fleet-storage-schema",

@@ -62,7 +62,7 @@ pub struct ObjectStorage {
 
 struct NativeTransaction<'a>(&'a mut sqlx::SqliteConnection);
 
-impl fleet_engine::CentralTransaction for NativeTransaction<'_> {
+impl fleet_lent_transaction::CentralTransaction for NativeTransaction<'_> {
     type Database = sqlx::Sqlite;
 
     fn executor(&mut self) -> impl sqlx::Executor<'_, Database = Self::Database> {

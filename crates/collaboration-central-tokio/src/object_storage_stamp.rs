@@ -1,24 +1,13 @@
 //! Stock SQLite binding for the sign-in stamp's owning transaction.
-use super::{AlarmPublicationFailure, BatchOutcome, ObjectStorage, StoreFailure};
+use super::{
+    AlarmPublicationFailure, BatchOutcome, NativeTransaction, ObjectStorage, StoreFailure,
+};
 use fleet_signin::{
     organization_authority::StoredStampRead,
-    stamp_store::{StampStore, StampTransaction, StampWrite, StampWriteStop, read_stamp},
+    stamp_store::{StampStore, StampWrite, StampWriteStop, read_stamp},
 };
 use futures_util::future::BoxFuture;
-use sqlx::{Executor, Sqlite, SqliteConnection, sqlite::SqliteQueryResult};
 use std::ops::ControlFlow;
-
-struct NativeStampTransaction<'connection>(&'connection mut SqliteConnection);
-
-impl StampTransaction for NativeStampTransaction<'_> {
-    type Database = Sqlite;
-    fn executor(&mut self) -> impl Executor<'_, Database = Sqlite> {
-        &mut *self.0
-    }
-    fn rows_affected(result: SqliteQueryResult) -> u64 {
-        result.rows_affected()
-    }
-}
 
 impl StampStore for ObjectStorage {
     fn read_stamp(&self) -> BoxFuture<'_, Result<StoredStampRead, StoreFailure>> {
@@ -51,7 +40,7 @@ impl ObjectStorage {
             .opened()
             .await?
             .run_transaction(async move |connection| {
-                let rows = match write.apply(&mut NativeStampTransaction(connection)).await {
+                let rows = match write.apply(&mut NativeTransaction(connection)).await {
                     Ok(rows) => rows,
                     Err(stop) => return Ok(ControlFlow::Break(stop)),
                 };

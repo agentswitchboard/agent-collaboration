@@ -5,6 +5,7 @@ use crate::{
 };
 use central_storage::{BatchOutcome, StoreFailure};
 use fleet_identity_protocol::OrganizationId;
+use fleet_lent_transaction::CentralTransaction;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use futures_util::future::BoxFuture;
 use sqlx::{ColumnIndex, Database, Decode, Encode, Executor, IntoArguments, Type};
@@ -76,13 +77,6 @@ pub struct StampWrite {
     pub(crate) audit: OrganizationChangeRecord,
 }
 
-/// A portable borrow of this host's current SQLx transaction.
-pub trait StampTransaction {
-    type Database: Database;
-    fn executor(&mut self) -> impl Executor<'_, Database = Self::Database>;
-    fn rows_affected(result: <Self::Database as Database>::QueryResult) -> u64;
-}
-
 #[derive(Debug, thiserror::Error)]
 pub enum StampWriteStop {
     #[error("stamp statement {index} affected {rows_affected} rows, expected one")]
@@ -135,7 +129,7 @@ fn exact_one(index: u32, rows_affected: u64) -> Result<(), StampWriteStop> {
 }
 
 impl StampWrite {
-    pub async fn apply<T: StampTransaction>(self, tx: &mut T) -> Result<[u64; 2], StampWriteStop>
+    pub async fn apply<T: CentralTransaction>(self, tx: &mut T) -> Result<[u64; 2], StampWriteStop>
     where
         <T::Database as Database>::Arguments: IntoArguments<T::Database>,
         String: Type<T::Database> + for<'q> Encode<'q, T::Database>,

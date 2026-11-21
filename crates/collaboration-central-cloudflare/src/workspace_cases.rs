@@ -1,6 +1,6 @@
 //! Controls the actual modern CentralObject only in test-support bundles.
-use super::{CentralObject, ObjectAddress, OrganizationId};
-use crate::store_wire::OwnedStoreCall;
+use super::{CentralObject, ObjectAddress, OrganizationId, statement_store};
+use crate::store_wire::{OwnedStatement, OwnedStoreCall};
 use fleet_runtime::{HeldPause, PausePoint};
 use serde::Deserialize;
 use std::{cell::RefCell, collections::BTreeMap};

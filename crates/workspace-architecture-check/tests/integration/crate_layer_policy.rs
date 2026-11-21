@@ -1,7 +1,7 @@
 //! Allowed normal/build edges between workspace packages.
 use super::workspace_boundaries;
 
-const LAYER_POLICY: [(&str, &[&str]); 39] = [
+const LAYER_POLICY: [(&str, &[&str]); 40] = [
     ("workspace-ids", &[]),
     (
         "workspace-model",
@@ -68,6 +68,7 @@ const LAYER_POLICY: [(&str, &[&str]); 39] = [
             "fleet-contracts",
             "fleet-engine",
             "fleet-identity-protocol",
+            "fleet-lent-transaction",
             "fleet-rpc",
             "fleet-runtime-ports",
             "fleet-runtime",
@@ -89,6 +90,7 @@ const LAYER_POLICY: [(&str, &[&str]); 39] = [
             "fleet-contracts",
             "fleet-engine",
             "fleet-identity-protocol",
+            "fleet-lent-transaction",
             "fleet-rpc",
             "fleet-runtime-ports",
             "fleet-runtime",
@@ -132,12 +134,14 @@ const LAYER_POLICY: [(&str, &[&str]); 39] = [
             "central-storage",
             "fleet-contracts",
             "fleet-identity-protocol",
+            "fleet-lent-transaction",
             "fleet-runtime",
             "fleet-runtime-ports",
             "state-machine-core",
             "workspace-ids",
         ],
     ),
+    (workspace_boundaries::LENT_TRANSACTION, &[]),
     ("fleet-storage-schema", &[]),
     (
         "fleet-store-sqlx",
