@@ -18,11 +18,6 @@ mod stored_messages;
 mod system_message_expiry;
 mod system_message_expiry_store;
 
-#[doc(hidden)]
-pub use fleet_engine::{
-    controlled_machine as __controlled_machine, machine_rows as __machine_rows,
-};
-
 pub use acknowledgement::settle_delivery_ack_held;
 pub use delivery_reads::{prepare_windowed_delivery_held, windowed_welcome_page_held};
 pub use direct_message::{
@@ -31,7 +26,7 @@ pub use direct_message::{
 };
 pub use direct_message_store::DirectMessageStore;
 pub use direct_status::direct_message_status_held;
-pub use due_queries::{DIRECT_MESSAGE_LIST, SYSTEM_MESSAGE_EXPIRY_LIST};
+pub use due_queries::{due_direct_messages, due_system_message_expiries};
 pub use message_insert::insert_message;
 pub use queued_notices::{plan_cancel_queued_notices_held, validate_queued_notices_held};
 pub use request_plan::{DirectSendPlan, plan_direct_send, plan_sourced_notice};

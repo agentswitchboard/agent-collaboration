@@ -241,14 +241,9 @@ impl<'runtime, R: EngineHost> Engine<'runtime, R> {
             };
         }
         let alarm = self.host().published_alarm().await?;
-        let pending = self
-            .host()
-            .read(central_engine_model::next_due_sql(self.0.alarm_inputs()))
-            .await?;
-        let timed_work_pending = pending
-            .rows
-            .first()
-            .is_some_and(|row| row.iter().any(|value| *value != SqlValue::Null));
+        let pending = self.host().engine_alarm_inputs().await?;
+        let timed_work_pending = pending.earliest_on_grid_due_unix_millis.is_some()
+            || pending.earliest_legacy_due_unix_millis.is_some();
         Ok(EngineHealthFacts {
             kinds,
             alarm,

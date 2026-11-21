@@ -397,6 +397,11 @@ async fn a_failed_final_publication_fails_the_event_and_the_driver_retries_at_th
     fixture.advance_to(retry).await;
     runtime.runtime().until_alarm_completed(callbacks + 1).await;
     assert_eq!(alarm_ms(&runtime), ms(at(start, 20, 0)));
+    assert_eq!(
+        probe_facts(&runtime, due, group).await,
+        vec![text("fired"), integer(1), integer(0)],
+        "the physical retry did not reapply the committed work"
+    );
     fixture.host.close().await;
 }
 
@@ -441,5 +446,31 @@ async fn a_failed_due_read_for_one_kind_still_handles_the_others() {
         vec![vec![text("failing"), integer(1), text("corrupt_row")]]
     );
     assert_eq!(alarm_ms(&runtime), ms(at(start, 10, 0)));
+    fixture.host.close().await;
+}
+
+#[tokio::test]
+async fn a_due_wake_with_a_null_key_records_source_corruption() {
+    let fixture = Fixture::new().await;
+    let runtime = runtime(&fixture).await;
+    let start = fixture.clock.utc_now();
+    let cutoff = at(start, 5, 0);
+    raw(
+        &runtime,
+        "INSERT INTO automation_wakes VALUES (NULL, 'target', ?, 'wake', 'active', ?, ?)",
+        vec![
+            text(cutoff.to_rfc3339()),
+            text(start.to_rfc3339()),
+            text(start.to_rfc3339()),
+        ],
+    )
+    .await;
+    fixture.set_utc(cutoff).await;
+    let completion = runtime.after_event().await.unwrap();
+    assert_eq!(completion.work.wakes_fired, 0);
+    assert_eq!(
+        source_attempt(&runtime, "wake_timer").await,
+        vec![vec![text("failing"), integer(1), text("corrupt_row")]]
+    );
     fixture.host.close().await;
 }

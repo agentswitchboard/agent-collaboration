@@ -1,0 +1,35 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT subject_key AS \"subject_key?: String\",\n       occurrence_ms AS \"occurrence_ms!: i64\",\n       due_at_ms AS \"effective_due_ms!: i64\"\nFROM engine_probe_due_rows\nWHERE is_subject = 1 AND due_at_ms <= ?1\nORDER BY due_at_ms, subject_key\nLIMIT ?2;\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "subject_key?: String",
+        "ordinal": 0,
+        "type_info": "Null",
+        "origin": "Expression"
+      },
+      {
+        "name": "occurrence_ms!: i64",
+        "ordinal": 1,
+        "type_info": "Null",
+        "origin": "Expression"
+      },
+      {
+        "name": "effective_due_ms!: i64",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "3c20d30785ef46255aa3ce2d2fca02f55c0f5e6f0a193632af67f2bca113561a"
+}

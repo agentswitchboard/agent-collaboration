@@ -226,11 +226,9 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         )?);
         Ok(EngineAdminPlan {
             alarm: match result {
-                OrganizationAdminResult::EngineRetried {} => AlarmUpdate::SetEngineFromQuery {
-                    query: central_engine_model::next_due_sql(
-                        crate::engine::query_registry::ALARM_INPUTS,
-                    ),
-                },
+                OrganizationAdminResult::EngineRetried {} => {
+                    AlarmUpdate::Engine(central_storage::EngineAlarmPlan::Recompute)
+                }
                 _ => AlarmUpdate::Unchanged,
             },
             result,
@@ -285,9 +283,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                 // The re-arm is this event's last step; a failed publication is
                 // observed and the next event re-publishes.
                 let _ = Engine::new(self)
-                    .publish_engine_query(central_engine_model::next_due_sql(
-                        crate::engine::query_registry::ALARM_INPUTS,
-                    ))
+                    .publish_engine_alarm(central_storage::EngineAlarmPlan::Recompute)
                     .await;
                 Ok(EngineAdminPlan {
                     result: OrganizationAdminResult::EngineDiscarded {},

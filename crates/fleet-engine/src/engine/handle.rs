@@ -87,7 +87,6 @@ impl<R: EngineHost> Engine<'_, R> {
     {
         let handler = ObjectHostEffects {
             host: self.host(),
-            alarm_inputs: self.0.alarm_inputs(),
             #[cfg(feature = "test-support")]
             pauses: self.pauses(),
         };

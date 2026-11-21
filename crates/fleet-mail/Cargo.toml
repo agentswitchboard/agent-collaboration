@@ -23,5 +23,6 @@ serde.workspace = true
 serde_json.workspace = true
 
 [dev-dependencies]
+sqlx = { workspace = true, features = ["sqlite", "macros"] }
 central-engine-test-support.workspace = true
 hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }

@@ -1,6 +1,7 @@
-use super::{alarm_time, constraint_kind, decided_engine_alarm, sql_value, statement_is_rejected};
+use super::{alarm_time, constraint_kind, sql_value, statement_is_rejected};
 use central_storage::{
-    ConstraintKind, CorruptReason, ReadOutcome, SafeInteger, SqlValue, StoreFailure,
+    ConstraintKind, CorruptReason, EngineAlarmTimes, ReadOutcome, SafeInteger, SqlValue,
+    StoreFailure,
 };
 use sqlx_durable_object::{DoArgumentValue, DoDatabaseError};
 
@@ -130,27 +131,26 @@ fn engine_publication_uses_both_pending_columns_and_the_supplied_clock() {
             .unwrap()
     );
     let decide = fleet_runtime::engine_alarm_decider(state);
-    let row = ReadOutcome {
-        columns: vec!["grid".into(), "legacy".into()],
-        rows: vec![vec![integer(300_000), integer(305_000)]],
+    let inputs = EngineAlarmTimes {
+        earliest_on_grid_due_unix_millis: Some(300_000),
+        earliest_legacy_due_unix_millis: Some(305_000),
     };
+    let mut published = None;
     assert_eq!(
-        decided_engine_alarm(&row, 300_000, &decide),
+        decide(inputs, 300_000, &mut |time| published = Some(time)),
         Ok(Some(330_000))
     );
-    assert!(matches!(
-        decided_engine_alarm(&answer(vec![vec![integer(300_000)]]), 0, &decide),
-        Err(StoreFailure::Corrupt { .. })
-    ));
+    assert_eq!(published, Some(Some(330_000)));
+
     let max = collaboration_central_core::MAX_ALARM_UNIX_MILLIS;
-    let row = ReadOutcome {
-        columns: row.columns,
-        rows: vec![vec![integer(max), SqlValue::Null]],
+    let inputs = EngineAlarmTimes {
+        earliest_on_grid_due_unix_millis: Some(max),
+        earliest_legacy_due_unix_millis: None,
     };
     assert_eq!(
-        decided_engine_alarm(&row, max, &decide),
-        Err(StoreFailure::AlarmUnpublishable {
-            reason: central_storage::AlarmPublicationFailure::NoLaterGridMark
-        })
+        decide(inputs, max, &mut |_| panic!(
+            "unpublishable alarm reached the writer"
+        )),
+        Err(central_storage::AlarmPublicationFailure::NoLaterGridMark)
     );
 }

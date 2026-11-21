@@ -9,9 +9,7 @@ mod timed_store;
 mod timing;
 mod wake_timer;
 
-pub use due_queries::WAKE_LIST;
-#[doc(hidden)]
-pub use due_queries::{__controlled_machine, __machine_rows};
+pub use due_queries::due_wakes;
 pub use finish::{WakeFinish, wake_finish_store};
 pub use request_plan::{cancel_wake_read, plan_cancel_wake, plan_set_wake};
 pub use stored_rows::WakeRow;

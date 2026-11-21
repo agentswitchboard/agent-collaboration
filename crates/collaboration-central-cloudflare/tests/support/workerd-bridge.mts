@@ -5,6 +5,7 @@ import { access, readFile } from "node:fs/promises";
 import { join } from "node:path";
 import {
   WorkerdStorage,
+  C2EvictionError,
   centralTestBundle,
   centralLinkTestBundle,
   workerdSignInPlanSchema,
@@ -131,22 +132,38 @@ async function answer(line: string): Promise<unknown> {
             `C2_ORDINARY_ACCEPT_PROBE ${JSON.stringify({
               stage: "eviction",
               disposition:
-                error instanceof Error &&
-                error.message ===
-                  "Timed out waiting to evict Durable Object: it still has active references."
+                error instanceof C2EvictionError && error.reason === "activeReferences"
                   ? "active-references"
                   : "unclassified-eviction-failure",
               events: witness.snapshot(),
             })}\n`,
           );
-        throw error;
+        return {
+          answer: "c2EvictionFailed",
+          reason: error instanceof C2EvictionError ? error.reason : "platformFailure",
+        };
       }
       return { answer: "c2Evicted", organization: parsed.data.c2Evict };
     }
     if ("c2Witness" in parsed.data) {
       if (witness === undefined) return { answer: "refused", error: "C2 witness not enabled" };
       witness.phase = parsed.data.c2Witness.phase;
-      return { answer: "c2Witness", events: witness.snapshot() };
+      const diagnostic = parsed.data.c2Witness.holdDecidingDiagnostic;
+      if (diagnostic !== undefined) witness.holdDecidingDiagnostic(diagnostic);
+      const upgrades = parsed.data.c2Witness.waitForUpgrades;
+      const events =
+        upgrades === undefined
+          ? witness.snapshot()
+          : await witness.settledLifecycle("upgrade", upgrades);
+      return { answer: "c2Witness", events };
+    }
+    if ("c2SettleAlarms" in parsed.data) {
+      if (witness === undefined) return { answer: "refused", error: "C2 witness not enabled" };
+      const { phase, correlationIds, expectRefused } = parsed.data.c2SettleAlarms;
+      return {
+        answer: "c2Witness",
+        events: await witness.settledAlarms(phase, correlationIds, expectRefused),
+      };
     }
     if ("setExternalTimeMs" in parsed.data) {
       if (witness === undefined) return { answer: "refused", error: "C2 witness not enabled" };

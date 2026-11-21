@@ -30,6 +30,8 @@ struct CentralStatements {
     zero_next_write_alarm: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(feature = "test-support")]
     witness_env: SendWrapper<Env>,
+    #[cfg(feature = "test-support")]
+    witnesses: workspace_link_witness::PendingWitnesses,
     connection: SendWrapper<DoConnection>,
     state: Arc<SendWrapper<State>>,
     clock: WorkspaceClock,
@@ -55,10 +57,7 @@ impl CentralStore for CentralStatements {
             let decide_alarm = self.decide_alarm.clone();
             #[cfg(feature = "test-support")]
             let decide_alarm = if !batch.statements.is_empty()
-                && matches!(
-                    batch.alarm,
-                    central_storage::AlarmUpdate::SetEngineFromQuery { .. }
-                )
+                && matches!(batch.alarm, central_storage::AlarmUpdate::Engine(_))
                 && self
                     .zero_next_write_alarm
                     .swap(false, std::sync::atomic::Ordering::SeqCst)
@@ -73,12 +72,24 @@ impl CentralStore for CentralStatements {
             } else {
                 decide_alarm
             };
+            #[cfg(feature = "test-support")]
+            let (decide_alarm, captured_alarm) = workspace_link_witness::capture_alarm_inputs(
+                &self.witness_env,
+                decide_alarm,
+                &batch,
+            );
             let result = statement_store::run_batch(
                 &self.connection,
                 batch.into(),
                 AlarmPolicy::Engine(self.state.storage(), self.clock.clone(), decide_alarm),
             )
             .await;
+            #[cfg(feature = "test-support")]
+            if let (Some(capture), Ok(BatchOutcome::Applied { publication, .. })) =
+                (captured_alarm, &result)
+            {
+                self.witnesses.alarm_committed(capture, publication);
+            }
             #[cfg(feature = "test-support")]
             if fault.is_some_and(|fault| {
                 matches!(
@@ -106,16 +117,31 @@ impl CentralStore for CentralStatements {
             let sql = statement.sql;
             let result = statement_store::read(&self.connection, statement.into()).await;
             #[cfg(feature = "test-support")]
-            workspace_link_witness::read_completed(
-                &self.witness_env,
-                self.state.id().to_string(),
-                sql,
-                &result,
-            )
-            .await
-            .map_err(|_| StoreFailure::Unavailable)?;
+            self.witnesses
+                .read_completed(&self.witness_env, &self.state, sql, &result);
             result
         })
+    }
+    fn read_timed_due_rows(
+        &self,
+        query: fleet_runtime_ports::DueListQuery,
+    ) -> impl std::future::Future<
+        Output = std::result::Result<Vec<fleet_runtime_ports::DueRow>, StoreFailure>,
+    > + Send {
+        SendFuture::new(async move {
+            #[cfg(feature = "test-support")]
+            if let Some(failure) = self.faults.take_due_read_failure(query.kind()) {
+                return Err(failure);
+            }
+            statement_store::read_timed_due_rows(&self.connection, query).await
+        })
+    }
+    fn engine_alarm_inputs(
+        &self,
+    ) -> impl std::future::Future<
+        Output = std::result::Result<central_storage::EngineAlarmTimes, StoreFailure>,
+    > + Send {
+        SendFuture::new(async move { statement_store::engine_alarm_inputs(&self.connection).await })
     }
     fn published_alarm(
         &self,
@@ -226,6 +252,8 @@ pub struct CentralObject {
     #[cfg(feature = "test-support")]
     controls: workspace_cases::Controls,
     #[cfg(feature = "test-support")]
+    witnesses: workspace_link_witness::PendingWitnesses,
+    #[cfg(feature = "test-support")]
     launcher_clock_sampled: Mutex<bool>,
 }
 impl CentralObject {
@@ -250,6 +278,8 @@ impl CentralObject {
             zero_next_write_alarm: self.controls.zero_next_write_alarm.clone(),
             #[cfg(feature = "test-support")]
             witness_env: SendWrapper::new(self.env.clone()),
+            #[cfg(feature = "test-support")]
+            witnesses: self.witnesses.clone(),
             connection: SendWrapper::new(DoConnection::new(self.state.storage())),
             state: self.state.clone(),
             clock: self.clock.clone(),
@@ -368,6 +398,8 @@ impl DurableObject for CentralObject {
             mail_pushes: Default::default(),
             #[cfg(feature = "test-support")]
             controls: workspace_cases::Controls::default(),
+            #[cfg(feature = "test-support")]
+            witnesses: workspace_link_witness::PendingWitnesses::default(),
             #[cfg(feature = "test-support")]
             launcher_clock_sampled: Mutex::new(false),
         }

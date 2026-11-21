@@ -143,9 +143,7 @@ async fn fail_unresolved_sender<R: EngineHost>(
         .host()
         .run_batch(StatementBatch {
             statements,
-            alarm: AlarmUpdate::SetEngineFromQuery {
-                query: central_engine_model::next_due_sql(runtime.alarm_inputs()),
-            },
+            alarm: AlarmUpdate::Engine(central_storage::EngineAlarmPlan::Recompute),
         })
         .await?
     {
