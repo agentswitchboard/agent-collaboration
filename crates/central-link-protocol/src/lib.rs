@@ -8,7 +8,9 @@ mod request_status;
 pub use request_status::{RequestRefusal, RequestStatusAnswer, RequestStatusQuery};
 
 pub use link_codec::{DataFrame, FrameDirection, LinkFrame, decode_text, encode_text};
-pub use link_delivery::{DeliveryAnswer, MessageCancellation, MessageOutcome, MessageRefusal};
+pub use link_delivery::{
+    MAX_RECEIPTS, MAX_TIME_LEFT_MS, Receipt, ReceiptBatch, ReceiptKind, ReceiptResult, TimeLeft,
+};
 pub use link_renewal::{
     InvalidMachineToken, MachineTokenText, TokenRenewalRefusal, TokenRenewalResult,
 };
@@ -25,6 +27,10 @@ pub enum ProtocolError {
     RequestIdPolicy { field: &'static str },
     #[error("batch must contain 1 to 64 writes with distinct correlation IDs")]
     InvalidBatch,
+    #[error("receipts must contain 1 to 64 items")]
+    InvalidReceiptBatch,
+    #[error("offer does not carry the time left required by its kind")]
+    InvalidOffer,
     #[error("frame is not allowed in this direction")]
     WrongDirection,
 }

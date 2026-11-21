@@ -35,6 +35,45 @@ fn send(to: workspace_ids::SessionRef, body: &str) -> Operation {
 }
 
 #[tokio::test]
+async fn direct_send_admits_an_enrolled_machine_without_a_session_actor() {
+    let fixture = Fixture::new().await;
+    let mut unregistered = session(&fixture.caller);
+    unregistered.session_id = "unregistered-direct-recipient"
+        .to_owned()
+        .try_into()
+        .unwrap();
+
+    let send_result = request(
+        &fixture,
+        &fixture.caller,
+        909_002,
+        send(unregistered.clone(), "D6"),
+    )
+    .await;
+    assert!(matches!(send_result, Result::Done(Answer::Queued { .. })));
+
+    let wake = Operation::SetWake {
+        target: unregistered.clone(),
+        due_at: chrono::DateTime::from_timestamp(FIXTURE_NOW + 300, 0).unwrap(),
+        text: "still requires a session".to_owned().try_into().unwrap(),
+    };
+    let schedule = Operation::SetAutomation {
+        target: unregistered.clone(),
+        timing: serde_json::from_str(r#"{"kind":"after","seconds":300}"#).unwrap(),
+        text: "still requires a session".to_owned().try_into().unwrap(),
+    };
+    for (request_id, operation) in [(909_003, wake), (909_004, schedule)] {
+        assert_eq!(
+            request(&fixture, &fixture.caller, request_id, operation).await,
+            Result::Refused(Refusal::UnknownSession {
+                target: unregistered.clone()
+            }),
+        );
+    }
+    fixture.host.close().await;
+}
+
+#[tokio::test]
 async fn direct_mail_replays_expires_and_routes_to_both_machines() {
     let mut fixture = Fixture::new().await;
     let first = session(&fixture.caller);
@@ -134,6 +173,7 @@ async fn direct_mail_replays_expires_and_routes_to_both_machines() {
         Result::Done(Answer::Queued { .. })
     ));
     let mut unknown = second.clone();
+    unknown.machine_id = id(909_001);
     unknown.session_id = "unknown".to_owned().try_into().unwrap();
     assert_eq!(
         request(

@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 /// Composes one Fleet runtime with the retained organization features.
 pub struct WorkspaceRuntime<Host: CentralStore, Stores: WorkspaceStores> {
+    pub(crate) direct_messages: Arc<dyn fleet_mail::DirectMessageStore>,
     pub(crate) execution: FleetRuntime<Host, Stores>,
     pub(crate) mail_delivery_ready: Arc<dyn Fn(MailDeliveryReady) + Send + Sync>,
     pub(crate) machine_revoked: Arc<dyn Fn(workspace_ids::MachineId) + Send + Sync>,
@@ -21,8 +22,12 @@ pub struct WorkspaceRuntime<Host: CentralStore, Stores: WorkspaceStores> {
         std::sync::Mutex<Option<(usize, central_storage::StoreFailure)>>,
 }
 impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores> {
-    pub fn new(execution: FleetRuntime<Host, Stores>) -> Self {
+    pub fn new(
+        execution: FleetRuntime<Host, Stores>,
+        direct_messages: Arc<dyn fleet_mail::DirectMessageStore>,
+    ) -> Self {
         Self {
+            direct_messages,
             execution,
             signin_authority: Default::default(),
             mail_delivery_ready: Arc::new(|_| {}),

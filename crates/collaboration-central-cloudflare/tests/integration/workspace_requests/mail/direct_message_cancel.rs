@@ -5,8 +5,7 @@ use central_storage::SqlValue;
 use std::sync::atomic::Ordering;
 use workspace_model::central_mail::{
     CentralMailAnswer as Answer, CentralMailOperation as Operation, CentralMailRequest,
-    CentralMailResult as Result, MessageBody, MessageCancellation, MessageDelivery, MessageOutcome,
-    MessageSender,
+    CentralMailResult as Result, MessageBody, MessageDelivery, MessageOutcome, MessageSender,
 };
 
 fn row_text(value: &SqlValue) -> &str {
@@ -17,7 +16,7 @@ fn row_text(value: &SqlValue) -> &str {
 }
 
 #[tokio::test]
-async fn an_unacknowledged_direct_message_is_cancelled_at_its_mark_and_the_sender_is_told() {
+async fn an_unconfirmed_direct_message_passes_its_mark_and_the_sender_is_told() {
     let fixture = Fixture::new().await;
     let runtime = fixture.host.central(&fixture.caller.organization_id).await;
     let sender = session(&fixture.caller);
@@ -87,7 +86,7 @@ async fn an_unacknowledged_direct_message_is_cancelled_at_its_mark_and_the_sende
         .0
         .store(mark.timestamp_millis(), Ordering::SeqCst);
     runtime.after_event().await.unwrap();
-    assert_eq!(state().await, SqlValue::Text("cancelled".to_owned()));
+    assert_eq!(state().await, SqlValue::Text("pastTheMark".to_owned()));
     let notices = runtime
         .statement_host()
         .read(Statement {
@@ -113,9 +112,7 @@ async fn an_unacknowledged_direct_message_is_cancelled_at_its_mark_and_the_sende
         MessageBody::DeliveryOutcome {
             message_id: message_id.clone(),
             request_id: id(1500),
-            outcome: MessageOutcome::Cancelled {
-                reason: MessageCancellation::NotDeliveredWithin15Minutes,
-            },
+            outcome: MessageOutcome::DeliveryNotConfirmed,
         }
     );
     assert_eq!(notice[3], SqlValue::Null);

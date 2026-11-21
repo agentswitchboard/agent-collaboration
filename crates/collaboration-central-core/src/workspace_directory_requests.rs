@@ -218,10 +218,8 @@ async fn write<Host: CentralStore, Stores: WorkspaceStores>(
     let logged = runtime
         .execution
         .statement_host()
-        .read(fleet_runtime::workspace_request_log::lookup(
-            fleet_runtime::workspace_request_log::RequestLogStore::Organization,
-            request_id,
-            &cutoff,
+        .read(fleet_request_log::lookup_organization_request(
+            request_id, &cutoff,
         ))
         .await?;
     if let Some(answer) = fleet_runtime::workspace_request_log::replay(&logged, &actor, &digest)? {
@@ -292,8 +290,7 @@ async fn write<Host: CentralStore, Stores: WorkspaceStores>(
             return Err(corrupt("directory write"));
         }
     };
-    statements.extend(fleet_runtime::workspace_request_log::retain(
-        fleet_runtime::workspace_request_log::RequestLogStore::Organization,
+    statements.extend(fleet_request_log::retain_organization_request(
         request_id,
         &actor,
         &digest,

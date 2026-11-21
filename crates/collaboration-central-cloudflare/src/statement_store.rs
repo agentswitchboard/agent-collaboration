@@ -176,6 +176,20 @@ impl<'c, E: sqlx_core::executor::Executor<'c, Database = Do>> sqlx_core::executo
 {
     type Database = Do;
 
+    fn execute<'e, 'q: 'e, Q>(
+        self,
+        query: Q,
+    ) -> futures_util::future::BoxFuture<
+        'e,
+        Result<sqlx_durable_object::DoQueryResult, sqlx_core::Error>,
+    >
+    where
+        'c: 'e,
+        Q: 'q + sqlx_core::executor::Execute<'q, Do>,
+    {
+        self.inner.execute(query)
+    }
+
     fn fetch_many<'e, 'q: 'e, Q>(
         self,
         query: Q,
@@ -233,14 +247,14 @@ impl<'c, E: sqlx_core::executor::Executor<'c, Database = Do>> sqlx_core::executo
     }
 }
 
-struct WorkerTransaction<'a, T> {
+pub(super) struct WorkerTransaction<'a, T> {
     inner: &'a T,
     #[cfg(feature = "test-support")]
     dispatches: std::sync::atomic::AtomicUsize,
 }
 
 impl<'a, T> WorkerTransaction<'a, T> {
-    fn new(inner: &'a T) -> Self {
+    pub(super) fn new(inner: &'a T) -> Self {
         Self {
             inner,
             #[cfg(feature = "test-support")]
@@ -310,6 +324,17 @@ async fn run_in_transaction(
         }
         rows_affected.push(affected);
     }
+    Ok((
+        rows_affected,
+        apply_alarm(transaction, &batch.alarm, policy).await?,
+    ))
+}
+
+async fn apply_alarm(
+    transaction: &DoTransaction,
+    alarm: &OwnedAlarmUpdate,
+    policy: AlarmPolicy,
+) -> Result<AlarmPublication, BatchStop> {
     let (storage, clock) = match policy {
         #[cfg(feature = "test-support")]
         AlarmPolicy::Apply(storage) => (Some(storage), None),
@@ -318,8 +343,8 @@ async fn run_in_transaction(
     };
     let mut publication = AlarmPublication::Unchanged;
     if let Some(storage) = storage {
-        let at = match &batch.alarm {
-            OwnedAlarmUpdate::Unchanged => return Ok((rows_affected, publication)),
+        let at = match alarm {
+            OwnedAlarmUpdate::Unchanged => return Ok(publication),
             OwnedAlarmUpdate::SetFromQuery(statement) => {
                 let rows = bound(statement).fetch_all(transaction).await?;
                 let at = alarm_time(&read_outcome(&rows).map_err(BatchStop::Failed)?)
@@ -378,7 +403,7 @@ async fn run_in_transaction(
             AlarmPublication::Set { unix_millis }
         });
     }
-    Ok((rows_affected, publication))
+    Ok(publication)
 }
 
 /// Runs `batch` atomically on `connection`'s storage.
@@ -412,6 +437,81 @@ pub(crate) async fn run_batch(
             Ok(BatchOutcome::StatementRejected { index })
         }
     }
+}
+
+/// A due unit and its later attempt charge each use an independent transaction.
+pub(super) async fn write_checked_due<Answer: 'static, Rejected: 'static>(
+    connection: &DoConnection,
+    apply: impl AsyncFnOnce(&DoTransaction) -> Result<Answer, Rejected> + 'static,
+) -> Result<std::ops::ControlFlow<Rejected, Answer>, fleet_engine::CheckedDueFailure> {
+    use std::ops::ControlFlow;
+
+    enum CheckedDueStop<Rejected> {
+        Callback(Rejected),
+        Commit,
+    }
+    impl<Rejected> From<sqlx_core::Error> for CheckedDueStop<Rejected> {
+        fn from(_: sqlx_core::Error) -> Self {
+            Self::Commit
+        }
+    }
+    match connection
+        .transaction(move |transaction| async move {
+            apply(&transaction).await.map_err(CheckedDueStop::Callback)
+        })
+        .await
+    {
+        Ok(answer) => Ok(ControlFlow::Continue(answer)),
+        Err(CheckedDueStop::Callback(rejection)) => Ok(ControlFlow::Break(rejection)),
+        Err(CheckedDueStop::Commit) => Err(fleet_engine::CheckedDueFailure::AnswerLost),
+    }
+}
+
+/// The same owning alarm step as a guarded batch, after the portable mail operation.
+pub(super) async fn write_direct_with_engine_alarm<Answer: 'static>(
+    connection: &DoConnection,
+    policy: AlarmPolicy,
+    apply: impl AsyncFnOnce(
+        &DoTransaction,
+    ) -> Result<
+        fleet_mail::direct_store_writes::DirectApplied<Answer>,
+        fleet_mail::direct_store_writes::ApplyingFailure,
+    > + 'static,
+) -> Result<Answer, fleet_mail::DirectWriteFailure> {
+    use fleet_mail::direct_store_writes::ApplyingFailure;
+
+    enum MailTransactionAbort {
+        Applying(ApplyingFailure),
+        Commit,
+    }
+    impl From<sqlx_core::Error> for MailTransactionAbort {
+        fn from(_: sqlx_core::Error) -> Self {
+            Self::Commit
+        }
+    }
+    connection
+        .transaction(move |transaction| async move {
+            let applied = apply(&transaction)
+                .await
+                .map_err(MailTransactionAbort::Applying)?;
+            if let Some(plan) = applied.alarm {
+                apply_alarm(&transaction, &OwnedAlarmUpdate::Engine(plan), policy)
+                    .await
+                    .map_err(|stop| match stop {
+                        BatchStop::Failed(failure) => ApplyingFailure::Store(failure),
+                        BatchStop::GuardFailed { .. }
+                        | BatchStop::ConstraintViolated { .. }
+                        | BatchStop::StatementRejected { .. } => ApplyingFailure::Conflict,
+                    })
+                    .map_err(MailTransactionAbort::Applying)?;
+            }
+            Ok(applied.outcome)
+        })
+        .await
+        .map_err(|failure| match failure {
+            MailTransactionAbort::Applying(failure) => failure.into_write_failure(),
+            MailTransactionAbort::Commit => fleet_mail::DirectWriteFailure::AnswerLost,
+        })
 }
 
 /// Runs one read outside any write.

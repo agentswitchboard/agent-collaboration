@@ -47,6 +47,7 @@ const SERVICE_SUPPORT_PACKAGES: &[&str] = &[
 const FLEET_ACCESS: &str = "fleet-workspace-access";
 const FLEET_DIRECTORY: &str = "fleet-workspace-directory";
 const FLEET_ENGINE: &str = "fleet-engine";
+const REQUEST_LOG: &str = "fleet-request-log";
 const FLEET_MAIL: &str = "fleet-mail";
 const FLEET_NOTICES: &str = "fleet-notices";
 const FLEET_WAKES: &str = "fleet-wakes";
@@ -89,6 +90,7 @@ pub(super) const MAIL_LAYER: (&str, &[&str]) = (
         "central-storage",
         "fleet-contracts",
         "fleet-engine",
+        "fleet-request-log",
         "fleet-runtime-ports",
         "fleet-workspace-access",
         "workspace-ids",
@@ -427,6 +429,7 @@ pub(super) fn check_pure_dependency_tree(root: &Path) -> Result<(), Box<dyn std:
             FLEET_ACCESS,
             FLEET_ENGINE,
             FLEET_MAIL,
+            REQUEST_LOG,
             FLEET_NOTICES,
             FLEET_DIRECTORY,
             WORKSPACE_SERVICE,
@@ -447,6 +450,7 @@ fn check_package_targets(root: &Path, package: &str) -> Result<(), Box<dyn std::
             | FLEET_DIRECTORY
             | FLEET_ENGINE
             | FLEET_MAIL
+            | REQUEST_LOG
             | FLEET_NOTICES
             | FLEET_WAKES
             | FLEET_SCHEDULES
@@ -495,6 +499,7 @@ fn check_package_tree(
         WORKSPACE_SERVICE
             | FLEET_ENGINE
             | FLEET_MAIL
+            | REQUEST_LOG
             | FLEET_NOTICES
             | FLEET_WAKES
             | FLEET_SCHEDULES
@@ -531,6 +536,7 @@ fn check_tree_output(
             FLEET_ACCESS
                 | FLEET_ENGINE
                 | FLEET_MAIL
+                | REQUEST_LOG
                 | FLEET_NOTICES
                 | FLEET_WAKES
                 | FLEET_SCHEDULES

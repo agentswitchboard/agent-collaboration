@@ -99,6 +99,13 @@ impl CentralStore for InMemoryDirectoryStore {
         Err(StoreFailure::Unavailable)
     }
 
+    async fn enrolled_direct_recipient(
+        &self,
+        _: &workspace_ids::MachineId,
+    ) -> Result<bool, StoreFailure> {
+        Err(StoreFailure::Unavailable)
+    }
+
     async fn engine_alarm_inputs(&self) -> Result<central_storage::EngineAlarmTimes, StoreFailure> {
         Err(StoreFailure::Unavailable)
     }

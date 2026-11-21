@@ -53,6 +53,23 @@ impl CentralStore for ObjectStorage {
     ) -> Result<Vec<fleet_runtime_ports::DueRow>, StoreFailure> {
         ObjectStorage::read_timed_due_rows(self, query).await
     }
+    async fn enrolled_direct_recipient(
+        &self,
+        machine: &workspace_ids::MachineId,
+    ) -> Result<bool, StoreFailure> {
+        let mut connection = self
+            .workspace_pool()
+            .await?
+            .acquire()
+            .await
+            .map_err(|_| StoreFailure::Unavailable)?;
+        collaboration_central_core::direct_recipient_admission::read_enrolled_direct_recipient(
+            &mut *connection,
+            machine,
+        )
+        .await
+    }
+
     async fn engine_alarm_inputs(&self) -> Result<central_storage::EngineAlarmTimes, StoreFailure> {
         ObjectStorage::engine_alarm_inputs(self).await
     }
@@ -234,15 +251,18 @@ impl TokioWorkspaceHost {
                 fleet_runtime::engine_alarm_decider(due_batches.clone()),
             ),
         );
-        let runtime = WorkspaceRuntime::new(FleetRuntime::open(
-            organization.clone(),
+        let runtime = WorkspaceRuntime::new(
+            FleetRuntime::open(
+                organization.clone(),
+                storage.clone(),
+                self.stores.clone(),
+                clock.clone(),
+                ids,
+                due_batches,
+                Arc::new(crate::native_logging::observe),
+            ),
             storage,
-            self.stores.clone(),
-            clock.clone(),
-            ids,
-            due_batches,
-            Arc::new(crate::native_logging::observe),
-        ));
+        );
         let runtime = match &self.sign_in {
             Some(trust) => match trust.for_organization(organization.clone(), clock) {
                 Ok(check) => runtime.with_sign_in_verification(check),

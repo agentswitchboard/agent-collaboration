@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT state, failure_reason FROM mail_messages\nWHERE message_id=? AND target_machine_id=? AND message_kind=?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "state",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "name": "failure_reason",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "failure_reason"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "e68ad5a7688ac55a66e16b89af82aeb3e0ce0fb648d496145e44180048dcf160"
+}

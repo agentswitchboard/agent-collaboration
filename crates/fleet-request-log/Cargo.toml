@@ -1,0 +1,23 @@
+[package]
+name = "fleet-request-log"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+autotests = false
+
+[lints]
+workspace = true
+
+[dependencies]
+central-storage.workspace = true
+fleet-engine.workspace = true
+fleet-runtime.workspace = true
+fleet-runtime-ports.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx-core.workspace = true
+workspace-model.workspace = true
+
+[dev-dependencies]
+sqlx = { workspace = true, features = ["sqlite", "macros"] }

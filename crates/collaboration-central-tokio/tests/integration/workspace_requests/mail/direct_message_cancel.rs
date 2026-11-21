@@ -5,8 +5,7 @@ use central_storage::SqlValue;
 use router_clock::RuntimeClock;
 use workspace_model::central_mail::{
     CentralMailAnswer as Answer, CentralMailOperation as Operation, CentralMailRequest,
-    CentralMailResult as Result, MessageBody, MessageCancellation, MessageDelivery, MessageOutcome,
-    MessageSender,
+    CentralMailResult as Result, MessageBody, MessageDelivery, MessageOutcome, MessageSender,
 };
 
 fn row_text(value: &SqlValue) -> Option<&str> {
@@ -17,7 +16,7 @@ fn row_text(value: &SqlValue) -> Option<&str> {
 }
 
 #[tokio::test]
-async fn an_unacknowledged_direct_message_is_cancelled_at_its_mark_and_the_sender_is_told() {
+async fn an_unconfirmed_direct_message_passes_its_mark_and_the_sender_is_told() {
     let fixture = Fixture::new().await;
     let runtime = fixture
         .host
@@ -108,7 +107,7 @@ async fn an_unacknowledged_direct_message_is_cancelled_at_its_mark_and_the_sende
     runtime.after_event().await.unwrap();
     assert_eq!(
         stored("SELECT state FROM mail_messages WHERE message_id=?").await[0][0],
-        SqlValue::Text("cancelled".to_owned())
+        SqlValue::Text("pastTheMark".to_owned())
     );
     let notices = runtime
         .runtime().statement_host()
@@ -135,9 +134,7 @@ async fn an_unacknowledged_direct_message_is_cancelled_at_its_mark_and_the_sende
         MessageBody::DeliveryOutcome {
             message_id: message_id.clone(),
             request_id: id(1500),
-            outcome: MessageOutcome::Cancelled {
-                reason: MessageCancellation::NotDeliveredWithin15Minutes,
-            },
+            outcome: MessageOutcome::DeliveryNotConfirmed,
         }
     );
     assert_eq!(

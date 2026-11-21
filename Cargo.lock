@@ -1430,6 +1430,7 @@ dependencies = [
  "fleet-workspace-service",
  "futures-channel",
  "futures-util",
+ "hegeltest",
  "http",
  "js-sys",
  "message-board",
@@ -1490,6 +1491,7 @@ dependencies = [
  "fleet-identity-protocol",
  "fleet-mail",
  "fleet-notices",
+ "fleet-request-log",
  "fleet-rpc",
  "fleet-runtime",
  "fleet-runtime-ports",
@@ -2471,12 +2473,17 @@ dependencies = [
  "chrono",
  "fleet-contracts",
  "fleet-engine",
+ "fleet-request-log",
  "fleet-runtime-ports",
  "fleet-workspace-access",
+ "futures-util",
  "hegeltest",
  "serde",
  "serde_json",
  "sqlx",
+ "sqlx-core",
+ "thiserror 2.0.18",
+ "uuid",
  "workspace-ids",
  "workspace-model",
 ]
@@ -2493,6 +2500,21 @@ dependencies = [
  "fleet-runtime-ports",
  "fleet-workspace-access",
  "workspace-ids",
+ "workspace-model",
+]
+
+[[package]]
+name = "fleet-request-log"
+version = "0.1.157"
+dependencies = [
+ "central-storage",
+ "fleet-engine",
+ "fleet-runtime",
+ "fleet-runtime-ports",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "sqlx-core",
  "workspace-model",
 ]
 
@@ -2544,6 +2566,7 @@ dependencies = [
  "fleet-storage-schema",
  "fleet-store-sqlx",
  "fleet-workspace-directory",
+ "workspace-ids",
  "workspace-model",
 ]
 

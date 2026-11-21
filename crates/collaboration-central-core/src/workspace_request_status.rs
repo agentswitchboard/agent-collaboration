@@ -9,8 +9,8 @@ use fleet_contracts::{
     ReadWorkspaceRequestStatus, RetainedWorkspaceStatus, RetainedWriteAnswer,
     WorkspaceServiceClient, WorkspaceServiceProtocol, WorkspaceServiceRpc, WorkspaceStatusFailure,
 };
+use fleet_request_log::lookup_organization_request;
 use fleet_rpc::{CallError, Transport};
-use fleet_runtime::workspace_request_log::{RequestLogStore, lookup};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use fleet_runtime_ports::{
     stored_values::{json, string},
@@ -117,8 +117,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             let rows = self
                 .execution
                 .statement_host()
-                .read(lookup(
-                    RequestLogStore::Organization,
+                .read(lookup_organization_request(
                     &query.request_id,
                     &cutoff.to_rfc3339(),
                 ))

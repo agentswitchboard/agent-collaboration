@@ -347,3 +347,77 @@ fn a_reconnect_whose_welcome_names_another_installation_is_invalid() {
     assert_eq!(refused, Err(ClientError::InvalidWelcome));
     assert_eq!(client.status(), LinkStatus::Connecting);
 }
+
+#[test]
+fn only_the_current_connections_exact_receipt_answer_retires_its_positions() {
+    use central_link_protocol::{Receipt, ReceiptBatch, ReceiptKind, ReceiptResult};
+    let (mut client, clock) = fixture();
+    let first = connect(&mut client);
+    let batch = ReceiptBatch::new(vec![Receipt {
+        message_id: "01890f2e-7b4c-7cc0-98c4-000000000009".parse().unwrap(),
+        kind: ReceiptKind::Seen {
+            completed_at: client.clock.utc_now(),
+        },
+    }])
+    .unwrap();
+    let frame = client.begin_receipts(batch.clone()).unwrap();
+    let LinkFrame::Data(DataFrame::Receipts { correlation_id, .. }) = frame else {
+        panic!("receipt frame");
+    };
+    let results = |correlation_id, results| {
+        LinkFrame::Data(DataFrame::ReceiptResults {
+            correlation_id,
+            results,
+        })
+    };
+    assert!(matches!(
+        client.receive(&first, results(correlation_id.clone(), vec![])),
+        Err(ClientError::InvalidReceiptResults)
+    ));
+    assert!(matches!(
+        client.begin_receipts(batch.clone()),
+        Err(ClientError::ReceiptFramePending)
+    ));
+    clock.advance(Duration::from_secs(30)).unwrap();
+    assert!(matches!(
+        client.poll_time(),
+        Some(ClientAction::Reconnect { .. })
+    ));
+    clock.advance(Duration::from_secs(1)).unwrap();
+    let second = connect(&mut client);
+    let frame = client.begin_receipts(batch).unwrap();
+    let LinkFrame::Data(DataFrame::Receipts {
+        correlation_id: current,
+        ..
+    }) = frame
+    else {
+        panic!("retry receipt frame");
+    };
+    assert!(
+        client
+            .receive(
+                &first,
+                results(correlation_id.clone(), vec![ReceiptResult::Recorded])
+            )
+            .is_err()
+    );
+    assert!(matches!(
+        client.receive(
+            &second,
+            results(correlation_id, vec![ReceiptResult::Recorded])
+        ),
+        Err(ClientError::InvalidReceiptResults)
+    ));
+    assert_eq!(
+        client
+            .receive(
+                &second,
+                results(current.clone(), vec![ReceiptResult::Recorded])
+            )
+            .unwrap(),
+        ClientEvent::ReceiptResults {
+            correlation_id: current,
+            results: vec![ReceiptResult::Recorded]
+        },
+    );
+}

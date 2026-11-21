@@ -60,6 +60,8 @@ pub struct ObjectStorage {
     publication_failures: std::sync::Mutex<Vec<AlarmPublicationFailure>>,
 }
 
+#[path = "object_storage_direct_mail.rs"]
+mod direct_mail;
 struct NativeTransaction<'a>(&'a mut sqlx::SqliteConnection);
 
 impl fleet_engine::CentralTransaction for NativeTransaction<'_> {

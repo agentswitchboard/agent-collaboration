@@ -1,0 +1,178 @@
+//! The local owning store of a direct-message lifecycle.
+use crate::direct_message_rows::StoredDirectState;
+use central_engine_model::{FailureRecord, ItemFailureClass};
+use central_storage::{AlarmPublicationFailure, CorruptReason};
+use fleet_contracts::{MachineConnectionAttachment, MailDeliveryReady};
+use fleet_engine::{CheckedDueFailure, CheckedDueUnit};
+use fleet_runtime_ports::IdSource;
+use futures_util::future::BoxFuture;
+use std::sync::Arc;
+use workspace_ids::{MachineId, MessageId, RequestId, SessionRef};
+use workspace_model::{
+    ActorIdentityId, Timestamp,
+    central_mail::{MessageRecord, MessageStatus, ReceiptKind, ReceiptResult, SendMessageRequest},
+};
+
+pub struct DirectSendLookup {
+    pub request_id: RequestId,
+    pub caller: ActorIdentityId,
+    pub digest: String,
+    pub cutoff: Timestamp,
+}
+
+pub enum RetainedDirectSend {
+    Queued { message_id: MessageId },
+    RefusedUnknownTarget { target: SessionRef },
+}
+
+pub enum RetainedDirectSendRead {
+    Missing,
+    RequestIdReused,
+    Found(RetainedDirectSend),
+}
+
+pub enum DirectSendAdmission {
+    Queued { message_id: MessageId },
+    UnknownTarget,
+}
+
+pub struct AdmittedDirectSend {
+    pub lookup: DirectSendLookup,
+    pub send: SendMessageRequest,
+    pub sent_at: Timestamp,
+    pub accepted_at: Timestamp,
+    pub admission: DirectSendAdmission,
+}
+
+/// Atomic send results exhaust the direct send's own success alternatives.
+/// A wake answer cannot be constructed at this service boundary.
+///
+/// ```compile_fail,E0599
+/// use fleet_mail::DirectSendResult;
+/// let _ = DirectSendResult::WakeCancelled;
+/// ```
+pub enum DirectSendResult {
+    Committed {
+        message_id: MessageId,
+        ready: MailDeliveryReady,
+    },
+    RetainedRefusal {
+        target: SessionRef,
+    },
+}
+
+pub struct AdmittedReceipt {
+    pub authority: MachineConnectionAttachment,
+    pub message_id: MessageId,
+    pub receipt: ReceiptKind,
+    pub now: Timestamp,
+    pub ids: Arc<dyn IdSource>,
+}
+
+pub enum ApplyReceipt {
+    Applied { ready: Option<MailDeliveryReady> },
+    Stop(ReceiptResult),
+    AuthorityLapsed,
+}
+
+pub struct DirectMark {
+    pub message_id: MessageId,
+    pub occurrence: Timestamp,
+    pub now: Timestamp,
+    pub ids: Arc<dyn IdSource>,
+}
+
+/// Proof of what the applying transaction saw before a rejected due mark.
+pub struct RejectedDirectMark {
+    pub(super) command: DirectMark,
+    pub(super) row: StoredDirectState,
+    pub(super) attempt: Option<FailureRecord>,
+    pub(super) class: ItemFailureClass,
+}
+
+pub type ApplyMark = CheckedDueUnit<Box<RejectedDirectMark>>;
+
+pub struct OwnedDirectStatus {
+    pub message_id: MessageId,
+    pub sender: ActorIdentityId,
+    pub now: Timestamp,
+}
+
+pub struct DirectOfferLookup {
+    pub message_id: MessageId,
+    pub recipient: MachineId,
+    pub now: Timestamp,
+}
+
+pub struct OfferPageLookup {
+    pub recipient: MachineId,
+    pub after: Option<fleet_contracts::mail_link::WelcomeDeliveryCursor>,
+    pub now: Timestamp,
+}
+
+pub struct DirectOffer {
+    pub message: MessageRecord,
+    pub sender: workspace_model::ResolvedSender,
+    pub cutoff: Timestamp,
+}
+
+/// A local read can fail or observe corrupt state.
+///
+/// ```compile_fail,E0599
+/// use fleet_mail::DirectReadFailure;
+/// let _ = DirectReadFailure::AnswerLost;
+/// ```
+#[derive(Debug, thiserror::Error)]
+pub enum DirectReadFailure {
+    #[error("the direct-message store is unavailable")]
+    Unavailable,
+    #[error("corrupt direct-message data: {reason:?}")]
+    Corrupt { reason: CorruptReason },
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum DirectWriteFailure {
+    #[error(transparent)]
+    Read(#[from] DirectReadFailure),
+    #[error("the transaction rolled back on a guard or constraint conflict")]
+    Conflict,
+    #[error("the direct-message transaction's answer was lost")]
+    AnswerLost,
+    #[error("the transaction could not publish its alarm: {reason:?}")]
+    AlarmUnpublishable { reason: AlarmPublicationFailure },
+}
+
+/// Commands and answers for the two Central hosts. The owners lend their local
+/// executor to the portable repository without exposing it to runtime callers.
+pub trait DirectMessageStore: Send + Sync {
+    fn read_retained_send(
+        &self,
+        lookup: DirectSendLookup,
+    ) -> BoxFuture<'_, Result<RetainedDirectSendRead, DirectReadFailure>>;
+    fn send(
+        &self,
+        send: AdmittedDirectSend,
+    ) -> BoxFuture<'_, Result<DirectSendResult, DirectWriteFailure>>;
+    fn apply_receipt(
+        &self,
+        receipt: AdmittedReceipt,
+    ) -> BoxFuture<'_, Result<ApplyReceipt, DirectWriteFailure>>;
+    fn apply_mark(&self, mark: DirectMark) -> BoxFuture<'_, Result<ApplyMark, CheckedDueFailure>>;
+    fn charge_rejected_mark(
+        &self,
+        rejection: Box<RejectedDirectMark>,
+        now: Timestamp,
+    ) -> BoxFuture<'_, Result<Option<FailureRecord>, CheckedDueFailure>>;
+    fn read_status(
+        &self,
+        status: OwnedDirectStatus,
+    ) -> BoxFuture<'_, Result<MessageStatus, DirectReadFailure>>;
+    fn read_offer_page(
+        &self,
+        page: OfferPageLookup,
+    ) -> BoxFuture<'_, Result<Vec<fleet_contracts::mail_link::WindowedDelivery>, DirectReadFailure>>;
+    fn read_offer(
+        &self,
+        offer: DirectOfferLookup,
+    ) -> BoxFuture<'_, Result<Option<DirectOffer>, DirectReadFailure>>;
+}

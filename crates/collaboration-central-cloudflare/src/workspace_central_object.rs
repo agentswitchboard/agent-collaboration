@@ -136,6 +136,18 @@ impl CentralStore for CentralStatements {
             statement_store::read_timed_due_rows(&self.connection, query).await
         })
     }
+    fn enrolled_direct_recipient(
+        &self,
+        machine: &workspace_ids::MachineId,
+    ) -> impl std::future::Future<Output = std::result::Result<bool, StoreFailure>> + Send {
+        SendFuture::new(
+            collaboration_central_core::direct_recipient_admission::read_enrolled_direct_recipient(
+                &*self.connection,
+                machine,
+            ),
+        )
+    }
+
     fn engine_alarm_inputs(
         &self,
     ) -> impl std::future::Future<
@@ -310,21 +322,24 @@ impl CentralObject {
         self.migrate().await?;
         let host = self.statement_host();
         let clock: Arc<dyn fleet_runtime_ports::Clock> = Arc::new(self.clock.clone());
-        let runtime = WorkspaceRuntime::new(FleetRuntime::open(
-            organization.clone(),
+        let runtime = WorkspaceRuntime::new(
+            FleetRuntime::open(
+                organization.clone(),
+                host.clone(),
+                WorkspaceTransport {
+                    env: Arc::new(SendWrapper::new(self.env.clone())),
+                    #[cfg(feature = "test-support")]
+                    lose_read: self.controls.lose_read.clone(),
+                    #[cfg(feature = "test-support")]
+                    legacy_workspace_calls: self.controls.legacy_workspace_calls.clone(),
+                },
+                clock.clone(),
+                Arc::new(ClockIds::new(self.clock.clone())),
+                self.due_batches.clone(),
+                Arc::new(crate::signin_observation::observe_signin),
+            ),
             host,
-            WorkspaceTransport {
-                env: Arc::new(SendWrapper::new(self.env.clone())),
-                #[cfg(feature = "test-support")]
-                lose_read: self.controls.lose_read.clone(),
-                #[cfg(feature = "test-support")]
-                legacy_workspace_calls: self.controls.legacy_workspace_calls.clone(),
-            },
-            clock.clone(),
-            Arc::new(ClockIds::new(self.clock.clone())),
-            self.due_batches.clone(),
-            Arc::new(crate::signin_observation::observe_signin),
-        ));
+        );
         let runtime = match crate::organization_signin_link::trust_settings(&self.env) {
             Ok(Some(settings)) => {
                 match CloudflareSignInTrust::new(settings).for_organization(organization, clock) {
@@ -530,3 +545,6 @@ mod workspace_machine_link;
 #[cfg(feature = "test-support")]
 #[path = "workspace_link_witness.rs"]
 mod workspace_link_witness;
+
+#[path = "workspace_direct_mail.rs"]
+mod direct_mail;

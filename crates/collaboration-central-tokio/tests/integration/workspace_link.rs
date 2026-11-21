@@ -7,6 +7,7 @@ mod caller_authority;
 mod delivery;
 mod fixture;
 mod link_support;
+mod receipt_frames;
 mod renewal_contract;
 mod revocation;
 mod revocation_backpressure;
@@ -254,21 +255,54 @@ async fn public_route_requires_upgrade_and_header_token_and_matching_organizatio
     fixture.close().await
 }
 
+async fn receipt_result(
+    socket: &mut reqwest_websocket::WebSocket,
+    message_id: workspace_ids::MessageId,
+    expected: central_link_protocol::ReceiptResult,
+) -> Result<()> {
+    let correlation_id = "019f0000-0000-7000-8000-00000000c201".parse()?;
+    let frame = DataFrame::Receipts {
+        correlation_id,
+        receipts: central_link_protocol::ReceiptBatch::new(vec![central_link_protocol::Receipt {
+            message_id,
+            kind: central_link_protocol::ReceiptKind::Delivered {
+                arrived_at: chrono::DateTime::from_timestamp(signed::NOW_SECONDS, 0)
+                    .ok_or("fixture UTC")?,
+                waiting: None,
+            },
+        }])?,
+    };
+    let DataFrame::Receipts { correlation_id, .. } = &frame else {
+        return Err("receipt fixture changed".into());
+    };
+    let expected_correlation = correlation_id.clone();
+    send(socket, &LinkFrame::Data(frame)).await?;
+    if receive(socket).await?
+        != LinkFrame::Data(DataFrame::ReceiptResults {
+            correlation_id: expected_correlation,
+            results: vec![expected],
+        })
+    {
+        return Err("receipt result or correlation changed".into());
+    }
+    Ok(())
+}
+
 #[expect(
     clippy::panic_in_result_fn,
-    reason = "The real socket must stay open after an unknown Ack and drain on shutdown."
+    reason = "The real socket must stay open after an unknown receipt and drain on shutdown."
 )]
 #[tokio::test]
-async fn unknown_ack_keeps_the_link_open_and_shutdown_drains_it() -> Result<()> {
+async fn unknown_receipt_keeps_the_link_open_and_shutdown_drains_it() -> Result<()> {
     let fixture = Fixture::new().await?;
     let mut socket = fixture.connect().await?;
     receive(&mut socket).await?;
-    socket
-        .send(Message::Text(serde_json::to_string(&DataFrame::Ack {
-            message_id: "019f0000-0000-7000-8000-00000000ce30".parse()?,
-            answer: central_link_protocol::DeliveryAnswer::Accepted,
-        })?))
-        .await?;
+    receipt_result(
+        &mut socket,
+        "019f0000-0000-7000-8000-00000000ce30".parse()?,
+        central_link_protocol::ReceiptResult::NoSuchMessage,
+    )
+    .await?;
     socket.send(Message::Text("ping".into())).await?;
     assert!(matches!(socket.next().await, Some(Ok(Message::Text(text))) if text == "pong"));
     fixture.close().await?;

@@ -2,11 +2,11 @@ use super::super::{m, support::*};
 use central_storage::{
     AlarmUpdate, BatchOutcome, GuardedStatement, RowExpectation, Statement, StatementBatch,
 };
-use fleet_contracts::mail_link::{MailAckIgnored, MailAckSettlement, WindowedDeliveryDecision};
+use fleet_contracts::mail_link::MailReceiptSettlement;
 use router_clock::RuntimeClock;
 use workspace_model::central_mail::{
-    CentralMailAnswer, CentralMailOperation, CentralMailRequest, CentralMailResult, DeliveryAnswer,
-    MessageDelivery, MessageFailureReason, MessageStatus,
+    CentralMailAnswer, CentralMailOperation, CentralMailRequest, CentralMailResult,
+    MessageDelivery, MessageStatus, ReceiptKind,
 };
 
 #[tokio::test]
@@ -79,7 +79,9 @@ async fn only_the_original_sender_can_read_direct_message_status() {
             .await
             .unwrap()
             .result,
-        expected(MessageStatus::Queued {})
+        expected(MessageStatus::Sent {
+            deadline_passed: false
+        })
     );
     let other = runtime.request(&other_caller, query.clone()).await.unwrap();
     let unknown = runtime
@@ -91,14 +93,17 @@ async fn only_the_original_sender_can_read_direct_message_status() {
 
     assert_eq!(
         runtime
-            .acknowledge_delivery(
+            .apply_delivery_receipt(
                 &fixture.caller.connection().attachment(),
                 &message_id,
-                DeliveryAnswer::Accepted
+                ReceiptKind::Delivered {
+                    arrived_at: fixture.clock.utc_now(),
+                    waiting: None
+                }
             )
             .await
             .unwrap(),
-        fleet_contracts::mail_link::MailAckSettlement::Applied
+        MailReceiptSettlement::Applied
     );
     assert_eq!(
         runtime
@@ -106,13 +111,17 @@ async fn only_the_original_sender_can_read_direct_message_status() {
             .await
             .unwrap()
             .result,
-        expected(MessageStatus::Delivered {})
+        expected(MessageStatus::Delivered {
+            arrived_at: fixture.clock.utc_now(),
+            waiting: None,
+            deadline_passed: false
+        })
     );
     fixture.host.close().await;
 }
 
 #[tokio::test]
-async fn unresolved_direct_sender_is_terminal_without_a_push_or_outcome() {
+async fn unresolved_direct_sender_is_a_store_failure_without_a_state_change_or_outcome() {
     let fixture = Fixture::new().await;
     let runtime = fixture
         .host
@@ -183,12 +192,16 @@ async fn unresolved_direct_sender_is_terminal_without_a_push_or_outcome() {
         BatchOutcome::Applied { .. }
     ));
     let attachment = fixture.caller.connection().attachment();
+    let alarm_before = runtime
+        .runtime()
+        .statement_host()
+        .published_alarm()
+        .unwrap();
     assert!(matches!(
         runtime
             .prepare_windowed_delivery(&attachment, &message_id)
-            .await
-            .unwrap(),
-        WindowedDeliveryDecision::SenderUnresolved
+            .await,
+        Err(central_storage::StoreFailure::Corrupt { .. })
     ));
     assert_eq!(
         runtime
@@ -196,21 +209,7 @@ async fn unresolved_direct_sender_is_terminal_without_a_push_or_outcome() {
             .statement_host()
             .published_alarm()
             .unwrap(),
-        None
-    );
-    assert!(matches!(
-        runtime
-            .prepare_windowed_delivery(&attachment, &message_id)
-            .await
-            .unwrap(),
-        WindowedDeliveryDecision::Ineligible
-    ));
-    assert_eq!(
-        runtime
-            .acknowledge_delivery(&attachment, &message_id, DeliveryAnswer::Accepted)
-            .await
-            .unwrap(),
-        MailAckSettlement::Ignored(MailAckIgnored::AlreadySettled)
+        alarm_before
     );
     assert!(matches!(
         row_identity(
@@ -241,8 +240,8 @@ async fn unresolved_direct_sender_is_terminal_without_a_push_or_outcome() {
     assert_eq!(
         reply.result,
         m::WorkspaceResult::Done(m::WorkspaceAnswer::MessageStatus {
-            status: MessageStatus::Failed {
-                reason: MessageFailureReason::SenderUnresolved
+            status: MessageStatus::Sent {
+                deadline_passed: false
             },
         })
     );

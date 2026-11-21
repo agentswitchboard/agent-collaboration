@@ -154,6 +154,18 @@ pub(super) async fn control(
     }
     let runtime = object.runtime(organization.clone()).await?;
     match path.as_str() {
+        "/test/direct-receipt-fixture" => {
+            let (authority, message, receipt): (
+                fleet_contracts::MachineConnectionAttachment,
+                workspace_ids::MessageId,
+                workspace_model::central_mail::ReceiptKind,
+            ) = request.json().await?;
+            Response::from_json(
+                &runtime
+                    .apply_delivery_receipt(&authority, &message, receipt)
+                    .await,
+            )
+        }
         "/test/completion-attempts" => {
             Response::from_json(&runtime.runtime().completion_attempts())
         }

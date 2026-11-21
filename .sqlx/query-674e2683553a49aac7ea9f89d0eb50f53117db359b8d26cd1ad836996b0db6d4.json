@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT caller, content_digest, answer\nFROM runtime_request_log WHERE request_id=? AND created_at>?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "caller",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runtime_request_log",
+            "name": "caller"
+          }
+        }
+      },
+      {
+        "name": "content_digest",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runtime_request_log",
+            "name": "content_digest"
+          }
+        }
+      },
+      {
+        "name": "answer",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "runtime_request_log",
+            "name": "answer"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "674e2683553a49aac7ea9f89d0eb50f53117db359b8d26cd1ad836996b0db6d4"
+}

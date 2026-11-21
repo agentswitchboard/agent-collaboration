@@ -3,6 +3,8 @@
 
 mod engine;
 
+pub use central_engine_model::FailureRecord;
+
 pub use engine::admin::{
     AttemptRefusal, DiscardOutcome, DiscardStore, EngineHealthFacts, KindHealth, KindRegistry,
     RegisteredDiscard, RetiredItem,
@@ -13,6 +15,10 @@ pub use engine::alarm_source::{
     WholeUnitOutcome, read_due_rows,
 };
 pub use engine::attempt_statements::{CONTROL_WRITE, delete_attempt, delete_observed_attempt};
+pub use engine::checked_attempts::{
+    CheckedAttempt, CheckedDueFailure, CheckedDueUnit, checked_statement_rejection,
+    observe_checked_attempt, record_checked_attempt,
+};
 pub use engine::handle::HandleOutcome;
 pub use engine::port::{Engine, EngineHost};
 #[cfg(feature = "test-support")]

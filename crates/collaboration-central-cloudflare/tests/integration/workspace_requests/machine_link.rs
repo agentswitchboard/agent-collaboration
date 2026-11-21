@@ -7,6 +7,7 @@ mod delivery;
 mod fixture;
 mod probe_diagnostic;
 mod receipt;
+mod receipt_frames;
 mod renewal;
 mod request_status;
 mod revocation;
@@ -32,17 +33,49 @@ use workspace_model::{
 const WORKSPACE_NAME: &str = "Real hibernation workspace";
 const AREA_NAME: &str = "Area created after actual hibernation";
 
+async fn receipt_result(
+    socket: &mut reqwest_websocket::WebSocket,
+    message_id: workspace_ids::MessageId,
+    expected: central_link_protocol::ReceiptResult,
+) -> Result<()> {
+    let correlation_id: CorrelationId = "019f0000-0000-7000-8000-00000000c201".parse()?;
+    fixture::send(
+        socket,
+        &DataFrame::Receipts {
+            correlation_id: correlation_id.clone(),
+            receipts: central_link_protocol::ReceiptBatch::new(vec![
+                central_link_protocol::Receipt {
+                    message_id,
+                    kind: central_link_protocol::ReceiptKind::Delivered {
+                        arrived_at: chrono::DateTime::from_timestamp(signed::NOW_SECONDS, 0)
+                            .ok_or("fixture UTC")?,
+                        waiting: None,
+                    },
+                },
+            ])?,
+        },
+    )
+    .await?;
+    if fixture::receive(socket).await?
+        != (DataFrame::ReceiptResults {
+            correlation_id,
+            results: vec![expected],
+        })
+    {
+        return Err("receipt result or correlation changed".into());
+    }
+    Ok(())
+}
+
 #[tokio::test]
-async fn worker_keeps_the_link_open_after_an_unknown_ack() -> Result<()> {
+async fn worker_keeps_the_link_open_after_an_unknown_receipt() -> Result<()> {
     let fixture = Fixture::new().await?;
     let result = async {
         let mut link = ConnectedLink::open(&fixture).await?;
-        fixture::send(
+        receipt_result(
             &mut link.socket,
-            &DataFrame::Ack {
-                message_id: "019f0000-0000-7000-8000-00000000cf39".parse()?,
-                answer: central_link_protocol::DeliveryAnswer::Accepted,
-            },
+            "019f0000-0000-7000-8000-00000000cf39".parse()?,
+            central_link_protocol::ReceiptResult::NoSuchMessage,
         )
         .await?;
         let exchange = link
@@ -64,7 +97,7 @@ async fn worker_keeps_the_link_open_after_an_unknown_ack() -> Result<()> {
             workspace_reply(&exchange.reply)?.result,
             WorkspaceResult::Done(_)
         ) {
-            return Err("the same socket did not answer a workspace read after the Ack".into());
+            return Err("the same socket did not answer a workspace read after the receipt".into());
         }
         link.close().await
     }

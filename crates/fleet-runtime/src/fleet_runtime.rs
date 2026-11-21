@@ -147,6 +147,10 @@ impl<Host: CentralStore, Stores: WorkspaceStores> FleetRuntime<Host, Stores> {
         AlarmSchedule::new()
     }
 
+    pub fn shared_ids(&self) -> Arc<dyn IdSource> {
+        self.ids.clone()
+    }
+
     pub fn statement_host(&self) -> &Host {
         &self.host
     }

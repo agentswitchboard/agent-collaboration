@@ -1,13 +1,13 @@
 use super::super::{Statement, support::*};
-use fleet_contracts::mail_link::{MailAckIgnored, MailAckSettlement};
+use fleet_contracts::mail_link::MailReceiptSettlement;
 use router_clock::RuntimeClock;
 use workspace_model::central_mail::{
-    CentralMailAnswer, CentralMailOperation, CentralMailRequest, CentralMailResult, DeliveryAnswer,
-    MessageBody, MessageCancellation, MessageDelivery, MessageOutcome,
+    CentralMailAnswer, CentralMailOperation, CentralMailRequest, CentralMailResult, MessageBody,
+    MessageDelivery, MessageOutcome, ReceiptKind, ReceiptResult,
 };
 
 #[tokio::test]
-async fn a_live_recipient_can_settle_once_after_cancel_and_another_machine_cannot() {
+async fn a_late_seen_receipt_changes_only_the_record_and_other_machines_cannot_settle() {
     let fixture = Fixture::new().await;
     let sender = session(&fixture.caller);
     let runtime = fixture
@@ -52,14 +52,16 @@ async fn a_live_recipient_can_settle_once_after_cancel_and_another_machine_canno
     .await;
     assert_eq!(
         runtime
-            .acknowledge_delivery(
+            .apply_delivery_receipt(
                 &other_caller.connection().attachment(),
                 &message_id,
-                DeliveryAnswer::Accepted
+                ReceiptKind::Seen {
+                    completed_at: sent_at
+                }
             )
             .await
             .unwrap(),
-        MailAckSettlement::Ignored(MailAckIgnored::WrongMachine)
+        MailReceiptSettlement::Stop(ReceiptResult::NoSuchMessage)
     );
 
     let cancel_at = fleet_mail::message_deadline::cancel_due_at(sent_at, sent_at);
@@ -72,17 +74,29 @@ async fn a_live_recipient_can_settle_once_after_cancel_and_another_machine_canno
         .attachment();
     assert_eq!(
         runtime
-            .acknowledge_delivery(&recipient, &message_id, DeliveryAnswer::Accepted)
+            .apply_delivery_receipt(
+                &recipient,
+                &message_id,
+                ReceiptKind::Seen {
+                    completed_at: sent_at
+                }
+            )
             .await
             .unwrap(),
-        MailAckSettlement::Applied
+        MailReceiptSettlement::Applied
     );
     assert_eq!(
         runtime
-            .acknowledge_delivery(&recipient, &message_id, DeliveryAnswer::Accepted)
+            .apply_delivery_receipt(
+                &recipient,
+                &message_id,
+                ReceiptKind::Seen {
+                    completed_at: sent_at
+                }
+            )
             .await
             .unwrap(),
-        MailAckSettlement::Ignored(MailAckIgnored::AlreadySettled)
+        MailReceiptSettlement::Stop(ReceiptResult::Recorded)
     );
 
     let stored = runtime
@@ -94,7 +108,7 @@ async fn a_live_recipient_can_settle_once_after_cancel_and_another_machine_canno
         })
         .await
         .unwrap();
-    assert_eq!(stored.rows, vec![vec![text("delivered")]]);
+    assert_eq!(stored.rows, vec![vec![text("seen")]]);
     let outcome_bodies = runtime.runtime().statement_host().read(Statement {
         sql: "SELECT body FROM mail_messages WHERE message_kind='deliveryOutcome' ORDER BY created_at,message_id",
         args: vec![],
@@ -119,14 +133,6 @@ async fn a_live_recipient_can_settle_once_after_cancel_and_another_machine_canno
             outcome
         })
         .collect::<Vec<_>>();
-    assert_eq!(
-        outcomes,
-        vec![
-            MessageOutcome::Cancelled {
-                reason: MessageCancellation::NotDeliveredWithin15Minutes
-            },
-            MessageOutcome::DeliveredAfterAll,
-        ]
-    );
+    assert_eq!(outcomes, vec![MessageOutcome::DeliveryNotConfirmed]);
     fixture.host.close().await;
 }

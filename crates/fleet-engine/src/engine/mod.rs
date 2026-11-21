@@ -4,6 +4,7 @@ pub(crate) mod alarm_source;
 pub(crate) mod attempt_records;
 pub(crate) mod attempt_statements;
 pub(crate) mod attempt_store;
+pub(crate) mod checked_attempts;
 pub(crate) mod control_gate;
 pub(crate) mod effects;
 pub(crate) mod failures;

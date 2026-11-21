@@ -393,6 +393,53 @@
       {
         "command": ["<root>/tmp/rust-tools/bin/sqlx", "database", "create"],
         "environment": {
+          "DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-request-log-central-schema.sqlite"
+        }
+      },
+      {
+        "command": [
+          "<root>/tmp/rust-tools/bin/sqlx",
+          "migrate",
+          "run",
+          "--source",
+          "crates/fleet-storage-schema/migrations/central"
+        ],
+        "environment": {
+          "DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-request-log-central-schema.sqlite"
+        }
+      },
+      {
+        "command": ["cargo", "clean", "--package", "path+file://<root>/crates/fleet-request-log"],
+        "environment": {
+          "SQLX_OFFLINE": "true",
+          "RUSTC_WRAPPER": "<wrapper>",
+          "SQLX_PREPARE_PACKAGE": "fleet-request-log",
+          "SQLX_PREPARE_MANIFEST_DIR": "<root>/crates/fleet-request-log",
+          "SQLX_PREPARE_DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-request-log-central-schema.sqlite",
+          "SQLX_PREPARE_METADATA_DIR": "<root>/tmp/<schema>/fleet-request-log-metadata"
+        }
+      },
+      {
+        "command": [
+          "cargo",
+          "check",
+          "--locked",
+          "--package",
+          "path+file://<root>/crates/fleet-request-log",
+          "--all-targets"
+        ],
+        "environment": {
+          "SQLX_OFFLINE": "true",
+          "RUSTC_WRAPPER": "<wrapper>",
+          "SQLX_PREPARE_PACKAGE": "fleet-request-log",
+          "SQLX_PREPARE_MANIFEST_DIR": "<root>/crates/fleet-request-log",
+          "SQLX_PREPARE_DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-request-log-central-schema.sqlite",
+          "SQLX_PREPARE_METADATA_DIR": "<root>/tmp/<schema>/fleet-request-log-metadata"
+        }
+      },
+      {
+        "command": ["<root>/tmp/rust-tools/bin/sqlx", "database", "create"],
+        "environment": {
           "DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-engine-fixtures-schema.sqlite"
         }
       },
@@ -468,7 +515,8 @@
         "query-collaboration-central-core.json": "collaboration-central-core",
         "query-fleet-wakes.json": "fleet-wakes",
         "query-fleet-schedules.json": "fleet-schedules",
-        "query-fleet-mail.json": "fleet-mail"
+        "query-fleet-mail.json": "fleet-mail",
+        "query-fleet-request-log.json": "fleet-request-log"
       }
     },
     "stderr": ""

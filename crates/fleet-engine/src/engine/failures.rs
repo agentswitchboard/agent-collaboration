@@ -22,6 +22,25 @@ impl<R: EngineHost> Engine<'_, R> {
         });
     }
 
+    pub(crate) fn observe_failed_item(
+        &self,
+        subject: &EngineSubject,
+        record: &central_engine_model::FailureRecord,
+        workspaces: &[WorkspaceId],
+    ) {
+        self.observe(fleet_contracts::CentralObservation::EngineItemFailed {
+            kind: subject.kind,
+            key: subject.key.clone(),
+            failure: record.last_failure.clone(),
+            count: record.failure_count.get(),
+            retired: matches!(
+                record.state,
+                central_engine_model::AttemptState::Retired { .. }
+            ),
+            workspaces: workspaces.to_vec(),
+        });
+    }
+
     pub(crate) fn observe_alarm_not_published(&self, failure: StoreFailure) {
         self.observe(fleet_contracts::CentralObservation::EngineAlarmNotPublished { failure });
     }
@@ -141,17 +160,7 @@ impl<R: EngineHost> Engine<'_, R> {
                 .await,
         ) {
             Ok(()) => {
-                self.observe(fleet_contracts::CentralObservation::EngineItemFailed {
-                    kind: subject.kind,
-                    key: subject.key.clone(),
-                    failure: record.last_failure.clone(),
-                    count: record.failure_count.get(),
-                    retired: matches!(
-                        record.state,
-                        central_engine_model::AttemptState::Retired { .. }
-                    ),
-                    workspaces: workspaces.to_vec(),
-                });
+                self.observe_failed_item(subject, &record, workspaces);
                 FailureOutcome::Recorded(record)
             }
             Err(ApplyFailure::Superseded) => FailureOutcome::Superseded,

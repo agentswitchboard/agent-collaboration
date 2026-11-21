@@ -10,11 +10,17 @@ autotests = false
 workspace = true
 
 [dependencies]
+sqlx-core.workspace = true
+uuid.workspace = true
+sqlx = { version = "=0.9.0", default-features = false, features = ["derive"] }
 central-engine-model.workspace = true
 central-storage.workspace = true
 fleet-contracts.workspace = true
 fleet-engine.workspace = true
 fleet-runtime-ports.workspace = true
+fleet-request-log.workspace = true
+futures-util.workspace = true
+thiserror.workspace = true
 fleet-workspace-access.workspace = true
 workspace-ids.workspace = true
 workspace-model.workspace = true

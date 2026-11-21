@@ -6,6 +6,7 @@ fn delivery_resolves_sender_beside_the_unchanged_message_record() {
     let id = "019f0000-0000-7000-8000-000000000001";
     let mut wire = json!({
         "kind":"deliver",
+        "timeLeft": 1500,
         "message":{
             "messageId":id,"sender":{"kind":"actor","value":id},
             "target":{"machineId":id,"sessionId":"recipient"},
@@ -68,7 +69,7 @@ fn scoped_status_reads_round_trip_in_their_wire_directions() {
             json!({
                 "kind":"reply", "correlationId":id,
                 "result":{"kind":"workspace","reply":{"actors":[],"result":{
-                    "kind":"done","answer":{"kind":"messageStatus","status":{"kind":"delivered"}}
+                    "kind":"done","answer":{"kind":"messageStatus","status":{"kind":"delivered","arrivedAt":"2030-03-17T17:46:40Z","waiting":null,"deadlinePassed":false}}
                 }}}
             }),
         ),
@@ -157,7 +158,7 @@ fn heartbeat_is_exact_unquoted_text_and_old_nonce_json_is_rejected() {
 }
 
 #[test]
-fn welcome_reply_deliver_and_ack_are_closed_and_directional() {
+fn welcome_reply_deliver_and_receipts_are_closed_and_directional() {
     let id = "01890f2e-7b4c-7cc0-98c4-000000000001";
     let fixtures = [
         (
@@ -170,15 +171,15 @@ fn welcome_reply_deliver_and_ack_are_closed_and_directional() {
         ),
         (
             FrameDirection::ToRouter,
-            json!({"kind":"deliver","sender":{"kind":"central"},"message":{"messageId":id,"sender":{"kind":"central"},"target":{"machineId":id,"sessionId":"s"},"body":{"kind":"direct","body":"hello","delivery":"auto","replyTo":null},"state":{"kind":"queued"},"source":null,"createdAt":"2030-01-01T00:00:00Z","updatedAt":"2030-01-01T00:00:00Z"}}),
+            json!({"kind":"deliver","timeLeft":1500,"sender":{"kind":"central"},"message":{"messageId":id,"sender":{"kind":"central"},"target":{"machineId":id,"sessionId":"s"},"body":{"kind":"direct","body":"hello","delivery":"auto","replyTo":null},"state":{"kind":"queued"},"source":null,"createdAt":"2030-01-01T00:00:00Z","updatedAt":"2030-01-01T00:00:00Z"}}),
         ),
         (
             FrameDirection::ToCentral,
-            json!({"kind":"ack","messageId":id,"answer":{"kind":"accepted"}}),
+            json!({"kind":"receipts","correlationId":id,"receipts":[{"messageId":id,"kind":{"kind":"delivered","arrivedAt":"2030-01-01T00:00:00Z","waiting":null}}]}),
         ),
         (
             FrameDirection::ToCentral,
-            json!({"kind":"ack","messageId":id,"answer":{"kind":"refused","reason":"unknownSession"}}),
+            json!({"kind":"receipts","correlationId":id,"receipts":[{"messageId":id,"kind":{"kind":"refused","reason":"unknownSession"}}]}),
         ),
     ];
     for (direction, fixture) in fixtures {
@@ -323,5 +324,69 @@ fn batch_rejects_reads_wrong_direction_unknown_fields_and_malformed_members() {
         json!({"kind":"batch", "requests":[null]}),
     ] {
         assert!(decode_text(&wire.to_string(), FrameDirection::ToCentral).is_err());
+    }
+}
+
+#[test]
+fn the_hard_cut_refuses_ack_and_checks_the_receipt_batch_before_dispatch() {
+    use crate::{MAX_RECEIPTS, ReceiptResult};
+    let id = "019f0000-0000-7000-8000-000000000003";
+    let ack = serde_json::json!({"kind":"ack","messageId":id,"answer":{"kind":"accepted"}});
+    assert!(decode_text(&ack.to_string(), FrameDirection::ToCentral).is_err());
+    let receipt = serde_json::json!({
+        "messageId":id,"kind":{"kind":"refused","reason":"sessionClosed"}
+    });
+    for count in [0, 1, MAX_RECEIPTS, MAX_RECEIPTS + 1] {
+        let frame = serde_json::json!({
+            "kind":"receipts","correlationId":id,"receipts":vec![receipt.clone(); count]
+        })
+        .to_string();
+        assert_eq!(
+            decode_text(&frame, FrameDirection::ToCentral).is_ok(),
+            (1..=64).contains(&count)
+        );
+        assert!(decode_text(&frame, FrameDirection::ToRouter).is_err());
+    }
+    let results = LinkFrame::Data(DataFrame::ReceiptResults {
+        correlation_id: id.parse().unwrap(),
+        results: vec![
+            ReceiptResult::Recorded,
+            ReceiptResult::AlreadySettled,
+            ReceiptResult::NotApplicable,
+            ReceiptResult::NoSuchMessage,
+        ],
+    });
+    let wire = encode_text(&results, FrameDirection::ToRouter).unwrap();
+    assert_eq!(
+        decode_text(&wire, FrameDirection::ToRouter).unwrap(),
+        results
+    );
+    assert!(decode_text(&wire, FrameDirection::ToCentral).is_err());
+}
+
+#[test]
+fn offer_time_is_positive_whole_milliseconds_and_cannot_revive_an_initial_zero() {
+    use crate::TimeLeft;
+    let accepted = "2030-01-01T00:00:00Z"
+        .parse::<workspace_model::Timestamp>()
+        .unwrap();
+    let cutoff = "2030-01-01T00:15:00Z"
+        .parse::<workspace_model::Timestamp>()
+        .unwrap();
+    for (now, expected) in [
+        ("2029-12-31T23:50:00Z", Some(900_000)),
+        ("2030-01-01T00:14:59.998900Z", Some(1)),
+        ("2030-01-01T00:14:59.999900Z", None),
+        ("2030-01-01T00:15:00Z", None),
+    ] {
+        let now = now.parse().unwrap();
+        assert_eq!(
+            TimeLeft::at_handoff(accepted, cutoff, now).map(u32::from),
+            expected
+        );
+        assert_eq!(TimeLeft::at_handoff(accepted, accepted, now), None);
+    }
+    for bad in ["0", "-1", "900001", "1.5"] {
+        assert!(serde_json::from_str::<TimeLeft>(bad).is_err());
     }
 }
