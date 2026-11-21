@@ -1,7 +1,9 @@
 //! Core's closed admin kind registry and discard routing.
 use crate::{WorkspaceRuntime, organization_admin_contract::EngineKindName};
 use central_storage::StoreFailure;
-use fleet_engine::{AttemptRefusal, DiscardOutcome, KindRegistry, RegisteredDiscard};
+use fleet_engine::{
+    AdminMachineKindRegistry, AttemptRefusal, DiscardOutcome, PreparedAttemptDiscard,
+};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use fleet_schedules::automation_finish_store;
 use fleet_timer_policy::FinishEvent;
@@ -21,29 +23,33 @@ const ENGINE_KINDS: &[(&str, EngineKindName)] = &[
     ),
     ("engine_source", EngineKindName::EngineSource),
 ];
-/// Test machines' records exist only in test-support stores and are not shown.
+/// Test machines' records exist only in test-support stores and are not visible_machine_kinds.
 #[cfg(feature = "test-support")]
 const HIDDEN_KINDS: &[&str] = &["engine_probe", "owed_reply"];
 #[cfg(not(feature = "test-support"))]
 const HIDDEN_KINDS: &[&str] = &[];
 
-pub(crate) const KIND_REGISTRY: KindRegistry<'static, EngineKindName> = KindRegistry {
-    shown: ENGINE_KINDS,
-    hidden: HIDDEN_KINDS,
-};
+pub(crate) const KIND_REGISTRY: AdminMachineKindRegistry<'static, EngineKindName> =
+    AdminMachineKindRegistry {
+        visible_machine_kinds: ENGINE_KINDS,
+        hidden_machine_kind_tags: HIDDEN_KINDS,
+    };
 
 pub(crate) async fn finish_registered_discard<H: CentralStore, S: WorkspaceStores>(
-    registered: RegisteredDiscard<'_, WorkspaceRuntime<H, S>>,
+    registered: PreparedAttemptDiscard<'_, WorkspaceRuntime<H, S>>,
 ) -> Result<DiscardOutcome, StoreFailure> {
-    match registered.kind() {
+    match registered.admin_machine_kind() {
         EngineKindName::WakeTimer => {
             registered
-                .finish::<fleet_wakes::WakeFinish>(wake_finish_store(), FinishEvent::Discard)
+                .commit_subject_discard::<fleet_wakes::WakeFinish>(
+                    wake_finish_store(),
+                    FinishEvent::Discard,
+                )
                 .await
         }
         EngineKindName::AutomationTimer => {
             registered
-                .finish::<fleet_schedules::AutomationFinish>(
+                .commit_subject_discard::<fleet_schedules::AutomationFinish>(
                     automation_finish_store(),
                     FinishEvent::Discard,
                 )

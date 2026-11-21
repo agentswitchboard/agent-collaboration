@@ -2,10 +2,13 @@
 use crate::{
     admin_failure_class::EngineFailureClass,
     attempt_records::decode_attempt,
-    engine_host_binding::{Engine, EngineHost},
+    engine_host_binding::{EngineHost, FleetEngine},
     event_source_policy::{EventSource, ReceiptStatements, SourcePolicy},
-    machine_event_execution::HandleOutcome,
-    machine_store_adapter::{LoadFailure, StoreAdapter, Versioned, load_store_failure},
+    machine_event_execution::MachineEventOutcome,
+    machine_store_adapter::{
+        MachineStoreAdapter, SubjectLoadFailure, VersionedSubjectState,
+        classify_subject_read_failure,
+    },
 };
 use central_engine_model::{AttemptState, EngineTime, InstanceKey, Machine};
 use central_storage::{GuardedStatement, ReadOutcome, SqlValue, Statement, StoreFailure};
@@ -16,68 +19,72 @@ use fleet_runtime_ports::{
     workspace_decode_error::corrupt,
 };
 
-pub struct KindRegistry<'a, Kind> {
-    pub shown: &'a [(&'static str, Kind)],
-    pub hidden: &'a [&'static str],
+pub struct AdminMachineKindRegistry<'a, Kind> {
+    pub visible_machine_kinds: &'a [(&'static str, Kind)],
+    pub hidden_machine_kind_tags: &'a [&'static str],
 }
 
 /// A retired attempt passed only to the preparing runtime's discard registration.
-pub struct RegisteredDiscard<'runtime, R: EngineHost> {
+pub struct PreparedAttemptDiscard<'runtime, R: EngineHost> {
     runtime: &'runtime R,
     attempt_id: uuid::Uuid,
-    kind: R::AdminKind,
+    kind: R::AdminMachineKind,
     stored_kind: String,
     key: InstanceKey,
     admission_and_receipt: Vec<GuardedStatement>,
 }
 
-type DecodeFinishingRow<State> = fn(&ReadOutcome) -> Result<Option<Versioned<State>>, LoadFailure>;
+type DecodeFinishingRow<State> =
+    fn(&ReadOutcome) -> Result<Option<VersionedSubjectState<State>>, SubjectLoadFailure>;
 type PlanFinishingWrite<State> =
-    fn(&Versioned<State>, &State, EngineTime) -> Result<GuardedStatement, StoreFailure>;
+    fn(&VersionedSubjectState<State>, &State, EngineTime) -> Result<GuardedStatement, StoreFailure>;
 
-pub struct DiscardStore<M: Machine> {
-    pub read_sql: &'static str,
-    pub decode: DecodeFinishingRow<M::State>,
-    pub save: PlanFinishingWrite<M::State>,
-    pub effect_statements: fn(&M::Effect) -> Result<Vec<GuardedStatement>, StoreFailure>,
-    pub failure_sql: &'static str,
+pub struct DiscardSubjectStatements<M: Machine> {
+    pub read_discard_subject_sql: &'static str,
+    pub decode_discard_subject: DecodeFinishingRow<M::State>,
+    pub plan_discard_subject_write: PlanFinishingWrite<M::State>,
+    pub plan_discard_effect_writes: fn(&M::Effect) -> Result<Vec<GuardedStatement>, StoreFailure>,
+    pub write_discard_attempt_failure_sql: &'static str,
 }
 
 /// Both finishing reads and the applying batch use the runtime from preparation.
 struct BoundDiscardStore<'a, R: EngineHost, M: Machine> {
     runtime: &'a R,
-    store: DiscardStore<M>,
+    store: DiscardSubjectStatements<M>,
 }
-impl<R: EngineHost, M: Machine> StoreAdapter<M> for BoundDiscardStore<'_, R, M> {
-    async fn load(&self, key: &InstanceKey) -> Result<Option<Versioned<M::State>>, LoadFailure> {
+impl<R: EngineHost, M: Machine> MachineStoreAdapter<M> for BoundDiscardStore<'_, R, M> {
+    async fn load_subject_state(
+        &self,
+        key: &InstanceKey,
+    ) -> Result<Option<VersionedSubjectState<M::State>>, SubjectLoadFailure> {
         let rows = self
             .runtime
-            .host()
+            .central_store()
             .read(Statement {
-                sql: self.store.read_sql,
+                sql: self.store.read_discard_subject_sql,
                 args: vec![text(&key.0)],
             })
             .await
-            .map_err(load_store_failure)?;
-        (self.store.decode)(&rows)
+            .map_err(classify_subject_read_failure)?;
+        (self.store.decode_discard_subject)(&rows)
     }
-    fn save(
+    fn plan_subject_state_write(
         &self,
         _key: &InstanceKey,
-        prior: &Versioned<M::State>,
+        prior: &VersionedSubjectState<M::State>,
         next: &M::State,
     ) -> Result<GuardedStatement, StoreFailure> {
-        (self.store.save)(prior, next, self.runtime.now()?)
+        (self.store.plan_discard_subject_write)(prior, next, self.runtime.current_engine_time()?)
     }
-    fn effect_statements(
+    fn plan_machine_effect_writes(
         &self,
         _key: &InstanceKey,
         effect: &M::Effect,
     ) -> Result<Vec<GuardedStatement>, StoreFailure> {
-        (self.store.effect_statements)(effect)
+        (self.store.plan_discard_effect_writes)(effect)
     }
-    fn failure_sql(&self) -> &'static str {
-        self.store.failure_sql
+    fn write_attempt_failure_sql(&self) -> &'static str {
+        self.store.write_discard_attempt_failure_sql
     }
 }
 
@@ -86,35 +93,35 @@ const READ_RETIRED_PAGE: &str = "SELECT attempt_id,machine_kind,subject_key,stat
 const READ_HEALTH: &str = "SELECT machine_kind,SUM(CASE WHEN state='failing' THEN 1 ELSE 0 END) AS failing,SUM(CASE WHEN state='retired' THEN 1 ELSE 0 END) AS retired,MIN(first_failed_at) AS oldest,(SELECT b.last_failure FROM engine_work_attempts b WHERE b.machine_kind=a.machine_kind ORDER BY b.last_failed_at DESC,b.attempt_id DESC LIMIT 1) AS last_failure FROM engine_work_attempts a GROUP BY machine_kind";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct KindHealth<Kind> {
-    pub kind: Kind,
-    pub failing: u32,
-    pub retired: u32,
+pub struct MachineKindAttemptHealth<Kind> {
+    pub machine_kind: Kind,
+    pub failing_attempt_count: u32,
+    pub retired_attempt_count: u32,
     pub oldest_first_failed_at: Option<EngineTime>,
-    pub last_failure: Option<EngineFailureClass>,
+    pub latest_failure_class: Option<EngineFailureClass>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EngineHealthFacts<Kind> {
-    pub kinds: Vec<KindHealth<Kind>>,
-    pub alarm: Option<EngineTime>,
+    pub health_by_machine_kind: Vec<MachineKindAttemptHealth<Kind>>,
+    pub published_alarm_at: Option<EngineTime>,
     pub alarm_missing: bool,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct RetiredItem<Kind> {
+pub struct RetiredAttemptSummary<Kind> {
     pub attempt_id: uuid::Uuid,
-    pub kind: Kind,
+    pub machine_kind: Kind,
     pub subject_key: String,
     pub failure_class: EngineFailureClass,
-    pub count: u32,
+    pub failure_count: u32,
     pub retired_at: EngineTime,
-    pub last_failure: Option<String>,
+    pub last_failure_detail: Option<String>,
 }
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum AttemptRefusal {
     NotFound,
     NotRetired,
     DiscardUnsupported,
-    Stale,
+    DiscardSuperseded,
     SubjectUnreadable,
 }
 pub enum DiscardOutcome {
@@ -124,15 +131,19 @@ pub enum DiscardOutcome {
     Refused(AttemptRefusal),
 }
 
-/// A shown kind, a hidden test kind (None), or a corrupt stored value.
+/// An admin-visible kind, a hidden test kind (None), or a corrupt stored value.
 fn registered_kind<Kind: Copy>(
     raw: &str,
-    kinds: &KindRegistry<'_, Kind>,
+    kinds: &AdminMachineKindRegistry<'_, Kind>,
 ) -> Result<Option<Kind>, StoreFailure> {
-    if let Some((_, kind)) = kinds.shown.iter().find(|(stored, _)| *stored == raw) {
+    if let Some((_, kind)) = kinds
+        .visible_machine_kinds
+        .iter()
+        .find(|(stored, _)| *stored == raw)
+    {
         return Ok(Some(*kind));
     }
-    if kinds.hidden.contains(&raw) {
+    if kinds.hidden_machine_kind_tags.contains(&raw) {
         return Ok(None);
     }
     Err(corrupt("engine_work_attempts.machine_kind"))
@@ -191,10 +202,10 @@ impl<M: Machine> EventSource<M> for DiscardSource {
     }
 }
 
-impl<'runtime, R: EngineHost> Engine<'runtime, R> {
-    pub async fn engine_health<Kind: Copy + Eq + Send + Sync>(
+impl<'runtime, R: EngineHost> FleetEngine<'runtime, R> {
+    pub async fn read_engine_attempt_health<Kind: Copy + Eq + Send + Sync>(
         &self,
-        registry: &KindRegistry<'_, Kind>,
+        registry: &AdminMachineKindRegistry<'_, Kind>,
     ) -> Result<EngineHealthFacts<Kind>, StoreFailure> {
         let rows = self
             .host()
@@ -204,14 +215,14 @@ impl<'runtime, R: EngineHost> Engine<'runtime, R> {
             })
             .await?;
         let mut kinds = registry
-            .shown
+            .visible_machine_kinds
             .iter()
-            .map(|(_, kind)| KindHealth {
-                kind: *kind,
-                failing: 0,
-                retired: 0,
+            .map(|(_, kind)| MachineKindAttemptHealth {
+                machine_kind: *kind,
+                failing_attempt_count: 0,
+                retired_attempt_count: 0,
                 oldest_first_failed_at: None,
-                last_failure: None,
+                latest_failure_class: None,
             })
             .collect::<Vec<_>>();
         for row in &rows.rows {
@@ -228,14 +239,14 @@ impl<'runtime, R: EngineHost> Engine<'runtime, R> {
                 .transpose()?;
             let entry = kinds
                 .iter_mut()
-                .find(|entry| entry.kind == kind)
+                .find(|entry| entry.machine_kind == kind)
                 .ok_or_else(|| corrupt("engine_work_attempts.machine_kind"))?;
-            *entry = KindHealth {
-                kind,
-                failing: integer(&rows, row, "failing")?,
-                retired: integer(&rows, row, "retired")?,
+            *entry = MachineKindAttemptHealth {
+                machine_kind: kind,
+                failing_attempt_count: integer(&rows, row, "failing")?,
+                retired_attempt_count: integer(&rows, row, "retired")?,
                 oldest_first_failed_at: oldest,
-                last_failure: optional_text(&rows, row, "last_failure")?
+                latest_failure_class: optional_text(&rows, row, "last_failure")?
                     .map(|tag| failure_class(&tag))
                     .transpose()?,
             };
@@ -245,19 +256,19 @@ impl<'runtime, R: EngineHost> Engine<'runtime, R> {
         let timed_work_pending = pending.earliest_on_grid_due_unix_millis.is_some()
             || pending.earliest_legacy_due_unix_millis.is_some();
         Ok(EngineHealthFacts {
-            kinds,
-            alarm,
+            health_by_machine_kind: kinds,
+            published_alarm_at: alarm,
             alarm_missing: alarm.is_none() && timed_work_pending,
         })
     }
 
     /// One page ascending by attempt id, `after` exclusive, plus whether more exist.
-    pub async fn engine_retired_page<Kind: Copy + Eq + Send + Sync>(
+    pub async fn read_retired_attempt_page<Kind: Copy + Eq + Send + Sync>(
         &self,
-        registry: &KindRegistry<'_, Kind>,
+        registry: &AdminMachineKindRegistry<'_, Kind>,
         after: Option<uuid::Uuid>,
         limit: u16,
-    ) -> Result<(Vec<RetiredItem<Kind>>, Option<uuid::Uuid>), StoreFailure> {
+    ) -> Result<(Vec<RetiredAttemptSummary<Kind>>, Option<uuid::Uuid>), StoreFailure> {
         let rows = self
             .host()
             .read(Statement {
@@ -288,17 +299,17 @@ impl<'runtime, R: EngineHost> Engine<'runtime, R> {
             }) else {
                 continue;
             };
-            items.push(RetiredItem {
+            items.push(RetiredAttemptSummary {
                 attempt_id: record.attempt_id,
-                kind,
+                machine_kind: kind,
                 subject_key: match column(&rows, row, "subject_key")? {
                     SqlValue::Text(key) => key.clone(),
                     _ => return Err(corrupt("engine_work_attempts.subject_key")),
                 },
                 failure_class: failure_class(record.last_failure.storage_tag())?,
-                count: record.failure_count.get(),
+                failure_count: record.failure_count.get(),
                 retired_at,
-                last_failure: crate::attempt_records::failure_detail(&record.last_failure),
+                last_failure_detail: crate::attempt_records::failure_detail(&record.last_failure),
             });
         }
         let next = if items.len() > usize::from(limit) {
@@ -312,7 +323,7 @@ impl<'runtime, R: EngineHost> Engine<'runtime, R> {
 
     async fn retired_attempt<Kind: Copy + Eq + Send + Sync>(
         &self,
-        registry: &KindRegistry<'_, Kind>,
+        registry: &AdminMachineKindRegistry<'_, Kind>,
         attempt_id: uuid::Uuid,
     ) -> Result<Result<(Kind, String, InstanceKey), AttemptRefusal>, StoreFailure> {
         let rows = self
@@ -347,9 +358,9 @@ impl<'runtime, R: EngineHost> Engine<'runtime, R> {
     }
 
     /// Retry is the guarded delete in the caller's batch, which also re-arms.
-    pub async fn plan_engine_retry<Kind: Copy + Eq + Send + Sync>(
+    pub async fn plan_retired_attempt_retry<Kind: Copy + Eq + Send + Sync>(
         &self,
-        registry: &KindRegistry<'_, Kind>,
+        registry: &AdminMachineKindRegistry<'_, Kind>,
         attempt_id: uuid::Uuid,
     ) -> Result<Result<GuardedStatement, AttemptRefusal>, StoreFailure> {
         Ok(self
@@ -364,32 +375,32 @@ impl<'runtime, R: EngineHost> Engine<'runtime, R> {
     ///
     /// ```compile_fail,E0061
     /// use central_engine_model::Machine;
-    /// use fleet_engine::{DiscardStore, Engine, EngineHost};
+    /// use fleet_engine::{DiscardSubjectStatements, FleetEngine, EngineHost};
     ///
     /// async fn replace_finisher<R: EngineHost, M: Machine>(
-    ///     engine: &Engine<'_, R>,
+    ///     engine: &FleetEngine<'_, R>,
     ///     attempt_id: uuid::Uuid,
-    ///     mut same_kind: DiscardStore<M>,
+    ///     mut same_kind: DiscardSubjectStatements<M>,
     ///     event: M::Event,
     /// ) {
-    ///     same_kind.read_sql = "SELECT 1";
-    ///     let _ = engine.discard(attempt_id, vec![], same_kind, event).await;
+    ///     same_kind.read_discard_subject_sql = "SELECT 1";
+    ///     let _ = engine.discard_retired_attempt(attempt_id, vec![], same_kind, event).await;
     /// }
     /// ```
-    pub async fn discard(
+    pub async fn discard_retired_attempt(
         &self,
         attempt_id: uuid::Uuid,
         admission_and_receipt: Vec<GuardedStatement>,
     ) -> Result<DiscardOutcome, StoreFailure> {
         let (kind, stored_kind, key) = match self
-            .retired_attempt(self.0.admin_kinds(), attempt_id)
+            .retired_attempt(self.0.admin_machine_kind_registry(), attempt_id)
             .await?
         {
             Ok(attempt) => attempt,
             Err(refusal) => return Ok(DiscardOutcome::Refused(refusal)),
         };
         self.0
-            .finish_registered_discard(RegisteredDiscard {
+            .finish_registered_discard(PreparedAttemptDiscard {
                 runtime: self.0,
                 attempt_id,
                 kind,
@@ -416,37 +427,37 @@ impl<'runtime, R: EngineHost> Engine<'runtime, R> {
         M::Event: Send + Sync,
         M::Effect: Send + Sync,
         M::Error: Send + Sync,
-        Adapter: crate::machine_store_adapter::StoreAdapter<M>,
+        Adapter: crate::machine_store_adapter::MachineStoreAdapter<M>,
     {
-        match adapter.load(&key).await {
+        match adapter.load_subject_state(&key).await {
             Ok(Some(_)) => {}
-            Ok(None) => return Ok(DiscardOutcome::Refused(AttemptRefusal::Stale)),
-            Err(crate::machine_store_adapter::LoadFailure::Corrupt { .. }) => {
+            Ok(None) => return Ok(DiscardOutcome::Refused(AttemptRefusal::DiscardSuperseded)),
+            Err(crate::machine_store_adapter::SubjectLoadFailure::CorruptSubjectRow { .. }) => {
                 return Ok(DiscardOutcome::Refused(AttemptRefusal::SubjectUnreadable));
             }
-            Err(crate::machine_store_adapter::LoadFailure::Uncertain) => {
+            Err(crate::machine_store_adapter::SubjectLoadFailure::StorageAnswerLost) => {
                 return Err(StoreFailure::AnswerLost);
             }
-            Err(crate::machine_store_adapter::LoadFailure::StoreDown(failure)) => {
+            Err(crate::machine_store_adapter::SubjectLoadFailure::StoreReadFailed(failure)) => {
                 return Err(failure);
             }
         }
         discard_outcome(
-            self.machine_event_execution::<M, Adapter, _>(adapter, key, event, source)
+            self.handle::<M, Adapter, _>(adapter, key, event, source)
                 .await,
         )
     }
 }
 
-impl<R: EngineHost> RegisteredDiscard<'_, R> {
-    pub fn kind(&self) -> R::AdminKind {
+impl<R: EngineHost> PreparedAttemptDiscard<'_, R> {
+    pub fn admin_machine_kind(&self) -> R::AdminMachineKind {
         self.kind
     }
 
     /// Runs the typed finisher selected inside the host registration callback.
-    pub async fn finish<M>(
+    pub async fn commit_subject_discard<M>(
         mut self,
-        store: DiscardStore<M>,
+        store: DiscardSubjectStatements<M>,
         event: M::Event,
     ) -> Result<DiscardOutcome, StoreFailure>
     where
@@ -461,7 +472,7 @@ impl<R: EngineHost> RegisteredDiscard<'_, R> {
         }
         self.admission_and_receipt
             .insert(0, delete_retired(self.attempt_id));
-        Engine::new(self.runtime)
+        FleetEngine::new(self.runtime)
             .discard_subject::<M, _>(
                 &BoundDiscardStore {
                     runtime: self.runtime,
@@ -476,17 +487,19 @@ impl<R: EngineHost> RegisteredDiscard<'_, R> {
 }
 
 fn discard_outcome<State, Error>(
-    outcome: HandleOutcome<State, Error>,
+    outcome: MachineEventOutcome<State, Error>,
 ) -> Result<DiscardOutcome, StoreFailure> {
     match outcome {
-        HandleOutcome::Done(_) => Ok(DiscardOutcome::Committed),
+        MachineEventOutcome::TransitionCommitted(_) => Ok(DiscardOutcome::Committed),
         // The subject moved, finished, vanished or is unreadable: nothing changed.
-        HandleOutcome::Superseded
-        | HandleOutcome::Refused(_)
-        | HandleOutcome::NotFound
-        | HandleOutcome::Failed(_)
-        | HandleOutcome::RequestFailed(_) => Ok(DiscardOutcome::Refused(AttemptRefusal::Stale)),
-        HandleOutcome::Uncertain => Err(StoreFailure::AnswerLost),
-        HandleOutcome::StoreDown(failure) => Err(failure),
+        MachineEventOutcome::EventSuperseded
+        | MachineEventOutcome::TransitionRefused(_)
+        | MachineEventOutcome::SubjectMissing
+        | MachineEventOutcome::AttemptFailureRecorded(_)
+        | MachineEventOutcome::RequestItemFailed(_) => {
+            Ok(DiscardOutcome::Refused(AttemptRefusal::DiscardSuperseded))
+        }
+        MachineEventOutcome::StorageAnswerLost => Err(StoreFailure::AnswerLost),
+        MachineEventOutcome::StorageFailed(failure) => Err(failure),
     }
 }

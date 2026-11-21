@@ -1,7 +1,7 @@
 use crate::{
-    attempt_statements::CONTROL_WRITE,
-    engine_host_binding::{Engine, EngineHost},
-    machine_event_execution::HandleOutcome,
+    attempt_statements::UPSERT_CONTROL_ATTEMPT_SQL,
+    engine_host_binding::{EngineHost, FleetEngine},
+    machine_event_execution::MachineEventOutcome,
     machine_store_adapter::corrupt_class,
     transition_batch_writes::ApplyFailure,
 };
@@ -22,43 +22,43 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 pub enum DueCutoff {
     BatchStart,
-    LookAhead,
+    LookAheadHorizon,
 }
-pub struct TimedSource {
+pub struct TimedSourceSchedule {
     pub machine_kind: MachineKind,
-    pub cutoff: DueCutoff,
+    pub due_cutoff_policy: DueCutoff,
 }
 pub enum DueDiscoveryError {
     InvalidBounds(central_engine_model::DueQueryError),
-    Store(StoreFailure),
+    ReadFailed(StoreFailure),
 }
 
 pub enum TimedRowOutcome {
-    Finished(AlarmResult),
-    CentralDown,
+    Handled(AlarmResult),
+    CentralStoreFailed,
 }
-pub trait TimedRows<R: EngineHost>: Send + Sync {
-    type Kind: Copy + Send + Sync + 'static;
-    fn ordered_kinds(&self) -> &'static [Self::Kind];
-    fn source(&self, kind: Self::Kind) -> TimedSource;
-    fn discover(
+pub trait TimedDueDispatch<R: EngineHost>: Send + Sync {
+    type TimedSourceKind: Copy + Send + Sync + 'static;
+    fn ordered_timed_source_kinds(&self) -> &'static [Self::TimedSourceKind];
+    fn timed_source_schedule(&self, kind: Self::TimedSourceKind) -> TimedSourceSchedule;
+    fn discover_due_rows(
         &self,
         runtime: &R,
-        kind: Self::Kind,
+        kind: Self::TimedSourceKind,
         cutoff: EngineTime,
         limit: usize,
     ) -> impl Future<Output = Result<Vec<DueRow>, DueDiscoveryError>> + Send;
-    fn run_row(
+    fn dispatch_timed_due_row(
         &self,
-        engine: &Engine<'_, R>,
+        engine: &FleetEngine<'_, R>,
         runtime: &R,
-        kind: Self::Kind,
+        kind: Self::TimedSourceKind,
         row: DueRow,
     ) -> impl Future<Output = TimedRowOutcome> + Send;
 }
-pub struct WholeUnit {
-    pub subject: EngineSubject,
-    pub threshold: RetirementThreshold,
+pub struct WholeDueUnitControl {
+    pub attempt_subject: EngineSubject,
+    pub retirement_threshold: RetirementThreshold,
 }
 pub enum WholeUnitOutcome {
     Skipped,
@@ -78,14 +78,17 @@ enum Unit<TimedKind, WholeKind> {
         MachineKind,
         DueRow,
     ),
-    Whole(WholeKind, WholeUnit),
+    Whole(WholeKind, WholeDueUnitControl),
 }
 #[cfg(feature = "test-support")]
 impl<TimedKind, WholeKind> Unit<TimedKind, WholeKind> {
     fn start_receipt(&self, now: EngineTime) -> fleet_runtime::DueUnitStart {
         let (kind, key) = match self {
             Self::Machine(_, kind, row) => (kind.0, row.key.0.clone()),
-            Self::Whole(_, unit) => (unit.subject.kind.0, unit.subject.key.0.clone()),
+            Self::Whole(_, unit) => (
+                unit.attempt_subject.kind.0,
+                unit.attempt_subject.key.0.clone(),
+            ),
         };
         fleet_runtime::DueUnitStart {
             batch_start_unix_millis: now.timestamp_millis(),
@@ -111,10 +114,10 @@ pub async fn read_due_rows(
         .map_err(DueDiscoveryError::InvalidBounds)?;
     host.read_timed_due_rows(query)
         .await
-        .map_err(DueDiscoveryError::Store)
+        .map_err(DueDiscoveryError::ReadFailed)
 }
 
-impl<R: EngineHost> Engine<'_, R> {
+impl<R: EngineHost> FleetEngine<'_, R> {
     /// Every event reaches this after its own work. The claim occurs before the
     /// first await; only individual units perform async work, at most eight wide.
     pub(crate) async fn after_event(&self) -> Result<EventCompletion, AlarmNotPublished> {
@@ -207,12 +210,12 @@ impl<R: EngineHost> Engine<'_, R> {
         let mut units = Vec::new();
         let mut leftovers = false;
         let mut central_down = false;
-        let timed = self.0.timed_rows();
-        for &kind in timed.ordered_kinds() {
-            let description = timed.source(kind);
+        let timed = self.0.timed_due_dispatch();
+        for &kind in timed.ordered_timed_source_kinds() {
+            let description = timed.timed_source_schedule(kind);
             let subject = source(description.machine_kind);
             let observed = match self
-                .control_gate(&subject, RetirementThreshold::DEFAULT)
+                .check_attempt_control_gate(&subject, RetirementThreshold::DEFAULT)
                 .await
             {
                 ControlGate::Run(observed) => observed,
@@ -223,12 +226,12 @@ impl<R: EngineHost> Engine<'_, R> {
                     break;
                 }
             };
-            let cutoff = match description.cutoff {
+            let cutoff = match description.due_cutoff_policy {
                 DueCutoff::BatchStart => now,
-                DueCutoff::LookAhead => horizon,
+                DueCutoff::LookAheadHorizon => horizon,
             };
             match timed
-                .discover(self.0, kind, cutoff, policy.per_kind_cap + 1)
+                .discover_due_rows(self.0, kind, cutoff, policy.per_kind_cap + 1)
                 .await
             {
                 Ok(mut rows) => {
@@ -250,12 +253,12 @@ impl<R: EngineHost> Engine<'_, R> {
                     central_down = true;
                     break;
                 }
-                Err(DueDiscoveryError::Store(StoreFailure::AnswerLost)) => {}
-                Err(DueDiscoveryError::Store(StoreFailure::Corrupt { reason })) => {
+                Err(DueDiscoveryError::ReadFailed(StoreFailure::AnswerLost)) => {}
+                Err(DueDiscoveryError::ReadFailed(StoreFailure::Corrupt { reason })) => {
                     if matches!(
                         self.record_failure(
                             &subject,
-                            CONTROL_WRITE,
+                            UPSERT_CONTROL_ATTEMPT_SQL,
                             &SubjectVersion(vec![]),
                             corrupt_class(reason),
                             RetirementThreshold::DEFAULT
@@ -267,7 +270,7 @@ impl<R: EngineHost> Engine<'_, R> {
                         break;
                     }
                 }
-                Err(DueDiscoveryError::Store(
+                Err(DueDiscoveryError::ReadFailed(
                     failure @ (StoreFailure::Unavailable | StoreFailure::AlarmUnpublishable { .. }),
                 )) => {
                     self.observe_engine_store_down(&subject, failure);
@@ -313,14 +316,19 @@ impl<R: EngineHost> Engine<'_, R> {
 
     async fn run_engine_unit(
         &self,
-        unit: Unit<<R::Timed as TimedRows<R>>::Kind, R::WholeKind>,
+        unit: Unit<<R::TimedDueDispatch as TimedDueDispatch<R>>::TimedSourceKind, R::WholeUnitKind>,
         now: EngineTime,
     ) -> (AlarmResult, bool) {
         match unit {
             Unit::Machine(kind, _, row) => {
-                match self.0.timed_rows().run_row(self, self.0, kind, row).await {
-                    TimedRowOutcome::Finished(work) => (work, false),
-                    TimedRowOutcome::CentralDown => (AlarmResult::default(), true),
+                match self
+                    .0
+                    .timed_due_dispatch()
+                    .dispatch_timed_due_row(self, self.0, kind, row)
+                    .await
+                {
+                    TimedRowOutcome::Handled(work) => (work, false),
+                    TimedRowOutcome::CentralStoreFailed => (AlarmResult::default(), true),
                 }
             }
             Unit::Whole(kind, unit) => self.run_whole_unit(kind, unit, now).await,
@@ -329,13 +337,16 @@ impl<R: EngineHost> Engine<'_, R> {
 
     async fn run_whole_unit(
         &self,
-        kind: R::WholeKind,
-        unit: WholeUnit,
+        kind: R::WholeUnitKind,
+        unit: WholeDueUnitControl,
         now: EngineTime,
     ) -> (AlarmResult, bool) {
-        let WholeUnit { subject, threshold } = unit;
+        let WholeDueUnitControl {
+            attempt_subject: subject,
+            retirement_threshold: threshold,
+        } = unit;
         let empty = AlarmResult::default();
-        let observed = match self.control_gate(&subject, threshold).await {
+        let observed = match self.check_attempt_control_gate(&subject, threshold).await {
             ControlGate::Run(observed) => observed,
             ControlGate::Skip | ControlGate::Uncertain => return (empty, false),
             ControlGate::CentralDown(failure) => {
@@ -368,9 +379,9 @@ impl<R: EngineHost> Engine<'_, R> {
                 Some(class) => (
                     empty,
                     matches!(
-                        self.record_failure_naming(
+                        self.record_attempt_failure_for_workspaces(
                             &subject,
-                            CONTROL_WRITE,
+                            UPSERT_CONTROL_ATTEMPT_SQL,
                             &SubjectVersion(vec![]),
                             class,
                             threshold,
@@ -386,7 +397,7 @@ impl<R: EngineHost> Engine<'_, R> {
     }
 
     /// One due machine instance as its own unit: `(done, central_down)`.
-    pub async fn run_machine_unit<M, Adapter>(
+    pub async fn run_due_machine_instance<M, Adapter>(
         &self,
         adapter: &Adapter,
         row: DueRow,
@@ -399,12 +410,12 @@ impl<R: EngineHost> Engine<'_, R> {
         M::Event: Send + Sync,
         M::Effect: Send + Sync,
         M::Error: Send + Sync,
-        Adapter: crate::machine_store_adapter::StoreAdapter<M>,
+        Adapter: crate::machine_store_adapter::MachineStoreAdapter<M>,
     {
-        let subject = adapter.subject(&row.key);
+        let subject = adapter.failure_attempt_subject(&row.key);
         let outcome = match EngineTime::from_timestamp_millis(row.occurrence_ms) {
             Some(occurrence) => {
-                self.machine_event_execution::<M, Adapter, _>(
+                self.handle::<M, Adapter, _>(
                     adapter,
                     row.key.clone(),
                     due_event(occurrence),
@@ -420,17 +431,17 @@ impl<R: EngineHost> Engine<'_, R> {
             }
         };
         match outcome {
-            HandleOutcome::Done(_) => (true, false),
-            HandleOutcome::StoreDown(failure) => {
+            MachineEventOutcome::TransitionCommitted(_) => (true, false),
+            MachineEventOutcome::StorageFailed(failure) => {
                 self.observe_engine_store_down(&subject, failure);
                 (false, true)
             }
-            HandleOutcome::Failed(_)
-            | HandleOutcome::RequestFailed(_)
-            | HandleOutcome::NotFound
-            | HandleOutcome::Refused(_)
-            | HandleOutcome::Superseded
-            | HandleOutcome::Uncertain => (false, false),
+            MachineEventOutcome::AttemptFailureRecorded(_)
+            | MachineEventOutcome::RequestItemFailed(_)
+            | MachineEventOutcome::SubjectMissing
+            | MachineEventOutcome::TransitionRefused(_)
+            | MachineEventOutcome::EventSuperseded
+            | MachineEventOutcome::StorageAnswerLost => (false, false),
         }
     }
 
@@ -439,25 +450,28 @@ impl<R: EngineHost> Engine<'_, R> {
         adapter: &Adapter,
         key: &InstanceKey,
         due_column: &'static str,
-    ) -> HandleOutcome<M::State, M::Error>
+    ) -> MachineEventOutcome<M::State, M::Error>
     where
         M: central_engine_model::Machine,
-        Adapter: crate::machine_store_adapter::StoreAdapter<M>,
+        Adapter: crate::machine_store_adapter::MachineStoreAdapter<M>,
     {
-        let version = match adapter.load(key).await {
-            Ok(Some(loaded)) => loaded.version,
-            Ok(None) => return HandleOutcome::NotFound,
-            Err(crate::machine_store_adapter::LoadFailure::Corrupt { version, .. }) => version,
-            Err(crate::machine_store_adapter::LoadFailure::Uncertain) => {
-                return HandleOutcome::Uncertain;
+        let version = match adapter.load_subject_state(key).await {
+            Ok(Some(loaded)) => loaded.observed_subject_version,
+            Ok(None) => return MachineEventOutcome::SubjectMissing,
+            Err(crate::machine_store_adapter::SubjectLoadFailure::CorruptSubjectRow {
+                observed_subject_version: version,
+                ..
+            }) => version,
+            Err(crate::machine_store_adapter::SubjectLoadFailure::StorageAnswerLost) => {
+                return MachineEventOutcome::StorageAnswerLost;
             }
-            Err(crate::machine_store_adapter::LoadFailure::StoreDown(failure)) => {
-                return HandleOutcome::StoreDown(failure);
+            Err(crate::machine_store_adapter::SubjectLoadFailure::StoreReadFailed(failure)) => {
+                return MachineEventOutcome::StorageFailed(failure);
             }
         };
         self.record_failure(
-            &adapter.subject(key),
-            adapter.failure_sql(),
+            &adapter.failure_attempt_subject(key),
+            adapter.write_attempt_failure_sql(),
             &version,
             central_engine_model::ItemFailureClass::CorruptRow {
                 column: due_column.into(),

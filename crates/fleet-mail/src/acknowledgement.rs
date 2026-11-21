@@ -9,7 +9,7 @@ use central_storage::{
     AlarmUpdate, BatchOutcome, SqlValue, Statement, StatementBatch, StoreFailure,
 };
 use fleet_contracts::mail_link::{MailAckIgnored, MailAckSettlement};
-use fleet_engine::{Engine, EngineHost, HandleOutcome};
+use fleet_engine::{EngineHost, FleetEngine, MachineEventOutcome};
 use fleet_runtime_ports::stored_values::format_utc_millis;
 use fleet_runtime_ports::{
     CentralStore,
@@ -31,7 +31,7 @@ pub async fn settle_delivery_ack_held<R: EngineHost>(
 ) -> Result<MailAckSettlement, StoreFailure> {
     use MailAckIgnored as Ignored;
     let ignored = |reason| Ok(MailAckSettlement::Ignored(reason));
-    let rows = runtime.host().read(Statement {
+    let rows = runtime.central_store().read(Statement {
         sql: "SELECT target_machine_id,message_kind,state FROM mail_messages WHERE message_id=?",
         args: vec![text(message_id)],
     }).await?;
@@ -67,24 +67,28 @@ async fn settle_direct_ack<R: EngineHost>(
     message_id: &MessageId,
     answer: DeliveryAnswer,
 ) -> Result<MailAckSettlement, StoreFailure> {
-    let settlement = Engine::new(runtime)
-        .handle_ack::<DirectMessage, _>(
+    let settlement = FleetEngine::new(runtime)
+        .apply_acknowledgement_event::<DirectMessage, _>(
             &DirectMessageStore::new(runtime),
             InstanceKey(message_id.to_string()),
             Event::Ack(answer),
         )
         .await;
     match settlement {
-        HandleOutcome::Done(_) => Ok(MailAckSettlement::Applied),
-        HandleOutcome::Refused(TransitionError::Domain(DirectMessageRefusal::AlreadySettled)) => {
-            Ok(MailAckSettlement::Ignored(MailAckIgnored::AlreadySettled))
+        MachineEventOutcome::TransitionCommitted(_) => Ok(MailAckSettlement::Applied),
+        MachineEventOutcome::TransitionRefused(TransitionError::Domain(
+            DirectMessageRefusal::AlreadySettled,
+        )) => Ok(MailAckSettlement::Ignored(MailAckIgnored::AlreadySettled)),
+        MachineEventOutcome::SubjectMissing => {
+            Ok(MailAckSettlement::Ignored(MailAckIgnored::UnknownMessage))
         }
-        HandleOutcome::NotFound => Ok(MailAckSettlement::Ignored(MailAckIgnored::UnknownMessage)),
-        HandleOutcome::Uncertain | HandleOutcome::Superseded => Err(StoreFailure::AnswerLost),
-        HandleOutcome::StoreDown(failure) => Err(failure),
-        HandleOutcome::Refused(_) | HandleOutcome::Failed(_) | HandleOutcome::RequestFailed(_) => {
-            Err(corrupt("mail_messages.ack"))
+        MachineEventOutcome::StorageAnswerLost | MachineEventOutcome::EventSuperseded => {
+            Err(StoreFailure::AnswerLost)
         }
+        MachineEventOutcome::StorageFailed(failure) => Err(failure),
+        MachineEventOutcome::TransitionRefused(_)
+        | MachineEventOutcome::AttemptFailureRecorded(_)
+        | MachineEventOutcome::RequestItemFailed(_) => Err(corrupt("mail_messages.ack")),
     }
 }
 
@@ -105,7 +109,7 @@ async fn settle_system_ack<R: EngineHost>(
             vec![
                 text(state),
                 reason,
-                text(format_utc_millis(runtime.now()?)),
+                text(format_utc_millis(runtime.current_engine_time()?)),
                 text(message_id),
                 text(target),
                 text(kind),
@@ -113,7 +117,7 @@ async fn settle_system_ack<R: EngineHost>(
         )],
         alarm: AlarmUpdate::Unchanged,
     };
-    match runtime.host().run_batch(batch).await? {
+    match runtime.central_store().run_batch(batch).await? {
         BatchOutcome::Applied { .. } => Ok(MailAckSettlement::Applied),
         BatchOutcome::GuardFailed { .. } => Err(StoreFailure::AnswerLost),
         BatchOutcome::ConstraintViolated { .. } | BatchOutcome::StatementRejected { .. } => {

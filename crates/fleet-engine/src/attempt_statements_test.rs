@@ -1,4 +1,4 @@
-use super::{CONTROL_WRITE, write_attempt};
+use super::{UPSERT_CONTROL_ATTEMPT_SQL, write_attempt};
 use central_engine_model::{
     EngineTime, FailureRecord, InstanceKey, ItemFailureClass, MachineKind, RetirementThreshold,
     after_failure,
@@ -7,7 +7,7 @@ use central_storage::{GuardedStatement, SqlValue};
 use fleet_contracts::{AttemptGuard, EngineSubject};
 use sqlx::{Connection, Row, SqliteConnection};
 
-const WAKE_WRITE: &str = guarded_attempt_sql!(
+const WAKE_WRITE: &str = guarded_attempt_upsert_sql!(
     "EXISTS(SELECT 1 FROM automation_wakes WHERE wake_id=?20 AND state='active')"
 );
 const KEY: &str = "01890f2e-7b4c-7cc0-98c4-000000000002";
@@ -84,7 +84,7 @@ async fn an_old_attempt_count_cannot_replace_the_newer_record() {
     assert_eq!(
         apply(
             &mut connection,
-            write_attempt(CONTROL_WRITE, &subject, &first, None, vec![]).unwrap()
+            write_attempt(UPSERT_CONTROL_ATTEMPT_SQL, &subject, &first, None, vec![]).unwrap()
         )
         .await,
         1
@@ -94,7 +94,14 @@ async fn an_old_attempt_count_cannot_replace_the_newer_record() {
     assert_eq!(
         apply(
             &mut connection,
-            write_attempt(CONTROL_WRITE, &subject, &second, Some(&prior), vec![]).unwrap()
+            write_attempt(
+                UPSERT_CONTROL_ATTEMPT_SQL,
+                &subject,
+                &second,
+                Some(&prior),
+                vec![]
+            )
+            .unwrap()
         )
         .await,
         1
@@ -102,7 +109,14 @@ async fn an_old_attempt_count_cannot_replace_the_newer_record() {
     assert_eq!(
         apply(
             &mut connection,
-            write_attempt(CONTROL_WRITE, &subject, &second, Some(&prior), vec![]).unwrap()
+            write_attempt(
+                UPSERT_CONTROL_ATTEMPT_SQL,
+                &subject,
+                &second,
+                Some(&prior),
+                vec![]
+            )
+            .unwrap()
         )
         .await,
         0
@@ -128,7 +142,7 @@ async fn a_deleted_control_record_is_not_recreated_by_an_old_failure() {
     assert_eq!(
         apply(
             &mut connection,
-            write_attempt(CONTROL_WRITE, &subject, &first, None, vec![]).unwrap()
+            write_attempt(UPSERT_CONTROL_ATTEMPT_SQL, &subject, &first, None, vec![]).unwrap()
         )
         .await,
         1
@@ -142,7 +156,14 @@ async fn a_deleted_control_record_is_not_recreated_by_an_old_failure() {
     assert_eq!(
         apply(
             &mut connection,
-            write_attempt(CONTROL_WRITE, &subject, &second, Some(&prior), vec![]).unwrap()
+            write_attempt(
+                UPSERT_CONTROL_ATTEMPT_SQL,
+                &subject,
+                &second,
+                Some(&prior),
+                vec![]
+            )
+            .unwrap()
         )
         .await,
         0

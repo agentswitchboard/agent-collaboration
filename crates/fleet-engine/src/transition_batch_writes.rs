@@ -1,7 +1,7 @@
 use crate::{
-    attempt_statements::delete_attempt,
+    attempt_statements::plan_attempt_delete,
     event_source_policy::ReceiptStatements,
-    machine_store_adapter::{StoreAdapter, Versioned},
+    machine_store_adapter::{MachineStoreAdapter, VersionedSubjectState},
 };
 use central_engine_model::{InstanceKey, ItemFailureClass, Machine};
 use central_storage::{AlarmUpdate, BatchOutcome, ConstraintKind, StatementBatch, StoreFailure};
@@ -63,7 +63,7 @@ pub(crate) trait EffectHandler {
         &self,
         adapter: &Adapter,
         key: &InstanceKey,
-        prior: &Versioned<M::State>,
+        prior: &VersionedSubjectState<M::State>,
         next: &M::State,
         effects: &[M::Effect],
         receipt: ReceiptStatements,
@@ -72,7 +72,7 @@ pub(crate) trait EffectHandler {
         M: Machine,
         M::State: Sync,
         M::Effect: Sync,
-        Adapter: StoreAdapter<M>;
+        Adapter: MachineStoreAdapter<M>;
 }
 
 pub(crate) struct ObjectHostEffects<'a, Host: CentralStore> {
@@ -86,7 +86,7 @@ impl<Host: CentralStore> EffectHandler for ObjectHostEffects<'_, Host> {
         &self,
         adapter: &Adapter,
         key: &InstanceKey,
-        prior: &Versioned<M::State>,
+        prior: &VersionedSubjectState<M::State>,
         next: &M::State,
         effects: &[M::Effect],
         receipt: ReceiptStatements,
@@ -95,7 +95,7 @@ impl<Host: CentralStore> EffectHandler for ObjectHostEffects<'_, Host> {
         M: Machine,
         M::State: Sync,
         M::Effect: Sync,
-        Adapter: StoreAdapter<M>,
+        Adapter: MachineStoreAdapter<M>,
     {
         let request_claim = matches!(&receipt, ReceiptStatements::Request(_));
         // R7: a request that changes state re-publishes the alarm in its own
@@ -109,11 +109,11 @@ impl<Host: CentralStore> EffectHandler for ObjectHostEffects<'_, Host> {
         };
         let mut receipt = receipt.into_statements();
         let statements = (|| {
-            receipt.push(adapter.save(key, prior, next)?);
+            receipt.push(adapter.plan_subject_state_write(key, prior, next)?);
             for effect in effects {
-                receipt.extend(adapter.effect_statements(key, effect)?);
+                receipt.extend(adapter.plan_machine_effect_writes(key, effect)?);
             }
-            receipt.push(delete_attempt(&adapter.subject(key)));
+            receipt.push(plan_attempt_delete(&adapter.failure_attempt_subject(key)));
             Ok::<_, StoreFailure>(receipt)
         })()
         .map_err(|failure| match failure {

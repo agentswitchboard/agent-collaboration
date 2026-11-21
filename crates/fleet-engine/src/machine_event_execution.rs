@@ -1,7 +1,7 @@
-use crate::engine_host_binding::{Engine, EngineHost};
+use crate::engine_host_binding::{EngineHost, FleetEngine};
 use crate::{
     event_source_policy::{EventSource, SourcePolicy},
-    machine_store_adapter::{LoadFailure, StoreAdapter, Versioned},
+    machine_store_adapter::{MachineStoreAdapter, SubjectLoadFailure, VersionedSubjectState},
     transition_batch_writes::{ApplyFailure, EffectHandler, ObjectHostEffects},
 };
 use central_engine_model::{
@@ -10,25 +10,25 @@ use central_engine_model::{
 use central_storage::StoreFailure;
 use fleet_contracts::FailureOutcome;
 
-pub enum HandleOutcome<State, Error> {
-    Done(State),
-    Refused(TransitionError<Error>),
-    NotFound,
-    Failed(ItemFailureClass),
+pub enum MachineEventOutcome<State, Error> {
+    TransitionCommitted(State),
+    TransitionRefused(TransitionError<Error>),
+    SubjectMissing,
+    AttemptFailureRecorded(ItemFailureClass),
     /// A request whose subject or batch is broken gets a typed answer; only due
     /// units charge an attempt record (P2, R3).
-    RequestFailed(ItemFailureClass),
-    Superseded,
-    Uncertain,
-    StoreDown(StoreFailure),
+    RequestItemFailed(ItemFailureClass),
+    EventSuperseded,
+    StorageAnswerLost,
+    StorageFailed(StoreFailure),
 }
-impl<State, Error> From<FailureOutcome> for HandleOutcome<State, Error> {
+impl<State, Error> From<FailureOutcome> for MachineEventOutcome<State, Error> {
     fn from(outcome: FailureOutcome) -> Self {
         match outcome {
-            FailureOutcome::Recorded(record) => Self::Failed(record.last_failure),
-            FailureOutcome::Superseded => Self::Superseded,
-            FailureOutcome::Uncertain => Self::Uncertain,
-            FailureOutcome::StoreDown(failure) => Self::StoreDown(failure),
+            FailureOutcome::Recorded(record) => Self::AttemptFailureRecorded(record.last_failure),
+            FailureOutcome::Superseded => Self::EventSuperseded,
+            FailureOutcome::Uncertain => Self::StorageAnswerLost,
+            FailureOutcome::StoreDown(failure) => Self::StorageFailed(failure),
         }
     }
 }
@@ -46,23 +46,23 @@ impl<M: Machine> EventSource<M> for AckSource {
     }
 }
 
-impl<R: EngineHost> Engine<'_, R> {
+impl<R: EngineHost> FleetEngine<'_, R> {
     /// Acknowledgements use request policy and carry no receipt statements.
-    pub async fn handle_ack<M, A>(
+    pub async fn apply_acknowledgement_event<M, A>(
         &self,
         adapter: &A,
         key: InstanceKey,
         event: M::Event,
-    ) -> HandleOutcome<M::State, M::Error>
+    ) -> MachineEventOutcome<M::State, M::Error>
     where
         M: Machine,
         M::State: Send + Sync,
         M::Event: Send + Sync,
         M::Effect: Send + Sync,
         M::Error: Send + Sync,
-        A: StoreAdapter<M>,
+        A: MachineStoreAdapter<M>,
     {
-        self.machine_event_execution::<M, A, _>(adapter, key, event, &AckSource)
+        self.handle::<M, A, _>(adapter, key, event, &AckSource)
             .await
     }
 
@@ -75,14 +75,14 @@ impl<R: EngineHost> Engine<'_, R> {
         key: InstanceKey,
         event: M::Event,
         source: &Source,
-    ) -> HandleOutcome<M::State, M::Error>
+    ) -> MachineEventOutcome<M::State, M::Error>
     where
         M: Machine,
         M::State: Send + Sync,
         M::Event: Send + Sync,
         M::Effect: Send + Sync,
         M::Error: Send + Sync,
-        Adapter: StoreAdapter<M>,
+        Adapter: MachineStoreAdapter<M>,
         Source: EventSource<M>,
     {
         let handler = ObjectHostEffects {
@@ -105,31 +105,35 @@ impl<R: EngineHost> Engine<'_, R> {
                     .reached_engine(fleet_runtime::PausePoint::AfterEngineAttemptGate, &key.0)
                     .await;
             }
-            let prior = match adapter.load(&key).await {
+            let prior = match adapter.load_subject_state(&key).await {
                 Ok(Some(prior)) => prior,
                 Ok(None) => {
                     if source.policy() != SourcePolicy::Request {
-                        return HandleOutcome::NotFound;
+                        return MachineEventOutcome::SubjectMissing;
                     }
                     let receipt = match source.missing() {
                         Ok(receipt) => receipt,
-                        Err(failure) => return HandleOutcome::StoreDown(failure),
+                        Err(failure) => return MachineEventOutcome::StorageFailed(failure),
                     };
                     return match handler.apply_receipt(receipt).await {
-                        Ok(()) => HandleOutcome::NotFound,
+                        Ok(()) => MachineEventOutcome::SubjectMissing,
                         Err(failure) => receipt_failure(failure),
                     };
                 }
-                Err(LoadFailure::Corrupt { class, .. })
-                    if source.policy() == SourcePolicy::Request =>
-                {
-                    return HandleOutcome::RequestFailed(class);
+                Err(SubjectLoadFailure::CorruptSubjectRow {
+                    failure_class: class,
+                    ..
+                }) if source.policy() == SourcePolicy::Request => {
+                    return MachineEventOutcome::RequestItemFailed(class);
                 }
-                Err(LoadFailure::Corrupt { class, version }) => {
+                Err(SubjectLoadFailure::CorruptSubjectRow {
+                    failure_class: class,
+                    observed_subject_version: version,
+                }) => {
                     return self
                         .record_failure(
-                            &adapter.subject(&key),
-                            adapter.failure_sql(),
+                            &adapter.failure_attempt_subject(&key),
+                            adapter.write_attempt_failure_sql(),
                             &version,
                             class,
                             M::retirement_threshold(),
@@ -137,8 +141,12 @@ impl<R: EngineHost> Engine<'_, R> {
                         .await
                         .into();
                 }
-                Err(LoadFailure::Uncertain) => return HandleOutcome::Uncertain,
-                Err(LoadFailure::StoreDown(failure)) => return HandleOutcome::StoreDown(failure),
+                Err(SubjectLoadFailure::StorageAnswerLost) => {
+                    return MachineEventOutcome::StorageAnswerLost;
+                }
+                Err(SubjectLoadFailure::StoreReadFailed(failure)) => {
+                    return MachineEventOutcome::StorageFailed(failure);
+                }
             };
             if source.policy() == SourcePolicy::Due
                 && let Some(outcome) = self
@@ -153,12 +161,12 @@ impl<R: EngineHost> Engine<'_, R> {
                 .await;
             let now = match self.now() {
                 Ok(now) => now,
-                Err(failure) => return HandleOutcome::StoreDown(failure),
+                Err(failure) => return MachineEventOutcome::StorageFailed(failure),
             };
             let transition = {
                 let mut ids = ReducerIds(self.ids());
                 M::transition(
-                    &prior.state,
+                    &prior.decoded_state,
                     event.clone(),
                     &mut Context { now, ids: &mut ids },
                 )
@@ -168,7 +176,7 @@ impl<R: EngineHost> Engine<'_, R> {
                 Err(error) => match source.policy() {
                     SourcePolicy::Due => {
                         let refusal = match error {
-                            TransitionError::Stale => return HandleOutcome::Superseded,
+                            TransitionError::Stale => return MachineEventOutcome::EventSuperseded,
                             TransitionError::NotAllowed { state, event } => {
                                 format!("{state}:{event}")
                             }
@@ -176,23 +184,23 @@ impl<R: EngineHost> Engine<'_, R> {
                         };
                         return self
                             .record_failure(
-                                &adapter.subject(&key),
-                                adapter.failure_sql(),
-                                &prior.version,
+                                &adapter.failure_attempt_subject(&key),
+                                adapter.write_attempt_failure_sql(),
+                                &prior.observed_subject_version,
                                 ItemFailureClass::Refused { refusal },
                                 M::retirement_threshold(),
                             )
                             .await
                             .into();
                     }
-                    SourcePolicy::Discard => return HandleOutcome::Refused(error),
+                    SourcePolicy::Discard => return MachineEventOutcome::TransitionRefused(error),
                     SourcePolicy::Request => {
                         let receipt = match source.refused(&error) {
                             Ok(receipt) => receipt,
-                            Err(failure) => return HandleOutcome::StoreDown(failure),
+                            Err(failure) => return MachineEventOutcome::StorageFailed(failure),
                         };
                         return match handler.apply_receipt(receipt).await {
-                            Ok(()) => HandleOutcome::Refused(error),
+                            Ok(()) => MachineEventOutcome::TransitionRefused(error),
                             Err(failure) => receipt_failure(failure),
                         };
                     }
@@ -200,7 +208,7 @@ impl<R: EngineHost> Engine<'_, R> {
             };
             let receipt = match source.accepted(&next) {
                 Ok(receipt) => receipt,
-                Err(failure) => return HandleOutcome::StoreDown(failure),
+                Err(failure) => return MachineEventOutcome::StorageFailed(failure),
             };
             match handler
                 .apply::<M, Adapter>(adapter, &key, &prior, &next, &effects, receipt)
@@ -209,57 +217,59 @@ impl<R: EngineHost> Engine<'_, R> {
                 Ok(()) => {
                     for delivery in effects
                         .iter()
-                        .filter_map(|effect| adapter.mail_ready(effect))
+                        .filter_map(|effect| adapter.mail_ready_from_effect(effect))
                     {
-                        self.0.offer_mail(delivery);
+                        self.0.offer_ready_mail(delivery);
                     }
                     #[cfg(feature = "test-support")]
                     self.pauses()
                         .reached_engine(fleet_runtime::PausePoint::AfterEngineCommit, &key.0)
                         .await;
-                    return HandleOutcome::Done(next);
+                    return MachineEventOutcome::TransitionCommitted(next);
                 }
                 Err(ApplyFailure::Superseded) => {
                     if source.policy() == SourcePolicy::Discard {
-                        return HandleOutcome::Superseded;
+                        return MachineEventOutcome::EventSuperseded;
                     }
                 }
                 Err(ApplyFailure::Rejected(class)) if source.policy() == SourcePolicy::Request => {
-                    return HandleOutcome::RequestFailed(class);
+                    return MachineEventOutcome::RequestItemFailed(class);
                 }
                 Err(ApplyFailure::Rejected(class)) => {
                     return self
                         .record_failure(
-                            &adapter.subject(&key),
-                            adapter.failure_sql(),
-                            &prior.version,
+                            &adapter.failure_attempt_subject(&key),
+                            adapter.write_attempt_failure_sql(),
+                            &prior.observed_subject_version,
                             class,
                             M::retirement_threshold(),
                         )
                         .await
                         .into();
                 }
-                Err(ApplyFailure::Uncertain) => return HandleOutcome::Uncertain,
-                Err(ApplyFailure::StoreDown(failure)) => return HandleOutcome::StoreDown(failure),
+                Err(ApplyFailure::Uncertain) => return MachineEventOutcome::StorageAnswerLost,
+                Err(ApplyFailure::StoreDown(failure)) => {
+                    return MachineEventOutcome::StorageFailed(failure);
+                }
             }
         }
-        HandleOutcome::Superseded
+        MachineEventOutcome::EventSuperseded
     }
 
-    async fn due_attempt_gate<M: Machine, Adapter: StoreAdapter<M>>(
+    async fn due_attempt_gate<M: Machine, Adapter: MachineStoreAdapter<M>>(
         &self,
         adapter: &Adapter,
         key: &InstanceKey,
-        prior: &Versioned<M::State>,
-    ) -> Option<HandleOutcome<M::State, M::Error>> {
-        let subject = adapter.subject(key);
+        prior: &VersionedSubjectState<M::State>,
+    ) -> Option<MachineEventOutcome<M::State, M::Error>> {
+        let subject = adapter.failure_attempt_subject(key);
         match crate::attempt_store::load_attempt(self.host(), &subject).await {
             Ok(Some(stored)) => match &stored.record {
                 Err(corruption) => Some(
                     self.write_failure(
                         &subject,
-                        adapter.failure_sql(),
-                        &prior.version,
+                        adapter.write_attempt_failure_sql(),
+                        &prior.observed_subject_version,
                         corruption.failure_class(),
                         M::retirement_threshold(),
                         Some(&stored),
@@ -270,27 +280,29 @@ impl<R: EngineHost> Engine<'_, R> {
                 Ok(record) => self.wait_for_next_try(&record.state),
             },
             Ok(None) => None,
-            Err(StoreFailure::AnswerLost) => Some(HandleOutcome::Uncertain),
-            Err(failure) => Some(HandleOutcome::StoreDown(failure)),
+            Err(StoreFailure::AnswerLost) => Some(MachineEventOutcome::StorageAnswerLost),
+            Err(failure) => Some(MachineEventOutcome::StorageFailed(failure)),
         }
     }
 
     /// The pre-load half of the due gate. A damaged control row needs the
     /// loaded row's version to be replaced, so it passes here and is replaced
     /// by `due_attempt_gate` after the load.
-    async fn due_attempt_wait<M: Machine, Adapter: StoreAdapter<M>>(
+    async fn due_attempt_wait<M: Machine, Adapter: MachineStoreAdapter<M>>(
         &self,
         adapter: &Adapter,
         key: &InstanceKey,
-    ) -> Option<HandleOutcome<M::State, M::Error>> {
-        match crate::attempt_store::load_attempt(self.host(), &adapter.subject(key)).await {
+    ) -> Option<MachineEventOutcome<M::State, M::Error>> {
+        match crate::attempt_store::load_attempt(self.host(), &adapter.failure_attempt_subject(key))
+            .await
+        {
             Ok(Some(stored)) => match &stored.record {
                 Ok(record) => self.wait_for_next_try(&record.state),
                 Err(_) => None,
             },
             Ok(None) => None,
-            Err(StoreFailure::AnswerLost) => Some(HandleOutcome::Uncertain),
-            Err(failure) => Some(HandleOutcome::StoreDown(failure)),
+            Err(StoreFailure::AnswerLost) => Some(MachineEventOutcome::StorageAnswerLost),
+            Err(failure) => Some(MachineEventOutcome::StorageFailed(failure)),
         }
     }
 
@@ -298,23 +310,25 @@ impl<R: EngineHost> Engine<'_, R> {
     fn wait_for_next_try<State, Error>(
         &self,
         state: &central_engine_model::AttemptState,
-    ) -> Option<HandleOutcome<State, Error>> {
+    ) -> Option<MachineEventOutcome<State, Error>> {
         match state {
-            central_engine_model::AttemptState::Retired { .. } => Some(HandleOutcome::Superseded),
+            central_engine_model::AttemptState::Retired { .. } => {
+                Some(MachineEventOutcome::EventSuperseded)
+            }
             central_engine_model::AttemptState::Failing { next_try_at } => match self.now() {
                 Ok(now) if *next_try_at <= now => None,
-                Ok(_) => Some(HandleOutcome::Superseded),
-                Err(failure) => Some(HandleOutcome::StoreDown(failure)),
+                Ok(_) => Some(MachineEventOutcome::EventSuperseded),
+                Err(failure) => Some(MachineEventOutcome::StorageFailed(failure)),
             },
         }
     }
 }
-fn receipt_failure<State, Error>(failure: ApplyFailure) -> HandleOutcome<State, Error> {
+fn receipt_failure<State, Error>(failure: ApplyFailure) -> MachineEventOutcome<State, Error> {
     match failure {
-        ApplyFailure::Superseded => HandleOutcome::Superseded,
-        ApplyFailure::Uncertain => HandleOutcome::Uncertain,
-        ApplyFailure::StoreDown(failure) => HandleOutcome::StoreDown(failure),
-        ApplyFailure::Rejected(_) => HandleOutcome::StoreDown(
+        ApplyFailure::Superseded => MachineEventOutcome::EventSuperseded,
+        ApplyFailure::Uncertain => MachineEventOutcome::StorageAnswerLost,
+        ApplyFailure::StoreDown(failure) => MachineEventOutcome::StorageFailed(failure),
+        ApplyFailure::Rejected(_) => MachineEventOutcome::StorageFailed(
             fleet_runtime_ports::workspace_decode_error::corrupt("runtime_request_log.claim"),
         ),
     }

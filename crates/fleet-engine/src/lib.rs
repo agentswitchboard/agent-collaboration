@@ -21,20 +21,23 @@ mod transition_batch_writes;
 
 pub use admin_failure_class::EngineFailureClass;
 pub use attempt_administration::{
-    AttemptRefusal, DiscardOutcome, DiscardStore, EngineHealthFacts, KindHealth, KindRegistry,
-    RegisteredDiscard, RetiredItem,
+    AdminMachineKindRegistry, AttemptRefusal, DiscardOutcome, DiscardSubjectStatements,
+    EngineHealthFacts, MachineKindAttemptHealth, PreparedAttemptDiscard, RetiredAttemptSummary,
 };
-pub use attempt_statements::{CONTROL_WRITE, delete_attempt, delete_observed_attempt};
+pub use attempt_statements::{
+    UPSERT_CONTROL_ATTEMPT_SQL, plan_attempt_delete, plan_observed_attempt_delete,
+};
 pub use due_batch_execution::{
-    DueCutoff, DueDiscoveryError, TimedRowOutcome, TimedRows, TimedSource, WholeUnit,
-    WholeUnitOutcome, read_due_rows,
+    DueCutoff, DueDiscoveryError, TimedDueDispatch, TimedRowOutcome, TimedSourceSchedule,
+    WholeDueUnitControl, WholeUnitOutcome, read_due_rows,
 };
-pub use engine_host_binding::{Engine, EngineHost};
-pub use machine_event_execution::HandleOutcome;
+pub use engine_host_binding::{EngineHost, FleetEngine};
+pub use machine_event_execution::MachineEventOutcome;
 #[cfg(feature = "test-support")]
 pub use machine_request_execution::EngineRequestOutcome;
 pub use machine_store_adapter::{
-    LoadFailure, StoreAdapter, Versioned, decode_load_failure, load_store_failure, raw_version,
+    MachineStoreAdapter, SubjectLoadFailure, VersionedSubjectState,
+    classify_subject_decode_failure, classify_subject_read_failure, read_observed_subject_version,
 };
 #[cfg(feature = "test-support")]
 pub use request_receipt_store::{EngineReceipt, EngineRefusal};

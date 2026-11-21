@@ -109,7 +109,7 @@ pub fn plan_disable_automation(
             vec![at(), text(automation_id)],
         )]
     };
-    statements.push(fleet_engine::delete_attempt(
+    statements.push(fleet_engine::plan_attempt_delete(
         &fleet_contracts::EngineSubject {
             kind: central_engine_model::MachineKind("automation_timer"),
             key: central_engine_model::InstanceKey(automation_id.to_string()),

@@ -12,8 +12,9 @@ use crate::{
 use central_engine_model::{InstanceKey, StateTag};
 use central_storage::{GuardedStatement, SqlValue, Statement, StoreFailure};
 use fleet_engine::{
-    EngineHost, LoadFailure, StoreAdapter, Versioned, decode_load_failure, guarded_attempt_sql,
-    load_store_failure, raw_version,
+    EngineHost, MachineStoreAdapter, SubjectLoadFailure, VersionedSubjectState,
+    classify_subject_decode_failure, classify_subject_read_failure, guarded_attempt_upsert_sql,
+    read_observed_subject_version,
 };
 use fleet_runtime_ports::CentralStore as _;
 use fleet_runtime_ports::stored_values::format_utc_millis;
@@ -30,29 +31,29 @@ impl<'a, R: EngineHost> DirectMessageStore<'a, R> {
     }
 }
 
-const DIRECT_MESSAGE_FAILURE: &str = guarded_attempt_sql!(
+const DIRECT_MESSAGE_FAILURE: &str = guarded_attempt_upsert_sql!(
     "EXISTS(SELECT 1 FROM mail_messages WHERE message_id IS ?20 AND sender IS ?21 AND message_kind IS ?22 AND state IS ?23 AND failure_reason IS ?24 AND cancel_due_at IS ?25 AND sender_request_id IS ?26 AND created_at IS ?27 AND updated_at IS ?28 AND state NOT IN ('delivered','failed'))"
 );
 
-impl<R: EngineHost> StoreAdapter<DirectMessage> for DirectMessageStore<'_, R> {
-    async fn load(
+impl<R: EngineHost> MachineStoreAdapter<DirectMessage> for DirectMessageStore<'_, R> {
+    async fn load_subject_state(
         &self,
         key: &InstanceKey,
-    ) -> Result<Option<Versioned<direct::State>>, LoadFailure> {
+    ) -> Result<Option<VersionedSubjectState<direct::State>>, SubjectLoadFailure> {
         let rows = self
             .0
-            .host()
+            .central_store()
             .read(Statement {
                 sql: DIRECT_MESSAGE_COLUMNS,
                 args: vec![text(&key.0)],
             })
             .await
-            .map_err(load_store_failure)?;
-        let Some(version) = raw_version(&rows)? else {
+            .map_err(classify_subject_read_failure)?;
+        let Some(version) = read_observed_subject_version(&rows)? else {
             return Ok(None);
         };
         let row = decode_direct_message(&rows, &version.0)
-            .map_err(|failure| decode_load_failure(failure, version.clone()))?;
+            .map_err(|failure| classify_subject_decode_failure(failure, version.clone()))?;
         let subject = |sender_session| DirectMessageSubject {
             id: row.id.clone(),
             sender_session,
@@ -65,15 +66,15 @@ impl<R: EngineHost> StoreAdapter<DirectMessage> for DirectMessageStore<'_, R> {
             DirectMessageStatus::Queued | DirectMessageStatus::Cancelled => {
                 let identity = self
                     .0
-                    .host()
+                    .central_store()
                     .read(Statement {
                         sql: "SELECT identity_kind,identity FROM access_actor_identities WHERE actor_identity_id=?",
                         args: vec![text(&row.sender)],
                     })
                     .await
-                    .map_err(load_store_failure)?;
+                    .map_err(classify_subject_read_failure)?;
                 let session = decode_sender_session(&identity)
-                    .map_err(|failure| decode_load_failure(failure, version.clone()))?;
+                    .map_err(|failure| classify_subject_decode_failure(failure, version.clone()))?;
                 if row.status == DirectMessageStatus::Queued {
                     direct::State::Queued(subject(session))
                 } else {
@@ -81,12 +82,15 @@ impl<R: EngineHost> StoreAdapter<DirectMessage> for DirectMessageStore<'_, R> {
                 }
             }
         };
-        Ok(Some(Versioned { state, version }))
+        Ok(Some(VersionedSubjectState {
+            decoded_state: state,
+            observed_subject_version: version,
+        }))
     }
-    fn save(
+    fn plan_subject_state_write(
         &self,
         _key: &InstanceKey,
-        prior: &Versioned<direct::State>,
+        prior: &VersionedSubjectState<direct::State>,
         next: &direct::State,
     ) -> Result<GuardedStatement, StoreFailure> {
         let failure = match next {
@@ -98,9 +102,9 @@ impl<R: EngineHost> StoreAdapter<DirectMessage> for DirectMessageStore<'_, R> {
         let mut args = vec![
             text(next.state_tag()),
             failure,
-            text(format_utc_millis(self.0.now()?)),
+            text(format_utc_millis(self.0.current_engine_time()?)),
         ];
-        args.extend(prior.version.0.clone());
+        args.extend(prior.observed_subject_version.0.clone());
         if args.len() != 12 {
             return Err(corrupt("mail_messages.version"));
         }
@@ -109,7 +113,7 @@ impl<R: EngineHost> StoreAdapter<DirectMessage> for DirectMessageStore<'_, R> {
             args,
         ))
     }
-    fn effect_statements(
+    fn plan_machine_effect_writes(
         &self,
         _key: &InstanceKey,
         effect: &direct::Effect,
@@ -119,11 +123,14 @@ impl<R: EngineHost> StoreAdapter<DirectMessage> for DirectMessageStore<'_, R> {
             direct::Effect::TellSender(notice) => Ok(vec![insert_message(notice)?]),
         }
     }
-    fn failure_sql(&self) -> &'static str {
+    fn write_attempt_failure_sql(&self) -> &'static str {
         DIRECT_MESSAGE_FAILURE
     }
 
-    fn mail_ready(&self, effect: &direct::Effect) -> Option<fleet_contracts::MailDeliveryReady> {
+    fn mail_ready_from_effect(
+        &self,
+        effect: &direct::Effect,
+    ) -> Option<fleet_contracts::MailDeliveryReady> {
         match effect {
             direct::Effect::TellSender(notice) => Some(notice.into()),
         }

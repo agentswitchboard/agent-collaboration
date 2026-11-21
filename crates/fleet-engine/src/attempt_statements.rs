@@ -13,7 +13,7 @@ const READ_ATTEMPT: &str = "SELECT attempt_id,machine_kind,subject_key,state,fai
 /// The literal predicate belongs to the adapter that owns the subject. No UPDATE
 /// of the subject is used as a guard: that would retrigger its failed statement.
 #[macro_export]
-macro_rules! guarded_attempt_sql {
+macro_rules! guarded_attempt_upsert_sql {
     ($subject_predicate:literal) => {
         concat!(
             "INSERT INTO engine_work_attempts(attempt_id,machine_kind,subject_key,state,failure_count,next_try_at,last_failure,last_failure_detail,first_failed_at,last_failed_at,retired_at,created_at,updated_at) ",
@@ -26,7 +26,7 @@ macro_rules! guarded_attempt_sql {
     };
 }
 
-pub const CONTROL_WRITE: &str = guarded_attempt_sql!("1");
+pub const UPSERT_CONTROL_ATTEMPT_SQL: &str = guarded_attempt_upsert_sql!("1");
 
 pub(crate) fn read_attempt(subject: &EngineSubject) -> Statement {
     Statement {
@@ -35,7 +35,7 @@ pub(crate) fn read_attempt(subject: &EngineSubject) -> Statement {
     }
 }
 
-pub fn delete_attempt(subject: &EngineSubject) -> GuardedStatement {
+pub fn plan_attempt_delete(subject: &EngineSubject) -> GuardedStatement {
     any(
         "DELETE FROM engine_work_attempts WHERE machine_kind=? AND subject_key=?",
         vec![text(subject.kind.0), text(&subject.key.0)],
@@ -45,7 +45,7 @@ pub fn delete_attempt(subject: &EngineSubject) -> GuardedStatement {
 /// Deletes the control record only while it is still the one a run observed
 /// (the write guard's columns, compared with IS). A record written or replaced
 /// after the observation matches nothing and survives.
-pub fn delete_observed_attempt(
+pub fn plan_observed_attempt_delete(
     subject: &EngineSubject,
     observed: &AttemptGuard,
 ) -> GuardedStatement {

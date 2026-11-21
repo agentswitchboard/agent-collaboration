@@ -9,54 +9,56 @@ use fleet_contracts::{
     MailDeliveryReady, ObservedControl,
 };
 use fleet_engine::{
-    DiscardOutcome, Engine, EngineHost, KindRegistry, RegisteredDiscard, WholeUnit,
-    WholeUnitOutcome,
+    AdminMachineKindRegistry, DiscardOutcome, EngineHost, FleetEngine, PreparedAttemptDiscard,
+    WholeDueUnitControl, WholeUnitOutcome,
 };
 use fleet_runtime::DueBatchState;
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 
 impl<H: CentralStore, S: WorkspaceStores> EngineHost for WorkspaceRuntime<H, S> {
-    type Host = H;
-    type Timed = CoreTimedRows;
-    type WholeKind = WholeKind;
-    type AdminKind = EngineKindName;
-    fn host(&self) -> &H {
+    type CentralStoreBackend = H;
+    type TimedDueDispatch = CoreTimedRows;
+    type WholeUnitKind = WholeKind;
+    type AdminMachineKind = EngineKindName;
+    fn central_store(&self) -> &H {
         self.execution.statement_host()
     }
-    fn now(&self) -> Result<EngineTime, StoreFailure> {
+    fn current_engine_time(&self) -> Result<EngineTime, StoreFailure> {
         self.execution.now()
     }
-    fn ids(&self) -> &dyn fleet_runtime_ports::IdSource {
+    fn host_id_source(&self) -> &dyn fleet_runtime_ports::IdSource {
         self.execution.ids()
     }
-    fn due_batches(&self) -> &DueBatchState {
+    fn due_batch_state(&self) -> &DueBatchState {
         self.execution.due_batches()
     }
-    fn observe(&self, observation: CentralObservation) {
+    fn emit_central_observation(&self, observation: CentralObservation) {
         self.execution.observe(observation);
     }
-    fn offer_mail(&self, delivery: MailDeliveryReady) {
+    fn offer_ready_mail(&self, delivery: MailDeliveryReady) {
         (self.mail_delivery_ready)(delivery);
     }
     async fn organization_is_provisioned(&self) -> Result<bool, StoreFailure> {
         self.alarm_organization_is_provisioned().await
     }
-    fn timed_rows(&self) -> &CoreTimedRows {
+    fn timed_due_dispatch(&self) -> &CoreTimedRows {
         &CoreTimedRows
     }
-    fn admin_kinds(&self) -> &'static KindRegistry<'static, Self::AdminKind> {
+    fn admin_machine_kind_registry(
+        &self,
+    ) -> &'static AdminMachineKindRegistry<'static, Self::AdminMachineKind> {
         &KIND_REGISTRY
     }
     async fn finish_registered_discard(
         &self,
-        discard: RegisteredDiscard<'_, Self>,
+        discard: PreparedAttemptDiscard<'_, Self>,
     ) -> Result<DiscardOutcome, StoreFailure> {
         finish_registered_discard(discard).await
     }
     fn ordered_whole_units(&self) -> &'static [WholeKind] {
         &[WholeKind::Windows, WholeKind::Drains]
     }
-    fn whole_unit(&self, kind: WholeKind) -> WholeUnit {
+    fn whole_unit(&self, kind: WholeKind) -> WholeDueUnitControl {
         kind.description()
     }
     async fn run_whole_unit(
@@ -69,7 +71,7 @@ impl<H: CentralStore, S: WorkspaceStores> EngineHost for WorkspaceRuntime<H, S> 
         self.execute_whole_unit(kind, now, subject, observed).await
     }
     #[cfg(feature = "test-support")]
-    fn pauses(&self) -> &fleet_runtime::PausePoints {
+    fn engine_test_pause_points(&self) -> &fleet_runtime::PausePoints {
         self.execution.pause_points()
     }
     #[cfg(feature = "test-support")]
@@ -81,6 +83,6 @@ impl<H: CentralStore, S: WorkspaceStores> EngineHost for WorkspaceRuntime<H, S> 
 impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
     /// Await the engine's completion after the event's own work.
     pub async fn after_event(&self) -> Result<EventCompletion, AlarmNotPublished> {
-        self.execution.after_event(&Engine::new(self)).await
+        self.execution.after_event(&FleetEngine::new(self)).await
     }
 }

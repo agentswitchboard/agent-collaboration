@@ -1,4 +1,4 @@
-use crate::engine_host_binding::{Engine, EngineHost};
+use crate::engine_host_binding::{EngineHost, FleetEngine};
 use crate::{
     attempt_records::StoredAttempt,
     attempt_statements::write_attempt,
@@ -13,7 +13,7 @@ use fleet_contracts::{EngineSubject, FailureOutcome, SubjectVersion};
 use fleet_runtime_ports::CentralStore as _;
 use workspace_model::WorkspaceId;
 
-impl<R: EngineHost> Engine<'_, R> {
+impl<R: EngineHost> FleetEngine<'_, R> {
     pub fn observe_engine_store_down(&self, subject: &EngineSubject, failure: StoreFailure) {
         self.observe(fleet_contracts::CentralObservation::EngineStoreDown {
             kind: subject.kind,
@@ -33,13 +33,20 @@ impl<R: EngineHost> Engine<'_, R> {
         class: ItemFailureClass,
         threshold: RetirementThreshold,
     ) -> FailureOutcome {
-        self.record_failure_naming(subject, failure_sql, version, class, threshold, &[])
-            .await
+        self.record_attempt_failure_for_workspaces(
+            subject,
+            failure_sql,
+            version,
+            class,
+            threshold,
+            &[],
+        )
+        .await
     }
 
     /// Records a failure whose observation names the workspaces a notice unit
     /// affected; the stored record keeps only its class (P2, P5 change 4).
-    pub async fn record_failure_naming(
+    pub async fn record_attempt_failure_for_workspaces(
         &self,
         subject: &EngineSubject,
         failure_sql: &'static str,

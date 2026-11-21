@@ -130,7 +130,7 @@ declare_timed_due_lists! {
 
 __declare_timed_due_row!();
 
-/// Reads an owner's due list and validates its storage types before Engine dispatch.
+/// Reads an owner's due list and validates its storage types before FleetEngine dispatch.
 pub async fn read_timed_due_rows<T: CentralTransaction>(
     transaction: &mut T,
     query: DueListQuery,

@@ -4,42 +4,42 @@ use fleet_contracts::{EngineSubject, MailDeliveryReady, SubjectVersion};
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use std::future::Future;
 
-pub struct Versioned<State> {
-    pub state: State,
-    pub version: SubjectVersion,
+pub struct VersionedSubjectState<State> {
+    pub decoded_state: State,
+    pub observed_subject_version: SubjectVersion,
 }
 
-pub enum LoadFailure {
-    Corrupt {
-        class: ItemFailureClass,
-        version: SubjectVersion,
+pub enum SubjectLoadFailure {
+    CorruptSubjectRow {
+        failure_class: ItemFailureClass,
+        observed_subject_version: SubjectVersion,
     },
-    Uncertain,
-    StoreDown(StoreFailure),
+    StorageAnswerLost,
+    StoreReadFailed(StoreFailure),
 }
 
 /// One machine's row codec and static statements. Reducers never see SQL.
-pub trait StoreAdapter<M: Machine>: Sync {
-    fn load(
+pub trait MachineStoreAdapter<M: Machine>: Sync {
+    fn load_subject_state(
         &self,
         key: &InstanceKey,
-    ) -> impl Future<Output = Result<Option<Versioned<M::State>>, LoadFailure>> + Send;
-    fn save(
+    ) -> impl Future<Output = Result<Option<VersionedSubjectState<M::State>>, SubjectLoadFailure>> + Send;
+    fn plan_subject_state_write(
         &self,
         key: &InstanceKey,
-        prior: &Versioned<M::State>,
+        prior: &VersionedSubjectState<M::State>,
         next: &M::State,
     ) -> Result<GuardedStatement, StoreFailure>;
-    fn effect_statements(
+    fn plan_machine_effect_writes(
         &self,
         key: &InstanceKey,
         effect: &M::Effect,
     ) -> Result<Vec<GuardedStatement>, StoreFailure>;
-    fn mail_ready(&self, _effect: &M::Effect) -> Option<MailDeliveryReady> {
+    fn mail_ready_from_effect(&self, _effect: &M::Effect) -> Option<MailDeliveryReady> {
         None
     }
-    fn failure_sql(&self) -> &'static str;
-    fn subject(&self, key: &InstanceKey) -> EngineSubject {
+    fn write_attempt_failure_sql(&self) -> &'static str;
+    fn failure_attempt_subject(&self, key: &InstanceKey) -> EngineSubject {
         EngineSubject {
             kind: M::KIND,
             key: key.clone(),
@@ -57,29 +57,34 @@ pub(crate) fn corrupt_class(reason: CorruptReason) -> ItemFailureClass {
     }
 }
 
-pub fn load_store_failure(failure: StoreFailure) -> LoadFailure {
+pub fn classify_subject_read_failure(failure: StoreFailure) -> SubjectLoadFailure {
     match failure {
-        StoreFailure::AnswerLost => LoadFailure::Uncertain,
+        StoreFailure::AnswerLost => SubjectLoadFailure::StorageAnswerLost,
         failure @ (StoreFailure::Unavailable
         | StoreFailure::Corrupt { .. }
-        | StoreFailure::AlarmUnpublishable { .. }) => LoadFailure::StoreDown(failure),
+        | StoreFailure::AlarmUnpublishable { .. }) => SubjectLoadFailure::StoreReadFailed(failure),
     }
 }
-pub fn decode_load_failure(failure: StoreFailure, version: SubjectVersion) -> LoadFailure {
+pub fn classify_subject_decode_failure(
+    failure: StoreFailure,
+    version: SubjectVersion,
+) -> SubjectLoadFailure {
     match failure {
-        StoreFailure::Corrupt { reason } => LoadFailure::Corrupt {
-            class: corrupt_class(reason),
-            version,
+        StoreFailure::Corrupt { reason } => SubjectLoadFailure::CorruptSubjectRow {
+            failure_class: corrupt_class(reason),
+            observed_subject_version: version,
         },
         failure @ (StoreFailure::Unavailable
         | StoreFailure::AnswerLost
-        | StoreFailure::AlarmUnpublishable { .. }) => load_store_failure(failure),
+        | StoreFailure::AlarmUnpublishable { .. }) => classify_subject_read_failure(failure),
     }
 }
-pub fn raw_version(rows: &ReadOutcome) -> Result<Option<SubjectVersion>, LoadFailure> {
+pub fn read_observed_subject_version(
+    rows: &ReadOutcome,
+) -> Result<Option<SubjectVersion>, SubjectLoadFailure> {
     match rows.rows.as_slice() {
         [] => Ok(None),
         [row] => Ok(Some(SubjectVersion(row.clone()))),
-        _ => Err(load_store_failure(corrupt("engine.subject_key"))),
+        _ => Err(classify_subject_read_failure(corrupt("engine.subject_key"))),
     }
 }

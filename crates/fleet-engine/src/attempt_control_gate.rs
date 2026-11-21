@@ -1,6 +1,6 @@
-use crate::engine_host_binding::{Engine, EngineHost};
+use crate::engine_host_binding::{EngineHost, FleetEngine};
 use crate::{
-    attempt_statements::{CONTROL_WRITE, delete_observed_attempt},
+    attempt_statements::{UPSERT_CONTROL_ATTEMPT_SQL, plan_observed_attempt_delete},
     attempt_store::load_attempt,
     transition_batch_writes::{ApplyFailure, classify_batch},
 };
@@ -11,8 +11,8 @@ use fleet_contracts::{
 };
 use fleet_runtime_ports::CentralStore as _;
 
-impl<R: EngineHost> Engine<'_, R> {
-    pub async fn control_gate(
+impl<R: EngineHost> FleetEngine<'_, R> {
+    pub async fn check_attempt_control_gate(
         &self,
         subject: &EngineSubject,
         threshold: RetirementThreshold,
@@ -37,7 +37,7 @@ impl<R: EngineHost> Engine<'_, R> {
             Err(corruption) => match self
                 .write_failure(
                     subject,
-                    CONTROL_WRITE,
+                    UPSERT_CONTROL_ATTEMPT_SQL,
                     &SubjectVersion(vec![]),
                     corruption.failure_class(),
                     threshold,
@@ -66,7 +66,7 @@ impl<R: EngineHost> Engine<'_, R> {
         classify_batch(
             self.host()
                 .run_batch(StatementBatch {
-                    statements: vec![delete_observed_attempt(subject, guard)],
+                    statements: vec![plan_observed_attempt_delete(subject, guard)],
                     alarm: AlarmUpdate::Unchanged,
                 })
                 .await,

@@ -1,8 +1,8 @@
-use crate::engine_host_binding::{Engine, EngineHost};
+use crate::engine_host_binding::{EngineHost, FleetEngine};
 use crate::{
     event_source_policy::RequestSource,
-    machine_event_execution::HandleOutcome,
-    machine_store_adapter::StoreAdapter,
+    machine_event_execution::MachineEventOutcome,
+    machine_store_adapter::MachineStoreAdapter,
     request_receipt_store::{EngineReceipt, ReceiptClaim},
 };
 use central_engine_model::{InstanceKey, Machine};
@@ -30,8 +30,8 @@ pub enum EngineRequestOutcome<State, Error> {
     },
 }
 
-impl<R: EngineHost> Engine<'_, R> {
-    pub async fn request_engine<M, Adapter>(
+impl<R: EngineHost> FleetEngine<'_, R> {
+    pub async fn run_machine_request<M, Adapter>(
         &self,
         adapter: &Adapter,
         caller: ActorIdentityId,
@@ -45,7 +45,7 @@ impl<R: EngineHost> Engine<'_, R> {
         M::Event: Send + Sync + Serialize,
         M::Effect: Send + Sync,
         M::Error: Send + Sync,
-        Adapter: StoreAdapter<M>,
+        Adapter: MachineStoreAdapter<M>,
     {
         let answer = self
             .execute_engine_request::<M, Adapter>(adapter, caller, request, key, event)
@@ -68,7 +68,7 @@ impl<R: EngineHost> Engine<'_, R> {
         M::Event: Send + Sync + Serialize,
         M::Effect: Send + Sync,
         M::Error: Send + Sync,
-        Adapter: StoreAdapter<M>,
+        Adapter: MachineStoreAdapter<M>,
     {
         // The request entry checked the organization
         // once for this event, before any read (P3).
@@ -103,29 +103,30 @@ impl<R: EngineHost> Engine<'_, R> {
         };
         Ok(
             match self
-                .machine_event_execution::<M, Adapter, _>(adapter, key, event, &source)
+                .handle::<M, Adapter, _>(adapter, key, event, &source)
                 .await
             {
-                HandleOutcome::Done(state) => EngineRequestOutcome::Answer {
+                MachineEventOutcome::TransitionCommitted(state) => EngineRequestOutcome::Answer {
                     receipt: EngineReceipt::Applied { state },
                 },
-                HandleOutcome::Refused(error) => EngineRequestOutcome::Answer {
+                MachineEventOutcome::TransitionRefused(error) => EngineRequestOutcome::Answer {
                     receipt: EngineReceipt::Refused {
                         error: error.into(),
                     },
                 },
-                HandleOutcome::NotFound => EngineRequestOutcome::Answer {
+                MachineEventOutcome::SubjectMissing => EngineRequestOutcome::Answer {
                     receipt: EngineReceipt::NotFound,
                 },
-                HandleOutcome::Failed(failure) | HandleOutcome::RequestFailed(failure) => {
+                MachineEventOutcome::AttemptFailureRecorded(failure)
+                | MachineEventOutcome::RequestItemFailed(failure) => {
                     EngineRequestOutcome::ItemFailed { failure }
                 }
-                HandleOutcome::Uncertain => EngineRequestOutcome::OutcomeUnknown,
-                HandleOutcome::StoreDown(failure) => {
+                MachineEventOutcome::StorageAnswerLost => EngineRequestOutcome::OutcomeUnknown,
+                MachineEventOutcome::StorageFailed(failure) => {
                     self.observe_engine_store_down(&subject, failure);
                     EngineRequestOutcome::CentralUnavailable
                 }
-                HandleOutcome::Superseded => {
+                MachineEventOutcome::EventSuperseded => {
                     let logged = self.host().read(source.0.lookup()).await?;
                     match source.0.replay(&logged)? {
                         Some(receipt) => EngineRequestOutcome::Answer { receipt },
