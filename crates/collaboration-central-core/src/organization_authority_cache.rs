@@ -47,9 +47,9 @@ impl fleet_signin::StampVerification for UnconfiguredStatementCheck {
     fn verify_stored_statement_facts<'a>(
         &'a self,
         _statement: &'a str,
-    ) -> BoxFuture<'a, Result<StoredStatementFacts, FleetOrganizationStatementRefusal>> {
+    ) -> BoxFuture<'a, Result<StoredStatementFacts, fleet_contracts::StoredStatementRefusal>> {
         Box::pin(std::future::ready(Err(
-            FleetOrganizationStatementRefusal::InvalidConfiguration,
+            fleet_contracts::StoredStatementRefusal::InvalidConfiguration,
         )))
     }
 

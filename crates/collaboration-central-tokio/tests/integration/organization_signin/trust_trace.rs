@@ -86,6 +86,10 @@ fn real_host_issuer_trace_matches_receipts_and_key_membership(case: TestCase) {
         order,
         first_receipt_delay_ms,
         between_receipts_ms,
+        advertised_max_age_seconds: case.draw_named(
+            "advertised_max_age_seconds",
+            gs::integers::<u64>().min_value(301).max_value(3_600),
+        ),
         probes,
     };
     let runtime = tokio::runtime::Builder::new_current_thread()

@@ -364,6 +364,11 @@ impl ObjectStorage {
         self.faults.arm_alarm_publication(failure);
     }
     #[cfg(feature = "test-support")]
+    pub fn alarm_batch_fault_pending(&self) -> bool {
+        self.faults.alarm_batch_pending()
+    }
+
+    #[cfg(feature = "test-support")]
     pub fn fail_next_alarm_batch(&self, failure: StoreFailure) {
         self.faults.arm_alarm_batch(failure);
     }

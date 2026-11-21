@@ -5,7 +5,7 @@ use crate::{
     person_request::PersonRequestInput,
 };
 use central_storage::StoreFailure;
-use fleet_contracts::OrganizationProvisioningFailure;
+use fleet_contracts::AuthorizationRevisionFailure;
 use fleet_contracts::{
     OrganizationStatementDigestReply, ProvisionOrganization, ProvisionOrganizationResult,
     ReadOrganizationStatementDigest,
@@ -33,7 +33,7 @@ pub trait OrganizationSignInPort: Send + Sync + 'static {
         &self,
         request: &AuthorizationRevision,
     ) -> impl Future<
-        Output = Result<AuthorizationRevisionAcknowledgement, OrganizationProvisioningFailure>,
+        Output = Result<AuthorizationRevisionAcknowledgement, AuthorizationRevisionFailure>,
     > + Send;
 
     fn admin(
@@ -72,7 +72,7 @@ impl<H: fleet_runtime_ports::CentralStore, S: fleet_runtime_ports::WorkspaceStor
     async fn revision(
         &self,
         request: &AuthorizationRevision,
-    ) -> Result<AuthorizationRevisionAcknowledgement, OrganizationProvisioningFailure> {
+    ) -> Result<AuthorizationRevisionAcknowledgement, AuthorizationRevisionFailure> {
         let answer = self.deliver_authorization_revision(request).await;
         self.after_signin_event().await;
         answer

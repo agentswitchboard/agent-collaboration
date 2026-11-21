@@ -1,7 +1,10 @@
 //! Fleet identity verification owns no storage, policy lifetime or host routing.
-use super::fleet_statement_wire::{OrganizationStatementDigest, ParsedFleetStatement};
+use super::fleet_statement_wire::ParsedFleetStatement;
 use crate::{IssuerKeyCache, IssuerSignatureVerifier};
-use fleet_contracts::FleetOrganizationStatementRefusal;
+use fleet_contracts::{
+    FleetOrganizationStatementRefusal, IssuerKeyId, OrganizationStatementDigest,
+    OrganizationStatementDigestReply, StatementSeconds, StoredStatementRefusal,
+};
 use fleet_identity_protocol::{OrganizationId, UnixSeconds};
 use fleet_runtime_ports::{Clock, SyncTime};
 use fleet_runtime_ports::{Ed25519Verification, IssuerKeySource, SignatureValidity};
@@ -9,7 +12,7 @@ use std::sync::Arc;
 
 /// Owner choice 3f: a statement lives 120 days and is renewed with 60 days left.
 /// The sign-in service owns issuance; central refuses anything longer-lived.
-pub const MAXIMUM_STATEMENT_LIFETIME_SECONDS: i64 = 10_368_000;
+const MAXIMUM_STATEMENT_LIFETIME_SECONDS: i64 = 10_368_000;
 
 pub struct FleetOrganizationStatementTrust {
     issuer: String,
@@ -77,7 +80,7 @@ impl<Crypto: Ed25519Verification, Keys: IssuerKeySource>
     pub async fn verify_stored_statement_facts(
         &self,
         statement: &str,
-    ) -> Result<StoredStatementFacts, FleetOrganizationStatementRefusal> {
+    ) -> Result<StoredStatementFacts, StoredStatementRefusal> {
         let verified = self.verify_signature_and_profile(statement).await?;
         Ok(StoredStatementFacts {
             digest: verified.digest,
@@ -89,53 +92,60 @@ impl<Crypto: Ed25519Verification, Keys: IssuerKeySource>
     async fn verify_signature_and_profile(
         &self,
         statement: &str,
-    ) -> Result<VerifiedFleetOrganizationStatement, FleetOrganizationStatementRefusal> {
+    ) -> Result<VerifiedFleetOrganizationStatement, StoredStatementRefusal> {
         let parsed = ParsedFleetStatement::parse(statement)?;
         if parsed.header.typ != "fleet-organization-stamp+jwt" {
-            return Err(FleetOrganizationStatementRefusal::WrongTokenType);
+            return Err(StoredStatementRefusal::WrongTokenType);
         }
         if parsed.header.alg != "EdDSA" {
-            return Err(FleetOrganizationStatementRefusal::UnsupportedAlgorithm);
+            return Err(StoredStatementRefusal::UnsupportedAlgorithm);
         }
-        if parsed.header.kid.is_empty() || parsed.signature.len() != 64 {
-            return Err(FleetOrganizationStatementRefusal::Malformed);
+        if parsed.signature.len() != 64 {
+            return Err(StoredStatementRefusal::Malformed);
         }
+        let key_id: IssuerKeyId = parsed
+            .header
+            .kid
+            .try_into()
+            .map_err(|_| StoredStatementRefusal::Malformed)?;
         let validity = self
             .signatures
-            .verify(&parsed.header.kid, &parsed.signed, &parsed.signature)
+            .verify(key_id.as_str(), &parsed.signed, &parsed.signature)
             .await
-            .map_err(FleetOrganizationStatementRefusal::VerificationUnavailable)?;
+            .map_err(StoredStatementRefusal::VerificationUnavailable)?;
         if validity != SignatureValidity::Valid {
-            return Err(FleetOrganizationStatementRefusal::BadSignature);
+            return Err(StoredStatementRefusal::BadSignature);
         }
         if parsed.claims.purpose != "fleet-organization-stamp" {
-            return Err(FleetOrganizationStatementRefusal::WrongPurpose);
+            return Err(StoredStatementRefusal::WrongPurpose);
         }
         if parsed.claims.version != 1 {
-            return Err(FleetOrganizationStatementRefusal::UnsupportedVersion);
+            return Err(StoredStatementRefusal::UnsupportedVersion);
         }
         if parsed.claims.iss != self.trust.issuer {
-            return Err(FleetOrganizationStatementRefusal::WrongIssuer);
+            return Err(StoredStatementRefusal::WrongIssuer);
         }
         if parsed.claims.aud != self.trust.audience {
-            return Err(FleetOrganizationStatementRefusal::WrongAudience);
+            return Err(StoredStatementRefusal::WrongAudience);
         }
         if parsed.claims.sub != parsed.claims.organization_id
             || parsed.claims.organization_id != self.trust.organization
         {
-            return Err(FleetOrganizationStatementRefusal::OrganizationMismatch);
+            return Err(StoredStatementRefusal::OrganizationMismatch);
         }
-        if parsed.claims.exp.0 <= parsed.claims.iat.0 {
-            return Err(FleetOrganizationStatementRefusal::Malformed);
+        if parsed.claims.exp.unix_seconds().0 <= parsed.claims.iat.unix_seconds().0 {
+            return Err(StoredStatementRefusal::Malformed);
         }
-        if parsed.claims.exp.0 - parsed.claims.iat.0 > MAXIMUM_STATEMENT_LIFETIME_SECONDS {
-            return Err(FleetOrganizationStatementRefusal::LifetimeExceedsPolicy);
+        if parsed.claims.exp.unix_seconds().0 - parsed.claims.iat.unix_seconds().0
+            > MAXIMUM_STATEMENT_LIFETIME_SECONDS
+        {
+            return Err(StoredStatementRefusal::LifetimeExceedsPolicy);
         }
         Ok(VerifiedFleetOrganizationStatement {
             organization: parsed.claims.organization_id,
-            key_id: parsed.header.kid,
-            issued_at: UnixSeconds(parsed.claims.iat.0),
-            expires_at: UnixSeconds(parsed.claims.exp.0),
+            key_id,
+            issued_at: parsed.claims.iat,
+            expires_at: parsed.claims.exp,
             replaces: parsed.claims.replaces,
             digest: OrganizationStatementDigest::of_compact_jws(statement),
         })
@@ -154,8 +164,8 @@ impl<Crypto: Ed25519Verification, Keys: IssuerKeySource>
 /// fn authorizing_control(verified: &VerifiedFleetOrganizationStatement, now: fleet_runtime_ports::SyncTime) {
 ///     let _ = verified.require_valid_at(now);
 /// }
-/// fn read_metadata(facts: &StoredStatementFacts) {
-///     let _ = (facts.digest(), facts.key_id(), facts.expires_at());
+/// fn read_metadata(facts: StoredStatementFacts) -> fleet_contracts::OrganizationStatementDigestReply {
+///     facts.into()
 /// }
 /// ```
 ///
@@ -171,22 +181,33 @@ impl<Crypto: Ed25519Verification, Keys: IssuerKeySource>
 #[derive(Debug)]
 pub struct StoredStatementFacts {
     digest: OrganizationStatementDigest,
-    key_id: String,
-    expires_at: UnixSeconds,
+    key_id: IssuerKeyId,
+    expires_at: StatementSeconds,
 }
 
+#[cfg(test)]
 impl StoredStatementFacts {
     #[must_use]
-    pub fn digest(&self) -> &OrganizationStatementDigest {
+    fn digest(&self) -> &OrganizationStatementDigest {
         &self.digest
     }
     #[must_use]
-    pub fn key_id(&self) -> &str {
-        &self.key_id
+    fn key_id(&self) -> &str {
+        self.key_id.as_str()
     }
     #[must_use]
-    pub const fn expires_at(&self) -> UnixSeconds {
-        self.expires_at
+    const fn expires_at(&self) -> UnixSeconds {
+        self.expires_at.unix_seconds()
+    }
+}
+
+impl From<StoredStatementFacts> for OrganizationStatementDigestReply {
+    fn from(facts: StoredStatementFacts) -> Self {
+        Self {
+            digest: facts.digest,
+            expires_at: facts.expires_at,
+            signing_key_id: facts.key_id,
+        }
     }
 }
 
@@ -194,9 +215,9 @@ impl StoredStatementFacts {
 #[derive(Debug)]
 pub struct VerifiedFleetOrganizationStatement {
     organization: OrganizationId,
-    key_id: String,
-    issued_at: UnixSeconds,
-    expires_at: UnixSeconds,
+    key_id: IssuerKeyId,
+    issued_at: StatementSeconds,
+    expires_at: StatementSeconds,
     replaces: Option<OrganizationStatementDigest>,
     digest: OrganizationStatementDigest,
 }
@@ -206,17 +227,18 @@ impl VerifiedFleetOrganizationStatement {
     pub fn organization_id(&self) -> &OrganizationId {
         &self.organization
     }
+    #[cfg(test)]
     #[must_use]
-    pub fn key_id(&self) -> &str {
-        &self.key_id
+    pub(crate) fn key_id(&self) -> &str {
+        self.key_id.as_str()
     }
     #[must_use]
     pub const fn issued_at(&self) -> UnixSeconds {
-        self.issued_at
+        self.issued_at.unix_seconds()
     }
     #[must_use]
     pub const fn expires_at(&self) -> UnixSeconds {
-        self.expires_at
+        self.expires_at.unix_seconds()
     }
     #[must_use]
     pub fn replaces(&self) -> Option<&OrganizationStatementDigest> {
@@ -229,10 +251,10 @@ impl VerifiedFleetOrganizationStatement {
 
     pub fn require_valid_at(&self, now: SyncTime) -> Result<(), FleetOrganizationStatementRefusal> {
         let now_seconds = now.unix_millis().div_euclid(1000);
-        if now_seconds < self.issued_at.0 {
+        if now_seconds < self.issued_at.unix_seconds().0 {
             return Err(FleetOrganizationStatementRefusal::NotYetValid);
         }
-        if now_seconds >= self.expires_at.0 {
+        if now_seconds >= self.expires_at.unix_seconds().0 {
             return Err(FleetOrganizationStatementRefusal::Expired);
         }
         Ok(())

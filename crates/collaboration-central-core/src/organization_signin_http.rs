@@ -13,7 +13,7 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
-use fleet_contracts::OrganizationProvisioningFailure;
+use fleet_contracts::AuthorizationRevisionFailure;
 use fleet_contracts::{
     ORGANIZATION_STATEMENT_DIGEST_ROUTE, PROVISION_ORGANIZATION_ROUTE, ProvisionOrganization,
     ReadOrganizationStatementDigest,
@@ -201,17 +201,13 @@ async fn forward_admin<Port: OrganizationSignInPort>(
 }
 
 /// Failure bodies are empty; only a 200 publishes a closed result.
-fn failure_status(failure: OrganizationProvisioningFailure) -> StatusCode {
+fn failure_status(failure: AuthorizationRevisionFailure) -> StatusCode {
     match failure {
-        OrganizationProvisioningFailure::OrganizationMismatch => StatusCode::FORBIDDEN,
-        OrganizationProvisioningFailure::InvalidStatement => StatusCode::UNPROCESSABLE_ENTITY,
-        OrganizationProvisioningFailure::StaleStatement => StatusCode::CONFLICT,
-        OrganizationProvisioningFailure::OrganizationFloorMissing => {
-            StatusCode::PRECONDITION_FAILED
-        }
-        OrganizationProvisioningFailure::Unprovisioned => StatusCode::NOT_FOUND,
-        OrganizationProvisioningFailure::Unavailable
-        | OrganizationProvisioningFailure::OutcomeUnknown => StatusCode::SERVICE_UNAVAILABLE,
+        AuthorizationRevisionFailure::OrganizationMismatch => StatusCode::FORBIDDEN,
+        AuthorizationRevisionFailure::Conflict => StatusCode::CONFLICT,
+        AuthorizationRevisionFailure::OrganizationFloorMissing => StatusCode::PRECONDITION_FAILED,
+        AuthorizationRevisionFailure::Unavailable
+        | AuthorizationRevisionFailure::OutcomeUnknown => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
 

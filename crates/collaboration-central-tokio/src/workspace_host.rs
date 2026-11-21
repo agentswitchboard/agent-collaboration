@@ -24,7 +24,7 @@ use collaboration_central_core::{
     identity_contract::{AuthorizationRevision, AuthorizationRevisionAcknowledgement},
     person_request::PersonRequestInput,
 };
-use fleet_contracts::OrganizationProvisioningFailure;
+use fleet_contracts::AuthorizationRevisionFailure;
 use fleet_identity_protocol::OrganizationId;
 use fleet_runtime::{ClockIds, FleetRuntime};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
@@ -358,10 +358,10 @@ impl OrganizationSignInPort for TokioWorkspaceHost {
     async fn revision(
         &self,
         request: &AuthorizationRevision,
-    ) -> Result<AuthorizationRevisionAcknowledgement, OrganizationProvisioningFailure> {
+    ) -> Result<AuthorizationRevisionAcknowledgement, AuthorizationRevisionFailure> {
         self.central(request.organization_id())
             .await
-            .map_err(|_| OrganizationProvisioningFailure::Unavailable)?
+            .map_err(|_| AuthorizationRevisionFailure::Unavailable)?
             .revision(request)
             .await
     }

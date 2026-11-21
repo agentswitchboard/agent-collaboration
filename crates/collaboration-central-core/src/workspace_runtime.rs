@@ -16,8 +16,6 @@ pub struct WorkspaceRuntime<Host: CentralStore, Stores: WorkspaceStores> {
     pub(crate) machine_revoked: Arc<dyn Fn(workspace_ids::MachineId) + Send + Sync>,
     pub(crate) signin_authority: crate::organization_authority_cache::OrganizationAuthority,
     #[cfg(feature = "test-support")]
-    pub(crate) lost_provisioning_reply: std::sync::atomic::AtomicBool,
-    #[cfg(feature = "test-support")]
     pub(crate) machine_restore_failure:
         std::sync::Mutex<Option<(usize, central_storage::StoreFailure)>>,
 }
@@ -33,8 +31,6 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             mail_delivery_ready: Arc::new(|_| {}),
             machine_revoked: Arc::new(|_| {}),
             #[cfg(feature = "test-support")]
-            lost_provisioning_reply: Default::default(),
-            #[cfg(feature = "test-support")]
             machine_restore_failure: Default::default(),
         }
     }
@@ -49,8 +45,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
 
     #[cfg(feature = "test-support")]
     pub fn lose_next_provisioning_reply(&self) {
-        self.lost_provisioning_reply
-            .store(true, std::sync::atomic::Ordering::SeqCst);
+        self.execution.test_faults().arm_lost_provisioning_reply();
     }
     #[cfg(feature = "test-support")]
     pub fn fail_next_issuer_cache(&self, operation: fleet_signin::IssuerCacheOperation) -> bool {

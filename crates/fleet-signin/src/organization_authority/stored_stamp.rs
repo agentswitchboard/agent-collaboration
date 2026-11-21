@@ -1,4 +1,4 @@
-use super::OrganizationStatementDigest;
+use fleet_contracts::OrganizationStatementDigest;
 use fleet_identity_protocol::OrganizationId;
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct StoredOrganizationStamp {
@@ -6,7 +6,7 @@ pub struct StoredOrganizationStamp {
     statement: String,
 }
 impl StoredOrganizationStamp {
-    pub fn new(organization: OrganizationId, statement: String) -> Self {
+    pub(crate) fn new(organization: OrganizationId, statement: String) -> Self {
         Self {
             organization,
             statement,
@@ -21,7 +21,7 @@ impl StoredOrganizationStamp {
         &self.statement
     }
     #[must_use]
-    pub fn digest(&self) -> OrganizationStatementDigest {
+    pub(crate) fn digest(&self) -> OrganizationStatementDigest {
         OrganizationStatementDigest::of_compact_jws(&self.statement)
     }
 }

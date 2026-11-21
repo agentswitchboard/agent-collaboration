@@ -284,10 +284,12 @@ async fn stored_facts_and_normal_verification_share_signature_and_profile_refusa
     let (signed, _) = valid.rsplit_once('.').unwrap();
     let forged = format!("{signed}.{}", URL_SAFE_NO_PAD.encode([0; 64]));
     assert_eq!(
-        verifier
-            .verify_stored_statement_facts(&forged)
-            .await
-            .unwrap_err(),
+        Refusal::from(
+            verifier
+                .verify_stored_statement_facts(&forged)
+                .await
+                .unwrap_err()
+        ),
         Refusal::BadSignature
     );
     assert_eq!(
@@ -331,10 +333,12 @@ async fn stored_facts_and_normal_verification_share_signature_and_profile_refusa
         input[field] = value;
         let statement = signed_statement(&header(), &input);
         assert_eq!(
-            verifier
-                .verify_stored_statement_facts(&statement)
-                .await
-                .unwrap_err(),
+            Refusal::from(
+                verifier
+                    .verify_stored_statement_facts(&statement)
+                    .await
+                    .unwrap_err()
+            ),
             expected
         );
         assert_eq!(verifier.verify(&statement).await.unwrap_err(), expected);
@@ -349,10 +353,12 @@ async fn stored_facts_and_normal_verification_share_signature_and_profile_refusa
         input[field] = value;
         let statement = signed_statement(&input, &claims());
         assert_eq!(
-            verifier
-                .verify_stored_statement_facts(&statement)
-                .await
-                .unwrap_err(),
+            Refusal::from(
+                verifier
+                    .verify_stored_statement_facts(&statement)
+                    .await
+                    .unwrap_err()
+            ),
             expected
         );
         assert_eq!(verifier.verify(&statement).await.unwrap_err(), expected);

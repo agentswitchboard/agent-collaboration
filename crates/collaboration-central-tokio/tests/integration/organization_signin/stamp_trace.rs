@@ -7,16 +7,20 @@ use serde_json::Value;
 fn private_stamp_trace_matches_the_wire_and_persisted_oracle(case: TestCase) {
     let steps = case.draw(gs::integers::<usize>().min_value(1).max_value(32));
     let operations: Vec<u8> = (0..steps)
-        .map(|_| case.draw(gs::integers::<u8>().max_value(4)))
+        .map(|_| case.draw(gs::integers::<u8>().max_value(5)))
         .collect();
     let runtime = tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap();
     runtime.block_on(async {
-        let fixture = Fixture::new().await.unwrap();
+        let mut fixture = Fixture::new().await.unwrap();
         let mut model = StampTrace::new(A).unwrap();
         for operation in operations {
+            if operation == 5 {
+                fixture.reopen().await.unwrap();
+            }
+            let operation = operation.min(4);
             let (body, expected_status, expected_reply) = model.step(operation, A);
             let path = if operation == 4 { DIGEST } else { PROVISION };
             let response = fixture.post(path, &body).await.unwrap();

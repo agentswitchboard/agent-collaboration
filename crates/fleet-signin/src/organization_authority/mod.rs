@@ -7,9 +7,11 @@ mod statement_replacement;
 mod stored_stamp;
 
 pub use fleet_statement::{
-    FleetOrganizationStatementTrust, FleetOrganizationStatementVerifier,
-    MAXIMUM_STATEMENT_LIFETIME_SECONDS, StoredStatementFacts, VerifiedFleetOrganizationStatement,
+    FleetOrganizationStatementTrust, FleetOrganizationStatementVerifier, StoredStatementFacts,
+    VerifiedFleetOrganizationStatement,
 };
-pub use fleet_statement_wire::{OrganizationStatementDigest, stored_statement_unexpired};
-pub(crate) use statement_replacement::{OfferStamp, StampEffect, StampMachine, StampRefusal};
+pub(crate) use fleet_statement_wire::stored_statement_unexpired;
+pub(crate) use statement_replacement::{
+    OfferStamp, ReplayStanding, StampApplication, StampMachine, StampMutation, StampRefusal,
+};
 pub use stored_stamp::{StoredOrganizationStamp, StoredStampRead};

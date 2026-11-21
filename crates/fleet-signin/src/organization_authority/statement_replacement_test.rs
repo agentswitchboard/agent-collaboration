@@ -1,4 +1,4 @@
-use super::{OfferStamp, StampEffect, StampMachine, StampRefusal as Refusal};
+use super::{OfferStamp, ReplayStanding, StampEffect, StampMachine, StampRefusal as Refusal};
 use crate::organization_authority::{
     StoredOrganizationStamp, StoredStampRead, VerifiedFleetOrganizationStatement,
     fleet_statement_test_support::{
@@ -45,11 +45,19 @@ enum Decision {
     Replace,
 }
 
+fn offer(retained: Option<&FixtureStamp>, incoming: &FixtureStamp) -> Result<Decision, Refusal> {
+    offer_with_standing(retained, incoming, ReplayStanding::TrustedAndUnexpired)
+}
+
 #[expect(
     clippy::panic_in_result_fn,
-    reason = "The test immediately rejects reducer states or effects outside its oracle."
+    reason = "Unexpected reducer states fail the oracle."
 )]
-fn offer(retained: Option<&FixtureStamp>, incoming: &FixtureStamp) -> Result<Decision, Refusal> {
+fn offer_with_standing(
+    retained: Option<&FixtureStamp>,
+    incoming: &FixtureStamp,
+    replay: ReplayStanding,
+) -> Result<Decision, Refusal> {
     let state = retained.map_or(StoredStampRead::Unprovisioned, |prior| {
         StoredStampRead::Stamped(stored(prior))
     });
@@ -58,10 +66,11 @@ fn offer(retained: Option<&FixtureStamp>, incoming: &FixtureStamp) -> Result<Dec
         OfferStamp {
             verified: &incoming.verified,
             compact: &incoming.compact,
+            replay,
         },
     ) {
         Ok((next, effects)) => match effects.as_slice() {
-            [] => {
+            [StampEffect::RepairReplay] => {
                 assert_eq!(next, state);
                 Ok(Decision::AlreadyProvisioned)
             }
@@ -220,11 +229,17 @@ fn offers_follow_the_independent_retained_stamp_trace(case: hegel::TestCase) {
     let mut retained = None;
     for _ in 0..case.draw(gs::integers::<usize>().min_value(1).max_value(32)) {
         let candidate = case.draw(gs::integers::<usize>().max_value(2));
+        let replay_allowed = case.draw(gs::booleans());
+        let replay = if replay_allowed {
+            ReplayStanding::TrustedAndUnexpired
+        } else {
+            ReplayStanding::Refused
+        };
         // Label 0 is the only first-style offer. Labels 1 and 2 both name it.
         let (expected, next) = match (retained, candidate) {
             (None, 0) => (Ok(Decision::Initialize), Some(0)),
             (Some(0), 1 | 2) => (Ok(Decision::Replace), Some(candidate)),
-            (Some(current), offer) if offer == 0 || offer == current => {
+            (Some(current), offer) if replay_allowed && (offer == 0 || offer == current) => {
                 (Ok(Decision::AlreadyProvisioned), retained)
             }
             _ => (Err(Refusal::StaleOrganizationStatement), retained),
@@ -232,7 +247,7 @@ fn offers_follow_the_independent_retained_stamp_trace(case: hegel::TestCase) {
         let current = retained.and_then(|index: usize| stamps.get(index).copied());
         let offered = stamps.get(candidate).unwrap();
         assert_eq!(
-            offer(current, offered),
+            offer_with_standing(current, offered, replay),
             expected,
             "retained={retained:?}, offer={candidate}"
         );
@@ -256,6 +271,7 @@ fn the_stamp_table_covers_absent_retained_replays_swaps_and_refusals() {
     let events = [&first, &successor, &competing].map(|stamp| OfferStamp {
         verified: &stamp.verified,
         compact: &stamp.compact,
+        replay: ReplayStanding::TrustedAndUnexpired,
     });
     state_machine_core::check_state_machine_transitions::<StampMachine<'_>>(
         states.iter().flat_map(|state| {

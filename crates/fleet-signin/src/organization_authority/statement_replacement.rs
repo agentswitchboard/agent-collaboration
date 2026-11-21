@@ -21,6 +21,7 @@ impl StateTag for StoredStampRead {
 pub(crate) struct OfferStamp<'verified> {
     pub(crate) verified: &'verified VerifiedFleetOrganizationStatement,
     pub(crate) compact: &'verified str,
+    pub(crate) replay: ReplayStanding,
 }
 
 impl EventTag for OfferStamp<'_> {
@@ -29,9 +30,17 @@ impl EventTag for OfferStamp<'_> {
     }
 }
 
+/// Standing and the retained expiry sampled by the applying caller.
+#[derive(Clone, Copy)]
+pub(crate) enum ReplayStanding {
+    TrustedAndUnexpired,
+    Refused,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum StampEffect {
     InitializeStamp,
+    RepairReplay,
     ReplaceStamp {
         predecessor: StoredOrganizationStamp,
     },
@@ -56,6 +65,59 @@ impl RefusalTag for StampRefusal {
 
 pub(crate) struct StampMachine<'verified>(std::marker::PhantomData<&'verified ()>);
 
+/// The accepted stamp and the exact predecessor guard from one transition.
+pub(crate) enum StampMutation {
+    Initialize(StoredOrganizationStamp),
+    Replace {
+        accepted: StoredOrganizationStamp,
+        predecessor: StoredOrganizationStamp,
+    },
+}
+
+impl StampMutation {
+    pub(crate) fn accepted(&self) -> &StoredOrganizationStamp {
+        match self {
+            Self::Initialize(accepted) | Self::Replace { accepted, .. } => accepted,
+        }
+    }
+}
+
+pub(crate) enum StampApplication {
+    Write(StampMutation),
+    RepairReplay,
+}
+
+impl<'verified> StampMachine<'verified> {
+    /// Interpret the single effect together with its own reduced state.
+    pub(crate) fn applying_plan(
+        state: &StoredStampRead,
+        offer: OfferStamp<'verified>,
+    ) -> Result<StampApplication, TransitionError<StampRefusal>> {
+        let (next, effects) = Self::transition(state, offer)?;
+        let mut effects = effects.into_iter();
+        match (next, effects.next(), effects.next()) {
+            (StoredStampRead::Stamped(accepted), Some(StampEffect::InitializeStamp), None) => {
+                Ok(StampApplication::Write(StampMutation::Initialize(accepted)))
+            }
+            (
+                StoredStampRead::Stamped(accepted),
+                Some(StampEffect::ReplaceStamp { predecessor }),
+                None,
+            ) => Ok(StampApplication::Write(StampMutation::Replace {
+                accepted,
+                predecessor,
+            })),
+            (StoredStampRead::Stamped(_), Some(StampEffect::RepairReplay), None) => {
+                Ok(StampApplication::RepairReplay)
+            }
+            _ => Err(TransitionError::NotAllowed {
+                state: state.state_tag(),
+                event: "offerStamp",
+            }),
+        }
+    }
+}
+
 impl<'verified> StateMachine for StampMachine<'verified> {
     type State = StoredStampRead;
     type Event = OfferStamp<'verified>;
@@ -73,6 +135,14 @@ impl<'verified> StateMachine for StampMachine<'verified> {
                 event.compact.to_owned(),
             ))
         };
+        let replay = || match event.replay {
+            ReplayStanding::TrustedAndUnexpired => {
+                Ok((state.clone(), vec![StampEffect::RepairReplay]))
+            }
+            ReplayStanding::Refused => Err(TransitionError::Domain(
+                StampRefusal::StaleOrganizationStatement,
+            )),
+        };
         match (state, incoming.replaces()) {
             (StoredStampRead::Unprovisioned, None) => {
                 Ok((accepted_stamp(), vec![StampEffect::InitializeStamp]))
@@ -85,12 +155,12 @@ impl<'verified> StateMachine for StampMachine<'verified> {
             {
                 Err(TransitionError::Domain(StampRefusal::OrganizationMismatch))
             }
-            (StoredStampRead::Stamped(_), None) => Ok((state.clone(), vec![])),
+            (StoredStampRead::Stamped(_), None) => replay(),
             (StoredStampRead::Stamped(stored), Some(predecessor)) => {
                 let retained_digest = stored.digest();
                 if &retained_digest == incoming.digest() {
                     // A byte-identical successor is a retry after a lost reply.
-                    Ok((state.clone(), vec![]))
+                    replay()
                 } else if predecessor == &retained_digest {
                     Ok((
                         accepted_stamp(),

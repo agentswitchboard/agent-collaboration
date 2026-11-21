@@ -1,6 +1,6 @@
 //! Exact signed bytes are checked against keys from the configured issuer source.
-use crate::{IssuerKeyCache, IssuerKeyId, resolve_issuer_key};
-use fleet_contracts::{IssuerKeyRefusal, IssuerKeyResolutionRefusal, IssuerSignatureRefusal};
+use crate::{IssuerKeyCache, issuer_key_resolution::resolve_issuer_key};
+use fleet_contracts::{IssuerKeyId, IssuerSignatureRefusal};
 use fleet_runtime_ports::{Clock, Ed25519Verification, IssuerKeySource, SignatureValidity};
 use std::sync::Arc;
 
@@ -39,14 +39,10 @@ impl<Platform: Ed25519Verification, Source: IssuerKeySource>
             Ok(key_id) => key_id,
             Err(_) => return Ok(SignatureValidity::Invalid),
         };
-        let key = match resolve_issuer_key(&self.source, &self.keys, self.clock.as_ref(), &key_id)
-            .await
-        {
-            Ok(key) => key,
-            Err(IssuerKeyResolutionRefusal::KeySet(IssuerKeyRefusal::UnknownKey)) => {
-                return Ok(SignatureValidity::Invalid);
-            }
-            Err(refusal) => return Err(IssuerSignatureRefusal::Keys(refusal)),
+        let Some(key) =
+            resolve_issuer_key(&self.source, &self.keys, self.clock.as_ref(), &key_id).await?
+        else {
+            return Ok(SignatureValidity::Invalid);
         };
         self.platform
             .verify_ed25519(key.public_key(), signed, signature)

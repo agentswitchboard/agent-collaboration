@@ -61,11 +61,13 @@ async fn reached_stamp_calls_keep_their_wire_answers_when_post_turn_publication_
         runtime
             .statement_host()
             .fail_next_alarm_batch(StoreFailure::Unavailable);
+        assert!(runtime.statement_host().alarm_batch_fault_pending());
         held.release();
 
         let reply = reply.await?;
         assert_eq!((reply.status, reply.body.as_slice()), (status, bytes));
         assert_eq!(runtime.engine_completion_entries(), entries + 1);
+        assert!(!runtime.statement_host().alarm_batch_fault_pending());
         assert!(
             runtime
                 .statement_host()

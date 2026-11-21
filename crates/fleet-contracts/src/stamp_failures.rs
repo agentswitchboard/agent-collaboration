@@ -4,9 +4,9 @@ use central_storage::StoreFailure;
 /// A provision call cannot report a floor failure.
 ///
 /// ```
-/// use fleet_contracts::{DigestFailure, OrganizationProvisioningFailure, ProvisionFailure};
+/// use fleet_contracts::{DigestFailure, AuthorizationRevisionFailure, ProvisionFailure};
 /// let _ = (ProvisionFailure::StaleStatement, DigestFailure::Unprovisioned,
-///          OrganizationProvisioningFailure::OrganizationFloorMissing);
+///          AuthorizationRevisionFailure::OrganizationFloorMissing);
 /// ```
 ///
 /// ```compile_fail,E0599

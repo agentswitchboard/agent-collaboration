@@ -1,13 +1,13 @@
 //! One applying turn owns a verified stamp and its guarded effects.
 use crate::{
     organization_authority::{
-        OfferStamp, StampEffect, StampMachine, StampRefusal, StoredStampRead, StoredStatementFacts,
-        VerifiedFleetOrganizationStatement,
+        OfferStamp, ReplayStanding, StampApplication, StampMachine, StampMutation, StampRefusal,
+        StoredStampRead, StoredStatementFacts, VerifiedFleetOrganizationStatement,
     },
     organization_change::{
         OrganizationChangeKind, OrganizationChangeOrigin, OrganizationChangeRecord,
     },
-    stamp_store::{StampMutation, StampStore, StampWrite},
+    stamp_store::{StampStore, StampWrite},
     standing::{StampStanding, StandingCache},
 };
 use central_storage::{AlarmUpdate, BatchOutcome, Statement, StatementBatch, StoreFailure};
@@ -19,7 +19,7 @@ use fleet_contracts::{
 use fleet_runtime::FleetRuntime;
 use fleet_runtime_ports::{CentralStore, SyncTime, WorkspaceStores};
 use futures_util::future::BoxFuture;
-use state_machine_core::{StateMachine, TransitionError};
+use state_machine_core::TransitionError;
 use std::sync::Arc;
 
 pub trait StampVerification: Send + Sync {
@@ -31,7 +31,7 @@ pub trait StampVerification: Send + Sync {
     fn verify_stored_statement_facts<'a>(
         &'a self,
         statement: &'a str,
-    ) -> BoxFuture<'a, Result<StoredStatementFacts, FleetOrganizationStatementRefusal>>;
+    ) -> BoxFuture<'a, Result<StoredStatementFacts, fleet_contracts::StoredStatementRefusal>>;
 }
 
 pub struct SignInService<'owner, Host: CentralStore, Stores: WorkspaceStores> {
@@ -40,8 +40,6 @@ pub struct SignInService<'owner, Host: CentralStore, Stores: WorkspaceStores> {
     standing: &'owner StandingCache,
     verify: Option<Arc<dyn StampVerification>>,
     alarm: Statement,
-    #[cfg(feature = "test-support")]
-    lost_reply: &'owner std::sync::atomic::AtomicBool,
 }
 
 impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
@@ -51,7 +49,6 @@ impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
         standing: &'owner StandingCache,
         verify: Option<Arc<dyn StampVerification>>,
         alarm: Statement,
-        #[cfg(feature = "test-support")] lost_reply: &'owner std::sync::atomic::AtomicBool,
     ) -> Self {
         Self {
             execution,
@@ -59,8 +56,6 @@ impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
             standing,
             verify,
             alarm,
-            #[cfg(feature = "test-support")]
-            lost_reply,
         }
     }
 
@@ -144,11 +139,17 @@ impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
         })?;
         let stored_trusted = self.standing.standing(now) != StampStanding::Refused;
         let stored = self.store.read_stamp().await?;
-        let (_, effects) = StampMachine::transition(
+        let replay = if stored_trusted && stored_unexpired(&stored, now) {
+            ReplayStanding::TrustedAndUnexpired
+        } else {
+            ReplayStanding::Refused
+        };
+        let application = StampMachine::applying_plan(
             &stored,
             OfferStamp {
                 verified: &verified,
                 compact: request.organization_statement.as_str(),
+                replay,
             },
         )
         .map_err(|reason| match reason {
@@ -160,11 +161,9 @@ impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
             }
             TransitionError::NotAllowed { .. } | TransitionError::Stale => Failure::Unavailable,
         })?;
-        let (stamp, kind, request_id) = match effects.into_iter().next() {
-            None => {
-                if !stored_trusted || !stored_unexpired(&stored, now) {
-                    return Err(Failure::StaleStatement);
-                }
+        let stamp = match application {
+            StampApplication::Write(stamp) => stamp,
+            StampApplication::RepairReplay => {
                 let repair = async {
                     applied(
                         self.execution
@@ -188,15 +187,15 @@ impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
                 self.standing.forget();
                 return Ok(ProvisionOrganizationResult::Provisioned {});
             }
-            Some(StampEffect::InitializeStamp) => (
-                StampMutation::Initialize,
+        };
+        let (kind, request_id) = match &stamp {
+            StampMutation::Initialize(accepted) => (
                 OrganizationChangeKind::OrganizationProvisioned,
-                self.execution.organization().as_str().to_owned(),
+                accepted.organization_id().as_str().to_owned(),
             ),
-            Some(StampEffect::ReplaceStamp { predecessor }) => (
-                StampMutation::Replace(predecessor),
+            StampMutation::Replace { accepted, .. } => (
                 OrganizationChangeKind::StampRenewed,
-                verified.digest().as_str().to_owned(),
+                accepted.digest().as_str().to_owned(),
             ),
         };
         let record = OrganizationChangeRecord {
@@ -205,14 +204,12 @@ impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
             request_id: request_id.try_into()?,
             kind,
             origin: OrganizationChangeOrigin::SignInProvisioning {},
-            target_id: self.execution.organization().as_str().to_owned(),
+            target_id: stamp.accepted().organization_id().as_str().to_owned(),
             created_at_millis: now.unix_millis(),
         };
 
         let write = StampWrite {
             mutation: stamp,
-            organization: self.execution.organization().clone(),
-            statement: request.organization_statement.as_str().to_owned(),
             now_ms: now.unix_millis(),
             issued_seconds: verified.issued_at().0,
             expires_seconds: verified.expires_at().0,
@@ -231,10 +228,7 @@ impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
         }
         self.standing.forget();
         #[cfg(feature = "test-support")]
-        if self
-            .lost_reply
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
+        if self.execution.test_faults().take_lost_provisioning_reply() {
             return Err(Failure::OutcomeUnknown);
         }
         Ok(ProvisionOrganizationResult::Provisioned {})
@@ -264,11 +258,7 @@ impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
             .verify_stored_statement_facts(stamp.statement())
             .await
             .map_err(|_| Failure::Unavailable)?;
-        Ok(OrganizationStatementDigestReply {
-            digest: verified.digest().as_str().to_owned(),
-            expires_at: verified.expires_at().0,
-            signing_key_id: verified.key_id().to_owned(),
-        })
+        Ok(verified.into())
     }
 }
 fn stored_unexpired(stored: &StoredStampRead, now: SyncTime) -> bool {

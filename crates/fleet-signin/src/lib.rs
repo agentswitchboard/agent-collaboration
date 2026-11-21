@@ -9,8 +9,7 @@ pub mod organization_authority;
 
 #[cfg(feature = "test-support")]
 pub use issuer_key_cache::IssuerCacheOperation;
-pub use issuer_key_cache::{IssuerKeyCache, IssuerKeyId, IssuerKeySet, IssuerVerificationKey};
-pub use issuer_key_resolution::resolve_issuer_key;
+pub use issuer_key_cache::IssuerKeyCache;
 pub use issuer_signature_verifier::IssuerSignatureVerifier;
 
 mod standing;

@@ -1,7 +1,7 @@
 //! Issuer cache and parser observations use explicit injected receipt times.
-use crate::{IssuerKeyCache, IssuerKeyId, IssuerKeySet};
+use super::{IssuerKeyCache, IssuerKeySet};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use fleet_contracts::IssuerKeyRefusal;
+use fleet_contracts::{IssuerKeyId, IssuerKeysUnavailable};
 use fleet_runtime_ports::RawJwks;
 use serde_json::{Value, json};
 
@@ -99,15 +99,9 @@ fn issuer_keys_from_another_configured_source_are_never_reused() {
 fn unknown_keys_and_a_withdrawn_empty_set_are_explicit() {
     let keys =
         IssuerKeySet::decode(&response(vec![published_key("first", [4; 32])], None).body).unwrap();
-    assert!(matches!(
-        keys.key(&key_id("unknown")),
-        Err(IssuerKeyRefusal::UnknownKey)
-    ));
+    assert!(keys.key(&key_id("unknown")).is_none());
     let withdrawn = IssuerKeySet::decode(br#"{"keys":[]}"#).unwrap();
-    assert!(matches!(
-        withdrawn.key(&key_id("first")),
-        Err(IssuerKeyRefusal::UnknownKey)
-    ));
+    assert!(withdrawn.key(&key_id("first")).is_none());
 }
 
 #[test]
@@ -128,17 +122,14 @@ fn malformed_key_sets_cannot_partially_replace_a_retained_set() {
             response(vec![published_key("new", [8; 32]), malformed], None),
             at(1),
         ),
-        Err(IssuerKeyRefusal::MalformedKeySet)
+        Err(IssuerKeysUnavailable::MalformedKeySet)
     ));
     let retained = cache.fresh(SOURCE, at(1)).unwrap().unwrap();
     assert_eq!(
         retained.key(&key_id("original")).unwrap().public_key(),
         &[5; 32]
     );
-    assert!(matches!(
-        retained.key(&key_id("new")),
-        Err(IssuerKeyRefusal::UnknownKey)
-    ));
+    assert!(retained.key(&key_id("new")).is_none());
 }
 
 #[test]
@@ -146,7 +137,7 @@ fn ambiguous_or_wrong_kind_keys_are_refused() {
     let first = published_key("same", [9; 32]);
     assert!(matches!(
         IssuerKeySet::decode(&response(vec![first.clone(), first], None).body),
-        Err(IssuerKeyRefusal::MalformedKeySet)
+        Err(IssuerKeysUnavailable::MalformedKeySet)
     ));
     for (field, value) in [
         ("kid", json!("")),
@@ -160,7 +151,7 @@ fn ambiguous_or_wrong_kind_keys_are_refused() {
         invalid[field] = value;
         assert!(matches!(
             IssuerKeySet::decode(&response(vec![invalid], None).body),
-            Err(IssuerKeyRefusal::MalformedKeySet)
+            Err(IssuerKeysUnavailable::MalformedKeySet)
         ));
     }
 }
@@ -197,7 +188,7 @@ fn the_last_valid_receipt_controls_key_bytes_and_expiry(case: hegel::TestCase) {
                     },
                     at(receipt)
                 ),
-                Err(IssuerKeyRefusal::MalformedKeySet)
+                Err(IssuerKeysUnavailable::MalformedKeySet)
             ));
         }
         let expiry = retained.map_or(receipt, |(_, expiry)| expiry);

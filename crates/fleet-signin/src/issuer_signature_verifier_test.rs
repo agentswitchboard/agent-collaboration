@@ -1,7 +1,7 @@
 use super::IssuerSignatureVerifier;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
+use fleet_contracts::IssuerKeysUnavailable;
 use fleet_contracts::IssuerSignatureRefusal;
-use fleet_contracts::{IssuerKeyRefusal, IssuerKeyResolutionRefusal};
 use fleet_runtime_ports::{Clock, SyncTime};
 use fleet_runtime_ports::{
     Ed25519Verification, IssuerKeySource, KeyFetchFailure, RawJwks, SignatureValidity,
@@ -179,9 +179,9 @@ async fn issuer_signature_does_not_guess_a_verdict_when_key_fetch_fails() {
 
         assert_eq!(
             result,
-            Err(IssuerSignatureRefusal::Keys(
-                IssuerKeyResolutionRefusal::Fetch { reason }
-            ))
+            Err(IssuerSignatureRefusal::Keys(IssuerKeysUnavailable::Fetch {
+                reason
+            }))
         );
         assert!(verifier.platform.inputs.lock().unwrap().is_empty());
     }
@@ -199,7 +199,7 @@ async fn issuer_signature_does_not_use_a_malformed_key_set() {
     assert_eq!(
         result,
         Err(IssuerSignatureRefusal::Keys(
-            IssuerKeyResolutionRefusal::KeySet(IssuerKeyRefusal::MalformedKeySet)
+            IssuerKeysUnavailable::MalformedKeySet
         ))
     );
     assert!(verifier.platform.inputs.lock().unwrap().is_empty());

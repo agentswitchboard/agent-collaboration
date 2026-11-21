@@ -1,14 +1,10 @@
 use central_storage::StoreFailure;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum OrganizationProvisioningFailure {
+pub enum AuthorizationRevisionFailure {
     #[error("organization mismatch")]
     OrganizationMismatch,
-    #[error("invalid organization statement")]
-    InvalidStatement,
-    #[error("stale organization statement")]
-    StaleStatement,
-    #[error("organization is unprovisioned")]
-    Unprovisioned,
+    #[error("authorization revision conflicts with the retained revision")]
+    Conflict,
     #[error("organization floor missing")]
     OrganizationFloorMissing,
     #[error("organization sign-in unavailable")]
@@ -16,7 +12,7 @@ pub enum OrganizationProvisioningFailure {
     #[error("organization sign-in outcome unknown")]
     OutcomeUnknown,
 }
-impl From<StoreFailure> for OrganizationProvisioningFailure {
+impl From<StoreFailure> for AuthorizationRevisionFailure {
     fn from(error: StoreFailure) -> Self {
         match error {
             StoreFailure::AnswerLost => Self::OutcomeUnknown,

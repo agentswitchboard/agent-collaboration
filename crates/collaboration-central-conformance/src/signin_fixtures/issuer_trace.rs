@@ -26,6 +26,20 @@ impl ScriptedKeyReply {
             Self::Transient => IssuerReply::Unavailable,
         })
     }
+
+    fn wire_with_max_age(self, max_age_seconds: u64) -> ConformanceResult<IssuerReply> {
+        match self {
+            Self::FirstKey => Ok(IssuerReply::CacheableDocument {
+                document: published_keys_except(&["stamp-b".to_owned()])?,
+                max_age_seconds,
+            }),
+            Self::BothKeys => Ok(IssuerReply::CacheableDocument {
+                document: published_keys()?,
+                max_age_seconds,
+            }),
+            Self::Malformed | Self::Transient => self.wire(),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -45,6 +59,7 @@ pub struct IssuerTracePlan {
     pub order: IssuerOrder,
     pub first_receipt_delay_ms: i64,
     pub between_receipts_ms: i64,
+    pub advertised_max_age_seconds: u64,
     pub probes: Vec<IssuerProbe>,
 }
 
@@ -207,7 +222,8 @@ async fn complete_cold_pair(
         } else {
             ((later_reply, later), (earlier_reply, earlier))
         };
-    first_response_gate.respond(first_response.wire()?)?;
+    first_response_gate
+        .respond(first_response.wire_with_max_age(plan.advertised_max_age_seconds)?)?;
     expect_reply(
         issuer,
         "first cold response",
@@ -219,7 +235,8 @@ async fn complete_cold_pair(
     oracle.received(first_response, first_receipt);
 
     host.set_receipt_time(last_receipt).await?;
-    last_response_gate.respond(last_response.wire()?)?;
+    last_response_gate
+        .respond(last_response.wire_with_max_age(plan.advertised_max_age_seconds)?)?;
     let last_status = last_request.await?;
     let (expected, retained_receipt) = if matches!(plan.order, MalformedCompletionArrivesLast) {
         (503, first_receipt)

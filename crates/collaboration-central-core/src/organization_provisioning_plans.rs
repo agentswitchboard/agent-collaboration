@@ -5,7 +5,7 @@ use crate::{
 };
 use central_storage::{BatchOutcome, StatementBatch, StoreFailure};
 use fleet_contracts::{
-    DigestFailure, OrganizationProvisioningFailure, OrganizationStatementDigestReply,
+    AuthorizationRevisionFailure, DigestFailure, OrganizationStatementDigestReply,
     ProvisionFailure, ProvisionOrganization, ProvisionOrganizationResult,
     ReadOrganizationStatementDigest,
 };
@@ -23,8 +23,6 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                 .check()
                 .map(|check| -> Arc<dyn StampVerification> { check }),
             central_engine_model::next_due_sql(crate::engine::query_registry::ALARM_INPUTS),
-            #[cfg(feature = "test-support")]
-            &self.lost_provisioning_reply,
         )
     }
 
@@ -49,8 +47,8 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
     pub async fn deliver_authorization_revision(
         &self,
         revision: &AuthorizationRevision,
-    ) -> Result<AuthorizationRevisionAcknowledgement, OrganizationProvisioningFailure> {
-        use OrganizationProvisioningFailure as Failure;
+    ) -> Result<AuthorizationRevisionAcknowledgement, AuthorizationRevisionFailure> {
+        use AuthorizationRevisionFailure as Failure;
         if revision.organization_id() != self.execution.organization() {
             return Err(Failure::OrganizationMismatch);
         }
@@ -77,12 +75,12 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
     async fn apply_revision_plan(
         &self,
         plan: crate::authorization_revision_plans::AuthorizationRevisionPlan,
-    ) -> Result<AuthorizationRevisionAcknowledgement, OrganizationProvisioningFailure> {
+    ) -> Result<AuthorizationRevisionAcknowledgement, AuthorizationRevisionFailure> {
         use crate::person_request::floor_delivery::FloorDelivery;
-        use OrganizationProvisioningFailure as Failure;
+        use AuthorizationRevisionFailure as Failure;
         let revision = match plan.delivery {
             FloorDelivery::Acknowledged(revision) => revision,
-            FloorDelivery::Conflict => return Err(Failure::StaleStatement),
+            FloorDelivery::Conflict => return Err(Failure::Conflict),
             FloorDelivery::OrganizationFloorMissing => {
                 return Err(Failure::OrganizationFloorMissing);
             }

@@ -193,11 +193,18 @@ impl<Ed: Ed25519Verification, Es: Es256Verification, Keys: IssuerKeySource>
             Ok(SignatureValidity::Valid) => {}
             Ok(SignatureValidity::Invalid) => return Err(PersonRequestRefusal::TokenSignature),
             Err(fleet_contracts::IssuerSignatureRefusal::Keys(
-                fleet_contracts::IssuerKeyResolutionRefusal::KeySet(_),
+                fleet_contracts::IssuerKeysUnavailable::MalformedKeySet
+                | fleet_contracts::IssuerKeysUnavailable::CacheUnavailable,
             )) => {
                 return Err(PersonRequestRefusal::IssuerKey);
             }
-            Err(_) => return Err(PersonRequestRefusal::VerificationUnavailable),
+            Err(
+                fleet_contracts::IssuerSignatureRefusal::Keys(
+                    fleet_contracts::IssuerKeysUnavailable::Fetch { .. }
+                    | fleet_contracts::IssuerKeysUnavailable::InvalidClock,
+                )
+                | fleet_contracts::IssuerSignatureRefusal::Crypto { .. },
+            ) => return Err(PersonRequestRefusal::VerificationUnavailable),
         }
         let person: PersonClaims =
             from_json(&parsed_token.claims, PersonRequestRefusal::PersonClaims)?;

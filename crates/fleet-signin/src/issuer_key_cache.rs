@@ -1,9 +1,8 @@
 //! Issuer key decoding and five-minute retention, separate from legacy Access.
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use chrono::{DateTime, Utc};
-use fleet_contracts::IssuerKeyRefusal;
+use fleet_contracts::{IssuerKeyId, IssuerKeysUnavailable};
 use fleet_runtime_ports::RawJwks;
-use message_board::IdentityValidationError;
 use serde::Deserialize;
 use state_machine_core::{
     EventTag, RefusalTag, StateMachine, StateMachineResult, StateTag, Transition,
@@ -12,52 +11,21 @@ use std::{collections::BTreeSet, sync::Mutex};
 
 const MAXIMUM_KEY_AGE_SECONDS: u64 = 300;
 
-/// The provider owns key identifiers; they are opaque, nonempty strings.
-#[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Deserialize)]
-#[serde(try_from = "String")]
-pub struct IssuerKeyId(String);
-
-impl TryFrom<String> for IssuerKeyId {
-    type Error = IdentityValidationError;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        if value.is_empty() {
-            return Err(IdentityValidationError {
-                field: "kid",
-                requirement: "must identify the issuer's signing key",
-            });
-        }
-        Ok(Self(value))
-    }
-}
-
-impl IssuerKeyId {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
 #[derive(Clone)]
-pub struct IssuerVerificationKey {
+pub(crate) struct IssuerVerificationKey {
     key_id: IssuerKeyId,
     public_key: [u8; 32],
 }
 
 impl IssuerVerificationKey {
     #[must_use]
-    pub fn key_id(&self) -> &IssuerKeyId {
-        &self.key_id
-    }
-
-    #[must_use]
-    pub const fn public_key(&self) -> &[u8; 32] {
+    pub(crate) const fn public_key(&self) -> &[u8; 32] {
         &self.public_key
     }
 }
 
 #[derive(Clone)]
-pub struct IssuerKeySet {
+pub(crate) struct IssuerKeySet {
     keys: Vec<IssuerVerificationKey>,
 }
 
@@ -108,20 +76,20 @@ enum IssuerKeyUse {
 }
 
 impl IssuerKeySet {
-    pub fn decode(bytes: &[u8]) -> Result<Self, IssuerKeyRefusal> {
+    fn decode(bytes: &[u8]) -> Result<Self, IssuerKeysUnavailable> {
         let published: PublishedIssuerKeys =
-            serde_json::from_slice(bytes).map_err(|_| IssuerKeyRefusal::MalformedKeySet)?;
+            serde_json::from_slice(bytes).map_err(|_| IssuerKeysUnavailable::MalformedKeySet)?;
         let mut identities = BTreeSet::new();
         let mut keys = Vec::with_capacity(published.keys.len());
         for published in published.keys {
             if !identities.insert(published.key_id.clone()) {
-                return Err(IssuerKeyRefusal::MalformedKeySet);
+                return Err(IssuerKeysUnavailable::MalformedKeySet);
             }
             let public_key = URL_SAFE_NO_PAD
                 .decode(published.public_key_base64)
-                .map_err(|_| IssuerKeyRefusal::MalformedKeySet)?
+                .map_err(|_| IssuerKeysUnavailable::MalformedKeySet)?
                 .try_into()
-                .map_err(|_| IssuerKeyRefusal::MalformedKeySet)?;
+                .map_err(|_| IssuerKeysUnavailable::MalformedKeySet)?;
             keys.push(IssuerVerificationKey {
                 key_id: published.key_id,
                 public_key,
@@ -130,11 +98,8 @@ impl IssuerKeySet {
         Ok(Self { keys })
     }
 
-    pub fn key(&self, key_id: &IssuerKeyId) -> Result<&IssuerVerificationKey, IssuerKeyRefusal> {
-        self.keys
-            .iter()
-            .find(|key| &key.key_id == key_id)
-            .ok_or(IssuerKeyRefusal::UnknownKey)
+    pub(crate) fn key(&self, key_id: &IssuerKeyId) -> Option<&IssuerVerificationKey> {
+        self.keys.iter().find(|key| &key.key_id == key_id)
     }
 }
 
@@ -237,30 +202,33 @@ impl IssuerKeyCache {
     }
 
     #[cfg(feature = "test-support")]
-    fn take_unavailable(&self, operation: IssuerCacheOperation) -> Result<(), IssuerKeyRefusal> {
+    fn take_unavailable(
+        &self,
+        operation: IssuerCacheOperation,
+    ) -> Result<(), IssuerKeysUnavailable> {
         let mut fault = self
             .unavailable
             .lock()
-            .map_err(|_| IssuerKeyRefusal::CacheUnavailable)?;
+            .map_err(|_| IssuerKeysUnavailable::CacheUnavailable)?;
         if *fault == Some(operation) {
             *fault = None;
-            Err(IssuerKeyRefusal::CacheUnavailable)
+            Err(IssuerKeysUnavailable::CacheUnavailable)
         } else {
             Ok(())
         }
     }
 
-    pub fn fresh(
+    pub(crate) fn fresh(
         &self,
         configured_source: &str,
         now: DateTime<Utc>,
-    ) -> Result<Option<IssuerKeySet>, IssuerKeyRefusal> {
+    ) -> Result<Option<IssuerKeySet>, IssuerKeysUnavailable> {
         #[cfg(feature = "test-support")]
         self.take_unavailable(IssuerCacheOperation::Read)?;
         let cached = self
             .cached
             .lock()
-            .map_err(|_| IssuerKeyRefusal::CacheUnavailable)?;
+            .map_err(|_| IssuerKeysUnavailable::CacheUnavailable)?;
         match &*cached {
             IssuerCacheState::Retained(entry)
                 if entry.source == configured_source && now < entry.expires_at =>
@@ -271,12 +239,12 @@ impl IssuerKeyCache {
         }
     }
 
-    pub fn remember(
+    pub(crate) fn remember(
         &self,
         configured_source: String,
         response: RawJwks,
         received_at: DateTime<Utc>,
-    ) -> Result<IssuerKeySet, IssuerKeyRefusal> {
+    ) -> Result<IssuerKeySet, IssuerKeysUnavailable> {
         let keys = IssuerKeySet::decode(&response.body)?;
         let max_age = response
             .cache_control
@@ -290,15 +258,15 @@ impl IssuerKeyCache {
             .min(MAXIMUM_KEY_AGE_SECONDS);
         let expires_at = received_at
             .checked_add_signed(chrono::TimeDelta::seconds(
-                i64::try_from(max_age).map_err(|_| IssuerKeyRefusal::CacheUnavailable)?,
+                i64::try_from(max_age).map_err(|_| IssuerKeysUnavailable::CacheUnavailable)?,
             ))
-            .ok_or(IssuerKeyRefusal::CacheUnavailable)?;
+            .ok_or(IssuerKeysUnavailable::CacheUnavailable)?;
         #[cfg(feature = "test-support")]
         self.take_unavailable(IssuerCacheOperation::Remember)?;
         let mut cached = self
             .cached
             .lock()
-            .map_err(|_| IssuerKeyRefusal::CacheUnavailable)?;
+            .map_err(|_| IssuerKeysUnavailable::CacheUnavailable)?;
         let (replacement, _) = IssuerCacheMachine::transition(
             &cached,
             RememberSet(CachedIssuerKeys {
@@ -307,7 +275,7 @@ impl IssuerKeyCache {
                 expires_at,
             }),
         )
-        .map_err(|_| IssuerKeyRefusal::CacheUnavailable)?;
+        .map_err(|_| IssuerKeysUnavailable::CacheUnavailable)?;
         *cached = replacement;
         Ok(keys)
     }

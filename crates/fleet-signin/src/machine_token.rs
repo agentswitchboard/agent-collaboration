@@ -51,6 +51,12 @@ impl VerifiedMachineToken {
     }
 }
 
+/// Machine verification exposes a rejection or an unavailable check.
+///
+/// ```compile_fail,E0599
+/// use fleet_signin::machine_token::MachineTokenRefusal;
+/// let _ = MachineTokenRefusal::UnknownKey;
+/// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum MachineTokenRefusal {
     #[error("machine token rejected")]
@@ -101,12 +107,15 @@ impl<Ed: Ed25519Verification, Keys: IssuerKeySource> MachineTokenVerifier<Ed, Ke
         {
             Ok(SignatureValidity::Valid) => {}
             Ok(SignatureValidity::Invalid) => return Err(MachineTokenRefusal::Rejected),
-            Err(fleet_contracts::IssuerSignatureRefusal::Keys(
-                fleet_contracts::IssuerKeyResolutionRefusal::KeySet(
-                    fleet_contracts::IssuerKeyRefusal::UnknownKey,
-                ),
-            )) => return Err(MachineTokenRefusal::Rejected),
-            Err(_) => return Err(MachineTokenRefusal::Unavailable),
+            Err(
+                fleet_contracts::IssuerSignatureRefusal::Keys(
+                    fleet_contracts::IssuerKeysUnavailable::MalformedKeySet
+                    | fleet_contracts::IssuerKeysUnavailable::CacheUnavailable
+                    | fleet_contracts::IssuerKeysUnavailable::InvalidClock
+                    | fleet_contracts::IssuerKeysUnavailable::Fetch { .. },
+                )
+                | fleet_contracts::IssuerSignatureRefusal::Crypto { .. },
+            ) => return Err(MachineTokenRefusal::Unavailable),
         }
         let now = self.clock.now().unix_millis().div_euclid(1000);
         claims.validate(&self.policy, now)

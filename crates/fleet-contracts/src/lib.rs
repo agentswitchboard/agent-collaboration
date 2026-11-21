@@ -11,7 +11,7 @@ mod machine_connection;
 mod machine_connection_refusal;
 mod mail_delivery_ready;
 pub mod mail_link;
-mod provisioning_failure;
+mod revision_failure;
 mod statement_refusal;
 pub mod workspace_description;
 mod workspace_directory;
@@ -20,11 +20,11 @@ mod workspace_rpc;
 pub use central_observation::CentralObservation;
 pub use client_id::ClientId;
 pub use event_completion::{AlarmNotPublished, AlarmResult, EventCompletion, EventCompletionHook};
-pub use issuer_refusals::{IssuerKeyRefusal, IssuerKeyResolutionRefusal, IssuerSignatureRefusal};
+pub use issuer_refusals::{IssuerKeysUnavailable, IssuerSignatureRefusal};
 pub use machine_connection::{LiveMachineConnection, MachineConnectionAttachment};
 pub use machine_connection_refusal::MachineConnectionRefusal;
-pub use provisioning_failure::OrganizationProvisioningFailure;
-pub use statement_refusal::FleetOrganizationStatementRefusal;
+pub use revision_failure::AuthorizationRevisionFailure;
+pub use statement_refusal::{FleetOrganizationStatementRefusal, StoredStatementRefusal};
 
 pub use engine_attempts::{
     AttemptGuard, ControlGate, EngineSubject, FailureOutcome, ObservedControl, SubjectVersion,
@@ -46,3 +46,6 @@ pub use machine_token_claims::{MachinePrincipal, MachineTokenClaims};
 
 mod stamp_failures;
 pub use stamp_failures::{DigestFailure, ProvisionFailure};
+
+mod stamp_values;
+pub use stamp_values::{IssuerKeyId, OrganizationStatementDigest, StatementSeconds};

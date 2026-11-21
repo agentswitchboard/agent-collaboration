@@ -6,7 +6,10 @@ use central_storage::{
     StatementBatch, StoreFailure,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{
+    Mutex, PoisonError,
+    atomic::{AtomicBool, Ordering},
+};
 
 #[derive(Default)]
 pub struct TestFaults {
@@ -14,9 +17,18 @@ pub struct TestFaults {
     read: Mutex<Option<EngineReadFault>>,
     alarm_batch: Mutex<Option<StoreFailure>>,
     alarm_publication: Mutex<Option<AlarmPublicationFailure>>,
+    lost_provisioning_reply: AtomicBool,
 }
 
 impl TestFaults {
+    pub fn arm_lost_provisioning_reply(&self) {
+        self.lost_provisioning_reply.store(true, Ordering::SeqCst);
+    }
+
+    pub fn take_lost_provisioning_reply(&self) -> bool {
+        self.lost_provisioning_reply.swap(false, Ordering::SeqCst)
+    }
+
     pub fn arm_commit(&self, fault: EngineCommitFault) {
         *self.commit.lock().unwrap_or_else(PoisonError::into_inner) = Some(fault);
     }

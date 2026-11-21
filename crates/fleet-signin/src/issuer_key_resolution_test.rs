@@ -1,7 +1,8 @@
 //! Refresh policy uses an event-driven source double and a controlled clock.
-use crate::{IssuerKeyCache, IssuerKeyId, resolve_issuer_key};
+use super::resolve_issuer_key;
+use crate::IssuerKeyCache;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use fleet_contracts::{IssuerKeyRefusal, IssuerKeyResolutionRefusal};
+use fleet_contracts::{IssuerKeyId, IssuerKeysUnavailable};
 use fleet_runtime_ports::{Clock, SyncTime};
 use fleet_runtime_ports::{IssuerKeySource, KeyFetchFailure, RawJwks};
 use std::{
@@ -106,6 +107,7 @@ async fn a_known_fresh_key_needs_no_second_fetch() {
     for _ in 0..2 {
         let selected = resolve_issuer_key(&source, &cache, source.clock.as_ref(), &key_id("known"))
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(selected.public_key(), &[1; 32]);
     }
@@ -124,12 +126,7 @@ async fn an_unknown_cached_key_refetches_once_then_refuses() {
         .unwrap();
     let refused =
         resolve_issuer_key(&source, &cache, source.clock.as_ref(), &key_id("missing")).await;
-    assert!(matches!(
-        refused,
-        Err(IssuerKeyResolutionRefusal::KeySet(
-            IssuerKeyRefusal::UnknownKey
-        ))
-    ));
+    assert!(matches!(refused, Ok(None)));
     assert_eq!(source.calls.load(Ordering::SeqCst), 2);
 }
 
@@ -143,12 +140,7 @@ async fn a_cold_unknown_key_never_fetches_twice() {
         &key_id("missing"),
     )
     .await;
-    assert!(matches!(
-        refused,
-        Err(IssuerKeyResolutionRefusal::KeySet(
-            IssuerKeyRefusal::UnknownKey
-        ))
-    ));
+    assert!(matches!(refused, Ok(None)));
     assert_eq!(source.calls.load(Ordering::SeqCst), 1);
 }
 
@@ -167,12 +159,7 @@ async fn different_unknown_requests_each_fetch_once_then_a_known_key_hits() {
     for (offset, unknown) in ["first-missing", "second-missing"].into_iter().enumerate() {
         let refused =
             resolve_issuer_key(&source, &cache, source.clock.as_ref(), &key_id(unknown)).await;
-        assert!(matches!(
-            refused,
-            Err(IssuerKeyResolutionRefusal::KeySet(
-                IssuerKeyRefusal::UnknownKey
-            ))
-        ));
+        assert!(matches!(refused, Ok(None)));
         assert_eq!(source.calls.load(Ordering::SeqCst), offset + 2);
     }
     resolve_issuer_key(&source, &cache, source.clock.as_ref(), &key_id("known"))
@@ -193,6 +180,7 @@ async fn a_rotated_key_is_selected_from_the_one_forced_refresh() {
         .unwrap();
     let selected = resolve_issuer_key(&source, &cache, source.clock.as_ref(), &key_id("new"))
         .await
+        .unwrap()
         .unwrap();
     assert_eq!(selected.public_key(), &[8; 32]);
     assert_eq!(source.calls.load(Ordering::SeqCst), 2);
@@ -209,7 +197,7 @@ async fn a_failed_expiry_refresh_never_falls_back_to_old_keys() {
     let refused = resolve_issuer_key(&source, &cache, source.clock.as_ref(), &key_id("old")).await;
     assert!(matches!(
         refused,
-        Err(IssuerKeyResolutionRefusal::Fetch {
+        Err(IssuerKeysUnavailable::Fetch {
             reason: KeyFetchFailure::Unreachable
         })
     ));
@@ -235,7 +223,7 @@ async fn cache_lifetime_is_measured_from_the_key_response_receipt() {
     };
     entered_receiver.await.unwrap();
     assert!(response_sender.send(keys("known", [4; 32])).is_ok());
-    let selected = resolving.await.unwrap().unwrap();
+    let selected = resolving.await.unwrap().unwrap().unwrap();
     assert_eq!(selected.public_key(), &[4; 32]);
     assert!(cache.fresh(SOURCE, at(399_999)).unwrap().is_some());
     assert!(cache.fresh(SOURCE, at(400_000)).unwrap().is_none());
@@ -254,7 +242,7 @@ async fn an_invalid_initial_receipt_clock_refuses_before_the_issuer_can_be_calle
             &key_id("known")
         )
         .await,
-        Err(IssuerKeyResolutionRefusal::InvalidClock)
+        Err(IssuerKeysUnavailable::InvalidClock)
     ));
     assert_eq!(source.calls.load(Ordering::SeqCst), 0);
 }

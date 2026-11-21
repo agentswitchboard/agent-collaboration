@@ -1,4 +1,5 @@
 //! The sign-in service provisions an organization it already created.
+use crate::{IssuerKeyId, OrganizationStatementDigest, StatementSeconds};
 use fleet_identity_protocol::OrganizationId;
 use schemars::{JsonSchema, Schema, SchemaGenerator, json_schema};
 use serde::{Deserialize, Serialize};
@@ -96,10 +97,13 @@ pub struct ReadOrganizationStatementDigest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OrganizationStatementDigestReply {
     /// Lowercase hex SHA-256 of the stored statement's compact bytes.
-    #[schemars(regex(pattern = r"^[0-9a-f]{64}$"))]
-    pub digest: String,
+    pub digest: OrganizationStatementDigest,
     /// The verified statement's `exp`, in integer seconds.
-    pub expires_at: i64,
+    pub expires_at: StatementSeconds,
     /// The verified statement's header `kid`.
-    pub signing_key_id: String,
+    pub signing_key_id: IssuerKeyId,
 }
+
+#[cfg(test)]
+#[path = "organization_provisioning_test.rs"]
+mod tests;

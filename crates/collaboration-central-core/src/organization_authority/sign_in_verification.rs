@@ -69,7 +69,7 @@ where
     fn verify_stored_statement_facts<'a>(
         &'a self,
         statement: &'a str,
-    ) -> BoxFuture<'a, Result<StoredStatementFacts, FleetOrganizationStatementRefusal>> {
+    ) -> BoxFuture<'a, Result<StoredStatementFacts, fleet_contracts::StoredStatementRefusal>> {
         Box::pin(self.statements.verify_stored_statement_facts(statement))
     }
 }

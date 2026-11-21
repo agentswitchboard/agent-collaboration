@@ -1,6 +1,6 @@
 //! Local checked statements for the owning Central store.
 use crate::{
-    organization_authority::{StoredOrganizationStamp, StoredStampRead},
+    organization_authority::{StampMutation, StoredOrganizationStamp, StoredStampRead},
     organization_change::OrganizationChangeRecord,
 };
 use central_storage::{BatchOutcome, Statement, StoreFailure};
@@ -72,15 +72,8 @@ where
     )))
 }
 
-pub(crate) enum StampMutation {
-    Initialize,
-    Replace(StoredOrganizationStamp),
-}
-
 pub struct StampWrite {
     pub(crate) mutation: StampMutation,
-    pub(crate) organization: OrganizationId,
-    pub(crate) statement: String,
     pub(crate) now_ms: i64,
     pub(crate) issued_seconds: i64,
     pub(crate) expires_seconds: i64,
@@ -154,12 +147,12 @@ impl StampWrite {
         i64: Type<T::Database> + for<'q> Encode<'q, T::Database>,
     {
         let time = timing(&self)?;
-        let id = self.organization.as_str().to_owned();
-        let body = self.statement;
+        let body = self.mutation.accepted().statement().to_owned();
         let audit = self.audit.insert_values()?;
         let audit_timestamp = audit.timestamp.get();
         let result = match self.mutation {
-            StampMutation::Initialize => {
+            StampMutation::Initialize(accepted) => {
+                let id = accepted.organization_id().as_str().to_owned();
                 #[cfg(all(test, not(target_arch = "wasm32")))]
                 let _ = sqlx::query_file!(
                     "src/queries/initialize_stamp.sql",
@@ -184,7 +177,9 @@ impl StampWrite {
                     .execute(tx.executor())
                     .await
             }
-            StampMutation::Replace(prior) => {
+            StampMutation::Replace {
+                predecessor: prior, ..
+            } => {
                 let stored_org = prior.organization_id().as_str().to_owned();
                 let prior_body = prior.statement().to_owned();
                 #[cfg(all(test, not(target_arch = "wasm32")))]

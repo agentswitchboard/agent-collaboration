@@ -25,6 +25,10 @@ pub struct HeldIssuerFetch {
 
 pub enum IssuerReply {
     Document(Value),
+    CacheableDocument {
+        document: Value,
+        max_age_seconds: u64,
+    },
     Unavailable,
 }
 
@@ -54,6 +58,17 @@ impl IssuerReplies {
         let _ = pending.arrived.send(());
         Some(match pending.answer.await {
             Ok(IssuerReply::Document(body)) => Json(body).into_response(),
+            Ok(IssuerReply::CacheableDocument {
+                document,
+                max_age_seconds,
+            }) => (
+                [(
+                    axum::http::header::CACHE_CONTROL,
+                    format!("public, max-age={max_age_seconds}"),
+                )],
+                Json(document),
+            )
+                .into_response(),
             Ok(IssuerReply::Unavailable) | Err(_) => {
                 StatusCode::SERVICE_UNAVAILABLE.into_response()
             }
