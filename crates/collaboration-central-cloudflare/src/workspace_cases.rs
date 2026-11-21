@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use std::{cell::RefCell, collections::BTreeMap};
 use worker::{Env, Request, Response, Result};
 use worker::{Headers, Method, RequestInit, js_sys};
+#[path = "engine_due_migration_fixture.rs"]
+mod engine_due_migration_fixture;
 #[path = "workspace_fixture_admission.rs"]
 mod fixture_admission;
 use crate::workspace_rpc_fixture;
@@ -584,6 +586,26 @@ enum AlarmReceiptResult {
 pub(super) async fn raw_control(object: &CentralObject, mut request: Request) -> Result<Response> {
     let storage = object.state.storage();
     match request.path().as_str() {
+        "/test/raw-engine-due-migration" => {
+            let command = request
+                .json::<engine_due_migration_fixture::MigrationCommand>()
+                .await?;
+            if matches!(
+                command,
+                engine_due_migration_fixture::MigrationCommand::Reset
+            ) {
+                object
+                    .state
+                    .block_concurrency_while(async {
+                        Err::<(), worker::Error>(error("due migration fixture reset"))
+                    })
+                    .await?;
+                return Response::error("object did not reset", 500);
+            }
+            Response::from_json(
+                &engine_due_migration_fixture::run(&object.connection, command).await,
+            )
+        }
         "/test/raw-legacy-workspace-call-count" => Response::from_json(
             &object
                 .controls

@@ -4,7 +4,9 @@ use central_storage::{
     AlarmUpdate, BatchOutcome, GuardedStatement, RowExpectation, SqlValue, Statement,
     StatementBatch,
 };
-use collaboration_central_conformance::alarm_input_scenarios::ALARM_INPUT_SCENARIOS;
+use collaboration_central_conformance::alarm_input_scenarios::{
+    ALARM_INPUT_SCENARIOS, CORRUPT_ALARM_INPUT_SCENARIOS,
+};
 use fleet_runtime_ports::CentralStore as _;
 
 #[tokio::test]
@@ -12,7 +14,10 @@ async fn checked_alarm_inputs_match_main_for_every_job() {
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
     let store = runtime.runtime().statement_host();
-    for scenario in ALARM_INPUT_SCENARIOS {
+    for scenario in CORRUPT_ALARM_INPUT_SCENARIOS
+        .iter()
+        .chain(ALARM_INPUT_SCENARIOS)
+    {
         if !scenario.writes.is_empty() {
             let statements = scenario
                 .writes

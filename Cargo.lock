@@ -2476,6 +2476,7 @@ dependencies = [
  "hegeltest",
  "serde",
  "serde_json",
+ "sqlx",
  "workspace-ids",
  "workspace-model",
 ]
@@ -2561,6 +2562,7 @@ dependencies = [
  "fleet-timer-policy",
  "hegeltest",
  "serde_json",
+ "sqlx",
  "workspace-ids",
  "workspace-model",
 ]

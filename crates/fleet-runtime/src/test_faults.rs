@@ -153,12 +153,12 @@ impl EngineReadFault {
     pub fn matches(&self, statement: &Statement) -> bool {
         statement
             .sql
-            .starts_with("SELECT subject_key,occurrence_ms,effective_due_ms")
+            .starts_with("SELECT subject_key AS \"subject_key?: String\"")
             && match self.kind.as_str() {
-                "wake_timer" => statement.sql.contains("FROM automation_wakes s"),
-                "automation_timer" => statement.sql.contains("FROM automation_schedules s"),
-                "direct_message" => statement.sql.contains("FROM mail_messages s"),
-                "engine_probe" => statement.sql.contains("s.machine_kind='engine_probe'"),
+                "wake_timer" => statement.sql.contains("FROM wake_due_rows"),
+                "automation_timer" => statement.sql.contains("FROM schedule_due_rows"),
+                "direct_message" => statement.sql.contains("FROM direct_message_due_rows"),
+                "engine_probe" => statement.sql.contains("FROM engine_probe_due_rows"),
                 _ => false,
             }
     }

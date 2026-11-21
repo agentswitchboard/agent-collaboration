@@ -34,19 +34,6 @@ where
     .fetch_one(transaction.executor())
     .await
     .map_err(|error| query_failure(error, "engine alarm input"))?;
-    #[cfg(feature = "test-support")]
-    let row = {
-        let fixture = sqlx::query_as::<T::Database, StoredAlarmInputs>(include_str!(
-            "queries/read_fixture_alarm_inputs.sql"
-        ))
-        .fetch_one(transaction.executor())
-        .await
-        .map_err(|error| query_failure(error, "engine alarm input"))?;
-        StoredAlarmInputs {
-            on_grid_due: row.on_grid_due.into_iter().chain(fixture.on_grid_due).min(),
-            legacy_due: row.legacy_due,
-        }
-    };
     Ok(EngineAlarmTimes {
         earliest_on_grid_due_unix_millis: validate_time(row.on_grid_due, "engine alarm input")?,
         earliest_legacy_due_unix_millis: validate_time(row.legacy_due, "engine alarm input")?,

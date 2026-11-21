@@ -90,5 +90,11 @@ async fn the_test_support_alarm_query_registers_six_kinds_and_the_sixth_contribu
 #[cfg(feature = "test-support")]
 #[test]
 fn fixture_alarm_sql_describes_the_rows_executed_by_both_hosts() {
-    let _ = sqlx::query_file!("../fleet-engine/src/queries/read_fixture_alarm_inputs.sql");
+    let _ = sqlx::query_file!("../fleet-engine/src/queries/read_alarm_inputs.sql");
+}
+
+#[cfg(feature = "test-support")]
+#[test]
+fn fixture_due_list_describes_the_probe_view() {
+    let _ = sqlx::query_file!("src/engine/queries/read_due_probes.sql", 0_i64, 1_i64);
 }

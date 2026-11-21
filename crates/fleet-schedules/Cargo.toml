@@ -23,5 +23,6 @@ serde_json.workspace = true
 agent-automation = { path = "../agent-automation", version = "0.1.149" }
 
 [dev-dependencies]
+sqlx = { workspace = true, features = ["sqlite", "macros"] }
 central-engine-test-support = { workspace = true }
 hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }

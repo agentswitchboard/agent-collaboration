@@ -1,95 +1,11 @@
-//! The closed registry owns SQL literals. Time and caps are bound values; no
-//! statement is generated or leaked to acquire a static lifetime.
+//! Engine query bindings and the frozen main oracle for conformance.
 
-#[cfg(any(test, feature = "test-support"))]
-use fleet_engine::controlled_legacy;
-#[cfg(feature = "test-support")]
-use fleet_engine::controlled_machine;
-#[cfg(feature = "test-support")]
-use fleet_engine::machine_rows;
-
-#[cfg(any(test, feature = "test-support"))]
-macro_rules! grid_inputs {
-    () => {
-        concat!(
-            "COALESCE(",
-            fleet_wakes::wake_alarm_input!(),
-            ",9223372036855),",
-            "COALESCE(",
-            fleet_schedules::schedule_alarm_input!(),
-            ",9223372036855)",
-            ",COALESCE(",
-            fleet_mail::direct_message_alarm_input!(),
-            ",9223372036855),COALESCE(",
-            fleet_mail::system_message_expiry_alarm_input!(),
-            ",9223372036855)"
-        )
-    };
-}
-#[cfg(feature = "test-support")]
-macro_rules! probe_rows {
-    () => {
-        machine_rows!(
-            "engine_probe_items",
-            "item_id",
-            "s.due_at",
-            "engine_probe",
-            "'waiting'",
-            "'fired','stopped'",
-            "s.machine_kind='engine_probe' AND s.due_at IS NOT NULL"
-        )
-    };
-}
-/// The second test table (V5.4): a timed kind with no machine and no due list,
-/// registered only so the alarm-inputs query runs with six kinds.
-#[cfg(feature = "test-support")]
-macro_rules! alarm_only_rows {
-    () => {
-        machine_rows!(
-            "engine_alarm_only_items",
-            "item_id",
-            "s.due_at",
-            "engine_alarm_only",
-            "'waiting'",
-            "'fired','stopped'",
-            "s.due_at IS NOT NULL"
-        )
-    };
-}
-#[cfg(feature = "test-support")]
-macro_rules! all_grid_inputs {
-    () => {
-        concat!(
-            grid_inputs!(),
-            ",COALESCE(",
-            controlled_machine!("engine_probe", probe_rows!()),
-            ",9223372036855),COALESCE(",
-            controlled_machine!("engine_alarm_only", alarm_only_rows!()),
-            ",9223372036855)"
-        )
-    };
-}
 #[cfg(all(test, not(feature = "test-support")))]
-macro_rules! all_grid_inputs {
-    () => {
-        grid_inputs!()
-    };
-}
-#[cfg(any(test, feature = "test-support"))]
-pub(crate) const ALARM_INPUTS: &str = concat!(
-    "SELECT CASE WHEN (SELECT COUNT(*) FROM signin_organization_identity)=1 THEN NULLIF(min(",
-    all_grid_inputs!(),
-    "),9223372036855) ELSE NULL END AS on_grid_due,",
-    "CASE WHEN (SELECT COUNT(*) FROM signin_organization_identity)=1 THEN NULLIF(min(COALESCE(",
-    fleet_notices::notice_window_alarm_input!(),
-    ",9223372036855),COALESCE(",
-    controlled_legacy!(
-        "legacy_workspace_drains",
-        "mail_workspace_drains",
-        "drain_due_at"
-    ),
-    ",9223372036855)),9223372036855) ELSE NULL END AS legacy_due"
-);
+pub(crate) const ALARM_INPUTS: &str =
+    include_str!("../../tests/fixtures/main_engine_alarm_inputs.sql");
+#[cfg(feature = "test-support")]
+pub(crate) const ALARM_INPUTS: &str =
+    include_str!("../../tests/fixtures/main_fixture_engine_alarm_inputs.sql");
 
 pub(crate) fn alarm_update() -> central_storage::AlarmUpdate {
     central_storage::AlarmUpdate::Engine(central_storage::EngineAlarmPlan::Recompute)
@@ -100,8 +16,4 @@ pub(crate) fn alarm_update() -> central_storage::AlarmUpdate {
 mod tests;
 
 #[cfg(feature = "test-support")]
-pub(crate) const PROBE_LIST: &str = concat!(
-    "SELECT subject_key,occurrence_ms,effective_due_ms FROM (",
-    probe_rows!(),
-    ") WHERE effective_due_ms<=?1 ORDER BY effective_due_ms,subject_key LIMIT ?2"
-);
+pub(crate) const PROBE_LIST: &str = include_str!("queries/read_due_probes.sql");

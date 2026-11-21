@@ -47,6 +47,21 @@ export const sqlitePreparationTargets: readonly SqlitePreparationTarget[] = [
     databaseFilename: "fleet-central-schema.sqlite",
   },
   {
+    packageName: "fleet-wakes",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-wakes-central-schema.sqlite",
+  },
+  {
+    packageName: "fleet-schedules",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-schedules-central-schema.sqlite",
+  },
+  {
+    packageName: "fleet-mail",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-mail-central-schema.sqlite",
+  },
+  {
     packageName: "collaboration-central-core",
     migrationSources: [centralMigrationSource],
     databaseFilename: "fleet-central-engine-fixtures-schema.sqlite",

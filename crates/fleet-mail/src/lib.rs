@@ -18,11 +18,6 @@ mod stored_messages;
 mod system_message_expiry;
 mod system_message_expiry_store;
 
-#[doc(hidden)]
-pub use fleet_engine::{
-    controlled_machine as __controlled_machine, machine_rows as __machine_rows,
-};
-
 pub use acknowledgement::settle_delivery_ack_held;
 pub use delivery_reads::{prepare_windowed_delivery_held, windowed_welcome_page_held};
 pub use direct_message::{

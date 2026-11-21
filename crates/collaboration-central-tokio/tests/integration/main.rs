@@ -9,6 +9,7 @@ mod alarm_publication_order;
 #[cfg(test)]
 #[cfg(feature = "test-support")]
 mod central_object_batches;
+mod engine_alarm_schema;
 #[cfg(test)]
 #[cfg(feature = "test-support")]
 mod request_pause_seam;

@@ -16,11 +16,7 @@ use fleet_contracts::{
     AlarmNotPublished, AlarmResult, ControlGate, EngineSubject, EventCompletion, FailureOutcome,
     LegacyUnitOutcome, SubjectVersion,
 };
-use fleet_runtime_ports::{
-    CentralStore,
-    stored_values::{column, string},
-    workspace_decode_error::corrupt,
-};
+use fleet_runtime_ports::{CentralStore, stored_values::column, workspace_decode_error::corrupt};
 use futures_util::{StreamExt, stream};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -124,14 +120,18 @@ fn decode_due(rows: central_storage::ReadOutcome) -> Result<Vec<DueRow>, StoreFa
     rows.rows
         .iter()
         .map(|row| {
-            let integer = |name| match column(&rows, row, name)? {
+            let integer = |column_name, field_name| match column(&rows, row, column_name)? {
                 SqlValue::Integer(value) => Ok(value.get()),
-                _ => Err(corrupt(name)),
+                _ => Err(corrupt(field_name)),
+            };
+            let subject_key = match column(&rows, row, "subject_key?: String")? {
+                SqlValue::Text(value) => value,
+                _ => return Err(corrupt("subject_key")),
             };
             Ok(DueRow {
-                key: InstanceKey(string(&rows, row, "subject_key")?.to_owned()),
-                occurrence_ms: integer("occurrence_ms")?,
-                effective_due_ms: integer("effective_due_ms")?,
+                key: InstanceKey(subject_key.clone()),
+                occurrence_ms: integer("occurrence_ms!: i64", "occurrence_ms")?,
+                effective_due_ms: integer("effective_due_ms!: i64", "effective_due_ms")?,
             })
         })
         .collect()

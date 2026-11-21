@@ -163,7 +163,91 @@ fn alarm_out_of_range(rows: &[DoRow]) -> StoreFailure {
     }
 }
 
-struct WorkerTransaction<'a, T>(&'a T);
+#[cfg(feature = "test-support")]
+#[derive(Debug)]
+struct AlarmInputExecutor<'a, E> {
+    inner: E,
+    dispatches: &'a std::sync::atomic::AtomicUsize,
+}
+
+#[cfg(feature = "test-support")]
+impl<'c, E: sqlx_core::executor::Executor<'c, Database = Do>> sqlx_core::executor::Executor<'c>
+    for AlarmInputExecutor<'c, E>
+{
+    type Database = Do;
+
+    fn fetch_many<'e, 'q: 'e, Q>(
+        self,
+        query: Q,
+    ) -> futures_util::stream::BoxStream<
+        'e,
+        Result<sqlx_core::Either<sqlx_durable_object::DoQueryResult, DoRow>, sqlx_core::Error>,
+    >
+    where
+        'c: 'e,
+        Q: 'q + sqlx_core::executor::Execute<'q, Do>,
+    {
+        self.dispatches
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.fetch_many(query)
+    }
+
+    fn fetch_optional<'e, 'q: 'e, Q>(
+        self,
+        query: Q,
+    ) -> futures_util::future::BoxFuture<'e, Result<Option<DoRow>, sqlx_core::Error>>
+    where
+        'c: 'e,
+        Q: 'q + sqlx_core::executor::Execute<'q, Do>,
+    {
+        self.dispatches
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.inner.fetch_optional(query)
+    }
+
+    fn prepare_with<'e>(
+        self,
+        sql: sqlx_core::sql_str::SqlStr,
+        parameters: &'e [sqlx_durable_object::DoTypeInfo],
+    ) -> futures_util::future::BoxFuture<
+        'e,
+        Result<sqlx_durable_object::DoStatement, sqlx_core::Error>,
+    >
+    where
+        'c: 'e,
+    {
+        self.inner.prepare_with(sql, parameters)
+    }
+
+    fn describe<'e>(
+        self,
+        sql: sqlx_core::sql_str::SqlStr,
+    ) -> futures_util::future::BoxFuture<
+        'e,
+        Result<sqlx_core::describe::Describe<Do>, sqlx_core::Error>,
+    >
+    where
+        'c: 'e,
+    {
+        self.inner.describe(sql)
+    }
+}
+
+struct WorkerTransaction<'a, T> {
+    inner: &'a T,
+    #[cfg(feature = "test-support")]
+    dispatches: std::sync::atomic::AtomicUsize,
+}
+
+impl<'a, T> WorkerTransaction<'a, T> {
+    fn new(inner: &'a T) -> Self {
+        Self {
+            inner,
+            #[cfg(feature = "test-support")]
+            dispatches: std::sync::atomic::AtomicUsize::new(0),
+        }
+    }
+}
 
 impl<T> fleet_engine::CentralTransaction for WorkerTransaction<'_, T>
 where
@@ -172,7 +256,13 @@ where
     type Database = Do;
 
     fn executor(&mut self) -> impl sqlx_core::executor::Executor<'_, Database = Do> {
-        self.0
+        #[cfg(feature = "test-support")]
+        return AlarmInputExecutor {
+            inner: self.inner,
+            dispatches: &self.dispatches,
+        };
+        #[cfg(not(feature = "test-support"))]
+        self.inner
     }
 
     fn rows_affected(result: <Do as sqlx_core::database::Database>::QueryResult) -> u64 {
@@ -183,7 +273,7 @@ where
 pub(crate) async fn engine_alarm_inputs(
     connection: &DoConnection,
 ) -> Result<EngineAlarmTimes, StoreFailure> {
-    fleet_engine::read_alarm_inputs(&mut WorkerTransaction(connection)).await
+    fleet_engine::read_alarm_inputs(&mut WorkerTransaction::new(connection)).await
 }
 
 async fn run_in_transaction(
@@ -237,17 +327,25 @@ async fn run_in_transaction(
                     clock.ok_or(BatchStop::Failed(StoreFailure::AlarmUnpublishable {
                         reason: AlarmPublicationFailure::ClockUnavailable,
                     }))?;
+                let mut alarm_transaction = WorkerTransaction::new(transaction);
                 let times = match plan {
                     central_storage::EngineAlarmPlan::Clear => EngineAlarmTimes {
                         earliest_on_grid_due_unix_millis: None,
                         earliest_legacy_due_unix_millis: None,
                     },
                     central_storage::EngineAlarmPlan::Recompute => {
-                        fleet_engine::read_alarm_inputs(&mut WorkerTransaction(transaction))
+                        fleet_engine::read_alarm_inputs(&mut alarm_transaction)
                             .await
                             .map_err(BatchStop::Failed)?
                     }
                 };
+                #[cfg(feature = "test-support")]
+                worker::console_log!(
+                    "Central alarm input SELECTs: {}",
+                    alarm_transaction
+                        .dispatches
+                        .load(std::sync::atomic::Ordering::Relaxed)
+                );
                 decide(times, clock.now().unix_millis(), &mut |_| {}).map_err(|reason| {
                     BatchStop::Failed(StoreFailure::AlarmUnpublishable { reason })
                 })?

@@ -53,9 +53,9 @@ async fn due_rows_keep_occurrence_separate_from_retry_and_include_invalid_rows()
         .into_iter()
         .map(|row| {
             (
-                row.get("subject_key"),
-                row.get("occurrence_ms"),
-                row.get("effective_due_ms"),
+                row.get("subject_key?: String"),
+                row.get("occurrence_ms!: i64"),
+                row.get("effective_due_ms!: i64"),
             )
         })
         .collect();
@@ -92,8 +92,8 @@ async fn due_selection_orders_before_its_per_kind_cap() {
         .await
         .unwrap();
     assert_eq!(rows.len(), 250);
-    assert_eq!(rows[0].get::<String, _>("subject_key"), key(2));
-    assert_eq!(rows[249].get::<String, _>("subject_key"), key(251));
+    assert_eq!(rows[0].get::<String, _>("subject_key?: String"), key(2));
+    assert_eq!(rows[249].get::<String, _>("subject_key?: String"), key(251));
     let continuation = sqlx::query(WAKE_LIST)
         .bind(300_000_i64)
         .bind(251_i64)
@@ -101,4 +101,9 @@ async fn due_selection_orders_before_its_per_kind_cap() {
         .await
         .unwrap();
     assert_eq!(continuation.len(), 251);
+}
+
+#[test]
+fn read_due_wakes_describes_the_owner_query() {
+    let _ = sqlx::query_file!("src/queries/read_due_wakes.sql", 0_i64, 1_i64);
 }

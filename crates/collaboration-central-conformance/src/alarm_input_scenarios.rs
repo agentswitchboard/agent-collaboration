@@ -121,3 +121,74 @@ pub const ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
         expected: [None, None],
     },
 ];
+
+pub const CORRUPT_ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
+    AlarmInputScenario {
+        name: "null-ID retired source masks the active wake",
+        writes: &[
+            (
+                "INSERT INTO automation_wakes VALUES ('01890f2e-7b4c-7cc0-98c4-000000000011','target','1970-01-01T00:02:00.000Z','wake','active','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z')",
+                1,
+            ),
+            (
+                "INSERT INTO engine_work_attempts VALUES (NULL,'engine_source','wake_timer','retired',1,NULL,'statement_rejected',NULL,'1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z')",
+                1,
+            ),
+        ],
+        expected: [None, None],
+    },
+    AlarmInputScenario {
+        name: "null-ID retired whole-unit control masks its open window",
+        writes: &[
+            (
+                "INSERT INTO mail_notification_windows VALUES ('01890f2e-7b4c-7cc0-98c4-000000000012','recipient','1970-01-01T00:00:00.000Z','1970-01-01T00:04:00.000Z','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z')",
+                1,
+            ),
+            (
+                "INSERT INTO engine_work_attempts VALUES (NULL,'legacy_notice_windows','all','retired',1,NULL,'statement_rejected',NULL,'1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z')",
+                1,
+            ),
+        ],
+        expected: [None, None],
+    },
+    AlarmInputScenario {
+        name: "null-ID failing subject keeps its scheduled deadline",
+        writes: &[
+            ("DELETE FROM engine_work_attempts", 2),
+            (
+                "INSERT INTO engine_work_attempts VALUES (NULL,'wake_timer','01890f2e-7b4c-7cc0-98c4-000000000011','failing',1,'1970-01-01T00:08:00.000Z','statement_rejected',NULL,'1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z',NULL,'1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z')",
+                1,
+            ),
+        ],
+        expected: [Some(120_000), Some(240_000)],
+    },
+    AlarmInputScenario {
+        name: "retired subject is excluded even with a null attempt ID",
+        writes: &[(
+            "UPDATE engine_work_attempts SET state='retired',next_try_at=NULL,retired_at='1970-01-01T00:00:00.000Z'",
+            1,
+        )],
+        expected: [None, Some(240_000)],
+    },
+    AlarmInputScenario {
+        name: "corrupt nonterminal still honors a valid subject retry",
+        writes: &[
+            ("DELETE FROM engine_work_attempts", 1),
+            ("UPDATE automation_wakes SET state='damaged'", 1),
+            (
+                "INSERT INTO engine_work_attempts VALUES ('01890f2e-7b4c-7cc0-98c4-000000000013','wake_timer','01890f2e-7b4c-7cc0-98c4-000000000011','failing',1,'1970-01-01T00:08:00.000Z','statement_rejected',NULL,'1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z',NULL,'1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z')",
+                1,
+            ),
+        ],
+        expected: [Some(480_000), Some(240_000)],
+    },
+    AlarmInputScenario {
+        name: "reset for the original main parity cases",
+        writes: &[
+            ("DELETE FROM engine_work_attempts", 1),
+            ("DELETE FROM automation_wakes", 1),
+            ("DELETE FROM mail_notification_windows", 1),
+        ],
+        expected: [None, None],
+    },
+];
