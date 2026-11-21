@@ -48,7 +48,7 @@ pub struct DiscardSubjectStatements<SubjectMachine: Machine> {
     pub write_discard_attempt_failure_sql: &'static str,
 }
 
-/// Both finishing reads and the applying batch use the runtime from preparation.
+/// Both finishing reads and the applying batch use the preparing host.
 struct BoundDiscardStore<'a, Host: EngineHost, SubjectMachine: Machine> {
     preparing_host: &'a Host,
     discard_subject_statements: DiscardSubjectStatements<SubjectMachine>,
@@ -217,7 +217,7 @@ impl<SubjectMachine: Machine> EventSource<SubjectMachine> for DiscardEventSource
     }
 }
 
-impl<'runtime, Host: EngineHost> FleetEngine<'runtime, Host> {
+impl<'host, Host: EngineHost> FleetEngine<'host, Host> {
     pub async fn read_engine_attempt_health<AdminMachineKind: Copy + Eq + Send + Sync>(
         &self,
         registry: &AdminMachineKindRegistry<'_, AdminMachineKind>,

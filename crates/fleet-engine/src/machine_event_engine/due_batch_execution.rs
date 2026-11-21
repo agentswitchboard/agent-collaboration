@@ -43,7 +43,7 @@ pub trait TimedDueDispatch<Host: EngineHost>: Send + Sync {
     fn timed_source_schedule(&self, kind: Self::TimedSourceKind) -> TimedSourceSchedule;
     fn discover_due_rows(
         &self,
-        runtime: &Host,
+        host: &Host,
         kind: Self::TimedSourceKind,
         cutoff: EngineTime,
         limit: usize,
@@ -51,7 +51,7 @@ pub trait TimedDueDispatch<Host: EngineHost>: Send + Sync {
     fn dispatch_timed_due_row(
         &self,
         engine: &FleetEngine<'_, Host>,
-        runtime: &Host,
+        host: &Host,
         kind: Self::TimedSourceKind,
         row: DueRow,
     ) -> impl Future<Output = TimedRowOutcome> + Send;

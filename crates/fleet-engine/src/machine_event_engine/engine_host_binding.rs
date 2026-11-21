@@ -1,4 +1,4 @@
-//! The engine's only view of the runtime that hosts it (P3, module direction):
+//! The engine's view of its host (P3, module direction):
 //! Engine modules depend on EngineHost. Central core implements it for WorkspaceRuntime.
 use super::attempt_administration::{
     AdminMachineKindRegistry, DiscardOutcome, PreparedAttemptDiscard,
