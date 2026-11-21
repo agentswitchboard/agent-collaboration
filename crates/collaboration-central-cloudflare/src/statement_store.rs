@@ -176,6 +176,35 @@ impl<'c, E: sqlx_core::executor::Executor<'c, Database = Do>> sqlx_core::executo
 {
     type Database = Do;
 
+    // The Durable Object driver reports affected rows through its write methods.
+    fn execute<'e, 'q: 'e, Q>(
+        self,
+        query: Q,
+    ) -> futures_util::future::BoxFuture<
+        'e,
+        Result<sqlx_durable_object::DoQueryResult, sqlx_core::Error>,
+    >
+    where
+        'c: 'e,
+        Q: 'q + sqlx_core::executor::Execute<'q, Do>,
+    {
+        self.inner.execute(query)
+    }
+
+    fn execute_many<'e, 'q: 'e, Q>(
+        self,
+        query: Q,
+    ) -> futures_util::stream::BoxStream<
+        'e,
+        Result<sqlx_durable_object::DoQueryResult, sqlx_core::Error>,
+    >
+    where
+        'c: 'e,
+        Q: 'q + sqlx_core::executor::Execute<'q, Do>,
+    {
+        self.inner.execute_many(query)
+    }
+
     fn fetch_many<'e, 'q: 'e, Q>(
         self,
         query: Q,
