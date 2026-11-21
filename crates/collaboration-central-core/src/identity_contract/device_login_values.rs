@@ -7,6 +7,10 @@ use std::borrow::Cow;
 pub const MAX_ALLOWED_WORKSPACES: usize = 100;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum EnrollPermission {
     #[serde(rename = "machine:enroll")]
     MachineEnroll,
@@ -19,6 +23,10 @@ pub struct TooManyAllowedWorkspaces;
 /// The original approval's ordered workspace snapshot.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "Vec<WorkspaceId>", into = "Vec<WorkspaceId>")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct AllowedWorkspaces(Vec<WorkspaceId>);
 
 impl TryFrom<Vec<WorkspaceId>> for AllowedWorkspaces {

@@ -5,9 +5,10 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
 macro_rules! identity_value {
-    ($name:ident, $inner:ty) => {
+    ($(#[$attribute:meta])* $name:ident, $inner:ty) => {
         #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
         #[serde(transparent)]
+        $(#[$attribute])*
         pub struct $name($inner);
         impl JsonSchema for $name {
             fn schema_name() -> Cow<'static, str> {
@@ -36,8 +37,22 @@ macro_rules! identity_value {
         }
     };
 }
-identity_value!(OrganizationId, RecordId);
-identity_value!(EnrollmentId, RecordId);
+identity_value!(
+    #[cfg_attr(
+        all(feature = "wire-export", not(target_arch = "wasm32")),
+        derive(specta::Type)
+    )]
+    OrganizationId,
+    RecordId
+);
+identity_value!(
+    #[cfg_attr(
+        all(feature = "wire-export", not(target_arch = "wasm32")),
+        derive(specta::Type)
+    )]
+    EnrollmentId,
+    RecordId
+);
 identity_value!(RemoteStartId, RecordId);
 identity_value!(IsolationInstanceId, RecordId);
 identity_value!(InstallationId, ServiceId);
@@ -87,7 +102,14 @@ bounded_value!(
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct UnixSeconds(pub i64);
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub struct UnixSeconds(
+    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = specta_typescript::Number))]
+    pub i64,
+);
 impl JsonSchema for UnixSeconds {
     fn schema_name() -> Cow<'static, str> {
         "UnixSeconds".into()

@@ -9,6 +9,10 @@ use serde::{Deserialize, Serialize};
 /// The closed set of engine kinds an admin sees; test-support machines are hidden.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum EngineKindName {
     WakeTimer,
     AutomationTimer,
@@ -22,6 +26,10 @@ pub enum EngineKindName {
 /// One registered engine kind in EngineHealth; zero counts are listed too.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct EngineKindHealth {
     pub kind: EngineKindName,
     pub failing: u32,
@@ -34,6 +42,10 @@ pub struct EngineKindHealth {
 /// One retired failure record in EngineListRetired, ascending by attempt ID.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct EngineRetiredItem {
     #[schemars(with = "String", extend("format" = "uuid"))]
     pub attempt_id: uuid::Uuid,
@@ -57,6 +69,10 @@ pub enum OrganizationAdminAnswer {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "result", rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum MachineEnrollmentRevocationResult {
     Revoked {},
     NotFound {},
@@ -68,6 +84,10 @@ pub enum MachineEnrollmentRevocationResult {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum MachineEnrollmentRevocationRefusal {
     NotPermitted,
     FactorNotRecent,
@@ -94,6 +114,10 @@ impl RetainedOrganizationAdminAnswer {
     rename_all = "camelCase",
     rename_all_fields = "camelCase",
     deny_unknown_fields
+)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
 )]
 pub enum OrganizationAdminResult {
     Applied {
@@ -125,6 +149,10 @@ pub enum OrganizationAdminResult {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum AdminRefusal {
     NameInUse,
     NotPermitted,

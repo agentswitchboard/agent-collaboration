@@ -10,6 +10,9 @@ description = "Shared vocabulary and interfaces for FleetRuntime features"
 [lints]
 workspace = true
 
+[features]
+wire-export = ["dep:specta","fleet-identity-protocol/wire-export","message-board/wire-export"]
+
 [dependencies]
 central-engine-model.workspace = true
 central-storage.workspace = true
@@ -25,3 +28,6 @@ workspace-model.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+specta = { workspace = true, features = ["derive"], optional = true }

@@ -3,6 +3,12 @@
 version = 4
 
 [[package]]
+name = "Inflector"
+version = "0.11.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fe438c63458706e03479442743baae6c88256498e6431708f6dfc520a26515d3"
+
+[[package]]
 name = "acp-client-runtime"
 version = "0.1.157"
 dependencies = [
@@ -1515,8 +1521,12 @@ dependencies = [
  "serde_json",
  "serde_json_canonicalizer",
  "sha2 0.10.9",
+ "specta",
+ "specta-serde",
+ "specta-typescript",
  "sqlx",
  "sqlx-core",
+ "tempfile",
  "thiserror 2.0.18",
  "tokio",
  "url",
@@ -2429,6 +2439,7 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "specta",
  "thiserror 2.0.18",
  "workspace-ids",
  "workspace-model",
@@ -2450,6 +2461,7 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "specta",
  "sqlx",
  "thiserror 2.0.18",
  "tokio",
@@ -2467,6 +2479,8 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "specta",
+ "specta-typescript",
 ]
 
 [[package]]
@@ -2603,6 +2617,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "specta",
+ "specta-typescript",
  "sqlx",
  "state-machine-core",
  "tempfile",
@@ -3788,6 +3804,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "specta",
  "thiserror 2.0.18",
  "url",
  "uuid",
@@ -5272,6 +5289,48 @@ checksum = "52d1cfed4120b4d927bf7c0f86d2087a4a7d6027c906d9f9d525a80573b9be51"
 dependencies = [
  "libc",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "specta"
+version = "2.0.0-rc.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3fa60a95f1bed059a9e9b1f4052dfa8fee47813c429223c8590b338f719ac12e"
+dependencies = [
+ "chrono",
+ "rustc_version",
+ "specta-macros",
+ "uuid",
+]
+
+[[package]]
+name = "specta-macros"
+version = "2.0.0-rc.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7eeb2926ce0ef69a996fb8ad805c39936d47b6f02b327eca79cb207645ac8686"
+dependencies = [
+ "Inflector",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.118",
+]
+
+[[package]]
+name = "specta-serde"
+version = "0.0.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "69fbb7f8846160cc2924352f5a3b199281742ea335b6b4328d886a44d398e417"
+dependencies = [
+ "specta",
+]
+
+[[package]]
+name = "specta-typescript"
+version = "0.0.15"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b96519dc9b060d66e50b55ab10fb550bbf56c7576b9c9cca467d580a53cd473d"
+dependencies = [
+ "specta",
 ]
 
 [[package]]
@@ -6775,6 +6834,7 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "specta",
  "thiserror 2.0.18",
  "uuid",
 ]

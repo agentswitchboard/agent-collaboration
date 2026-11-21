@@ -16,6 +16,10 @@ use serde_json::Value;
 /// retry. Central's request log retains its committed outcome.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct AdminOperationId(String);
 impl TryFrom<String> for AdminOperationId {
     type Error = PersonRequestRefusal;
@@ -52,6 +56,10 @@ pub const MAXIMUM_RECORD_PAGE: u16 = 100;
 /// than rewritten, so the signed intent hashes the stored name.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct WorkspaceName(message_board::ResourceName);
 impl TryFrom<String> for WorkspaceName {
     type Error = PersonRequestRefusal;
@@ -88,6 +96,10 @@ impl JsonSchema for WorkspaceName {
 /// One page of change records: 1..=100.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "u16", into = "u16")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct RecordPageLimit(u16);
 impl TryFrom<u16> for RecordPageLimit {
     type Error = PersonRequestRefusal;
@@ -120,17 +132,26 @@ impl JsonSchema for RecordPageLimit {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct CreateWorkspaceRequest {
     pub organization_id: OrganizationId,
     pub operation_id: AdminOperationId,
     pub name: WorkspaceName,
     #[serde(deserialize_with = "deserialize_description")]
+    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = String))]
     #[schemars(schema_with = "description_schema")]
     pub description: String,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct WorkspaceLookupRequest {
     pub organization_id: OrganizationId,
     pub workspace_id: message_board::WorkspaceId,
@@ -138,6 +159,10 @@ pub struct WorkspaceLookupRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct ReadChangeRecordsRequest {
     pub organization_id: OrganizationId,
     /// The last record ID of the previous page; absent or null for the first.
@@ -177,6 +202,10 @@ pub struct EngineAttemptRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct RevokeMachineEnrollmentRequest {
     pub organization_id: OrganizationId,
     pub enrollment_id: EnrollmentId,

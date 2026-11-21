@@ -19,9 +19,10 @@ pub struct IdentityValidationError {
 }
 
 macro_rules! uuid_v7_identity {
-    ($($name:ident),+ $(,)?) => {$ (
+    ($($(#[$attribute:meta])* $name:ident),+ $(,)?) => {$ (
         #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
         #[serde(try_from = "String", into = "String")]
+        $(#[$attribute])*
         pub struct $name(String);
 
         impl JsonSchema for $name {
@@ -62,6 +63,10 @@ macro_rules! uuid_v7_identity {
 uuid_v7_identity!(ProjectId, BoardId);
 
 uuid_v7_identity!(
+    #[cfg_attr(
+        all(feature = "wire-export", not(target_arch = "wasm32")),
+        derive(specta::Type)
+    )]
     WorkspaceId,
     WorkstreamId,
     TaskId,
@@ -78,6 +83,10 @@ uuid_v7_identity!(
     RequestId,
     WorkTrailRowId,
     TrailRedactionId,
+    #[cfg_attr(
+        all(feature = "wire-export", not(target_arch = "wasm32")),
+        derive(specta::Type)
+    )]
     RecordId,
     EpochLineId
 );

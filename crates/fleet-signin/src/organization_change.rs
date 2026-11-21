@@ -12,6 +12,10 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum OrganizationChangeKind {
     OrganizationProvisioned,
     StampRenewed,
@@ -56,6 +60,10 @@ impl OrganizationChangeKind {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum OrganizationChangeOrigin {
     /// An empty struct variant so an unknown field is refused like any other.
     SignInProvisioning {},
@@ -69,6 +77,10 @@ pub enum OrganizationChangeOrigin {
 /// The operation's own identity; a repeat of that operation finds this row.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct ChangeRequestId(String);
 
 impl TryFrom<String> for ChangeRequestId {
@@ -106,6 +118,10 @@ impl ChangeRequestId {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct OrganizationChangeRecord {
     #[schemars(with = "String", extend("format" = "uuid"))]
     pub id: Uuid,
@@ -113,6 +129,7 @@ pub struct OrganizationChangeRecord {
     pub kind: OrganizationChangeKind,
     pub origin: OrganizationChangeOrigin,
     pub target_id: String,
+    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = specta_typescript::Number))]
     pub created_at_millis: i64,
 }
 

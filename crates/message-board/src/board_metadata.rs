@@ -21,9 +21,10 @@ pub struct TextValidationError {
 }
 
 macro_rules! bounded_text {
-    ($name:ident, $field:literal, $min:expr, $max:expr, $trim:expr, $reject_c0:expr $(, all_of_type = $all_of_type:literal)?) => {
+    ($(#[$attribute:meta])* $name:ident, $field:literal, $min:expr, $max:expr, $trim:expr, $reject_c0:expr $(, all_of_type = $all_of_type:literal)?) => {
         #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
         #[serde(try_from = "String", into = "String")]
+        $(#[$attribute])*
         pub struct $name(String);
         impl JsonSchema for $name {
             fn schema_name() -> Cow<'static, str> { stringify!($name).into() }
@@ -61,8 +62,23 @@ macro_rules! bounded_text {
 }
 
 // name, minimum, maximum, trims surrounding whitespace, rejects C0 controls.
-bounded_text!(ResourceName, "name", 1, MAX_NAME_BYTES, true, false);
 bounded_text!(
+    #[cfg_attr(
+        all(feature = "wire-export", not(target_arch = "wasm32")),
+        derive(specta::Type)
+    )]
+    ResourceName,
+    "name",
+    1,
+    MAX_NAME_BYTES,
+    true,
+    false
+);
+bounded_text!(
+    #[cfg_attr(
+        all(feature = "wire-export", not(target_arch = "wasm32")),
+        derive(specta::Type)
+    )]
     Description,
     "description",
     0,
@@ -78,6 +94,10 @@ bounded_text!(DropReason, "reason", 1, MAX_MESSAGE_TEXT_BYTES, false, true);
 bounded_text!(TrailTag, "tag", 1, MAX_NAME_BYTES, true, true);
 bounded_text!(MarkdownText, "text", 1, MAX_MESSAGE_TEXT_BYTES, false, true);
 bounded_text!(
+    #[cfg_attr(
+        all(feature = "wire-export", not(target_arch = "wasm32")),
+        derive(specta::Type)
+    )]
     MachineLabel,
     "machineLabel",
     1,
@@ -112,6 +132,10 @@ pub enum BoardState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum WorkspaceState {
     Active,
     Archiving,

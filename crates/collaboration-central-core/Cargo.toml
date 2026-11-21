@@ -10,6 +10,7 @@ publish.workspace = true
 workspace = true
 
 [features]
+wire-export = ["dep:specta","dep:specta-typescript","fleet-contracts/wire-export","fleet-engine/wire-export","fleet-identity-protocol/wire-export","fleet-signin/wire-export","message-board/wire-export","workspace-ids/wire-export"]
 conformance = []
 # Test seams (pause points, the storage conformance schema); never in a production build.
 test-support = ["fleet-signin/test-support", "fleet-engine/test-support", "fleet-runtime/test-support", "dep:sqlx-core", "fleet-storage-schema/test-support"]
@@ -68,3 +69,11 @@ tokio.workspace = true
 [[test]]
 name = "integration"
 path = "tests/integration/main.rs"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+specta = { workspace = true, features = ["derive","chrono","uuid"], optional = true }
+specta-typescript = { workspace = true, optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+specta-serde.workspace = true
+tempfile = "3.27.0"

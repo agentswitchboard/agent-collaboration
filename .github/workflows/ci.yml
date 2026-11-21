@@ -412,6 +412,25 @@ jobs:
       # targets, so fetch target-specific packages even on this Linux runner.
       - name: Fetch dependencies for all targets
         run: cargo fetch --locked
+      - name: Check Central Sign-in TypeScript wire contracts
+        if: matrix.shard == 1
+        run: cargo test --locked --offline -p collaboration-central-core --features wire-export --lib signin_wire_export_test
+      - name: Keep Specta out of production dependency graphs
+        if: matrix.shard == 1
+        shell: bash
+        run: |
+          set -eu
+          check_graph() {
+            graph=$(cargo tree --locked --offline --prefix none -e normal,build "$@")
+            if printf '%s\n' "$graph" | grep -E '^specta(-[^ ]+)? v'; then
+              echo "Specta is present in the production graph for $*" >&2
+              return 1
+            fi
+          }
+          check_graph --target aarch64-apple-darwin -p codex-router-cli -p agent-collaboration
+          check_graph -p collaboration-central-tokio --no-default-features
+          check_graph --target wasm32-unknown-unknown -p collaboration-central-cloudflare --no-default-features
+          check_graph --target wasm32-unknown-unknown -p collaboration-central-cloudflare --no-default-features --features link
       - name: Check the central engine native property-test dependency offline
         if: matrix.shard == 1
         run: cargo check --locked --offline -p central-engine-model --tests

@@ -9,6 +9,10 @@ use std::num::NonZeroU32;
 use workspace_ids::MachineId;
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct DecideDeviceLogin {
     pub organization_id: OrganizationId,
     pub approver: PersonId,
@@ -18,9 +22,11 @@ pub struct DecideDeviceLogin {
     pub label: MachineLabel,
     pub allowed_workspaces: AllowedWorkspaces,
     #[serde(deserialize_with = "nullable_nonnegative_unix_seconds")]
+    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = Option<UnixSeconds>))]
     #[schemars(required, schema_with = "nullable_nonnegative_unix_seconds_schema")]
     pub approver_second_factor_at: Option<UnixSeconds>,
     #[serde(deserialize_with = "nonnegative_unix_seconds")]
+    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = UnixSeconds))]
     #[schemars(with = "i64", range(min = 0))]
     pub code_expires_at: UnixSeconds,
 }
@@ -57,6 +63,10 @@ fn nullable_nonnegative_unix_seconds<'de, D: Deserializer<'de>>(
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum DeviceLoginDecision {
     Approved {
         enrollment_id: EnrollmentId,
@@ -74,6 +84,10 @@ pub enum DeviceLoginDecision {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum DeviceLoginRefusal {
     NotPermitted {},
     MachineInAnotherOrganization {},
@@ -82,6 +96,10 @@ pub enum DeviceLoginRefusal {
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct DecideMachineToken {
     pub organization_id: OrganizationId,
     pub enrollment_id: EnrollmentId,
@@ -89,6 +107,10 @@ pub struct DecideMachineToken {
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct EndedMachineClient {
     pub enrollment_id: EnrollmentId,
     pub client_id: ClientId,
@@ -100,14 +122,20 @@ pub struct EndedMachineClient {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum MachineTokenDecision {
     Grant {
         machine_id: MachineId,
         enrollment_id: EnrollmentId,
         #[serde(deserialize_with = "nonnegative_unix_seconds")]
+        #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = UnixSeconds))]
         #[schemars(with = "i64", range(min = 0))]
         decided_at: UnixSeconds,
         #[serde(deserialize_with = "nonnegative_unix_seconds")]
+        #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = UnixSeconds))]
         #[schemars(with = "i64", range(min = 0))]
         grant_expires_at: UnixSeconds,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -124,6 +152,10 @@ pub enum MachineTokenDecision {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum MachineTokenRefusal {
     EnrollmentNotActive {},
     Superseded {},
@@ -132,6 +164,10 @@ pub enum MachineTokenRefusal {
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct PresentedMachine {
     pub machine_id: MachineId,
 }

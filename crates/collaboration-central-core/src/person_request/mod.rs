@@ -19,3 +19,6 @@ pub use request_admission::{
 pub use request_verifier::{
     PersonRequestInput, PersonRequestPolicy, PersonRequestVerifier, VerifiedPersonRequest,
 };
+
+#[cfg(all(test, feature = "wire-export", not(target_arch = "wasm32")))]
+pub(crate) use admin_operations::RevokeMachineEnrollmentRequest;
