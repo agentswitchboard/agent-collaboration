@@ -105,13 +105,5 @@ async fn due_selection_orders_before_its_per_kind_cap() {
 
 #[test]
 fn read_due_wakes_describes_the_owner_query() {
-    let _ = fleet_engine::check_timed_due_list!(
-        wake_list,
-        central_engine_model::due_list_query(
-            central_engine_model::DueListKind::Wakes,
-            central_engine_model::EngineTime::UNIX_EPOCH,
-            1
-        )
-        .unwrap()
-    );
+    let _ = fleet_engine::check_timed_due_list!(Wakes);
 }

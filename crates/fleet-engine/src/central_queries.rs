@@ -73,6 +73,38 @@ macro_rules! declare_timed_due_lists {
             }
         )+
 
+        /// Checks the SQL and binds for one kind on its owning crate's SQLite schema.
+        #[macro_export]
+        macro_rules! check_timed_due_list {
+            $(
+                ($kind) => {{
+                    const _: () = {
+                        let path = $file.as_bytes();
+                        let owner = concat!("../", env!("CARGO_PKG_NAME"), "/").as_bytes();
+                        assert!(path.len() > owner.len(), "timed-list witness must be in its owning crate");
+                        let mut offset = 0;
+                        while offset < owner.len() {
+                            assert!(path[offset] == owner[offset], "timed-list witness must be in its owning crate");
+                            offset += 1;
+                        }
+                    };
+                    $crate::__declare_timed_due_row!();
+                    macro_rules! witness {
+                        ($d sql:literal, $d horizon:expr, $d cap:expr) => {
+                            sqlx::query_file_as!(StoredDueRow, $d sql, $d horizon, $d cap)
+                        };
+                    }
+                    let query = central_engine_model::due_list_query(
+                        central_engine_model::DueListKind::$kind,
+                        central_engine_model::EngineTime::UNIX_EPOCH,
+                        1,
+                    ).unwrap();
+                    use $crate::$witness;
+                    $witness!(witness, query)
+                }};
+            )+
+        }
+
         macro_rules! select_timed_due_list {
             ($d emit:ident, $d input:expr) => {
                 match $d input.kind() {
@@ -94,21 +126,6 @@ declare_timed_due_lists! {
     SystemExpiries, system_expiry_list, "../fleet-mail/src/queries/read_due_system_expiries.sql";
     #[cfg(feature = "test-support")]
     Probes, probe_list, "../collaboration-central-core/src/engine/queries/read_due_probes.sql";
-}
-
-/// Native, owner-local checks use the same typed row, SQL file and bind order as runtime.
-#[macro_export]
-macro_rules! check_timed_due_list {
-    ($list:ident, $input:expr) => {{
-        $crate::__declare_timed_due_row!();
-        macro_rules! witness {
-            ($file:literal, $horizon:expr, $cap:expr) => {
-                sqlx::query_file_as!(StoredDueRow, $file, $horizon, $cap)
-            };
-        }
-        use $crate::$list;
-        $list!(witness, $input)
-    }};
 }
 
 __declare_timed_due_row!();

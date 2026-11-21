@@ -13,3 +13,9 @@ export const engineFixtureSqlMarkers = [
   "SELECT subject_key,occurrence_ms,effective_due_ms FROM (SELECT",
   "checked Engine widget fixture",
 ] as const;
+
+/** SQLite identifiers are ASCII case-insensitive. Latin-1 keeps the artifact bytes intact. */
+export function findEngineFixtureSql(content: Buffer): string | undefined {
+  const artifact = content.toString("latin1").toLowerCase();
+  return engineFixtureSqlMarkers.find((marker) => artifact.includes(marker.toLowerCase()));
+}

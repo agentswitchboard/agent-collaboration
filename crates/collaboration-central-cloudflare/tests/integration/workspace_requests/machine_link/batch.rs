@@ -13,8 +13,8 @@ use futures_util::{SinkExt, StreamExt};
 use reqwest_websocket::Message;
 use std::{io::Write, path::PathBuf};
 use workspace_model::central_mail::{
-    CentralMailOperation, CentralMailRefusal, CentralMailRequest, CentralMailResult,
-    TimingRequirement,
+    CentralMailAnswer, CentralMailOperation, CentralMailRefusal, CentralMailRequest,
+    CentralMailResult, TimingRequirement,
 };
 use workspace_model::{
     Caller, ItemRef, ItemView, WorkspaceAnswer, WorkspaceId, WorkspaceOperation, WorkspaceRequest,
@@ -45,6 +45,77 @@ async fn refused_alarm_and_restoration_diagnostics_preserve_correlated_replies()
     let result = refused_diagnostic_journey(&fixture).await;
     fixture.close().await?;
     result
+}
+
+#[tokio::test]
+async fn each_reply_observes_the_alarm_committed_for_that_member() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let result = committed_alarm_journey(&fixture).await;
+    fixture.close().await?;
+    result
+}
+
+async fn committed_alarm_journey(fixture: &Fixture) -> Result<()> {
+    let (mut link, _, _, _, _) = baseline(fixture).await?;
+    let Caller::Session(target) = session_caller()? else {
+        return Err("wake needs the fixture's session caller".into());
+    };
+    let later: workspace_model::Timestamp = "2030-03-17T17:55:00Z".parse()?;
+    let earlier: workspace_model::Timestamp = "2030-03-17T17:50:00Z".parse()?;
+    let payloads = [
+        ("019f0000-0000-7000-8000-00000000cf51", later),
+        ("019f0000-0000-7000-8000-00000000cf52", earlier),
+    ]
+    .into_iter()
+    .map(|(request_id, due_at)| {
+        Ok(RequestPayload::Mail(CentralMailRequest {
+            request_id: request_id.parse()?,
+            operation: CentralMailOperation::SetWake {
+                target: target.clone(),
+                due_at,
+                text: "C2 alarm outcome".to_owned().try_into()?,
+            },
+        }))
+    })
+    .collect::<Result<Vec<_>>>()?;
+    fixture.host.c2_witness(WitnessPhase::Deciding).await?;
+    let (batch, replies) = link.batch(payloads).await?;
+    let correlations = batch_correlations(&batch)?;
+    let records = fixture
+        .host
+        .c2_settle_alarms(WitnessPhase::Deciding, &correlations)
+        .await?;
+    assert_eq!(replies.len(), 2);
+    for ((reply, correlation), expected) in replies.iter().zip(correlations).zip([later, earlier]) {
+        let DataFrame::Reply { result, .. } = reply else {
+            return Err("wake did not produce its reply".into());
+        };
+        assert!(
+            matches!(result.as_ref(), ReplyPayload::Mail(CentralMailResult::Done(
+            CentralMailAnswer::WakeSet { due_at, .. }
+        )) if *due_at == expected)
+        );
+        let snapshots = records
+            .iter()
+            .filter_map(|record| match &record.event {
+                WitnessEvent::AlarmSnapshot {
+                    correlation_id,
+                    earliest_due_ms,
+                    alarm_ms,
+                    ..
+                } if correlation_id == correlation => Some((
+                    earliest_due_ms.map(central_storage::SafeInteger::get),
+                    alarm_ms.map(central_storage::SafeInteger::get),
+                )),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        let expected = Some(expected.timestamp_millis());
+        assert_eq!(snapshots, [(expected, expected)]);
+    }
+    let physical: Option<i64> = fixture.runtime().control("raw-alarm-time", &()).await?;
+    assert_eq!(physical, Some(earlier.timestamp_millis()));
+    link.close().await
 }
 
 async fn refused_diagnostic_journey(fixture: &Fixture) -> Result<()> {

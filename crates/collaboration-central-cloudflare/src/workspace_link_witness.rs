@@ -1,9 +1,16 @@
 //! Verification-only events; no hook or binding exists in a production bundle.
 use super::CentralObject;
-use central_storage::{ReadOutcome, StoreFailure};
-use fleet_runtime_ports::CentralStore;
+use central_storage::{
+    AlarmPublication, AlarmUpdate, EngineAlarmDecider, EngineAlarmTimes, ReadOutcome,
+    StatementBatch, StoreFailure,
+};
 use serde::Serialize;
-use std::{cell::RefCell, collections::VecDeque, rc::Rc};
+use std::{
+    cell::RefCell,
+    collections::VecDeque,
+    rc::Rc,
+    sync::{Arc, Mutex, PoisonError},
+};
 use worker::{Env, Method, RequestInit, Result, send::SendWrapper};
 
 #[derive(Clone, Copy, Serialize)]
@@ -51,6 +58,34 @@ enum Event {
     },
 }
 
+// The observer borrows the actual Engine inputs and only keeps the pair once
+// the host confirms the same transaction committed the physical alarm change.
+pub(super) struct ApplyingAlarmInputs(Arc<Mutex<Option<EngineAlarmTimes>>>);
+
+pub(super) fn capture_alarm_inputs(
+    env: &Env,
+    decider: EngineAlarmDecider,
+    batch: &StatementBatch,
+) -> (EngineAlarmDecider, Option<ApplyingAlarmInputs>) {
+    if !matches!(batch.alarm, AlarmUpdate::Engine(_)) || !enabled(env).unwrap_or(false) {
+        return (decider, None);
+    }
+    let inputs = Arc::new(Mutex::new(None));
+    let applying = inputs.clone();
+    let observed: EngineAlarmDecider = Arc::new(move |times, now, write| {
+        let decision = decider(times, now, write)?;
+        *applying.lock().unwrap_or_else(PoisonError::into_inner) = Some(times);
+        Ok(decision)
+    });
+    (observed, Some(ApplyingAlarmInputs(inputs)))
+}
+
+#[derive(Clone, Copy)]
+struct CommittedAlarmObservation {
+    inputs: EngineAlarmTimes,
+    alarm_ms: Option<i64>,
+}
+
 // Every object records observations in capture order. The detached drain may wait
 // for acknowledgements without affecting a statement, reply, or later batch member.
 #[derive(Clone, Default)]
@@ -60,9 +95,26 @@ pub(super) struct PendingWitnesses(SendWrapper<Rc<RefCell<WitnessQueue>>>);
 struct WitnessQueue {
     events: VecDeque<Event>,
     draining: bool,
+    committed_alarm: Option<CommittedAlarmObservation>,
 }
 
 impl PendingWitnesses {
+    pub(super) fn alarm_committed(
+        &self,
+        applying: ApplyingAlarmInputs,
+        publication: &AlarmPublication,
+    ) {
+        let alarm_ms = match publication {
+            AlarmPublication::Set { unix_millis } => Some(*unix_millis),
+            AlarmPublication::Cleared => None,
+            AlarmPublication::Unchanged | AlarmPublication::Failed { .. } => return,
+        };
+        if let Some(inputs) = *applying.0.lock().unwrap_or_else(PoisonError::into_inner) {
+            self.0.borrow_mut().committed_alarm =
+                Some(CommittedAlarmObservation { inputs, alarm_ms });
+        }
+    }
+
     fn enqueue(&self, env: &Env, state: &worker::State, event: Event) -> Result<()> {
         if !enabled(env)? {
             return Ok(());
@@ -177,21 +229,22 @@ impl CentralObject {
             worker::console_warn!("C2 authority diagnostic failed: {error}");
         }
     }
-    pub(super) async fn witness_alarm(
+    pub(super) fn witness_alarm_outcome(
         &self,
         correlation_id: &central_link_protocol::CorrelationId,
     ) -> Result<()> {
         if !enabled(&self.env)? {
             return Ok(());
         }
-        let inputs = self
-            .statement_host()
-            .engine_alarm_inputs()
-            .await
-            .map_err(|_| worker::Error::RustError("C2 due read unavailable".into()))?;
+        // A member that made no successful publication retains the last one.
+        // Cold runtime initialization publishes before accepting any member.
+        let observed =
+            self.witnesses.0.borrow().committed_alarm.ok_or_else(|| {
+                worker::Error::RustError("C2 has no committed alarm outcome".into())
+            })?;
         let earliest_due_ms = [
-            inputs.earliest_on_grid_due_unix_millis,
-            inputs.earliest_legacy_due_unix_millis,
+            observed.inputs.earliest_on_grid_due_unix_millis,
+            observed.inputs.earliest_legacy_due_unix_millis,
         ]
         .into_iter()
         .flatten()
@@ -199,7 +252,7 @@ impl CentralObject {
         if earliest_due_ms.is_some_and(|value| value < 0) {
             return Err(worker::Error::RustError("C2 invalid due value".into()));
         }
-        let alarm_ms = self.state.storage().get_alarm().await?;
+        let alarm_ms = observed.alarm_ms;
         if alarm_ms
             .is_some_and(|value| value < 0 || central_storage::SafeInteger::new(value).is_err())
         {

@@ -72,12 +72,24 @@ impl CentralStore for CentralStatements {
             } else {
                 decide_alarm
             };
+            #[cfg(feature = "test-support")]
+            let (decide_alarm, captured_alarm) = workspace_link_witness::capture_alarm_inputs(
+                &self.witness_env,
+                decide_alarm,
+                &batch,
+            );
             let result = statement_store::run_batch(
                 &self.connection,
                 batch.into(),
                 AlarmPolicy::Engine(self.state.storage(), self.clock.clone(), decide_alarm),
             )
             .await;
+            #[cfg(feature = "test-support")]
+            if let (Some(capture), Ok(BatchOutcome::Applied { publication, .. })) =
+                (captured_alarm, &result)
+            {
+                self.witnesses.alarm_committed(capture, publication);
+            }
             #[cfg(feature = "test-support")]
             if fault.is_some_and(|fault| {
                 matches!(

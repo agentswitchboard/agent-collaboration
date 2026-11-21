@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { z } from "zod";
-import { engineFixtureSqlMarkers } from "./central-engine-fixture-markers.ts";
+import { findEngineFixtureSql } from "./central-engine-fixture-markers.ts";
 
 const cargoArtifact = z.object({
   reason: z.literal("compiler-artifact"),
@@ -33,9 +33,9 @@ export function checkCentralNativeArtifacts(messages: string): number {
       if (features.includes("test-support"))
         throw new Error(`Native Central artifact ${target.name} enables test-support`);
       const content = readFileSync(archive);
-      for (const marker of engineFixtureSqlMarkers)
-        if (content.includes(marker))
-          throw new Error(`Native Central artifact ${target.name} contains fixture SQL: ${marker}`);
+      const marker = findEngineFixtureSql(content);
+      if (marker !== undefined)
+        throw new Error(`Native Central artifact ${target.name} contains fixture SQL: ${marker}`);
       artifacts.add(target.name);
     }
   }

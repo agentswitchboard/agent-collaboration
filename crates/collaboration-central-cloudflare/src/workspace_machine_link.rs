@@ -231,13 +231,11 @@ impl CentralObject {
                 {
                     MachineRequestResult::Reply(reply) => {
                         self.send_reply_and_close_if_lapsed(&socket, &request, reply, false)
-                            .await
                     }
                     // The request is answered before the close, as on the native host.
                     MachineRequestResult::AuthorityRefused => {
                         let reply = refused_reply(request.payload(), RefusalReason::MachineRevoked);
                         self.send_reply_and_close_if_lapsed(&socket, &request, reply, true)
-                            .await
                     }
                     MachineRequestResult::Unavailable => {
                         close(&socket, "machine admission unavailable")
@@ -265,8 +263,12 @@ impl CentralObject {
                     };
                     // A lapsed authority closes the link with the last member's reply.
                     let close_after_reply = lapsed && members.peek().is_none();
-                    self.send_reply_and_close_if_lapsed(&socket, request, reply, close_after_reply)
-                        .await?;
+                    self.send_reply_and_close_if_lapsed(
+                        &socket,
+                        request,
+                        reply,
+                        close_after_reply,
+                    )?;
                 }
                 Ok(())
             }
@@ -434,11 +436,11 @@ impl CentralObject {
     #[cfg_attr(
         not(feature = "test-support"),
         expect(
-            clippy::unused_async,
-            reason = "test-support can observe the alarm after sending the frame"
+            clippy::unused_self,
+            reason = "test-support records the applying outcome"
         )
     )]
-    async fn send_reply_and_close_if_lapsed(
+    fn send_reply_and_close_if_lapsed(
         &self,
         socket: &WebSocket,
         request: &LinkRequest,
@@ -457,7 +459,7 @@ impl CentralObject {
         }
 
         #[cfg(feature = "test-support")]
-        if let Err(error) = self.witness_alarm(request.correlation_id()).await {
+        if let Err(error) = self.witness_alarm_outcome(request.correlation_id()) {
             worker::console_warn!("Post-reply alarm diagnostic failed: {error}");
         }
         Ok(())

@@ -83,13 +83,5 @@ fn fixture_alarm_sql_describes_the_rows_executed_by_both_hosts() {
 #[cfg(feature = "test-support")]
 #[test]
 fn fixture_due_list_describes_the_probe_view() {
-    let _ = fleet_engine::check_timed_due_list!(
-        probe_list,
-        central_engine_model::due_list_query(
-            central_engine_model::DueListKind::Probes,
-            central_engine_model::EngineTime::UNIX_EPOCH,
-            1
-        )
-        .unwrap()
-    );
+    let _ = fleet_engine::check_timed_due_list!(Probes);
 }

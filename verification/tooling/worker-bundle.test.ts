@@ -101,11 +101,13 @@ test("every Central fixture SQL marker is rejected from a production Wasm", (): 
   const { root, selectedDirectory } = selectionFixture();
   try {
     for (const marker of engineFixtureSqlMarkers) {
-      writeFileSync(join(selectedDirectory, "index_bg.wasm"), marker);
-      assert.deepEqual(checkWorkerBundle("production", root, selectedDirectory), {
-        status: 1,
-        message: `Worker production bundle contains fixture SQL: ${marker}`,
-      });
+      for (const spelling of [marker, marker.toUpperCase()]) {
+        writeFileSync(join(selectedDirectory, "index_bg.wasm"), spelling);
+        assert.deepEqual(checkWorkerBundle("production", root, selectedDirectory), {
+          status: 1,
+          message: `Worker production bundle contains fixture SQL: ${marker}`,
+        });
+      }
     }
   } finally {
     rmSync(root, { recursive: true, force: true });
