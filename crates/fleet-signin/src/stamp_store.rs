@@ -3,20 +3,16 @@ use crate::{
     organization_authority::{StampMutation, StoredOrganizationStamp, StoredStampRead},
     organization_change::OrganizationChangeRecord,
 };
-use central_storage::{BatchOutcome, Statement, StoreFailure};
+use central_storage::{BatchOutcome, StoreFailure};
 use fleet_identity_protocol::OrganizationId;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use futures_util::future::BoxFuture;
 use sqlx::{ColumnIndex, Database, Decode, Encode, Executor, IntoArguments, Type};
 
-/// The existing Central alarm query stays on its host transaction.
+/// The host applies a checked stamp and recomputes its alarm on the same transaction.
 pub trait StampStore: Send + Sync {
     fn read_stamp(&self) -> BoxFuture<'_, Result<StoredStampRead, StoreFailure>>;
-    fn write_stamp(
-        &self,
-        write: StampWrite,
-        alarm: Statement,
-    ) -> BoxFuture<'_, Result<BatchOutcome, StoreFailure>>;
+    fn write_stamp(&self, write: StampWrite) -> BoxFuture<'_, Result<BatchOutcome, StoreFailure>>;
 }
 
 const READ_STAMP_SQL: &str = include_str!("queries/read_stamp.sql");

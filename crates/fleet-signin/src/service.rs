@@ -10,7 +10,7 @@ use crate::{
     stamp_store::{StampStore, StampWrite},
     standing::{StampStanding, StandingCache},
 };
-use central_storage::{AlarmUpdate, BatchOutcome, Statement, StatementBatch, StoreFailure};
+use central_storage::{AlarmUpdate, BatchOutcome, EngineAlarmPlan, StatementBatch, StoreFailure};
 use fleet_contracts::{
     DigestFailure, FleetOrganizationStatementRefusal, OrganizationStatementDigestReply,
     ProvisionFailure, ProvisionOrganization, ProvisionOrganizationResult,
@@ -48,7 +48,6 @@ pub struct SignInService<'owner, Host: CentralStore, Stores: WorkspaceStores> {
     store: &'owner dyn StampStore,
     standing: &'owner StandingCache,
     verify: Option<Arc<dyn StampVerification>>,
-    alarm: Statement,
 }
 
 impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
@@ -57,14 +56,12 @@ impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
         store: &'owner dyn StampStore,
         standing: &'owner StandingCache,
         verify: Option<Arc<dyn StampVerification>>,
-        alarm: Statement,
     ) -> Self {
         Self {
             execution,
             store,
             standing,
             verify,
-            alarm,
         }
     }
 
@@ -189,9 +186,7 @@ impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
                             .statement_host()
                             .run_batch(StatementBatch {
                                 statements: vec![],
-                                alarm: AlarmUpdate::SetEngineFromQuery {
-                                    query: self.alarm.clone(),
-                                },
+                                alarm: AlarmUpdate::Engine(EngineAlarmPlan::Recompute),
                             })
                             .await?,
                     )
@@ -239,7 +234,7 @@ impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
             .pause_points()
             .reached_central(fleet_runtime::PausePoint::AfterSignInSample)
             .await;
-        match self.store.write_stamp(write, self.alarm.clone()).await? {
+        match self.store.write_stamp(write).await? {
             BatchOutcome::Applied { .. } => {}
             // A rejected statement keeps main's store-outage answer on this path.
             BatchOutcome::StatementRejected { .. } => return Err(Failure::Unavailable),

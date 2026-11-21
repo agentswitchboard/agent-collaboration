@@ -6,20 +6,16 @@ use super::{
     store_adapter::corrupt_class,
 };
 use central_engine_model::{
-    DueBatchPolicy, DueRow, EngineTime, InstanceKey, MachineKind, RetirementThreshold,
+    DueBatchPolicy, DueListKind, DueRow, EngineTime, InstanceKey, MachineKind, RetirementThreshold,
 };
 use central_storage::{
-    AlarmPublication, AlarmUpdate, BatchOutcome, SqlValue, Statement, StatementBatch, StoreFailure,
+    AlarmPublication, AlarmUpdate, BatchOutcome, EngineAlarmPlan, StatementBatch, StoreFailure,
 };
 use fleet_contracts::{
     AlarmNotPublished, AlarmResult, ControlGate, EngineSubject, EventCompletion, FailureOutcome,
     LegacyUnitOutcome, SubjectVersion,
 };
-use fleet_runtime_ports::CentralStore as _;
-use fleet_runtime_ports::{
-    stored_values::{column, string},
-    workspace_decode_error::corrupt,
-};
+use fleet_runtime_ports::{CentralStore, workspace_decode_error::corrupt};
 use futures_util::{StreamExt, stream};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -30,9 +26,13 @@ pub enum DueCutoff {
 }
 pub struct TimedSource {
     pub machine_kind: MachineKind,
-    pub list_sql: &'static str,
     pub cutoff: DueCutoff,
 }
+pub enum DueDiscoveryError {
+    InvalidBounds(central_engine_model::DueQueryError),
+    Store(StoreFailure),
+}
+
 pub enum TimedRowOutcome {
     Finished(AlarmResult),
     CentralDown,
@@ -41,6 +41,13 @@ pub trait TimedRows<R: EngineHost>: Send + Sync {
     type Kind: Copy + Send + Sync + 'static;
     fn ordered_kinds(&self) -> &'static [Self::Kind];
     fn source(&self, kind: Self::Kind) -> TimedSource;
+    fn discover(
+        &self,
+        runtime: &R,
+        kind: Self::Kind,
+        cutoff: EngineTime,
+        limit: usize,
+    ) -> impl Future<Output = Result<Vec<DueRow>, DueDiscoveryError>> + Send;
     fn run_row(
         &self,
         engine: &Engine<'_, R>,
@@ -94,21 +101,17 @@ fn source(kind: MachineKind) -> EngineSubject {
         key: InstanceKey(kind.0.into()),
     }
 }
-fn decode_due(rows: central_storage::ReadOutcome) -> Result<Vec<DueRow>, StoreFailure> {
-    rows.rows
-        .iter()
-        .map(|row| {
-            let integer = |name| match column(&rows, row, name)? {
-                SqlValue::Integer(value) => Ok(value.get()),
-                _ => Err(corrupt(name)),
-            };
-            Ok(DueRow {
-                key: InstanceKey(string(&rows, row, "subject_key")?.to_owned()),
-                occurrence_ms: integer("occurrence_ms")?,
-                effective_due_ms: integer("effective_due_ms")?,
-            })
-        })
-        .collect()
+pub async fn read_due_rows(
+    host: &impl CentralStore,
+    kind: DueListKind,
+    cutoff: EngineTime,
+    limit: usize,
+) -> Result<Vec<DueRow>, DueDiscoveryError> {
+    let query = central_engine_model::due_list_query(kind, cutoff, limit)
+        .map_err(DueDiscoveryError::InvalidBounds)?;
+    host.read_timed_due_rows(query)
+        .await
+        .map_err(DueDiscoveryError::Store)
 }
 
 impl<R: EngineHost> Engine<'_, R> {
@@ -145,12 +148,7 @@ impl<R: EngineHost> Engine<'_, R> {
             .await
             .map_err(|failure| AlarmNotPublished { failure })?;
         if !provisioned {
-            let publication = self
-                .publish_engine_query(Statement {
-                    sql: "SELECT NULL,NULL",
-                    args: vec![],
-                })
-                .await?;
+            let publication = self.publish_engine_alarm(EngineAlarmPlan::Clear).await?;
             return Ok(EventCompletion {
                 work: AlarmResult::default(),
                 publication,
@@ -161,20 +159,20 @@ impl<R: EngineHost> Engine<'_, R> {
             work = self.run_due_batch(now).await;
         }
         let publication = self
-            .publish_engine_query(central_engine_model::next_due_sql(self.0.alarm_inputs()))
+            .publish_engine_alarm(EngineAlarmPlan::Recompute)
             .await?;
         Ok(EventCompletion { work, publication })
     }
 
-    pub async fn publish_engine_query(
+    pub async fn publish_engine_alarm(
         &self,
-        query: Statement,
+        plan: EngineAlarmPlan,
     ) -> Result<AlarmPublication, AlarmNotPublished> {
         match self
             .host()
             .run_batch(StatementBatch {
                 statements: vec![],
-                alarm: AlarmUpdate::SetEngineFromQuery { query },
+                alarm: AlarmUpdate::Engine(plan),
             })
             .await
         {
@@ -229,18 +227,10 @@ impl<R: EngineHost> Engine<'_, R> {
                 DueCutoff::BatchStart => now,
                 DueCutoff::LookAhead => horizon,
             };
-            let query = match central_engine_model::due_list_sql(
-                description.list_sql,
-                cutoff,
-                policy.per_kind_cap + 1,
-            ) {
-                Ok(query) => query,
-                Err(_) => {
-                    central_down = true;
-                    break;
-                }
-            };
-            match self.host().read(query).await.and_then(decode_due) {
+            match timed
+                .discover(self.0, kind, cutoff, policy.per_kind_cap + 1)
+                .await
+            {
                 Ok(mut rows) => {
                     leftovers |= rows.len() > policy.per_kind_cap;
                     rows.truncate(policy.per_kind_cap);
@@ -256,8 +246,12 @@ impl<R: EngineHost> Engine<'_, R> {
                         }
                     }
                 }
-                Err(StoreFailure::AnswerLost) => {}
-                Err(StoreFailure::Corrupt { reason }) => {
+                Err(DueDiscoveryError::InvalidBounds(_)) => {
+                    central_down = true;
+                    break;
+                }
+                Err(DueDiscoveryError::Store(StoreFailure::AnswerLost)) => {}
+                Err(DueDiscoveryError::Store(StoreFailure::Corrupt { reason })) => {
                     if matches!(
                         self.record_failure(
                             &subject,
@@ -273,9 +267,9 @@ impl<R: EngineHost> Engine<'_, R> {
                         break;
                     }
                 }
-                Err(
+                Err(DueDiscoveryError::Store(
                     failure @ (StoreFailure::Unavailable | StoreFailure::AlarmUnpublishable { .. }),
-                ) => {
+                )) => {
                     self.observe_engine_store_down(&subject, failure);
                     central_down = true;
                     break;

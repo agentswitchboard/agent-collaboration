@@ -73,6 +73,17 @@ fn automatic_origin_rejects_person_or_permission_cells_instead_of_dropping_them(
 
 struct ReadOnlyRows(ReadOutcome);
 impl CentralStore for ReadOnlyRows {
+    async fn read_timed_due_rows(
+        &self,
+        _: fleet_runtime_ports::DueListQuery,
+    ) -> Result<Vec<fleet_runtime_ports::DueRow>, StoreFailure> {
+        Err(StoreFailure::Unavailable)
+    }
+
+    async fn engine_alarm_inputs(&self) -> Result<central_storage::EngineAlarmTimes, StoreFailure> {
+        Err(StoreFailure::Unavailable)
+    }
+
     async fn published_alarm(
         &self,
     ) -> Result<Option<central_engine_model::EngineTime>, central_storage::StoreFailure> {

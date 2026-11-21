@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import { test } from "node:test";
 import { z } from "zod";
 import { checkDeployTemplate, checkWorkerBundle } from "./check-central-worker-bundle.ts";
+import { engineFixtureSqlMarkers } from "./central-engine-fixture-markers.ts";
 import { testSupportMarkers } from "./worker-test-support-markers.ts";
 
 const schema = z.object({
@@ -93,6 +94,23 @@ test("a production bundle carrying any storage test-support marker is refused", 
     } finally {
       rmSync(root, { recursive: true, force: true });
     }
+  }
+});
+
+test("every Central fixture SQL marker is rejected from a production Wasm", (): void => {
+  const { root, selectedDirectory } = selectionFixture();
+  try {
+    for (const marker of engineFixtureSqlMarkers) {
+      for (const spelling of [marker, marker.toUpperCase()]) {
+        writeFileSync(join(selectedDirectory, "index_bg.wasm"), spelling);
+        assert.deepEqual(checkWorkerBundle("production", root, selectedDirectory), {
+          status: 1,
+          message: `Worker production bundle contains fixture SQL: ${marker}`,
+        });
+      }
+    }
+  } finally {
+    rmSync(root, { recursive: true, force: true });
   }
 });
 

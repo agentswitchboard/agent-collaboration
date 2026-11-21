@@ -54,8 +54,22 @@ impl TestFaults {
     }
 
     pub fn take_read_failure(&self, statement: &Statement) -> Option<StoreFailure> {
+        self.take_read_failure_matching(|fault| fault.matches_sql(statement.sql))
+    }
+
+    pub fn take_due_read_failure(
+        &self,
+        kind: fleet_runtime_ports::DueListKind,
+    ) -> Option<StoreFailure> {
+        self.take_read_failure_matching(|fault| fault.kind == kind.machine_kind())
+    }
+
+    fn take_read_failure_matching(
+        &self,
+        matches: impl FnOnce(&EngineReadFault) -> bool,
+    ) -> Option<StoreFailure> {
         let mut armed = self.read.lock().unwrap_or_else(PoisonError::into_inner);
-        if armed.as_ref().is_some_and(|fault| fault.matches(statement)) {
+        if armed.as_ref().is_some_and(matches) {
             armed.take();
             Some(StoreFailure::Corrupt {
                 reason: CorruptReason::BadValue {
@@ -99,7 +113,7 @@ impl TestFaults {
         if batch.statements.is_empty()
             && matches!(
                 batch.alarm,
-                AlarmUpdate::SetFromQuery(_) | AlarmUpdate::SetEngineFromQuery { .. }
+                AlarmUpdate::SetFromQuery(_) | AlarmUpdate::Engine(_)
             )
         {
             self.alarm_batch
@@ -183,15 +197,13 @@ pub struct EngineReadFault {
     pub kind: String,
 }
 impl EngineReadFault {
-    pub fn matches(&self, statement: &Statement) -> bool {
-        statement
-            .sql
-            .starts_with("SELECT subject_key,occurrence_ms,effective_due_ms")
+    fn matches_sql(&self, sql: &str) -> bool {
+        sql.starts_with("SELECT subject_key AS \"subject_key?: String\"")
             && match self.kind.as_str() {
-                "wake_timer" => statement.sql.contains("FROM automation_wakes s"),
-                "automation_timer" => statement.sql.contains("FROM automation_schedules s"),
-                "direct_message" => statement.sql.contains("FROM mail_messages s"),
-                "engine_probe" => statement.sql.contains("s.machine_kind='engine_probe'"),
+                "wake_timer" => sql.contains("FROM wake_due_rows"),
+                "automation_timer" => sql.contains("FROM schedule_due_rows"),
+                "direct_message" => sql.contains("FROM direct_message_due_rows"),
+                "engine_probe" => sql.contains("FROM engine_probe_due_rows"),
                 _ => false,
             }
     }

@@ -60,6 +60,20 @@ pub struct ObjectStorage {
     publication_failures: std::sync::Mutex<Vec<AlarmPublicationFailure>>,
 }
 
+struct NativeTransaction<'a>(&'a mut sqlx::SqliteConnection);
+
+impl fleet_engine::CentralTransaction for NativeTransaction<'_> {
+    type Database = sqlx::Sqlite;
+
+    fn executor(&mut self) -> impl sqlx::Executor<'_, Database = Self::Database> {
+        &mut *self.0
+    }
+
+    fn rows_affected(result: <sqlx::Sqlite as sqlx::Database>::QueryResult) -> u64 {
+        result.rows_affected()
+    }
+}
+
 impl ObjectStorage {
     #[must_use]
     pub fn new(path: PathBuf, migrator: Arc<Migrator>) -> Self {
@@ -163,10 +177,8 @@ impl ObjectStorage {
         if let Some(result) = commit_fault.as_ref().and_then(|fault| fault.before()) {
             return result;
         }
-        if matches!(
-            &batch.alarm,
-            central_storage::AlarmUpdate::SetEngineFromQuery { .. }
-        ) && self.engine_publication.is_none()
+        if matches!(&batch.alarm, central_storage::AlarmUpdate::Engine(_))
+            && self.engine_publication.is_none()
         {
             return Err(StoreFailure::AlarmUnpublishable {
                 reason: AlarmPublicationFailure::ClockUnavailable,
@@ -176,7 +188,11 @@ impl ObjectStorage {
         if let Some(failure) = self.faults.take_alarm_batch_failure(&batch) {
             return Err(failure);
         }
-        let (mut outcome, alarm) = self.opened().await?.run_batch(batch).await?;
+        let (mut outcome, alarm) = self
+            .opened()
+            .await?
+            .run_batch(batch, Self::read_engine_inputs)
+            .await?;
         #[cfg(feature = "test-support")]
         if matches!(outcome, BatchOutcome::Applied { .. }) {
             self.central_publication_pauses
@@ -294,6 +310,43 @@ impl ObjectStorage {
             return Err(failure);
         }
         self.opened().await?.read(statement).await
+    }
+
+    pub(crate) async fn read_timed_due_rows(
+        &self,
+        query: fleet_runtime_ports::DueListQuery,
+    ) -> Result<Vec<fleet_runtime_ports::DueRow>, StoreFailure> {
+        #[cfg(feature = "test-support")]
+        if let Some(failure) = self.faults.take_due_read_failure(query.kind()) {
+            return Err(failure);
+        }
+        let mut connection = self
+            .opened()
+            .await?
+            .pool()
+            .acquire()
+            .await
+            .map_err(|_| StoreFailure::Unavailable)?;
+        fleet_engine::read_timed_due_rows(&mut NativeTransaction(&mut connection), query).await
+    }
+
+    async fn read_engine_inputs(
+        connection: &mut sqlx::SqliteConnection,
+    ) -> Result<central_storage::EngineAlarmTimes, StoreFailure> {
+        fleet_engine::read_alarm_inputs(&mut NativeTransaction(connection)).await
+    }
+
+    pub(crate) async fn engine_alarm_inputs(
+        &self,
+    ) -> Result<central_storage::EngineAlarmTimes, StoreFailure> {
+        let mut connection = self
+            .opened()
+            .await?
+            .pool()
+            .acquire()
+            .await
+            .map_err(|_| StoreFailure::Unavailable)?;
+        Self::read_engine_inputs(&mut connection).await
     }
 
     pub(crate) async fn workspace_pool(&self) -> Result<&sqlx::SqlitePool, StoreFailure> {

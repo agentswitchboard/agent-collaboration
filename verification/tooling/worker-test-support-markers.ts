@@ -6,6 +6,8 @@ export const testSupportMarkers: readonly string[] = [
   "/test-support/workspace/",
   "/test/fail-alarm-batch",
   "/test/lose-provisioning-reply",
+  "/test/engine-due-schedules",
+  "TEST_C2_WITNESS",
   "/test/raw-signin-observe",
   "/test/raw-drop-alarm",
   "/test/raw-alarm-time",

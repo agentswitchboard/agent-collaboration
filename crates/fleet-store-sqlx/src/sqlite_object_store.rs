@@ -5,8 +5,8 @@
 //! or a constraint error rolls the whole batch back. The store knows no business table.
 
 use central_storage::{
-    AlarmPublication, AlarmUpdate, BatchOutcome, ConstraintKind, CorruptReason, ReadOutcome,
-    SafeInteger, SqlValue, Statement, StatementBatch, StoreFailure,
+    AlarmPublication, AlarmUpdate, BatchOutcome, ConstraintKind, CorruptReason, EngineAlarmPlan,
+    EngineAlarmTimes, ReadOutcome, SafeInteger, SqlValue, Statement, StatementBatch, StoreFailure,
 };
 use fleet_runtime_ports::SyncTime;
 use sqlx::error::ErrorKind;
@@ -16,7 +16,7 @@ use sqlx::sqlite::{
     SqliteRow,
 };
 use sqlx::{Arguments, Column, Row, SqliteConnection, TypeInfo, ValueRef};
-use std::path::Path;
+use std::{ops::ControlFlow, path::Path};
 
 /// What a committed batch asks of the object's alarm.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -70,75 +70,99 @@ impl SqliteObjectStore {
         self.pool.close().await;
     }
 
-    pub async fn run_batch(
+    /// Start one owning transaction and lend the callback the connection until
+    /// it has finished its writes and read any publication inputs.
+    pub async fn run_transaction<Applied, Rejected>(
         &self,
-        batch: StatementBatch,
-    ) -> Result<(BatchOutcome, AlarmChange), StoreFailure> {
+        work: impl AsyncFnOnce(
+            &mut SqliteConnection,
+        ) -> Result<ControlFlow<Rejected, Applied>, StoreFailure>,
+    ) -> Result<ControlFlow<Rejected, Applied>, StoreFailure> {
         let mut transaction = self
             .pool
             .begin_with("BEGIN IMMEDIATE")
             .await
             .map_err(|_| StoreFailure::Unavailable)?;
-        let mut rows_affected = Vec::with_capacity(batch.statements.len());
-        for (index, guarded) in batch.statements.into_iter().enumerate() {
-            let index = u32::try_from(index).map_err(|_| StoreFailure::Unavailable)?;
-            let arguments = bind_arguments(guarded.statement.args)?;
-            let affected = match execute(&mut transaction, guarded.statement.sql, arguments).await {
-                Ok(affected) => affected,
-                Err(sqlx::Error::Database(error)) => {
-                    let outcome = match constraint_kind(error.kind()) {
-                        Some(kind) => BatchOutcome::ConstraintViolated { index, kind },
-                        None if statement_is_rejected(error.code().as_deref()) => {
-                            BatchOutcome::StatementRejected { index }
-                        }
-                        None => return Err(StoreFailure::Unavailable),
-                    };
-                    transaction
-                        .rollback()
-                        .await
-                        .map_err(|_| StoreFailure::Unavailable)?;
-                    return Ok((outcome, AlarmChange::Unchanged));
-                }
-                Err(_) => return Err(StoreFailure::Unavailable),
-            };
-            if !guarded.expect.admits(affected) {
+        match work(&mut transaction).await? {
+            ControlFlow::Continue(applied) => {
+                transaction
+                    .commit()
+                    .await
+                    .map_err(|_| StoreFailure::AnswerLost)?;
+                Ok(ControlFlow::Continue(applied))
+            }
+            ControlFlow::Break(rejected) => {
                 transaction
                     .rollback()
                     .await
                     .map_err(|_| StoreFailure::Unavailable)?;
-                return Ok((
-                    BatchOutcome::GuardFailed {
-                        index,
-                        rows_affected: affected,
-                    },
-                    AlarmChange::Unchanged,
-                ));
+                Ok(ControlFlow::Break(rejected))
             }
-            rows_affected.push(affected);
         }
-        let alarm = match batch.alarm {
-            AlarmUpdate::Unchanged => AlarmChange::Unchanged,
-            AlarmUpdate::SetFromQuery(query) => alarm_from_query(&mut transaction, query).await?,
-            AlarmUpdate::SetEngineFromQuery { query } => {
-                let answer = read_rows(&mut transaction, query).await?;
-                let (earliest_on_grid_due, earliest_legacy_due) = engine_alarm_inputs(&answer)?;
-                AlarmChange::Engine {
-                    earliest_on_grid_due,
-                    earliest_legacy_due,
+    }
+
+    pub async fn run_batch(
+        &self,
+        batch: StatementBatch,
+        read_engine: impl AsyncFnOnce(&mut SqliteConnection) -> Result<EngineAlarmTimes, StoreFailure>,
+    ) -> Result<(BatchOutcome, AlarmChange), StoreFailure> {
+        match self
+            .run_transaction(async move |connection| {
+                let mut rows_affected = Vec::with_capacity(batch.statements.len());
+                for (index, guarded) in batch.statements.into_iter().enumerate() {
+                    let index = u32::try_from(index).map_err(|_| StoreFailure::Unavailable)?;
+                    let arguments = bind_arguments(guarded.statement.args)?;
+                    let affected = match execute(connection, guarded.statement.sql, arguments).await
+                    {
+                        Ok(affected) => affected,
+                        Err(sqlx::Error::Database(error)) => {
+                            let outcome = match constraint_kind(error.kind()) {
+                                Some(kind) => BatchOutcome::ConstraintViolated { index, kind },
+                                None if statement_is_rejected(error.code().as_deref()) => {
+                                    BatchOutcome::StatementRejected { index }
+                                }
+                                None => return Err(StoreFailure::Unavailable),
+                            };
+                            return Ok(ControlFlow::Break(outcome));
+                        }
+                        Err(_) => return Err(StoreFailure::Unavailable),
+                    };
+                    if !guarded.expect.admits(affected) {
+                        return Ok(ControlFlow::Break(BatchOutcome::GuardFailed {
+                            index,
+                            rows_affected: affected,
+                        }));
+                    }
+                    rows_affected.push(affected);
                 }
-            }
-        };
-        transaction
-            .commit()
-            .await
-            .map_err(|_| StoreFailure::AnswerLost)?;
-        Ok((
-            BatchOutcome::Applied {
-                rows_affected,
-                publication: AlarmPublication::Unchanged,
-            },
-            alarm,
-        ))
+                let alarm = match batch.alarm {
+                    AlarmUpdate::Unchanged => AlarmChange::Unchanged,
+                    AlarmUpdate::SetFromQuery(query) => alarm_from_query(connection, query).await?,
+                    AlarmUpdate::Engine(EngineAlarmPlan::Clear) => AlarmChange::Engine {
+                        earliest_on_grid_due: None,
+                        earliest_legacy_due: None,
+                    },
+                    AlarmUpdate::Engine(EngineAlarmPlan::Recompute) => {
+                        let times = read_engine(connection).await?;
+                        AlarmChange::Engine {
+                            earliest_on_grid_due: times.earliest_on_grid_due_unix_millis,
+                            earliest_legacy_due: times.earliest_legacy_due_unix_millis,
+                        }
+                    }
+                };
+                Ok(ControlFlow::Continue((rows_affected, alarm)))
+            })
+            .await?
+        {
+            ControlFlow::Continue((rows_affected, alarm)) => Ok((
+                BatchOutcome::Applied {
+                    rows_affected,
+                    publication: AlarmPublication::Unchanged,
+                },
+                alarm,
+            )),
+            ControlFlow::Break(rejected) => Ok((rejected, AlarmChange::Unchanged)),
+        }
     }
 
     /// Borrow an owning connection for a local typed read.
@@ -152,45 +176,6 @@ impl SqliteObjectStore {
             .await
             .map_err(|_| StoreFailure::Unavailable)?;
         read(&mut connection).await
-    }
-
-    /// Apply typed writes and sample engine alarm inputs in the same transaction.
-    pub async fn write_with_engine_alarm<Applied, Abort>(
-        &self,
-        write: impl AsyncFnOnce(&mut SqliteConnection) -> Result<Applied, Abort>,
-        alarm: Statement,
-    ) -> Result<(Applied, central_storage::EngineAlarmTimes), Abort>
-    where
-        Abort: From<StoreFailure>,
-    {
-        let mut transaction = self
-            .pool
-            .begin_with("BEGIN IMMEDIATE")
-            .await
-            .map_err(|_| StoreFailure::Unavailable)?;
-        let applied = match write(&mut transaction).await {
-            Ok(applied) => applied,
-            Err(failure) => {
-                transaction
-                    .rollback()
-                    .await
-                    .map_err(|_| StoreFailure::Unavailable)?;
-                return Err(failure);
-            }
-        };
-        let rows = read_rows(&mut transaction, alarm).await?;
-        let (grid, legacy) = engine_alarm_inputs(&rows)?;
-        transaction
-            .commit()
-            .await
-            .map_err(|_| StoreFailure::AnswerLost)?;
-        Ok((
-            applied,
-            central_storage::EngineAlarmTimes {
-                earliest_on_grid_due_unix_millis: grid,
-                earliest_legacy_due_unix_millis: legacy,
-            },
-        ))
     }
 
     pub async fn read(&self, statement: Statement) -> Result<ReadOutcome, StoreFailure> {
@@ -355,35 +340,6 @@ pub fn batch_statement_failure(
         Ok(BatchOutcome::StatementRejected { index })
     } else {
         Err(StoreFailure::Unavailable)
-    }
-}
-
-fn engine_alarm_inputs(answer: &ReadOutcome) -> Result<(Option<i64>, Option<i64>), StoreFailure> {
-    fn time(value: &SqlValue) -> Result<Option<i64>, StoreFailure> {
-        match value {
-            SqlValue::Null => Ok(None),
-            SqlValue::Integer(value) => Ok(Some(value.get())),
-            SqlValue::Text(_) | SqlValue::Blob(_) => Err(StoreFailure::Corrupt {
-                reason: CorruptReason::BadValue {
-                    column: "engine alarm input".into(),
-                },
-            }),
-        }
-    }
-    match answer.rows.as_slice() {
-        [row] => match row.as_slice() {
-            [grid, legacy] => Ok((time(grid)?, time(legacy)?)),
-            _ => Err(StoreFailure::Corrupt {
-                reason: CorruptReason::BadValue {
-                    column: "engine alarm input".into(),
-                },
-            }),
-        },
-        _ => Err(StoreFailure::Corrupt {
-            reason: CorruptReason::BadValue {
-                column: "engine alarm input".into(),
-            },
-        }),
     }
 }
 

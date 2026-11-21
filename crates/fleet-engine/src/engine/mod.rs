@@ -9,7 +9,6 @@ pub(crate) mod effects;
 pub(crate) mod failures;
 pub(crate) mod handle;
 pub(crate) mod port;
-mod query_shapes;
 #[cfg(any(feature = "test-support", test))]
 pub(crate) mod receipts;
 #[cfg(feature = "test-support")]

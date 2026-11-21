@@ -1,11 +1,12 @@
 //! Stock SQLite binding for the sign-in stamp's owning transaction.
-use super::{AlarmPublicationFailure, BatchOutcome, ObjectStorage, Statement, StoreFailure};
+use super::{AlarmPublicationFailure, BatchOutcome, ObjectStorage, StoreFailure};
 use fleet_signin::{
     organization_authority::StoredStampRead,
     stamp_store::{StampStore, StampTransaction, StampWrite, StampWriteStop, read_stamp},
 };
 use futures_util::future::BoxFuture;
 use sqlx::{Executor, Sqlite, SqliteConnection, sqlite::SqliteQueryResult};
+use std::ops::ControlFlow;
 
 struct NativeStampTransaction<'connection>(&'connection mut SqliteConnection);
 
@@ -29,14 +30,10 @@ impl StampStore for ObjectStorage {
         })
     }
 
-    fn write_stamp(
-        &self,
-        write: StampWrite,
-        alarm: Statement,
-    ) -> BoxFuture<'_, Result<BatchOutcome, StoreFailure>> {
+    fn write_stamp(&self, write: StampWrite) -> BoxFuture<'_, Result<BatchOutcome, StoreFailure>> {
         Box::pin(async move {
             let _order = self.lock_batch_order().await;
-            let result = self.write_stamp_in_order(write, alarm).await;
+            let result = self.write_stamp_in_order(write).await;
             self.record_publication_status(true, &result);
             result
         })
@@ -44,11 +41,7 @@ impl StampStore for ObjectStorage {
 }
 
 impl ObjectStorage {
-    async fn write_stamp_in_order(
-        &self,
-        write: StampWrite,
-        alarm: Statement,
-    ) -> Result<BatchOutcome, StoreFailure> {
+    async fn write_stamp_in_order(&self, write: StampWrite) -> Result<BatchOutcome, StoreFailure> {
         if self.engine_publication.is_none() {
             return Err(StoreFailure::AlarmUnpublishable {
                 reason: AlarmPublicationFailure::ClockUnavailable,
@@ -57,13 +50,17 @@ impl ObjectStorage {
         match self
             .opened()
             .await?
-            .write_with_engine_alarm(
-                async move |connection| write.apply(&mut NativeStampTransaction(connection)).await,
-                alarm,
-            )
-            .await
+            .run_transaction(async move |connection| {
+                let rows = match write.apply(&mut NativeStampTransaction(connection)).await {
+                    Ok(rows) => rows,
+                    Err(stop) => return Ok(ControlFlow::Break(stop)),
+                };
+                let times = Self::read_engine_inputs(connection).await?;
+                Ok(ControlFlow::Continue((rows, times)))
+            })
+            .await?
         {
-            Ok((rows, times)) => {
+            ControlFlow::Continue((rows, times)) => {
                 #[cfg(feature = "test-support")]
                 self.central_publication_pauses
                     .reached_central(fleet_runtime::PausePoint::AfterStoreApplied)
@@ -84,17 +81,17 @@ impl ObjectStorage {
                     publication,
                 })
             }
-            Err(StampWriteStop::Guard {
+            ControlFlow::Break(StampWriteStop::Guard {
                 index,
                 rows_affected,
             }) => Ok(BatchOutcome::GuardFailed {
                 index,
                 rows_affected,
             }),
-            Err(StampWriteStop::Sql { index, source }) => {
+            ControlFlow::Break(StampWriteStop::Sql { index, source }) => {
                 fleet_store_sqlx::batch_statement_failure(&source, index)
             }
-            Err(StampWriteStop::Store(failure)) => Err(failure),
+            ControlFlow::Break(StampWriteStop::Store(failure)) => Err(failure),
         }
     }
 }

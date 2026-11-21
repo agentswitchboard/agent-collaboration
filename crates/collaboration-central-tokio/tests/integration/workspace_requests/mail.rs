@@ -26,6 +26,7 @@ mod replay;
 mod replay_failures;
 
 mod engine_alarm;
+mod engine_alarm_input_parity;
 mod engine_alarm_readback;
 mod engine_attempts;
 mod engine_drive_gate;

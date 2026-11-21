@@ -1,5 +1,5 @@
 //! Raw fixture state and physical alarm receipts for the owning Durable Object.
-use super::error;
+use super::{engine_due_migration_fixture, error};
 use crate::workspace_central_object::{
     AlarmFailure, AlarmPolicy, CentralObject, OrganizationId, statement_store,
 };
@@ -47,6 +47,26 @@ pub(in crate::workspace_central_object) async fn raw_control(
 ) -> Result<Response> {
     let storage = object.state.storage();
     match request.path().as_str() {
+        "/test/raw-engine-due-migration" => {
+            let command = request
+                .json::<engine_due_migration_fixture::MigrationCommand>()
+                .await?;
+            if matches!(
+                command,
+                engine_due_migration_fixture::MigrationCommand::Reset
+            ) {
+                object
+                    .state
+                    .block_concurrency_while(async {
+                        Err::<(), worker::Error>(error("due migration fixture reset"))
+                    })
+                    .await?;
+                return Response::error("object did not reset", 500);
+            }
+            Response::from_json(
+                &engine_due_migration_fixture::run(&object.connection, command).await,
+            )
+        }
         "/test/raw-legacy-workspace-call-count" => Response::from_json(
             &object
                 .controls

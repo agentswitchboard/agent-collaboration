@@ -1,7 +1,6 @@
 //! Durable Object bindings for local checked stamp operations.
 use super::{
-    AlarmPolicy, BatchOutcome, CentralStatements, SendFuture, Statement, StoreFailure,
-    statement_store,
+    AlarmPolicy, BatchOutcome, CentralStatements, SendFuture, StoreFailure, statement_store,
 };
 use fleet_signin::{
     organization_authority::StoredStampRead,
@@ -16,18 +15,14 @@ impl StampStore for CentralStatements {
         }))
     }
 
-    fn write_stamp(
-        &self,
-        write: StampWrite,
-        alarm: Statement,
-    ) -> BoxFuture<'_, Result<BatchOutcome, StoreFailure>> {
+    fn write_stamp(&self, write: StampWrite) -> BoxFuture<'_, Result<BatchOutcome, StoreFailure>> {
         Box::pin(SendFuture::new(async move {
             let policy = AlarmPolicy::Engine(
                 self.state.storage(),
                 self.clock.clone(),
                 self.engine_decider(true),
             );
-            statement_store::write_stamp(&self.connection, write, alarm, policy).await
+            statement_store::write_stamp(&self.connection, write, policy).await
         }))
     }
 }

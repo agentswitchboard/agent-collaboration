@@ -1,7 +1,7 @@
 use super::super::{Statement, support::*};
 use central_storage::{
-    AlarmPublication, AlarmPublicationFailure, AlarmUpdate, BatchOutcome, GuardedStatement,
-    RowExpectation, SqlValue, StatementBatch, StoreFailure,
+    AlarmPublication, AlarmPublicationFailure, AlarmUpdate, BatchOutcome, EngineAlarmPlan,
+    GuardedStatement, RowExpectation, StatementBatch, StoreFailure,
 };
 use std::sync::atomic::Ordering;
 use workspace_model::central_mail::{
@@ -19,22 +19,33 @@ async fn engine_alarm_publication_sets_the_real_retained_deadline() {
     fixture.clock.0.store(now, Ordering::SeqCst);
     let _: bool = runtime.control("clock", &now).await.unwrap();
     let due = now + 5_000;
+    let stamp = chrono::DateTime::from_timestamp_millis(due)
+        .unwrap()
+        .to_rfc3339();
     let result = runtime
         .run_batch(StatementBatch {
-            statements: vec![],
-            alarm: AlarmUpdate::SetEngineFromQuery {
-                query: Statement {
-                    sql: "SELECT NULL,?",
-                    args: vec![SqlValue::Integer(due.try_into().unwrap())],
+            statements: vec![GuardedStatement {
+                statement: Statement {
+                    sql: "INSERT INTO mail_notification_windows VALUES (?, ?, ?, ?, ?, ?)",
+                    args: vec![
+                        text(id::<workspace_ids::NotificationWindowId>(8521)),
+                        text(id::<workspace_model::ActorIdentityId>(8522)),
+                        text(&stamp),
+                        text(&stamp),
+                        text(&stamp),
+                        text(&stamp),
+                    ],
                 },
-            },
+                expect: RowExpectation::Exactly(1),
+            }],
+            alarm: AlarmUpdate::Engine(EngineAlarmPlan::Recompute),
         })
         .await
         .unwrap();
     assert_eq!(
         result,
         BatchOutcome::Applied {
-            rows_affected: vec![],
+            rows_affected: vec![1],
             publication: AlarmPublication::Set { unix_millis: due }
         }
     );
@@ -92,12 +103,7 @@ async fn an_unpublishable_alarm_rolls_back_rows_and_keeps_the_real_deadline() {
                 },
                 expect: RowExpectation::Exactly(1),
             }],
-            alarm: AlarmUpdate::SetEngineFromQuery {
-                query: Statement {
-                    sql: "SELECT 0,NULL",
-                    args: vec![],
-                },
-            },
+            alarm: AlarmUpdate::Engine(EngineAlarmPlan::Recompute),
         })
         .await;
 

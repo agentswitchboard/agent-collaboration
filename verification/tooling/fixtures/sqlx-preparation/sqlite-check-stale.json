@@ -205,6 +205,261 @@
       {
         "command": ["<root>/tmp/rust-tools/bin/sqlx", "database", "create"],
         "environment": {
+          "DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-schema.sqlite"
+        }
+      },
+      {
+        "command": [
+          "<root>/tmp/rust-tools/bin/sqlx",
+          "migrate",
+          "run",
+          "--source",
+          "crates/fleet-storage-schema/migrations/central"
+        ],
+        "environment": {
+          "DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-schema.sqlite"
+        }
+      },
+      {
+        "command": ["cargo", "clean", "--package", "path+file://<root>/crates/fleet-engine"],
+        "environment": {
+          "SQLX_OFFLINE": "true",
+          "RUSTC_WRAPPER": "<wrapper>",
+          "SQLX_PREPARE_PACKAGE": "fleet-engine",
+          "SQLX_PREPARE_MANIFEST_DIR": "<root>/crates/fleet-engine",
+          "SQLX_PREPARE_DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-schema.sqlite",
+          "SQLX_PREPARE_METADATA_DIR": "<root>/tmp/<schema>/fleet-engine-metadata"
+        }
+      },
+      {
+        "command": [
+          "cargo",
+          "check",
+          "--locked",
+          "--package",
+          "path+file://<root>/crates/fleet-engine",
+          "--all-targets"
+        ],
+        "environment": {
+          "SQLX_OFFLINE": "true",
+          "RUSTC_WRAPPER": "<wrapper>",
+          "SQLX_PREPARE_PACKAGE": "fleet-engine",
+          "SQLX_PREPARE_MANIFEST_DIR": "<root>/crates/fleet-engine",
+          "SQLX_PREPARE_DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-schema.sqlite",
+          "SQLX_PREPARE_METADATA_DIR": "<root>/tmp/<schema>/fleet-engine-metadata"
+        }
+      },
+      {
+        "command": ["<root>/tmp/rust-tools/bin/sqlx", "database", "create"],
+        "environment": {
+          "DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-wakes-central-schema.sqlite"
+        }
+      },
+      {
+        "command": [
+          "<root>/tmp/rust-tools/bin/sqlx",
+          "migrate",
+          "run",
+          "--source",
+          "crates/fleet-storage-schema/migrations/central"
+        ],
+        "environment": {
+          "DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-wakes-central-schema.sqlite"
+        }
+      },
+      {
+        "command": ["cargo", "clean", "--package", "path+file://<root>/crates/fleet-wakes"],
+        "environment": {
+          "SQLX_OFFLINE": "true",
+          "RUSTC_WRAPPER": "<wrapper>",
+          "SQLX_PREPARE_PACKAGE": "fleet-wakes",
+          "SQLX_PREPARE_MANIFEST_DIR": "<root>/crates/fleet-wakes",
+          "SQLX_PREPARE_DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-wakes-central-schema.sqlite",
+          "SQLX_PREPARE_METADATA_DIR": "<root>/tmp/<schema>/fleet-wakes-metadata"
+        }
+      },
+      {
+        "command": [
+          "cargo",
+          "check",
+          "--locked",
+          "--package",
+          "path+file://<root>/crates/fleet-wakes",
+          "--all-targets"
+        ],
+        "environment": {
+          "SQLX_OFFLINE": "true",
+          "RUSTC_WRAPPER": "<wrapper>",
+          "SQLX_PREPARE_PACKAGE": "fleet-wakes",
+          "SQLX_PREPARE_MANIFEST_DIR": "<root>/crates/fleet-wakes",
+          "SQLX_PREPARE_DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-wakes-central-schema.sqlite",
+          "SQLX_PREPARE_METADATA_DIR": "<root>/tmp/<schema>/fleet-wakes-metadata"
+        }
+      },
+      {
+        "command": ["<root>/tmp/rust-tools/bin/sqlx", "database", "create"],
+        "environment": {
+          "DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-schedules-central-schema.sqlite"
+        }
+      },
+      {
+        "command": [
+          "<root>/tmp/rust-tools/bin/sqlx",
+          "migrate",
+          "run",
+          "--source",
+          "crates/fleet-storage-schema/migrations/central"
+        ],
+        "environment": {
+          "DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-schedules-central-schema.sqlite"
+        }
+      },
+      {
+        "command": ["cargo", "clean", "--package", "path+file://<root>/crates/fleet-schedules"],
+        "environment": {
+          "SQLX_OFFLINE": "true",
+          "RUSTC_WRAPPER": "<wrapper>",
+          "SQLX_PREPARE_PACKAGE": "fleet-schedules",
+          "SQLX_PREPARE_MANIFEST_DIR": "<root>/crates/fleet-schedules",
+          "SQLX_PREPARE_DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-schedules-central-schema.sqlite",
+          "SQLX_PREPARE_METADATA_DIR": "<root>/tmp/<schema>/fleet-schedules-metadata"
+        }
+      },
+      {
+        "command": [
+          "cargo",
+          "check",
+          "--locked",
+          "--package",
+          "path+file://<root>/crates/fleet-schedules",
+          "--all-targets"
+        ],
+        "environment": {
+          "SQLX_OFFLINE": "true",
+          "RUSTC_WRAPPER": "<wrapper>",
+          "SQLX_PREPARE_PACKAGE": "fleet-schedules",
+          "SQLX_PREPARE_MANIFEST_DIR": "<root>/crates/fleet-schedules",
+          "SQLX_PREPARE_DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-schedules-central-schema.sqlite",
+          "SQLX_PREPARE_METADATA_DIR": "<root>/tmp/<schema>/fleet-schedules-metadata"
+        }
+      },
+      {
+        "command": ["<root>/tmp/rust-tools/bin/sqlx", "database", "create"],
+        "environment": {
+          "DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-mail-central-schema.sqlite"
+        }
+      },
+      {
+        "command": [
+          "<root>/tmp/rust-tools/bin/sqlx",
+          "migrate",
+          "run",
+          "--source",
+          "crates/fleet-storage-schema/migrations/central"
+        ],
+        "environment": {
+          "DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-mail-central-schema.sqlite"
+        }
+      },
+      {
+        "command": ["cargo", "clean", "--package", "path+file://<root>/crates/fleet-mail"],
+        "environment": {
+          "SQLX_OFFLINE": "true",
+          "RUSTC_WRAPPER": "<wrapper>",
+          "SQLX_PREPARE_PACKAGE": "fleet-mail",
+          "SQLX_PREPARE_MANIFEST_DIR": "<root>/crates/fleet-mail",
+          "SQLX_PREPARE_DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-mail-central-schema.sqlite",
+          "SQLX_PREPARE_METADATA_DIR": "<root>/tmp/<schema>/fleet-mail-metadata"
+        }
+      },
+      {
+        "command": [
+          "cargo",
+          "check",
+          "--locked",
+          "--package",
+          "path+file://<root>/crates/fleet-mail",
+          "--all-targets"
+        ],
+        "environment": {
+          "SQLX_OFFLINE": "true",
+          "RUSTC_WRAPPER": "<wrapper>",
+          "SQLX_PREPARE_PACKAGE": "fleet-mail",
+          "SQLX_PREPARE_MANIFEST_DIR": "<root>/crates/fleet-mail",
+          "SQLX_PREPARE_DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-mail-central-schema.sqlite",
+          "SQLX_PREPARE_METADATA_DIR": "<root>/tmp/<schema>/fleet-mail-metadata"
+        }
+      },
+      {
+        "command": ["<root>/tmp/rust-tools/bin/sqlx", "database", "create"],
+        "environment": {
+          "DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-engine-fixtures-schema.sqlite"
+        }
+      },
+      {
+        "command": [
+          "<root>/tmp/rust-tools/bin/sqlx",
+          "migrate",
+          "run",
+          "--source",
+          "crates/fleet-storage-schema/migrations/central"
+        ],
+        "environment": {
+          "DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-engine-fixtures-schema.sqlite"
+        }
+      },
+      {
+        "command": [
+          "<root>/tmp/rust-tools/bin/sqlx",
+          "migrate",
+          "run",
+          "--ignore-missing",
+          "--source",
+          "<root>/tmp/<schema>/engine-fixture-migrations"
+        ],
+        "environment": {
+          "DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-engine-fixtures-schema.sqlite"
+        }
+      },
+      {
+        "command": [
+          "cargo",
+          "clean",
+          "--package",
+          "path+file://<root>/crates/collaboration-central-core"
+        ],
+        "environment": {
+          "SQLX_OFFLINE": "true",
+          "RUSTC_WRAPPER": "<wrapper>",
+          "SQLX_PREPARE_PACKAGE": "collaboration-central-core",
+          "SQLX_PREPARE_MANIFEST_DIR": "<root>/crates/collaboration-central-core",
+          "SQLX_PREPARE_DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-engine-fixtures-schema.sqlite",
+          "SQLX_PREPARE_METADATA_DIR": "<root>/tmp/<schema>/collaboration-central-core-metadata"
+        }
+      },
+      {
+        "command": [
+          "cargo",
+          "check",
+          "--locked",
+          "--package",
+          "path+file://<root>/crates/collaboration-central-core",
+          "--all-targets",
+          "--features",
+          "test-support"
+        ],
+        "environment": {
+          "SQLX_OFFLINE": "true",
+          "RUSTC_WRAPPER": "<wrapper>",
+          "SQLX_PREPARE_PACKAGE": "collaboration-central-core",
+          "SQLX_PREPARE_MANIFEST_DIR": "<root>/crates/collaboration-central-core",
+          "SQLX_PREPARE_DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-engine-fixtures-schema.sqlite",
+          "SQLX_PREPARE_METADATA_DIR": "<root>/tmp/<schema>/collaboration-central-core-metadata"
+        }
+      },
+      {
+        "command": ["<root>/tmp/rust-tools/bin/sqlx", "database", "create"],
+        "environment": {
           "DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-signin.sqlite"
         }
       },

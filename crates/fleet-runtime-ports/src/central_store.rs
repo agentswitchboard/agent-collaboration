@@ -1,5 +1,7 @@
 //! The organization's central store: one atomic statement batch, with its alarm update.
-use central_storage::{BatchOutcome, ReadOutcome, Statement, StatementBatch, StoreFailure};
+use central_storage::{
+    BatchOutcome, EngineAlarmTimes, ReadOutcome, Statement, StatementBatch, StoreFailure,
+};
 use std::future::Future;
 
 pub trait CentralStore: Send + Sync + 'static {
@@ -13,6 +15,14 @@ pub trait CentralStore: Send + Sync + 'static {
         &self,
         statement: Statement,
     ) -> impl Future<Output = Result<ReadOutcome, StoreFailure>> + Send;
+    /// Executes the owner's checked due-list SELECT on this store.
+    fn read_timed_due_rows(
+        &self,
+        query: crate::DueListQuery,
+    ) -> impl Future<Output = Result<Vec<crate::DueRow>, StoreFailure>> + Send;
+    fn engine_alarm_inputs(
+        &self,
+    ) -> impl Future<Output = Result<EngineAlarmTimes, StoreFailure>> + Send;
     /// The physical alarm actually armed, for health (P8): Cloudflare reads the
     /// Durable Object alarm, Tokio the last successfully published deadline.
     fn published_alarm(

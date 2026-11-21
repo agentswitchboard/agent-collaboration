@@ -22,7 +22,6 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
             self.signin_authority
                 .check()
                 .map(|check| -> Arc<dyn StampVerification> { check }),
-            central_engine_model::next_due_sql(crate::engine::query_registry::ALARM_INPUTS),
         )
     }
 

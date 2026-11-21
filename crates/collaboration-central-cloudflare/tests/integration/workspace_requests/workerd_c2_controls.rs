@@ -104,6 +104,29 @@ fn nullable_safe_integer<'de, D: serde::Deserializer<'de>>(
     Option::deserialize(deserializer)
 }
 
+#[derive(Debug, Deserialize, Eq, PartialEq, thiserror::Error)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::workspace_requests) enum C2EvictionCause {
+    #[error("the Durable Object still has active references")]
+    ActiveReferences,
+    #[error("the fixture namespace is unavailable")]
+    NamespaceUnavailable,
+    #[error("the fixture witness drain failed")]
+    WitnessDrainFailed,
+    #[error("the Workerd eviction operation failed")]
+    PlatformFailure,
+}
+
+#[derive(Debug, thiserror::Error)]
+pub(in crate::workspace_requests) enum C2EvictionError {
+    #[error("C2 eviction failed: {0}")]
+    Failed(C2EvictionCause),
+    #[error("C2 eviction bridge exchange failed: {0}")]
+    Bridge(#[from] StoreFailure),
+    #[error("C2 eviction received an unexpected reply")]
+    UnexpectedReply,
+}
+
 #[derive(Deserialize)]
 #[serde(
     tag = "answer",
@@ -115,6 +138,10 @@ enum BridgeReply {
     #[serde(rename = "c2Evicted")]
     C2Evicted {
         organization: OrganizationId,
+    },
+    #[serde(rename = "c2EvictionFailed")]
+    C2EvictionFailed {
+        reason: C2EvictionCause,
     },
     #[serde(rename = "c2Witness")]
     C2Witness {
@@ -128,6 +155,16 @@ enum BridgeReply {
     },
 }
 
+impl BridgeReply {
+    fn eviction_result(self, target: &OrganizationId) -> Result<(), C2EvictionError> {
+        match self {
+            Self::C2Evicted { organization } if organization == *target => Ok(()),
+            Self::C2EvictionFailed { reason } => Err(C2EvictionError::Failed(reason)),
+            _ => Err(C2EvictionError::UnexpectedReply),
+        }
+    }
+}
+
 // Logs have other shapes; an answer envelope belongs to the command exchange.
 pub(super) fn is_control_reply(line: &str) -> bool {
     #[derive(Deserialize)]
@@ -135,6 +172,20 @@ pub(super) fn is_control_reply(line: &str) -> bool {
         answer: String,
     }
     serde_json::from_str::<Envelope>(line).is_ok_and(|envelope| !envelope.answer.is_empty())
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::workspace_requests) enum HeldDiagnostic {
+    AlarmSnapshot,
+    RestoreResult,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::workspace_requests) enum DiagnosticDisposition {
+    Record,
+    Refuse,
 }
 
 impl WorkerdHost {
@@ -155,16 +206,13 @@ impl WorkerdHost {
         }
         Ok(reply)
     }
-    pub async fn c2_evict(&self, organization: &OrganizationId) -> Result<(), StoreFailure> {
-        match self
-            .c2_control(serde_json::json!({"c2Evict":organization}))
+    pub(in crate::workspace_requests) async fn c2_evict(
+        &self,
+        organization: &OrganizationId,
+    ) -> Result<(), C2EvictionError> {
+        self.c2_control(serde_json::json!({"c2Evict":organization}))
             .await?
-        {
-            BridgeReply::C2Evicted {
-                organization: echoed,
-            } if &echoed == organization => Ok(()),
-            _ => Err(StoreFailure::Unavailable),
-        }
+            .eviction_result(organization)
     }
     pub async fn c2_witness(
         &self,
@@ -172,6 +220,69 @@ impl WorkerdHost {
     ) -> Result<Vec<WitnessRecord>, StoreFailure> {
         match self
             .c2_control(serde_json::json!({"c2Witness":{"phase":phase}}))
+            .await?
+        {
+            BridgeReply::C2Witness { events } => Ok(events),
+            _ => Err(StoreFailure::Unavailable),
+        }
+    }
+    pub(in crate::workspace_requests) async fn c2_hold_deciding_diagnostic(
+        &self,
+        kind: HeldDiagnostic,
+        ordinal: usize,
+        disposition: DiagnosticDisposition,
+    ) -> Result<(), StoreFailure> {
+        match self
+            .c2_control(serde_json::json!({
+                "c2Witness": {
+                    "phase": WitnessPhase::Deciding,
+                    "holdDecidingDiagnostic": {"kind": kind, "ordinal": ordinal, "disposition": disposition}
+                }
+            }))
+            .await?
+        {
+            BridgeReply::C2Witness { .. } => Ok(()),
+            _ => Err(StoreFailure::Unavailable),
+        }
+    }
+    pub async fn c2_settle_alarms(
+        &self,
+        phase: WitnessPhase,
+        correlation_ids: &[&central_link_protocol::CorrelationId],
+    ) -> Result<Vec<WitnessRecord>, StoreFailure> {
+        match self
+            .c2_control(serde_json::json!({
+                "c2SettleAlarms": {"phase": phase, "correlationIds": correlation_ids}
+            }))
+            .await?
+        {
+            BridgeReply::C2Witness { events } => Ok(events),
+            _ => Err(StoreFailure::Unavailable),
+        }
+    }
+    pub(in crate::workspace_requests) async fn c2_settle_refused_diagnostic(
+        &self,
+        refused: &central_link_protocol::CorrelationId,
+        alarm_ids: &[&central_link_protocol::CorrelationId],
+    ) -> Result<(), StoreFailure> {
+        match self.c2_control(serde_json::json!({
+            "c2SettleAlarms": {
+                "phase": WitnessPhase::Deciding, "correlationIds": alarm_ids, "expectRefused": refused
+            }
+        })).await? {
+            BridgeReply::C2Witness { .. } => Ok(()),
+            _ => Err(StoreFailure::Unavailable),
+        }
+    }
+    pub(in crate::workspace_requests) async fn c2_wait_for_upgrades(
+        &self,
+        phase: WitnessPhase,
+        upgrades: usize,
+    ) -> Result<Vec<WitnessRecord>, StoreFailure> {
+        match self
+            .c2_control(serde_json::json!({
+                "c2Witness": {"phase": phase, "waitForUpgrades": upgrades}
+            }))
             .await?
         {
             BridgeReply::C2Witness { events } => Ok(events),
@@ -215,3 +326,7 @@ pub(super) async fn open_fixture(
     host._fixture_plan = Some(root);
     Ok(host)
 }
+
+#[cfg(test)]
+#[path = "workerd_c2_controls_test.rs"]
+mod tests;

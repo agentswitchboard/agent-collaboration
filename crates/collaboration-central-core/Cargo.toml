@@ -60,7 +60,7 @@ central-engine-test-support = { workspace = true, features = ["sqlite-fixtures"]
 fleet-runtime-test-support.workspace = true
 fleet-storage-schema.workspace = true
 hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
-sqlx = { workspace = true, features = ["sqlite", "migrate"] }
+sqlx = { workspace = true, features = ["sqlite", "migrate", "macros"] }
 ring = "0.17.14"
 jsonschema.workspace = true
 tokio.workspace = true
