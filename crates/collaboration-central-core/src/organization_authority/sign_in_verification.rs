@@ -63,14 +63,25 @@ where
         statement: &'a str,
     ) -> BoxFuture<'a, Result<VerifiedFleetOrganizationStatement, FleetOrganizationStatementRefusal>>
     {
-        Box::pin(self.statements.verify(statement))
+        Box::pin(async {
+            self.statements
+                .verify(statement)
+                .await
+                .map_err(FleetOrganizationStatementRefusal::from)
+        })
     }
 
     fn verify_stored_statement_facts<'a>(
         &'a self,
         statement: &'a str,
-    ) -> BoxFuture<'a, Result<StoredStatementFacts, fleet_contracts::StoredStatementRefusal>> {
-        Box::pin(self.statements.verify_stored_statement_facts(statement))
+    ) -> BoxFuture<'a, Result<StoredStatementFacts, fleet_signin::StoredStampVerificationFailure>>
+    {
+        Box::pin(async {
+            self.statements
+                .verify_stored_statement_facts(statement)
+                .await
+                .map_err(fleet_signin::StoredStampVerificationFailure::Verification)
+        })
     }
 }
 

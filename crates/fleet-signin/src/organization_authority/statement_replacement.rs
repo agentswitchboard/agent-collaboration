@@ -1,5 +1,7 @@
 //! The pure stamp reducer uses the retained bytes observed by the applying turn.
+use super::fleet_statement_wire::stored_statement_unexpired;
 use super::{StoredOrganizationStamp, StoredStampRead, VerifiedFleetOrganizationStatement};
+use fleet_runtime_ports::SyncTime;
 use state_machine_core::{
     EventTag, RefusalTag, StateMachine, StateMachineResult, StateTag, Transition, TransitionError,
 };
@@ -30,10 +32,10 @@ impl EventTag for OfferStamp<'_> {
     }
 }
 
-/// Standing and the retained expiry sampled by the applying caller.
+/// Standing and the time already sampled by the applying caller.
 #[derive(Clone, Copy)]
 pub(crate) enum ReplayStanding {
-    TrustedAndUnexpired,
+    TrustedAt(SyncTime),
     Refused,
 }
 
@@ -135,11 +137,13 @@ impl<'verified> StateMachine for StampMachine<'verified> {
                 event.compact.to_owned(),
             ))
         };
-        let replay = || match event.replay {
-            ReplayStanding::TrustedAndUnexpired => {
+        let replay = |retained: &StoredOrganizationStamp| match event.replay {
+            ReplayStanding::TrustedAt(now)
+                if stored_statement_unexpired(retained.statement(), now) =>
+            {
                 Ok((state.clone(), vec![StampEffect::RepairReplay]))
             }
-            ReplayStanding::Refused => Err(TransitionError::Domain(
+            ReplayStanding::TrustedAt(_) | ReplayStanding::Refused => Err(TransitionError::Domain(
                 StampRefusal::StaleOrganizationStatement,
             )),
         };
@@ -155,12 +159,12 @@ impl<'verified> StateMachine for StampMachine<'verified> {
             {
                 Err(TransitionError::Domain(StampRefusal::OrganizationMismatch))
             }
-            (StoredStampRead::Stamped(_), None) => replay(),
+            (StoredStampRead::Stamped(stored), None) => replay(stored),
             (StoredStampRead::Stamped(stored), Some(predecessor)) => {
                 let retained_digest = stored.digest();
                 if &retained_digest == incoming.digest() {
                     // A byte-identical successor is a retry after a lost reply.
-                    replay()
+                    replay(stored)
                 } else if predecessor == &retained_digest {
                     Ok((
                         accepted_stamp(),

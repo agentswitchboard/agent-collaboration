@@ -19,4 +19,4 @@ pub mod organization_change;
 pub mod stamp_store;
 
 mod service;
-pub use service::{SignInService, StampVerification};
+pub use service::{SignInService, StampVerification, StoredStampVerificationFailure};

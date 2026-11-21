@@ -37,7 +37,17 @@ pub enum FleetOrganizationStatementRefusal {
 ///
 /// ```compile_fail,E0599
 /// use fleet_contracts::StoredStatementRefusal;
-/// let _ = (StoredStatementRefusal::Expired, StoredStatementRefusal::NotYetValid);
+/// let _ = StoredStatementRefusal::Expired;
+/// ```
+///
+/// ```compile_fail,E0599
+/// use fleet_contracts::StoredStatementRefusal;
+/// let _ = StoredStatementRefusal::NotYetValid;
+/// ```
+///
+/// ```compile_fail,E0599
+/// use fleet_contracts::StoredStatementRefusal;
+/// let _ = StoredStatementRefusal::InvalidConfiguration;
 /// ```
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum StoredStatementRefusal {
@@ -61,8 +71,6 @@ pub enum StoredStatementRefusal {
     OrganizationMismatch,
     #[error("Fleet organization statement outlives the 120-day policy")]
     LifetimeExceedsPolicy,
-    #[error("Fleet organization statement trust configuration is invalid")]
-    InvalidConfiguration,
     #[error("Fleet organization statement verification is unavailable: {0}")]
     VerificationUnavailable(IssuerSignatureRefusal),
 }
@@ -80,7 +88,6 @@ impl From<StoredStatementRefusal> for FleetOrganizationStatementRefusal {
             StoredStatementRefusal::WrongAudience => Self::WrongAudience,
             StoredStatementRefusal::OrganizationMismatch => Self::OrganizationMismatch,
             StoredStatementRefusal::LifetimeExceedsPolicy => Self::LifetimeExceedsPolicy,
-            StoredStatementRefusal::InvalidConfiguration => Self::InvalidConfiguration,
             StoredStatementRefusal::VerificationUnavailable(reason) => {
                 Self::VerificationUnavailable(reason)
             }

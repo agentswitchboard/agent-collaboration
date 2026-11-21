@@ -32,13 +32,25 @@ impl From<OrganizationStatementDigest> for String {
     }
 }
 
-impl OrganizationStatementDigest {
-    #[must_use]
-    pub fn of_compact_jws(statement: &str) -> Self {
-        use sha2::{Digest, Sha256};
-        Self(format!("{:x}", Sha256::digest(statement.as_bytes())))
+impl From<[u8; 32]> for OrganizationStatementDigest {
+    fn from(bytes: [u8; 32]) -> Self {
+        let digit = |nibble| {
+            char::from(if nibble < 10 {
+                b'0' + nibble
+            } else {
+                b'a' + nibble - 10
+            })
+        };
+        Self(
+            bytes
+                .into_iter()
+                .flat_map(|byte| [digit(byte >> 4), digit(byte & 0xf)])
+                .collect(),
+        )
     }
+}
 
+impl OrganizationStatementDigest {
     #[must_use]
     pub fn as_str(&self) -> &str {
         &self.0

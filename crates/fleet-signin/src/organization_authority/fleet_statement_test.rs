@@ -1,8 +1,10 @@
+use super::{ConfiguredStatementRefusal as Refusal, StampTimeRefusal};
 use crate::organization_authority::fleet_statement_test_support::{
     FOREIGN_ORGANIZATION, ORGANIZATION, claims, header, organization, signed_statement, verifier,
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use fleet_contracts::FleetOrganizationStatementRefusal as Refusal;
+use fleet_contracts::StoredStatementRefusal;
+use fleet_runtime_ports::SyncTime;
 use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::sync::atomic::Ordering;
@@ -26,7 +28,7 @@ async fn fleet_statement_refuses_a_forged_signature() {
     let forged = format!("{signed}.{}", URL_SAFE_NO_PAD.encode([0; 64]));
     assert_eq!(
         verifier.verify(&forged).await.unwrap_err(),
-        Refusal::BadSignature
+        Refusal::Profile(StoredStatementRefusal::BadSignature)
     );
 }
 
@@ -47,7 +49,10 @@ async fn fleet_statement_refuses_an_edited_signed_predecessor() {
 
     let result = verifier.verify(&edited).await;
 
-    assert_eq!(result.unwrap_err(), Refusal::BadSignature);
+    assert_eq!(
+        result.unwrap_err(),
+        Refusal::Profile(StoredStatementRefusal::BadSignature)
+    );
 }
 
 #[tokio::test]
@@ -58,7 +63,7 @@ async fn fleet_statement_refuses_a_person_token_header() {
     let statement = signed_statement(&input, &claims());
     assert_eq!(
         verifier.verify(&statement).await.unwrap_err(),
-        Refusal::WrongTokenType
+        Refusal::Profile(StoredStatementRefusal::WrongTokenType)
     );
 }
 
@@ -70,7 +75,7 @@ async fn fleet_statement_refuses_another_signed_purpose() {
     let statement = signed_statement(&header(), &input);
     assert_eq!(
         verifier.verify(&statement).await.unwrap_err(),
-        Refusal::WrongPurpose
+        Refusal::Profile(StoredStatementRefusal::WrongPurpose)
     );
 }
 
@@ -84,7 +89,7 @@ async fn fleet_statement_refuses_another_audience() {
             .verify(&signed_statement(&header(), &input))
             .await
             .unwrap_err(),
-        Refusal::WrongAudience
+        Refusal::Profile(StoredStatementRefusal::WrongAudience)
     );
 }
 
@@ -97,7 +102,7 @@ async fn fleet_statement_expires_at_the_exact_exp_boundary() {
     clock.0.store(1_800_000_600_000, Ordering::SeqCst);
     assert_eq!(
         verifier.verify(&statement).await.unwrap_err(),
-        Refusal::Expired
+        Refusal::Time(StampTimeRefusal::Expired)
     );
 }
 
@@ -112,7 +117,7 @@ async fn fleet_statement_refuses_another_organization_even_with_its_real_signatu
             .verify(&signed_statement(&header(), &input))
             .await
             .unwrap_err(),
-        Refusal::OrganizationMismatch
+        Refusal::Profile(StoredStatementRefusal::OrganizationMismatch)
     );
 }
 
@@ -126,7 +131,7 @@ async fn fleet_statement_requires_subject_and_organization_to_agree() {
             .verify(&signed_statement(&header(), &input))
             .await
             .unwrap_err(),
-        Refusal::OrganizationMismatch
+        Refusal::Profile(StoredStatementRefusal::OrganizationMismatch)
     );
 }
 
@@ -140,7 +145,7 @@ async fn fleet_statement_refuses_a_different_issuer() {
             .verify(&signed_statement(&header(), &input))
             .await
             .unwrap_err(),
-        Refusal::WrongIssuer
+        Refusal::Profile(StoredStatementRefusal::WrongIssuer)
     );
 }
 
@@ -154,7 +159,7 @@ async fn fleet_statement_refuses_an_unsupported_version() {
             .verify(&signed_statement(&header(), &input))
             .await
             .unwrap_err(),
-        Refusal::UnsupportedVersion
+        Refusal::Profile(StoredStatementRefusal::UnsupportedVersion)
     );
 }
 
@@ -168,7 +173,7 @@ async fn fleet_statement_refuses_a_future_issuance_time() {
             .verify(&signed_statement(&header(), &input))
             .await
             .unwrap_err(),
-        Refusal::NotYetValid
+        Refusal::Time(StampTimeRefusal::NotYetValid)
     );
 }
 
@@ -182,7 +187,7 @@ async fn fleet_statement_refuses_another_signature_algorithm() {
             .verify(&signed_statement(&input, &claims()))
             .await
             .unwrap_err(),
-        Refusal::UnsupportedAlgorithm
+        Refusal::Profile(StoredStatementRefusal::UnsupportedAlgorithm)
     );
 }
 
@@ -216,7 +221,7 @@ async fn fleet_statement_refuses_null_malformed_or_unsigned_profile_fields() {
                 .verify(&signed_statement(&header(), &input))
                 .await
                 .unwrap_err(),
-            Refusal::Malformed
+            Refusal::Profile(StoredStatementRefusal::Malformed)
         );
     }
     let mut input = header();
@@ -226,7 +231,7 @@ async fn fleet_statement_refuses_null_malformed_or_unsigned_profile_fields() {
             .verify(&signed_statement(&input, &claims()))
             .await
             .unwrap_err(),
-        Refusal::Malformed
+        Refusal::Profile(StoredStatementRefusal::Malformed)
     );
 }
 
@@ -250,7 +255,7 @@ async fn stored_facts_keep_expired_bounds_without_changing_normal_verification()
         assert!(facts.digest().as_str() == format!("{:x}", Sha256::digest(statement.as_bytes())));
         assert_eq!(
             verifier.verify(&statement).await.unwrap_err(),
-            Refusal::Expired
+            Refusal::Time(StampTimeRefusal::Expired)
         );
     }
 }
@@ -273,7 +278,7 @@ async fn stored_facts_keep_future_issuance_without_changing_normal_verification(
     assert!(facts.digest().as_str() == format!("{:x}", Sha256::digest(statement.as_bytes())));
     assert_eq!(
         verifier.verify(&statement).await.unwrap_err(),
-        Refusal::NotYetValid
+        Refusal::Time(StampTimeRefusal::NotYetValid)
     );
 }
 
@@ -290,44 +295,60 @@ async fn stored_facts_and_normal_verification_share_signature_and_profile_refusa
                 .await
                 .unwrap_err()
         ),
-        Refusal::BadSignature
+        Refusal::Profile(StoredStatementRefusal::BadSignature)
     );
     assert_eq!(
         verifier.verify(&forged).await.unwrap_err(),
-        Refusal::BadSignature
+        Refusal::Profile(StoredStatementRefusal::BadSignature)
     );
 
     // Every expected refusal is independent of current-time admission.
     for (field, value, expected) in [
-        ("purpose", json!("person-token"), Refusal::WrongPurpose),
-        ("version", json!(2), Refusal::UnsupportedVersion),
+        (
+            "purpose",
+            json!("person-token"),
+            Refusal::Profile(StoredStatementRefusal::WrongPurpose),
+        ),
+        (
+            "version",
+            json!(2),
+            Refusal::Profile(StoredStatementRefusal::UnsupportedVersion),
+        ),
         (
             "iss",
             json!("https://another.example.invalid"),
-            Refusal::WrongIssuer,
+            Refusal::Profile(StoredStatementRefusal::WrongIssuer),
         ),
         (
             "aud",
             json!("https://another.example.invalid/identity"),
-            Refusal::WrongAudience,
+            Refusal::Profile(StoredStatementRefusal::WrongAudience),
         ),
         (
             "organization_id",
             json!(FOREIGN_ORGANIZATION),
-            Refusal::OrganizationMismatch,
+            Refusal::Profile(StoredStatementRefusal::OrganizationMismatch),
         ),
         (
             "sub",
             json!(FOREIGN_ORGANIZATION),
-            Refusal::OrganizationMismatch,
+            Refusal::Profile(StoredStatementRefusal::OrganizationMismatch),
         ),
-        ("exp", json!(1_799_999_900), Refusal::Malformed),
+        (
+            "exp",
+            json!(1_799_999_900),
+            Refusal::Profile(StoredStatementRefusal::Malformed),
+        ),
         (
             "exp",
             json!(1_799_999_900 + super::MAXIMUM_STATEMENT_LIFETIME_SECONDS + 1),
-            Refusal::LifetimeExceedsPolicy,
+            Refusal::Profile(StoredStatementRefusal::LifetimeExceedsPolicy),
         ),
-        ("iat", json!(-1), Refusal::Malformed),
+        (
+            "iat",
+            json!(-1),
+            Refusal::Profile(StoredStatementRefusal::Malformed),
+        ),
     ] {
         let mut input = claims();
         input[field] = value;
@@ -344,10 +365,26 @@ async fn stored_facts_and_normal_verification_share_signature_and_profile_refusa
         assert_eq!(verifier.verify(&statement).await.unwrap_err(), expected);
     }
     for (field, value, expected) in [
-        ("typ", json!("at+jwt"), Refusal::WrongTokenType),
-        ("alg", json!("RS256"), Refusal::UnsupportedAlgorithm),
-        ("kid", json!(""), Refusal::Malformed),
-        ("crit", json!(["future"]), Refusal::Malformed),
+        (
+            "typ",
+            json!("at+jwt"),
+            Refusal::Profile(StoredStatementRefusal::WrongTokenType),
+        ),
+        (
+            "alg",
+            json!("RS256"),
+            Refusal::Profile(StoredStatementRefusal::UnsupportedAlgorithm),
+        ),
+        (
+            "kid",
+            json!(""),
+            Refusal::Profile(StoredStatementRefusal::Malformed),
+        ),
+        (
+            "crit",
+            json!(["future"]),
+            Refusal::Profile(StoredStatementRefusal::Malformed),
+        ),
     ] {
         let mut input = header();
         input[field] = value;
@@ -363,4 +400,20 @@ async fn stored_facts_and_normal_verification_share_signature_and_profile_refusa
         );
         assert_eq!(verifier.verify(&statement).await.unwrap_err(), expected);
     }
+}
+
+#[tokio::test]
+async fn applying_time_recheck_has_only_temporal_refusals() {
+    let (verifier, _) = verifier();
+    let compact = signed_statement(&header(), &claims());
+    let verified = verifier.verify(&compact).await.unwrap();
+    let sample = |millis| -> Result<(), StampTimeRefusal> {
+        verified.require_valid_at(SyncTime::from_unix_millis(millis))
+    };
+    let issued_ms = verified.issued_at().0 * 1_000;
+    let expires_ms = verified.expires_at().0 * 1_000;
+    assert_eq!(sample(issued_ms - 1), Err(StampTimeRefusal::NotYetValid));
+    assert_eq!(sample(issued_ms), Ok(()));
+    assert_eq!(sample(expires_ms - 1), Ok(()));
+    assert_eq!(sample(expires_ms), Err(StampTimeRefusal::Expired));
 }

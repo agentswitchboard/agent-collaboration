@@ -288,10 +288,7 @@ impl CentralObject {
             Ok(Some(settings)) => {
                 match CloudflareSignInTrust::new(settings).for_organization(organization, clock) {
                     Ok(check) => runtime.with_sign_in_verification(check),
-                    Err(
-                        fleet_contracts::FleetOrganizationStatementRefusal::InvalidConfiguration,
-                    ) => runtime,
-                    Err(_) => return Err(StoreFailure::Unavailable),
+                    Err(fleet_signin::organization_authority::InvalidStampTrust) => runtime,
                 }
             }
             // Invalid/missing trust never permits sign-in. The default checker

@@ -1,3 +1,4 @@
+use super::fleet_statement_wire::digest_compact_statement;
 use fleet_contracts::OrganizationStatementDigest;
 use fleet_identity_protocol::OrganizationId;
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -22,7 +23,7 @@ impl StoredOrganizationStamp {
     }
     #[must_use]
     pub(crate) fn digest(&self) -> OrganizationStatementDigest {
-        OrganizationStatementDigest::of_compact_jws(&self.statement)
+        digest_compact_statement(&self.statement)
     }
 }
 #[derive(Clone, Debug, Eq, PartialEq)]

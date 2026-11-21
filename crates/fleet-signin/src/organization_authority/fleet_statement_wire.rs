@@ -3,6 +3,12 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use fleet_contracts::{OrganizationStatementDigest, StatementSeconds, StoredStatementRefusal};
 use fleet_identity_protocol::OrganizationId;
 use serde::{Deserialize, Deserializer};
+use sha2::{Digest, Sha256};
+
+pub(super) fn digest_compact_statement(statement: &str) -> OrganizationStatementDigest {
+    let bytes: [u8; 32] = Sha256::digest(statement.as_bytes()).into();
+    bytes.into()
+}
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -67,7 +73,7 @@ fn decode(value: &str) -> Result<Vec<u8>, StoredStatementRefusal> {
 }
 
 /// A stored statement's expiry guard only; this does not establish signature trust.
-pub(crate) fn stored_statement_unexpired(
+pub(super) fn stored_statement_unexpired(
     compact: &str,
     now: fleet_runtime_ports::SyncTime,
 ) -> bool {

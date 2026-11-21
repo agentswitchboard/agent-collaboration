@@ -6,6 +6,7 @@ use crate::organization_authority::{
         verified_foreign_organization, verified_next_key,
     },
 };
+use fleet_runtime_ports::SyncTime;
 use serde_json::json;
 use state_machine_core::{StateMachine, TransitionError};
 
@@ -46,7 +47,11 @@ enum Decision {
 }
 
 fn offer(retained: Option<&FixtureStamp>, incoming: &FixtureStamp) -> Result<Decision, Refusal> {
-    offer_with_standing(retained, incoming, ReplayStanding::TrustedAndUnexpired)
+    offer_with_standing(
+        retained,
+        incoming,
+        ReplayStanding::TrustedAt(SyncTime::from_unix_millis(1_800_000_000_000)),
+    )
 }
 
 #[expect(
@@ -231,7 +236,7 @@ fn offers_follow_the_independent_retained_stamp_trace(case: hegel::TestCase) {
         let candidate = case.draw(gs::integers::<usize>().max_value(2));
         let replay_allowed = case.draw(gs::booleans());
         let replay = if replay_allowed {
-            ReplayStanding::TrustedAndUnexpired
+            ReplayStanding::TrustedAt(SyncTime::from_unix_millis(1_800_000_000_000))
         } else {
             ReplayStanding::Refused
         };
@@ -271,7 +276,7 @@ fn the_stamp_table_covers_absent_retained_replays_swaps_and_refusals() {
     let events = [&first, &successor, &competing].map(|stamp| OfferStamp {
         verified: &stamp.verified,
         compact: &stamp.compact,
-        replay: ReplayStanding::TrustedAndUnexpired,
+        replay: ReplayStanding::TrustedAt(SyncTime::from_unix_millis(1_800_000_000_000)),
     });
     state_machine_core::check_state_machine_transitions::<StampMachine<'_>>(
         states.iter().flat_map(|state| {
@@ -282,4 +287,30 @@ fn the_stamp_table_covers_absent_retained_replays_swaps_and_refusals() {
         }),
     )
     .unwrap();
+}
+
+#[tokio::test]
+async fn only_a_replay_depends_on_the_retained_expiry() {
+    let first = first_stamp().await;
+    let expires = first.expires_at().0 * 1_000;
+    let at_retained_expiry = ReplayStanding::TrustedAt(SyncTime::from_unix_millis(expires));
+    let just_before = ReplayStanding::TrustedAt(SyncTime::from_unix_millis(expires - 1));
+
+    assert_eq!(
+        offer_with_standing(Some(&first), &first, just_before),
+        Ok(Decision::AlreadyProvisioned)
+    );
+    assert_eq!(
+        offer_with_standing(Some(&first), &first, at_retained_expiry),
+        Err(Refusal::StaleOrganizationStatement)
+    );
+
+    let mut successor = claims();
+    successor["replaces"] = json!(first.digest().as_str());
+    successor["exp"] = json!(first.expires_at().0 + 60);
+    let successor = signed_fixture(successor).await;
+    assert_eq!(
+        offer_with_standing(Some(&first), &successor, at_retained_expiry),
+        Ok(Decision::Replace)
+    );
 }

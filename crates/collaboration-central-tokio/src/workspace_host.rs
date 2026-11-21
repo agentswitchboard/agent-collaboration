@@ -241,10 +241,7 @@ impl TokioWorkspaceHost {
                 Ok(check) => runtime.with_sign_in_verification(check),
                 // The default checker explicitly refuses every offered statement with
                 // InvalidConfiguration, at the core observation boundary.
-                Err(fleet_contracts::FleetOrganizationStatementRefusal::InvalidConfiguration) => {
-                    runtime
-                }
-                Err(_) => return Err(StoreFailure::Unavailable),
+                Err(fleet_signin::organization_authority::InvalidStampTrust) => runtime,
             },
             None => runtime,
         };

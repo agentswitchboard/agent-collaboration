@@ -24,6 +24,7 @@ futures-util.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2 = "0.10.9"
 sqlx = { version = "=0.9.0", default-features = false, features = ["derive"] }
 state-machine-core.workspace = true
 thiserror.workspace = true
@@ -39,7 +40,6 @@ trybuild.workspace = true
 [dev-dependencies]
 central-engine-model.workspace = true
 ring = "0.17.14"
-sha2 = "0.10.9"
 
 hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
 tokio.workspace = true

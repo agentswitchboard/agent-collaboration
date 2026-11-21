@@ -6,14 +6,15 @@ use collaboration_central_core::{
     organization_authority::{SignInVerification, SignInVerifiers},
     person_request::{PersonRequestPolicy, PersonRequestVerifier},
 };
-use fleet_contracts::FleetOrganizationStatementRefusal;
 use fleet_identity_protocol::OrganizationId;
 use fleet_runtime_ports::Clock;
 use fleet_runtime_ports::{IssuerKeySource, KeyFetchFailure, RawJwks};
 use fleet_signin::{
     IssuerKeyCache, IssuerSignatureVerifier,
     machine_token::{MachineTokenPolicy, MachineTokenVerifier},
-    organization_authority::{FleetOrganizationStatementTrust, FleetOrganizationStatementVerifier},
+    organization_authority::{
+        FleetOrganizationStatementTrust, FleetOrganizationStatementVerifier, InvalidStampTrust,
+    },
 };
 use std::{future::Future, sync::Arc};
 use worker::{Fetch, send::SendFuture};
@@ -38,9 +39,9 @@ impl CloudflareSignInTrust {
         &self,
         organization: OrganizationId,
         clock: Arc<dyn Clock>,
-    ) -> Result<Arc<dyn SignInVerification>, FleetOrganizationStatementRefusal> {
+    ) -> Result<Arc<dyn SignInVerification>, InvalidStampTrust> {
         if !self.settings.machine_audience_is_valid() {
-            return Err(FleetOrganizationStatementRefusal::InvalidConfiguration);
+            return Err(InvalidStampTrust);
         }
         let trust = FleetOrganizationStatementTrust::new(
             self.settings.issuer.clone(),

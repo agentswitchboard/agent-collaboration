@@ -19,7 +19,6 @@ fleet-runtime-ports.workspace = true
 message-board = { version = "0.1.93", path = "../message-board" }
 schemars.workspace = true
 serde.workspace = true
-sha2 = "0.10.9"
 thiserror.workspace = true
 workspace-ids.workspace = true
 workspace-model.workspace = true

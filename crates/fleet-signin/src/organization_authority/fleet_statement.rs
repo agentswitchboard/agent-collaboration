@@ -1,5 +1,5 @@
 //! Fleet identity verification owns no storage, policy lifetime or host routing.
-use super::fleet_statement_wire::ParsedFleetStatement;
+use super::fleet_statement_wire::{ParsedFleetStatement, digest_compact_statement};
 use crate::{IssuerKeyCache, IssuerSignatureVerifier};
 use fleet_contracts::{
     FleetOrganizationStatementRefusal, IssuerKeyId, OrganizationStatementDigest,
@@ -14,6 +14,11 @@ use std::sync::Arc;
 /// The sign-in service owns issuance; central refuses anything longer-lived.
 const MAXIMUM_STATEMENT_LIFETIME_SECONDS: i64 = 10_368_000;
 
+/// The configured issuer and audience must both be usable.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("Fleet organization statement trust configuration is invalid")]
+pub struct InvalidStampTrust;
+
 pub struct FleetOrganizationStatementTrust {
     issuer: String,
     audience: String,
@@ -21,23 +26,80 @@ pub struct FleetOrganizationStatementTrust {
 }
 
 impl FleetOrganizationStatementTrust {
+    /// Construct trust from its configuration values.
+    ///
+    /// ```compile_fail,E0308
+    /// use fleet_contracts::FleetOrganizationStatementRefusal;
+    /// use fleet_identity_protocol::OrganizationId;
+    /// use fleet_signin::organization_authority::FleetOrganizationStatementTrust;
+    /// fn configure(organization: OrganizationId) {
+    ///     let _: Result<_, FleetOrganizationStatementRefusal> =
+    ///         FleetOrganizationStatementTrust::new("https://issuer".into(), "central".into(), organization);
+    /// }
+    /// ```
     pub fn new(
         issuer: String,
         audience: String,
         organization: OrganizationId,
-    ) -> Result<Self, FleetOrganizationStatementRefusal> {
+    ) -> Result<Self, InvalidStampTrust> {
         if issuer.is_empty()
             || audience.is_empty()
             || issuer.contains('\0')
             || audience.contains('\0')
         {
-            return Err(FleetOrganizationStatementRefusal::InvalidConfiguration);
+            return Err(InvalidStampTrust);
         }
         Ok(Self {
             issuer,
             audience,
             organization,
         })
+    }
+}
+
+/// A configured verifier checks a signed profile and its current validity.
+///
+/// ```compile_fail,E0599
+/// use fleet_signin::organization_authority::ConfiguredStatementRefusal;
+/// let _ = ConfiguredStatementRefusal::InvalidConfiguration;
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum ConfiguredStatementRefusal {
+    #[error(transparent)]
+    Profile(#[from] StoredStatementRefusal),
+    #[error(transparent)]
+    Time(#[from] StampTimeRefusal),
+}
+
+impl From<ConfiguredStatementRefusal> for FleetOrganizationStatementRefusal {
+    fn from(refusal: ConfiguredStatementRefusal) -> Self {
+        match refusal {
+            ConfiguredStatementRefusal::Profile(reason) => reason.into(),
+            ConfiguredStatementRefusal::Time(reason) => reason.into(),
+        }
+    }
+}
+
+/// A validity interval can refuse at either of its two time bounds.
+///
+/// ```compile_fail,E0599
+/// use fleet_signin::organization_authority::StampTimeRefusal;
+/// let _ = StampTimeRefusal::BadSignature;
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum StampTimeRefusal {
+    #[error("Fleet organization statement has expired")]
+    Expired,
+    #[error("Fleet organization statement is not yet valid")]
+    NotYetValid,
+}
+
+impl From<StampTimeRefusal> for FleetOrganizationStatementRefusal {
+    fn from(refusal: StampTimeRefusal) -> Self {
+        match refusal {
+            StampTimeRefusal::Expired => Self::Expired,
+            StampTimeRefusal::NotYetValid => Self::NotYetValid,
+        }
     }
 }
 
@@ -68,7 +130,7 @@ impl<Crypto: Ed25519Verification, Keys: IssuerKeySource>
     pub async fn verify(
         &self,
         statement: &str,
-    ) -> Result<VerifiedFleetOrganizationStatement, FleetOrganizationStatementRefusal> {
+    ) -> Result<VerifiedFleetOrganizationStatement, ConfiguredStatementRefusal> {
         let verified = self.verify_signature_and_profile(statement).await?;
         // Sample after key fetch/crypto, so verification cannot outlive its exp.
         verified.require_valid_at(self.clock.now())?;
@@ -147,7 +209,7 @@ impl<Crypto: Ed25519Verification, Keys: IssuerKeySource>
             issued_at: parsed.claims.iat,
             expires_at: parsed.claims.exp,
             replaces: parsed.claims.replaces,
-            digest: OrganizationStatementDigest::of_compact_jws(statement),
+            digest: digest_compact_statement(statement),
         })
     }
 }
@@ -161,8 +223,8 @@ impl<Crypto: Ed25519Verification, Keys: IssuerKeySource>
 /// use fleet_signin::organization_authority::{
 ///     StoredStatementFacts, VerifiedFleetOrganizationStatement,
 /// };
-/// fn authorizing_control(verified: &VerifiedFleetOrganizationStatement, now: fleet_runtime_ports::SyncTime) {
-///     let _ = verified.require_valid_at(now);
+/// fn authorizing_control(verified: &VerifiedFleetOrganizationStatement) {
+///     let _ = verified.organization_id();
 /// }
 /// fn read_metadata(facts: StoredStatementFacts) -> fleet_contracts::OrganizationStatementDigestReply {
 ///     facts.into()
@@ -212,6 +274,15 @@ impl From<StoredStatementFacts> for OrganizationStatementDigestReply {
 }
 
 /// Constructed only by the signature/profile verifier; not a person permission.
+///
+/// The applying-time recheck belongs to sign-in.
+///
+/// ```compile_fail,E0624
+/// use fleet_signin::organization_authority::VerifiedFleetOrganizationStatement;
+/// fn recheck(verified: &VerifiedFleetOrganizationStatement, now: fleet_runtime_ports::SyncTime) {
+///     let _ = verified.require_valid_at(now);
+/// }
+/// ```
 #[derive(Debug)]
 pub struct VerifiedFleetOrganizationStatement {
     organization: OrganizationId,
@@ -249,13 +320,14 @@ impl VerifiedFleetOrganizationStatement {
         &self.digest
     }
 
-    pub fn require_valid_at(&self, now: SyncTime) -> Result<(), FleetOrganizationStatementRefusal> {
+    /// Recheck only time at the applying sample.
+    pub(crate) fn require_valid_at(&self, now: SyncTime) -> Result<(), StampTimeRefusal> {
         let now_seconds = now.unix_millis().div_euclid(1000);
         if now_seconds < self.issued_at.unix_seconds().0 {
-            return Err(FleetOrganizationStatementRefusal::NotYetValid);
+            return Err(StampTimeRefusal::NotYetValid);
         }
         if now_seconds >= self.expires_at.unix_seconds().0 {
-            return Err(FleetOrganizationStatementRefusal::Expired);
+            return Err(StampTimeRefusal::Expired);
         }
         Ok(())
     }

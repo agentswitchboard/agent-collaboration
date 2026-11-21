@@ -14,13 +14,22 @@ use central_storage::{AlarmUpdate, BatchOutcome, Statement, StatementBatch, Stor
 use fleet_contracts::{
     DigestFailure, FleetOrganizationStatementRefusal, OrganizationStatementDigestReply,
     ProvisionFailure, ProvisionOrganization, ProvisionOrganizationResult,
-    ReadOrganizationStatementDigest,
+    ReadOrganizationStatementDigest, StoredStatementRefusal,
 };
 use fleet_runtime::FleetRuntime;
-use fleet_runtime_ports::{CentralStore, SyncTime, WorkspaceStores};
+use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use futures_util::future::BoxFuture;
 use state_machine_core::TransitionError;
 use std::sync::Arc;
+
+/// A stored facts read on the shared port may lack configured trust.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum StoredStampVerificationFailure {
+    #[error("Fleet organization statement trust configuration is invalid")]
+    InvalidConfiguration,
+    #[error(transparent)]
+    Verification(#[from] StoredStatementRefusal),
+}
 
 pub trait StampVerification: Send + Sync {
     fn verify_statement<'a>(
@@ -31,7 +40,7 @@ pub trait StampVerification: Send + Sync {
     fn verify_stored_statement_facts<'a>(
         &'a self,
         statement: &'a str,
-    ) -> BoxFuture<'a, Result<StoredStatementFacts, fleet_contracts::StoredStatementRefusal>>;
+    ) -> BoxFuture<'a, Result<StoredStatementFacts, StoredStampVerificationFailure>>;
 }
 
 pub struct SignInService<'owner, Host: CentralStore, Stores: WorkspaceStores> {
@@ -117,7 +126,17 @@ impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
                     | FleetOrganizationStatementRefusal::InvalidConfiguration => {
                         Failure::Unavailable
                     }
-                    _ => Failure::InvalidStatement,
+                    FleetOrganizationStatementRefusal::Malformed
+                    | FleetOrganizationStatementRefusal::WrongTokenType
+                    | FleetOrganizationStatementRefusal::UnsupportedAlgorithm
+                    | FleetOrganizationStatementRefusal::BadSignature
+                    | FleetOrganizationStatementRefusal::WrongPurpose
+                    | FleetOrganizationStatementRefusal::UnsupportedVersion
+                    | FleetOrganizationStatementRefusal::WrongIssuer
+                    | FleetOrganizationStatementRefusal::WrongAudience
+                    | FleetOrganizationStatementRefusal::LifetimeExceedsPolicy
+                    | FleetOrganizationStatementRefusal::Expired
+                    | FleetOrganizationStatementRefusal::NotYetValid => Failure::InvalidStatement,
                 }
             })?;
         #[cfg(feature = "test-support")]
@@ -128,19 +147,19 @@ impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
         let _turn = self.execution.take_central_turn().await;
         self.prepare_standing().await?;
         let now = self.execution.clock().now();
-        verified.require_valid_at(now).map_err(|refusal| {
+        verified.require_valid_at(now).map_err(|reason| {
             self.execution.observe(
                 fleet_contracts::CentralObservation::OrganizationStatementRefused {
                     organization: self.execution.organization().clone(),
-                    refusal,
+                    refusal: reason.into(),
                 },
             );
             Failure::InvalidStatement
         })?;
         let stored_trusted = self.standing.standing(now) != StampStanding::Refused;
         let stored = self.store.read_stamp().await?;
-        let replay = if stored_trusted && stored_unexpired(&stored, now) {
-            ReplayStanding::TrustedAndUnexpired
+        let replay = if stored_trusted {
+            ReplayStanding::TrustedAt(now)
         } else {
             ReplayStanding::Refused
         };
@@ -257,17 +276,13 @@ impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
         let verified = check
             .verify_stored_statement_facts(stamp.statement())
             .await
-            .map_err(|_| Failure::Unavailable)?;
+            .map_err(|reason| match reason {
+                StoredStampVerificationFailure::InvalidConfiguration
+                | StoredStampVerificationFailure::Verification(_) => Failure::Unavailable,
+            })?;
         Ok(verified.into())
     }
 }
-fn stored_unexpired(stored: &StoredStampRead, now: SyncTime) -> bool {
-    let StoredStampRead::Stamped(stamp) = stored else {
-        return false;
-    };
-    crate::organization_authority::stored_statement_unexpired(stamp.statement(), now)
-}
-
 fn applied(outcome: BatchOutcome) -> Result<(), StoreFailure> {
     match outcome {
         BatchOutcome::Applied { .. } => Ok(()),
