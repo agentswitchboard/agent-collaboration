@@ -58,6 +58,7 @@ impl CentralStore for CentralStatements {
                 && matches!(
                     batch.alarm,
                     central_storage::AlarmUpdate::SetEngineFromQuery { .. }
+                        | central_storage::AlarmUpdate::Engine(_)
                 )
                 && self
                     .zero_next_write_alarm
@@ -116,6 +117,13 @@ impl CentralStore for CentralStatements {
             .map_err(|_| StoreFailure::Unavailable)?;
             result
         })
+    }
+    fn engine_alarm_inputs(
+        &self,
+    ) -> impl std::future::Future<
+        Output = std::result::Result<central_storage::EngineAlarmTimes, StoreFailure>,
+    > + Send {
+        SendFuture::new(async move { statement_store::engine_alarm_inputs(&self.connection).await })
     }
     fn published_alarm(
         &self,

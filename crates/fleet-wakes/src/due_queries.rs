@@ -24,6 +24,14 @@ pub const WAKE_LIST: &str = concat!(
     ") WHERE effective_due_ms<=?1 ORDER BY effective_due_ms,subject_key LIMIT ?2"
 );
 
+pub async fn due_wakes(
+    host: &impl fleet_runtime_ports::CentralStore,
+    cutoff: central_engine_model::EngineTime,
+    limit: usize,
+) -> Result<Vec<central_engine_model::DueRow>, fleet_engine::DueDiscoveryError> {
+    fleet_engine::read_due_rows(host, WAKE_LIST, cutoff, limit).await
+}
+
 #[cfg(test)]
 #[path = "due_queries_test.rs"]
 mod tests;

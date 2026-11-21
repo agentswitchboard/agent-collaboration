@@ -31,7 +31,7 @@ pub use direct_message::{
 };
 pub use direct_message_store::DirectMessageStore;
 pub use direct_status::direct_message_status_held;
-pub use due_queries::{DIRECT_MESSAGE_LIST, SYSTEM_MESSAGE_EXPIRY_LIST};
+pub use due_queries::{due_direct_messages, due_system_message_expiries};
 pub use message_insert::insert_message;
 pub use queued_notices::{plan_cancel_queued_notices_held, validate_queued_notices_held};
 pub use request_plan::{DirectSendPlan, plan_direct_send, plan_sourced_notice};

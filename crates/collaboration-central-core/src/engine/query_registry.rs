@@ -1,10 +1,14 @@
 //! The closed registry owns SQL literals. Time and caps are bound values; no
 //! statement is generated or leaked to acquire a static lifetime.
 
+#[cfg(any(test, feature = "test-support"))]
 use fleet_engine::controlled_legacy;
 #[cfg(feature = "test-support")]
-use fleet_engine::{controlled_machine, machine_rows};
+use fleet_engine::controlled_machine;
+#[cfg(feature = "test-support")]
+use fleet_engine::machine_rows;
 
+#[cfg(any(test, feature = "test-support"))]
 macro_rules! grid_inputs {
     () => {
         concat!(
@@ -65,12 +69,13 @@ macro_rules! all_grid_inputs {
         )
     };
 }
-#[cfg(not(feature = "test-support"))]
+#[cfg(all(test, not(feature = "test-support")))]
 macro_rules! all_grid_inputs {
     () => {
         grid_inputs!()
     };
 }
+#[cfg(any(test, feature = "test-support"))]
 pub(crate) const ALARM_INPUTS: &str = concat!(
     "SELECT CASE WHEN (SELECT COUNT(*) FROM signin_organization_identity)=1 THEN NULLIF(min(",
     all_grid_inputs!(),
@@ -87,9 +92,7 @@ pub(crate) const ALARM_INPUTS: &str = concat!(
 );
 
 pub(crate) fn alarm_update() -> central_storage::AlarmUpdate {
-    central_storage::AlarmUpdate::SetEngineFromQuery {
-        query: central_engine_model::next_due_sql(ALARM_INPUTS),
-    }
+    central_storage::AlarmUpdate::Engine(central_storage::EngineAlarmPlan::Recompute)
 }
 
 #[cfg(test)]

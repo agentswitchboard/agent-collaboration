@@ -64,7 +64,9 @@ impl TestFaults {
         if batch.statements.is_empty()
             && matches!(
                 batch.alarm,
-                AlarmUpdate::SetFromQuery(_) | AlarmUpdate::SetEngineFromQuery { .. }
+                AlarmUpdate::SetFromQuery(_)
+                    | AlarmUpdate::SetEngineFromQuery { .. }
+                    | AlarmUpdate::Engine(_)
             )
         {
             self.alarm_batch

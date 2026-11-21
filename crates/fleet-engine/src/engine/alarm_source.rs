@@ -9,14 +9,15 @@ use central_engine_model::{
     DueBatchPolicy, DueRow, EngineTime, InstanceKey, MachineKind, RetirementThreshold,
 };
 use central_storage::{
-    AlarmPublication, AlarmUpdate, BatchOutcome, SqlValue, Statement, StatementBatch, StoreFailure,
+    AlarmPublication, AlarmUpdate, BatchOutcome, EngineAlarmPlan, SqlValue, StatementBatch,
+    StoreFailure,
 };
 use fleet_contracts::{
     AlarmNotPublished, AlarmResult, ControlGate, EngineSubject, EventCompletion, FailureOutcome,
     LegacyUnitOutcome, SubjectVersion,
 };
-use fleet_runtime_ports::CentralStore as _;
 use fleet_runtime_ports::{
+    CentralStore,
     stored_values::{column, string},
     workspace_decode_error::corrupt,
 };
@@ -30,9 +31,13 @@ pub enum DueCutoff {
 }
 pub struct TimedSource {
     pub machine_kind: MachineKind,
-    pub list_sql: &'static str,
     pub cutoff: DueCutoff,
 }
+pub enum DueDiscoveryError {
+    InvalidBounds(central_engine_model::DueQueryError),
+    Store(StoreFailure),
+}
+
 pub enum TimedRowOutcome {
     Finished(AlarmResult),
     CentralDown,
@@ -41,6 +46,13 @@ pub trait TimedRows<R: EngineHost>: Send + Sync {
     type Kind: Copy + Send + Sync + 'static;
     fn ordered_kinds(&self) -> &'static [Self::Kind];
     fn source(&self, kind: Self::Kind) -> TimedSource;
+    fn discover(
+        &self,
+        runtime: &R,
+        kind: Self::Kind,
+        cutoff: EngineTime,
+        limit: usize,
+    ) -> impl Future<Output = Result<Vec<DueRow>, DueDiscoveryError>> + Send;
     fn run_row(
         &self,
         engine: &Engine<'_, R>,
@@ -94,6 +106,20 @@ fn source(kind: MachineKind) -> EngineSubject {
         key: InstanceKey(kind.0.into()),
     }
 }
+pub async fn read_due_rows(
+    host: &impl CentralStore,
+    sql: &'static str,
+    cutoff: EngineTime,
+    limit: usize,
+) -> Result<Vec<DueRow>, DueDiscoveryError> {
+    let query = central_engine_model::due_list_sql(sql, cutoff, limit)
+        .map_err(DueDiscoveryError::InvalidBounds)?;
+    host.read(query)
+        .await
+        .and_then(decode_due)
+        .map_err(DueDiscoveryError::Store)
+}
+
 fn decode_due(rows: central_storage::ReadOutcome) -> Result<Vec<DueRow>, StoreFailure> {
     rows.rows
         .iter()
@@ -145,12 +171,7 @@ impl<R: EngineHost> Engine<'_, R> {
             .await
             .map_err(|failure| AlarmNotPublished { failure })?;
         if !provisioned {
-            let publication = self
-                .publish_engine_query(Statement {
-                    sql: "SELECT NULL,NULL",
-                    args: vec![],
-                })
-                .await?;
+            let publication = self.publish_engine_alarm(EngineAlarmPlan::Clear).await?;
             return Ok(EventCompletion {
                 work: AlarmResult::default(),
                 publication,
@@ -161,20 +182,20 @@ impl<R: EngineHost> Engine<'_, R> {
             work = self.run_due_batch(now).await;
         }
         let publication = self
-            .publish_engine_query(central_engine_model::next_due_sql(self.0.alarm_inputs()))
+            .publish_engine_alarm(EngineAlarmPlan::Recompute)
             .await?;
         Ok(EventCompletion { work, publication })
     }
 
-    pub async fn publish_engine_query(
+    pub async fn publish_engine_alarm(
         &self,
-        query: Statement,
+        plan: EngineAlarmPlan,
     ) -> Result<AlarmPublication, AlarmNotPublished> {
         match self
             .host()
             .run_batch(StatementBatch {
                 statements: vec![],
-                alarm: AlarmUpdate::SetEngineFromQuery { query },
+                alarm: AlarmUpdate::Engine(plan),
             })
             .await
         {
@@ -229,18 +250,10 @@ impl<R: EngineHost> Engine<'_, R> {
                 DueCutoff::BatchStart => now,
                 DueCutoff::LookAhead => horizon,
             };
-            let query = match central_engine_model::due_list_sql(
-                description.list_sql,
-                cutoff,
-                policy.per_kind_cap + 1,
-            ) {
-                Ok(query) => query,
-                Err(_) => {
-                    central_down = true;
-                    break;
-                }
-            };
-            match self.host().read(query).await.and_then(decode_due) {
+            match timed
+                .discover(self.0, kind, cutoff, policy.per_kind_cap + 1)
+                .await
+            {
                 Ok(mut rows) => {
                     leftovers |= rows.len() > policy.per_kind_cap;
                     rows.truncate(policy.per_kind_cap);
@@ -256,8 +269,12 @@ impl<R: EngineHost> Engine<'_, R> {
                         }
                     }
                 }
-                Err(StoreFailure::AnswerLost) => {}
-                Err(StoreFailure::Corrupt { reason }) => {
+                Err(DueDiscoveryError::InvalidBounds(_)) => {
+                    central_down = true;
+                    break;
+                }
+                Err(DueDiscoveryError::Store(StoreFailure::AnswerLost)) => {}
+                Err(DueDiscoveryError::Store(StoreFailure::Corrupt { reason })) => {
                     if matches!(
                         self.record_failure(
                             &subject,
@@ -273,9 +290,9 @@ impl<R: EngineHost> Engine<'_, R> {
                         break;
                     }
                 }
-                Err(
+                Err(DueDiscoveryError::Store(
                     failure @ (StoreFailure::Unavailable | StoreFailure::AlarmUnpublishable { .. }),
-                ) => {
+                )) => {
                     self.observe_engine_store_down(&subject, failure);
                     central_down = true;
                     break;

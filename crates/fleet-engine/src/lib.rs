@@ -9,7 +9,8 @@ pub use engine::admin::{
 };
 pub use engine::admin_failure_class::EngineFailureClass;
 pub use engine::alarm_source::{
-    DueCutoff, TimedRowOutcome, TimedRows, TimedSource, WholeUnit, WholeUnitOutcome,
+    DueCutoff, DueDiscoveryError, TimedRowOutcome, TimedRows, TimedSource, WholeUnit,
+    WholeUnitOutcome, read_due_rows,
 };
 pub use engine::attempt_statements::{CONTROL_WRITE, delete_attempt, delete_observed_attempt};
 pub use engine::handle::HandleOutcome;
@@ -21,3 +22,6 @@ pub use engine::requests::EngineRequestOutcome;
 pub use engine::store_adapter::{
     LoadFailure, StoreAdapter, Versioned, decode_load_failure, load_store_failure, raw_version,
 };
+
+mod central_queries;
+pub use central_queries::{CentralTransaction, read_alarm_inputs};

@@ -44,9 +44,6 @@ impl<H: CentralStore, S: WorkspaceStores> EngineHost for WorkspaceRuntime<H, S> 
     fn timed_rows(&self) -> &CoreTimedRows {
         &CoreTimedRows
     }
-    fn alarm_inputs(&self) -> &'static str {
-        crate::engine::query_registry::ALARM_INPUTS
-    }
     fn admin_kinds(&self) -> &'static KindRegistry<'static, Self::AdminKind> {
         &KIND_REGISTRY
     }

@@ -36,8 +36,3 @@ pub fn due_list_sql(
         args: vec![SqlValue::Integer(horizon), SqlValue::Integer(cap)],
     })
 }
-
-/// The closed registry supplies its static scalar-subquery aggregate.
-pub fn next_due_sql(sql: &'static str) -> Statement {
-    Statement { sql, args: vec![] }
-}

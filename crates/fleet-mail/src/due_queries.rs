@@ -59,3 +59,19 @@ pub const SYSTEM_MESSAGE_EXPIRY_LIST: &str = concat!(
     __system_message_expiry_rows!(),
     ") WHERE effective_due_ms<=?1 ORDER BY effective_due_ms,subject_key LIMIT ?2"
 );
+
+pub async fn due_direct_messages(
+    host: &impl fleet_runtime_ports::CentralStore,
+    cutoff: central_engine_model::EngineTime,
+    limit: usize,
+) -> Result<Vec<central_engine_model::DueRow>, fleet_engine::DueDiscoveryError> {
+    fleet_engine::read_due_rows(host, DIRECT_MESSAGE_LIST, cutoff, limit).await
+}
+
+pub async fn due_system_message_expiries(
+    host: &impl fleet_runtime_ports::CentralStore,
+    cutoff: central_engine_model::EngineTime,
+    limit: usize,
+) -> Result<Vec<central_engine_model::DueRow>, fleet_engine::DueDiscoveryError> {
+    fleet_engine::read_due_rows(host, SYSTEM_MESSAGE_EXPIRY_LIST, cutoff, limit).await
+}

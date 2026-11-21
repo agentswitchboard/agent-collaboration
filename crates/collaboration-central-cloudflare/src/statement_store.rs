@@ -163,6 +163,29 @@ fn alarm_out_of_range(rows: &[DoRow]) -> StoreFailure {
     }
 }
 
+struct WorkerTransaction<'a, T>(&'a T);
+
+impl<T> fleet_engine::CentralTransaction for WorkerTransaction<'_, T>
+where
+    for<'executor> &'executor T: sqlx_core::executor::Executor<'executor, Database = Do>,
+{
+    type Database = Do;
+
+    fn executor(&mut self) -> impl sqlx_core::executor::Executor<'_, Database = Do> {
+        self.0
+    }
+
+    fn rows_affected(result: <Do as sqlx_core::database::Database>::QueryResult) -> u64 {
+        result.rows_affected()
+    }
+}
+
+pub(crate) async fn engine_alarm_inputs(
+    connection: &DoConnection,
+) -> Result<EngineAlarmTimes, StoreFailure> {
+    fleet_engine::read_alarm_inputs(&mut WorkerTransaction(connection)).await
+}
+
 async fn run_in_transaction(
     transaction: &DoTransaction,
     batch: OwnedBatch,
@@ -208,6 +231,26 @@ async fn run_in_transaction(
                     return Err(BatchStop::Failed(alarm_out_of_range(&rows)));
                 }
                 at
+            }
+            OwnedAlarmUpdate::Engine(plan) => {
+                let (clock, decide) =
+                    clock.ok_or(BatchStop::Failed(StoreFailure::AlarmUnpublishable {
+                        reason: AlarmPublicationFailure::ClockUnavailable,
+                    }))?;
+                let times = match plan {
+                    central_storage::EngineAlarmPlan::Clear => EngineAlarmTimes {
+                        earliest_on_grid_due_unix_millis: None,
+                        earliest_legacy_due_unix_millis: None,
+                    },
+                    central_storage::EngineAlarmPlan::Recompute => {
+                        fleet_engine::read_alarm_inputs(&mut WorkerTransaction(transaction))
+                            .await
+                            .map_err(BatchStop::Failed)?
+                    }
+                };
+                decide(times, clock.now().unix_millis(), &mut |_| {}).map_err(|reason| {
+                    BatchStop::Failed(StoreFailure::AlarmUnpublishable { reason })
+                })?
             }
             OwnedAlarmUpdate::SetEngineFromQuery { query } => {
                 let rows = bound(query).fetch_all(transaction).await?;

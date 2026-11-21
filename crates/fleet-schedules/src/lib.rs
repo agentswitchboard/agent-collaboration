@@ -10,7 +10,7 @@ mod timed_store;
 mod timing;
 
 pub use automation_timer::{AutomationTimer, Effect, Event, State};
-pub use due_queries::AUTOMATION_LIST;
+pub use due_queries::due_schedules;
 #[doc(hidden)]
 pub use due_queries::{__controlled_machine, __machine_rows};
 pub use finish::{AutomationFinish, automation_finish_store};

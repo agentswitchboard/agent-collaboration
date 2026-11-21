@@ -127,12 +127,6 @@ pub(super) const ENGINE_EDGES: &[&str] = &[
     "fleet-runtime-ports",
     "workspace-model",
 ];
-const FLEET_ENGINE_FUTURES: &[&str] = &[
-    "futures-core",
-    "futures-sink",
-    "futures-task",
-    "futures-util",
-];
 const FLEET_WASM_TARGET: &str = "wasm32-unknown-unknown";
 // Chrono's wasm support reaches these runtime-independent helpers via js-sys.
 const FLEET_WASM_SUPPORT_PACKAGES: &[&str] = &["futures-core", "futures-task", "futures-util"];
@@ -496,13 +490,16 @@ fn check_package_tree(
         )
         .into());
     }
-    let allowed_support = if package == WORKSPACE_SERVICE {
-        SERVICE_SUPPORT_PACKAGES
-    } else if matches!(
+    let allowed_support = if matches!(
         package,
-        FLEET_ENGINE | FLEET_MAIL | FLEET_NOTICES | FLEET_WAKES | FLEET_SCHEDULES
+        WORKSPACE_SERVICE
+            | FLEET_ENGINE
+            | FLEET_MAIL
+            | FLEET_NOTICES
+            | FLEET_WAKES
+            | FLEET_SCHEDULES
     ) {
-        FLEET_ENGINE_FUTURES
+        SERVICE_SUPPORT_PACKAGES
     } else if target == Some(FLEET_WASM_TARGET) {
         FLEET_WASM_SUPPORT_PACKAGES
     } else {

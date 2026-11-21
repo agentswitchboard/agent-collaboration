@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { runCommands, runProcess, type CommandRunner } from "./process-command.ts";
@@ -14,7 +14,11 @@ export interface SqlitePreparationTarget {
   readonly packageName: string;
   readonly migrationSources: readonly string[];
   readonly databaseFilename: string;
+  readonly features?: readonly string[];
+  readonly fixtureMigration?: string;
 }
+
+const centralMigrationSource = "crates/fleet-storage-schema/migrations/central";
 
 export const sqlitePreparationTargets: readonly SqlitePreparationTarget[] = [
   {
@@ -37,7 +41,43 @@ export const sqlitePreparationTargets: readonly SqlitePreparationTarget[] = [
     migrationSources: ["crates/fleet-storage-schema/migrations/workspace"],
     databaseFilename: "fleet-workspace-schema.sqlite",
   },
+  {
+    packageName: "fleet-engine",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-central-schema.sqlite",
+  },
+  {
+    packageName: "collaboration-central-core",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-central-engine-fixtures-schema.sqlite",
+    features: ["test-support"],
+    fixtureMigration:
+      "crates/fleet-storage-schema/tests/fixtures/engine_migrations/0001_engine_probe.sql",
+  },
 ];
+
+function appendFixtureMigration(
+  repositoryRoot: string,
+  directory: string,
+  target: SqlitePreparationTarget,
+): readonly string[] {
+  if (target.fixtureMigration === undefined) return target.migrationSources;
+  const lastVersion = target.migrationSources
+    .flatMap((source) => readdirSync(join(repositoryRoot, source)))
+    .reduce((latest, filename) => {
+      const version = /^(\d+)_.*\.sql$/.exec(filename)?.[1];
+      if (version === undefined) return latest;
+      const current = BigInt(version);
+      return current > latest ? current : latest;
+    }, 0n);
+  const fixtures = join(directory, "engine-fixture-migrations");
+  mkdirSync(fixtures);
+  copyFileSync(
+    join(repositoryRoot, target.fixtureMigration),
+    join(fixtures, `${lastVersion + 1n}_engine_probe.sql`),
+  );
+  return [...target.migrationSources, fixtures];
+}
 
 export interface PreparationOptions {
   readonly repositoryRoot: string;
@@ -74,7 +114,7 @@ export function prepareSqlxMetadata(options: PreparationOptions): number {
         };
         const schemaCommands = [
           [sqlx, "database", "create"],
-          ...target.migrationSources.map((source, index) => [
+          ...appendFixtureMigration(repositoryRoot, directory, target).map((source, index) => [
             sqlx,
             "migrate",
             "run",
@@ -93,7 +133,15 @@ export function prepareSqlxMetadata(options: PreparationOptions): number {
         const compileStatus = runCommands(
           [
             ["cargo", "clean", "--package", packageSpec],
-            ["cargo", "check", "--locked", "--package", packageSpec, "--all-targets"],
+            [
+              "cargo",
+              "check",
+              "--locked",
+              "--package",
+              packageSpec,
+              "--all-targets",
+              ...(target.features === undefined ? [] : ["--features", target.features.join(",")]),
+            ],
           ],
           { cwd: repositoryRoot, env: describing, inherit: true },
           runner,

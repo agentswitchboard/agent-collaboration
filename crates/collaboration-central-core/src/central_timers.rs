@@ -1,6 +1,6 @@
 //! Organization gating and startup re-publication; the engine owns due work.
 use crate::WorkspaceRuntime;
-use central_storage::{Statement, StoreFailure};
+use central_storage::{EngineAlarmPlan, StoreFailure};
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 
@@ -19,16 +19,13 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         }
     }
     pub async fn recompute_alarm(&self) -> Result<(), StoreFailure> {
-        let query = if self.alarm_organization_is_provisioned().await? {
-            central_engine_model::next_due_sql(crate::engine::query_registry::ALARM_INPUTS)
+        let plan = if self.alarm_organization_is_provisioned().await? {
+            EngineAlarmPlan::Recompute
         } else {
-            Statement {
-                sql: "SELECT NULL,NULL",
-                args: vec![],
-            }
+            EngineAlarmPlan::Clear
         };
         fleet_engine::Engine::new(self)
-            .publish_engine_query(query)
+            .publish_engine_alarm(plan)
             .await
             .map(|_| ())
             .map_err(|error| error.failure)

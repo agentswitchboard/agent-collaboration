@@ -4,6 +4,10 @@ use std::sync::Mutex;
 
 struct ReadSequence(Mutex<Vec<(&'static str, ReadOutcome)>>);
 impl CentralStore for ReadSequence {
+    async fn engine_alarm_inputs(&self) -> Result<central_storage::EngineAlarmTimes, StoreFailure> {
+        Err(StoreFailure::Unavailable)
+    }
+
     async fn published_alarm(
         &self,
     ) -> Result<Option<central_engine_model::EngineTime>, central_storage::StoreFailure> {

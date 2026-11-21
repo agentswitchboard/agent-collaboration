@@ -1,5 +1,6 @@
-//! Shared sign-in fixtures for both central hosts' test suites.
+//! Shared Central fixtures for both central hosts' test suites.
 #![forbid(unsafe_code)]
+pub mod alarm_input_scenarios;
 #[cfg(all(feature = "signin-test-support", not(target_arch = "wasm32")))]
 pub mod signin_fixtures;
 #[cfg(feature = "signin-test-support")]

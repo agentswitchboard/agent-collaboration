@@ -109,6 +109,13 @@ pub struct StatementBatch {
     pub alarm: AlarmUpdate,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum EngineAlarmPlan {
+    Recompute,
+    Clear,
+}
+
 #[derive(Clone, Debug, PartialEq, Serialize)]
 #[serde(
     tag = "kind",
@@ -124,6 +131,8 @@ pub enum AlarmUpdate {
     /// The query returns one row with one column: the alarm time as INTEGER Unix
     /// milliseconds, or NULL to clear the alarm. Any other answer is `StoreFailure::Corrupt`.
     SetFromQuery(Statement),
+    /// The host applies the checked Central projection or a typed clear.
+    Engine(EngineAlarmPlan),
     /// The host reads two pending-time columns atomically and applies engine policy.
     SetEngineFromQuery {
         query: Statement,

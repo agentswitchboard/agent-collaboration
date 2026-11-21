@@ -5,7 +5,8 @@ use crate::engine::query_registry;
 use central_engine_model::{DueRow, EngineTime, InstanceKey, MachineKind, RetirementThreshold};
 use fleet_contracts::{AlarmResult, EngineSubject, LegacyUnitOutcome, ObservedControl};
 use fleet_engine::{
-    DueCutoff, Engine, TimedRowOutcome, TimedRows, TimedSource, WholeUnit, WholeUnitOutcome,
+    DueCutoff, DueDiscoveryError, Engine, TimedRowOutcome, TimedRows, TimedSource, WholeUnit,
+    WholeUnitOutcome,
 };
 use fleet_mail::{
     DirectMessage, DirectMessageEvent, DirectMessageStore, ExpireAt, SystemMessageExpiry,
@@ -37,16 +38,6 @@ impl DueKind {
             Self::Probe => MachineKind("engine_probe"),
         }
     }
-    fn sql(self) -> &'static str {
-        match self {
-            Self::Wake => fleet_wakes::WAKE_LIST,
-            Self::Automation => fleet_schedules::AUTOMATION_LIST,
-            Self::DirectMessage => fleet_mail::DIRECT_MESSAGE_LIST,
-            Self::SystemMessageExpiry => fleet_mail::SYSTEM_MESSAGE_EXPIRY_LIST,
-            #[cfg(feature = "test-support")]
-            Self::Probe => query_registry::PROBE_LIST,
-        }
-    }
 }
 
 pub struct CoreTimedRows;
@@ -65,7 +56,6 @@ impl<H: CentralStore, S: WorkspaceStores> TimedRows<WorkspaceRuntime<H, S>> for 
     fn source(&self, kind: DueKind) -> TimedSource {
         TimedSource {
             machine_kind: kind.kind(),
-            list_sql: kind.sql(),
             cutoff: if matches!(kind, DueKind::SystemMessageExpiry) {
                 DueCutoff::BatchStart
             } else {
@@ -73,6 +63,28 @@ impl<H: CentralStore, S: WorkspaceStores> TimedRows<WorkspaceRuntime<H, S>> for 
             },
         }
     }
+    async fn discover(
+        &self,
+        runtime: &WorkspaceRuntime<H, S>,
+        kind: DueKind,
+        cutoff: EngineTime,
+        limit: usize,
+    ) -> Result<Vec<DueRow>, DueDiscoveryError> {
+        let store = runtime.execution.statement_host();
+        match kind {
+            DueKind::Wake => fleet_wakes::due_wakes(store, cutoff, limit).await,
+            DueKind::Automation => fleet_schedules::due_schedules(store, cutoff, limit).await,
+            DueKind::DirectMessage => fleet_mail::due_direct_messages(store, cutoff, limit).await,
+            DueKind::SystemMessageExpiry => {
+                fleet_mail::due_system_message_expiries(store, cutoff, limit).await
+            }
+            #[cfg(feature = "test-support")]
+            DueKind::Probe => {
+                fleet_engine::read_due_rows(store, query_registry::PROBE_LIST, cutoff, limit).await
+            }
+        }
+    }
+
     async fn run_row(
         &self,
         engine: &Engine<'_, WorkspaceRuntime<H, S>>,

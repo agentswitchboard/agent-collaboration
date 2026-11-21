@@ -31,7 +31,6 @@ pub trait EngineHost: Send + Sync + Sized {
         &self,
     ) -> impl Future<Output = Result<bool, StoreFailure>> + Send;
     fn timed_rows(&self) -> &Self::Timed;
-    fn alarm_inputs(&self) -> &'static str;
     fn admin_kinds(&self) -> &'static KindRegistry<'static, Self::AdminKind>;
     /// Selects the finisher and event for an attempt the engine resolved on this host.
     fn finish_registered_discard(

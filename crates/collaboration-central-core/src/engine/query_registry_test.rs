@@ -86,3 +86,9 @@ async fn the_test_support_alarm_query_registers_six_kinds_and_the_sixth_contribu
         .unwrap();
     assert_eq!(alarm(&mut connection).await, (Some(900_000), None));
 }
+
+#[cfg(feature = "test-support")]
+#[test]
+fn fixture_alarm_sql_describes_the_rows_executed_by_both_hosts() {
+    let _ = sqlx::query_file!("../fleet-engine/src/queries/read_fixture_alarm_inputs.sql");
+}

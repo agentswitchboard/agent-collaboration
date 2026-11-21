@@ -58,6 +58,14 @@ for (const filename of readdirSync(fixtureDirectory).sort()) {
     try {
       const targets = sqlitePreparationTargets;
       for (const target of targets) {
+        if (target.fixtureMigration !== undefined) {
+          for (const source of target.migrationSources) {
+            mkdirSync(join(root, source), { recursive: true });
+            writeFileSync(join(root, source, "0004_central_work_attempts.sql"), "");
+          }
+          mkdirSync(join(root, target.fixtureMigration, ".."), { recursive: true });
+          writeFileSync(join(root, target.fixtureMigration), "");
+        }
         const metadata = join(root, ".sqlx");
         mkdirSync(metadata, { recursive: true });
         const name =

@@ -47,6 +47,10 @@ impl CentralStore for ObjectStorage {
     async fn read(&self, statement: Statement) -> Result<ReadOutcome, StoreFailure> {
         ObjectStorage::read(self, statement).await
     }
+    async fn engine_alarm_inputs(&self) -> Result<central_storage::EngineAlarmTimes, StoreFailure> {
+        ObjectStorage::engine_alarm_inputs(self).await
+    }
+
     async fn published_alarm(&self) -> Result<Option<chrono::DateTime<chrono::Utc>>, StoreFailure> {
         ObjectStorage::published_alarm(self)
     }

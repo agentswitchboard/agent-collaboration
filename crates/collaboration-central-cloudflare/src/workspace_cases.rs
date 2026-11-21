@@ -151,6 +151,21 @@ pub(super) async fn control(
         "/test/completion-attempts" => {
             Response::from_json(&runtime.runtime().completion_attempts())
         }
+        "/test/engine-alarm-inputs" => {
+            use fleet_runtime_ports::CentralStore as _;
+
+            let inputs = runtime
+                .runtime()
+                .statement_host()
+                .engine_alarm_inputs()
+                .await;
+            Response::from_json(&inputs.map(|times| {
+                [
+                    times.earliest_on_grid_due_unix_millis,
+                    times.earliest_legacy_due_unix_millis,
+                ]
+            }))
+        }
         "/test/engine-completion-entries" => {
             Response::from_json(&runtime.runtime().engine_completion_entries())
         }
@@ -361,13 +376,12 @@ pub(super) async fn control(
         "/test/central-batch" => {
             let batch = request.json::<OwnedBatch>().await?;
             let policy = match &batch.alarm {
-                crate::store_wire::OwnedAlarmUpdate::SetEngineFromQuery { .. } => {
-                    AlarmPolicy::Engine(
-                        object.state.storage(),
-                        object.clock.clone(),
-                        fleet_runtime::engine_alarm_decider(object.due_batches.clone()),
-                    )
-                }
+                crate::store_wire::OwnedAlarmUpdate::SetEngineFromQuery { .. }
+                | crate::store_wire::OwnedAlarmUpdate::Engine(_) => AlarmPolicy::Engine(
+                    object.state.storage(),
+                    object.clock.clone(),
+                    fleet_runtime::engine_alarm_decider(object.due_batches.clone()),
+                ),
                 crate::store_wire::OwnedAlarmUpdate::Unchanged
                 | crate::store_wire::OwnedAlarmUpdate::SetFromQuery(_) => AlarmPolicy::Ignore,
             };

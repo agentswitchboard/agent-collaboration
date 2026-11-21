@@ -397,6 +397,11 @@ async fn a_failed_final_publication_fails_the_event_and_the_driver_retries_at_th
     fixture.advance_to(retry).await;
     runtime.runtime().until_alarm_completed(callbacks + 1).await;
     assert_eq!(alarm_ms(&runtime), ms(at(start, 20, 0)));
+    assert_eq!(
+        probe_facts(&runtime, due, group).await,
+        vec![text("fired"), integer(1), integer(0)],
+        "the physical retry did not reapply the committed work"
+    );
     fixture.host.close().await;
 }
 
