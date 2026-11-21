@@ -82,7 +82,7 @@ async fn settle_direct_ack<R: EngineHost>(
         MachineEventOutcome::SubjectMissing => {
             Ok(MailAckSettlement::Ignored(MailAckIgnored::UnknownMessage))
         }
-        MachineEventOutcome::StorageAnswerLost | MachineEventOutcome::EventSuperseded => {
+        MachineEventOutcome::StorageAnswerLost | MachineEventOutcome::Superseded => {
             Err(StoreFailure::AnswerLost)
         }
         MachineEventOutcome::StorageFailed(failure) => Err(failure),

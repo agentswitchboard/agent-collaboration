@@ -8,7 +8,7 @@ use serde::Serialize;
 #[derive(Clone, Copy, Eq, PartialEq)]
 pub(crate) enum EventExecutionPolicy {
     DueWork,
-    RequestEvent,
+    RequestOrAck,
     AdminDiscard,
 }
 
@@ -21,22 +21,20 @@ pub(crate) enum ReceiptStatements {
             reason = "only explicit machine requests carry these receipts"
         )
     )]
-    RequestReceiptWrites(Vec<GuardedStatement>),
-    AdminReceiptWrites(Vec<GuardedStatement>),
+    RequestClaim(Vec<GuardedStatement>),
+    AdminCommit(Vec<GuardedStatement>),
 }
 impl ReceiptStatements {
     pub fn into_statements(self) -> Vec<GuardedStatement> {
         match self {
             Self::None => vec![],
-            Self::RequestReceiptWrites(statements) | Self::AdminReceiptWrites(statements) => {
-                statements
-            }
+            Self::RequestClaim(statements) | Self::AdminCommit(statements) => statements,
         }
     }
 }
 
 /// Static source-specific receipt construction keeps serialization off the
-/// Machine contract. SubjectStore due event has no receipt; request states opt into Serde.
+/// Machine contract. A due event has no receipt; request states opt into Serde.
 pub(crate) trait EventSource<SubjectMachine: Machine>: Sync {
     fn event_execution_policy(&self) -> EventExecutionPolicy;
     fn plan_accepted_receipt(
@@ -71,7 +69,7 @@ where
     SubjectMachine::State: Serialize,
 {
     fn event_execution_policy(&self) -> EventExecutionPolicy {
-        EventExecutionPolicy::RequestEvent
+        EventExecutionPolicy::RequestOrAck
     }
     fn plan_accepted_receipt(
         &self,
@@ -81,7 +79,7 @@ where
             .plan_receipt_claim_writes(&EngineReceipt::<_, SubjectMachine::Error>::Applied {
                 state,
             })
-            .map(ReceiptStatements::RequestReceiptWrites)
+            .map(ReceiptStatements::RequestClaim)
     }
     fn plan_refusal_receipt(
         &self,
@@ -99,13 +97,13 @@ where
             .plan_receipt_claim_writes(&EngineReceipt::<SubjectMachine::State, _>::Refused {
                 error,
             })
-            .map(ReceiptStatements::RequestReceiptWrites)
+            .map(ReceiptStatements::RequestClaim)
     }
     fn plan_missing_subject_receipt(&self) -> Result<ReceiptStatements, StoreFailure> {
         self.0
             .plan_receipt_claim_writes(
                 &EngineReceipt::<SubjectMachine::State, SubjectMachine::Error>::NotFound,
             )
-            .map(ReceiptStatements::RequestReceiptWrites)
+            .map(ReceiptStatements::RequestClaim)
     }
 }

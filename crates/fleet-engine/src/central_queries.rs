@@ -49,7 +49,7 @@ where
     })
 }
 
-// Both the native check_timed_due_query and build_timed_due_query decoder expand this private row declaration.
+// The native query witness and the runtime decoder expand the same row declaration.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __declare_timed_due_row {
@@ -66,7 +66,7 @@ macro_rules! __declare_timed_due_row {
     };
 }
 
-/// Declares the only kind-to-file mapping used by build_timed_due_query and the owner witnesses.
+/// Declares the only kind-to-file mapping used at runtime and by the owning query witnesses.
 macro_rules! declare_timed_due_lists {
     ($d:tt; $($(#[$feature:meta])* $kind:ident, $witness:ident, $file:literal);+ $(;)?) => {
         $(

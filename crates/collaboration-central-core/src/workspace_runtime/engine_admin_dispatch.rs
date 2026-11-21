@@ -23,7 +23,7 @@ const ENGINE_KINDS: &[(&str, EngineKindName)] = &[
     ),
     ("engine_source", EngineKindName::EngineSource),
 ];
-/// Test machines' records exist only in test-support stores and are not visible_machine_kinds.
+/// Test machines' records exist only in test-support stores and are hidden from production administration.
 #[cfg(feature = "test-support")]
 const HIDDEN_KINDS: &[&str] = &["engine_probe", "owed_reply"];
 #[cfg(not(feature = "test-support"))]

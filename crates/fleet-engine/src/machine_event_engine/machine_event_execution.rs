@@ -17,10 +17,10 @@ pub enum MachineEventOutcome<State, Error> {
     TransitionRefused(TransitionError<Error>),
     SubjectMissing,
     AttemptFailureRecorded(ItemFailureClass),
-    /// SubjectStore request whose subject or batch is broken gets a typed answer; only due
+    /// A request whose subject or batch is broken gets a typed answer; only due
     /// units charge an attempt record (P2, R3).
     RequestItemFailed(ItemFailureClass),
-    EventSuperseded,
+    Superseded,
     StorageAnswerLost,
     StorageFailed(StoreFailure),
 }
@@ -28,7 +28,7 @@ impl<State, Error> From<FailureOutcome> for MachineEventOutcome<State, Error> {
     fn from(outcome: FailureOutcome) -> Self {
         match outcome {
             FailureOutcome::Recorded(record) => Self::AttemptFailureRecorded(record.last_failure),
-            FailureOutcome::Superseded => Self::EventSuperseded,
+            FailureOutcome::Superseded => Self::Superseded,
             FailureOutcome::Uncertain => Self::StorageAnswerLost,
             FailureOutcome::StoreDown(failure) => Self::StorageFailed(failure),
         }
@@ -44,7 +44,7 @@ impl central_engine_model::IdSource for ReducerIds<'_> {
 struct AcknowledgementEventSource;
 impl<SubjectMachine: Machine> EventSource<SubjectMachine> for AcknowledgementEventSource {
     fn event_execution_policy(&self) -> EventExecutionPolicy {
-        EventExecutionPolicy::RequestEvent
+        EventExecutionPolicy::RequestOrAck
     }
 }
 
@@ -75,7 +75,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
 
     /// Handles one event for one instance. The event's entry (complete_event_with_observation for due
     /// units, the request entry for requests) has already checked the organization
-    /// once for this event (P3), so handle does not read the stamp again.
+    /// once for this event (P3), so the machine event handler skips the stamp read.
     pub(crate) async fn apply_machine_event<SubjectMachine, SubjectStore, ExecutionSource>(
         &self,
         adapter: &SubjectStore,
@@ -119,7 +119,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
             let prior = match adapter.load_subject_state(&key).await {
                 Ok(Some(prior)) => prior,
                 Ok(None) => {
-                    if source.event_execution_policy() != EventExecutionPolicy::RequestEvent {
+                    if source.event_execution_policy() != EventExecutionPolicy::RequestOrAck {
                         return MachineEventOutcome::SubjectMissing;
                     }
                     let receipt = match source.plan_missing_subject_receipt() {
@@ -134,7 +134,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                 Err(SubjectLoadFailure::CorruptSubjectRow {
                     failure_class: class,
                     ..
-                }) if source.event_execution_policy() == EventExecutionPolicy::RequestEvent => {
+                }) if source.event_execution_policy() == EventExecutionPolicy::RequestOrAck => {
                     return MachineEventOutcome::RequestItemFailed(class);
                 }
                 Err(SubjectLoadFailure::CorruptSubjectRow {
@@ -189,7 +189,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                 Err(error) => match source.event_execution_policy() {
                     EventExecutionPolicy::DueWork => {
                         let refusal = match error {
-                            TransitionError::Stale => return MachineEventOutcome::EventSuperseded,
+                            TransitionError::Stale => return MachineEventOutcome::Superseded,
                             TransitionError::NotAllowed { state, event } => {
                                 format!("{state}:{event}")
                             }
@@ -209,7 +209,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                     EventExecutionPolicy::AdminDiscard => {
                         return MachineEventOutcome::TransitionRefused(error);
                     }
-                    EventExecutionPolicy::RequestEvent => {
+                    EventExecutionPolicy::RequestOrAck => {
                         let receipt = match source.plan_refusal_receipt(&error) {
                             Ok(receipt) => receipt,
                             Err(failure) => return MachineEventOutcome::StorageFailed(failure),
@@ -246,11 +246,11 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                 }
                 Err(BatchApplyFailure::Superseded) => {
                     if source.event_execution_policy() == EventExecutionPolicy::AdminDiscard {
-                        return MachineEventOutcome::EventSuperseded;
+                        return MachineEventOutcome::Superseded;
                     }
                 }
                 Err(BatchApplyFailure::Rejected(class))
-                    if source.event_execution_policy() == EventExecutionPolicy::RequestEvent =>
+                    if source.event_execution_policy() == EventExecutionPolicy::RequestOrAck =>
                 {
                     return MachineEventOutcome::RequestItemFailed(class);
                 }
@@ -274,7 +274,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                 }
             }
         }
-        MachineEventOutcome::EventSuperseded
+        MachineEventOutcome::Superseded
     }
 
     async fn check_due_attempt_after_subject_load<
@@ -309,7 +309,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
         }
     }
 
-    /// The pre-load half of the due gate. SubjectStore damaged control row needs the
+    /// The pre-load half of the due gate. A damaged control row needs the
     /// loaded row's version to be replaced, so it passes here and is replaced
     /// by `check_due_attempt_after_subject_load` after the load.
     async fn check_due_attempt_before_subject_load<
@@ -343,12 +343,12 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
     ) -> Option<MachineEventOutcome<State, Error>> {
         match state {
             central_engine_model::AttemptState::Retired { .. } => {
-                Some(MachineEventOutcome::EventSuperseded)
+                Some(MachineEventOutcome::Superseded)
             }
             central_engine_model::AttemptState::Failing { next_try_at } => {
                 match self.current_engine_time() {
                     Ok(now) if *next_try_at <= now => None,
-                    Ok(_) => Some(MachineEventOutcome::EventSuperseded),
+                    Ok(_) => Some(MachineEventOutcome::Superseded),
                     Err(failure) => Some(MachineEventOutcome::StorageFailed(failure)),
                 }
             }
@@ -359,7 +359,7 @@ fn map_receipt_write_failure<State, Error>(
     failure: BatchApplyFailure,
 ) -> MachineEventOutcome<State, Error> {
     match failure {
-        BatchApplyFailure::Superseded => MachineEventOutcome::EventSuperseded,
+        BatchApplyFailure::Superseded => MachineEventOutcome::Superseded,
         BatchApplyFailure::StorageAnswerLost => MachineEventOutcome::StorageAnswerLost,
         BatchApplyFailure::StorageFailed(failure) => MachineEventOutcome::StorageFailed(failure),
         BatchApplyFailure::Rejected(_) => MachineEventOutcome::StorageFailed(

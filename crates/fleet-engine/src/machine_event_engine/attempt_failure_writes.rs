@@ -182,7 +182,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
             Err(BatchApplyFailure::Superseded) => FailureOutcome::Superseded,
             Err(BatchApplyFailure::StorageAnswerLost) => FailureOutcome::Uncertain,
             Err(BatchApplyFailure::StorageFailed(failure)) => FailureOutcome::StoreDown(failure),
-            // SubjectStore rejected attempt write cannot charge another attempt or recurse.
+            // A rejected attempt write cannot charge another attempt or recurse.
             Err(BatchApplyFailure::Rejected(_)) => FailureOutcome::StoreDown(
                 fleet_runtime_ports::workspace_decode_error::corrupt("engine_work_attempts.write"),
             ),

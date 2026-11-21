@@ -24,7 +24,7 @@ pub struct AdminMachineKindRegistry<'a, AdminMachineKind> {
     pub hidden_machine_kind_tags: &'a [&'static str],
 }
 
-/// SubjectStore retired attempt passed only to the preparing runtime's discard registration.
+/// A retired attempt passed only to the preparing host's discard registration.
 pub struct PreparedAttemptDiscard<'preparing_host, Host: EngineHost> {
     preparing_host: &'preparing_host Host,
     attempt_id: uuid::Uuid,
@@ -213,7 +213,7 @@ impl<SubjectMachine: Machine> EventSource<SubjectMachine> for DiscardEventSource
         &self,
         _state: &SubjectMachine::State,
     ) -> Result<ReceiptStatements, StoreFailure> {
-        Ok(ReceiptStatements::AdminReceiptWrites(self.0.clone()))
+        Ok(ReceiptStatements::AdminCommit(self.0.clone()))
     }
 }
 
@@ -396,9 +396,9 @@ impl<'runtime, Host: EngineHost> FleetEngine<'runtime, Host> {
             .map(|_| plan_retired_attempt_delete(attempt_id)))
     }
 
-    /// Resolves a retired attempt and runs its preparing runtime's registered finisher.
+    /// Resolves a retired attempt and runs its preparing host's registered finisher.
     ///
-    /// SubjectStore same-kind descriptor cannot be substituted at the admin entry.
+    /// A same-kind subject statements value cannot be substituted at the admin entry.
     ///
     /// ```compile_fail,E0061
     /// use central_engine_model::Machine;
@@ -521,7 +521,7 @@ fn map_subject_discard_outcome<State, Error>(
     match outcome {
         MachineEventOutcome::TransitionCommitted(_) => Ok(DiscardOutcome::Committed),
         // The subject moved, finished, vanished or is unreadable: nothing changed.
-        MachineEventOutcome::EventSuperseded
+        MachineEventOutcome::Superseded
         | MachineEventOutcome::TransitionRefused(_)
         | MachineEventOutcome::SubjectMissing
         | MachineEventOutcome::AttemptFailureRecorded(_)

@@ -133,7 +133,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                     self.observe_engine_store_down(&subject, failure);
                     EngineRequestOutcome::CentralUnavailable
                 }
-                MachineEventOutcome::EventSuperseded => {
+                MachineEventOutcome::Superseded => {
                     let logged = self
                         .central_store()
                         .read(source.0.build_live_receipt_lookup())

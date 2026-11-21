@@ -43,7 +43,7 @@ pub fn plan_attempt_delete(subject: &EngineSubject) -> GuardedStatement {
 }
 
 /// Deletes the control record only while it is still the one a run observed
-/// (the write guard's columns, compared with IS). SubjectStore record written or replaced
+/// (the write guard's columns, compared with IS). A record written or replaced
 /// after the observation matches nothing and survives.
 pub fn plan_observed_attempt_delete(
     subject: &EngineSubject,

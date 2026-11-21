@@ -78,14 +78,14 @@ enum DueBatchUnit<TimedKind, WholeKind> {
         MachineKind,
         DueRow,
     ),
-    WholeDueUnit(WholeKind, WholeDueUnitControl),
+    Whole(WholeKind, WholeDueUnitControl),
 }
 #[cfg(feature = "test-support")]
 impl<TimedKind, WholeKind> DueBatchUnit<TimedKind, WholeKind> {
     fn build_due_unit_start_receipt(&self, now: EngineTime) -> fleet_runtime::DueUnitStart {
         let (kind, key) = match self {
             Self::TimedMachineRow(_, kind, row) => (kind.0, row.key.0.clone()),
-            Self::WholeDueUnit(_, unit) => (
+            Self::Whole(_, unit) => (
                 unit.attempt_subject.kind.0,
                 unit.attempt_subject.key.0.clone(),
             ),
@@ -297,7 +297,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                 self.0
                     .ordered_whole_units()
                     .iter()
-                    .map(|&kind| DueBatchUnit::WholeDueUnit(kind, self.0.whole_unit(kind))),
+                    .map(|&kind| DueBatchUnit::Whole(kind, self.0.whole_unit(kind))),
             );
             let stop_after_store_failure = AtomicBool::new(false);
             let mut completed = stream::iter(units)
@@ -348,7 +348,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                     TimedRowOutcome::CentralStoreFailed => (AlarmResult::default(), true),
                 }
             }
-            DueBatchUnit::WholeDueUnit(kind, unit) => {
+            DueBatchUnit::Whole(kind, unit) => {
                 self.run_whole_unit_with_attempt_control(kind, unit, now)
                     .await
             }
@@ -466,7 +466,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
             | MachineEventOutcome::RequestItemFailed(_)
             | MachineEventOutcome::SubjectMissing
             | MachineEventOutcome::TransitionRefused(_)
-            | MachineEventOutcome::EventSuperseded
+            | MachineEventOutcome::Superseded
             | MachineEventOutcome::StorageAnswerLost => (false, false),
         }
     }

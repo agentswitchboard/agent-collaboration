@@ -99,14 +99,13 @@ impl<StoreBackend: CentralStore> TransitionBatchWriter
         SubjectMachine::Effect: Sync,
         SubjectStore: MachineStoreAdapter<SubjectMachine>,
     {
-        let request_claim = matches!(&receipt, ReceiptStatements::RequestReceiptWrites(_));
+        let request_claim = matches!(&receipt, ReceiptStatements::RequestClaim(_));
         // R7: a request that changes state re-publishes the alarm in its own
-        // atomic batch, so rows, receipt and alarm commit together. SubjectStore due unit
+        // atomic batch, so rows, receipt and alarm commit together. A due unit
         // keeps the alarm unchanged; its due batch publishes once at its end.
         let alarm = match &receipt {
             ReceiptStatements::None => AlarmUpdate::Unchanged,
-            ReceiptStatements::RequestReceiptWrites(_)
-            | ReceiptStatements::AdminReceiptWrites(_) => {
+            ReceiptStatements::RequestClaim(_) | ReceiptStatements::AdminCommit(_) => {
                 AlarmUpdate::Engine(central_storage::EngineAlarmPlan::Recompute)
             }
         };
@@ -151,7 +150,7 @@ impl<StoreBackend: CentralStore> CentralTransitionBatchWriter<'_, StoreBackend> 
         &self,
         receipt: ReceiptStatements,
     ) -> Result<(), BatchApplyFailure> {
-        let request_claim = matches!(&receipt, ReceiptStatements::RequestReceiptWrites(_));
+        let request_claim = matches!(&receipt, ReceiptStatements::RequestClaim(_));
         classify_batch_with_receipt_claim(
             self.central_store
                 .run_batch(StatementBatch {
