@@ -118,14 +118,34 @@ async fn older_set_cannot_overwrite_a_newer_clear() {
 }
 
 fn engine_alarm_from_widgets() -> AlarmUpdate {
-    AlarmUpdate::SetEngineFromQuery {
-        query: Statement {
-            sql: "SELECT MIN(due_at_ms),NULL FROM widgets WHERE active=1",
-            args: vec![],
-        },
-    }
+    AlarmUpdate::Engine(central_storage::EngineAlarmPlan::Recompute)
 }
 
+// The checked Engine query operates on real fixture rows, including arbitrary
+// dates close to a clock boundary. The single-value conformance tests above
+// keep their independent widget migration and statement.
+fn engine_widgets_migrator() -> sqlx::migrate::Migrator {
+    let mut migrations: Vec<_> = widgets_migrator().iter().cloned().collect();
+    let version = migrations
+        .iter()
+        .map(|migration| migration.version)
+        .max()
+        .unwrap_or(0)
+        + 1;
+    migrations.push(sqlx::migrate::Migration::new(
+        version,
+        "checked Engine widget fixture".into(),
+        sqlx::migrate::MigrationType::Simple,
+        sqlx::SqlStr::from_static("
+            CREATE TABLE signin_organization_identity (id TEXT PRIMARY KEY);
+            INSERT INTO signin_organization_identity VALUES ('01890f2e-7b4c-7cc0-98c4-000000000041');
+            CREATE VIEW engine_due_rows AS
+            SELECT 'on_grid' AS due_lane, due_at_ms, 1 AS contributes_to_alarm
+            FROM widgets WHERE active=1;"),
+        false,
+    ));
+    sqlx::migrate::Migrator::with_migrations(migrations)
+}
 #[tokio::test]
 async fn a_batch_prepared_before_a_new_claim_publishes_the_latest_floor() {
     let root = tempfile::tempdir().unwrap();
@@ -134,7 +154,7 @@ async fn a_batch_prepared_before_a_new_claim_publishes_the_latest_floor() {
     let storage = Arc::new(
         ObjectStorage::new(
             root.path().join("latest-floor.sqlite"),
-            Arc::new(widgets_migrator()),
+            Arc::new(engine_widgets_migrator()),
         )
         .with_engine_publication(clock, fleet_runtime::engine_alarm_decider(state.clone())),
     );
@@ -147,13 +167,15 @@ async fn a_batch_prepared_before_a_new_claim_publishes_the_latest_floor() {
                 "floor-owner",
                 central_storage::RowExpectation::Exactly(1),
             ),
+            collaboration_central_core::storage_conformance::insert_widget(
+                "floor-widget",
+                "floor-owner",
+                SqlValue::Text("floor".to_owned()),
+                SqlValue::Integer(1.try_into().unwrap()),
+                Some(35_000.try_into().unwrap()),
+            ),
         ],
-        alarm: AlarmUpdate::SetEngineFromQuery {
-            query: Statement {
-                sql: "SELECT 35000,NULL",
-                args: vec![],
-            },
-        },
+        alarm: engine_alarm_from_widgets(),
     };
     let pending = tokio::spawn(async move { applying.run_batch(prepared).await.unwrap() });
     held.until_held().await;
@@ -179,7 +201,7 @@ async fn a_batch_prepared_before_a_new_claim_publishes_the_latest_floor() {
     assert_eq!(
         pending.await.unwrap(),
         BatchOutcome::Applied {
-            rows_affected: vec![1],
+            rows_affected: vec![1, 1],
             publication: central_storage::AlarmPublication::Set {
                 unix_millis: 61_000
             }
@@ -198,7 +220,7 @@ async fn publication_uses_the_shared_clock_after_both_committed_publication_hold
     let storage = Arc::new(
         ObjectStorage::new(
             root.path().join("publication-clock.sqlite"),
-            Arc::new(widgets_migrator()),
+            Arc::new(engine_widgets_migrator()),
         )
         .with_engine_publication(
             clock.clone(),
@@ -271,7 +293,7 @@ async fn postcommit_upper_edge_failure_preserves_applied_rows_and_the_previous_a
     let storage = Arc::new(
         ObjectStorage::new(
             root.path().join("publication-failure.sqlite"),
-            Arc::new(widgets_migrator()),
+            Arc::new(engine_widgets_migrator()),
         )
         .with_engine_publication(
             clock.clone(),

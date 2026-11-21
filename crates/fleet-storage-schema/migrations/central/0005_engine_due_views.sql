@@ -5,11 +5,11 @@ CREATE VIEW wake_due_candidates AS
 SELECT wake_id,due_at,state FROM automation_wakes INDEXED BY wakes_due WHERE state='active'
 UNION ALL
 SELECT wake_id,due_at,state FROM automation_wakes INDEXED BY wakes_unknown_state_due WHERE state NOT IN ('active','done','disabled');
-CREATE INDEX automations_unknown_state_due ON automation_schedules(next_due_at) WHERE state NOT IN ('active','done','disabled');
+CREATE INDEX automations_unknown_state_due ON automation_schedules(next_due_at) WHERE state NOT IN ('active','done','disabled') OR (state='active' AND next_due_at IS NULL);
 CREATE VIEW schedule_due_candidates AS
 SELECT automation_id,next_due_at,state FROM automation_schedules INDEXED BY automations_due WHERE state='active' AND next_due_at IS NOT NULL
 UNION ALL
-SELECT automation_id,next_due_at,state FROM automation_schedules INDEXED BY automations_unknown_state_due WHERE state NOT IN ('active','done','disabled');
+SELECT automation_id,next_due_at,state FROM automation_schedules INDEXED BY automations_unknown_state_due WHERE state NOT IN ('active','done','disabled') OR (state='active' AND next_due_at IS NULL);
 
 CREATE VIEW engine_due_attempt_controls(machine_kind,subject_key,uses_subject_attempt,retired,due_at_ms) AS
 SELECT machine_kind,subject_key,attempt_id IS NOT NULL,

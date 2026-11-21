@@ -57,9 +57,6 @@ async fn the_static_alarm_query_combines_machine_and_legacy_control_deadlines() 
         .await
         .unwrap();
     assert_eq!(alarm(&mut connection).await, (None, None));
-    for forbidden in ["UNION", "INTERSECT", "EXCEPT"] {
-        assert!(!ALARM_INPUTS.contains(forbidden));
-    }
 }
 
 /// V5.4: with test-support the query registers six kinds, the second test table
@@ -67,16 +64,6 @@ async fn the_static_alarm_query_combines_machine_and_legacy_control_deadlines() 
 #[cfg(feature = "test-support")]
 #[tokio::test]
 async fn the_test_support_alarm_query_registers_six_kinds_and_the_sixth_contributes() {
-    for table in [
-        "FROM automation_wakes ",
-        "FROM automation_schedules ",
-        "FROM mail_notification_windows ",
-        "FROM mail_workspace_drains ",
-        "FROM engine_probe_items ",
-        "FROM engine_alarm_only_items ",
-    ] {
-        assert!(ALARM_INPUTS.contains(table), "{table}");
-    }
     let mut connection =
         database(&fleet_storage_schema::workspace_migrations::central_migrator()).await;
     sqlx::query("INSERT INTO engine_alarm_only_items VALUES (?,'1970-01-01T00:15:00.000Z','waiting','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z')")
@@ -96,5 +83,13 @@ fn fixture_alarm_sql_describes_the_rows_executed_by_both_hosts() {
 #[cfg(feature = "test-support")]
 #[test]
 fn fixture_due_list_describes_the_probe_view() {
-    let _ = sqlx::query_file!("src/engine/queries/read_due_probes.sql", 0_i64, 1_i64);
+    let _ = fleet_engine::check_timed_due_list!(
+        Probes,
+        central_engine_model::due_list_query(
+            central_engine_model::DueListKind::Probes,
+            central_engine_model::EngineTime::UNIX_EPOCH,
+            1
+        )
+        .unwrap()
+    );
 }

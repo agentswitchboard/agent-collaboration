@@ -191,4 +191,28 @@ pub const CORRUPT_ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
         ],
         expected: [None, None],
     },
+    AlarmInputScenario {
+        name: "active schedule with null due date",
+        writes: &[(
+            "INSERT INTO automation_schedules VALUES ('01890f2e-7b4c-7cc0-98c4-000000000014','target','timing','1970-01-01T00:00:00.000Z','1970-01-08T00:00:00.000Z',NULL,'schedule',NULL,'active','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z')",
+            1,
+        )],
+        expected: [Some(0), None],
+    },
+    AlarmInputScenario {
+        name: "active schedule with null due date honors retry",
+        writes: &[(
+            "INSERT INTO engine_work_attempts VALUES ('01890f2e-7b4c-7cc0-98c4-000000000015','automation_timer','01890f2e-7b4c-7cc0-98c4-000000000014','failing',1,'1970-01-01T00:02:00.123Z','statement_rejected',NULL,'1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z',NULL,'1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z')",
+            1,
+        )],
+        expected: [Some(120_123), None],
+    },
+    AlarmInputScenario {
+        name: "reset after null schedule cases",
+        writes: &[
+            ("DELETE FROM engine_work_attempts", 1),
+            ("DELETE FROM automation_schedules", 1),
+        ],
+        expected: [None, None],
+    },
 ];

@@ -1,7 +1,5 @@
 //! Core's concrete timed jobs and whole-unit execution.
 use crate::WorkspaceRuntime;
-#[cfg(feature = "test-support")]
-use crate::engine::query_registry;
 use central_engine_model::{DueRow, EngineTime, InstanceKey, MachineKind, RetirementThreshold};
 use fleet_contracts::{AlarmResult, EngineSubject, LegacyUnitOutcome, ObservedControl};
 use fleet_engine::{
@@ -80,7 +78,13 @@ impl<H: CentralStore, S: WorkspaceStores> TimedRows<WorkspaceRuntime<H, S>> for 
             }
             #[cfg(feature = "test-support")]
             DueKind::Probe => {
-                fleet_engine::read_due_rows(store, query_registry::PROBE_LIST, cutoff, limit).await
+                fleet_engine::read_due_rows(
+                    store,
+                    central_engine_model::DueListKind::Probes,
+                    cutoff,
+                    limit,
+                )
+                .await
             }
         }
     }

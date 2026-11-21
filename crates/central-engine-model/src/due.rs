@@ -16,17 +16,55 @@ pub enum DueQueryError {
     CapOutOfRange,
 }
 
-/// A checked owner SELECT with the two portable integer bindings.
+/// The checked SELECT belonging to each timed owner.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct DueListQuery {
-    pub sql: &'static str,
-    pub horizon: SafeInteger,
-    pub cap: SafeInteger,
+pub enum DueListKind {
+    Wakes,
+    Schedules,
+    DirectMessages,
+    SystemExpiries,
+    Probes,
 }
 
-/// Registry-owned static SQL binds the horizon and per-kind cap as ?1 and ?2.
-pub fn due_list_sql(
-    sql: &'static str,
+impl DueListKind {
+    pub const fn machine_kind(self) -> &'static str {
+        match self {
+            Self::Wakes => "wake_timer",
+            Self::Schedules => "automation_timer",
+            Self::DirectMessages => "direct_message",
+            Self::SystemExpiries => "system_message_expiry",
+            Self::Probes => "engine_probe",
+        }
+    }
+}
+
+/// An owner SELECT and its portable integer bindings.
+///
+/// Runtime callers cannot supply alternate SQL to a checked list.
+/// ```compile_fail,E0308
+/// use central_engine_model::{EngineTime, due_list_query};
+/// let _ = due_list_query("SELECT * FROM nonexistent_table", EngineTime::UNIX_EPOCH, 250);
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct DueListQuery {
+    kind: DueListKind,
+    horizon: SafeInteger,
+    cap: SafeInteger,
+}
+
+impl DueListQuery {
+    pub const fn kind(self) -> DueListKind {
+        self.kind
+    }
+
+    /// The horizon and per-kind cap bind in this order to ?1 and ?2.
+    pub const fn bindings(self) -> (i64, i64) {
+        (self.horizon.get(), self.cap.get())
+    }
+}
+
+pub fn due_list_query(
+    kind: DueListKind,
     horizon: EngineTime,
     per_kind_cap: usize,
 ) -> Result<DueListQuery, DueQueryError> {
@@ -39,5 +77,5 @@ pub fn due_list_sql(
         .ok()
         .and_then(|cap| SafeInteger::new(cap).ok())
         .ok_or(DueQueryError::CapOutOfRange)?;
-    Ok(DueListQuery { sql, horizon, cap })
+    Ok(DueListQuery { kind, horizon, cap })
 }

@@ -40,12 +40,22 @@ impl TestFaults {
     }
 
     pub fn take_read_failure(&self, statement: &Statement) -> Option<StoreFailure> {
-        self.take_due_read_failure(statement.sql)
+        self.take_read_failure_matching(|fault| fault.matches_sql(statement.sql))
     }
 
-    pub fn take_due_read_failure(&self, sql: &str) -> Option<StoreFailure> {
+    pub fn take_due_read_failure(
+        &self,
+        kind: fleet_runtime_ports::DueListKind,
+    ) -> Option<StoreFailure> {
+        self.take_read_failure_matching(|fault| fault.kind == kind.machine_kind())
+    }
+
+    fn take_read_failure_matching(
+        &self,
+        matches: impl FnOnce(&EngineReadFault) -> bool,
+    ) -> Option<StoreFailure> {
         let mut armed = self.read.lock().unwrap_or_else(PoisonError::into_inner);
-        if armed.as_ref().is_some_and(|fault| fault.matches_sql(sql)) {
+        if armed.as_ref().is_some_and(matches) {
             armed.take();
             Some(StoreFailure::Corrupt {
                 reason: CorruptReason::BadValue {
@@ -68,9 +78,7 @@ impl TestFaults {
         if batch.statements.is_empty()
             && matches!(
                 batch.alarm,
-                AlarmUpdate::SetFromQuery(_)
-                    | AlarmUpdate::SetEngineFromQuery { .. }
-                    | AlarmUpdate::Engine(_)
+                AlarmUpdate::SetFromQuery(_) | AlarmUpdate::Engine(_)
             )
         {
             self.alarm_batch

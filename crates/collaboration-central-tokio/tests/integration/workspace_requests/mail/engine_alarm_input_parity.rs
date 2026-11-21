@@ -40,6 +40,39 @@ async fn checked_alarm_inputs_match_main_for_every_job() {
                 scenario.name
             );
         }
+        if scenario
+            .name
+            .starts_with("active schedule with null due date")
+        {
+            let effective_due_ms = scenario.expected[0].unwrap();
+            let key = SqlValue::Text("01890f2e-7b4c-7cc0-98c4-000000000014".into());
+            for sql in [
+                include_str!(
+                    "../../../../../collaboration-central-core/tests/fixtures/main-schedules.sql"
+                ),
+                include_str!("../../../../../fleet-schedules/src/queries/read_due_schedules.sql"),
+            ] {
+                let at_deadline = store
+                    .read(Statement {
+                        sql,
+                        args: vec![integer(effective_due_ms), integer(250)],
+                    })
+                    .await
+                    .unwrap();
+                assert_eq!(
+                    at_deadline.rows,
+                    vec![vec![key.clone(), integer(0), integer(effective_due_ms)]]
+                );
+                let before = store
+                    .read(Statement {
+                        sql,
+                        args: vec![integer(effective_due_ms - 1), integer(250)],
+                    })
+                    .await
+                    .unwrap();
+                assert!(before.rows.is_empty());
+            }
+        }
         let main = store
             .read(Statement {
                 sql: collaboration_central_core::ENGINE_ALARM_INPUTS,

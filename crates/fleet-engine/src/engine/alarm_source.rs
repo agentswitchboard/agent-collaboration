@@ -6,7 +6,7 @@ use super::{
     store_adapter::corrupt_class,
 };
 use central_engine_model::{
-    DueBatchPolicy, DueRow, EngineTime, InstanceKey, MachineKind, RetirementThreshold,
+    DueBatchPolicy, DueListKind, DueRow, EngineTime, InstanceKey, MachineKind, RetirementThreshold,
 };
 use central_storage::{
     AlarmPublication, AlarmUpdate, BatchOutcome, EngineAlarmPlan, StatementBatch, StoreFailure,
@@ -103,11 +103,11 @@ fn source(kind: MachineKind) -> EngineSubject {
 }
 pub async fn read_due_rows(
     host: &impl CentralStore,
-    sql: &'static str,
+    kind: DueListKind,
     cutoff: EngineTime,
     limit: usize,
 ) -> Result<Vec<DueRow>, DueDiscoveryError> {
-    let query = central_engine_model::due_list_sql(sql, cutoff, limit)
+    let query = central_engine_model::due_list_query(kind, cutoff, limit)
         .map_err(DueDiscoveryError::InvalidBounds)?;
     host.read_timed_due_rows(query)
         .await

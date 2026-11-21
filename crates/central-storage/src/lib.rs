@@ -133,10 +133,6 @@ pub enum AlarmUpdate {
     SetFromQuery(Statement),
     /// The host applies the checked Central projection or a typed clear.
     Engine(EngineAlarmPlan),
-    /// The host reads two pending-time columns atomically and applies engine policy.
-    SetEngineFromQuery {
-        query: Statement,
-    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, serde::Deserialize)]

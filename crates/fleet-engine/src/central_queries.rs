@@ -1,5 +1,5 @@
 //! Checked Central alarm and timed-list rows read on the owning executor.
-use central_engine_model::{DueListQuery, DueRow, InstanceKey};
+use central_engine_model::{DueListKind, DueListQuery, DueRow, InstanceKey};
 use central_storage::{CorruptReason, EngineAlarmTimes, SafeInteger, StoreFailure};
 use sqlx::{ColumnIndex, Database, Decode, Encode, Executor, IntoArguments, Type};
 
@@ -41,15 +41,63 @@ where
     })
 }
 
-#[derive(sqlx::FromRow)]
-struct StoredDueRow {
-    #[sqlx(rename = "subject_key?: String")]
-    subject_key: Option<String>,
-    #[sqlx(rename = "occurrence_ms!: i64")]
-    occurrence_ms: i64,
-    #[sqlx(rename = "effective_due_ms!: i64")]
-    effective_due_ms: i64,
+// Both the native witness and runtime decoder expand this private row declaration.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __declare_timed_due_row {
+    () => {
+        #[derive(sqlx::FromRow)]
+        struct StoredDueRow {
+            #[sqlx(rename = "subject_key?: String")]
+            subject_key: Option<String>,
+            #[sqlx(rename = "occurrence_ms!: i64")]
+            occurrence_ms: i64,
+            #[sqlx(rename = "effective_due_ms!: i64")]
+            effective_due_ms: i64,
+        }
+    };
 }
+
+/// Shares the owner file and positional bindings between runtime and the SQLx witness.
+#[doc(hidden)]
+#[macro_export]
+macro_rules! __with_timed_due_sql {
+    (@bind $file:literal, $emit:ident, $input:expr) => {{
+        let (horizon, cap) = $input.bindings();
+        $emit!($file, horizon, cap)
+    }};
+    (Wakes, $emit:ident, $input:expr) => {
+        $crate::__with_timed_due_sql!(@bind "../fleet-wakes/src/queries/read_due_wakes.sql", $emit, $input)
+    };
+    (Schedules, $emit:ident, $input:expr) => {
+        $crate::__with_timed_due_sql!(@bind "../fleet-schedules/src/queries/read_due_schedules.sql", $emit, $input)
+    };
+    (DirectMessages, $emit:ident, $input:expr) => {
+        $crate::__with_timed_due_sql!(@bind "../fleet-mail/src/queries/read_due_direct_messages.sql", $emit, $input)
+    };
+    (SystemExpiries, $emit:ident, $input:expr) => {
+        $crate::__with_timed_due_sql!(@bind "../fleet-mail/src/queries/read_due_system_expiries.sql", $emit, $input)
+    };
+    (Probes, $emit:ident, $input:expr) => {
+        $crate::__with_timed_due_sql!(@bind "../collaboration-central-core/src/engine/queries/read_due_probes.sql", $emit, $input)
+    };
+}
+
+/// Native, owner-local checks use the same typed row, SQL file and bind order as runtime.
+#[macro_export]
+macro_rules! check_timed_due_list {
+    ($kind:ident, $input:expr) => {{
+        $crate::__declare_timed_due_row!();
+        macro_rules! witness {
+            ($file:literal, $horizon:expr, $cap:expr) => {
+                sqlx::query_file_as!(StoredDueRow, $file, $horizon, $cap)
+            };
+        }
+        $crate::__with_timed_due_sql!($kind, witness, $input)
+    }};
+}
+
+__declare_timed_due_row!();
 
 /// Reads an owner's due list and validates its storage types before Engine dispatch.
 pub async fn read_timed_due_rows<T: CentralTransaction>(
@@ -64,9 +112,20 @@ where
     String: Type<T::Database> + for<'row> Decode<'row, T::Database>,
     for<'row> &'row str: ColumnIndex<<T::Database as Database>::Row>,
 {
-    sqlx::query_as::<T::Database, StoredDueRow>(query.sql)
-        .bind(query.horizon.get())
-        .bind(query.cap.get())
+    macro_rules! runtime {
+        ($file:literal, $($arg:expr),+) => {
+            sqlx::query_as::<T::Database, StoredDueRow>(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $file)))
+                $(.bind($arg))+
+        };
+    }
+    let select = match query.kind() {
+        DueListKind::Wakes => __with_timed_due_sql!(Wakes, runtime, query),
+        DueListKind::Schedules => __with_timed_due_sql!(Schedules, runtime, query),
+        DueListKind::DirectMessages => __with_timed_due_sql!(DirectMessages, runtime, query),
+        DueListKind::SystemExpiries => __with_timed_due_sql!(SystemExpiries, runtime, query),
+        DueListKind::Probes => __with_timed_due_sql!(Probes, runtime, query),
+    };
+    select
         .fetch_all(transaction.executor())
         .await
         .map_err(due_list_failure)?

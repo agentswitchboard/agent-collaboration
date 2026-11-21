@@ -169,11 +169,8 @@ impl ObjectStorage {
         if let Some(result) = commit_fault.as_ref().and_then(|fault| fault.before()) {
             return result;
         }
-        if matches!(
-            &batch.alarm,
-            central_storage::AlarmUpdate::SetEngineFromQuery { .. }
-                | central_storage::AlarmUpdate::Engine(_)
-        ) && self.engine_publication.is_none()
+        if matches!(&batch.alarm, central_storage::AlarmUpdate::Engine(_))
+            && self.engine_publication.is_none()
         {
             return Err(StoreFailure::AlarmUnpublishable {
                 reason: AlarmPublicationFailure::ClockUnavailable,
@@ -308,7 +305,7 @@ impl ObjectStorage {
         query: fleet_runtime_ports::DueListQuery,
     ) -> Result<Vec<fleet_runtime_ports::DueRow>, StoreFailure> {
         #[cfg(feature = "test-support")]
-        if let Some(failure) = self.faults.take_due_read_failure(query.sql) {
+        if let Some(failure) = self.faults.take_due_read_failure(query.kind()) {
             return Err(failure);
         }
         let mut connection = self

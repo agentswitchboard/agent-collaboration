@@ -247,6 +247,7 @@ test("a populated masked job and fixed active history agree on both backends", a
   const cases = [
     { name: "sparse-short-history", seed: seedHistory(100, 50, 50) },
     { name: "sparse-long-history", seed: seedHistory(10_000, 50, 50) },
+    { name: "all-finished", seed: seedHistory(10_000, 0, 0) },
     { name: "open-windows", seed: seedHistory(10_000, 50, 10_000) },
     {
       name: "held-jobs",
@@ -270,7 +271,11 @@ test("a populated masked job and fixed active history agree on both backends", a
       const previous = native.prepare(oldAlarm);
       const expected = pair(resultSchema.shape.rows.parse(previous.all()), false);
       assert.deepEqual(pair(old.rows, false), expected);
-      assert.deepEqual(expected, name === "held-jobs" ? [180_000, 720_000] : [300_000, 300_000]);
+      const expectedAlarm = {
+        "all-finished": [null, null],
+        "held-jobs": [180_000, 720_000],
+      }[name] ?? [300_000, 300_000];
+      assert.deepEqual(expected, expectedAlarm);
       const mainLists = name.startsWith("sparse-") ? await dueLists(name, native, false) : null;
       const mainMs = timeStock(previous);
       const mainStock = stockCounters(database, oldAlarm);

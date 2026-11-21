@@ -14,6 +14,3 @@ pub(crate) fn alarm_update() -> central_storage::AlarmUpdate {
 #[cfg(test)]
 #[path = "query_registry_test.rs"]
 mod tests;
-
-#[cfg(feature = "test-support")]
-pub(crate) const PROBE_LIST: &str = include_str!("queries/read_due_probes.sql");

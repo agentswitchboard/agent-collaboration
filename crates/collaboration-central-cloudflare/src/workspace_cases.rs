@@ -2,7 +2,7 @@
 use super::{
     AlarmFailure, AlarmPolicy, CentralObject, ObjectAddress, OrganizationId, statement_store,
 };
-use crate::store_wire::{OwnedBatch, OwnedStatement, OwnedStoreCall};
+use crate::store_wire::{OwnedStatement, OwnedStoreCall};
 use fleet_runtime::{HeldPause, PausePoint};
 use serde::{Deserialize, Serialize};
 use std::{cell::RefCell, collections::BTreeMap};
@@ -12,6 +12,10 @@ use worker::{Headers, Method, RequestInit, js_sys};
 mod engine_due_migration_fixture;
 #[path = "workspace_fixture_admission.rs"]
 mod fixture_admission;
+#[path = "workspace_store_cases.rs"]
+mod workspace_store_cases;
+#[path = "workspace_turn_cases.rs"]
+mod workspace_turn_cases;
 use crate::workspace_rpc_fixture;
 
 #[derive(Default)]
@@ -266,284 +270,34 @@ pub(super) async fn control(
             Response::from_json(&runtime.queued_for_session(&session).await)
         }
         "/test/alarm" => Response::from_json(&object.state.storage().get_alarm().await?),
-        "/test/hold-central" => {
-            let point: Point = request.json().await?;
-            if !matches!(
-                point,
-                Point::BeforeTimerCommit
-                    | Point::AfterTimerCommit
-                    | Point::AfterEngineLoad
-                    | Point::BeforeSignInSample
-                    | Point::AfterSignInSample
-                    | Point::AfterWorkspaceExecute
-                    | Point::EngineCompletionEntered
-            ) {
-                return Err(error("not a timer point"));
-            }
-            object.controls.central_holds.borrow_mut().insert(
-                point,
-                runtime.runtime().pause_points().hold_central(point.into()),
-            );
-            Response::from_json(&true)
+        "/test/hold-central"
+        | "/test/hold-engine"
+        | "/test/until-held-engine"
+        | "/test/release-engine"
+        | "/test/until-central-waiting"
+        | "/test/until-admission-waiting"
+        | "/test/admission-waiting"
+        | "/test/engine-probe-admit"
+        | "/test/engine-probe-request-admitted"
+        | "/test/until-held-central"
+        | "/test/release-central" => {
+            workspace_turn_cases::control(object, &runtime, &path, request).await
         }
-        "/test/hold-engine" => {
-            let pause: EnginePause = request.json().await?;
-            let id = object.controls.next_engine_hold.get();
-            object.controls.next_engine_hold.set(id + 1);
-            let held = runtime
-                .runtime()
-                .pause_points()
-                .hold_engine(pause.point.into(), &pause.key);
-            object.controls.engine_holds.borrow_mut().insert(id, held);
-            Response::from_json(&id)
-        }
-        "/test/until-held-engine" => {
-            let id: u64 = request.json().await?;
-            let mut held = object
-                .controls
-                .engine_holds
-                .borrow_mut()
-                .remove(&id)
-                .ok_or_else(|| error("engine hold not armed"))?;
-            held.until_held().await;
-            object.controls.engine_holds.borrow_mut().insert(id, held);
-            Response::from_json(&true)
-        }
-        "/test/release-engine" => {
-            let id: u64 = request.json().await?;
-            if let Some(held) = object.controls.engine_holds.borrow_mut().remove(&id) {
-                held.release();
-            }
-            Response::from_json(&true)
-        }
-        "/test/until-central-waiting" => {
-            let count: usize = request.json().await?;
-            runtime.runtime().until_central_waiting(count).await;
-            Response::from_json(&true)
-        }
-        "/test/until-admission-waiting" => {
-            let count: usize = request.json().await?;
-            runtime.runtime().until_admission_waiting(count).await;
-            Response::from_json(&true)
-        }
-        "/test/admission-waiting" => {
-            Response::from_json(&runtime.runtime().admission_waiting_now())
-        }
-        "/test/engine-probe-admit" => {
-            #[derive(Deserialize)]
-            #[serde(rename_all = "camelCase", deny_unknown_fields)]
-            struct AdmitCall {
-                caller: workspace_model::Caller,
-                token: String,
-            }
-            let call: AdmitCall = request.json().await?;
-            let admitted =
-                fixture_admission::admitted_caller(&runtime, &call.token, call.caller).await?;
-            let accepted = admitted.is_some();
-            *object.controls.admitted_probe_caller.borrow_mut() = admitted;
-            Response::from_json(&accepted)
-        }
-        "/test/engine-probe-request-admitted" => {
-            let probe: collaboration_central_core::engine_probe::ProbeRequest =
-                request.json().await?;
-            let admitted = object.controls.admitted_probe_caller.borrow().clone();
-            let Some(caller) = admitted else {
-                return Response::error("no admitted probe caller", 409);
-            };
-            Response::from_json(&runtime.request_probe(&caller, probe).await)
-        }
-        "/test/until-held-central" => {
-            let point: Point = request.json().await?;
-            let mut held = object
-                .controls
-                .central_holds
-                .borrow_mut()
-                .remove(&point)
-                .ok_or_else(|| error("point not armed"))?;
-            held.until_held().await;
-            object
-                .controls
-                .central_holds
-                .borrow_mut()
-                .insert(point, held);
-            Response::from_json(&true)
-        }
-        "/test/release-central" => {
-            let point: Point = request.json().await?;
-            if let Some(held) = object.controls.central_holds.borrow_mut().remove(&point) {
-                held.release();
-            }
-            Response::from_json(&true)
-        }
-        "/test/central-batch" => {
-            let batch = request.json::<OwnedBatch>().await?;
-            let policy = match &batch.alarm {
-                crate::store_wire::OwnedAlarmUpdate::SetEngineFromQuery { .. }
-                | crate::store_wire::OwnedAlarmUpdate::Engine(_) => AlarmPolicy::Engine(
-                    object.state.storage(),
-                    object.clock.clone(),
-                    fleet_runtime::engine_alarm_decider(object.due_batches.clone()),
-                ),
-                crate::store_wire::OwnedAlarmUpdate::Unchanged
-                | crate::store_wire::OwnedAlarmUpdate::SetFromQuery(_) => AlarmPolicy::Ignore,
-            };
-            Response::from_json(
-                &statement_store::run_batch(&object.connection, batch, policy).await,
-            )
-        }
-        "/test/central-read" => Response::from_json(
-            &statement_store::read(&object.connection, request.json::<OwnedStatement>().await?)
-                .await,
-        ),
-        "/test/store" => {
-            let store: Store = request.json().await?;
-            Response::from_json(
-                &crate::cloudflare_transport::call_store(&object.env, store.workspace, store.call)
-                    .await,
-            )
-        }
-        "/test/store-failing-upgrade" => {
-            let store: Store = request.json().await?;
-            Response::from_json(
-                &crate::cloudflare_transport::call_failing_workspace_store(
-                    &object.env,
-                    store.workspace,
-                    store.call,
-                )
-                .await,
-            )
-        }
-        "/test/reset-store" => {
-            let workspace: workspace_ids::WorkspaceId = request.json().await?;
-            let address = ObjectAddress::WorkspaceStore(workspace);
-            let headers = Headers::new();
-            crate::cloudflare_transport::address_header(&headers, &address)?;
-            let mut init = RequestInit::new();
-            init.with_method(Method::Post).with_headers(headers);
-            let response = crate::cloudflare_transport::stub(&object.env, &address)?
-                .fetch_with_request(Request::new_with_init(
-                    "https://central.internal/test/crash",
-                    &init,
-                )?)
-                .await;
-            Response::from_json(
-                &response
-                    .map(|response| response.status_code() != 200)
-                    .unwrap_or(true),
-            )
-        }
-        "/test/central-failing-upgrade" => Response::from_json(
-            &statement_store::migrate(
-                &object.connection,
-                std::sync::Arc::new(fleet_storage_schema::workspace_migrations::failing_upgrade(
-                    fleet_storage_schema::workspace_migrations::central_migrator(),
-                )),
-            )
-            .await
-            .map_err(|error| error.to_string()),
-        ),
-        "/test/lose-read" => {
-            object
-                .controls
-                .lose_read
-                .store(true, std::sync::atomic::Ordering::SeqCst);
-            Response::from_json(&true)
-        }
-        "/test/lose-reply" => {
-            runtime
-                .runtime()
-                .lose_reply_after_apply(request.json().await?);
-            Response::from_json(&true)
-        }
-        "/test/hold" => {
-            let target: Pause = request.json().await?;
-            let held = runtime
-                .runtime()
-                .pause_points()
-                .hold(&target.workspace, target.point.into());
-            object
-                .controls
-                .holds
-                .borrow_mut()
-                .insert((target.workspace, target.point), held);
-            Response::from_json(&true)
-        }
-        "/test/until-held" => {
-            let target: Pause = request.json().await?;
-            let key = (target.workspace, target.point);
-            let mut held = object
-                .controls
-                .holds
-                .borrow_mut()
-                .remove(&key)
-                .ok_or_else(|| error("point not armed"))?;
-            held.until_held().await;
-            object.controls.holds.borrow_mut().insert(key, held);
-            Response::from_json(&true)
-        }
-        "/test/guard-next-read" => {
-            let wait: Wait = request.json().await?;
-            object.controls.observations.borrow_mut().insert(
-                wait.workspace.clone(),
-                runtime
-                    .runtime()
-                    .pause_points()
-                    .hold(&wait.workspace, PausePoint::AfterReads),
-            );
-            Response::from_json(&true)
-        }
-        "/test/waiting-before-read" => {
-            let wait: Wait = request.json().await?;
-            let mut held = object
-                .controls
-                .observations
-                .borrow_mut()
-                .remove(&wait.workspace)
-                .ok_or_else(|| error("read observation not armed"))?;
-            let before_read = {
-                let read = held.until_held();
-                let waiting = runtime
-                    .runtime()
-                    .workspace_turns()
-                    .until_waiting(&wait.workspace, wait.count);
-                futures_util::pin_mut!(read, waiting);
-                matches!(
-                    futures_util::future::select(read, waiting).await,
-                    futures_util::future::Either::Right(_)
-                )
-            };
-            Response::from_json(&before_read)
-        }
-        "/test/crash" => {
-            object
-                .state
-                .block_concurrency_while(async {
-                    Err::<(), worker::Error>(error("workspace fixture crash"))
-                })
-                .await?;
-            Response::error("object did not reset", 500)
-        }
-        "/test/until-waiting" => {
-            let wait: Wait = request.json().await?;
-            runtime
-                .runtime()
-                .workspace_turns()
-                .until_waiting(&wait.workspace, wait.count)
-                .await;
-            Response::from_json(&true)
-        }
-        "/test/release" => {
-            let target: Pause = request.json().await?;
-            let held = object
-                .controls
-                .holds
-                .borrow_mut()
-                .remove(&(target.workspace, target.point));
-            if let Some(held) = held {
-                held.release();
-            }
-            Response::from_json(&true)
-        }
+        "/test/central-batch"
+        | "/test/central-read"
+        | "/test/store"
+        | "/test/store-failing-upgrade"
+        | "/test/reset-store"
+        | "/test/central-failing-upgrade"
+        | "/test/lose-read"
+        | "/test/lose-reply"
+        | "/test/hold"
+        | "/test/until-held"
+        | "/test/guard-next-read"
+        | "/test/waiting-before-read"
+        | "/test/crash"
+        | "/test/until-waiting"
+        | "/test/release" => workspace_store_cases::control(object, &runtime, &path, request).await,
         _ => Response::error("unknown workspace control", 404),
     }
 }

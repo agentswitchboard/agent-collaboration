@@ -14,10 +14,10 @@ async fn business_migration_upgrade_failure_rolls_back_both_real_owners_and_all_
                 .join("central")
                 .join(format!("{}.sqlite", f.caller.organization_id().as_str())),
             workspace_migrations::central_migrator as fn() -> sqlx::migrate::Migrator,
-            // 0001-0004 plus the probe fixture this test build appends (core always
+            // 0001-0005 plus the probe fixture this test build appends (core always
             // has test-support here); workspace_migrations_test.rs proves a
-            // production build has exactly 0001-0004.
-            5,
+            // production build has exactly 0001-0005.
+            6,
         ),
         (
             f.root

@@ -55,11 +55,7 @@ impl CentralStore for CentralStatements {
             let decide_alarm = self.decide_alarm.clone();
             #[cfg(feature = "test-support")]
             let decide_alarm = if !batch.statements.is_empty()
-                && matches!(
-                    batch.alarm,
-                    central_storage::AlarmUpdate::SetEngineFromQuery { .. }
-                        | central_storage::AlarmUpdate::Engine(_)
-                )
+                && matches!(batch.alarm, central_storage::AlarmUpdate::Engine(_))
                 && self
                     .zero_next_write_alarm
                     .swap(false, std::sync::atomic::Ordering::SeqCst)
@@ -126,7 +122,7 @@ impl CentralStore for CentralStatements {
     > + Send {
         SendFuture::new(async move {
             #[cfg(feature = "test-support")]
-            if let Some(failure) = self.faults.take_due_read_failure(query.sql) {
+            if let Some(failure) = self.faults.take_due_read_failure(query.kind()) {
                 return Err(failure);
             }
             statement_store::read_timed_due_rows(&self.connection, query).await

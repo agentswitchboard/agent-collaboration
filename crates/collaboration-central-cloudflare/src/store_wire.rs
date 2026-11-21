@@ -34,7 +34,6 @@ pub(crate) struct OwnedGuardedStatement {
 pub(crate) enum OwnedAlarmUpdate {
     Unchanged,
     SetFromQuery(OwnedStatement),
-    SetEngineFromQuery { query: OwnedStatement },
     Engine(central_storage::EngineAlarmPlan),
 }
 
@@ -80,9 +79,6 @@ impl From<AlarmUpdate> for OwnedAlarmUpdate {
             AlarmUpdate::Unchanged => Self::Unchanged,
             AlarmUpdate::Engine(plan) => Self::Engine(plan),
             AlarmUpdate::SetFromQuery(statement) => Self::SetFromQuery(statement.into()),
-            AlarmUpdate::SetEngineFromQuery { query } => Self::SetEngineFromQuery {
-                query: query.into(),
-            },
         }
     }
 }

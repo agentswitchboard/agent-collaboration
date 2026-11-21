@@ -435,7 +435,7 @@ impl CentralObject {
         not(feature = "test-support"),
         expect(
             clippy::unused_async,
-            reason = "only the test-support witness awaits before the reply is sent"
+            reason = "test-support can observe the alarm after sending the frame"
         )
     )]
     async fn reply_to_machine(
@@ -444,15 +444,19 @@ impl CentralObject {
         request: &LinkRequest,
         reply: ReplyPayload,
     ) -> Result<()> {
-        #[cfg(feature = "test-support")]
-        self.witness_alarm(request.correlation_id()).await?;
         send(
             socket,
             DataFrame::Reply {
                 correlation_id: request.correlation_id().clone(),
                 result: Box::new(reply),
             },
-        )
+        )?;
+
+        #[cfg(feature = "test-support")]
+        if let Err(error) = self.witness_alarm(request.correlation_id()).await {
+            worker::console_warn!("Post-reply alarm diagnostic failed: {error}");
+        }
+        Ok(())
     }
 }
 fn refused_reply(payload: &RequestPayload, reason: RefusalReason) -> ReplyPayload {

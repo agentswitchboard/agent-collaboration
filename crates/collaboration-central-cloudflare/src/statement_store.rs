@@ -357,16 +357,6 @@ async fn run_in_transaction(
                     BatchStop::Failed(StoreFailure::AlarmUnpublishable { reason })
                 })?
             }
-            OwnedAlarmUpdate::SetEngineFromQuery { query } => {
-                let rows = bound(query).fetch_all(transaction).await?;
-                let answer = read_outcome(&rows).map_err(BatchStop::Failed)?;
-                let (clock, decide) =
-                    clock.ok_or(BatchStop::Failed(StoreFailure::AlarmUnpublishable {
-                        reason: AlarmPublicationFailure::ClockUnavailable,
-                    }))?;
-                decided_engine_alarm(&answer, clock.now().unix_millis(), &decide)
-                    .map_err(BatchStop::Failed)?
-            }
         };
         // A storage write in the same transaction: it commits with the batch or not at all.
         let written = match at {
@@ -485,39 +475,4 @@ fn statement_is_rejected(error: &sqlx_core::Error) -> bool {
                 | "SQLITE_CONSTRAINT_DATATYPE"
         )
     )
-}
-
-fn decided_engine_alarm(
-    answer: &ReadOutcome,
-    now: i64,
-    decide: &EngineAlarmDecider,
-) -> Result<Option<i64>, StoreFailure> {
-    let bad = || StoreFailure::Corrupt {
-        reason: CorruptReason::BadValue {
-            column: "engine alarm input".into(),
-        },
-    };
-    let value = |value: &SqlValue| -> Result<Option<i64>, StoreFailure> {
-        match value {
-            SqlValue::Null => Ok(None),
-            SqlValue::Integer(time) => Ok(Some(time.get())),
-            SqlValue::Text(_) | SqlValue::Blob(_) => Err(bad()),
-        }
-    };
-    let (grid, legacy) = match answer.rows.as_slice() {
-        [row] => match row.as_slice() {
-            [grid, legacy] => (value(grid)?, value(legacy)?),
-            _ => return Err(bad()),
-        },
-        _ => return Err(bad()),
-    };
-    decide(
-        EngineAlarmTimes {
-            earliest_on_grid_due_unix_millis: grid,
-            earliest_legacy_due_unix_millis: legacy,
-        },
-        now,
-        &mut |_| {},
-    )
-    .map_err(|reason| StoreFailure::AlarmUnpublishable { reason })
 }

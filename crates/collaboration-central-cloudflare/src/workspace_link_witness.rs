@@ -1,6 +1,6 @@
 //! Verification-only events; no hook or binding exists in a production bundle.
 use super::CentralObject;
-use central_storage::{ReadOutcome, SqlValue, Statement, StoreFailure};
+use central_storage::{ReadOutcome, StoreFailure};
 use fleet_runtime_ports::CentralStore;
 use serde::Serialize;
 use worker::{Env, Method, RequestInit, Result};
@@ -138,30 +138,21 @@ impl CentralObject {
         if !enabled(&self.env)? {
             return Ok(());
         }
-        let rows = self
+        let inputs = self
             .statement_host()
-            .read(Statement {
-                sql: collaboration_central_core::ENGINE_ALARM_INPUTS,
-                args: vec![],
-            })
+            .engine_alarm_inputs()
             .await
             .map_err(|_| worker::Error::RustError("C2 due read unavailable".into()))?;
-        // The engine's earliest due is the earlier of its on-grid and legacy inputs.
-        let due_value = |value: &SqlValue| match value {
-            SqlValue::Null => Ok(None),
-            SqlValue::Integer(value) if value.get() >= 0 => Ok(Some(value.get())),
-            _ => Err(worker::Error::RustError("C2 invalid due value".into())),
-        };
-        let earliest_due_ms = match (rows.columns.as_slice(), rows.rows.as_slice()) {
-            (columns, [row]) if columns == ["on_grid_due", "legacy_due"] => match row.as_slice() {
-                [on_grid, legacy] => [due_value(on_grid)?, due_value(legacy)?]
-                    .into_iter()
-                    .flatten()
-                    .min(),
-                _ => return Err(worker::Error::RustError("C2 invalid due value".into())),
-            },
-            _ => return Err(worker::Error::RustError("C2 invalid due row".into())),
-        };
+        let earliest_due_ms = [
+            inputs.earliest_on_grid_due_unix_millis,
+            inputs.earliest_legacy_due_unix_millis,
+        ]
+        .into_iter()
+        .flatten()
+        .min();
+        if earliest_due_ms.is_some_and(|value| value < 0) {
+            return Err(worker::Error::RustError("C2 invalid due value".into()));
+        }
         let alarm_ms = self.state.storage().get_alarm().await?;
         if alarm_ms
             .is_some_and(|value| value < 0 || central_storage::SafeInteger::new(value).is_err())
