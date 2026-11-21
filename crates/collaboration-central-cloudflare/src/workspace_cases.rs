@@ -235,6 +235,12 @@ pub(super) async fn control(
             runtime.lose_next_provisioning_reply();
             Response::from_json(&true)
         }
+        "/test/alarm-batch-fault-pending" => {
+            Response::from_json(&object.controls.faults.alarm_batch_pending())
+        }
+        "/test/fail-issuer-cache" => {
+            Response::from_json(&runtime.fail_next_issuer_cache(request.json().await?))
+        }
         "/test/fail-alarm-batch" => {
             let failure = request.json().await?;
             object.controls.faults.arm_alarm_batch(failure);

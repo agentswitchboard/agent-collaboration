@@ -6,7 +6,6 @@ use crate::{
     organization_authority::machine_login::{
         EnrollmentFacts, EnrollmentQuery, StoredEnrollment, StoredEnrollmentState,
     },
-    organization_change_rows::{OrganizationChangeOrigin, read_machine_supersession},
 };
 use central_storage::{Statement, StoreFailure};
 use fleet_identity_protocol::OrganizationId;
@@ -14,6 +13,7 @@ use fleet_runtime_ports::CentralStore;
 use fleet_runtime_ports::{
     guarded_statements::text, stored_values::string, workspace_decode_error::corrupt,
 };
+use fleet_signin::organization_change::{OrganizationChangeOrigin, read_machine_supersession};
 
 const BY_REQUEST: &str = "SELECT a.approval_id,a.request_id,a.label,a.allowed_workspaces,a.state,a.end_reason,a.approved_by_person_id,a.permission_checked,a.base_generation,a.code_expires_at,a.machine_client_id,a.last_grant_at,a.ended_at,a.created_at,a.updated_at,m.machine_id FROM login_machine_approvals a LEFT JOIN login_machines m ON m.machine_id=a.machine_id WHERE a.request_id=?";
 const BY_ENROLLMENT: &str = "SELECT a.approval_id,a.request_id,a.label,a.allowed_workspaces,a.state,a.end_reason,a.approved_by_person_id,a.permission_checked,a.base_generation,a.code_expires_at,a.machine_client_id,a.last_grant_at,a.ended_at,a.created_at,a.updated_at,m.machine_id FROM login_machine_approvals a LEFT JOIN login_machines m ON m.machine_id=a.machine_id WHERE a.approval_id=?";

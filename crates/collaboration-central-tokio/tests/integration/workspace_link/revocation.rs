@@ -1,5 +1,6 @@
 use super::*;
 use central_storage::{SqlValue, Statement};
+use fleet_contracts::MachinePrincipal;
 
 #[tokio::test]
 async fn private_signed_revocation_commits_and_closes_the_idle_machine_link() -> Result<()> {
@@ -82,7 +83,7 @@ async fn revocation_journey(fixture: &Fixture) -> Result<()> {
 #[test]
 fn issuer_one_machine_id_vectors_are_closed_on_this_host() -> Result<()> {
     use collaboration_central_core::identity_contract::{
-        DecideDeviceLogin, MachinePrincipal, MachineTokenDecision, PresentedMachine,
+        DecideDeviceLogin, MachineTokenDecision, PresentedMachine,
     };
 
     fn round_trip<Wire: serde::de::DeserializeOwned + serde::Serialize>(

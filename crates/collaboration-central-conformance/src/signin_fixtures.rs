@@ -4,6 +4,9 @@ use crate::ConformanceResult;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde_json::{Value, json};
+mod issuer_replies;
+use issuer_replies::IssuerReplies;
+pub use issuer_replies::{HeldIssuerFetch, IssuerReply};
 mod machine_tokens;
 pub use machine_tokens::{
     MACHINE_AUDIENCE, enroll_another_machine, machine_token, resign_machine_token,
@@ -169,6 +172,7 @@ pub struct SignInKeys {
     retired: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
     fetches: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     failing: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    replies: std::sync::Arc<IssuerReplies>,
     stop: tokio::sync::oneshot::Sender<()>,
     task: tokio::task::JoinHandle<Result<(), std::io::Error>>,
 }
@@ -182,23 +186,30 @@ impl SignInKeys {
         let counted = fetches.clone();
         let failing = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let unavailable = failing.clone();
+        let replies = std::sync::Arc::new(IssuerReplies::default());
+        let scheduled = replies.clone();
         let router = axum::Router::new().route(
             "/api/auth/jwks",
             axum::routing::get(move || {
                 let published = published.clone();
+                let scheduled = scheduled.clone();
                 counted.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 let unavailable = unavailable.load(std::sync::atomic::Ordering::SeqCst);
                 async move {
-                    if unavailable {
-                        return Err(axum::http::StatusCode::SERVICE_UNAVAILABLE);
+                    use axum::response::IntoResponse;
+                    if let Some(response) = scheduled.next_response().await {
+                        return response;
                     }
-                    let retired = published
-                        .lock()
-                        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)?
-                        .clone();
+                    if unavailable {
+                        return axum::http::StatusCode::SERVICE_UNAVAILABLE.into_response();
+                    }
+                    let unavailable =
+                        || axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response();
+                    let Ok(retired) = published.lock() else {
+                        return unavailable();
+                    };
                     published_keys_except(&retired)
-                        .map(axum::Json)
-                        .map_err(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR)
+                        .map_or_else(|_| unavailable(), |keys| axum::Json(keys).into_response())
                 }
             }),
         );
@@ -215,6 +226,7 @@ impl SignInKeys {
             retired,
             fetches,
             failing,
+            replies,
             stop,
             task,
         })
@@ -234,6 +246,10 @@ impl SignInKeys {
         self.failing
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
+    pub fn hold_next_fetch(&self) -> HeldIssuerFetch {
+        self.replies.hold_next()
+    }
+
     /// How many times central has fetched the published key set.
     pub fn fetches(&self) -> usize {
         self.fetches.load(std::sync::atomic::Ordering::SeqCst)
@@ -249,3 +265,9 @@ mod statement_refusals;
 pub use statement_refusals::{
     StatementRefusalCase, statement_refusal_case, statement_with_header, statement_with_times,
 };
+
+mod stamp_trace;
+pub use stamp_trace::StampTrace;
+
+mod issuer_order;
+pub use issuer_order::{IssuerOrder, IssuerOrderHost, prove_issuer_completion_order};

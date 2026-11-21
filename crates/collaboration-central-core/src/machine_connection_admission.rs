@@ -44,10 +44,10 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
             .ok_or(StoreFailure::Unavailable)?;
         let verified = match check.verify_machine_token(token).await {
             Ok(verified) => verified,
-            Err(crate::machine_token::MachineTokenRefusal::Rejected) => {
+            Err(fleet_signin::machine_token::MachineTokenRefusal::Rejected) => {
                 return Ok(Err(MachineConnectionRefusal::EnrollmentNotActive {}));
             }
-            Err(crate::machine_token::MachineTokenRefusal::Unavailable) => {
+            Err(fleet_signin::machine_token::MachineTokenRefusal::Unavailable) => {
                 return Err(StoreFailure::Unavailable);
             }
         };
@@ -105,10 +105,10 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
             .ok_or(StoreFailure::Unavailable)?;
         let verified = match check.verify_machine_token(token).await {
             Ok(verified) => verified,
-            Err(crate::machine_token::MachineTokenRefusal::Rejected) => {
+            Err(fleet_signin::machine_token::MachineTokenRefusal::Rejected) => {
                 return Ok(Err(Refusal::TokenRejected));
             }
-            Err(crate::machine_token::MachineTokenRefusal::Unavailable) => {
+            Err(fleet_signin::machine_token::MachineTokenRefusal::Unavailable) => {
                 return Err(StoreFailure::Unavailable);
             }
         };
@@ -271,7 +271,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> LiveMachineConnection
 }
 
 fn attachment_from_verified(
-    verified: &crate::machine_token::VerifiedMachineToken,
+    verified: &fleet_signin::machine_token::VerifiedMachineToken,
 ) -> MachineConnectionAttachment {
     MachineConnectionAttachment::from_token_claims(
         verified.organization_id().clone(),

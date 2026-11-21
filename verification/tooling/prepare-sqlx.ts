@@ -37,6 +37,11 @@ export const sqlitePreparationTargets: readonly SqlitePreparationTarget[] = [
     migrationSources: ["crates/fleet-storage-schema/migrations/workspace"],
     databaseFilename: "fleet-workspace-schema.sqlite",
   },
+  {
+    packageName: "fleet-signin",
+    migrationSources: ["crates/fleet-storage-schema/migrations/central"],
+    databaseFilename: "fleet-central-signin.sqlite",
+  },
 ];
 
 export interface PreparationOptions {

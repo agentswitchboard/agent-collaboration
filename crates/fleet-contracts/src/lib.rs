@@ -38,3 +38,11 @@ pub use workspace_rpc::{
     WorkspaceResponse, WorkspaceServiceClient, WorkspaceServiceProtocol, WorkspaceServiceRpc,
     WorkspaceStatusFailure, dispatch_workspace_request,
 };
+
+mod organization_provisioning;
+pub use organization_provisioning::*;
+mod machine_token_claims;
+pub use machine_token_claims::{MachinePrincipal, MachineTokenClaims};
+
+mod stamp_failures;
+pub use stamp_failures::{DigestFailure, ProvisionFailure};

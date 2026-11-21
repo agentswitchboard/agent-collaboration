@@ -1,19 +1,20 @@
 //! Worker sign-in trust configured explicitly for org-scoped central runtimes.
 
 use crate::sign_in_crypto::{WorkerEd25519, WorkerEs256};
-use collaboration_central_core::machine_token::{MachineTokenPolicy, MachineTokenVerifier};
 use collaboration_central_core::{
-    IssuerKeyCache, IssuerSignatureVerifier, SignInTrustSettings,
-    organization_authority::{
-        FleetOrganizationStatementTrust, FleetOrganizationStatementVerifier, SignInVerification,
-        SignInVerifiers,
-    },
+    SignInTrustSettings,
+    organization_authority::{SignInVerification, SignInVerifiers},
     person_request::{PersonRequestPolicy, PersonRequestVerifier},
 };
 use fleet_contracts::FleetOrganizationStatementRefusal;
 use fleet_identity_protocol::OrganizationId;
 use fleet_runtime_ports::Clock;
 use fleet_runtime_ports::{IssuerKeySource, KeyFetchFailure, RawJwks};
+use fleet_signin::{
+    IssuerKeyCache, IssuerSignatureVerifier,
+    machine_token::{MachineTokenPolicy, MachineTokenVerifier},
+    organization_authority::{FleetOrganizationStatementTrust, FleetOrganizationStatementVerifier},
+};
 use std::{future::Future, sync::Arc};
 use worker::{Fetch, send::SendFuture};
 
@@ -86,6 +87,8 @@ impl CloudflareSignInTrust {
                 },
             ),
             sign_in_service: self.settings.service_id.clone(),
+            #[cfg(feature = "test-support")]
+            issuer_cache: self.cache.clone(),
         }))
     }
 }

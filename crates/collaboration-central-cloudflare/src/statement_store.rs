@@ -190,6 +190,15 @@ async fn run_in_transaction(
         }
         rows_affected.push(affected);
     }
+    let publication = apply_alarm(transaction, &batch.alarm, policy).await?;
+    Ok((rows_affected, publication))
+}
+
+async fn apply_alarm(
+    transaction: &DoTransaction,
+    alarm: &OwnedAlarmUpdate,
+    policy: AlarmPolicy,
+) -> Result<AlarmPublication, BatchStop> {
     let (storage, clock) = match policy {
         #[cfg(feature = "test-support")]
         AlarmPolicy::Apply(storage) => (Some(storage), None),
@@ -198,8 +207,8 @@ async fn run_in_transaction(
     };
     let mut publication = AlarmPublication::Unchanged;
     if let Some(storage) = storage {
-        let at = match &batch.alarm {
-            OwnedAlarmUpdate::Unchanged => return Ok((rows_affected, publication)),
+        let at = match alarm {
+            OwnedAlarmUpdate::Unchanged => return Ok(publication),
             OwnedAlarmUpdate::SetFromQuery(statement) => {
                 let rows = bound(statement).fetch_all(transaction).await?;
                 let at = alarm_time(&read_outcome(&rows).map_err(BatchStop::Failed)?)
@@ -240,7 +249,7 @@ async fn run_in_transaction(
             AlarmPublication::Set { unix_millis }
         });
     }
-    Ok((rows_affected, publication))
+    Ok(publication)
 }
 
 /// Runs `batch` atomically on `connection`'s storage.
@@ -254,6 +263,12 @@ pub(crate) async fn run_batch(
             run_in_transaction(&transaction, batch, policy).await
         })
         .await;
+    batch_receipt(outcome)
+}
+
+fn batch_receipt(
+    outcome: Result<(Vec<u64>, AlarmPublication), BatchStop>,
+) -> Result<BatchOutcome, StoreFailure> {
     match outcome {
         Ok((rows_affected, publication)) => Ok(BatchOutcome::Applied {
             rows_affected,
@@ -372,4 +387,57 @@ fn decided_engine_alarm(
         &mut |_| {},
     )
     .map_err(|reason| StoreFailure::AlarmUnpublishable { reason })
+}
+
+pub(crate) async fn write_stamp(
+    connection: &DoConnection,
+    write: fleet_signin::stamp_store::StampWrite,
+    alarm: central_storage::Statement,
+    policy: AlarmPolicy,
+) -> Result<BatchOutcome, StoreFailure> {
+    use fleet_signin::stamp_store::{StampTransaction, StampWriteStop};
+    use sqlx_durable_object::DoQueryResult;
+
+    struct DoStampTransaction<'transaction>(&'transaction DoTransaction);
+
+    impl StampTransaction for DoStampTransaction<'_> {
+        type Database = Do;
+        fn executor(&mut self) -> impl sqlx_core::executor::Executor<'_, Database = Do> {
+            self.0
+        }
+        fn rows_affected(result: DoQueryResult) -> u64 {
+            result.rows_affected()
+        }
+    }
+
+    let alarm = OwnedAlarmUpdate::SetEngineFromQuery {
+        query: alarm.into(),
+    };
+    let result = connection
+        .transaction(move |transaction| async move {
+            let rows = write
+                .apply(&mut DoStampTransaction(&transaction))
+                .await
+                .map_err(|stop| match stop {
+                    StampWriteStop::Guard {
+                        index,
+                        rows_affected,
+                    } => BatchStop::GuardFailed {
+                        index,
+                        rows_affected,
+                    },
+                    StampWriteStop::Sql { index, source } => match constraint_kind(&source) {
+                        Some(kind) => BatchStop::ConstraintViolated { index, kind },
+                        None if statement_is_rejected(&source) => {
+                            BatchStop::StatementRejected { index }
+                        }
+                        None => BatchStop::Failed(store_failure(&source)),
+                    },
+                    StampWriteStop::Store(error) => BatchStop::Failed(error),
+                })?;
+            let publication = apply_alarm(&transaction, &alarm, policy).await?;
+            Ok((rows.into(), publication))
+        })
+        .await;
+    batch_receipt(result)
 }

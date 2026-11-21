@@ -1,10 +1,8 @@
 //! Verify the issuer's machine access-token profile before live admission.
-use crate::{
-    IssuerSignatureVerifier,
-    identity_contract::{MachinePrincipal, MachineTokenClaims},
-};
+use crate::IssuerSignatureVerifier;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use fleet_contracts::ClientId;
+use fleet_contracts::{MachinePrincipal, MachineTokenClaims};
 use fleet_identity_protocol::{EnrollmentId, OrganizationId, UnixSeconds};
 use fleet_runtime_ports::Clock;
 use fleet_runtime_ports::{Ed25519Verification, IssuerKeySource, SignatureValidity};
@@ -13,7 +11,7 @@ use std::sync::Arc;
 use workspace_ids::MachineId;
 
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
-pub(crate) const MACHINE_TOKEN_LIFETIME_SECONDS: i64 = 600;
+pub const MACHINE_TOKEN_LIFETIME_SECONDS: i64 = 600;
 
 #[derive(Clone, Debug)]
 pub struct MachineTokenPolicy {
@@ -104,7 +102,9 @@ impl<Ed: Ed25519Verification, Keys: IssuerKeySource> MachineTokenVerifier<Ed, Ke
             Ok(SignatureValidity::Valid) => {}
             Ok(SignatureValidity::Invalid) => return Err(MachineTokenRefusal::Rejected),
             Err(fleet_contracts::IssuerSignatureRefusal::Keys(
-                fleet_contracts::IssuerKeyResolutionRefusal::KeySet(_),
+                fleet_contracts::IssuerKeyResolutionRefusal::KeySet(
+                    fleet_contracts::IssuerKeyRefusal::UnknownKey,
+                ),
             )) => return Err(MachineTokenRefusal::Rejected),
             Err(_) => return Err(MachineTokenRefusal::Unavailable),
         }

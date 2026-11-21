@@ -1,15 +1,15 @@
 //! The private sign-in link delegates organization work to a scoped runtime.
 use crate::{
-    identity_contract::{
-        AuthorizationRevision, AuthorizationRevisionAcknowledgement,
-        OrganizationStatementDigestReply, ProvisionOrganization, ProvisionOrganizationResult,
-        ReadOrganizationStatementDigest,
-    },
+    identity_contract::{AuthorizationRevision, AuthorizationRevisionAcknowledgement},
     organization_admin_contract::OrganizationAdminAnswer,
     person_request::PersonRequestInput,
 };
 use central_storage::StoreFailure;
 use fleet_contracts::OrganizationProvisioningFailure;
+use fleet_contracts::{
+    OrganizationStatementDigestReply, ProvisionOrganization, ProvisionOrganizationResult,
+    ReadOrganizationStatementDigest,
+};
 use fleet_identity_protocol::OrganizationId;
 use std::future::Future;
 
@@ -19,13 +19,14 @@ pub trait OrganizationSignInPort: Send + Sync + 'static {
     fn provision(
         &self,
         request: &ProvisionOrganization,
-    ) -> impl Future<Output = Result<ProvisionOrganizationResult, OrganizationProvisioningFailure>> + Send;
+    ) -> impl Future<Output = Result<ProvisionOrganizationResult, fleet_contracts::ProvisionFailure>>
+    + Send;
 
     fn digest(
         &self,
         request: &ReadOrganizationStatementDigest,
     ) -> impl Future<
-        Output = Result<OrganizationStatementDigestReply, OrganizationProvisioningFailure>,
+        Output = Result<OrganizationStatementDigestReply, fleet_contracts::DigestFailure>,
     > + Send;
 
     fn revision(
@@ -55,7 +56,7 @@ impl<H: fleet_runtime_ports::CentralStore, S: fleet_runtime_ports::WorkspaceStor
     async fn provision(
         &self,
         request: &ProvisionOrganization,
-    ) -> Result<ProvisionOrganizationResult, OrganizationProvisioningFailure> {
+    ) -> Result<ProvisionOrganizationResult, fleet_contracts::ProvisionFailure> {
         let answer = self.provision_organization(request).await;
         self.after_signin_event().await;
         answer
@@ -63,7 +64,7 @@ impl<H: fleet_runtime_ports::CentralStore, S: fleet_runtime_ports::WorkspaceStor
     async fn digest(
         &self,
         request: &ReadOrganizationStatementDigest,
-    ) -> Result<OrganizationStatementDigestReply, OrganizationProvisioningFailure> {
+    ) -> Result<OrganizationStatementDigestReply, fleet_contracts::DigestFailure> {
         let answer = self.read_statement_digest(request).await;
         self.after_signin_event().await;
         answer

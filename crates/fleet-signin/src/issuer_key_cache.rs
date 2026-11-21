@@ -5,6 +5,9 @@ use fleet_contracts::IssuerKeyRefusal;
 use fleet_runtime_ports::RawJwks;
 use message_board::IdentityValidationError;
 use serde::Deserialize;
+use state_machine_core::{
+    EventTag, RefusalTag, StateMachine, StateMachineResult, StateTag, Transition,
+};
 use std::{collections::BTreeSet, sync::Mutex};
 
 const MAXIMUM_KEY_AGE_SECONDS: u64 = 300;
@@ -137,29 +140,135 @@ impl IssuerKeySet {
 
 #[derive(Default)]
 pub struct IssuerKeyCache {
-    cached: Mutex<Option<CachedIssuerKeys>>,
+    cached: Mutex<IssuerCacheState>,
+    #[cfg(feature = "test-support")]
+    unavailable: Mutex<Option<IssuerCacheOperation>>,
 }
 
+#[cfg(feature = "test-support")]
+#[derive(Clone, Copy, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum IssuerCacheOperation {
+    Read,
+    Remember,
+}
+
+#[derive(Clone)]
 struct CachedIssuerKeys {
     source: String,
     keys: IssuerKeySet,
     expires_at: DateTime<Utc>,
 }
 
+#[derive(Clone, Default)]
+enum IssuerCacheState {
+    #[default]
+    Empty,
+    Retained(CachedIssuerKeys),
+}
+
+#[derive(Clone)]
+struct RememberSet(CachedIssuerKeys);
+
+impl StateTag for IssuerCacheState {
+    fn state_tag(&self) -> &'static str {
+        match self {
+            Self::Empty => "empty",
+            Self::Retained(_) => "retained",
+        }
+    }
+    fn is_terminal(&self) -> bool {
+        false
+    }
+}
+
+impl EventTag for RememberSet {
+    fn event_tag(&self) -> &'static str {
+        "rememberSet"
+    }
+}
+
+enum CacheRefusal {}
+impl RefusalTag for CacheRefusal {
+    fn refusal_tag(&self) -> &'static str {
+        match *self {}
+    }
+}
+
+struct IssuerCacheMachine;
+impl StateMachine for IssuerCacheMachine {
+    type State = IssuerCacheState;
+    type Event = RememberSet;
+    type Effect = ();
+    type Error = CacheRefusal;
+
+    fn transition(state: &IssuerCacheState, event: RememberSet) -> StateMachineResult<Self> {
+        match state {
+            IssuerCacheState::Empty | IssuerCacheState::Retained(_) => {
+                Ok((IssuerCacheState::Retained(event.0), vec![]))
+            }
+        }
+    }
+    fn transitions() -> &'static [Transition] {
+        &[
+            Transition {
+                from: "empty",
+                event: "rememberSet",
+                to: "retained",
+                terminal: false,
+            },
+            Transition {
+                from: "retained",
+                event: "rememberSet",
+                to: "retained",
+                terminal: false,
+            },
+        ]
+    }
+}
+
 impl IssuerKeyCache {
+    #[cfg(feature = "test-support")]
+    pub fn fail_next(&self, operation: IssuerCacheOperation) {
+        *self
+            .unavailable
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(operation);
+    }
+
+    #[cfg(feature = "test-support")]
+    fn take_unavailable(&self, operation: IssuerCacheOperation) -> Result<(), IssuerKeyRefusal> {
+        let mut fault = self
+            .unavailable
+            .lock()
+            .map_err(|_| IssuerKeyRefusal::CacheUnavailable)?;
+        if *fault == Some(operation) {
+            *fault = None;
+            Err(IssuerKeyRefusal::CacheUnavailable)
+        } else {
+            Ok(())
+        }
+    }
+
     pub fn fresh(
         &self,
         configured_source: &str,
         now: DateTime<Utc>,
     ) -> Result<Option<IssuerKeySet>, IssuerKeyRefusal> {
+        #[cfg(feature = "test-support")]
+        self.take_unavailable(IssuerCacheOperation::Read)?;
         let cached = self
             .cached
             .lock()
             .map_err(|_| IssuerKeyRefusal::CacheUnavailable)?;
-        Ok(cached
-            .as_ref()
-            .filter(|entry| entry.source == configured_source && now < entry.expires_at)
-            .map(|entry| entry.keys.clone()))
+        match &*cached {
+            IssuerCacheState::Retained(entry)
+                if entry.source == configured_source && now < entry.expires_at =>
+            {
+                Ok(Some(entry.keys.clone()))
+            }
+            IssuerCacheState::Empty | IssuerCacheState::Retained(_) => Ok(None),
+        }
     }
 
     pub fn remember(
@@ -184,14 +293,22 @@ impl IssuerKeyCache {
                 i64::try_from(max_age).map_err(|_| IssuerKeyRefusal::CacheUnavailable)?,
             ))
             .ok_or(IssuerKeyRefusal::CacheUnavailable)?;
-        *self
+        #[cfg(feature = "test-support")]
+        self.take_unavailable(IssuerCacheOperation::Remember)?;
+        let mut cached = self
             .cached
             .lock()
-            .map_err(|_| IssuerKeyRefusal::CacheUnavailable)? = Some(CachedIssuerKeys {
-            source: configured_source,
-            keys: keys.clone(),
-            expires_at,
-        });
+            .map_err(|_| IssuerKeyRefusal::CacheUnavailable)?;
+        let (replacement, _) = IssuerCacheMachine::transition(
+            &cached,
+            RememberSet(CachedIssuerKeys {
+                source: configured_source,
+                keys: keys.clone(),
+                expires_at,
+            }),
+        )
+        .map_err(|_| IssuerKeyRefusal::CacheUnavailable)?;
+        *cached = replacement;
         Ok(keys)
     }
 }

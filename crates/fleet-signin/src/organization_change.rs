@@ -1,6 +1,6 @@
 //! Sign-in change records share the stamp/effect atomic batch.
 use central_storage::{
-    GuardedStatement, ReadOutcome, RowExpectation, SqlValue, Statement, StoreFailure,
+    GuardedStatement, ReadOutcome, RowExpectation, SafeInteger, SqlValue, Statement, StoreFailure,
 };
 use fleet_runtime_ports::CentralStore;
 use fleet_runtime_ports::{
@@ -23,7 +23,7 @@ pub enum OrganizationChangeKind {
 }
 
 impl OrganizationChangeKind {
-    pub(crate) const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::OrganizationProvisioned => "organizationProvisioned",
             Self::StampRenewed => "stampRenewed",
@@ -34,7 +34,7 @@ impl OrganizationChangeKind {
             Self::AllowanceChanged => "allowanceChanged",
         }
     }
-    pub(crate) fn parse(value: &str) -> Result<Self, StoreFailure> {
+    pub fn parse(value: &str) -> Result<Self, StoreFailure> {
         match value {
             "organizationProvisioned" => Ok(Self::OrganizationProvisioned),
             "stampRenewed" => Ok(Self::StampRenewed),
@@ -135,39 +135,70 @@ fn private_id(value: &str) -> Result<Uuid, StoreFailure> {
     }
     Ok(id)
 }
-pub(crate) fn insert(record: &OrganizationChangeRecord) -> Result<GuardedStatement, StoreFailure> {
-    private_id(&record.id.to_string())?;
-    let (origin, person, permission) = match &record.origin {
-        OrganizationChangeOrigin::SignInProvisioning {} => {
-            ("signInProvisioning", SqlValue::Null, SqlValue::Null)
-        }
-        OrganizationChangeOrigin::Automatic {} => ("automatic", SqlValue::Null, SqlValue::Null),
-        OrganizationChangeOrigin::Person {
-            person_id,
-            permission_checked,
-        } => {
-            if person_id.is_empty() || permission_checked.is_empty() {
-                return Err(bad_value("signin_change_records.origin"));
+pub(crate) struct AuditInput<'record> {
+    pub(crate) id: String,
+    pub(crate) request: &'record str,
+    pub(crate) kind: &'static str,
+    pub(crate) origin: &'static str,
+    pub(crate) person: Option<&'record str>,
+    pub(crate) permission: Option<&'record str>,
+    pub(crate) target: &'record str,
+    pub(crate) timestamp: SafeInteger,
+}
+
+impl OrganizationChangeRecord {
+    pub(crate) fn insert_values(&self) -> Result<AuditInput<'_>, StoreFailure> {
+        let id = self.id.to_string();
+        private_id(&id)?;
+        let (origin, person, permission) = match &self.origin {
+            OrganizationChangeOrigin::SignInProvisioning {} => ("signInProvisioning", None, None),
+            OrganizationChangeOrigin::Automatic {} => ("automatic", None, None),
+            OrganizationChangeOrigin::Person {
+                person_id,
+                permission_checked,
+            } => {
+                if person_id.is_empty() || permission_checked.is_empty() {
+                    return Err(bad_value("signin_change_records.origin"));
+                }
+                (
+                    "person",
+                    Some(person_id.as_str()),
+                    Some(permission_checked.as_str()),
+                )
             }
-            ("person", text(person_id), text(permission_checked))
+        };
+        if self.target_id.is_empty() {
+            return Err(bad_value("signin_change_records.target_id"));
         }
-    };
-    if record.target_id.is_empty() {
-        return Err(bad_value("signin_change_records.target_id"));
+        Ok(AuditInput {
+            id,
+            request: self.request_id.as_str(),
+            kind: self.kind.as_str(),
+            origin,
+            person,
+            permission,
+            target: &self.target_id,
+            timestamp: SafeInteger::new(self.created_at_millis)
+                .map_err(|_| bad_value("signin_change_records.created_at"))?,
+        })
     }
+}
+
+pub fn insert(record: &OrganizationChangeRecord) -> Result<GuardedStatement, StoreFailure> {
+    let audit = record.insert_values()?;
     Ok(GuardedStatement {
         statement: Statement {
-            sql: "INSERT INTO signin_change_records(id,request_id,kind,origin,actor_person_id,permission_checked,target_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
+            sql: include_str!("queries/insert_change_record.sql"),
             args: vec![
-                text(record.id),
-                text(record.request_id.as_str()),
-                text(record.kind.as_str()),
-                text(origin),
-                person,
-                permission,
-                text(&record.target_id),
-                integer(record.created_at_millis)?,
-                integer(record.created_at_millis)?,
+                text(audit.id),
+                text(audit.request),
+                text(audit.kind),
+                text(audit.origin),
+                audit.person.map_or(SqlValue::Null, text),
+                audit.permission.map_or(SqlValue::Null, text),
+                text(audit.target),
+                SqlValue::Integer(audit.timestamp),
+                SqlValue::Integer(audit.timestamp),
             ],
         },
         expect: RowExpectation::Exactly(1),
@@ -219,7 +250,7 @@ fn decode(rows: &ReadOutcome, row: &[SqlValue]) -> Result<OrganizationChangeReco
         created_at_millis: created.get(),
     })
 }
-pub(crate) async fn read_page(
+pub async fn read_page(
     host: &impl CentralStore,
     after: Option<Uuid>,
     limit: u16,
@@ -230,7 +261,7 @@ pub(crate) async fn read_page(
 
 /// Find the predecessor ended by this approval's activation, without paging
 /// through unrelated audit history. The operation key already stores this link.
-pub(crate) async fn read_machine_supersession(
+pub async fn read_machine_supersession(
     host: &impl CentralStore,
     originating_request: &str,
 ) -> Result<Option<OrganizationChangeRecord>, StoreFailure> {
@@ -246,5 +277,5 @@ pub(crate) async fn read_machine_supersession(
 }
 
 #[cfg(test)]
-#[path = "organization_change_rows_test.rs"]
+#[path = "organization_change_test.rs"]
 mod tests;

@@ -13,6 +13,7 @@ workspace = true
 test-support = ["fleet-runtime/test-support", "fleet-storage-schema/test-support", "collaboration-central-core/test-support", "router-clock/test-support"]
 
 [dependencies]
+fleet-signin.workspace = true
 fleet-rpc.workspace = true
 fleet-workspace-service.workspace = true
 central-storage.workspace = true

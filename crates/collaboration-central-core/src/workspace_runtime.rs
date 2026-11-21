@@ -11,19 +11,24 @@ use std::sync::Arc;
 /// Composes one Fleet runtime with the retained organization features.
 pub struct WorkspaceRuntime<Host: CentralStore, Stores: WorkspaceStores> {
     pub(crate) execution: FleetRuntime<Host, Stores>,
+    pub(crate) stamp_store: Arc<dyn fleet_signin::stamp_store::StampStore>,
     pub(crate) mail_delivery_ready: Arc<dyn Fn(MailDeliveryReady) + Send + Sync>,
     pub(crate) machine_revoked: Arc<dyn Fn(workspace_ids::MachineId) + Send + Sync>,
     pub(crate) signin_authority: crate::organization_authority_cache::OrganizationAuthority,
     #[cfg(feature = "test-support")]
-    lost_provisioning_reply: std::sync::atomic::AtomicBool,
+    pub(crate) lost_provisioning_reply: std::sync::atomic::AtomicBool,
     #[cfg(feature = "test-support")]
     pub(crate) machine_restore_failure:
         std::sync::Mutex<Option<(usize, central_storage::StoreFailure)>>,
 }
 impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores> {
-    pub fn new(execution: FleetRuntime<Host, Stores>) -> Self {
+    pub fn new(
+        execution: FleetRuntime<Host, Stores>,
+        stamp_store: Arc<dyn fleet_signin::stamp_store::StampStore>,
+    ) -> Self {
         Self {
             execution,
+            stamp_store,
             signin_authority: Default::default(),
             mail_delivery_ready: Arc::new(|_| {}),
             machine_revoked: Arc::new(|_| {}),
@@ -48,9 +53,10 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
     #[cfg(feature = "test-support")]
-    pub(crate) fn take_lost_provisioning_reply(&self) -> bool {
-        self.lost_provisioning_reply
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
+    pub fn fail_next_issuer_cache(&self, operation: fleet_signin::IssuerCacheOperation) -> bool {
+        self.signin_authority
+            .check()
+            .is_some_and(|verifier| verifier.fail_next_issuer_cache(operation))
     }
     pub fn with_mail_delivery_observer(
         mut self,

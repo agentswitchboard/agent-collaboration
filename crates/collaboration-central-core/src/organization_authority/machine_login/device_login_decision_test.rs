@@ -10,10 +10,10 @@ use super::{SD8_MILLIS, decide_device_login};
 use crate::identity_contract::{
     DecideDeviceLogin, DeviceLoginDecision, DeviceLoginRefusal, EnrollmentRevocationReason,
 };
-use crate::organization_change_rows::{
+use fleet_identity_protocol::UnixSeconds;
+use fleet_signin::organization_change::{
     OrganizationChangeKind as Kind, OrganizationChangeOrigin as Origin,
 };
-use fleet_identity_protocol::UnixSeconds;
 
 #[test]
 fn approval_plans_an_inactive_snapshot_and_allowance_records_after_its_machine() {

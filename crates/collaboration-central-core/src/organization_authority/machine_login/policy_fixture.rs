@@ -148,7 +148,7 @@ pub(super) fn assert_refused(plan: &Decided<MachineTokenDecision>, reason: Machi
 }
 pub(super) fn records<T>(
     plan: &Decided<T>,
-) -> Vec<&crate::organization_authority::OrganizationChangeRecord> {
+) -> Vec<&fleet_signin::organization_change::OrganizationChangeRecord> {
     plan.changes
         .iter()
         .filter_map(|change| match change {

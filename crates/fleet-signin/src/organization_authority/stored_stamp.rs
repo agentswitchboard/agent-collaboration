@@ -6,7 +6,7 @@ pub struct StoredOrganizationStamp {
     statement: String,
 }
 impl StoredOrganizationStamp {
-    pub(crate) fn new(organization: OrganizationId, statement: String) -> Self {
+    pub fn new(organization: OrganizationId, statement: String) -> Self {
         Self {
             organization,
             statement,

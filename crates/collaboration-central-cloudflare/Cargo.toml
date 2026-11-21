@@ -18,6 +18,7 @@ link = []
 test-support = ["fleet-runtime/test-support", "fleet-storage-schema/test-support", "collaboration-central-core/test-support", "dep:sqlx"]
 
 [dependencies]
+fleet-signin.workspace = true
 fleet-rpc.workspace = true
 fleet-workspace-service.workspace = true
 central-storage.workspace = true
@@ -55,6 +56,7 @@ web-sys = { version = "=0.3.106", features = ["WorkerGlobalScope", "Crypto", "Su
 js-sys = "=0.3.106"
 
 [dev-dependencies]
+hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
 fleet-mail.workspace = true
 runtime-primitives.workspace = true
 base64 = "0.22.1"

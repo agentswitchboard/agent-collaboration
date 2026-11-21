@@ -2,7 +2,8 @@
 //! core has constructed the real transaction. No stand-in replaces storage.
 use central_engine_model::InstanceKey;
 use central_storage::{
-    AlarmUpdate, BatchOutcome, CorruptReason, SqlValue, Statement, StatementBatch, StoreFailure,
+    AlarmPublicationFailure, AlarmUpdate, BatchOutcome, CorruptReason, SqlValue, Statement,
+    StatementBatch, StoreFailure,
 };
 use serde::{Deserialize, Serialize};
 use std::sync::{Mutex, PoisonError};
@@ -12,6 +13,7 @@ pub struct TestFaults {
     commit: Mutex<Option<EngineCommitFault>>,
     read: Mutex<Option<EngineReadFault>>,
     alarm_batch: Mutex<Option<StoreFailure>>,
+    alarm_publication: Mutex<Option<AlarmPublicationFailure>>,
 }
 
 impl TestFaults {
@@ -53,11 +55,32 @@ impl TestFaults {
         }
     }
 
+    pub fn arm_alarm_publication(&self, failure: AlarmPublicationFailure) {
+        *self
+            .alarm_publication
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(failure);
+    }
+
+    pub fn take_alarm_publication_failure(&self) -> Option<AlarmPublicationFailure> {
+        self.alarm_publication
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+
     pub fn arm_alarm_batch(&self, failure: StoreFailure) {
         *self
             .alarm_batch
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(failure);
+    }
+
+    pub fn alarm_batch_pending(&self) -> bool {
+        self.alarm_batch
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some()
     }
 
     pub fn take_alarm_batch_failure(&self, batch: &StatementBatch) -> Option<StoreFailure> {

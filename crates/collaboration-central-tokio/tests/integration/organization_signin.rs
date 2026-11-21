@@ -4,14 +4,17 @@ mod alarm_recovery;
 mod causal_races;
 mod deadlines;
 mod floors;
+mod issuer_order;
 mod linearization;
 mod machine_login;
 mod observations;
+mod post_turn;
 mod provisioning;
 mod records;
 mod replay_repair;
 mod rollback;
 mod setup;
+mod stamp_trace;
 mod support;
 
 mod carry_edges;

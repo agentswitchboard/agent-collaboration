@@ -543,3 +543,113 @@ async fn a_renewal_whose_key_cannot_be_fetched_is_central_unavailable() -> Resul
     assert_eq!(still_open, LinkFrame::Pong);
     fixture.close().await
 }
+
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "The real link must preserve retry/refusal bodies and the previous deadline."
+)]
+#[tokio::test]
+async fn machine_link_distinguishes_issuer_cache_outages_from_unknown_keys() -> Result<()> {
+    use fleet_signin::IssuerCacheOperation;
+    use reqwest_websocket::RequestBuilderExt;
+    let fixture = Fixture::new().await?;
+    let (mut client, attempt, mut socket) = connect_client(&fixture, &fixture.token).await?;
+    let organization = signed::ORGANIZATION;
+    let owner = fixture
+        .host
+        .central(&organization.to_owned().try_into()?)
+        .await?;
+    let unknown = with_uncached_key(&fixture.token)?;
+    let phases = [
+        (
+            Some(IssuerCacheOperation::Read),
+            None,
+            0,
+            TokenRenewalRefusal::CentralUnavailable,
+            503,
+        ),
+        (
+            None,
+            Some(json!({})),
+            1,
+            TokenRenewalRefusal::CentralUnavailable,
+            503,
+        ),
+        (
+            Some(IssuerCacheOperation::Remember),
+            Some(signed::published_keys_except(&["stamp-a".to_owned()])?),
+            1,
+            TokenRenewalRefusal::CentralUnavailable,
+            503,
+        ),
+        (None, None, 1, TokenRenewalRefusal::TokenRejected, 401),
+    ];
+    for (arm, document, fetch_count, refusal, expected_status) in phases {
+        let before = fixture.keys().fetches();
+        if let Some(operation) = arm {
+            assert!(owner.fail_next_issuer_cache(operation));
+        }
+        if let Some(document) = document.clone() {
+            fixture
+                .keys()
+                .hold_next_fetch()
+                .respond(signed::IssuerReply::Document(document))?;
+        }
+        let response = fixture
+            .client()?
+            .get(fixture.url(organization))
+            .bearer_auth(&unknown)
+            .upgrade()
+            .send()
+            .await?;
+        assert_eq!(response.status().as_u16(), expected_status);
+        assert_eq!(fixture.keys().fetches(), before + fetch_count);
+
+        let before = fixture.keys().fetches();
+        if let Some(operation) = arm {
+            assert!(owner.fail_next_issuer_cache(operation));
+        }
+        if let Some(document) = document {
+            fixture
+                .keys()
+                .hold_next_fetch()
+                .respond(signed::IssuerReply::Document(document))?;
+        }
+        let correlation = "019f0000-0000-7000-8000-00000000c361";
+        send(&mut socket, &renew_frame(correlation, &unknown)?).await?;
+        assert_eq!(
+            answer_to(&mut socket, correlation).await?,
+            TokenRenewalResult::Refused { reason: refusal }
+        );
+        assert_eq!(fixture.keys().fetches(), before + fetch_count);
+        // Read, parse and write failure each preserves warm admission with no refresh.
+        let verified = reqwest::Client::builder()
+            .no_proxy()
+            .unix_socket(fixture.signin_socket.clone())
+            .build()?
+            .post("http://localhost/internal/organization-statement-digest")
+            .json(&json!({"organizationId": organization}))
+            .send()
+            .await?;
+        assert_eq!(verified.status().as_u16(), 200);
+        assert_eq!(fixture.keys().fetches(), before + fetch_count);
+    }
+
+    fixture.clock.advance(Duration::from_secs(599))?;
+    let request = client.begin_request(
+        caller()?,
+        create_workspace(
+            "019f0000-0000-7000-8000-00000000d361",
+            "Before the retained expiry",
+        )?,
+    )?;
+    send(&mut socket, &request).await?;
+    let (_, answer) = workspace_reply(&mut client, &attempt, &mut socket).await?;
+    assert!(matches!(answer.result, WorkspaceResult::Done(_)));
+    fixture.clock.advance(Duration::from_secs(1))?;
+    let correlation = "019f0000-0000-7000-8000-00000000c362";
+    send(&mut socket, &renew_frame(correlation, &fixture.token)?).await?;
+    assert_eq!(answer_to(&mut socket, correlation).await?, not_active());
+    drop(socket);
+    fixture.close().await
+}

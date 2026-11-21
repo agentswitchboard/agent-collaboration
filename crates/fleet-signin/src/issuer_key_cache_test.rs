@@ -164,3 +164,52 @@ fn ambiguous_or_wrong_kind_keys_are_refused() {
         ));
     }
 }
+
+#[hegel::test(test_cases = 256)]
+fn the_last_valid_receipt_controls_key_bytes_and_expiry(case: hegel::TestCase) {
+    use hegel::generators as gs;
+    let cache = IssuerKeyCache::default();
+    let mut retained = None;
+    let mut receipt = 0;
+    for key_byte in 1..=case.draw(gs::integers::<u8>().min_value(1).max_value(32)) {
+        receipt += case.draw(gs::integers::<i64>().max_value(301_000).min_value(0));
+        let (header, lifetime) = match case.draw(gs::integers::<u8>().max_value(2)) {
+            0 => (Some("max-age=0"), 0),
+            1 => (Some("max-age=2"), 2_000),
+            _ => (Some("max-age=303"), 300_000),
+        };
+        if case.draw(gs::booleans()) {
+            cache
+                .remember(
+                    SOURCE.to_owned(),
+                    response(vec![published_key("stable", [key_byte; 32])], header),
+                    at(receipt),
+                )
+                .unwrap();
+            retained = Some((key_byte, receipt + lifetime));
+        } else {
+            assert!(matches!(
+                cache.remember(
+                    SOURCE.to_owned(),
+                    RawJwks {
+                        body: b"{}".to_vec(),
+                        cache_control: None
+                    },
+                    at(receipt)
+                ),
+                Err(IssuerKeyRefusal::MalformedKeySet)
+            ));
+        }
+        let expiry = retained.map_or(receipt, |(_, expiry)| expiry);
+        for sample in [receipt, expiry - 1, expiry] {
+            let actual = cache
+                .fresh(SOURCE, at(sample))
+                .unwrap()
+                .map(|keys| *keys.key(&key_id("stable")).unwrap().public_key());
+            let expected = retained
+                .filter(|(_, expiry)| sample < *expiry)
+                .map(|(value, _)| [value; 32]);
+            assert_eq!(actual, expected, "receipt={receipt}, sample={sample}");
+        }
+    }
+}

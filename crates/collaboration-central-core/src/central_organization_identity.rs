@@ -1,8 +1,7 @@
 //! The provisioned sign-in stamp is central's sole durable organization identity.
-use central_storage::{Statement, StoreFailure};
+use central_storage::StoreFailure;
 use fleet_identity_protocol::OrganizationId;
 use fleet_runtime_ports::CentralStore;
-use fleet_runtime_ports::{stored_values::string, workspace_decode_error::corrupt};
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CentralOrganizationIdentity {
     Unprovisioned,
@@ -10,34 +9,22 @@ pub enum CentralOrganizationIdentity {
 }
 /// Reads the row verified by provisioning; alarms do not verify its signature again.
 pub async fn read_central_organization(
-    host: &impl CentralStore,
+    store: &dyn fleet_signin::stamp_store::StampStore,
 ) -> Result<CentralOrganizationIdentity, StoreFailure> {
-    let rows = host
-        .read(Statement {
-            sql: "SELECT id,organization_statement FROM signin_organization_identity ORDER BY id LIMIT 2",
-            args: vec![],
-        })
-        .await?;
-    if rows.rows.len() > 1 {
-        return Err(corrupt("signin_organization_identity.id"));
-    }
-    let Some(row) = rows.rows.first() else {
-        return Ok(CentralOrganizationIdentity::Unprovisioned);
-    };
-    let organization_id = OrganizationId::try_from(string(&rows, row, "id")?.to_owned())
-        .map_err(|_| corrupt("signin_organization_identity.id"))?;
-    if string(&rows, row, "organization_statement")?.is_empty() {
-        return Err(corrupt(
-            "signin_organization_identity.organization_statement",
-        ));
-    }
-    Ok(CentralOrganizationIdentity::Stamped { organization_id })
+    use fleet_signin::organization_authority::StoredStampRead;
+    Ok(match store.read_stamp().await? {
+        StoredStampRead::Unprovisioned => CentralOrganizationIdentity::Unprovisioned,
+        StoredStampRead::Stamped(stamp) => CentralOrganizationIdentity::Stamped {
+            organization_id: stamp.organization_id().clone(),
+        },
+    })
 }
 /// Prepares a cold alarm without fabricating an identity for an unprovisioned store.
 pub async fn prepare_central_alarm(
     host: &impl CentralStore,
+    store: &dyn fleet_signin::stamp_store::StampStore,
 ) -> Result<CentralOrganizationIdentity, StoreFailure> {
-    let identity = read_central_organization(host).await?;
+    let identity = read_central_organization(store).await?;
     if identity == CentralOrganizationIdentity::Unprovisioned {
         crate::central_statement_values::applied(
             host.run_batch(central_storage::StatementBatch {

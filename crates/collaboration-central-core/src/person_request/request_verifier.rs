@@ -9,11 +9,11 @@ use super::{
     },
     refusal::PersonRequestRefusal,
 };
-use crate::IssuerSignatureVerifier;
 use fleet_identity_protocol::OrganizationId;
 use fleet_runtime_ports::{
     Clock, Ed25519Verification, Es256Verification, IssuerKeySource, ProofJwk, SignatureValidity,
 };
+use fleet_signin::IssuerSignatureVerifier;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use uuid::Uuid;

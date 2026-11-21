@@ -1,19 +1,20 @@
-//! Native sign-in trust: real HTTP key publication and core-owned cache policy.
+//! Native sign-in trust: real HTTP key publication and Fleet issuer cache.
 
 use crate::sign_in_crypto::{NativeEd25519, NativeEs256};
-use collaboration_central_core::machine_token::{MachineTokenPolicy, MachineTokenVerifier};
 use collaboration_central_core::{
-    IssuerKeyCache, IssuerSignatureVerifier, SignInTrustSettings,
-    organization_authority::{
-        FleetOrganizationStatementTrust, FleetOrganizationStatementVerifier, SignInVerification,
-        SignInVerifiers,
-    },
+    SignInTrustSettings,
+    organization_authority::{SignInVerification, SignInVerifiers},
     person_request::{PersonRequestPolicy, PersonRequestVerifier},
 };
 use fleet_contracts::FleetOrganizationStatementRefusal;
 use fleet_identity_protocol::OrganizationId;
 use fleet_runtime_ports::Clock;
 use fleet_runtime_ports::{IssuerKeySource, KeyFetchFailure, RawJwks};
+use fleet_signin::{
+    IssuerKeyCache, IssuerSignatureVerifier,
+    machine_token::{MachineTokenPolicy, MachineTokenVerifier},
+    organization_authority::{FleetOrganizationStatementTrust, FleetOrganizationStatementVerifier},
+};
 use std::sync::Arc;
 
 /// The host retains one trust configuration and key cache across its org runtimes.
@@ -90,6 +91,8 @@ impl NativeSignInTrust {
                 },
             ),
             sign_in_service: self.settings.service_id.clone(),
+            #[cfg(feature = "test-support")]
+            issuer_cache: self.cache.clone(),
         }))
     }
 }

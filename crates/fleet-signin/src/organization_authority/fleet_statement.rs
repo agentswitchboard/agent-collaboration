@@ -148,11 +148,11 @@ impl<Crypto: Ed25519Verification, Keys: IssuerKeySource>
 /// Both types and their intended consumers remain usable:
 ///
 /// ```
-/// use collaboration_central_core::organization_authority::{
-///     CurrentStamp, StoredStatementFacts, VerifiedFleetOrganizationStatement,
+/// use fleet_signin::organization_authority::{
+///     StoredStatementFacts, VerifiedFleetOrganizationStatement,
 /// };
-/// fn authorizing_control(verified: &VerifiedFleetOrganizationStatement) -> CurrentStamp {
-///     CurrentStamp::of_verified(verified)
+/// fn authorizing_control(verified: &VerifiedFleetOrganizationStatement, now: fleet_runtime_ports::SyncTime) {
+///     let _ = verified.require_valid_at(now);
 /// }
 /// fn read_metadata(facts: &StoredStatementFacts) {
 ///     let _ = (facts.digest(), facts.key_id(), facts.expires_at());
@@ -162,9 +162,10 @@ impl<Crypto: Ed25519Verification, Keys: IssuerKeySource>
 /// Facts cannot enter the same authorizing policy boundary:
 ///
 /// ```compile_fail,E0308
-/// use collaboration_central_core::organization_authority::{CurrentStamp, StoredStatementFacts};
+/// use fleet_signin::organization_authority::{StoredStatementFacts, VerifiedFleetOrganizationStatement};
+/// fn apply(_verified: &VerifiedFleetOrganizationStatement) {}
 /// fn cannot_authorize(facts: &StoredStatementFacts) {
-///     let _ = CurrentStamp::of_verified(facts);
+///     apply(facts);
 /// }
 /// ```
 #[derive(Debug)]

@@ -141,6 +141,58 @@ impl SqliteObjectStore {
         ))
     }
 
+    /// Borrow an owning connection for a local typed read.
+    pub async fn read_checked<Output>(
+        &self,
+        read: impl AsyncFnOnce(&mut SqliteConnection) -> Result<Output, StoreFailure>,
+    ) -> Result<Output, StoreFailure> {
+        let mut connection = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|_| StoreFailure::Unavailable)?;
+        read(&mut connection).await
+    }
+
+    /// Apply typed writes and sample engine alarm inputs in the same transaction.
+    pub async fn write_with_engine_alarm<Applied, Abort>(
+        &self,
+        write: impl AsyncFnOnce(&mut SqliteConnection) -> Result<Applied, Abort>,
+        alarm: Statement,
+    ) -> Result<(Applied, central_storage::EngineAlarmTimes), Abort>
+    where
+        Abort: From<StoreFailure>,
+    {
+        let mut transaction = self
+            .pool
+            .begin_with("BEGIN IMMEDIATE")
+            .await
+            .map_err(|_| StoreFailure::Unavailable)?;
+        let applied = match write(&mut transaction).await {
+            Ok(applied) => applied,
+            Err(failure) => {
+                transaction
+                    .rollback()
+                    .await
+                    .map_err(|_| StoreFailure::Unavailable)?;
+                return Err(failure);
+            }
+        };
+        let rows = read_rows(&mut transaction, alarm).await?;
+        let (grid, legacy) = engine_alarm_inputs(&rows)?;
+        transaction
+            .commit()
+            .await
+            .map_err(|_| StoreFailure::AnswerLost)?;
+        Ok((
+            applied,
+            central_storage::EngineAlarmTimes {
+                earliest_on_grid_due_unix_millis: grid,
+                earliest_legacy_due_unix_millis: legacy,
+            },
+        ))
+    }
+
     pub async fn read(&self, statement: Statement) -> Result<ReadOutcome, StoreFailure> {
         let mut connection = self
             .pool
@@ -287,6 +339,23 @@ fn statement_is_rejected(code: Option<&str>) -> bool {
         code.and_then(|code| code.parse::<i32>().ok()),
         Some(19 | 20 | 531 | 1043 | 1811 | 2323 | 2579 | 2835 | 3091)
     )
+}
+
+/// Classify the SQLite statement error after a typed transaction rolled back.
+pub fn batch_statement_failure(
+    error: &sqlx::Error,
+    index: u32,
+) -> Result<BatchOutcome, StoreFailure> {
+    let sqlx::Error::Database(error) = error else {
+        return Err(StoreFailure::Unavailable);
+    };
+    if let Some(kind) = constraint_kind(error.kind()) {
+        Ok(BatchOutcome::ConstraintViolated { index, kind })
+    } else if statement_is_rejected(error.code().as_deref()) {
+        Ok(BatchOutcome::StatementRejected { index })
+    } else {
+        Err(StoreFailure::Unavailable)
+    }
 }
 
 fn engine_alarm_inputs(answer: &ReadOutcome) -> Result<(Option<i64>, Option<i64>), StoreFailure> {

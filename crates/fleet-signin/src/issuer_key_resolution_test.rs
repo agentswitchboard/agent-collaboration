@@ -240,3 +240,21 @@ async fn cache_lifetime_is_measured_from_the_key_response_receipt() {
     assert!(cache.fresh(SOURCE, at(399_999)).unwrap().is_some());
     assert!(cache.fresh(SOURCE, at(400_000)).unwrap().is_none());
 }
+
+#[tokio::test]
+async fn an_invalid_initial_receipt_clock_refuses_before_the_issuer_can_be_called() {
+    let source = ConfiguredSource::new(vec![FetchStep::Answer(Ok(keys("known", [1; 32])))]);
+    source.clock.0.store(i64::MAX, Ordering::SeqCst);
+
+    assert!(matches!(
+        resolve_issuer_key(
+            &source,
+            &IssuerKeyCache::default(),
+            source.clock.as_ref(),
+            &key_id("known")
+        )
+        .await,
+        Err(IssuerKeyResolutionRefusal::InvalidClock)
+    ));
+    assert_eq!(source.calls.load(Ordering::SeqCst), 0);
+}

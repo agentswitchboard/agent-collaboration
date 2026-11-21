@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO signin_organization_identity(id,organization_statement,created_at,updated_at) SELECT ?,?,?,? WHERE NOT EXISTS (SELECT 1 FROM signin_organization_identity) AND ?>=? AND ?<?\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "ab974901cca8e40ac836a1dcd09b102f054b34f9151fb39044c01428628df875"
+}

@@ -12,7 +12,7 @@ mod test_support_policy;
 #[path = "workspace_boundaries.rs"]
 mod workspace_boundaries;
 
-const LAYER_POLICY: [(&str, &[&str]); 38] = [
+const LAYER_POLICY: [(&str, &[&str]); 39] = [
     ("workspace-ids", &[]),
     (
         "workspace-model",
@@ -61,6 +61,7 @@ const LAYER_POLICY: [(&str, &[&str]); 38] = [
             "fleet-rpc",
             "fleet-runtime-ports",
             "fleet-runtime",
+            "fleet-signin",
             "fleet-workspace-access",
             "fleet-workspace-directory",
             "message-board",
@@ -80,6 +81,7 @@ const LAYER_POLICY: [(&str, &[&str]); 38] = [
             "fleet-rpc",
             "fleet-runtime-ports",
             "fleet-runtime",
+            "fleet-signin",
             "fleet-storage-schema",
             "fleet-store-sqlx",
             "fleet-workspace-service",
@@ -99,6 +101,7 @@ const LAYER_POLICY: [(&str, &[&str]); 38] = [
             "fleet-rpc",
             "fleet-runtime-ports",
             "fleet-runtime",
+            "fleet-signin",
             "fleet-storage-schema",
             "fleet-workspace-service",
             "message-board",
@@ -132,6 +135,19 @@ const LAYER_POLICY: [(&str, &[&str]); 38] = [
         ],
     ),
     ("fleet-engine", workspace_boundaries::ENGINE_EDGES),
+    (
+        "fleet-signin",
+        &[
+            "central-storage",
+            "fleet-contracts",
+            "fleet-identity-protocol",
+            "fleet-runtime",
+            "fleet-runtime-ports",
+            "message-board",
+            "state-machine-core",
+            "workspace-ids",
+        ],
+    ),
     ("fleet-storage-schema", &[]),
     (
         "fleet-store-sqlx",
@@ -468,6 +484,8 @@ fn fixture_graph(
         ("fleet-ports", "fleet-runtime-ports"),
         ("fleet-contracts", "fleet-contracts"),
         ("fleet-runtime", "fleet-runtime"),
+        ("fleet-signin", "fleet-signin"),
+        ("central-core", "collaboration-central-core"),
         ("fleet-access", "fleet-workspace-access"),
         ("fleet-storage-schema", "fleet-storage-schema"),
         ("fleet-store-sqlx", "fleet-store-sqlx"),
@@ -591,6 +609,29 @@ fn only_the_native_central_host_can_reach_the_executor_directly() {
                 .expect_err("the portable crate cannot use the native executor");
             assert_eq!(violation.source_name, package);
             assert_eq!(violation.destination_name, "fleet-store-sqlx");
+            assert_eq!(violation.kind, kind.unwrap_or(DependencyKind::Normal));
+        }
+    }
+}
+
+#[test]
+fn fleet_signin_can_use_the_runtime_but_cannot_reach_core_or_host_adapters() {
+    for kind in [None, Some(DependencyKind::Build)] {
+        assert!(
+            fixture_graph("fleet-signin", "fleet-runtime", vec![kind])
+                .check_policy()
+                .is_ok()
+        );
+        for (target, name) in [
+            ("central-core", "collaboration-central-core"),
+            ("central-native", "collaboration-central-tokio"),
+            ("central-worker", "collaboration-central-cloudflare"),
+        ] {
+            let violation = fixture_graph("fleet-signin", target, vec![kind])
+                .check_policy()
+                .expect_err("sign-in must not depend upward on a composer or host");
+            assert_eq!(violation.source_name, "fleet-signin");
+            assert_eq!(violation.destination_name, name);
             assert_eq!(violation.kind, kind.unwrap_or(DependencyKind::Normal));
         }
     }
