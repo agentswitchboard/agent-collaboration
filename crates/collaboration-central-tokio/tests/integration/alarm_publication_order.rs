@@ -136,12 +136,15 @@ fn engine_widgets_migrator() -> sqlx::migrate::Migrator {
         version,
         "checked Engine widget fixture".into(),
         sqlx::migrate::MigrationType::Simple,
-        sqlx::SqlStr::from_static("
+        sqlx::SqlStr::from_static(concat!(
+            "
             CREATE TABLE signin_organization_identity (id TEXT PRIMARY KEY);
             INSERT INTO signin_organization_identity VALUES ('01890f2e-7b4c-7cc0-98c4-000000000041');
             CREATE VIEW engine_due_rows AS
             SELECT 'on_grid' AS due_lane, due_at_ms, 1 AS contributes_to_alarm
-            FROM widgets WHERE active=1;"),
+            FROM widgets WHERE active=1;",
+            include_str!("../../../fleet-storage-schema/migrations/central/0006_signin_provisioned_for_engine.sql"),
+        )),
         false,
     ));
     sqlx::migrate::Migrator::with_migrations(migrations)
