@@ -1,6 +1,6 @@
-use crate::engine_host_binding::{EngineHost, FleetEngine};
-use crate::{
-    event_source_policy::RequestSource,
+use super::engine_host_binding::{EngineHost, FleetEngine};
+use super::{
+    event_source_policy::RetainedRequestEventSource,
     machine_event_execution::MachineEventOutcome,
     machine_store_adapter::MachineStoreAdapter,
     request_receipt_store::{EngineReceipt, ReceiptClaim},
@@ -30,80 +30,87 @@ pub enum EngineRequestOutcome<State, Error> {
     },
 }
 
-impl<R: EngineHost> FleetEngine<'_, R> {
-    pub async fn run_machine_request<M, Adapter>(
+impl<Host: EngineHost> FleetEngine<'_, Host> {
+    pub async fn run_machine_request<SubjectMachine, SubjectStore>(
         &self,
-        adapter: &Adapter,
+        adapter: &SubjectStore,
         caller: ActorIdentityId,
         request: RequestId,
         key: InstanceKey,
-        event: M::Event,
-    ) -> Result<EngineRequestOutcome<M::State, M::Error>, StoreFailure>
+        event: SubjectMachine::Event,
+    ) -> Result<EngineRequestOutcome<SubjectMachine::State, SubjectMachine::Error>, StoreFailure>
     where
-        M: Machine,
-        M::State: Send + Sync + Serialize + DeserializeOwned,
-        M::Event: Send + Sync + Serialize,
-        M::Effect: Send + Sync,
-        M::Error: Send + Sync,
-        Adapter: MachineStoreAdapter<M>,
+        SubjectMachine: Machine,
+        SubjectMachine::State: Send + Sync + Serialize + DeserializeOwned,
+        SubjectMachine::Event: Send + Sync + Serialize,
+        SubjectMachine::Effect: Send + Sync,
+        SubjectMachine::Error: Send + Sync,
+        SubjectStore: MachineStoreAdapter<SubjectMachine>,
     {
         let answer = self
-            .execute_engine_request::<M, Adapter>(adapter, caller, request, key, event)
+            .execute_engine_request::<SubjectMachine, SubjectStore>(
+                adapter, caller, request, key, event,
+            )
             .await;
-        let _ = self.after_event().await;
+        let _ = self.complete_event_with_observation().await;
         answer
     }
 
-    async fn execute_engine_request<M, Adapter>(
+    async fn execute_engine_request<SubjectMachine, SubjectStore>(
         &self,
-        adapter: &Adapter,
+        adapter: &SubjectStore,
         caller: ActorIdentityId,
         request: RequestId,
         key: InstanceKey,
-        event: M::Event,
-    ) -> Result<EngineRequestOutcome<M::State, M::Error>, StoreFailure>
+        event: SubjectMachine::Event,
+    ) -> Result<EngineRequestOutcome<SubjectMachine::State, SubjectMachine::Error>, StoreFailure>
     where
-        M: Machine,
-        M::State: Send + Sync + Serialize + DeserializeOwned,
-        M::Event: Send + Sync + Serialize,
-        M::Effect: Send + Sync,
-        M::Error: Send + Sync,
-        Adapter: MachineStoreAdapter<M>,
+        SubjectMachine: Machine,
+        SubjectMachine::State: Send + Sync + Serialize + DeserializeOwned,
+        SubjectMachine::Event: Send + Sync + Serialize,
+        SubjectMachine::Effect: Send + Sync,
+        SubjectMachine::Error: Send + Sync,
+        SubjectStore: MachineStoreAdapter<SubjectMachine>,
     {
         // The request entry checked the organization
         // once for this event, before any read (P3).
-        let now = self.now()?;
+        let now = self.current_engine_time()?;
         let cutoff = now
             .checked_sub_signed(chrono::Duration::hours(24))
             .ok_or_else(|| corrupt("runtime_request_log.cutoff"))?;
         let digest = fleet_runtime::workspace_request_log::digest(
-            &serde_json::json!({"machine":M::KIND.0,"key":&key.0,"event":&event}),
+            &serde_json::json!({"machine":SubjectMachine::KIND.0,"key":&key.0,"event":&event}),
         )?;
-        let source = RequestSource(ReceiptClaim {
-            request,
-            caller,
-            digest,
-            started_at: now,
-            cutoff,
+        let source = RetainedRequestEventSource(ReceiptClaim {
+            request_id: request,
+            caller_actor_id: caller,
+            request_content_digest: digest,
+            request_started_at: now,
+            receipt_retention_cutoff: cutoff,
         });
-        let logged = self.host().read(source.0.lookup()).await?;
-        if let Some(receipt) = source.0.replay(&logged)? {
+        let logged = self
+            .central_store()
+            .read(source.0.build_live_receipt_lookup())
+            .await?;
+        if let Some(receipt) = source.0.decode_retained_receipt(&logged)? {
             return Ok(EngineRequestOutcome::Answer { receipt });
         }
         #[cfg(feature = "test-support")]
-        self.pauses()
+        self.engine_test_pause_points()
             .reached_engine(
                 fleet_runtime::PausePoint::AfterEngineAbsentLookup,
-                &source.0.request.to_string(),
+                &source.0.request_id.to_string(),
             )
             .await;
         let subject = EngineSubject {
-            kind: M::KIND,
+            kind: SubjectMachine::KIND,
             key: key.clone(),
         };
         Ok(
             match self
-                .handle::<M, Adapter, _>(adapter, key, event, &source)
+                .apply_machine_event::<SubjectMachine, SubjectStore, _>(
+                    adapter, key, event, &source,
+                )
                 .await
             {
                 MachineEventOutcome::TransitionCommitted(state) => EngineRequestOutcome::Answer {
@@ -127,8 +134,11 @@ impl<R: EngineHost> FleetEngine<'_, R> {
                     EngineRequestOutcome::CentralUnavailable
                 }
                 MachineEventOutcome::EventSuperseded => {
-                    let logged = self.host().read(source.0.lookup()).await?;
-                    match source.0.replay(&logged)? {
+                    let logged = self
+                        .central_store()
+                        .read(source.0.build_live_receipt_lookup())
+                        .await?;
+                    match source.0.decode_retained_receipt(&logged)? {
                         Some(receipt) => EngineRequestOutcome::Answer { receipt },
                         None => EngineRequestOutcome::Conflict,
                     }

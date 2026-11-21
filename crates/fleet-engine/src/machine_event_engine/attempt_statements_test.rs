@@ -1,4 +1,4 @@
-use super::{UPSERT_CONTROL_ATTEMPT_SQL, write_attempt};
+use super::{UPSERT_CONTROL_ATTEMPT_SQL, plan_guarded_attempt_upsert};
 use central_engine_model::{
     EngineTime, FailureRecord, InstanceKey, ItemFailureClass, MachineKind, RetirementThreshold,
     after_failure,
@@ -7,21 +7,21 @@ use central_storage::{GuardedStatement, SqlValue};
 use fleet_contracts::{AttemptGuard, EngineSubject};
 use sqlx::{Connection, Row, SqliteConnection};
 
-const WAKE_WRITE: &str = guarded_attempt_upsert_sql!(
+const UPSERT_ACTIVE_WAKE_ATTEMPT_SQL: &str = guarded_attempt_upsert_sql!(
     "EXISTS(SELECT 1 FROM automation_wakes WHERE wake_id=?20 AND state='active')"
 );
-const KEY: &str = "01890f2e-7b4c-7cc0-98c4-000000000002";
+const FIXTURE_WAKE_ID: &str = "01890f2e-7b4c-7cc0-98c4-000000000002";
 
-fn text(value: &str) -> SqlValue {
+fn sql_text(value: &str) -> SqlValue {
     SqlValue::Text(value.into())
 }
-fn subject(kind: &'static str, key: &str) -> EngineSubject {
+fn make_attempt_subject(kind: &'static str, key: &str) -> EngineSubject {
     EngineSubject {
         kind: MachineKind(kind),
         key: InstanceKey(key.into()),
     }
 }
-fn failure(prior: Option<&FailureRecord>, now: i64) -> FailureRecord {
+fn next_attempt_failure_record(prior: Option<&FailureRecord>, now: i64) -> FailureRecord {
     match after_failure(
         prior,
         ItemFailureClass::StatementRejected,
@@ -35,7 +35,7 @@ fn failure(prior: Option<&FailureRecord>, now: i64) -> FailureRecord {
         central_engine_model::FailureTransition::Unchanged => panic!("the failure must count"),
     }
 }
-async fn database() -> SqliteConnection {
+async fn open_migrated_central_database() -> SqliteConnection {
     let mut connection = SqliteConnection::connect("sqlite::memory:").await.unwrap();
     fleet_storage_schema::workspace_migrations::central_migrator()
         .run(&mut connection)
@@ -43,7 +43,10 @@ async fn database() -> SqliteConnection {
         .unwrap();
     connection
 }
-async fn apply(connection: &mut SqliteConnection, statement: GuardedStatement) -> u64 {
+async fn execute_attempt_statement(
+    connection: &mut SqliteConnection,
+    statement: GuardedStatement,
+) -> u64 {
     let mut query = sqlx::query(statement.statement.sql);
     for value in statement.statement.args {
         query = match value {
@@ -55,7 +58,7 @@ async fn apply(connection: &mut SqliteConnection, statement: GuardedStatement) -
     }
     query.execute(connection).await.unwrap().rows_affected()
 }
-async fn guard(connection: &mut SqliteConnection) -> AttemptGuard {
+async fn read_attempt_guard(connection: &mut SqliteConnection) -> AttemptGuard {
     let row = sqlx::query(
         "SELECT attempt_id,state,failure_count,last_failure,updated_at FROM engine_work_attempts",
     )
@@ -78,23 +81,24 @@ async fn guard(connection: &mut SqliteConnection) -> AttemptGuard {
 
 #[tokio::test]
 async fn an_old_attempt_count_cannot_replace_the_newer_record() {
-    let mut connection = database().await;
-    let subject = subject("engine_source", "wake_timer");
-    let first = failure(None, 300_000);
+    let mut connection = open_migrated_central_database().await;
+    let subject = make_attempt_subject("engine_source", "wake_timer");
+    let first = next_attempt_failure_record(None, 300_000);
     assert_eq!(
-        apply(
+        execute_attempt_statement(
             &mut connection,
-            write_attempt(UPSERT_CONTROL_ATTEMPT_SQL, &subject, &first, None, vec![]).unwrap()
+            plan_guarded_attempt_upsert(UPSERT_CONTROL_ATTEMPT_SQL, &subject, &first, None, vec![])
+                .unwrap()
         )
         .await,
         1
     );
-    let prior = guard(&mut connection).await;
-    let second = failure(Some(&first), 600_000);
+    let prior = read_attempt_guard(&mut connection).await;
+    let second = next_attempt_failure_record(Some(&first), 600_000);
     assert_eq!(
-        apply(
+        execute_attempt_statement(
             &mut connection,
-            write_attempt(
+            plan_guarded_attempt_upsert(
                 UPSERT_CONTROL_ATTEMPT_SQL,
                 &subject,
                 &second,
@@ -107,9 +111,9 @@ async fn an_old_attempt_count_cannot_replace_the_newer_record() {
         1
     );
     assert_eq!(
-        apply(
+        execute_attempt_statement(
             &mut connection,
-            write_attempt(
+            plan_guarded_attempt_upsert(
                 UPSERT_CONTROL_ATTEMPT_SQL,
                 &subject,
                 &second,
@@ -136,27 +140,28 @@ async fn an_old_attempt_count_cannot_replace_the_newer_record() {
 
 #[tokio::test]
 async fn a_deleted_control_record_is_not_recreated_by_an_old_failure() {
-    let mut connection = database().await;
-    let subject = subject("engine_source", "wake_timer");
-    let first = failure(None, 300_000);
+    let mut connection = open_migrated_central_database().await;
+    let subject = make_attempt_subject("engine_source", "wake_timer");
+    let first = next_attempt_failure_record(None, 300_000);
     assert_eq!(
-        apply(
+        execute_attempt_statement(
             &mut connection,
-            write_attempt(UPSERT_CONTROL_ATTEMPT_SQL, &subject, &first, None, vec![]).unwrap()
+            plan_guarded_attempt_upsert(UPSERT_CONTROL_ATTEMPT_SQL, &subject, &first, None, vec![])
+                .unwrap()
         )
         .await,
         1
     );
-    let prior = guard(&mut connection).await;
+    let prior = read_attempt_guard(&mut connection).await;
     sqlx::query("DELETE FROM engine_work_attempts")
         .execute(&mut connection)
         .await
         .unwrap();
-    let second = failure(Some(&first), 600_000);
+    let second = next_attempt_failure_record(Some(&first), 600_000);
     assert_eq!(
-        apply(
+        execute_attempt_statement(
             &mut connection,
-            write_attempt(
+            plan_guarded_attempt_upsert(
                 UPSERT_CONTROL_ATTEMPT_SQL,
                 &subject,
                 &second,
@@ -179,26 +184,33 @@ async fn a_deleted_control_record_is_not_recreated_by_an_old_failure() {
 
 #[tokio::test]
 async fn a_failure_can_be_recorded_without_retriggering_the_subject_and_cannot_resurrect_it() {
-    let mut connection = database().await;
-    sqlx::query("INSERT INTO automation_wakes(wake_id,target,due_at,text,state,created_at,updated_at) VALUES (?,'not-json','1970-01-01T00:05:00.000Z','broken','active','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z')").bind(KEY).execute(&mut connection).await.unwrap();
+    let mut connection = open_migrated_central_database().await;
+    sqlx::query("INSERT INTO automation_wakes(wake_id,target,due_at,text,state,created_at,updated_at) VALUES (?,'not-json','1970-01-01T00:05:00.000Z','broken','active','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z')").bind(FIXTURE_WAKE_ID).execute(&mut connection).await.unwrap();
     sqlx::query("CREATE TRIGGER reject_subject_update BEFORE UPDATE ON automation_wakes BEGIN SELECT RAISE(ABORT,'reject subject'); END").execute(&mut connection).await.unwrap();
-    let subject = subject("wake_timer", KEY);
-    let first = failure(None, 300_000);
+    let subject = make_attempt_subject("wake_timer", FIXTURE_WAKE_ID);
+    let first = next_attempt_failure_record(None, 300_000);
     assert_eq!(
-        apply(
+        execute_attempt_statement(
             &mut connection,
-            write_attempt(WAKE_WRITE, &subject, &first, None, vec![text(KEY)]).unwrap()
+            plan_guarded_attempt_upsert(
+                UPSERT_ACTIVE_WAKE_ATTEMPT_SQL,
+                &subject,
+                &first,
+                None,
+                vec![sql_text(FIXTURE_WAKE_ID)]
+            )
+            .unwrap()
         )
         .await,
         1
     );
-    let prior = guard(&mut connection).await;
+    let prior = read_attempt_guard(&mut connection).await;
     sqlx::query("DROP TRIGGER reject_subject_update")
         .execute(&mut connection)
         .await
         .unwrap();
     sqlx::query("UPDATE automation_wakes SET state='disabled' WHERE wake_id=?")
-        .bind(KEY)
+        .bind(FIXTURE_WAKE_ID)
         .execute(&mut connection)
         .await
         .unwrap();
@@ -206,11 +218,18 @@ async fn a_failure_can_be_recorded_without_retriggering_the_subject_and_cannot_r
         .execute(&mut connection)
         .await
         .unwrap();
-    let second = failure(Some(&first), 600_000);
+    let second = next_attempt_failure_record(Some(&first), 600_000);
     assert_eq!(
-        apply(
+        execute_attempt_statement(
             &mut connection,
-            write_attempt(WAKE_WRITE, &subject, &second, Some(&prior), vec![text(KEY)]).unwrap()
+            plan_guarded_attempt_upsert(
+                UPSERT_ACTIVE_WAKE_ATTEMPT_SQL,
+                &subject,
+                &second,
+                Some(&prior),
+                vec![sql_text(FIXTURE_WAKE_ID)]
+            )
+            .unwrap()
         )
         .await,
         0

@@ -1,4 +1,4 @@
-use crate::attempt_records::failure_detail;
+use super::attempt_records::encode_attempt_failure_detail;
 use central_engine_model::{AttemptState, FailureRecord};
 use central_storage::{GuardedStatement, SqlValue, Statement, StoreFailure};
 use fleet_contracts::{AttemptGuard, EngineSubject};
@@ -8,7 +8,7 @@ use fleet_runtime_ports::{
     workspace_decode_error::corrupt,
 };
 
-const READ_ATTEMPT: &str = "SELECT attempt_id,machine_kind,subject_key,state,failure_count,next_try_at,last_failure,last_failure_detail,first_failed_at,last_failed_at,retired_at,created_at,updated_at FROM engine_work_attempts WHERE machine_kind=? AND subject_key=?";
+const READ_ATTEMPT_BY_SUBJECT_SQL: &str = "SELECT attempt_id,machine_kind,subject_key,state,failure_count,next_try_at,last_failure,last_failure_detail,first_failed_at,last_failed_at,retired_at,created_at,updated_at FROM engine_work_attempts WHERE machine_kind=? AND subject_key=?";
 
 /// The literal predicate belongs to the adapter that owns the subject. No UPDATE
 /// of the subject is used as a guard: that would retrigger its failed statement.
@@ -28,9 +28,9 @@ macro_rules! guarded_attempt_upsert_sql {
 
 pub const UPSERT_CONTROL_ATTEMPT_SQL: &str = guarded_attempt_upsert_sql!("1");
 
-pub(crate) fn read_attempt(subject: &EngineSubject) -> Statement {
+pub(crate) fn build_attempt_read_statement(subject: &EngineSubject) -> Statement {
     Statement {
-        sql: READ_ATTEMPT,
+        sql: READ_ATTEMPT_BY_SUBJECT_SQL,
         args: vec![text(subject.kind.0), text(&subject.key.0)],
     }
 }
@@ -43,7 +43,7 @@ pub fn plan_attempt_delete(subject: &EngineSubject) -> GuardedStatement {
 }
 
 /// Deletes the control record only while it is still the one a run observed
-/// (the write guard's columns, compared with IS). A record written or replaced
+/// (the write guard's columns, compared with IS). SubjectStore record written or replaced
 /// after the observation matches nothing and survives.
 pub fn plan_observed_attempt_delete(
     subject: &EngineSubject,
@@ -63,7 +63,7 @@ pub fn plan_observed_attempt_delete(
     )
 }
 
-fn integer(value: i64) -> Result<SqlValue, StoreFailure> {
+fn encode_attempt_integer_bind(value: i64) -> Result<SqlValue, StoreFailure> {
     value
         .try_into()
         .map(SqlValue::Integer)
@@ -71,7 +71,7 @@ fn integer(value: i64) -> Result<SqlValue, StoreFailure> {
 }
 
 /// Bind slots 1..19; an adapter's subject-version values start at slot 20.
-pub(crate) fn write_attempt(
+pub(crate) fn plan_guarded_attempt_upsert(
     sql: &'static str,
     subject: &EngineSubject,
     record: &FailureRecord,
@@ -95,16 +95,16 @@ pub(crate) fn write_attempt(
         text(subject.kind.0),
         text(&subject.key.0),
         text(state),
-        integer(i64::from(record.failure_count.get()))?,
+        encode_attempt_integer_bind(i64::from(record.failure_count.get()))?,
         next_try,
         text(record.last_failure.storage_tag()),
-        failure_detail(&record.last_failure).map_or(SqlValue::Null, text),
+        encode_attempt_failure_detail(&record.last_failure).map_or(SqlValue::Null, text),
         text(format_utc_millis(record.first_failed_at)),
         text(format_utc_millis(record.last_failed_at)),
         retired_at,
         text(format_utc_millis(record.created_at)),
         text(format_utc_millis(record.updated_at)),
-        integer(i64::from(prior.is_some()))?,
+        encode_attempt_integer_bind(i64::from(prior.is_some()))?,
     ];
     match prior {
         Some(prior) => args.extend([

@@ -40,20 +40,23 @@ pub enum EngineReceipt<State, Error> {
 /// One request freezes this cutoff for its lookup, expired-row delete and loser
 /// reread. Millisecond formatting is shared with stored receipt timestamps.
 pub(crate) struct ReceiptClaim {
-    pub request: RequestId,
-    pub caller: ActorIdentityId,
-    pub digest: String,
-    pub started_at: EngineTime,
-    pub cutoff: EngineTime,
+    pub request_id: RequestId,
+    pub caller_actor_id: ActorIdentityId,
+    pub request_content_digest: String,
+    pub request_started_at: EngineTime,
+    pub receipt_retention_cutoff: EngineTime,
 }
 impl ReceiptClaim {
-    pub fn lookup(&self) -> Statement {
+    pub fn build_live_receipt_lookup(&self) -> Statement {
         Statement {
             sql: "SELECT caller,content_digest,answer FROM runtime_request_log WHERE request_id=? AND created_at>=?",
-            args: vec![text(&self.request), text(format_utc_millis(self.cutoff))],
+            args: vec![
+                text(&self.request_id),
+                text(format_utc_millis(self.receipt_retention_cutoff)),
+            ],
         }
     }
-    pub fn replay<State: DeserializeOwned, Error: DeserializeOwned>(
+    pub fn decode_retained_receipt<State: DeserializeOwned, Error: DeserializeOwned>(
         &self,
         rows: &ReadOutcome,
     ) -> Result<Option<EngineReceipt<State, Error>>, StoreFailure> {
@@ -62,14 +65,14 @@ impl ReceiptClaim {
             [row] => row,
             _ => return Err(corrupt("runtime_request_log.request_id")),
         };
-        if string(rows, row, "caller")? != self.caller.as_str()
-            || string(rows, row, "content_digest")? != self.digest
+        if string(rows, row, "caller")? != self.caller_actor_id.as_str()
+            || string(rows, row, "content_digest")? != self.request_content_digest
         {
             return Ok(Some(EngineReceipt::RequestIdReused));
         }
         json(string(rows, row, "answer")?, "runtime_request_log.answer").map(Some)
     }
-    pub fn statements(
+    pub fn plan_receipt_claim_writes(
         &self,
         answer: &impl Serialize,
     ) -> Result<Vec<GuardedStatement>, StoreFailure> {
@@ -78,17 +81,20 @@ impl ReceiptClaim {
         Ok(vec![
             any(
                 "DELETE FROM runtime_request_log WHERE request_id=? AND created_at<?",
-                vec![text(&self.request), text(format_utc_millis(self.cutoff))],
+                vec![
+                    text(&self.request_id),
+                    text(format_utc_millis(self.receipt_retention_cutoff)),
+                ],
             ),
             exact(
                 "INSERT INTO runtime_request_log(request_id,caller,content_digest,answer,created_at,updated_at) VALUES (?,?,?,?,?,?)",
                 vec![
-                    text(&self.request),
-                    text(&self.caller),
-                    text(&self.digest),
+                    text(&self.request_id),
+                    text(&self.caller_actor_id),
+                    text(&self.request_content_digest),
                     text(encoded),
-                    text(format_utc_millis(self.started_at)),
-                    text(format_utc_millis(self.started_at)),
+                    text(format_utc_millis(self.request_started_at)),
+                    text(format_utc_millis(self.request_started_at)),
                 ],
             ),
         ])

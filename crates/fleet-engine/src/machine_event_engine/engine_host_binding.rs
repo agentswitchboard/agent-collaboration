@@ -1,10 +1,9 @@
 //! The engine's only view of the runtime that hosts it (P3, module direction):
-//! engine/ names this port and never WorkspaceRuntime, so the module graph has
-//! one direction. `crate::engine_wiring` implements it for WorkspaceRuntime.
-use crate::attempt_administration::{
+//! Engine modules depend on EngineHost. Central core implements it for WorkspaceRuntime.
+use super::attempt_administration::{
     AdminMachineKindRegistry, DiscardOutcome, PreparedAttemptDiscard,
 };
-use crate::due_batch_execution::{TimedDueDispatch, WholeDueUnitControl, WholeUnitOutcome};
+use super::due_batch_execution::{TimedDueDispatch, WholeDueUnitControl, WholeUnitOutcome};
 use central_engine_model::EngineTime;
 use central_storage::StoreFailure;
 use fleet_contracts::CentralObservation;
@@ -58,35 +57,35 @@ pub trait EngineHost: Send + Sync + Sized {
 
 /// The engine bound to one host. Every engine operation is a method here, so
 /// none is attributed to WorkspaceRuntime.
-pub struct FleetEngine<'a, R: EngineHost>(pub(crate) &'a R);
+pub struct FleetEngine<'a, Host: EngineHost>(pub(crate) &'a Host);
 
-impl<'a, R: EngineHost> FleetEngine<'a, R> {
-    pub fn new(host: &'a R) -> Self {
+impl<'a, Host: EngineHost> FleetEngine<'a, Host> {
+    pub fn new(host: &'a Host) -> Self {
         Self(host)
     }
-    pub(crate) fn host(&self) -> &'a R::CentralStoreBackend {
+    pub(crate) fn central_store(&self) -> &'a Host::CentralStoreBackend {
         self.0.central_store()
     }
-    pub(crate) fn now(&self) -> Result<EngineTime, StoreFailure> {
+    pub(crate) fn current_engine_time(&self) -> Result<EngineTime, StoreFailure> {
         self.0.current_engine_time()
     }
-    pub(crate) fn ids(&self) -> &'a dyn fleet_runtime_ports::IdSource {
+    pub(crate) fn host_id_source(&self) -> &'a dyn fleet_runtime_ports::IdSource {
         self.0.host_id_source()
     }
-    pub(crate) fn due_batches(&self) -> &'a DueBatchState {
+    pub(crate) fn due_batch_state(&self) -> &'a DueBatchState {
         self.0.due_batch_state()
     }
-    pub(crate) fn observe(&self, observation: CentralObservation) {
+    pub(crate) fn emit_central_observation(&self, observation: CentralObservation) {
         self.0.emit_central_observation(observation);
     }
     #[cfg(feature = "test-support")]
-    pub(crate) fn pauses(&self) -> &'a fleet_runtime::PausePoints {
+    pub(crate) fn engine_test_pause_points(&self) -> &'a fleet_runtime::PausePoints {
         self.0.engine_test_pause_points()
     }
 }
 
-impl<R: EngineHost> EventCompletionHook for FleetEngine<'_, R> {
+impl<Host: EngineHost> EventCompletionHook for FleetEngine<'_, Host> {
     async fn complete_event(&self) -> Result<EventCompletion, AlarmNotPublished> {
-        self.after_event().await
+        self.complete_event_with_observation().await
     }
 }

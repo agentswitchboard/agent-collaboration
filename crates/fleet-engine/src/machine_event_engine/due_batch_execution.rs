@@ -1,9 +1,9 @@
-use crate::{
+use super::{
     attempt_statements::UPSERT_CONTROL_ATTEMPT_SQL,
     engine_host_binding::{EngineHost, FleetEngine},
     machine_event_execution::MachineEventOutcome,
-    machine_store_adapter::corrupt_class,
-    transition_batch_writes::ApplyFailure,
+    machine_store_adapter::classify_corrupt_subject_row,
+    transition_batch_writes::BatchApplyFailure,
 };
 use central_engine_model::{
     DueBatchPolicy, DueListKind, DueRow, EngineTime, InstanceKey, MachineKind, RetirementThreshold,
@@ -37,21 +37,21 @@ pub enum TimedRowOutcome {
     Handled(AlarmResult),
     CentralStoreFailed,
 }
-pub trait TimedDueDispatch<R: EngineHost>: Send + Sync {
+pub trait TimedDueDispatch<Host: EngineHost>: Send + Sync {
     type TimedSourceKind: Copy + Send + Sync + 'static;
     fn ordered_timed_source_kinds(&self) -> &'static [Self::TimedSourceKind];
     fn timed_source_schedule(&self, kind: Self::TimedSourceKind) -> TimedSourceSchedule;
     fn discover_due_rows(
         &self,
-        runtime: &R,
+        runtime: &Host,
         kind: Self::TimedSourceKind,
         cutoff: EngineTime,
         limit: usize,
     ) -> impl Future<Output = Result<Vec<DueRow>, DueDiscoveryError>> + Send;
     fn dispatch_timed_due_row(
         &self,
-        engine: &FleetEngine<'_, R>,
-        runtime: &R,
+        engine: &FleetEngine<'_, Host>,
+        runtime: &Host,
         kind: Self::TimedSourceKind,
         row: DueRow,
     ) -> impl Future<Output = TimedRowOutcome> + Send;
@@ -65,8 +65,8 @@ pub enum WholeUnitOutcome {
     Completed(AlarmResult),
 }
 
-enum Unit<TimedKind, WholeKind> {
-    Machine(
+enum DueBatchUnit<TimedKind, WholeKind> {
+    TimedMachineRow(
         TimedKind,
         #[cfg_attr(
             not(feature = "test-support"),
@@ -78,14 +78,14 @@ enum Unit<TimedKind, WholeKind> {
         MachineKind,
         DueRow,
     ),
-    Whole(WholeKind, WholeDueUnitControl),
+    WholeDueUnit(WholeKind, WholeDueUnitControl),
 }
 #[cfg(feature = "test-support")]
-impl<TimedKind, WholeKind> Unit<TimedKind, WholeKind> {
-    fn start_receipt(&self, now: EngineTime) -> fleet_runtime::DueUnitStart {
+impl<TimedKind, WholeKind> DueBatchUnit<TimedKind, WholeKind> {
+    fn build_due_unit_start_receipt(&self, now: EngineTime) -> fleet_runtime::DueUnitStart {
         let (kind, key) = match self {
-            Self::Machine(_, kind, row) => (kind.0, row.key.0.clone()),
-            Self::Whole(_, unit) => (
+            Self::TimedMachineRow(_, kind, row) => (kind.0, row.key.0.clone()),
+            Self::WholeDueUnit(_, unit) => (
                 unit.attempt_subject.kind.0,
                 unit.attempt_subject.key.0.clone(),
             ),
@@ -98,7 +98,7 @@ impl<TimedKind, WholeKind> Unit<TimedKind, WholeKind> {
     }
 }
 
-fn source(kind: MachineKind) -> EngineSubject {
+fn timed_source_attempt_subject(kind: MachineKind) -> EngineSubject {
     EngineSubject {
         kind: MachineKind("engine_source"),
         key: InstanceKey(kind.0.into()),
@@ -117,30 +117,32 @@ pub async fn read_due_rows(
         .map_err(DueDiscoveryError::ReadFailed)
 }
 
-impl<R: EngineHost> FleetEngine<'_, R> {
+impl<Host: EngineHost> FleetEngine<'_, Host> {
     /// Every event reaches this after its own work. The claim occurs before the
     /// first await; only individual units perform async work, at most eight wide.
-    pub(crate) async fn after_event(&self) -> Result<EventCompletion, AlarmNotPublished> {
+    pub(crate) async fn complete_event_with_observation(
+        &self,
+    ) -> Result<EventCompletion, AlarmNotPublished> {
         #[cfg(feature = "test-support")]
         {
             self.0.record_engine_completion_entry();
-            self.pauses()
+            self.engine_test_pause_points()
                 .reached_central(fleet_runtime::PausePoint::EngineCompletionEntered)
                 .await;
         }
-        let result = self.complete_event().await;
+        let result = self.complete_due_work_and_alarm().await;
         if let Err(error) = &result {
             self.observe_alarm_not_published(error.failure.clone());
         }
         result
     }
 
-    async fn complete_event(&self) -> Result<EventCompletion, AlarmNotPublished> {
+    async fn complete_due_work_and_alarm(&self) -> Result<EventCompletion, AlarmNotPublished> {
         let now = self
-            .now()
+            .current_engine_time()
             .map_err(|failure| AlarmNotPublished { failure })?;
-        let claimed = self
-            .due_batches()
+        let due_batch_claimed = self
+            .due_batch_state()
             .try_claim(now.timestamp_millis(), DueBatchPolicy::DEFAULT.spacing)
             .map_err(|reason| AlarmNotPublished {
                 failure: StoreFailure::AlarmUnpublishable { reason },
@@ -157,14 +159,17 @@ impl<R: EngineHost> FleetEngine<'_, R> {
                 publication,
             });
         }
-        let mut work = AlarmResult::default();
-        if claimed {
-            work = self.run_due_batch(now).await;
+        let mut due_work_result = AlarmResult::default();
+        if due_batch_claimed {
+            due_work_result = self.run_due_batch(now).await;
         }
         let publication = self
             .publish_engine_alarm(EngineAlarmPlan::Recompute)
             .await?;
-        Ok(EventCompletion { work, publication })
+        Ok(EventCompletion {
+            work: due_work_result,
+            publication,
+        })
     }
 
     pub async fn publish_engine_alarm(
@@ -172,7 +177,7 @@ impl<R: EngineHost> FleetEngine<'_, R> {
         plan: EngineAlarmPlan,
     ) -> Result<AlarmPublication, AlarmNotPublished> {
         match self
-            .host()
+            .central_store()
             .run_batch(StatementBatch {
                 statements: vec![],
                 alarm: AlarmUpdate::Engine(plan),
@@ -208,12 +213,12 @@ impl<R: EngineHost> FleetEngine<'_, R> {
             return AlarmResult::default();
         };
         let mut units = Vec::new();
-        let mut leftovers = false;
+        let mut more_timed_rows_due = false;
         let mut central_down = false;
-        let timed = self.0.timed_due_dispatch();
-        for &kind in timed.ordered_timed_source_kinds() {
-            let description = timed.timed_source_schedule(kind);
-            let subject = source(description.machine_kind);
+        let timed_due_dispatch = self.0.timed_due_dispatch();
+        for &kind in timed_due_dispatch.ordered_timed_source_kinds() {
+            let timed_source_schedule = timed_due_dispatch.timed_source_schedule(kind);
+            let subject = timed_source_attempt_subject(timed_source_schedule.machine_kind);
             let observed = match self
                 .check_attempt_control_gate(&subject, RetirementThreshold::DEFAULT)
                 .await
@@ -226,24 +231,31 @@ impl<R: EngineHost> FleetEngine<'_, R> {
                     break;
                 }
             };
-            let cutoff = match description.due_cutoff_policy {
+            let cutoff = match timed_source_schedule.due_cutoff_policy {
                 DueCutoff::BatchStart => now,
                 DueCutoff::LookAheadHorizon => horizon,
             };
-            match timed
+            match timed_due_dispatch
                 .discover_due_rows(self.0, kind, cutoff, policy.per_kind_cap + 1)
                 .await
             {
                 Ok(mut rows) => {
-                    leftovers |= rows.len() > policy.per_kind_cap;
+                    more_timed_rows_due |= rows.len() > policy.per_kind_cap;
                     rows.truncate(policy.per_kind_cap);
-                    units.extend(
-                        rows.into_iter()
-                            .map(|row| Unit::Machine(kind, description.machine_kind, row)),
-                    );
-                    match self.clear_control(&subject, &observed).await {
-                        Ok(()) | Err(ApplyFailure::Superseded | ApplyFailure::Uncertain) => {}
-                        Err(ApplyFailure::StoreDown(_) | ApplyFailure::Rejected(_)) => {
+                    units.extend(rows.into_iter().map(|row| {
+                        DueBatchUnit::TimedMachineRow(kind, timed_source_schedule.machine_kind, row)
+                    }));
+                    match self
+                        .clear_observed_attempt_control(&subject, &observed)
+                        .await
+                    {
+                        Ok(())
+                        | Err(
+                            BatchApplyFailure::Superseded | BatchApplyFailure::StorageAnswerLost,
+                        ) => {}
+                        Err(
+                            BatchApplyFailure::StorageFailed(_) | BatchApplyFailure::Rejected(_),
+                        ) => {
                             central_down = true;
                             break;
                         }
@@ -256,11 +268,11 @@ impl<R: EngineHost> FleetEngine<'_, R> {
                 Err(DueDiscoveryError::ReadFailed(StoreFailure::AnswerLost)) => {}
                 Err(DueDiscoveryError::ReadFailed(StoreFailure::Corrupt { reason })) => {
                     if matches!(
-                        self.record_failure(
+                        self.record_attempt_failure(
                             &subject,
                             UPSERT_CONTROL_ATTEMPT_SQL,
                             &SubjectVersion(vec![]),
-                            corrupt_class(reason),
+                            classify_corrupt_subject_row(reason),
                             RetirementThreshold::DEFAULT
                         )
                         .await,
@@ -279,48 +291,53 @@ impl<R: EngineHost> FleetEngine<'_, R> {
                 }
             }
         }
-        let mut work = AlarmResult::default();
+        let mut due_work_result = AlarmResult::default();
         if !central_down {
             units.extend(
                 self.0
                     .ordered_whole_units()
                     .iter()
-                    .map(|&kind| Unit::Whole(kind, self.0.whole_unit(kind))),
+                    .map(|&kind| DueBatchUnit::WholeDueUnit(kind, self.0.whole_unit(kind))),
             );
-            let stop = AtomicBool::new(false);
+            let stop_after_store_failure = AtomicBool::new(false);
             let mut completed = stream::iter(units)
                 .map(|unit| {
-                    let stop = &stop;
+                    let stop_after_store_failure = &stop_after_store_failure;
                     async move {
-                        if stop.load(Ordering::Acquire) {
+                        if stop_after_store_failure.load(Ordering::Acquire) {
                             return AlarmResult::default();
                         }
                         #[cfg(feature = "test-support")]
-                        self.due_batches()
-                            .record_unit_start(unit.start_receipt(now));
-                        let (work, down) = self.run_engine_unit(unit, now).await;
-                        if down {
-                            stop.store(true, Ordering::Release);
+                        self.due_batch_state()
+                            .record_unit_start(unit.build_due_unit_start_receipt(now));
+                        let (due_work_result, central_store_failed) =
+                            self.dispatch_due_batch_unit(unit, now).await;
+                        if central_store_failed {
+                            stop_after_store_failure.store(true, Ordering::Release);
                         }
-                        work
+                        due_work_result
                     }
                 })
                 .buffer_unordered(8);
             while let Some(done) = completed.next().await {
-                work += done;
+                due_work_result += done;
             }
         }
-        self.due_batches().finish(now.timestamp_millis(), leftovers);
-        work
+        self.due_batch_state()
+            .finish(now.timestamp_millis(), more_timed_rows_due);
+        due_work_result
     }
 
-    async fn run_engine_unit(
+    async fn dispatch_due_batch_unit(
         &self,
-        unit: Unit<<R::TimedDueDispatch as TimedDueDispatch<R>>::TimedSourceKind, R::WholeUnitKind>,
+        unit: DueBatchUnit<
+            <Host::TimedDueDispatch as TimedDueDispatch<Host>>::TimedSourceKind,
+            Host::WholeUnitKind,
+        >,
         now: EngineTime,
     ) -> (AlarmResult, bool) {
         match unit {
-            Unit::Machine(kind, _, row) => {
+            DueBatchUnit::TimedMachineRow(kind, _, row) => {
                 match self
                     .0
                     .timed_due_dispatch()
@@ -331,13 +348,16 @@ impl<R: EngineHost> FleetEngine<'_, R> {
                     TimedRowOutcome::CentralStoreFailed => (AlarmResult::default(), true),
                 }
             }
-            Unit::Whole(kind, unit) => self.run_whole_unit(kind, unit, now).await,
+            DueBatchUnit::WholeDueUnit(kind, unit) => {
+                self.run_whole_unit_with_attempt_control(kind, unit, now)
+                    .await
+            }
         }
     }
 
-    async fn run_whole_unit(
+    async fn run_whole_unit_with_attempt_control(
         &self,
-        kind: R::WholeUnitKind,
+        kind: Host::WholeUnitKind,
         unit: WholeDueUnitControl,
         now: EngineTime,
     ) -> (AlarmResult, bool) {
@@ -358,15 +378,21 @@ impl<R: EngineHost> FleetEngine<'_, R> {
             Ok(WholeUnitOutcome::Skipped) => (empty, false),
             Ok(WholeUnitOutcome::Completed(work)) => {
                 #[cfg(feature = "test-support")]
-                self.pauses()
+                self.engine_test_pause_points()
                     .reached_engine(
                         fleet_runtime::PausePoint::BeforeControlClear,
                         subject.kind.0,
                     )
                     .await;
-                match self.clear_control(&subject, &observed).await {
-                    Err(ApplyFailure::StoreDown(_) | ApplyFailure::Rejected(_)) => (empty, true),
-                    Ok(()) | Err(ApplyFailure::Superseded | ApplyFailure::Uncertain) => {
+                match self
+                    .clear_observed_attempt_control(&subject, &observed)
+                    .await
+                {
+                    Err(BatchApplyFailure::StorageFailed(_) | BatchApplyFailure::Rejected(_)) => {
+                        (empty, true)
+                    }
+                    Ok(())
+                    | Err(BatchApplyFailure::Superseded | BatchApplyFailure::StorageAnswerLost) => {
                         (work, false)
                     }
                 }
@@ -397,36 +423,36 @@ impl<R: EngineHost> FleetEngine<'_, R> {
     }
 
     /// One due machine instance as its own unit: `(done, central_down)`.
-    pub async fn run_due_machine_instance<M, Adapter>(
+    pub async fn run_due_machine_instance<SubjectMachine, SubjectStore>(
         &self,
-        adapter: &Adapter,
+        adapter: &SubjectStore,
         row: DueRow,
         due_column: &'static str,
-        due_event: fn(EngineTime) -> M::Event,
+        due_event: fn(EngineTime) -> SubjectMachine::Event,
     ) -> (bool, bool)
     where
-        M: central_engine_model::Machine,
-        M::State: Send + Sync,
-        M::Event: Send + Sync,
-        M::Effect: Send + Sync,
-        M::Error: Send + Sync,
-        Adapter: crate::machine_store_adapter::MachineStoreAdapter<M>,
+        SubjectMachine: central_engine_model::Machine,
+        SubjectMachine::State: Send + Sync,
+        SubjectMachine::Event: Send + Sync,
+        SubjectMachine::Effect: Send + Sync,
+        SubjectMachine::Error: Send + Sync,
+        SubjectStore: super::machine_store_adapter::MachineStoreAdapter<SubjectMachine>,
     {
         let subject = adapter.failure_attempt_subject(&row.key);
         let outcome = match EngineTime::from_timestamp_millis(row.occurrence_ms) {
             Some(occurrence) => {
-                self.handle::<M, Adapter, _>(
+                self.apply_machine_event::<SubjectMachine, SubjectStore, _>(
                     adapter,
                     row.key.clone(),
                     due_event(occurrence),
-                    &crate::event_source_policy::DueSource,
+                    &super::event_source_policy::DueEventSource,
                 )
                 .await
             }
             // The due SQL clamps unreadable times, so this is defensive: the item
             // fails alone as CorruptRow and the batch continues (P3).
             None => {
-                self.record_unrepresentable_due(adapter, &row.key, due_column)
+                self.record_invalid_due_occurrence(adapter, &row.key, due_column)
                     .await
             }
         };
@@ -445,31 +471,31 @@ impl<R: EngineHost> FleetEngine<'_, R> {
         }
     }
 
-    async fn record_unrepresentable_due<M, Adapter>(
+    async fn record_invalid_due_occurrence<SubjectMachine, SubjectStore>(
         &self,
-        adapter: &Adapter,
+        adapter: &SubjectStore,
         key: &InstanceKey,
         due_column: &'static str,
-    ) -> MachineEventOutcome<M::State, M::Error>
+    ) -> MachineEventOutcome<SubjectMachine::State, SubjectMachine::Error>
     where
-        M: central_engine_model::Machine,
-        Adapter: crate::machine_store_adapter::MachineStoreAdapter<M>,
+        SubjectMachine: central_engine_model::Machine,
+        SubjectStore: super::machine_store_adapter::MachineStoreAdapter<SubjectMachine>,
     {
         let version = match adapter.load_subject_state(key).await {
             Ok(Some(loaded)) => loaded.observed_subject_version,
             Ok(None) => return MachineEventOutcome::SubjectMissing,
-            Err(crate::machine_store_adapter::SubjectLoadFailure::CorruptSubjectRow {
+            Err(super::machine_store_adapter::SubjectLoadFailure::CorruptSubjectRow {
                 observed_subject_version: version,
                 ..
             }) => version,
-            Err(crate::machine_store_adapter::SubjectLoadFailure::StorageAnswerLost) => {
+            Err(super::machine_store_adapter::SubjectLoadFailure::StorageAnswerLost) => {
                 return MachineEventOutcome::StorageAnswerLost;
             }
-            Err(crate::machine_store_adapter::SubjectLoadFailure::StoreReadFailed(failure)) => {
+            Err(super::machine_store_adapter::SubjectLoadFailure::StoreReadFailed(failure)) => {
                 return MachineEventOutcome::StorageFailed(failure);
             }
         };
-        self.record_failure(
+        self.record_attempt_failure(
             &adapter.failure_attempt_subject(key),
             adapter.write_attempt_failure_sql(),
             &version,
@@ -477,7 +503,7 @@ impl<R: EngineHost> FleetEngine<'_, R> {
                 column: due_column.into(),
                 raw_value: None,
             },
-            M::retirement_threshold(),
+            SubjectMachine::retirement_threshold(),
         )
         .await
         .into()

@@ -19,35 +19,40 @@ pub enum SubjectLoadFailure {
 }
 
 /// One machine's row codec and static statements. Reducers never see SQL.
-pub trait MachineStoreAdapter<M: Machine>: Sync {
+pub trait MachineStoreAdapter<SubjectMachine: Machine>: Sync {
     fn load_subject_state(
         &self,
         key: &InstanceKey,
-    ) -> impl Future<Output = Result<Option<VersionedSubjectState<M::State>>, SubjectLoadFailure>> + Send;
+    ) -> impl Future<
+        Output = Result<Option<VersionedSubjectState<SubjectMachine::State>>, SubjectLoadFailure>,
+    > + Send;
     fn plan_subject_state_write(
         &self,
         key: &InstanceKey,
-        prior: &VersionedSubjectState<M::State>,
-        next: &M::State,
+        prior: &VersionedSubjectState<SubjectMachine::State>,
+        next: &SubjectMachine::State,
     ) -> Result<GuardedStatement, StoreFailure>;
     fn plan_machine_effect_writes(
         &self,
         key: &InstanceKey,
-        effect: &M::Effect,
+        effect: &SubjectMachine::Effect,
     ) -> Result<Vec<GuardedStatement>, StoreFailure>;
-    fn mail_ready_from_effect(&self, _effect: &M::Effect) -> Option<MailDeliveryReady> {
+    fn mail_ready_from_effect(
+        &self,
+        _effect: &SubjectMachine::Effect,
+    ) -> Option<MailDeliveryReady> {
         None
     }
     fn write_attempt_failure_sql(&self) -> &'static str;
     fn failure_attempt_subject(&self, key: &InstanceKey) -> EngineSubject {
         EngineSubject {
-            kind: M::KIND,
+            kind: SubjectMachine::KIND,
             key: key.clone(),
         }
     }
 }
 
-pub(crate) fn corrupt_class(reason: CorruptReason) -> ItemFailureClass {
+pub(crate) fn classify_corrupt_subject_row(reason: CorruptReason) -> ItemFailureClass {
     let (CorruptReason::MissingColumn { column }
     | CorruptReason::UnknownKind { column }
     | CorruptReason::BadValue { column }) = reason;
@@ -71,7 +76,7 @@ pub fn classify_subject_decode_failure(
 ) -> SubjectLoadFailure {
     match failure {
         StoreFailure::Corrupt { reason } => SubjectLoadFailure::CorruptSubjectRow {
-            failure_class: corrupt_class(reason),
+            failure_class: classify_corrupt_subject_row(reason),
             observed_subject_version: version,
         },
         failure @ (StoreFailure::Unavailable
