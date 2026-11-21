@@ -2,6 +2,7 @@ import { existsSync, readFileSync, statSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parse } from "smol-toml";
 import { z } from "zod";
+import { engineFixtureSqlMarkers } from "./central-engine-fixture-markers.ts";
 import { conformanceMarkers } from "./worker-bundle-markers.ts";
 import { retiredMarkers } from "./worker-retired-markers.ts";
 import { testSupportMarkers } from "./worker-test-support-markers.ts";
@@ -84,6 +85,10 @@ export function checkWorkerBundle(
       status: 1,
       message: "Worker production bundle contains the storage test-support routes",
     };
+  const fixtureSql =
+    mode === "production" && engineFixtureSqlMarkers.find((marker) => content.includes(marker));
+  if (fixtureSql)
+    return { status: 1, message: `Worker production bundle contains fixture SQL: ${fixtureSql}` };
   if (mode === "production" && content.includes("_cf_test_directory_updates"))
     return { status: 1, message: "Worker production bundle contains the test-only Fleet receiver" };
   if (content.includes("central depth measurement"))

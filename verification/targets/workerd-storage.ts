@@ -19,6 +19,7 @@ import { z } from "zod";
 import {
   C2WitnessRecorder,
   c2PhaseSchema,
+  c2HeldDiagnosticSchema,
   c2WitnessWrapperSource,
 } from "../observations/central/c2-witness.ts";
 import { ordinaryAcceptProbeSource } from "../observations/central/c2-ordinary-accept-probe.ts";
@@ -98,7 +99,32 @@ export const workerdBridgeCommandSchema = z.union([
   z.object({ setTimeMs: workerdLauncherTimeSchema }).strict(),
   z.object({ observe: z.uuidv7() }).strict(),
   z.object({ c2Evict: z.uuidv7() }).strict(),
-  z.object({ c2Witness: z.object({ phase: c2PhaseSchema }).strict() }).strict(),
+  z
+    .object({
+      c2Witness: z
+        .object({
+          phase: c2PhaseSchema,
+          holdDecidingDiagnostic: c2HeldDiagnosticSchema.optional(),
+          waitForUpgrades: z.number().int().positive().optional(),
+        })
+        .strict(),
+    })
+    .strict(),
+  z
+    .object({
+      c2SettleAlarms: z
+        .object({
+          phase: c2PhaseSchema,
+          correlationIds: z.array(z.uuidv7()),
+          expectRefused: z.uuidv7().optional(),
+        })
+        .strict()
+        .refine(
+          ({ correlationIds, expectRefused }) =>
+            correlationIds.length > 0 || expectRefused !== undefined,
+        ),
+    })
+    .strict(),
   z.object({ setExternalTimeMs: workerdLauncherTimeSchema }).strict(),
 ]);
 

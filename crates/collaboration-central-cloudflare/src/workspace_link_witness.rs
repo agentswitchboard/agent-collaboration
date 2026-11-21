@@ -3,7 +3,8 @@ use super::CentralObject;
 use central_storage::{ReadOutcome, StoreFailure};
 use fleet_runtime_ports::CentralStore;
 use serde::Serialize;
-use worker::{Env, Method, RequestInit, Result};
+use std::{cell::RefCell, collections::VecDeque, rc::Rc};
+use worker::{Env, Method, RequestInit, Result, send::SendWrapper};
 
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -50,6 +51,76 @@ enum Event {
     },
 }
 
+// Every object records observations in capture order. The detached drain may wait
+// for acknowledgements without affecting a statement, reply, or later batch member.
+#[derive(Clone, Default)]
+pub(super) struct PendingWitnesses(SendWrapper<Rc<RefCell<WitnessQueue>>>);
+
+#[derive(Default)]
+struct WitnessQueue {
+    events: VecDeque<Event>,
+    draining: bool,
+}
+
+impl PendingWitnesses {
+    fn enqueue(&self, env: &Env, state: &worker::State, event: Event) -> Result<()> {
+        if !enabled(env)? {
+            return Ok(());
+        }
+        let mut queue = self.0.borrow_mut();
+        queue.events.push_back(event);
+        if queue.draining {
+            return Ok(());
+        }
+        queue.draining = true;
+        let pending = self.clone();
+        let env = env.clone();
+        state.wait_until(async move {
+            loop {
+                let event = {
+                    let mut queue = pending.0.borrow_mut();
+                    let Some(event) = queue.events.pop_front() else {
+                        queue.draining = false;
+                        break;
+                    };
+                    event
+                };
+                if let Err(error) = record(&env, event).await {
+                    worker::console_warn!("C2 witness delivery failed: {error}");
+                }
+            }
+        });
+        Ok(())
+    }
+
+    pub(super) fn read_completed(
+        &self,
+        env: &Env,
+        state: &worker::State,
+        sql: &str,
+        result: &std::result::Result<ReadOutcome, StoreFailure>,
+    ) {
+        let Some(query) = classify(sql) else {
+            return;
+        };
+        if let Err(error) = self.enqueue(
+            env,
+            state,
+            Event::EnrollmentRead {
+                object_id: state.id().to_string(),
+                query,
+                outcome: if result.is_ok() {
+                    ReadResult::Read
+                } else {
+                    ReadResult::Unavailable
+                },
+            },
+        ) {
+            worker::console_warn!("C2 enrollment diagnostic failed: {error}");
+        }
+    }
+}
+
 fn enabled(env: &Env) -> Result<bool> {
     worker::js_sys::Reflect::has(
         env,
@@ -58,9 +129,6 @@ fn enabled(env: &Env) -> Result<bool> {
     .map_err(worker::Error::from)
 }
 async fn record(env: &Env, event: Event) -> Result<()> {
-    if !enabled(env)? {
-        return Ok(());
-    }
     let mut init = RequestInit::new();
     init.with_method(Method::Post)
         .with_body(Some(serde_json::to_string(&event)?.into()));
@@ -74,30 +142,6 @@ async fn record(env: &Env, event: Event) -> Result<()> {
         ));
     }
     Ok(())
-}
-
-pub(super) async fn read_completed(
-    env: &Env,
-    object_id: String,
-    sql: &str,
-    result: &std::result::Result<ReadOutcome, StoreFailure>,
-) -> Result<()> {
-    let Some(query) = classify(sql) else {
-        return Ok(());
-    };
-    record(
-        env,
-        Event::EnrollmentRead {
-            object_id,
-            query,
-            outcome: if result.is_ok() {
-                ReadResult::Read
-            } else {
-                ReadResult::Unavailable
-            },
-        },
-    )
-    .await
 }
 
 fn classify(sql: &str) -> Option<EnrollmentQuery> {
@@ -116,20 +160,22 @@ fn classify(sql: &str) -> Option<EnrollmentQuery> {
     }
 }
 impl CentralObject {
-    pub(super) async fn witness_restored(
+    pub(super) fn witness_restored(
         &self,
         correlation_id: &central_link_protocol::CorrelationId,
         outcome: RestoreOutcome,
-    ) -> Result<()> {
-        record(
+    ) {
+        if let Err(error) = self.witnesses.enqueue(
             &self.env,
+            &self.state,
             Event::RestoreResult {
                 object_id: self.state.id().to_string(),
                 correlation_id: correlation_id.clone(),
                 outcome,
             },
-        )
-        .await
+        ) {
+            worker::console_warn!("C2 authority diagnostic failed: {error}");
+        }
     }
     pub(super) async fn witness_alarm(
         &self,
@@ -159,8 +205,9 @@ impl CentralObject {
         {
             return Err(worker::Error::RustError("C2 invalid alarm value".into()));
         }
-        record(
+        self.witnesses.enqueue(
             &self.env,
+            &self.state,
             Event::AlarmSnapshot {
                 object_id: self.state.id().to_string(),
                 correlation_id: correlation_id.clone(),
@@ -168,6 +215,5 @@ impl CentralObject {
                 alarm_ms,
             },
         )
-        .await
     }
 }

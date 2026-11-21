@@ -146,7 +146,22 @@ async function answer(line: string): Promise<unknown> {
     if ("c2Witness" in parsed.data) {
       if (witness === undefined) return { answer: "refused", error: "C2 witness not enabled" };
       witness.phase = parsed.data.c2Witness.phase;
-      return { answer: "c2Witness", events: witness.snapshot() };
+      const diagnostic = parsed.data.c2Witness.holdDecidingDiagnostic;
+      if (diagnostic !== undefined) witness.holdDecidingDiagnostic(diagnostic);
+      const upgrades = parsed.data.c2Witness.waitForUpgrades;
+      const events =
+        upgrades === undefined
+          ? witness.snapshot()
+          : await witness.settledLifecycle("upgrade", upgrades);
+      return { answer: "c2Witness", events };
+    }
+    if ("c2SettleAlarms" in parsed.data) {
+      if (witness === undefined) return { answer: "refused", error: "C2 witness not enabled" };
+      const { phase, correlationIds, expectRefused } = parsed.data.c2SettleAlarms;
+      return {
+        answer: "c2Witness",
+        events: await witness.settledAlarms(phase, correlationIds, expectRefused),
+      };
     }
     if ("setExternalTimeMs" in parsed.data) {
       if (witness === undefined) return { answer: "refused", error: "C2 witness not enabled" };

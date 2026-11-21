@@ -4,7 +4,7 @@ import assert from "node:assert/strict";
 import { c2WitnessWrapperSource } from "./c2-witness.ts";
 
 export function ordinaryAcceptProbeSource(): string {
-  const constructor = "super(state, env);";
+  const constructor = "super(state, witnessEnv);";
   const attachments = "this.witnessState.getWebSockets()";
   assert.equal(
     c2WitnessWrapperSource.split(constructor).length,
@@ -35,7 +35,7 @@ export function ordinaryAcceptProbeSource(): string {
       const value = Reflect.get(target, property, target);
       return typeof value === 'function' ? value.bind(target) : value;
     }});
-    super(ordinaryState, env);
+    super(ordinaryState, witnessEnv);
     serving = this;
     this.ordinaryProbeSockets = ordinarySockets;
   `,

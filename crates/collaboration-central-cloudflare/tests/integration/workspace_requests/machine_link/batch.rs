@@ -1,11 +1,11 @@
 //! One real hibernation wake settles each well-formed write independently.
 use super::super::workerd_host::c2_controls::{
-    AttachmentSnapshot, EnrollmentReadOutcome, EnrollmentReadQuery, RestoreOutcome, WitnessEvent,
-    WitnessPhase, WitnessRecord,
+    AttachmentSnapshot, DiagnosticDisposition, EnrollmentReadOutcome, EnrollmentReadQuery,
+    HeldDiagnostic, RestoreOutcome, WitnessEvent, WitnessPhase, WitnessRecord,
 };
 use super::fixture::{Fixture, MACHINE_ID, session_caller};
 use super::receipt::{AreaReceipt, BatchHibernationReceipt};
-use super::{baseline, workspace_reply};
+use super::{baseline, correlation, create_area, workspace_reply};
 use central_link_protocol::{DataFrame, ReplyPayload, RequestPayload};
 use central_storage::{SqlValue, Statement};
 use collaboration_central_conformance::ConformanceResult as Result;
@@ -31,8 +31,106 @@ async fn one_hibernation_wake_processes_independent_writes_and_replies() -> Resu
     if destination.as_ref().is_some_and(|path| !path.is_absolute()) {
         return Err("batch hibernation receipt destination must be absolute".into());
     }
+    run_with_held_callback(3, destination).await
+}
+
+#[tokio::test]
+async fn the_first_alarm_callback_cannot_delay_later_batch_replies() -> Result<()> {
+    run_with_held_callback(1, None).await
+}
+
+#[tokio::test]
+async fn refused_alarm_and_restoration_diagnostics_preserve_correlated_replies() -> Result<()> {
     let fixture = Fixture::new().await?;
-    let result = batch_journey(&fixture).await;
+    let result = refused_diagnostic_journey(&fixture).await;
+    fixture.close().await?;
+    result
+}
+
+async fn refused_diagnostic_journey(fixture: &Fixture) -> Result<()> {
+    let (mut link, _, workspace, _, _) = baseline(fixture).await?;
+    fixture
+        .host
+        .c2_hold_deciding_diagnostic(
+            HeldDiagnostic::RestoreResult,
+            1,
+            DiagnosticDisposition::Refuse,
+        )
+        .await?;
+    let single = link.call(create_area(&workspace)?).await?;
+    let single_id = correlation(&single.request)?;
+    created_area(&single.reply, super::AREA_NAME)?;
+    fixture
+        .host
+        .c2_settle_refused_diagnostic(single_id, &[single_id])
+        .await?;
+
+    fixture
+        .host
+        .c2_hold_deciding_diagnostic(
+            HeldDiagnostic::AlarmSnapshot,
+            1,
+            DiagnosticDisposition::Refuse,
+        )
+        .await?;
+    // A genuine independent two-write batch. The recorder refuses only after
+    // both replies reached the client, on the same socket as the single reply.
+    let mut payloads = writes(&workspace)?;
+    payloads.remove(1);
+    let (batch, replies) = link.batch(payloads).await?;
+    let [first, second] = replies.as_slice() else {
+        return Err("two independent writes must return two Replies".into());
+    };
+    created_area(first, AREA_A)?;
+    created_area(second, AREA_B)?;
+    let [first, second] = batch_correlations(&batch)?[..] else {
+        return Err("two independent writes must have two correlations".into());
+    };
+    fixture
+        .host
+        .c2_settle_refused_diagnostic(first, &[second])
+        .await?;
+
+    fixture
+        .host
+        .c2_hold_deciding_diagnostic(
+            HeldDiagnostic::AlarmSnapshot,
+            1,
+            DiagnosticDisposition::Refuse,
+        )
+        .await?;
+    let single = link
+        .call(WorkspaceRequest {
+            request_id: Some("019f0000-0000-7000-8000-00000000cf12".parse()?),
+            workspace_id: Some(workspace),
+            operation: WorkspaceOperation::CreateArea {
+                name: "Area after recorder refusal".to_owned().try_into()?,
+                description: "Test description".to_owned().try_into()?,
+            },
+        })
+        .await?;
+    created_area(&single.reply, "Area after recorder refusal")?;
+    fixture
+        .host
+        .c2_settle_refused_diagnostic(correlation(&single.request)?, &[])
+        .await?;
+    link.close().await
+}
+
+fn batch_correlations(frame: &DataFrame) -> Result<Vec<&central_link_protocol::CorrelationId>> {
+    let DataFrame::Batch { requests } = frame else {
+        return Err("deciding frame must be the actual Batch".into());
+    };
+    Ok(requests
+        .requests()
+        .iter()
+        .map(central_link_protocol::LinkRequest::correlation_id)
+        .collect())
+}
+
+async fn run_with_held_callback(ordinal: usize, destination: Option<PathBuf>) -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let result = batch_journey(&fixture, ordinal).await;
     fixture.close().await?;
     let mut receipt = result?;
     receipt.disposed = true;
@@ -46,7 +144,7 @@ async fn one_hibernation_wake_processes_independent_writes_and_replies() -> Resu
     Ok(())
 }
 
-async fn batch_journey(fixture: &Fixture) -> Result<BatchHibernationReceipt> {
+async fn batch_journey(fixture: &Fixture, held_callback: usize) -> Result<BatchHibernationReceipt> {
     let (mut link, baseline, workspace, before_events, attachment) = baseline(fixture).await?;
     let payloads = writes(&workspace)?;
     fixture.host.c2_witness(WitnessPhase::Evicting).await?;
@@ -65,10 +163,22 @@ async fn batch_journey(fixture: &Fixture) -> Result<BatchHibernationReceipt> {
         }
         heartbeat_events.push(events);
     }
-    fixture.host.c2_witness(WitnessPhase::Deciding).await?;
+    fixture
+        .host
+        .c2_hold_deciding_diagnostic(
+            HeldDiagnostic::AlarmSnapshot,
+            held_callback,
+            DiagnosticDisposition::Record,
+        )
+        .await?;
     let (batch_request, batch_replies) = link.batch(payloads).await?;
-    // No target read or later frame may contaminate the deciding interval.
-    let deciding_events = fixture.host.c2_witness(WitnessPhase::Deciding).await?;
+    let correlations = batch_correlations(&batch_request)?;
+    // The recorder holds its callback until this read, which happens only after
+    // every reply. The settling read returns only when all three records arrive.
+    let deciding_events = fixture
+        .host
+        .c2_settle_alarms(WitnessPhase::Deciding, &correlations)
+        .await?;
     assert_member_witnesses(
         &before_events,
         &deciding_events,

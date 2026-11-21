@@ -230,13 +230,14 @@ impl CentralObject {
                     .await?
                 {
                     MachineRequestResult::Reply(reply) => {
-                        self.reply_to_machine(&socket, &request, reply).await
+                        self.send_reply_and_close_if_lapsed(&socket, &request, reply, false)
+                            .await
                     }
                     // The request is answered before the close, as on the native host.
                     MachineRequestResult::AuthorityRefused => {
                         let reply = refused_reply(request.payload(), RefusalReason::MachineRevoked);
-                        self.reply_to_machine(&socket, &request, reply).await?;
-                        close(&socket, "machine authority expired or revoked")
+                        self.send_reply_and_close_if_lapsed(&socket, &request, reply, true)
+                            .await
                     }
                     MachineRequestResult::Unavailable => {
                         close(&socket, "machine admission unavailable")
@@ -245,7 +246,8 @@ impl CentralObject {
             }
             IncomingRequests::Batch(requests) => {
                 let mut lapsed = false;
-                for request in requests.requests() {
+                let mut members = requests.requests().iter().peekable();
+                while let Some(request) = members.next() {
                     // Every member restores live provenance and enters its own applying turn.
                     // Semantic refusals are replies, so they cannot skip later members.
                     let reply = match self
@@ -261,11 +263,10 @@ impl CentralObject {
                             ReplyPayload::central_unavailable(request.payload())
                         }
                     };
-                    self.reply_to_machine(&socket, request, reply).await?;
-                }
-                // A lapsed authority closes the link once every member is answered.
-                if lapsed {
-                    return close(&socket, "machine authority expired or revoked");
+                    // A lapsed authority closes the link with the last member's reply.
+                    let close_after_reply = lapsed && members.peek().is_none();
+                    self.send_reply_and_close_if_lapsed(&socket, request, reply, close_after_reply)
+                        .await?;
                 }
                 Ok(())
             }
@@ -392,8 +393,7 @@ impl CentralObject {
                     super::workspace_link_witness::RestoreOutcome::Unavailable
                 }
             },
-        )
-        .await?;
+        );
         let connection = match restored {
             Ok(MachineLinkRequestAuthority::Admitted(connection)) => connection,
             Ok(MachineLinkRequestAuthority::Refused) => {
@@ -438,11 +438,12 @@ impl CentralObject {
             reason = "test-support can observe the alarm after sending the frame"
         )
     )]
-    async fn reply_to_machine(
+    async fn send_reply_and_close_if_lapsed(
         &self,
         socket: &WebSocket,
         request: &LinkRequest,
         reply: ReplyPayload,
+        close_after_reply: bool,
     ) -> Result<()> {
         send(
             socket,
@@ -451,6 +452,9 @@ impl CentralObject {
                 result: Box::new(reply),
             },
         )?;
+        if close_after_reply {
+            close(socket, "machine authority expired or revoked")?;
+        }
 
         #[cfg(feature = "test-support")]
         if let Err(error) = self.witness_alarm(request.correlation_id()).await {

@@ -29,6 +29,24 @@ pub(super) async fn control(
                 &statement_store::run_batch(&object.connection, batch, policy).await,
             )
         }
+        "/test/engine-due-schedules" => {
+            let horizon_ms = request.json::<i64>().await?;
+            let horizon = fleet_runtime_ports::EngineTime::from_timestamp_millis(horizon_ms)
+                .ok_or_else(|| error("test list horizon is outside the supported range"))?;
+            let rows = fleet_engine::read_due_rows(
+                object.statement_host().as_ref(),
+                fleet_runtime_ports::DueListKind::Schedules,
+                horizon,
+                250,
+            )
+            .await
+            .map_err(|_| error("typed schedule list failed"))?;
+            let rows: Vec<_> = rows
+                .into_iter()
+                .map(|row| (row.key.0, row.occurrence_ms, row.effective_due_ms))
+                .collect();
+            Response::from_json(&rows)
+        }
         "/test/central-read" => Response::from_json(
             &statement_store::read(&object.connection, request.json::<OwnedStatement>().await?)
                 .await,

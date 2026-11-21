@@ -137,6 +137,20 @@ pub(super) fn is_control_reply(line: &str) -> bool {
     serde_json::from_str::<Envelope>(line).is_ok_and(|envelope| !envelope.answer.is_empty())
 }
 
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::workspace_requests) enum HeldDiagnostic {
+    AlarmSnapshot,
+    RestoreResult,
+}
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(in crate::workspace_requests) enum DiagnosticDisposition {
+    Record,
+    Refuse,
+}
+
 impl WorkerdHost {
     pub async fn open_c2(clock: Arc<dyn Clock>, plan: &Path) -> Result<Self, StoreFailure> {
         Self::open_configured(clock, Some(plan.to_owned()), true, true, None).await
@@ -172,6 +186,69 @@ impl WorkerdHost {
     ) -> Result<Vec<WitnessRecord>, StoreFailure> {
         match self
             .c2_control(serde_json::json!({"c2Witness":{"phase":phase}}))
+            .await?
+        {
+            BridgeReply::C2Witness { events } => Ok(events),
+            _ => Err(StoreFailure::Unavailable),
+        }
+    }
+    pub(in crate::workspace_requests) async fn c2_hold_deciding_diagnostic(
+        &self,
+        kind: HeldDiagnostic,
+        ordinal: usize,
+        disposition: DiagnosticDisposition,
+    ) -> Result<(), StoreFailure> {
+        match self
+            .c2_control(serde_json::json!({
+                "c2Witness": {
+                    "phase": WitnessPhase::Deciding,
+                    "holdDecidingDiagnostic": {"kind": kind, "ordinal": ordinal, "disposition": disposition}
+                }
+            }))
+            .await?
+        {
+            BridgeReply::C2Witness { .. } => Ok(()),
+            _ => Err(StoreFailure::Unavailable),
+        }
+    }
+    pub async fn c2_settle_alarms(
+        &self,
+        phase: WitnessPhase,
+        correlation_ids: &[&central_link_protocol::CorrelationId],
+    ) -> Result<Vec<WitnessRecord>, StoreFailure> {
+        match self
+            .c2_control(serde_json::json!({
+                "c2SettleAlarms": {"phase": phase, "correlationIds": correlation_ids}
+            }))
+            .await?
+        {
+            BridgeReply::C2Witness { events } => Ok(events),
+            _ => Err(StoreFailure::Unavailable),
+        }
+    }
+    pub(in crate::workspace_requests) async fn c2_settle_refused_diagnostic(
+        &self,
+        refused: &central_link_protocol::CorrelationId,
+        alarm_ids: &[&central_link_protocol::CorrelationId],
+    ) -> Result<(), StoreFailure> {
+        match self.c2_control(serde_json::json!({
+            "c2SettleAlarms": {
+                "phase": WitnessPhase::Deciding, "correlationIds": alarm_ids, "expectRefused": refused
+            }
+        })).await? {
+            BridgeReply::C2Witness { .. } => Ok(()),
+            _ => Err(StoreFailure::Unavailable),
+        }
+    }
+    pub(in crate::workspace_requests) async fn c2_wait_for_upgrades(
+        &self,
+        phase: WitnessPhase,
+        upgrades: usize,
+    ) -> Result<Vec<WitnessRecord>, StoreFailure> {
+        match self
+            .c2_control(serde_json::json!({
+                "c2Witness": {"phase": phase, "waitForUpgrades": upgrades}
+            }))
             .await?
         {
             BridgeReply::C2Witness { events } => Ok(events),

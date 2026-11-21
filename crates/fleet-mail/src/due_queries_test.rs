@@ -1,7 +1,7 @@
 #[test]
 fn read_due_direct_messages_describes_the_owner_query() {
     let _ = fleet_engine::check_timed_due_list!(
-        DirectMessages,
+        direct_message_list,
         central_engine_model::due_list_query(
             central_engine_model::DueListKind::DirectMessages,
             central_engine_model::EngineTime::UNIX_EPOCH,
@@ -14,7 +14,7 @@ fn read_due_direct_messages_describes_the_owner_query() {
 #[test]
 fn read_due_system_expiries_describes_the_owner_query() {
     let _ = fleet_engine::check_timed_due_list!(
-        SystemExpiries,
+        system_expiry_list,
         central_engine_model::due_list_query(
             central_engine_model::DueListKind::SystemExpiries,
             central_engine_model::EngineTime::UNIX_EPOCH,

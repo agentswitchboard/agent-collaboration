@@ -285,6 +285,7 @@ pub(super) async fn control(
         }
         "/test/central-batch"
         | "/test/central-read"
+        | "/test/engine-due-schedules"
         | "/test/store"
         | "/test/store-failing-upgrade"
         | "/test/reset-store"

@@ -134,7 +134,10 @@ async fn hibernation_journey(fixture: &Fixture) -> Result<HibernationReceipt> {
     fixture.host.c2_witness(WitnessPhase::Deciding).await?;
     let deciding = link.call(create_area(&workspace)?).await?;
     // Capture before Show, raw store inspection, phase changes or socket close.
-    let deciding_events = fixture.host.c2_witness(WitnessPhase::Deciding).await?;
+    let deciding_events = fixture
+        .host
+        .c2_settle_alarms(WitnessPhase::Deciding, &[correlation(&deciding.request)?])
+        .await?;
     let (instance, restored_sequence) = witness_assertions::reconstruction(
         &before_events,
         &deciding_events,
@@ -258,7 +261,10 @@ async fn baseline(
     }
     let workspace = workspace.workspace_id.clone();
     fixture.allow_workspace(&workspace).await?;
-    let events = fixture.host.c2_witness(WitnessPhase::Baseline).await?;
+    let events = fixture
+        .host
+        .c2_settle_alarms(WitnessPhase::Baseline, &[correlation(&exchange.request)?])
+        .await?;
     let attachment =
         witness_assertions::baseline_attachment(&events, correlation(&exchange.request)?)?;
     Ok((link, exchange, workspace, events, attachment))
@@ -505,7 +511,10 @@ async fn denied_journey(fixture: &Fixture, change: AuthorityChange) -> Result<()
             .into());
         }
     }
-    let deciding = fixture.host.c2_witness(WitnessPhase::Deciding).await?;
+    let deciding = fixture
+        .host
+        .c2_settle_alarms(WitnessPhase::Deciding, &[correlation(&request)?])
+        .await?;
     witness_assertions::reconstruction(
         &before,
         &deciding,

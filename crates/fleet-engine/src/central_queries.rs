@@ -58,42 +58,56 @@ macro_rules! __declare_timed_due_row {
     };
 }
 
-/// Shares the owner file and positional bindings between runtime and the SQLx witness.
-#[doc(hidden)]
-#[macro_export]
-macro_rules! __with_timed_due_sql {
-    (@bind $file:literal, $emit:ident, $input:expr) => {{
-        let (horizon, cap) = $input.bindings();
-        $emit!($file, horizon, cap)
-    }};
-    (Wakes, $emit:ident, $input:expr) => {
-        $crate::__with_timed_due_sql!(@bind "../fleet-wakes/src/queries/read_due_wakes.sql", $emit, $input)
+/// Declares the only kind-to-file mapping used by runtime and the owner witnesses.
+macro_rules! declare_timed_due_lists {
+    ($d:tt; $($(#[$feature:meta])* $kind:ident, $witness:ident, $file:literal);+ $(;)?) => {
+        $(
+            $(#[$feature])*
+            #[doc(hidden)]
+            #[macro_export]
+            macro_rules! $witness {
+                ($d emit:ident, $d input:expr) => {{
+                    let (horizon, cap) = $d input.bindings();
+                    $d emit!($file, horizon, cap)
+                }};
+            }
+        )+
+
+        macro_rules! select_timed_due_list {
+            ($d emit:ident, $d input:expr) => {
+                match $d input.kind() {
+                    $(
+                        $(#[$feature])*
+                        DueListKind::$kind => $witness!($d emit, $d input),
+                    )+
+                }
+            };
+        }
     };
-    (Schedules, $emit:ident, $input:expr) => {
-        $crate::__with_timed_due_sql!(@bind "../fleet-schedules/src/queries/read_due_schedules.sql", $emit, $input)
-    };
-    (DirectMessages, $emit:ident, $input:expr) => {
-        $crate::__with_timed_due_sql!(@bind "../fleet-mail/src/queries/read_due_direct_messages.sql", $emit, $input)
-    };
-    (SystemExpiries, $emit:ident, $input:expr) => {
-        $crate::__with_timed_due_sql!(@bind "../fleet-mail/src/queries/read_due_system_expiries.sql", $emit, $input)
-    };
-    (Probes, $emit:ident, $input:expr) => {
-        $crate::__with_timed_due_sql!(@bind "../collaboration-central-core/src/engine/queries/read_due_probes.sql", $emit, $input)
-    };
+}
+
+declare_timed_due_lists! {
+    $;
+    Wakes, wake_list, "../fleet-wakes/src/queries/read_due_wakes.sql";
+    Schedules, schedule_list, "../fleet-schedules/src/queries/read_due_schedules.sql";
+    DirectMessages, direct_message_list, "../fleet-mail/src/queries/read_due_direct_messages.sql";
+    SystemExpiries, system_expiry_list, "../fleet-mail/src/queries/read_due_system_expiries.sql";
+    #[cfg(feature = "test-support")]
+    Probes, probe_list, "../collaboration-central-core/src/engine/queries/read_due_probes.sql";
 }
 
 /// Native, owner-local checks use the same typed row, SQL file and bind order as runtime.
 #[macro_export]
 macro_rules! check_timed_due_list {
-    ($kind:ident, $input:expr) => {{
+    ($list:ident, $input:expr) => {{
         $crate::__declare_timed_due_row!();
         macro_rules! witness {
             ($file:literal, $horizon:expr, $cap:expr) => {
                 sqlx::query_file_as!(StoredDueRow, $file, $horizon, $cap)
             };
         }
-        $crate::__with_timed_due_sql!($kind, witness, $input)
+        use $crate::$list;
+        $list!(witness, $input)
     }};
 }
 
@@ -118,13 +132,7 @@ where
                 $(.bind($arg))+
         };
     }
-    let select = match query.kind() {
-        DueListKind::Wakes => __with_timed_due_sql!(Wakes, runtime, query),
-        DueListKind::Schedules => __with_timed_due_sql!(Schedules, runtime, query),
-        DueListKind::DirectMessages => __with_timed_due_sql!(DirectMessages, runtime, query),
-        DueListKind::SystemExpiries => __with_timed_due_sql!(SystemExpiries, runtime, query),
-        DueListKind::Probes => __with_timed_due_sql!(Probes, runtime, query),
-    };
+    let select = select_timed_due_list!(runtime, query);
     select
         .fetch_all(transaction.executor())
         .await

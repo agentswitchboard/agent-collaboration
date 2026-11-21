@@ -30,6 +30,8 @@ struct CentralStatements {
     zero_next_write_alarm: Arc<std::sync::atomic::AtomicBool>,
     #[cfg(feature = "test-support")]
     witness_env: SendWrapper<Env>,
+    #[cfg(feature = "test-support")]
+    witnesses: workspace_link_witness::PendingWitnesses,
     connection: SendWrapper<DoConnection>,
     state: Arc<SendWrapper<State>>,
     clock: WorkspaceClock,
@@ -103,14 +105,8 @@ impl CentralStore for CentralStatements {
             let sql = statement.sql;
             let result = statement_store::read(&self.connection, statement.into()).await;
             #[cfg(feature = "test-support")]
-            workspace_link_witness::read_completed(
-                &self.witness_env,
-                self.state.id().to_string(),
-                sql,
-                &result,
-            )
-            .await
-            .map_err(|_| StoreFailure::Unavailable)?;
+            self.witnesses
+                .read_completed(&self.witness_env, &self.state, sql, &result);
             result
         })
     }
@@ -244,6 +240,8 @@ pub struct CentralObject {
     #[cfg(feature = "test-support")]
     controls: workspace_cases::Controls,
     #[cfg(feature = "test-support")]
+    witnesses: workspace_link_witness::PendingWitnesses,
+    #[cfg(feature = "test-support")]
     launcher_clock_sampled: Mutex<bool>,
 }
 impl CentralObject {
@@ -268,6 +266,8 @@ impl CentralObject {
             zero_next_write_alarm: self.controls.zero_next_write_alarm.clone(),
             #[cfg(feature = "test-support")]
             witness_env: SendWrapper::new(self.env.clone()),
+            #[cfg(feature = "test-support")]
+            witnesses: self.witnesses.clone(),
             connection: SendWrapper::new(DoConnection::new(self.state.storage())),
             state: self.state.clone(),
             clock: self.clock.clone(),
@@ -386,6 +386,8 @@ impl DurableObject for CentralObject {
             mail_pushes: Default::default(),
             #[cfg(feature = "test-support")]
             controls: workspace_cases::Controls::default(),
+            #[cfg(feature = "test-support")]
+            witnesses: workspace_link_witness::PendingWitnesses::default(),
             #[cfg(feature = "test-support")]
             launcher_clock_sampled: Mutex::new(false),
         }

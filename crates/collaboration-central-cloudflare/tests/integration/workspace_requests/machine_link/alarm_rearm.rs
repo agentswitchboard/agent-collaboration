@@ -92,7 +92,10 @@ async fn reconnect_journey(fixture: &Fixture) -> Result<()> {
     let reopened = ConnectedLink::open(fixture).await?;
     // FIRST after authenticated Welcome: read actual platform state, before any core query.
     let physical_after_welcome: Option<i64> = runtime.control("raw-alarm-time", &()).await?;
-    let after = fixture.host.c2_witness(WitnessPhase::Connecting).await?;
+    let after = fixture
+        .host
+        .c2_wait_for_upgrades(WitnessPhase::Connecting, 2)
+        .await?;
     if !after.starts_with(&before) {
         return Err("warm Worker witness history changed".into());
     }
@@ -263,7 +266,10 @@ async fn unavailable_rearm_journey(fixture: &Fixture) -> Result<()> {
     if physical_after_welcome.is_some() {
         return Err("failed Worker rearm must not retry alarm publication".into());
     }
-    let after = fixture.host.c2_witness(WitnessPhase::Connecting).await?;
+    let after = fixture
+        .host
+        .c2_wait_for_upgrades(WitnessPhase::Connecting, 2)
+        .await?;
     if !after.starts_with(&before) {
         return Err("nonfatal Worker witness history changed".into());
     }

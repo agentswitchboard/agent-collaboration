@@ -147,7 +147,7 @@ test("compiled-class wrapper shape hibernates and delegates on the original work
     await once(socket, "open");
     const [text] = await welcome;
     assert.equal(String(text), "welcome");
-    const initial = witness.snapshot();
+    const initial = await witness.settledLifecycle("upgrade", 1);
     assert.deepEqual(
       initial.map((record) => record.event.kind),
       ["constructor", "upgrade"],
@@ -170,7 +170,7 @@ test("compiled-class wrapper shape hibernates and delegates on the original work
       delegated: "actual-delegation-probe",
       clock: { milliseconds: clock },
     });
-    const final = witness.snapshot();
+    const final = await witness.settledLifecycle("handler", 1);
     assert.deepEqual(
       final.map((record) => record.event.kind),
       ["constructor", "upgrade", "constructor", "handler"],

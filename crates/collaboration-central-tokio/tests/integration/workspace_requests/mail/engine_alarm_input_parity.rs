@@ -46,31 +46,45 @@ async fn checked_alarm_inputs_match_main_for_every_job() {
         {
             let effective_due_ms = scenario.expected[0].unwrap();
             let key = SqlValue::Text("01890f2e-7b4c-7cc0-98c4-000000000014".into());
-            for sql in [
-                include_str!(
-                    "../../../../../collaboration-central-core/tests/fixtures/main-schedules.sql"
+            let oracle = include_str!(
+                "../../../../../collaboration-central-core/tests/fixtures/main-schedules.sql"
+            );
+            for (horizon_ms, expected) in [
+                (effective_due_ms - 1, vec![]),
+                (
+                    effective_due_ms,
+                    vec![vec![key, integer(0), integer(effective_due_ms)]],
                 ),
-                include_str!("../../../../../fleet-schedules/src/queries/read_due_schedules.sql"),
             ] {
-                let at_deadline = store
+                let previous = store
                     .read(Statement {
-                        sql,
-                        args: vec![integer(effective_due_ms), integer(250)],
+                        sql: oracle,
+                        args: vec![integer(horizon_ms), integer(250)],
                     })
                     .await
                     .unwrap();
-                assert_eq!(
-                    at_deadline.rows,
-                    vec![vec![key.clone(), integer(0), integer(effective_due_ms)]]
-                );
-                let before = store
-                    .read(Statement {
-                        sql,
-                        args: vec![integer(effective_due_ms - 1), integer(250)],
+                assert_eq!(previous.rows, expected, "main list: {}", scenario.name);
+                let horizon =
+                    fleet_runtime_ports::EngineTime::from_timestamp_millis(horizon_ms).unwrap();
+                let typed = fleet_engine::read_due_rows(
+                    store,
+                    fleet_runtime_ports::DueListKind::Schedules,
+                    horizon,
+                    250,
+                )
+                .await
+                .unwrap_or_else(|_| panic!("typed schedule list failed"));
+                let typed: Vec<_> = typed
+                    .into_iter()
+                    .map(|row| {
+                        vec![
+                            SqlValue::Text(row.key.0),
+                            integer(row.occurrence_ms),
+                            integer(row.effective_due_ms),
+                        ]
                     })
-                    .await
-                    .unwrap();
-                assert!(before.rows.is_empty());
+                    .collect();
+                assert_eq!(typed, expected, "typed list: {}", scenario.name);
             }
         }
         let main = store

@@ -17,12 +17,22 @@ pub enum DueQueryError {
 }
 
 /// The checked SELECT belonging to each timed owner.
+#[cfg_attr(
+    not(feature = "test-support"),
+    doc = "The fixture probe cannot be requested in a production build.
+
+```compile_fail,E0599
+use central_engine_model::DueListKind;
+let _ = DueListKind::Probes;
+```"
+)]
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum DueListKind {
     Wakes,
     Schedules,
     DirectMessages,
     SystemExpiries,
+    #[cfg(feature = "test-support")]
     Probes,
 }
 
@@ -33,6 +43,7 @@ impl DueListKind {
             Self::Schedules => "automation_timer",
             Self::DirectMessages => "direct_message",
             Self::SystemExpiries => "system_message_expiry",
+            #[cfg(feature = "test-support")]
             Self::Probes => "engine_probe",
         }
     }

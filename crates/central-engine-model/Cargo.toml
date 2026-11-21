@@ -6,6 +6,9 @@ license.workspace = true
 publish = false
 autotests = false
 
+[features]
+test-support = []
+
 [dependencies]
 central-storage.workspace = true
 state-machine-core.workspace = true
