@@ -1,7 +1,7 @@
-use super::{
+use crate::{
     attempt_statements::delete_attempt,
-    source::ReceiptStatements,
-    store_adapter::{StoreAdapter, Versioned},
+    event_source_policy::ReceiptStatements,
+    machine_store_adapter::{StoreAdapter, Versioned},
 };
 use central_engine_model::{InstanceKey, ItemFailureClass, Machine};
 use central_storage::{AlarmUpdate, BatchOutcome, ConstraintKind, StatementBatch, StoreFailure};
@@ -33,7 +33,7 @@ pub(crate) fn classify_batch(
             Err(ApplyFailure::StoreDown(failure))
         }
         Err(StoreFailure::Corrupt { reason }) => Err(ApplyFailure::Rejected(
-            super::store_adapter::corrupt_class(reason),
+            crate::machine_store_adapter::corrupt_class(reason),
         )),
     }
 }
@@ -118,7 +118,7 @@ impl<Host: CentralStore> EffectHandler for ObjectHostEffects<'_, Host> {
         })()
         .map_err(|failure| match failure {
             StoreFailure::Corrupt { reason } => {
-                ApplyFailure::Rejected(super::store_adapter::corrupt_class(reason))
+                ApplyFailure::Rejected(crate::machine_store_adapter::corrupt_class(reason))
             }
             StoreFailure::AnswerLost => ApplyFailure::Uncertain,
             failure @ (StoreFailure::Unavailable | StoreFailure::AlarmUnpublishable { .. }) => {

@@ -1,8 +1,8 @@
-use super::port::{Engine, EngineHost};
-use super::{
-    effects::{ApplyFailure, EffectHandler, ObjectHostEffects},
-    source::{EventSource, SourcePolicy},
-    store_adapter::{LoadFailure, StoreAdapter, Versioned},
+use crate::engine_host_binding::{Engine, EngineHost};
+use crate::{
+    event_source_policy::{EventSource, SourcePolicy},
+    machine_store_adapter::{LoadFailure, StoreAdapter, Versioned},
+    transition_batch_writes::{ApplyFailure, EffectHandler, ObjectHostEffects},
 };
 use central_engine_model::{
     Context, InstanceKey, ItemFailureClass, Machine, RefusalTag, TransitionError,
@@ -62,7 +62,7 @@ impl<R: EngineHost> Engine<'_, R> {
         M::Error: Send + Sync,
         A: StoreAdapter<M>,
     {
-        self.handle::<M, A, _>(adapter, key, event, &AckSource)
+        self.machine_event_execution::<M, A, _>(adapter, key, event, &AckSource)
             .await
     }
 
@@ -253,7 +253,7 @@ impl<R: EngineHost> Engine<'_, R> {
         prior: &Versioned<M::State>,
     ) -> Option<HandleOutcome<M::State, M::Error>> {
         let subject = adapter.subject(key);
-        match super::attempt_store::load_attempt(self.host(), &subject).await {
+        match crate::attempt_store::load_attempt(self.host(), &subject).await {
             Ok(Some(stored)) => match &stored.record {
                 Err(corruption) => Some(
                     self.write_failure(
@@ -283,7 +283,7 @@ impl<R: EngineHost> Engine<'_, R> {
         adapter: &Adapter,
         key: &InstanceKey,
     ) -> Option<HandleOutcome<M::State, M::Error>> {
-        match super::attempt_store::load_attempt(self.host(), &adapter.subject(key)).await {
+        match crate::attempt_store::load_attempt(self.host(), &adapter.subject(key)).await {
             Ok(Some(stored)) => match &stored.record {
                 Ok(record) => self.wait_for_next_try(&record.state),
                 Err(_) => None,

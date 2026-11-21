@@ -1,9 +1,9 @@
-use super::{
+use crate::{
     attempt_statements::CONTROL_WRITE,
-    effects::ApplyFailure,
-    handle::HandleOutcome,
-    port::{Engine, EngineHost},
-    store_adapter::corrupt_class,
+    engine_host_binding::{Engine, EngineHost},
+    machine_event_execution::HandleOutcome,
+    machine_store_adapter::corrupt_class,
+    transition_batch_writes::ApplyFailure,
 };
 use central_engine_model::{
     DueBatchPolicy, DueListKind, DueRow, EngineTime, InstanceKey, MachineKind, RetirementThreshold,
@@ -399,16 +399,16 @@ impl<R: EngineHost> Engine<'_, R> {
         M::Event: Send + Sync,
         M::Effect: Send + Sync,
         M::Error: Send + Sync,
-        Adapter: super::store_adapter::StoreAdapter<M>,
+        Adapter: crate::machine_store_adapter::StoreAdapter<M>,
     {
         let subject = adapter.subject(&row.key);
         let outcome = match EngineTime::from_timestamp_millis(row.occurrence_ms) {
             Some(occurrence) => {
-                self.handle::<M, Adapter, _>(
+                self.machine_event_execution::<M, Adapter, _>(
                     adapter,
                     row.key.clone(),
                     due_event(occurrence),
-                    &super::source::DueSource,
+                    &crate::event_source_policy::DueSource,
                 )
                 .await
             }
@@ -442,14 +442,16 @@ impl<R: EngineHost> Engine<'_, R> {
     ) -> HandleOutcome<M::State, M::Error>
     where
         M: central_engine_model::Machine,
-        Adapter: super::store_adapter::StoreAdapter<M>,
+        Adapter: crate::machine_store_adapter::StoreAdapter<M>,
     {
         let version = match adapter.load(key).await {
             Ok(Some(loaded)) => loaded.version,
             Ok(None) => return HandleOutcome::NotFound,
-            Err(super::store_adapter::LoadFailure::Corrupt { version, .. }) => version,
-            Err(super::store_adapter::LoadFailure::Uncertain) => return HandleOutcome::Uncertain,
-            Err(super::store_adapter::LoadFailure::StoreDown(failure)) => {
+            Err(crate::machine_store_adapter::LoadFailure::Corrupt { version, .. }) => version,
+            Err(crate::machine_store_adapter::LoadFailure::Uncertain) => {
+                return HandleOutcome::Uncertain;
+            }
+            Err(crate::machine_store_adapter::LoadFailure::StoreDown(failure)) => {
                 return HandleOutcome::StoreDown(failure);
             }
         };

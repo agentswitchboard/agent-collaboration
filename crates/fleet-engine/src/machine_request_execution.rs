@@ -1,9 +1,9 @@
-use super::port::{Engine, EngineHost};
-use super::{
-    handle::HandleOutcome,
-    receipts::{EngineReceipt, ReceiptClaim},
-    source::RequestSource,
-    store_adapter::StoreAdapter,
+use crate::engine_host_binding::{Engine, EngineHost};
+use crate::{
+    event_source_policy::RequestSource,
+    machine_event_execution::HandleOutcome,
+    machine_store_adapter::StoreAdapter,
+    request_receipt_store::{EngineReceipt, ReceiptClaim},
 };
 use central_engine_model::{InstanceKey, Machine};
 use central_storage::StoreFailure;
@@ -103,7 +103,7 @@ impl<R: EngineHost> Engine<'_, R> {
         };
         Ok(
             match self
-                .handle::<M, Adapter, _>(adapter, key, event, &source)
+                .machine_event_execution::<M, Adapter, _>(adapter, key, event, &source)
                 .await
             {
                 HandleOutcome::Done(state) => EngineRequestOutcome::Answer {

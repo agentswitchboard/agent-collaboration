@@ -1,5 +1,5 @@
 #[cfg(feature = "test-support")]
-use super::receipts::{EngineReceipt, EngineRefusal, ReceiptClaim};
+use crate::request_receipt_store::{EngineReceipt, EngineRefusal, ReceiptClaim};
 use central_engine_model::{Machine, TransitionError};
 use central_storage::{GuardedStatement, StoreFailure};
 #[cfg(feature = "test-support")]

@@ -1,4 +1,4 @@
-use super::attempt_records::failure_detail;
+use crate::attempt_records::failure_detail;
 use central_engine_model::{AttemptState, FailureRecord};
 use central_storage::{GuardedStatement, SqlValue, Statement, StoreFailure};
 use fleet_contracts::{AttemptGuard, EngineSubject};

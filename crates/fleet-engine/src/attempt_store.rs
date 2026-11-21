@@ -1,4 +1,4 @@
-use super::{
+use crate::{
     attempt_records::{StoredAttempt, decode_attempt},
     attempt_statements::read_attempt,
 };

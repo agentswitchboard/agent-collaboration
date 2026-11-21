@@ -217,5 +217,5 @@ fn query_failure(error: sqlx::Error, column: &str) -> StoreFailure {
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
-#[path = "central_queries_test.rs"]
+#[path = "central_due_queries_test.rs"]
 mod tests;

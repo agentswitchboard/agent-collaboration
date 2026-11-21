@@ -95,5 +95,5 @@ impl ReceiptClaim {
     }
 }
 #[cfg(test)]
-#[path = "receipts_test.rs"]
+#[path = "request_receipt_store_test.rs"]
 mod tests;

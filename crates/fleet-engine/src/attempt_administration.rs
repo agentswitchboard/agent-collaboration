@@ -1,11 +1,11 @@
 //! Attempt-only administration and host-bound discard.
-use super::{
+use crate::{
     admin_failure_class::EngineFailureClass,
     attempt_records::decode_attempt,
-    handle::HandleOutcome,
-    port::{Engine, EngineHost},
-    source::{EventSource, ReceiptStatements, SourcePolicy},
-    store_adapter::{LoadFailure, StoreAdapter, Versioned, load_store_failure},
+    engine_host_binding::{Engine, EngineHost},
+    event_source_policy::{EventSource, ReceiptStatements, SourcePolicy},
+    machine_event_execution::HandleOutcome,
+    machine_store_adapter::{LoadFailure, StoreAdapter, Versioned, load_store_failure},
 };
 use central_engine_model::{AttemptState, EngineTime, InstanceKey, Machine};
 use central_storage::{GuardedStatement, ReadOutcome, SqlValue, Statement, StoreFailure};
@@ -298,7 +298,7 @@ impl<'runtime, R: EngineHost> Engine<'runtime, R> {
                 failure_class: failure_class(record.last_failure.storage_tag())?,
                 count: record.failure_count.get(),
                 retired_at,
-                last_failure: super::attempt_records::failure_detail(&record.last_failure),
+                last_failure: crate::attempt_records::failure_detail(&record.last_failure),
             });
         }
         let next = if items.len() > usize::from(limit) {
@@ -416,21 +416,23 @@ impl<'runtime, R: EngineHost> Engine<'runtime, R> {
         M::Event: Send + Sync,
         M::Effect: Send + Sync,
         M::Error: Send + Sync,
-        Adapter: super::store_adapter::StoreAdapter<M>,
+        Adapter: crate::machine_store_adapter::StoreAdapter<M>,
     {
         match adapter.load(&key).await {
             Ok(Some(_)) => {}
             Ok(None) => return Ok(DiscardOutcome::Refused(AttemptRefusal::Stale)),
-            Err(super::store_adapter::LoadFailure::Corrupt { .. }) => {
+            Err(crate::machine_store_adapter::LoadFailure::Corrupt { .. }) => {
                 return Ok(DiscardOutcome::Refused(AttemptRefusal::SubjectUnreadable));
             }
-            Err(super::store_adapter::LoadFailure::Uncertain) => {
+            Err(crate::machine_store_adapter::LoadFailure::Uncertain) => {
                 return Err(StoreFailure::AnswerLost);
             }
-            Err(super::store_adapter::LoadFailure::StoreDown(failure)) => return Err(failure),
+            Err(crate::machine_store_adapter::LoadFailure::StoreDown(failure)) => {
+                return Err(failure);
+            }
         }
         discard_outcome(
-            self.handle::<M, Adapter, _>(adapter, key, event, source)
+            self.machine_event_execution::<M, Adapter, _>(adapter, key, event, source)
                 .await,
         )
     }

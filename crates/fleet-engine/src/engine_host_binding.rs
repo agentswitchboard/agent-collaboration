@@ -1,8 +1,8 @@
 //! The engine's only view of the runtime that hosts it (P3, module direction):
 //! engine/ names this port and never WorkspaceRuntime, so the module graph has
 //! one direction. `crate::engine_wiring` implements it for WorkspaceRuntime.
-use super::admin::{DiscardOutcome, KindRegistry, RegisteredDiscard};
-use super::alarm_source::{TimedRows, WholeUnit, WholeUnitOutcome};
+use crate::attempt_administration::{DiscardOutcome, KindRegistry, RegisteredDiscard};
+use crate::due_batch_execution::{TimedRows, WholeUnit, WholeUnitOutcome};
 use central_engine_model::EngineTime;
 use central_storage::StoreFailure;
 use fleet_contracts::CentralObservation;
