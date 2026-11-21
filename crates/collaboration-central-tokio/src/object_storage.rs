@@ -303,6 +303,24 @@ impl ObjectStorage {
         self.opened().await?.read(statement).await
     }
 
+    pub(crate) async fn read_timed_due_rows(
+        &self,
+        query: fleet_runtime_ports::DueListQuery,
+    ) -> Result<Vec<fleet_runtime_ports::DueRow>, StoreFailure> {
+        #[cfg(feature = "test-support")]
+        if let Some(failure) = self.faults.take_due_read_failure(query.sql) {
+            return Err(failure);
+        }
+        let mut connection = self
+            .opened()
+            .await?
+            .pool()
+            .acquire()
+            .await
+            .map_err(|_| StoreFailure::Unavailable)?;
+        fleet_engine::read_timed_due_rows(&mut NativeTransaction(&mut connection), query).await
+    }
+
     async fn read_engine_inputs(
         connection: &mut sqlx::SqliteConnection,
     ) -> Result<central_storage::EngineAlarmTimes, StoreFailure> {

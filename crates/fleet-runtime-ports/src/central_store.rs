@@ -15,6 +15,11 @@ pub trait CentralStore: Send + Sync + 'static {
         &self,
         statement: Statement,
     ) -> impl Future<Output = Result<ReadOutcome, StoreFailure>> + Send;
+    /// Executes the owner's checked due-list SELECT on this store.
+    fn read_timed_due_rows(
+        &self,
+        query: crate::DueListQuery,
+    ) -> impl Future<Output = Result<Vec<crate::DueRow>, StoreFailure>> + Send;
     fn engine_alarm_inputs(
         &self,
     ) -> impl Future<Output = Result<EngineAlarmTimes, StoreFailure>> + Send;

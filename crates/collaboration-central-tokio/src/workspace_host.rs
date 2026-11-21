@@ -47,6 +47,12 @@ impl CentralStore for ObjectStorage {
     async fn read(&self, statement: Statement) -> Result<ReadOutcome, StoreFailure> {
         ObjectStorage::read(self, statement).await
     }
+    async fn read_timed_due_rows(
+        &self,
+        query: fleet_runtime_ports::DueListQuery,
+    ) -> Result<Vec<fleet_runtime_ports::DueRow>, StoreFailure> {
+        ObjectStorage::read_timed_due_rows(self, query).await
+    }
     async fn engine_alarm_inputs(&self) -> Result<central_storage::EngineAlarmTimes, StoreFailure> {
         ObjectStorage::engine_alarm_inputs(self).await
     }

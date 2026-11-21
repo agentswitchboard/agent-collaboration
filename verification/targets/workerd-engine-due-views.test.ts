@@ -145,7 +145,7 @@ test("the shipped Workerd alarm fits 330 reads and loses the bound without the e
     /SEARCH s USING INDEX messages_system_expiry_due\b/,
     /SEARCH s USING INDEX workspace_drains_due\b/,
     /SEARCH engine_work_attempts USING INDEX central_work_attempts_subject\b/,
-    /SCAN s$/m,
+    /mail_notification_windows USING COVERING INDEX notification_windows_due\b/,
   ])
     assert.match(paths, path);
   assert.doesNotMatch(paths, /SCAN automation_(?:wakes|schedules)$/m);
@@ -290,6 +290,15 @@ test("a populated masked job and fixed active history agree on both backends", a
       native.exec(dueSchema);
       const stockMigrationMs = performance.now() - migrationStarted;
       const actual = await run(name, nextAlarm);
+      const notices =
+        name === "open-windows" || name === "held-jobs"
+          ? await run(name, "SELECT due_at_ms FROM notice_window_due_rows")
+          : null;
+      if (notices !== null) {
+        assert.deepEqual(notices.rows, [{ due_at_ms: name === "held-jobs" ? 720_000 : 300_000 }]);
+        assert.equal(notices.rowsWritten, 0);
+        if (name === "held-jobs") assert.ok(notices.rowsRead <= 2, JSON.stringify(notices));
+      }
       const current = native.prepare(nextAlarm);
       assert.deepEqual(pair(actual.rows, true), expected);
       assert.deepEqual(pair(resultSchema.shape.rows.parse(current.all()), true), expected);
@@ -301,6 +310,7 @@ test("a populated masked job and fixed active history agree on both backends", a
           viewRows: actual.rowsRead,
           stockMsFor1000: [mainMs, timeStock(current)],
           stockCounters: [mainStock, stockCounters(database, nextAlarm)],
+          noticeRows: notices?.rowsRead,
           indexBuilds,
           stockMigrationMs,
         }),
@@ -315,7 +325,7 @@ test("a populated masked job and fixed active history agree on both backends", a
       native.close();
     }
   }
-  assert.deepEqual(historyReads, [317, 317]);
+  assert.deepEqual(historyReads, [318, 318]);
   assert.deepEqual(selections[0], selections[1]);
 });
 

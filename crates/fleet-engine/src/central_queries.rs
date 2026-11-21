@@ -1,6 +1,7 @@
-//! Checked Central alarm inputs read on the owning transaction's executor.
+//! Checked Central alarm and timed-list rows read on the owning executor.
+use central_engine_model::{DueListQuery, DueRow, InstanceKey};
 use central_storage::{CorruptReason, EngineAlarmTimes, SafeInteger, StoreFailure};
-use sqlx::{ColumnIndex, Database, Decode, Executor, IntoArguments, Type};
+use sqlx::{ColumnIndex, Database, Decode, Encode, Executor, IntoArguments, Type};
 
 /// An owning Central transaction lends the repository an executor.
 /// The host retains responsibility for begin, commit and physical alarm writes.
@@ -38,6 +39,68 @@ where
         earliest_on_grid_due_unix_millis: validate_time(row.on_grid_due, "engine alarm input")?,
         earliest_legacy_due_unix_millis: validate_time(row.legacy_due, "engine alarm input")?,
     })
+}
+
+#[derive(sqlx::FromRow)]
+struct StoredDueRow {
+    #[sqlx(rename = "subject_key?: String")]
+    subject_key: Option<String>,
+    #[sqlx(rename = "occurrence_ms!: i64")]
+    occurrence_ms: i64,
+    #[sqlx(rename = "effective_due_ms!: i64")]
+    effective_due_ms: i64,
+}
+
+/// Reads an owner's due list and validates its storage types before Engine dispatch.
+pub async fn read_timed_due_rows<T: CentralTransaction>(
+    transaction: &mut T,
+    query: DueListQuery,
+) -> Result<Vec<DueRow>, StoreFailure>
+where
+    <T::Database as Database>::Arguments: IntoArguments<T::Database>,
+    i64: Type<T::Database>
+        + for<'value> Encode<'value, T::Database>
+        + for<'row> Decode<'row, T::Database>,
+    String: Type<T::Database> + for<'row> Decode<'row, T::Database>,
+    for<'row> &'row str: ColumnIndex<<T::Database as Database>::Row>,
+{
+    sqlx::query_as::<T::Database, StoredDueRow>(query.sql)
+        .bind(query.horizon.get())
+        .bind(query.cap.get())
+        .fetch_all(transaction.executor())
+        .await
+        .map_err(due_list_failure)?
+        .into_iter()
+        .map(|stored| {
+            let subject_key = stored.subject_key.ok_or_else(|| StoreFailure::Corrupt {
+                reason: CorruptReason::BadValue {
+                    column: "subject_key".into(),
+                },
+            })?;
+            Ok(DueRow {
+                key: InstanceKey(subject_key),
+                occurrence_ms: validate_integer(stored.occurrence_ms, "occurrence_ms")?,
+                effective_due_ms: validate_integer(stored.effective_due_ms, "effective_due_ms")?,
+            })
+        })
+        .collect()
+}
+
+fn due_list_failure(error: sqlx::Error) -> StoreFailure {
+    match error {
+        sqlx::Error::ColumnDecode { index, .. } => {
+            let index = index.trim_matches('"');
+            let field = index
+                .split_once(['?', '!'])
+                .map_or(index, |(field, _)| field);
+            StoreFailure::Corrupt {
+                reason: CorruptReason::BadValue {
+                    column: field.into(),
+                },
+            }
+        }
+        error => query_failure(error, "engine.due_list"),
+    }
 }
 
 fn validate_time(time: Option<i64>, column: &str) -> Result<Option<i64>, StoreFailure> {

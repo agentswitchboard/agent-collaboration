@@ -118,6 +118,20 @@ impl CentralStore for CentralStatements {
             result
         })
     }
+    fn read_timed_due_rows(
+        &self,
+        query: fleet_runtime_ports::DueListQuery,
+    ) -> impl std::future::Future<
+        Output = std::result::Result<Vec<fleet_runtime_ports::DueRow>, StoreFailure>,
+    > + Send {
+        SendFuture::new(async move {
+            #[cfg(feature = "test-support")]
+            if let Some(failure) = self.faults.take_due_read_failure(query.sql) {
+                return Err(failure);
+            }
+            statement_store::read_timed_due_rows(&self.connection, query).await
+        })
+    }
     fn engine_alarm_inputs(
         &self,
     ) -> impl std::future::Future<

@@ -9,14 +9,13 @@ use central_engine_model::{
     DueBatchPolicy, DueRow, EngineTime, InstanceKey, MachineKind, RetirementThreshold,
 };
 use central_storage::{
-    AlarmPublication, AlarmUpdate, BatchOutcome, EngineAlarmPlan, SqlValue, StatementBatch,
-    StoreFailure,
+    AlarmPublication, AlarmUpdate, BatchOutcome, EngineAlarmPlan, StatementBatch, StoreFailure,
 };
 use fleet_contracts::{
     AlarmNotPublished, AlarmResult, ControlGate, EngineSubject, EventCompletion, FailureOutcome,
     LegacyUnitOutcome, SubjectVersion,
 };
-use fleet_runtime_ports::{CentralStore, stored_values::column, workspace_decode_error::corrupt};
+use fleet_runtime_ports::{CentralStore, workspace_decode_error::corrupt};
 use futures_util::{StreamExt, stream};
 use std::future::Future;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -110,31 +109,9 @@ pub async fn read_due_rows(
 ) -> Result<Vec<DueRow>, DueDiscoveryError> {
     let query = central_engine_model::due_list_sql(sql, cutoff, limit)
         .map_err(DueDiscoveryError::InvalidBounds)?;
-    host.read(query)
+    host.read_timed_due_rows(query)
         .await
-        .and_then(decode_due)
         .map_err(DueDiscoveryError::Store)
-}
-
-fn decode_due(rows: central_storage::ReadOutcome) -> Result<Vec<DueRow>, StoreFailure> {
-    rows.rows
-        .iter()
-        .map(|row| {
-            let integer = |column_name, field_name| match column(&rows, row, column_name)? {
-                SqlValue::Integer(value) => Ok(value.get()),
-                _ => Err(corrupt(field_name)),
-            };
-            let subject_key = match column(&rows, row, "subject_key?: String")? {
-                SqlValue::Text(value) => value,
-                _ => return Err(corrupt("subject_key")),
-            };
-            Ok(DueRow {
-                key: InstanceKey(subject_key.clone()),
-                occurrence_ms: integer("occurrence_ms!: i64", "occurrence_ms")?,
-                effective_due_ms: integer("effective_due_ms!: i64", "effective_due_ms")?,
-            })
-        })
-        .collect()
 }
 
 impl<R: EngineHost> Engine<'_, R> {

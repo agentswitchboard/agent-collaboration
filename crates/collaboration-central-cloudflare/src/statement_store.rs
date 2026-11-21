@@ -270,6 +270,13 @@ where
     }
 }
 
+pub(crate) async fn read_timed_due_rows(
+    connection: &DoConnection,
+    query: fleet_runtime_ports::DueListQuery,
+) -> Result<Vec<fleet_runtime_ports::DueRow>, StoreFailure> {
+    fleet_engine::read_timed_due_rows(&mut WorkerTransaction::new(connection), query).await
+}
+
 pub(crate) async fn engine_alarm_inputs(
     connection: &DoConnection,
 ) -> Result<EngineAlarmTimes, StoreFailure> {

@@ -82,17 +82,27 @@ UNION ALL
 SELECT 'on_grid', 0, NULL, NULL, due_at_ms, 1 FROM source_attempt;
 
 CREATE VIEW notice_window_due_rows(due_lane, is_subject, subject_key, occurrence_ms, due_at_ms, contributes_to_alarm) AS
-WITH source_attempt AS (
-  SELECT 1 AS control_present, due_at_ms FROM engine_due_attempt_controls
-  WHERE machine_kind='legacy_notice_windows' AND subject_key='all'
-)
-SELECT 'legacy', 1, s.window_id, CASE WHEN unixepoch(s.due_at) IS NULL OR abs(unixepoch(s.due_at)*1000+CAST(substr(strftime('%f',s.due_at),4,3) AS INTEGER))>9223372036854 THEN 0 ELSE unixepoch(s.due_at)*1000+CAST(substr(strftime('%f',s.due_at),4,3) AS INTEGER) END,
-       CASE WHEN unixepoch(s.due_at) IS NULL OR abs(unixepoch(s.due_at)*1000+CAST(substr(strftime('%f',s.due_at),4,3) AS INTEGER))>9223372036854 THEN 0 ELSE unixepoch(s.due_at)*1000+CAST(substr(strftime('%f',s.due_at),4,3) AS INTEGER) END, source_attempt.control_present IS NULL
-FROM mail_notification_windows s
-LEFT JOIN source_attempt ON 1
-WHERE s.due_at IS NOT NULL
-UNION ALL
-SELECT 'legacy', 0, NULL, NULL, due_at_ms, 1 FROM source_attempt;
+-- A control governs the whole unit. The held arm must skip the window scan.
+SELECT 'legacy', 0, NULL, NULL,
+       CASE
+         WHEN EXISTS (
+           SELECT 1 FROM engine_due_attempt_controls
+           WHERE machine_kind='legacy_notice_windows' AND subject_key='all'
+         ) THEN (
+           SELECT due_at_ms FROM engine_due_attempt_controls
+           WHERE machine_kind='legacy_notice_windows' AND subject_key='all'
+         )
+         ELSE (
+           SELECT MIN(CASE
+             WHEN unixepoch(due_at) IS NULL
+                  OR abs(unixepoch(due_at)*1000+CAST(substr(strftime('%f',due_at),4,3) AS INTEGER))>9223372036854
+             THEN 0
+             ELSE unixepoch(due_at)*1000+CAST(substr(strftime('%f',due_at),4,3) AS INTEGER)
+           END)
+           FROM mail_notification_windows
+           WHERE due_at IS NOT NULL
+         )
+       END, 1;
 
 CREATE VIEW workspace_drain_due_rows(due_lane, is_subject, subject_key, occurrence_ms, due_at_ms, contributes_to_alarm) AS
 WITH source_attempt AS (

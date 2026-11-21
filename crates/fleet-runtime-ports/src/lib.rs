@@ -9,7 +9,7 @@ mod signature_crypto;
 mod time_and_ids;
 mod workspace_stores;
 
-pub use central_engine_model::EngineTime;
+pub use central_engine_model::{DueListQuery, DueRow, EngineTime};
 pub use central_observer::Observer;
 pub use central_store::CentralStore;
 pub use issuer_key_source::{IssuerKeySource, KeyFetchFailure, RawJwks};
