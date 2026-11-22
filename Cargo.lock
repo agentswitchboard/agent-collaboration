@@ -5710,10 +5710,14 @@ dependencies = [
 name = "switchboard-machine-enrollment"
 version = "0.1.158"
 dependencies = [
+ "chrono",
+ "futures-util",
+ "hegeltest",
  "router-clock",
  "serde",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "url",
  "uuid",
  "workspace-ids",
