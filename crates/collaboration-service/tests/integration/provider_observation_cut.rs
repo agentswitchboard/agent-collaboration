@@ -162,14 +162,14 @@ async fn read(
     Ok((result, streamed))
 }
 
-async fn advance_if_observation_stalls(clock: &ManualClock) {
+async fn advance_if_observation_stalls(
+    clock: &ManualClock,
+) -> Result<(), router_clock::ClockAdvanceError> {
     // Continue polling the real socket even when the promised notification is missing.
     for _ in 0..100_000 {
         tokio::task::yield_now().await;
     }
-    clock
-        .advance(Duration::from_secs(31))
-        .unwrap_or_else(|error| panic!("test clock: {error}"));
+    clock.advance(Duration::from_secs(31))
 }
 
 // Rejects a cut missing or misplaced between retained and already-queued live records.
@@ -196,7 +196,10 @@ async fn the_public_tool_streams_the_cut_before_queued_live_while_the_call_is_op
             let live = notifications.recv().await.expect("queued live event");
             (first, last, cut, live)
         } => records,
-        () = advance_if_observation_stalls(&clock) => panic!("missing queued live notification before the injected deadline"),
+        advance = advance_if_observation_stalls(&clock) => {
+            advance.unwrap();
+            panic!("missing queued live notification before the injected deadline");
+        },
     };
     assert_eq!(cut, marker_notification(2));
     assert!(!call.is_finished());
@@ -204,7 +207,10 @@ async fn the_public_tool_streams_the_cut_before_queued_live_while_the_call_is_op
     let result = tokio::select! {
         biased;
         outcome = &mut call => outcome.unwrap().unwrap(),
-        () = advance_if_observation_stalls(&clock) => panic!("call remained open after its injected deadline"),
+        advance = advance_if_observation_stalls(&clock) => {
+            advance.unwrap();
+            panic!("call remained open after its injected deadline");
+        },
     };
     assert_eq!(first.event, numbered(&item(1)));
     assert_eq!(last.event, numbered(&item(2)));
