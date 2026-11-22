@@ -4,7 +4,9 @@ use super::{
 };
 use collaboration_protocol::{ObservationCursor, ObservationEndReason};
 use serde_json::json;
-use state_machine_core::{StateMachine, TransitionError, check_state_machine_transitions};
+use state_machine_core::{
+    EventTag, StateMachine, StateTag, TransitionError, check_state_machine_transitions,
+};
 
 fn declared_rows() -> Vec<(
     ObservationState,
@@ -164,6 +166,23 @@ fn each_transition_sends_the_expected_order_and_reason() {
             ObservationCallMachine::transition(&ended, arrival.clone()),
             Err(TransitionError::Stale)
         );
+    }
+    for active_state in [
+        ObservationState::Admitting,
+        ObservationState::History,
+        ObservationState::Live,
+    ] {
+        for (allowed_state, arrival, _, _) in &rows {
+            if &active_state != allowed_state {
+                assert_eq!(
+                    ObservationCallMachine::transition(&active_state, arrival.clone()),
+                    Err(TransitionError::NotAllowed {
+                        state: active_state.state_tag(),
+                        event: arrival.event_tag(),
+                    }),
+                );
+            }
+        }
     }
     for (state, arrival, next, effects) in rows {
         let observed = ObservationCallMachine::transition(&state, arrival.clone());

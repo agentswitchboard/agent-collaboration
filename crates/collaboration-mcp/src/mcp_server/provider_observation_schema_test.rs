@@ -125,34 +125,67 @@ fn published_record_branches_match_the_four_contract_kinds() {
         .expect("record branches");
     let shapes = branches
         .iter()
-        .map(|branch| {
-            let resolved = dereference(defs, branch);
-            let resolved = resolved.get("oneOf").map_or(resolved, |variants| {
-                let [variant] = variants.as_array().expect("tagged marker").as_slice() else {
-                    panic!("expected the one snapshot branch");
-                };
-                variant
-            });
-            match resolved["properties"]["kind"].get("const") {
-                Some(kind) => kind.as_str().expect("kind").to_owned(),
-                None if resolved["properties"].get("event").is_some() => "event".to_owned(),
-                None => {
-                    let kind = dereference(defs, &resolved["properties"]["kind"]);
-                    kind["enum"]
-                        .as_array()
-                        .and_then(|values| values.first())
-                        .or_else(|| kind.get("const"))
-                        .and_then(Value::as_str)
-                        .expect("record discriminant")
-                        .to_owned()
-                }
-            }
-        })
+        .flat_map(|branch| record_kinds(defs, branch))
         .collect::<Vec<_>>();
     assert_eq!(
         shapes,
         ["event", "snapshotEnd", "resyncRequired", "eventTooLarge"]
     );
+}
+
+// Keep the top-level event discriminator closed independently of the generator.
+#[test]
+fn published_session_event_discriminators_match_the_contract() {
+    let schema = published_schema();
+    let defs = schema["$defs"].as_object().expect("definitions");
+    assert_eq!(
+        record_kinds(defs, &defs["SessionEvent"]),
+        [
+            "turnStarted",
+            "inputAccepted",
+            "turnEnded",
+            "itemStarted",
+            "itemUpdated",
+            "itemCompleted",
+            "interactionRequested",
+            "interactionResolved",
+            "stateChanged",
+            "capabilitiesChanged",
+            "settingsChanged",
+            "resyncRequired",
+        ]
+    );
+}
+
+fn record_kinds(defs: &Map<String, Value>, schema: &Value) -> Vec<String> {
+    let schema = dereference(defs, schema);
+    if let Some(variants) = schema.get("oneOf") {
+        return variants
+            .as_array()
+            .expect("record variants")
+            .iter()
+            .flat_map(|variant| record_kinds(defs, variant))
+            .collect();
+    }
+    let Some(kind) = schema["properties"].get("kind") else {
+        assert!(schema["properties"].get("event").is_some());
+        return vec!["event".to_owned()];
+    };
+    let kind = dereference(defs, kind);
+    if let Some(values) = kind.get("enum") {
+        return values
+            .as_array()
+            .expect("discriminator enum")
+            .iter()
+            .map(|value| value.as_str().expect("discriminator literal").to_owned())
+            .collect();
+    }
+    vec![
+        kind["const"]
+            .as_str()
+            .expect("discriminator literal")
+            .to_owned(),
+    ]
 }
 
 fn dereference<'a>(defs: &'a Map<String, Value>, schema: &'a Value) -> &'a Value {
@@ -230,6 +263,12 @@ fn real_observation_records_validate_with_exact_wide_positions() {
     }
     for invalid in [
         json!({"kind":"unknown"}),
+        json!({"kind":"inventedKind","sequence":1,"itemId":null}),
+        json!({"kind":"inventedKind","cursor":cursor}),
+        json!({"kind":"resyncRequired","sequence":1,"itemId":null}),
+        json!({"sequence":1,"event":{"kind":"inventedKind","itemId":"item"}}),
+        json!({"sequence":1,"event":{"kind":"turnEnded","turnId":"turn","outcome":{"kind":"lost","reason":"invented"}}}),
+        json!({"sequence":1,"event":{"kind":"itemStarted","item":{"itemId":"item","kind":{"kind":"toolCall","tool_kind":"exec","status":"invented"},"text":null}}}),
         json!({"kind":"snapshotEnd"}),
         json!({"kind":"eventTooLarge","sequence":1}),
         json!({"sequence":1,"event":{"kind":"turnEnded","turnId":"turn","outcome":{"kind":"invented"}}}),
@@ -246,8 +285,9 @@ fn real_observation_records_validate_with_exact_wide_positions() {
 
 fn event_examples() -> Vec<SessionEvent> {
     use session_event_model::{
-        ConfigValue, ConfigValueState, InputId, LocalCause, SessionSettings, SessionState,
-        StopReason, ToolCallStatus, TurnLostReason,
+        CapabilityReport, ConfigValue, ConfigValueState, InputId, LocalCause, ProviderAuthStatus,
+        QueueCapability, QueueSupport, SessionSettings, SessionState, StopReason, ToolCallStatus,
+        TurnLostReason,
     };
     let input = InputId::new("fixture-input").unwrap();
     let mut examples = vec![
@@ -293,6 +333,34 @@ fn event_examples() -> Vec<SessionEvent> {
             replay_epoch: u64::MAX,
         },
     ];
+    for auth_status in [
+        ProviderAuthStatus::LoggedOut,
+        ProviderAuthStatus::Account {
+            label: "account".into(),
+        },
+        ProviderAuthStatus::ApiKey {
+            label: "key".into(),
+        },
+        ProviderAuthStatus::Gateway {
+            label: "gateway".into(),
+        },
+        ProviderAuthStatus::External {
+            label: "external".into(),
+        },
+    ] {
+        for kind in [QueueCapability::Native, QueueCapability::Router] {
+            examples.push(SessionEvent::CapabilitiesChanged {
+                capabilities: CapabilityReport {
+                    queue: Some(QueueSupport {
+                        kind,
+                        can_cancel: true,
+                    }),
+                    auth_status: auth_status.clone(),
+                    ..Default::default()
+                },
+            });
+        }
+    }
     for session_state in [
         SessionState::Idle,
         SessionState::Unloaded,
@@ -303,6 +371,40 @@ fn event_examples() -> Vec<SessionEvent> {
         examples.push(SessionEvent::StateChanged {
             state: session_state,
         });
+    }
+    for reason in [
+        TurnLostReason::ProviderTurnFailed,
+        TurnLostReason::EndNotObservable,
+    ] {
+        examples.push(SessionEvent::TurnEnded {
+            turn_id: "turn".into(),
+            outcome: TurnOutcome::Lost { reason },
+        });
+    }
+    for local_cause in [None, Some(LocalCause::OutputOverflow)] {
+        examples.push(SessionEvent::TurnEnded {
+            turn_id: "turn".into(),
+            outcome: TurnOutcome::Ended {
+                stop_reason: StopReason::EndTurn,
+                local_cause,
+            },
+        });
+    }
+    for status in [
+        ToolCallStatus::Pending,
+        ToolCallStatus::InProgress,
+        ToolCallStatus::Failed,
+    ] {
+        let item = SessionItem {
+            item_id: "tool".into(),
+            kind: SessionItemKind::ToolCall {
+                tool_kind: "exec".into(),
+                status,
+            },
+            text: Some("tool output".into()),
+        };
+        examples.push(SessionEvent::ItemStarted { item: item.clone() });
+        examples.push(SessionEvent::ItemUpdated { item });
     }
     for reason in [
         StopReason::EndTurn,
@@ -371,6 +473,7 @@ fn event_examples() -> Vec<SessionEvent> {
             interaction: approval,
         });
     }
+    examples.extend(approval_subject_examples());
     let pending: session_event_model::PendingInteraction =
         serde_json::from_value(question).unwrap();
     examples.push(SessionEvent::StateChanged {
@@ -382,4 +485,52 @@ fn event_examples() -> Vec<SessionEvent> {
         interaction: pending,
     });
     examples
+}
+
+fn approval_subject_examples() -> Vec<SessionEvent> {
+    use session_event_model::{
+        ApprovalRequest, ApprovalSubject, ApprovalToolCallSubject, OptionsOrigin,
+        PendingInteraction,
+    };
+    let mut request: ApprovalRequest = serde_json::from_value(json!({
+        "requestId":"approval-with-subject","title":"Approve",
+        "options":[{"optionId":"decline","label":"Decline","choice":{"effect":"decline","scope":"once"}},
+            {"optionId":"abort","label":"Abort","choice":{"effect":"abort","scope":"once"}}]
+    })).unwrap();
+    request.options_origin = OptionsOrigin::RouterSynthesized;
+    request.description = Some("fixture".into());
+    let approver: message_board::Identity = serde_json::from_value(json!({
+        "kind":"session","session":{"endpoint":{"serviceId":"00000000-0000-7000-8000-000000000001",
+            "endpointId":"codex-local"},"sessionId":"approver"}
+    }))
+    .unwrap();
+    [
+        ApprovalSubject::Command {
+            command: "pwd".into(),
+            cwd: "/fixture".into(),
+        },
+        ApprovalSubject::ToolCall {
+            tool_call: ApprovalToolCallSubject {
+                tool_call_id: "exec".into(),
+                kind: "execute".into(),
+                title: "Execute".into(),
+            },
+        },
+        ApprovalSubject::Plan {
+            tool_call_id: "plan".into(),
+            plan_item_id: "step".into(),
+        },
+    ]
+    .into_iter()
+    .map(|subject| {
+        let mut request = request.clone();
+        request.subject = Some(subject);
+        SessionEvent::InteractionRequested {
+            interaction: PendingInteraction::Approval {
+                approver: approver.clone(),
+                request: Box::new(request),
+            },
+        }
+    })
+    .collect()
 }

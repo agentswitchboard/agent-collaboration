@@ -2,7 +2,7 @@
 
 ## 0.1.158
 
-- Provider `events_observe` calls emit one `snapshotEnd` record when they finish sending kept history. Its cursor is the position to continue from, and live events follow it.
+- Provider `events_observe` calls emit one `snapshotEnd` record when they finish sending kept history. Live events follow it. Existing clients may ignore this unnumbered record or use its cursor to detect the cut and resume. Strict record decoders must accept the new kind.
 - A continuation can send the optional `serviceEpoch` from the previous result along with its cursor. The Router refuses a position from another Host run with the existing bare `resyncRequired` record.
 
 ## 0.1.63

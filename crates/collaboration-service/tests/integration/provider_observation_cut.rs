@@ -162,6 +162,16 @@ async fn read(
     Ok((result, streamed))
 }
 
+async fn advance_if_observation_stalls(clock: &ManualClock) {
+    // Continue polling the real socket even when the promised notification is missing.
+    for _ in 0..100_000 {
+        tokio::task::yield_now().await;
+    }
+    clock
+        .advance(Duration::from_secs(31))
+        .unwrap_or_else(|error| panic!("test clock: {error}"));
+}
+
 // Rejects a cut missing or misplaced between retained and already-queued live records.
 #[tokio::test]
 async fn the_public_tool_streams_the_cut_before_queued_live_while_the_call_is_open() {
@@ -171,23 +181,31 @@ async fn the_public_tool_streams_the_cut_before_queued_live_while_the_call_is_op
     let api = ServedApi::start(identity(FIRST_RUN, clock.clone(), hub).unwrap()).unwrap();
     let client = api.client("snapshot-cut").await.unwrap();
     let (sink, mut notifications) = mpsc::unbounded_channel();
-    let call = tokio::spawn(async move {
+    let mut call = tokio::spawn(async move {
         client
             .observe_provider_session_streaming(request(10, 4096).unwrap(), Some(sink))
             .await
     });
-    let first = notifications.recv().await.expect("first kept event");
-    let last = notifications.recv().await.expect("last kept event");
-    let cut = notifications
-        .recv()
-        .await
-        .expect("snapshotEnd precedes live");
+    let (first, last, cut, live) = tokio::select! {
+        biased;
+        outcome = &mut call => panic!("call answered before queued live notification: {outcome:?}"),
+        records = async {
+            let first = notifications.recv().await.expect("first kept event");
+            let last = notifications.recv().await.expect("last kept event");
+            let cut = notifications.recv().await.expect("snapshotEnd precedes live");
+            let live = notifications.recv().await.expect("queued live event");
+            (first, last, cut, live)
+        } => records,
+        () = advance_if_observation_stalls(&clock) => panic!("missing queued live notification before the injected deadline"),
+    };
     assert_eq!(cut, marker_notification(2));
-    let live = notifications.recv().await.expect("queued live event");
     assert!(!call.is_finished());
-
     clock.advance(Duration::from_secs(31)).unwrap();
-    let result = call.await.unwrap().unwrap();
+    let result = tokio::select! {
+        biased;
+        outcome = &mut call => outcome.unwrap().unwrap(),
+        () = advance_if_observation_stalls(&clock) => panic!("call remained open after its injected deadline"),
+    };
     assert_eq!(first.event, numbered(&item(1)));
     assert_eq!(last.event, numbered(&item(2)));
     assert_eq!(live.event, numbered(&item(3)));

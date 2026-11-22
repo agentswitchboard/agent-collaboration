@@ -9,7 +9,7 @@ use collaboration_protocol::{
     ObservationCursor, ObservationEventNotification, ProviderSnapshotMarker,
 };
 use serde_json::Value;
-use state_machine_core::StateMachine;
+use state_machine_core::{EventTag, StateMachine, StateTag};
 
 /// Where an observation hands each event as it observes it, before its result.
 pub type ObservedEventSink = tokio::sync::mpsc::UnboundedSender<ObservationEventNotification>;
@@ -34,8 +34,19 @@ impl ObservationDriver {
         arrival: ObservationArrival,
         epoch: u64,
     ) -> Result<(), ObservationFailure> {
-        let Ok((next, effects)) = ObservationCallMachine::transition(&self.state, arrival) else {
-            return Ok(());
+        let arrival_tag = arrival.event_tag();
+        let (next, effects) = match ObservationCallMachine::transition(&self.state, arrival) {
+            Ok(transition) => transition,
+            Err(refusal) => {
+                tracing::warn!(
+                    state = self.state.state_tag(),
+                    arrival = arrival_tag,
+                    ?refusal,
+                    "observation driver received an invalid arrival"
+                );
+                debug_assert!(false, "observation driver received an invalid arrival");
+                return Ok(());
+            }
         };
         self.state = next;
         for effect in effects {

@@ -37,7 +37,7 @@ fn observed(
     (events, notifications, reason)
 }
 
-// Rejects early live output, a duplicate marker, late history, or output after Ended.
+// Rejects emitting a waiting live record before the cut or losing it.
 #[test]
 fn the_driver_only_emits_the_machine_authorized_order() {
     let (events, streamed, reason) = observed([
@@ -51,16 +51,7 @@ fn the_driver_only_emits_the_machine_authorized_order() {
             value: record(1),
         },
         Input::HistoryExhausted(CURSOR),
-        Input::HistoryExhausted(CURSOR),
-        Input::Kept {
-            sequence: 3,
-            value: record(3),
-        },
         Input::Deadline,
-        Input::Live {
-            sequence: 4,
-            value: record(4),
-        },
     ]);
 
     assert_eq!(events, vec![record(1), snapshot(), record(2)]);
@@ -86,10 +77,6 @@ fn exact_fit_and_post_marker_gap_reach_both_outputs() {
         },
         Input::HistoryExhausted(CURSOR),
         Input::LiveGap,
-        Input::Live {
-            sequence: 2,
-            value: record(2),
-        },
     ]);
 
     assert_eq!(exact, vec![record(1), snapshot()]);
@@ -101,4 +88,83 @@ fn exact_fit_and_post_marker_gap_reach_both_outputs() {
     );
     assert_eq!(gap_notifications[2].cursor, None);
     assert_eq!(gap_reason, Some(ObservationEndReason::ResyncRequired));
+}
+
+fn assert_refused(
+    driver: &mut super::ObservationDriver,
+    receiver: &mut tokio::sync::mpsc::UnboundedReceiver<ObservationEventNotification>,
+    arrival: super::ObservationArrival,
+) {
+    let state = driver.state.clone();
+    let recorded = driver.events.clone();
+    let outcome = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        driver.dispatch(arrival, CURSOR.epoch)
+    }));
+    if cfg!(debug_assertions) {
+        let panic = outcome.expect_err("invalid driver input must trip the debug invariant");
+        assert!(
+            panic.downcast_ref::<&str>().is_some_and(
+                |message| message.contains("observation driver received an invalid arrival")
+            ) || panic.downcast_ref::<String>().is_some_and(
+                |message| message.contains("observation driver received an invalid arrival")
+            )
+        );
+    } else {
+        outcome
+            .expect("a release driver fails closed")
+            .expect("no operation failure");
+    }
+    assert_eq!(driver.state, state);
+    assert_eq!(driver.events, recorded);
+    assert!(matches!(
+        receiver.try_recv(),
+        Err(tokio::sync::mpsc::error::TryRecvError::Empty)
+    ));
+}
+
+// Rejects a dispatcher that passes a raw early live arrival or any other invalid arrival.
+#[test]
+fn raw_invalid_arrivals_cannot_write_either_output() {
+    use super::{
+        Admission, HistoryArrival, LiveArrival, ObservationArrival as Arrival, ObservationDriver,
+        ObservationRecord,
+    };
+    let (sink, mut receiver) = tokio::sync::mpsc::unbounded_channel();
+    let mut driver = ObservationDriver::new(Some(sink));
+    driver
+        .dispatch(Arrival::Admission(Admission::Accepted), CURSOR.epoch)
+        .unwrap();
+    assert_refused(
+        &mut driver,
+        &mut receiver,
+        Arrival::Live(LiveArrival::Record(ObservationRecord {
+            sequence: 2,
+            value: record(2),
+        })),
+    );
+
+    let cut = Arrival::History(HistoryArrival::Exhausted(CURSOR));
+    driver.dispatch(cut.clone(), CURSOR.epoch).unwrap();
+    assert_eq!(receiver.try_recv().unwrap().event, snapshot());
+    assert_refused(&mut driver, &mut receiver, cut);
+    assert_refused(
+        &mut driver,
+        &mut receiver,
+        Arrival::History(HistoryArrival::Record(ObservationRecord {
+            sequence: 3,
+            value: record(3),
+        })),
+    );
+
+    driver
+        .dispatch(Arrival::Live(LiveArrival::Deadline), CURSOR.epoch)
+        .unwrap();
+    assert_refused(
+        &mut driver,
+        &mut receiver,
+        Arrival::Live(LiveArrival::Record(ObservationRecord {
+            sequence: 4,
+            value: record(4),
+        })),
+    );
 }

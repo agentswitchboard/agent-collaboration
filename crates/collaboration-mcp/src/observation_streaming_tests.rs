@@ -133,6 +133,25 @@ async fn next_streamed(streamed: &mut mpsc::UnboundedReceiver<Value>) -> Value {
     streamed.recv().await.expect("notification channel open")
 }
 
+// Bound silence by cooperative scheduler turns. Advancing the same clock on exhaustion
+// prevents a missing notification or missing clock registration from owning the test.
+async fn observation_progress<Output>(
+    clock: &ManualClock,
+    stage: &str,
+    signal: impl std::future::Future<Output = Output>,
+) -> Output {
+    tokio::select! {
+        biased;
+        value = signal => value,
+        () = async {
+            for _ in 0..100_000 {
+                tokio::task::yield_now().await;
+            }
+            clock.advance(Duration::from_secs(31)).expect("advance the observation bound");
+        } => panic!("observation made no progress: {stage}"),
+    }
+}
+
 fn observe(
     target: &SessionRef,
     timeout_seconds: u64,
@@ -173,32 +192,49 @@ async fn a_bounded_observation_streams_each_event_while_the_call_is_open_on_both
         let peer = client.peer().clone();
 
         // Act: a call bounded at two events and thirty seconds.
-        let first_call = {
+        let mut first_call = {
             let peer = peer.clone();
             let request = observe(target, 30, None);
             tokio::spawn(async move { peer.call_tool(request).await })
         };
-        let retained = next_streamed(&mut streamed).await;
-        let cut = next_streamed(&mut streamed).await;
+        let (retained, cut) = observation_progress(&clock, "kept record and cut", async {
+            tokio::select! {
+                outcome = &mut first_call => panic!("call answered before kept record and cut: {outcome:?}"),
+                records = async {
+                    let retained = next_streamed(&mut streamed).await;
+                    let cut = next_streamed(&mut streamed).await;
+                    (retained, cut)
+                } => records,
+            }
+        }).await;
         let still_open = !first_call.is_finished();
         publish(&hub, target, "live").await;
-        let first = first_call
+        let first = observation_progress(&clock, "first result", first_call)
             .await
             .expect("first call joins")
             .expect("first call answers");
-        let live = next_streamed(&mut streamed).await;
+        let live =
+            observation_progress(&clock, "live notification", next_streamed(&mut streamed)).await;
         // Published between the calls; the second call resumes from the first's cursor.
         publish(&hub, target, "between-calls").await;
         let next_request = observe(target, 1, Some(&live["cursor"]));
-        let next_call = tokio::spawn(async move { peer.call_tool(next_request).await });
-        let resumed = next_streamed(&mut streamed).await;
-        let resumed_cut = next_streamed(&mut streamed).await;
+        let mut next_call = tokio::spawn(async move { peer.call_tool(next_request).await });
         let deadline = clock.monotonic_now().after(Duration::from_secs(1));
-        clock.not_due_check_now(deadline).await;
+        let (resumed, resumed_cut) = observation_progress(&clock, "resume notifications and live deadline", async {
+            tokio::select! {
+                outcome = &mut next_call => panic!("continued call answered before the clock advance: {outcome:?}"),
+                records = async {
+                    let resumed = next_streamed(&mut streamed).await;
+                    let resumed_cut = next_streamed(&mut streamed).await;
+                    clock.not_due_check_now(deadline).await;
+                    (resumed, resumed_cut)
+                } => records,
+            }
+        }).await;
         clock
             .advance(Duration::from_secs(1))
             .expect("advance past wait");
-        let second = next_call
+        let second = observation_progress(&clock, "continued result", next_call)
             .await
             .expect("second call joins")
             .expect("second call answers");
@@ -288,8 +324,10 @@ async fn a_reader_that_stops_reading_neither_keeps_the_call_past_its_bound_nor_h
         )),
         NumberOrString::Number(1),
     );
-    let StreamableHttpPostResponse::Sse(mut stalled_reader, _) = client
-        .post_message(
+    let StreamableHttpPostResponse::Sse(mut stalled_reader, _) = observation_progress(
+        &clock,
+        "initial SSE headers",
+        client.post_message(
             Arc::from(api.url()),
             request,
             None,
@@ -299,35 +337,51 @@ async fn a_reader_that_stops_reading_neither_keeps_the_call_past_its_bound_nor_h
                 http::HeaderValue::from_static(TEST_PROTOCOL_VERSION),
             )]
             .into(),
-        )
-        .await
-        .expect("send the observation")
-    else {
+        ),
+    )
+    .await
+    .expect("send the observation") else {
         panic!("the observation must stream");
     };
-    clock
-        .not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(1)))
-        .await;
+    observation_progress(&clock, "drain checked the injected clock", async {
+        tokio::select! {
+            () = api.join_active_calls() => panic!("the stalled call completed before its drain deadline"),
+            () = clock.not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(1))) => {}
+        }
+    }).await;
     assert_eq!(api.active_calls(), 1);
     clock
         .advance(Duration::from_secs(2))
         .expect("advance past drain");
 
     // Assert: the call ends at its bound although the reader still has not read.
-    api.join_active_calls().await;
+    observation_progress(
+        &clock,
+        "stalled handler released its slot",
+        api.join_active_calls(),
+    )
+    .await;
     assert_eq!(api.active_calls(), 0);
     // Assert: the listener's only slot is free for the next caller meanwhile.
-    let next = api.call_tool("endpoints_list", json!({})).await;
+    let next = observation_progress(
+        &clock,
+        "next caller took the slot",
+        api.call_tool("endpoints_list", json!({})),
+    )
+    .await;
     assert_ne!(next.is_error, Some(true), "{next:?}");
 
     let mut prefix = Vec::new();
     let result = loop {
-        let data = stalled_reader
-            .next()
-            .await
-            .expect("SSE frame")
-            .expect("SSE")
-            .data;
+        let data = observation_progress(
+            &clock,
+            "stalled reader received the result or its prefix",
+            stalled_reader.next(),
+        )
+        .await
+        .expect("SSE frame")
+        .expect("SSE")
+        .data;
         let Some(data) = data.filter(|data| !data.is_empty()) else {
             continue;
         };
@@ -454,5 +508,110 @@ async fn native_codex_watch_preserves_its_result_and_notification_shape() {
     assert!(streamed.try_recv().is_err());
     peer.await.unwrap();
     client.cancel().await.unwrap();
+    api.stop().await;
+}
+
+// A continuation can have the current Host identity and a valid sequence while naming an old stream.
+#[tokio::test]
+async fn an_earlier_stream_is_refused_on_the_current_host() {
+    let directory = private_directory();
+    let target = provider_target("reset");
+    let (identity, hub) = provider_router(directory.path(), &[&target]).await;
+    publish(&hub, &target, "old-record").await;
+    let clock = Arc::new(ManualClock::new(Default::default()));
+    let config = api_config(identity.with_clock(clock.clone()).build(), directory.path());
+    let api = ServedApi::unix(&config, &directory.path().join("api.sock"));
+    let (events, mut streamed) = mpsc::unbounded_channel();
+    let client = api.client_with(ObservationEvents(events)).await;
+    let args = json!({"target":target,"timeoutSeconds":1,"maxEvents":1,"maxBytes":4096});
+    let first = observation_progress(
+        &clock,
+        "obtain the old position",
+        client.peer().call_tool(
+            CallToolRequestParams::new("events_observe")
+                .with_arguments(args.as_object().unwrap().clone()),
+        ),
+    )
+    .await
+    .unwrap()
+    .structured_content
+    .unwrap();
+    let old_cut = observation_progress(&clock, "old record and cut", async {
+        next_streamed(&mut streamed).await;
+        next_streamed(&mut streamed).await
+    })
+    .await;
+    assert_eq!(
+        old_cut["cursor"],
+        json!({"epoch":first["epoch"],"afterSequence":1})
+    );
+
+    let session = serde_json::from_value(serde_json::to_value(&target).unwrap()).unwrap();
+    let current_epoch = hub.begin_history_replay(session).await.unwrap();
+    publish(&hub, &target, "fresh-record-one").await;
+    publish(&hub, &target, "fresh-record-two").await;
+    let mut guarded = args;
+    guarded["epoch"] = old_cut["cursor"]["epoch"].clone();
+    guarded["afterSequence"] = old_cut["cursor"]["afterSequence"].clone();
+    guarded["serviceEpoch"] = first["generation"]["serviceEpoch"].clone();
+
+    let refused = observation_progress(
+        &clock,
+        "refuse an older stream",
+        client.peer().call_tool(
+            CallToolRequestParams::new("events_observe")
+                .with_arguments(guarded.as_object().unwrap().clone()),
+        ),
+    )
+    .await
+    .unwrap()
+    .structured_content
+    .unwrap();
+    let note = observation_progress(
+        &clock,
+        "bare gap notification",
+        next_streamed(&mut streamed),
+    )
+    .await;
+
+    assert_eq!(
+        refused["generation"]["serviceEpoch"],
+        first["generation"]["serviceEpoch"]
+    );
+    assert_eq!(refused["epoch"], current_epoch);
+    assert_eq!(refused["endReason"], "resyncRequired");
+    assert_eq!(refused["events"], json!([{"kind":"resyncRequired"}]));
+    assert_eq!(
+        note,
+        json!({"event":{"kind":"resyncRequired"},"cursor":null})
+    );
+    assert!(streamed.try_recv().is_err());
+    client.cancel().await.unwrap();
+    api.stop().await;
+}
+
+// A Host identity requires both position fields, even when the other position would be valid.
+#[tokio::test]
+async fn partial_guarded_positions_are_invalid_parameters() {
+    let directory = private_directory();
+    let target = provider_target("partial");
+    let (identity, hub) = provider_router(directory.path(), &[&target]).await;
+    publish(&hub, &target, "kept").await;
+    let config = api_config(identity.build(), directory.path());
+    let api = ServedApi::unix(&config, &directory.path().join("api.sock"));
+    for position in [json!({}), json!({"epoch":0}), json!({"afterSequence":0})] {
+        let mut args = json!({"target":target,"timeoutSeconds":1,"maxEvents":1,"maxBytes":4096,
+            "serviceEpoch":crate::api_test_harness::TEST_SERVICE_EPOCH});
+        args.as_object_mut()
+            .unwrap()
+            .extend(position.as_object().unwrap().clone());
+        let result = api.call_tool("events_observe", args).await;
+        assert_eq!(result.is_error, Some(true));
+        let refusal = result.structured_content.unwrap();
+        assert_eq!(refusal["kind"], "rejected");
+        assert_eq!(refusal["serviceKind"], "invalidField");
+        assert_eq!(refusal["code"], -32602);
+        assert_eq!(refusal["effect"], "none");
+    }
     api.stop().await;
 }
