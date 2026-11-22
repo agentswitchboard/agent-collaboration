@@ -168,6 +168,14 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
     let metadata: CargoMetadata = serde_json::from_slice(&output.stdout)?;
     test_support_policy::check_workspace(&metadata.packages, &metadata.workspace_members)?;
     let graph = NonDevDependencyGraph::from_metadata(metadata);
+    for package in [
+        workspace_boundaries::SESSION_STORE.0,
+        workspace_boundaries::SESSION_EVENTS.0,
+    ] {
+        if graph.workspace_id(package).is_none() {
+            return Err(format!("closed dependency policy package missing: {package}").into());
+        }
+    }
     for (source, destinations) in &graph.dev_edges {
         if !graph.workspace_members.contains(source) {
             continue;
@@ -207,6 +215,9 @@ fn fixture_graph(
         ("runtime", "collaboration-runtime"),
         ("service", "collaboration-service"),
         ("host", "codex-router-host"),
+        ("mcp", "collaboration-mcp"),
+        ("session-store", "switchboard-session-store"),
+        ("session-events", "switchboard-session-events"),
         ("router-clock", "router-clock"),
         ("fleet-ports", "fleet-runtime-ports"),
         ("fleet-contracts", "fleet-contracts"),
@@ -243,6 +254,49 @@ fn fixture_graph(
             }],
         },
     })
+}
+
+#[test]
+fn session_owner_packages_reject_unlisted_workspace_edges() {
+    let cases = [
+        (
+            "session-store",
+            "runtime",
+            DependencyKind::Normal,
+            "BD1: forbidden Normal dependency switchboard-session-store -> collaboration-runtime",
+        ),
+        (
+            "session-store",
+            "mcp",
+            DependencyKind::Build,
+            "BD1: forbidden Build dependency switchboard-session-store -> collaboration-mcp",
+        ),
+        (
+            "session-events",
+            "host",
+            DependencyKind::Build,
+            "BD1: forbidden Build dependency switchboard-session-events -> codex-router-host",
+        ),
+        (
+            "session-events",
+            "mcp",
+            DependencyKind::Normal,
+            "BD1: forbidden Normal dependency switchboard-session-events -> collaboration-mcp",
+        ),
+    ];
+    let mut observed = Vec::new();
+    for (source, destination, kind, _) in cases {
+        let graph = fixture_graph(source, destination, vec![Some(kind)]);
+        observed.push(
+            workspace_boundaries::check_boundaries(&graph)
+                .err()
+                .map(|error| error.to_string()),
+        );
+    }
+    assert_eq!(
+        observed,
+        cases.map(|(_, _, _, message)| Some(message.to_owned()))
+    );
 }
 
 #[test]

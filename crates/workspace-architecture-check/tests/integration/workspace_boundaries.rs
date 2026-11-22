@@ -50,11 +50,11 @@ const FLEET_NOTICES: &str = "fleet-notices";
 const FLEET_WAKES: &str = "fleet-wakes";
 const FLEET_SCHEDULES: &str = "fleet-schedules";
 const FLEET_TIMER_POLICY: &str = "fleet-timer-policy";
-const SESSION_STORE: (&str, &[&str]) = (
+pub(super) const SESSION_STORE: (&str, &[&str]) = (
     "switchboard-session-store",
     &["collaboration-protocol", "sqlite-storage-maintenance"],
 );
-const SESSION_EVENTS: (&str, &[&str]) = (
+pub(super) const SESSION_EVENTS: (&str, &[&str]) = (
     "switchboard-session-events",
     &[
         "collaboration-contracts",
