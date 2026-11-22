@@ -405,6 +405,9 @@ async fn a_failed_final_publication_fails_the_event_and_the_driver_retries_at_th
     fixture.host.close().await;
 }
 
+#[path = "engine_alarm_direct_mail.rs"]
+mod direct_mail_recovery;
+
 #[tokio::test]
 async fn a_failed_due_read_for_one_kind_still_handles_the_others() {
     let fixture = Fixture::new().await;

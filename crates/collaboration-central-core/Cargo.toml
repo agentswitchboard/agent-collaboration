@@ -29,6 +29,7 @@ fleet-schedules.workspace = true
 fleet-timer-policy.workspace = true
 fleet-runtime-ports.workspace = true
 fleet-runtime.workspace = true
+fleet-request-log.workspace = true
 fleet-workspace-access.workspace = true
 fleet-workspace-directory.workspace = true
 workspace-model.workspace = true

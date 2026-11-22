@@ -20,6 +20,7 @@ test-support = ["fleet-engine/test-support", "fleet-runtime/test-support", "flee
 [dependencies]
 fleet-lent-transaction.workspace = true
 fleet-signin.workspace = true
+fleet-mail.workspace = true
 fleet-rpc.workspace = true
 fleet-engine.workspace = true
 fleet-workspace-service.workspace = true
@@ -59,7 +60,6 @@ js-sys = "=0.3.106"
 
 [dev-dependencies]
 hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
-fleet-mail.workspace = true
 runtime-primitives.workspace = true
 base64 = "0.22.1"
 central-link-client = { path = "../central-link-client", version = "0.1.152" }

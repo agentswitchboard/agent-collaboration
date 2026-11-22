@@ -82,10 +82,8 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         let logged = self
             .execution
             .statement_host()
-            .read(fleet_runtime::workspace_request_log::lookup(
-                fleet_runtime::workspace_request_log::RequestLogStore::Organization,
-                &operation,
-                &cutoff,
+            .read(fleet_request_log::lookup_organization_request(
+                &operation, &cutoff,
             ))
             .await?;
         if logged.rows.len() > 1 {
@@ -165,8 +163,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                 })?,
             }
         };
-        statements.extend(fleet_runtime::workspace_request_log::retain(
-            fleet_runtime::workspace_request_log::RequestLogStore::Organization,
+        statements.extend(fleet_request_log::retain_organization_request(
             &operation,
             &actor.actor,
             &person.intent_digest,

@@ -4,6 +4,7 @@ mod automations;
 mod corruption;
 mod delivery_ack;
 mod direct_message_cancel;
+mod direct_receipt_sequences;
 mod message_status;
 mod requests;
 mod stored_row_use;

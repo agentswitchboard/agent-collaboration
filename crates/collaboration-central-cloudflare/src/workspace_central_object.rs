@@ -122,6 +122,7 @@ impl CentralStore for CentralStatements {
             statement_store::read_timed_due_rows(&self.connection, query).await
         })
     }
+
     fn engine_alarm_inputs(
         &self,
     ) -> impl std::future::Future<
@@ -314,7 +315,7 @@ impl CentralObject {
         self.migrate().await?;
         let host = self.statement_host();
         let clock: Arc<dyn fleet_runtime_ports::Clock> = Arc::new(self.clock.clone());
-        let runtime = WorkspaceRuntime::new(
+        let central = WorkspaceRuntime::new(
             FleetRuntime::open(
                 organization.clone(),
                 host.clone(),
@@ -330,23 +331,24 @@ impl CentralObject {
                 self.due_batches.clone(),
                 Arc::new(crate::signin_observation::observe_signin),
             ),
+            host.clone(),
             host,
         );
-        let runtime = match crate::organization_signin_link::trust_settings(&self.env) {
+        let central = match crate::organization_signin_link::trust_settings(&self.env) {
             Ok(Some(settings)) => {
                 match CloudflareSignInTrust::new(settings).for_organization(organization, clock) {
-                    Ok(check) => runtime.with_sign_in_verification(check),
-                    Err(fleet_signin::organization_authority::InvalidStampTrust) => runtime,
+                    Ok(check) => central.with_sign_in_verification(check),
+                    Err(fleet_signin::organization_authority::InvalidStampTrust) => central,
                 }
             }
             // Invalid/missing trust never permits sign-in. The default checker
             // returns the closed InvalidConfiguration refusal for core to observe.
-            Ok(None) | Err(_) => runtime,
+            Ok(None) | Err(_) => central,
         };
         let mail_pushes = self.mail_pushes.clone();
         let state_for_revocation = self.state.clone();
-        let runtime = Arc::new(
-            runtime
+        let central = Arc::new(
+            central
                 .with_mail_delivery_observer(Arc::new(move |message| {
                     mail_pushes
                         .lock()
@@ -360,9 +362,9 @@ impl CentralObject {
                     }
                 })),
         );
-        runtime.recompute_alarm().await?;
-        *initialized = Some(runtime.clone());
-        Ok(runtime)
+        central.recompute_alarm().await?;
+        *initialized = Some(central.clone());
+        Ok(central)
     }
     async fn alarm_runtime(
         &self,
@@ -561,3 +563,6 @@ impl CentralStatements {
 
 #[path = "workspace_stamp_store.rs"]
 mod stamp_store;
+
+#[path = "workspace_direct_mail.rs"]
+mod direct_mail;

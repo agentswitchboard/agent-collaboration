@@ -22,6 +22,25 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
         });
     }
 
+    pub(crate) fn observe_recorded_attempt_failure(
+        &self,
+        subject: &EngineSubject,
+        record: &central_engine_model::FailureRecord,
+        workspaces: &[WorkspaceId],
+    ) {
+        self.emit_central_observation(fleet_contracts::CentralObservation::EngineItemFailed {
+            kind: subject.kind,
+            key: subject.key.clone(),
+            failure: record.last_failure.clone(),
+            count: record.failure_count.get(),
+            retired: matches!(
+                record.state,
+                central_engine_model::AttemptState::Retired { .. }
+            ),
+            workspaces: workspaces.to_vec(),
+        });
+    }
+
     pub(crate) fn observe_alarm_not_published(&self, failure: StoreFailure) {
         self.emit_central_observation(
             fleet_contracts::CentralObservation::EngineAlarmNotPublished { failure },
@@ -164,19 +183,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                 .await,
         ) {
             Ok(()) => {
-                self.emit_central_observation(
-                    fleet_contracts::CentralObservation::EngineItemFailed {
-                        kind: subject.kind,
-                        key: subject.key.clone(),
-                        failure: record.last_failure.clone(),
-                        count: record.failure_count.get(),
-                        retired: matches!(
-                            record.state,
-                            central_engine_model::AttemptState::Retired { .. }
-                        ),
-                        workspaces: workspaces.to_vec(),
-                    },
-                );
+                self.observe_recorded_attempt_failure(subject, &record, workspaces);
                 FailureOutcome::Recorded(record)
             }
             Err(BatchApplyFailure::Superseded) => FailureOutcome::Superseded,

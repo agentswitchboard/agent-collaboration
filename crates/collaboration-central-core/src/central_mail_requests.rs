@@ -57,11 +57,18 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         let digest = fleet_runtime::workspace_request_log::digest(&request.operation)?;
         let now = self.execution.now()?;
         let cutoff = (now - chrono::Duration::hours(24)).to_rfc3339();
+        if matches!(
+            &request.operation,
+            mail::CentralMailOperation::SendMessage { .. }
+        ) {
+            return self
+                .execute_direct_send(identity, request, now, digest)
+                .await;
+        }
         let rows = self
             .execution
             .statement_host()
-            .read(fleet_runtime::workspace_request_log::lookup(
-                fleet_runtime::workspace_request_log::RequestLogStore::Organization,
+            .read(fleet_request_log::lookup_organization_request(
                 &request.request_id,
                 &cutoff,
             ))
@@ -111,7 +118,6 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             return Ok(Result::Refused(reason));
         }
         let actor = self.access().resolve_identity(&identity).await?;
-        let mut delivery_ready = None;
         let decision =
             if let mail::CentralMailOperation::SetNoticeCadence { cadence } = &request.operation {
                 if !matches!(caller.caller(), m::Caller::Session(_)) {
@@ -129,33 +135,6 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                         mail::CentralMailAnswer::NoticeCadenceSet { cadence: *cadence },
                     ))
                 }
-            } else if let mail::CentralMailOperation::SendMessage {
-                to,
-                body,
-                delivery,
-                reply_to,
-                sent_at,
-            } = &request.operation
-            {
-                if !self.known_session(to).await? {
-                    Err(Refusal::UnknownSession { target: to.clone() })
-                } else {
-                    let plan = fleet_mail::plan_direct_send(
-                        &request.request_id,
-                        actor.clone(),
-                        mail::SendMessageRequest {
-                            to: to.clone(),
-                            body: body.clone(),
-                            delivery: *delivery,
-                            reply_to: reply_to.clone(),
-                        },
-                        *sent_at,
-                        now,
-                        || self.execution.mint(),
-                    )?;
-                    delivery_ready = Some(plan.delivery_ready);
-                    Ok((vec![plan.insert], plan.answer))
-                }
             } else {
                 self.plan_timer_request(&request.operation, now).await?
             };
@@ -164,8 +143,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             Err(reason) => (vec![], Result::Refused(reason)),
         };
 
-        statements.extend(fleet_runtime::workspace_request_log::retain(
-            fleet_runtime::workspace_request_log::RequestLogStore::Organization,
+        statements.extend(fleet_request_log::retain_organization_request(
             &request.request_id,
             &actor,
             &digest,
@@ -189,9 +167,6 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             Err(StoreFailure::AnswerLost) => return Ok(Result::OutcomeUnknown),
             Err(StoreFailure::Unavailable) => return Ok(Result::CentralUnavailable),
             Err(error) => return Err(error),
-        }
-        if let Some(delivery) = delivery_ready {
-            (self.mail_delivery_ready)(delivery);
         }
         #[cfg(feature = "test-support")]
         if self.execution.take_lost_reply(&request.request_id) {

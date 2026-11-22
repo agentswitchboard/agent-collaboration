@@ -3,6 +3,8 @@
 
 mod machine_event_engine;
 
+pub use central_engine_model::FailureRecord;
+
 pub use machine_event_engine::admin_failure_class::EngineFailureClass;
 pub use machine_event_engine::attempt_administration::{
     AdminMachineKindRegistry, AttemptRefusal, DiscardOutcome, DiscardSubjectStatements,
@@ -10,6 +12,10 @@ pub use machine_event_engine::attempt_administration::{
 };
 pub use machine_event_engine::attempt_statements::{
     UPSERT_CONTROL_ATTEMPT_SQL, plan_attempt_delete, plan_observed_attempt_delete,
+};
+pub use machine_event_engine::checked_attempts::{
+    CheckedAttempt, CheckedDueFailure, CheckedDueUnit, checked_statement_rejection,
+    observe_checked_attempt, record_checked_attempt,
 };
 pub use machine_event_engine::due_batch_execution::{
     DueCutoff, DueDiscoveryError, TimedDueDispatch, TimedRowOutcome, TimedSourceSchedule,

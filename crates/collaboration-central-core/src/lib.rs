@@ -48,6 +48,7 @@ mod central_request_targets;
 mod central_statement_values;
 mod central_timer_plans;
 mod central_timers;
+mod direct_send_requests;
 mod mail_delivery_authority;
 mod notice_mailbox;
 mod workspace_drain;

@@ -1,3 +1,4 @@
+use super::checked_attempts::{CheckedDueFailure, CheckedDueUnit};
 use super::{
     attempt_statements::UPSERT_CONTROL_ATTEMPT_SQL,
     engine_host_binding::{EngineHost, FleetEngine},
@@ -422,7 +423,64 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
         }
     }
 
-    /// One due machine instance as its own unit: `(done, central_down)`.
+    /// Direct sends and changing direct receipts request an alarm recomputation
+    /// with their applying write. The due mark and the failure charge each settle
+    /// independently, then this batch recomputes once to avoid paying for the
+    /// alarm query (318 rows in the sparse fixture) per due item. System receipts
+    /// keep their existing post-event completion path.
+    /// Returns the completion and Central failure flags for the due dispatch.
+    pub async fn run_checked_due_machine_instance<Rejected, Charge>(
+        &self,
+        subject: &EngineSubject,
+        apply: impl std::future::Future<Output = Result<CheckedDueUnit<Rejected>, CheckedDueFailure>>,
+        charge: impl FnOnce(Rejected, EngineTime) -> Charge,
+    ) -> (bool, bool)
+    where
+        Charge: std::future::Future<
+                Output = Result<Option<central_engine_model::FailureRecord>, CheckedDueFailure>,
+            >,
+    {
+        let failure = match apply.await {
+            Ok(CheckedDueUnit::Applied { ready }) => {
+                if let Some(ready) = ready {
+                    self.0.offer_ready_mail(ready);
+                }
+                #[cfg(feature = "test-support")]
+                self.engine_test_pause_points()
+                    .reached_engine(fleet_runtime::PausePoint::AfterEngineCommit, &subject.key.0)
+                    .await;
+                return (true, false);
+            }
+            Ok(CheckedDueUnit::Stale) => return (false, false),
+            Ok(CheckedDueUnit::Failed(record)) => Ok(Some(record)),
+            Ok(CheckedDueUnit::Rejected(rejected)) => {
+                #[cfg(feature = "test-support")]
+                self.engine_test_pause_points()
+                    .reached_engine(
+                        fleet_runtime::PausePoint::BeforeEngineFailureWrite,
+                        &subject.key.0,
+                    )
+                    .await;
+                match self.current_engine_time() {
+                    Ok(now) => charge(rejected, now).await,
+                    Err(failure) => Err(CheckedDueFailure::from_store(failure)),
+                }
+            }
+            Err(failure) => Err(failure),
+        };
+        let failure = match failure {
+            Ok(Some(record)) => {
+                self.observe_recorded_attempt_failure(subject, &record, &[]);
+                return (false, false);
+            }
+            Ok(None) | Err(CheckedDueFailure::AnswerLost) => return (false, false),
+            Err(CheckedDueFailure::Unavailable) => StoreFailure::Unavailable,
+            Err(CheckedDueFailure::Corrupt { reason }) => StoreFailure::Corrupt { reason },
+        };
+        self.observe_engine_store_down(subject, failure);
+        (false, true)
+    }
+
     pub async fn run_due_machine_instance<SubjectMachine, SubjectStore>(
         &self,
         adapter: &SubjectStore,
