@@ -566,21 +566,26 @@ async fn denied_journey(fixture: &Fixture, change: AuthorityChange) -> Result<()
     fixture.host.c2_witness(WitnessPhase::Deciding).await?;
     let request = link.request_as(fixture::session_caller()?, create_area(&workspace)?)?;
     fixture::send(&mut link.socket, &request).await?;
-    // Both hosts answer the request MachineRevoked under its correlation, then
-    // close: the Router's only way on is a fresh connection.
+    let (expected_reply, expected_close) = match change {
+        AuthorityChange::Expiry => (
+            WorkspaceResult::CentralUnavailable,
+            central_link_protocol::MachineLinkCloseCode::Expired,
+        ),
+        AuthorityChange::Revocation => (
+            WorkspaceResult::Refused(RefusalReason::MachineRevoked),
+            central_link_protocol::MachineLinkCloseCode::Revoked,
+        ),
+    };
     let reply = fixture::receive(&mut link.socket).await?;
     let refused = matches!(
         &reply,
         DataFrame::Reply { correlation_id, .. } if correlation_id == correlation(&request)?
-    ) && workspace_reply(&reply)?.result
-        == WorkspaceResult::Refused(RefusalReason::MachineRevoked);
+    ) && workspace_reply(&reply)?.result == expected_reply;
     if !refused {
-        return Err(format!("stale authority must answer MachineRevoked first: {reply:?}").into());
+        return Err(
+            format!("{expected_close:?} must answer {expected_reply:?} first: {reply:?}").into(),
+        );
     }
-    let expected_close = match change {
-        AuthorityChange::Expiry => central_link_protocol::MachineLinkCloseCode::Expired,
-        AuthorityChange::Revocation => central_link_protocol::MachineLinkCloseCode::Revoked,
-    };
     match link.socket.next().await {
         Some(Ok(Message::Close { code, .. }))
             if central_link_protocol::MachineLinkCloseCode::from_code(code.into())
