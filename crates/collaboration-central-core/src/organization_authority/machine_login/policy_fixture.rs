@@ -3,7 +3,7 @@ use super::{
     Decided, DecisionTime, EnrollmentChange, EnrollmentFacts, MachineRow, MachineState,
     StoredEnrollment, StoredEnrollmentState, decide_machine_token,
 };
-use crate::identity_contract::{
+use fleet_contracts::{
     DecideDeviceLogin, DecideMachineToken, EnrollPermission, MachineTokenDecision,
     MachineTokenRefusal, PersonId,
 };
@@ -177,7 +177,7 @@ pub(super) fn project<T>(facts: &EnrollmentFacts, plan: &Decided<T>) -> Enrollme
                 if matches!(
                     row.state,
                     StoredEnrollmentState::Revoked {
-                        reason: crate::identity_contract::EnrollmentRevocationReason::Superseded {},
+                        reason: fleet_contracts::EnrollmentRevocationReason::Superseded {},
                         ..
                     }
                 ) {

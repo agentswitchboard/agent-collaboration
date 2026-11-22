@@ -7,9 +7,7 @@ use super::super::{
     },
 };
 use super::decide_machine_token;
-use crate::identity_contract::{
-    EnrollmentRevocationReason, MachineTokenDecision, MachineTokenRefusal,
-};
+use fleet_contracts::{EnrollmentRevocationReason, MachineTokenDecision, MachineTokenRefusal};
 use fleet_identity_protocol::UnixSeconds;
 use fleet_signin::organization_change::{
     OrganizationChangeKind as Kind, OrganizationChangeOrigin as Origin,

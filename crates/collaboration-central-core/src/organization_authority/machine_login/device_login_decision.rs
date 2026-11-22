@@ -4,9 +4,9 @@ use super::enrollment_records::{
     Decided, EnrollmentChange, EnrollmentFacts, EnrollmentGeneration, MachineRow, MachineState,
     StoredEnrollment, StoredEnrollmentState,
 };
-use crate::identity_contract::{DecideDeviceLogin, DeviceLoginDecision, DeviceLoginRefusal};
 use crate::person_request::SECOND_FACTOR_WINDOW_SECONDS;
 use central_storage::StoreFailure;
+use fleet_contracts::{DecideDeviceLogin, DeviceLoginDecision, DeviceLoginRefusal};
 use fleet_identity_protocol::EnrollmentId;
 use fleet_runtime_ports::IdSource;
 use fleet_signin::organization_change::{MachineAllowanceState, OrganizationChangeOrigin};

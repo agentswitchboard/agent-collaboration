@@ -82,9 +82,7 @@ async fn revocation_journey(fixture: &Fixture) -> Result<()> {
 
 #[test]
 fn issuer_one_machine_id_vectors_are_closed_on_this_host() -> Result<()> {
-    use collaboration_central_core::identity_contract::{
-        DecideDeviceLogin, MachineTokenDecision, PresentedMachine,
-    };
+    use fleet_contracts::{DecideDeviceLogin, MachineTokenDecision, PresentedMachine};
 
     fn round_trip<Wire: serde::de::DeserializeOwned + serde::Serialize>(
         value: serde_json::Value,

@@ -287,7 +287,7 @@ impl AdminRoute {
             // is, admission refuses these two routes with NotPermitted.
             Self::EngineRetry | Self::EngineDiscard => "organization:repairWork",
             Self::RevokeMachineEnrollment => {
-                crate::identity_contract::RevokePermission::MachineRevoke.as_str()
+                fleet_contracts::RevokePermission::MachineRevoke.as_str()
             }
         }
     }

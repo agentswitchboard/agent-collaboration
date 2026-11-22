@@ -1,13 +1,13 @@
 //! Apply a verified revocation and its fresh-proof reservation in one org turn.
 use crate::{
     MachineEnrollmentRevocationResult as ResultKind, OrganizationAdminAnswer, WorkspaceRuntime,
-    identity_contract::PersonId,
     organization_authority::machine_login::{
         self, DecisionTime, EnrollmentQuery, StoredEnrollmentState,
     },
     person_request::{AdminOperationId, VerifiedPersonRequest},
 };
 use central_storage::{AlarmUpdate, BatchOutcome, GuardedStatement, StatementBatch, StoreFailure};
+use fleet_contracts::PersonId;
 use fleet_identity_protocol::EnrollmentId;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};

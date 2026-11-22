@@ -8,7 +8,7 @@ use central_storage::{
     StatementBatch,
 };
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
-use collaboration_central_core::identity_contract::{
+use fleet_contracts::{
     DecideDeviceLogin, DecideMachineToken, DeviceLoginDecision, MachineTokenDecision,
 };
 use fleet_contracts::{ProvisionOrganization, ProvisionOrganizationResult};

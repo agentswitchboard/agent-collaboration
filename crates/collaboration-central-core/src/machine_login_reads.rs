@@ -1,6 +1,5 @@
 //! Read only the machine-login facts named by an organization-serialized query.
 use crate::{
-    identity_contract::{EndedMachineClient, EnrollmentRevocationReason},
     machine_login_row_values::{identifier, nonnegative_integer},
     machine_login_rows::{enrollment, machine, only_row},
     organization_authority::machine_login::{
@@ -8,6 +7,7 @@ use crate::{
     },
 };
 use central_storage::{Statement, StoreFailure};
+use fleet_contracts::{EndedMachineClient, EnrollmentRevocationReason};
 use fleet_identity_protocol::OrganizationId;
 use fleet_runtime_ports::CentralStore;
 use fleet_runtime_ports::{

@@ -1,7 +1,7 @@
 //! Exact issuer-owned vectors from switchboard b1c9f6f6, with no local verdict changes.
 //! The pinned source bytes stay intact. Contract 1 changes only the machine identity fields.
 use collaboration_central_core::OrganizationChangeRecord;
-use collaboration_central_core::identity_contract::{
+use fleet_contracts::{
     DecideDeviceLogin, DecideMachineToken, DeviceLoginDecision, DeviceLoginRefusal,
     MachineTokenDecision, MachineTokenRefusal,
 };

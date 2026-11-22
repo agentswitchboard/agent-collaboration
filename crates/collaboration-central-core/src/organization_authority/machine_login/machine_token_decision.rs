@@ -4,11 +4,11 @@ use super::enrollment_records::{
     Decided, EnrollmentChange, EnrollmentFacts, MachineRow, MachineState, StoredEnrollment,
     StoredEnrollmentState,
 };
-use crate::identity_contract::{
+use central_storage::StoreFailure;
+use fleet_contracts::{
     DecideMachineToken, EndedMachineClient, EnrollmentRevocationReason, MachineTokenDecision,
     MachineTokenRefusal,
 };
-use central_storage::StoreFailure;
 use fleet_identity_protocol::UnixSeconds;
 use fleet_runtime_ports::IdSource;
 use fleet_signin::machine_token::MACHINE_TOKEN_LIFETIME_SECONDS;

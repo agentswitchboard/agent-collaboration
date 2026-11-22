@@ -1,13 +1,13 @@
 //! One org turn owns machine-login reads, applying time and the guarded batch.
 use crate::WorkspaceRuntime;
-use crate::identity_contract::{
-    DecideDeviceLogin, DecideMachineToken, DeviceLoginDecision, MachineTokenDecision,
-};
 use crate::organization_authority::machine_login::{
     self, Decided, DecisionTime, EnrollmentFacts, EnrollmentQuery,
 };
 use crate::organization_authority_cache::StampStanding;
 use central_storage::{AlarmUpdate, BatchOutcome, StatementBatch, StoreFailure};
+use fleet_contracts::{
+    DecideDeviceLogin, DecideMachineToken, DeviceLoginDecision, MachineTokenDecision,
+};
 use fleet_runtime_ports::SyncTime;
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 

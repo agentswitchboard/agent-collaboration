@@ -9,7 +9,7 @@ pub enum RevokePermission {
 }
 
 impl RevokePermission {
-    pub(crate) const fn as_str(self) -> &'static str {
+    pub const fn as_str(self) -> &'static str {
         match self {
             Self::MachineRevoke => "machine:revoke",
         }
@@ -21,4 +21,11 @@ impl RevokePermission {
 pub enum AllowanceState {
     Active,
     Withdrawn,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+pub enum EnrollmentRevocationReason {
+    Owner {},
+    Superseded {},
 }

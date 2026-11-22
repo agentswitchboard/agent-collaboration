@@ -5,7 +5,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use central_link_client::{ClientAction, ClientEvent, ConnectionAttempt, LinkClient};
 use central_link_protocol::{CorrelationId, DataFrame, LinkFrame, ReplyPayload, RequestPayload};
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
-use collaboration_central_core::identity_contract::MachineTokenDecision;
+use fleet_contracts::MachineTokenDecision;
 use reqwest_websocket::{RequestBuilderExt, WebSocket};
 use serde_json::json;
 use workspace_model::{Caller, Workspace, WorkspaceAnswer, WorkspaceReply, WorkspaceResult};

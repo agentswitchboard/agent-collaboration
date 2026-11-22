@@ -5,9 +5,9 @@ use super::enrollment_records::{
     StoredEnrollmentState,
 };
 use super::machine_token_decision::append_allowance_records;
-use crate::identity_contract::{EndedMachineClient, EnrollmentRevocationReason, PersonId};
 use crate::person_request::AdminOperationId;
 use central_storage::StoreFailure;
+use fleet_contracts::{EndedMachineClient, EnrollmentRevocationReason, PersonId};
 use fleet_runtime_ports::IdSource;
 use fleet_signin::organization_change::{OrganizationChangeKind, OrganizationChangeOrigin};
 

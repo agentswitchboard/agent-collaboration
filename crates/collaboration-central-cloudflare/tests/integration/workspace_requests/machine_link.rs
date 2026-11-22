@@ -521,7 +521,7 @@ async fn denied_journey(fixture: &Fixture, change: AuthorityChange) -> Result<()
         AuthorityChange::Expiry => {}
         AuthorityChange::Revocation => {
             let ended: std::result::Result<
-                Option<collaboration_central_core::identity_contract::EndedMachineClient>,
+                Option<fleet_contracts::EndedMachineClient>,
                 central_storage::StoreFailure,
             > = fixture
                 .runtime()

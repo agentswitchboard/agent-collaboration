@@ -49,3 +49,6 @@ pub use stamp_failures::{DigestFailure, ProvisionFailure};
 
 mod stamp_values;
 pub use stamp_values::{IssuerKeyId, OrganizationStatementDigest, StatementSeconds};
+
+mod machine_login;
+pub use machine_login::*;

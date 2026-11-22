@@ -6,9 +6,7 @@ use super::super::{
     },
 };
 use super::revoke_machine_enrollment;
-use crate::identity_contract::{
-    EndedMachineClient, EnrollmentRevocationReason, MachineTokenRefusal,
-};
+use fleet_contracts::{EndedMachineClient, EnrollmentRevocationReason, MachineTokenRefusal};
 use fleet_signin::organization_change::OrganizationChangeOrigin as Origin;
 
 #[test]

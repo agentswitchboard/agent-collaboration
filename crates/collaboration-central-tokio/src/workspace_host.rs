@@ -387,9 +387,8 @@ impl OrganizationSignInPort for TokioWorkspaceHost {
     }
     async fn device_login(
         &self,
-        request: &collaboration_central_core::identity_contract::DecideDeviceLogin,
-    ) -> Result<collaboration_central_core::identity_contract::DeviceLoginDecision, StoreFailure>
-    {
+        request: &fleet_contracts::DecideDeviceLogin,
+    ) -> Result<fleet_contracts::DeviceLoginDecision, StoreFailure> {
         self.central(&request.organization_id)
             .await?
             .device_login(request)
@@ -397,9 +396,8 @@ impl OrganizationSignInPort for TokioWorkspaceHost {
     }
     async fn machine_token(
         &self,
-        request: &collaboration_central_core::identity_contract::DecideMachineToken,
-    ) -> Result<collaboration_central_core::identity_contract::MachineTokenDecision, StoreFailure>
-    {
+        request: &fleet_contracts::DecideMachineToken,
+    ) -> Result<fleet_contracts::MachineTokenDecision, StoreFailure> {
         self.central(&request.organization_id)
             .await?
             .machine_token(request)

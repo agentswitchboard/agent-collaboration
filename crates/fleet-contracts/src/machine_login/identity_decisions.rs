@@ -1,6 +1,6 @@
 //! Sign-in service decisions and machine-token extension claims.
 use super::{AllowedWorkspaces, DeviceLoginRequestId, EnrollPermission, PersonId};
-use fleet_contracts::ClientId;
+use crate::ClientId;
 use fleet_identity_protocol::{EnrollmentId, OrganizationId, UnixSeconds};
 use message_board::MachineLabel;
 use schemars::JsonSchema;

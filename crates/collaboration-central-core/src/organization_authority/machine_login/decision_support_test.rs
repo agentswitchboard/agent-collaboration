@@ -4,7 +4,7 @@ use super::super::{
         CountingIds, NOW_MS, NOW_S, approval, approved, empty_facts, facts, time, token,
     },
 };
-use crate::identity_contract::MachineTokenDecision;
+use fleet_contracts::MachineTokenDecision;
 use fleet_runtime_ports::IdSource;
 
 #[test]

@@ -81,7 +81,7 @@ async fn live_admission_refuses_revoked_expired_wrong_credential_and_archived_di
     })).unwrap()).await.unwrap();
     assert!(matches!(
         renewal,
-        collaboration_central_core::identity_contract::MachineTokenDecision::Grant { .. }
+        fleet_contracts::MachineTokenDecision::Grant { .. }
     ));
     assert_eq!(
         call(

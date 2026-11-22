@@ -7,7 +7,7 @@ use super::super::{
     },
 };
 use super::{SD8_MILLIS, decide_device_login};
-use crate::identity_contract::{
+use fleet_contracts::{
     DecideDeviceLogin, DeviceLoginDecision, DeviceLoginRefusal, EnrollmentRevocationReason,
 };
 use fleet_identity_protocol::UnixSeconds;
