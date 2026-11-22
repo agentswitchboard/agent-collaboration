@@ -71,3 +71,25 @@ fn a_direct_mark_must_follow_acceptance_and_the_cutoff_on_the_grid() {
         assert!(row.decode_direct_message().is_err());
     }
 }
+
+#[test]
+fn a_stored_direct_message_requires_its_sender_request_id() {
+    let mut row = stored();
+    row.sender_request_id = None;
+
+    assert_eq!(
+        row.decode_direct_message().err(),
+        Some(corrupt("mail_messages.sender_request_id"))
+    );
+}
+
+#[test]
+fn a_stored_direct_message_requires_an_actor_sender() {
+    let mut row = stored();
+    row.sender = r#"{"kind":"central"}"#.into();
+
+    assert_eq!(
+        row.decode_direct_message().err(),
+        Some(corrupt("mail_messages.sender"))
+    );
+}
