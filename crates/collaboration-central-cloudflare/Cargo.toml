@@ -59,7 +59,6 @@ web-sys = { version = "=0.3.106", features = ["WorkerGlobalScope", "Crypto", "Su
 js-sys = "=0.3.106"
 
 [dev-dependencies]
-fleet-machine-login.workspace = true
 hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
 runtime-primitives.workspace = true
 base64 = "0.22.1"

@@ -1,6 +1,5 @@
 //! Machine rows observed through the established launcher IPC after real HTTP decisions.
 use super::{Bridge, ConformanceResult, Value, json, signed};
-use fleet_machine_login::policy::IDLE_EXPIRY_SECONDS;
 use std::path::Path;
 
 const INSTALLATION: &str = "019f0000-0000-7000-8000-00000000e101";
@@ -428,7 +427,7 @@ async fn bridge_first_observation_after_real_idle_expiry_accepts_automatic_recor
         json!({"result":"grant","machineId":INSTALLATION,
         "enrollmentId":first,"decidedAt":start,"grantExpiresAt":start+600})
     );
-    let idle_at = start + IDLE_EXPIRY_SECONDS;
+    let idle_at = start + signed::MACHINE_IDLE_LIMIT_SECONDS;
     bridge.set_time((idle_at - 60) * 1000, 1).await?;
     let pending = approve(
         &bridge,

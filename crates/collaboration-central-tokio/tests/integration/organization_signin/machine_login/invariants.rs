@@ -256,8 +256,6 @@ async fn assert_allowance_pairs(
 )]
 #[tokio::test]
 async fn generated_allowance_traces_survive_reopen_and_terminalization() -> Result<()> {
-    use fleet_machine_login::policy::IDLE_EXPIRY_SECONDS;
-
     for (selected, omitted) in [(WORKSPACE, WORKSPACE_TWO), (WORKSPACE_TWO, WORKSPACE)] {
         for end in [EndEnrollment::OwnerRevoke, EndEnrollment::IdleExpiry] {
             let mut f = MachineFixture::new().await?;
@@ -292,7 +290,7 @@ async fn generated_allowance_traces_survive_reopen_and_terminalization() -> Resu
                     );
                 }
                 EndEnrollment::IdleExpiry => {
-                    f.advance(u64::try_from(IDLE_EXPIRY_SECONDS * 1000)?)
+                    f.advance(u64::try_from(signed::MACHINE_IDLE_LIMIT_SECONDS * 1000)?)
                         .await?;
                     assert_eq!(
                         f.post(TOKEN, &token(&active, &active)).await?,
@@ -324,4 +322,126 @@ async fn generated_allowance_traces_survive_reopen_and_terminalization() -> Resu
         }
     }
     Ok(())
+}
+
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "The real token decision must preserve the previously withdrawn row and audit only the active sibling on idle expiry."
+)]
+#[tokio::test]
+async fn idle_expiry_preserves_already_withdrawn_snapshot_pair_and_audits_only_active_sibling()
+-> Result<()> {
+    use collaboration_central_conformance::signin_fixtures::MACHINE_IDLE_LIMIT_SECONDS;
+
+    const PAIRS: &str = "SELECT workspace_id,state,allowance_id,machine_id,change_request_id,change_origin,created_at,updated_at FROM login_machine_allowances ORDER BY workspace_id";
+    const AUTOMATIC_AUDITS: &str = "SELECT request_id,kind,target_id,workspace_id,allowance_state,created_at FROM signin_change_records WHERE origin='automatic' ORDER BY kind DESC,workspace_id";
+    let f = MachineFixture::new().await?;
+    let (status, approved) = f
+        .post(
+            DEVICE,
+            &approval(
+                0xe201,
+                INSTALLATION,
+                "Idle with historical withdrawal",
+                &[WORKSPACE, WORKSPACE_TWO],
+                f.now(),
+            ),
+        )
+        .await?;
+    assert_eq!(status, 200);
+    let enrollment = enrollment(&approved)?;
+    let request = token(&enrollment, &enrollment);
+    assert_eq!(
+        f.post(TOKEN, &request).await?,
+        (200, grant(&enrollment, INSTALLATION, f.now(), None))
+    );
+
+    // Fixture a prior persisted withdrawal with its own audit provenance.
+    // The enrolled approval still names both workspaces in its immutable snapshot.
+    let prior_request = format!("{}:machineAllowanceChanged:{WORKSPACE}", id(0xe202));
+    let prior_seconds = f.now();
+    let prior_millis = prior_seconds * 1_000;
+    f.execute(
+        "INSERT INTO signin_change_records (id,request_id,kind,origin,target_id,created_at,updated_at,workspace_id,allowance_state) VALUES (?,?,'machineAllowanceChanged','automatic',?,?,?,?,'withdrawn')",
+        vec![text(id(0xe203)),text(&prior_request),text(INSTALLATION),number(prior_millis)?,number(prior_millis)?,text(WORKSPACE)],
+    ).await?;
+    f.execute(
+        "UPDATE login_machine_allowances SET state='withdrawn',change_request_id=?,change_origin='automatic',updated_at=strftime('%Y-%m-%dT%H:%M:%fZ',?,'unixepoch') WHERE machine_id=? AND workspace_id=? AND state='active'",
+        vec![text(&prior_request),number(prior_seconds)?,text(INSTALLATION),text(WORKSPACE)],
+    ).await?;
+    let before = f.rows(PAIRS).await?;
+    let [held_before, active_before] = before.as_slice() else {
+        return Err("the idle fixture does not have exactly two allowance pairs".into());
+    };
+    assert_eq!(held_before.first(), Some(&text(WORKSPACE)));
+    assert_eq!(held_before.get(1), Some(&text("withdrawn")));
+    assert_eq!(held_before.get(4), Some(&text(&prior_request)));
+    assert_eq!(active_before.first(), Some(&text(WORKSPACE_TWO)));
+    assert_eq!(active_before.get(1), Some(&text("active")));
+
+    f.advance(u64::try_from(MACHINE_IDLE_LIMIT_SECONDS * 1_000)?)
+        .await?;
+    assert_eq!(
+        f.post(TOKEN, &request).await?,
+        (200, refused("idleExpired"))
+    );
+
+    let after = f.rows(PAIRS).await?;
+    let [held_after, active_after] = after.as_slice() else {
+        return Err("idle expiry did not retain both allowance pairs".into());
+    };
+    let sibling_change = format!("{enrollment}:machineAllowanceChanged:{WORKSPACE_TWO}");
+    assert_eq!(
+        held_after, held_before,
+        "expiry rewrote the historical allowance row"
+    );
+    assert_eq!(
+        active_after.get(2..4),
+        active_before.get(2..4),
+        "expiry replaced the active sibling row"
+    );
+    assert_eq!(active_after.get(1), Some(&text("withdrawn")));
+    assert_eq!(active_after.get(4), Some(&text(&sibling_change)));
+    assert_eq!(active_after.get(5), Some(&text("automatic")));
+    assert_allowance_pairs(
+        &f,
+        &[(WORKSPACE, "withdrawn"), (WORKSPACE_TWO, "withdrawn")],
+        2,
+        2,
+    )
+    .await?;
+
+    let expiry_millis = f.now() * 1_000;
+    let null = central_storage::SqlValue::Null;
+    assert_eq!(
+        f.rows(AUTOMATIC_AUDITS).await?,
+        vec![
+            vec![
+                text(format!("{enrollment}:machineExpired:{enrollment}")),
+                text("machineExpired"),
+                text(&enrollment),
+                null.clone(),
+                null,
+                number(expiry_millis)?
+            ],
+            vec![
+                text(prior_request),
+                text("machineAllowanceChanged"),
+                text(INSTALLATION),
+                text(WORKSPACE),
+                text("withdrawn"),
+                number(prior_millis)?
+            ],
+            vec![
+                text(sibling_change),
+                text("machineAllowanceChanged"),
+                text(INSTALLATION),
+                text(WORKSPACE_TWO),
+                text("withdrawn"),
+                number(expiry_millis)?
+            ],
+        ],
+        "the idle commit must retain the old withdrawal and add exactly the expiry and sibling withdrawal",
+    );
+    f.close().await
 }

@@ -59,7 +59,7 @@ pub enum TokenRenewalResult {
         effective_expires_at: Timestamp,
         central_time: Timestamp,
     },
-    /// The old expiry stands; the socket stays open until it refuses a frame.
+    /// A refusal leaves the attachment unchanged. A typed close can end the transport.
     Refused { reason: TokenRenewalRefusal },
 }
 
@@ -74,7 +74,7 @@ pub enum TokenRenewalRefusal {
     DifferentMachine,
     /// The token names another enrollment or client than this connection's.
     DifferentEnrollment,
-    /// Central could not decide now; the old expiry stands.
+    /// Retryable refusal. A lapsed link on a still-enrolled machine also sends an Expired close.
     CentralUnavailable,
 }
 

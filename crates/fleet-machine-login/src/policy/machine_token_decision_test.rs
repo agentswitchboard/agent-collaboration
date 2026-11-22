@@ -1,6 +1,5 @@
 use super::super::{
-    EnrollmentChange, EnrollmentFacts, IDLE_EXPIRY_SECONDS, MachineState, StoredEnrollment,
-    StoredEnrollmentState,
+    EnrollmentChange, EnrollmentFacts, MachineState, StoredEnrollment, StoredEnrollmentState,
     policy_fixture::{
         CountingIds, NOW_MS, NOW_S, active_workspaces, approved, assert_refused, decide_token,
         empty_facts, enrolled, facts, id, person, project, records, time, token,
@@ -299,7 +298,7 @@ fn exact_sixty_day_idle_boundary_withdraws_allowances_with_automatic_compound_re
 fn each_grant_restarts_the_idle_period_using_whole_seconds() {
     let active = enrolled(40, 0, NOW_S);
     let facts = facts(active.clone(), Some(active), 1);
-    let renewal_interval = IDLE_EXPIRY_SECONDS * 1000 * 2 / 3;
+    let renewal_interval = INACTIVITY_ORACLE_SECONDS * 1000 * 2 / 3;
     let plan = decide_token(&facts, NOW_MS + renewal_interval);
     let next = project(&facts, &plan);
     assert!(matches!(
@@ -355,8 +354,8 @@ fn replacement_retry_keeps_the_predecessor_and_checks_live_client_before_returni
 
 #[test]
 fn idle_expiry_fences_pending_approvals_and_generation_exhaustion_returns_no_plan() {
-    let active = enrolled(39, 0, NOW_S - IDLE_EXPIRY_SECONDS);
-    let before = facts(active.clone(), Some(active.clone()), 1);
+    let active = enrolled(39, 0, NOW_S - INACTIVITY_ORACLE_SECONDS);
+    let before = facts(active.clone(), Some(active), 1);
     let expired = decide_token(&before, NOW_MS);
     let after = project(&before, &expired);
     assert_eq!(after.machine.as_ref().unwrap().generation.get(), 2);
@@ -382,3 +381,5 @@ fn idle_expiry_fences_pending_approvals_and_generation_exhaustion_returns_no_pla
         .is_err()
     );
 }
+
+const INACTIVITY_ORACLE_SECONDS: i64 = chrono::TimeDelta::days(60).num_seconds();

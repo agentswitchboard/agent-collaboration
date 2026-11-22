@@ -1,5 +1,4 @@
 use super::support::*;
-use fleet_machine_login::policy::IDLE_EXPIRY_SECONDS;
 
 #[expect(
     clippy::panic_in_result_fn,
@@ -24,8 +23,10 @@ async fn idle_expiry_fences_a_still_claimable_approval_and_fresh_approval_can_ac
         (200, grant(&first, INSTALLATION, f.now(), None))
     );
     let first_granted_at = f.now();
-    f.advance(u64::try_from((IDLE_EXPIRY_SECONDS - 60) * 1000)?)
-        .await?;
+    f.advance(u64::try_from(
+        (signed::MACHINE_IDLE_LIMIT_SECONDS - 60) * 1000,
+    )?)
+    .await?;
     let pending_body = approval(0xdb02, INSTALLATION, "Pending E2", &[WORKSPACE], f.now());
     let code_expires_at = pending_body["codeExpiresAt"].as_i64().unwrap();
     let pending_reply = f.post(DEVICE, &pending_body).await?;
@@ -65,7 +66,10 @@ async fn idle_expiry_fences_a_still_claimable_approval_and_fresh_approval_can_ac
 
     // Act: E1's exact idle boundary revokes it while E2's real code remains live.
     f.advance(60_000).await?;
-    assert_eq!(f.now(), first_granted_at + IDLE_EXPIRY_SECONDS);
+    assert_eq!(
+        f.now(),
+        first_granted_at + signed::MACHINE_IDLE_LIMIT_SECONDS
+    );
     assert!(f.now() < code_expires_at);
     f.execute("CREATE TRIGGER fail_idle_expiry BEFORE INSERT ON signin_change_records WHEN NEW.kind='machineAllowanceChanged' AND NEW.origin='automatic' BEGIN SELECT RAISE(ABORT,'fixture final idle allowance record failure'); END",vec![]).await?;
     let before_failed_expiry = snapshot(&f).await?;
