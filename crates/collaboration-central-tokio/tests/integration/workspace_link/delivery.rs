@@ -5,7 +5,7 @@ use workspace_model::{ResolvedSender, central_mail::CentralMailAnswer};
 
 #[tokio::test]
 async fn live_direct_mail_pushes_then_reconnect_owns_the_backlog_and_receipt() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = delivery_journey(&fixture).await;
     fixture.close().await?;
     result
@@ -235,7 +235,7 @@ pub(super) async fn mail_reply(
 
 #[tokio::test]
 async fn zero_time_direct_mail_is_never_offered_after_clock_rollback() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = zero_time_offer_journey(&fixture).await;
     fixture.close().await?;
     result
@@ -344,7 +344,7 @@ async fn zero_time_offer_journey(fixture: &Fixture) -> Result<()> {
 
 #[tokio::test]
 async fn reconnect_samples_time_left_across_the_backlog_page_boundary() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = backlog_page_journey(&fixture).await;
     fixture.close().await?;
     result

@@ -1,5 +1,5 @@
 //! Force the actual Axum socket's write to return Pending without a peer read.
-use super::fixture::{Fixture, receive, send};
+use super::fixture::{Fixture, receive, send, start_fixture};
 use super::idle_expiry::{
     assert_idle_commit, connect_replacement, require_inactive_close, seed_idle_grant,
 };
@@ -45,7 +45,7 @@ async fn signed_revocation_reports_its_typed_close_when_a_pending_reply_can_flus
 }
 
 async fn run_revocation(settlement: WriteSettlement) -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let gated = GatedLink::open(&fixture).await?;
     let result = revoke_while_reply_is_blocked(&fixture, &gated, settlement).await;
     gated.close().await?;
@@ -64,7 +64,7 @@ async fn idle_renewal_cleans_up_and_drops_the_transport_after_the_io_budget() ->
 }
 
 async fn run_idle_renewal(settlement: WriteSettlement) -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let gated = GatedLink::open(&fixture).await?;
     let result = settle_idle_renewal(&fixture, &gated, settlement).await;
     gated.close().await?;

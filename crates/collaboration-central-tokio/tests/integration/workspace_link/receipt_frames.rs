@@ -10,7 +10,7 @@ use central_storage::{
 #[tokio::test]
 async fn a_real_link_answers_one_and_sixty_four_receipts_and_refuses_invalid_frames() -> Result<()>
 {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = async {
         let mut socket = fixture.connect().await?;
     receive(&mut socket).await?;
@@ -50,7 +50,7 @@ async fn a_real_link_answers_one_and_sixty_four_receipts_and_refuses_invalid_fra
 
 #[tokio::test]
 async fn a_mid_frame_revocation_preserves_only_the_committed_receipt_prefix() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = revoke_between_receipts(&fixture).await;
     fixture.close().await?;
     result
@@ -177,7 +177,7 @@ async fn revoke_between_receipts(fixture: &Fixture) -> Result<()> {
 
 #[tokio::test]
 async fn reconnect_replays_the_receipt_frame_after_its_answer_is_lost() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = replay_after_lost_answer(&fixture).await;
     fixture.close().await?;
     result
@@ -416,7 +416,7 @@ impl EnrollmentAtApply {
 }
 
 async fn check_receipt_authority_at_apply(enrollment: EnrollmentAtApply) -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = receipt_expiry_journey(&fixture, enrollment).await;
     fixture.close().await?;
     result

@@ -1,5 +1,5 @@
 //! Real links retain each connection's grant, correlate concurrent calls and replay writes.
-use super::fixture::{Fixture, INSTALLATION, receive, send};
+use super::fixture::{Fixture, INSTALLATION, receive, send, start_fixture};
 use super::link_support::{
     caller, connect_client, correlation, create_workspace, created_workspace, workspace_reply,
 };
@@ -35,7 +35,7 @@ fn workspace_store(fixture: &Fixture, workspace: &WorkspaceId) -> ObjectStorage 
 )]
 #[tokio::test]
 async fn two_in_flight_requests_keep_distinct_correlations_and_payloads() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let (mut client, attempt, mut socket, _) = connect_client(&fixture, &fixture.token).await?;
     let first = client.begin_request(
         caller()?,
@@ -100,7 +100,7 @@ async fn two_in_flight_requests_keep_distinct_correlations_and_payloads() -> Res
 #[tokio::test]
 async fn lost_reply_after_commit_replays_one_durable_write_on_a_new_correlation() -> Result<()> {
     // Arrange: create a real workspace and establish its explicit allowance precondition.
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let (mut client, attempt, mut socket, _) = connect_client(&fixture, &fixture.token).await?;
     let create = client.begin_request(
         caller()?,

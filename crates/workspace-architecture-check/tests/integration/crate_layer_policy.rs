@@ -74,6 +74,7 @@ const LAYER_POLICY: [(&str, &[&str]); 44] = [
         &[
             "central-link-protocol",
             "central-storage",
+            "collaboration-central-conformance",
             "collaboration-central-core",
             "fleet-contracts",
             "fleet-engine",

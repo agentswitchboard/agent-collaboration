@@ -1,5 +1,5 @@
 //! Force revocation between reads and the applying turn on the actual public socket.
-use super::fixture::{Fixture, INSTALLATION, receive, send};
+use super::fixture::{INSTALLATION, receive, send, start_fixture};
 use central_link_protocol::{
     DataFrame, LinkFrame, LinkRequest, MachineLinkCloseCode, ReplyPayload, RequestPayload,
 };
@@ -32,7 +32,7 @@ fn frame(correlation: &str, caller: &Caller, operation: serde_json::Value) -> Re
 #[tokio::test]
 async fn revocation_after_rule_reads_refuses_before_workspace_or_drain_effects() -> Result<()> {
     // Arrange: authenticate normally, then create one permitted empty workspace.
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let mut socket = fixture.connect().await?;
     assert!(matches!(
         receive(&mut socket).await?,
@@ -166,7 +166,7 @@ async fn revocation_after_rule_reads_refuses_before_workspace_or_drain_effects()
 async fn revocation_committing_while_request_waits_for_applying_turn_prevents_writes() -> Result<()>
 {
     // Arrange: authenticate the link and allow one empty workspace.
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let mut socket = fixture.connect().await?;
     assert!(matches!(
         receive(&mut socket).await?,

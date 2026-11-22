@@ -1,5 +1,5 @@
 //! A warm connection must repair a lost physical alarm before its Welcome is observable.
-use super::fixture::{Fixture, INSTALLATION, receive, send};
+use super::fixture::{Fixture, INSTALLATION, receive, send, start_fixture};
 use central_link_client::{ClientAction, ClientEvent, ConnectionAttempt, LinkClient};
 use central_link_protocol::{LinkFrame, ReplyPayload, RequestPayload};
 use central_storage::{AlarmUpdate, BatchOutcome, SqlValue, Statement, StatementBatch};
@@ -17,7 +17,7 @@ use workspace_model::{
 
 #[tokio::test]
 async fn warm_reconnect_rearms_healthy_wake_before_welcome_is_observable() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = reconnect_journey(&fixture).await;
     fixture.close().await?;
     result
@@ -249,7 +249,7 @@ async fn unavailable_alarm_publication_still_delivers_welcome_and_reports_typed_
             .with_writer(move || output.clone())
             .finish(),
     )?;
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = unavailable_rearm_journey(&fixture, &logs).await;
     fixture.close().await?;
     result
