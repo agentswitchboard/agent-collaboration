@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, organization_id, person_id, minimum_revision, state\nFROM signin_person_authorization_floors\nWHERE organization_id = ? AND person_id = ?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "signin_person_authorization_floors",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "organization_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "signin_person_authorization_floors",
+            "name": "organization_id"
+          }
+        }
+      },
+      {
+        "name": "person_id",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "signin_person_authorization_floors",
+            "name": "person_id"
+          }
+        }
+      },
+      {
+        "name": "minimum_revision",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "signin_person_authorization_floors",
+            "name": "minimum_revision"
+          }
+        }
+      },
+      {
+        "name": "state",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "signin_person_authorization_floors",
+            "name": "state"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "c72cf69ecc7320a8cb363d67bf1366ed98a3135093f3c96c2d483fd69c10ae77"
+}

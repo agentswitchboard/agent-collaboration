@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, minimum_revision, state, permission_policy_digest, request_reject_through_ms\nFROM signin_authorization_floors\nWHERE id = ?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "signin_authorization_floors",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "minimum_revision",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "signin_authorization_floors",
+            "name": "minimum_revision"
+          }
+        }
+      },
+      {
+        "name": "state",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "signin_authorization_floors",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "name": "permission_policy_digest",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "signin_authorization_floors",
+            "name": "permission_policy_digest"
+          }
+        }
+      },
+      {
+        "name": "request_reject_through_ms",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "signin_authorization_floors",
+            "name": "request_reject_through_ms"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "cdae4efac132bf401757be26d2e061a0a810c4ef194fc2ad52b1ab321f9309cf"
+}

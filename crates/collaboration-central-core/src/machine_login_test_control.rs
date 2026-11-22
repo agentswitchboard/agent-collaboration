@@ -2,9 +2,9 @@
 use crate::WorkspaceRuntime;
 use crate::person_request::AdminOperationId;
 use central_storage::StoreFailure;
-use fleet_contracts::{EndedMachineClient, PersonId};
+use fleet_contracts::{AdmittedRevoke, EndedMachineClient, PersonId, RevokePermission};
 use fleet_identity_protocol::EnrollmentId;
-use fleet_machine_login::policy::{self as machine_login, EnrollmentQuery};
+use fleet_machine_login::{MachineLoginPlan, PreparedEnrollmentRevocation};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use serde::{Deserialize, Serialize};
 use workspace_ids::MachineId;
@@ -40,35 +40,34 @@ pub async fn machine_login_control<H: CentralStore, S: WorkspaceStores>(
             machine_id,
             enrollment_id,
         } => {
-            let query = EnrollmentQuery {
-                machine_id: Some(machine_id),
-                enrollment: Some(enrollment_id.clone()),
-                ..EnrollmentQuery::default()
-            };
-            let facts = fleet_machine_login::enrollment_reads::facts(
-                runtime.execution.statement_host(),
-                runtime.execution.organization().clone(),
-                &query,
-            )
-            .await?;
-            if facts
-                .active
-                .as_ref()
-                .is_none_or(|active| active.id != enrollment_id)
-            {
-                return Ok(None);
-            }
-            let decided = machine_login::revoke_machine_enrollment(
-                &facts,
-                &person_id,
-                &String::from(operation_id)
+            let authority = AdmittedRevoke {
+                actor: person_id,
+                proof_request_id: String::from(operation_id)
                     .try_into()
                     .map_err(|_| StoreFailure::Unavailable)?,
-                "machine:revoke",
-                time,
-                runtime.execution.ids(),
-            )?;
-            runtime.apply_machine_login(&facts, decided, time).await
+                permission: RevokePermission::MachineRevoke,
+            };
+            let prepared = runtime
+                .machine_login_service()
+                .prepare_revoke_enrollment(authority, &enrollment_id, time)
+                .await?;
+            match prepared {
+                PreparedEnrollmentRevocation::Revoked {
+                    machine_id: owner,
+                    ended,
+                    statements,
+                } if owner == machine_id => {
+                    runtime
+                        .apply_machine_login(MachineLoginPlan {
+                            answer: Some(ended),
+                            statements,
+                        })
+                        .await
+                }
+                PreparedEnrollmentRevocation::Revoked { .. }
+                | PreparedEnrollmentRevocation::NotFound
+                | PreparedEnrollmentRevocation::AlreadyEnded => Ok(None),
+            }
         }
     }
 }

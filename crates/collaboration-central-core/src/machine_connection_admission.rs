@@ -233,16 +233,13 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         machine_id: &MachineId,
         enrollment: &EnrollmentId,
     ) -> Result<EnrollmentFacts, StoreFailure> {
-        fleet_machine_login::enrollment_reads::facts(
-            self.execution.statement_host(),
-            self.execution.organization().clone(),
-            &EnrollmentQuery {
+        self.machine_login_service()
+            .read_facts(&EnrollmentQuery {
                 machine_id: Some(machine_id.clone()),
                 enrollment: Some(enrollment.clone()),
                 ..EnrollmentQuery::default()
-            },
-        )
-        .await
+            })
+            .await
     }
 }
 

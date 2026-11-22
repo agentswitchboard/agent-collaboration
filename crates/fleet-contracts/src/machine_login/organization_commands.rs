@@ -1,3 +1,5 @@
+use super::PersonId;
+use message_board::RecordId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -14,6 +16,13 @@ impl RevokePermission {
             Self::MachineRevoke => "machine:revoke",
         }
     }
+}
+
+/// The actor and proof already admitted for the owning revoke operation.
+pub struct AdmittedRevoke {
+    pub actor: PersonId,
+    pub proof_request_id: RecordId,
+    pub permission: RevokePermission,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]

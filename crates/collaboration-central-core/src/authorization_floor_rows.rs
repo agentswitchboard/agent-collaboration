@@ -94,10 +94,17 @@ pub(crate) async fn read_organization_floor(
     host: &impl CentralStore,
     organization: &str,
 ) -> Result<Option<OrganizationFloor>, StoreFailure> {
-    let rows = host.read(Statement {
-        sql: "SELECT id,minimum_revision,state,permission_policy_digest,request_reject_through_ms FROM signin_authorization_floors WHERE id=?",
-        args: vec![SqlValue::Text(organization.to_owned())],
-    }).await?;
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    let _ = sqlx::query_file!(
+        "src/person_proof_queries/read_organization_floor.sql",
+        organization,
+    );
+    let rows = host
+        .read(Statement {
+            sql: include_str!("person_proof_queries/read_organization_floor.sql"),
+            args: vec![SqlValue::Text(organization.to_owned())],
+        })
+        .await?;
     decode_organization_floor(&rows, organization)
 }
 
@@ -106,10 +113,21 @@ pub(crate) async fn read_person_floor(
     organization: &str,
     person: &str,
 ) -> Result<Option<PersonFloor>, StoreFailure> {
-    let rows = host.read(Statement {
-        sql: "SELECT id,organization_id,person_id,minimum_revision,state FROM signin_person_authorization_floors WHERE organization_id=? AND person_id=?",
-        args: vec![SqlValue::Text(organization.to_owned()), SqlValue::Text(person.to_owned())],
-    }).await?;
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    let _ = sqlx::query_file!(
+        "src/person_proof_queries/read_person_floor.sql",
+        organization,
+        person,
+    );
+    let rows = host
+        .read(Statement {
+            sql: include_str!("person_proof_queries/read_person_floor.sql"),
+            args: vec![
+                SqlValue::Text(organization.to_owned()),
+                SqlValue::Text(person.to_owned()),
+            ],
+        })
+        .await?;
     decode_person_floor(&rows, organization, person)
 }
 
@@ -132,12 +150,22 @@ pub(crate) fn organization_guard(
     organization: &str,
     floor: &OrganizationFloor,
 ) -> Result<GuardedStatement, StoreFailure> {
+    let state = organization_state(floor.state);
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    let _ = sqlx::query_file!(
+        "src/person_proof_queries/guard_organization_floor.sql",
+        organization,
+        floor.revision.get(),
+        state,
+        &floor.policy_digest,
+        floor.reject_through_ms,
+    );
     Ok(fleet_runtime_ports::guarded_statements::exact(
-        "UPDATE signin_authorization_floors SET id=id WHERE id=? AND minimum_revision=? AND state=? AND permission_policy_digest=? AND request_reject_through_ms=?",
+        include_str!("person_proof_queries/guard_organization_floor.sql"),
         vec![
             SqlValue::Text(organization.to_owned()),
             integer(floor.revision.get(), "minimum_revision")?,
-            SqlValue::Text(organization_state(floor.state).to_owned()),
+            SqlValue::Text(state.to_owned()),
             SqlValue::Text(floor.policy_digest.clone()),
             integer(floor.reject_through_ms, "request_reject_through_ms")?,
         ],
@@ -148,14 +176,24 @@ pub(crate) fn person_guard(
     person: &str,
     floor: &PersonFloor,
 ) -> Result<GuardedStatement, StoreFailure> {
+    let state = person_state(floor.state);
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    let _ = sqlx::query_file!(
+        "src/person_proof_queries/guard_person_floor.sql",
+        &floor.subject_id,
+        organization,
+        person,
+        floor.revision.get(),
+        state,
+    );
     Ok(fleet_runtime_ports::guarded_statements::exact(
-        "UPDATE signin_person_authorization_floors SET id=id WHERE id=? AND organization_id=? AND person_id=? AND minimum_revision=? AND state=?",
+        include_str!("person_proof_queries/guard_person_floor.sql"),
         vec![
             SqlValue::Text(floor.subject_id.clone()),
             SqlValue::Text(organization.to_owned()),
             SqlValue::Text(person.to_owned()),
             integer(floor.revision.get(), "minimum_revision")?,
-            SqlValue::Text(person_state(floor.state).to_owned()),
+            SqlValue::Text(state.to_owned()),
         ],
     ))
 }

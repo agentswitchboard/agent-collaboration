@@ -1,8 +1,13 @@
 //! Machine enrollment decisions and their organization-owned storage statements.
 #![forbid(unsafe_code)]
 
-pub mod enrollment_reads;
+mod enrollment_reads;
 pub mod enrollment_row_codec;
 pub mod enrollment_row_values;
-pub mod enrollment_writes;
+mod enrollment_writes;
+mod machine_login_service;
 pub mod policy;
+
+pub use machine_login_service::{
+    MachineLoginPlan, MachineLoginService, PreparedEnrollmentRevocation,
+};
