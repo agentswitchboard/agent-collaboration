@@ -25,6 +25,7 @@ futures-util.workspace = true
 http.workspace = true
 message-board = { path = "../message-board", version = "0.1.20" }
 rmcp.workspace = true
+router-clock.workspace = true
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

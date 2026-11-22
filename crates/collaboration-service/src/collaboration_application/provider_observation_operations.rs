@@ -11,6 +11,7 @@ use collaboration_protocol::{
     EndpointAvailability, ObservationEndReason, ObservationEventNotification,
     ProviderObservationEventTooLarge, ProviderObservationEventTooLargeKind, SessionRef,
 };
+use router_clock::RuntimeClock;
 use serde_json::{Value, json};
 use session_event_model::SessionEvent;
 use tokio::sync::broadcast;
@@ -24,6 +25,7 @@ pub struct ObservationOperations {
     pub(super) provider_session_hub:
         Option<std::sync::Arc<dyn collaboration_contracts::SessionEventHub>>,
     pub(super) directory: collaboration_runtime::EndpointDirectory,
+    clock: std::sync::Arc<dyn RuntimeClock>,
 }
 
 impl ObservationOperations {
@@ -31,12 +33,20 @@ impl ObservationOperations {
         identity: collaboration_contracts::RouterIdentity,
         provider_session_hub: Option<std::sync::Arc<dyn collaboration_contracts::SessionEventHub>>,
         directory: collaboration_runtime::EndpointDirectory,
+        clock: std::sync::Arc<dyn RuntimeClock>,
     ) -> Self {
         Self {
             identity,
             provider_session_hub,
             directory,
+            clock,
         }
+    }
+
+    /// The Host clock shared by the collector and its notification carrier.
+    #[must_use]
+    pub fn clock(&self) -> &dyn RuntimeClock {
+        self.clock.as_ref()
     }
 
     /// Collects events after `afterSequence` (in `epoch`) until a bound or the deadline,
@@ -69,11 +79,13 @@ async fn collect(
     {
         return Err(ObservationFailure::InvalidField);
     }
-    let deadline = tokio::time::Instant::now()
+    let clock = operations.clock();
+    let deadline = clock
+        .monotonic_now()
         .checked_add(std::time::Duration::from_secs(request.timeout_seconds))
         .ok_or(ObservationFailure::InvalidField)?;
     let (attachment, generation) =
-        tokio::time::timeout_at(deadline, attach(&request.target, operations))
+        router_clock::timeout_at(clock, deadline, attach(&request.target, operations))
             .await
             .map_err(|_| ObservationFailure::Unavailable)??;
     if request.after_sequence.is_some() && request.epoch.is_none() {
@@ -116,7 +128,7 @@ async fn collect(
             event_value_bounded(event)
         } else {
             let received = tokio::select! {
-                () = tokio::time::sleep_until(deadline) => break ObservationEndReason::DeadlineReached,
+                () = clock.sleep_until(deadline) => break ObservationEndReason::DeadlineReached,
                 received = receiver.recv() => received,
             };
             match received {
@@ -339,3 +351,7 @@ impl CollaborationRejection for ObservationFailure {
         PublishedRejection::typed(code, self.to_string(), self)
     }
 }
+
+#[cfg(test)]
+#[path = "provider_observation_operations_test.rs"]
+mod tests;

@@ -9,6 +9,7 @@ pub struct ApplicationFixture {
     pub(crate) machine_identity: collaboration_contracts::MachineIdentity,
     pub(crate) service_epoch: UuidIdentity,
     pub(crate) directory: EndpointDirectory,
+    clock: Option<std::sync::Arc<dyn router_clock::RuntimeClock>>,
     pub(crate) journal: Option<std::sync::Arc<lifecycle_observation::LifecycleStore>>,
     pub(crate) native_backend: Option<collaboration_runtime::NativeControlBackend>,
     pub(crate) provider_operations:
@@ -25,6 +26,12 @@ pub struct ApplicationFixture {
         Option<std::sync::Arc<dyn collaboration_contracts::ProviderConversationBackend>>,
 }
 impl ApplicationFixture {
+    #[must_use]
+    pub fn with_clock(mut self, clock: std::sync::Arc<dyn router_clock::RuntimeClock>) -> Self {
+        self.clock = Some(clock);
+        self
+    }
+
     pub fn with_installation_peer(
         mut self,
         peer: collaboration_protocol::InstallationPeerId,
@@ -160,6 +167,7 @@ impl ApplicationFixture {
             codex_conversation_recorder: None,
             provider_conversations: None,
             directory: EndpointDirectory::new(service_id),
+            clock: None,
         })
     }
 }
@@ -227,6 +235,9 @@ impl ApplicationFixture {
             self.router_identity(),
             self.provider_session_hub.clone(),
             self.directory.clone(),
+            self.clock
+                .clone()
+                .unwrap_or_else(|| std::sync::Arc::new(router_clock::SystemRuntimeClock::new())),
         );
         crate::CollaborationApplication::new(
             self.router_identity(),
