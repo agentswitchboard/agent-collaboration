@@ -308,7 +308,9 @@ async fn approve_replacement(fixture: &Fixture) -> Result<EnrollmentId> {
     .await?;
     match decision {
         DeviceLoginDecision::Approved { enrollment_id, .. } => Ok(enrollment_id),
-        other => Err(format!("private replacement approval was refused: {other:?}").into()),
+        refusal @ DeviceLoginDecision::Refused { .. } => {
+            Err(format!("private replacement approval was refused: {refusal:?}").into())
+        }
     }
 }
 

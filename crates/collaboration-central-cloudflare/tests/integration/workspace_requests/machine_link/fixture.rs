@@ -165,24 +165,6 @@ impl Fixture {
         Ok(())
     }
 
-    pub async fn supersede(&self) -> Result<()> {
-        let next = approve(
-            &self.host,
-            &self.client,
-            "019f0000-0000-7000-8000-00000000cf06",
-            self.host.now_seconds(),
-        )
-        .await?;
-        match grant(&self.host, &self.client, &next).await? {
-            MachineTokenDecision::Grant {
-                enrollment_id,
-                superseded: Some(ended),
-                ..
-            } if enrollment_id == next && ended.enrollment_id == self.enrollment => Ok(()),
-            _ => Err("real second grant did not supersede the original enrollment".into()),
-        }
-    }
-
     pub async fn close(self) -> Result<()> {
         self.host.close().await;
         self.keys.shutdown().await
