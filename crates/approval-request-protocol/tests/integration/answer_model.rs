@@ -210,7 +210,7 @@ fn question_shapes_reject_extra_fields_and_values_without_a_wire_type() {
 }
 
 #[test]
-fn persistence_rule_uses_the_declared_duration_for_allow_decline_and_abort() {
+fn verified_storage_uses_the_declared_duration_for_allow_decline_and_abort() {
     for effect in ["allow", "decline", "abort"] {
         for (duration, needs_factor) in [
             ("thisRequest", false),
@@ -220,12 +220,29 @@ fn persistence_rule_uses_the_declared_duration_for_allow_decline_and_abort() {
             ("notVerified", true),
         ] {
             let offered_option: OfferedOption = serde_json::from_value(json!({
-                "id":"choice","label":"Always allow","effect":effect,"lasts":duration,"kept":"notVerified"
+                "id":"choice","label":"Always allow","effect":effect,"lasts":duration,"kept":"nowhere"
             })).unwrap();
             assert_eq!(
                 offered_option.needs_person_with_fresh_factor(),
                 needs_factor,
                 "{effect}: {duration}"
+            );
+        }
+    }
+}
+
+#[test]
+fn either_unverified_option_field_requires_a_fresh_factor_for_allow_and_decline() {
+    for effect in ["allow", "decline"] {
+        for (duration, storage) in [("notVerified", "nowhere"), ("thisRequest", "notVerified")] {
+            let offered_option: OfferedOption = serde_json::from_value(json!({
+                "id": "choice", "label": "This time only", "effect": effect,
+                "lasts": duration, "kept": storage
+            }))
+            .unwrap();
+            assert!(
+                offered_option.needs_person_with_fresh_factor(),
+                "{effect} with duration {duration} and storage {storage} requires a fresh factor"
             );
         }
     }

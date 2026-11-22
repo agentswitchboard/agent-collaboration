@@ -184,7 +184,7 @@ impl OfferedOption {
         matches!(
             self.lasts,
             OptionDuration::KeptUntilChanged | OptionDuration::NotVerified
-        )
+        ) || matches!(self.kept, KeptWhere::NotVerified)
     }
 }
 
