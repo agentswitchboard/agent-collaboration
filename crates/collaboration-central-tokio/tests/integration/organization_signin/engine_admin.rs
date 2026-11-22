@@ -549,3 +549,6 @@ async fn discarding_a_retired_subject_whose_lifecycle_state_will_not_decode_repo
     );
     engine.close().await;
 }
+
+#[path = "engine_retired_paging.rs"]
+mod retired_paging;

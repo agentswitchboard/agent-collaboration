@@ -350,42 +350,59 @@ impl<'host, Host: EngineHost> FleetEngine<'host, Host> {
         ),
         StoreFailure,
     > {
-        let rows = self
-            .central_store()
-            .read(plan_retired_attempt_page(
-                after.map(|cursor| cursor.to_string()),
-                i64::from(limit) + 1,
-            )?)
-            .await?;
+        let lookahead = usize::from(limit) + 1;
+        let read_limit = i64::from(limit) + 1;
+        let mut scan_after = after.map(|cursor| cursor.to_string());
         let mut items = Vec::new();
-        for row in &rows.rows {
-            let stored = decode_observed_attempt_row(&rows, row)?;
-            let record = stored
-                .decoded_failure_record
-                .map_err(|corruption| corrupt(&corruption.column_path))?;
-            let AttemptState::Retired { retired_at } = record.state else {
-                return Err(corrupt("engine_work_attempts.state"));
-            };
-            let Some(admin_kind) = (match read_result_column(&rows, row, "machine_kind")? {
-                SqlValue::Text(admin_kind) => decode_registered_admin_kind(admin_kind, registry)?,
-                _ => return Err(corrupt("engine_work_attempts.machine_kind")),
-            }) else {
-                continue;
-            };
-            items.push(RetiredAttemptSummary {
-                attempt_id: record.attempt_id,
-                machine_kind: admin_kind,
-                subject_key: match read_result_column(&rows, row, "subject_key")? {
-                    SqlValue::Text(key) => key.clone(),
-                    _ => return Err(corrupt("engine_work_attempts.subject_key")),
-                },
-                failure_class: decode_attempt_failure_class(record.last_failure.storage_tag())?,
-                failure_count: record.failure_count.get(),
-                retired_at,
-                last_failure_detail: super::attempt_records::encode_attempt_failure_detail(
-                    &record.last_failure,
-                ),
-            });
+        loop {
+            let rows = self
+                .central_store()
+                .read(plan_retired_attempt_page(scan_after.take(), read_limit)?)
+                .await?;
+            let reached_end = rows.rows.len() < lookahead;
+            for row in &rows.rows {
+                let stored = decode_observed_attempt_row(&rows, row)?;
+                let record = stored
+                    .decoded_failure_record
+                    .map_err(|corruption| corrupt(&corruption.column_path))?;
+                let AttemptState::Retired { retired_at } = record.state else {
+                    return Err(corrupt("engine_work_attempts.state"));
+                };
+                // Keep the raw SQLite key for an internal continuation, including hidden rows.
+                let SqlValue::Text(raw_attempt_id) = read_result_column(&rows, row, "attempt_id")?
+                else {
+                    return Err(corrupt("engine_work_attempts.attempt_id"));
+                };
+                scan_after = Some(raw_attempt_id.clone());
+                let Some(admin_kind) = (match read_result_column(&rows, row, "machine_kind")? {
+                    SqlValue::Text(admin_kind) => {
+                        decode_registered_admin_kind(admin_kind, registry)?
+                    }
+                    _ => return Err(corrupt("engine_work_attempts.machine_kind")),
+                }) else {
+                    continue;
+                };
+                items.push(RetiredAttemptSummary {
+                    attempt_id: record.attempt_id,
+                    machine_kind: admin_kind,
+                    subject_key: match read_result_column(&rows, row, "subject_key")? {
+                        SqlValue::Text(key) => key.clone(),
+                        _ => return Err(corrupt("engine_work_attempts.subject_key")),
+                    },
+                    failure_class: decode_attempt_failure_class(record.last_failure.storage_tag())?,
+                    failure_count: record.failure_count.get(),
+                    retired_at,
+                    last_failure_detail: super::attempt_records::encode_attempt_failure_detail(
+                        &record.last_failure,
+                    ),
+                });
+                if items.len() == lookahead {
+                    break;
+                }
+            }
+            if reached_end || items.len() == lookahead {
+                break;
+            }
         }
         let next_attempt_cursor = if items.len() > usize::from(limit) {
             items.truncate(usize::from(limit));
