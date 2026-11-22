@@ -53,23 +53,31 @@ pub async fn call_machine<R: MacLinkRpc>(
     request: Envelope<R::Target, R::Request>,
 ) -> Result<Envelope<R::Target, R::Reply>, CallFailure> {
     let target = request.target.clone();
-    let request = MacCallInvocation {
-        machine_id,
-        request: R::request(request),
-    };
-    let answer = cloudflare_transport::object_exchange(
-        env,
-        ObjectAddress::Central(organization),
-        MACHINE_CALL_PATH,
-        &request,
-        None,
-    )
-    .await?;
+    let answer = invoke_mac_call::<R>(env, organization, machine_id, request).await?;
     match answer {
         MacCallAnswer::Replied { result } => finish_mac_call::<R>(&target, result),
         MacCallAnswer::NeverReached => Err(CallFailure::NeverReached),
         MacCallAnswer::AnswerLost => Err(CallFailure::AnswerLost),
     }
+}
+
+async fn invoke_mac_call<R: MacLinkRpc>(
+    env: &Env,
+    organization: OrganizationId,
+    machine_id: MachineId,
+    request: Envelope<R::Target, R::Request>,
+) -> Result<MacCallAnswer, CallFailure> {
+    cloudflare_transport::object_exchange(
+        env,
+        ObjectAddress::Central(organization),
+        MACHINE_CALL_PATH,
+        &MacCallInvocation {
+            machine_id,
+            request: R::request(request),
+        },
+        None,
+    )
+    .await
 }
 
 impl CentralObject {
