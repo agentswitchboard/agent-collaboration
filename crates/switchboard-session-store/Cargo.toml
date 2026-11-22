@@ -18,7 +18,7 @@ collaboration-protocol = { path = "../collaboration-protocol", version = "0.1.14
 serde.workspace = true
 serde_json.workspace = true
 sqlite-storage-maintenance = { path = "../sqlite-storage-maintenance", version = "0.1.118" }
-sqlx = { workspace = true, features = ["sqlite"] }
+sqlx = { workspace = true, features = ["macros", "migrate", "sqlite"] }
 thiserror.workspace = true
 tokio.workspace = true
 
