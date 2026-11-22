@@ -67,12 +67,6 @@ async fn frozen_view_keeps_its_contract_and_projected_reads_detect_no_raw_grid_w
                     .control("engine-due-schedules", &horizon_ms)
                     .await
                     .unwrap();
-                let typed: Vec<_> = typed
-                    .into_iter()
-                    .map(|(key, occurrence, effective)| {
-                        vec![SqlValue::Text(key), integer(occurrence), integer(effective)]
-                    })
-                    .collect();
                 assert!(
                     typed.is_empty(),
                     "unprojected schedule must stay out of dispatch: {}",

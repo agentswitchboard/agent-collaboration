@@ -74,16 +74,6 @@ async fn frozen_view_keeps_its_contract_and_projected_reads_detect_no_raw_grid_w
                 )
                 .await
                 .unwrap_or_else(|_| panic!("typed schedule list failed"));
-                let typed: Vec<_> = typed
-                    .into_iter()
-                    .map(|row| {
-                        vec![
-                            SqlValue::Text(row.key.0),
-                            integer(row.occurrence_ms),
-                            integer(row.effective_due_ms),
-                        ]
-                    })
-                    .collect();
                 assert!(
                     typed.is_empty(),
                     "unprojected schedule must stay out of dispatch: {}",

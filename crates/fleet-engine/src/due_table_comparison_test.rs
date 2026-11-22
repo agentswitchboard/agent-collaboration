@@ -1,4 +1,4 @@
-use super::{LegacyTime, StoredAlarmInputs, StoredSource};
+use super::{LegacyTime, RetiredItem, StoredAlarmInputs, StoredSource};
 
 #[test]
 fn diagnostic_sql_describes_the_rows_read_on_the_owning_transaction() {
@@ -11,7 +11,9 @@ fn diagnostic_sql_describes_the_rows_read_on_the_owning_transaction() {
 }
 
 use super::{DueTableDifference, compare_due_table};
-use crate::{DueItemKey, DueKind, DueOwnerTiming, DueTableChange, apply_due_table_change};
+use crate::{
+    DueEntryKey, DueItemKey, DueKind, DueOwnerTiming, DueTableChange, apply_due_table_change,
+};
 use central_engine_model::{AlarmInputs, DueBatchPolicy, EngineTime, InstanceKey};
 use fleet_lent_transaction::CentralTransaction;
 use sqlx::{Connection, Sqlite, SqliteConnection, sqlite::SqliteQueryResult};
@@ -88,7 +90,7 @@ async fn due_comparison_identifies_missing_wrong_stale_and_out_of_band_rows() {
     assert_eq!(uuid::Uuid::parse_str(&id).unwrap().get_version_num(), 7);
 
     let changed = EngineTime::from_timestamp_millis(600_000).unwrap();
-    let change = DueTableChange::PublishItem(DueOwnerTiming::at(key, changed).unwrap());
+    let change = DueTableChange::PublishItem(DueOwnerTiming::at(key.clone(), changed).unwrap());
     apply_due_table_change(&mut LendingSqlite(&mut tx), &change, epoch)
         .await
         .unwrap();
@@ -110,6 +112,19 @@ async fn due_comparison_identifies_missing_wrong_stale_and_out_of_band_rows() {
             .any(|difference| matches!(difference, DueTableDifference::WrongDispatch { .. }))
     );
 
+    sqlx::query("UPDATE engine_due_entries SET effective_due_ms=123456 WHERE subject_key=?1")
+        .bind(SUBJECT)
+        .execute(&mut *tx)
+        .await
+        .unwrap();
+    let differences = compare_due_table(&mut LendingSqlite(&mut tx), due, 1, alarm, &policy)
+        .await
+        .unwrap();
+    assert!(differences.iter().any(|difference| matches!(difference,
+        DueTableDifference::WrongItemTime { kind: DueKind::WakeTimer, projected, .. }
+            if projected.effective_due_ms == 123456
+    )));
+
     sqlx::query("DELETE FROM automation_wakes WHERE wake_id=?1")
         .bind(SUBJECT)
         .execute(&mut *tx)
@@ -127,6 +142,29 @@ async fn due_comparison_identifies_missing_wrong_stale_and_out_of_band_rows() {
         DueTableDifference::NonCanonicalLegacyTime { kind: DueKind::LegacyNoticeWindows, key, stored_time }
             if key.ends_with("000003") && stored_time == "not-canonical"
     )));
+    sqlx::query("INSERT INTO automation_wakes VALUES (?1,'target','1970-01-01T00:05:00.000Z','wake','active',?2,?2)")
+        .bind(SUBJECT).bind(AT).execute(&mut *tx).await.unwrap();
+    sqlx::query("INSERT INTO engine_work_attempts VALUES ('019f0000-0000-7000-8000-000000000004','wake_timer',?1,'retired',4,NULL,'refused',NULL,?2,?2,?2,?2,?2)")
+        .bind(SUBJECT).bind(AT).execute(&mut *tx).await.unwrap();
+    let differences = compare_due_table(&mut LendingSqlite(&mut tx), due, 1, alarm, &policy)
+        .await
+        .unwrap();
+    assert!(differences.iter().any(|difference| matches!(difference,
+        DueTableDifference::RetiredItemMismatch { key, reference: true, projected: false, .. }
+            if key == SUBJECT
+    )));
+    let change = DueTableChange::RefreshAttempt(DueEntryKey::Item(key));
+    apply_due_table_change(&mut LendingSqlite(&mut tx), &change, epoch)
+        .await
+        .unwrap();
+    let differences = compare_due_table(&mut LendingSqlite(&mut tx), due, 1, alarm, &policy)
+        .await
+        .unwrap();
+    assert!(
+        !differences
+            .iter()
+            .any(|difference| matches!(difference, DueTableDifference::RetiredItemMismatch { .. }))
+    );
     tx.rollback().await.unwrap();
     assert!(
         compare_due_table(&mut LendingSqlite(&mut connection), due, 1, alarm, &policy)

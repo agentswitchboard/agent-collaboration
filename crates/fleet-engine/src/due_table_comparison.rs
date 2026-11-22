@@ -26,6 +26,12 @@ pub enum DueTableDifference {
         reference: DueRow,
         projected: DueRow,
     },
+    RetiredItemMismatch {
+        kind: String,
+        key: String,
+        reference: bool,
+        projected: bool,
+    },
     WrongDispatch {
         kind: DueKind,
         reference: Vec<DueRow>,
@@ -76,6 +82,16 @@ struct StoredSource {
 }
 
 #[derive(sqlx::FromRow)]
+struct RetiredItem {
+    #[sqlx(rename = "kind!: String")]
+    kind: String,
+    #[sqlx(rename = "key!: String")]
+    key: String,
+    #[sqlx(rename = "is_reference!: i64")]
+    is_reference: i64,
+}
+
+#[derive(sqlx::FromRow)]
 struct LegacyTime {
     #[sqlx(rename = "kind!: String")]
     kind: String,
@@ -91,6 +107,7 @@ macro_rules! comparison_queries {
             $emit!(StoredAlarmInputs, "src/queries/read_alarm_inputs.sql"),
             $emit!(StoredSource, "src/queries/compare_due_sources.sql"),
             $emit!(LegacyTime, "src/queries/compare_legacy_times.sql"),
+            $emit!(RetiredItem, "src/queries/compare_retired_due_items.sql"),
         )
     };
 }
@@ -147,7 +164,7 @@ where
             )))
         };
     }
-    let (alarm_query, sources_query, legacy_query) = comparison_queries!(query_as);
+    let (alarm_query, sources_query, legacy_query, retired_query) = comparison_queries!(query_as);
     let alarm = alarm_query
         .fetch_one(transaction.executor())
         .await
@@ -177,6 +194,35 @@ where
         .await
         .map_err(|error| map_central_query_failure(error, "due source comparison"))?;
     compare_sources(sources, &mut differences);
+
+    let retired_items = retired_query
+        .fetch_all(transaction.executor())
+        .await
+        .map_err(|error| map_central_query_failure(error, "retired due item comparison"))?;
+    let mut retirement = BTreeMap::<_, (bool, bool)>::new();
+    for RetiredItem {
+        kind,
+        key,
+        is_reference,
+    } in retired_items
+    {
+        let presence = retirement.entry((kind, key)).or_default();
+        if is_reference == 1 {
+            presence.0 = true;
+        } else {
+            presence.1 = true;
+        }
+    }
+    for ((kind, key), (reference, projected)) in retirement {
+        if reference != projected {
+            differences.push(DueTableDifference::RetiredItemMismatch {
+                kind,
+                key,
+                reference,
+                projected,
+            });
+        }
+    }
 
     let legacy_times = legacy_query
         .fetch_all(transaction.executor())
