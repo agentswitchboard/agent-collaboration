@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE automation_schedules SET next_due_at=? WHERE automation_id=?\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "1967f11e474a3426553385046f67a0cdb530a70ee551ddb68c80c7f3c2f30755"
+}

@@ -1,0 +1,146 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT automation_id,target,timing_rule,anchor_at,expires_at,evaluated_through_at,text,next_due_at,state,created_at,updated_at FROM automation_schedules WHERE automation_id=?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "automation_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "automation_schedules",
+            "name": "automation_id"
+          }
+        }
+      },
+      {
+        "name": "target",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "automation_schedules",
+            "name": "target"
+          }
+        }
+      },
+      {
+        "name": "timing_rule",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "automation_schedules",
+            "name": "timing_rule"
+          }
+        }
+      },
+      {
+        "name": "anchor_at",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "automation_schedules",
+            "name": "anchor_at"
+          }
+        }
+      },
+      {
+        "name": "expires_at",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "automation_schedules",
+            "name": "expires_at"
+          }
+        }
+      },
+      {
+        "name": "evaluated_through_at",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "automation_schedules",
+            "name": "evaluated_through_at"
+          }
+        }
+      },
+      {
+        "name": "text",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "automation_schedules",
+            "name": "text"
+          }
+        }
+      },
+      {
+        "name": "next_due_at",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "automation_schedules",
+            "name": "next_due_at"
+          }
+        }
+      },
+      {
+        "name": "state",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "automation_schedules",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "automation_schedules",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "automation_schedules",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8ba12a9f49b38304574af35b506aa418bff4d30d052b91b5980e5056fb4f777f"
+}
