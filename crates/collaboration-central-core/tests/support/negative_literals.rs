@@ -59,6 +59,27 @@ pub fn explicit_negatives(name: &str, literals: &[Value]) -> Vec<Value> {
                 json!({"result":"refused","reason":"unrecognizedVariant"}),
                 json!({"result":"refused","reason":{"kind":"nameInUse"}}),
             ]);
+            let allowance = literals
+                .iter()
+                .filter_map(|value| value["records"].as_array())
+                .flatten()
+                .find(|record| record["kind"] == "machineAllowanceChanged")
+                .unwrap();
+            for field in ["machineId", "workspaceId", "state"] {
+                let mut missing = allowance.clone();
+                missing.as_object_mut().unwrap().remove(field);
+                invalid.push(json!({"result":"records","records":[missing]}));
+            }
+            for (field, value) in [
+                ("state", json!("inactive")),
+                ("machineId", json!(7)),
+                ("workspaceId", Value::Null),
+                ("targetId", allowance["machineId"].clone()),
+            ] {
+                let mut wrong = allowance.clone();
+                wrong[field] = value;
+                invalid.push(json!({"result":"records","records":[wrong]}));
+            }
         }
         "CreateWorkspaceRequest" => {
             let mut missing_description = literals[0].clone();

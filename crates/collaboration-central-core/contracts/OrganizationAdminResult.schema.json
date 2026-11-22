@@ -165,16 +165,16 @@
       ],
       "type": "object"
     },
-    "OrganizationChangeKind": {
+    "MachineAllowanceState": {
       "enum": [
-        "organizationProvisioned",
-        "stampRenewed",
-        "workspaceCreated",
-        "machineEnrolled",
-        "machineRevoked",
-        "machineExpired",
-        "allowanceChanged"
+        "active",
+        "withdrawn"
       ],
+      "type": "string"
+    },
+    "MachineId": {
+      "description": "The Router install's durable identity, shared with central.",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
       "type": "string"
     },
     "OrganizationChangeOrigin": {
@@ -231,6 +231,75 @@
       ]
     },
     "OrganizationChangeRecord": {
+      "anyOf": [
+        {
+          "additionalProperties": false,
+          "properties": {
+            "createdAtMillis": {
+              "$ref": "#/$defs/UnixMillis"
+            },
+            "id": {
+              "format": "uuid",
+              "type": "string"
+            },
+            "kind": {
+              "const": "machineAllowanceChanged",
+              "type": "string"
+            },
+            "machineId": {
+              "$ref": "#/$defs/MachineId"
+            },
+            "origin": {
+              "$ref": "#/$defs/OrganizationChangeOrigin"
+            },
+            "requestId": {
+              "$ref": "#/$defs/ChangeRequestId"
+            },
+            "state": {
+              "$ref": "#/$defs/MachineAllowanceState"
+            },
+            "workspaceId": {
+              "$ref": "#/$defs/WorkspaceId"
+            }
+          },
+          "required": [
+            "kind",
+            "id",
+            "requestId",
+            "origin",
+            "machineId",
+            "workspaceId",
+            "state",
+            "createdAtMillis"
+          ],
+          "type": "object"
+        },
+        {
+          "$ref": "#/$defs/TargetedOrganizationChangeRecord"
+        }
+      ],
+      "description": "The organization change page projects both subject shapes under one kind tag."
+    },
+    "ResourceName": {
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^(?:[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000](?:[\\s\\S]*[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000])?)?$(?![\\s\\S])",
+      "type": "string",
+      "x-maxUtf8Bytes": 256
+    },
+    "TargetedOrganizationChangeKind": {
+      "enum": [
+        "organizationProvisioned",
+        "stampRenewed",
+        "workspaceCreated",
+        "machineEnrolled",
+        "machineRevoked",
+        "machineExpired",
+        "allowanceChanged"
+      ],
+      "type": "string"
+    },
+    "TargetedOrganizationChangeRecord": {
       "additionalProperties": false,
       "properties": {
         "createdAtMillis": {
@@ -241,7 +310,7 @@
           "type": "string"
         },
         "kind": {
-          "$ref": "#/$defs/OrganizationChangeKind"
+          "$ref": "#/$defs/TargetedOrganizationChangeKind"
         },
         "origin": {
           "$ref": "#/$defs/OrganizationChangeOrigin"
@@ -262,13 +331,6 @@
         "createdAtMillis"
       ],
       "type": "object"
-    },
-    "ResourceName": {
-      "maxLength": 256,
-      "minLength": 1,
-      "pattern": "^(?:[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000](?:[\\s\\S]*[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000])?)?$(?![\\s\\S])",
-      "type": "string",
-      "x-maxUtf8Bytes": 256
     },
     "UnixMillis": {
       "format": "int64",
