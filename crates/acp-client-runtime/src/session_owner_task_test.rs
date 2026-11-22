@@ -370,6 +370,13 @@ impl SessionOwnerPorts for OutboxOrderProbe {
         caller_wakes: &mut OwnerCallerWakes,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
         if matches!(effect, OwnerEffect::RetireRoute(_)) {
+            assert!(
+                matches!(
+                    self.snapshot.borrow().lifecycle,
+                    SessionLifecycle::NotLoaded { .. }
+                ),
+                "ordinary outbox effect must still see the old snapshot"
+            );
             self.order
                 .lock()
                 .map_err(|_| OwnerTaskError::ExecutorStopped)?
