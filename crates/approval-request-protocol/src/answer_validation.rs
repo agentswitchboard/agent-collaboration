@@ -47,7 +47,10 @@ pub fn check_answer(offer: &OfferView, answer: &Answer) -> Result<(), InvalidAns
         (OfferView::ProviderQuestion { offer }, Answer::Question { answer }) => {
             check_question_answer(&offer.fields, answer)
         }
-        _ => Err(InvalidAnswer::WrongKind {}),
+        (OfferView::ProviderApproval { .. }, Answer::Question { .. })
+        | (OfferView::ProviderQuestion { .. }, Answer::Approval { .. }) => {
+            Err(InvalidAnswer::WrongKind {})
+        }
     }
 }
 
@@ -136,7 +139,30 @@ fn check_field_value(
             selected_option_ids,
             selection.counts(),
         ),
-        _ => Err(InvalidAnswer::WrongValueType {
+        (
+            QuestionField::Text { .. },
+            QuestionAnswerValue::Number { .. }
+            | QuestionAnswerValue::Boolean { .. }
+            | QuestionAnswerValue::SelectedOptions { .. },
+        )
+        | (
+            QuestionField::Number { .. },
+            QuestionAnswerValue::Text { .. }
+            | QuestionAnswerValue::Boolean { .. }
+            | QuestionAnswerValue::SelectedOptions { .. },
+        )
+        | (
+            QuestionField::Boolean { .. },
+            QuestionAnswerValue::Text { .. }
+            | QuestionAnswerValue::Number { .. }
+            | QuestionAnswerValue::SelectedOptions { .. },
+        )
+        | (
+            QuestionField::SingleChoice { .. } | QuestionField::MultiChoice { .. },
+            QuestionAnswerValue::Text { .. }
+            | QuestionAnswerValue::Number { .. }
+            | QuestionAnswerValue::Boolean { .. },
+        ) => Err(InvalidAnswer::WrongValueType {
             field_id: field.field_id().clone(),
         }),
     }

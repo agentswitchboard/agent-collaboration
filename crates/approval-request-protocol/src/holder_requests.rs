@@ -120,11 +120,28 @@ impl DeliverEndingReply {
     #[must_use]
     pub const fn delivery_after_reply(self, current: Delivery) -> Delivery {
         match (self, current) {
-            (Self::Received {}, Delivery::Owed {} | Delivery::ClosedWithoutReceipt {}) => {
-                Delivery::ReceivedByHolder {}
-            }
-            (Self::NotHeld {}, Delivery::Owed {}) => Delivery::ClosedWithoutReceipt {},
-            _ => current,
+            (
+                Self::Received {},
+                Delivery::Owed {}
+                | Delivery::ReceivedByHolder {}
+                | Delivery::ClosedWithoutReceipt {},
+            )
+            | (
+                Self::StopOwed {}
+                | Self::NotHeld {}
+                | Self::HolderNotReady {}
+                | Self::EndingDiffers {},
+                Delivery::ReceivedByHolder {},
+            ) => Delivery::ReceivedByHolder {},
+            (Self::NotHeld {}, Delivery::Owed {} | Delivery::ClosedWithoutReceipt {})
+            | (
+                Self::StopOwed {} | Self::HolderNotReady {} | Self::EndingDiffers {},
+                Delivery::ClosedWithoutReceipt {},
+            ) => Delivery::ClosedWithoutReceipt {},
+            (
+                Self::StopOwed {} | Self::HolderNotReady {} | Self::EndingDiffers {},
+                Delivery::Owed {},
+            ) => Delivery::Owed {},
         }
     }
 }
@@ -134,8 +151,18 @@ impl StopReply {
     #[must_use]
     pub const fn delivery_after_stop(&self, current: Delivery) -> Delivery {
         match (self, current) {
-            (Self::Stands { .. }, Delivery::Owed {}) => Delivery::ClosedWithoutReceipt {},
-            _ => current,
+            (Self::Stands { .. }, Delivery::Owed {})
+            | (
+                Self::Stands { .. } | Self::NotVisible {} | Self::AuthorityRefused { .. },
+                Delivery::ClosedWithoutReceipt {},
+            ) => Delivery::ClosedWithoutReceipt {},
+            (
+                Self::Stands { .. } | Self::NotVisible {} | Self::AuthorityRefused { .. },
+                Delivery::ReceivedByHolder {},
+            ) => Delivery::ReceivedByHolder {},
+            (Self::NotVisible {} | Self::AuthorityRefused { .. }, Delivery::Owed {}) => {
+                Delivery::Owed {}
+            }
         }
     }
 }
