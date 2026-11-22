@@ -20,6 +20,10 @@ impl DecisionTime {
     }
 }
 
+pub(crate) fn idle_limit_reached(time: DecisionTime, last_grant_at: UnixSeconds) -> bool {
+    time.seconds().0.saturating_sub(last_grant_at.0) >= IDLE_EXPIRY_SECONDS
+}
+
 pub(super) struct DecisionIds<'a>(pub &'a dyn IdSource);
 impl DecisionIds<'_> {
     pub(super) fn next(&self) -> Result<Uuid, StoreFailure> {

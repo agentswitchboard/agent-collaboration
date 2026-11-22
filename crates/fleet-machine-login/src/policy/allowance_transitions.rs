@@ -1,12 +1,12 @@
 //! One allowance lifecycle per machine and workspace pair.
+use super::enrollment_records::{AllowanceEffect, StoredAllowance, StoredAllowanceState};
 use central_storage::StoreFailure;
-use fleet_signin::organization_change::MachineAllowanceState;
 use state_machine_core::{
-    EventTag, RefusalTag, StateMachine, StateMachineResult, StateTag, Transition,
+    EventTag, RefusalTag, StateMachine, StateMachineResult, StateTag, Transition, TransitionError,
 };
 
-#[derive(Clone, Copy)]
-pub(super) enum AllowanceStatus {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum AllowanceStatus {
     Absent,
     Active,
     Withdrawn,
@@ -49,34 +49,46 @@ impl RefusalTag for AllowanceRefusal {
     }
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum PairChange {
+    Insert,
+    Reactivate,
+    Withdraw,
+}
+
 struct AllowanceLifecycle;
 
 impl StateMachine for AllowanceLifecycle {
     type State = AllowanceStatus;
     type Event = AllowanceEvent;
-    type Effect = MachineAllowanceState;
+    type Effect = PairChange;
     type Error = AllowanceRefusal;
 
     fn transition(state: &AllowanceStatus, event: AllowanceEvent) -> StateMachineResult<Self> {
         use AllowanceEvent::{ApprovalSelectedWorkspace, EnrollmentEnded};
         use AllowanceStatus::{Absent, Active, Withdrawn};
         Ok(match (*state, event) {
-            (Absent | Withdrawn, ApprovalSelectedWorkspace) => {
-                (Active, vec![MachineAllowanceState::Active])
-            }
-            (Active, EnrollmentEnded) => (Withdrawn, vec![MachineAllowanceState::Withdrawn]),
-            (Active, ApprovalSelectedWorkspace) | (Absent | Withdrawn, EnrollmentEnded) => {
+            (Absent, ApprovalSelectedWorkspace) => (Active, vec![PairChange::Insert]),
+            (Withdrawn, ApprovalSelectedWorkspace) => (Active, vec![PairChange::Reactivate]),
+            (Active, EnrollmentEnded) => (Withdrawn, vec![PairChange::Withdraw]),
+            (Active, ApprovalSelectedWorkspace) | (Withdrawn, EnrollmentEnded) => {
                 (*state, Vec::new())
+            }
+            // Ending enumerates persisted pairs. A missing pair is outside that set.
+            (Absent, EnrollmentEnded) => {
+                return Err(TransitionError::NotAllowed {
+                    state: state.state_tag(),
+                    event: event.event_tag(),
+                });
             }
         })
     }
 
     fn transitions() -> &'static [Transition] {
-        const ALLOWANCE_TRANSITIONS: [Transition; 6] = [
+        const ALLOWANCE_TRANSITIONS: [Transition; 5] = [
             allowance_transition("absent", "approvalSelectedWorkspace", "active"),
             allowance_transition("active", "approvalSelectedWorkspace", "active"),
             allowance_transition("withdrawn", "approvalSelectedWorkspace", "active"),
-            allowance_transition("absent", "enrollmentEnded", "absent"),
             allowance_transition("active", "enrollmentEnded", "withdrawn"),
             allowance_transition("withdrawn", "enrollmentEnded", "withdrawn"),
         ];
@@ -98,14 +110,22 @@ const fn allowance_transition(
 }
 
 pub(super) fn allowance_effect(
-    state: AllowanceStatus,
+    observed: Option<&StoredAllowance>,
     event: AllowanceEvent,
-) -> Result<Option<MachineAllowanceState>, StoreFailure> {
+) -> Result<Option<AllowanceEffect>, StoreFailure> {
+    let status = match observed.map(|row| row.state) {
+        None => AllowanceStatus::Absent,
+        Some(StoredAllowanceState::Active) => AllowanceStatus::Active,
+        Some(StoredAllowanceState::Withdrawn) => AllowanceStatus::Withdrawn,
+    };
     let (_, effects) =
-        AllowanceLifecycle::transition(&state, event).map_err(|_| StoreFailure::Unavailable)?;
+        AllowanceLifecycle::transition(&status, event).map_err(|_| StoreFailure::Unavailable)?;
+    let pair_id = || observed.map(|row| row.id).ok_or(StoreFailure::Unavailable);
     match effects.as_slice() {
         [] => Ok(None),
-        [effect] => Ok(Some(*effect)),
+        [PairChange::Insert] => Ok(Some(AllowanceEffect::Insert)),
+        [PairChange::Reactivate] => pair_id().map(|id| Some(AllowanceEffect::Reactivate(id))),
+        [PairChange::Withdraw] => pair_id().map(|id| Some(AllowanceEffect::Withdraw(id))),
         _ => Err(StoreFailure::Unavailable),
     }
 }

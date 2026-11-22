@@ -169,6 +169,23 @@ fn fresh(fixture: &Fixture, now: i64, until: i64) -> Result<String> {
     )
 }
 
+fn retryable_expiry() -> TokenRenewalResult {
+    TokenRenewalResult::Refused {
+        reason: TokenRenewalRefusal::CentralUnavailable,
+    }
+}
+
+async fn expect_expired_close(link: &mut super::ConnectedLink) -> Result<()> {
+    let close = link.socket.next().await;
+    if !matches!(close, Some(Ok(Message::Close { code, .. }))
+        if central_link_protocol::MachineLinkCloseCode::from_code(code.into()) ==
+            Some(central_link_protocol::MachineLinkCloseCode::Expired))
+    {
+        return Err(format!("expected the old transport deadline close: {close:?}").into());
+    }
+    Ok(())
+}
+
 fn not_active() -> TokenRenewalResult {
     TokenRenewalResult::Refused {
         reason: TokenRenewalRefusal::EnrollmentNotActive,
@@ -198,7 +215,7 @@ fn is_done(frame: &DataFrame) -> bool {
 }
 
 #[tokio::test]
-async fn a_renewal_just_before_the_deadline_renews_and_at_or_after_it_is_refused() -> Result<()> {
+async fn a_renewal_at_the_live_deadline_answers_retryably_then_closes() -> Result<()> {
     let fixture = Fixture::new().await?;
     let result = deadline_journey(&fixture).await;
     fixture.close().await?;
@@ -227,13 +244,6 @@ async fn deadline_journey(fixture: &Fixture) -> Result<()> {
         renew("019f0000-0000-7000-8000-00000000c312", &late)?,
     )
     .await?;
-    advance(fixture, 1).await?;
-    let after = renewal(
-        &mut link,
-        renew("019f0000-0000-7000-8000-00000000c313", &late)?,
-    )
-    .await?;
-
     // Assert
     let renewed_to =
         chrono::DateTime::from_timestamp(signed::NOW_SECONDS + 1199, 0).ok_or("renewed expiry")?;
@@ -246,12 +256,10 @@ async fn deadline_journey(fixture: &Fixture) -> Result<()> {
     {
         return Err(format!("one second before the deadline must renew: {just_before:?}").into());
     }
-    if at_deadline != not_active() || after != not_active() {
-        return Err(format!(
-            "at and after the deadline renewal is refused: {at_deadline:?}, {after:?}"
-        )
-        .into());
+    if at_deadline != retryable_expiry() {
+        return Err(format!("expected retryable expiry: {at_deadline:?}").into());
     }
+    expect_expired_close(&mut link).await?;
     drop(link);
     Ok(())
 }
@@ -363,33 +371,10 @@ async fn refusals_journey(fixture: &Fixture) -> Result<()> {
     if !is_done(&before.reply) {
         return Err(format!("the old deadline still admits +599: {:?}", before.reply).into());
     }
-    if at_deadline != not_active() {
-        return Err(format!("the advertised deadline refuses renewal: {at_deadline:?}").into());
+    if at_deadline != retryable_expiry() {
+        return Err(format!("expected retryable expiry: {at_deadline:?}").into());
     }
-    let expired = link
-        .call_as(
-            fixture::session_caller()?,
-            area(
-                "019f0000-0000-7000-8000-00000000cf32",
-                "At the deadline",
-                &workspace,
-            )?,
-        )
-        .await?;
-    if !matches!(
-        &expired.reply,
-        DataFrame::Reply { result, .. } if matches!(
-            result.as_ref(),
-            central_link_protocol::ReplyPayload::Workspace(reply)
-                if reply.result == WorkspaceResult::Refused(RefusalReason::MachineRevoked)
-        )
-    ) {
-        return Err(format!(
-            "the advertised deadline must refuse the write: {:?}",
-            expired.reply
-        )
-        .into());
-    }
+    expect_expired_close(&mut link).await?;
     drop(link);
     Ok(())
 }
@@ -405,18 +390,42 @@ async fn a_renewal_after_the_enrollment_is_superseded_is_refused_as_not_active()
 async fn superseded_journey(fixture: &Fixture) -> Result<()> {
     let (mut link, _, _, _, _) = baseline(fixture).await?;
     let token = fresh(fixture, 0, 900)?;
-    fixture.supersede().await?;
-
+    // Restore from a committed terminal row with no immediate host signal.
+    fixture.runtime().run_batch(central_storage::StatementBatch {
+        statements: vec![
+            central_storage::GuardedStatement {
+                statement: central_storage::Statement {
+                    sql: "UPDATE login_machine_approvals SET state='ended',end_reason='superseded',last_grant_at=NULL,ended_at=updated_at WHERE approval_id=?",
+                    args: vec![central_storage::SqlValue::Text(fixture.enrollment.as_str().to_owned())],
+                },
+                expect: central_storage::RowExpectation::Exactly(1),
+            },
+            central_storage::GuardedStatement {
+                statement: central_storage::Statement {
+                    sql: "UPDATE login_machines SET state='revoked',enrollment_generation=enrollment_generation+1 WHERE machine_id=?",
+                    args: vec![central_storage::SqlValue::Text(MACHINE_ID.to_owned())],
+                },
+                expect: central_storage::RowExpectation::Exactly(1),
+            },
+        ],
+        alarm: central_storage::AlarmUpdate::Unchanged,
+    }).await?;
+    advance(fixture, 600).await?;
     let answer = renewal(
         &mut link,
         renew("019f0000-0000-7000-8000-00000000c331", &token)?,
     )
     .await?;
-
     if answer != not_active() {
-        return Err(format!("a superseded enrollment cannot renew: {answer:?}").into());
+        return Err(format!("a stored ending wins over the old deadline: {answer:?}").into());
     }
-    drop(link);
+    let close = link.socket.next().await;
+    if !matches!(close, Some(Ok(Message::Close { code, .. }))
+        if central_link_protocol::MachineLinkCloseCode::from_code(code.into()) ==
+            Some(central_link_protocol::MachineLinkCloseCode::Inactive))
+    {
+        return Err(format!("expected the terminal enrollment close: {close:?}").into());
+    }
     Ok(())
 }
 

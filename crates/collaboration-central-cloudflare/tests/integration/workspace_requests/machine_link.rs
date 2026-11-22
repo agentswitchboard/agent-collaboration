@@ -6,6 +6,7 @@ mod caller_authority;
 mod delivery;
 mod fixture;
 mod idle_expiry;
+mod private_enrollment_invalidation;
 mod probe_diagnostic;
 mod receipt;
 mod receipt_frames;
@@ -491,7 +492,6 @@ async fn route_and_caller_refusals(fixture: &Fixture) -> Result<()> {
 enum AuthorityChange {
     Expiry,
     Revocation,
-    Supersession,
 }
 
 #[tokio::test]
@@ -505,8 +505,18 @@ async fn hibernating_socket_refuses_revoked_enrollment() -> Result<()> {
 }
 
 #[tokio::test]
-async fn hibernating_socket_refuses_superseded_enrollment() -> Result<()> {
-    authority_refusal(AuthorityChange::Supersession).await
+async fn hibernating_socket_closes_on_private_supersession_before_a_guarded_frame() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let result = async {
+        let (mut link, _, _, _, _) = baseline(&fixture).await?;
+        fixture.host.c2_witness(WitnessPhase::Evicting).await?;
+        fixture.host.c2_evict(&fixture.organization).await?;
+        private_enrollment_invalidation::supersede_and_require_old_close(&fixture, &mut link.socket)
+            .await
+    }
+    .await;
+    fixture.close().await?;
+    result
 }
 
 async fn authority_refusal(change: AuthorityChange) -> Result<()> {
@@ -542,7 +552,6 @@ async fn denied_journey(fixture: &Fixture, change: AuthorityChange) -> Result<()
                 return Err("real revocation did not end the original client".into());
             }
         }
-        AuthorityChange::Supersession => fixture.supersede().await?,
     }
     let before = fixture.host.c2_witness(WitnessPhase::Evicting).await?;
     fixture.host.c2_evict(&fixture.organization).await?;
@@ -570,7 +579,6 @@ async fn denied_journey(fixture: &Fixture, change: AuthorityChange) -> Result<()
     let expected_close = match change {
         AuthorityChange::Expiry => central_link_protocol::MachineLinkCloseCode::Expired,
         AuthorityChange::Revocation => central_link_protocol::MachineLinkCloseCode::Revoked,
-        AuthorityChange::Supersession => central_link_protocol::MachineLinkCloseCode::Inactive,
     };
     match link.socket.next().await {
         Some(Ok(Message::Close { code, .. }))

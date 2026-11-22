@@ -266,8 +266,8 @@ impl TokioWorkspaceHost {
                 .with_mail_delivery_observer(Arc::new(move |delivery| {
                     registry.offer(&organization_key, &delivery.machine_id, delivery.message_id);
                 }))
-                .with_machine_revocation_observer(Arc::new(move |machine_id| {
-                    revocation_registry.revoke(&revocation_org, &machine_id);
+                .with_enrollment_invalidation_observer(Arc::new(move |invalidation| {
+                    revocation_registry.invalidate_enrollment(&revocation_org, &invalidation);
                 })),
         );
         central.recompute_alarm().await?;
@@ -278,6 +278,10 @@ impl TokioWorkspaceHost {
         orgs.insert(organization.clone(), central.clone());
         Ok(central)
     }
+    pub(crate) fn link_clock(&self) -> &dyn RuntimeClock {
+        self.clock.as_ref()
+    }
+
     pub fn current_time(&self) -> runtime_primitives::SyncTime {
         self.clock.now()
     }

@@ -2,8 +2,8 @@
 use crate::{
     enrollment_row_values as values,
     policy::{
-        EnrollmentChange, EnrollmentFacts, IDLE_EXPIRY_SECONDS, MachineRow, MachineState,
-        StoredEnrollment, StoredEnrollmentState,
+        AllowanceEffect, AllowanceInputs, EnrollmentChange, EnrollmentFacts, IDLE_EXPIRY_SECONDS,
+        MachineRow, MachineState, StoredAllowanceState, StoredEnrollment, StoredEnrollmentState,
     },
 };
 use central_storage::{GuardedStatement, SafeInteger, SqlValue, StoreFailure};
@@ -41,9 +41,11 @@ pub fn statements(
     let at = values::timestamp(applying_ms, "machine_login.applying_time")?;
     let mut machine = facts.machine.clone();
     let mut enrollments = BTreeMap::new();
-    for enrollment in [&facts.enrollment, &facts.active, &facts.prior_approval]
-        .into_iter()
-        .flatten()
+    for enrollment in facts
+        .enrollment
+        .iter()
+        .chain(facts.current.iter().map(|current| current.enrollment()))
+        .chain(facts.prior_approval.iter())
     {
         enrollments.insert(enrollment.id.as_str().to_owned(), enrollment.clone());
     }
@@ -58,12 +60,15 @@ pub fn statements(
                 generation(before.generation.get())?,
                 text(machine_state(before.state)),
                 text(before.label.as_str()),
-                encode(
-                    &before.allowed_workspaces,
-                    "login_machine_allowances.workspace_id"
-                )?
+                nullable(
+                    facts
+                        .current
+                        .as_ref()
+                        .map(|current| current.enrollment().id.as_str())
+                )
             ]
         ));
+        guard_observed_allowances(&mut statements, before, &facts.allowances)?;
     }
     for change in changes {
         match change {
@@ -97,11 +102,11 @@ pub fn statements(
                 }
                 statements.push(fleet_signin::organization_change::insert(record)?);
             }
-            EnrollmentChange::RecordAllowance(record) => {
+            EnrollmentChange::RecordAllowance { record, effect } => {
                 if record.created_at_millis.0 != applying_ms {
                     return Err(corrupt("signin_change_records.created_at"));
                 }
-                statements.push(apply_allowance(record, &at)?);
+                statements.push(apply_allowance(record, *effect, &at)?);
                 statements.push(
                     fleet_signin::organization_change::insert_machine_allowance_change(record)?,
                 );
@@ -181,8 +186,55 @@ fn put_machine(
     }
 }
 
+fn guard_observed_allowances(
+    statements: &mut Vec<GuardedStatement>,
+    machine: &MachineRow,
+    allowances: &AllowanceInputs,
+) -> Result<(), StoreFailure> {
+    let held_state = match allowances {
+        AllowanceInputs::Unused => return Ok(()),
+        AllowanceInputs::Selected(_) => StoredAllowanceState::Active,
+        AllowanceInputs::Ending(_) => StoredAllowanceState::Withdrawn,
+    };
+    let held: Vec<_> = match allowances {
+        AllowanceInputs::Unused => Vec::new(),
+        AllowanceInputs::Selected(selected) => selected.values().flatten().collect(),
+        AllowanceInputs::Ending(pairs) => {
+            let active_workspaces: Vec<_> = pairs
+                .values()
+                .filter(|pair| pair.state == StoredAllowanceState::Active)
+                .map(|pair| pair.workspace_id.as_str())
+                .collect();
+            statements.push(checked_statement!(
+                "src/queries/guard_active_allowance_set.sql",
+                [
+                    text(machine.machine_id.as_str()),
+                    encode(&active_workspaces, "login_machine_allowances.workspace_id")?,
+                ]
+            ));
+            pairs.values().collect()
+        }
+    };
+    for pair in held.into_iter().filter(|pair| pair.state == held_state) {
+        statements.push(checked_statement!(
+            "src/queries/guard_held_machine_allowance.sql",
+            [
+                text(machine.machine_id.as_str()),
+                text(pair.workspace_id.as_str()),
+                text(pair.id),
+                text(match pair.state {
+                    StoredAllowanceState::Active => "active",
+                    StoredAllowanceState::Withdrawn => "withdrawn",
+                }),
+            ]
+        ));
+    }
+    Ok(())
+}
+
 fn apply_allowance(
     record: &fleet_signin::organization_change::MachineAllowanceChange,
+    effect: AllowanceEffect,
     at: &str,
 ) -> Result<GuardedStatement, StoreFailure> {
     use fleet_signin::organization_change::{MachineAllowanceState, OrganizationChangeOrigin};
@@ -197,9 +249,9 @@ fn apply_allowance(
     let machine = record.machine_id.as_str();
     let workspace = record.workspace_id.as_str();
     let request = record.request_id.as_str();
-    Ok(match record.state {
-        MachineAllowanceState::Active => checked_statement!(
-            "src/queries/activate_machine_allowance.sql",
+    Ok(match (effect, record.state) {
+        (AllowanceEffect::Insert, MachineAllowanceState::Active) => checked_statement!(
+            "src/queries/insert_machine_allowance.sql",
             [
                 text(record.id),
                 text(machine),
@@ -209,16 +261,29 @@ fn apply_allowance(
                 text(at)
             ]
         ),
-        MachineAllowanceState::Withdrawn => checked_statement!(
-            "src/queries/withdraw_machine_allowance.sql",
+        (AllowanceEffect::Reactivate(id), MachineAllowanceState::Active) => checked_statement!(
+            "src/queries/reactivate_machine_allowance.sql",
             [
                 text(machine),
                 text(workspace),
+                text(id),
                 text(request),
                 text(origin),
                 text(at)
             ]
         ),
+        (AllowanceEffect::Withdraw(id), MachineAllowanceState::Withdrawn) => checked_statement!(
+            "src/queries/withdraw_machine_allowance.sql",
+            [
+                text(machine),
+                text(workspace),
+                text(id),
+                text(request),
+                text(origin),
+                text(at)
+            ]
+        ),
+        _ => return Err(corrupt("login_machine_allowances.state")),
     })
 }
 

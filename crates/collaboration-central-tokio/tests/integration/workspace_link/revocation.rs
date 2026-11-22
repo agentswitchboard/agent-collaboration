@@ -48,15 +48,23 @@ async fn revocation_journey(fixture: &Fixture) -> Result<()> {
     revocation
         .expect(&owner, enrollment, json!({"result":"alreadyEnded"}))
         .await?;
-    let rejected = fixture
+    let mut rejected = fixture
         .client()?
         .get(fixture.url(signed::ORGANIZATION))
         .bearer_auth(&fixture.token)
         .upgrade()
         .send()
+        .await?
+        .into_websocket()
         .await?;
-    if rejected.status().as_u16() != 401 {
-        return Err("old bearer must be refused on reconnect".into());
+    let frame = rejected.next().await;
+    if !matches!(frame, Some(Ok(Message::Close { code, .. })) if
+        central_link_protocol::MachineLinkCloseCode::from_code(code.into()) ==
+        Some(central_link_protocol::MachineLinkCloseCode::Revoked))
+    {
+        return Err(
+            format!("a verified ended reconnect must close with Revoked: {frame:?}").into(),
+        );
     }
 
     let runtime = fixture

@@ -3,7 +3,7 @@ use crate::{
     authorization_floor_rows::{
         organization_guard, person_guard, read_organization_floor, read_person_floor,
     },
-    person_proof_repository::{reserve_admitted_proof, used_proof_exists},
+    person_proof_repository::{ObservedProof, observe_proof},
     person_request::{
         AdmissionRefusal, VerifiedPersonRequest,
         request_admission::{admission_before_person, decide_admission, request_time_refusal},
@@ -47,16 +47,16 @@ pub(crate) async fn prepare_person_admission(
         Ok(admitted) => admitted,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    if used_proof_exists(host, request.request_id).await? {
-        return Ok(Err(AdmissionRefusal::RequestReused));
-    }
+    let unused_proof = match observe_proof(host, request).await? {
+        ObservedProof::Unused(proof) => proof,
+        ObservedProof::Consumed => return Ok(Err(AdmissionRefusal::RequestReused)),
+    };
     let organization = organization.ok_or_else(|| corrupt("signin_authorization_floors.id"))?;
     let person = person.ok_or_else(|| corrupt("signin_person_authorization_floors.id"))?;
-    let now_ms = admitted.now_ms;
     let statements = vec![
         organization_guard(organization_id, &organization)?,
         person_guard(organization_id, &request.person_id, &person)?,
-        reserve_admitted_proof(request, now_ms)?,
+        unused_proof.consume(admitted).reservation_statement()?,
     ];
     Ok(Ok(PersonAdmissionPlan { statements }))
 }

@@ -104,6 +104,7 @@ pub(super) const MAIL_LAYER: (&str, &[&str]) = (
         "fleet-contracts",
         LENT_TRANSACTION,
         "fleet-engine",
+        "fleet-machine-login",
         "fleet-request-log",
         "fleet-runtime-ports",
         "fleet-workspace-access",

@@ -1,5 +1,6 @@
 //! The latest welcomed socket locally owns delivery for an organization machine.
 use central_link_protocol::MachineLinkCloseCode;
+use fleet_contracts::EnrollmentInvalidation;
 use fleet_identity_protocol::{EnrollmentId, OrganizationId};
 use std::{
     collections::HashMap,
@@ -19,7 +20,7 @@ struct PushSocket {
 }
 
 #[derive(Clone, Default)]
-pub(crate) struct MachinePushRegistry(Arc<Mutex<HashMap<MachineKey, PushSocket>>>);
+pub(crate) struct MachinePushRegistry(Arc<Mutex<HashMap<MachineKey, Vec<PushSocket>>>>);
 
 impl MachinePushRegistry {
     pub(crate) fn register(
@@ -33,17 +34,16 @@ impl MachinePushRegistry {
         let replaced = CancellationToken::new();
         let authority_close = Arc::new(OnceLock::new());
         let mut sockets = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(older) = sockets.insert(
-            key.clone(),
-            PushSocket {
-                enrollment,
-                sender: sender.clone(),
-                replaced: replaced.clone(),
-                authority_close: authority_close.clone(),
-            },
-        ) {
+        let active = sockets.entry(key.clone()).or_default();
+        if let Some(older) = active.last() {
             older.replaced.cancel();
         }
+        active.push(PushSocket {
+            enrollment,
+            sender: sender.clone(),
+            replaced: replaced.clone(),
+            authority_close: authority_close.clone(),
+        });
         MachinePushRegistration {
             registry: self.clone(),
             key,
@@ -54,43 +54,21 @@ impl MachinePushRegistry {
         }
     }
 
-    pub(crate) fn revoke(&self, organization: &OrganizationId, machine: &MachineId) {
-        self.close_matching(
-            organization,
-            machine,
-            |_| true,
-            MachineLinkCloseCode::Revoked,
-        );
-    }
-
-    pub(crate) fn close_idle_enrollment(
+    pub(crate) fn invalidate_enrollment(
         &self,
         organization: &OrganizationId,
-        machine: &MachineId,
-        enrollment: &EnrollmentId,
+        invalidation: &EnrollmentInvalidation,
     ) {
-        self.close_matching(
-            organization,
-            machine,
-            |socket| &socket.enrollment == enrollment,
-            MachineLinkCloseCode::Inactive,
-        );
-    }
-
-    fn close_matching(
-        &self,
-        organization: &OrganizationId,
-        machine: &MachineId,
-        matches: impl FnOnce(&PushSocket) -> bool,
-        cause: MachineLinkCloseCode,
-    ) {
-        let mut sockets = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let key = (organization.clone(), machine.clone());
-        if sockets.get(&key).is_some_and(matches)
-            && let Some(socket) = sockets.remove(&key)
-        {
-            let _ = socket.authority_close.set(cause);
-            socket.replaced.cancel();
+        let sockets = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let key = (organization.clone(), invalidation.machine_id.clone());
+        if let Some(registered) = sockets.get(&key) {
+            for socket in registered
+                .iter()
+                .filter(|socket| socket.enrollment == invalidation.enrollment_id)
+            {
+                let _ = socket.authority_close.set(invalidation.cause);
+                socket.replaced.cancel();
+            }
         }
     }
 
@@ -101,7 +79,10 @@ impl MachinePushRegistry {
         message: MessageId,
     ) {
         let sockets = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(socket) = sockets.get(&(organization.clone(), machine.clone()))
+        if let Some(socket) = sockets
+            .get(&(organization.clone(), machine.clone()))
+            .and_then(|sockets| sockets.last())
+            && !socket.replaced.is_cancelled()
             && let Err(mpsc::error::TrySendError::Full(_)) = socket.sender.try_send(message)
         {
             // Reconnect can recover the durable queued rows after a backed-up socket closes.
@@ -126,11 +107,11 @@ impl Drop for MachinePushRegistration {
             .0
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        if sockets
-            .get(&self.key)
-            .is_some_and(|socket| socket.sender.same_channel(&self.sender))
-        {
-            sockets.remove(&self.key);
+        if let Some(registered) = sockets.get_mut(&self.key) {
+            registered.retain(|socket| !socket.sender.same_channel(&self.sender));
+            if registered.is_empty() {
+                sockets.remove(&self.key);
+            }
         }
     }
 }

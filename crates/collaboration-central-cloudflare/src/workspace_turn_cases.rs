@@ -18,6 +18,8 @@ pub(super) async fn control(
                 Point::BeforeTimerCommit
                     | Point::BeforeReceiptTransaction
                     | Point::AfterIdleExpiryCommit
+                    | Point::AfterIdleRenewalPlatformSendError
+                    | Point::BeforePrivateEnrollmentInvalidation
                     | Point::BeforeIdleEnrollmentCleanup
                     | Point::AfterIdleEnrollmentCleanup
                     | Point::AfterTimerCommit

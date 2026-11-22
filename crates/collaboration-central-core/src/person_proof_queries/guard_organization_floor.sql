@@ -1,5 +1,5 @@
 UPDATE signin_authorization_floors
-SET id = id
+SET updated_at = updated_at
 WHERE id = ?
   AND minimum_revision = ?
   AND state = ?

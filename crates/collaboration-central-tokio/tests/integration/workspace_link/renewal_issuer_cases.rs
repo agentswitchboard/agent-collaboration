@@ -1,7 +1,7 @@
 //! Connect and renewal classification for unavailable and unknown issuer keys.
 use super::super::fixture::{Fixture, receive, send};
 use super::super::link_support::{caller, connect_client, create_workspace, workspace_reply};
-use super::{answer_to, not_active, renew_frame};
+use super::{answer_to, renew_frame, retryable_expiry};
 use central_link_protocol::{LinkFrame, TokenRenewalRefusal, TokenRenewalResult};
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 use serde_json::json;
@@ -156,7 +156,10 @@ async fn machine_link_distinguishes_issuer_cache_outages_from_unknown_keys() -> 
     fixture.clock.advance(Duration::from_secs(1))?;
     let correlation = "019f0000-0000-7000-8000-00000000c362";
     send(&mut socket, &renew_frame(correlation, &fixture.token)?).await?;
-    assert_eq!(answer_to(&mut socket, correlation).await?, not_active());
+    assert_eq!(
+        answer_to(&mut socket, correlation).await?,
+        retryable_expiry()
+    );
     drop(socket);
     fixture.close().await
 }

@@ -129,6 +129,8 @@ pub(crate) enum CasePausePoint {
     BeforeTimerCommit,
     BeforeReceiptTransaction,
     AfterIdleExpiryCommit,
+    AfterIdleRenewalPlatformSendError,
+    BeforePrivateEnrollmentInvalidation,
     BeforeIdleEnrollmentCleanup,
     AfterIdleEnrollmentCleanup,
     AfterTimerCommit,
@@ -156,6 +158,12 @@ impl From<CasePausePoint> for PausePoint {
             CasePausePoint::BeforeTimerCommit => Self::BeforeTimerCommit,
             CasePausePoint::BeforeReceiptTransaction => Self::BeforeReceiptTransaction,
             CasePausePoint::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
+            CasePausePoint::AfterIdleRenewalPlatformSendError => {
+                Self::AfterIdleRenewalPlatformSendError
+            }
+            CasePausePoint::BeforePrivateEnrollmentInvalidation => {
+                Self::BeforePrivateEnrollmentInvalidation
+            }
             CasePausePoint::BeforeIdleEnrollmentCleanup => Self::BeforeIdleEnrollmentCleanup,
             CasePausePoint::AfterIdleEnrollmentCleanup => Self::AfterIdleEnrollmentCleanup,
             CasePausePoint::AfterTimerCommit => Self::AfterTimerCommit,
@@ -184,6 +192,12 @@ impl From<PausePoint> for CasePausePoint {
             PausePoint::BeforeTimerCommit => Self::BeforeTimerCommit,
             PausePoint::BeforeReceiptTransaction => Self::BeforeReceiptTransaction,
             PausePoint::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
+            PausePoint::AfterIdleRenewalPlatformSendError => {
+                Self::AfterIdleRenewalPlatformSendError
+            }
+            PausePoint::BeforePrivateEnrollmentInvalidation => {
+                Self::BeforePrivateEnrollmentInvalidation
+            }
             PausePoint::BeforeIdleEnrollmentCleanup => Self::BeforeIdleEnrollmentCleanup,
             PausePoint::AfterIdleEnrollmentCleanup => Self::AfterIdleEnrollmentCleanup,
             PausePoint::AfterTimerCommit => Self::AfterTimerCommit,

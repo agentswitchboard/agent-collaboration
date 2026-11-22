@@ -1,20 +1,26 @@
 //! Activation is generation-fenced; renewal rechecks live client and idle state.
-use super::allowance_transitions::{AllowanceEvent, AllowanceStatus, allowance_effect};
-use super::decision_support::{DecisionIds, DecisionTime, IDLE_EXPIRY_SECONDS};
+use super::allowance_transitions::{AllowanceEvent, allowance_effect};
+use super::decision_support::{DecisionIds, DecisionTime, idle_limit_reached};
 use super::enrollment_records::{
-    Decided, EnrollmentChange, EnrollmentFacts, MachineRow, MachineState, StoredEnrollment,
-    StoredEnrollmentState,
+    AllowanceInputs, CurrentEnrollment, Decided, EnrollmentChange, EnrollmentFacts,
+    StoredEnrollment, StoredEnrollmentState,
 };
-use super::enrollment_transitions::{EnrollmentEvent, replace_enrollment};
+use super::enrollment_transitions::{
+    EnrollmentEnding, EnrollmentEvent, activate_enrollment, end_current_enrollment,
+    replace_enrollment,
+};
 use central_storage::StoreFailure;
 use fleet_contracts::{
     DecideMachineToken, EndedMachineClient, EnrollmentRevocationReason, MachineTokenDecision,
     MachineTokenRefusal,
 };
 use fleet_identity_protocol::UnixSeconds;
-use fleet_runtime_ports::IdSource;
+use fleet_runtime_ports::{IdSource, workspace_decode_error::corrupt};
 use fleet_signin::machine_token::MACHINE_TOKEN_LIFETIME_SECONDS;
-use fleet_signin::organization_change::{OrganizationChangeKind, OrganizationChangeOrigin};
+use fleet_signin::organization_change::{
+    MachineAllowanceState, OrganizationChangeKind, OrganizationChangeOrigin,
+};
+use workspace_ids::MachineId;
 
 pub fn decide_machine_token(
     request: &DecideMachineToken,
@@ -35,14 +41,16 @@ pub fn decide_machine_token(
             client_id,
             last_grant_at,
         } => {
-            if facts.active.as_ref().map(|active| &active.id) != Some(&enrollment.id) {
-                return Ok(refuse(MachineTokenRefusal::Superseded {}));
-            }
+            let current = facts
+                .current
+                .as_ref()
+                .filter(|active| active.enrollment() == enrollment)
+                .ok_or_else(|| corrupt("login_machine_approvals.current_enrollment"))?;
             if client_id != &request.client_id {
                 return Ok(refuse(MachineTokenRefusal::WrongClient {}));
             }
-            if time.seconds().0.saturating_sub(last_grant_at.0) >= IDLE_EXPIRY_SECONDS {
-                return idle_expiry(enrollment, facts, time, &ids);
+            if idle_limit_reached(time, *last_grant_at) {
+                return idle_expiry(current, facts, time, &ids);
             }
             Ok(Decided::writing(
                 grant(enrollment, time, facts.superseded_client.clone())?,
@@ -96,20 +104,14 @@ fn first_grant(
     if machine.generation != enrollment.base_generation {
         return Ok(refuse(MachineTokenRefusal::Superseded {}));
     }
-    let next_generation = machine.generation.next()?;
     let origin = OrganizationChangeOrigin::Person {
         person_id: enrollment.approved_by.as_str().to_owned(),
         permission_checked: "machine:enroll".to_owned(),
     };
     let mut changes = Vec::new();
-    let superseded = facts
-        .active
-        .as_ref()
-        .and_then(|previous| previous.ended_client());
-    if let Some(previous) = &facts.active {
-        if !matches!(&previous.state, StoredEnrollmentState::Enrolled { .. }) {
-            return Err(StoreFailure::Unavailable);
-        }
+    let previous = facts.current.as_ref().map(CurrentEnrollment::enrollment);
+    let superseded = previous.and_then(StoredEnrollment::ended_client);
+    if let Some(previous) = previous {
         // End the old enrollment before entering the partial unique index.
         changes.push(replace_enrollment(
             previous,
@@ -123,18 +125,12 @@ fn first_grant(
             time,
         )?));
     }
-    changes.push(replace_enrollment(
+    changes.extend(activate_enrollment(
+        machine,
         enrollment,
-        EnrollmentEvent::FirstGrant {
-            client_id: request.client_id.clone(),
-            time,
-        },
+        request.client_id.clone(),
+        time,
     )?);
-    changes.push(EnrollmentChange::PutMachine(MachineRow {
-        generation: next_generation,
-        state: MachineState::Enrolled,
-        ..machine.clone()
-    }));
     changes.push(EnrollmentChange::Record(ids.record(
         enrollment.request_id.as_str(),
         OrganizationChangeKind::MachineEnrolled,
@@ -169,35 +165,28 @@ fn grant(
 }
 
 fn idle_expiry(
-    enrollment: &StoredEnrollment,
+    current: &CurrentEnrollment,
     facts: &EnrollmentFacts,
     time: DecisionTime,
     ids: &DecisionIds<'_>,
 ) -> Result<Decided<MachineTokenDecision>, StoreFailure> {
-    if !matches!(&enrollment.state, StoredEnrollmentState::Enrolled { .. }) {
-        return Err(StoreFailure::Unavailable);
-    }
-    let machine = facts.machine.as_ref().ok_or(StoreFailure::Unavailable)?;
+    let enrollment = current.enrollment();
     let automatic = OrganizationChangeOrigin::Automatic {};
-    let mut changes = vec![
-        replace_enrollment(enrollment, EnrollmentEvent::IdleDeadlineElapsed(time))?,
-        EnrollmentChange::PutMachine(MachineRow {
-            generation: machine.generation.next()?,
-            state: MachineState::Revoked,
-            allowed_workspaces: Vec::new(),
-            ..machine.clone()
-        }),
-        EnrollmentChange::Record(ids.record(
-            enrollment.id.as_str(),
-            OrganizationChangeKind::MachineExpired,
-            &automatic,
-            enrollment.id.as_str().to_owned(),
-            time,
-        )?),
-    ];
+    let mut changes = Vec::from(end_current_enrollment(
+        current,
+        EnrollmentEnding::Idle(time),
+    )?);
+    changes.push(EnrollmentChange::Record(ids.record(
+        enrollment.id.as_str(),
+        OrganizationChangeKind::MachineExpired,
+        &automatic,
+        enrollment.id.as_str().to_owned(),
+        time,
+    )?));
     append_allowance_records(
         &mut changes,
-        machine,
+        &facts.allowances,
+        &current.machine().machine_id,
         enrollment.id.as_str(),
         &automatic,
         time,
@@ -217,14 +206,18 @@ pub(crate) fn expire_current_if_idle(
     time: DecisionTime,
     ids: &dyn IdSource,
 ) -> Result<Option<Decided<()>>, StoreFailure> {
-    let enrollment = facts.enrollment.as_ref().ok_or(StoreFailure::Unavailable)?;
-    let StoredEnrollmentState::Enrolled { last_grant_at, .. } = &enrollment.state else {
-        return Err(StoreFailure::Unavailable);
+    let current = facts
+        .current
+        .as_ref()
+        .filter(|current| Some(current.enrollment()) == facts.enrollment.as_ref())
+        .ok_or_else(|| corrupt("login_machine_approvals.current_enrollment"))?;
+    let StoredEnrollmentState::Enrolled { last_grant_at, .. } = &current.enrollment().state else {
+        return Err(corrupt("login_machine_approvals.current_enrollment"));
     };
-    if time.seconds().0.saturating_sub(last_grant_at.0) < IDLE_EXPIRY_SECONDS {
+    if !idle_limit_reached(time, *last_grant_at) {
         return Ok(None);
     }
-    let decided = idle_expiry(enrollment, facts, time, &DecisionIds(ids))?;
+    let decided = idle_expiry(current, facts, time, &DecisionIds(ids))?;
     Ok(Some(Decided {
         answer: (),
         changes: decided.changes,
@@ -234,32 +227,34 @@ pub(crate) fn expire_current_if_idle(
 
 pub(super) fn append_allowance_records(
     changes: &mut Vec<EnrollmentChange>,
-    machine: &MachineRow,
+    allowances: &AllowanceInputs,
+    machine_id: &MachineId,
     originating: &str,
     origin: &OrganizationChangeOrigin,
     time: DecisionTime,
     ids: &DecisionIds<'_>,
 ) -> Result<(), StoreFailure> {
-    let Some(effect) = allowance_effect(AllowanceStatus::Active, AllowanceEvent::EnrollmentEnded)?
-    else {
-        return Ok(());
+    let AllowanceInputs::Ending(pairs) = allowances else {
+        return Err(corrupt("login_machine_allowances.ending_inputs"));
     };
-    let mut recorded = Vec::new();
-    for workspace in &machine.allowed_workspaces {
-        if recorded.contains(workspace) {
-            continue;
-        }
-        changes.push(EnrollmentChange::RecordAllowance(
-            ids.record_allowance_change(
-                originating,
-                origin,
-                &machine.machine_id,
-                workspace,
+    // Missing pairs are outside the persisted set, and do not acquire a row on ending.
+    // Allowance ID order preserves the audit sequence across the active-only read.
+    let mut ordered: Vec<_> = pairs.values().collect();
+    ordered.sort_by_key(|pair| pair.id);
+    for pair in ordered {
+        if let Some(effect) = allowance_effect(Some(pair), AllowanceEvent::EnrollmentEnded)? {
+            changes.push(EnrollmentChange::RecordAllowance {
+                record: ids.record_allowance_change(
+                    originating,
+                    origin,
+                    machine_id,
+                    &pair.workspace_id,
+                    MachineAllowanceState::Withdrawn,
+                    time,
+                )?,
                 effect,
-                time,
-            )?,
-        ));
-        recorded.push(workspace.clone());
+            });
+        }
     }
     Ok(())
 }

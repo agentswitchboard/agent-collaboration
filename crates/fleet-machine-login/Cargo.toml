@@ -14,6 +14,9 @@ workspace = true
 central-storage.workspace = true
 chrono = { version = "0.4.45", default-features = false, features = ["alloc"] }
 fleet-contracts.workspace = true
+fleet-lent-transaction.workspace = true
+sqlx-core.workspace = true
+sqlx = { version = "=0.9.0", default-features = false, features = ["derive"] }
 fleet-identity-protocol = { path = "../fleet-identity-protocol", version = "0.1.156" }
 fleet-runtime-ports.workspace = true
 fleet-signin.workspace = true
@@ -25,6 +28,7 @@ uuid = { workspace = true, features = ["serde"] }
 workspace-ids.workspace = true
 
 [dev-dependencies]
+hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
 central-engine-model.workspace = true
 tokio.workspace = true
 

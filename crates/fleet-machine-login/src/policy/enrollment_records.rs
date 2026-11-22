@@ -9,6 +9,8 @@ use fleet_identity_protocol::{EnrollmentId, OrganizationId, UnixSeconds};
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use fleet_signin::organization_change::{MachineAllowanceChange, OrganizationChangeRecord};
 use message_board::{MachineLabel, WorkspaceId};
+use std::collections::BTreeMap;
+use uuid::Uuid;
 use workspace_ids::MachineId;
 
 /// A generation is an exact cross-host SQL integer; exhaustion never wraps.
@@ -46,7 +48,6 @@ pub enum MachineState {
 pub struct MachineRow {
     pub machine_id: MachineId,
     pub label: MachineLabel,
-    pub allowed_workspaces: Vec<WorkspaceId>,
     pub generation: EnrollmentGeneration,
     pub state: MachineState,
 }
@@ -97,6 +98,188 @@ impl StoredEnrollment {
     }
 }
 
+/// A checked machine/enrollment pair and the only basis for live authority.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CurrentEnrollment {
+    machine: MachineRow,
+    enrollment: StoredEnrollment,
+}
+
+impl CurrentEnrollment {
+    pub(crate) fn checked(
+        machine: Option<&MachineRow>,
+        enrollment: Option<StoredEnrollment>,
+    ) -> Result<Option<Self>, StoreFailure> {
+        validate_current_binding(
+            machine.map(AuthorityMachine::from).as_ref(),
+            enrollment.as_ref().map(AuthorityApproval::from).as_ref(),
+        )?;
+        Ok(machine.zip(enrollment).map(|(machine, enrollment)| Self {
+            machine: machine.clone(),
+            enrollment,
+        }))
+    }
+
+    pub fn machine(&self) -> &MachineRow {
+        &self.machine
+    }
+
+    pub fn enrollment(&self) -> &StoredEnrollment {
+        &self.enrollment
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AuthorityMachine {
+    pub(crate) machine_id: MachineId,
+    pub(crate) generation: EnrollmentGeneration,
+    pub(crate) state: MachineState,
+}
+
+impl From<&MachineRow> for AuthorityMachine {
+    fn from(row: &MachineRow) -> Self {
+        Self {
+            machine_id: row.machine_id.clone(),
+            generation: row.generation,
+            state: row.state,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct AuthorityApproval {
+    pub(crate) id: EnrollmentId,
+    pub(crate) machine_id: MachineId,
+    pub(crate) base_generation: EnrollmentGeneration,
+    pub(crate) state: StoredEnrollmentState,
+    pub(crate) ended_at_ms: Option<i64>,
+}
+
+impl From<&StoredEnrollment> for AuthorityApproval {
+    fn from(row: &StoredEnrollment) -> Self {
+        Self {
+            id: row.id.clone(),
+            machine_id: row.machine_id.clone(),
+            base_generation: row.base_generation,
+            state: row.state.clone(),
+            ended_at_ms: row.ended_at_ms,
+        }
+    }
+}
+
+fn validate_current_binding(
+    machine: Option<&AuthorityMachine>,
+    active: Option<&AuthorityApproval>,
+) -> Result<(), StoreFailure> {
+    match (machine, active) {
+        (Some(machine), Some(enrollment))
+            if machine.state == MachineState::Enrolled
+                && machine.machine_id == enrollment.machine_id
+                && matches!(enrollment.state, StoredEnrollmentState::Enrolled { .. })
+                && machine.generation == enrollment.base_generation.next()? =>
+        {
+            Ok(())
+        }
+        (
+            Some(AuthorityMachine {
+                state: MachineState::Revoked,
+                ..
+            })
+            | None,
+            None,
+        ) => Ok(()),
+        _ => Err(corrupt("login_machine_approvals.current_enrollment")),
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CurrentAuthority(AuthorityApproval);
+
+impl CurrentAuthority {
+    pub(crate) fn enrollment(&self) -> &AuthorityApproval {
+        &self.0
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct EnrollmentAuthority {
+    machine: Option<AuthorityMachine>,
+    enrollment: Option<AuthorityApproval>,
+    current: Option<CurrentAuthority>,
+}
+
+impl EnrollmentAuthority {
+    #[cfg(test)]
+    pub(crate) fn checked(
+        machine: Option<MachineRow>,
+        enrollment: Option<StoredEnrollment>,
+        active: Option<StoredEnrollment>,
+    ) -> Result<Self, StoreFailure> {
+        Self::from_projection(
+            machine.as_ref().map(AuthorityMachine::from),
+            enrollment.as_ref().map(AuthorityApproval::from),
+            active.as_ref().map(AuthorityApproval::from),
+        )
+    }
+
+    pub(crate) fn from_projection(
+        machine: Option<AuthorityMachine>,
+        enrollment: Option<AuthorityApproval>,
+        active: Option<AuthorityApproval>,
+    ) -> Result<Self, StoreFailure> {
+        validate_current_binding(machine.as_ref(), active.as_ref())?;
+        if let Some(candidate) = &enrollment
+            && matches!(candidate.state, StoredEnrollmentState::Enrolled { .. })
+            && active.as_ref() != Some(candidate)
+        {
+            return Err(corrupt("login_machine_approvals.current_enrollment"));
+        }
+        Ok(Self {
+            machine,
+            enrollment,
+            current: active.map(CurrentAuthority),
+        })
+    }
+
+    pub(crate) fn machine(&self) -> Option<&AuthorityMachine> {
+        self.machine.as_ref()
+    }
+    pub(crate) fn enrollment(&self) -> Option<&AuthorityApproval> {
+        self.enrollment.as_ref()
+    }
+    pub(crate) fn current(&self) -> Option<&CurrentAuthority> {
+        self.current.as_ref()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum StoredAllowanceState {
+    Active,
+    Withdrawn,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) struct StoredAllowance {
+    pub(crate) id: Uuid,
+    pub(crate) workspace_id: WorkspaceId,
+    pub(crate) state: StoredAllowanceState,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) enum AllowanceInputs {
+    #[default]
+    Unused,
+    Selected(BTreeMap<WorkspaceId, Option<StoredAllowance>>),
+    Ending(BTreeMap<WorkspaceId, StoredAllowance>),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AllowanceEffect {
+    Insert,
+    Reactivate(Uuid),
+    Withdraw(Uuid),
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct EnrollmentQuery {
     pub machine_id: Option<MachineId>,
@@ -112,9 +295,38 @@ pub struct EnrollmentFacts {
     pub prior_approval: Option<StoredEnrollment>,
     pub enrollment: Option<StoredEnrollment>,
     pub machine: Option<MachineRow>,
-    pub active: Option<StoredEnrollment>,
+    pub current: Option<CurrentEnrollment>,
     pub superseded_client: Option<EndedMachineClient>,
     pub missing_workspaces: Vec<WorkspaceId>,
+    pub(crate) allowances: AllowanceInputs,
+}
+
+impl EnrollmentFacts {
+    pub(crate) fn checked(
+        organization_id: OrganizationId,
+        machine: Option<MachineRow>,
+        enrollment: Option<StoredEnrollment>,
+        active: Option<StoredEnrollment>,
+    ) -> Result<Self, StoreFailure> {
+        let current = CurrentEnrollment::checked(machine.as_ref(), active)?;
+        if let Some(candidate) = &enrollment
+            && matches!(candidate.state, StoredEnrollmentState::Enrolled { .. })
+            && current.as_ref().map(CurrentEnrollment::enrollment) != Some(candidate)
+        {
+            return Err(corrupt("login_machine_approvals.current_enrollment"));
+        }
+        Ok(Self {
+            organization_id,
+            organization_has_enrollment: false,
+            prior_approval: None,
+            enrollment,
+            machine,
+            current,
+            superseded_client: None,
+            missing_workspaces: Vec::new(),
+            allowances: AllowanceInputs::Unused,
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -123,7 +335,10 @@ pub enum EnrollmentChange {
     ReplaceEnrollment(StoredEnrollment),
     PutMachine(MachineRow),
     Record(OrganizationChangeRecord),
-    RecordAllowance(MachineAllowanceChange),
+    RecordAllowance {
+        record: MachineAllowanceChange,
+        effect: AllowanceEffect,
+    },
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Decided<T> {

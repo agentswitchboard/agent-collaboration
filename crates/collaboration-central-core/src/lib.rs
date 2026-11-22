@@ -17,15 +17,16 @@ pub mod signin_test_observation;
 #[cfg(feature = "test-support")]
 pub mod storage_conformance;
 
-mod machine_connection;
-pub use machine_connection::ValidatedMachineConnection;
+pub use fleet_machine_login::link_authority::ValidatedMachineConnection;
+pub use fleet_machine_login::link_transitions::{
+    MachineTokenRenewalRefusal, RenewedMachineConnection,
+};
 mod machine_connection_admission;
 mod machine_login_plans;
 #[cfg(feature = "test-support")]
 mod machine_login_test_control;
 pub use machine_connection_admission::{
-    IdleEndedEnrollment, MachineLinkAdmission, MachineLinkRequestAuthority,
-    MachineTokenRenewalRefusal, RenewedMachineConnection,
+    MachineLinkAdmission, MachineLinkRequestAuthority, RenewalTermination, project_renewal_refusal,
 };
 mod workspace_caller;
 pub use workspace_caller::WorkspaceCaller;

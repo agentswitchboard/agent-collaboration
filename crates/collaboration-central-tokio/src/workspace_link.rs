@@ -16,15 +16,19 @@ use central_link_protocol::{
     TokenRenewalRefusal, TokenRenewalResult, decode_text, encode_text,
 };
 use collaboration_central_core::{
-    IdleEndedEnrollment, MachineLinkAdmission, MachineLinkRequestAuthority, WorkspaceRuntime,
+    MachineLinkAdmission, MachineLinkRequestAuthority, RenewalTermination, WorkspaceRuntime,
+    project_renewal_refusal,
 };
 use collaboration_central_core::{ValidatedMachineConnection, WorkspaceCaller};
+use fleet_contracts::EnrollmentInvalidation;
 use fleet_contracts::mail_link::{
     MailReceiptSettlement, WELCOME_PAGE_SIZE, WelcomeDeliveryPage, WindowedDeliveryDecision,
 };
 use fleet_identity_protocol::OrganizationId;
 use futures_util::FutureExt;
+use router_clock::RuntimeClock;
 use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use workspace_model::{
     RefusalReason, WorkspaceReply, WorkspaceResult,
@@ -106,23 +110,18 @@ async fn upgrade_link(
         {
             connection
         }
-        Ok(MachineLinkAdmission::IdleEnded(ended)) => {
+        Ok(MachineLinkAdmission::Ended(ended)) => {
             let failed_state = state.clone();
             let failed_org = organization.clone();
             let failed_ended = ended.clone();
             return upgrade
                 .on_failed_upgrade(move |_| {
-                    close_idle_enrollment(&failed_state, &failed_org, &failed_ended)
+                    close_ended_enrollment(&failed_state, &failed_org, &failed_ended)
                 })
                 .on_upgrade(move |mut socket| async move {
                     let _task = task;
-                    close_link(
-                        &mut socket,
-                        &state.stop,
-                        MachineLinkCloseCode::Inactive.code(),
-                        "",
-                    );
-                    close_idle_enrollment(&state, &organization, &ended);
+                    attempt_close(&mut socket, ended.cause.code(), "");
+                    close_ended_enrollment(&state, &organization, &ended);
                 })
                 .into_response();
         }
@@ -211,6 +210,7 @@ async fn serve_link(
         stop: &state.stop,
         replaced: &registration.replaced,
         authority_close: &registration.authority_close,
+        clock: state.host.link_clock(),
     };
     if !writes.send(&mut socket, &welcome).await {
         return;
@@ -221,7 +221,10 @@ async fn serve_link(
     loop {
         let message = tokio::select! {
             biased;
-            () = state.stop.cancelled() => return,
+            () = state.stop.cancelled() => {
+                writes.close_if_authority_cancelled(&mut socket);
+                return;
+            }
             () = registration.replaced.cancelled() => {
                 writes.close(&mut socket, close_code::NORMAL, "machine link ended");
                 return;
@@ -313,34 +316,39 @@ async fn serve_link(
                 correlation_id,
                 token,
             }) => {
-                let (result, ended) = renew(&runtime, &mut connection, token.expose()).await;
+                let (result, termination) = renew(&runtime, &mut connection, token.expose()).await;
                 let answer = LinkFrame::Data(DataFrame::MachineTokenRenewal {
                     correlation_id,
                     result,
                 });
-                #[cfg(feature = "test-support")]
-                let fail_send = ended.is_some() && runtime.take_idle_renewal_send_failure();
-                #[cfg(not(feature = "test-support"))]
-                let fail_send = false;
-                let sent = !fail_send && writes.send(&mut socket, &answer).await;
-                if let Some(ended) = ended {
-                    writes.close_authority(&mut socket, MachineLinkCloseCode::Inactive);
+                if let Some(termination) = termination {
                     #[cfg(feature = "test-support")]
-                    runtime
-                        .runtime()
-                        .pause_points()
-                        .reached_central(fleet_runtime::PausePoint::BeforeIdleEnrollmentCleanup)
-                        .await;
-                    close_idle_enrollment(&state, connection.organization_id(), &ended);
-                    #[cfg(feature = "test-support")]
-                    runtime
-                        .runtime()
-                        .pause_points()
-                        .reached_central(fleet_runtime::PausePoint::AfterIdleEnrollmentCleanup)
-                        .await;
+                    let fail_send = matches!(termination, RenewalTermination::EndEnrollment(_))
+                        && runtime.take_idle_renewal_send_failure();
+                    #[cfg(not(feature = "test-support"))]
+                    let fail_send = false;
+                    if !fail_send {
+                        writes.attempt_terminal_refusal(&mut socket, &answer).await;
+                    }
+                    writes.close_authority(&mut socket, termination.cause());
+                    if let RenewalTermination::EndEnrollment(ended) = termination {
+                        #[cfg(feature = "test-support")]
+                        runtime
+                            .runtime()
+                            .pause_points()
+                            .reached_central(fleet_runtime::PausePoint::BeforeIdleEnrollmentCleanup)
+                            .await;
+                        close_ended_enrollment(&state, connection.organization_id(), &ended);
+                        #[cfg(feature = "test-support")]
+                        runtime
+                            .runtime()
+                            .pause_points()
+                            .reached_central(fleet_runtime::PausePoint::AfterIdleEnrollmentCleanup)
+                            .await;
+                    }
                     return;
                 }
-                if !sent {
+                if !writes.send(&mut socket, &answer).await {
                     return;
                 }
             }
@@ -441,8 +449,8 @@ async fn send_welcome_backlog(
     loop {
         let page = tokio::select! {
             biased;
-            () = state.stop.cancelled() => return false,
-            () = writes.replaced.cancelled() => return false,
+            () = state.stop.cancelled() => { writes.close_if_authority_cancelled(socket); return false; }
+            () = writes.replaced.cancelled() => { writes.close_if_authority_cancelled(socket); return false; }
             page = runtime.windowed_welcome_page(&attachment, cursor.as_ref()) => page,
         };
         let rows = match page {
@@ -488,8 +496,8 @@ async fn offer_windowed_delivery(
     let attachment = connection.attachment();
     let decision = tokio::select! {
         biased;
-        () = state.stop.cancelled() => return false,
-        () = writes.replaced.cancelled() => return false,
+        () = state.stop.cancelled() => { writes.close_if_authority_cancelled(socket); return false; }
+        () = writes.replaced.cancelled() => { writes.close_if_authority_cancelled(socket); return false; }
         decision = runtime.prepare_windowed_delivery(&attachment, message_id) => decision,
     };
     let delivery = match decision {
@@ -540,10 +548,12 @@ async fn renew(
     runtime: &Runtime,
     connection: &mut ValidatedMachineConnection,
     token: &str,
-) -> (TokenRenewalResult, Option<IdleEndedEnrollment>) {
-    use collaboration_central_core::MachineTokenRenewalRefusal as Refusal;
+) -> (TokenRenewalResult, Option<RenewalTermination>) {
     let refused = |reason| (TokenRenewalResult::Refused { reason }, None);
-    match runtime.renew_machine_connection(connection, token).await {
+    match runtime
+        .renew_machine_connection(connection.attachment_ref(), token)
+        .await
+    {
         Ok(Ok(renewed)) => {
             let Some(effective_expires_at) =
                 chrono::DateTime::from_timestamp(renewed.connection.effective_expires_at().0, 0)
@@ -559,33 +569,23 @@ async fn renew(
                 None,
             )
         }
-        Ok(Err(Refusal::IdleEnded(ended))) => (
-            TokenRenewalResult::Refused {
-                reason: TokenRenewalRefusal::EnrollmentNotActive,
-            },
-            Some(ended),
-        ),
-        Ok(Err(refusal)) => refused(match refusal {
-            Refusal::TokenRejected => TokenRenewalRefusal::TokenRejected,
-            Refusal::EnrollmentNotActive => TokenRenewalRefusal::EnrollmentNotActive,
-            Refusal::DifferentMachine => TokenRenewalRefusal::DifferentMachine,
-            Refusal::DifferentEnrollment => TokenRenewalRefusal::DifferentEnrollment,
-            Refusal::IdleEnded(_) => TokenRenewalRefusal::EnrollmentNotActive,
-        }),
+        Ok(Err(refusal)) => {
+            let (reason, termination) = project_renewal_refusal(refusal);
+            (TokenRenewalResult::Refused { reason }, termination)
+        }
         Err(_) => refused(TokenRenewalRefusal::CentralUnavailable),
     }
 }
 
-fn close_idle_enrollment(
+fn close_ended_enrollment(
     state: &LinkState,
     organization: &OrganizationId,
-    ended: &IdleEndedEnrollment,
+    ended: &EnrollmentInvalidation,
 ) {
-    state.host.push_registry.close_idle_enrollment(
-        organization,
-        &ended.machine_id,
-        &ended.enrollment_id,
-    );
+    state
+        .host
+        .push_registry
+        .invalidate_enrollment(organization, ended);
 }
 
 /// What became of one request frame on the link.
@@ -696,6 +696,7 @@ struct LinkWrites<'a> {
     stop: &'a CancellationToken,
     replaced: &'a CancellationToken,
     authority_close: &'a OnceLock<MachineLinkCloseCode>,
+    clock: &'a dyn RuntimeClock,
 }
 
 impl LinkWrites<'_> {
@@ -703,40 +704,64 @@ impl LinkWrites<'_> {
         let Ok(text) = encode_text(frame, FrameDirection::ToRouter) else {
             return false;
         };
-        tokio::select! {
+        let sent = tokio::select! {
             biased;
             () = self.stop.cancelled() => false,
             () = self.replaced.cancelled() => false,
             result = socket.send(Message::Text(text.into())) => result.is_ok(),
+        };
+        if !sent {
+            self.close_if_authority_cancelled(socket);
+        }
+        sent
+    }
+
+    fn close_if_authority_cancelled(&self, socket: &mut WebSocket) {
+        if let Some(cause) = self.authority_close.get() {
+            self.close_authority(socket, *cause);
+        }
+    }
+
+    async fn attempt_terminal_refusal(&self, socket: &mut WebSocket, frame: &LinkFrame) {
+        const REFUSAL_SEND_BUDGET: Duration = Duration::from_millis(250);
+        let Ok(text) = encode_text(frame, FrameDirection::ToRouter) else {
+            return;
+        };
+        tokio::select! {
+            biased;
+            () = self.stop.cancelled() => {}
+            _ = router_clock::timeout(self.clock, REFUSAL_SEND_BUDGET, socket.send(Message::Text(text.into()))) => {}
         }
     }
 
     fn close_authority(&self, socket: &mut WebSocket, cause: MachineLinkCloseCode) {
-        self.close(socket, cause.code(), "");
+        let cause = self.authority_close.get().copied().unwrap_or(cause);
+        attempt_close(socket, cause.code(), "");
     }
 
     fn close(&self, socket: &mut WebSocket, code: u16, reason: &'static str) {
-        let (code, reason) = if self.replaced.is_cancelled() {
-            self.authority_close
-                .get()
-                .map_or((close_code::NORMAL, "machine link ended"), |cause| {
-                    (cause.code(), "")
-                })
+        if let Some(cause) = self.authority_close.get() {
+            self.close_authority(socket, *cause);
+        } else if self.replaced.is_cancelled() {
+            close_link(socket, self.stop, close_code::NORMAL, "machine link ended");
         } else {
-            (code, reason)
-        };
-        close_link(socket, self.stop, code, reason);
+            close_link(socket, self.stop, code, reason);
+        }
     }
 }
 
 fn close_link(socket: &mut WebSocket, stop: &CancellationToken, code: u16, reason: &'static str) {
     if !stop.is_cancelled() {
-        // An idle peer can see the Close. Never wait on a backpressured transport.
-        let _ = socket
-            .send(Message::Close(Some(CloseFrame {
-                code,
-                reason: reason.into(),
-            })))
-            .now_or_never();
+        attempt_close(socket, code, reason);
     }
+}
+
+fn attempt_close(socket: &mut WebSocket, code: u16, reason: &'static str) {
+    // Once polled on a writable socket the transport can deliver the typed reason.
+    let _ = socket
+        .send(Message::Close(Some(CloseFrame {
+            code,
+            reason: reason.into(),
+        })))
+        .now_or_never();
 }

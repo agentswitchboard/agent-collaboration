@@ -1,11 +1,56 @@
 //! Live request admission. Callers hold the central turn through the admitted effect.
 use crate::WorkspaceAccess;
-use central_storage::{SqlValue, Statement, StoreFailure};
+use central_storage::{ReadOutcome, SqlValue, Statement, StoreFailure};
 use fleet_contracts::{LiveMachineConnection, MachineConnectionAttachment};
 use fleet_runtime_ports::stored_values::column;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
-use workspace_model::{Caller, RefusalReason, WorkspaceId};
+use workspace_model::{Caller, RefusalReason, WorkspaceId, WorkspaceState};
+
+struct StoredWorkspaceStateRow {
+    workspace_state: String,
+}
+
+impl StoredWorkspaceStateRow {
+    fn decode(&self) -> Result<WorkspaceState, StoreFailure> {
+        match self.workspace_state.as_str() {
+            "active" => Ok(WorkspaceState::Active),
+            "archived" => Ok(WorkspaceState::Archived),
+            _ => Err(corrupt("directory_workspaces.state")),
+        }
+    }
+}
+
+fn read_workspace_state(workspace: &WorkspaceId) -> Statement {
+    let workspace_id = workspace.as_str();
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    let _ = sqlx::query_file_as!(
+        StoredWorkspaceStateRow,
+        "src/queries/read_workspace_state.sql",
+        workspace_id
+    );
+    Statement {
+        sql: include_str!("queries/read_workspace_state.sql"),
+        args: vec![SqlValue::Text(workspace_id.to_owned())],
+    }
+}
+
+fn decode_workspace_state(rows: &ReadOutcome) -> Result<Option<WorkspaceState>, StoreFailure> {
+    let row = match rows.rows.as_slice() {
+        [] => return Ok(None),
+        [row] => row,
+        _ => return Err(corrupt("directory_workspaces.workspace_id")),
+    };
+    match column(rows, row, "workspace_state")? {
+        SqlValue::Text(value) => StoredWorkspaceStateRow {
+            workspace_state: value.clone(),
+        }
+        .decode()
+        .map(Some),
+        SqlValue::Null => Ok(None),
+        _ => Err(corrupt("directory_workspaces.state")),
+    }
+}
 
 impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceAccess<'_, Host, Stores> {
     pub async fn admit_workspace(
@@ -24,29 +69,25 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceAccess<'_, Host, Stor
             return Ok(Err(RefusalReason::MachineRevoked));
         }
         if let Some(workspace) = workspace {
-            let allowed = live.active_workspaces_held(attachment.machine_id()).await?;
-            if !allowed.contains(workspace) {
+            if !live
+                .allows_workspace_held(attachment.machine_id(), workspace)
+                .await?
+            {
                 return Ok(Err(RefusalReason::WorkspaceNotAllowed));
             }
-            let rows = self.execution.statement_host().read(Statement {
-                sql: "SELECT state AS workspace_state FROM directory_workspaces WHERE workspace_id=?",
-                args: vec![SqlValue::Text(workspace.to_string())],
-            }).await?;
-            let Some(row) = rows.rows.first() else {
+            let rows = self
+                .execution
+                .statement_host()
+                .read(read_workspace_state(workspace))
+                .await?;
+            if decode_workspace_state(&rows)? != Some(WorkspaceState::Active) {
                 return Ok(Err(RefusalReason::WorkspaceNotAllowed));
-            };
-            if rows.rows.len() != 1 {
-                return Err(corrupt("directory_workspaces.workspace_id"));
-            }
-            match column(&rows, row, "workspace_state")? {
-                SqlValue::Text(value) if value == "active" => {}
-                SqlValue::Text(value) if value == "archived" => {
-                    return Ok(Err(RefusalReason::WorkspaceNotAllowed));
-                }
-                SqlValue::Null => return Ok(Err(RefusalReason::WorkspaceNotAllowed)),
-                _ => return Err(corrupt("directory_workspaces.state")),
             }
         }
         Ok(Ok(()))
     }
 }
+
+#[cfg(test)]
+#[path = "workspace_admission_test.rs"]
+mod tests;

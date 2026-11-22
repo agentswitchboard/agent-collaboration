@@ -4,7 +4,7 @@ use crate::person_request::AdminOperationId;
 use central_storage::StoreFailure;
 use fleet_contracts::{AdmittedRevoke, EndedMachineClient, PersonId, RevokePermission};
 use fleet_identity_protocol::EnrollmentId;
-use fleet_machine_login::{MachineLoginPlan, PreparedEnrollmentRevocation};
+use fleet_machine_login::PreparedEnrollmentRevocation;
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use serde::{Deserialize, Serialize};
 use workspace_ids::MachineId;
@@ -52,19 +52,14 @@ pub async fn machine_login_control<H: CentralStore, S: WorkspaceStores>(
                 .prepare_revoke_enrollment(authority, &enrollment_id, time)
                 .await?;
             match prepared {
-                PreparedEnrollmentRevocation::Revoked {
-                    machine_id: owner,
-                    ended,
-                    statements,
-                } if owner == machine_id => {
-                    runtime
-                        .apply_machine_login(MachineLoginPlan {
-                            answer: Some(ended),
-                            statements,
-                        })
-                        .await
+                PreparedEnrollmentRevocation::Revoked(revocation)
+                    if revocation.ended_machine() == &machine_id =>
+                {
+                    let (ended, _, statements) = revocation.into_applying();
+                    runtime.apply_machine_login_statements(statements).await?;
+                    Ok(Some(ended))
                 }
-                PreparedEnrollmentRevocation::Revoked { .. }
+                PreparedEnrollmentRevocation::Revoked(_)
                 | PreparedEnrollmentRevocation::NotFound
                 | PreparedEnrollmentRevocation::AlreadyEnded => Ok(None),
             }

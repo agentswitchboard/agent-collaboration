@@ -125,12 +125,12 @@ async fn first_stamp_rolls_back_on_physical_alarm_failure_then_arms_and_fires_on
     let runtime = f.runtime().await;
     let due = chrono::DateTime::from_timestamp((NOW_SECONDS.div_euclid(300) + 1) * 300, 0).unwrap();
     let target = workspace_ids::SessionRef {
-        machine_id: "019f0000-0000-7000-8000-00000000d222".parse().unwrap(),
+        machine_id: FIXTURE_MACHINE.parse().unwrap(),
         session_id: "pending-signin".to_owned().try_into().unwrap(),
     };
     // Arrange pending durable work before the first organization authority exists.
     // Authenticated SetWake cannot run before provisioning at this hard cut.
-    f.execute("INSERT INTO login_machines(machine_id,label,state,created_at,updated_at) VALUES (?,'Pending wake host','enrolled',?,?)",vec![SqlValue::Text(target.machine_id.to_string()),SqlValue::Text(due.to_rfc3339()),SqlValue::Text(due.to_rfc3339())]).await;
+    f.seed_machine("Pending wake host").await;
     // As SetWake would store it: canonical millisecond UTC, created now, due later.
     let stored_due = due.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let created = chrono::DateTime::from_timestamp(NOW_SECONDS, 0)

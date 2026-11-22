@@ -1,9 +1,10 @@
 use super::super::{
-    Decided, EnrollmentChange, EnrollmentGeneration, MachineRow, MachineState, StoredEnrollment,
+    AllowanceEffect, AllowanceInputs, CurrentEnrollment, Decided, EnrollmentChange,
+    EnrollmentGeneration, MachineRow, MachineState, StoredAllowanceState, StoredEnrollment,
     StoredEnrollmentState,
     policy_fixture::{
-        CountingIds, NOW_MS, NOW_S, allowance_records, approval, approved, empty_facts, enrolled,
-        id, label, machine, person, time, workspace,
+        CountingIds, NOW_MS, NOW_S, allowance, allowance_records, approval, approved, empty_facts,
+        enrolled, id, label, machine, person, time, workspace,
     },
 };
 use super::{SD8_MILLIS, decide_device_login};
@@ -81,10 +82,6 @@ fn duplicate_allowed_workspaces_keep_the_snapshot_but_plan_one_allowance_and_rec
 
     let plan = decide_device_login(&request, &empty_facts(), NOW_MS, time(NOW_MS), &ids).unwrap();
 
-    let EnrollmentChange::PutMachine(machine) = &plan.changes[0] else {
-        panic!("expected machine allowance union")
-    };
-    assert_eq!(machine.allowed_workspaces, vec![workspace(50)]);
     let EnrollmentChange::InsertEnrollment(enrollment) = &plan.changes[1] else {
         panic!("expected immutable approval")
     };
@@ -122,7 +119,21 @@ fn approving_again_preserves_the_machine_key_generation_active_state_and_existin
         let mut facts = empty_facts();
         let mut existing = machine(7);
         existing.state = state;
-        existing.allowed_workspaces.push(workspace(52));
+        let active = (state == MachineState::Enrolled).then(|| enrolled(88, 6, NOW_S));
+        facts.current = CurrentEnrollment::checked(Some(&existing), active).unwrap();
+        facts.allowances = AllowanceInputs::Selected(
+            [
+                (
+                    workspace(50),
+                    Some(allowance(50, StoredAllowanceState::Active)),
+                ),
+                (
+                    workspace(51),
+                    Some(allowance(51, StoredAllowanceState::Active)),
+                ),
+            ]
+            .into(),
+        );
         facts.machine = Some(existing.clone());
         let mut request = approval();
         request.label = label("renamed");
@@ -415,4 +426,41 @@ fn unknown_workspace_refuses_without_a_plan_or_minted_ids() {
         })
     );
     assert_eq!(ids.minted(), 0);
+}
+
+#[test]
+fn fresh_approval_reactivates_the_observed_pair_and_inserts_only_the_missing_pair() {
+    let request = approval();
+    let mut facts = empty_facts();
+    facts.machine = Some(machine(2));
+    let withdrawn = allowance(50, StoredAllowanceState::Withdrawn);
+    facts.allowances = AllowanceInputs::Selected(
+        [
+            (workspace(50), Some(withdrawn.clone())),
+            (workspace(51), None),
+        ]
+        .into(),
+    );
+    let plan =
+        decide_device_login(&request, &facts, NOW_MS, time(NOW_MS), &CountingIds::new()).unwrap();
+    let effects: Vec<_> = plan
+        .changes
+        .iter()
+        .filter_map(|change| match change {
+            EnrollmentChange::RecordAllowance { record, effect } => {
+                Some((record.workspace_id.as_str(), *effect))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        effects,
+        [
+            (
+                withdrawn.workspace_id.as_str(),
+                AllowanceEffect::Reactivate(withdrawn.id)
+            ),
+            (workspace(51).as_str(), AllowanceEffect::Insert),
+        ]
+    );
 }

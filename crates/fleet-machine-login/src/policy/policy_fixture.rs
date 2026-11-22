@@ -1,7 +1,8 @@
 //! Pure fact/plan fixtures; these do not emulate or prove a database commit.
 use super::{
-    Decided, DecisionTime, EnrollmentChange, EnrollmentFacts, MachineRow, MachineState,
-    StoredEnrollment, StoredEnrollmentState, decide_machine_token,
+    AllowanceInputs, CurrentEnrollment, Decided, DecisionTime, EnrollmentChange, EnrollmentFacts,
+    MachineRow, MachineState, StoredAllowance, StoredAllowanceState, StoredEnrollment,
+    StoredEnrollmentState, decide_machine_token,
 };
 use fleet_contracts::{
     DecideDeviceLogin, DecideMachineToken, EnrollPermission, MachineTokenDecision,
@@ -57,7 +58,10 @@ pub(super) fn empty_facts() -> EnrollmentFacts {
         prior_approval: None,
         enrollment: None,
         machine: None,
-        active: None,
+        current: None,
+        allowances: AllowanceInputs::Selected(
+            [(workspace(50), None), (workspace(51), None)].into(),
+        ),
         superseded_client: None,
         missing_workspaces: Vec::new(),
     }
@@ -79,7 +83,6 @@ pub(super) fn machine(generation: u64) -> MachineRow {
     MachineRow {
         machine_id: machine_id(),
         label: label("original"),
-        allowed_workspaces: vec![workspace(50), workspace(51)],
         generation: generation.try_into().unwrap(),
         state: MachineState::Revoked,
     }
@@ -120,8 +123,15 @@ pub(super) fn facts(
     EnrollmentFacts {
         organization_has_enrollment: true,
         enrollment: Some(candidate),
-        machine: Some(machine),
-        active,
+        machine: Some(machine.clone()),
+        current: CurrentEnrollment::checked(Some(&machine), active).unwrap(),
+        allowances: AllowanceInputs::Ending(
+            [
+                (workspace(50), allowance(50, StoredAllowanceState::Active)),
+                (workspace(51), allowance(51, StoredAllowanceState::Active)),
+            ]
+            .into(),
+        ),
         ..empty_facts()
     }
 }
@@ -162,7 +172,7 @@ pub(super) fn allowance_records<T>(
     plan: &Decided<T>,
 ) -> impl Iterator<Item = &fleet_signin::organization_change::MachineAllowanceChange> {
     plan.changes.iter().filter_map(|change| match change {
-        EnrollmentChange::RecordAllowance(record) => Some(record),
+        EnrollmentChange::RecordAllowance { record, .. } => Some(record),
         _ => None,
     })
 }
@@ -170,6 +180,10 @@ pub(super) fn allowance_records<T>(
 /// Project a decision's facts for the next pure-policy invocation only.
 pub(super) fn project<T>(facts: &EnrollmentFacts, plan: &Decided<T>) -> EnrollmentFacts {
     let mut next = facts.clone();
+    let mut active = facts
+        .current
+        .as_ref()
+        .map(|current| current.enrollment().clone());
     for change in &plan.changes {
         match change {
             EnrollmentChange::PutMachine(machine) => next.machine = Some(machine.clone()),
@@ -191,17 +205,53 @@ pub(super) fn project<T>(facts: &EnrollmentFacts, plan: &Decided<T>) -> Enrollme
                     next.enrollment = Some(row.clone());
                 }
                 if matches!(row.state, StoredEnrollmentState::Enrolled { .. }) {
-                    next.active = Some(row.clone());
-                } else if next
-                    .active
-                    .as_ref()
-                    .is_some_and(|active| active.id == row.id)
-                {
-                    next.active = None;
+                    active = Some(row.clone());
+                } else if active.as_ref().is_some_and(|active| active.id == row.id) {
+                    active = None;
                 }
             }
-            EnrollmentChange::Record(_) | EnrollmentChange::RecordAllowance(_) => {}
+            EnrollmentChange::RecordAllowance { record, effect } => {
+                if let AllowanceInputs::Ending(pairs) = &mut next.allowances {
+                    use super::AllowanceEffect;
+                    let workspace_id: WorkspaceId =
+                        record.workspace_id.as_str().to_owned().try_into().unwrap();
+                    let (id, state) = match effect {
+                        AllowanceEffect::Insert => (record.id, StoredAllowanceState::Active),
+                        AllowanceEffect::Reactivate(id) => (*id, StoredAllowanceState::Active),
+                        AllowanceEffect::Withdraw(id) => (*id, StoredAllowanceState::Withdrawn),
+                    };
+                    pairs.insert(
+                        workspace_id.clone(),
+                        StoredAllowance {
+                            id,
+                            workspace_id,
+                            state,
+                        },
+                    );
+                }
+            }
+            EnrollmentChange::Record(_) => {}
         }
     }
+    next.current = CurrentEnrollment::checked(next.machine.as_ref(), active).unwrap();
     next
+}
+
+pub(super) fn allowance(suffix: u64, state: StoredAllowanceState) -> StoredAllowance {
+    StoredAllowance {
+        id: Uuid::parse_str(&id(suffix + 100)).unwrap(),
+        workspace_id: workspace(suffix),
+        state,
+    }
+}
+
+pub(super) fn active_workspaces(facts: &EnrollmentFacts) -> Vec<WorkspaceId> {
+    let AllowanceInputs::Ending(pairs) = &facts.allowances else {
+        panic!("expected stored allowances");
+    };
+    pairs
+        .values()
+        .filter(|pair| pair.state == StoredAllowanceState::Active)
+        .map(|pair| pair.workspace_id.clone())
+        .collect()
 }

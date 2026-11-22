@@ -57,12 +57,21 @@ impl MachineConnectionAttachment {
     }
 }
 
+/// A committed ending identifies only the enrollment whose live sockets must end.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EnrollmentInvalidation {
+    pub machine_id: MachineId,
+    pub enrollment_id: EnrollmentId,
+    pub cause: crate::mail_link::MachineLinkCloseCode,
+}
+
 /// Restores the attachment against live login rows under the turn held by the caller.
 pub trait LiveMachineConnection: Send + Sync {
-    fn active_workspaces_held(
+    fn allows_workspace_held(
         &self,
         machine: &MachineId,
-    ) -> impl Future<Output = Result<Vec<WorkspaceId>, StoreFailure>> + Send;
+        workspace: &WorkspaceId,
+    ) -> impl Future<Output = Result<bool, StoreFailure>> + Send;
 
     fn restore_held(
         &self,

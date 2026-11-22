@@ -7,7 +7,6 @@ use central_storage::{
     AlarmUpdate, GuardedStatement, RowExpectation, SqlValue, Statement, StatementBatch,
 };
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
-use fleet_machine_login::policy::IDLE_EXPIRY_SECONDS;
 use fleet_runtime::PausePoint;
 use futures_util::{FutureExt, StreamExt};
 use reqwest_websocket::RequestBuilderExt;
@@ -15,11 +14,13 @@ use reqwest_websocket::{Message, WebSocket};
 
 const WORKSPACE: &str = "019f0000-0000-7000-8000-00000000ce6f";
 
-async fn seed_idle_grant(fixture: &Fixture, elapsed_seconds: i64) -> Result<()> {
+pub(super) async fn seed_idle_grant(fixture: &Fixture, elapsed_seconds: i64) -> Result<()> {
     let runtime = fixture
         .host
         .central(&signed::ORGANIZATION.to_owned().try_into()?)
         .await?;
+    // Fixture mutation shares the authority read turn with the open socket.
+    let _turn = runtime.runtime().take_central_turn().await;
     let idle_at = chrono::DateTime::from_timestamp(signed::NOW_SECONDS - elapsed_seconds, 0)
         .ok_or("invalid fixture clock")?
         .to_rfc3339();
@@ -64,7 +65,7 @@ async fn seed_idle_grant(fixture: &Fixture, elapsed_seconds: i64) -> Result<()> 
     Ok(())
 }
 
-async fn assert_idle_commit(fixture: &Fixture) -> Result<()> {
+pub(super) async fn assert_idle_commit(fixture: &Fixture) -> Result<()> {
     let runtime = fixture
         .host
         .central(&signed::ORGANIZATION.to_owned().try_into()?)
@@ -87,7 +88,70 @@ async fn assert_idle_commit(fixture: &Fixture) -> Result<()> {
     Ok(())
 }
 
-async fn require_inactive_close(socket: &mut WebSocket) -> Result<()> {
+async fn login_rows(fixture: &Fixture) -> Result<Vec<Vec<Vec<SqlValue>>>> {
+    let runtime = fixture
+        .host
+        .central(&signed::ORGANIZATION.to_owned().try_into()?)
+        .await?;
+    let store = runtime.runtime().statement_host();
+    let mut rows = Vec::new();
+    for sql in [
+        "SELECT * FROM login_machine_approvals ORDER BY approval_id",
+        "SELECT * FROM login_machines ORDER BY machine_id",
+        "SELECT * FROM login_machine_allowances ORDER BY allowance_id",
+        "SELECT * FROM signin_change_records ORDER BY id",
+    ] {
+        rows.push(store.read(Statement { sql, args: vec![] }).await?.rows);
+    }
+    Ok(rows)
+}
+
+async fn schema_statement(fixture: &Fixture, sql: &'static str) -> Result<()> {
+    let runtime = fixture
+        .host
+        .central(&signed::ORGANIZATION.to_owned().try_into()?)
+        .await?;
+    let store = runtime.runtime().statement_host();
+    let outcome = store
+        .run_batch(StatementBatch {
+            statements: vec![GuardedStatement {
+                statement: Statement { sql, args: vec![] },
+                expect: RowExpectation::Any,
+            }],
+            alarm: AlarmUpdate::Unchanged,
+        })
+        .await?;
+    if !matches!(outcome, central_storage::BatchOutcome::Applied { .. }) {
+        return Err(format!("idle failure fixture DDL did not apply: {outcome:?}").into());
+    }
+    Ok(())
+}
+
+async fn renew_and_receive(
+    fixture: &Fixture,
+    socket: &mut WebSocket,
+) -> Result<TokenRenewalResult> {
+    let expected_correlation: central_link_protocol::CorrelationId =
+        "019f0000-0000-7000-8000-00000000ce68".parse()?;
+    send(
+        socket,
+        &LinkFrame::Data(DataFrame::RenewMachineToken {
+            correlation_id: expected_correlation.clone(),
+            token: fixture.token.clone().try_into()?,
+        }),
+    )
+    .await?;
+    let reply = receive(socket).await?;
+    match reply {
+        LinkFrame::Data(DataFrame::MachineTokenRenewal {
+            correlation_id,
+            result,
+        }) if correlation_id == expected_correlation => Ok(result),
+        other => Err(format!("expected a correlated renewal response, got {other:?}").into()),
+    }
+}
+
+pub(super) async fn require_inactive_close(socket: &mut WebSocket) -> Result<()> {
     let frame = socket.next().await;
     if !matches!(frame, Some(Ok(Message::Close { code, .. })) if MachineLinkCloseCode::from_code(code.into()) == Some(MachineLinkCloseCode::Inactive))
     {
@@ -102,7 +166,7 @@ async fn idle_renewal_commits_before_its_correlated_inactive_reply_and_close() -
     let result = async {
         let mut socket = fixture.connect().await?;
         receive(&mut socket).await?;
-        seed_idle_grant(&fixture, IDLE_EXPIRY_SECONDS).await?;
+        seed_idle_grant(&fixture, signed::MACHINE_IDLE_LIMIT_SECONDS).await?;
         let runtime = fixture
             .host
             .central(&signed::ORGANIZATION.to_owned().try_into()?)
@@ -121,7 +185,12 @@ async fn idle_renewal_commits_before_its_correlated_inactive_reply_and_close() -
             }),
         )
         .await?;
-        barrier.until_held().await;
+        tokio::select! {
+            () = barrier.until_held() => {},
+            early = socket.next() => {
+                return Err(format!("renewal emitted a frame before reaching the idle commit: {early:?}").into());
+            }
+        }
         let store = assert_idle_commit(&fixture).await;
         let premature = socket.next().now_or_never().is_some();
         barrier.release();
@@ -154,8 +223,35 @@ async fn two_idle_connects_close_without_welcome_and_expire_only_once() -> Resul
     let result = async {
         let mut existing = fixture.connect().await?;
         receive(&mut existing).await?;
-        seed_idle_grant(&fixture, IDLE_EXPIRY_SECONDS).await?;
-        let (first, second) = tokio::join!(fixture.connect(), fixture.connect());
+        seed_idle_grant(&fixture, signed::MACHINE_IDLE_LIMIT_SECONDS).await?;
+        let runtime = fixture
+            .host
+            .central(&signed::ORGANIZATION.to_owned().try_into()?)
+            .await?;
+        let execution = runtime.runtime();
+        let mut barrier = execution
+            .pause_points()
+            .hold_central(PausePoint::AfterIdleExpiryCommit);
+        let mut first = std::pin::pin!(fixture.connect());
+        tokio::select! {
+            () = barrier.until_held() => {},
+            _ = &mut first => return Err("first connect finished before its idle commit was observed".into()),
+        }
+        let mut second = std::pin::pin!(fixture.connect());
+        tokio::select! {
+            () = execution.until_admission_waiting(1) => {},
+            _ = &mut first => return Err("first connect upgraded before idle commit release".into()),
+            _ = &mut second => return Err("second connect bypassed the held idle commit".into()),
+        }
+        assert_idle_commit(&fixture).await?;
+        if first.as_mut().now_or_never().is_some()
+            || second.as_mut().now_or_never().is_some()
+            || existing.next().now_or_never().is_some()
+        {
+            return Err("an upgrade or socket frame appeared before idle commit release".into());
+        }
+        barrier.release();
+        let (first, second) = tokio::join!(first, second);
         require_inactive_close(&mut first?).await?;
         require_inactive_close(&mut second?).await?;
         require_inactive_close(&mut existing).await?;
@@ -166,7 +262,7 @@ async fn two_idle_connects_close_without_welcome_and_expire_only_once() -> Resul
     result
 }
 
-async fn connect_replacement(fixture: &Fixture) -> Result<WebSocket> {
+pub(super) async fn connect_replacement(fixture: &Fixture) -> Result<WebSocket> {
     use fleet_contracts::{DeviceLoginDecision, MachineTokenDecision};
     use serde_json::json;
 
@@ -221,7 +317,7 @@ async fn idle_reply_send_failure_still_closes_only_the_ended_enrollment() -> Res
     let result = async {
         let mut old = fixture.connect().await?;
         receive(&mut old).await?;
-        seed_idle_grant(&fixture, IDLE_EXPIRY_SECONDS).await?;
+        seed_idle_grant(&fixture, signed::MACHINE_IDLE_LIMIT_SECONDS).await?;
         let runtime = fixture
             .host
             .central(&signed::ORGANIZATION.to_owned().try_into()?)
@@ -272,7 +368,7 @@ async fn idle_reply_send_failure_still_closes_only_the_ended_enrollment() -> Res
 async fn connect_allows_one_second_before_idle_expiry_and_rejects_one_second_after() -> Result<()> {
     let fixture = Fixture::new().await?;
     let result = async {
-        seed_idle_grant(&fixture, IDLE_EXPIRY_SECONDS - 1).await?;
+        seed_idle_grant(&fixture, signed::MACHINE_IDLE_LIMIT_SECONDS - 1).await?;
         let mut before = fixture.connect().await?;
         if !matches!(
             receive(&mut before).await?,
@@ -284,8 +380,102 @@ async fn connect_allows_one_second_before_idle_expiry_and_rejects_one_second_aft
             .close(reqwest_websocket::CloseCode::Normal, None)
             .await?;
 
-        seed_idle_grant(&fixture, IDLE_EXPIRY_SECONDS + 1).await?;
+        seed_idle_grant(&fixture, signed::MACHINE_IDLE_LIMIT_SECONDS + 1).await?;
         require_inactive_close(&mut fixture.connect().await?).await?;
+        assert_idle_commit(&fixture).await
+    }
+    .await;
+    fixture.close().await?;
+    result
+}
+
+#[tokio::test]
+async fn renewal_allows_one_second_before_idle_expiry_and_rejects_one_second_after() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let result = async {
+        let mut socket = fixture.connect().await?;
+        receive(&mut socket).await?;
+        seed_idle_grant(&fixture, signed::MACHINE_IDLE_LIMIT_SECONDS - 1).await?;
+        let before = login_rows(&fixture).await?;
+        if !matches!(
+            renew_and_receive(&fixture, &mut socket).await?,
+            TokenRenewalResult::Renewed { .. }
+        ) || login_rows(&fixture).await? != before
+        {
+            return Err(
+                "renewal below the idle limit must renew without changing login rows".into(),
+            );
+        }
+
+        seed_idle_grant(&fixture, signed::MACHINE_IDLE_LIMIT_SECONDS + 1).await?;
+        let actual = renew_and_receive(&fixture, &mut socket).await?;
+        let expected = TokenRenewalResult::Refused {
+            reason: TokenRenewalRefusal::EnrollmentNotActive,
+        };
+        if actual != expected {
+            return Err(
+                format!("expected inactive renewal after the idle limit, got {actual:?}").into(),
+            );
+        }
+        require_inactive_close(&mut socket).await?;
+        assert_idle_commit(&fixture).await
+    }
+    .await;
+    fixture.close().await?;
+    result
+}
+
+#[tokio::test]
+async fn late_idle_expiry_abort_preserves_login_rows_and_the_existing_link() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let result = async {
+        let mut socket = fixture.connect().await?;
+        receive(&mut socket).await?;
+        seed_idle_grant(&fixture, signed::MACHINE_IDLE_LIMIT_SECONDS).await?;
+        let before = login_rows(&fixture).await?;
+        // The withdrawal audit is last, after the enrollment end, machine update,
+        // expiry audit and allowance withdrawal have executed in the batch.
+        schema_statement(
+            &fixture,
+            "CREATE TRIGGER fail_idle_withdrawal_audit BEFORE INSERT ON signin_change_records WHEN NEW.kind='machineAllowanceChanged' AND NEW.allowance_state='withdrawn' BEGIN SELECT RAISE(ABORT,'fixture late idle expiry failure'); END",
+        )
+        .await?;
+
+        let response = fixture
+            .client()?
+            .get(fixture.url(signed::ORGANIZATION))
+            .bearer_auth(&fixture.token)
+            .upgrade()
+            .send()
+            .await?;
+        if response.status().as_u16() != 503 {
+            return Err(format!("idle connect batch abort must return 503, got {}", response.status()).into());
+        }
+        if socket.next().now_or_never().is_some() || login_rows(&fixture).await? != before {
+            return Err("failed idle connect changed login rows or sent an existing-link frame".into());
+        }
+
+        let actual = renew_and_receive(&fixture, &mut socket).await?;
+        let expected = TokenRenewalResult::Refused {
+            reason: TokenRenewalRefusal::CentralUnavailable,
+        };
+        if actual != expected {
+            return Err(format!("idle renewal batch abort must report unavailability, got {actual:?}").into());
+        }
+        if socket.next().now_or_never().is_some() || login_rows(&fixture).await? != before {
+            return Err("failed idle renewal changed login rows or sent a terminal frame".into());
+        }
+
+        schema_statement(&fixture, "DROP TRIGGER fail_idle_withdrawal_audit").await?;
+        // Retrying on this same socket proves the failed renewal left it usable.
+        let actual = renew_and_receive(&fixture, &mut socket).await?;
+        let expected = TokenRenewalResult::Refused {
+            reason: TokenRenewalRefusal::EnrollmentNotActive,
+        };
+        if actual != expected {
+            return Err(format!("healthy idle renewal retry must end the enrollment, got {actual:?}").into());
+        }
+        require_inactive_close(&mut socket).await?;
         assert_idle_commit(&fixture).await
     }
     .await;

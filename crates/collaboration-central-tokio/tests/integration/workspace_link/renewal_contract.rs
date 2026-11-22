@@ -189,6 +189,12 @@ async fn fresh_token(
     renewed_token(&fixture.token, &grant, client_id)
 }
 
+fn retryable_expiry() -> TokenRenewalResult {
+    TokenRenewalResult::Refused {
+        reason: TokenRenewalRefusal::CentralUnavailable,
+    }
+}
+
 fn not_active() -> TokenRenewalResult {
     TokenRenewalResult::Refused {
         reason: TokenRenewalRefusal::EnrollmentNotActive,
@@ -204,10 +210,10 @@ fn at(seconds: i64) -> Result<chrono::DateTime<chrono::Utc>> {
     reason = "Renewal answers and owning rows are compared at literal deadline boundaries."
 )]
 #[tokio::test]
-async fn a_renewal_just_before_the_deadline_renews_and_at_or_after_it_is_refused() -> Result<()> {
+async fn a_renewal_at_the_live_deadline_answers_retryably_then_closes() -> Result<()> {
     // Arrange: the connection counts until +600.
     let fixture = Fixture::new().await?;
-    let (mut client, attempt, mut socket, _) = connect_client(&fixture, &fixture.token).await?;
+    let (_client, _attempt, mut socket, _) = connect_client(&fixture, &fixture.token).await?;
     let runtime = fixture
         .host
         .central(&signed::ORGANIZATION.to_owned().try_into()?)
@@ -236,23 +242,6 @@ async fn a_renewal_just_before_the_deadline_renews_and_at_or_after_it_is_refused
     )
     .await?;
     let at_deadline = answer_to(&mut socket, "019f0000-0000-7000-8000-00000000c302").await?;
-    fixture.clock.advance(Duration::from_secs(1))?;
-    send(
-        &mut socket,
-        &renew_frame("019f0000-0000-7000-8000-00000000c303", &token)?,
-    )
-    .await?;
-    let after = answer_to(&mut socket, "019f0000-0000-7000-8000-00000000c303").await?;
-    // A request after the deadline is answered MachineRevoked, then the link closes.
-    let expired = client.begin_request(
-        caller()?,
-        create_workspace("019f0000-0000-7000-8000-00000000d301", "After the deadline")?,
-    )?;
-    send(&mut socket, &expired).await?;
-    let (after_id, after_write) = workspace_reply(&mut client, &attempt, &mut socket).await?;
-    let closed = socket.next().await;
-
-    // Assert
     assert_eq!(
         just_before,
         TokenRenewalResult::Renewed {
@@ -260,20 +249,15 @@ async fn a_renewal_just_before_the_deadline_renews_and_at_or_after_it_is_refused
             central_time: at(599)?,
         }
     );
-    assert_eq!(at_deadline, not_active());
-    assert_eq!(
-        after_write.result,
-        WorkspaceResult::Refused(RefusalReason::MachineRevoked)
-    );
-    assert_eq!(after, not_active());
-    assert_eq!(after_id, correlation(&expired)?);
+    assert_eq!(at_deadline, retryable_expiry());
+    let close = socket.next().await;
     assert!(
         matches!(
-            &closed,
-            Some(Ok(Message::Close { code, .. }))
-                if central_link_protocol::MachineLinkCloseCode::from_code((*code).into()) == Some(central_link_protocol::MachineLinkCloseCode::Expired)
+            close, Some(Ok(Message::Close { code, .. }))
+                if central_link_protocol::MachineLinkCloseCode::from_code(code.into())
+                    == Some(central_link_protocol::MachineLinkCloseCode::Expired)
         ),
-        "the lapsed link closes: {closed:?}"
+        "unexpected terminal frame: {close:?}"
     );
     let rows = runtime
         .runtime()
@@ -439,9 +423,15 @@ async fn a_renewal_after_live_revocation_is_refused_as_enrollment_not_active() -
     // Assert
     assert!(revoked.is_some());
     assert_eq!(answer, not_active());
-    socket
-        .close(reqwest_websocket::CloseCode::Normal, None)
-        .await?;
+    let close = socket.next().await;
+    assert!(
+        matches!(
+            close, Some(Ok(Message::Close { code, .. }))
+                if central_link_protocol::MachineLinkCloseCode::from_code(code.into())
+                    == Some(central_link_protocol::MachineLinkCloseCode::Revoked)
+        ),
+        "unexpected terminal frame: {close:?}"
+    );
     fixture.close().await
 }
 

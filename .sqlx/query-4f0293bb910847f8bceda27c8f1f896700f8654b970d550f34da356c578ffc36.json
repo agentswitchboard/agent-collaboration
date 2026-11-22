@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO login_machine_allowances\n    (allowance_id, machine_id, workspace_id, state, change_request_id, change_origin, created_at, updated_at)\nVALUES (?1, ?2, ?3, 'active', ?4, ?5, ?6, ?6)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "4f0293bb910847f8bceda27c8f1f896700f8654b970d550f34da356c578ffc36"
+}

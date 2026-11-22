@@ -1,8 +1,8 @@
 use super::super::{
     Decided, EnrollmentFacts, MachineState, StoredEnrollmentState,
     policy_fixture::{
-        CountingIds, NOW_MS, NOW_S, approved, assert_refused, decide_token, empty_facts, enrolled,
-        facts, id, person, project, records, time,
+        CountingIds, NOW_MS, NOW_S, active_workspaces, approved, assert_refused, decide_token,
+        empty_facts, enrolled, facts, id, person, project, records, time,
     },
 };
 use super::revoke_machine_enrollment;
@@ -33,7 +33,7 @@ fn owner_revocation_fences_pending_approvals_and_aba_without_a_public_route() {
     let next = project(&facts, &plan);
     assert_eq!(next.machine.as_ref().unwrap().generation.get(), 2);
     assert_eq!(next.machine.as_ref().unwrap().state, MachineState::Revoked);
-    assert!(next.machine.as_ref().unwrap().allowed_workspaces.is_empty());
+    assert!(active_workspaces(&next).is_empty());
     assert_eq!(
         next.enrollment.as_ref().unwrap().state,
         StoredEnrollmentState::Revoked {

@@ -2,8 +2,8 @@ use super::super::{
     EnrollmentChange, EnrollmentFacts, IDLE_EXPIRY_SECONDS, MachineState, StoredEnrollment,
     StoredEnrollmentState,
     policy_fixture::{
-        CountingIds, NOW_MS, NOW_S, approved, assert_refused, decide_token, empty_facts, enrolled,
-        facts, id, person, project, records, time, token,
+        CountingIds, NOW_MS, NOW_S, active_workspaces, approved, assert_refused, decide_token,
+        empty_facts, enrolled, facts, id, person, project, records, time, token,
     },
 };
 use super::decide_machine_token;
@@ -34,11 +34,11 @@ fn ba1_first_grant_wins_in_either_order_and_never_activates_the_other_approval()
         assert_eq!(old.ended_at_ms, Some(NOW_MS));
         let next = project(&facts, &plan);
         assert_eq!(next.machine.as_ref().unwrap().generation.get(), 2);
+        assert_eq!(active_workspaces(&next), active_workspaces(&facts));
         assert_eq!(
-            next.machine.as_ref().unwrap().allowed_workspaces,
-            facts.machine.as_ref().unwrap().allowed_workspaces
+            next.current.as_ref().unwrap().enrollment().id.as_str(),
+            id(winner)
         );
-        assert_eq!(next.active.as_ref().unwrap().id.as_str(), id(winner));
         let records = records(&plan);
         assert_eq!(
             records.iter().map(|record| record.kind).collect::<Vec<_>>(),
@@ -159,7 +159,10 @@ fn true_code_deadline_lapses_only_the_candidate_at_and_after_the_boundary() {
         MachineTokenDecision::Grant { .. }
     ));
     for now_ms in [NOW_S * 1000, NOW_S * 1000 + 1] {
-        let plan = decide_token(&facts, now_ms);
+        let mut request = token(&candidate);
+        request.client_id = id(99).try_into().unwrap();
+        let plan =
+            decide_machine_token(&request, &facts, time(now_ms), &CountingIds::new()).unwrap();
         assert_eq!(
             plan.answer,
             MachineTokenDecision::Refuse {
@@ -237,7 +240,7 @@ fn wrong_client_unknown_org_and_inactive_states_never_mint_or_write() {
 
 #[test]
 fn exact_sixty_day_idle_boundary_withdraws_allowances_with_automatic_compound_records() {
-    let last = NOW_S - IDLE_EXPIRY_SECONDS;
+    let last = NOW_S - 60 * 24 * 60 * 60;
     let active = enrolled(40, 0, last);
     let facts = facts(active.clone(), Some(active), 1);
     assert!(matches!(
@@ -254,7 +257,7 @@ fn exact_sixty_day_idle_boundary_withdraws_allowances_with_automatic_compound_re
     let next = project(&facts, &plan);
     assert_eq!(next.machine.as_ref().unwrap().generation.get(), 2);
     assert_eq!(next.machine.as_ref().unwrap().state, MachineState::Revoked);
-    assert!(next.machine.as_ref().unwrap().allowed_workspaces.is_empty());
+    assert!(active_workspaces(&next).is_empty());
     assert_eq!(
         next.enrollment.as_ref().unwrap().state,
         StoredEnrollmentState::Expired {
@@ -336,12 +339,17 @@ fn replacement_retry_keeps_the_predecessor_and_checks_live_client_before_returni
         MachineTokenRefusal::WrongClient {},
     );
     let no_longer_active = EnrollmentFacts {
-        active: None,
+        current: None,
         ..next
     };
-    assert_refused(
-        &decide_token(&no_longer_active, NOW_MS + 1000),
-        MachineTokenRefusal::Superseded {},
+    assert!(
+        decide_machine_token(
+            &token(no_longer_active.enrollment.as_ref().unwrap()),
+            &no_longer_active,
+            time(NOW_MS + 1000),
+            &CountingIds::new(),
+        )
+        .is_err()
     );
 }
 
@@ -362,7 +370,8 @@ fn idle_expiry_fences_pending_approvals_and_generation_exhaustion_returns_no_pla
     );
 
     let max = 9_007_199_254_740_991;
-    let exhausted = facts(active.clone(), Some(active), max);
+    let exhausted_active = enrolled(39, max - 1, NOW_S - 60 * 24 * 60 * 60);
+    let exhausted = facts(exhausted_active.clone(), Some(exhausted_active), max);
     assert!(
         decide_machine_token(
             &token(exhausted.enrollment.as_ref().unwrap()),

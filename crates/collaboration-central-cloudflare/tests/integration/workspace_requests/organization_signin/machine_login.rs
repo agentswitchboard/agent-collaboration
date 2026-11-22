@@ -6,6 +6,7 @@ mod constraints;
 mod fencing;
 mod idle_fencing;
 mod invariants;
+mod lifecycle_hegel;
 mod liveness;
 mod observation;
 mod receipt;

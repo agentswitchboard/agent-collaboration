@@ -1,5 +1,5 @@
 use super::support::*;
-use fleet_machine_login::policy::IDLE_EXPIRY_SECONDS;
+use collaboration_central_conformance::signin_fixtures::MACHINE_IDLE_LIMIT_SECONDS;
 
 #[expect(
     clippy::panic_in_result_fn,
@@ -26,6 +26,17 @@ async fn first_grant_uses_the_codes_exact_deadline_and_lapse_keeps_the_working_l
         let machine = f
             .rows("SELECT * FROM login_machines ORDER BY machine_id")
             .await?;
+        let allowance_pairs = "SELECT machine_id, workspace_id, state FROM login_machine_allowances ORDER BY machine_id, workspace_id";
+        assert_eq!(
+            f.rows(allowance_pairs).await?,
+            vec![
+                vec![text(INSTALLATION), text(WORKSPACE), text("active")],
+                vec![text(INSTALLATION), text(WORKSPACE_TWO), text("active")],
+            ]
+        );
+        let allowances = f
+            .rows("SELECT * FROM login_machine_allowances ORDER BY machine_id, workspace_id")
+            .await?;
         let immutable_pending = f.rows("SELECT approval_id,request_id,machine_id,label,allowed_workspaces,approved_by_person_id,permission_checked,base_generation,code_expires_at,created_at FROM login_machine_approvals WHERE label='Pending'").await?;
         let working = f
             .rows("SELECT * FROM login_machine_approvals WHERE label='Working'")
@@ -39,7 +50,9 @@ async fn first_grant_uses_the_codes_exact_deadline_and_lapse_keeps_the_working_l
             )
             .await?;
         f.advance(elapsed_ms).await?;
-        let answer = f.post(TOKEN, &token(&b, &b)).await?;
+        // At and after the deadline, lapse takes precedence over client mismatch.
+        let client_id = if elapsed_ms >= 30_000 { &a } else { &b };
+        let answer = f.post(TOKEN, &token(&b, client_id)).await?;
         if elapsed_ms >= 30_000 {
             assert_eq!(answer, (200, refused("enrollmentNotActive")));
             let ended_at = chrono::DateTime::from_timestamp_millis(
@@ -62,7 +75,20 @@ async fn first_grant_uses_the_codes_exact_deadline_and_lapse_keeps_the_working_l
                 f.rows("SELECT * FROM login_machines ORDER BY machine_id")
                     .await?
                     == machine,
-                "lapse leaves machine generation/current allowances alone"
+                "lapse leaves the machine row alone"
+            );
+            assert_eq!(
+                f.rows(allowance_pairs).await?,
+                vec![
+                    vec![text(INSTALLATION), text(WORKSPACE), text("active")],
+                    vec![text(INSTALLATION), text(WORKSPACE_TWO), text("active")]
+                ]
+            );
+            assert_eq!(
+                f.rows("SELECT * FROM login_machine_allowances ORDER BY machine_id, workspace_id")
+                    .await?,
+                allowances,
+                "lapse preserves the allowance pairs and their metadata from both approvals"
             );
             assert!(f.rows("SELECT approval_id,request_id,machine_id,label,allowed_workspaces,approved_by_person_id,permission_checked,base_generation,code_expires_at,created_at FROM login_machine_approvals WHERE label='Pending'").await? == immutable_pending);
             assert!(
@@ -136,7 +162,7 @@ async fn renewal_extends_idle_deadline_and_sixty_days_without_grant_expires_once
         vec![vec![number(1)]]
     );
     // Both intervals must fit within the organization statement lifetime.
-    f.advance(u64::try_from(IDLE_EXPIRY_SECONDS * 2 / 3 * 1000)?)
+    f.advance(u64::try_from(MACHINE_IDLE_LIMIT_SECONDS * 2 / 3 * 1000)?)
         .await?;
     assert_eq!(
         f.post(TOKEN, &token(&enrollment_id, &enrollment_id))
@@ -149,7 +175,7 @@ async fn renewal_extends_idle_deadline_and_sixty_days_without_grant_expires_once
             .await?,
         vec![vec![number(f.now())]]
     );
-    f.advance(u64::try_from(IDLE_EXPIRY_SECONDS * 1000)?)
+    f.advance(u64::try_from(MACHINE_IDLE_LIMIT_SECONDS * 1000)?)
         .await?;
     assert_eq!(
         f.post(TOKEN, &token(&enrollment_id, &enrollment_id))

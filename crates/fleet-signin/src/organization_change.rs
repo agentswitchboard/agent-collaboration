@@ -1,15 +1,17 @@
 //! Sign-in change records share the stamp/effect atomic batch.
 use central_storage::{
-    GuardedStatement, ReadOutcome, RowExpectation, SafeInteger, SqlValue, Statement, StoreFailure,
+    GuardedStatement, ReadOutcome, SafeInteger, SqlValue, Statement, StoreFailure,
 };
 use fleet_identity_protocol::UnixMillis;
 use fleet_runtime_ports::CentralStore;
 use fleet_runtime_ports::{
+    guarded_statements::exact,
     stored_values::{column, string},
     workspace_decode_error::corrupt as bad_value,
 };
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use sqlx::{Database, Encode, IntoArguments, Type, query::Query};
 use uuid::Uuid;
 use workspace_ids::{MachineId, WorkspaceId};
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -202,21 +204,21 @@ fn private_id(value: &str) -> Result<Uuid, StoreFailure> {
     Ok(id)
 }
 pub(crate) struct AuditInput<'record> {
-    pub(crate) id: String,
-    pub(crate) request: &'record str,
-    pub(crate) kind: &'static str,
-    pub(crate) origin: &'static str,
-    pub(crate) person: Option<&'record str>,
-    pub(crate) permission: Option<&'record str>,
-    pub(crate) target: &'record str,
-    pub(crate) timestamp: SafeInteger,
-    pub(crate) allowance: Option<AuditAllowanceFields<'record>>,
+    id: String,
+    request: &'record str,
+    kind: &'static str,
+    origin: &'static str,
+    person: Option<&'record str>,
+    permission: Option<&'record str>,
+    target: &'record str,
+    timestamp: SafeInteger,
+    allowance: Option<AuditAllowanceFields<'record>>,
 }
 
 #[derive(Clone, Copy)]
-pub(crate) struct AuditAllowanceFields<'record> {
-    pub(crate) workspace: &'record str,
-    pub(crate) state: &'static str,
+struct AuditAllowanceFields<'record> {
+    workspace: &'record str,
+    state: &'static str,
 }
 
 impl OrganizationChangeRecord {
@@ -291,31 +293,77 @@ pub fn insert(record: &OrganizationChangeRecord) -> Result<GuardedStatement, Sto
     Ok(insert_audit(record.insert_values()?))
 }
 
+// The stamp executor and the CentralStore batch bind the same ordered values.
+// SQLite's checked witness describes the arity of this shared argument list.
+macro_rules! change_record_bindings {
+    ($audit:ident, $bind:ident) => {
+        $bind!(
+            "src/queries/insert_change_record.sql",
+            [
+                Text($audit.id),
+                Text($audit.request.to_owned()),
+                Text($audit.kind.to_owned()),
+                Text($audit.origin.to_owned()),
+                OptionalText($audit.person.map(str::to_owned)),
+                OptionalText($audit.permission.map(str::to_owned)),
+                Text($audit.target.to_owned()),
+                Integer($audit.timestamp),
+                Integer($audit.timestamp),
+                OptionalText($audit.allowance.map(|fields| fields.workspace.to_owned())),
+                OptionalText($audit.allowance.map(|fields| fields.state.to_owned())),
+            ]
+        )
+    };
+}
+
+macro_rules! guarded_change_record {
+    ($file:literal, [$($kind:ident($value:expr)),* $(,)?]) => {{
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        let _ = sqlx::query_file!(
+            $file $(, guarded_change_record!(@parameter $value))*
+        );
+        exact(
+            include_str!(concat!("../", $file)),
+            vec![$(guarded_change_record!(@value $kind $value)),*],
+        )
+    }};
+    (@parameter $value:expr) => {{
+        let _ = stringify!($value);
+        0_i64
+    }};
+    (@value Text $value:expr) => { SqlValue::Text($value) };
+    (@value OptionalText $value:expr) => { $value.map_or(SqlValue::Null, SqlValue::Text) };
+    (@value Integer $value:expr) => { SqlValue::Integer($value) };
+}
+
+macro_rules! sqlx_change_record {
+    ($file:literal, [$($kind:ident($value:expr)),* $(,)?]) => {
+        sqlx::query::<DB>(include_str!(concat!("../", $file)))
+            $(.bind(sqlx_change_record!(@value $kind $value)))*
+    };
+    (@value Text $value:expr) => { $value };
+    (@value OptionalText $value:expr) => { $value };
+    (@value Integer $value:expr) => { $value.get() };
+}
+
 fn insert_audit(audit: AuditInput<'_>) -> GuardedStatement {
-    GuardedStatement {
-        statement: Statement {
-            sql: include_str!("queries/insert_change_record.sql"),
-            args: vec![
-                text(audit.id),
-                text(audit.request),
-                text(audit.kind),
-                text(audit.origin),
-                audit.person.map_or(SqlValue::Null, text),
-                audit.permission.map_or(SqlValue::Null, text),
-                text(audit.target),
-                SqlValue::Integer(audit.timestamp),
-                SqlValue::Integer(audit.timestamp),
-                audit
-                    .allowance
-                    .map_or(SqlValue::Null, |fields| text(fields.workspace)),
-                audit
-                    .allowance
-                    .map_or(SqlValue::Null, |fields| text(fields.state)),
-            ],
-        },
-        expect: RowExpectation::Exactly(1),
+    change_record_bindings!(audit, guarded_change_record)
+}
+
+impl AuditInput<'_> {
+    pub(crate) fn insert_query<DB>(self) -> Query<'static, DB, DB::Arguments>
+    where
+        DB: Database,
+        DB::Arguments: IntoArguments<DB>,
+        String: Type<DB> + for<'q> Encode<'q, DB>,
+        Option<String>: Type<DB> + for<'q> Encode<'q, DB>,
+        i64: Type<DB> + for<'q> Encode<'q, DB>,
+    {
+        let audit = self;
+        change_record_bindings!(audit, sqlx_change_record)
     }
 }
+
 fn optional_text(
     rows: &ReadOutcome,
     row: &[SqlValue],

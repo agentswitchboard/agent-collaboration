@@ -2,6 +2,7 @@
 use crate::WorkspaceRuntime;
 use crate::organization_authority_cache::StampStanding;
 use central_storage::{AlarmUpdate, BatchOutcome, StatementBatch, StoreFailure};
+use fleet_contracts::EnrollmentInvalidation;
 use fleet_contracts::{
     DecideDeviceLogin, DecideMachineToken, DeviceLoginDecision, MachineTokenDecision,
 };
@@ -26,7 +27,9 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
             .machine_login_service()
             .prepare_device_login(request, received_at_ms, time)
             .await?;
-        self.apply_machine_login(plan).await
+        self.apply_machine_login(plan)
+            .await
+            .map(|(answer, _)| answer)
     }
 
     pub async fn decide_machine_token(
@@ -38,13 +41,26 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
             .pause_points()
             .reached_central(fleet_runtime::PausePoint::BeforeSignInSample)
             .await;
-        let _turn = self.execution.take_central_turn().await;
+        let turn = self.execution.take_central_turn().await;
         let time = self.machine_login_time(&request.organization_id).await?;
         let plan = self
             .machine_login_service()
             .prepare_machine_token(request, time)
             .await?;
-        self.apply_machine_login(plan).await
+        let (answer, invalidation) = self.apply_machine_login(plan).await?;
+        #[cfg(feature = "test-support")]
+        drop(turn);
+        if let Some(invalidation) = invalidation {
+            #[cfg(feature = "test-support")]
+            self.execution
+                .pause_points()
+                .reached_central(fleet_runtime::PausePoint::BeforePrivateEnrollmentInvalidation)
+                .await;
+            (self.enrollment_invalidated)(invalidation);
+        }
+        #[cfg(not(feature = "test-support"))]
+        drop(turn);
+        Ok(answer)
     }
 
     pub(crate) async fn machine_login_time(
@@ -84,8 +100,16 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
     pub(crate) async fn apply_machine_login<Answer>(
         &self,
         plan: MachineLoginPlan<Answer>,
-    ) -> Result<Answer, StoreFailure> {
-        let MachineLoginPlan { answer, statements } = plan;
+    ) -> Result<(Answer, Option<EnrollmentInvalidation>), StoreFailure> {
+        let (answer, statements, invalidation) = plan.into_applying();
+        self.apply_machine_login_statements(statements).await?;
+        Ok((answer, invalidation))
+    }
+
+    pub(crate) async fn apply_machine_login_statements(
+        &self,
+        statements: Vec<central_storage::GuardedStatement>,
+    ) -> Result<(), StoreFailure> {
         #[cfg(feature = "test-support")]
         self.execution
             .pause_points()
@@ -105,6 +129,6 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                 _ => return Err(StoreFailure::Unavailable),
             }
         }
-        Ok(answer)
+        Ok(())
     }
 }

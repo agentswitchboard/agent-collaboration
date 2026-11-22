@@ -3,7 +3,7 @@ use super::super::{
     baseline,
     fixture::{self, Fixture, ORGANIZATION},
 };
-use super::{advance, area, fresh, is_done, not_active, renew, renewal};
+use super::{advance, area, fresh, is_done, renew, renewal, retryable_expiry};
 use central_link_protocol::{TokenRenewalRefusal, TokenRenewalResult};
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 
@@ -181,7 +181,7 @@ async fn issuer_cache_journey(fixture: &Fixture) -> Result<()> {
             )?
         )
         .await?,
-        not_active()
+        retryable_expiry()
     );
     drop(link);
     Ok(())

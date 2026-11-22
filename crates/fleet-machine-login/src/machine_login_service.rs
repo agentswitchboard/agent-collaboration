@@ -2,37 +2,71 @@
 use crate::{
     enrollment_reads, enrollment_writes,
     policy::{
-        self, Decided, DecisionTime, EnrollmentFacts, EnrollmentQuery, StoredEnrollmentState,
+        self, Decided, DecisionTime, EnrollmentChange, EnrollmentFacts, EnrollmentQuery,
+        StoredAllowanceState, StoredEnrollmentState,
     },
 };
 use central_storage::{GuardedStatement, StoreFailure};
 use fleet_contracts::{
     AdmittedRevoke, DecideDeviceLogin, DecideMachineToken, DeviceLoginDecision, EndedMachineClient,
-    MachineTokenDecision,
+    EnrollmentInvalidation, EnrollmentRevocationReason, MachineTokenDecision,
+    mail_link::MachineLinkCloseCode,
 };
 use fleet_identity_protocol::{EnrollmentId, OrganizationId};
 use fleet_runtime_ports::{CentralStore, IdSource, workspace_decode_error::corrupt};
 use workspace_ids::{MachineId, WorkspaceId};
 
 pub struct MachineLoginService<'turn, Host> {
-    store: &'turn Host,
-    organization: &'turn OrganizationId,
+    pub(crate) store: &'turn Host,
+    pub(crate) organization: &'turn OrganizationId,
     ids: &'turn dyn IdSource,
 }
 
 pub struct MachineLoginPlan<Answer> {
-    pub answer: Answer,
-    pub statements: Vec<GuardedStatement>,
+    answer: Answer,
+    statements: Vec<GuardedStatement>,
+    invalidation: Option<EnrollmentInvalidation>,
+}
+
+impl<Answer> MachineLoginPlan<Answer> {
+    pub fn into_applying(
+        self,
+    ) -> (
+        Answer,
+        Vec<GuardedStatement>,
+        Option<EnrollmentInvalidation>,
+    ) {
+        (self.answer, self.statements, self.invalidation)
+    }
 }
 
 pub enum PreparedEnrollmentRevocation {
     NotFound,
     AlreadyEnded,
-    Revoked {
-        machine_id: MachineId,
-        ended: EndedMachineClient,
-        statements: Vec<GuardedStatement>,
-    },
+    Revoked(PreparedOwnerRevocation),
+}
+
+pub struct PreparedOwnerRevocation {
+    ended: EndedMachineClient,
+    invalidation: EnrollmentInvalidation,
+    statements: Vec<GuardedStatement>,
+}
+
+impl PreparedOwnerRevocation {
+    #[must_use]
+    pub fn ended_machine(&self) -> &MachineId {
+        &self.invalidation.machine_id
+    }
+
+    pub fn into_applying(
+        self,
+    ) -> (
+        EndedMachineClient,
+        EnrollmentInvalidation,
+        Vec<GuardedStatement>,
+    ) {
+        (self.ended, self.invalidation, self.statements)
+    }
 }
 
 impl<'turn, Host: CentralStore> MachineLoginService<'turn, Host> {
@@ -71,12 +105,23 @@ impl<'turn, Host: CentralStore> MachineLoginService<'turn, Host> {
         request: &DecideMachineToken,
         time: DecisionTime,
     ) -> Result<MachineLoginPlan<MachineTokenDecision>, StoreFailure> {
-        let facts = self
+        let mut facts = self
             .read_facts(&EnrollmentQuery {
                 enrollment: Some(request.enrollment_id.clone()),
                 ..EnrollmentQuery::default()
             })
             .await?;
+        let ends_current = facts.current.as_ref().is_some_and(|current| {
+            request.organization_id == facts.organization_id
+                && current.enrollment().id == request.enrollment_id
+                && matches!(&current.enrollment().state,
+                    StoredEnrollmentState::Enrolled { client_id, last_grant_at }
+                    if client_id == &request.client_id
+                        && policy::idle_limit_reached(time, *last_grant_at))
+        });
+        if ends_current {
+            enrollment_reads::load_terminal_allowances(self.store, &mut facts).await?;
+        }
         let decided = policy::decide_machine_token(request, &facts, time, self.ids)?;
         prepare_plan(&facts, decided, time)
     }
@@ -87,7 +132,7 @@ impl<'turn, Host: CentralStore> MachineLoginService<'turn, Host> {
         enrollment_id: &EnrollmentId,
         time: DecisionTime,
     ) -> Result<PreparedEnrollmentRevocation, StoreFailure> {
-        let facts = self
+        let mut facts = self
             .read_facts(&EnrollmentQuery {
                 enrollment: Some(enrollment_id.clone()),
                 ..EnrollmentQuery::default()
@@ -104,9 +149,15 @@ impl<'turn, Host: CentralStore> MachineLoginService<'turn, Host> {
                 Ok(PreparedEnrollmentRevocation::AlreadyEnded)
             }
             StoredEnrollmentState::Enrolled { .. } => {
-                if facts.active.as_ref().map(|active| &active.id) != Some(enrollment_id) {
+                if facts
+                    .current
+                    .as_ref()
+                    .map(|current| &current.enrollment().id)
+                    != Some(enrollment_id)
+                {
                     return Err(corrupt("login_machine_approvals.enrolled"));
                 }
+                enrollment_reads::load_terminal_allowances(self.store, &mut facts).await?;
                 let decided = policy::revoke_machine_enrollment(
                     &facts,
                     &authority.actor,
@@ -116,21 +167,22 @@ impl<'turn, Host: CentralStore> MachineLoginService<'turn, Host> {
                     self.ids,
                 )?;
                 let plan = prepare_plan(&facts, decided, time)?;
-                Ok(PreparedEnrollmentRevocation::Revoked {
-                    machine_id: enrollment.machine_id.clone(),
-                    ended: plan
-                        .answer
-                        .ok_or_else(|| corrupt("login_machine_approvals.enrolled"))?,
-                    statements: plan.statements,
-                })
+                Ok(PreparedEnrollmentRevocation::Revoked(
+                    PreparedOwnerRevocation {
+                        invalidation: plan
+                            .invalidation
+                            .ok_or_else(|| corrupt("login_machine_approvals.enrolled"))?,
+                        ended: plan
+                            .answer
+                            .ok_or_else(|| corrupt("login_machine_approvals.enrolled"))?,
+                        statements: plan.statements,
+                    },
+                ))
             }
         }
     }
 
-    pub async fn read_facts(
-        &self,
-        query: &EnrollmentQuery,
-    ) -> Result<EnrollmentFacts, StoreFailure> {
+    async fn read_facts(&self, query: &EnrollmentQuery) -> Result<EnrollmentFacts, StoreFailure> {
         enrollment_reads::facts(self.store, self.organization.clone(), query).await
     }
 
@@ -149,7 +201,20 @@ impl<'turn, Host: CentralStore> MachineLoginService<'turn, Host> {
             .collect()
     }
 
-    pub fn prepare_idle_expiry(
+    pub async fn allows_workspace(
+        &self,
+        machine: &MachineId,
+        workspace: &WorkspaceId,
+    ) -> Result<bool, StoreFailure> {
+        let workspace = crate::enrollment_row_values::identifier(
+            workspace.as_str(),
+            "login_machine_allowances.workspace_id",
+        )?;
+        let allowance = enrollment_reads::read_allowance(self.store, machine, &workspace).await?;
+        Ok(allowance.is_some_and(|pair| pair.state == StoredAllowanceState::Active))
+    }
+
+    pub(crate) fn prepare_idle_expiry(
         &self,
         facts: &EnrollmentFacts,
         time: DecisionTime,
@@ -171,8 +236,33 @@ fn prepare_plan<Answer>(
     } {
         return Err(corrupt("machine_login.applying_time"));
     }
+    let invalidation = decided.changes.iter().find_map(|change| {
+        let EnrollmentChange::ReplaceEnrollment(enrollment) = change else {
+            return None;
+        };
+        let cause = match enrollment.state {
+            StoredEnrollmentState::Revoked {
+                reason: EnrollmentRevocationReason::Owner {},
+                ..
+            } => MachineLinkCloseCode::Revoked,
+            StoredEnrollmentState::Revoked {
+                reason: EnrollmentRevocationReason::Superseded {},
+                ..
+            }
+            | StoredEnrollmentState::Expired { .. } => MachineLinkCloseCode::Inactive,
+            StoredEnrollmentState::Approved
+            | StoredEnrollmentState::Enrolled { .. }
+            | StoredEnrollmentState::Lapsed => return None,
+        };
+        Some(EnrollmentInvalidation {
+            machine_id: enrollment.machine_id.clone(),
+            enrollment_id: enrollment.id.clone(),
+            cause,
+        })
+    });
     Ok(MachineLoginPlan {
         answer: decided.answer,
         statements: enrollment_writes::statements(facts, &decided.changes, time.now_ms)?,
+        invalidation,
     })
 }

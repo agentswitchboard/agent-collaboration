@@ -7,10 +7,10 @@ use central_link_protocol::{
 };
 use collaboration_central_core::WorkspaceCaller;
 use collaboration_central_core::{
-    IdleEndedEnrollment, MachineLinkAdmission, MachineLinkRequestAuthority,
+    MachineLinkAdmission, MachineLinkRequestAuthority, RenewalTermination, project_renewal_refusal,
 };
-use fleet_contracts::MachineConnectionAttachment;
 use fleet_contracts::mail_link::MailReceiptSettlement;
+use fleet_contracts::{EnrollmentInvalidation, MachineConnectionAttachment};
 use fleet_runtime_ports::Clock;
 use worker::{
     Request, Response, Result, WebSocket, WebSocketIncomingMessage, WebSocketPair,
@@ -61,9 +61,9 @@ impl CentralObject {
             {
                 connection
             }
-            Ok(MachineLinkAdmission::IdleEnded(ended)) => {
-                let upgrade = close_idle_connect();
-                self.close_idle_enrollment(&ended, None);
+            Ok(MachineLinkAdmission::Ended(ended)) => {
+                let upgrade = close_ended_connect(ended.cause);
+                close_enrollment_sockets(&self.state, &ended, None);
                 return upgrade;
             }
             Ok(_) => return Response::error("machine refused", 401),
@@ -256,10 +256,11 @@ impl CentralObject {
                 correlation_id,
                 token,
             } => {
-                let (result, ended) =
+                let (result, termination) =
                     renew(&socket, runtime.as_ref(), &attachment, token.expose()).await?;
                 #[cfg(feature = "test-support")]
-                let fail_send = ended.is_some() && runtime.take_idle_renewal_send_failure();
+                let fail_send = matches!(termination, Some(RenewalTermination::EndEnrollment(_)))
+                    && runtime.take_idle_renewal_send_failure();
                 #[cfg(not(feature = "test-support"))]
                 let fail_send = false;
                 let reply = if fail_send {
@@ -275,24 +276,36 @@ impl CentralObject {
                         },
                     )
                 };
-                if let Some(ended) = ended {
-                    let closed = close_authority(
-                        &socket,
-                        central_link_protocol::MachineLinkCloseCode::Inactive,
-                    );
-                    #[cfg(feature = "test-support")]
+                #[cfg(feature = "test-support")]
+                if !fail_send
+                    && reply.is_err()
+                    && matches!(termination, Some(RenewalTermination::EndEnrollment(_)))
+                {
                     runtime
                         .runtime()
                         .pause_points()
-                        .reached_central(fleet_runtime::PausePoint::BeforeIdleEnrollmentCleanup)
+                        .reached_central(
+                            fleet_runtime::PausePoint::AfterIdleRenewalPlatformSendError,
+                        )
                         .await;
-                    self.close_idle_enrollment(&ended, Some(&socket));
-                    #[cfg(feature = "test-support")]
-                    runtime
-                        .runtime()
-                        .pause_points()
-                        .reached_central(fleet_runtime::PausePoint::AfterIdleEnrollmentCleanup)
-                        .await;
+                }
+                if let Some(termination) = termination {
+                    let closed = close_authority(&socket, termination.cause());
+                    if let RenewalTermination::EndEnrollment(ended) = termination {
+                        #[cfg(feature = "test-support")]
+                        runtime
+                            .runtime()
+                            .pause_points()
+                            .reached_central(fleet_runtime::PausePoint::BeforeIdleEnrollmentCleanup)
+                            .await;
+                        close_enrollment_sockets(&self.state, &ended, Some(&socket));
+                        #[cfg(feature = "test-support")]
+                        runtime
+                            .runtime()
+                            .pause_points()
+                            .reached_central(fleet_runtime::PausePoint::AfterIdleEnrollmentCleanup)
+                            .await;
+                    }
                     return reply.and(closed);
                 }
                 reply
@@ -348,26 +361,6 @@ impl CentralObject {
                     )?;
                 }
                 Ok(())
-            }
-        }
-    }
-
-    fn close_idle_enrollment(&self, ended: &IdleEndedEnrollment, current: Option<&WebSocket>) {
-        for socket in self
-            .state
-            .get_websockets_with_tag(ended.machine_id.as_str())
-        {
-            if current.is_some_and(|current| current.as_ref() == socket.as_ref()) {
-                continue;
-            }
-            if matches!(
-                socket.deserialize_attachment::<MachineConnectionAttachment>(),
-                Ok(Some(attachment)) if attachment.enrollment_id() == &ended.enrollment_id
-            ) {
-                let _ = close_authority(
-                    &socket,
-                    central_link_protocol::MachineLinkCloseCode::Inactive,
-                );
             }
         }
     }
@@ -608,13 +601,28 @@ fn close_authority(
     socket.close(Some(cause.code()), None::<&str>)
 }
 
-fn close_idle_connect() -> Result<Response> {
+pub(crate) fn close_enrollment_sockets(
+    state: &worker::State,
+    invalidation: &EnrollmentInvalidation,
+    current: Option<&WebSocket>,
+) {
+    for socket in state.get_websockets_with_tag(invalidation.machine_id.as_str()) {
+        if current.is_some_and(|current| current.as_ref() == socket.as_ref()) {
+            continue;
+        }
+        if matches!(
+            socket.deserialize_attachment::<MachineConnectionAttachment>(),
+            Ok(Some(attachment)) if attachment.enrollment_id() == &invalidation.enrollment_id
+        ) {
+            let _ = close_authority(&socket, invalidation.cause);
+        }
+    }
+}
+
+fn close_ended_connect(cause: central_link_protocol::MachineLinkCloseCode) -> Result<Response> {
     let pair = WebSocketPair::new()?;
     pair.server.accept()?;
-    close_authority(
-        &pair.server,
-        central_link_protocol::MachineLinkCloseCode::Inactive,
-    )?;
+    close_authority(&pair.server, cause)?;
     Response::from_websocket(pair.client)
 }
 
@@ -632,20 +640,12 @@ async fn renew(
     token: &str,
 ) -> Result<(
     central_link_protocol::TokenRenewalResult,
-    Option<IdleEndedEnrollment>,
+    Option<RenewalTermination>,
 )> {
     use central_link_protocol::{TokenRenewalRefusal, TokenRenewalResult};
-    use collaboration_central_core::MachineTokenRenewalRefusal as Refusal;
     let refused = |reason| (TokenRenewalResult::Refused { reason }, None);
-    // The current connection is restored against live rows first; a socket
-    // whose authority already lapsed cannot renew.
-    let current = match runtime.restore_machine_connection(attachment).await {
-        Ok(Ok(current)) => current,
-        Ok(Err(_)) => return Ok(refused(TokenRenewalRefusal::EnrollmentNotActive)),
-        Err(_) => return Ok(refused(TokenRenewalRefusal::CentralUnavailable)),
-    };
     Ok(
-        match runtime.renew_machine_connection(&current, token).await {
+        match runtime.renew_machine_connection(attachment, token).await {
             Ok(Ok(renewed)) => {
                 let Some(effective_expires_at) = chrono::DateTime::from_timestamp(
                     renewed.connection.effective_expires_at().0,
@@ -662,19 +662,10 @@ async fn renew(
                     None,
                 )
             }
-            Ok(Err(Refusal::IdleEnded(ended))) => (
-                TokenRenewalResult::Refused {
-                    reason: TokenRenewalRefusal::EnrollmentNotActive,
-                },
-                Some(ended),
-            ),
-            Ok(Err(refusal)) => refused(match refusal {
-                Refusal::TokenRejected => TokenRenewalRefusal::TokenRejected,
-                Refusal::EnrollmentNotActive => TokenRenewalRefusal::EnrollmentNotActive,
-                Refusal::DifferentMachine => TokenRenewalRefusal::DifferentMachine,
-                Refusal::DifferentEnrollment => TokenRenewalRefusal::DifferentEnrollment,
-                Refusal::IdleEnded(_) => TokenRenewalRefusal::EnrollmentNotActive,
-            }),
+            Ok(Err(refusal)) => {
+                let (reason, termination) = project_renewal_refusal(refusal);
+                (TokenRenewalResult::Refused { reason }, termination)
+            }
             Err(_) => refused(TokenRenewalRefusal::CentralUnavailable),
         },
     )

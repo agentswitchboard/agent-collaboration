@@ -14,3 +14,7 @@ CREATE TABLE login_machine_allowances (
     updated_at TEXT NOT NULL,
     UNIQUE (machine_id, workspace_id)
 );
+
+CREATE INDEX login_machine_allowances_active
+ON login_machine_allowances (machine_id, workspace_id)
+WHERE state = 'active';

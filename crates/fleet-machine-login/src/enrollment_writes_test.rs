@@ -9,9 +9,8 @@ fn machine() -> MachineRow {
             .try_into()
             .unwrap(),
         label: "Current label".to_owned().try_into().unwrap(),
-        allowed_workspaces: vec![],
         generation: EnrollmentGeneration::try_from(3).unwrap(),
-        state: MachineState::Enrolled,
+        state: MachineState::Revoked,
     }
 }
 fn enrollment() -> StoredEnrollment {
@@ -48,7 +47,8 @@ fn facts() -> EnrollmentFacts {
         prior_approval: None,
         enrollment: Some(enrollment()),
         machine: Some(machine()),
-        active: None,
+        current: None,
+        allowances: AllowanceInputs::Unused,
         superseded_client: None,
         missing_workspaces: vec![],
     }
@@ -71,7 +71,7 @@ fn activation_guards_the_same_applying_time_and_never_updates_approval_metadata(
     )
     .unwrap();
     assert_eq!(plan.len(), 3);
-    assert!(plan[0].statement.sql.contains("enrollment_generation=?"));
+    assert!(plan[0].statement.sql.contains("enrollment_generation = ?"));
     assert!(
         plan[1]
             .statement

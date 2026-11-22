@@ -140,9 +140,6 @@ impl StampWrite {
             .statement()
             .to_owned();
         let audit = self.audit.insert_values()?;
-        let audit_timestamp = audit.timestamp.get();
-        let workspace = audit.allowance.map(|fields| fields.workspace);
-        let allowance_state = audit.allowance.map(|fields| fields.state);
         let result = match self.mutation {
             StampMutation::Initialize(accepted) => {
                 let id = accepted.organization_id().as_str().to_owned();
@@ -204,33 +201,8 @@ impl StampWrite {
         let affected = T::rows_affected(result);
         exact_one(0, affected)?;
 
-        #[cfg(all(test, not(target_arch = "wasm32")))]
-        let _ = sqlx::query_file!(
-            "src/queries/insert_change_record.sql",
-            &audit.id,
-            &audit.request,
-            &audit.kind,
-            &audit.origin,
-            &audit.person,
-            &audit.permission,
-            &audit.target,
-            audit_timestamp,
-            audit_timestamp,
-            workspace,
-            allowance_state,
-        );
-        let result = sqlx::query::<T::Database>(include_str!("queries/insert_change_record.sql"))
-            .bind(audit.id)
-            .bind(audit.request.to_owned())
-            .bind(audit.kind.to_owned())
-            .bind(audit.origin.to_owned())
-            .bind(audit.person.map(str::to_owned))
-            .bind(audit.permission.map(str::to_owned))
-            .bind(audit.target.to_owned())
-            .bind(audit_timestamp)
-            .bind(audit_timestamp)
-            .bind(workspace.map(str::to_owned))
-            .bind(allowance_state.map(str::to_owned))
+        let result = audit
+            .insert_query::<T::Database>()
             .execute(tx.executor())
             .await
             .map_err(|source| StampWriteStop::Sql { index: 1, source })?;

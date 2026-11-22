@@ -1,16 +1,16 @@
 //! Approval reserves a snapshot; it never activates a login.
-use super::allowance_transitions::{AllowanceEvent, AllowanceStatus, allowance_effect};
+use super::allowance_transitions::{AllowanceEvent, allowance_effect};
 use super::decision_support::{DecisionIds, DecisionTime};
 use super::enrollment_records::{
-    Decided, EnrollmentChange, EnrollmentFacts, EnrollmentGeneration, MachineRow, MachineState,
-    StoredEnrollment, StoredEnrollmentState,
+    AllowanceInputs, Decided, EnrollmentChange, EnrollmentFacts, StoredEnrollment,
 };
+use super::enrollment_transitions::reserve_enrollment;
 use central_storage::StoreFailure;
 use fleet_contracts::PERSON_SECOND_FACTOR_WINDOW_SECONDS;
 use fleet_contracts::{DecideDeviceLogin, DeviceLoginDecision, DeviceLoginRefusal};
 use fleet_identity_protocol::EnrollmentId;
-use fleet_runtime_ports::IdSource;
-use fleet_signin::organization_change::OrganizationChangeOrigin;
+use fleet_runtime_ports::{IdSource, workspace_decode_error::corrupt};
+use fleet_signin::organization_change::{MachineAllowanceState, OrganizationChangeOrigin};
 use std::{collections::BTreeSet, num::NonZeroU32};
 
 pub const SD8_MILLIS: i64 = 5_000;
@@ -77,44 +77,12 @@ pub fn decide_device_login(
         return refuse(DeviceLoginRefusal::SecondFactorRequired { within_seconds });
     }
     let ids = DecisionIds(ids);
-    let mut machine = match &facts.machine {
-        Some(machine) => machine.clone(),
-        None => MachineRow {
-            machine_id: machine_id.clone(),
-            label: request.label.clone(),
-            allowed_workspaces: Vec::new(),
-            generation: EnrollmentGeneration::default(),
-            state: MachineState::Revoked,
-        },
-    };
-    machine.label = request.label.clone();
-    // Approval adds allowances; it does not withdraw existing ones (B3/R39).
-    let mut added = Vec::new();
-    for workspace in request.allowed_workspaces.as_slice() {
-        let status = if machine.allowed_workspaces.contains(workspace) {
-            AllowanceStatus::Active
-        } else {
-            AllowanceStatus::Absent
-        };
-        if let Some(effect) = allowance_effect(status, AllowanceEvent::ApprovalSelectedWorkspace)? {
-            machine.allowed_workspaces.push(workspace.clone());
-            added.push((workspace, effect));
-        }
-    }
-    let enrollment = StoredEnrollment {
-        id: EnrollmentId::try_from(ids.next()?.to_string())
-            .map_err(|_| StoreFailure::Unavailable)?,
-        machine_id,
-        request_id: request.request_id.clone(),
-        approved_by: request.approver.clone(),
-        label: request.label.clone(),
-        allowed_workspaces: request.allowed_workspaces.clone(),
-        base_generation: machine.generation,
-        approved_at_ms: time.now_ms,
-        code_expires_at: request.code_expires_at,
-        state: StoredEnrollmentState::Approved,
-        ended_at_ms: None,
-    };
+    let (machine, enrollment) = reserve_enrollment(
+        facts.machine.as_ref(),
+        request,
+        EnrollmentId::try_from(ids.next()?.to_string()).map_err(|_| StoreFailure::Unavailable)?,
+        time,
+    )?;
     // The owning machine must precede its approval's foreign key.
     let mut changes = vec![
         EnrollmentChange::PutMachine(machine),
@@ -124,17 +92,32 @@ pub fn decide_device_login(
         person_id: request.approver.as_str().to_owned(),
         permission_checked: "machine:enroll".to_owned(),
     };
-    for (workspace, effect) in added {
-        changes.push(EnrollmentChange::RecordAllowance(
-            ids.record_allowance_change(
-                request.request_id.as_str(),
-                &origin,
-                &enrollment.machine_id,
-                workspace,
+    let AllowanceInputs::Selected(selected) = &facts.allowances else {
+        return Err(corrupt("login_machine_allowances.approval_inputs"));
+    };
+    let mut touched = BTreeSet::new();
+    for workspace in request.allowed_workspaces.as_slice() {
+        if !touched.insert(workspace) {
+            continue;
+        }
+        let observed = selected
+            .get(workspace)
+            .ok_or_else(|| corrupt("login_machine_allowances.workspace_id"))?;
+        if let Some(effect) =
+            allowance_effect(observed.as_ref(), AllowanceEvent::ApprovalSelectedWorkspace)?
+        {
+            changes.push(EnrollmentChange::RecordAllowance {
+                record: ids.record_allowance_change(
+                    request.request_id.as_str(),
+                    &origin,
+                    &enrollment.machine_id,
+                    workspace,
+                    MachineAllowanceState::Active,
+                    time,
+                )?,
                 effect,
-                time,
-            )?,
-        ));
+            });
+        }
     }
     Ok(Decided::writing(
         approved(&enrollment),

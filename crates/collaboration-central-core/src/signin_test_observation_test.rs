@@ -280,7 +280,7 @@ async fn machine_store() -> SqliteConnection {
         .await
         .unwrap();
     // Insert reverse identifiers and creation times so ID order is the wrong oracle.
-    for (index, created, state, reason, client, last, ended) in [
+    for (index, created, state, reason, client, last, ended, base_generation) in [
         (
             2,
             "2027-01-15T08:00:02Z",
@@ -289,6 +289,7 @@ async fn machine_store() -> SqliteConnection {
             None,
             None,
             None,
+            7_i64,
         ),
         (
             1,
@@ -298,6 +299,7 @@ async fn machine_store() -> SqliteConnection {
             Some(fixture_id(0xe011)),
             Some(TIME),
             None,
+            6,
         ),
         (
             3,
@@ -307,11 +309,12 @@ async fn machine_store() -> SqliteConnection {
             Some(fixture_id(0xe013)),
             None,
             Some(TIME),
+            4,
         ),
     ] {
-        query::<Sqlite>("INSERT INTO login_machine_approvals VALUES(?,?,?,'Approval snapshot','[]',?,?,?,?,7,?,?,?,?,?,?)")
+        query::<Sqlite>("INSERT INTO login_machine_approvals VALUES(?,?,?,'Approval snapshot','[]',?,?,?,?,?,?,?,?,?,?,?)")
             .bind(fixture_id(0xe010 + index)).bind(fixture_id(0xe020 + index)).bind(fixture_id(0xe000))
-            .bind(state).bind(reason).bind(PERSON).bind("machine:enroll")
+            .bind(state).bind(reason).bind(PERSON).bind("machine:enroll").bind(base_generation)
             .bind("2027-01-15T08:10:00+00:00").bind(client).bind(last).bind(ended).bind(created).bind(created)
             .execute(&mut connection).await.unwrap();
     }
@@ -344,11 +347,11 @@ async fn machine_snapshot_exports_checked_lifecycle_fields_in_creation_order() {
         value["machineApprovals"],
         json!([
             {"approvalId":fixture_id(0xe013),"requestId":fixture_id(0xe023),"machineId":fixture_id(0xe000),
-             "state":"ended","endReason":"idle","allowedWorkspaces":[],"baseGeneration":7,
+             "state":"ended","endReason":"idle","allowedWorkspaces":[],"baseGeneration":4,
              "codeExpiresAt":"2027-01-15T08:10:00.000Z","machineClientId":fixture_id(0xe013),
              "lastGrantAt":null,"endedAt":"2027-01-15T08:00:00.000Z","createdAt":"2027-01-15T08:00:00.000Z"},
             {"approvalId":fixture_id(0xe011),"requestId":fixture_id(0xe021),"machineId":fixture_id(0xe000),
-             "state":"enrolled","endReason":null,"allowedWorkspaces":[],"baseGeneration":7,
+             "state":"enrolled","endReason":null,"allowedWorkspaces":[],"baseGeneration":6,
              "codeExpiresAt":"2027-01-15T08:10:00.000Z","machineClientId":fixture_id(0xe011),
              "lastGrantAt":"2027-01-15T08:00:00.000Z","endedAt":null,"createdAt":"2027-01-15T08:00:01.000Z"},
             {"approvalId":fixture_id(0xe012),"requestId":fixture_id(0xe022),"machineId":fixture_id(0xe000),

@@ -7,6 +7,7 @@ mod enrollment_transitions;
 mod machine_token_decision;
 mod revoke_enrollment;
 
+pub(crate) use decision_support::idle_limit_reached;
 pub use decision_support::{DecisionTime, IDLE_EXPIRY_SECONDS};
 pub use device_login_decision::decide_device_login;
 pub use enrollment_records::*;

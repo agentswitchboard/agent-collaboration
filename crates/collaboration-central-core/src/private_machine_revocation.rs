@@ -1,6 +1,6 @@
 //! Apply a verified revocation and its fresh-proof reservation in one org turn.
 use crate::{OrganizationAdminAnswer, WorkspaceRuntime, person_request::VerifiedPersonRequest};
-use central_storage::{AlarmUpdate, BatchOutcome, GuardedStatement, StatementBatch, StoreFailure};
+use central_storage::{GuardedStatement, StoreFailure};
 use fleet_contracts::{
     AdmittedRevoke, MachineEnrollmentRevocationResult as ResultKind, RevokePermission,
 };
@@ -35,37 +35,18 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             .machine_login_service()
             .prepare_revoke_enrollment(authority, enrollment_id, DecisionTime { now_ms })
             .await?;
-        let (result, revoked_machine) = match prepared {
+        let (result, invalidation) = match prepared {
             PreparedEnrollmentRevocation::NotFound => (ResultKind::NotFound {}, None),
             PreparedEnrollmentRevocation::AlreadyEnded => (ResultKind::AlreadyEnded {}, None),
-            PreparedEnrollmentRevocation::Revoked {
-                machine_id,
-                statements: effects,
-                ..
-            } => {
+            PreparedEnrollmentRevocation::Revoked(revocation) => {
+                let (_, invalidation, effects) = revocation.into_applying();
                 statements.extend(effects);
-                (ResultKind::Revoked {}, Some(machine_id))
+                (ResultKind::Revoked {}, Some(invalidation))
             }
         };
-        #[cfg(feature = "test-support")]
-        self.execution
-            .pause_points()
-            .reached_central(fleet_runtime::PausePoint::AfterSignInSample)
-            .await;
-        if !matches!(
-            self.execution
-                .statement_host()
-                .run_batch(StatementBatch {
-                    statements,
-                    alarm: AlarmUpdate::Unchanged,
-                })
-                .await?,
-            BatchOutcome::Applied { .. }
-        ) {
-            return Err(StoreFailure::Unavailable);
-        }
-        if let Some(machine_id) = revoked_machine {
-            (self.machine_revoked)(machine_id);
+        self.apply_machine_login_statements(statements).await?;
+        if let Some(invalidation) = invalidation {
+            (self.enrollment_invalidated)(invalidation);
         }
         Ok(OrganizationAdminAnswer::MachineEnrollmentRevocation(result))
     }

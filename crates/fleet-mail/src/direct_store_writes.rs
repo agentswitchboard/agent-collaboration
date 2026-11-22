@@ -182,27 +182,12 @@ where
 }
 
 #[derive(sqlx::FromRow)]
-struct StoredReceiptEnrollment {
-    #[sqlx(rename = "machine_id!: String")]
-    machine_id: String,
-}
-#[derive(sqlx::FromRow)]
 struct StoredReceiptRoute {
     target_machine_id: String,
 }
 #[derive(sqlx::FromRow)]
 struct StoredReceiptKind {
     message_kind: String,
-}
-macro_rules! enrollment_query {
-    ($emit:ident,$auth:expr) => {
-        $emit!(
-            "src/queries/read_receipt_enrollment.sql",
-            $auth.machine_id().to_string(),
-            $auth.enrollment_id().as_str().to_owned(),
-            $auth.client_id().as_str().to_owned()
-        )
-    };
 }
 macro_rules! route_query {
     ($emit:ident,$message:expr) => {
@@ -233,31 +218,25 @@ where
     String: Type<T::Database> + for<'q> Encode<'q, T::Database> + for<'r> Decode<'r, T::Database>,
     Option<String>:
         Type<T::Database> + for<'q> Encode<'q, T::Database> + for<'r> Decode<'r, T::Database>,
+    i64: Type<T::Database> + for<'r> Decode<'r, T::Database>,
     for<'r> &'r str: ColumnIndex<<T::Database as Database>::Row>,
 {
     let authority = command.authority;
     let target = authority.machine_id();
-    let enrollment: Option<StoredReceiptEnrollment> =
-        enrollment_query!(bind_receipt_projection, authority)
-            .fetch_optional(tx.executor())
-            .await?;
-    // A receipt can wait for the write transaction until after its attachment
-    // expires. Re-read enrollment and sample the clock inside that transaction.
-    let applying_time = Timestamp::from_timestamp_millis(command.clock.now().unix_millis())
-        .ok_or_else(|| corrupt("clock"))?;
-    use fleet_contracts::mail_link::MachineLinkCloseCode;
-    let lapse = if applying_time.timestamp() >= authority.effective_expires_at().0 {
-        Some(MachineLinkCloseCode::Expired)
-    } else if enrollment.is_none_or(|row| row.machine_id != target.as_str()) {
-        Some(MachineLinkCloseCode::Inactive)
-    } else {
-        None
-    };
+    // Sample after the authority reads, while the applying transaction is held.
+    let (applying_time, lapse) = fleet_machine_login::link_authority::recheck_lent_link_authority(
+        tx,
+        &authority,
+        command.clock.as_ref(),
+    )
+    .await?;
     if let Some(cause) = lapse {
         return Ok(DirectWriteOutcome::without_alarm_recompute(
             ApplyReceipt::AuthorityLapsed(cause),
         ));
     }
+    let applying_time = Timestamp::from_timestamp_millis(applying_time.unix_millis())
+        .ok_or_else(|| corrupt("clock"))?;
     let row: Option<StoredReceiptRoute> = route_query!(bind_receipt_projection, command.message_id)
         .fetch_optional(tx.executor())
         .await?;
