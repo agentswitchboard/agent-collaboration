@@ -23,6 +23,7 @@ mod provider_conversation_cli;
 mod provider_create_mode_cli;
 mod provider_inventory_source_reads;
 mod provider_load_error_e2e;
+mod provider_observation_commands;
 mod provider_session_list_cli;
 mod provider_source_actions;
 mod served_command_groups;

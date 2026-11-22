@@ -11,15 +11,14 @@ use axum::{
     routing::get,
 };
 use central_link_protocol::{
-    DataFrame, FrameDirection, LinkFrame, LinkRequest, ProtocolError, ReplyPayload, RequestPayload,
-    RequestRefusal, RequestStatusAnswer, TokenRenewalRefusal, TokenRenewalResult, decode_text,
-    encode_text,
+    DataFrame, FrameDirection, LinkFrame, LinkRequest, ProtocolError, ReceiptResult, ReplyPayload,
+    RequestPayload, RequestRefusal, RequestStatusAnswer, TimeLeft, TokenRenewalRefusal,
+    TokenRenewalResult, decode_text, encode_text,
 };
 use collaboration_central_core::{MachineLinkRequestAuthority, WorkspaceRuntime};
 use collaboration_central_core::{ValidatedMachineConnection, WorkspaceCaller};
 use fleet_contracts::mail_link::{
-    MailAckIgnored, MailAckSettlement, WELCOME_PAGE_SIZE, WelcomeDeliveryPage,
-    WindowedDeliveryDecision,
+    MailReceiptSettlement, WELCOME_PAGE_SIZE, WelcomeDeliveryPage, WindowedDeliveryDecision,
 };
 use fleet_identity_protocol::OrganizationId;
 use futures_util::FutureExt;
@@ -317,23 +316,39 @@ async fn serve_link(
                     return;
                 }
             }
-            LinkFrame::Data(DataFrame::Ack { message_id, answer }) => {
-                match runtime
-                    .acknowledge_delivery(&connection.attachment(), &message_id, answer)
-                    .await
-                {
-                    Ok(MailAckSettlement::Ignored(MailAckIgnored::MachineAuthorityLapsed)) => {
-                        writes.close_lapsed(&mut socket);
-                        return;
+            LinkFrame::Data(DataFrame::Receipts {
+                correlation_id,
+                receipts,
+            }) => {
+                let attachment = connection.attachment();
+                let mut results = Vec::with_capacity(receipts.receipts().len());
+                for receipt in receipts.receipts() {
+                    match runtime
+                        .apply_delivery_receipt(
+                            &attachment,
+                            &receipt.message_id,
+                            receipt.kind.clone(),
+                        )
+                        .await
+                    {
+                        Ok(MailReceiptSettlement::Applied) => results.push(ReceiptResult::Recorded),
+                        Ok(MailReceiptSettlement::Stop(result)) => results.push(result),
+                        Ok(MailReceiptSettlement::AuthorityLapsed) => {
+                            writes.close_lapsed(&mut socket);
+                            return;
+                        }
+                        Err(_) => {
+                            writes.close(&mut socket, close_code::ERROR, "central unavailable");
+                            return;
+                        }
                     }
-                    Ok(MailAckSettlement::Ignored(reason @ MailAckIgnored::WrongMachine)) => {
-                        tracing::warn!(?reason, "machine_delivery_ack_ignored");
-                    }
-                    Ok(_) => {}
-                    Err(_) => {
-                        writes.close(&mut socket, close_code::ERROR, "central unavailable");
-                        return;
-                    }
+                }
+                let reply = LinkFrame::Data(DataFrame::ReceiptResults {
+                    correlation_id,
+                    results,
+                });
+                if !writes.send(&mut socket, &reply).await {
+                    return;
                 }
             }
             // Direction validation also rejects server-only frames here.
@@ -409,17 +424,38 @@ async fn offer_windowed_delivery(
     };
     let delivery = match decision {
         Ok(WindowedDeliveryDecision::Ready(delivery)) => delivery,
-        Ok(WindowedDeliveryDecision::Ineligible | WindowedDeliveryDecision::SenderUnresolved) => {
+        Ok(WindowedDeliveryDecision::Ineligible) => {
             return true;
         }
         Ok(WindowedDeliveryDecision::AuthorityLapsed) | Err(_) => return false,
     };
-    if state.host.current_time().unix_millis() >= delivery.expires_at.timestamp_millis() {
+    let Some(now) =
+        chrono::DateTime::from_timestamp_millis(state.host.current_time().unix_millis())
+    else {
+        return false;
+    };
+    if now >= delivery.expires_at {
         return true;
     }
+    let time_left = if matches!(
+        delivery.message.body,
+        workspace_model::central_mail::MessageBody::Direct { .. }
+    ) {
+        let Some(time_left) =
+            TimeLeft::at_handoff(delivery.message.created_at, delivery.expires_at, now)
+        else {
+            return true;
+        };
+        Some(time_left)
+    } else {
+        None
+    };
     let frame = LinkFrame::Data(DataFrame::Deliver {
-        message: delivery.message,
+        message: Box::new(central_link_protocol::DeliveryMessage::from(
+            *delivery.message,
+        )),
         sender: delivery.sender,
+        time_left,
     });
     writes.send(socket, &frame).await
 }

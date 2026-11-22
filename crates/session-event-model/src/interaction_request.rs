@@ -8,7 +8,9 @@ use serde::{Deserialize, Serialize};
 use crate::{ApprovalChoice, InteractionKind};
 
 /// ACP option IDs are opaque. Validation never trims or rewrites them.
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+#[derive(
+    schemars::JsonSchema, Clone, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize,
+)]
 #[serde(try_from = "String", into = "String")]
 pub struct OfferedOptionId(String);
 
@@ -52,7 +54,7 @@ impl std::fmt::Display for InvalidOfferedOptionId {
 
 impl std::error::Error for InvalidOfferedOptionId {}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct OfferedOption {
     pub option_id: OfferedOptionId,
@@ -66,6 +68,18 @@ pub struct OfferedOption {
 pub struct OfferedOptions {
     first: OfferedOption,
     remaining: Vec<OfferedOption>,
+}
+
+impl schemars::JsonSchema for OfferedOptions {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "OfferedOptions".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let mut schema = <Vec<OfferedOption> as schemars::JsonSchema>::json_schema(generator);
+        schema.insert("minItems".to_owned(), 1.into());
+        schema
+    }
 }
 
 impl OfferedOptions {
@@ -118,7 +132,7 @@ impl std::fmt::Display for InvalidOfferedOptions {
 
 impl std::error::Error for InvalidOfferedOptions {}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case", deny_unknown_fields)]
 pub enum ApprovalSubject {
     ToolCall {
@@ -146,7 +160,7 @@ pub enum OptionsOrigin {
     RouterSynthesized,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApprovalToolCallSubject {
     pub tool_call_id: String,
@@ -154,7 +168,7 @@ pub struct ApprovalToolCallSubject {
     pub title: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApprovalRequest {
     pub request_id: String,
@@ -175,7 +189,7 @@ pub struct ChoiceOption {
     pub label: String,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum QuestionField {
     #[serde(rename_all = "camelCase")]
@@ -224,6 +238,18 @@ pub enum QuestionField {
 pub struct QuestionFields {
     first: QuestionField,
     remaining: Vec<QuestionField>,
+}
+
+impl schemars::JsonSchema for QuestionFields {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "QuestionFields".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let mut schema = <Vec<QuestionField> as schemars::JsonSchema>::json_schema(generator);
+        schema.insert("minItems".to_owned(), 1.into());
+        schema
+    }
 }
 
 impl QuestionFields {
@@ -293,7 +319,7 @@ impl std::fmt::Display for EmptyQuestionFields {
 
 impl std::error::Error for EmptyQuestionFields {}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct QuestionRequest {
     pub request_id: String,
@@ -301,7 +327,7 @@ pub struct QuestionRequest {
     pub fields: QuestionFields,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum PendingInteraction {
     Approval {

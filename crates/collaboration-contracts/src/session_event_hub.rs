@@ -20,6 +20,8 @@ pub struct SessionEventAttachment {
     pub snapshot: Vec<HubEvent>,
     pub receiver: broadcast::Receiver<HubEvent>,
     pub epoch: u64,
+    /// The newest sequence issued in this epoch at attach, or zero in a fresh stream.
+    pub latest_issued_sequence: u64,
 }
 
 pub struct SkillViewAttachment {
@@ -48,7 +50,7 @@ pub enum SessionEventHubError {
     Unavailable,
 }
 
-/// Attach must capture its snapshot and subscribe to later events atomically.
+/// Attach must capture its snapshot and issued sequence and subscribe to later events atomically.
 /// The implementation owns the event log and sequence numbers. Sessions
 /// returns only Sessions on the requested provider endpoint.
 pub trait SessionEventHub: Send + Sync {

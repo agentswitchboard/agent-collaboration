@@ -71,12 +71,18 @@ pub fn explicit_negatives(name: &str, literals: &[Value]) -> Vec<Value> {
             wrong_operation["operationId"] = json!("00000000-0000-4000-8000-000000000001");
             invalid.push(wrong_operation);
         }
-        "ReadChangeRecordsRequest" => {
+        "ReadChangeRecordsRequest" | "ListWorkspacesRequest" => {
             for limit in [json!(0), json!(101), json!(1.5)] {
                 let mut wrong_limit = literals[0].clone();
                 wrong_limit["limit"] = limit;
                 invalid.push(wrong_limit);
             }
+        }
+        "ListWorkspacesResult" => {
+            let first_row = literals.iter()
+                .find_map(|reply| reply["workspaces"].as_array()?.first()).unwrap();
+            invalid.push(json!({"result":"workspaces","workspaces":vec![first_row.clone(); 101],"next":null}));
+            invalid.push(json!({"result":"workspaces","workspaces":[]}));
         }
         "OrganizationAdminIntent" => {
             for literal in literals {

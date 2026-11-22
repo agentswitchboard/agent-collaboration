@@ -1,12 +1,15 @@
 use super::super::{m, support::*};
+use super::direct_receipt_sequences::queue_direct;
+use super::engine_probe_support::{Runtime, integer, runtime as central_for_fixture};
 use central_storage::{
-    AlarmUpdate, BatchOutcome, GuardedStatement, RowExpectation, Statement, StatementBatch,
+    AlarmUpdate, BatchOutcome, CorruptReason, GuardedStatement, RowExpectation, Statement,
+    StatementBatch, StoreFailure,
 };
-use fleet_contracts::mail_link::{MailAckIgnored, MailAckSettlement, WindowedDeliveryDecision};
+use fleet_contracts::mail_link::{MailReceiptSettlement, WindowedDeliveryDecision};
 use router_clock::RuntimeClock;
 use workspace_model::central_mail::{
-    CentralMailAnswer, CentralMailOperation, CentralMailRequest, CentralMailResult, DeliveryAnswer,
-    MessageDelivery, MessageFailureReason, MessageStatus,
+    CentralMailAnswer, CentralMailOperation, CentralMailRequest, CentralMailResult,
+    MessageDelivery, MessageStatus, ReceiptKind,
 };
 
 #[tokio::test]
@@ -79,7 +82,9 @@ async fn only_the_original_sender_can_read_direct_message_status() {
             .await
             .unwrap()
             .result,
-        expected(MessageStatus::Queued {})
+        expected(MessageStatus::Sent {
+            deadline_passed: false
+        })
     );
     let other = runtime.request(&other_caller, query.clone()).await.unwrap();
     let unknown = runtime
@@ -91,14 +96,17 @@ async fn only_the_original_sender_can_read_direct_message_status() {
 
     assert_eq!(
         runtime
-            .acknowledge_delivery(
+            .apply_delivery_receipt(
                 &fixture.caller.connection().attachment(),
                 &message_id,
-                DeliveryAnswer::Accepted
+                ReceiptKind::Delivered {
+                    arrived_at: fixture.clock.utc_now(),
+                    waiting: None
+                }
             )
             .await
             .unwrap(),
-        fleet_contracts::mail_link::MailAckSettlement::Applied
+        MailReceiptSettlement::Applied
     );
     assert_eq!(
         runtime
@@ -106,13 +114,17 @@ async fn only_the_original_sender_can_read_direct_message_status() {
             .await
             .unwrap()
             .result,
-        expected(MessageStatus::Delivered {})
+        expected(MessageStatus::Delivered {
+            arrived_at: fixture.clock.utc_now(),
+            waiting: None,
+            deadline_passed: false
+        })
     );
     fixture.host.close().await;
 }
 
 #[tokio::test]
-async fn unresolved_direct_sender_is_terminal_without_a_push_or_outcome() {
+async fn unresolved_direct_sender_is_a_store_failure_without_a_state_change_or_outcome() {
     let fixture = Fixture::new().await;
     let runtime = fixture
         .host
@@ -183,12 +195,16 @@ async fn unresolved_direct_sender_is_terminal_without_a_push_or_outcome() {
         BatchOutcome::Applied { .. }
     ));
     let attachment = fixture.caller.connection().attachment();
+    let alarm_before = runtime
+        .runtime()
+        .statement_host()
+        .published_alarm()
+        .unwrap();
     assert!(matches!(
         runtime
             .prepare_windowed_delivery(&attachment, &message_id)
-            .await
-            .unwrap(),
-        WindowedDeliveryDecision::SenderUnresolved
+            .await,
+        Err(central_storage::StoreFailure::Corrupt { .. })
     ));
     assert_eq!(
         runtime
@@ -196,21 +212,7 @@ async fn unresolved_direct_sender_is_terminal_without_a_push_or_outcome() {
             .statement_host()
             .published_alarm()
             .unwrap(),
-        None
-    );
-    assert!(matches!(
-        runtime
-            .prepare_windowed_delivery(&attachment, &message_id)
-            .await
-            .unwrap(),
-        WindowedDeliveryDecision::Ineligible
-    ));
-    assert_eq!(
-        runtime
-            .acknowledge_delivery(&attachment, &message_id, DeliveryAnswer::Accepted)
-            .await
-            .unwrap(),
-        MailAckSettlement::Ignored(MailAckIgnored::AlreadySettled)
+        alarm_before
     );
     assert!(matches!(
         row_identity(
@@ -241,8 +243,8 @@ async fn unresolved_direct_sender_is_terminal_without_a_push_or_outcome() {
     assert_eq!(
         reply.result,
         m::WorkspaceResult::Done(m::WorkspaceAnswer::MessageStatus {
-            status: MessageStatus::Failed {
-                reason: MessageFailureReason::SenderUnresolved
+            status: MessageStatus::Sent {
+                deadline_passed: false
             },
         })
     );
@@ -259,5 +261,135 @@ async fn unresolved_direct_sender_is_terminal_without_a_push_or_outcome() {
             .rows
             .is_empty()
     );
+    fixture.host.close().await;
+}
+
+async fn queue_for_sender_read() -> (Fixture, Runtime, workspace_ids::MessageId) {
+    let fixture = Fixture::new().await;
+    let central = central_for_fixture(&fixture).await;
+    let message = queue_direct(&fixture, fixture.clock.utc_now(), 1554).await;
+    (fixture, central, message)
+}
+
+async fn replace_sender_identity(
+    central: &Runtime,
+    message: &workspace_ids::MessageId,
+    identity_kind: &str,
+    identity_json: &str,
+) {
+    let outcome = central
+        .runtime()
+        .statement_host()
+        .run_batch(StatementBatch {
+            statements: vec![GuardedStatement {
+                statement: Statement {
+                    sql: "UPDATE access_actor_identities SET identity_kind=?,identity=? WHERE actor_identity_id=(SELECT json_extract(sender,'$.value') FROM mail_messages WHERE message_id=?)",
+                    args: vec![text(identity_kind), text(identity_json), text(message)],
+                },
+                expect: RowExpectation::Exactly(1),
+            }],
+            alarm: AlarmUpdate::Unchanged,
+        })
+        .await
+        .unwrap();
+    assert!(matches!(outcome, BatchOutcome::Applied { .. }));
+}
+
+#[tokio::test]
+async fn an_owning_direct_offer_rejects_a_missing_sender_actor() {
+    let (fixture, central, message) = queue_for_sender_read().await;
+    let outcome = central
+        .runtime()
+        .statement_host()
+        .run_batch(StatementBatch {
+            statements: vec![GuardedStatement {
+                statement: Statement {
+                    sql: "UPDATE mail_messages SET sender=? WHERE message_id=?",
+                    args: vec![
+                        text(r#"{"kind":"actor","value":"01890f2e-7b4c-7cc0-98c4-0000000000c1"}"#),
+                        text(&message),
+                    ],
+                },
+                expect: RowExpectation::Exactly(1),
+            }],
+            alarm: AlarmUpdate::Unchanged,
+        })
+        .await
+        .unwrap();
+    assert!(matches!(outcome, BatchOutcome::Applied { .. }));
+
+    let offer = central
+        .prepare_windowed_delivery(&fixture.caller.connection().attachment(), &message)
+        .await;
+
+    assert!(matches!(
+        offer,
+        Err(StoreFailure::Corrupt { reason: CorruptReason::BadValue { column } })
+            if column == "mail_messages.sender"
+    ));
+    fixture.host.close().await;
+}
+
+#[tokio::test]
+async fn an_owning_direct_offer_rejects_a_sender_identity_kind_that_disagrees_with_json() {
+    let (fixture, central, message) = queue_for_sender_read().await;
+    let session_json = serde_json::to_string(&m::Identity::AgentSession {
+        session: session(&fixture.caller),
+    })
+    .unwrap();
+    replace_sender_identity(&central, &message, "person", &session_json).await;
+
+    let offer = central
+        .prepare_windowed_delivery(&fixture.caller.connection().attachment(), &message)
+        .await;
+
+    assert!(matches!(
+        offer,
+        Err(StoreFailure::Corrupt { reason: CorruptReason::BadValue { column } })
+            if column == "access_actor_identities.identity_kind"
+    ));
+    fixture.host.close().await;
+}
+
+#[tokio::test]
+async fn an_owning_direct_offer_resolves_a_person_without_a_session_outcome() {
+    let (fixture, central, message) = queue_for_sender_read().await;
+    let person_id: workspace_ids::PersonId =
+        "01890f2e-7b4c-7cc0-98c4-0000000000d1".parse().unwrap();
+    let person_json = serde_json::to_string(&m::Identity::Person {
+        person_id: person_id.clone(),
+    })
+    .unwrap();
+    replace_sender_identity(&central, &message, "person", &person_json).await;
+
+    let offer = central
+        .prepare_windowed_delivery(&fixture.caller.connection().attachment(), &message)
+        .await
+        .unwrap();
+    let WindowedDeliveryDecision::Ready(delivery) = offer else {
+        panic!("a valid person sender must resolve to an offer");
+    };
+    assert_eq!(
+        delivery.sender,
+        m::ResolvedSender::Person {
+            person_id,
+            display_name: None,
+        }
+    );
+
+    let accepted_at = fixture.clock.utc_now();
+    let mark = fleet_mail::message_deadline::direct_receipt_mark(accepted_at, accepted_at);
+    let _alarm_driver = central
+        .runtime()
+        .pause_points()
+        .hold_engine(fleet_runtime::PausePoint::BeforeDriveGuard, "driver");
+    fixture.set_utc(mark).await;
+    central.after_event().await.unwrap();
+
+    let stored = central.runtime().statement_host().read(Statement {
+        sql: "SELECT state,(SELECT COUNT(*) FROM mail_messages WHERE message_kind='deliveryOutcome') FROM mail_messages WHERE message_id=?",
+        args: vec![text(&message)],
+    }).await.unwrap();
+    assert_eq!(stored.rows, [vec![text("pastTheMark"), integer(0)]]);
     fixture.host.close().await;
 }

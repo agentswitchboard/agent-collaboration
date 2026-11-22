@@ -123,6 +123,7 @@ function answer(standIn: StandIn, name: string, args: Readonly<Record<string, un
       return { ...createSettingsFields(standIn.createSettings), operationId, target };
     }
     case "events_observe":
+      assert.equal(args["serviceEpoch"], args["afterSequence"] === undefined ? undefined : "e");
       return observe();
     case "conversation_prompt": {
       standIn.promptOperation = z.string().parse(args["operationId"]);

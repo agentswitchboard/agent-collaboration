@@ -261,6 +261,10 @@ impl ServedApi {
         self.tool_calls.running()
     }
 
+    pub(crate) async fn join_active_calls(&self) {
+        self.tool_calls.ended().await;
+    }
+
     /// Waits until the number of handlers in flight is `expected`, or fails at `deadline`.
     pub(crate) async fn await_active_calls(&self, expected: usize, deadline: Duration) {
         tokio::time::timeout(deadline, async {

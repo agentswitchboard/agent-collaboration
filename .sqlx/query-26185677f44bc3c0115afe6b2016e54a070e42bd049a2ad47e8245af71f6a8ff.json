@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT identity_kind, identity FROM access_actor_identities WHERE actor_identity_id=?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "identity_kind",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "access_actor_identities",
+            "name": "identity_kind"
+          }
+        }
+      },
+      {
+        "name": "identity",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "access_actor_identities",
+            "name": "identity"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "26185677f44bc3c0115afe6b2016e54a070e42bd049a2ad47e8245af71f6a8ff"
+}

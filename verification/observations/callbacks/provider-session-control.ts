@@ -5,6 +5,7 @@ import {
   observedObject,
   operationViewSchema,
   providerRecordSchema,
+  providerObservationSchema,
   publicObservationSchema,
   type JsonObject,
 } from "../shared/evidence-models.ts";
@@ -50,10 +51,14 @@ export async function observeSession(
     maxEvents: 1024,
     maxBytes: 1048576,
   });
-  const view = publicObservationSchema.parse(observation);
+  const view = providerObservationSchema.parse(observation);
   const rawEvents = arrayField(observation, "events");
   const events: JsonObject[] = [];
   for (const [index, wrappedView] of view.events.entries()) {
+    if (!("event" in wrappedView)) {
+      if (wrappedView.kind === "snapshotEnd") continue;
+      throw new Error("observer resync or oversized event gap");
+    }
     const wrapped = observedObject(rawEvents[index]);
     const event = wrappedView.event;
     if (event.kind === "resyncRequired" || event.kind === "eventTooLarge")

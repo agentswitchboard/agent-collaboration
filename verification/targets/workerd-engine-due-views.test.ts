@@ -358,3 +358,237 @@ test("the checked SELECT in a Workerd fixture overlay requires exactly one stamp
   ]);
   assert.deepEqual(pair((await run("overlay", nextAlarm)).rows, true), [null, null]);
 });
+
+test("the final Central schema keeps delivered direct marks within 330 sparse reads", async (context) => {
+  const states = [
+    // Finished history uses the new terminal/marked tags. Delivered is unfinished.
+    "UPDATE mail_messages SET state='seen',seen_completed_at='1970-01-01T00:01:00.000Z' WHERE message_kind='direct' AND state='delivered'",
+    "UPDATE mail_messages SET state='pastTheMark' WHERE message_kind='direct' AND state='cancelled'",
+    "UPDATE mail_messages SET state='delivered',delivered_arrived_at='1970-01-01T00:00:01.000Z' WHERE message_kind='direct' AND state='queued'",
+  ];
+  const finalSchema = readFileSync(new URL("0007_direct_message_receipts.sql", migrations), "utf8");
+  const fixtures = seedHistory(10_000, 50, 50);
+  for (const [name, ddl, limit] of [
+    ["mail2-indexed", finalSchema, true],
+    [
+      "mail2-no-direct-index",
+      replaceRequired(finalSchema, "INDEXED BY messages_cancel_due", "NOT INDEXED"),
+      false,
+    ],
+  ] as const) {
+    await prepare(name, [...oldSchema, dueSchema, signinAlarmSchema, ddl, ...fixtures, ...states]);
+    const alarm = await run(name, nextAlarm);
+
+    assert.deepEqual(pair(alarm.rows, true), [300_000, 300_000]);
+    assert.equal(alarm.rowsWritten, 0);
+    assert.equal(alarm.rowsRead <= 330, limit, JSON.stringify(alarm));
+    context.diagnostic(JSON.stringify({ name, rowsRead: alarm.rowsRead }));
+  }
+});
+
+test("system offer and expiry inputs preserve every stored shape from main", async (context) => {
+  const object = "mail2-system-shapes";
+  // Frozen 254caabce delivery candidate predicate. The probe selects only
+  // IDs so it observes eligibility independently of the typed decoder.
+  const oldQuery =
+    "SELECT message_id FROM mail_messages WHERE target_machine_id=?1 AND state='queued' AND message_kind IN ('direct','notice','deliveryOutcome') AND delivery_window_ends_at>?2 AND (?3 IS NULL OR (created_at,message_id)>(?3,?4)) ORDER BY created_at,message_id LIMIT ?5";
+  const version = readFileSync(new URL("0007_direct_message_receipts.sql", migrations), "utf8");
+  const page = readFileSync(
+    new URL("crates/fleet-mail/src/queries/read_windowed_page.sql", source),
+    "utf8",
+  );
+  const previousExpiry = readFileSync(
+    new URL("crates/collaboration-central-core/tests/fixtures/main-system.sql", source),
+    "utf8",
+  );
+  const currentExpiry = readFileSync(
+    new URL("crates/fleet-mail/src/queries/read_due_system_expiries.sql", source),
+    "utf8",
+  );
+  const machine = "01890f2e-7b4c-7cc0-98c4-000000009002";
+  const now = "1970-01-01T00:06:00.000Z";
+  const created = "1970-01-01T00:00:00.000Z";
+  const seed = seedHistory(1, 0, 0);
+  const sqlText = (value: string | null): string => (value === null ? "NULL" : "'" + value + "'");
+  const rows: string[] = [];
+  // All predicate equivalence classes, with both present and NULL SQLite PKs.
+  for (const kind of ["notice", "deliveryOutcome", "wake", "automation", "unrecognized"]) {
+    for (const state of ["queued", "delivered", "cancelled", "failed", "unrecognized"]) {
+      for (const expiry of [null, created, now, "1970-01-01T00:08:00.000Z", "unreadable"]) {
+        for (const key of [null, "fixture-" + rows.length]) {
+          rows.push(
+            "INSERT INTO mail_messages (message_id,sender,target_machine_id,target_session,message_kind,body,state,created_at,updated_at,delivery_window_ends_at) VALUES (" +
+              [key, "central", machine, "fixture", kind, "body", state, created, created, expiry]
+                .map(sqlText)
+                .join(",") +
+              ");",
+          );
+        }
+      }
+    }
+  }
+  await prepare(object, [
+    ...oldSchema,
+    dueSchema,
+    version,
+    ...seed,
+    "DELETE FROM mail_messages",
+    rows.join("\n"),
+  ]);
+  const native = new DatabaseSync(":memory:");
+  try {
+    for (const statement of [
+      ...oldSchema,
+      dueSchema,
+      version,
+      ...seed,
+      "DELETE FROM mail_messages",
+      ...rows,
+    ])
+      native.exec(statement);
+    const substitute = (sql: string, binds: readonly string[]): string =>
+      sql.replace(/\?(\d+)/g, (_, index: string) => binds[Number(index) - 1] ?? "NULL");
+    const offerBinds = [sqlText(machine), sqlText(now), "NULL", "NULL", "250"];
+    const identities = (items: Result["rows"], label: string): unknown[] =>
+      items.map((row) => row[label]);
+    const original = substitute(oldQuery, offerBinds);
+    // On offer a NULL message id fails the checked decoder. The predicate
+    // comparison retains it to verify selection before decoding.
+    const current = substitute(
+      "SELECT message_id FROM (" + page.replace('AS "message_id!: String"', "") + ")",
+      offerBinds,
+    );
+    assert.deepEqual(
+      identities((await run(object, current)).rows, "message_id"),
+      identities((await run(object, original)).rows, "message_id"),
+    );
+    assert.deepEqual(native.prepare(current).all(), native.prepare(original).all());
+    for (const horizon of ["0", "359999", "360000", "480000", "600000"]) {
+      const oldSql = substitute(previousExpiry, [horizon, "250"]);
+      const newSql = substitute(currentExpiry, [horizon, "250"]);
+      const values = (result: readonly Record<string, unknown>[]): unknown[][] =>
+        result.map(Object.values);
+      assert.deepEqual(
+        values((await run(object, newSql)).rows),
+        values((await run(object, oldSql)).rows),
+      );
+      assert.deepEqual(values(native.prepare(newSql).all()), values(native.prepare(oldSql).all()));
+    }
+    context.diagnostic(
+      JSON.stringify({ systemShapes: rows.length, backends: 2, expiryHorizons: 5 }),
+    );
+  } finally {
+    native.close();
+  }
+});
+
+function quotedLedgerBindings(sql: string, binds: readonly string[]): string {
+  let position = 0;
+  return sql.replaceAll("?", (): string => {
+    const value = binds[position++];
+    assert.ok(value !== undefined, "every ledger placeholder has a bound value");
+    return "'" + value.replaceAll("'", "''") + "'";
+  });
+}
+
+test("organization request replay and pruning keep main's strict cutoff on both stores", async (context): Promise<void> => {
+  // The three frozen statements are from fleet-runtime at main 6cf6c254c.
+  const original = {
+    read: "SELECT caller,content_digest,answer FROM runtime_request_log WHERE request_id=? AND created_at>?",
+    retain:
+      "INSERT INTO runtime_request_log (request_id,caller,content_digest,answer,created_at,updated_at) VALUES (?,?,?,?,?,?) ON CONFLICT(request_id) DO UPDATE SET caller=excluded.caller,content_digest=excluded.content_digest,answer=excluded.answer,created_at=excluded.created_at,updated_at=excluded.updated_at",
+    prune: "DELETE FROM runtime_request_log WHERE created_at<=?",
+  };
+  const directory = new URL("crates/fleet-request-log/src/queries/", source);
+  const current = {
+    read: readFileSync(new URL("read_central_request.sql", directory), "utf8"),
+    retain: readFileSync(new URL("retain_central_request.sql", directory), "utf8"),
+    prune: readFileSync(new URL("prune_central_requests.sql", directory), "utf8"),
+  };
+  const cutoff = "2030-01-02T00:00:00+00:00";
+  const storedTimes = [
+    "2029-12-31T23:59:59+00:00",
+    "2030-01-01T23:59:59.999999999+00:00",
+    cutoff,
+    "2030-01-02T00:00:00.000000001+00:00",
+    "2030-01-02T00:00:01+00:00",
+    "2030-01-02T00:00:00Z",
+    "2030-01-02T00:00:00.000Z",
+    "bad time",
+    "",
+  ];
+  const executeComparison = async (
+    statements: typeof current,
+    execute: (sql: string, binds: readonly string[]) => Promise<readonly unknown[]>,
+  ): Promise<readonly unknown[]> => {
+    for (const [index, createdAt] of storedTimes.entries()) {
+      await execute(statements.retain, [
+        String(index),
+        "caller",
+        "digest",
+        "{}",
+        createdAt,
+        "2030-01-03T00:00:00+00:00",
+      ]);
+    }
+    const retained = [];
+    for (const [index] of storedTimes.entries()) {
+      retained.push(await execute(statements.read, [String(index), cutoff]));
+    }
+    await execute(statements.prune, [cutoff]);
+    const firstSurvivors = await execute(
+      "SELECT * FROM runtime_request_log ORDER BY request_id",
+      [],
+    );
+    await execute(statements.retain, ["2", "new caller", "digest", "{}", cutoff, cutoff]);
+    await execute(statements.retain, [
+      "3",
+      "new caller",
+      "new digest",
+      '{"done":true}',
+      cutoff,
+      cutoff,
+    ]);
+    const replayAtEquality = await execute(statements.read, ["3", cutoff]);
+    const updatedBeforePrune = await execute(
+      "SELECT * FROM runtime_request_log ORDER BY request_id",
+      [],
+    );
+    await execute(statements.prune, [cutoff]);
+    const finalSurvivors = await execute(
+      "SELECT * FROM runtime_request_log ORDER BY request_id",
+      [],
+    );
+    return [retained, firstSurvivors, replayAtEquality, updatedBeforePrune, finalSurvivors];
+  };
+
+  const outcomes = [];
+  for (const [name, statements] of [
+    ["main", original],
+    ["checked", current],
+  ] as const) {
+    const object = `request-cutoff-${name}`;
+    await prepare(object, oldSchema);
+    const worker = await executeComparison(
+      statements,
+      async (sql, binds): Promise<Result["rows"]> =>
+        (await run(object, quotedLedgerBindings(sql, binds))).rows,
+    );
+    const native = new DatabaseSync(":memory:");
+    try {
+      for (const sql of oldSchema) native.exec(sql);
+      const sqlite = await executeComparison(statements, async (sql, binds): Promise<unknown[]> =>
+        native
+          .prepare(sql)
+          .all(...binds)
+          .map((row) => ({ ...row })),
+      );
+      assert.deepEqual(worker, sqlite);
+      outcomes.push(worker);
+    } finally {
+      native.close();
+    }
+  }
+  assert.deepEqual(outcomes[1], outcomes[0]);
+  context.diagnostic(JSON.stringify({ storedTimes: storedTimes.length, backends: 2 }));
+});

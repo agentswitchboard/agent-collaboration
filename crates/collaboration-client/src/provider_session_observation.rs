@@ -8,8 +8,9 @@ use std::{collections::VecDeque, time::Duration};
 
 use collaboration_protocol::{
     BoundedObservationRequest, BoundedObservationResult, ChannelDescription, CodexGeneration,
-    EndpointId, EndpointRef, ObservationEndReason, SessionId, SessionRef,
+    EndpointId, EndpointRef, ObservationEndReason, ProviderSnapshotMarker, SessionId, SessionRef,
 };
+use serde::Deserialize as _;
 use serde_json::Value;
 use tokio_util::sync::CancellationToken;
 
@@ -94,6 +95,7 @@ impl SessionObservation {
                         max_bytes: FOLLOW_MAX_BYTES,
                         after_sequence: None,
                         epoch: None,
+                        service_epoch: None,
                     },
                     None,
                 )
@@ -150,7 +152,10 @@ impl SessionObservation {
                     OperationError::before_dispatch("observation-collect", Some(target), error)),
             }
         } else {
-            if request.after_sequence.is_some() || request.epoch.is_some() {
+            if request.after_sequence.is_some()
+                || request.epoch.is_some()
+                || request.service_epoch.is_some()
+            {
                 return Err(OperationError::before_dispatch(
                     "observation-validation",
                     Some(target),
@@ -232,6 +237,10 @@ impl ProviderSessionFollow {
                         max_bytes: FOLLOW_MAX_BYTES,
                         after_sequence: self.after_sequence,
                         epoch: self.epoch,
+                        service_epoch: self
+                            .epoch
+                            .zip(self.after_sequence)
+                            .map(|_| self.generation.service_epoch.clone()),
                     },
                     None,
                 )
@@ -245,7 +254,18 @@ impl ProviderSessionFollow {
             self.epoch = observed.epoch;
         }
         for event in &observed.events {
-            if let Some(sequence) = event.get("sequence").and_then(Value::as_u64) {
+            let position = if event["kind"] == "snapshotEnd" {
+                match ProviderSnapshotMarker::deserialize(event) {
+                    Ok(ProviderSnapshotMarker::SnapshotEnd { cursor }) => {
+                        self.epoch = Some(cursor.epoch);
+                        Some(cursor.after_sequence)
+                    }
+                    Err(_) => None,
+                }
+            } else {
+                event.get("sequence").and_then(Value::as_u64)
+            };
+            if let Some(sequence) = position {
                 self.after_sequence = Some(
                     self.after_sequence
                         .map_or(sequence, |after| after.max(sequence)),
@@ -261,6 +281,10 @@ impl ProviderSessionFollow {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "provider_session_observation_test.rs"]
+mod tests;
 
 fn provider_access(
     access: &CollaborationAccess,

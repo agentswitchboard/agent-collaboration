@@ -174,6 +174,40 @@ export type EnrollmentId = RecordId;
 /**  The provider's opaque, nonempty signing key identifier. */
 export type IssuerKeyId = string;
 
+export type ListWorkspacesParams = ListWorkspacesParams_Serialize | ListWorkspacesParams_Deserialize;
+
+export type ListWorkspacesParams_Deserialize = {
+	after?: WorkspaceId | null,
+	limit: RecordPageLimit,
+};
+
+export type ListWorkspacesParams_Serialize = {
+	after: WorkspaceId | null,
+	limit: RecordPageLimit,
+};
+
+export type ListWorkspacesRequest = ListWorkspacesRequest_Serialize | ListWorkspacesRequest_Deserialize;
+
+export type ListWorkspacesRequest_Deserialize = {
+	organizationId: OrganizationId,
+	/**  The last workspace ID of the previous page; absent or null for the first. */
+	after?: WorkspaceId | null,
+	limit?: RecordPageLimit,
+};
+
+export type ListWorkspacesRequest_Serialize = {
+	organizationId: OrganizationId,
+	/**  The last workspace ID of the previous page; absent or null for the first. */
+	after: WorkspaceId | null,
+	limit: RecordPageLimit,
+};
+
+export type ListWorkspacesResult = ListWorkspacesResult_Serialize | ListWorkspacesResult_Deserialize;
+
+export type ListWorkspacesResult_Deserialize = { result: "workspaces"; workspaces: WorkspacePageRows_Deserialize; next: WorkspaceId | null } | { result: "refused"; reason: AdminRefusal };
+
+export type ListWorkspacesResult_Serialize = { result: "workspaces"; workspaces: WorkspacePageRows_Serialize; next: WorkspaceId | null } | { result: "refused"; reason: AdminRefusal };
+
 /**  The complete payload Central inspects. Unrecognized issuer claims are ignored. */
 export type MachineAccessTokenClaims = MachineAccessTokenClaims_Serialize | MachineAccessTokenClaims_Deserialize;
 
@@ -249,9 +283,9 @@ export type OrganizationAdminIntent = OrganizationAdminIntent_Serialize | Organi
 
 export type OrganizationAdminIntentWire = OrganizationAdminIntentWire_Serialize | OrganizationAdminIntentWire_Deserialize;
 
-export type OrganizationAdminIntentWire_Deserialize = { operation: "CreateWorkspace"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: AdminOperationId; params: CreateWorkspaceParams_Deserialize } | { operation: "WorkspaceLookup"; v: 1; organization: OrganizationId; target: WorkspaceId; operationId: null; params: WorkspaceLookupParams } | { operation: "ReadChangeRecords"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ReadChangeRecordsParams_Deserialize } | { operation: "EngineHealth"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: WorkspaceLookupParams } | { operation: "EngineListRetired"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ReadChangeRecordsParams_Deserialize } | { operation: "EngineRetry"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: AdminOperationId; params: EngineAttemptParams } | { operation: "EngineDiscard"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: AdminOperationId; params: EngineAttemptParams } | { operation: "RevokeMachineEnrollment"; v: 1; organization: OrganizationId; target: EnrollmentId; operationId: null; params: MachineRevocationParams_Deserialize };
+export type OrganizationAdminIntentWire_Deserialize = { operation: "CreateWorkspace"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: AdminOperationId; params: CreateWorkspaceParams_Deserialize } | { operation: "WorkspaceLookup"; v: 1; organization: OrganizationId; target: WorkspaceId; operationId: null; params: WorkspaceLookupParams } | { operation: "ListWorkspaces"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ListWorkspacesParams_Deserialize } | { operation: "ReadChangeRecords"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ReadChangeRecordsParams_Deserialize } | { operation: "EngineHealth"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: WorkspaceLookupParams } | { operation: "EngineListRetired"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ReadChangeRecordsParams_Deserialize } | { operation: "EngineRetry"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: AdminOperationId; params: EngineAttemptParams } | { operation: "EngineDiscard"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: AdminOperationId; params: EngineAttemptParams } | { operation: "RevokeMachineEnrollment"; v: 1; organization: OrganizationId; target: EnrollmentId; operationId: null; params: MachineRevocationParams_Deserialize };
 
-export type OrganizationAdminIntentWire_Serialize = { operation: "CreateWorkspace"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: AdminOperationId; params: CreateWorkspaceParams_Serialize } | { operation: "WorkspaceLookup"; v: 1; organization: OrganizationId; target: WorkspaceId; operationId: null; params: WorkspaceLookupParams } | { operation: "ReadChangeRecords"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ReadChangeRecordsParams_Serialize } | { operation: "EngineHealth"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: WorkspaceLookupParams } | { operation: "EngineListRetired"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ReadChangeRecordsParams_Serialize } | { operation: "EngineRetry"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: AdminOperationId; params: EngineAttemptParams } | { operation: "EngineDiscard"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: AdminOperationId; params: EngineAttemptParams } | { operation: "RevokeMachineEnrollment"; v: 1; organization: OrganizationId; target: EnrollmentId; operationId: null; params: MachineRevocationParams_Serialize };
+export type OrganizationAdminIntentWire_Serialize = { operation: "CreateWorkspace"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: AdminOperationId; params: CreateWorkspaceParams_Serialize } | { operation: "WorkspaceLookup"; v: 1; organization: OrganizationId; target: WorkspaceId; operationId: null; params: WorkspaceLookupParams } | { operation: "ListWorkspaces"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ListWorkspacesParams_Serialize } | { operation: "ReadChangeRecords"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ReadChangeRecordsParams_Serialize } | { operation: "EngineHealth"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: WorkspaceLookupParams } | { operation: "EngineListRetired"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ReadChangeRecordsParams_Serialize } | { operation: "EngineRetry"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: AdminOperationId; params: EngineAttemptParams } | { operation: "EngineDiscard"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: AdminOperationId; params: EngineAttemptParams } | { operation: "RevokeMachineEnrollment"; v: 1; organization: OrganizationId; target: EnrollmentId; operationId: null; params: MachineRevocationParams_Serialize };
 
 /**  The version-one T06 object whose canonical bytes a person's proof hashes. */
 export type OrganizationAdminIntent_Deserialize = OrganizationAdminIntentWire_Deserialize;
@@ -513,6 +547,15 @@ export type WorkspaceLookupRequest = {
  *  than rewritten, so the signed intent hashes the stored name.
  */
 export type WorkspaceName = string;
+
+/**  The bounded workspace collection returned by one successful page. */
+export type WorkspacePageRows = WorkspacePageRows_Serialize | WorkspacePageRows_Deserialize;
+
+/**  The bounded workspace collection returned by one successful page. */
+export type WorkspacePageRows_Deserialize = WorkspaceView_Deserialize[];
+
+/**  The bounded workspace collection returned by one successful page. */
+export type WorkspacePageRows_Serialize = WorkspaceView_Serialize[];
 
 export type WorkspaceState = "active" | "archiving" | "archived";
 

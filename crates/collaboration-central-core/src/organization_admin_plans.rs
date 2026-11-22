@@ -1,10 +1,13 @@
 //! Person proof admission and read operations on modern org central.
 use crate::{
-    AdminRefusal, MachineEnrollmentRevocationRefusal, MachineEnrollmentRevocationResult,
-    OrganizationAdminAnswer, OrganizationAdminResult, WorkspaceRuntime,
+    AdminRefusal, ListWorkspacesResult, MachineEnrollmentRevocationRefusal,
+    MachineEnrollmentRevocationResult, OrganizationAdminAnswer, OrganizationAdminResult,
+    WorkspaceRuntime,
     organization_authority_cache::StampStanding,
     person_admission_plans::prepare_person_admission,
-    person_request::{AdminOperation, AdmissionRefusal, PersonRequestInput, PersonRequestRefusal},
+    person_request::{
+        AdminOperation, AdminRoute, AdmissionRefusal, PersonRequestInput, PersonRequestRefusal,
+    },
 };
 use central_storage::{BatchOutcome, StatementBatch, StoreFailure};
 use fleet_contracts::WorkspaceDirectory;
@@ -69,10 +72,9 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                 ) {
                     return Ok(revocation_admission_refusal(reason));
                 }
-                return Ok(OrganizationAdminAnswer::Answered(
-                    OrganizationAdminResult::Refused {
-                        reason: reason.into(),
-                    },
+                return Ok(admin_refusal_answer(
+                    verified.operation.route(),
+                    reason.into(),
                 ));
             }
         };
@@ -99,7 +101,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                 statements.extend(created.statements);
                 operation = Some(created.operation);
                 retained = created.retained;
-                created.result
+                OrganizationAdminAnswer::Answered(created.result)
             }
             AdminOperation::WorkspaceLookup(request) => {
                 let workspace = request
@@ -116,21 +118,40 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                     .await?
                     .map(|row| directory.workspace_view(row))
                     .transpose()?;
-                OrganizationAdminResult::Found { workspace: found }
+                OrganizationAdminAnswer::Answered(OrganizationAdminResult::Found {
+                    workspace: found,
+                })
             }
-            AdminOperation::ReadChangeRecords(request) => OrganizationAdminResult::Records {
-                records: fleet_signin::organization_change::read_page(
+            AdminOperation::ListWorkspaces(request) => {
+                let directory = CentralWorkspaceDirectory::new(self.execution.statement_host());
+                let page = directory
+                    .read_workspace_page(request.after.as_ref(), request.limit.get())
+                    .await?;
+                OrganizationAdminAnswer::WorkspaceList(ListWorkspacesResult::Workspaces {
+                    workspaces: page
+                        .workspaces
+                        .try_into()
+                        .map_err(|_| StoreFailure::Unavailable)?,
+                    next: page.next,
+                })
+            }
+            AdminOperation::ReadChangeRecords(request) => {
+                let records = fleet_signin::organization_change::read_page(
                     self.execution.statement_host(),
                     request.after,
                     request.limit.get(),
                 )
-                .await?,
-            },
-            AdminOperation::EngineHealth(_) => self.engine_health_result().await?.result,
+                .await?;
+                OrganizationAdminAnswer::Answered(OrganizationAdminResult::Records { records })
+            }
+            AdminOperation::EngineHealth(_) => {
+                OrganizationAdminAnswer::Answered(self.engine_health_result().await?.result)
+            }
             AdminOperation::EngineListRetired(request) => {
-                self.engine_retired_result(request.after, request.limit.get())
-                    .await?
-                    .result
+                let planned = self
+                    .engine_retired_result(request.after, request.limit.get())
+                    .await?;
+                OrganizationAdminAnswer::Answered(planned.result)
             }
             AdminOperation::EngineRetry(request) => {
                 let planned = self.prepare_engine_retry(&verified, request, now).await?;
@@ -139,7 +160,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                 retained = planned.retained;
                 // A concurrent retry deleted the record first.
                 guard_failed = AdminRefusal::NotFound;
-                planned.result
+                OrganizationAdminAnswer::Answered(planned.result)
             }
             AdminOperation::EngineDiscard(request) => {
                 let planned = self
@@ -150,7 +171,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                 }
                 statements.extend(planned.statements);
                 retained = planned.retained;
-                planned.result
+                OrganizationAdminAnswer::Answered(planned.result)
             }
         };
         #[cfg(feature = "test-support")]
@@ -178,17 +199,24 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                 let _retained_operation = operation;
                 Ok(match retained {
                     Some(answer) => OrganizationAdminAnswer::Retained(answer),
-                    None => OrganizationAdminAnswer::Answered(result),
+                    None => result,
                 })
             }
             // A rejected statement keeps main's store-outage answer on this path.
             BatchOutcome::StatementRejected { .. } => Err(StoreFailure::Unavailable),
-            _ => Ok(OrganizationAdminAnswer::Answered(
-                OrganizationAdminResult::Refused {
-                    reason: guard_failed,
-                },
+            _ => Ok(admin_refusal_answer(
+                verified.operation.route(),
+                guard_failed,
             )),
         }
+    }
+}
+
+fn admin_refusal_answer(route: AdminRoute, reason: AdminRefusal) -> OrganizationAdminAnswer {
+    if route == AdminRoute::ListWorkspaces {
+        OrganizationAdminAnswer::WorkspaceList(ListWorkspacesResult::Refused { reason })
+    } else {
+        OrganizationAdminAnswer::Answered(OrganizationAdminResult::Refused { reason })
     }
 }
 

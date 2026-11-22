@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{CapabilityReport, PendingInteraction, SessionSettings, SessionState};
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum StopReason {
     EndTurn,
@@ -13,7 +13,7 @@ pub enum StopReason {
     Unknown(String),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum LocalCause {
     OutputOverflow,
@@ -138,7 +138,7 @@ impl schemars::JsonSchema for ProviderSettingFailureReason {
 }
 
 /// Ended carries an agent-confirmed stop reason; lost carries no such claim.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum TurnOutcome {
     Ended {
@@ -150,7 +150,7 @@ pub enum TurnOutcome {
     },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ToolCallStatus {
     Pending,
@@ -159,7 +159,7 @@ pub enum ToolCallStatus {
     Failed,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum SessionItemKind {
     UserMessage,
@@ -182,7 +182,7 @@ pub enum SessionItemKind {
 
 /// Text is retained for history and simple facades; structured payloads can
 /// be added at this boundary when a consumer needs their exact shape.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct SessionItem {
     pub item_id: String,
@@ -191,7 +191,7 @@ pub struct SessionItem {
 }
 
 /// Events carry domain facts; the hub assigns sequence numbers and owns replay.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
     tag = "kind",
     rename_all = "camelCase",

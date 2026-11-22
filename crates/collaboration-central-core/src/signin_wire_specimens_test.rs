@@ -191,6 +191,24 @@ pub(super) fn invalid_specimens() -> Vec<(&'static str, WireSpecimen)> {
         Serialize,
         read_intent,
     );
+    let mut workspace_page = core_reply("ListWorkspacesResult")
+        .into_iter()
+        .find(|specimen| {
+            specimen.value["next"].is_null() && specimen.value["result"] == "workspaces"
+        })
+        .expect("last workspace page fixture")
+        .value;
+    workspace_page.as_object_mut().unwrap().remove("next");
+    let missing_serialized_cursor = wire_specimen(
+        "workspace page reply omits its required nullable cursor",
+        Serialize,
+        workspace_page.clone(),
+    );
+    let missing_accepted_cursor = wire_specimen(
+        "workspace page reader sees no required nullable cursor",
+        Deserialize,
+        workspace_page,
+    );
     vec![
         ("MachineTokenDecision", numeric),
         ("MachineTokenDecision", omit_only),
@@ -198,6 +216,8 @@ pub(super) fn invalid_specimens() -> Vec<(&'static str, WireSpecimen)> {
         ("OrganizationAdminIntent", wrong_tag),
         ("OrganizationAdminIntent", wrong_version),
         ("OrganizationAdminIntent", required_null),
+        ("ListWorkspacesResult", missing_serialized_cursor),
+        ("ListWorkspacesResult", missing_accepted_cursor),
     ]
     .into_iter()
     .chain(

@@ -5,12 +5,12 @@ use crate::identity_contract::{
     MachineTokenRefusal, PersonId, PresentedMachine,
 };
 use crate::organization_admin_contract::{
-    MachineEnrollmentRevocationResult, OrganizationAdminResult,
+    ListWorkspacesResult, MachineEnrollmentRevocationResult, OrganizationAdminResult,
 };
 use crate::person_request::{
-    AdminOperation, AdminRoute, CreateWorkspaceRequest, OrganizationAdminIntent, PersonClaims,
-    PersonTokenHeader, ProofClaims, ProofHeader, ReadChangeRecordsRequest,
-    RevokeMachineEnrollmentRequest, WorkspaceLookupRequest,
+    AdminOperation, AdminRoute, CreateWorkspaceRequest, ListWorkspacesRequest,
+    OrganizationAdminIntent, PersonClaims, PersonTokenHeader, ProofClaims, ProofHeader,
+    ReadChangeRecordsRequest, RevokeMachineEnrollmentRequest, WorkspaceLookupRequest,
 };
 use fleet_contracts::{
     ClientId, MachinePrincipal, MachineTokenClaims, OrganizationStatementDigestReply,
@@ -93,6 +93,8 @@ const SIGNIN_ROOTS: &[WireRoot] = &[
     wire_root!(MachineTokenClaims, core_request),
     wire_root!(CreateWorkspaceRequest, core_request),
     wire_root!(WorkspaceLookupRequest, core_request),
+    wire_root!(ListWorkspacesRequest, core_request),
+    wire_root!(ListWorkspacesResult, core_reply),
     wire_root!(ReadChangeRecordsRequest, change_records_requests),
     wire_root!(OrganizationAdminResult, core_reply),
     wire_root!(OrganizationChangeRecord, change_records_replies),

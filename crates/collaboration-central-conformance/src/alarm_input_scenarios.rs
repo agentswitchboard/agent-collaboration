@@ -74,10 +74,16 @@ pub const ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
     },
     AlarmInputScenario {
         name: "notice window legacy minimum",
-        writes: &[(
-            "INSERT INTO mail_notification_windows VALUES ('01890f2e-7b4c-7cc0-98c4-000000000007','recipient','1970-01-01T00:00:00.000Z','1970-01-01T00:15:00.000Z','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z')",
-            1,
-        )],
+        writes: &[
+            (
+                "UPDATE mail_messages SET state='seen' WHERE message_id='01890f2e-7b4c-7cc0-98c4-000000000005'",
+                1,
+            ),
+            (
+                "INSERT INTO mail_notification_windows VALUES ('01890f2e-7b4c-7cc0-98c4-000000000007','recipient','1970-01-01T00:00:00.000Z','1970-01-01T00:15:00.000Z','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z')",
+                1,
+            ),
+        ],
         expected: [Some(300000), Some(900000)],
     },
     AlarmInputScenario {

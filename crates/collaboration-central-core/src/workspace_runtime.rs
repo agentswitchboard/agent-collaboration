@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 /// Composes one Fleet runtime with the retained organization features.
 pub struct WorkspaceRuntime<Host: CentralStore, Stores: WorkspaceStores> {
+    pub(crate) direct_messages: Arc<dyn fleet_mail::DirectMessageStore>,
     pub(crate) execution: FleetRuntime<Host, Stores>,
     pub(crate) stamp_store: Arc<dyn fleet_signin::stamp_store::StampStore>,
     pub(crate) mail_delivery_ready: Arc<dyn Fn(MailDeliveryReady) + Send + Sync>,
@@ -23,8 +24,10 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
     pub fn new(
         execution: FleetRuntime<Host, Stores>,
         stamp_store: Arc<dyn fleet_signin::stamp_store::StampStore>,
+        direct_messages: Arc<dyn fleet_mail::DirectMessageStore>,
     ) -> Self {
         Self {
+            direct_messages,
             execution,
             stamp_store,
             signin_authority: Default::default(),

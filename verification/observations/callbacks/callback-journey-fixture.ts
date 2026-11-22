@@ -175,7 +175,42 @@ function createDatabase(model: FixtureModels): DatabaseSync {
   return connection;
 }
 
-function createFixtureServer(model: FixtureModels, connection: DatabaseSync): FixtureServer {
+type ObservationFixture = "legacy" | "marker" | "bareRefusal" | "numberedGap" | "oversize";
+
+function observationResponse(model: FixtureModels, fixture: ObservationFixture): JsonObject {
+  const metadata = observedObject(model.capture.observation);
+  const events = arrayField(model.capture, "events");
+  if (fixture === "legacy") return { ...metadata, events };
+  const epoch = 7n;
+  if (fixture === "bareRefusal")
+    return {
+      ...metadata,
+      epoch,
+      endReason: "resyncRequired",
+      events: [{ kind: "resyncRequired" }],
+    };
+  if (fixture === "numberedGap")
+    return {
+      ...metadata,
+      epoch,
+      endReason: "resyncRequired",
+      events: [{ sequence: 1n, event: { kind: "resyncRequired", replayEpoch: epoch + 1n } }],
+    };
+  if (fixture === "oversize")
+    return { ...metadata, epoch, events: [{ kind: "eventTooLarge", sequence: 1n, itemId: null }] };
+  const afterSequence = z.bigint().parse(observedObject(events.at(-1)).sequence);
+  return {
+    ...metadata,
+    epoch,
+    events: [...events, { kind: "snapshotEnd", cursor: { epoch, afterSequence } }],
+  };
+}
+
+function createFixtureServer(
+  model: FixtureModels,
+  connection: DatabaseSync,
+  observation: ObservationFixture,
+): FixtureServer {
   const state: CallbackState = { kind: "question" };
   const mutations: JsonObject[] = [];
   const waiting: { readonly name: string; readonly response: ServerResponse }[] = [];
@@ -240,7 +275,7 @@ function createFixtureServer(model: FixtureModels, connection: DatabaseSync): Fi
           reply(
             pending.response,
             pending.name === "events_observe"
-              ? { ...observedObject(model.capture.observation), events: model.capture.events }
+              ? observationResponse(model, observation)
               : { settled: true },
           );
         return;
@@ -292,11 +327,12 @@ function preparePlan(model: FixtureModels, url: string): JourneyPlan {
 
 export async function runCallbackFixture(
   driver: (plan: JourneyPlan, planPath: string) => Promise<JourneyRun>,
+  observation: ObservationFixture = "legacy",
 ): Promise<unknown> {
   const root = createFixtureDirectory("callback-journey");
   const model = createModels(root);
   const connection = createDatabase(model);
-  const { server, state, mutations, waiting } = createFixtureServer(model, connection);
+  const { server, state, mutations, waiting } = createFixtureServer(model, connection, observation);
   try {
     server.listen(0, "127.0.0.1");
     await once(server, "listening");

@@ -49,6 +49,24 @@ impl TestFaults {
         }
     }
 
+    /// Direct marks use a typed operation in place of the guarded-batch matcher.
+    pub fn take_direct_mark_answer_loss(
+        &self,
+        message: &workspace_model::MessageId,
+    ) -> Option<DirectMarkAnswerLoss> {
+        let mut armed = self.commit.lock().unwrap_or_else(PoisonError::into_inner);
+        let fault = armed
+            .as_ref()
+            .filter(|fault| fault.key.0 == message.as_str())?;
+        let loss = match fault.kind {
+            EngineCommitFaultKind::NotAppliedAnswerLost => DirectMarkAnswerLoss::BeforeApplying,
+            EngineCommitFaultKind::AppliedAnswerLost => DirectMarkAnswerLoss::AfterCommit,
+            _ => return None,
+        };
+        armed.take();
+        Some(loss)
+    }
+
     pub fn arm_read(&self, fault: EngineReadFault) {
         *self.read.lock().unwrap_or_else(PoisonError::into_inner) = Some(fault);
     }
@@ -124,6 +142,11 @@ impl TestFaults {
             None
         }
     }
+}
+
+pub enum DirectMarkAnswerLoss {
+    BeforeApplying,
+    AfterCommit,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

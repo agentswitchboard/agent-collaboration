@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT machine_id AS \"machine_id!: String\"\nFROM login_machines\nWHERE machine_id = ? AND state = 'enrolled'\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "machine_id!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machines",
+            "name": "machine_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "198db84c5ffaad1bc676825a8e7da69caa051cfb981d37faf514dc593096620b"
+}

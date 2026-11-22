@@ -11,7 +11,7 @@ workspace = true
 
 [features]
 # The API served the way a Host serves it, for other crates' tests.
-test-support = ["collaboration-service/test-support"]
+test-support = ["collaboration-service/test-support", "dep:session-event-model"]
 
 [dependencies]
 collaboration-runtime = { version = "0.1.105", path = "../collaboration-runtime" }
@@ -25,6 +25,8 @@ futures-util.workspace = true
 http.workspace = true
 message-board = { path = "../message-board", version = "0.1.20" }
 rmcp.workspace = true
+router-clock.workspace = true
+session-event-model = { path = "../session-event-model", version = "0.1.39", optional = true }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -33,6 +35,7 @@ tokio-util.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+session-event-model = { path = "../session-event-model", version = "0.1.39" }
 sqlx = { workspace = true, features = ["sqlite"] }
 acp-provider-adapters = { path = "../acp-provider-adapters", version = "0.1.114", features = ["test-support"] }
 codex-router-test-support = { path = "../codex-router-test-support", version = "0.1.4" }

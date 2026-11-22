@@ -68,6 +68,8 @@ macro_rules! impl_executor {
                         sql.as_str(),
                         arguments_of(arguments.as_ref()),
                         None,
+                        #[cfg(feature = "test-support")]
+                        self.fetch_observer.as_deref(),
                     )
                     .map(|(rows, _)| rows)
                 }
@@ -91,6 +93,8 @@ macro_rules! impl_executor {
                         sql.as_str(),
                         arguments_of(arguments.as_ref()),
                         Some(1),
+                        #[cfg(feature = "test-support")]
+                        self.fetch_observer.as_deref(),
                     )?;
                     Ok(rows.into_iter().next())
                 }

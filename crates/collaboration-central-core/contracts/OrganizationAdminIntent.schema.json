@@ -45,6 +45,29 @@
       "const": 1,
       "type": "integer"
     },
+    "ListWorkspacesParams": {
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit": {
+          "$ref": "#/$defs/RecordPageLimit"
+        }
+      },
+      "required": [
+        "after",
+        "limit"
+      ],
+      "type": "object"
+    },
     "MachineRevocationParams": {
       "additionalProperties": false,
       "properties": {
@@ -121,6 +144,39 @@
             },
             "target": {
               "$ref": "#/$defs/WorkspaceId"
+            },
+            "v": {
+              "$ref": "#/$defs/IntentVersionOne"
+            }
+          },
+          "required": [
+            "operation",
+            "v",
+            "organization",
+            "target",
+            "operationId",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "ListWorkspaces",
+              "type": "string"
+            },
+            "operationId": {
+              "type": "null"
+            },
+            "organization": {
+              "$ref": "#/$defs/OrganizationId"
+            },
+            "params": {
+              "$ref": "#/$defs/ListWorkspacesParams"
+            },
+            "target": {
+              "$ref": "#/$defs/OrganizationId"
             },
             "v": {
               "$ref": "#/$defs/IntentVersionOne"
