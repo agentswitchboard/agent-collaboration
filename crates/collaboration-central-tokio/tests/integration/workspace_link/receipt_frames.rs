@@ -1,5 +1,11 @@
 use super::*;
-use central_link_protocol::{CorrelationId, Receipt, ReceiptBatch, ReceiptKind, ReceiptResult};
+use central_link_protocol::{
+    CorrelationId, MachineLinkCloseCode, Receipt, ReceiptBatch, ReceiptKind, ReceiptResult,
+};
+use central_storage::{
+    AlarmUpdate, BatchOutcome, GuardedStatement, RowExpectation, SqlValue, Statement,
+    StatementBatch,
+};
 
 #[tokio::test]
 async fn a_real_link_answers_one_and_sixty_four_receipts_and_refuses_invalid_frames() -> Result<()>
@@ -372,14 +378,51 @@ async fn replay_after_lost_answer(fixture: &Fixture) -> Result<()> {
 
 #[tokio::test]
 async fn an_applying_receipt_checks_expiry_after_waiting_for_its_transaction() -> Result<()> {
+    check_receipt_authority_at_apply(EnrollmentAtApply::StillEnrolled).await
+}
+
+#[tokio::test]
+async fn an_applying_receipt_reports_owner_revocation_over_its_expired_transport() -> Result<()> {
+    check_receipt_authority_at_apply(EnrollmentAtApply::OwnerRevoked).await
+}
+
+#[tokio::test]
+async fn an_applying_receipt_reports_idle_ending_over_its_expired_transport() -> Result<()> {
+    check_receipt_authority_at_apply(EnrollmentAtApply::EndedForIdle).await
+}
+
+pub(super) enum EnrollmentAtApply {
+    StillEnrolled,
+    OwnerRevoked,
+    EndedForIdle,
+}
+
+impl EnrollmentAtApply {
+    pub(super) fn stored_end_reason(&self) -> Option<&'static str> {
+        match self {
+            Self::StillEnrolled => None,
+            Self::OwnerRevoked => Some("owner"),
+            Self::EndedForIdle => Some("idle"),
+        }
+    }
+
+    pub(super) fn expected_close(&self) -> MachineLinkCloseCode {
+        match self {
+            Self::StillEnrolled => MachineLinkCloseCode::Expired,
+            Self::OwnerRevoked => MachineLinkCloseCode::Revoked,
+            Self::EndedForIdle => MachineLinkCloseCode::Inactive,
+        }
+    }
+}
+
+async fn check_receipt_authority_at_apply(enrollment: EnrollmentAtApply) -> Result<()> {
     let fixture = Fixture::new().await?;
-    let result = receipt_expiry_journey(&fixture).await;
+    let result = receipt_expiry_journey(&fixture, enrollment).await;
     fixture.close().await?;
     result
 }
 
-async fn receipt_expiry_journey(fixture: &Fixture) -> Result<()> {
-    use central_storage::SqlValue;
+async fn receipt_expiry_journey(fixture: &Fixture, enrollment: EnrollmentAtApply) -> Result<()> {
     use fleet_runtime::PausePoint;
     use workspace_model::central_mail::{CentralMailAnswer, MessageRefusal};
     let sent_at = chrono::DateTime::from_timestamp(signed::NOW_SECONDS, 0).ok_or("fixture UTC")?;
@@ -412,29 +455,91 @@ async fn receipt_expiry_journey(fixture: &Fixture) -> Result<()> {
         }])?,
     };
     send(&mut socket, &LinkFrame::Data(receipt_frame)).await?;
-    hold.until_held().await;
-    let advanced = fixture.clock.advance(Duration::from_secs(600));
-    hold.release();
-    advanced?;
-    let reply = socket.next().await;
+    tokio::select! {
+        () = hold.until_held() => {}
+        early = socket.next() => {
+            return Err(format!("receipt emitted a frame before the transaction barrier: {early:?}").into());
+        }
+    }
     let store = central.runtime().statement_host();
-    if !matches!(reply, Some(Ok(Message::Close { .. }))) {
-        return Err(format!(
-            "expired applying receipt yielded a frame instead of close: {reply:?}"
-        )
-        .into());
+    // Commit a coherent ending through SQLite while the already-admitted receipt
+    // holds Central's turn. A private revoke would wait for the same turn and
+    // its socket observer would obscure what the transaction recheck reports.
+    let applying: Result<()> = async {
+        fixture.clock.advance(Duration::from_secs(600))?;
+        if let Some(reason) = enrollment.stored_end_reason() {
+            let ending = stored_ending_batch(INSTALLATION, fixture.enrollment_id.as_str(), reason)?;
+            let outcome = store.run_batch(ending).await?;
+            if !matches!(outcome, BatchOutcome::Applied { .. }) {
+                return Err(format!(
+                    "could not persist the held receipt's enrollment ending: {outcome:?}"
+                )
+                .into());
+            }
+        }
+        Ok(())
+    }
+    .await;
+    hold.release();
+    applying?;
+    let reply = socket.next().await;
+    let expected_close = enrollment.expected_close();
+    if !matches!(reply, Some(Ok(Message::Close { code, .. })) if MachineLinkCloseCode::from_code(code.into()) == Some(expected_close))
+    {
+        return Err(
+            format!("applying receipt must close with {expected_close:?}, got {reply:?}").into(),
+        );
     }
     let rows = store.read(central_storage::Statement {
-        sql: "SELECT state, (SELECT count(*) FROM mail_messages WHERE message_kind='deliveryOutcome') FROM mail_messages WHERE message_id=?",
+        sql: "SELECT state,failure_reason,(SELECT count(*) FROM mail_messages WHERE message_kind='deliveryOutcome' AND json_extract(body,'$.messageId')=message.message_id) FROM mail_messages AS message WHERE message_id=?",
         args: vec![SqlValue::Text(message_id.to_string())],
     }).await?.rows;
     if rows
         != [vec![
             SqlValue::Text("queued".into()),
+            SqlValue::Null,
             SqlValue::Integer(0.try_into()?),
         ]]
     {
-        return Err(format!("expired receipt changed owning rows: {rows:?}").into());
+        return Err(format!("refused receipt changed owning rows: {rows:?}").into());
     }
     Ok(())
+}
+
+pub(super) fn stored_ending_batch(
+    machine_id: &str,
+    approval_id: &str,
+    reason: &str,
+) -> Result<StatementBatch> {
+    let ended_at = chrono::DateTime::from_timestamp(signed::NOW_SECONDS + 600, 0)
+        .ok_or("fixture transport deadline")?
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    Ok(StatementBatch {
+        statements: vec![
+            GuardedStatement {
+                statement: Statement {
+                    sql: "UPDATE login_machine_approvals SET state='ended',end_reason=?,last_grant_at=NULL,ended_at=?,updated_at=? WHERE approval_id=? AND machine_id=? AND state='enrolled' AND machine_client_id=approval_id",
+                    args: vec![
+                        SqlValue::Text(reason.to_owned()),
+                        SqlValue::Text(ended_at.clone()),
+                        SqlValue::Text(ended_at.clone()),
+                        SqlValue::Text(approval_id.to_owned()),
+                        SqlValue::Text(machine_id.to_owned()),
+                    ],
+                },
+                expect: RowExpectation::Exactly(1),
+            },
+            GuardedStatement {
+                statement: Statement {
+                    sql: "UPDATE login_machines SET state='revoked',enrollment_generation=enrollment_generation+1,updated_at=? WHERE machine_id=? AND state='enrolled'",
+                    args: vec![
+                        SqlValue::Text(ended_at),
+                        SqlValue::Text(machine_id.to_owned()),
+                    ],
+                },
+                expect: RowExpectation::Exactly(1),
+            },
+        ],
+        alarm: AlarmUpdate::Unchanged,
+    })
 }

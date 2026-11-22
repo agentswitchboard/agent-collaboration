@@ -1,7 +1,8 @@
 //! Replay precedes mutable rule decisions; the durable answer shares the effect batch.
 
-use crate::WorkspaceCaller;
 use crate::WorkspaceRuntime;
+use crate::{ApplyingRequestFailure, WorkspaceCaller, applying_request_failure::applying_refusal};
+use central_link_protocol::ReplyPayload;
 use central_storage::{AlarmUpdate, BatchOutcome, StatementBatch, StoreFailure};
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
@@ -43,7 +44,7 @@ pub(crate) async fn execute<Host: CentralStore, Stores: WorkspaceStores>(
     runtime: &WorkspaceRuntime<Host, Stores>,
     caller: &WorkspaceCaller,
     request: m::WorkspaceRequest,
-) -> Result<m::WorkspaceReply, StoreFailure> {
+) -> Result<m::WorkspaceReply, ApplyingRequestFailure> {
     if request.operation.is_write() && request.request_id.is_none() {
         return Ok(invalid("requestId"));
     }
@@ -86,7 +87,7 @@ pub(crate) async fn execute<Host: CentralStore, Stores: WorkspaceStores>(
             )
             .await?
         {
-            return Ok(reply(m::WorkspaceResult::Refused(refusal)));
+            return applying_refusal(refusal, |reason| reply(m::WorkspaceResult::Refused(reason)));
         }
     }
     let identity = match caller.caller() {
@@ -109,7 +110,7 @@ pub(crate) async fn execute<Host: CentralStore, Stores: WorkspaceStores>(
             )
             .await?
         {
-            return Ok(reply(m::WorkspaceResult::Refused(refusal)));
+            return applying_refusal(refusal, |reason| reply(m::WorkspaceResult::Refused(reason)));
         }
         runtime.access().resolve_identity(&identity).await?
     };
@@ -134,7 +135,7 @@ pub(crate) async fn execute<Host: CentralStore, Stores: WorkspaceStores>(
         )
         .await?
     {
-        return Ok(reply(m::WorkspaceResult::Refused(refusal)));
+        return applying_refusal(refusal, |reason| reply(m::WorkspaceResult::Refused(reason)));
     }
     let now = runtime.execution.now()?;
     let cutoff = (now - chrono::Duration::hours(24)).to_rfc3339();
@@ -262,7 +263,7 @@ pub(crate) async fn execute<Host: CentralStore, Stores: WorkspaceStores>(
             )
             .await?
         {
-            return Ok(reply(m::WorkspaceResult::Refused(refusal)));
+            return applying_refusal(refusal, |reason| reply(m::WorkspaceResult::Refused(reason)));
         }
         if matches!(
             answer,
@@ -295,13 +296,13 @@ pub(crate) async fn execute<Host: CentralStore, Stores: WorkspaceStores>(
     }
     enrich(runtime, answer, true).await
 }
-fn drain_failure(error: StoreFailure) -> Result<m::WorkspaceReply, StoreFailure> {
+fn drain_failure(error: StoreFailure) -> Result<m::WorkspaceReply, ApplyingRequestFailure> {
     match error {
         StoreFailure::Unavailable | StoreFailure::AnswerLost => {
             Ok(reply(m::WorkspaceResult::OutcomeUnknown))
         }
         error @ (StoreFailure::Corrupt { .. } | StoreFailure::AlarmUnpublishable { .. }) => {
-            Err(error)
+            Err(error.into())
         }
     }
 }
@@ -309,7 +310,7 @@ async fn enrich<Host: CentralStore, Stores: WorkspaceStores>(
     runtime: &WorkspaceRuntime<Host, Stores>,
     result: m::WorkspaceResult,
     durable_answer: bool,
-) -> Result<m::WorkspaceReply, StoreFailure> {
+) -> Result<m::WorkspaceReply, ApplyingRequestFailure> {
     let actors = match runtime
         .access()
         .actor_views(&crate::workspace_item_reads::actor_ids(&result))
@@ -323,7 +324,7 @@ async fn enrich<Host: CentralStore, Stores: WorkspaceStores>(
                 m::WorkspaceResult::CentralUnavailable
             }));
         }
-        Err(error) => return Err(error),
+        Err(error) => return Err(error.into()),
     };
     Ok(m::WorkspaceReply { result, actors })
 }
@@ -354,6 +355,25 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         caller: &WorkspaceCaller,
         request: m::WorkspaceRequest,
     ) -> Result<m::WorkspaceReply, StoreFailure> {
+        match self.request_with_authority(caller, request).await {
+            Ok(reply) => Ok(reply),
+            Err(ApplyingRequestFailure::Authority(cause)) => {
+                Ok(ReplyPayload::workspace_authority_refused(cause))
+            }
+            Err(ApplyingRequestFailure::Store(error)) => Err(error),
+        }
+    }
+
+    pub async fn request_with_authority(
+        &self,
+        caller: &WorkspaceCaller,
+        request: m::WorkspaceRequest,
+    ) -> Result<m::WorkspaceReply, ApplyingRequestFailure> {
+        #[cfg(feature = "test-support")]
+        self.execution
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::BeforeWorkspaceRequestApplying)
+            .await;
         // Admission answers for the organization as on main; the due batch that
         // follows checks the stamp once for this event before any unit (P3).
         let result = execute(self, caller, request).await;
@@ -364,8 +384,9 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             .await;
         let _ = self.after_event().await;
         match result {
-            Err(StoreFailure::Unavailable) => Ok(reply(m::WorkspaceResult::CentralUnavailable)),
-            Err(StoreFailure::AnswerLost) => Ok(reply(m::WorkspaceResult::CentralUnavailable)),
+            Err(ApplyingRequestFailure::Store(
+                StoreFailure::Unavailable | StoreFailure::AnswerLost,
+            )) => Ok(reply(m::WorkspaceResult::CentralUnavailable)),
             result => result,
         }
     }

@@ -27,7 +27,7 @@ async fn migrated_store() -> SqliteConnection {
         .run(&mut connection)
         .await
         .unwrap();
-    sqlx::query("INSERT INTO login_machines(machine_id,label,state,allowed_workspaces,created_at,updated_at) VALUES ('019f0000-0000-7000-8000-000000000002','fixture','enrolled','[]','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z')")
+    sqlx::query("INSERT INTO login_machines(machine_id,label,state,created_at,updated_at) VALUES ('019f0000-0000-7000-8000-000000000002','fixture','enrolled','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z')")
         .execute(&mut connection).await.unwrap();
     sqlx::query("INSERT INTO mail_messages(message_id,sender,target_machine_id,target_session,message_kind,body,state,created_at,updated_at,cancel_due_at) VALUES (?,'sender','019f0000-0000-7000-8000-000000000002','session','direct','{}','queued','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z','1970-01-01T00:01:00.000Z')")
         .bind(SUBJECT).execute(&mut connection).await.unwrap();

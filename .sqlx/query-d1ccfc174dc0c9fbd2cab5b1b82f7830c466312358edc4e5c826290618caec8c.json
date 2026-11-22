@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT workspace_id FROM directory_workspaces WHERE workspace_id=?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "workspace_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "directory_workspaces",
+            "name": "workspace_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "d1ccfc174dc0c9fbd2cab5b1b82f7830c466312358edc4e5c826290618caec8c"
+}

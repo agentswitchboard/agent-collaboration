@@ -5,7 +5,7 @@ use super::support::*;
     reason = "Exact private reply, immutable approval and owning-row assertions propagate real fixture errors."
 )]
 #[tokio::test]
-async fn approval_replays_immutable_three_field_snapshot_after_changed_input_activation_and_reopen()
+async fn approval_refuses_changed_inputs_and_replays_the_retained_snapshot_after_activation_and_reopen()
 -> Result<()> {
     let mut f = MachineFixture::new().await?;
     let request = approval(
@@ -50,10 +50,14 @@ async fn approval_replays_immutable_three_field_snapshot_after_changed_input_act
     changed["label"] = json!("Submitted changed label");
     changed["allowedWorkspaces"] = json!([id(0xc199)]);
     changed["approverSecondFactorAt"] = Value::Null;
+    let request_conflict = (
+        200,
+        json!({"result":"refused","reason":{"kind":"requestConflict"}}),
+    );
     assert_eq!(
         f.post(DEVICE, &changed).await?,
-        first,
-        "N03 returns the first approval even when mutable submitted fields change"
+        request_conflict,
+        "a changed label and workspace set conflict on the retained request ID"
     );
     assert!(
         snapshot(&f).await? == before,
@@ -65,8 +69,11 @@ async fn approval_replays_immutable_three_field_snapshot_after_changed_input_act
         (200, grant(&enrollment_id, INSTALLATION, f.now(), None))
     );
     let activated = snapshot(&f).await?;
+    let mut equal_replay = request.clone();
+    equal_replay["allowedWorkspaces"] = json!([WORKSPACE_TWO, WORKSPACE, WORKSPACE]);
+    equal_replay["approverSecondFactorAt"] = Value::Null;
     assert_eq!(
-        f.post(DEVICE, &changed).await?,
+        f.post(DEVICE, &equal_replay).await?,
         first,
         "activation cannot replace approval's immutable reply"
     );
@@ -74,30 +81,40 @@ async fn approval_replays_immutable_three_field_snapshot_after_changed_input_act
     f.reopen().await?;
     f.advance(86_400_001).await?;
     assert_eq!(
-        f.post(DEVICE, &changed).await?,
+        f.post(DEVICE, &equal_replay).await?,
         first,
         "owning reopen and a day beyond code expiry retain the exact three-field approval"
     );
     assert!(snapshot(&f).await? == activated);
-    let rows=f.rows("SELECT request_id,kind,origin,actor_person_id,permission_checked,target_id FROM signin_change_records WHERE kind='allowanceChanged' ORDER BY target_id").await?;
+    let rows=f.rows("SELECT request_id,kind,origin,actor_person_id,permission_checked,target_id,workspace_id,allowance_state FROM signin_change_records WHERE kind='machineAllowanceChanged' ORDER BY workspace_id").await?;
     assert_eq!(
         rows,
         vec![
             vec![
-                text(format!("{}:allowanceChanged:{WORKSPACE}", id(0xc101))),
-                text("allowanceChanged"),
+                text(format!(
+                    "{}:machineAllowanceChanged:{WORKSPACE}",
+                    id(0xc101)
+                )),
+                text("machineAllowanceChanged"),
                 text("person"),
                 text(signed::OWNER),
                 text("machine:enroll"),
-                text(WORKSPACE)
+                text(INSTALLATION),
+                text(WORKSPACE),
+                text("active")
             ],
             vec![
-                text(format!("{}:allowanceChanged:{WORKSPACE_TWO}", id(0xc101))),
-                text("allowanceChanged"),
+                text(format!(
+                    "{}:machineAllowanceChanged:{WORKSPACE_TWO}",
+                    id(0xc101)
+                )),
+                text("machineAllowanceChanged"),
                 text("person"),
                 text(signed::OWNER),
                 text("machine:enroll"),
-                text(WORKSPACE_TWO)
+                text(INSTALLATION),
+                text(WORKSPACE_TWO),
+                text("active")
             ]
         ]
     );
@@ -160,8 +177,16 @@ async fn retained_approval_refuses_another_installation_but_preserves_same_insta
     same_installation["codeExpiresAt"] = json!(f.now() - 1);
     assert_eq!(
         f.post(DEVICE, &same_installation).await?,
+        (
+            200,
+            json!({"result":"refused","reason":{"kind":"requestConflict"}})
+        ),
+        "a changed retained approval conflicts before fresh approval checks"
+    );
+    assert_eq!(
+        f.post(DEVICE, &original).await?,
         first,
-        "same-machine_id N03 replay precedes new-approval deadline and mutable-input checks"
+        "an exact replay still returns the snapshot after code expiry"
     );
     assert!(snapshot(&f).await? == before);
     another_installation["codeExpiresAt"] = json!(f.now() + 600);

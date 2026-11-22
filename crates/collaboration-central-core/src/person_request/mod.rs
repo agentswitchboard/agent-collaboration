@@ -23,8 +23,11 @@ pub use request_verifier::{
 };
 
 #[cfg(all(test, feature = "wire-export", not(target_arch = "wasm32")))]
-pub(crate) use admin_operations::RevokeMachineEnrollmentRequest;
 #[cfg(all(test, feature = "wire-export", not(target_arch = "wasm32")))]
 pub(crate) use signed_claims::{
     PersonClaims, PersonTokenHeader, ProofClaims, ProofHeader, signed_claims_specimens,
 };
+
+#[cfg(test)]
+#[path = "approval_digest_parity_test.rs"]
+mod approval_digest_parity_test;

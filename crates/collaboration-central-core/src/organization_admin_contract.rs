@@ -1,11 +1,11 @@
 //! Closed answers from a verified organization admin operation.
 use crate::person_request::{AdmissionRefusal, MAXIMUM_RECORD_PAGE};
-use fleet_contracts::WorkspaceView;
+use fleet_contracts::{MachineEnrollmentRevocationResult, WorkspaceView};
 use fleet_engine::EngineFailureClass;
 use fleet_identity_protocol::UnixMillis;
 use fleet_signin::organization_change::{
-    ChangeRequestId, OrganizationChangeOrigin,
-    OrganizationChangeRecord as TargetedOrganizationChangeRecord,
+    ChangeRequestId, MachineAllowanceState, OrganizationChangeOrigin,
+    OrganizationChangeRecord as TargetedOrganizationChangeRecord, StoredOrganizationChange,
 };
 use message_board::WorkspaceId;
 use schemars::JsonSchema;
@@ -39,15 +39,29 @@ pub enum OrganizationChangeRecord {
     TargetedChange(TargetedOrganizationChangeRecord),
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub enum MachineAllowanceState {
-    Active,
-    Withdrawn,
+impl TryFrom<StoredOrganizationChange> for OrganizationChangeRecord {
+    type Error = central_storage::StoreFailure;
+
+    fn try_from(record: StoredOrganizationChange) -> Result<Self, Self::Error> {
+        Ok(match record {
+            StoredOrganizationChange::MachineAllowanceChanged(change) => {
+                Self::MachineAllowanceChanged {
+                    id: change.id,
+                    request_id: change.request_id,
+                    origin: change.origin,
+                    machine_id: change.machine_id,
+                    workspace_id: String::from(change.workspace_id).try_into().map_err(|_| {
+                        fleet_runtime_ports::workspace_decode_error::corrupt(
+                            "signin_change_records.workspace_id",
+                        )
+                    })?,
+                    state: change.state,
+                    created_at_millis: change.created_at_millis,
+                }
+            }
+            StoredOrganizationChange::TargetedChange(change) => Self::TargetedChange(change),
+        })
+    }
 }
 
 /// The closed set of engine kinds an admin sees; test-support machines are hidden.
@@ -183,32 +197,6 @@ impl JsonSchema for WorkspacePageRows {
         let items = generator.subschema_for::<WorkspaceView>();
         schemars::json_schema!({"type":"array","items":items,"maxItems":MAXIMUM_RECORD_PAGE})
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "result", rename_all = "camelCase", deny_unknown_fields)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub enum MachineEnrollmentRevocationResult {
-    Revoked {},
-    NotFound {},
-    AlreadyEnded {},
-    Refused {
-        reason: MachineEnrollmentRevocationRefusal,
-    },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub enum MachineEnrollmentRevocationRefusal {
-    NotPermitted,
-    FactorNotRecent,
 }
 
 /// Validated retained JSON travels to HTTP without another serialization.

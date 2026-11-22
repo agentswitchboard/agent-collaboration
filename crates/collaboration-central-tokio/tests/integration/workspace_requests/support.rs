@@ -58,7 +58,7 @@ pub(super) async fn seed_machine_for(
         .unwrap()
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let statements = [
-        ("INSERT INTO login_machines(machine_id,label,state,allowed_workspaces,enrollment_generation,created_at,updated_at) VALUES (?,'Machine','enrolled','[]',1,?,?)", vec![text(machine_id), text(&at), text(&at)]),
+        ("INSERT INTO login_machines(machine_id,label,state,enrollment_generation,created_at,updated_at) VALUES (?,'Machine','enrolled',1,?,?)", vec![text(machine_id), text(&at), text(&at)]),
         ("INSERT INTO login_machine_approvals(approval_id,request_id,machine_id,label,allowed_workspaces,state,approved_by_person_id,permission_checked,base_generation,code_expires_at,machine_client_id,last_grant_at,created_at,updated_at) VALUES (?,?,?,'Machine','[]','enrolled',?,'machine:enroll',0,?,?,?,?,?)", vec![text(id::<m::WorkspaceId>(enrollment)),text(id::<m::WorkspaceId>(enrollment+1)),text(machine_id),text(signed::OWNER),text(&at),text(id::<m::WorkspaceId>(enrollment)),text(&at),text(&at),text(&at)]),
     ].into_iter().map(|(sql,args)| GuardedStatement { statement: Statement { sql,args }, expect: RowExpectation::Exactly(1) }).collect();
     assert!(matches!(
@@ -136,7 +136,7 @@ pub(super) async fn create_workspace(
     let batch = StatementBatch {
         statements: vec![GuardedStatement {
             statement: Statement {
-                sql: "UPDATE login_machines SET allowed_workspaces=? WHERE machine_id=?",
+                sql: collaboration_central_conformance::REPLACE_FIXTURE_ALLOWANCES_SQL,
                 args: vec![
                     text(serde_json::to_string(&vec![workspace.workspace_id.clone()]).unwrap()),
                     text(caller.caller().machine_id()),

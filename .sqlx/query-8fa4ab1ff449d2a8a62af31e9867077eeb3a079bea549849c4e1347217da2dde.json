@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT count(*) AS \"ordinal!: i64\"\nFROM directory_workspaces\nWHERE workspace_id <= ?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "ordinal!: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "8fa4ab1ff449d2a8a62af31e9867077eeb3a079bea549849c4e1347217da2dde"
+}

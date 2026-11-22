@@ -1,13 +1,12 @@
 //! One org turn owns machine-login reads, applying time and the guarded batch.
 use crate::WorkspaceRuntime;
-use crate::identity_contract::{
-    DecideDeviceLogin, DecideMachineToken, DeviceLoginDecision, MachineTokenDecision,
-};
-use crate::organization_authority::machine_login::{
-    self, Decided, DecisionTime, EnrollmentFacts, EnrollmentQuery,
-};
 use crate::organization_authority_cache::StampStanding;
 use central_storage::{AlarmUpdate, BatchOutcome, StatementBatch, StoreFailure};
+use fleet_contracts::EnrollmentInvalidation;
+use fleet_contracts::{
+    DecideDeviceLogin, DecideMachineToken, DeviceLoginDecision, MachineTokenDecision,
+};
+use fleet_machine_login::{MachineLoginPlan, MachineLoginService, policy::DecisionTime};
 use fleet_runtime_ports::SyncTime;
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 
@@ -24,26 +23,13 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
             .await;
         let _turn = self.execution.take_central_turn().await;
         let time = self.machine_login_time(&request.organization_id).await?;
-        let query = EnrollmentQuery {
-            machine_id: Some(request.machine_id.clone()),
-            request: Some(request.request_id.clone()),
-            workspaces: request.allowed_workspaces.as_slice().to_vec(),
-            ..EnrollmentQuery::default()
-        };
-        let facts = crate::machine_login_reads::facts(
-            self.execution.statement_host(),
-            self.execution.organization().clone(),
-            &query,
-        )
-        .await?;
-        let decided = machine_login::decide_device_login(
-            request,
-            &facts,
-            received_at_ms,
-            time,
-            self.execution.ids(),
-        )?;
-        self.apply_machine_login(&facts, decided, time).await
+        let plan = self
+            .machine_login_service()
+            .prepare_device_login(request, received_at_ms, time)
+            .await?;
+        self.apply_machine_login(plan)
+            .await
+            .map(|(answer, _)| answer)
     }
 
     pub async fn decide_machine_token(
@@ -55,21 +41,26 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
             .pause_points()
             .reached_central(fleet_runtime::PausePoint::BeforeSignInSample)
             .await;
-        let _turn = self.execution.take_central_turn().await;
+        let turn = self.execution.take_central_turn().await;
         let time = self.machine_login_time(&request.organization_id).await?;
-        let query = EnrollmentQuery {
-            enrollment: Some(request.enrollment_id.clone()),
-            ..EnrollmentQuery::default()
-        };
-        let facts = crate::machine_login_reads::facts(
-            self.execution.statement_host(),
-            self.execution.organization().clone(),
-            &query,
-        )
-        .await?;
-        let decided =
-            machine_login::decide_machine_token(request, &facts, time, self.execution.ids())?;
-        self.apply_machine_login(&facts, decided, time).await
+        let plan = self
+            .machine_login_service()
+            .prepare_machine_token(request, time)
+            .await?;
+        let (answer, invalidation) = self.apply_machine_login(plan).await?;
+        #[cfg(feature = "test-support")]
+        drop(turn);
+        if let Some(invalidation) = invalidation {
+            #[cfg(feature = "test-support")]
+            self.execution
+                .pause_points()
+                .reached_central(fleet_runtime::PausePoint::BeforePrivateEnrollmentInvalidation)
+                .await;
+            (self.enrollment_invalidated)(invalidation);
+        }
+        #[cfg(not(feature = "test-support"))]
+        drop(turn);
+        Ok(answer)
     }
 
     pub(crate) async fn machine_login_time(
@@ -98,22 +89,27 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         Ok(time)
     }
 
-    pub(crate) async fn apply_machine_login<T>(
+    pub(crate) fn machine_login_service(&self) -> MachineLoginService<'_, H> {
+        MachineLoginService::for_organization(
+            self.execution.statement_host(),
+            self.execution.organization(),
+            self.execution.ids(),
+        )
+    }
+
+    pub(crate) async fn apply_machine_login<Answer>(
         &self,
-        facts: &EnrollmentFacts,
-        decided: Decided<T>,
-        time: DecisionTime,
-    ) -> Result<T, StoreFailure> {
-        if match decided.written_at_ms {
-            Some(at) => at != time.now_ms || decided.changes.is_empty(),
-            None => !decided.changes.is_empty(),
-        } {
-            return Err(fleet_runtime_ports::workspace_decode_error::corrupt(
-                "machine_login.applying_time",
-            ));
-        }
-        let statements =
-            crate::machine_login_writes::statements(facts, &decided.changes, time.now_ms)?;
+        plan: MachineLoginPlan<Answer>,
+    ) -> Result<(Answer, Option<EnrollmentInvalidation>), StoreFailure> {
+        let (answer, statements, invalidation) = plan.into_applying();
+        self.apply_machine_login_statements(statements).await?;
+        Ok((answer, invalidation))
+    }
+
+    pub(crate) async fn apply_machine_login_statements(
+        &self,
+        statements: Vec<central_storage::GuardedStatement>,
+    ) -> Result<(), StoreFailure> {
         #[cfg(feature = "test-support")]
         self.execution
             .pause_points()
@@ -133,6 +129,6 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                 _ => return Err(StoreFailure::Unavailable),
             }
         }
-        Ok(decided.answer)
+        Ok(())
     }
 }

@@ -1,0 +1,86 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT machine_id,label,state,enrollment_generation,created_at,updated_at FROM login_machines WHERE machine_id=?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "machine_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machines",
+            "name": "machine_id"
+          }
+        }
+      },
+      {
+        "name": "label",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machines",
+            "name": "label"
+          }
+        }
+      },
+      {
+        "name": "state",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machines",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "name": "enrollment_generation",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "login_machines",
+            "name": "enrollment_generation"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machines",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machines",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8a24e32778084aa1fea4d63daf17d9962574c65916bed785a7058000675b14d1"
+}
