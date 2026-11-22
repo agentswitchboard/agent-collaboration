@@ -22,7 +22,7 @@ impl CentralStore for ReadSequence {
     }
     async fn read(&self, statement: Statement) -> Result<ReadOutcome, StoreFailure> {
         let (sql, result) = self.0.lock().unwrap().remove(0);
-        assert_eq!(statement.sql, sql);
+        assert_eq!(statement.sql.trim_end(), sql.trim_end());
         Ok(result)
     }
     async fn run_batch(&self, _: StatementBatch) -> Result<BatchOutcome, StoreFailure> {
@@ -66,7 +66,10 @@ async fn retained_approval_returns_before_reading_any_mutable_decision_facts() {
         ("last_grant_at", SqlValue::Null),
         ("ended_at", SqlValue::Null),
     ]);
-    let host = ReadSequence(Mutex::new(vec![(BY_REQUEST, stored)]));
+    let host = ReadSequence(Mutex::new(vec![(
+        include_str!("queries/read_approval_by_request.sql"),
+        stored,
+    )]));
     let query = EnrollmentQuery {
         request: Some(
             "019a3dce-2000-7000-8000-000000000004"

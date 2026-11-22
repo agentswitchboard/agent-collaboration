@@ -27,3 +27,6 @@ workspace-ids.workspace = true
 [dev-dependencies]
 central-engine-model.workspace = true
 tokio.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+sqlx = { workspace = true, features = ["sqlite", "macros"] }

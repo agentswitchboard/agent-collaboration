@@ -84,6 +84,11 @@ export const sqlitePreparationTargets: readonly SqlitePreparationTarget[] = [
     migrationSources: [centralMigrationSource],
     databaseFilename: "fleet-central-signin.sqlite",
   },
+  {
+    packageName: "fleet-machine-login",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-central-machine-login.sqlite",
+  },
 ];
 
 function appendFixtureMigration(

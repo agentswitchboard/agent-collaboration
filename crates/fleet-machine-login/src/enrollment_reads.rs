@@ -13,9 +13,16 @@ use fleet_runtime_ports::{
 };
 use fleet_signin::organization_change::{OrganizationChangeOrigin, read_machine_supersession};
 
-const BY_REQUEST: &str = "SELECT a.approval_id,a.request_id,a.label,a.allowed_workspaces,a.state,a.end_reason,a.approved_by_person_id,a.permission_checked,a.base_generation,a.code_expires_at,a.machine_client_id,a.last_grant_at,a.ended_at,a.created_at,a.updated_at,m.machine_id FROM login_machine_approvals a LEFT JOIN login_machines m ON m.machine_id=a.machine_id WHERE a.request_id=?";
-const BY_ENROLLMENT: &str = "SELECT a.approval_id,a.request_id,a.label,a.allowed_workspaces,a.state,a.end_reason,a.approved_by_person_id,a.permission_checked,a.base_generation,a.code_expires_at,a.machine_client_id,a.last_grant_at,a.ended_at,a.created_at,a.updated_at,m.machine_id FROM login_machine_approvals a LEFT JOIN login_machines m ON m.machine_id=a.machine_id WHERE a.approval_id=?";
-const ACTIVE: &str = "SELECT a.approval_id,a.request_id,a.label,a.allowed_workspaces,a.state,a.end_reason,a.approved_by_person_id,a.permission_checked,a.base_generation,a.code_expires_at,a.machine_client_id,a.last_grant_at,a.ended_at,a.created_at,a.updated_at,m.machine_id FROM login_machine_approvals a LEFT JOIN login_machines m ON m.machine_id=a.machine_id WHERE a.machine_id=? AND a.state='enrolled'";
+macro_rules! checked_read {
+    ($query:literal $(, $input:expr)* $(,)?) => {{
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        let _ = sqlx::query_file!($query $(, $input)*);
+        Statement {
+            sql: include_str!(concat!("../", $query)),
+            args: vec![$(text($input)),*],
+        }
+    }};
+}
 
 pub async fn facts(
     host: &impl CentralStore,
@@ -24,10 +31,10 @@ pub async fn facts(
 ) -> Result<EnrollmentFacts, StoreFailure> {
     let prior_approval = if let Some(request) = &query.request {
         let rows = host
-            .read(Statement {
-                sql: BY_REQUEST,
-                args: vec![text(request.as_str())],
-            })
+            .read(checked_read!(
+                "src/queries/read_approval_by_request.sql",
+                request.as_str()
+            ))
             .await?;
         only_row(&rows, enrollment, "login_machine_approvals.request_id")?
     } else {
@@ -46,10 +53,7 @@ pub async fn facts(
         });
     }
     let history = host
-        .read(Statement {
-            sql: "SELECT EXISTS(SELECT 1 FROM login_machine_approvals) AS has_enrollment",
-            args: vec![],
-        })
+        .read(checked_read!("src/queries/read_approval_history.sql"))
         .await?;
     let organization_has_enrollment = only_row(
         &history,
@@ -63,20 +67,30 @@ pub async fn facts(
     .ok_or_else(|| corrupt("login_machine_approvals.has_enrollment"))?;
     let enrollment = if let Some(id) = &query.enrollment {
         let rows = host
-            .read(Statement {
-                sql: BY_ENROLLMENT,
-                args: vec![text(id.as_str())],
-            })
+            .read(checked_read!(
+                "src/queries/read_approval_by_id.sql",
+                id.as_str()
+            ))
             .await?;
         only_row(&rows, enrollment, "login_machine_approvals.approval_id")?
     } else {
         None
     };
     let machine = if let Some(machine_id) = &query.machine_id {
-        let rows = host.read(Statement { sql: "SELECT machine_id,label,state,allowed_workspaces,enrollment_generation,created_at,updated_at FROM login_machines WHERE machine_id=?", args: vec![text(machine_id.as_str())] }).await?;
+        let rows = host
+            .read(checked_read!(
+                "src/queries/read_machine_by_id.sql",
+                machine_id.as_str()
+            ))
+            .await?;
         only_row(&rows, machine, "login_machines.machine_id")?
     } else if let Some(found) = &enrollment {
-        let rows = host.read(Statement { sql: "SELECT machine_id,label,state,allowed_workspaces,enrollment_generation,created_at,updated_at FROM login_machines WHERE machine_id=?", args: vec![text(found.machine_id.as_str())] }).await?;
+        let rows = host
+            .read(checked_read!(
+                "src/queries/read_machine_by_id.sql",
+                found.machine_id.as_str()
+            ))
+            .await?;
         Some(
             only_row(&rows, machine, "login_machines.machine_id")?
                 .ok_or_else(|| corrupt("login_machine_approvals.machine_id"))?,
@@ -86,10 +100,10 @@ pub async fn facts(
     };
     let active = if let Some(found) = &machine {
         let rows = host
-            .read(Statement {
-                sql: ACTIVE,
-                args: vec![text(found.machine_id.as_str())],
-            })
+            .read(checked_read!(
+                "src/queries/read_active_approval.sql",
+                found.machine_id.as_str()
+            ))
             .await?;
         only_row(
             &rows,
@@ -108,10 +122,10 @@ pub async fn facts(
     let mut missing_workspaces = Vec::new();
     for workspace in &query.workspaces {
         let rows = host
-            .read(Statement {
-                sql: "SELECT workspace_id FROM directory_workspaces WHERE workspace_id=?",
-                args: vec![text(workspace.as_str())],
-            })
+            .read(checked_read!(
+                "src/queries/read_workspace_presence.sql",
+                workspace.as_str()
+            ))
             .await?;
         let found: Option<message_board::WorkspaceId> = only_row(
             &rows,
@@ -147,10 +161,10 @@ async fn superseded_client(
         return Ok(None);
     };
     let rows = host
-        .read(Statement {
-            sql: BY_ENROLLMENT,
-            args: vec![text(&record.target_id)],
-        })
+        .read(checked_read!(
+            "src/queries/read_approval_by_id.sql",
+            &record.target_id
+        ))
         .await?;
     let previous = only_row(&rows, enrollment, "login_machine_approvals.superseded")?
         .ok_or_else(|| corrupt("login_machine_approvals.superseded"))?;

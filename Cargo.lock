@@ -2520,6 +2520,7 @@ dependencies = [
  "message-board",
  "serde",
  "serde_json",
+ "sqlx",
  "state-machine-core",
  "tokio",
  "uuid",

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE login_machines\nSET label=?,state=?,allowed_workspaces=?,enrollment_generation=?,updated_at=?\nWHERE machine_id=?\n  AND enrollment_generation=?\n  AND state=?\n  AND label=?\n  AND json(allowed_workspaces)=json(?)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": []
+  },
+  "hash": "e8d04ba700a207a1b8481827bc06425bd4f79a13d0465d5d0ad27f232008e7c4"
+}

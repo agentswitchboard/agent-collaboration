@@ -15,6 +15,24 @@ use fleet_runtime_ports::{
 use serde::Serialize;
 use std::collections::BTreeMap;
 
+// SQLite reports parameter arity but no parameter types. Expand the native
+// witness from the runtime bind list so the statement cannot drift in arity.
+macro_rules! checked_statement {
+    ($file:literal, [$($argument:expr),* $(,)?]) => {{
+        let arguments = [$($argument),*];
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        let _ = checked_statement!(@check $file, [$($argument),*]);
+        exact(include_str!(concat!("../", $file)), Vec::from(arguments))
+    }};
+    (@check $file:literal, [$($argument:expr),*]) => {{
+        let _ = sqlx::query_file!($file $(, checked_statement!(@parameter $argument))*);
+    }};
+    (@parameter $argument:expr) => {{
+        let _ = stringify!($argument);
+        0_i64
+    }};
+}
+
 pub fn statements(
     facts: &EnrollmentFacts,
     changes: &[EnrollmentChange],
@@ -33,7 +51,19 @@ pub fn statements(
     if !changes.is_empty()
         && let Some(before) = &machine
     {
-        statements.push(exact("UPDATE login_machines SET machine_id=machine_id WHERE machine_id=? AND enrollment_generation=? AND state=? AND label=? AND json(allowed_workspaces)=json(?)", vec![text(before.machine_id.as_str()),generation(before.generation.get())?,text(machine_state(before.state)),text(before.label.as_str()),encode(&before.allowed_workspaces,"login_machines.allowed_workspaces")?]));
+        statements.push(checked_statement!(
+            "src/queries/guard_observed_machine.sql",
+            [
+                text(before.machine_id.as_str()),
+                generation(before.generation.get())?,
+                text(machine_state(before.state)),
+                text(before.label.as_str()),
+                encode(
+                    &before.allowed_workspaces,
+                    "login_machines.allowed_workspaces"
+                )?
+            ]
+        ));
     }
     for change in changes {
         match change {
@@ -116,9 +146,9 @@ fn put_machine(
             if next.generation.get() != 0 || next.state != MachineState::Revoked {
                 return Err(corrupt("login_machines.enrollment_generation"));
             }
-            Ok(exact(
-                "INSERT INTO login_machines(machine_id,label,state,allowed_workspaces,enrollment_generation,created_at,updated_at) VALUES (?,?,?,?,?,?,?)",
-                vec![
+            Ok(checked_statement!(
+                "src/queries/insert_login_machine.sql",
+                [
                     text(next.machine_id.as_str()),
                     text(next.label.as_str()),
                     text(machine_state(next.state)),
@@ -126,7 +156,7 @@ fn put_machine(
                     generation(next.generation.get())?,
                     text(at),
                     text(at),
-                ],
+                ]
             ))
         }
         Some(before) => {
@@ -138,9 +168,9 @@ fn put_machine(
             {
                 return Err(corrupt("login_machines.enrollment_generation"));
             }
-            Ok(exact(
-                "UPDATE login_machines SET label=?,state=?,allowed_workspaces=?,enrollment_generation=?,updated_at=? WHERE machine_id=? AND enrollment_generation=? AND state=? AND label=? AND json(allowed_workspaces)=json(?)",
-                vec![
+            Ok(checked_statement!(
+                "src/queries/replace_observed_machine.sql",
+                [
                     text(next.label.as_str()),
                     text(machine_state(next.state)),
                     allowed,
@@ -154,7 +184,7 @@ fn put_machine(
                         &before.allowed_workspaces,
                         "login_machines.allowed_workspaces",
                     )?,
-                ],
+                ]
             ))
         }
     }
@@ -239,9 +269,9 @@ fn insert_enrollment(next: &StoredEnrollment, at: &str) -> Result<GuardedStateme
         values::private_id(value, field)?;
     }
     let encoded = state(next)?;
-    Ok(exact(
-        "INSERT INTO login_machine_approvals(approval_id,request_id,machine_id,label,allowed_workspaces,state,end_reason,approved_by_person_id,permission_checked,base_generation,code_expires_at,machine_client_id,last_grant_at,ended_at,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        vec![
+    Ok(checked_statement!(
+        "src/queries/insert_approval_snapshot.sql",
+        [
             text(next.id.as_str()),
             text(next.request_id.as_str()),
             text(next.machine_id.as_str()),
@@ -267,7 +297,7 @@ fn insert_enrollment(next: &StoredEnrollment, at: &str) -> Result<GuardedStateme
                 "login_machine_approvals.created_at",
             )?),
             text(at),
-        ],
+        ]
     ))
 }
 
@@ -297,9 +327,9 @@ fn replace_enrollment(
         )?),
         _ => None,
     };
-    Ok(exact(
-        "UPDATE login_machine_approvals SET state=?,end_reason=?,machine_client_id=?,last_grant_at=?,ended_at=?,updated_at=? WHERE approval_id=? AND machine_id=? AND state=? AND end_reason IS ? AND machine_client_id IS ? AND unixepoch(last_grant_at) IS ? AND ended_at IS NULL AND base_generation=? AND unixepoch(code_expires_at)=? AND request_id=? AND label=? AND json(allowed_workspaces)=json(?) AND approved_by_person_id=? AND permission_checked='machine:enroll' AND unixepoch(created_at)*1000+CAST(substr(strftime('%f',created_at),4,3) AS INTEGER)=?",
-        vec![
+    Ok(checked_statement!(
+        "src/queries/replace_observed_approval.sql",
+        [
             text(new.state),
             nullable(new.reason),
             nullable(new.client),
@@ -325,7 +355,7 @@ fn replace_enrollment(
             )?,
             text(before.approved_by.as_str()),
             integer(before.approved_at_ms, "login_machine_approvals.created_at")?,
-        ],
+        ]
     ))
 }
 
@@ -340,22 +370,28 @@ fn time_guard(
     // These no-op guards use the same statement vocabulary as authorization floors.
     // A miss rolls back every earlier effect in this decision's batch.
     let guard = match (&before.state, &next.state) {
-        (StoredEnrollmentState::Approved, StoredEnrollmentState::Enrolled { .. }) => exact(
-            "UPDATE login_machine_approvals SET approval_id=approval_id WHERE approval_id=? AND state='approved' AND unixepoch(code_expires_at)*1000>?",
-            vec![text(before.id.as_str()), now],
+        (StoredEnrollmentState::Approved, StoredEnrollmentState::Enrolled { .. }) => {
+            checked_statement!(
+                "src/queries/guard_unexpired_approval.sql",
+                [text(before.id.as_str()), now]
+            )
+        }
+        (StoredEnrollmentState::Approved, StoredEnrollmentState::Lapsed) => checked_statement!(
+            "src/queries/guard_lapsing_approval.sql",
+            [text(before.id.as_str()), now]
         ),
-        (StoredEnrollmentState::Approved, StoredEnrollmentState::Lapsed) => exact(
-            "UPDATE login_machine_approvals SET approval_id=approval_id WHERE approval_id=? AND state='approved' AND unixepoch(code_expires_at)*1000<=?",
-            vec![text(before.id.as_str()), now],
-        ),
-        (StoredEnrollmentState::Enrolled { .. }, StoredEnrollmentState::Enrolled { .. }) => exact(
-            "UPDATE login_machine_approvals SET approval_id=approval_id WHERE approval_id=? AND state='enrolled' AND ?-unixepoch(last_grant_at)<?",
-            vec![text(before.id.as_str()), now_seconds, idle],
-        ),
-        (StoredEnrollmentState::Enrolled { .. }, StoredEnrollmentState::Expired { .. }) => exact(
-            "UPDATE login_machine_approvals SET approval_id=approval_id WHERE approval_id=? AND state='enrolled' AND ?-unixepoch(last_grant_at)>=?",
-            vec![text(before.id.as_str()), now_seconds, idle],
-        ),
+        (StoredEnrollmentState::Enrolled { .. }, StoredEnrollmentState::Enrolled { .. }) => {
+            checked_statement!(
+                "src/queries/guard_refresh_under_idle_limit.sql",
+                [text(before.id.as_str()), now_seconds, idle]
+            )
+        }
+        (StoredEnrollmentState::Enrolled { .. }, StoredEnrollmentState::Expired { .. }) => {
+            checked_statement!(
+                "src/queries/guard_idle_expiry.sql",
+                [text(before.id.as_str()), now_seconds, idle]
+            )
+        }
         (StoredEnrollmentState::Enrolled { .. }, StoredEnrollmentState::Revoked { .. }) => {
             return Ok(None);
         }

@@ -82,7 +82,7 @@ fn activation_guards_the_same_applying_time_and_never_updates_approval_metadata(
         plan[1].statement.args.last(),
         Some(&integer(1_900_000_001_234, "now").unwrap())
     );
-    assert!(plan[2].statement.sql.starts_with("UPDATE login_machine_approvals SET state=?,end_reason=?,machine_client_id=?,last_grant_at=?,ended_at=?,updated_at=? WHERE"));
+    assert!(plan[2].statement.sql.split_whitespace().collect::<Vec<_>>().join(" ").starts_with("UPDATE login_machine_approvals SET state=?,end_reason=?,machine_client_id=?,last_grant_at=?,ended_at=?,updated_at=? WHERE"));
     assert!(!plan[2].statement.sql.contains("SET label="));
     assert!(
         plan.iter()

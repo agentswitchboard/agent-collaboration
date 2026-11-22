@@ -26,6 +26,7 @@ pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 3] = [
         "fleet-contracts",
         &[
             "central-engine-model",
+            "central-link-protocol",
             "central-storage",
             "fleet-identity-protocol",
             FLEET_RPC,
