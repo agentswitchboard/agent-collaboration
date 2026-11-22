@@ -1,5 +1,5 @@
 use central_storage::{ReadOutcome, StoreFailure};
-use fleet_engine::guarded_attempt_sql;
+use fleet_engine::guarded_attempt_upsert_sql;
 use fleet_runtime_ports::{
     stored_values::{json, string},
     workspace_decode_error::corrupt,
@@ -63,6 +63,6 @@ pub(crate) fn decode_wakes(rows: &ReadOutcome) -> Result<Vec<WakeRow>, StoreFail
         .collect()
 }
 
-pub(crate) const WAKE_FAILURE: &str = guarded_attempt_sql!(
+pub(crate) const WAKE_FAILURE: &str = guarded_attempt_upsert_sql!(
     "EXISTS(SELECT 1 FROM automation_wakes WHERE wake_id IS ?20 AND target IS ?21 AND due_at IS ?22 AND text IS ?23 AND state IS ?24 AND created_at IS ?25 AND updated_at IS ?26 AND state NOT IN ('done','disabled'))"
 );

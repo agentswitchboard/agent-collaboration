@@ -57,19 +57,19 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
     ) -> Result<(), StoreFailure> {
         use central_engine_model::{InstanceKey, MachineKind, RetirementThreshold};
         use fleet_contracts::{ControlGate, EngineSubject, FailureOutcome, SubjectVersion};
-        use fleet_engine::{CONTROL_WRITE, Engine};
+        use fleet_engine::{FleetEngine, UPSERT_CONTROL_ATTEMPT_SQL};
         let subject = EngineSubject {
             kind: MachineKind("legacy_workspace_drains"),
             key: InstanceKey("all".into()),
         };
-        match Engine::new(self)
-            .control_gate(&subject, RetirementThreshold::NOTICE_UNITS)
+        match FleetEngine::new(self)
+            .check_attempt_control_gate(&subject, RetirementThreshold::NOTICE_UNITS)
             .await
         {
             ControlGate::Run(_) => {}
             ControlGate::Skip | ControlGate::Uncertain => return Ok(()),
             ControlGate::CentralDown(failure) => {
-                Engine::new(self).observe_engine_store_down(&subject, failure);
+                FleetEngine::new(self).observe_engine_store_down(&subject, failure);
                 return Ok(());
             }
         }
@@ -79,16 +79,16 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         match self.drain_workspace_held(workspace).await {
             Ok(_) => Ok(()),
             Err(LegacyUnitOutcome::CentralDown(failure)) => {
-                Engine::new(self).observe_engine_store_down(&subject, failure);
+                FleetEngine::new(self).observe_engine_store_down(&subject, failure);
                 Ok(())
             }
             Err(outcome) => {
                 let outcome = outcome.in_workspace(workspace);
                 if let Some(class) = outcome.failure_class()
-                    && let FailureOutcome::StoreDown(failure) = Engine::new(self)
-                        .record_failure_naming(
+                    && let FailureOutcome::StoreDown(failure) = FleetEngine::new(self)
+                        .record_attempt_failure_for_workspaces(
                             &subject,
-                            CONTROL_WRITE,
+                            UPSERT_CONTROL_ATTEMPT_SQL,
                             &SubjectVersion(vec![]),
                             class,
                             RetirementThreshold::NOTICE_UNITS,
@@ -96,7 +96,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                         )
                         .await
                 {
-                    Engine::new(self).observe_engine_store_down(&subject, failure);
+                    FleetEngine::new(self).observe_engine_store_down(&subject, failure);
                 }
                 Ok(())
             }
