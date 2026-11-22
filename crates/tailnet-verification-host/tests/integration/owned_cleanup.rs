@@ -5,7 +5,7 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
-use codex_router_tailnet_verification_host::bounded_command::exit_code;
+use codex_router_tailnet_verification_host::bounded_command::{exit_code, wait_for_child};
 use codex_router_tailnet_verification_host::driver_error::{DriverError, DriverResult};
 use codex_router_tailnet_verification_host::owned_host::{
     CleanupInventory, capture_cleanup_inventory, with_owned_child,
@@ -71,8 +71,12 @@ fn exercise_cleanup(action: &str) -> Result<(), Box<dyn std::error::Error>> {
     let exit = child.try_wait()?;
     if exit.is_none() {
         // Reap the disposable fixture even when the cleanup oracle fails.
-        drop(child.stdin.take());
-        child.wait()?;
+        child.kill()?;
+        if wait_for_child(&mut child, Duration::from_secs(5))?.is_none() {
+            return Err(
+                "driver left the child unreaped and the fixture rescue could not reap it".into(),
+            );
+        }
     }
     let settlement_path = evidence.path().join("host-settlement.json");
     let settlement = std::fs::read_to_string(settlement_path);
