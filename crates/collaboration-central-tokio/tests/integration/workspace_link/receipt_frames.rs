@@ -67,7 +67,7 @@ async fn revoke_between_receipts(fixture: &Fixture) -> Result<()> {
         let CentralMailResult::Done(CentralMailAnswer::Queued { message_id }) = queued else {
             return Err("test send did not queue".into());
         };
-        if !matches!(receive(&mut socket).await?, LinkFrame::Data(DataFrame::Deliver { message, .. }) if message.message_id == message_id)
+        if !matches!(receive(&mut socket).await?, LinkFrame::Data(DataFrame::Deliver { message, .. }) if message.message_id() == &message_id)
         {
             return Err("test send did not produce its own offer".into());
         }
@@ -196,7 +196,7 @@ async fn replay_after_lost_answer(fixture: &Fixture) -> Result<()> {
         let CentralMailResult::Done(CentralMailAnswer::Queued { message_id }) = queued else {
             return Err("test send did not queue".into());
         };
-        if !matches!(receive(&mut socket).await?, LinkFrame::Data(DataFrame::Deliver { message, .. }) if message.message_id == message_id)
+        if !matches!(receive(&mut socket).await?, LinkFrame::Data(DataFrame::Deliver { message, .. }) if message.message_id() == &message_id)
         {
             return Err("test send did not produce its own offer".into());
         }

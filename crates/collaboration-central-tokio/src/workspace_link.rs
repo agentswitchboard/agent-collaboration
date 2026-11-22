@@ -451,7 +451,9 @@ async fn offer_windowed_delivery(
         None
     };
     let frame = LinkFrame::Data(DataFrame::Deliver {
-        message: delivery.message,
+        message: Box::new(central_link_protocol::DeliveryMessage::from(
+            *delivery.message,
+        )),
         sender: delivery.sender,
         time_left,
     });

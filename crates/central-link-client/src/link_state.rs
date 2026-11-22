@@ -4,13 +4,13 @@ use crate::{
     pending_calls::{PendingCalls, ReplyDisposition},
 };
 use central_link_protocol::{
-    CorrelationId, DataFrame, LinkFrame, LinkRequest, ReceiptBatch, ReceiptResult, ReplyPayload,
-    RequestPayload, TimeLeft, TokenRenewalResult,
+    CorrelationId, DataFrame, DeliveryMessage, LinkFrame, LinkRequest, ReceiptBatch, ReceiptResult,
+    ReplyPayload, RequestPayload, TimeLeft, TokenRenewalResult,
 };
 use router_clock::{ClockInstant, RuntimeClock};
 use std::{sync::Arc, time::Duration};
 use workspace_ids::MachineId;
-use workspace_model::{Caller, ResolvedSender, central_mail::MessageRecord};
+use workspace_model::{Caller, ResolvedSender};
 
 const PING_INTERVAL: Duration = Duration::from_secs(20);
 const CALL_DEADLINE: Duration = Duration::from_secs(30);
@@ -80,7 +80,7 @@ pub enum ClientEvent {
     },
     /// A message central delivered to this Router (2c); repeats are safe.
     Deliver {
-        message: Box<MessageRecord>,
+        message: Box<DeliveryMessage>,
         sender: ResolvedSender,
         time_left: Option<TimeLeft>,
     },

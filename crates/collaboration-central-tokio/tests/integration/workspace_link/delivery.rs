@@ -48,7 +48,7 @@ async fn delivery_journey(fixture: &Fixture) -> Result<()> {
     let first_offer = receive(&mut original).await?;
     if !matches!(&first_offer, LinkFrame::Data(DataFrame::Deliver {
         message, sender: ResolvedSender::Session { session: sender, display_name: None, machine_label: Some(label) }, time_left: Some(time_left),
-    }) if message.message_id == message_id && message.target == session && sender == &session
+    }) if message.message_id() == &message_id && message.target() == &session && sender == &session
         && u32::from(*time_left) == 900_000 && label.as_str() == "Link test machine")
     {
         return Err("live delivery did not carry the accepted id and resolved sender".into());
@@ -146,7 +146,7 @@ async fn delivery_journey(fixture: &Fixture) -> Result<()> {
     else {
         return Err("the replacement did not accept its next message".into());
     };
-    if !matches!(receive(&mut replacement).await?, LinkFrame::Data(DataFrame::Deliver { message, .. }) if message.message_id == next_message)
+    if !matches!(receive(&mut replacement).await?, LinkFrame::Data(DataFrame::Deliver { message, .. }) if message.message_id() == &next_message)
     {
         return Err("closing the previous socket lost the registered replacement".into());
     }
@@ -278,7 +278,7 @@ async fn zero_time_offer_journey(fixture: &Fixture) -> Result<()> {
         return Err("the positive control was not accepted".into());
     };
     assert!(
-        matches!(receive(&mut live).await?, LinkFrame::Data(DataFrame::Deliver { message, time_left: Some(time_left), .. }) if message.message_id == message_id && u32::from(time_left) == 900_000)
+        matches!(receive(&mut live).await?, LinkFrame::Data(DataFrame::Deliver { message, time_left: Some(time_left), .. }) if message.message_id() == &message_id && u32::from(time_left) == 900_000)
     );
     send(&mut live, &LinkFrame::Ping).await?;
     assert_eq!(receive(&mut live).await?, LinkFrame::Pong);
@@ -289,7 +289,7 @@ async fn zero_time_offer_journey(fixture: &Fixture) -> Result<()> {
         LinkFrame::Data(DataFrame::Welcome { .. })
     ));
     assert!(
-        matches!(receive(&mut reopened).await?, LinkFrame::Data(DataFrame::Deliver { message, time_left: Some(time_left), .. }) if message.message_id == message_id && u32::from(time_left) == 900_000)
+        matches!(receive(&mut reopened).await?, LinkFrame::Data(DataFrame::Deliver { message, time_left: Some(time_left), .. }) if message.message_id() == &message_id && u32::from(time_left) == 900_000)
     );
     send(&mut reopened, &LinkFrame::Ping).await?;
     assert_eq!(receive(&mut reopened).await?, LinkFrame::Pong);
@@ -329,7 +329,7 @@ async fn backlog_page_journey(fixture: &Fixture) -> Result<()> {
     let CentralMailResult::Done(CentralMailAnswer::Queued { message_id }) = answer else {
         return Err("backlog template was not queued".into());
     };
-    if !matches!(receive(&mut socket).await?, LinkFrame::Data(DataFrame::Deliver { message, .. }) if message.message_id == message_id)
+    if !matches!(receive(&mut socket).await?, LinkFrame::Data(DataFrame::Deliver { message, .. }) if message.message_id() == &message_id)
     {
         return Err("backlog template did not have its live offer".into());
     }
@@ -350,7 +350,7 @@ async fn backlog_page_journey(fixture: &Fixture) -> Result<()> {
     if !matches!(seed, BatchOutcome::Applied { .. }) {
         return Err("the test could not seed a backlog larger than one page".into());
     }
-    fixture.clock.advance(Duration::from_secs(17))?;
+    fixture.clock.advance(Duration::from_secs(62))?;
     let mut reopened = fixture.connect().await?;
     if !matches!(
         receive(&mut reopened).await?,
@@ -360,15 +360,47 @@ async fn backlog_page_journey(fixture: &Fixture) -> Result<()> {
     }
     let mut offered = std::collections::BTreeSet::new();
     for _ in 0..=page_size {
-        let LinkFrame::Data(DataFrame::Deliver {
+        let Some(Ok(Message::Text(offer_text))) = reopened.next().await else {
+            return Err("expected a direct offer as raw socket text".into());
+        };
+        let offer_json: serde_json::Value = serde_json::from_str(&offer_text)?;
+        let offer_keys = offer_json
+            .get("message")
+            .and_then(serde_json::Value::as_object)
+            .ok_or("missing direct offer payload")?
+            .keys()
+            .map(String::as_str)
+            .collect::<std::collections::BTreeSet<_>>();
+        if offer_keys
+            != std::collections::BTreeSet::from([
+                "body",
+                "messageId",
+                "sender",
+                "source",
+                "state",
+                "target",
+            ])
+            || offer_json
+                .get("timeLeft")
+                .and_then(serde_json::Value::as_u64)
+                != Some(838_000)
+        {
+            return Err(
+                format!("unexpected direct offer fields or time left: {offer_text}").into(),
+            );
+        }
+        let central_link_protocol::LinkFrame::Data(DataFrame::Deliver {
             message,
             time_left: Some(time_left),
             ..
-        }) = receive(&mut reopened).await?
+        }) = central_link_protocol::decode_text(
+            &offer_text,
+            central_link_protocol::FrameDirection::ToRouter,
+        )?
         else {
             return Err("expected another direct offer across the backlog page boundary".into());
         };
-        if u32::from(time_left) != 883_000 || !offered.insert(message.message_id) {
+        if u32::from(time_left) != 838_000 || !offered.insert(message.message_id().clone()) {
             return Err("a backlog offer had stale time left or repeated a message".into());
         }
     }

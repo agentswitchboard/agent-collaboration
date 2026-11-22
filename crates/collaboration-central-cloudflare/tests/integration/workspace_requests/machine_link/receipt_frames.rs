@@ -76,7 +76,7 @@ async fn revoke_between_receipts(fixture: &Fixture) -> Result<()> {
         else {
             return Err("test send did not queue".into());
         };
-        if !matches!(fixture::receive(&mut link.socket).await?, DataFrame::Deliver { message, .. } if &message.message_id == message_id)
+        if !matches!(fixture::receive(&mut link.socket).await?, DataFrame::Deliver { message, .. } if message.message_id() == message_id)
         {
             return Err("test send did not produce its own offer".into());
         }
@@ -212,7 +212,7 @@ async fn replay_after_lost_answer(fixture: &Fixture) -> Result<()> {
         else {
             return Err("test send did not queue".into());
         };
-        if !matches!(fixture::receive(&mut socket.socket).await?, DataFrame::Deliver { message, .. } if &message.message_id == message_id)
+        if !matches!(fixture::receive(&mut socket.socket).await?, DataFrame::Deliver { message, .. } if message.message_id() == message_id)
         {
             return Err("test send did not produce its own offer".into());
         }

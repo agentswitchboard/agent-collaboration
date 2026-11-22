@@ -1,11 +1,11 @@
 use crate::{
-    CorrelationId, LinkRequest, LinkRequestBatch, MachineTokenText, ProtocolError, ReceiptBatch,
-    ReceiptResult, ReplyPayload, RequestStatusAnswer, RequestStatusQuery, TimeLeft,
+    CorrelationId, DeliveryMessage, LinkRequest, LinkRequestBatch, MachineTokenText, ProtocolError,
+    ReceiptBatch, ReceiptResult, ReplyPayload, RequestStatusAnswer, RequestStatusQuery, TimeLeft,
     TokenRenewalResult,
 };
 use serde::{Deserialize, Serialize};
 use workspace_ids::MachineId;
-use workspace_model::{Caller, ResolvedSender, Timestamp, central_mail::MessageRecord};
+use workspace_model::{Caller, ResolvedSender, Timestamp};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrameDirection {
@@ -55,7 +55,7 @@ pub enum DataFrame {
     /// Central to the recipient's Router: a queued direct message, pushed at
     /// once when it is accepted and again on reconnect while inside its window.
     Deliver {
-        message: Box<MessageRecord>,
+        message: Box<DeliveryMessage>,
         sender: ResolvedSender,
         #[serde(skip_serializing_if = "Option::is_none")]
         time_left: Option<TimeLeft>,
@@ -104,7 +104,7 @@ impl LinkFrame {
                 message, time_left, ..
             }) = self
             {
-                TimeLeft::validate_offer(&message.body, *time_left)?;
+                TimeLeft::validate_offer(message, *time_left)?;
             }
             Ok(())
         } else {

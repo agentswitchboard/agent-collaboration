@@ -9,7 +9,8 @@ pub use request_status::{RequestRefusal, RequestStatusAnswer, RequestStatusQuery
 
 pub use link_codec::{DataFrame, FrameDirection, LinkFrame, decode_text, encode_text};
 pub use link_delivery::{
-    MAX_RECEIPTS, MAX_TIME_LEFT_MS, Receipt, ReceiptBatch, ReceiptKind, ReceiptResult, TimeLeft,
+    DeliveryMessage, DirectOfferBody, DirectOfferMessage, MAX_RECEIPTS, MAX_TIME_LEFT_MS, Receipt,
+    ReceiptBatch, ReceiptKind, ReceiptResult, TimeLeft,
 };
 pub use link_renewal::{
     InvalidMachineToken, MachineTokenText, TokenRenewalRefusal, TokenRenewalResult,

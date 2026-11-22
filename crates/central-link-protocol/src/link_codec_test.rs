@@ -390,3 +390,37 @@ fn offer_time_is_positive_whole_milliseconds_and_cannot_revive_an_initial_zero()
         assert!(serde_json::from_str::<TimeLeft>(bad).is_err());
     }
 }
+
+#[test]
+fn direct_delivery_rejects_storage_times_and_system_delivery_keeps_them() {
+    let mut offer = serde_json::json!({
+        "kind":"deliver",
+        "sender":{"kind":"central"},
+        "timeLeft":838000,
+        "message":{
+            "messageId":"01890f2e-7b4c-7cc0-98c4-000000000009",
+            "sender":{"kind":"central"},
+            "target":{"machineId":"01890f2e-7b4c-7cc0-98c4-000000000002","sessionId":"s"},
+            "body":{"kind":"direct","body":"hello","delivery":"auto","replyTo":null},
+            "state":{"kind":"queued"},
+            "source":null
+        }
+    });
+    let check =
+        |offer: &serde_json::Value| decode_text(&offer.to_string(), FrameDirection::ToRouter);
+    assert!(check(&offer).is_ok());
+    offer["message"]["createdAt"] = serde_json::json!("2030-01-01T00:00:00Z");
+    offer["message"]["updatedAt"] = serde_json::json!("2030-01-01T00:00:00Z");
+    assert!(check(&offer).is_err());
+    offer["message"]["body"] = serde_json::json!({"kind":"notice","items":[]});
+    assert!(check(&offer).is_err());
+    offer.as_object_mut().unwrap().remove("timeLeft");
+    let system = check(&offer).unwrap();
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(
+            &encode_text(&system, FrameDirection::ToRouter).unwrap()
+        )
+        .unwrap(),
+        offer
+    );
+}
