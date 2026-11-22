@@ -60,7 +60,6 @@ impl PrivateEnding {
             Raise::ProviderQuestion { .. } => Ok(Self::ProviderQuestion {
                 ending: project_ending(ending, take_question, ProviderCancellation::from)?,
             }),
-            Raise::UnprovenCall { .. } => Err(InvalidApprovalEnding::UnsupportedRequestKind),
         }
     }
 
@@ -172,12 +171,10 @@ pub(crate) fn check_decision_actor(
     answer: &Answer,
     actor: &DecidedBy,
 ) -> Result<(), InvalidApprovalEnding> {
-    let offer = raise
-        .offer_view()
-        .ok_or(InvalidApprovalEnding::UnsupportedRequestKind)?;
+    let offer = raise.offer_view();
     check_answer(&offer, answer).map_err(InvalidApprovalEnding::Answer)?;
     if let DecidedBy::Session { session } = actor
-        && (raise.requesting_session() == Some(session) || requires_fresh_factor(raise, answer))
+        && (raise.requesting_session() == session || requires_fresh_factor(raise, answer))
     {
         return Err(InvalidApprovalEnding::IneligibleDecider);
     }

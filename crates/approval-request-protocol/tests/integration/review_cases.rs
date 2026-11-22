@@ -22,14 +22,6 @@ fn checked_window() -> Value {
     json!({"raisedAt":RAISED,"deadline":DEADLINE})
 }
 
-fn parked_raise() -> Value {
-    json!({
-        "kind":"unprovenCall","requestId":REQUEST,"holder":{"routerRun":RUN},
-        "invocation":"A".repeat(43),
-        "offer":{"operation":"writeConfig","summary":"Write configuration","options":[offered_option()]}
-    })
-}
-
 fn provider_raise() -> Value {
     json!({
         "kind":"providerApproval","requestId":REQUEST,"holder":{"routerRun":RUN,"sessionId":MACHINE},
@@ -55,22 +47,7 @@ fn multi_choice_field(minimum: u8, maximum: u8) -> Value {
 }
 
 #[test]
-fn parked_invocation_remains_bound_to_raise_without_a_core_projection() {
-    let first: Raise = serde_json::from_value(parked_raise()).unwrap();
-    let mut replacement = parked_raise();
-    replacement["invocation"] = json!(format!("B{}", "A".repeat(42)));
-    let replacement: Raise = serde_json::from_value(replacement).unwrap();
-    assert_ne!(first, replacement);
-    assert_ne!(
-        first.contents_digest().unwrap(),
-        replacement.contents_digest().unwrap()
-    );
-    assert!(first.offer_view().is_none());
-    assert!(replacement.offer_view().is_none());
-}
-
-#[test]
-fn provider_and_call_projections_accept_only_bounded_local_ordinals() {
+fn provider_projections_accept_only_bounded_local_ordinals() {
     assert!(OfferedOptionId::new(1).is_ok());
     assert!(OfferedOptionId::new(16).is_ok());
     assert!(OfferedOptionId::new(0).is_err());
@@ -86,10 +63,9 @@ fn provider_and_call_projections_accept_only_bounded_local_ordinals() {
         json!(0),
         json!(17),
     ] {
-        for mut specimen in [provider_raise(), parked_raise()] {
-            specimen["offer"]["options"][0]["id"] = invalid.clone();
-            assert!(serde_json::from_str::<Raise>(&specimen.to_string()).is_err());
-        }
+        let mut specimen = provider_raise();
+        specimen["offer"]["options"][0]["id"] = invalid.clone();
+        assert!(serde_json::from_str::<Raise>(&specimen.to_string()).is_err());
     }
     for invalid in [
         json!("native-field"),
@@ -147,22 +123,14 @@ fn a_verified_short_duration_cannot_be_backed_by_a_file() {
 
 #[test]
 fn holder_and_destination_endings_reject_the_wrong_request_payload() {
-    let call: Raise = serde_json::from_value(parked_raise()).unwrap();
+    let mut other_raise = provider_raise();
+    other_raise["requestId"] = json!(PERSON);
+    let other_raise: Raise = serde_json::from_value(other_raise).unwrap();
     let provider: Raise = serde_json::from_value(provider_raise()).unwrap();
     let by: DecidedBy = serde_json::from_value(json!({"kind":"person","personId":PERSON})).unwrap();
     let approval = Answer::Approval {
         option_id: OfferedOptionId::new(1).unwrap(),
     };
-    assert!(
-        DeliverEndingRequest::from_raise(
-            &call,
-            Ending::Decided {
-                answer: approval.clone(),
-                by: by.clone()
-            }
-        )
-        .is_err()
-    );
     let offered = DeliverEndingRequest::from_raise(
         &provider,
         Ending::Decided {
@@ -171,7 +139,7 @@ fn holder_and_destination_endings_reject_the_wrong_request_payload() {
         },
     )
     .unwrap();
-    assert!(offered.check_bound_raise(&call).is_err());
+    assert!(offered.check_bound_raise(&other_raise).is_err());
     assert!(offered.check_bound_raise(&provider).is_ok());
 
     let wrong_call_answer = json!({
@@ -399,5 +367,6 @@ fn the_requester_cannot_construct_its_own_read_projection() {
     let membership = [requester.clone(), different.clone()];
     assert!(AdmittedDestination::for_request(&raise, &requester, &membership).is_err());
     let admitted = AdmittedDestination::for_request(&raise, &different, &membership).unwrap();
-    assert!(RequestView::waiting(&admitted, WaitingStatus::Pending, window).is_ok());
+    let view = RequestView::waiting(&admitted, WaitingStatus::Pending, window);
+    assert_eq!(view.view().request_id(), raise.request_id());
 }

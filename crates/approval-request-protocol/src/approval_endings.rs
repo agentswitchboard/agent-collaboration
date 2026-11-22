@@ -166,6 +166,4 @@ pub enum InvalidApprovalEnding {
     RetainedDecisionMismatch,
     #[error("the ending time does not respect the request's approval window")]
     Chronology,
-    #[error("this request kind is outside the core approval flow")]
-    UnsupportedRequestKind,
 }

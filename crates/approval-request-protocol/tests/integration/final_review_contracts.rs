@@ -44,15 +44,6 @@ fn provider_approval(lasts: Value) -> Value {
     ]}})
 }
 
-fn parked_call() -> Value {
-    json!({"kind":"unprovenCall","requestId":REQUEST_ID,"invocation":"A".repeat(43),
-    "holder":{"routerRun":RUN_ID},
-    "offer":{"operation":"readConfig","summary":"Read config","options":[
-        {"id":1,"label":"Allow once","effect":"allow","lasts":{"kind":"thisRequest"}},
-        {"id":2,"label":"Decline","effect":"decline","lasts":{"kind":"thisRequest"}}
-    ]}})
-}
-
 fn decide_question() -> serde_json::Result<DecideRequest> {
     serde_json::from_value(json!({"requestId":REQUEST_ID,"operationId":OPERATION_ID,
     "value":{"kind":"question","answer":{"kind":"answered","fields":[
@@ -207,17 +198,13 @@ fn handover_checks_exact_session_and_fresh_factor_preconditions() {
             Err(InvalidApprovalEnding::IneligibleDecider)
         ));
     }
-    let parked: Raise = serde_json::from_value(parked_call()).unwrap();
-    assert!(DeliverEndingRequest::from_raise(&parked, Ending::TimedOut {}).is_err());
     let person = person().unwrap();
-    assert!(
-        AdmittedDestination::for_request(&parked, &person, std::slice::from_ref(&person)).is_err()
-    );
     let retained: Raise =
         serde_json::from_value(provider_approval(json!({"kind":"notVerified"}))).unwrap();
     let owner = AdmittedDestination::for_request(&retained, &person, std::slice::from_ref(&person))
         .unwrap();
-    let answer = serde_json::from_value(json!({"kind":"approval","optionId":1})).unwrap();
+    let answer: approval_request_protocol::Answer =
+        serde_json::from_value(json!({"kind":"approval","optionId":1})).unwrap();
     assert!(matches!(
         owner.decide(answer.clone(), DecisionFactor::NoFreshPersonFactor),
         Err(InvalidApprovalEnding::FreshFactorRequired)
@@ -240,7 +227,7 @@ fn views_check_ending_chronology_at_decode_and_build() {
         AdmittedDestination::for_request(&provider, &person, std::slice::from_ref(&person))
             .unwrap();
     let provider_waiting =
-        RequestView::waiting(&provider_dest, WaitingStatus::PassedOn, approval_window).unwrap();
+        RequestView::waiting(&provider_dest, WaitingStatus::PassedOn, approval_window);
     assert_eq!(
         serde_json::to_value(provider_waiting.view()).unwrap()["state"]["status"],
         "passedOn"

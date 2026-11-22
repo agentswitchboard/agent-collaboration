@@ -116,18 +116,6 @@ approval_digest!(
     /// Identity of the complete admitted Raise body.
     RequestContentsDigest
 );
-approval_digest!(
-    /// Identity of the exact invocation bytes held on the Mac.
-    InvocationDigest
-);
-
-impl InvocationDigest {
-    #[must_use]
-    pub fn from_bound_bytes(bytes: &[u8]) -> Self {
-        Self(sha256_url(bytes))
-    }
-}
-
 impl RequestContentsDigest {
     pub(crate) fn from_wire(value: &impl Serialize) -> Result<Self, ApprovalDigestError> {
         digest_wire(value).map(Self)

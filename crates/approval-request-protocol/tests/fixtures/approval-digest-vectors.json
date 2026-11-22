@@ -55,34 +55,5 @@
       "canonical": "{\"holder\":{\"routerRun\":\"01934a50-1000-7000-8000-000000000002\",\"sessionId\":\"01934a50-1000-7000-8000-000000000014\"},\"kind\":\"providerQuestion\",\"offer\":{\"fields\":[{\"description\":null,\"fieldId\":1,\"kind\":\"number\",\"label\":\"Metres\",\"required\":true}],\"prompt\":\"Which distance?\"},\"requestId\":\"01934a50-1000-7000-8000-000000000001\"}",
       "digest": "268EIFaAguF5uPRHt_OqQig0cn-fDHmCKeBpo5Fm3W4"
     }
-  },
-  {
-    "kind": "unprovenCall",
-    "raise": {
-      "body": {
-        "kind": "unprovenCall",
-        "requestId": "01934a50-1000-7000-8000-000000000001",
-        "holder": {
-          "routerRun": "01934a50-1000-7000-8000-000000000002"
-        },
-        "invocation": "CIr-m8fTgfbL4Kr_j_CJDxciqpxPodlvHcsyfD_si4Y",
-        "offer": {
-          "operation": "writeConfig",
-          "summary": "Write configuration",
-          "options": [
-            {
-              "id": 1,
-              "label": "Allow once",
-              "effect": "allow",
-              "lasts": {
-                "kind": "thisRequest"
-              }
-            }
-          ]
-        }
-      },
-      "canonical": "{\"holder\":{\"routerRun\":\"01934a50-1000-7000-8000-000000000002\"},\"invocation\":\"CIr-m8fTgfbL4Kr_j_CJDxciqpxPodlvHcsyfD_si4Y\",\"kind\":\"unprovenCall\",\"offer\":{\"operation\":\"writeConfig\",\"options\":[{\"effect\":\"allow\",\"id\":1,\"label\":\"Allow once\",\"lasts\":{\"kind\":\"thisRequest\"}}],\"summary\":\"Write configuration\"},\"requestId\":\"01934a50-1000-7000-8000-000000000001\"}",
-      "digest": "Zg95SAnCFxR7jkJ8utrjqwLOIFNZ7Y6vZMheYJ5nLd0"
-    }
   }
 ]

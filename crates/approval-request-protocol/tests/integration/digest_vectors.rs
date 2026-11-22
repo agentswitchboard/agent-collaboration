@@ -1,20 +1,14 @@
-use approval_request_protocol::{InvocationDigest, Raise, RequestContentsDigest, canonical_json};
+use approval_request_protocol::{Raise, RequestContentsDigest, canonical_json};
 use serde_json::{Value, json};
 
 #[test]
 fn immutable_raise_bytes_are_fixed_for_each_request_kind() {
     let fixtures: Vec<Value> =
         serde_json::from_str(include_str!("../fixtures/approval-digest-vectors.json")).unwrap();
-    assert_eq!(fixtures.len(), 3);
+    assert_eq!(fixtures.len(), 2);
     for fixture in fixtures {
         let request = &fixture["raise"];
         let raise: Raise = serde_json::from_value(request["body"].clone()).unwrap();
-        if let Raise::UnprovenCall { invocation, .. } = &raise {
-            assert_eq!(
-                invocation,
-                &InvocationDigest::from_bound_bytes(b"immutable parked invocation specimen")
-            );
-        }
 
         assert_eq!(
             canonical_json(&serde_json::to_value(&raise).unwrap()).unwrap(),

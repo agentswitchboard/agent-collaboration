@@ -194,11 +194,12 @@ enum RequestViewFields {
 pub struct RequestView(RequestViewFields);
 
 impl RequestView {
+    #[must_use]
     pub fn waiting<'request>(
         admitted: &AdmittedDestination<'request>,
         status: WaitingStatus,
         window: ApprovalWindow,
-    ) -> Result<DestinationProjection<'request, Self>, InvalidApprovalEnding> {
+    ) -> DestinationProjection<'request, Self> {
         let raise = admitted.raise();
         let request_id = raise.request_id().clone();
         let fields = match raise {
@@ -214,14 +215,11 @@ impl RequestView {
                 state: RequestStateView::Waiting { status },
                 window,
             },
-            Raise::UnprovenCall { .. } => {
-                return Err(InvalidApprovalEnding::UnsupportedRequestKind);
-            }
         };
-        Ok(DestinationProjection {
+        DestinationProjection {
             actor: admitted.actor(),
             view: Self(fields),
-        })
+        }
     }
 
     pub fn ended<'request>(

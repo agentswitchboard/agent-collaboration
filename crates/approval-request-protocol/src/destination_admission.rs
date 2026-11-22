@@ -26,9 +26,7 @@ impl<'request> AdmittedDestination<'request> {
         actor: &'request DecidedBy,
         current_destinations: &[DecidedBy],
     ) -> Result<Self, InvalidApprovalEnding> {
-        let requester = raise
-            .requesting_session()
-            .ok_or(InvalidApprovalEnding::UnsupportedRequestKind)?;
+        let requester = raise.requesting_session();
         if let DecidedBy::Session { session } = actor
             && requester == session
         {

@@ -65,11 +65,6 @@ fn question_with_all_fields() -> Value {
     ]})
 }
 
-fn call_offer() -> Value {
-    json!({"operation": "writeConfig", "summary": "Write config",
-        "options": offered_options() })
-}
-
 fn offered_approval() -> Value {
     json!({"kind": "providerApproval", "offer": approval_offer()})
 }
@@ -135,8 +130,7 @@ macro_rules! expected_wire_roots {
             json!({"kind":"runNotRegistered"}), json!({"kind":"enrollmentEnded"}));
         $root!(RunRefusal, json!({"kind":"runRetired"}), json!({"kind":"runNotRegistered"}), json!({"kind":"enrollmentEnded"}));
         $root!(Raise, approval_raise(),
-            json!({"kind":"providerQuestion","requestId":REQUEST_ID,"holder":holder(),"offer":question_offer()}),
-            json!({"kind":"unprovenCall","requestId":REQUEST_ID,"holder":{"routerRun":RUN_ID},"invocation":DIGEST,"offer":call_offer()}));
+            json!({"kind":"providerQuestion","requestId":REQUEST_ID,"holder":holder(),"offer":question_offer()}));
         $root!(RaiseReceipt, json!({"requestId":REQUEST_ID,"window":approval_window()}));
         $root!(RaiseReply, json!({"kind":"receipt","receipt":{"requestId":REQUEST_ID,"window":approval_window()}}),
             json!({"kind":"alreadyStopped"}), json!({"kind":"sessionEnded"}),
@@ -160,7 +154,6 @@ macro_rules! expected_wire_roots {
         $root!(DeliverEndingReply, json!({"kind":"received"}), json!({"kind":"stopOwed"}),
             json!({"kind":"notHeld"}), json!({"kind":"holderNotReady"}), json!({"kind":"endingDiffers"}));
         $root!(RequestContentsDigest, json!(DIGEST));
-        $root!(InvocationDigest, json!(DIGEST));
         $root!(DecideRequest, decide_request());
         $root!(DecideReply, json!({"kind":"savedDecision","decision":decision()}),json!({"kind":"standing","ending":standing_approval_ending()}),
             json!({"kind":"notVisible"}),json!({"kind":"invalid"}),json!({"kind":"tooLate"}),json!({"kind":"operationConflict"}));
@@ -190,7 +183,6 @@ macro_rules! expected_wire_roots {
         $root!(CentralSessionId, json!(CENTRAL_SESSION_ID));
         $root!(SessionDecider, deciding_session());
         $root!(ProviderHolder, holder());
-        $root!(ParkedCallHolder, json!({"routerRun":RUN_ID}));
         $root!(QuestionOffer, question_with_all_fields());
         $root!(QuestionFieldAnswer, json!({"fieldId":1,"value":{"kind":"number","value":"2.50"}}));
     }};
@@ -252,8 +244,6 @@ pub(crate) fn check_expected_typescript_roots(typescript: &str) {
         "ApprovalOffer",
         "ApprovalRequestId",
         "ApprovalWindowFields",
-        "CallOffer",
-        "CallOperationName",
         "CancelReason",
         "ChoiceOption",
         "ChoiceOptions",
@@ -331,21 +321,15 @@ fn raise_rejects_wrong_kind_holder_payload_and_extra_fields() {
         "kind":"providerQuestion", "requestId":REQUEST_ID, "holder":holder(), "offer":question_offer()
     });
     question_with_options["offer"]["options"] = approval_offer()["options"].clone();
-    let call_with_session = json!({
-        "kind":"unprovenCall", "requestId":REQUEST_ID, "holder":holder(), "invocation":DIGEST, "offer":call_offer()
-    });
-    let mut call_with_arguments = json!({
-        "kind":"unprovenCall", "requestId":REQUEST_ID, "holder":{"routerRun":RUN_ID}, "invocation":DIGEST, "offer":call_offer()
-    });
-    call_with_arguments["offer"]["arguments"] = json!({});
+    let mut later_kind = approval_raise();
+    later_kind["kind"] = json!("unprovenCall");
     for invalid in [
         wrong_kind,
         unknown_kind,
         approval_with_callback,
         revised_offer,
         question_with_options,
-        call_with_session,
-        call_with_arguments,
+        later_kind,
     ] {
         assert!(
             serde_json::from_str::<Raise>(&invalid.to_string()).is_err(),
@@ -494,8 +478,6 @@ fn stop_requires_a_cause_for_the_kind_of_wait_and_the_ending_keeps_that_cause() 
     for (kind, cause) in [
         ("provider", "callWithdrawn"),
         ("unprovenCall", "turnStopped"),
-        ("unprovenCall", "sessionClosed"),
-        ("unprovenCall", "providerConnectionLost"),
     ] {
         let invalid = json!({"kind":kind,"requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"cause":cause});
         assert!(

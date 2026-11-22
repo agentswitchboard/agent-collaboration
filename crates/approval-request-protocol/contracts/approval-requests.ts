@@ -34,14 +34,6 @@ export type ApprovalWindowFields = {
 	deadline: string,
 };
 
-export type CallOffer = {
-	operation: CallOperationName,
-	summary: Description,
-	options: OfferedOptions,
-};
-
-export type CallOperationName = string;
-
 export type CancelReason = { kind: "stopped"; cause: HolderStopCause } | { kind: "requesterGone" } | { kind: "sessionEnded" } | { kind: "enrollmentEnded" };
 
 /**  The never-reused Central identity of one provider session incarnation. */
@@ -96,9 +88,6 @@ export type GiverDecision<AcceptedAnswer> = {
 export type HolderEnding<AcceptedAnswer, Cancellation> = { kind: "decided"; answer: AcceptedAnswer; by: DecidedBy } | { kind: "cancelled"; reason: Cancellation } | { kind: "timedOut" };
 
 export type HolderStopCause = "turnStopped" | "askReplaced" | "sessionClosed" | "providerConnectionLost";
-
-/**  Identity of the exact invocation bytes held on the Mac. */
-export type InvocationDigest = string;
 
 export type Label = string;
 
@@ -155,10 +144,6 @@ export type OptionLifetime =
 { kind: "thisRequest" } | { kind: "thisTurn"; kept: TransientOptionStorage } | { kind: "thisSession"; kept: TransientOptionStorage } | { kind: "keptUntilChanged"; kept: RetainedOptionStorage } |
 /**  The adapter cannot verify the duration or the destination. */
 { kind: "notVerified" };
-
-export type ParkedCallHolder = {
-	routerRun: RouterRunId,
-};
 
 export type PassOnReply = { kind: "forwarded" } | { kind: "notVisible" } | { kind: "tooLate" } | { kind: "ended" };
 
@@ -225,9 +210,9 @@ export type RaiseReceipt = {
 /**  Outcome of a Raise on the holder link, including the current authority check. */
 export type RaiseReply = { kind: "receipt"; receipt: RaiseReceipt } | { kind: "alreadyStopped" } | { kind: "sessionEnded" } | { kind: "contentsDiffer" } | { kind: "tooManyOutstanding" } | { kind: "authorityRefused"; refusal: RunRefusal };
 
-export type Raise_Deserialize = { kind: "providerApproval"; requestId: ApprovalRequestId; holder: ProviderHolder; offer: ApprovalOffer_Deserialize } | { kind: "providerQuestion"; requestId: ApprovalRequestId; holder: ProviderHolder; offer: QuestionOffer_Deserialize } | { kind: "unprovenCall"; requestId: ApprovalRequestId; holder: ParkedCallHolder; invocation: InvocationDigest; offer: CallOffer };
+export type Raise_Deserialize = { kind: "providerApproval"; requestId: ApprovalRequestId; holder: ProviderHolder; offer: ApprovalOffer_Deserialize } | { kind: "providerQuestion"; requestId: ApprovalRequestId; holder: ProviderHolder; offer: QuestionOffer_Deserialize };
 
-export type Raise_Serialize = { kind: "providerApproval"; requestId: ApprovalRequestId; holder: ProviderHolder; offer: ApprovalOffer_Serialize } | { kind: "providerQuestion"; requestId: ApprovalRequestId; holder: ProviderHolder; offer: QuestionOffer_Serialize } | { kind: "unprovenCall"; requestId: ApprovalRequestId; holder: ParkedCallHolder; invocation: InvocationDigest; offer: CallOffer };
+export type Raise_Serialize = { kind: "providerApproval"; requestId: ApprovalRequestId; holder: ProviderHolder; offer: ApprovalOffer_Serialize } | { kind: "providerQuestion"; requestId: ApprovalRequestId; holder: ProviderHolder; offer: QuestionOffer_Serialize };
 
 export type RegisterRunReply = { kind: "registered" } | { kind: "runRetired" } | { kind: "runNotRegistered" } | { kind: "enrollmentEnded" };
 

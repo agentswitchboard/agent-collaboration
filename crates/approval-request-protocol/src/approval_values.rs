@@ -131,7 +131,6 @@ macro_rules! approval_ordinal {
 
 approval_ordinal!(OfferedOptionId, MAX_OPTION_ORDINAL);
 approval_ordinal!(QuestionFieldId, MAX_FIELD_ORDINAL);
-approval_text!(CallOperationName, Some(TITLE_MAX_CHARACTERS), true);
 
 pub type CentralTime = chrono::DateTime<chrono::Utc>;
 
