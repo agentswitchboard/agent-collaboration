@@ -2682,6 +2682,7 @@ dependencies = [
  "fleet-contracts",
  "fleet-runtime-ports",
  "message-board",
+ "sqlx",
  "workspace-model",
 ]
 

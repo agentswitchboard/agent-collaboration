@@ -1,0 +1,5 @@
+[
+{"next":"019a3dce-2000-7000-8000-000000000002","result":"workspaces","workspaces":[{"description":"","name":"Example","state":"archived","workspaceId":"019a3dce-2000-7000-8000-000000000002"}]},
+{"next":null,"result":"workspaces","workspaces":[]},
+{"reason":"notPermitted","result":"refused"}
+]

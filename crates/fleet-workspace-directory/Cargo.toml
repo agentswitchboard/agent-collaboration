@@ -16,3 +16,6 @@ fleet-contracts.workspace = true
 fleet-runtime-ports.workspace = true
 workspace-model.workspace = true
 message-board = { path = "../message-board", version = "0.1.93" }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+sqlx = { workspace = true, features = ["sqlite", "macros"] }

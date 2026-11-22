@@ -98,6 +98,12 @@ impl TryFrom<u16> for RecordPageLimit {
         Ok(Self(value))
     }
 }
+impl Default for RecordPageLimit {
+    fn default() -> Self {
+        Self(MAXIMUM_RECORD_PAGE)
+    }
+}
+
 impl From<RecordPageLimit> for u16 {
     fn from(value: RecordPageLimit) -> Self {
         value.0
@@ -134,6 +140,17 @@ pub struct CreateWorkspaceRequest {
 pub struct WorkspaceLookupRequest {
     pub organization_id: OrganizationId,
     pub workspace_id: message_board::WorkspaceId,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct ListWorkspacesRequest {
+    pub organization_id: OrganizationId,
+    /// The last workspace ID of the previous page; absent or null for the first.
+    #[serde(default)]
+    pub after: Option<message_board::WorkspaceId>,
+    #[serde(default)]
+    pub limit: RecordPageLimit,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -197,6 +214,7 @@ pub struct AuthorizedMachineRevocation {
 pub enum AdminRoute {
     CreateWorkspace,
     WorkspaceLookup,
+    ListWorkspaces,
     ReadChangeRecords,
     EngineHealth,
     EngineListRetired,
@@ -211,6 +229,7 @@ impl AdminRoute {
         match self {
             Self::CreateWorkspace => "/organization-admin/v1/create-workspace",
             Self::WorkspaceLookup => "/organization-admin/v1/workspace-lookup",
+            Self::ListWorkspaces => "/organization-admin/v1/list-workspaces",
             Self::ReadChangeRecords => "/organization-admin/v1/change-records",
             Self::EngineHealth => "/organization-admin/v1/engine-health",
             Self::EngineListRetired => "/organization-admin/v1/engine-retired",
@@ -224,7 +243,7 @@ impl AdminRoute {
     pub const fn permission(self) -> &'static str {
         match self {
             Self::CreateWorkspace => "workspace:create",
-            Self::WorkspaceLookup => "organization:view",
+            Self::WorkspaceLookup | Self::ListWorkspaces => "organization:view",
             Self::ReadChangeRecords => "organization:readAudit",
             Self::EngineHealth | Self::EngineListRetired => "organization:readAudit",
             // Mapped by the sign-in service's policy (Fleet access Lead); until it
@@ -238,13 +257,17 @@ impl AdminRoute {
     /// Changes need a fresh second factor; reads are exempt.
     #[must_use]
     pub const fn changes_state(self) -> bool {
-        matches!(
-            self,
+        match self {
             Self::CreateWorkspace
-                | Self::EngineRetry
-                | Self::EngineDiscard
-                | Self::RevokeMachineEnrollment
-        )
+            | Self::EngineRetry
+            | Self::EngineDiscard
+            | Self::RevokeMachineEnrollment => true,
+            Self::WorkspaceLookup
+            | Self::ListWorkspaces
+            | Self::ReadChangeRecords
+            | Self::EngineHealth
+            | Self::EngineListRetired => false,
+        }
     }
 }
 
@@ -254,6 +277,7 @@ impl AdminRoute {
 pub enum AdminOperation {
     CreateWorkspace(CreateWorkspaceRequest),
     WorkspaceLookup(WorkspaceLookupRequest),
+    ListWorkspaces(ListWorkspacesRequest),
     ReadChangeRecords(ReadChangeRecordsRequest),
     EngineHealth(EngineHealthRequest),
     EngineListRetired(EngineListRetiredRequest),
@@ -287,6 +311,13 @@ enum OrganizationAdminIntentWire {
         target: message_board::WorkspaceId,
         operation_id: (),
         params: WorkspaceLookupParams,
+    },
+    ListWorkspaces {
+        v: IntentVersionOne,
+        organization: OrganizationId,
+        target: OrganizationId,
+        operation_id: (),
+        params: ListWorkspacesParams,
     },
     ReadChangeRecords {
         v: IntentVersionOne,
@@ -375,6 +406,13 @@ struct WorkspaceLookupParams {}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ListWorkspacesParams {
+    after: Option<message_board::WorkspaceId>,
+    limit: RecordPageLimit,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
 struct ReadChangeRecordsParams {
     #[schemars(with = "Option<String>", extend("format" = "uuid"))]
     after: Option<uuid::Uuid>,
@@ -425,6 +463,9 @@ impl AdminOperation {
             AdminRoute::WorkspaceLookup => {
                 Self::WorkspaceLookup(serde_json::from_slice(body).map_err(refusal)?)
             }
+            AdminRoute::ListWorkspaces => {
+                Self::ListWorkspaces(serde_json::from_slice(body).map_err(refusal)?)
+            }
             AdminRoute::ReadChangeRecords => {
                 Self::ReadChangeRecords(serde_json::from_slice(body).map_err(refusal)?)
             }
@@ -466,8 +507,9 @@ impl AdminOperation {
             Self::CreateWorkspace(request) => {
                 request.description.len() <= MAXIMUM_DESCRIPTION_BYTES
             }
-            Self::WorkspaceLookup(_) => true,
-            Self::ReadChangeRecords(_)
+            Self::WorkspaceLookup(_)
+            | Self::ListWorkspaces(_)
+            | Self::ReadChangeRecords(_)
             | Self::EngineHealth(_)
             | Self::EngineListRetired(_)
             | Self::EngineRetry(_)
@@ -486,6 +528,7 @@ impl AdminOperation {
         match self {
             Self::CreateWorkspace(_) => AdminRoute::CreateWorkspace,
             Self::WorkspaceLookup(_) => AdminRoute::WorkspaceLookup,
+            Self::ListWorkspaces(_) => AdminRoute::ListWorkspaces,
             Self::ReadChangeRecords(_) => AdminRoute::ReadChangeRecords,
             Self::EngineHealth(_) => AdminRoute::EngineHealth,
             Self::EngineListRetired(_) => AdminRoute::EngineListRetired,
@@ -500,6 +543,7 @@ impl AdminOperation {
         match self {
             Self::CreateWorkspace(request) => &request.organization_id,
             Self::WorkspaceLookup(request) => &request.organization_id,
+            Self::ListWorkspaces(request) => &request.organization_id,
             Self::ReadChangeRecords(request) => &request.organization_id,
             Self::EngineHealth(request) => &request.organization_id,
             Self::EngineListRetired(request) => &request.organization_id,
@@ -516,6 +560,7 @@ impl AdminOperation {
                 Some(&request.operation_id)
             }
             Self::WorkspaceLookup(_)
+            | Self::ListWorkspaces(_)
             | Self::ReadChangeRecords(_)
             | Self::EngineHealth(_)
             | Self::EngineListRetired(_)
@@ -544,6 +589,16 @@ impl AdminOperation {
                 target: request.workspace_id.clone(),
                 operation_id: (),
                 params: WorkspaceLookupParams {},
+            },
+            Self::ListWorkspaces(request) => OrganizationAdminIntentWire::ListWorkspaces {
+                v: IntentVersionOne,
+                organization: organization.clone(),
+                target: organization,
+                operation_id: (),
+                params: ListWorkspacesParams {
+                    after: request.after.clone(),
+                    limit: request.limit,
+                },
             },
             Self::ReadChangeRecords(request) => OrganizationAdminIntentWire::ReadChangeRecords {
                 v: IntentVersionOne,

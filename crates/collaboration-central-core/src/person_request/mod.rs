@@ -6,9 +6,10 @@ mod refusal;
 pub(crate) mod request_admission;
 mod request_verifier;
 
+pub(crate) use admin_operations::MAXIMUM_RECORD_PAGE;
 pub use admin_operations::{
     AdminOperation, AdminOperationId, AdminRoute, CreateWorkspaceRequest, EngineAttemptRequest,
-    EngineHealthRequest, EngineListRetiredRequest, OrganizationAdminIntent,
+    EngineHealthRequest, EngineListRetiredRequest, ListWorkspacesRequest, OrganizationAdminIntent,
     ReadChangeRecordsRequest, RecordPageLimit, WorkspaceLookupRequest, WorkspaceName,
 };
 pub use refusal::PersonRequestRefusal;
