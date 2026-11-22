@@ -454,11 +454,16 @@ impl AcpSessionBinding {
     pub fn is_unmaterialized(&self) -> bool {
         !self.materialized
     }
+    /// The admission signal follows an unmaterialized binding while its holder lends it out.
+    #[must_use]
+    pub fn admission_retirement(&self) -> Option<&tokio_util::sync::CancellationToken> {
+        self.admission_retirement.as_ref()
+    }
+
     #[must_use]
     pub fn is_retired(&self) -> bool {
-        self.admission_retirement
-            .as_ref()
-            .is_some_and(|retirement| retirement.is_cancelled())
+        self.admission_retirement()
+            .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
     }
     #[must_use]
     pub fn generation(&self) -> &CodexGeneration {

@@ -6,9 +6,25 @@ use std::{
     sync::Mutex,
 };
 
+use tokio_util::sync::CancellationToken;
+
 enum HeldThread {
     Ready(Box<AcpSessionBinding>),
-    Busy(CodexGeneration),
+    Busy {
+        generation: CodexGeneration,
+        retirement: Option<CancellationToken>,
+    },
+}
+
+impl HeldThread {
+    fn is_retired(&self) -> bool {
+        match self {
+            Self::Ready(binding) => binding.is_retired(),
+            Self::Busy { retirement, .. } => retirement
+                .as_ref()
+                .is_some_and(CancellationToken::is_cancelled),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -29,10 +45,7 @@ impl UnmaterializedThreadHolder {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .get(session_id)
-            .is_some_and(|thread| match thread {
-                HeldThread::Ready(binding) => !binding.is_retired(),
-                HeldThread::Busy(_) => true,
-            })
+            .is_some_and(|thread| !thread.is_retired())
     }
 
     pub async fn drain_host_tasks(&self) {
@@ -99,16 +112,27 @@ impl UnmaterializedBindingStore for UnmaterializedThreadHolder {
             .threads
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match threads.remove_entry(session_id) {
-            Some((key, HeldThread::Ready(binding))) if !binding.is_retired() => {
-                threads.insert(key, HeldThread::Busy(binding.generation().clone()));
+        let Some((key, thread)) = threads.remove_entry(session_id) else {
+            return HeldBindingCheckout::Missing;
+        };
+        if thread.is_retired() {
+            return HeldBindingCheckout::Missing;
+        }
+        match thread {
+            HeldThread::Ready(binding) => {
+                threads.insert(
+                    key,
+                    HeldThread::Busy {
+                        generation: binding.generation().clone(),
+                        retirement: binding.admission_retirement().cloned(),
+                    },
+                );
                 HeldBindingCheckout::Ready(binding)
             }
-            Some((key, busy @ HeldThread::Busy(_))) => {
+            busy @ HeldThread::Busy { .. } => {
                 threads.insert(key, busy);
                 HeldBindingCheckout::Busy
             }
-            Some((_, HeldThread::Ready(_))) | None => HeldBindingCheckout::Missing,
         }
     }
 
@@ -118,7 +142,7 @@ impl UnmaterializedBindingStore for UnmaterializedThreadHolder {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if let Entry::Occupied(mut slot) = threads.entry(binding.session_id().to_owned())
-            && matches!(slot.get(), HeldThread::Busy(generation) if generation == binding.generation())
+            && matches!(slot.get(), HeldThread::Busy { generation, .. } if generation == binding.generation())
         {
             if binding.is_retired() || !binding.is_unmaterialized() {
                 slot.remove();
@@ -133,7 +157,8 @@ impl UnmaterializedBindingStore for UnmaterializedThreadHolder {
             .threads
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if matches!(threads.get(session_id), Some(HeldThread::Busy(owner)) if owner == generation) {
+        if matches!(threads.get(session_id), Some(HeldThread::Busy { generation: owner, .. }) if owner == generation)
+        {
             threads.remove(session_id);
         }
     }

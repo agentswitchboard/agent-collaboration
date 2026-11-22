@@ -502,13 +502,27 @@ impl collaboration_contracts::AttemptEvidenceSink for PauseAfterDeliveryCheckout
     }
 }
 
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "A failed preservation assertion must identify the forced interleaving."
-)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum DeliveryReturnOrder {
+    BeforeSuccessor,
+    DuringSuccessorResume,
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn delivery_restore_cannot_make_a_retired_binding_shadow_its_successor()
 -> Result<(), FixtureError> {
+    assert_retired_delivery_does_not_shadow_successor(DeliveryReturnOrder::BeforeSuccessor).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn retired_busy_delivery_cannot_shadow_its_successor() -> Result<(), FixtureError> {
+    assert_retired_delivery_does_not_shadow_successor(DeliveryReturnOrder::DuringSuccessorResume)
+        .await
+}
+
+async fn assert_retired_delivery_does_not_shadow_successor(
+    order: DeliveryReturnOrder,
+) -> Result<(), FixtureError> {
     use collaboration_contracts::{
         DeliveryPrecondition, LoadPolicy, RoutePresence, SessionDeliveryRoute,
         layer_zero::{DeliveryRequest, PreparedPush},
@@ -573,12 +587,21 @@ async fn delivery_restore_cannot_make_a_retired_binding_shadow_its_successor()
     // directory makes the actual delivery path return the known-unsent binding.
     sink.checked_out.cancelled().await;
     fixture.gate.retire()?;
-    sink.release.cancel();
-    let receipt = delivery.await??;
-    assert!(matches!(
-        receipt.receipt().outcome,
-        DeliveryOutcome::NotSubmitted { .. }
-    ));
+    let settle_delivery = async {
+        sink.release.cancel();
+        let receipt = delivery.await??;
+        assert!(matches!(
+            receipt.receipt().outcome,
+            DeliveryOutcome::NotSubmitted { .. }
+        ));
+        Ok::<(), FixtureError>(())
+    };
+    let mut delayed_return = Some(settle_delivery);
+    if order == DeliveryReturnOrder::BeforeSuccessor
+        && let Some(settle) = delayed_return.take()
+    {
+        settle.await?;
+    }
     let successor_path = fixture.root.path().join("successor.sock");
     let successor = UnixListener::bind(&successor_path)?;
     fixture.gate.activate(
@@ -589,31 +612,62 @@ async fn delivery_restore_cannot_make_a_retired_binding_shadow_its_successor()
 
     let presence = route.presence(&target).await?;
     let successor_native = async {
-        let mut wire = tokio_tungstenite::accept_async(successor.accept().await?.0).await?;
+        let (stream, _) = successor.accept().await?;
+        drop(successor);
+        let mut wire = tokio_tungstenite::accept_async(stream).await?;
         let request = native_request(&mut wire, "initialize").await?;
         native_reply(&mut wire, &request, json!({})).await?;
         native_request(&mut wire, "initialized").await?;
         let resume = native_request(&mut wire, "thread/resume").await?;
-        assert_eq!(resume["params"]["threadId"], SESSION);
-        native_reply(&mut wire, &resume, json!({"cwd":"/tmp","thread":{"id":SESSION,"cwd":"/tmp","status":{"type":"idle"},"turns":[]}})).await
+        Ok::<_, FixtureError>((wire, resume))
     };
     let mut frontend = fixture.connect().await?;
-    let response = {
-        let load = frontend.call(3, "session/load", load_params());
-        tokio::pin!(load, successor_native);
-        tokio::select! {
-            reply = &mut load => reply?,
-            backend = &mut successor_native => {
-                backend?;
-                load.await?
-            }
+    frontend.send(3, "session/load", load_params()).await?;
+    let (backend, early_reply) = tokio::select! {
+        reply = frontend.receive(3) => (None, Some(reply?)),
+        backend = successor_native => (Some(backend?), None),
+    };
+    // In the overlap case, A is released only after B has reached its native resume,
+    // or after the frontend has proved that it could not get that far.
+    if let Some(settle) = delayed_return {
+        settle.await?;
+    }
+    let response = if let Some((mut wire, resume)) = backend {
+        reply_resumed(&mut wire, &resume).await?;
+        let response = frontend.receive(3).await?;
+        if order == DeliveryReturnOrder::DuringSuccessorResume && response.get("result").is_some() {
+            frontend.send(4, "session/load", load_params()).await?;
+            let reply = frontend.receive(4);
+            tokio::pin!(reply);
+            let (used_successor, reloaded) = tokio::select! {
+                reply = &mut reply => (false, reply?),
+                resume = native_request(&mut wire, "thread/resume") => {
+                    reply_resumed(&mut wire, &resume?).await?;
+                    (true, reply.await?)
+                },
+            };
+            assert!(
+                used_successor && reloaded.get("result").is_some(),
+                "B must remain usable after A returns: {reloaded}"
+            );
         }
+        response
+    } else {
+        early_reply.ok_or("frontend and backend returned no resume result")?
     };
     drop(frontend);
     fixture.stop().await?;
     assert!(
         presence != RoutePresence::Running && response.get("result").is_some(),
-        "retired delivery return shadowed generation B: presence={presence:?}, load={response}"
+        "retired delivery shadowed generation B with {order:?}: presence={presence:?}, load={response}"
     );
     Ok(())
+}
+
+async fn reply_resumed(
+    wire: &mut WebSocketStream<UnixStream>,
+    resume: &Value,
+) -> Result<(), FixtureError> {
+    assert_eq!(resume["params"]["threadId"], SESSION);
+    native_reply(wire, resume, json!({"cwd":"/tmp","thread":{"id":SESSION,"cwd":"/tmp","status":{"type":"idle"},"turns":[]}})).await
 }
