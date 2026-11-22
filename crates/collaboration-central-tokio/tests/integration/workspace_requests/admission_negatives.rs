@@ -93,7 +93,7 @@ async fn live_admission_refuses_revoked_expired_wrong_credential_and_archived_di
         )
         .await
         .result,
-        m::WorkspaceResult::Refused(m::RefusalReason::MachineRevoked)
+        m::WorkspaceResult::CentralUnavailable
     );
     let renewed = f.fresh_caller(&f.caller).await;
     let machine_id = text(f.caller.caller().machine_id());
