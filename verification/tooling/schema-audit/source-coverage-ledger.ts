@@ -77,6 +77,8 @@ import { section as sessionEventModel } from "./source-coverage-ledger/session-e
 import { section as sqliteStorageMaintenance } from "./source-coverage-ledger/sqlite-storage-maintenance.ts";
 import { section as sqlxDurableObjectCore } from "./source-coverage-ledger/sqlx-durable-object-core.ts";
 import { section as sqlxDurableObject } from "./source-coverage-ledger/sqlx-durable-object.ts";
+import { section as switchboardSessionEvents } from "./source-coverage-ledger/switchboard-session-events.ts";
+import { section as switchboardSessionStore } from "./source-coverage-ledger/switchboard-session-store.ts";
 import { section as tailnetVerificationHost } from "./source-coverage-ledger/tailnet-verification-host.ts";
 import { section as uiPreferenceStore } from "./source-coverage-ledger/ui-preference-store.ts";
 import { section as workspaceArchitectureCheck } from "./source-coverage-ledger/workspace-architecture-check.ts";
@@ -158,6 +160,8 @@ export const LEDGER_SECTIONS: readonly LedgerSection[] = [
   sqliteStorageMaintenance,
   sqlxDurableObjectCore,
   sqlxDurableObject,
+  switchboardSessionEvents,
+  switchboardSessionStore,
   tailnetVerificationHost,
   uiPreferenceStore,
   workspaceArchitectureCheck,
