@@ -16,7 +16,7 @@ use workspace_package_tree_policy::{
 #[path = "job_layer_tests.rs"]
 mod job_layer_tests;
 
-pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 3] = [
+pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 4] = [
     (FLEET_RPC, &[]),
     (
         "fleet-runtime-ports",
@@ -33,6 +33,15 @@ pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 3] = [
             "message-board",
             "workspace-ids",
             "workspace-model",
+        ],
+    ),
+    (
+        "fleet-approvals",
+        &[
+            "approval-request-protocol",
+            "central-engine-model",
+            "fleet-identity-protocol",
+            "workspace-ids",
         ],
     ),
 ];
