@@ -1,10 +1,10 @@
 use approval_request_protocol::{
     Answer, ApprovalDecision, ApprovalPageItems, ApprovalPageSize, ApprovalWindow, CallStopCause,
-    ChoiceOption, ChoiceOptions, DecidePersonReply, DecideSessionReply, DecidedBy, Ending, Label,
-    ListPersonRequestsReply, MultiChoiceSelection, OfferEnding, OfferedOption, OfferedOptionId,
-    OfferedOptions, OptionEffect, OptionLifetime, PersonApprovalContinuation, QuestionField,
-    QuestionFieldId, QuestionFields, QuestionOffer, Raise, RaiseReply, RegisterRunRequest,
-    RequestView, RetainedOptionStorage, SessionApprovalContinuation, TransientOptionStorage,
+    ChoiceOption, ChoiceOptions, DecideReply, DecidedBy, DeliverEndingRequest, DeliveryEvidence,
+    Ending, Label, ListSessionRequestsReply, MultiChoiceSelection, OfferedOption, OfferedOptionId,
+    OfferedOptions, OptionEffect, OptionLifetime, PrivateEnding, QuestionField, QuestionFieldId,
+    QuestionFields, QuestionOffer, Raise, RaiseReply, RegisterRunRequest, RequestView,
+    RetainedOptionStorage, SessionApprovalContinuation, TransientOptionStorage, WaitingRequestView,
     WaitingStatus,
 };
 use serde_json::{Value, json};
@@ -13,7 +13,6 @@ const REQUEST: &str = "01934a50-1000-7000-8000-000000000001";
 const RUN: &str = "01934a50-1000-7000-8000-000000000002";
 const MACHINE: &str = "01934a50-1000-7000-8000-000000000003";
 const PERSON: &str = "01934a50-1000-7000-8000-000000000004";
-const OTHER_PERSON: &str = "01934a50-1000-7000-8000-000000000005";
 const RAISED: &str = "2026-11-22T10:00:00Z";
 const DEADLINE: &str = "2026-11-22T11:00:00Z";
 
@@ -28,14 +27,14 @@ fn checked_window() -> Value {
 fn parked_raise() -> Value {
     json!({
         "kind":"unprovenCall","requestId":REQUEST,"holder":{"routerRun":RUN},
-        "invocation":"a".repeat(64),
+        "invocation":"A".repeat(43),
         "offer":{"operation":"writeConfig","summary":"Write configuration","options":[offered_option()]}
     })
 }
 
 fn provider_raise() -> Value {
     json!({
-        "kind":"providerApproval","requestId":REQUEST,"holder":{"routerRun":RUN,"session":session()},
+        "kind":"providerApproval","requestId":REQUEST,"holder":{"routerRun":RUN,"sessionId":"host/session"},
         "offer":{"title":"Use the tool","description":null,"subject":null,"options":[offered_option()]}
     })
 }
@@ -61,7 +60,7 @@ fn multi_choice_field(minimum: u8, maximum: u8) -> Value {
 fn parked_digest_stays_in_raise_equality_and_out_of_both_projections() {
     let first: Raise = serde_json::from_value(parked_raise()).unwrap();
     let mut replacement = parked_raise();
-    replacement["invocation"] = json!("b".repeat(64));
+    replacement["invocation"] = json!(format!("B{}", "A".repeat(42)));
     let replacement: Raise = serde_json::from_value(replacement).unwrap();
     assert_ne!(first, replacement);
     assert_eq!(first.offer_view(), replacement.offer_view());
@@ -69,8 +68,10 @@ fn parked_digest_stays_in_raise_equality_and_out_of_both_projections() {
         &first,
         WaitingStatus::Pending,
         serde_json::from_value(checked_window()).unwrap(),
-    );
-    let list = ListPersonRequestsReply::Listed {
+        &serde_json::from_value(json!({"kind":"person","personId":PERSON})).unwrap(),
+    )
+    .unwrap();
+    let list = ListSessionRequestsReply::Listed {
         requests: ApprovalPageItems::new(vec![detail.clone()]).unwrap(),
         continuation: None,
     };
@@ -170,7 +171,7 @@ fn holder_and_destination_endings_reject_the_wrong_request_payload() {
         option_id: OfferedOptionId::new(1).unwrap(),
     };
     assert!(
-        OfferEnding::from_raise(
+        DeliverEndingRequest::from_raise(
             &call,
             Ending::Decided {
                 answer: approval.clone(),
@@ -179,7 +180,7 @@ fn holder_and_destination_endings_reject_the_wrong_request_payload() {
         )
         .is_err()
     );
-    let offered = OfferEnding::from_raise(
+    let offered = DeliverEndingRequest::from_raise(
         &provider,
         Ending::Decided {
             answer: approval,
@@ -191,55 +192,50 @@ fn holder_and_destination_endings_reject_the_wrong_request_payload() {
     assert!(offered.check_bound_raise(&provider).is_ok());
 
     let wrong_call_answer = json!({
-        "kind":"unprovenCall","requestId":REQUEST,"holder":{"routerRun":RUN},
+        "kind":"unprovenCall",
         "ending":{"kind":"decided","answer":{"kind":"approval","optionId":1},"by":{"kind":"person","personId":PERSON}}
     });
-    assert!(serde_json::from_value::<OfferEnding>(wrong_call_answer).is_err());
+    assert!(serde_json::from_value::<PrivateEnding>(wrong_call_answer).is_err());
     let mut holder_wire = serde_json::to_value(offered).unwrap();
-    holder_wire["ending"]["answer"] = json!(2);
-    let unoffered: OfferEnding = serde_json::from_value(holder_wire).unwrap();
+    holder_wire["ending"]["ending"]["answer"] = json!(2);
+    let unoffered: DeliverEndingRequest = serde_json::from_value(holder_wire).unwrap();
     assert!(unoffered.check_bound_raise(&provider).is_err());
 
     let wrong_provider_stop = json!({
-        "kind":"providerQuestion","requestId":REQUEST,"holder":{"routerRun":RUN,"session":session()},
+        "kind":"providerQuestion",
         "ending":{"kind":"cancelled","reason":{"kind":"stopped","cause":CallStopCause::CallWithdrawn}}
     });
-    assert!(serde_json::from_value::<OfferEnding>(wrong_provider_stop).is_err());
+    assert!(serde_json::from_value::<PrivateEnding>(wrong_provider_stop).is_err());
 
     let mismatched_view = json!({
         "kind":"providerApproval","requestId":REQUEST,"offer":provider_raise()["offer"],"window":checked_window(),
-        "state":{"kind":"ended","ending":{"kind":"decidedWithAnswer","answer":{"kind":"call","optionId":1},
-                "by":{"kind":"person","personId":PERSON}},"endedAt":RAISED,"delivery":{"kind":"awaitingReport"}}
+        "state":{"kind":"ended","ending":{"kind":"giver","decision":{"answer":{"kind":"call","optionId":1},"by":{"kind":"person","personId":PERSON}}},"endedAt":RAISED,"delivery":{"kind":"awaitingReport"}}
     });
     assert!(serde_json::from_value::<RequestView>(mismatched_view.clone()).is_err());
     let mut wrong_answer_id = mismatched_view.clone();
-    wrong_answer_id["state"]["ending"]["answer"] = json!(2);
+    wrong_answer_id["state"]["ending"]["decision"]["answer"] = json!(2);
     assert!(serde_json::from_value::<RequestView>(wrong_answer_id).is_err());
     let mut wrong_stop_view = mismatched_view;
-    wrong_stop_view["state"]["ending"] =
-        json!({"kind":"cancelled","reason":{"kind":"stopped","cause":"callWithdrawn"}});
+    wrong_stop_view["state"]["ending"] = json!({"kind":"standing","ending":{"kind":"cancelled","reason":{"kind":"stopped","cause":"callWithdrawn"}}});
     assert!(serde_json::from_value::<RequestView>(wrong_stop_view).is_err());
 }
 
 #[test]
 fn a_decide_success_requires_answer_and_attribution() {
     for impossible in [
-        json!({"kind":"decided","decision":{"kind":"timedOut"}}),
-        json!({"kind":"decided","decision":{"answer":{"kind":"approval","optionId":1}}}),
-        json!({"kind":"decided","decision":{"by":{"kind":"person","personId":PERSON}}}),
+        json!({"kind":"savedDecision","decision":{"kind":"timedOut"}}),
+        json!({"kind":"savedDecision","decision":{"answer":{"kind":"approval","optionId":1}}}),
+        json!({"kind":"savedDecision","decision":{"by":{"kind":"person","personId":PERSON}}}),
     ] {
-        assert!(serde_json::from_value::<DecidePersonReply>(impossible.clone()).is_err());
-        assert!(serde_json::from_value::<DecideSessionReply>(impossible).is_err());
+        assert!(serde_json::from_value::<DecideReply>(impossible).is_err());
     }
     let accepted: ApprovalDecision = serde_json::from_value(json!({
         "answer":{"kind":"approval","optionId":1},
         "by":{"kind":"person","personId":PERSON},
     }))
     .unwrap();
-    let reply = DecidePersonReply::Decided { decision: accepted };
-    assert!(
-        serde_json::from_str::<DecidePersonReply>(&serde_json::to_string(&reply).unwrap()).is_ok()
-    );
+    let reply = DecideReply::SavedDecision { decision: accepted };
+    assert!(serde_json::from_str::<DecideReply>(&serde_json::to_string(&reply).unwrap()).is_ok());
 }
 
 #[test]
@@ -315,8 +311,7 @@ fn standalone_choices_reject_empty_duplicate_and_excessive_ranges() {
 
 #[test]
 fn raise_receipt_rejects_a_nested_unknown_field() {
-    let valid =
-        json!({"kind":"raiseReceipt","receipt":{"requestId":REQUEST,"window":checked_window()}});
+    let valid = json!({"kind":"receipt","receipt":{"requestId":REQUEST,"window":checked_window()}});
     assert!(serde_json::from_value::<RaiseReply>(valid.clone()).is_ok());
     let mut invalid = valid;
     invalid["receipt"]["extra"] = json!(true);
@@ -364,13 +359,6 @@ fn continuation_matches_its_admitted_audience_and_uses_checked_ordering() {
     assert!(ApprovalPageSize::new(64).is_ok());
     assert!(ApprovalPageSize::new(0).is_err());
     assert!(ApprovalPageSize::new(65).is_err());
-    let cursor: PersonApprovalContinuation =
-        serde_json::from_value(json!({"personId":PERSON,"afterRowId":REQUEST})).unwrap();
-    assert_eq!(
-        cursor.after_for(&PERSON.parse().unwrap()).unwrap().as_str(),
-        REQUEST
-    );
-    assert!(cursor.after_for(&OTHER_PERSON.parse().unwrap()).is_err());
     let cursor: SessionApprovalContinuation =
         serde_json::from_value(json!({"session":session(),"afterRowId":REQUEST})).unwrap();
     assert_eq!(
@@ -387,8 +375,8 @@ fn continuation_matches_its_admitted_audience_and_uses_checked_ordering() {
             .is_err()
     );
     assert!(
-        serde_json::from_value::<PersonApprovalContinuation>(
-            json!({"personId":PERSON,"afterRowId":"after row 123"})
+        serde_json::from_value::<SessionApprovalContinuation>(
+            json!({"session":session(),"afterRowId":"after row 123"})
         )
         .is_err()
     );
@@ -411,19 +399,54 @@ fn approval_named_objects_reject_positional_arrays_at_each_depth() {
     assert!(serde_json::from_str::<RegisterRunRequest>(&json!([RUN]).to_string()).is_err());
     assert!(
         serde_json::from_value::<RaiseReply>(
-            json!({"kind":"raiseReceipt","receipt":[REQUEST,checked_window()]})
+            json!({"kind":"receipt","receipt":[REQUEST,checked_window()]})
         )
         .is_err()
     );
-    assert!(serde_json::from_value::<RaiseReply>(
-        json!({"kind":"raiseReceipt","receipt":{"requestId":REQUEST,"window":[RAISED,DEADLINE]}})
-    ).is_err());
+    assert!(
+        serde_json::from_value::<RaiseReply>(
+            json!({"kind":"receipt","receipt":{"requestId":REQUEST,"window":[RAISED,DEADLINE]}})
+        )
+        .is_err()
+    );
 
     let mut invalid_provider = provider_raise();
-    invalid_provider["holder"]["session"] = json!([MACHINE, "host/session"]);
+    invalid_provider["holder"]["sessionId"] = json!([MACHINE, "host/session"]);
     assert!(serde_json::from_str::<Raise>(&invalid_provider.to_string()).is_err());
     assert!(
         serde_json::from_value::<QuestionOffer>(single_choice_question(json!([1, "Canada"])))
             .is_err()
     );
+}
+
+#[test]
+fn transport_evidence_cannot_claim_application_or_attach_output() {
+    for invalid in [
+        json!({"kind":"acp","evidence":{"kind":"queueRefused","flush":{"kind":"flushObserved"}}}),
+        json!({"kind":"acp","evidence":{"kind":"queueAccepted"}}),
+        json!({"kind":"native","evidence":{"kind":"applied"}}),
+        json!({"kind":"parkedCall","evidence":{"kind":"ranWithResult","result":{"kind":"succeeded"},"output":"hidden"}}),
+        json!({"kind":"parkedCall","evidence":{"kind":"notDispatched","result":{"kind":"failed"}}}),
+    ] {
+        assert!(
+            serde_json::from_value::<DeliveryEvidence>(invalid.clone()).is_err(),
+            "{invalid}"
+        );
+    }
+}
+
+#[test]
+fn the_requester_cannot_construct_its_own_session_read_or_watch_projection() {
+    let raise: Raise = serde_json::from_value(provider_raise()).unwrap();
+    let requester: DecidedBy =
+        serde_json::from_value(json!({"kind":"session","session":session()})).unwrap();
+    let different: DecidedBy = serde_json::from_value(json!({
+        "kind":"session","session":{"machineId":MACHINE,"sessionId":"host/destination"}
+    }))
+    .unwrap();
+    let window = serde_json::from_value(checked_window()).unwrap();
+    assert!(RequestView::waiting(&raise, WaitingStatus::Pending, window, &requester).is_err());
+    assert!(WaitingRequestView::for_destination(&raise, &requester).is_err());
+    assert!(RequestView::waiting(&raise, WaitingStatus::Pending, window, &different).is_ok());
+    assert!(WaitingRequestView::for_destination(&raise, &different).is_ok());
 }

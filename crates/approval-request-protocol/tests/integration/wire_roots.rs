@@ -14,14 +14,14 @@ const PERSON_ID: &str = "01934a50-1000-7000-8000-000000000004";
 const MACHINE_ID: &str = "01934a50-1000-7000-8000-000000000005";
 const RAISED_AT: &str = "2026-11-22T10:00:00Z";
 const DEADLINE: &str = "2026-11-22T11:00:00Z";
-const DIGEST: &str = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+const DIGEST: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
 fn session_ref() -> Value {
     json!({ "machineId": MACHINE_ID, "sessionId": "host/session" })
 }
 
 fn holder() -> Value {
-    json!({ "session": session_ref(), "routerRun": RUN_ID })
+    json!({ "sessionId": "host/session", "routerRun": RUN_ID })
 }
 
 fn offered_options() -> Value {
@@ -73,7 +73,7 @@ fn ending() -> Value {
 }
 
 fn ending_with_answer() -> Value {
-    json!({"kind":"providerApproval","ending":{"kind":"decidedWithAnswer","answer":1,"by":deciding_person()}})
+    json!({"kind":"providerApproval","ending":{"kind":"giver","decision":{"answer":1,"by":deciding_person()}}})
 }
 
 fn approval_window() -> Value {
@@ -84,10 +84,6 @@ fn decision() -> Value {
     json!({"answer": approval_answer(), "by": deciding_person()})
 }
 
-fn person_cursor() -> Value {
-    json!({"personId": PERSON_ID, "afterRowId": OPERATION_ID})
-}
-
 fn session_cursor() -> Value {
     json!({"session": session_ref(), "afterRowId": OPERATION_ID})
 }
@@ -96,15 +92,15 @@ fn request_view() -> Value {
     json!({
         "kind":"providerApproval", "requestId": REQUEST_ID, "offer": approval_offer(),
         "state": {
-            "kind": "ended", "ending": {"kind": "decided", "by": deciding_person()},
-            "endedAt": RAISED_AT, "delivery": {"kind": "reported", "report": "deliveryUnknown"}
+            "kind":"ended","ending":{"kind":"standing","ending":{"kind":"decided","by":deciding_person()}},
+            "endedAt": RAISED_AT, "delivery": {"kind": "reported", "evidence": native_evidence()}
         },
         "window": approval_window()
     })
 }
 
 fn decide_request() -> Value {
-    json!({"requestId": REQUEST_ID, "operationId": OPERATION_ID, "answer": approval_answer()})
+    json!({"requestId": REQUEST_ID, "operationId": OPERATION_ID, "value": approval_answer()})
 }
 
 fn waiting_list() -> Value {
@@ -114,87 +110,113 @@ fn waiting_list() -> Value {
 
 // The expected roots come from the operations and the approval design.
 // The generator has its own registration list. These declarations drive neither its input nor its output.
+fn native_evidence() -> Value {
+    json!({"kind":"native","evidence":{"kind":"possibleWrite"}})
+}
+
+fn authority_refused() -> Value {
+    json!({"kind":"authorityRefused","refusal":{"kind":"runRetired"}})
+}
+
+fn private_approval_ending() -> Value {
+    json!({"kind":"providerApproval","ending":{"kind":"decided","answer":1,"by":deciding_person()}})
+}
+
+fn standing_approval_ending() -> Value {
+    json!({"kind":"providerApproval","ending":{"kind":"standing","ending":{"kind":"decided","by":deciding_person()}}})
+}
+
 macro_rules! expected_wire_roots {
     ($root:ident) => {{
-        $root!(RegisterRunRequest, json!({"routerRun": RUN_ID}));
-        $root!(RegisterRunReply, json!({"kind":"runRegistered"}), json!({"kind":"runRetired"}));
+        $root!(RegisterRunRequest, json!({"routerRun":RUN_ID}));
+        $root!(RegisterRunReply, json!({"kind":"registered"}), json!({"kind":"runRetired"}),
+            json!({"kind":"runNotRegistered"}), json!({"kind":"enrollmentEnded"}));
+        $root!(AuthorityProbeRequest, json!({"routerRun":RUN_ID}));
+        $root!(AuthorityProbeReply, json!({"kind":"admitted"}), authority_refused());
+        $root!(RunRefusal, json!({"kind":"runRetired"}), json!({"kind":"runNotRegistered"}), json!({"kind":"enrollmentEnded"}));
         $root!(Raise, approval_raise(),
             json!({"kind":"providerQuestion","requestId":REQUEST_ID,"holder":holder(),"offer":question_offer()}),
             json!({"kind":"unprovenCall","requestId":REQUEST_ID,"holder":{"routerRun":RUN_ID},"invocation":DIGEST,"offer":call_offer()}));
-        $root!(RaiseReply,
-            json!({"kind":"raiseReceipt","receipt":{"requestId":REQUEST_ID,"window":approval_window()}}),
-            json!({"kind":"alreadyStopped"}), json!({"kind":"alreadyEnded"}), json!({"kind":"contentsDiffer"}), json!({"kind":"tooManyOutstanding"}));
+        $root!(RaiseReceipt, json!({"requestId":REQUEST_ID,"window":approval_window()}));
+        $root!(RaiseReply, json!({"kind":"receipt","receipt":{"requestId":REQUEST_ID,"window":approval_window()}}),
+            json!({"kind":"alreadyStopped"}), json!({"kind":"alreadyEnded"}), json!({"kind":"sessionEnded"}),
+            json!({"kind":"contentsDiffer"}), json!({"kind":"tooManyOutstanding"}), authority_refused());
         $root!(StopRequest,
-            json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"cause":"turnStopped"}),
-            json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"cause":"askReplaced"}),
-            json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"cause":"sessionClosed"}),
-            json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"cause":"providerConnectionLost"}),
-            json!({"kind":"unprovenCall","requestId":REQUEST_ID,"routerRun":RUN_ID,"cause":"callWithdrawn"}));
+            json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"cause":"turnStopped"}),
+            json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"cause":"askReplaced"}),
+            json!({"kind":"unprovenCall","requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"cause":"callWithdrawn"}));
         $root!(HolderStopCause, json!("turnStopped"), json!("sessionClosed"),
             json!("providerConnectionLost"), json!("askReplaced"), json!("callWithdrawn"));
         $root!(StopReply,
-            json!({"kind":"stopReceipt","ending":{"kind":"cancelled","reason":{"kind":"stopped","cause":"turnStopped"}}}),
-            json!({"kind":"stopReceipt","ending":{"kind":"cancelled","reason":{"kind":"sessionEnded"}}}),
-            json!({"kind":"stopReceipt","ending":{"kind":"cancelled","reason":{"kind":"enrollmentEnded"}}}),
-            json!({"kind":"stopReceipt","ending":{"kind":"timedOut"}}),
-            json!({"kind":"stopReceipt","ending":{"kind":"decidedEarlier"}}));
+            json!({"kind":"stands","ending":{"kind":"cancelled","reason":{"kind":"stopped","cause":"turnStopped"}}}),
+            json!({"kind":"stands","ending":{"kind":"cancelled","reason":{"kind":"sessionEnded"}}}),
+            json!({"kind":"stands","ending":{"kind":"cancelled","reason":{"kind":"enrollmentEnded"}}}),
+            json!({"kind":"stands","ending":{"kind":"timedOut"}}),
+            json!({"kind":"stands","ending":{"kind":"decidedEarlier"}}),
+            json!({"kind":"notVisible"}), authority_refused());
         $root!(StopReceiptEnding, json!({"kind":"timedOut"}), json!({"kind":"decidedEarlier"}));
-        $root!(OfferEnding, json!({"kind":"providerApproval","requestId":REQUEST_ID,"holder":holder(),"ending":{"kind":"decided","answer":1,"by":deciding_person()}}),
-            json!({"kind":"providerQuestion","requestId":REQUEST_ID,"holder":holder(),"ending":{"kind":"decided","answer":{"kind":"declined"},"by":deciding_person()}}),
-            json!({"kind":"unprovenCall","requestId":REQUEST_ID,"holder":{"routerRun":RUN_ID},"ending":{"kind":"decided","answer":1,"by":deciding_person()}}));
-        $root!(ReportDeliveryRequest,
-            json!({"requestId":REQUEST_ID,"routerRun":RUN_ID,"report":"applied"}));
-        $root!(ReportDeliveryReply,
-            json!({"kind":"deliveryRecorded"}), json!({"kind":"reportDiffers"}), json!({"kind":"noHandoverOwed"}),
-            json!({"kind":"refused","refusal":{"kind":"run","refusal":"runRetired"}}));
-        $root!(ListPersonRequests, json!({"pageSize":4,"continuation":null}), json!({"pageSize":4,"continuation":person_cursor()}));
-        $root!(ListPersonRequestsReply, json!({"kind":"listed","requests":[request_view()],"continuation":person_cursor()}));
-        $root!(ReadPersonRequest, json!({"requestId":REQUEST_ID}));
-        $root!(ReadPersonRequestReply, json!({"kind":"read","request":request_view()}),
-            json!({"kind":"refused","refusal":{"kind":"notVisible"}}));
-        $root!(DecidePersonRequest, decide_request());
-        $root!(DecidePersonReply, json!({"kind":"decided","decision":decision()}));
+        $root!(PrivateEnding, private_approval_ending(),
+            json!({"kind":"providerQuestion","ending":{"kind":"decided","answer":{"kind":"declined"},"by":deciding_person()}}),
+            json!({"kind":"unprovenCall","ending":{"kind":"decided","answer":1,"by":deciding_person()}}));
+        $root!(DeliverEndingRequest, json!({"requestId":REQUEST_ID,"contentsDigest":DIGEST,"ending":private_approval_ending()}));
+        $root!(DeliverEndingReply, json!({"kind":"received"}), json!({"kind":"stopOwed"}),
+            json!({"kind":"notHeld"}), json!({"kind":"holderNotReady"}), json!({"kind":"endingDiffers"}));
+        $root!(ReportDeliveryRequest, json!({
+            "requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"endingDigest":DIGEST,"evidence":native_evidence()
+        }));
+        $root!(ReportDeliveryReply, json!({"kind":"deliveryRecorded"}), json!({"kind":"reportDiffers"}),
+            json!({"kind":"noHandoverOwed"}), json!({"kind":"notVisible"}), authority_refused());
+        $root!(DeliveryEvidence, native_evidence(),
+            json!({"kind":"acp","evidence":{"kind":"queueAccepted","flush":{"kind":"flushObserved"}}}),
+            json!({"kind":"parkedCall","evidence":{"kind":"ranWithResult","result":{"kind":"failed"}}}));
+        $root!(AcpDeliveryEvidence, json!({"kind":"queueRefused"}),
+            json!({"kind":"queueAccepted","flush":{"kind":"flushNotObserved"}}));
+        $root!(AcpFlushObservation, json!({"kind":"flushObserved"}), json!({"kind":"flushNotObserved"}));
+        $root!(NativeDeliveryEvidence, json!({"kind":"refusedBeforeSend"}), json!({"kind":"sendReturned"}), json!({"kind":"possibleWrite"}));
+        $root!(ParkedCallEvidence, json!({"kind":"ranWithResult","result":{"kind":"succeeded"}}),
+            json!({"kind":"notDispatched"}), json!({"kind":"unknownAfterDispatch"}));
+        $root!(ParkedCallResult, json!({"kind":"succeeded"}), json!({"kind":"failed"}));
+        $root!(RequestContentsDigest, json!(DIGEST));
+        $root!(EndingDigest, json!(DIGEST));
+        $root!(InvocationDigest, json!(DIGEST));
         $root!(ListSessionRequests, json!({"pageSize":4,"continuation":null}), json!({"pageSize":4,"continuation":session_cursor()}));
         $root!(ListSessionRequestsReply, json!({"kind":"listed","requests":[request_view()],"continuation":session_cursor()}));
         $root!(ReadSessionRequest, json!({"requestId":REQUEST_ID}));
         $root!(ReadSessionRequestReply, json!({"kind":"read","request":request_view()}),
             json!({"kind":"refused","refusal":{"kind":"notVisible"}}));
-        $root!(DecideSessionRequest, decide_request());
-        $root!(DecideSessionReply, json!({"kind":"decided","decision":decision()}));
-        $root!(PassOnRequest, json!({"requestId":REQUEST_ID,"operationId":OPERATION_ID}));
-        $root!(PassOnReply, json!({"kind":"passedOn"}));
+        $root!(DecideRequest, decide_request());
+        $root!(DecideReply, json!({"kind":"savedDecision","decision":decision()}),json!({"kind":"standing","ending":standing_approval_ending()}),
+            json!({"kind":"notVisible"}),json!({"kind":"invalid"}),json!({"kind":"tooLate"}),json!({"kind":"operationConflict"}));
+        $root!(PassOnRequest, json!({"requestId":REQUEST_ID}));
+        $root!(PassOnReply, json!({"kind":"forwarded"}),json!({"kind":"notVisible"}),json!({"kind":"tooLate"}),json!({"kind":"ended"}));
         $root!(WaitingListAtRequest, json!({"afterRevision":4}), json!({"afterRevision":null}));
-        $root!(WaitingListAtReply, waiting_list(), json!({"kind":"unchanged","revision":6}),
-            json!({"kind":"unavailable"}));
+        $root!(WaitingListAtReply, waiting_list(), json!({"kind":"unchanged","revision":6}), json!({"kind":"unavailable"}));
         $root!(OfferView, offered_approval());
         $root!(Answer, approval_answer(), json!({"kind":"call","optionId":1}),
             json!({"kind":"question","answer":{"kind":"declined"}}),
             json!({"kind":"question","answer":{"kind":"answered","fields":[
                 {"fieldId":1,"value":{"kind":"text","value":"ca"}}, {"fieldId":2,"value":{"kind":"boolean","value":true}},
-                {"fieldId":3,"value":{"kind":"number","value":2.5}}, {"fieldId":4,"value":{"kind":"selectedOptions","selectedOptionIds":[1]}}
+                {"fieldId":3,"value":{"kind":"number","value":"2.5"}}, {"fieldId":4,"value":{"kind":"selectedOptions","selectedOptionIds":[1]}}
             ]}}));
         $root!(DecidedBy, deciding_person(), json!({"kind":"session","session":session_ref()}));
         $root!(Ending, ending(), json!({"kind":"cancelled","reason":{"kind":"stopped","cause":"turnStopped"}}), json!({"kind":"timedOut"}));
-        $root!(EndingView, ending_with_answer(), json!({"kind":"providerApproval","ending":{"kind":"decided","by":deciding_person()}}));
-        $root!(HolderReport, json!("goneBeforeHandover"), json!("replyWrittenEffectNotConfirmed"),
-            json!("deliveryUnknown"), json!("applied"));
+        $root!(EndingView, ending_with_answer(), standing_approval_ending());
         $root!(Delivery, json!({"kind":"noHandoverOwed"}), json!({"kind":"awaitingReport"}),
-            json!({"kind":"reported","report":"deliveryUnknown"}), json!({"kind":"receiptUnknown"}));
-        $root!(RequestState, json!({"kind":"waiting","status":"passedOn"}),
-            json!({"kind":"ended","ending":ending()}));
+            json!({"kind":"reported","evidence":native_evidence()}), json!({"kind":"receiptUnknown"}));
+        $root!(RequestState, json!({"kind":"waiting","status":"passedOn"}), json!({"kind":"ended","ending":ending()}));
         $root!(RequestView, request_view(),
             json!({"kind":"providerQuestion","requestId":REQUEST_ID,"offer":question_offer(),"window":approval_window(),
-                "state":{"kind":"ended","ending":{"kind":"decidedWithAnswer","answer":{"kind":"declined"},"by":deciding_person()},
+                "state":{"kind":"ended","ending":{"kind":"giver","decision":{"answer":{"kind":"declined"},"by":deciding_person()}},
                          "endedAt":RAISED_AT,"delivery":{"kind":"awaitingReport"}}}),
             json!({"kind":"unprovenCall","requestId":REQUEST_ID,"offer":call_offer(),"window":approval_window(),
-                "state":{"kind":"ended","ending":{"kind":"decidedWithAnswer","answer":1,"by":deciding_person()},
+                "state":{"kind":"ended","ending":{"kind":"giver","decision":{"answer":1,"by":deciding_person()}},
                          "endedAt":RAISED_AT,"delivery":{"kind":"awaitingReport"}}}));
         $root!(ApprovalWindow, approval_window());
         $root!(ApprovalDecision, decision());
-        $root!(PersonApprovalContinuation, person_cursor());
         $root!(SessionApprovalContinuation, session_cursor());
         $root!(ApprovalPageSize, json!(4), json!(64));
-        $root!(OptionLifetime, json!({"kind":"thisRequest"}), json!({"kind":"thisTurn","kept":"agentMemory"}), json!({"kind":"thisSession","kept":"nowhere"}), json!({"kind":"keptUntilChanged","kept":"agentRulesFile"}), json!({"kind":"notVerified"}));
+        $root!(OptionLifetime, json!({"kind":"thisRequest"}), json!({"kind":"thisTurn","kept":"agentMemory"}),
+            json!({"kind":"thisSession","kept":"nowhere"}), json!({"kind":"keptUntilChanged","kept":"agentRulesFile"}), json!({"kind":"notVerified"}));
         $root!(Refusal, json!({"kind":"notVisible"}), json!({"kind":"invalidAnswer","reason":{"kind":"wrongKind"}}));
     }};
 }
@@ -369,7 +391,10 @@ fn answer_disclosure_names_the_winner_and_scopes_values_to_the_giver() {
     let raise: Raise = serde_json::from_value(approval_raise()).unwrap();
     let ending: Ending = serde_json::from_value(ending()).unwrap();
     let giver = serde_json::from_value(deciding_person()).unwrap();
-    let other = serde_json::from_value(json!({"kind":"session","session":session_ref()})).unwrap();
+    let other = serde_json::from_value(
+        json!({"kind":"session","session":{"machineId":MACHINE_ID,"sessionId":"host/destination"}}),
+    )
+    .unwrap();
     assert_eq!(
         serde_json::to_value(EndingView::for_raise(&raise, ending.clone(), &giver).unwrap())
             .unwrap(),
@@ -377,7 +402,7 @@ fn answer_disclosure_names_the_winner_and_scopes_values_to_the_giver() {
     );
     assert_eq!(
         serde_json::to_value(EndingView::for_raise(&raise, ending, &other).unwrap()).unwrap(),
-        json!({"kind":"providerApproval","ending":{"kind":"decided","by":deciding_person()}})
+        standing_approval_ending()
     );
 }
 
@@ -419,7 +444,7 @@ fn stop_requires_a_cause_for_the_kind_of_wait_and_the_ending_keeps_that_cause() 
     use approval_request_protocol::{CancelReason, HolderStopCause, StopRequest};
 
     let stopped: StopRequest = serde_json::from_value(json!({
-        "kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"cause":"providerConnectionLost"
+        "kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"cause":"providerConnectionLost"
     }))
     .unwrap();
     assert_eq!(stopped.cause(), HolderStopCause::ProviderConnectionLost);
@@ -439,12 +464,23 @@ fn stop_requires_a_cause_for_the_kind_of_wait_and_the_ending_keeps_that_cause() 
         ("unprovenCall", "sessionClosed"),
         ("unprovenCall", "providerConnectionLost"),
     ] {
-        let invalid = json!({"kind":kind,"requestId":REQUEST_ID,"routerRun":RUN_ID,"cause":cause});
+        let invalid = json!({"kind":kind,"requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"cause":cause});
         assert!(
             serde_json::from_str::<StopRequest>(&invalid.to_string()).is_err(),
             "{invalid}"
         );
     }
-    let missing_cause = json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID});
+    let missing_cause = json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST});
     assert!(serde_json::from_str::<StopRequest>(&missing_cause.to_string()).is_err());
+}
+
+#[test]
+fn every_wire_root_checks_named_records_and_tagged_unions_at_each_depth() -> Result<(), String> {
+    macro_rules! check_named {
+        ($wire_type:ident, $($specimen:expr),+ $(,)?) => {
+            $(crate::map_only::assert_objects_require_named_maps::<approval_request_protocol::$wire_type>(&$specimen)?;)+
+        };
+    }
+    expected_wire_roots!(check_named);
+    Ok(())
 }

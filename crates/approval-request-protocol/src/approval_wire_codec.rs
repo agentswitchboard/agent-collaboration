@@ -3,7 +3,9 @@ use std::{fmt, marker::PhantomData};
 
 use serde::de::{Deserializer, MapAccess, Visitor, value::MapAccessDeserializer};
 
-pub(crate) fn decode_named_map<'de, Record: serde::Deserialize<'de>, Input: Deserializer<'de>>(
+/// Shared by the approval body and its RPC targets.
+#[doc(hidden)]
+pub fn decode_named_map<'de, Record: serde::Deserialize<'de>, Input: Deserializer<'de>>(
     deserializer: Input,
 ) -> Result<Record, Input::Error> {
     struct NamedMap<Record>(PhantomData<Record>);
@@ -33,28 +35,30 @@ macro_rules! approval_wire_record {
     (
         [$($serde_option:ident),*]
         $(#[$attribute:meta])*
-        $visibility:vis struct $record:ident {
+        $visibility:vis struct $record:ident $(<$($parameter:ident),+>)? {
             $($(#[$field_attribute:meta])* $field_visibility:vis $field:ident: $field_type:ty $(=> $field_decoder:literal)?),* $(,)?
         }
     ) => {
         $(#[$attribute])*
         #[derive(serde::Serialize)]
         #[serde(rename_all = "camelCase", $($serde_option),*)]
-        $visibility struct $record {
+        $visibility struct $record $(<$($parameter),+>)? {
             $($(#[$field_attribute])* $field_visibility $field: $field_type),*
         }
 
-        impl<'de> serde::Deserialize<'de> for $record {
+        impl<'de $(, $($parameter: serde::Deserialize<'de>),+)?> serde::Deserialize<'de>
+            for $record $(<$($parameter),+>)?
+        {
             fn deserialize<Input: serde::Deserializer<'de>>(
                 deserializer: Input,
             ) -> Result<Self, Input::Error> {
                 #[derive(serde::Deserialize)]
                 #[serde(rename_all = "camelCase", $($serde_option),*)]
-                struct NamedFields {
+                struct NamedFields $(<$($parameter),+>)? {
                     $($(#[serde(deserialize_with = $field_decoder)])? $field: $field_type),*
                 }
 
-                let fields = $crate::approval_wire_codec::decode_named_map::<NamedFields, _>(deserializer)?;
+                let fields = $crate::approval_wire_codec::decode_named_map::<NamedFields $(<$($parameter),+>)?, _>(deserializer)?;
                 Ok(Self { $($field: fields.$field),* })
             }
         }

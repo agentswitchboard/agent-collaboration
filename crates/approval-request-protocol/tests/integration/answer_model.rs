@@ -236,56 +236,41 @@ fn only_retained_or_unverified_lifetimes_require_a_fresh_factor() {
 }
 
 #[test]
-fn question_numbers_refuse_the_first_unsafe_integer_on_both_sides() {
+fn question_numbers_preserve_exact_decimal_strings_and_refuse_other_spellings() {
     use approval_request_protocol::{InvalidQuestionNumber, QuestionNumber};
-    use serde_json::Number;
 
-    for boundary in [-9_007_199_254_740_991i64, 9_007_199_254_740_991] {
-        let number = Number::from(boundary);
-        assert_eq!(
-            QuestionNumber::try_from(number.clone())
-                .unwrap()
-                .as_json_number(),
-            &number
-        );
-        let wire_answer = format!(
-            r#"{{"kind":"question","answer":{{"kind":"answered","fields":[{{"fieldId":1,"value":{{"kind":"number","value":{boundary}}}}}]}}}}"#
-        );
-        let decoded: Answer = serde_json::from_str(&wire_answer).unwrap();
-        let value = serde_json::to_value(decoded).unwrap();
-        assert_eq!(
-            value["answer"]["fields"][0]["value"]["value"],
-            json!(boundary)
-        );
+    for spelling in [
+        "0",
+        "1",
+        "-123",
+        "-0.125",
+        "10.050",
+        "9007199254740992000000000000000000000000",
+    ] {
+        let number = QuestionNumber::new(spelling).unwrap();
+        assert_eq!(number.as_str(), spelling);
+        let wire = json!({"kind":"question","answer":{"kind":"answered","fields":[
+            {"fieldId":1,"value":{"kind":"number","value":spelling}}
+        ]}});
+        let answer: Answer = serde_json::from_str(&wire.to_string()).unwrap();
+        assert_eq!(serde_json::to_value(answer).unwrap(), wire);
     }
 
-    for boundary in [-9_007_199_254_740_992i64, 9_007_199_254_740_992] {
+    for spelling in [
+        "", "-0", "-01", "00", "01.2", "+1", "1e2", "2.", ".2", "--1", "1.2.3", "NaN", " 1", "١",
+    ] {
         assert_eq!(
-            QuestionNumber::try_from(Number::from(boundary)),
-            Err(InvalidQuestionNumber::UnsafeInteger)
+            QuestionNumber::new(spelling),
+            Err(InvalidQuestionNumber::InvalidSpelling)
         );
-        for spelling in [
-            boundary.to_string(),
-            format!("{boundary}.0"),
-            format!("{boundary}e0"),
-        ] {
-            let wire_answer = format!(
-                r#"{{"kind":"question","answer":{{"kind":"answered","fields":[{{"fieldId":1,"value":{{"kind":"number","value":{spelling}}}}}]}}}}"#
-            );
-            let error = serde_json::from_str::<Answer>(&wire_answer).unwrap_err();
-            assert!(
-                error
-                    .to_string()
-                    .contains(&InvalidQuestionNumber::UnsafeInteger.to_string()),
-                "{error}"
-            );
-        }
+        assert!(serde_json::from_value::<QuestionNumber>(json!(spelling)).is_err());
     }
 
-    for nonfinite in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
-        assert_eq!(
-            QuestionNumber::try_from(nonfinite),
-            Err(InvalidQuestionNumber::NonFinite)
-        );
+    assert_eq!(
+        QuestionNumber::new("9".repeat(41)),
+        Err(InvalidQuestionNumber::TooLong)
+    );
+    for other in [json!(7), json!(2.5), json!(true), json!(null)] {
+        assert!(serde_json::from_value::<QuestionNumber>(other).is_err());
     }
 }

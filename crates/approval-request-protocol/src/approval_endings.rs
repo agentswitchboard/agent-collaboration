@@ -3,7 +3,7 @@ use crate::approval_wire_codec::approval_wire_union;
 use serde::{Deserialize, Serialize};
 use workspace_ids::{PersonId, SessionRef};
 
-use crate::{Answer, InvalidAnswer};
+use crate::{Answer, ApprovalDigestError, DeliveryEvidence, InvalidAnswer};
 
 approval_wire_union! {
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -112,21 +112,6 @@ pub enum CancelReason {
 }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub enum HolderReport {
-    GoneBeforeHandover,
-    ReplyWrittenEffectNotConfirmed,
-    /// The holder lost custody after a possible write.
-    DeliveryUnknown,
-    /// The holder has evidence that the answer took effect.
-    Applied,
-}
-
 approval_wire_union! {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(
@@ -137,7 +122,7 @@ pub enum Delivery {
     NoHandoverOwed {},
     AwaitingReport {},
     Reported {
-        report: HolderReport,
+        evidence: DeliveryEvidence,
     },
     /// Central retired a run with delivery still owed.
     ReceiptUnknown {},
@@ -179,6 +164,10 @@ approval_wire_record! {
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum InvalidApprovalEnding {
+    #[error(transparent)]
+    Digest(#[from] ApprovalDigestError),
+    #[error("a requester is not a destination of its own request")]
+    RequesterIsReader,
     #[error("the approval ending belongs to a different request or holder")]
     BindingMismatch,
     #[error("the answer does not fit the approval offer: {0:?}")]

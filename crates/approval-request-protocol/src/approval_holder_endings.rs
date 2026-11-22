@@ -1,11 +1,11 @@
 //! Deliverable endings carry only the answer and cancellation of their request kind.
-use crate::approval_wire_codec::approval_wire_union;
+use crate::approval_wire_codec::{approval_wire_record, approval_wire_union};
 use workspace_ids::ApprovalRequestId;
 
 use crate::{
-    Answer, CallStopCause, CancelReason, DecidedBy, Ending, HolderStopCause, InvalidAnswer,
-    InvalidApprovalEnding, OfferedOptionId, ParkedCallHolder, ProviderHolder, ProviderStopCause,
-    QuestionAnswer, Raise, check_answer,
+    Answer, ApprovalDigestError, CallStopCause, CancelReason, DecidedBy, Ending, EndingDigest,
+    HolderStopCause, InvalidAnswer, InvalidApprovalEnding, OfferedOptionId, ProviderStopCause,
+    QuestionAnswer, Raise, RequestContentsDigest, check_answer,
 };
 
 approval_wire_union! {
@@ -55,88 +55,87 @@ pub enum CallCancellation {
 
 approval_wire_union! {
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub enum OfferEnding {
-    ProviderApproval {
-        request_id: ApprovalRequestId,
-        holder: ProviderHolder,
-        ending: HolderEnding<OfferedOptionId, ProviderCancellation>,
-    },
-    ProviderQuestion {
-        request_id: ApprovalRequestId,
-        holder: ProviderHolder,
-        ending: HolderEnding<QuestionAnswer, ProviderCancellation>,
-    },
-    UnprovenCall {
-        request_id: ApprovalRequestId,
-        holder: ParkedCallHolder,
-        ending: HolderEnding<OfferedOptionId, CallCancellation>,
-    },
+#[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
+pub enum PrivateEnding {
+    ProviderApproval { ending: HolderEnding<OfferedOptionId, ProviderCancellation> },
+    ProviderQuestion { ending: HolderEnding<QuestionAnswer, ProviderCancellation> },
+    UnprovenCall { ending: HolderEnding<OfferedOptionId, CallCancellation> },
 }
 }
 
-impl OfferEnding {
-    /// Project the lifecycle's ending only for the exact recorded raise.
+impl PrivateEnding {
     pub fn from_raise(raise: &Raise, ending: Ending) -> Result<Self, InvalidApprovalEnding> {
-        match &ending {
-            Ending::Decided { answer, .. } => {
-                check_answer(&raise.offer_view(), answer).map_err(InvalidApprovalEnding::Answer)?
-            }
-            Ending::Cancelled { .. } | Ending::TimedOut {} => {}
+        if let Ending::Decided { answer, .. } = &ending {
+            check_answer(&raise.offer_view(), answer).map_err(InvalidApprovalEnding::Answer)?;
         }
         match raise {
-            Raise::ProviderApproval {
-                request_id, holder, ..
-            } => Ok(Self::ProviderApproval {
-                request_id: request_id.clone(),
-                holder: holder.clone(),
+            Raise::ProviderApproval { .. } => Ok(Self::ProviderApproval {
                 ending: project_ending(ending, take_approval, ProviderCancellation::try_from)?,
             }),
-            Raise::ProviderQuestion {
-                request_id, holder, ..
-            } => Ok(Self::ProviderQuestion {
-                request_id: request_id.clone(),
-                holder: holder.clone(),
+            Raise::ProviderQuestion { .. } => Ok(Self::ProviderQuestion {
                 ending: project_ending(ending, take_question, ProviderCancellation::try_from)?,
             }),
-            Raise::UnprovenCall {
-                request_id, holder, ..
-            } => Ok(Self::UnprovenCall {
-                request_id: request_id.clone(),
-                holder: holder.clone(),
+            Raise::UnprovenCall { .. } => Ok(Self::UnprovenCall {
                 ending: project_ending(ending, take_call, CallCancellation::try_from)?,
             }),
         }
     }
 
-    /// The Mac calls this before handing an offer to its exact bound responder.
-    pub fn check_bound_raise(&self, raise: &Raise) -> Result<(), InvalidApprovalEnding> {
-        let expected = Self::from_raise(raise, self.clone().into_ending())?;
-        if &expected == self {
-            Ok(())
-        } else {
-            Err(InvalidApprovalEnding::BindingMismatch)
-        }
+    pub fn ending_digest(&self) -> Result<EndingDigest, ApprovalDigestError> {
+        EndingDigest::from_wire(self)
     }
 
     #[must_use]
     pub fn into_ending(self) -> Ending {
         match self {
-            Self::ProviderApproval { ending, .. } => ending.into_ending(
+            Self::ProviderApproval { ending } => ending.into_ending(
                 |option_id| Answer::Approval { option_id },
                 ProviderCancellation::into_reason,
             ),
-            Self::ProviderQuestion { ending, .. } => ending.into_ending(
+            Self::ProviderQuestion { ending } => ending.into_ending(
                 |answer| Answer::Question { answer },
                 ProviderCancellation::into_reason,
             ),
-            Self::UnprovenCall { ending, .. } => ending.into_ending(
+            Self::UnprovenCall { ending } => ending.into_ending(
                 |option_id| Answer::Call { option_id },
                 CallCancellation::into_reason,
             ),
+        }
+    }
+}
+
+approval_wire_record! {
+[deny_unknown_fields]
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
+pub struct DeliverEndingRequest {
+    pub request_id: ApprovalRequestId,
+    pub contents_digest: RequestContentsDigest,
+    pub ending: PrivateEnding,
+}
+}
+
+impl DeliverEndingRequest {
+    pub fn from_raise(raise: &Raise, ending: Ending) -> Result<Self, InvalidApprovalEnding> {
+        Ok(Self {
+            request_id: raise.request_id().clone(),
+            contents_digest: raise.contents_digest()?,
+            ending: PrivateEnding::from_raise(raise, ending)?,
+        })
+    }
+
+    /// Check the holder's exact frozen Raise and its selected answer before handover.
+    pub fn check_bound_raise(&self, raise: &Raise) -> Result<(), InvalidApprovalEnding> {
+        if &self.request_id != raise.request_id()
+            || self.contents_digest != raise.contents_digest()?
+        {
+            return Err(InvalidApprovalEnding::BindingMismatch);
+        }
+        let expected = PrivateEnding::from_raise(raise, self.ending.clone().into_ending())?;
+        if self.ending == expected {
+            Ok(())
+        } else {
+            Err(InvalidApprovalEnding::BindingMismatch)
         }
     }
 }

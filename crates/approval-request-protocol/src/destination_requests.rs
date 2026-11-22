@@ -1,94 +1,12 @@
 use crate::approval_wire_codec::approval_wire_record;
 use crate::approval_wire_codec::approval_wire_union;
-use crate::{
-    ApprovalPageItems, ApprovalPageSize, PersonApprovalContinuation, SessionApprovalContinuation,
-};
+use crate::{ApprovalPageItems, ApprovalPageSize, SessionApprovalContinuation};
 use workspace_ids::{ApprovalRequestId, RequestId};
 
 use crate::{
-    Answer, ApprovalDecision, EndingView, InvalidAnswer, OfferView, RequestView, WaitingRevision,
+    Answer, ApprovalDecision, DecidedBy, EndingView, InvalidAnswer, InvalidApprovalEnding,
+    OfferView, Raise, RequestView, WaitingRevision,
 };
-
-approval_wire_record! {
-[deny_unknown_fields]
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub struct ListPersonRequests {
-    pub page_size: ApprovalPageSize,
-    pub continuation: Option<PersonApprovalContinuation>,
-}
-}
-
-approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub enum ListPersonRequestsReply {
-    Listed {
-        requests: ApprovalPageItems,
-        continuation: Option<PersonApprovalContinuation>,
-    },
-    Refused {
-        refusal: Refusal,
-    },
-}
-}
-
-approval_wire_record! {
-[deny_unknown_fields]
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub struct ReadPersonRequest {
-    pub request_id: ApprovalRequestId,
-}
-}
-
-approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub enum ReadPersonRequestReply {
-    Read { request: RequestView },
-    Refused { refusal: Refusal },
-}
-}
-
-approval_wire_record! {
-[deny_unknown_fields]
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub struct DecidePersonRequest {
-    pub request_id: ApprovalRequestId,
-    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = String))]
-    pub operation_id: RequestId,
-    pub answer: Answer,
-}
-}
-
-approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub enum DecidePersonReply {
-    Decided { decision: ApprovalDecision },
-    Refused { refusal: Refusal },
-}
-}
 
 approval_wire_record! {
 [deny_unknown_fields]
@@ -151,11 +69,11 @@ approval_wire_record! {
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
 )]
-pub struct DecideSessionRequest {
+pub struct DecideRequest {
     pub request_id: ApprovalRequestId,
     #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = String))]
     pub operation_id: RequestId,
-    pub answer: Answer,
+    pub value: Answer,
 }
 }
 
@@ -165,9 +83,13 @@ approval_wire_union! {
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
 )]
-pub enum DecideSessionReply {
-    Decided { decision: ApprovalDecision },
-    Refused { refusal: Refusal },
+pub enum DecideReply {
+    SavedDecision { decision: ApprovalDecision },
+    Standing { ending: EndingView },
+    NotVisible {},
+    Invalid {},
+    TooLate {},
+    OperationConflict {},
 }
 }
 
@@ -180,8 +102,6 @@ approval_wire_record! {
 )]
 pub struct PassOnRequest {
     pub request_id: ApprovalRequestId,
-    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = String))]
-    pub operation_id: RequestId,
 }
 }
 
@@ -192,8 +112,10 @@ approval_wire_union! {
     derive(specta::Type)
 )]
 pub enum PassOnReply {
-    PassedOn {},
-    Refused { refusal: Refusal },
+    Forwarded {},
+    NotVisible {},
+    TooLate {},
+    Ended {},
 }
 }
 
@@ -238,9 +160,33 @@ approval_wire_record! {
     derive(specta::Type)
 )]
 pub struct WaitingRequestView {
-    pub request_id: ApprovalRequestId,
-    pub offer: OfferView,
+    request_id: ApprovalRequestId,
+    offer: OfferView,
 }
+}
+
+impl WaitingRequestView {
+    /// Central checks live destination membership before making the watch row.
+    pub fn for_destination(
+        raise: &Raise,
+        destination: &DecidedBy,
+    ) -> Result<Self, InvalidApprovalEnding> {
+        crate::approval_request_views::check_reader(raise, destination)?;
+        Ok(Self {
+            request_id: raise.request_id().clone(),
+            offer: raise.offer_view(),
+        })
+    }
+
+    #[must_use]
+    pub fn request_id(&self) -> &ApprovalRequestId {
+        &self.request_id
+    }
+
+    #[must_use]
+    pub fn offer(&self) -> &OfferView {
+        &self.offer
+    }
 }
 
 approval_wire_union! {

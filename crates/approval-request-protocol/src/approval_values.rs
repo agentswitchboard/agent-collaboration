@@ -1,6 +1,5 @@
 use crate::approval_wire_codec::approval_wire_record;
 use serde::{Deserialize, Serialize};
-use serde_json::Number;
 
 const MAX_SAFE_JSON_INTEGER: u64 = (1 << 53) - 1;
 
@@ -136,48 +135,6 @@ approval_ordinal!(OfferedOptionId, MAX_OPTION_ORDINAL);
 approval_ordinal!(QuestionFieldId, MAX_FIELD_ORDINAL);
 approval_text!(CallOperationName, Some(TITLE_MAX_CHARACTERS), true);
 
-/// SHA-256 of the parked invocation, in canonical lowercase hexadecimal.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub struct InvocationDigest(String);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("invocation digest must be 64 lowercase hexadecimal characters")]
-pub struct InvalidInvocationDigest;
-
-impl TryFrom<String> for InvocationDigest {
-    type Error = InvalidInvocationDigest;
-
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        if value.len() == 64
-            && value
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            Ok(Self(value))
-        } else {
-            Err(InvalidInvocationDigest)
-        }
-    }
-}
-
-impl From<InvocationDigest> for String {
-    fn from(value: InvocationDigest) -> Self {
-        value.0
-    }
-}
-
-impl InvocationDigest {
-    #[must_use]
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
 pub type CentralTime = chrono::DateTime<chrono::Utc>;
 
 approval_wire_record! {
@@ -289,63 +246,65 @@ impl From<WaitingRevision> for u64 {
     }
 }
 
-/// A finite JSON number. Integers must lie within ±(2^53 − 1), the range
-/// Rust and JavaScript can round-trip exactly without changing their value.
+/// An exact ASCII decimal spelling. The wire transports the string unchanged.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "Number", into = "Number")]
-pub struct QuestionNumber(Number);
+#[serde(try_from = "String", into = "String")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub struct QuestionNumber(String);
 
-#[cfg(all(feature = "wire-export", not(target_arch = "wasm32")))]
-impl specta::Type for QuestionNumber {
-    fn definition(types: &mut specta::Types) -> specta::datatype::DataType {
-        specta_typescript::Number::<()>::definition(types)
-    }
-}
+pub const MAX_QUESTION_NUMBER_LENGTH: usize = 40;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum InvalidQuestionNumber {
-    #[error("question number must be finite")]
-    NonFinite,
-    #[error("question integer is outside the JavaScript safe integer range")]
-    UnsafeInteger,
+    #[error("a question number can contain at most {MAX_QUESTION_NUMBER_LENGTH} characters")]
+    TooLong,
+    #[error("a question number must use the approved decimal spelling")]
+    InvalidSpelling,
 }
 
-impl TryFrom<Number> for QuestionNumber {
+impl QuestionNumber {
+    pub fn new(spelling: impl Into<String>) -> Result<Self, InvalidQuestionNumber> {
+        Self::try_from(spelling.into())
+    }
+
+    #[must_use]
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for QuestionNumber {
     type Error = InvalidQuestionNumber;
 
-    fn try_from(value: Number) -> Result<Self, Self::Error> {
-        // Outside the safe integer range a finite binary64 number has no fraction.
-        // Conversion here is only for validation. The original JSON number is retained.
-        let binary_number = value
-            .as_f64()
-            .filter(|number| number.is_finite())
-            .ok_or(InvalidQuestionNumber::NonFinite)?;
-        if binary_number.abs() > MAX_SAFE_JSON_INTEGER as f64 {
-            return Err(InvalidQuestionNumber::UnsafeInteger);
+    fn try_from(spelling: String) -> Result<Self, Self::Error> {
+        if spelling.len() > MAX_QUESTION_NUMBER_LENGTH {
+            return Err(InvalidQuestionNumber::TooLong);
         }
-        Ok(Self(value))
+        let digits = spelling.strip_prefix('-').unwrap_or(&spelling);
+        let (whole, fraction) = match digits.split_once('.') {
+            Some((whole, fraction)) => (whole, Some(fraction)),
+            None => (digits, None),
+        };
+        if spelling == "-0"
+            || !is_decimal_digits(whole)
+            || (whole.starts_with('0') && whole.len() > 1)
+            || fraction.is_some_and(|fraction| !is_decimal_digits(fraction))
+        {
+            return Err(InvalidQuestionNumber::InvalidSpelling);
+        }
+        Ok(Self(spelling))
     }
 }
 
-impl TryFrom<f64> for QuestionNumber {
-    type Error = InvalidQuestionNumber;
-
-    fn try_from(value: f64) -> Result<Self, Self::Error> {
-        Number::from_f64(value)
-            .ok_or(InvalidQuestionNumber::NonFinite)?
-            .try_into()
-    }
-}
-
-impl From<QuestionNumber> for Number {
+impl From<QuestionNumber> for String {
     fn from(value: QuestionNumber) -> Self {
         value.0
     }
 }
 
-impl QuestionNumber {
-    #[must_use]
-    pub const fn as_json_number(&self) -> &Number {
-        &self.0
-    }
+fn is_decimal_digits(part: &str) -> bool {
+    !part.is_empty() && part.bytes().all(|digit| digit.is_ascii_digit())
 }

@@ -1,12 +1,13 @@
 use crate::approval_wire_codec::approval_wire_record;
 use crate::approval_wire_codec::approval_wire_union;
 use serde::{Deserialize, Serialize};
-use workspace_ids::{ApprovalRequestId, RouterRunId, SessionRef};
+use workspace_ids::{ApprovalRequestId, RouterRunId, SessionId};
 
 use crate::approval_values::{
-    CallOperationName, Description, InvocationDigest, Label, OfferedOptionId, Subject, Title,
+    CallOperationName, Description, Label, OfferedOptionId, Subject, Title,
 };
 use crate::question_fields::{InvalidOfferedOptions, QuestionFields, validate_options};
+use crate::{ApprovalDigestError, InvocationDigest, RequestContentsDigest};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -47,6 +48,10 @@ pub enum Raise {
 }
 
 impl Raise {
+    pub fn contents_digest(&self) -> Result<RequestContentsDigest, ApprovalDigestError> {
+        RequestContentsDigest::from_wire(self)
+    }
+
     #[must_use]
     pub const fn kind(&self) -> RequestKind {
         match self {
@@ -113,8 +118,8 @@ approval_wire_record! {
     derive(specta::Type)
 )]
 pub struct ProviderHolder {
-    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = crate::typescript_shapes::SessionRef))]
-    pub session: SessionRef => "crate::approval_wire_codec::decode_named_map",
+    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = String))]
+    pub session_id: SessionId,
     pub router_run: RouterRunId,
 }
 }

@@ -1,6 +1,6 @@
 //! Bounded organization-scoped reads page by the immutable Central row order.
 use serde::{Deserialize, Serialize};
-use workspace_ids::{PersonId, RequestId, SessionRef};
+use workspace_ids::{RequestId, SessionRef};
 
 use crate::{RequestView, approval_wire_codec::approval_wire_record};
 
@@ -112,39 +112,6 @@ impl ApprovalListPosition {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("the approval continuation belongs to a different destination")]
 pub struct ApprovalContinuationAudienceMismatch;
-
-approval_wire_record! {
-    [deny_unknown_fields]
-    #[derive(Clone, Debug, Eq, PartialEq)]
-    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
-    pub struct PersonApprovalContinuation {
-        #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = String))]
-        person_id: PersonId,
-        after_row_id: ApprovalListPosition,
-    }
-}
-
-impl PersonApprovalContinuation {
-    #[must_use]
-    pub const fn new(person_id: PersonId, after_row_id: ApprovalListPosition) -> Self {
-        Self {
-            person_id,
-            after_row_id,
-        }
-    }
-
-    /// Check against the authenticated person inside the current authorized read.
-    pub fn after_for(
-        &self,
-        admitted: &PersonId,
-    ) -> Result<&ApprovalListPosition, ApprovalContinuationAudienceMismatch> {
-        if &self.person_id == admitted {
-            Ok(&self.after_row_id)
-        } else {
-            Err(ApprovalContinuationAudienceMismatch)
-        }
-    }
-}
 
 approval_wire_record! {
     [deny_unknown_fields]

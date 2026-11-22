@@ -1,32 +1,41 @@
 //! A destination sees only the offer and ending for the request's own kind.
-use crate::approval_wire_codec::approval_wire_union;
+use crate::approval_wire_codec::{approval_wire_record, approval_wire_union};
 use serde::{Deserialize, Serialize};
 use workspace_ids::ApprovalRequestId;
 
 use crate::{
     Answer, ApprovalOffer, ApprovalWindow, CallCancellation, CallOffer, CentralTime, DecidedBy,
-    Delivery, Ending, HolderEnding, InvalidApprovalEnding, OfferEnding, OfferView, OfferedOptionId,
-    ProviderCancellation, QuestionAnswer, QuestionOffer, Raise, WaitingStatus, check_answer,
+    Delivery, Ending, HolderEnding, InvalidApprovalEnding, OfferView, OfferedOptionId,
+    PrivateEnding, ProviderCancellation, QuestionAnswer, QuestionOffer, Raise, WaitingStatus,
+    check_answer,
 };
 
 approval_wire_union! {
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub enum DestinationEnding<AcceptedAnswer, Cancellation> {
-    Decided {
-        by: DecidedBy,
-    },
-    DecidedWithAnswer {
-        answer: AcceptedAnswer,
-        by: DecidedBy,
-    },
-    Cancelled {
-        reason: Cancellation,
-    },
+#[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
+pub enum StandingEnding<Cancellation> {
+    Decided { by: DecidedBy },
+    Cancelled { reason: Cancellation },
     TimedOut {},
+}
+}
+
+approval_wire_record! {
+[deny_unknown_fields]
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
+pub struct GiverDecision<AcceptedAnswer> {
+    pub by: DecidedBy,
+    pub answer: AcceptedAnswer,
+}
+}
+
+approval_wire_union! {
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
+pub enum DestinationEnding<AcceptedAnswer, Cancellation> {
+    Standing { ending: StandingEnding<Cancellation> },
+    Giver { decision: GiverDecision<AcceptedAnswer> },
 }
 }
 
@@ -35,14 +44,17 @@ impl<AcceptedAnswer, Cancellation> DestinationEnding<AcceptedAnswer, Cancellatio
         ending: HolderEnding<AcceptedAnswer, Cancellation>,
         destination: &DecidedBy,
     ) -> Self {
-        match ending {
+        let standing = match ending {
             HolderEnding::Decided { answer, by } if &by == destination => {
-                Self::DecidedWithAnswer { answer, by }
+                return Self::Giver {
+                    decision: GiverDecision { answer, by },
+                };
             }
-            HolderEnding::Decided { by, .. } => Self::Decided { by },
-            HolderEnding::Cancelled { reason } => Self::Cancelled { reason },
-            HolderEnding::TimedOut {} => Self::TimedOut {},
-        }
+            HolderEnding::Decided { by, .. } => StandingEnding::Decided { by },
+            HolderEnding::Cancelled { reason } => StandingEnding::Cancelled { reason },
+            HolderEnding::TimedOut {} => StandingEnding::TimedOut {},
+        };
+        Self::Standing { ending: standing }
     }
 }
 
@@ -72,14 +84,15 @@ impl EndingView {
         ending: Ending,
         reader: &DecidedBy,
     ) -> Result<Self, InvalidApprovalEnding> {
-        Ok(match OfferEnding::from_raise(raise, ending)? {
-            OfferEnding::ProviderApproval { ending, .. } => Self::ProviderApproval {
+        check_reader(raise, reader)?;
+        Ok(match PrivateEnding::from_raise(raise, ending)? {
+            PrivateEnding::ProviderApproval { ending, .. } => Self::ProviderApproval {
                 ending: DestinationEnding::project(ending, reader),
             },
-            OfferEnding::ProviderQuestion { ending, .. } => Self::ProviderQuestion {
+            PrivateEnding::ProviderQuestion { ending, .. } => Self::ProviderQuestion {
                 ending: DestinationEnding::project(ending, reader),
             },
-            OfferEnding::UnprovenCall { ending, .. } => Self::UnprovenCall {
+            PrivateEnding::UnprovenCall { ending, .. } => Self::UnprovenCall {
                 ending: DestinationEnding::project(ending, reader),
             },
         })
@@ -111,11 +124,12 @@ impl<AcceptedAnswer, Cancellation> RequestStateView<AcceptedAnswer, Cancellation
         answer_for_kind: impl FnOnce(&AcceptedAnswer) -> Answer,
     ) -> Result<(), InvalidApprovalEnding> {
         if let Self::Ended {
-            ending: DestinationEnding::DecidedWithAnswer { answer, .. },
+            ending: DestinationEnding::Giver { decision },
             ..
         } = self
         {
-            check_answer(offer, &answer_for_kind(answer)).map_err(InvalidApprovalEnding::Answer)?;
+            check_answer(offer, &answer_for_kind(&decision.answer))
+                .map_err(InvalidApprovalEnding::Answer)?;
         }
         Ok(())
     }
@@ -160,10 +174,16 @@ enum RequestViewFields {
 pub struct RequestView(RequestViewFields);
 
 impl RequestView {
-    #[must_use]
-    pub fn waiting(raise: &Raise, status: WaitingStatus, window: ApprovalWindow) -> Self {
+    /// Central checks current destination membership before invoking this projection.
+    pub fn waiting(
+        raise: &Raise,
+        status: WaitingStatus,
+        window: ApprovalWindow,
+        reader: &DecidedBy,
+    ) -> Result<Self, InvalidApprovalEnding> {
+        check_reader(raise, reader)?;
         let request_id = raise.request_id().clone();
-        Self(match raise {
+        Ok(Self(match raise {
             Raise::ProviderApproval { offer, .. } => RequestViewFields::ProviderApproval {
                 request_id,
                 offer: offer.clone(),
@@ -182,7 +202,7 @@ impl RequestView {
                 state: RequestStateView::Waiting { status },
                 window,
             },
-        })
+        }))
     }
 
     /// Central has already checked this reader's destination standing.
@@ -298,5 +318,17 @@ impl TryFrom<RequestViewFields> for RequestView {
 impl From<RequestView> for RequestViewFields {
     fn from(view: RequestView) -> Self {
         view.0
+    }
+}
+
+pub(crate) fn check_reader(raise: &Raise, reader: &DecidedBy) -> Result<(), InvalidApprovalEnding> {
+    match (raise, reader) {
+        (
+            Raise::ProviderApproval { holder, .. } | Raise::ProviderQuestion { holder, .. },
+            DecidedBy::Session { session },
+        ) if holder.session_id == session.session_id => {
+            Err(InvalidApprovalEnding::RequesterIsReader)
+        }
+        _ => Ok(()),
     }
 }

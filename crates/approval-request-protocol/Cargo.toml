@@ -14,9 +14,11 @@ workspace = true
 wire-export = ["dep:specta", "dep:specta-typescript", "workspace-ids/wire-export"]
 
 [dependencies]
+base64.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
 chrono = { version = "=0.4.45", default-features = false, features = ["std", "serde"] }
 serde.workspace = true
-serde_json = { workspace = true, features = ["float_roundtrip"] }
 thiserror.workspace = true
 workspace-ids.workspace = true
 
