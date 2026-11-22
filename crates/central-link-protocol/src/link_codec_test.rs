@@ -2,7 +2,7 @@ use super::*;
 use serde_json::json;
 
 #[test]
-fn delivery_resolves_sender_beside_the_unchanged_message_record() {
+fn direct_offer_preserves_the_resolved_sender_and_delivery_fields() {
     let id = "019f0000-0000-7000-8000-000000000001";
     let mut wire = json!({
         "kind":"deliver",
@@ -11,8 +11,7 @@ fn delivery_resolves_sender_beside_the_unchanged_message_record() {
             "messageId":id,"sender":{"kind":"actor","value":id},
             "target":{"machineId":id,"sessionId":"recipient"},
             "body":{"kind":"direct","body":"hello","delivery":"auto","replyTo":null},
-            "state":{"kind":"queued"},"source":null,
-            "createdAt":"2030-03-17T17:46:40Z","updatedAt":"2030-03-17T17:46:40Z"
+            "state":{"kind":"queued"},"source":null
         },
         "sender":{
             "kind":"session","session":{"machineId":id,"sessionId":"sender"},
@@ -171,7 +170,7 @@ fn welcome_reply_deliver_and_receipts_are_closed_and_directional() {
         ),
         (
             FrameDirection::ToRouter,
-            json!({"kind":"deliver","timeLeft":1500,"sender":{"kind":"central"},"message":{"messageId":id,"sender":{"kind":"central"},"target":{"machineId":id,"sessionId":"s"},"body":{"kind":"direct","body":"hello","delivery":"auto","replyTo":null},"state":{"kind":"queued"},"source":null,"createdAt":"2030-01-01T00:00:00Z","updatedAt":"2030-01-01T00:00:00Z"}}),
+            json!({"kind":"deliver","timeLeft":1500,"sender":{"kind":"central"},"message":{"messageId":id,"sender":{"kind":"central"},"target":{"machineId":id,"sessionId":"s"},"body":{"kind":"direct","body":"hello","delivery":"auto","replyTo":null},"state":{"kind":"queued"},"source":null}}),
         ),
         (
             FrameDirection::ToCentral,
