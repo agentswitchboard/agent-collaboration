@@ -215,9 +215,16 @@ async fn serve_lazy_codex_sessions(
         #[cfg(feature = "test-support")]
         if let Some(probe) = &probe {
             if probe.phase().holds_registry_handoff() {
-                probe.reached.cancelled().await;
+                tokio::select! {
+                    () = probe.reached.cancelled() => {},
+                    () = probe.generation_disposed.cancelled() => {},
+                    () = probe.abandoned.cancelled() => {},
+                }
             } else {
-                probe.generation_disposed.cancelled().await;
+                tokio::select! {
+                    () = probe.generation_disposed.cancelled() => {},
+                    () = probe.abandoned.cancelled() => {},
+                }
             }
         }
         if !frontend_close.peer_disconnected.is_cancelled()

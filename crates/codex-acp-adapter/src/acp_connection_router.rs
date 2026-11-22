@@ -334,7 +334,10 @@ pub async fn serve_acp_router_connection_until<
         if let Some(probe) = crate::test_support::binding_preservation::current()
             .filter(|probe| probe.phase().holds_registry_handoff())
         {
-            probe.release_outer_abort.cancelled().await;
+            tokio::select! {
+                () = probe.release_outer_abort.cancelled() => {},
+                () = probe.abandoned.cancelled() => {},
+            }
         }
         route_tasks.abort_all();
         while route_tasks.join_next().await.is_some() {}

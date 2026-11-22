@@ -76,8 +76,7 @@ pub async fn run_acp_transport<TStream: AsyncRead + AsyncWrite + Unpin>(
             #[cfg(feature = "test-support")]
             if hold_read && let Some(probe) = crate::test_support::binding_preservation::current().filter(|probe| probe.phase() == crate::test_support::binding_preservation::PreservationPhase::PeerWriteFailure) {
                 // Keep the read half pending after dispatching the prompt so the real write error wins.
-                let _wait_for_write = probe.peer_write_failed.cancelled().await;
-                std::future::pending::<()>().await;
+                probe.abandoned.cancelled().await;
             }
         }
     };

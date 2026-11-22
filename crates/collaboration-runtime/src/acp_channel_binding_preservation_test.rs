@@ -50,6 +50,10 @@ fn native_schemas() -> Result<Arc<NativePayloadSchemas>, Box<dyn std::error::Err
 
 type FixtureError = Box<dyn std::error::Error + Send + Sync>;
 
+#[path = "acp_channel_preservation_scenario_test.rs"]
+mod scenario;
+use scenario::{proof_stage, run_scenario};
+
 struct Frontend {
     reader: BufReader<OwnedReadHalf>,
     writer: OwnedWriteHalf,
@@ -57,6 +61,7 @@ struct Frontend {
 
 impl Frontend {
     async fn connect(path: &Path) -> Result<Self, FixtureError> {
+        proof_stage("connecting frontend Unix socket");
         let (reader, writer) = UnixStream::connect(path).await?.into_split();
         let mut frontend = Self {
             reader: BufReader::new(reader),
@@ -72,6 +77,7 @@ impl Frontend {
     }
 
     async fn send(&mut self, id: u64, method: &str, params: Value) -> Result<(), FixtureError> {
+        proof_stage(format!("sending ACP {method} ({id})"));
         self.writer
             .write_all(
                 format!(
@@ -90,8 +96,15 @@ impl Frontend {
     }
 
     async fn receive(&mut self, id: u64) -> Result<Value, FixtureError> {
+        proof_stage(format!("reading ACP response {id}"));
+        self.read_reply(id).await
+    }
+
+    async fn read_reply(&mut self, id: u64) -> Result<Value, FixtureError> {
         let mut reply = String::new();
-        self.reader.read_line(&mut reply).await?;
+        if self.reader.read_line(&mut reply).await? == 0 {
+            return Err(format!("frontend closed before response {id}").into());
+        }
         let reply: Value = serde_json::from_str(&reply)?;
         if reply["id"] != id {
             return Err(format!("unexpected reply to request {id}: {reply}").into());
@@ -104,6 +117,7 @@ async fn native_request(
     wire: &mut WebSocketStream<UnixStream>,
     method: &str,
 ) -> Result<Value, FixtureError> {
+    proof_stage(format!("reading native {method}"));
     let frame = wire
         .next()
         .await
@@ -120,6 +134,7 @@ async fn native_reply(
     request: &Value,
     result: Value,
 ) -> Result<(), FixtureError> {
+    proof_stage(format!("replying to native {}", request["method"]));
     wire.send(Message::text(
         json!({"id":request["id"],"result":result}).to_string(),
     ))
@@ -130,7 +145,9 @@ async fn native_reply(
 async fn prepare_native_thread(
     listener: UnixListener,
 ) -> Result<(WebSocketStream<UnixStream>, Value), FixtureError> {
+    proof_stage("accepting original native Unix socket");
     let (stream, _) = listener.accept().await?;
+    proof_stage("negotiating original native WebSocket");
     // Reload must reuse the original native client. A new dial fails immediately.
     drop(listener);
     let mut wire = tokio_tungstenite::accept_async(stream).await?;
@@ -160,6 +177,8 @@ struct ListenerFixture {
     stop: CancellationToken,
     gate: NativeGenerationGate,
     task: tokio::task::JoinHandle<io::Result<()>>,
+    listener_exited: CancellationToken,
+    probe: Arc<PreservationProbe>,
 }
 
 impl ListenerFixture {
@@ -191,9 +210,15 @@ impl ListenerFixture {
         )?
         .with_connection_budget(Arc::clone(&permit));
         let stop = CancellationToken::new();
+        let listener_exited = CancellationToken::new();
+        let on_exit = listener_exited.clone().drop_guard();
+        let run = listener.run(stop.clone());
         let task = tokio::spawn(binding_preservation::scope(
             Some(Arc::clone(probe)),
-            listener.run(stop.clone()),
+            async move {
+                let _on_exit = on_exit;
+                run.await
+            },
         ));
         Ok((
             Self {
@@ -203,6 +228,8 @@ impl ListenerFixture {
                 stop,
                 gate,
                 task,
+                listener_exited,
+                probe: Arc::clone(probe),
             },
             backend,
         ))
@@ -226,9 +253,29 @@ impl ListenerFixture {
     }
 
     async fn await_frontend_return(&self) -> Result<(), FixtureError> {
-        drop(self.permit.acquire().await?);
+        proof_stage("waiting for the frontend connection permit to return");
+        tokio::select! {
+            biased;
+            permit = self.permit.acquire() => drop(permit?),
+            () = self.listener_exited.cancelled() => return Err("listener exited before frontend permit returned".into()),
+        }
         assert!(!self.stop.is_cancelled(), "the Host outlives the frontend");
         Ok(())
+    }
+
+    async fn wait_for_gate(
+        &self,
+        stage: &str,
+        reached: &CancellationToken,
+        participant_exited: &CancellationToken,
+    ) -> Result<(), FixtureError> {
+        proof_stage(stage);
+        tokio::select! {
+            biased;
+            () = reached.cancelled() => Ok(()),
+            () = participant_exited.cancelled() => Err(format!("participant exited before {stage}").into()),
+            () = self.listener_exited.cancelled() => Err(format!("listener exited before {stage}").into()),
+        }
     }
 
     fn begin_host_stop(&self) -> Result<(), FixtureError> {
@@ -237,10 +284,29 @@ impl ListenerFixture {
         Ok(())
     }
 
-    async fn stop(self) -> Result<(), FixtureError> {
-        self.begin_host_stop()?;
-        self.task.await??;
+    async fn join_listener(&mut self) -> Result<(), FixtureError> {
+        proof_stage("joining listener after Host stop");
+        (&mut self.task).await??;
         Ok(())
+    }
+
+    async fn stop(mut self) -> Result<(), FixtureError> {
+        self.begin_host_stop()?;
+        self.join_listener().await
+    }
+}
+
+impl Drop for ListenerFixture {
+    fn drop(&mut self) {
+        self.probe.abandoned.cancel();
+        self.probe.release_outer_abort.cancel();
+        self.probe.release_handoff.cancel();
+        self.probe.release_update_write.cancel();
+        self.stop.cancel();
+        let _retired = self.gate.retire();
+        if !self.task.is_finished() {
+            self.task.abort();
+        }
     }
 }
 
@@ -283,6 +349,7 @@ async fn assert_interrupted_load_preserves_binding(
     reply_started(&mut native_wire, &request).await?;
     let host_tasks = fixture.holder.host_tasks();
     host_tasks.close();
+    proof_stage("waiting for Host create to publish its held binding");
     host_tasks.wait().await;
     host_tasks.reopen();
     assert!(
@@ -293,10 +360,23 @@ async fn assert_interrupted_load_preserves_binding(
     probe.arm();
     let mut interrupted = fixture.connect().await?;
     interrupted.send(2, "session/load", load_params()).await?;
-    probe.reached.cancelled().await;
+    let setup_checkpoint = format!("waiting for held setup gate {phase:?}");
+    proof_stage(&setup_checkpoint);
+    tokio::select! {
+        biased;
+        () = probe.reached.cancelled() => {},
+        reply = interrupted.read_reply(2) => return Err(format!("{setup_checkpoint}: frontend answered before the gate: {reply:?}").into()),
+        () = fixture.listener_exited.cancelled() => return Err(format!("{setup_checkpoint}: listener exited").into()),
+    }
     drop(interrupted);
     fixture.await_frontend_return().await?;
-    probe.generation_disposed.cancelled().await;
+    fixture
+        .wait_for_gate(
+            "waiting for interrupted load generation disposal",
+            &probe.generation_disposed,
+            &fixture.listener_exited,
+        )
+        .await?;
 
     probe.disarm();
     let mut reconnected = fixture.connect().await?;
@@ -312,37 +392,51 @@ async fn assert_interrupted_load_preserves_binding(
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn checked_out_binding_survives_eof_before_setup_first_poll() -> Result<(), FixtureError> {
-    assert_interrupted_load_preserves_binding(PreservationPhase::BeforeSetupPoll).await
+async fn checked_out_binding_survives_eof_before_setup_first_poll() {
+    run_scenario(assert_interrupted_load_preserves_binding(
+        PreservationPhase::BeforeSetupPoll,
+    ))
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn checked_out_binding_survives_eof_during_directory_normalization()
--> Result<(), FixtureError> {
-    assert_interrupted_load_preserves_binding(PreservationPhase::DuringDirectoryNormalization).await
+async fn checked_out_binding_survives_eof_during_directory_normalization() {
+    run_scenario(assert_interrupted_load_preserves_binding(
+        PreservationPhase::DuringDirectoryNormalization,
+    ))
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn successful_uncollected_setup_survives_eof() -> Result<(), FixtureError> {
-    assert_interrupted_load_preserves_binding(PreservationPhase::BeforeSetupCollection).await
+async fn successful_uncollected_setup_survives_eof() {
+    run_scenario(assert_interrupted_load_preserves_binding(
+        PreservationPhase::BeforeSetupCollection,
+    ))
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn lazy_generation_eof_preserves_native_prompt_terminal_observation()
--> Result<(), FixtureError> {
-    assert_native_observer_survives_close(PreservationPhase::BeforeRegistryHandoff).await
+async fn lazy_generation_eof_preserves_native_prompt_terminal_observation() {
+    run_scenario(assert_native_observer_survives_close(
+        PreservationPhase::BeforeRegistryHandoff,
+    ))
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn peer_write_failure_preserves_native_prompt_terminal_observation()
--> Result<(), FixtureError> {
-    assert_native_observer_survives_close(PreservationPhase::PeerWriteFailure).await
+async fn peer_write_failure_preserves_native_prompt_terminal_observation() {
+    run_scenario(assert_native_observer_survives_close(
+        PreservationPhase::PeerWriteFailure,
+    ))
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn truncated_peer_request_preserves_native_prompt_terminal_observation()
--> Result<(), FixtureError> {
-    assert_native_observer_survives_close(PreservationPhase::TruncatedPeerRequest).await
+async fn truncated_peer_request_preserves_native_prompt_terminal_observation() {
+    run_scenario(assert_native_observer_survives_close(
+        PreservationPhase::TruncatedPeerRequest,
+    ))
+    .await;
 }
 
 async fn assert_native_observer_survives_close(
@@ -376,7 +470,13 @@ async fn assert_native_observer_survives_close(
 
     if phase == PreservationPhase::PeerWriteFailure {
         native_wire.send(Message::text(json!({"method":"item/agentMessage/delta","params":{"threadId":SESSION,"turnId":"held-turn","itemId":"message","delta":"queued update"}}).to_string())).await?;
-        probe.update_waiting_to_write.cancelled().await;
+        fixture
+            .wait_for_gate(
+                "waiting for the queued update at the transport writer",
+                &probe.update_waiting_to_write,
+                &probe.generation_disposed,
+            )
+            .await?;
     }
     if phase == PreservationPhase::TruncatedPeerRequest {
         frontend.writer.write_all(b"{\"jsonrpc\":\"2.0\",").await?;
@@ -384,16 +484,41 @@ async fn assert_native_observer_survives_close(
     drop(frontend);
     if phase == PreservationPhase::PeerWriteFailure {
         probe.release_update_write.cancel();
-        probe.peer_write_failed.cancelled().await;
+        fixture
+            .wait_for_gate(
+                "waiting for the real BrokenPipe at the transport writer",
+                &probe.peer_write_failed,
+                &probe.generation_disposed,
+            )
+            .await?;
     }
-    probe.reached.cancelled().await;
-    probe.lazy_close_issued.cancelled().await;
+    fixture
+        .wait_for_gate(
+            "waiting for the registry handoff gate",
+            &probe.reached,
+            &probe.generation_disposed,
+        )
+        .await?;
+    fixture
+        .wait_for_gate(
+            "waiting for the lazy route close decision",
+            &probe.lazy_close_issued,
+            &probe.generation_disposed,
+        )
+        .await?;
     probe.release_handoff.cancel();
-    probe.generation_disposed.cancelled().await;
+    fixture
+        .wait_for_gate(
+            "waiting for the active generation to dispose",
+            &probe.generation_disposed,
+            &fixture.listener_exited,
+        )
+        .await?;
     probe.release_outer_abort.cancel();
     fixture.await_frontend_return().await?;
 
     let terminal = async {
+        proof_stage("sending the native terminal after frontend return");
         native_wire.send(Message::text(json!({"method":"turn/completed","params":{"threadId":SESSION,"turn":{"id":"held-turn","status":"completed"}}}).to_string())).await?;
         let exact_readback = native_request(&mut native_wire, "thread/read").await?;
         assert_eq!(exact_readback["params"]["threadId"], SESSION);
@@ -407,15 +532,15 @@ async fn assert_native_observer_survives_close(
     Ok(())
 }
 
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "A failed preservation assertion must identify the forced interleaving."
-)]
 #[tokio::test(flavor = "current_thread")]
-async fn host_stop_counts_generation_before_registry_handoff() -> Result<(), FixtureError> {
+async fn host_stop_counts_generation_before_registry_handoff() {
+    run_scenario(assert_host_stop_counts_generation()).await;
+}
+
+async fn assert_host_stop_counts_generation() -> Result<(), FixtureError> {
     let probe = PreservationProbe::new(PreservationPhase::HostStopBeforeHandoff);
     probe.arm();
-    let (fixture, backend) = ListenerFixture::start(&probe)?;
+    let (mut fixture, backend) = ListenerFixture::start(&probe)?;
     let mut frontend = fixture.connect().await?;
     frontend
         .send(2, "session/new", fixture.create_params()?)
@@ -425,13 +550,25 @@ async fn host_stop_counts_generation_before_registry_handoff() -> Result<(), Fix
     assert_eq!(frontend.receive(2).await?["result"]["sessionId"], SESSION);
 
     drop(frontend);
-    probe.reached.cancelled().await;
+    fixture
+        .wait_for_gate(
+            "waiting for the generation before Host handoff",
+            &probe.reached,
+            &probe.generation_disposed,
+        )
+        .await?;
     fixture.await_frontend_return().await?;
     fixture.begin_host_stop()?;
-    probe.listener_draining.cancelled().await;
+    fixture
+        .wait_for_gate(
+            "waiting for the listener to enter Host drain",
+            &probe.listener_draining,
+            &fixture.listener_exited,
+        )
+        .await?;
     let tracked_at_drain = fixture.holder.host_tasks().len();
     probe.release_handoff.cancel();
-    fixture.task.await??;
+    fixture.join_listener().await?;
 
     assert_eq!(
         tracked_at_drain, 1,
@@ -443,7 +580,7 @@ async fn host_stop_counts_generation_before_registry_handoff() -> Result<(), Fix
 async fn host_stop_with_detached_prompt(start_acknowledged: bool) -> Result<(), FixtureError> {
     let probe = PreservationProbe::new(PreservationPhase::HostStopAfterPromptDetach);
     probe.arm();
-    let (fixture, backend) = ListenerFixture::start(&probe)?;
+    let (mut fixture, backend) = ListenerFixture::start(&probe)?;
     let mut frontend = fixture.connect().await?;
     frontend
         .send(2, "session/new", fixture.create_params()?)
@@ -467,35 +604,53 @@ async fn host_stop_with_detached_prompt(start_acknowledged: bool) -> Result<(), 
             json!({"turn":{"id":"held-turn","status":"inProgress"}}),
         )
         .await?;
-        probe.prompt_started.cancelled().await;
+        fixture
+            .wait_for_gate(
+                "waiting for native start acknowledgement",
+                &probe.prompt_started,
+                &probe.prompt_exited,
+            )
+            .await?;
     }
 
     drop(frontend);
     fixture.await_frontend_return().await?;
-    probe.prompt_detached.cancelled().await;
+    fixture
+        .wait_for_gate(
+            "waiting for prompt actor detachment",
+            &probe.prompt_detached,
+            &probe.prompt_exited,
+        )
+        .await?;
     // Force one real prompt poll after retirement without sending the native reply.
     fixture.begin_host_stop()?;
     assert!(
         probe.check_prompt_after_retirement(),
         "the detached prompt must have suspended on native work"
     );
-    probe.prompt_checked.cancelled().await;
+    fixture
+        .wait_for_gate(
+            "waiting for the post-retirement prompt poll",
+            &probe.prompt_checked,
+            &probe.prompt_exited,
+        )
+        .await?;
     assert!(
         probe.prompt_completed_after_retirement(),
         "Host shutdown waited for a withheld native reply, start_acknowledged={start_acknowledged}"
     );
-    fixture.task.await??;
+    fixture.join_listener().await?;
     Ok(())
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn host_stop_finishes_while_detached_native_start_ack_is_held() -> Result<(), FixtureError> {
-    host_stop_with_detached_prompt(false).await
+async fn host_stop_finishes_while_detached_native_start_ack_is_held() {
+    run_scenario(host_stop_with_detached_prompt(false)).await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn host_stop_finishes_while_detached_native_terminal_is_held() -> Result<(), FixtureError> {
-    host_stop_with_detached_prompt(true).await
+async fn host_stop_finishes_while_detached_native_terminal_is_held() {
+    run_scenario(host_stop_with_detached_prompt(true)).await;
 }
 
 #[derive(Default)]
@@ -534,15 +689,19 @@ enum DeliveryReturnOrder {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn delivery_restore_cannot_make_a_retired_binding_shadow_its_successor()
--> Result<(), FixtureError> {
-    assert_retired_delivery_does_not_shadow_successor(DeliveryReturnOrder::BeforeSuccessor).await
+async fn delivery_restore_cannot_make_a_retired_binding_shadow_its_successor() {
+    run_scenario(assert_retired_delivery_does_not_shadow_successor(
+        DeliveryReturnOrder::BeforeSuccessor,
+    ))
+    .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn retired_busy_delivery_cannot_shadow_its_successor() -> Result<(), FixtureError> {
-    assert_retired_delivery_does_not_shadow_successor(DeliveryReturnOrder::DuringSuccessorResume)
-        .await
+async fn retired_busy_delivery_cannot_shadow_its_successor() {
+    run_scenario(assert_retired_delivery_does_not_shadow_successor(
+        DeliveryReturnOrder::DuringSuccessorResume,
+    ))
+    .await;
 }
 
 async fn assert_retired_delivery_does_not_shadow_successor(
@@ -567,6 +726,7 @@ async fn assert_retired_delivery_does_not_shadow_successor(
         reply_started(&mut wire, &request).await?;
         let tracker = fixture.holder.host_tasks();
         tracker.close();
+        proof_stage("waiting for Host create to publish the delivery binding");
         tracker.wait().await;
         tracker.reopen();
         assert!(fixture.holder.contains(SESSION));
@@ -590,7 +750,7 @@ async fn assert_retired_delivery_does_not_shadow_successor(
     let push_id: PushId = uuid::Uuid::now_v7().to_string().try_into()?;
     let push = push_id.as_str();
     let sink = Arc::new(PauseAfterDeliveryCheckout::default());
-    let delivery = tokio::spawn({
+    let mut delivery = tokio_util::task::AbortOnDropHandle::new(tokio::spawn({
         let route = Arc::clone(&route);
         let sink = Arc::clone(&sink);
         let request = DeliveryRequest {
@@ -606,13 +766,20 @@ async fn assert_retired_delivery_does_not_shadow_successor(
             },
         };
         async move { route.deliver(request, sink.as_ref()).await }
-    });
+    }));
 
     // The second evidence record is inside Ready checkout. An empty endpoint
     // directory makes the actual delivery path return the known-unsent binding.
-    sink.checked_out.cancelled().await;
+    proof_stage("waiting for delivery to check out generation A");
+    tokio::select! {
+        biased;
+        () = sink.checked_out.cancelled() => {},
+        _ = &mut delivery => return Err("delivery completed before checkout gate".into()),
+        () = fixture.listener_exited.cancelled() => return Err("listener exited while awaiting delivery checkout".into()),
+    }
     fixture.gate.retire()?;
     let settle_delivery = async {
+        proof_stage("waiting for generation A to return its checkout");
         sink.release.cancel();
         let receipt = delivery.await??;
         assert!(matches!(
@@ -712,7 +879,9 @@ async fn reply_resumed(
 async fn receive_successor_resume(
     listener: &UnixListener,
 ) -> Result<(WebSocketStream<UnixStream>, Value), FixtureError> {
+    proof_stage("accepting successor native Unix socket");
     let (stream, _) = listener.accept().await?;
+    proof_stage("negotiating successor native WebSocket");
     let mut wire = tokio_tungstenite::accept_async(stream).await?;
     let request = native_request(&mut wire, "initialize").await?;
     native_reply(&mut wire, &request, json!({})).await?;

@@ -49,6 +49,8 @@ pub struct PreservationProbe {
     pub generation_disposed: CancellationToken,
     pub prompt_detached: CancellationToken,
     pub prompt_started: CancellationToken,
+    pub prompt_exited: CancellationToken,
+    pub abandoned: CancellationToken,
     pub prompt_checked: CancellationToken,
     prompt_poll: Mutex<PromptPoll>,
     pub listener_draining: CancellationToken,
@@ -69,6 +71,8 @@ impl PreservationProbe {
             generation_disposed: CancellationToken::new(),
             prompt_detached: CancellationToken::new(),
             prompt_started: CancellationToken::new(),
+            prompt_exited: CancellationToken::new(),
+            abandoned: CancellationToken::new(),
             prompt_checked: CancellationToken::new(),
             prompt_poll: Mutex::default(),
             listener_draining: CancellationToken::new(),
@@ -131,6 +135,7 @@ pub(crate) async fn watch_prompt<T>(future: impl Future<Output = T>) -> T {
     else {
         return future.await;
     };
+    let _exited = probe.prompt_exited.clone().drop_guard();
     let mut future = std::pin::pin!(future);
     poll_fn(|context| {
         let result = future.as_mut().poll(context);
