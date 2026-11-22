@@ -205,7 +205,7 @@ pub(crate) async fn route_codex_sessions(
                         let setup_work = crate::test_support::binding_preservation::scope(
                             crate::test_support::binding_preservation::current(), async move {
                                 crate::test_support::binding_preservation::hold_at(crate::test_support::binding_preservation::PreservationPhase::BeforeSetupPoll).await;
-                                setup_work.await
+                                crate::test_support::binding_preservation::watch_held_setup(setup_work).await
                             },
                         );
                         setup_requests.spawn(setup_work);

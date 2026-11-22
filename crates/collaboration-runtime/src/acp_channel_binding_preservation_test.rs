@@ -362,12 +362,27 @@ async fn assert_interrupted_load_preserves_binding(
     interrupted.send(2, "session/load", load_params()).await?;
     let setup_checkpoint = format!("waiting for held setup gate {phase:?}");
     proof_stage(&setup_checkpoint);
-    tokio::select! {
-        biased;
-        () = probe.reached.cancelled() => {},
-        reply = interrupted.read_reply(2) => return Err(format!("{setup_checkpoint}: frontend answered before the gate: {reply:?}").into()),
-        () = fixture.listener_exited.cancelled() => return Err(format!("{setup_checkpoint}: listener exited").into()),
-    }
+    let checkpoint = if phase == PreservationPhase::DuringDirectoryNormalization {
+        fixture
+            .wait_for_gate(
+                &setup_checkpoint,
+                &probe.normalization_polled,
+                &probe.generation_disposed,
+            )
+            .await?;
+        if probe.normalization_suspended_at_gate() {
+            Ok(())
+        } else {
+            Err("first held setup poll did not suspend at the directory normalization checkpoint")
+        }
+    } else {
+        tokio::select! {
+            biased;
+            () = probe.reached.cancelled() => Ok(()),
+            reply = interrupted.read_reply(2) => return Err(format!("{setup_checkpoint}: frontend answered before the gate: {reply:?}").into()),
+            () = fixture.listener_exited.cancelled() => return Err(format!("{setup_checkpoint}: listener exited").into()),
+        }
+    };
     drop(interrupted);
     fixture.await_frontend_return().await?;
     fixture
@@ -377,6 +392,12 @@ async fn assert_interrupted_load_preserves_binding(
             &fixture.listener_exited,
         )
         .await?;
+
+    if let Err(failure) = checkpoint {
+        fixture.stop().await?;
+        proof_stage(&setup_checkpoint);
+        return Err(failure.into());
+    }
 
     probe.disarm();
     let mut reconnected = fixture.connect().await?;

@@ -44,6 +44,8 @@ pub struct PreservationProbe {
     phase: PreservationPhase,
     armed: AtomicBool,
     pub reached: CancellationToken,
+    pub normalization_polled: CancellationToken,
+    normalization_suspended: AtomicBool,
     pub release_handoff: CancellationToken,
     pub lazy_close_issued: CancellationToken,
     pub generation_disposed: CancellationToken,
@@ -66,6 +68,8 @@ impl PreservationProbe {
             phase,
             armed: AtomicBool::new(false),
             reached: CancellationToken::new(),
+            normalization_polled: CancellationToken::new(),
+            normalization_suspended: AtomicBool::new(false),
             release_handoff: CancellationToken::new(),
             lazy_close_issued: CancellationToken::new(),
             generation_disposed: CancellationToken::new(),
@@ -99,6 +103,10 @@ impl PreservationProbe {
         self.phase
     }
 
+    pub fn normalization_suspended_at_gate(&self) -> bool {
+        self.normalization_suspended.load(Ordering::Acquire)
+    }
+
     pub fn check_prompt_after_retirement(&self) -> bool {
         let mut poll = self
             .prompt_poll
@@ -127,6 +135,28 @@ pub fn current() -> Option<Arc<PreservationProbe>> {
 
 pub async fn scope<T>(probe: Option<Arc<PreservationProbe>>, future: impl Future<Output = T>) -> T {
     PROBE.scope(probe, future).await
+}
+
+pub(crate) async fn watch_held_setup<T>(future: impl Future<Output = T>) -> T {
+    let Some(probe) =
+        current().filter(|probe| probe.phase() == PreservationPhase::DuringDirectoryNormalization)
+    else {
+        return future.await;
+    };
+    let mut future = std::pin::pin!(future);
+    poll_fn(|context| {
+        let result = future.as_mut().poll(context);
+        if !probe.normalization_polled.is_cancelled() {
+            // Held adoption runs synchronously up to the normalization gate for this fixture.
+            let suspended_at_gate = result.is_pending() && probe.reached.is_cancelled();
+            probe
+                .normalization_suspended
+                .store(suspended_at_gate, Ordering::Release);
+            probe.normalization_polled.cancel();
+        }
+        result
+    })
+    .await
 }
 
 pub(crate) async fn watch_prompt<T>(future: impl Future<Output = T>) -> T {
