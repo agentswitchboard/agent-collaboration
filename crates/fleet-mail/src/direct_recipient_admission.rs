@@ -1,22 +1,12 @@
 //! Admission for the destination of a direct send.
 use central_storage::StoreFailure;
-use fleet_runtime_ports::CentralStore;
+use fleet_engine::CentralTransaction;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use sqlx_core::{
     arguments::IntoArguments, column::ColumnIndex, database::Database, decode::Decode,
-    encode::Encode, executor::Executor, from_row::FromRow, query_as::query_as, row::Row,
-    types::Type,
+    encode::Encode, from_row::FromRow, query_as::query_as, row::Row, types::Type,
 };
 use workspace_ids::MachineId;
-
-/// The transient rule of messages/D6 accepts an enrolled receiving machine.
-/// Once Central creates sessions, replace this with lookup of that session.
-pub(crate) async fn admit_direct_recipient(
-    host: &impl CentralStore,
-    machine: &MachineId,
-) -> Result<bool, StoreFailure> {
-    host.enrolled_direct_recipient(machine).await
-}
 
 struct StoredEnrolledRecipient {
     machine_id: String,
@@ -43,19 +33,22 @@ macro_rules! enrolled_direct_recipient_query {
     };
 }
 
-/// Reads the enrollment on the owning Central store's executor.
-pub async fn read_enrolled_direct_recipient<'query, DB: Database>(
-    executor: impl Executor<'query, Database = DB>,
+/// The transient messages/D6 rule accepts an enrolled receiving machine.
+/// Central session creation replaces this with a lookup of that session.
+pub(super) async fn admit_enrolled_direct_recipient<T: CentralTransaction>(
+    transaction: &mut T,
     machine: &MachineId,
 ) -> Result<bool, StoreFailure>
 where
-    DB::Arguments: IntoArguments<DB>,
-    String: Type<DB> + for<'value> Encode<'value, DB> + for<'row> Decode<'row, DB>,
-    &'static str: ColumnIndex<DB::Row>,
+    <T::Database as Database>::Arguments: IntoArguments<T::Database>,
+    String: Type<T::Database>
+        + for<'value> Encode<'value, T::Database>
+        + for<'row> Decode<'row, T::Database>,
+    &'static str: ColumnIndex<<T::Database as Database>::Row>,
 {
-    macro_rules! runtime_query {
+    macro_rules! bind_enrolled_recipient_read {
         ($file:literal, $machine:expr) => {
-            query_as::<DB, StoredEnrolledRecipient>(include_str!(concat!(
+            query_as::<T::Database, StoredEnrolledRecipient>(include_str!(concat!(
                 env!("CARGO_MANIFEST_DIR"),
                 "/",
                 $file,
@@ -63,8 +56,8 @@ where
             .bind($machine)
         };
     }
-    let row = enrolled_direct_recipient_query!(runtime_query, machine)
-        .fetch_optional(executor)
+    let row = enrolled_direct_recipient_query!(bind_enrolled_recipient_read, machine)
+        .fetch_optional(transaction.executor())
         .await
         .map_err(|_| StoreFailure::Unavailable)?;
     match row {

@@ -5,9 +5,8 @@ use crate::{
         DirectMessageRefusal, DirectMessageSubject, DirectReducerState, FinalReceipt,
     },
     direct_message_rows::enum_text,
-    direct_store_port::{
-        AdmittedDirectSend, AdmittedReceipt, ApplyReceipt, DirectSendAdmission, DirectSendResult,
-    },
+    direct_recipient_admission::admit_enrolled_direct_recipient,
+    direct_store_port::{AdmittedDirectSend, AdmittedReceipt, ApplyReceipt, DirectSendResult},
     direct_store_reads::{StoredDirectState, read_stored_direct_message},
     mail_write_failure::require_one_affected_row,
     message_deadline::{cancel_due_at, delivery_window_ends_at, system_message_deadline},
@@ -27,7 +26,7 @@ use sqlx_core::{
     arguments::IntoArguments, column::ColumnIndex, database::Database, decode::Decode,
     encode::Encode, query::query, query_as::query_as, types::Type,
 };
-use workspace_ids::MachineId;
+use workspace_ids::{MachineId, MessageId};
 use workspace_model::{
     Timestamp,
     central_mail::{
@@ -112,51 +111,57 @@ pub async fn apply_direct_send<T: CentralTransaction>(
 ) -> Result<DirectWriteOutcome<DirectSendResult>, DirectApplyFailure>
 where
     <T::Database as Database>::Arguments: IntoArguments<T::Database>,
-    String: Type<T::Database> + for<'q> Encode<'q, T::Database>,
+    String: Type<T::Database> + for<'q> Encode<'q, T::Database> + for<'r> Decode<'r, T::Database>,
+    &'static str: ColumnIndex<<T::Database as Database>::Row>,
 {
     let target = command.send.to;
-    let (reply, decision) = match command.admission {
-        DirectSendAdmission::UnknownTarget => (
+    let (reply, decision) = if admit_enrolled_direct_recipient(tx, &target.machine_id).await? {
+        let message_id: MessageId = command
+            .ids
+            .new_id()
+            .to_string()
+            .try_into()
+            .map_err(|_| corrupt("minted id"))?;
+        let message = MessageRecord {
+            message_id: message_id.clone(),
+            sender: MessageSender::Actor(command.lookup.caller.clone()),
+            target,
+            body: MessageBody::Direct {
+                body: command.send.body,
+                delivery: command.send.delivery,
+                reply_to: command.send.reply_to,
+            },
+            state: MessageState::Queued,
+            source: None,
+            created_at: command.accepted_at,
+            updated_at: command.accepted_at,
+        };
+        let result = insert_send!(
+            execute,
+            message,
+            cancel_due_at(command.sent_at, command.accepted_at),
+            command.lookup.request_id,
+            delivery_window_ends_at(command.sent_at, command.accepted_at)
+        )
+        .execute(tx.executor())
+        .await?;
+        require_one_affected_row::<T>(result)?;
+        (
+            CentralMailResult::Done(CentralMailAnswer::Queued {
+                message_id: message_id.clone(),
+            }),
+            DirectSendResult::Committed {
+                message_id,
+                ready: (&message).into(),
+            },
+        )
+    } else {
+        (
             CentralMailResult::Refused(CentralMailRefusal::UnknownSession {
                 target: target.clone(),
             }),
             DirectSendResult::RetainedRefusal { target },
-        ),
-        DirectSendAdmission::Queued { message_id } => {
-            let message = MessageRecord {
-                message_id: message_id.clone(),
-                sender: MessageSender::Actor(command.lookup.caller.clone()),
-                target,
-                body: MessageBody::Direct {
-                    body: command.send.body,
-                    delivery: command.send.delivery,
-                    reply_to: command.send.reply_to,
-                },
-                state: MessageState::Queued,
-                source: None,
-                created_at: command.accepted_at,
-                updated_at: command.accepted_at,
-            };
-            let result = insert_send!(
-                execute,
-                message,
-                cancel_due_at(command.sent_at, command.accepted_at),
-                command.lookup.request_id,
-                delivery_window_ends_at(command.sent_at, command.accepted_at)
-            )
-            .execute(tx.executor())
-            .await?;
-            require_one_affected_row::<T>(result)?;
-            (
-                CentralMailResult::Done(CentralMailAnswer::Queued {
-                    message_id: message_id.clone(),
-                }),
-                DirectSendResult::Committed {
-                    message_id,
-                    ready: (&message).into(),
-                },
-            )
-        }
+        )
     };
     let result = upsert_organization_request_answer(
         tx,

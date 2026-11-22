@@ -20,10 +20,6 @@ pub trait CentralStore: Send + Sync + 'static {
         &self,
         query: crate::DueListQuery,
     ) -> impl Future<Output = Result<Vec<crate::DueRow>, StoreFailure>> + Send;
-    fn enrolled_direct_recipient(
-        &self,
-        machine: &workspace_ids::MachineId,
-    ) -> impl Future<Output = Result<bool, StoreFailure>> + Send;
     fn engine_alarm_inputs(
         &self,
     ) -> impl Future<Output = Result<EngineAlarmTimes, StoreFailure>> + Send;

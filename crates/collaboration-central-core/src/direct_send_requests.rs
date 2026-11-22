@@ -2,8 +2,8 @@
 use crate::WorkspaceRuntime;
 use central_storage::{BatchOutcome, StatementBatch, StoreFailure};
 use fleet_mail::{
-    AdmittedDirectSend, DirectSendAdmission, DirectSendLookup, DirectSendResult,
-    RetainedDirectSend, RetainedDirectSendRead,
+    AdmittedDirectSend, DirectSendLookup, DirectSendResult, RetainedDirectSend,
+    RetainedDirectSendRead,
 };
 use fleet_runtime_ports::{CentralStore, WorkspaceStores, workspace_decode_error::corrupt};
 use workspace_model::{Identity, Timestamp, central_mail as mail};
@@ -74,18 +74,6 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         else {
             return Err(corrupt("direct send operation"));
         };
-        let admission = if crate::direct_recipient_admission::admit_direct_recipient(
-            self.execution.statement_host(),
-            &to.machine_id,
-        )
-        .await?
-        {
-            DirectSendAdmission::Queued {
-                message_id: self.execution.mint()?,
-            }
-        } else {
-            DirectSendAdmission::UnknownTarget
-        };
         let result = self
             .direct_messages
             .apply_direct_send(AdmittedDirectSend {
@@ -98,7 +86,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                 },
                 sent_at,
                 accepted_at: now,
-                admission,
+                ids: self.execution.shared_ids(),
             })
             .await;
         let answer = match result {

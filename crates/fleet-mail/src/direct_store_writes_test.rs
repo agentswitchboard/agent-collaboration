@@ -1,5 +1,5 @@
 use super::*;
-use workspace_ids::{MessageId, SessionRef};
+use workspace_ids::SessionRef;
 
 #[test]
 fn the_executed_direct_write_files_fit_the_owning_central_schema()

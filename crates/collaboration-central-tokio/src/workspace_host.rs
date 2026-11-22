@@ -53,22 +53,6 @@ impl CentralStore for ObjectStorage {
     ) -> Result<Vec<fleet_runtime_ports::DueRow>, StoreFailure> {
         ObjectStorage::read_timed_due_rows(self, query).await
     }
-    async fn enrolled_direct_recipient(
-        &self,
-        machine: &workspace_ids::MachineId,
-    ) -> Result<bool, StoreFailure> {
-        let mut connection = self
-            .workspace_pool()
-            .await?
-            .acquire()
-            .await
-            .map_err(|_| StoreFailure::Unavailable)?;
-        collaboration_central_core::direct_recipient_admission::read_enrolled_direct_recipient(
-            &mut *connection,
-            machine,
-        )
-        .await
-    }
 
     async fn engine_alarm_inputs(&self) -> Result<central_storage::EngineAlarmTimes, StoreFailure> {
         ObjectStorage::engine_alarm_inputs(self).await

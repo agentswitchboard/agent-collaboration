@@ -4,6 +4,7 @@
 pub mod direct_mark_apply;
 mod direct_message;
 mod direct_message_rows;
+mod direct_recipient_admission;
 mod direct_store_port;
 pub mod direct_store_reads;
 mod direct_store_sender;

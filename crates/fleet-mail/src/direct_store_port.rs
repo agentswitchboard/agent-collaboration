@@ -31,17 +31,12 @@ pub enum RetainedDirectSendRead {
     Found(RetainedDirectSend),
 }
 
-pub enum DirectSendAdmission {
-    Queued { message_id: MessageId },
-    UnknownTarget,
-}
-
 pub struct AdmittedDirectSend {
     pub lookup: DirectSendLookup,
     pub send: SendMessageRequest,
     pub sent_at: Timestamp,
     pub accepted_at: Timestamp,
-    pub admission: DirectSendAdmission,
+    pub ids: Arc<dyn IdSource>,
 }
 
 /// Atomic send results exhaust the direct send's own success alternatives.

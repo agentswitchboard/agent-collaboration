@@ -136,17 +136,6 @@ impl CentralStore for CentralStatements {
             statement_store::read_timed_due_rows(&self.connection, query).await
         })
     }
-    fn enrolled_direct_recipient(
-        &self,
-        machine: &workspace_ids::MachineId,
-    ) -> impl std::future::Future<Output = std::result::Result<bool, StoreFailure>> + Send {
-        SendFuture::new(
-            collaboration_central_core::direct_recipient_admission::read_enrolled_direct_recipient(
-                &*self.connection,
-                machine,
-            ),
-        )
-    }
 
     fn engine_alarm_inputs(
         &self,
