@@ -58,15 +58,17 @@ where
 {
     let record = fleet_request_log::read_retained_organization_request(
         tx,
-        &lookup.request_id,
-        lookup.cutoff,
+        &lookup.request.request_id,
+        lookup.request.cutoff,
     )
     .await
     .map_err(DirectReadFailure::from_store)?;
     let Some(record) = record else {
         return Ok(RetainedDirectSendRead::Missing);
     };
-    if record.caller != lookup.caller || record.content_digest != lookup.digest {
+    if lookup.caller.as_ref() != Some(&record.caller)
+        || record.content_digest != lookup.request.digest
+    {
         return Ok(RetainedDirectSendRead::RequestIdReused);
     }
     let corrupt_answer = || DirectReadFailure::from_store(corrupt("runtime_request_log.answer"));

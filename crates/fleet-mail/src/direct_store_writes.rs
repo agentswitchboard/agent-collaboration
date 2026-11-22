@@ -124,7 +124,7 @@ where
             .map_err(|_| corrupt("minted id"))?;
         let message = MessageRecord {
             message_id: message_id.clone(),
-            sender: MessageSender::Actor(command.lookup.caller.clone()),
+            sender: MessageSender::Actor(command.caller.clone()),
             target,
             body: MessageBody::Direct {
                 body: command.send.body,
@@ -140,7 +140,7 @@ where
             execute,
             message,
             cancel_due_at(command.sent_at, command.accepted_at),
-            command.lookup.request_id,
+            command.request.request_id,
             delivery_window_ends_at(command.sent_at, command.accepted_at)
         )
         .execute(tx.executor())
@@ -166,9 +166,9 @@ where
     let result = upsert_organization_request_answer(
         tx,
         RetainRequest {
-            request_id: &command.lookup.request_id,
-            caller: &command.lookup.caller,
-            digest: &command.lookup.digest,
+            request_id: &command.request.request_id,
+            caller: &command.caller,
+            digest: &command.request.digest,
             answer: encode_mail_json(reply)?,
             at: command.accepted_at,
         },
@@ -177,7 +177,7 @@ where
     if result != 1 {
         return Err(DirectApplyFailure::Conflict);
     }
-    prune_expired_organization_requests(tx, command.lookup.cutoff).await?;
+    prune_expired_organization_requests(tx, command.request.cutoff).await?;
     Ok(DirectWriteOutcome::with_alarm_recompute(decision))
 }
 

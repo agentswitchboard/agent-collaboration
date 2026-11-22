@@ -2,8 +2,8 @@
 use crate::WorkspaceRuntime;
 use central_storage::{BatchOutcome, StatementBatch, StoreFailure};
 use fleet_mail::{
-    AdmittedDirectSend, DirectSendLookup, DirectSendResult, RetainedDirectSend,
-    RetainedDirectSendRead,
+    AdmittedDirectSend, DirectSendLookup, DirectSendRequestKey, DirectSendResult,
+    RetainedDirectSend, RetainedDirectSendRead,
 };
 use fleet_runtime_ports::{CentralStore, WorkspaceStores, workspace_decode_error::corrupt};
 use workspace_model::{Identity, Timestamp, central_mail as mail};
@@ -20,14 +20,23 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
             CentralMailAnswer as Answer, CentralMailRefusal as Refusal, CentralMailResult as Reply,
         };
         let cutoff = fleet_runtime::workspace_request_log::strict_cutoff(now);
-        let caller = self.access().resolve_identity(&identity).await?;
-        let lookup = || DirectSendLookup {
+        let existing_actor = self
+            .access()
+            .read_existing_identity_actor(&identity)
+            .await?;
+        let request_key = DirectSendRequestKey {
             request_id: request.request_id.clone(),
-            caller: caller.clone(),
-            digest: digest.clone(),
+            digest,
             cutoff,
         };
-        match self.direct_messages.read_retained_send(lookup()).await? {
+        let retained = self
+            .direct_messages
+            .read_retained_send(DirectSendLookup {
+                request: request_key.clone(),
+                caller: existing_actor.clone(),
+            })
+            .await?;
+        match retained {
             RetainedDirectSendRead::Missing => {}
             RetainedDirectSendRead::RequestIdReused => {
                 return Ok(Reply::Refused(Refusal::Workspace(
@@ -74,10 +83,15 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         else {
             return Err(corrupt("direct send operation"));
         };
+        let caller = match existing_actor {
+            Some(actor) => actor,
+            None => self.access().resolve_identity(&identity).await?,
+        };
         let result = self
             .direct_messages
             .apply_direct_send(AdmittedDirectSend {
-                lookup: lookup(),
+                request: request_key,
+                caller,
                 send: mail::SendMessageRequest {
                     to,
                     body,

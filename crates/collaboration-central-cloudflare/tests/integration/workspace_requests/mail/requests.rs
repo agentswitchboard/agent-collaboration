@@ -74,6 +74,53 @@ async fn direct_send_admits_an_enrolled_machine_without_a_session_actor() {
 }
 
 #[tokio::test]
+async fn a_fresh_send_refused_for_clock_does_not_create_its_sender_actor() {
+    let fixture = Fixture::new().await;
+    let upper_bound = collaboration_central_core::MAX_ALARM_UNIX_MILLIS;
+    let valid = m::Timestamp::from_timestamp_millis(upper_bound - 1_000).unwrap();
+    let out_of_range = m::Timestamp::from_timestamp_millis(upper_bound + 1_000).unwrap();
+    use std::sync::atomic::Ordering;
+    fixture
+        .clock
+        .0
+        .store(valid.timestamp_millis(), Ordering::SeqCst);
+    let mut caller = relocate_authority(&fixture.host, &fixture.caller).await;
+    let mut sender = session(&caller);
+    sender.session_id = "fresh-mail-clock-refusal".to_owned().try_into().unwrap();
+    caller.caller = m::Caller::Session(sender.clone());
+    let central = fixture.host.central(&caller.organization_id).await;
+    fixture
+        .clock
+        .0
+        .store(out_of_range.timestamp_millis(), Ordering::SeqCst);
+    let store = central.statement_host();
+    let actor_facts = || Statement {
+        sql: "SELECT actor_identity_id,identity FROM access_actor_identities ORDER BY actor_identity_id",
+        args: vec![],
+    };
+    let before = store.read(actor_facts()).await.unwrap();
+    let reply = fixture
+        .host
+        .request_central(
+            &caller,
+            CentralMailRequest {
+                request_id: id(909005),
+                operation: send(sender, "invalid applying time"),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        reply,
+        Result::Refused(Refusal::TimeOutOfRange {
+            field: "anchorAt".into()
+        })
+    );
+    assert_eq!(store.read(actor_facts()).await.unwrap(), before);
+    fixture.host.close().await;
+}
+
+#[tokio::test]
 async fn direct_mail_replays_expires_and_routes_to_both_machines() {
     let mut fixture = Fixture::new().await;
     let first = session(&fixture.caller);

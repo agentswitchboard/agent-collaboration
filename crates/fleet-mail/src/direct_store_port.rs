@@ -13,11 +13,16 @@ use workspace_model::{
     central_mail::{MessageRecord, MessageStatus, ReceiptKind, ReceiptResult, SendMessageRequest},
 };
 
-pub struct DirectSendLookup {
+#[derive(Clone)]
+pub struct DirectSendRequestKey {
     pub request_id: RequestId,
-    pub caller: ActorIdentityId,
     pub digest: String,
     pub cutoff: Timestamp,
+}
+
+pub struct DirectSendLookup {
+    pub request: DirectSendRequestKey,
+    pub caller: Option<ActorIdentityId>,
 }
 
 pub enum RetainedDirectSend {
@@ -32,7 +37,8 @@ pub enum RetainedDirectSendRead {
 }
 
 pub struct AdmittedDirectSend {
-    pub lookup: DirectSendLookup,
+    pub request: DirectSendRequestKey,
+    pub caller: ActorIdentityId,
     pub send: SendMessageRequest,
     pub sent_at: Timestamp,
     pub accepted_at: Timestamp,
