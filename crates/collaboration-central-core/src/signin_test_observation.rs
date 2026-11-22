@@ -12,7 +12,9 @@ use fleet_runtime_ports::{
     stored_values::{json, string},
     workspace_decode_error::corrupt,
 };
-use fleet_signin::organization_change::{ChangeRequestId, OrganizationChangeKind};
+use fleet_signin::organization_change::{
+    ChangeRequestId, MachineAllowanceState, OrganizationChangeKind,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;
@@ -84,10 +86,27 @@ pub struct ObservedWorkspace {
 #[derive(Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ObservedChangeRecord {
-    pub kind: OrganizationChangeKind,
+    pub kind: ObservedChangeKind,
     pub request_id: ChangeRequestId,
     pub target_id: String,
     pub created_at_millis: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub workspace_id: Option<WorkspaceId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub allowance_state: Option<MachineAllowanceState>,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ObservedChangeKind {
+    Targeted(OrganizationChangeKind),
+    Allowance(MachineAllowanceRecordKind),
+}
+
+#[derive(Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MachineAllowanceRecordKind {
+    MachineAllowanceChanged,
 }
 
 impl SignInObservation {
@@ -122,7 +141,8 @@ SELECT 0 AS row_group,id AS row_id,json_object('kind','identity','row',json_obje
  FROM signin_organization_identity
 UNION ALL SELECT 1,id,json_object('kind','record','row',json_object(
  'id',id,'request_id',request_id,'kind',kind,'origin',origin,'actor_person_id',actor_person_id,
- 'permission_checked',permission_checked,'target_id',target_id,'created_at',created_at,'updated_at',updated_at))
+ 'permission_checked',permission_checked,'target_id',target_id,'created_at',created_at,'updated_at',updated_at,
+ 'workspace_id',workspace_id,'allowance_state',allowance_state))
  FROM signin_change_records
 UNION ALL SELECT 2,id,json_object('kind','organizationFloor','row',json_object(
  'id',id,'minimum_revision',minimum_revision,'state',state,'policy_digest',permission_policy_digest,
@@ -144,7 +164,10 @@ UNION ALL SELECT 5,workspace_id,json_object('kind','workspace','row',json_object
 ), machines_and_approvals AS (
 SELECT 6 AS row_group,machine_id AS row_id,json_object('kind','machine','row',json_object(
  'machine_id',machine_id,'label',label,'state',state,
- 'allowed_workspaces',allowed_workspaces,'enrollment_generation',enrollment_generation,
+ 'active_workspaces','' || (SELECT json_group_array(workspace_id) FROM (
+    SELECT workspace_id FROM login_machine_allowances
+    WHERE machine_id=login_machines.machine_id AND state='active' ORDER BY allowance_id
+  )),'enrollment_generation',enrollment_generation,
  'created_at',created_at,'updated_at',updated_at)) AS payload
  FROM login_machines
 UNION ALL SELECT 7,a.approval_id,json_object('kind','machineApproval','row',json_object(
@@ -200,13 +223,15 @@ enum StoredChangeOrigin {
 struct ChangeRow {
     id: String,
     request_id: ChangeRequestId,
-    kind: OrganizationChangeKind,
+    kind: ObservedChangeKind,
     origin: StoredChangeOrigin,
     actor_person_id: Option<String>,
     permission_checked: Option<String>,
     target_id: String,
     created_at: SafeInteger,
     updated_at: SafeInteger,
+    workspace_id: Option<WorkspaceId>,
+    allowance_state: Option<MachineAllowanceState>,
 }
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -332,11 +357,23 @@ fn decode_snapshot(
                 };
                 non_empty(&row.target_id, "signin_change_records.target_id")?;
                 canonical_v7(&row.id, "signin_change_records.id")?;
+                match (row.kind, &row.workspace_id, row.allowance_state) {
+                    (ObservedChangeKind::Targeted(_), None, None) => {}
+                    (ObservedChangeKind::Allowance(_), Some(_), Some(_)) => {
+                        let _: workspace_ids::MachineId = row
+                            .target_id
+                            .parse()
+                            .map_err(|_| corrupt("signin_change_records.target_id"))?;
+                    }
+                    _ => return Err(corrupt("signin_change_records.allowance_state")),
+                }
                 observation.records.push(ObservedChangeRecord {
                     request_id: row.request_id,
                     kind: row.kind,
                     target_id: row.target_id,
                     created_at_millis: row.created_at.get(),
+                    workspace_id: row.workspace_id,
+                    allowance_state: row.allowance_state,
                 });
             }
             SnapshotRow::OrganizationFloor(row) => {

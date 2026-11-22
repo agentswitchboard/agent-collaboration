@@ -62,3 +62,79 @@ async fn unknown_enrollment_and_foreign_organization_requests_do_not_create_mach
     );
     f.close().await
 }
+
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "The private reply and owning storage state are the replay oracle."
+)]
+#[tokio::test]
+async fn stored_approval_resolves_after_approver_loses_permission() -> Result<()> {
+    use super::super::support::{REVISIONS, org_revision, person_revision};
+    let f = MachineFixture::new().await?;
+    for initial_floor in [org_revision(1, "active"), person_revision(1, "active")] {
+        assert_eq!(
+            f.post(REVISIONS, &initial_floor).await?,
+            (200, json!({"acknowledgedRevision":1}))
+        );
+    }
+    let request = approval(
+        0xcb10,
+        INSTALLATION,
+        "Retained approval",
+        &[WORKSPACE],
+        f.now(),
+    );
+    let approved = f.post(DEVICE, &request).await?;
+    assert_eq!(approved.0, 200);
+    enrollment(&approved.1);
+    assert_eq!(
+        f.post(REVISIONS, &person_revision(2, "inactive")).await?,
+        (200, json!({"acknowledgedRevision":2}))
+    );
+    assert_eq!(
+        f.rows("SELECT state FROM signin_person_authorization_floors")
+            .await?,
+        vec![vec![text("inactive")]],
+        "the approval's original person lost authority before retry"
+    );
+    let before_repeats = snapshot(&f).await?;
+
+    assert_eq!(f.held_approval(&request, 5_001).await?, approved);
+    let mut changed_replay = request.clone();
+    changed_replay["label"] = json!("Different bound label");
+    assert_eq!(
+        f.held_approval(&changed_replay, 5_001).await?,
+        (
+            200,
+            json!({"result":"refused","reason":{"kind":"requestConflict"}})
+        )
+    );
+    assert_eq!(snapshot(&f).await?, before_repeats);
+
+    let mut fresh = approval(
+        0xcb11,
+        INSTALLATION,
+        "No retained approval",
+        &[WORKSPACE],
+        f.now(),
+    );
+    assert_eq!(
+        f.held_approval(&fresh, 5_001).await?,
+        (
+            200,
+            json!({"result":"refused","reason":{"kind":"notPermitted"}})
+        )
+    );
+    assert_eq!(snapshot(&f).await?, before_repeats);
+    fresh["approverSecondFactorAt"] = Value::Null;
+    assert_eq!(
+        f.post(DEVICE, &fresh).await?,
+        (
+            200,
+            json!({"result":"refused","reason":{"kind":"secondFactorRequired","withinSeconds":900}})
+        )
+    );
+    assert_eq!(snapshot(&f).await?, before_repeats);
+    f.close().await?;
+    Ok(())
+}

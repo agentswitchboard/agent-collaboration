@@ -1,8 +1,11 @@
-use crate::ProtocolError;
+use crate::{MachineLinkCloseCode, ProtocolError};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use workspace_model::central_mail::{CentralMailRequest, CentralMailResult};
-use workspace_model::{Caller, RequestId, WorkspaceOperation, WorkspaceReply, WorkspaceRequest};
+use workspace_model::central_mail::{CentralMailRefusal, CentralMailRequest, CentralMailResult};
+use workspace_model::{
+    Caller, RefusalReason, RequestId, WorkspaceOperation, WorkspaceReply, WorkspaceRequest,
+    WorkspaceResult,
+};
 
 /// The one ledger that can contain a request's retained decision.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -169,12 +172,68 @@ impl ReplyPayload {
         }
     }
 
+    /// Projects live authority loss into the reply that precedes the typed close.
+    #[must_use]
+    pub fn authority_refused(request: &RequestPayload, cause: MachineLinkCloseCode) -> Self {
+        match request {
+            RequestPayload::Workspace(_) => {
+                Self::Workspace(Self::workspace_authority_refused(cause))
+            }
+            RequestPayload::Mail(_) => Self::Mail(Self::mail_authority_refused(cause)),
+        }
+    }
+
+    #[must_use]
+    pub fn workspace_authority_refused(cause: MachineLinkCloseCode) -> WorkspaceReply {
+        WorkspaceReply {
+            result: project_authority_refusal(
+                cause,
+                WorkspaceResult::CentralUnavailable,
+                WorkspaceResult::Refused,
+            ),
+            actors: vec![],
+        }
+    }
+
+    #[must_use]
+    pub fn mail_authority_refused(cause: MachineLinkCloseCode) -> CentralMailResult {
+        project_authority_refusal(cause, CentralMailResult::CentralUnavailable, |reason| {
+            CentralMailResult::Refused(CentralMailRefusal::Workspace(reason))
+        })
+    }
+
+    #[must_use]
+    pub fn workspace_refused(request: &RequestPayload, reason: RefusalReason) -> Self {
+        match request {
+            RequestPayload::Workspace(_) => Self::Workspace(WorkspaceReply {
+                result: WorkspaceResult::Refused(reason),
+                actors: vec![],
+            }),
+            RequestPayload::Mail(_) => Self::Mail(CentralMailResult::Refused(
+                CentralMailRefusal::Workspace(reason),
+            )),
+        }
+    }
+
     pub fn matches_request(&self, request: &RequestPayload) -> bool {
         match (self, request) {
             (Self::Workspace(_), RequestPayload::Workspace(_))
             | (Self::Mail(_), RequestPayload::Mail(_)) => true,
             (Self::Workspace(_), RequestPayload::Mail(_))
             | (Self::Mail(_), RequestPayload::Workspace(_)) => false,
+        }
+    }
+}
+
+fn project_authority_refusal<Reply>(
+    cause: MachineLinkCloseCode,
+    unavailable: Reply,
+    refused: impl FnOnce(RefusalReason) -> Reply,
+) -> Reply {
+    match cause {
+        MachineLinkCloseCode::Expired => unavailable,
+        MachineLinkCloseCode::Revoked | MachineLinkCloseCode::Inactive => {
+            refused(RefusalReason::MachineRevoked)
         }
     }
 }

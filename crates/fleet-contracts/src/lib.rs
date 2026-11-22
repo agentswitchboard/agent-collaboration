@@ -22,7 +22,9 @@ pub use central_observation::CentralObservation;
 pub use client_id::ClientId;
 pub use event_completion::{AlarmNotPublished, AlarmResult, EventCompletion, EventCompletionHook};
 pub use issuer_refusals::{IssuerKeysUnavailable, IssuerSignatureRefusal};
-pub use machine_connection::{LiveMachineConnection, MachineConnectionAttachment};
+pub use machine_connection::{
+    EnrollmentInvalidation, LiveMachineConnection, MachineConnectionAttachment,
+};
 pub use machine_connection_refusal::MachineConnectionRefusal;
 pub use revision_failure::AuthorizationRevisionFailure;
 pub use statement_refusal::{FleetOrganizationStatementRefusal, StoredStatementRefusal};
@@ -50,3 +52,6 @@ pub use stamp_failures::{DigestFailure, ProvisionFailure};
 
 mod stamp_values;
 pub use stamp_values::{IssuerKeyId, OrganizationStatementDigest, StatementSeconds};
+
+mod machine_login;
+pub use machine_login::*;

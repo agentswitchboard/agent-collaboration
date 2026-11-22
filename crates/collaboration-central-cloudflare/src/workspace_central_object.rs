@@ -373,11 +373,12 @@ impl CentralObject {
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .push(message);
                 }))
-                .with_machine_revocation_observer(Arc::new(move |machine_id| {
-                    for socket in state_for_revocation.get_websockets_with_tag(machine_id.as_str())
-                    {
-                        let _ = socket.close(Some(1008), Some("machine authority revoked"));
-                    }
+                .with_enrollment_invalidation_observer(Arc::new(move |invalidation| {
+                    workspace_machine_link::close_enrollment_sockets(
+                        &state_for_revocation,
+                        &invalidation,
+                        None,
+                    );
                 })),
         );
         central.recompute_alarm().await?;

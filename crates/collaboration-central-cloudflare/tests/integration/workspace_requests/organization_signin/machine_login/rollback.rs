@@ -8,7 +8,7 @@ use super::support::*;
 async fn approval_late_record_failure_rolls_back_all_rows_then_same_request_applies_once()
 -> Result<()> {
     let f = MachineFixture::new().await?;
-    f.execute("CREATE TRIGGER fail_login_approval BEFORE INSERT ON signin_change_records WHEN NEW.kind='allowanceChanged' AND NEW.target_id='019f0000-0000-7000-8000-00000000bc04' BEGIN SELECT RAISE(ABORT,'fixture last allowance record failure'); END",vec![]).await?;
+    f.execute("CREATE TRIGGER fail_login_approval BEFORE INSERT ON signin_change_records WHEN NEW.kind='machineAllowanceChanged' AND NEW.workspace_id='019f0000-0000-7000-8000-00000000bc04' BEGIN SELECT RAISE(ABORT,'fixture last allowance record failure'); END",vec![]).await?;
     let body = approval(
         0xc901,
         INSTALLATION,
@@ -30,7 +30,7 @@ async fn approval_late_record_failure_rolls_back_all_rows_then_same_request_appl
     let committed = snapshot(&f).await?;
     assert_eq!(f.post(DEVICE, &body).await?, approved);
     assert!(snapshot(&f).await? == committed);
-    assert_eq!(f.rows("SELECT (SELECT COUNT(*) FROM login_machines),(SELECT COUNT(*) FROM login_machine_approvals),(SELECT COUNT(*) FROM signin_change_records WHERE kind='allowanceChanged')").await?,vec![vec![number(1),number(1),number(2)]]);
+    assert_eq!(f.rows("SELECT (SELECT COUNT(*) FROM login_machines),(SELECT COUNT(*) FROM login_machine_approvals),(SELECT COUNT(*) FROM signin_change_records WHERE kind='machineAllowanceChanged')").await?,vec![vec![number(1),number(1),number(2)]]);
     f.close().await
 }
 

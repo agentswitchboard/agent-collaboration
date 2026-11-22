@@ -44,6 +44,19 @@
       "additionalProperties": false,
       "properties": {
         "kind": {
+          "const": "requestConflict",
+          "type": "string"
+        }
+      },
+      "required": [
+        "kind"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "kind": {
           "const": "secondFactorRequired",
           "type": "string"
         },

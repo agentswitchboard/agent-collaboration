@@ -259,7 +259,10 @@ impl RequestView {
                 },
                 window,
             },
-            _ => return Err(InvalidApprovalEnding::BindingMismatch),
+            (Raise::ProviderApproval { .. }, EndingViewWire::ProviderQuestion { .. })
+            | (Raise::ProviderQuestion { .. }, EndingViewWire::ProviderApproval { .. }) => {
+                return Err(InvalidApprovalEnding::BindingMismatch);
+            }
         };
         Ok(DestinationProjection {
             actor: admitted.actor(),

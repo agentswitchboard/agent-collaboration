@@ -1,7 +1,6 @@
 //! Person proof admission and read operations on modern org central.
 use crate::{
-    AdminRefusal, ListWorkspacesResult, MachineEnrollmentRevocationRefusal,
-    MachineEnrollmentRevocationResult, OrganizationAdminAnswer, OrganizationAdminResult,
+    AdminRefusal, ListWorkspacesResult, OrganizationAdminAnswer, OrganizationAdminResult,
     WorkspaceRuntime,
     organization_admin_contract::OrganizationChangeRecord,
     organization_authority_cache::StampStanding,
@@ -11,7 +10,9 @@ use crate::{
     },
 };
 use central_storage::{BatchOutcome, StatementBatch, StoreFailure};
-use fleet_contracts::WorkspaceDirectory;
+use fleet_contracts::{
+    MachineEnrollmentRevocationRefusal, MachineEnrollmentRevocationResult, WorkspaceDirectory,
+};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use fleet_workspace_directory::CentralWorkspaceDirectory;
 impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
@@ -145,8 +146,8 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                 .await?;
                 let records = records
                     .into_iter()
-                    .map(OrganizationChangeRecord::TargetedChange)
-                    .collect();
+                    .map(OrganizationChangeRecord::try_from)
+                    .collect::<Result<_, _>>()?;
                 OrganizationAdminAnswer::Answered(OrganizationAdminResult::Records { records })
             }
             AdminOperation::EngineHealth(_) => {

@@ -1,0 +1,134 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id, request_id, kind, origin, actor_person_id, permission_checked, target_id,\n       created_at, workspace_id, allowance_state\nFROM signin_change_records\nWHERE id > ?\nORDER BY id\nLIMIT ?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "signin_change_records",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "request_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "signin_change_records",
+            "name": "request_id"
+          }
+        }
+      },
+      {
+        "name": "kind",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "signin_change_records",
+            "name": "kind"
+          }
+        }
+      },
+      {
+        "name": "origin",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "signin_change_records",
+            "name": "origin"
+          }
+        }
+      },
+      {
+        "name": "actor_person_id",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "signin_change_records",
+            "name": "actor_person_id"
+          }
+        }
+      },
+      {
+        "name": "permission_checked",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "signin_change_records",
+            "name": "permission_checked"
+          }
+        }
+      },
+      {
+        "name": "target_id",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "signin_change_records",
+            "name": "target_id"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "signin_change_records",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "workspace_id",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "signin_change_records",
+            "name": "workspace_id"
+          }
+        }
+      },
+      {
+        "name": "allowance_state",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "signin_change_records",
+            "name": "allowance_state"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "f975075406843e2e8fc7bc4df0a0eb0f1beb7b04a25735a32ab0e6128a74b59d"
+}

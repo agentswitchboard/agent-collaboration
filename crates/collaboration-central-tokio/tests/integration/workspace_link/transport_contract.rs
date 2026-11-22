@@ -36,7 +36,7 @@ fn workspace_store(fixture: &Fixture, workspace: &WorkspaceId) -> ObjectStorage 
 #[tokio::test]
 async fn two_in_flight_requests_keep_distinct_correlations_and_payloads() -> Result<()> {
     let fixture = Fixture::new().await?;
-    let (mut client, attempt, mut socket) = connect_client(&fixture, &fixture.token).await?;
+    let (mut client, attempt, mut socket, _) = connect_client(&fixture, &fixture.token).await?;
     let first = client.begin_request(
         caller()?,
         create_workspace("019f0000-0000-7000-8000-00000000d201", "First outstanding")?,
@@ -101,7 +101,7 @@ async fn two_in_flight_requests_keep_distinct_correlations_and_payloads() -> Res
 async fn lost_reply_after_commit_replays_one_durable_write_on_a_new_correlation() -> Result<()> {
     // Arrange: create a real workspace and establish its explicit allowance precondition.
     let fixture = Fixture::new().await?;
-    let (mut client, attempt, mut socket) = connect_client(&fixture, &fixture.token).await?;
+    let (mut client, attempt, mut socket, _) = connect_client(&fixture, &fixture.token).await?;
     let create = client.begin_request(
         caller()?,
         create_workspace(
@@ -122,7 +122,7 @@ async fn lost_reply_after_commit_replays_one_durable_write_on_a_new_correlation(
         .run_batch(StatementBatch {
             statements: vec![GuardedStatement {
                 statement: Statement {
-                    sql: "UPDATE login_machines SET allowed_workspaces=? WHERE machine_id=?",
+                    sql: collaboration_central_conformance::REPLACE_FIXTURE_ALLOWANCES_SQL,
                     args: vec![
                         SqlValue::Text(serde_json::to_string(&vec![
                             workspace.workspace_id.clone(),

@@ -3,7 +3,12 @@ const machine = "'01890f2e-7b4c-7cc0-98c4-000000009002'";
 const stamp = "'1970-01-01T00:00:00.000Z'";
 const clock =
   "(CASE WHEN i%4 IN (0,1) THEN '1970-01-01T00:05:00.000Z' ELSE '1970-01-01T00:10:00.000Z' END)";
-export function seedHistory(n: number, active: number, windows: number): string[] {
+export function seedHistory(
+  n: number,
+  active: number,
+  windows: number,
+  schema: "historical" | "machine-allowances" = "historical",
+): string[] {
   const seq =
     "WITH RECURSIVE seq(i) AS (SELECT 1 UNION ALL SELECT i+1 FROM seq WHERE i<" + n + ") ";
   function attempts(kind: string, base: number, subject: number, filter: string): string {
@@ -40,7 +45,7 @@ export function seedHistory(n: number, active: number, windows: number): string[
     );
   }
   return [
-    ...seedJobs(seq, active, windows),
+    ...seedJobs(seq, active, windows, schema),
     attempts("wake_timer", 700000, 100000, "i%8=0"),
     attempts("automation_timer", 800000, 200000, "i%8=0"),
     attempts("direct_message", 900000, 300000, "i%8=2"),
@@ -48,16 +53,33 @@ export function seedHistory(n: number, active: number, windows: number): string[
   ];
 }
 
-function seedJobs(seq: string, active: number, windows: number): string[] {
+function seedMachine(schema: "historical" | "machine-allowances"): string {
+  const machineColumns = schema === "historical" ? "state,allowed_workspaces" : "state";
+  const machineValues = schema === "historical" ? "'active','[]'" : "'enrolled'";
+  return (
+    "INSERT INTO login_machines(machine_id,label," +
+    machineColumns +
+    ",created_at,updated_at) VALUES (" +
+    machine +
+    ",'fixture'," +
+    machineValues +
+    "," +
+    stamp +
+    "," +
+    stamp +
+    ");"
+  );
+}
+
+function seedJobs(
+  seq: string,
+  active: number,
+  windows: number,
+  schema: "historical" | "machine-allowances",
+): string[] {
   return [
     "INSERT INTO signin_organization_identity VALUES ('01890f2e-7b4c-7cc0-98c4-000000009001','fixture',1,1);",
-    "INSERT INTO login_machines(machine_id,label,state,allowed_workspaces,created_at,updated_at) VALUES (" +
-      machine +
-      ",'fixture','active','[]'," +
-      stamp +
-      "," +
-      stamp +
-      ");",
+    seedMachine(schema),
     seq +
       "INSERT INTO automation_wakes SELECT " +
       id("100000+i") +
