@@ -84,8 +84,9 @@ pub struct CleanupResult {
 
 fn remaining_records(
     known: &BTreeMap<i32, ProcessIdentity>,
+    read_inventory: &impl Fn() -> DriverResult<BTreeMap<i32, ProcessIdentity>>,
 ) -> DriverResult<BTreeMap<i32, RemainingIdentity>> {
-    Ok(process_table()?
+    Ok(read_inventory()?
         .into_iter()
         .filter(|(pid, identity)| {
             known
@@ -118,8 +119,9 @@ fn failure(stage: Option<&'static str>, pid: Option<i32>, error: &DriverError) -
 fn signal_if_matching(
     identity: &ProcessIdentity,
     signal: rustix::process::Signal,
+    lookup: &impl Fn(i32) -> DriverResult<Option<ProcessIdentity>>,
 ) -> DriverResult<bool> {
-    if !lookup_identity(identity.pid)?.is_some_and(|current| current.same_process(identity)) {
+    if !lookup(identity.pid)?.is_some_and(|current| current.same_process(identity)) {
         return Ok(false);
     }
     let pid = rustix::process::Pid::from_raw(identity.pid)
@@ -135,6 +137,15 @@ pub fn stop_owned(
     child: &mut Child,
     known: &mut BTreeMap<i32, ProcessIdentity>,
 ) -> DriverResult<CleanupResult> {
+    stop_owned_observing(child, known, &process_table, &lookup_identity)
+}
+
+fn stop_owned_observing(
+    child: &mut Child,
+    known: &mut BTreeMap<i32, ProcessIdentity>,
+    read_inventory: &impl Fn() -> DriverResult<BTreeMap<i32, ProcessIdentity>>,
+    lookup: &impl Fn(i32) -> DriverResult<Option<ProcessIdentity>>,
+) -> DriverResult<CleanupResult> {
     let root = i32::try_from(child.id()).map_err(|_| DriverError::Runtime("Host PID overflow"))?;
     let mut errors = Vec::new();
     let mut signals = Vec::new();
@@ -145,7 +156,7 @@ pub fn stop_owned(
         (rustix::process::Signal::TERM, 45, 15),
         (rustix::process::Signal::KILL, 5, 9),
     ] {
-        if let Err(error) = process_table() {
+        if let Err(error) = read_inventory() {
             errors.push(failure(Some("freshIdentity"), None, &error));
             return Ok(CleanupResult {
                 exit: child.try_wait()?.map(exit_code),
@@ -166,13 +177,15 @@ pub fn stop_owned(
                 .map(|(_, identity)| identity),
         );
         for identity in ordered {
-            match signal_if_matching(identity, signal) {
+            match signal_if_matching(identity, signal, lookup) {
                 Ok(true) => signals.push(ProcessSignal {
                     pid: identity.pid,
                     signal: number,
                 }),
                 Ok(false) => {}
-                Err(error) => errors.push(failure(None, Some(identity.pid), &error)),
+                Err(error) => {
+                    errors.push(failure(Some("fallbackSignal"), Some(identity.pid), &error))
+                }
             }
         }
         if wait_for_child(child, Duration::from_secs(seconds))?.is_none() {
@@ -184,7 +197,7 @@ pub fn stop_owned(
             .collect();
         let until = Instant::now() + Duration::from_secs(5);
         while Instant::now() < until {
-            match remaining_records(known) {
+            match remaining_records(known, read_inventory) {
                 Ok(observed) => remaining = observed,
                 Err(error) => {
                     errors.push(failure(Some("settlementObservation"), None, &error));
@@ -200,7 +213,7 @@ pub fn stop_owned(
             break;
         }
     }
-    let remaining = match remaining_records(known) {
+    let remaining = match remaining_records(known, read_inventory) {
         Ok(records) => records,
         Err(error) => {
             errors.push(failure(Some("finalObservation"), None, &error));
@@ -219,6 +232,7 @@ fn cleanup_owned(
     child: &mut Child,
     known: &mut BTreeMap<i32, ProcessIdentity>,
     evidence: &Path,
+    lookup: &impl Fn(i32) -> DriverResult<Option<ProcessIdentity>>,
 ) -> DriverResult<()> {
     let root = i32::try_from(child.id()).map_err(|_| DriverError::Runtime("Host PID overflow"))?;
     let snapshot = match observe_owned(root, known) {
@@ -229,13 +243,28 @@ fn cleanup_owned(
         },
     };
     let saved = save_record(&evidence.join("host-before-fallback.json"), &snapshot).is_ok();
+    let mut initial_errors = Vec::new();
+    let mut initial_signals = Vec::new();
     if let Some(identity) = known.get(&root)
         && child.try_wait()?.is_none()
-        && signal_if_matching(identity, rustix::process::Signal::TERM).is_ok()
     {
-        let _ = wait_for_child(child, Duration::from_secs(45));
+        match signal_if_matching(identity, rustix::process::Signal::TERM, lookup) {
+            Ok(true) => {
+                initial_signals.push(ProcessSignal {
+                    pid: root,
+                    signal: 15,
+                });
+                if let Err(error) = wait_for_child(child, Duration::from_secs(45)) {
+                    initial_errors.push(failure(Some("initialReap"), Some(root), &error));
+                }
+            }
+            Ok(false) => {}
+            Err(error) => initial_errors.push(failure(Some("initialSignal"), Some(root), &error)),
+        }
     }
-    let result = stop_owned(child, known)?;
+    let mut result = stop_owned_observing(child, known, &process_table, lookup)?;
+    result.signals.splice(..0, initial_signals);
+    result.errors.splice(..0, initial_errors);
     save_record(&evidence.join("host-settlement.json"), &result)?;
     if !result.remaining.is_empty() || !result.errors.is_empty() {
         return Err(DriverError::Runtime(
@@ -266,6 +295,10 @@ pub fn with_owned_child<TValue>(
         save_record(&evidence.join("host-started.json"), identity)?;
         body(child, &mut known)
     })();
-    cleanup_owned(child, &mut known, evidence)?;
+    cleanup_owned(child, &mut known, evidence, &lookup_identity)?;
     result
 }
+
+#[cfg(test)]
+#[path = "owned_host_test.rs"]
+mod tests;
