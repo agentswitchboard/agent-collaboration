@@ -636,21 +636,11 @@ async fn assert_retired_delivery_does_not_shadow_successor(
     )?;
 
     let presence = route.presence(&target).await?;
-    let successor_native = async {
-        let (stream, _) = successor.accept().await?;
-        drop(successor);
-        let mut wire = tokio_tungstenite::accept_async(stream).await?;
-        let request = native_request(&mut wire, "initialize").await?;
-        native_reply(&mut wire, &request, json!({})).await?;
-        native_request(&mut wire, "initialized").await?;
-        let resume = native_request(&mut wire, "thread/resume").await?;
-        Ok::<_, FixtureError>((wire, resume))
-    };
     let mut frontend = fixture.connect().await?;
     frontend.send(3, "session/load", load_params()).await?;
     let (backend, early_reply) = tokio::select! {
         reply = frontend.receive(3) => (None, Some(reply?)),
-        backend = successor_native => (Some(backend?), None),
+        backend = receive_successor_resume(&successor) => (Some(backend?), None),
     };
     // In the overlap case, A is released only after B has reached its native resume,
     // or after the frontend has proved that it could not get that far.
@@ -681,6 +671,28 @@ async fn assert_retired_delivery_does_not_shadow_successor(
         early_reply.ok_or("frontend and backend returned no resume result")?
     };
     drop(frontend);
+    if order == DeliveryReturnOrder::DuringSuccessorResume && response.get("result").is_some() {
+        fixture.await_frontend_return().await?;
+        let presence_after_return = route.presence(&target).await?;
+        let mut fresh = fixture.connect().await?;
+        fresh.send(5, "session/load", load_params()).await?;
+        let fresh_reply = fresh.receive(5);
+        tokio::pin!(fresh_reply);
+        let (used_successor, fresh_load) = tokio::select! {
+            early = &mut fresh_reply => (false, early?),
+            backend = receive_successor_resume(&successor) => {
+                let (mut wire, resume) = backend?;
+                reply_resumed(&mut wire, &resume).await?;
+                (true, fresh_reply.await?)
+            },
+        };
+        assert!(
+            presence_after_return != RoutePresence::Running
+                && used_successor
+                && fresh_load.get("result").is_some(),
+            "late old return shadowed a fresh generation B frontend: presence={presence_after_return:?}, load={fresh_load}"
+        );
+    }
     fixture.stop().await?;
     assert!(
         presence != RoutePresence::Running && response.get("result").is_some(),
@@ -695,4 +707,16 @@ async fn reply_resumed(
 ) -> Result<(), FixtureError> {
     assert_eq!(resume["params"]["threadId"], SESSION);
     native_reply(wire, resume, json!({"cwd":"/tmp","thread":{"id":SESSION,"cwd":"/tmp","status":{"type":"idle"},"turns":[]}})).await
+}
+
+async fn receive_successor_resume(
+    listener: &UnixListener,
+) -> Result<(WebSocketStream<UnixStream>, Value), FixtureError> {
+    let (stream, _) = listener.accept().await?;
+    let mut wire = tokio_tungstenite::accept_async(stream).await?;
+    let request = native_request(&mut wire, "initialize").await?;
+    native_reply(&mut wire, &request, json!({})).await?;
+    native_request(&mut wire, "initialized").await?;
+    let resume = native_request(&mut wire, "thread/resume").await?;
+    Ok((wire, resume))
 }
