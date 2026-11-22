@@ -3,8 +3,9 @@ mod observation;
 use observation::{assert_effects, assert_state};
 
 use approval_request_protocol::{
-    ApprovalWindow, CancelReason, DecidedBy, DeliverEndingReply, DeliverEndingRequest,
-    HolderStopCause, PassOnRequest, Raise, WaitingStatus,
+    Answer, ApprovalWindow, CallOffer, CallStopCause, CancelReason, DecidedBy, DeliverEndingReply,
+    DeliverEndingRequest, HolderStopCause, InvocationDigest, ParkedCallHolder, PassOnRequest,
+    Raise, SessionCallDecision, SessionCallOperation, StopRequest, WaitingStatus,
 };
 use central_engine_model::{Context, TransitionError};
 use fleet_approvals::{
@@ -80,12 +81,53 @@ impl Scenario {
     }
 
     fn raise(&self, row: usize, changed: bool) -> Raise {
+        if ROWS[row].parked {
+            let key = self.key(row);
+            return Raise::UnprovenCall {
+                request_id: key.request_id,
+                holder: ParkedCallHolder {
+                    router_run: key.run.router_run,
+                },
+                invocation: InvocationDigest::from_bound_bytes(if changed {
+                    b"second held copy"
+                } else {
+                    b"first held copy"
+                }),
+                offer: CallOffer {
+                    operation: SessionCallOperation::EndSessionForGood {
+                        session_id: self.requester[RUN_ENROLLMENTS[ROWS[row].run]]
+                            .session_id
+                            .clone(),
+                    },
+                },
+            };
+        }
         let requester = &self.requester[RUN_ENROLLMENTS[ROWS[row].run]];
         provider(
             &self.key(row),
             requester,
             if changed { "Changed" } else { "Original" },
         )
+    }
+
+    fn choice(row: usize, choice: u8) -> Answer {
+        match (ROWS[row].parked, choice) {
+            (true, 1) => Answer::UnprovenCall {
+                decision: SessionCallDecision::Allow,
+            },
+            (true, 2) => Answer::UnprovenCall {
+                decision: SessionCallDecision::Decline,
+            },
+            (false, _) | (true, _) => answer(choice),
+        }
+    }
+
+    fn stop_cause(row: usize) -> HolderStopCause {
+        if ROWS[row].parked {
+            HolderStopCause::CallWithdrawn
+        } else {
+            HolderStopCause::AskReplaced
+        }
     }
 
     fn frame(&self, row: usize, offer: Offer) -> DeliverEndingRequest {
@@ -112,7 +154,19 @@ impl Scenario {
             }
             Step::Stop { row, changed } => ApprovalCollectionEvent::Stop {
                 run: self.runs[ROWS[row].run].clone(),
-                request: provider_stop(&self.raise(row, changed)),
+                request: {
+                    let raise = self.raise(row, changed);
+                    if ROWS[row].parked {
+                        StopRequest::UnprovenCall {
+                            request_id: raise.request_id().clone(),
+                            router_run: raise.router_run().clone(),
+                            contents_digest: raise.contents_digest().unwrap(),
+                            cause: CallStopCause::CallWithdrawn,
+                        }
+                    } else {
+                        provider_stop(&raise)
+                    }
+                },
             },
             Step::Decide {
                 row,
@@ -127,7 +181,12 @@ impl Scenario {
                     },
                     ApprovalActor::Session(session) => AdmittedDecider::Session(session),
                 };
-                decide_event(&self.key(row), decider, operation, answer(choice))
+                decide_event(
+                    &self.key(row),
+                    decider,
+                    operation,
+                    Self::choice(row, choice),
+                )
             }
             Step::Read { row, actor } => {
                 let ApprovalActor::Person(person_id) = self.actor(row, actor) else {
@@ -167,7 +226,11 @@ impl Scenario {
                 let mut offer = ledger.rows[row].offered?;
                 if wrong_ending {
                     offer.ending = if offer.ending == Ending::TimedOut {
-                        Ending::SessionEnded
+                        if ROWS[row].parked {
+                            Ending::RequesterGone
+                        } else {
+                            Ending::SessionEnded
+                        }
                     } else {
                         Ending::TimedOut
                     };
@@ -201,13 +264,13 @@ impl Scenario {
         use approval_request_protocol::Ending as ProtocolEnding;
         match ending {
             Ending::Decided { choice, actor } => ProtocolEnding::Decided {
-                answer: answer(choice),
+                answer: Self::choice(row, choice),
                 by: self.identity(row, actor),
             },
             Ending::TimedOut => ProtocolEnding::TimedOut {},
             Ending::Stopped => ProtocolEnding::Cancelled {
                 reason: CancelReason::Stopped {
-                    cause: HolderStopCause::AskReplaced,
+                    cause: Self::stop_cause(row),
                 },
             },
             Ending::SessionEnded => ProtocolEnding::Cancelled {
@@ -223,6 +286,27 @@ impl Scenario {
     }
 
     fn recipient_ending(&self, row: usize, actor: Actor, ending: Ending) -> Value {
+        if ROWS[row].parked {
+            return match ending {
+                Ending::Decided {
+                    choice,
+                    actor: giver,
+                } if giver == actor => {
+                    json!({"kind":"giver","personId":person_id(if giver == Actor::FirstPerson { 10 } else { 11 }),
+                        "decision": if choice == 1 { "allow" } else { "decline" }})
+                }
+                Ending::Decided { actor: giver, .. } => {
+                    json!({"kind":"decided","personId":person_id(if giver == Actor::FirstPerson { 10 } else { 11 })})
+                }
+                Ending::Stopped
+                | Ending::TimedOut
+                | Ending::SessionEnded
+                | Ending::RequesterGone
+                | Ending::EnrollmentEnded => {
+                    serde_json::to_value(self.ending(row, ending)).unwrap()
+                }
+            };
+        }
         if let Ending::Decided {
             choice,
             actor: giver,
@@ -240,7 +324,22 @@ impl Scenario {
     }
 
     fn expected_read(&self, row: usize, actor: Actor, view: View, changed: bool) -> Value {
-        let Raise::ProviderApproval { offer, .. } = self.raise(row, changed) else {
+        let raise = self.raise(row, changed);
+        if let Raise::UnprovenCall {
+            offer, invocation, ..
+        } = &raise
+        {
+            let state = match view.ending {
+                Some((ending, at, delivery)) => {
+                    json!({"kind":"ended","ending":self.recipient_ending(row, actor, ending),
+                    "endedAt":time(at), "delivery": wire_delivery(delivery)})
+                }
+                None => json!({"kind":"waiting"}),
+            };
+            return json!({"kind":"unprovenCall","requestId":self.key(row).request_id,"offer":offer,
+                "invocation":invocation,"state":state,"window":ApprovalWindow::from_first_save(time(view.raised_at)).unwrap()});
+        }
+        let Raise::ProviderApproval { offer, .. } = raise else {
             panic!("the model fixture owns an approval offer");
         };
         let state = if let Some((ending, at, delivery)) = view.ending {
@@ -413,8 +512,42 @@ fn generated_histories_match_the_separate_smaller_central_ledger(case: hegel::Te
             2,
         );
     }
+    if prefix == 4 {
+        compare(
+            Step::Raise {
+                row: 4,
+                changed: false,
+            },
+            0,
+        );
+        compare(
+            Step::Forward {
+                row: 4,
+                actor: Actor::Parent,
+            },
+            1,
+        );
+        compare(
+            Step::Decide {
+                row: 4,
+                operation: 101,
+                choice: 1,
+                actor: Actor::FirstPerson,
+            },
+            2,
+        );
+        compare(
+            Step::Read {
+                row: 4,
+                actor: Actor::SecondPerson,
+            },
+            2,
+        );
+    }
     for _ in 0..case.draw(gs::integers::<u8>().min_value(1).max_value(32)) {
-        let row = usize::from(case.draw(gs::integers::<u8>().max_value(3)));
+        let row = usize::from(
+            case.draw(gs::integers::<u8>().max_value(u8::try_from(ROWS.len() - 1).unwrap())),
+        );
         let flags = case.draw(gs::booleans());
         let sampled = case.draw(gs::sampled_from(vec![
             0,

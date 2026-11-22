@@ -34,3 +34,19 @@ export const invalidDelivery: Delivery = { kind: "reported" };
 
 // @ts-expect-error The provider holder takes a Central session ID, not an addressed harness ID.
 export const invalidHolder: Extract<Raise, { kind: "providerApproval" }>["holder"] = { sessionId: { session }, routerRun: session };
+
+export const parkedStart = {
+  kind: "unprovenCall",
+  requestId: session,
+  holder: { routerRun: session },
+  offer: {
+    operation: { kind: "startSession", agentProgram: "claude", workingFolder: "/project", mode: "plan" },
+  },
+  invocation: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+} satisfies Raise;
+
+// @ts-expect-error A parked holder names a run without attributing a session.
+export const invalidParkedHolder: Extract<Raise, { kind: "unprovenCall" }>["holder"] = { routerRun: session, sessionId: session };
+
+// @ts-expect-error C1 cannot carry a general operation.
+export const invalidParkedOperation: Extract<Raise, { kind: "unprovenCall" }>["offer"]["operation"] = { kind: "runCommand" };

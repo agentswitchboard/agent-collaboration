@@ -13,11 +13,13 @@ mod destination_admission;
 mod destination_requests;
 mod holder_requests;
 mod question_fields;
+mod unproven_session_call;
 
 pub use answer_validation::{InvalidAnswer, check_answer};
 pub use approval_answers::{Answer, QuestionAnswer, QuestionAnswerValue, QuestionFieldAnswer};
 pub use approval_digests::{
-    ApprovalDigestError, InvalidApprovalDigest, RequestContentsDigest, canonical_json, sha256_url,
+    ApprovalDigestError, InvalidApprovalDigest, InvocationDigest, RequestContentsDigest,
+    canonical_json, sha256_url,
 };
 pub use approval_endings::{
     ApprovalDecision, CancelReason, DecidedBy, Delivery, Ending, HolderStopCause,
@@ -39,7 +41,8 @@ pub use approval_values::{
     ApprovalWindow, CentralTime, DESCRIPTION_MAX_CHARACTERS, Description, InvalidApprovalOrdinal,
     InvalidApprovalText, InvalidApprovalWindow, InvalidQuestionNumber, LABEL_MAX_CHARACTERS, Label,
     MAX_OFFERED_OPTIONS, MAX_QUESTION_FIELDS, MAX_QUESTION_NUMBER_LENGTH, OfferedOptionId,
-    QuestionFieldId, QuestionNumber, SUBJECT_MAX_CHARACTERS, Subject, TITLE_MAX_CHARACTERS, Title,
+    QuestionFieldId, QuestionNumber, SUBJECT_MAX_CHARACTERS, SessionCallFolder, SessionCallMode,
+    Subject, TITLE_MAX_CHARACTERS, Title,
 };
 #[doc(hidden)]
 pub use approval_wire_codec::decode_named_map;
@@ -55,5 +58,10 @@ pub use holder_requests::{
 pub use question_fields::{
     ChoiceOption, ChoiceOptions, InvalidChoiceRange, InvalidOfferedOptions, InvalidQuestionFields,
     MultiChoiceSelection, QuestionField, QuestionFields,
+};
+pub use unproven_session_call::{
+    CallCancellation, CallOffer, CallStopCause, ParkedCallEnding, ParkedCallEndingView,
+    ParkedCallHolder, ParkedCallStateView, SessionCallDecision, SessionCallOperation,
+    SessionCallProgram,
 };
 pub use workspace_ids::{ApprovalRequestId, CentralSessionId, RouterRunId};

@@ -168,11 +168,9 @@ fn project_view(
     let identity = actor.identity();
     let admitted = checked_destination(saved, &identity)?;
     match state {
-        ApprovalState::Waiting { .. } => Ok(RequestView::waiting(
-            &admitted,
-            saved.waiting_status,
-            saved.window,
-        )),
+        ApprovalState::Waiting { .. } => {
+            RequestView::waiting(&admitted, saved.waiting_status, saved.window)
+        }
         ApprovalState::Ended { closed, .. } => RequestView::ended(
             &admitted,
             saved.window,

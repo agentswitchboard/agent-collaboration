@@ -45,6 +45,7 @@ pub enum HolderStopCause {
     AskWithdrawn,
     SessionClosed,
     ProviderConnectionLost,
+    CallWithdrawn,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -74,15 +75,18 @@ impl ProviderStopCause {
     }
 }
 
-impl From<HolderStopCause> for ProviderStopCause {
-    fn from(cause: HolderStopCause) -> Self {
-        match cause {
+impl TryFrom<HolderStopCause> for ProviderStopCause {
+    type Error = InvalidApprovalEnding;
+
+    fn try_from(cause: HolderStopCause) -> Result<Self, Self::Error> {
+        Ok(match cause {
             HolderStopCause::TurnStopped => Self::TurnStopped,
             HolderStopCause::AskReplaced => Self::AskReplaced,
             HolderStopCause::AskWithdrawn => Self::AskWithdrawn,
             HolderStopCause::SessionClosed => Self::SessionClosed,
             HolderStopCause::ProviderConnectionLost => Self::ProviderConnectionLost,
-        }
+            HolderStopCause::CallWithdrawn => return Err(InvalidApprovalEnding::BindingMismatch),
+        })
     }
 }
 

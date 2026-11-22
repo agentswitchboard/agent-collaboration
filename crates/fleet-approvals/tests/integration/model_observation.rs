@@ -1,13 +1,11 @@
-use approval_request_protocol::{
-    ApprovalWindow, HolderStopCause, RaiseReceipt, RaiseReply, StopReply,
-};
+use approval_request_protocol::{ApprovalWindow, RaiseReceipt, RaiseReply, StopReply};
 use fleet_approvals::{
     ApprovalCollection, ApprovalCollectionEffect, ApprovalDecisionReply, ApprovalEffect,
     ApprovalReceipt, ApprovalState,
 };
 use serde_json::json;
 
-use super::super::fixtures::{HOUR, answer, operation_id, time};
+use super::super::fixtures::{HOUR, operation_id, time};
 use super::super::model_ledger::{
     Actor, Decision, Ledger, OperationEffect, ROWS, RUN_ENROLLMENTS, RaiseResult, Step, StopResult,
 };
@@ -24,7 +22,7 @@ fn assert_decision(
         Decision::Won { choice } => assert_eq!(
             actual,
             &ApprovalDecisionReply::SavedDecision {
-                answer: answer(choice),
+                answer: Scenario::choice(row, choice),
                 by: scenario.identity(row, actor)
             }
         ),
@@ -34,7 +32,7 @@ fn assert_decision(
             };
             assert_eq!(
                 serde_json::to_value(ending).unwrap(),
-                json!({"kind":"providerApproval","ending":scenario.recipient_ending(row, actor, standing)})
+                json!({"kind":if ROWS[row].parked { "unprovenCall" } else { "providerApproval" },"ending":scenario.recipient_ending(row, actor, standing)})
             );
         }
         Decision::NotVisible => assert_eq!(actual, &ApprovalDecisionReply::NotVisible {}),
@@ -205,7 +203,7 @@ pub(super) fn assert_state(scenario: &Scenario, ledger: &Ledger, book: &Approval
                         .contents_digest()
                         .unwrap()
                 );
-                assert_eq!(cause, &HolderStopCause::AskReplaced);
+                assert_eq!(cause, &Scenario::stop_cause(row));
             }
             Some(ApprovalState::Waiting { saved }) => {
                 let (changed, at) = expected.first_save.unwrap();

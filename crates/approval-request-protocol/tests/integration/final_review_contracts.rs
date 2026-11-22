@@ -214,7 +214,7 @@ fn handover_checks_exact_session_and_fresh_factor_preconditions() {
             .decide(answer, DecisionFactor::FreshPersonFactor)
             .is_ok()
     );
-    let forged_parked_ending = json!({"kind":"unprovenCall","ending":{"kind":"timedOut"}});
+    let forged_parked_ending = json!({"kind":"unprovenCall","ending":{"kind":"decided","decision":"allow","by":{"kind":"session","session":REQUESTER_SESSION}}});
     assert!(serde_json::from_value::<PrivateEnding>(forged_parked_ending).is_err());
 }
 
@@ -227,7 +227,7 @@ fn views_check_ending_chronology_at_decode_and_build() {
         AdmittedDestination::for_request(&provider, &person, std::slice::from_ref(&person))
             .unwrap();
     let provider_waiting =
-        RequestView::waiting(&provider_dest, WaitingStatus::PassedOn, approval_window);
+        RequestView::waiting(&provider_dest, WaitingStatus::PassedOn, approval_window).unwrap();
     assert_eq!(
         serde_json::to_value(provider_waiting.view()).unwrap()["state"]["status"],
         "passedOn"

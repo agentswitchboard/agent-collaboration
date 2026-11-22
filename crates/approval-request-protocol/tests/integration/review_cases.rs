@@ -367,6 +367,6 @@ fn the_requester_cannot_construct_its_own_read_projection() {
     let membership = [requester.clone(), different.clone()];
     assert!(AdmittedDestination::for_request(&raise, &requester, &membership).is_err());
     let admitted = AdmittedDestination::for_request(&raise, &different, &membership).unwrap();
-    let view = RequestView::waiting(&admitted, WaitingStatus::Pending, window);
+    let view = RequestView::waiting(&admitted, WaitingStatus::Pending, window).unwrap();
     assert_eq!(view.view().request_id(), raise.request_id());
 }

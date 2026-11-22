@@ -3,8 +3,9 @@ use crate::approval_wire_codec::{approval_wire_record, approval_wire_union};
 use workspace_ids::ApprovalRequestId;
 
 use crate::{
-    Answer, CancelReason, DecidedBy, Ending, InvalidAnswer, InvalidApprovalEnding, OfferedOptionId,
-    ProviderStopCause, QuestionAnswer, Raise, RequestContentsDigest, check_answer,
+    Answer, CallCancellation, CallStopCause, CancelReason, DecidedBy, Ending, HolderStopCause,
+    InvalidAnswer, InvalidApprovalEnding, OfferedOptionId, ParkedCallEnding, ProviderStopCause,
+    QuestionAnswer, Raise, RequestContentsDigest, check_answer,
 };
 
 approval_wire_union! {
@@ -45,6 +46,7 @@ approval_wire_union! {
 pub enum PrivateEnding {
     ProviderApproval { ending: HolderEnding<OfferedOptionId, ProviderCancellation> },
     ProviderQuestion { ending: HolderEnding<QuestionAnswer, ProviderCancellation> },
+    UnprovenCall { ending: ParkedCallEnding },
 }
 }
 
@@ -55,10 +57,13 @@ impl PrivateEnding {
         }
         match raise {
             Raise::ProviderApproval { .. } => Ok(Self::ProviderApproval {
-                ending: project_ending(ending, take_approval, ProviderCancellation::from)?,
+                ending: project_ending(ending, take_approval, ProviderCancellation::try_from)?,
             }),
             Raise::ProviderQuestion { .. } => Ok(Self::ProviderQuestion {
-                ending: project_ending(ending, take_question, ProviderCancellation::from)?,
+                ending: project_ending(ending, take_question, ProviderCancellation::try_from)?,
+            }),
+            Raise::UnprovenCall { .. } => Ok(Self::UnprovenCall {
+                ending: ParkedCallEnding::try_from(ending)?,
             }),
         }
     }
@@ -83,6 +88,7 @@ impl PrivateEnding {
                 |answer| Answer::Question { answer },
                 ProviderCancellation::into_reason,
             ),
+            Self::UnprovenCall { ending } => ending.into(),
         }
     }
 }
@@ -140,7 +146,7 @@ impl<AcceptedAnswer, Cancellation> HolderEnding<AcceptedAnswer, Cancellation> {
 fn project_ending<AcceptedAnswer, Cancellation>(
     ending: Ending,
     answer_for_kind: impl FnOnce(Answer) -> Option<AcceptedAnswer>,
-    cancellation_for_kind: impl FnOnce(CancelReason) -> Cancellation,
+    cancellation_for_kind: impl FnOnce(CancelReason) -> Result<Cancellation, InvalidApprovalEnding>,
 ) -> Result<HolderEnding<AcceptedAnswer, Cancellation>, InvalidApprovalEnding> {
     match ending {
         Ending::Decided { answer, by } => {
@@ -149,7 +155,7 @@ fn project_ending<AcceptedAnswer, Cancellation>(
             Ok(HolderEnding::Decided { answer, by })
         }
         Ending::Cancelled { reason } => Ok(HolderEnding::Cancelled {
-            reason: cancellation_for_kind(reason),
+            reason: cancellation_for_kind(reason)?,
         }),
         Ending::TimedOut {} => Ok(HolderEnding::TimedOut {}),
     }
@@ -162,10 +168,13 @@ pub(crate) fn requires_fresh_factor(raise: &Raise, answer: &Answer) -> bool {
             .as_slice()
             .iter()
             .any(|option| &option.id == option_id && option.needs_person_with_fresh_factor()),
-        (Raise::ProviderApproval { .. }, Answer::Question { .. })
-        | (Raise::ProviderQuestion { .. }, Answer::Approval { .. } | Answer::Question { .. }) => {
-            false
-        }
+        (Raise::UnprovenCall { .. }, Answer::UnprovenCall { .. }) => true,
+        (Raise::ProviderApproval { .. }, Answer::Question { .. } | Answer::UnprovenCall { .. })
+        | (
+            Raise::ProviderQuestion { .. },
+            Answer::Approval { .. } | Answer::Question { .. } | Answer::UnprovenCall { .. },
+        )
+        | (Raise::UnprovenCall { .. }, Answer::Approval { .. } | Answer::Question { .. }) => false,
     }
 }
 
@@ -177,7 +186,7 @@ pub(crate) fn check_decision_actor(
     let offer = raise.offer_view();
     check_answer(&offer, answer).map_err(InvalidApprovalEnding::Answer)?;
     if let DecidedBy::Session { session } = actor
-        && (raise.requesting_session() == session || requires_fresh_factor(raise, answer))
+        && (raise.requesting_session() == Some(session) || requires_fresh_factor(raise, answer))
     {
         return Err(InvalidApprovalEnding::IneligibleDecider);
     }
@@ -187,26 +196,94 @@ pub(crate) fn check_decision_actor(
 fn take_approval(answer: Answer) -> Option<OfferedOptionId> {
     match answer {
         Answer::Approval { option_id } => Some(option_id),
-        Answer::Question { .. } => None,
+        Answer::Question { .. } | Answer::UnprovenCall { .. } => None,
     }
 }
 
 fn take_question(answer: Answer) -> Option<QuestionAnswer> {
     match answer {
         Answer::Question { answer } => Some(answer),
-        Answer::Approval { .. } => None,
+        Answer::Approval { .. } | Answer::UnprovenCall { .. } => None,
     }
 }
 
-impl From<CancelReason> for ProviderCancellation {
-    fn from(reason: CancelReason) -> Self {
-        match reason {
+impl TryFrom<CancelReason> for ProviderCancellation {
+    type Error = InvalidApprovalEnding;
+    fn try_from(reason: CancelReason) -> Result<Self, Self::Error> {
+        Ok(match reason {
             CancelReason::Stopped { cause } => Self::Stopped {
-                cause: cause.into(),
+                cause: cause.try_into()?,
             },
             CancelReason::RequesterGone {} => Self::RequesterGone {},
             CancelReason::SessionEnded {} => Self::SessionEnded {},
             CancelReason::EnrollmentEnded {} => Self::EnrollmentEnded {},
+        })
+    }
+}
+
+impl TryFrom<Ending> for ParkedCallEnding {
+    type Error = InvalidApprovalEnding;
+
+    fn try_from(ending: Ending) -> Result<Self, Self::Error> {
+        match ending {
+            Ending::Decided {
+                answer: Answer::UnprovenCall { decision },
+                by: DecidedBy::Person { person_id },
+            } => Ok(Self::Decided {
+                decision,
+                person_id,
+            }),
+            Ending::Decided { .. } => Err(InvalidApprovalEnding::IneligibleDecider),
+            Ending::Cancelled { reason } => {
+                let reason = match reason {
+                    CancelReason::Stopped {
+                        cause: HolderStopCause::CallWithdrawn,
+                    } => CallCancellation::Stopped {
+                        cause: CallStopCause::CallWithdrawn,
+                    },
+                    CancelReason::RequesterGone {} => CallCancellation::RequesterGone {},
+                    CancelReason::EnrollmentEnded {} => CallCancellation::EnrollmentEnded {},
+                    CancelReason::Stopped {
+                        cause:
+                            HolderStopCause::TurnStopped
+                            | HolderStopCause::AskReplaced
+                            | HolderStopCause::AskWithdrawn
+                            | HolderStopCause::SessionClosed
+                            | HolderStopCause::ProviderConnectionLost,
+                    }
+                    | CancelReason::SessionEnded {} => {
+                        return Err(InvalidApprovalEnding::BindingMismatch);
+                    }
+                };
+                Ok(Self::Cancelled { reason })
+            }
+            Ending::TimedOut {} => Ok(Self::TimedOut {}),
+        }
+    }
+}
+
+impl From<ParkedCallEnding> for Ending {
+    fn from(ending: ParkedCallEnding) -> Self {
+        match ending {
+            ParkedCallEnding::Decided {
+                decision,
+                person_id,
+            } => Self::Decided {
+                answer: Answer::UnprovenCall { decision },
+                by: DecidedBy::Person { person_id },
+            },
+            ParkedCallEnding::Cancelled { reason } => Self::Cancelled {
+                reason: match reason {
+                    CallCancellation::Stopped {
+                        cause: CallStopCause::CallWithdrawn,
+                    } => CancelReason::Stopped {
+                        cause: HolderStopCause::CallWithdrawn,
+                    },
+                    CallCancellation::RequesterGone {} => CancelReason::RequesterGone {},
+                    CallCancellation::EnrollmentEnded {} => CancelReason::EnrollmentEnded {},
+                },
+            },
+            ParkedCallEnding::TimedOut {} => Self::TimedOut {},
         }
     }
 }

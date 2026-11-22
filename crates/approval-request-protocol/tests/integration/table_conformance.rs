@@ -44,6 +44,7 @@ fn stop_standing_case(ending: StopReceiptEnding) -> &'static str {
                 HolderStopCause::AskWithdrawn => "askWithdrawn",
                 HolderStopCause::SessionClosed => "sessionClosed",
                 HolderStopCause::ProviderConnectionLost => "providerConnectionLost",
+                HolderStopCause::CallWithdrawn => "callWithdrawn",
             },
         },
     }
@@ -178,6 +179,12 @@ fn table_requests_and_reply_cases_match_the_core_protocol() -> Result<(), String
             }),
         )?;
     }
+    slice_case::<StopRequest>(
+        "Unproven call Stop request",
+        json!({
+            "kind":"unprovenCall","requestId":REQUEST,"routerRun":RUN,"contentsDigest":DIGEST,"cause":"callWithdrawn"
+        }),
+    )?;
     let mut stop_cases = vec![
         (
             "timedOut",
@@ -197,7 +204,7 @@ fn table_requests_and_reply_cases_match_the_core_protocol() -> Result<(), String
             )
         }),
     );
-    stop_cases.extend(["turnStopped","askReplaced","askWithdrawn","sessionClosed","providerConnectionLost"].map(|cause| {
+    stop_cases.extend(["turnStopped","askReplaced","askWithdrawn","sessionClosed","providerConnectionLost","callWithdrawn"].map(|cause| {
         (cause, json!({"kind":"stands","ending":{"kind":"cancelled","reason":{"kind":"stopped","cause":cause}}}))
     }));
     assert_authority_reply::<StopReply>("Stop", &stop_cases, |reply| match reply {
@@ -332,6 +339,9 @@ fn decide_standing_cases_cover_every_request_kind_and_disclosure() -> Result<(),
                 }
                 EndingViewWire::ProviderQuestion { ending } => {
                     ("providerQuestion", destination_standing_case(ending))
+                }
+                EndingViewWire::UnprovenCall { .. } => {
+                    return Err("provider fixture decoded as an unproven call".to_owned());
                 }
             };
             if observed != (request_kind, case) {

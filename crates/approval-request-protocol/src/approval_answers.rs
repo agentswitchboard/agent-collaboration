@@ -12,6 +12,7 @@ approval_wire_union! {
 pub enum Answer {
     Approval { option_id: OfferedOptionId },
     Question { answer: QuestionAnswer },
+    UnprovenCall { decision: crate::SessionCallDecision },
 }
 }
 

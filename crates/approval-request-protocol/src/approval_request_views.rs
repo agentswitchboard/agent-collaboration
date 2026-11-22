@@ -4,10 +4,11 @@ use serde::{Deserialize, Serialize};
 use workspace_ids::ApprovalRequestId;
 
 use crate::{
-    AdmittedDestination, Answer, ApprovalOffer, ApprovalWindow, CentralTime, DecidedBy,
+    AdmittedDestination, Answer, ApprovalOffer, ApprovalWindow, CallOffer, CentralTime, DecidedBy,
     DeliverEndingRequest, Delivery, DestinationProjection, HolderEnding, InvalidApprovalEnding,
-    OfferView, OfferedOptionId, PrivateEnding, ProviderCancellation, QuestionAnswer, QuestionOffer,
-    Raise, WaitingStatus, check_answer,
+    InvocationDigest, OfferView, OfferedOptionId, ParkedCallEndingView, ParkedCallStateView,
+    PrivateEnding, ProviderCancellation, QuestionAnswer, QuestionOffer, Raise, WaitingStatus,
+    check_answer,
 };
 
 approval_wire_union! {
@@ -71,6 +72,7 @@ pub enum EndingViewWire {
     ProviderQuestion {
         ending: DestinationEnding<QuestionAnswer, ProviderCancellation>,
     },
+    UnprovenCall { ending: ParkedCallEndingView },
 }
 }
 
@@ -97,6 +99,9 @@ impl EndingView {
             },
             PrivateEnding::ProviderQuestion { ending } => EndingViewWire::ProviderQuestion {
                 ending: DestinationEnding::project(ending, actor),
+            },
+            PrivateEnding::UnprovenCall { ending } => EndingViewWire::UnprovenCall {
+                ending: ParkedCallEndingView::for_reader(ending, actor),
             },
         };
         Ok(DestinationProjection {
@@ -149,9 +154,7 @@ impl<AcceptedAnswer, Cancellation> RequestStateView<AcceptedAnswer, Cancellation
                 ending: StandingEnding::TimedOut {}
             }
         );
-        if *ended_at < window.raised_at() || (*ended_at >= window.deadline()) != timed_out {
-            return Err(InvalidApprovalEnding::Chronology);
-        }
+        check_ending_time(window, *ended_at, timed_out)?;
 
         if let DestinationEnding::Giver { decision } = ending {
             check_answer(offer, &answer_for_kind(&decision.answer))
@@ -180,6 +183,13 @@ enum RequestViewFields {
         state: RequestStateView<QuestionAnswer, ProviderCancellation>,
         window: ApprovalWindow,
     },
+    UnprovenCall {
+        request_id: ApprovalRequestId,
+        offer: CallOffer,
+        invocation: InvocationDigest,
+        state: ParkedCallStateView,
+        window: ApprovalWindow,
+    },
 }
 }
 
@@ -194,12 +204,11 @@ enum RequestViewFields {
 pub struct RequestView(RequestViewFields);
 
 impl RequestView {
-    #[must_use]
     pub fn waiting<'request>(
         admitted: &AdmittedDestination<'request>,
         status: WaitingStatus,
         window: ApprovalWindow,
-    ) -> DestinationProjection<'request, Self> {
+    ) -> Result<DestinationProjection<'request, Self>, InvalidApprovalEnding> {
         let raise = admitted.raise();
         let request_id = raise.request_id().clone();
         let fields = match raise {
@@ -215,11 +224,23 @@ impl RequestView {
                 state: RequestStateView::Waiting { status },
                 window,
             },
+            Raise::UnprovenCall {
+                offer, invocation, ..
+            } => match status {
+                WaitingStatus::Pending => RequestViewFields::UnprovenCall {
+                    request_id,
+                    offer: offer.clone(),
+                    invocation: invocation.clone(),
+                    state: ParkedCallStateView::Waiting {},
+                    window,
+                },
+                WaitingStatus::PassedOn => return Err(InvalidApprovalEnding::BindingMismatch),
+            },
         };
-        DestinationProjection {
+        Ok(DestinationProjection {
             actor: admitted.actor(),
             view: Self(fields),
-        }
+        })
     }
 
     pub fn ended<'request>(
@@ -259,8 +280,34 @@ impl RequestView {
                 },
                 window,
             },
-            (Raise::ProviderApproval { .. }, EndingViewWire::ProviderQuestion { .. })
-            | (Raise::ProviderQuestion { .. }, EndingViewWire::ProviderApproval { .. }) => {
+            (
+                Raise::UnprovenCall {
+                    offer, invocation, ..
+                },
+                EndingViewWire::UnprovenCall { ending },
+            ) => RequestViewFields::UnprovenCall {
+                request_id,
+                offer: offer.clone(),
+                invocation: invocation.clone(),
+                state: ParkedCallStateView::Ended {
+                    ending,
+                    ended_at,
+                    delivery,
+                },
+                window,
+            },
+            (
+                Raise::ProviderApproval { .. },
+                EndingViewWire::ProviderQuestion { .. } | EndingViewWire::UnprovenCall { .. },
+            )
+            | (
+                Raise::ProviderQuestion { .. },
+                EndingViewWire::ProviderApproval { .. } | EndingViewWire::UnprovenCall { .. },
+            )
+            | (
+                Raise::UnprovenCall { .. },
+                EndingViewWire::ProviderApproval { .. } | EndingViewWire::ProviderQuestion { .. },
+            ) => {
                 return Err(InvalidApprovalEnding::BindingMismatch);
             }
         };
@@ -274,7 +321,8 @@ impl RequestView {
     pub const fn request_id(&self) -> &ApprovalRequestId {
         match &self.0 {
             RequestViewFields::ProviderApproval { request_id, .. }
-            | RequestViewFields::ProviderQuestion { request_id, .. } => request_id,
+            | RequestViewFields::ProviderQuestion { request_id, .. }
+            | RequestViewFields::UnprovenCall { request_id, .. } => request_id,
         }
     }
 
@@ -282,7 +330,8 @@ impl RequestView {
     pub const fn window(&self) -> ApprovalWindow {
         match &self.0 {
             RequestViewFields::ProviderApproval { window, .. }
-            | RequestViewFields::ProviderQuestion { window, .. } => *window,
+            | RequestViewFields::ProviderQuestion { window, .. }
+            | RequestViewFields::UnprovenCall { window, .. } => *window,
         }
     }
 }
@@ -320,9 +369,38 @@ impl TryFrom<RequestViewFields> for RequestView {
                     answer: answer.clone(),
                 },
             )?,
+            RequestViewFields::UnprovenCall {
+                state: ParkedCallStateView::Waiting {},
+                ..
+            } => {}
+            RequestViewFields::UnprovenCall {
+                state:
+                    ParkedCallStateView::Ended {
+                        ending, ended_at, ..
+                    },
+                window,
+                ..
+            } => {
+                check_ending_time(
+                    *window,
+                    *ended_at,
+                    matches!(ending, ParkedCallEndingView::TimedOut {}),
+                )?;
+            }
         }
         Ok(Self(view))
     }
+}
+
+fn check_ending_time(
+    window: ApprovalWindow,
+    ended_at: CentralTime,
+    timed_out: bool,
+) -> Result<(), InvalidApprovalEnding> {
+    if ended_at < window.raised_at() || (ended_at >= window.deadline()) != timed_out {
+        return Err(InvalidApprovalEnding::Chronology);
+    }
+    Ok(())
 }
 
 impl From<RequestView> for RequestViewFields {

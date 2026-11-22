@@ -5,7 +5,9 @@ use workspace_ids::{ApprovalRequestId, CentralSessionId, RouterRunId};
 
 use crate::approval_values::{Description, Label, OfferedOptionId, Subject, Title};
 use crate::question_fields::{InvalidOfferedOptions, QuestionFields, validate_options};
-use crate::{ApprovalDigestError, RequestContentsDigest};
+use crate::{
+    ApprovalDigestError, CallOffer, InvocationDigest, ParkedCallHolder, RequestContentsDigest,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -16,6 +18,7 @@ use crate::{ApprovalDigestError, RequestContentsDigest};
 pub enum RequestKind {
     ProviderApproval,
     ProviderQuestion,
+    UnprovenCall,
 }
 
 approval_wire_union! {
@@ -35,6 +38,12 @@ pub enum Raise {
         holder: ProviderHolder,
         offer: QuestionOffer,
     },
+    UnprovenCall {
+        request_id: ApprovalRequestId,
+        holder: ParkedCallHolder,
+        invocation: InvocationDigest,
+        offer: CallOffer,
+    },
 }
 }
 
@@ -44,15 +53,17 @@ impl Raise {
             Self::ProviderApproval { holder, .. } | Self::ProviderQuestion { holder, .. } => {
                 &holder.router_run
             }
+            Self::UnprovenCall { holder, .. } => &holder.router_run,
         }
     }
 
     #[must_use]
-    pub const fn requesting_session(&self) -> &CentralSessionId {
+    pub const fn requesting_session(&self) -> Option<&CentralSessionId> {
         match self {
             Self::ProviderApproval { holder, .. } | Self::ProviderQuestion { holder, .. } => {
-                &holder.session_id
+                Some(&holder.session_id)
             }
+            Self::UnprovenCall { .. } => None,
         }
     }
 
@@ -65,6 +76,7 @@ impl Raise {
         match self {
             Self::ProviderApproval { .. } => RequestKind::ProviderApproval,
             Self::ProviderQuestion { .. } => RequestKind::ProviderQuestion,
+            Self::UnprovenCall { .. } => RequestKind::UnprovenCall,
         }
     }
 
@@ -72,7 +84,8 @@ impl Raise {
     pub const fn request_id(&self) -> &ApprovalRequestId {
         match self {
             Self::ProviderApproval { request_id, .. }
-            | Self::ProviderQuestion { request_id, .. } => request_id,
+            | Self::ProviderQuestion { request_id, .. }
+            | Self::UnprovenCall { request_id, .. } => request_id,
         }
     }
 
@@ -85,6 +98,12 @@ impl Raise {
             Self::ProviderQuestion { offer, .. } => OfferView::ProviderQuestion {
                 offer: offer.clone(),
             },
+            Self::UnprovenCall {
+                offer, invocation, ..
+            } => OfferView::UnprovenCall {
+                offer: offer.clone(),
+                invocation: invocation.clone(),
+            },
         }
     }
 }
@@ -95,6 +114,7 @@ approval_wire_union! {
 pub enum OfferView {
     ProviderApproval { offer: ApprovalOffer },
     ProviderQuestion { offer: QuestionOffer },
+    UnprovenCall { offer: CallOffer, invocation: InvocationDigest },
 }
 }
 

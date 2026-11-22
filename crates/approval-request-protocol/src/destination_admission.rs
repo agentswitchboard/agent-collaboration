@@ -28,11 +28,14 @@ impl<'request> AdmittedDestination<'request> {
     ) -> Result<Self, InvalidApprovalEnding> {
         let requester = raise.requesting_session();
         if let DecidedBy::Session { session } = actor
-            && requester == session
+            && requester == Some(session)
         {
             return Err(InvalidApprovalEnding::RequesterIsReader);
         }
-        if !current_destinations.contains(actor) {
+        if (matches!(raise, Raise::UnprovenCall { .. })
+            && matches!(actor, DecidedBy::Session { .. }))
+            || !current_destinations.contains(actor)
+        {
             return Err(InvalidApprovalEnding::DestinationNotAdmitted);
         }
         Ok(Self { raise, actor })
