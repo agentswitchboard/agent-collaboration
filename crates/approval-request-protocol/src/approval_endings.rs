@@ -42,6 +42,7 @@ pub enum Ending {
 pub enum HolderStopCause {
     TurnStopped,
     AskReplaced,
+    AskWithdrawn,
     SessionClosed,
     ProviderConnectionLost,
 }
@@ -55,6 +56,8 @@ pub enum HolderStopCause {
 pub enum ProviderStopCause {
     TurnStopped,
     AskReplaced,
+    /// The provider agent withdrew this waiting ask.
+    AskWithdrawn,
     SessionClosed,
     ProviderConnectionLost,
 }
@@ -64,6 +67,7 @@ impl ProviderStopCause {
         match self {
             Self::TurnStopped => HolderStopCause::TurnStopped,
             Self::AskReplaced => HolderStopCause::AskReplaced,
+            Self::AskWithdrawn => HolderStopCause::AskWithdrawn,
             Self::SessionClosed => HolderStopCause::SessionClosed,
             Self::ProviderConnectionLost => HolderStopCause::ProviderConnectionLost,
         }
@@ -75,6 +79,7 @@ impl From<HolderStopCause> for ProviderStopCause {
         match cause {
             HolderStopCause::TurnStopped => Self::TurnStopped,
             HolderStopCause::AskReplaced => Self::AskReplaced,
+            HolderStopCause::AskWithdrawn => Self::AskWithdrawn,
             HolderStopCause::SessionClosed => Self::SessionClosed,
             HolderStopCause::ProviderConnectionLost => Self::ProviderConnectionLost,
         }

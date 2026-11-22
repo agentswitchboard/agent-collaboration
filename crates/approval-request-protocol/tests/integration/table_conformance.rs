@@ -41,6 +41,7 @@ fn stop_standing_case(ending: StopReceiptEnding) -> &'static str {
             CancelReason::Stopped { cause } => match cause {
                 HolderStopCause::TurnStopped => "turnStopped",
                 HolderStopCause::AskReplaced => "askReplaced",
+                HolderStopCause::AskWithdrawn => "askWithdrawn",
                 HolderStopCause::SessionClosed => "sessionClosed",
                 HolderStopCause::ProviderConnectionLost => "providerConnectionLost",
             },
@@ -163,12 +164,20 @@ fn table_requests_and_reply_cases_match_the_core_protocol() -> Result<(), String
         },
     )?;
 
-    slice_case::<StopRequest>(
-        "Stop request",
-        json!({
-            "kind":"provider","requestId":REQUEST,"routerRun":RUN,"contentsDigest":DIGEST,"cause":"askReplaced"
-        }),
-    )?;
+    for cause in [
+        "turnStopped",
+        "askReplaced",
+        "askWithdrawn",
+        "sessionClosed",
+        "providerConnectionLost",
+    ] {
+        slice_case::<StopRequest>(
+            "Stop request",
+            json!({
+                "kind":"provider","requestId":REQUEST,"routerRun":RUN,"contentsDigest":DIGEST,"cause":cause
+            }),
+        )?;
+    }
     let mut stop_cases = vec![
         (
             "timedOut",
@@ -188,7 +197,7 @@ fn table_requests_and_reply_cases_match_the_core_protocol() -> Result<(), String
             )
         }),
     );
-    stop_cases.extend(["turnStopped","askReplaced","sessionClosed","providerConnectionLost" ].map(|cause| {
+    stop_cases.extend(["turnStopped","askReplaced","askWithdrawn","sessionClosed","providerConnectionLost"].map(|cause| {
         (cause, json!({"kind":"stands","ending":{"kind":"cancelled","reason":{"kind":"stopped","cause":cause}}}))
     }));
     assert_authority_reply::<StopReply>("Stop", &stop_cases, |reply| match reply {
