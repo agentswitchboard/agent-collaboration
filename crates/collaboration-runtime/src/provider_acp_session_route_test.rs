@@ -713,10 +713,12 @@ async fn steer_whose_expected_turn_changed_is_placed_once_after_one_re_read()
     harness.stop().await
 }
 
+type HeldStoreWork = futures_util::future::Shared<
+    futures_util::future::BoxFuture<'static, Result<(), Arc<tokio::task::JoinError>>>,
+>;
+
 struct StoreOwningProviderRoute {
-    store: Arc<tokio::sync::Mutex<crate::ProviderOperationStore>>,
-    nested_entered: tokio::sync::oneshot::Sender<()>,
-    release_nested: tokio::sync::oneshot::Receiver<()>,
+    nested_work: HeldStoreWork,
     route_closing: tokio::sync::oneshot::Sender<()>,
 }
 
@@ -728,28 +730,21 @@ impl AcpSessionRoute for StoreOwningProviderRoute {
     fn run(self: Box<Self>, router: AcpRouterChannels, _: AcpConnectionContext) -> AcpRouteFuture {
         Box::pin(async move {
             let Self {
-                store,
-                nested_entered,
-                release_nested,
+                nested_work,
                 route_closing,
             } = *self;
-            let mut nested_work = tokio::task::JoinSet::new();
-            nested_work.spawn_blocking(move || {
-                let _entered = nested_entered.send(());
-                // The retained store cannot be dropped by cancellation until the test
-                // releases this work. The connection and route still share one worker.
-                let _released = release_nested.blocking_recv();
-                drop(store);
-            });
+            let mut nested_tasks = tokio::task::JoinSet::new();
+            nested_tasks.spawn(nested_work);
             router.closed.cancelled().await;
             let _closing = route_closing.send(());
-            nested_work.shutdown().await;
+            if let Some(result) = nested_tasks.join_next().await {
+                result?.map_err(std::io::Error::other)?;
+            }
             Ok(())
         })
     }
 }
 
-// Rejects returning from a client EOF while the provider route's nested work owns the store.
 #[tokio::test(flavor = "current_thread")]
 #[expect(
     clippy::panic_in_result_fn,
@@ -757,21 +752,32 @@ impl AcpSessionRoute for StoreOwningProviderRoute {
 )]
 async fn peer_eof_joins_the_provider_routes_nested_store_owner()
 -> Result<(), Box<dyn std::error::Error>> {
+    use futures_util::FutureExt as _;
     use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+    use tokio::sync::oneshot;
+    use tokio::time::timeout;
 
+    const BOUND: std::time::Duration = std::time::Duration::from_secs(5);
     let root = tempfile::tempdir()?;
     let store = Arc::new(tokio::sync::Mutex::new(
         crate::ProviderOperationStore::open(&root.path().join("provider-operations.sqlite"))
             .await?,
     ));
-    let (entered, nested_entered) = tokio::sync::oneshot::channel();
-    let (release, release_nested) = tokio::sync::oneshot::channel();
+    let retained_store = Arc::clone(&store);
+    let (entered, nested_entered) = oneshot::channel();
+    let (release, release_nested) = oneshot::channel::<()>();
     let mut release = Some(release);
-    let (route_closing, closing) = tokio::sync::oneshot::channel();
+    let blocking = tokio::task::spawn_blocking(move || {
+        let _entered = entered.send(());
+        let _released = release_nested.blocking_recv();
+        drop(retained_store);
+    });
+    let nested_work = async move { blocking.await.map_err(Arc::new) }
+        .boxed()
+        .shared();
+    let (route_closing, closing) = oneshot::channel();
     let route = Box::new(StoreOwningProviderRoute {
-        store: store.clone(),
-        nested_entered: entered,
-        release_nested,
+        nested_work: nested_work.clone(),
         route_closing,
     });
     let host_stop = CancellationToken::new();
@@ -781,33 +787,48 @@ async fn peer_eof_joins_the_provider_routes_nested_store_owner()
         vec![route],
         host_stop.clone(),
     ));
+    let mut stage = "initialize";
     let mut peer = BufReader::new(peer);
-    peer.write_all(
-        b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":1,\"clientCapabilities\":{}}}\n",
-    )
-    .await?;
-    let mut response = String::new();
-    peer.read_line(&mut response).await?;
-    let response: Value = serde_json::from_str(&response)?;
-    assert_eq!(response["id"], 1);
-    assert!(response.get("result").is_some(), "{response}");
-    nested_entered.await?;
-
-    // Act: only the peer closes. The Host's stop token is still live.
-    drop(peer);
-    let (stopped, exclusive) = tokio::select! {
-        stopped = &mut connection => (stopped, Arc::try_unwrap(store)),
-        closing = closing => {
-            if closing.is_ok() {
-                release.take().expect("held work").send(()).expect("release nested work");
+    let proof = timeout(BOUND, async {
+        peer.write_all(
+            b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":1,\"clientCapabilities\":{}}}\n",
+        ).await?;
+        let mut response = String::new();
+        peer.read_line(&mut response).await?;
+        let response: Value = serde_json::from_str(&response)?;
+        assert_eq!(response["id"], 1);
+        assert!(response.get("result").is_some(), "{response}");
+        stage = "nested store owner entry";
+        nested_entered.await?;
+        drop(peer);
+        stage = "route close on peer EOF";
+        let (stopped, exclusive) = tokio::select! {
+            stopped = &mut connection => (stopped, Arc::try_unwrap(store)),
+            closing = closing => {
+                if closing.is_ok() {
+                    release.take().expect("held work").send(()).expect("release nested work");
+                }
+                stage = "connection join after route close";
+                ((&mut connection).await, Arc::try_unwrap(store))
             }
-            (connection.await, Arc::try_unwrap(store))
-        }
-    };
-    let exclusive = exclusive.map_err(|remaining| Arc::strong_count(&remaining));
-    drop(release);
-    stopped??;
+        };
+        let exclusive = exclusive.map_err(|remaining| Arc::strong_count(&remaining));
+        stopped??;
+        Ok::<_, Box<dyn std::error::Error>>(exclusive)
+    }).await;
 
+    // The test retains a join handle even when the route or connection fails.
+    // Sample exclusive ownership before this unconditional fixture release.
+    drop(release);
+    timeout(BOUND, nested_work)
+        .await
+        .map_err(|_| "nested store owner did not join")?
+        .map_err(std::io::Error::other)?;
+    if !connection.is_finished() {
+        connection.abort();
+        let _connection_stopped = connection.await;
+    }
+    let exclusive = proof.map_err(|_| format!("ACP EOF proof timed out during {stage}"))??;
     assert!(!host_stop.is_cancelled());
     let store = exclusive.unwrap_or_else(|owners| {
         panic!("ACP peer EOF returned before joining nested provider work: {owners} store owners")
