@@ -1,19 +1,13 @@
+use crate::approval_wire_codec::approval_wire_union;
 use std::collections::BTreeSet;
-
-use serde::{Deserialize, Serialize};
 
 use crate::{
     Answer, ChoiceOption, OfferView, OfferedOptionId, OfferedOptions, QuestionAnswer,
     QuestionAnswerValue, QuestionField, QuestionFieldId, QuestionFields,
 };
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
+approval_wire_union! {
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -42,6 +36,7 @@ pub enum InvalidAnswer {
     WrongSelectionCount {
         field_id: QuestionFieldId,
     },
+}
 }
 
 pub fn check_answer(offer: &OfferView, answer: &Answer) -> Result<(), InvalidAnswer> {
@@ -118,29 +113,31 @@ fn check_field_value(
     value: &QuestionAnswerValue,
 ) -> Result<(), InvalidAnswer> {
     match (field, value) {
-        (QuestionField::Text { .. }, QuestionAnswerValue::Text(_))
-        | (QuestionField::Number { .. }, QuestionAnswerValue::Number(_))
-        | (QuestionField::Boolean { .. }, QuestionAnswerValue::Boolean(_)) => Ok(()),
+        (QuestionField::Text { .. }, QuestionAnswerValue::Text { .. })
+        | (QuestionField::Number { .. }, QuestionAnswerValue::Number { .. })
+        | (QuestionField::Boolean { .. }, QuestionAnswerValue::Boolean { .. }) => Ok(()),
         (
             QuestionField::SingleChoice {
                 field_id, options, ..
             },
-            QuestionAnswerValue::SelectedOptions(choice),
-        ) => check_selection(field_id, options, &choice.selected_option_ids, 1..=1),
+            QuestionAnswerValue::SelectedOptions {
+                selected_option_ids,
+            },
+        ) => check_selection(field_id, options.as_slice(), selected_option_ids, 1..=1),
         (
             QuestionField::MultiChoice {
                 field_id,
-                options,
-                min,
-                max,
+                selection,
                 ..
             },
-            QuestionAnswerValue::SelectedOptions(choice),
+            QuestionAnswerValue::SelectedOptions {
+                selected_option_ids,
+            },
         ) => check_selection(
             field_id,
-            options,
-            &choice.selected_option_ids,
-            min.map_or(0, usize::from)..=max.map_or(options.len(), usize::from),
+            selection.options(),
+            selected_option_ids,
+            selection.counts(),
         ),
         _ => Err(InvalidAnswer::WrongValueType {
             field_id: field.field_id().clone(),
