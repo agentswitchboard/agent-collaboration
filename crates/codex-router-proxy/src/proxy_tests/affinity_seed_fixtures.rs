@@ -276,62 +276,59 @@ pub(super) fn replacement_affinity_secret() -> RouterAffinityHashSecret {
     }
 }
 
-pub(super) fn wait_for_repository_selected_account(
+pub(super) fn assert_repository_selected_account(
     state: &SqliteStateStore,
     expected_account_id: &AccountId,
     context: &str,
 ) {
-    let mut last_selected = None;
-    for _attempt in 0..50 {
-        let selected = RepositoryBackedAccountSelector::new(state)
-            .select_upstream_account(
-                &HttpProxyRequest::new(Method::Post, "/v1/responses"),
-                TokenGeneration::new(1),
-                None,
-            )
-            .unwrap_or_else(|error| panic!("{context}: {error}"));
-        if selected.account_id() == expected_account_id {
-            return;
-        }
-        last_selected = Some(selected.account_id().clone());
-        thread::sleep(Duration::from_millis(10));
-    }
-
-    panic!(
-        "{context}: expected {}, last selected {:?}",
-        expected_account_id.as_str(),
-        last_selected
-    );
+    let selected = RepositoryBackedAccountSelector::new(state)
+        .select_upstream_account(
+            &HttpProxyRequest::new(Method::Post, "/v1/responses"),
+            TokenGeneration::new(1),
+            None,
+        )
+        .unwrap_or_else(|error| panic!("{context}: {error}"));
+    assert_eq!(selected.account_id(), expected_account_id, "{context}");
 }
 
-pub(super) fn wait_for_durable_quota_exhaustion(state: &SqliteStateStore, accounts: &[&AccountId]) {
-    let mut last_snapshots = Vec::new();
-    for _attempt in 0..50 {
-        let snapshots = accounts
-            .iter()
-            .map(|account_id| {
-                state
-                    .load_quota_snapshot_for_route_band(account_id, "responses")
-                    .unwrap_or_else(|error| panic!("quota snapshot should load: {error}"))
-            })
-            .collect::<Vec<_>>();
-        if snapshots.iter().all(|snapshot| {
-            snapshot.as_ref().is_some_and(|snapshot| {
-                snapshot.source() == QuotaSnapshotSource::OpenAiEndpoint
-                    && snapshot.remaining_headroom() == 0
-            })
-        }) {
-            return;
-        }
-        last_snapshots = snapshots
-            .iter()
-            .map(|snapshot| {
-                snapshot
-                    .as_ref()
-                    .map(|row| (row.source(), row.remaining_headroom()))
-            })
-            .collect();
-        thread::sleep(Duration::from_millis(10));
+pub(super) fn assert_durable_quota_exhaustion(
+    state: &SqliteStateStore,
+    completions: &mut tokio::sync::mpsc::UnboundedReceiver<QuotaWriteCompletion>,
+    accounts: &[&AccountId],
+) {
+    let mut remaining_accounts = accounts
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    for _ in accounts {
+        // The caller has already awaited a FIFO barrier or joined the writer.
+        let completion = completions.try_recv().unwrap_or_else(|error| {
+            panic!(
+                "quota writer finished without a completion for {remaining_accounts:?}: {error}"
+            );
+        });
+        assert_eq!(
+            completion.route_band,
+            RouteBand::Responses,
+            "quota write band"
+        );
+        let account_id = &completion.account_id;
+        assert!(
+            remaining_accounts.remove(account_id),
+            "unexpected or duplicate quota completion for {account_id:?}",
+        );
+        completion.result.unwrap_or_else(|error| {
+            panic!(
+                "provider quota write failed after enqueue for {} (responses): {error:?}",
+                account_id.as_str()
+            );
+        });
+        let snapshot = must_ok(state.load_quota_snapshot_for_route_band(account_id, "responses"));
+        assert_eq!(
+            snapshot.map(|snapshot| (snapshot.source(), snapshot.remaining_headroom())),
+            Some((QuotaSnapshotSource::OpenAiEndpoint, 0)),
+            "committed quota exhaustion should be visible for {}",
+            account_id.as_str(),
+        );
     }
-    panic!("provider quota exhaustion did not persist while serving: {last_snapshots:?}");
 }

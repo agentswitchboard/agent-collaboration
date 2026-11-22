@@ -10,8 +10,6 @@ use codex_router_core::ids::AccountId;
 use codex_router_core::ids::ReservationId;
 use codex_router_core::provider::Provider;
 use codex_router_core::routes::RouteBand;
-use futures_util::future::BoxFuture;
-use thiserror::Error;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -33,11 +31,14 @@ use crate::telemetry::record_db_write_queue_depth;
 use crate::telemetry::record_db_write_queue_event;
 use codex_router_state::affinity_owner::PreviousResponseAffinityOwnerRecord;
 use codex_router_state::session_account_affinity::SessionAccountAffinity;
-use codex_router_state::sqlite::AsyncSqliteStateStore;
-use codex_router_state::sqlite::StateStoreError;
 
 mod session_affinity_scheduler;
+mod write_repository;
+
 use session_affinity_scheduler::{await_db_write_task_shutdown, run_session_affinity_scheduler};
+#[cfg(test)]
+pub(crate) use write_repository::QuotaWriteCompletion;
+pub use write_repository::{DbWriteRepository, DbWriteRepositoryError, SqliteDbWriteRepository};
 
 /// Default bounded capacity for durable provider exhaustion writes.
 pub const PROVIDER_EXHAUSTION_QUEUE_CAPACITY: usize = 128;
@@ -224,176 +225,33 @@ struct QueuedDbWriteCommand {
     enqueued_at: Instant,
 }
 
-/// Storage boundary used by the write actor.
-pub trait DbWriteRepository: Send + Sync + 'static {
-    /// Persists a provider quota exhaustion observation from derived fields.
-    fn record_provider_quota_exhausted<'a>(
-        &'a self,
-        account_id: AccountId,
-        route_band: RouteBand,
-        classification: ProviderErrorClassification,
-        observed_unix_seconds: u64,
-    ) -> BoxFuture<'a, Result<(), DbWriteRepositoryError>>;
-
-    /// Persists an active-client mirror acquisition.
-    fn record_active_client_acquired<'a>(
-        &'a self,
-        _route_band: RouteBand,
-        _process_run_id: String,
-        _reservation_id: ReservationId,
-        _account_id: AccountId,
-        _acquired_unix_seconds: u64,
-        _active_pressure: u32,
-    ) -> BoxFuture<'a, Result<(), DbWriteRepositoryError>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    /// Persists an active-client mirror release.
-    fn record_active_client_released<'a>(
-        &'a self,
-        _route_band: RouteBand,
-        _process_run_id: String,
-        _reservation_id: ReservationId,
-        _released_unix_seconds: u64,
-    ) -> BoxFuture<'a, Result<(), DbWriteRepositoryError>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    /// Persists a previous-response affinity owner record.
-    fn record_previous_response_affinity_owner<'a>(
-        &'a self,
-        _owner: PreviousResponseAffinityOwnerRecord,
-    ) -> BoxFuture<'a, Result<(), DbWriteRepositoryError>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    /// Persists a Codex session account affinity.
-    fn record_session_account_affinity<'a>(
-        &'a self,
-        _affinity: SessionAccountAffinity,
-    ) -> BoxFuture<'a, Result<(), DbWriteRepositoryError>> {
-        Box::pin(async { Ok(()) })
-    }
+#[derive(Debug)]
+enum DbWriteQueueItem {
+    Write(QueuedDbWriteCommand),
+    #[cfg(test)]
+    QuotaBarrier(tokio::sync::oneshot::Sender<()>),
 }
 
-/// Durable write repository failure.
-#[derive(Debug, Error)]
-pub enum DbWriteRepositoryError {
-    /// SQLite or state repository failed.
-    #[error("state store unavailable while recording DB write actor command")]
-    State(#[from] StateStoreError),
-}
-
-/// SQLite-backed DB write repository.
-#[derive(Clone, Debug)]
-pub struct SqliteDbWriteRepository {
-    state: AsyncSqliteStateStore,
-}
-
-impl SqliteDbWriteRepository {
-    /// Creates a SQLite-backed DB write repository.
-    #[must_use]
-    pub const fn new(state: AsyncSqliteStateStore) -> Self {
-        Self { state }
-    }
-}
-
-impl DbWriteRepository for SqliteDbWriteRepository {
-    fn record_provider_quota_exhausted<'a>(
-        &'a self,
-        account_id: AccountId,
-        route_band: RouteBand,
-        classification: ProviderErrorClassification,
-        observed_unix_seconds: u64,
-    ) -> BoxFuture<'a, Result<(), DbWriteRepositoryError>> {
-        Box::pin(async move {
-            if classification == ProviderErrorClassification::AccountQuotaExhausted {
-                self.state
-                    .mark_route_band_quota_exhausted(
-                        &account_id,
-                        route_band.as_str(),
-                        observed_unix_seconds,
-                    )
-                    .await?;
+impl DbWriteQueueItem {
+    fn into_write(self) -> Option<QueuedDbWriteCommand> {
+        match self {
+            Self::Write(command) => Some(command),
+            #[cfg(test)]
+            Self::QuotaBarrier(acknowledge) => {
+                let _receiver_closed = acknowledge.send(());
+                None
             }
-            Ok(())
-        })
-    }
-
-    fn record_active_client_acquired<'a>(
-        &'a self,
-        route_band: RouteBand,
-        process_run_id: String,
-        reservation_id: ReservationId,
-        account_id: AccountId,
-        acquired_unix_seconds: u64,
-        active_pressure: u32,
-    ) -> BoxFuture<'a, Result<(), DbWriteRepositoryError>> {
-        Box::pin(async move {
-            self.state
-                .record_active_client_acquired(
-                    route_band.as_str(),
-                    &process_run_id,
-                    &reservation_id,
-                    &account_id,
-                    acquired_unix_seconds,
-                    active_pressure,
-                )
-                .await?;
-            Ok(())
-        })
-    }
-
-    fn record_active_client_released<'a>(
-        &'a self,
-        route_band: RouteBand,
-        process_run_id: String,
-        reservation_id: ReservationId,
-        released_unix_seconds: u64,
-    ) -> BoxFuture<'a, Result<(), DbWriteRepositoryError>> {
-        Box::pin(async move {
-            self.state
-                .record_active_client_released(
-                    route_band.as_str(),
-                    &process_run_id,
-                    &reservation_id,
-                    released_unix_seconds,
-                )
-                .await?;
-            Ok(())
-        })
-    }
-
-    fn record_previous_response_affinity_owner<'a>(
-        &'a self,
-        owner: PreviousResponseAffinityOwnerRecord,
-    ) -> BoxFuture<'a, Result<(), DbWriteRepositoryError>> {
-        Box::pin(async move {
-            self.state.write_previous_response_owner(&owner).await?;
-            Ok(())
-        })
-    }
-
-    fn record_session_account_affinity<'a>(
-        &'a self,
-        affinity: SessionAccountAffinity,
-    ) -> BoxFuture<'a, Result<(), DbWriteRepositoryError>> {
-        Box::pin(async move {
-            self.state
-                .upsert_session_account_affinity(&affinity)
-                .await?;
-            Ok(())
-        })
+        }
     }
 }
 
 /// Bounded write-side actor handle.
 #[derive(Clone, Debug)]
 pub struct DbWriteActor {
-    provider_exhaustion_sender: mpsc::Sender<QueuedDbWriteCommand>,
-    affinity_owner_sender: mpsc::Sender<QueuedDbWriteCommand>,
-    session_affinity_sender: mpsc::Sender<QueuedDbWriteCommand>,
-    active_mirror_sender: mpsc::Sender<QueuedDbWriteCommand>,
+    provider_exhaustion_sender: mpsc::Sender<DbWriteQueueItem>,
+    affinity_owner_sender: mpsc::Sender<DbWriteQueueItem>,
+    session_affinity_sender: mpsc::Sender<DbWriteQueueItem>,
+    active_mirror_sender: mpsc::Sender<DbWriteQueueItem>,
     shutdown: CancellationToken,
     closed: Arc<AtomicBool>,
     route_band_queue_health: RouteBandQueueHealth,
@@ -405,9 +263,9 @@ pub struct DbWriteActor {
 
 struct DbWriteActorRuntime {
     repository: Arc<dyn DbWriteRepository>,
-    provider_exhaustion_receiver: mpsc::Receiver<QueuedDbWriteCommand>,
-    affinity_owner_receiver: mpsc::Receiver<QueuedDbWriteCommand>,
-    active_mirror_receiver: mpsc::Receiver<QueuedDbWriteCommand>,
+    provider_exhaustion_receiver: mpsc::Receiver<DbWriteQueueItem>,
+    affinity_owner_receiver: mpsc::Receiver<DbWriteQueueItem>,
+    active_mirror_receiver: mpsc::Receiver<DbWriteQueueItem>,
     shutdown: CancellationToken,
     closed: Arc<AtomicBool>,
     route_band_queue_health: RouteBandQueueHealth,
@@ -532,12 +390,13 @@ impl DbWriteActor {
         let command_queue_name = command.queue_name();
         let command_route_band_label = command.route_band_label();
         let sender = self.sender_for_command(&command);
-        let queued_command = QueuedDbWriteCommand {
-            command,
-            enqueued_at: Instant::now(),
-        };
-        match sender.try_send(queued_command) {
-            Ok(()) => {
+        let enqueued_at = Instant::now();
+        match sender.try_reserve() {
+            Ok(permit) => {
+                permit.send(DbWriteQueueItem::Write(QueuedDbWriteCommand {
+                    command,
+                    enqueued_at,
+                }));
                 record_db_write_queue_event(
                     command_queue_name,
                     command_route_band_label,
@@ -547,22 +406,28 @@ impl DbWriteActor {
                 self.record_queue_depth(command_queue_name, command_route_band_label);
                 DbWriteEnqueueResult::Enqueued
             }
-            Err(mpsc::error::TrySendError::Full(queued_command)) => {
-                self.record_degraded_event(&queued_command.command, QueueDegradedReason::Full);
+            Err(mpsc::error::TrySendError::Full(())) => {
+                self.record_degraded_event(&command, QueueDegradedReason::Full);
                 DbWriteEnqueueResult::FullDegraded
             }
-            Err(mpsc::error::TrySendError::Closed(queued_command)) => {
-                if queued_command
-                    .command
-                    .routing_degraded_route_band()
-                    .is_some()
-                {
+            Err(mpsc::error::TrySendError::Closed(())) => {
+                if command.routing_degraded_route_band().is_some() {
                     self.closed.store(true, Ordering::Release);
                 }
-                self.record_degraded_event(&queued_command.command, QueueDegradedReason::Closed);
+                self.record_degraded_event(&command, QueueDegradedReason::Closed);
                 DbWriteEnqueueResult::ClosedDegraded
             }
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn quota_barrier_for_test(&self) -> tokio::sync::oneshot::Receiver<()> {
+        let (acknowledge, reached) = tokio::sync::oneshot::channel();
+        // The HTTP response follows enqueue. This item follows those writes in the same FIFO.
+        self.provider_exhaustion_sender
+            .try_send(DbWriteQueueItem::QuotaBarrier(acknowledge))
+            .expect("quota writer should accept a test barrier");
+        reached
     }
 
     /// Returns the last scrubbed degraded queue event observed by this actor.
@@ -670,7 +535,7 @@ impl DbWriteActor {
         }
     }
 
-    fn sender_for_command(&self, command: &DbWriteCommand) -> &mpsc::Sender<QueuedDbWriteCommand> {
+    fn sender_for_command(&self, command: &DbWriteCommand) -> &mpsc::Sender<DbWriteQueueItem> {
         match command {
             DbWriteCommand::ProviderQuotaExhausted { .. } => &self.provider_exhaustion_sender,
             DbWriteCommand::PreviousResponseAffinityOwner { .. } => &self.affinity_owner_sender,
@@ -680,7 +545,7 @@ impl DbWriteActor {
         }
     }
 
-    fn sender_for_queue_name(&self, queue_name: &str) -> &mpsc::Sender<QueuedDbWriteCommand> {
+    fn sender_for_queue_name(&self, queue_name: &str) -> &mpsc::Sender<DbWriteQueueItem> {
         match queue_name {
             PROVIDER_EXHAUSTION_QUEUE_NAME => &self.provider_exhaustion_sender,
             "affinity_owner" => &self.affinity_owner_sender,
@@ -742,18 +607,21 @@ async fn run_db_write_actor(mut runtime: DbWriteActorRuntime) {
 
 async fn handle_db_write_actor_command(
     repository: &dyn DbWriteRepository,
-    queued_command: Option<QueuedDbWriteCommand>,
-    receiver: &mut mpsc::Receiver<QueuedDbWriteCommand>,
+    item: Option<DbWriteQueueItem>,
+    receiver: &mut mpsc::Receiver<DbWriteQueueItem>,
     route_band_queue_health: &RouteBandQueueHealth,
     low_water_depth: usize,
     last_queue_lag_event: &Arc<Mutex<Option<QueueLagEvent>>>,
 ) -> bool {
+    let Some(item) = item else {
+        return false;
+    };
     let Some(QueuedDbWriteCommand {
         command,
         enqueued_at,
-    }) = queued_command
+    }) = item.into_write()
     else {
-        return false;
+        return true;
     };
     let queue_lag_event = emit_db_write_queue_lag_observed(
         command.queue_name(),
