@@ -82,12 +82,12 @@ async fn provider_create_projects_effective_partial_and_invalid_settings() -> Te
                 ensure_eq!(
                     advertised_models.as_slice(),
                     &[
-                        collaboration_runtime::ProviderModelEntry::try_new(
+                        collaboration_contracts::ProviderModelEntry::try_new(
                             "a".into(),
                             "a".into(),
                             "Advertised by the provider".into()
                         )?,
-                        collaboration_runtime::ProviderModelEntry::try_new(
+                        collaboration_contracts::ProviderModelEntry::try_new(
                             "b".into(),
                             "b".into(),
                             "Advertised by the provider".into()

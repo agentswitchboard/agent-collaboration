@@ -1,7 +1,6 @@
 //! Codex app-server protocol transport for Router-owned provider sessions.
 use crate::app_server_event_forwarding::AppServerEventForwarding;
 use crate::app_server_event_forwarding::historical_turns;
-use crate::app_server_model_catalog::ProviderModelEntry;
 use crate::app_server_model_catalog::render_model_list;
 use crate::private_socket_listener::PrivateSocketListener;
 use collaboration_contracts::CommandContent;
@@ -9,6 +8,7 @@ use collaboration_contracts::CreateSessionCommand;
 use collaboration_contracts::HubEvent;
 use collaboration_contracts::HubSessionSummary;
 use collaboration_contracts::PromptSessionCommand;
+use collaboration_contracts::ProviderModelEntry;
 use collaboration_contracts::SessionCommandPort;
 use collaboration_contracts::SessionEventAttachment;
 use collaboration_contracts::SessionEventHub;

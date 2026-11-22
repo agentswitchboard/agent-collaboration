@@ -399,7 +399,7 @@ impl CollaborationRuntime {
                     std::sync::Arc::clone(&commands),
                     std::sync::Arc::clone(&events),
                     std::sync::Arc::new(
-                        crate::provider_model_catalog::SupervisorModelCatalog::new(
+                        crate::provider_model_catalog_adapter::SupervisorModelCatalog::new(
                             std::sync::Arc::clone(supervisor),
                         ),
                     ),

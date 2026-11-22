@@ -46,6 +46,7 @@ pub use provider_queue_operation_registry::{ProviderQueueCancellationError, Prov
 pub use provider_session_command_port::HostSessionCommandPort;
 mod provider_cache_warm;
 mod provider_model_catalog;
+mod provider_model_catalog_adapter;
 pub use provider_acp_delivery_route::{
     ProviderAcpDeliveryRoute, ProviderCancelActiveTurnError, ProviderPromptContentsError,
     ProviderQueueAdmissionError, ProviderSteerContentsError,

@@ -456,3 +456,81 @@ async fn unmapped_native_plan_has_zero_effect_while_default_metadata_keeps_ordin
     }
     Ok(())
 }
+
+struct RefusingModelCatalog(crate::SessionModelCatalogError);
+
+impl crate::SessionModelCatalog for RefusingModelCatalog {
+    fn read_models(
+        &self,
+        _target: SessionRef,
+    ) -> std::pin::Pin<
+        Box<
+            dyn std::future::Future<
+                    Output = Result<Vec<ProviderModelEntry>, crate::SessionModelCatalogError>,
+                > + Send
+                + '_,
+        >,
+    > {
+        Box::pin(std::future::ready(Err(self.0)))
+    }
+}
+
+#[tokio::test]
+async fn native_model_list_distinguishes_missing_from_unavailable() {
+    for (failure, expected) in [
+        (
+            crate::SessionModelCatalogError::SessionNotFound,
+            json!({"id": 2, "error": {"code": -32002, "message": "session model catalogue not found"}}),
+        ),
+        (
+            crate::SessionModelCatalogError::Unavailable,
+            json!({"id": 2, "error": {"code": -32000, "message": "session model catalogue unavailable"}}),
+        ),
+    ] {
+        let root = tempfile::tempdir().expect("fixture root");
+        let path = root.path().join("catalog.sock");
+        let listener = UnixListener::bind(&path).expect("native socket");
+        let backend = ScriptedSessionBackend::new().expect("scripted session backend");
+        let context = Arc::new(RouterSessionAppServerContext::new(
+            backend.endpoint.clone(),
+            ScriptedSessionBackend::actor().expect("actor"),
+            backend.clone(),
+            backend,
+            Arc::new(RefusingModelCatalog(failure)),
+        ));
+        let server = tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.expect("native peer");
+            serve_router_session_app_server_connection(stream, context).await
+        });
+        let (mut client, _) = client_async(
+            "ws://localhost/rpc",
+            UnixStream::connect(&path).await.expect("native connection"),
+        )
+        .await
+        .expect("native channel");
+        for request in [
+            json!({"id":1,"method":"thread/start","params":{"cwd":root.path()}}),
+            json!({"id":2,"method":"model/list","params":{}}),
+        ] {
+            client
+                .send(Message::Text(request.to_string().into()))
+                .await
+                .expect("RPC sent");
+            loop {
+                let frame = client.next().await.expect("native reply").expect("frame");
+                let value: Value =
+                    serde_json::from_str(frame.to_text().expect("text frame")).expect("RPC");
+                if value["id"] == request["id"] {
+                    if request["id"] == 1 {
+                        assert!(value["result"]["thread"]["id"].is_string(), "{value}");
+                    } else {
+                        assert_eq!(value, expected);
+                    }
+                    break;
+                }
+            }
+        }
+        client.close(None).await.expect("native close");
+        server.await.expect("server task").expect("server stopped");
+    }
+}
