@@ -179,7 +179,11 @@ async fn renewal_extends_the_same_socket_in_elapsed_time_and_shutdown_closes() {
                 .get("authorization")
                 .is_some_and(|value| value.as_bytes() == format!("Bearer {TOKEN}").as_bytes())
         );
-        assert_eq!(request.uri().path(), "/organization/link");
+        assert_eq!(
+            request.uri().path_and_query().map(|value| value.as_str()),
+            Some("/organization/link"),
+            "bearer bytes must stay out of the request URL"
+        );
         Ok(response)
     })
     .await
@@ -447,4 +451,29 @@ async fn busy_retries_and_bad_address_parks_with_no_final_enrollment_effect() {
     drop(fault);
     assert!(fixture.ended.try_recv().is_err());
     fixture.stop().await;
+}
+
+#[tokio::test]
+async fn shutdown_joins_after_sending_the_idle_sockets_close() {
+    let mut fixture = Fixture::new().await;
+    let mut socket = fixture.accept().await;
+    welcome(&mut socket).await;
+    fixture
+        .status
+        .wait_for(|state| matches!(state, LinkStatus::Welcomed { .. }))
+        .await
+        .unwrap();
+    fixture.clock.not_due_check_now(tick(20)).await;
+
+    fixture.shutdown.send_replace(true);
+    fixture.task.await.unwrap();
+    assert!(
+        matches!(socket.next().await, Some(Ok(Message::Close(_)))),
+        "shutdown must send the idle socket's Close frame before dropping it"
+    );
+    fixture.clock.advance(Duration::from_secs(600)).unwrap();
+    assert!(
+        !fixture.clock.has_not_due_check_now(tick(620)),
+        "the joined task cannot schedule another heartbeat"
+    );
 }
