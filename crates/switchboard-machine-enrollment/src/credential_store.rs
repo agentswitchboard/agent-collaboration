@@ -11,6 +11,8 @@ pub enum CredentialStoreError {
     Replace,
     #[error("the enrollment credential could not be removed")]
     Remove,
+    #[error("the enrollment cleanup deadline elapsed")]
+    CleanupTimedOut,
 }
 
 /// The store reports whether the expected generation still owned a mutation.
@@ -43,6 +45,8 @@ pub trait CredentialStore: Send + Sync {
     ) -> impl Future<Output = Result<ConditionalWrite, CredentialStoreError>> + Send;
 
     /// Removes the current secret and records an ending at expected + 1.
+    /// If cancelled before commit, no mutation may become visible later. If
+    /// commit won, the next read must already expose the durable ending.
     fn remove(
         &self,
         expected: BindingGeneration,
@@ -50,7 +54,8 @@ pub trait CredentialStore: Send + Sync {
     ) -> impl Future<Output = Result<ConditionalWrite, CredentialStoreError>> + Send;
 
     /// Records an ending at expected + 1 if physical secret removal failed.
-    /// A reader of the marker must never return the old binding.
+    /// A reader of the marker must never return the old binding. Cancellation
+    /// has the same commit and visibility contract as removal.
     fn mark_unusable(
         &self,
         expected: BindingGeneration,

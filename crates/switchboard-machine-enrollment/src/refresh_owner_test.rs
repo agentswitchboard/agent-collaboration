@@ -1,5 +1,5 @@
 use std::{
-    future::{Future, poll_fn, ready},
+    future::{Future, poll_fn},
     pin::Pin,
     sync::{
         Arc, Mutex,
@@ -26,6 +26,9 @@ use super::{
 struct StoreState {
     saved: Mutex<StoredEnrollment>,
     hold_write: AtomicBool,
+    hold_read: AtomicBool,
+    hold_remove: AtomicBool,
+    hold_marker: AtomicBool,
     fail_write: AtomicBool,
     fail_remove: AtomicBool,
     fail_marker: AtomicBool,
@@ -83,8 +86,9 @@ impl CredentialStore for FakeStore {
         StoreDurability::Durable
     }
 
-    fn read(&self) -> impl Future<Output = Result<StoredEnrollment, CredentialStoreError>> + Send {
-        ready(Ok(self.snapshot()))
+    async fn read(&self) -> Result<StoredEnrollment, CredentialStoreError> {
+        wait_while_held(&self.0.hold_read).await;
+        Ok(self.snapshot())
     }
 
     async fn replace(
@@ -106,29 +110,42 @@ impl CredentialStore for FakeStore {
         Ok(self.write(expected, StoredEnrollment::Active(binding.clone())))
     }
 
-    fn remove(
+    async fn remove(
         &self,
         expected: BindingGeneration,
         why: EnrollmentEnd,
-    ) -> impl Future<Output = Result<ConditionalWrite, CredentialStoreError>> + Send {
-        ready(if self.0.fail_remove.load(Ordering::SeqCst) {
+    ) -> Result<ConditionalWrite, CredentialStoreError> {
+        wait_while_held(&self.0.hold_remove).await;
+        if self.0.fail_remove.load(Ordering::SeqCst) {
             Err(CredentialStoreError::Remove)
         } else {
             Ok(self.end(expected, why))
-        })
+        }
     }
 
-    fn mark_unusable(
+    async fn mark_unusable(
         &self,
         expected: BindingGeneration,
         why: EnrollmentEnd,
-    ) -> impl Future<Output = Result<ConditionalWrite, CredentialStoreError>> + Send {
-        ready(if self.0.fail_marker.load(Ordering::SeqCst) {
+    ) -> Result<ConditionalWrite, CredentialStoreError> {
+        wait_while_held(&self.0.hold_marker).await;
+        if self.0.fail_marker.load(Ordering::SeqCst) {
             Err(CredentialStoreError::Replace)
         } else {
             Ok(self.end(expected, why))
-        })
+        }
     }
+}
+
+async fn wait_while_held(held: &AtomicBool) {
+    poll_fn(|_| {
+        if held.load(Ordering::SeqCst) {
+            Poll::Pending
+        } else {
+            Poll::Ready(())
+        }
+    })
+    .await;
 }
 
 struct SignInState {
@@ -136,6 +153,7 @@ struct SignInState {
     block: AtomicBool,
     revision: AtomicUsize,
     lose_answer: AtomicBool,
+    stale_answers: AtomicUsize,
 }
 
 impl SignInState {
@@ -174,9 +192,23 @@ impl RefreshSource for FakeSignIn {
             RefreshAnswer::Unavailable { retry_after: None }
         } else {
             RefreshAnswer::Rotated(TokenGrant {
-                credential: wire_credential(next),
+                credential: RefreshCredential {
+                    enrollment_id: credential.enrollment_id,
+                    ..wire_credential(next)
+                },
                 access_token: access_secret(next),
-                expires_in: Duration::from_secs(60),
+                expires_in: if self
+                    .0
+                    .stale_answers
+                    .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| {
+                        remaining.checked_sub(1)
+                    })
+                    .is_ok()
+                {
+                    Duration::ZERO
+                } else {
+                    Duration::from_secs(60)
+                },
             })
         }
     }
@@ -248,6 +280,9 @@ impl Fixture {
         let store = FakeStore(Arc::new(StoreState {
             saved: Mutex::new(StoredEnrollment::Active(binding(1, 0))),
             hold_write: AtomicBool::new(false),
+            hold_read: AtomicBool::new(false),
+            hold_remove: AtomicBool::new(false),
+            hold_marker: AtomicBool::new(false),
             fail_write: AtomicBool::new(false),
             fail_remove: AtomicBool::new(false),
             fail_marker: AtomicBool::new(false),
@@ -257,6 +292,7 @@ impl Fixture {
             block: AtomicBool::new(false),
             revision: AtomicUsize::new(0),
             lose_answer: AtomicBool::new(false),
+            stale_answers: AtomicUsize::new(0),
         });
         let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
         let owner = RefreshOwner::new(
@@ -640,3 +676,6 @@ fn generated_refresh_callers_match_the_rotation_model(case: hegel::TestCase) {
         fixture.advance(60);
     }
 }
+
+#[path = "refresh_owner_review_test.rs"]
+mod review;

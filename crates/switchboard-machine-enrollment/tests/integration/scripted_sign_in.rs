@@ -356,11 +356,20 @@ pub struct SignInScript {
 
 impl SignInScript {
     pub async fn start(expires_in: u64, polls: impl IntoIterator<Item = Reply>) -> Self {
+        Self::spawn_script(Some(expires_in), polls).await
+    }
+
+    pub async fn token_responses(replies: impl IntoIterator<Item = Reply>) -> Self {
+        Self::spawn_script(None, replies).await
+    }
+
+    async fn spawn_script(expires_in: Option<u64>, polls: impl IntoIterator<Item = Reply>) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("loopback listener");
         let issuer = format!("http://{}", listener.local_addr().expect("bound address"));
         let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
+        let prelude = expires_in.into_iter().flat_map(|expires_in| {
         let discovery = Reply::new(
             StatusCode::OK,
             serde_json::json!({"client_id": ROUTER_CLIENT, "link_url": "https://central.example/v1/organizations/{organization_id}/link"}).to_string(),
@@ -377,9 +386,11 @@ impl SignInScript {
             })
             .to_string(),
         );
+        [discovery, device]
+        });
         let (observed, observations) = mpsc::unbounded_channel();
         let state = Arc::new(ScriptState {
-            replies: Mutex::new([discovery, device].into_iter().chain(polls).collect()),
+            replies: Mutex::new(prelude.chain(polls).collect()),
             observed,
             clock: Arc::clone(&clock),
         });

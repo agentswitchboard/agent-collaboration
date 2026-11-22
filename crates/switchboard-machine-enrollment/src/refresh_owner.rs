@@ -1,4 +1,8 @@
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{
+    future::Future,
+    sync::{Arc, Weak},
+    time::Duration,
+};
 
 use futures_util::future::{BoxFuture, FutureExt, Shared};
 use router_clock::{ClockInstant, RuntimeClock, timeout_at};
@@ -12,6 +16,8 @@ use crate::{
 
 const WRITE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
 const WRITE_RETRY_LIMIT: Duration = Duration::from_secs(5);
+// Reserve time for the fallback marker even if physical removal stalls.
+const ENDING_CLEANUP_LIMIT: Duration = Duration::from_secs(2);
 
 /// The sign-in adapter supplies one refresh result for the current credential.
 pub trait RefreshSource: Send + Sync {
@@ -50,6 +56,8 @@ pub enum LeaseUnavailable {
     NotEnrolled,
     #[error("enrollment ended, enroll this Mac again")]
     Ended { why: EnrollmentEnd },
+    #[error("sign-in returned access grants that expired before delivery")]
+    StaleAccessGrant,
     #[error("sign-in is temporarily unreachable")]
     SignInUnreachable { retry_after: Option<Duration> },
     #[error(transparent)]
@@ -74,21 +82,15 @@ pub enum LeaseConfigurationFault {
 }
 
 type LeaseResult = Result<AccessLease, LeaseUnavailable>;
-type RefreshFlight = Shared<BoxFuture<'static, RefreshCompletion>>;
+type RefreshFlight = Shared<BoxFuture<'static, (BindingGeneration, RefreshCompletion)>>;
 
 #[derive(Clone)]
 enum RefreshCompletion {
-    Resolved(LeaseResult),
-    Superseded,
-    Backoff {
-        generation: BindingGeneration,
-        until: ClockInstant,
-    },
-    FailClosed(EnrollmentEnd),
-    RefusedConfiguration {
-        generation: BindingGeneration,
-        fault: LeaseConfigurationFault,
-    },
+    Committed(AccessLease),
+    Unavailable(Option<ClockInstant>),
+    Invalid(LeaseConfigurationFault),
+    Ended(EnrollmentEnd),
+    Recheck,
 }
 
 #[derive(Default)]
@@ -96,8 +98,34 @@ struct RefreshState {
     flight: Option<RefreshFlight>,
     lease: Option<AccessLease>,
     backoff: Option<(BindingGeneration, ClockInstant)>,
-    fail_closed: Option<EnrollmentEnd>,
+    ending: Option<(EnrollmentKey, EnrollmentEnd)>,
     fault: Option<(BindingGeneration, LeaseConfigurationFault)>,
+}
+
+impl RefreshState {
+    fn admit(
+        &mut self,
+        binding: &EnrollmentBinding,
+        request: AccessRequest,
+    ) -> Result<(), LeaseUnavailable> {
+        if let Some((key, why)) = &self.ending {
+            if *key == binding.key() {
+                return Err(LeaseUnavailable::Ended { why: *why });
+            }
+            self.ending = None;
+        }
+        if let AccessRequest::NewerThan(rejected) = request
+            && rejected > binding.generation
+        {
+            return Err(LeaseConfigurationFault::FutureGeneration.into());
+        }
+        Ok(())
+    }
+
+    fn fence(&mut self, key: EnrollmentKey, why: EnrollmentEnd) {
+        self.lease = None;
+        self.ending = Some((key, why));
+    }
 }
 
 struct RefreshInputs<Store, Source> {
@@ -110,7 +138,7 @@ struct RefreshInputs<Store, Source> {
 /// Composition makes one refresh owner per configured enrollment scope.
 pub struct RefreshOwner<Store, Source> {
     inputs: Arc<RefreshInputs<Store, Source>>,
-    state: Mutex<RefreshState>,
+    state: Arc<Mutex<RefreshState>>,
 }
 
 impl<Store, Source> RefreshOwner<Store, Source>
@@ -131,67 +159,91 @@ where
                 clock,
                 context,
             }),
-            state: Mutex::new(RefreshState::default()),
+            state: Arc::new(Mutex::new(RefreshState::default())),
         }
     }
 
     pub async fn lease(&self, request: AccessRequest) -> LeaseResult {
+        let mut followed_stale_access = false;
         loop {
             let flight = {
                 let mut state = self.state.lock().await;
-                if let Some(why) = state.fail_closed {
-                    return Err(LeaseUnavailable::Ended { why });
+                let binding = self.inputs.read_binding().await?;
+                state.admit(&binding, request)?;
+                let now = self.inputs.clock.monotonic_now();
+                let generation = binding.generation;
+                if let Some((faulted, fault)) = state.fault
+                    && faulted == generation
+                {
+                    return Err(fault.into());
+                }
+                if let Some(lease) = &state.lease
+                    && lease.binding_generation == generation
+                    && request.accepts(generation)
+                    && now < lease.usable_until
+                {
+                    return Ok(lease.clone());
+                }
+                if let Some((waiting, until)) = state.backoff
+                    && waiting == generation
+                    && now < until
+                {
+                    return Err(unavailable_until(Some(until), now));
                 }
                 if let Some(flight) = &state.flight {
+                    // The shared result records whether it is usable on its own generation.
                     flight.clone()
                 } else {
-                    let flight =
-                        self.new_refresh(request, state.lease.clone(), state.backoff, state.fault);
+                    let next = generation
+                        .successor()
+                        .ok_or(LeaseConfigurationFault::GenerationExhausted)?;
+                    let flight = self.new_refresh(binding, next);
                     state.flight = Some(flight.clone());
                     flight
                 }
             };
 
-            let result = flight.clone().await;
+            let (origin, result) = flight.clone().await;
             let mut state = self.state.lock().await;
-            if let Some(why) = state.fail_closed {
-                return Err(LeaseUnavailable::Ended { why });
-            }
-            let owns_completion = state
+            if state
                 .flight
                 .as_ref()
-                .is_some_and(|active| active.ptr_eq(&flight));
-            if owns_completion {
+                .is_some_and(|active| active.ptr_eq(&flight))
+            {
                 state.flight = None;
-                match &result {
-                    RefreshCompletion::Resolved(Ok(lease)) => state.lease = Some(lease.clone()),
-                    RefreshCompletion::Backoff { generation, until } => {
-                        state.backoff = Some((*generation, *until))
-                    }
-                    RefreshCompletion::FailClosed(why) => {
-                        state.lease = None;
-                        state.fail_closed = Some(*why);
-                    }
-                    RefreshCompletion::RefusedConfiguration { generation, fault } => {
-                        state.fault = Some((*generation, *fault));
-                    }
-                    _ => {}
-                }
             }
-            match result {
-                RefreshCompletion::Resolved(Ok(lease))
-                    if !request.accepts(lease.binding_generation) => {}
-                RefreshCompletion::Superseded => {}
-                RefreshCompletion::Resolved(result) => return result,
-                RefreshCompletion::Backoff { until, .. } => {
-                    return Err(LeaseUnavailable::SignInUnreachable {
-                        retry_after: Some(
-                            until.saturating_duration_since(self.inputs.clock.monotonic_now()),
-                        ),
-                    });
+            let binding = match (self.inputs.read_binding().await, &result) {
+                (Err(LeaseUnavailable::Store(_)), RefreshCompletion::Ended(why)) => {
+                    return Err(LeaseUnavailable::Ended { why: *why });
                 }
-                RefreshCompletion::FailClosed(why) => return Err(LeaseUnavailable::Ended { why }),
-                RefreshCompletion::RefusedConfiguration { fault, .. } => return Err(fault.into()),
+                (current, _) => current?,
+            };
+            state.admit(&binding, request)?;
+            let now = self.inputs.clock.monotonic_now();
+            match result {
+                RefreshCompletion::Committed(lease)
+                    if binding.generation == lease.binding_generation =>
+                {
+                    if now < lease.usable_until {
+                        state.lease = Some(lease.clone());
+                        if request.accepts(lease.binding_generation) {
+                            return Ok(lease);
+                        }
+                    } else if followed_stale_access {
+                        return Err(LeaseUnavailable::StaleAccessGrant);
+                    } else {
+                        followed_stale_access = true;
+                    }
+                }
+                RefreshCompletion::Invalid(fault) if binding.generation == origin => {
+                    state.fault = Some((origin, fault));
+                    return Err(fault.into());
+                }
+                RefreshCompletion::Unavailable(until) if binding.generation == origin => {
+                    state.backoff = until.map(|until| (origin, until));
+                    return Err(unavailable_until(until, now));
+                }
+                _ => {}
             }
         }
     }
@@ -201,45 +253,53 @@ where
         key: &EnrollmentKey,
         why: EnrollmentEnd,
     ) -> Result<ConditionalWrite, CredentialStoreError> {
+        let deadline = self
+            .inputs
+            .clock
+            .monotonic_now()
+            .after(ENDING_CLEANUP_LIMIT);
         loop {
-            let StoredEnrollment::Active(binding) = self.inputs.store.read().await? else {
-                return Ok(ConditionalWrite::Superseded);
-            };
-            if &binding.key() != key {
-                return Ok(ConditionalWrite::Superseded);
-            }
-            match self.inputs.end_binding(binding.generation, why).await {
-                Ok(ConditionalWrite::Applied) => return Ok(ConditionalWrite::Applied),
-                Ok(ConditionalWrite::Superseded) => {}
-                Err(error) => {
-                    let mut state = self.state.lock().await;
-                    state.lease = None;
-                    state.fail_closed = Some(why);
-                    return Err(error);
+            let generation = {
+                let mut state = self.state.lock().await;
+                let snapshot = self.inputs.read_for_cleanup(deadline).await?;
+                match snapshot {
+                    StoredEnrollment::Active(binding) if &binding.key() == key => {
+                        state.fence(key.clone(), why);
+                        binding.generation
+                    }
+                    StoredEnrollment::Ended {
+                        key: ended,
+                        why: recorded,
+                        ..
+                    } if &ended == key && recorded == why => return Ok(ConditionalWrite::Applied),
+                    _ => return Ok(ConditionalWrite::Superseded),
                 }
+            };
+            match self.inputs.end_binding(generation, why, deadline).await? {
+                ConditionalWrite::Applied => return Ok(ConditionalWrite::Applied),
+                // A same-identity rotation may have advanced the version. Re-check within
+                // the original end budget. Never apply an old ending to a new identity.
+                ConditionalWrite::Superseded => {}
             }
         }
     }
 
-    fn new_refresh(
-        &self,
-        request: AccessRequest,
-        cached: Option<AccessLease>,
-        backoff: Option<(BindingGeneration, ClockInstant)>,
-        prior_fault: Option<(BindingGeneration, LeaseConfigurationFault)>,
-    ) -> RefreshFlight {
+    fn new_refresh(&self, binding: EnrollmentBinding, next: BindingGeneration) -> RefreshFlight {
         let inputs = Arc::clone(&self.inputs);
+        let state = Arc::downgrade(&self.state);
         async move {
-            match inputs
-                .refresh_if_needed(request, cached, backoff, prior_fault)
-                .await
-            {
-                Ok(completion) => completion,
-                Err(error) => RefreshCompletion::Resolved(Err(error)),
-            }
+            let origin = binding.generation;
+            let completion = inputs.rotate(binding, next, state).await;
+            (origin, completion)
         }
         .boxed()
         .shared()
+    }
+}
+
+fn unavailable_until(until: Option<ClockInstant>, now: ClockInstant) -> LeaseUnavailable {
+    LeaseUnavailable::SignInUnreachable {
+        retry_after: until.map(|until| until.saturating_duration_since(now)),
     }
 }
 
@@ -253,74 +313,36 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
         }
     }
 
-    async fn refresh_if_needed(
+    async fn rotate(
         &self,
-        request: AccessRequest,
-        cached: Option<AccessLease>,
-        backoff: Option<(BindingGeneration, ClockInstant)>,
-        prior_fault: Option<(BindingGeneration, LeaseConfigurationFault)>,
-    ) -> Result<RefreshCompletion, LeaseUnavailable> {
-        let binding = self.read_binding().await?;
-        let generation = binding.generation;
-        let now = self.clock.monotonic_now();
-        if let Some(lease) = cached
-            && lease.binding_generation == generation
-            && request.accepts(generation)
-            && now < lease.usable_until
-        {
-            return Ok(RefreshCompletion::Resolved(Ok(lease)));
-        }
-        if let AccessRequest::NewerThan(rejected) = request
-            && rejected > generation
-        {
-            return Err(LeaseConfigurationFault::FutureGeneration.into());
-        }
-        if let Some((refused_generation, fault)) = prior_fault
-            && refused_generation == generation
-        {
-            return Err(fault.into());
-        }
-        if let Some((waiting_generation, until)) = backoff
-            && waiting_generation == generation
-            && now < until
-        {
-            return Ok(RefreshCompletion::Backoff { generation, until });
-        }
-        let next = generation
-            .successor()
-            .ok_or(LeaseConfigurationFault::GenerationExhausted)?;
+        binding: EnrollmentBinding,
+        next: BindingGeneration,
+        state: Weak<Mutex<RefreshState>>,
+    ) -> RefreshCompletion {
+        let dispatched = self.clock.monotonic_now();
         match self.source.refresh(&binding.credential).await {
             RefreshAnswer::Rotated(grant) => {
-                let usable_until = now.after(grant.expires_in);
-                Ok(self
-                    .commit_rotation(binding, next, grant, usable_until)
-                    .await)
-            }
-            RefreshAnswer::Unavailable { retry_after } => {
-                match self.read_binding().await {
-                    Ok(current) if current.generation == generation => {}
-                    Ok(_) => return Ok(RefreshCompletion::Superseded),
-                    Err(error) => return Err(error),
+                if grant.credential.enrollment_id != binding.credential.enrollment_id {
+                    return RefreshCompletion::Invalid(LeaseConfigurationFault::InvalidAnswer(
+                        InvalidReason::WrongEnrollment,
+                    ));
                 }
-                Ok(match retry_after {
-                    Some(wait) => RefreshCompletion::Backoff {
-                        generation,
-                        until: self.clock.monotonic_now().after(wait),
-                    },
-                    None => RefreshCompletion::Resolved(Err(LeaseUnavailable::SignInUnreachable {
-                        retry_after: None,
-                    })),
-                })
+                let usable_until = dispatched.after(grant.expires_in);
+                self.commit_rotation(binding, next, grant, usable_until, state)
+                    .await
             }
+            RefreshAnswer::Unavailable { retry_after } => RefreshCompletion::Unavailable(
+                retry_after.map(|delay| self.clock.monotonic_now().after(delay)),
+            ),
             RefreshAnswer::Refused {
                 reason: InvalidReason::GrantRefused,
-            } => Ok(self
-                .finish_binding(generation, EnrollmentEnd::RefreshRefused)
-                .await),
-            RefreshAnswer::Refused { reason } => Ok(RefreshCompletion::RefusedConfiguration {
-                generation,
-                fault: LeaseConfigurationFault::InvalidAnswer(reason),
-            }),
+            } => {
+                self.finish_binding(binding, EnrollmentEnd::RefreshRefused, state)
+                    .await
+            }
+            RefreshAnswer::Refused { reason } => {
+                RefreshCompletion::Invalid(LeaseConfigurationFault::InvalidAnswer(reason))
+            }
         }
     }
 
@@ -330,18 +352,17 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
         generation: BindingGeneration,
         grant: TokenGrant,
         usable_until: ClockInstant,
+        state: Weak<Mutex<RefreshState>>,
     ) -> RefreshCompletion {
-        let replacement = EnrollmentBinding {
-            generation,
-            context: previous.context,
-            credential: grant.credential,
-        };
+        let mut replacement = previous.clone();
+        replacement.generation = generation;
+        replacement.credential = grant.credential;
         let deadline = self.clock.monotonic_now().after(WRITE_RETRY_LIMIT);
         loop {
             let now = self.clock.monotonic_now();
             if now >= deadline {
                 return self
-                    .finish_binding(previous.generation, EnrollmentEnd::LocalCredentialLost)
+                    .finish_binding(previous, EnrollmentEnd::LocalCredentialLost, state)
                     .await;
             }
             // Retain the same pair across write failures. The old token is spent.
@@ -353,23 +374,20 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
             .await;
             match change {
                 Ok(Ok(ConditionalWrite::Applied)) => {
-                    if self.clock.monotonic_now() < usable_until {
-                        return RefreshCompletion::Resolved(Ok(AccessLease {
-                            token: grant.access_token,
-                            usable_until,
-                            binding_generation: generation,
-                        }));
-                    }
-                    return RefreshCompletion::Superseded;
+                    return RefreshCompletion::Committed(AccessLease {
+                        token: grant.access_token,
+                        usable_until,
+                        binding_generation: generation,
+                    });
                 }
-                Ok(Ok(ConditionalWrite::Superseded)) => return RefreshCompletion::Superseded,
+                Ok(Ok(ConditionalWrite::Superseded)) => return RefreshCompletion::Recheck,
                 _ => {
-                    let next_attempt = self
+                    let retry = self
                         .clock
                         .monotonic_now()
                         .after(WRITE_RETRY_INTERVAL)
                         .min(deadline);
-                    self.clock.sleep_until(next_attempt).await;
+                    self.clock.sleep_until(retry).await;
                 }
             }
         }
@@ -377,27 +395,70 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
 
     async fn finish_binding(
         &self,
-        generation: BindingGeneration,
+        binding: EnrollmentBinding,
         why: EnrollmentEnd,
+        state: Weak<Mutex<RefreshState>>,
     ) -> RefreshCompletion {
-        match self.end_binding(generation, why).await {
-            Ok(ConditionalWrite::Applied) => {
-                RefreshCompletion::Resolved(Err(LeaseUnavailable::Ended { why }))
+        let deadline = self.clock.monotonic_now().after(ENDING_CLEANUP_LIMIT);
+        if let Some(state) = state.upgrade() {
+            let mut state = state.lock().await;
+            let key = binding.key();
+            if state
+                .ending
+                .as_ref()
+                .is_some_and(|(ending, _)| *ending == key)
+            {
+                return RefreshCompletion::Recheck;
             }
-            Ok(ConditionalWrite::Superseded) => RefreshCompletion::Superseded,
-            Err(_) => RefreshCompletion::FailClosed(why),
+            // Fence this identity before attempting cleanup, even if the store is unavailable.
+            state.fence(key, why);
         }
+        match self.end_binding(binding.generation, why, deadline).await {
+            Ok(ConditionalWrite::Superseded) => RefreshCompletion::Recheck,
+            Ok(ConditionalWrite::Applied) | Err(_) => RefreshCompletion::Ended(why),
+        }
+    }
+
+    async fn read_for_cleanup(
+        &self,
+        deadline: ClockInstant,
+    ) -> Result<StoredEnrollment, CredentialStoreError> {
+        if self.clock.monotonic_now() >= deadline {
+            return Err(CredentialStoreError::CleanupTimedOut);
+        }
+        timeout_at(self.clock.as_ref(), deadline, self.store.read())
+            .await
+            .map_err(|_| CredentialStoreError::CleanupTimedOut)?
     }
 
     async fn end_binding(
         &self,
         generation: BindingGeneration,
         why: EnrollmentEnd,
+        deadline: ClockInstant,
     ) -> Result<ConditionalWrite, CredentialStoreError> {
-        match self.store.remove(generation, why).await {
-            Ok(ending) => Ok(ending),
-            Err(_) => self.store.mark_unusable(generation, why).await,
+        let removal_deadline = self
+            .clock
+            .monotonic_now()
+            .after(ENDING_CLEANUP_LIMIT / 2)
+            .min(deadline);
+        if let Ok(Ok(ending)) = timeout_at(
+            self.clock.as_ref(),
+            removal_deadline,
+            self.store.remove(generation, why),
+        )
+        .await
+        {
+            return Ok(ending);
         }
+
+        timeout_at(
+            self.clock.as_ref(),
+            deadline,
+            self.store.mark_unusable(generation, why),
+        )
+        .await
+        .map_err(|_| CredentialStoreError::CleanupTimedOut)?
     }
 }
 

@@ -7,6 +7,7 @@ pub enum InvalidReason {
     UnknownError,
     MalformedAnswer,
     UnexpectedStatus,
+    WrongEnrollment,
 }
 
 /// The enrollment reducer or refresh owner reports one of these final reasons.
