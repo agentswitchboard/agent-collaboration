@@ -5,6 +5,7 @@ use super::enrollment_records::{
     Decided, EnrollmentChange, EnrollmentFacts, MachineRow, MachineState, StoredEnrollment,
     StoredEnrollmentState,
 };
+use super::enrollment_transitions::{EnrollmentEvent, replace_enrollment};
 use central_storage::StoreFailure;
 use fleet_contracts::{
     DecideMachineToken, EndedMachineClient, EnrollmentRevocationReason, MachineTokenDecision,
@@ -45,13 +46,10 @@ pub fn decide_machine_token(
             }
             Ok(Decided::writing(
                 grant(enrollment, time, facts.superseded_client.clone())?,
-                vec![EnrollmentChange::ReplaceEnrollment(StoredEnrollment {
-                    state: StoredEnrollmentState::Enrolled {
-                        client_id: client_id.clone(),
-                        last_grant_at: time.seconds(),
-                    },
-                    ..enrollment.clone()
-                })],
+                vec![replace_enrollment(
+                    enrollment,
+                    EnrollmentEvent::ActiveGrant(time),
+                )?],
                 time.now_ms,
             ))
         }
@@ -84,11 +82,10 @@ fn first_grant(
             MachineTokenDecision::Refuse {
                 reason: MachineTokenRefusal::EnrollmentNotActive {},
             },
-            vec![EnrollmentChange::ReplaceEnrollment(StoredEnrollment {
-                state: StoredEnrollmentState::Lapsed,
-                ended_at_ms: Some(time.now_ms),
-                ..enrollment.clone()
-            })],
+            vec![replace_enrollment(
+                enrollment,
+                EnrollmentEvent::ApprovalDeadlineElapsed(time),
+            )?],
             time.now_ms,
         ));
     }
@@ -110,18 +107,14 @@ fn first_grant(
         .as_ref()
         .and_then(|previous| previous.ended_client());
     if let Some(previous) = &facts.active {
-        let StoredEnrollmentState::Enrolled { client_id, .. } = &previous.state else {
+        if !matches!(&previous.state, StoredEnrollmentState::Enrolled { .. }) {
             return Err(StoreFailure::Unavailable);
-        };
+        }
         // End the old enrollment before entering the partial unique index.
-        changes.push(EnrollmentChange::ReplaceEnrollment(StoredEnrollment {
-            state: StoredEnrollmentState::Revoked {
-                client_id: client_id.clone(),
-                reason: EnrollmentRevocationReason::Superseded {},
-            },
-            ended_at_ms: Some(time.now_ms),
-            ..previous.clone()
-        }));
+        changes.push(replace_enrollment(
+            previous,
+            EnrollmentEvent::Superseded(time),
+        )?);
         changes.push(EnrollmentChange::Record(ids.record(
             enrollment.request_id.as_str(),
             OrganizationChangeKind::MachineRevoked,
@@ -130,13 +123,13 @@ fn first_grant(
             time,
         )?));
     }
-    changes.push(EnrollmentChange::ReplaceEnrollment(StoredEnrollment {
-        state: StoredEnrollmentState::Enrolled {
+    changes.push(replace_enrollment(
+        enrollment,
+        EnrollmentEvent::FirstGrant {
             client_id: request.client_id.clone(),
-            last_grant_at: time.seconds(),
+            time,
         },
-        ..enrollment.clone()
-    }));
+    )?);
     changes.push(EnrollmentChange::PutMachine(MachineRow {
         generation: next_generation,
         state: MachineState::Enrolled,
@@ -181,19 +174,13 @@ fn idle_expiry(
     time: DecisionTime,
     ids: &DecisionIds<'_>,
 ) -> Result<Decided<MachineTokenDecision>, StoreFailure> {
-    let StoredEnrollmentState::Enrolled { client_id, .. } = &enrollment.state else {
+    if !matches!(&enrollment.state, StoredEnrollmentState::Enrolled { .. }) {
         return Err(StoreFailure::Unavailable);
-    };
+    }
     let machine = facts.machine.as_ref().ok_or(StoreFailure::Unavailable)?;
     let automatic = OrganizationChangeOrigin::Automatic {};
     let mut changes = vec![
-        EnrollmentChange::ReplaceEnrollment(StoredEnrollment {
-            state: StoredEnrollmentState::Expired {
-                client_id: client_id.clone(),
-            },
-            ended_at_ms: Some(time.now_ms),
-            ..enrollment.clone()
-        }),
+        replace_enrollment(enrollment, EnrollmentEvent::IdleDeadlineElapsed(time))?,
         EnrollmentChange::PutMachine(MachineRow {
             generation: machine.generation.next()?,
             state: MachineState::Revoked,

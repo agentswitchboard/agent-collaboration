@@ -1,12 +1,12 @@
 //! Private revocation policy; routing and connection close delivery belong to C.
 use super::decision_support::{DecisionIds, DecisionTime};
 use super::enrollment_records::{
-    Decided, EnrollmentChange, EnrollmentFacts, MachineRow, MachineState, StoredEnrollment,
-    StoredEnrollmentState,
+    Decided, EnrollmentChange, EnrollmentFacts, MachineRow, MachineState, StoredEnrollmentState,
 };
+use super::enrollment_transitions::{EnrollmentEvent, replace_enrollment};
 use super::machine_token_decision::append_allowance_records;
 use central_storage::StoreFailure;
-use fleet_contracts::{EndedMachineClient, EnrollmentRevocationReason, PersonId};
+use fleet_contracts::{EndedMachineClient, PersonId};
 use fleet_runtime_ports::IdSource;
 use fleet_signin::organization_change::{OrganizationChangeKind, OrganizationChangeOrigin};
 use message_board::RecordId;
@@ -23,9 +23,9 @@ pub fn revoke_machine_enrollment(
     let (Some(machine), Some(active)) = (&facts.machine, &facts.active) else {
         return Ok(Decided::unchanged(None));
     };
-    let StoredEnrollmentState::Enrolled { client_id, .. } = &active.state else {
+    if !matches!(&active.state, StoredEnrollmentState::Enrolled { .. }) {
         return Ok(Decided::unchanged(None));
-    };
+    }
     let next_generation = machine.generation.next()?;
     let ids = DecisionIds(ids);
     let origin = OrganizationChangeOrigin::Person {
@@ -33,14 +33,7 @@ pub fn revoke_machine_enrollment(
         permission_checked: permission_checked.to_owned(),
     };
     let mut changes = vec![
-        EnrollmentChange::ReplaceEnrollment(StoredEnrollment {
-            state: StoredEnrollmentState::Revoked {
-                client_id: client_id.clone(),
-                reason: EnrollmentRevocationReason::Owner {},
-            },
-            ended_at_ms: Some(time.now_ms),
-            ..active.clone()
-        }),
+        replace_enrollment(active, EnrollmentEvent::OwnerRevoked(time))?,
         EnrollmentChange::PutMachine(MachineRow {
             generation: next_generation,
             state: MachineState::Revoked,

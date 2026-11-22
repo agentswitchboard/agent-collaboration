@@ -3,6 +3,7 @@ mod allowance_transitions;
 mod decision_support;
 mod device_login_decision;
 mod enrollment_records;
+mod enrollment_transitions;
 mod machine_token_decision;
 mod revoke_enrollment;
 
