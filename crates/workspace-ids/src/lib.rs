@@ -10,7 +10,7 @@ pub struct IdValidationError {
 
 // Ported from message-board::board_identity, without the system-clock mint API.
 macro_rules! workspace_identifiers {
-    ($($(#[$attribute:meta])* $name:ident),+ $(,)?) => {$ (
+    ($($(#[$attribute:meta])* $name:ident $(=> $error:ident)?),+ $(,)?) => {$ (
         #[derive(
             Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize,
             schemars::JsonSchema,
@@ -19,6 +19,18 @@ macro_rules! workspace_identifiers {
         $(#[$attribute])*
         pub struct $name(String);
 
+        workspace_identifiers!(@conversion $name $(=> $error)?);
+        impl From<$name> for String { fn from(value: $name) -> Self { value.0 } }
+        impl std::fmt::Display for $name {
+            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str(&self.0)
+            }
+        }
+        impl $name {
+            #[must_use] pub fn as_str(&self) -> &str { &self.0 }
+        }
+    )+};
+    (@conversion $name:ident) => {
         impl TryFrom<String> for $name {
             type Error = IdValidationError;
             fn try_from(value: String) -> Result<Self, Self::Error> {
@@ -35,16 +47,29 @@ macro_rules! workspace_identifiers {
             type Err = IdValidationError;
             fn from_str(value: &str) -> Result<Self, Self::Err> { Self::try_from(value.to_owned()) }
         }
-        impl From<$name> for String { fn from(value: $name) -> Self { value.0 } }
-        impl std::fmt::Display for $name {
-            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-                formatter.write_str(&self.0)
+    };
+    (@conversion $name:ident => $error:ident) => {
+        impl TryFrom<String> for $name {
+            type Error = $error;
+            fn try_from(value: String) -> Result<Self, Self::Error> {
+                let parsed = Uuid::parse_str(&value).map_err(|_| $error::Malformed)?;
+                if parsed.get_version_num() != 7 {
+                    return Err($error::WrongVersion);
+                }
+                if parsed.get_variant() != Variant::RFC4122 {
+                    return Err($error::WrongVariant);
+                }
+                if parsed.hyphenated().to_string() != value {
+                    return Err($error::NonCanonical);
+                }
+                Ok(Self(value))
             }
         }
-        impl $name {
-            #[must_use] pub fn as_str(&self) -> &str { &self.0 }
+        impl std::str::FromStr for $name {
+            type Err = $error;
+            fn from_str(value: &str) -> Result<Self, Self::Err> { Self::try_from(value.to_owned()) }
         }
-    )+};
+    };
 }
 
 workspace_identifiers!(
@@ -63,6 +88,8 @@ workspace_identifiers!(
     /// The never-reused Central identity of one provider session incarnation.
     #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
     CentralSessionId,
+    /// One operation on a session, made by the caller before it sends, so a repeat can be recognised.
+    SessionOperationId => SessionOperationIdError,
     PersonId,
     AreaId,
     ProjectId,
@@ -89,6 +116,23 @@ workspace_identifiers!(
     WakeId,
     AutomationId
 );
+
+/// The session operation ID parser returns this when supplied text is not a canonical RFC UUIDv7.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum SessionOperationIdError {
+    /// The input does not parse as a UUID.
+    #[error("SessionOperationId is not UUID text")]
+    Malformed,
+    /// The UUID's version is not 7.
+    #[error("SessionOperationId UUID version must be 7")]
+    WrongVersion,
+    /// The UUID does not use the RFC 4122 variant.
+    #[error("SessionOperationId UUID variant must be RFC 4122")]
+    WrongVariant,
+    /// The text differs from the UUID's lowercase hyphenated spelling.
+    #[error("SessionOperationId must use lowercase hyphenated UUID text")]
+    NonCanonical,
+}
 
 /// One agent conversation, as its provider (Claude Code, Codex) minted it:
 /// stored as given, 1 to 4096 UTF-8 bytes without NUL.
