@@ -75,6 +75,11 @@ export const sqlitePreparationTargets: readonly SqlitePreparationTarget[] = [
       "crates/fleet-storage-schema/tests/fixtures/engine_migrations/0001_engine_probe.sql",
   },
   {
+    packageName: "fleet-workspace-access",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-central-workspace-access.sqlite",
+  },
+  {
     packageName: "fleet-workspace-directory",
     migrationSources: [centralMigrationSource],
     databaseFilename: "fleet-central-workspace-directory.sqlite",
@@ -83,6 +88,11 @@ export const sqlitePreparationTargets: readonly SqlitePreparationTarget[] = [
     packageName: "fleet-signin",
     migrationSources: [centralMigrationSource],
     databaseFilename: "fleet-central-signin.sqlite",
+  },
+  {
+    packageName: "fleet-machine-login",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-central-machine-login.sqlite",
   },
 ];
 

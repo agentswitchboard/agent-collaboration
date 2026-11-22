@@ -340,6 +340,11 @@ fn welcome_cancels_its_deadline_and_late_socket_close_does_not_double_backoff() 
             LinkFrame::Data(DataFrame::Welcome {
                 machine_id: client.machine.clone(),
                 central_time: clock.utc_now(),
+                effective_expires_at: workspace_model::Timestamp::from_timestamp(
+                    clock.utc_now().timestamp() + 600,
+                    0,
+                )
+                .unwrap(),
             }),
         )
         .unwrap();

@@ -1,8 +1,7 @@
 # Central identity contracts
 
 These schemas derive from `collaboration_central_core::identity_contract`.
-Each file is keyed by type name, including shapes with identical fields such
-as `DecideMachineToken` and `DisableMachineClient`.
+Each file is keyed by type name.
 
 - `<RustType>.fixtures.json`: canonical serializer output.
 - `<RustType>.negatives.json`: rejected reads.

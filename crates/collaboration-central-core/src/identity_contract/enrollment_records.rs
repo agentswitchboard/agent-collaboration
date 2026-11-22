@@ -1,6 +1,6 @@
 //! Observable enrollment states always retain the machine client they authorized.
-use super::{AdmissionId, DeviceLoginRequestId, PersonId};
-use fleet_contracts::ClientId;
+use super::AdmissionId;
+use fleet_contracts::{ClientId, DeviceLoginRequestId, EnrollmentRevocationReason, PersonId};
 use fleet_identity_protocol::{EnrollmentId, UnixSeconds};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -62,10 +62,4 @@ pub enum MachineEnrollment {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         ends_at: Option<UnixSeconds>,
     },
-}
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
-pub enum EnrollmentRevocationReason {
-    Owner {},
-    Superseded {},
 }

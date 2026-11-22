@@ -8,7 +8,7 @@ use central_storage::{
     StatementBatch,
 };
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
-use collaboration_central_core::identity_contract::{
+use fleet_contracts::{
     DecideDeviceLogin, DecideMachineToken, DeviceLoginDecision, MachineTokenDecision,
 };
 use fleet_contracts::{ProvisionOrganization, ProvisionOrganizationResult};
@@ -16,7 +16,7 @@ use fleet_identity_protocol::{EnrollmentId, OrganizationId};
 use futures_util::{SinkExt, StreamExt};
 use reqwest_websocket::{CloseCode, Message, RequestBuilderExt, WebSocket};
 use router_clock::ManualClock;
-use runtime_primitives::{Clock, SyncTime};
+use runtime_primitives::SyncTime;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
 use std::sync::Arc;
@@ -143,38 +143,26 @@ impl Fixture {
 
     pub async fn allow_workspace(&self, workspace: &WorkspaceId) -> Result<()> {
         // This is an allowance precondition, not proof of an admin authorization journey.
-        let timestamp = chrono::DateTime::from_timestamp_millis(self.clock.now().unix_millis())
-            .ok_or("fixture UTC")?;
-        let result = self.runtime().run_batch(StatementBatch {
-            statements: vec![GuardedStatement {
-                statement: Statement {
-                    sql:"UPDATE login_machines SET allowed_workspaces=?,updated_at=? WHERE machine_id=?",
-                    args:vec![SqlValue::Text(serde_json::to_string(&vec![workspace])?),SqlValue::Text(timestamp.to_rfc3339()),SqlValue::Text(MACHINE_ID.into())],
-                }, expect:RowExpectation::Exactly(1),
-            }], alarm:AlarmUpdate::Unchanged,
-        }).await?;
+        let result = self
+            .runtime()
+            .run_batch(StatementBatch {
+                statements: vec![GuardedStatement {
+                    statement: Statement {
+                        sql: collaboration_central_conformance::REPLACE_FIXTURE_ALLOWANCES_SQL,
+                        args: vec![
+                            SqlValue::Text(serde_json::to_string(&vec![workspace])?),
+                            SqlValue::Text(MACHINE_ID.into()),
+                        ],
+                    },
+                    expect: RowExpectation::Exactly(1),
+                }],
+                alarm: AlarmUpdate::Unchanged,
+            })
+            .await?;
         if !matches!(result, BatchOutcome::Applied { .. }) {
             return Err("fixture allowance precondition failed".into());
         }
         Ok(())
-    }
-
-    pub async fn supersede(&self) -> Result<()> {
-        let next = approve(
-            &self.host,
-            &self.client,
-            "019f0000-0000-7000-8000-00000000cf06",
-            self.host.now_seconds(),
-        )
-        .await?;
-        match grant(&self.host, &self.client, &next).await? {
-            MachineTokenDecision::Grant {
-                enrollment_id,
-                superseded: Some(ended),
-                ..
-            } if enrollment_id == next && ended.enrollment_id == self.enrollment => Ok(()),
-            _ => Err("real second grant did not supersede the original enrollment".into()),
-        }
     }
 
     pub async fn close(self) -> Result<()> {
@@ -205,7 +193,7 @@ async fn post<Answer: DeserializeOwned>(
     Ok(response.json().await?)
 }
 
-async fn approve(
+pub(super) async fn approve(
     host: &WorkerdHost,
     client: &reqwest::Client,
     request_id: &str,
@@ -222,7 +210,7 @@ async fn approve(
     }
 }
 
-async fn grant(
+pub(super) async fn grant(
     host: &WorkerdHost,
     client: &reqwest::Client,
     enrollment: &EnrollmentId,
@@ -261,7 +249,10 @@ impl ConnectedLink {
             .into_websocket()
             .await?;
         let welcome = receive(&mut socket).await?;
-        if client.receive(&attempt, LinkFrame::Data(welcome.clone()))? != ClientEvent::Welcomed {
+        if !matches!(
+            client.receive(&attempt, LinkFrame::Data(welcome.clone()))?,
+            ClientEvent::Welcomed { .. }
+        ) {
             return Err("ordinary client did not accept Welcome".into());
         }
         Ok(Self {

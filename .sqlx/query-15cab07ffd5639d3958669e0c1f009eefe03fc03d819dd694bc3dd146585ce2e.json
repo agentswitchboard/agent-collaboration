@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE login_machines\nSET updated_at = updated_at\nWHERE machine_id = ?1\n  AND (\n      SELECT count(*) FROM login_machine_allowances\n      WHERE machine_id = ?1 AND state = 'active'\n  ) = json_array_length(?2)\n  AND NOT EXISTS (\n      SELECT 1 FROM json_each(?2) AS observed\n      WHERE NOT EXISTS (\n          SELECT 1 FROM login_machine_allowances\n          WHERE machine_id = ?1 AND workspace_id = observed.value AND state = 'active'\n      )\n  )\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "15cab07ffd5639d3958669e0c1f009eefe03fc03d819dd694bc3dd146585ce2e"
+}

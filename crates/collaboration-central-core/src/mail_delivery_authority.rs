@@ -48,13 +48,8 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         receipt: ReceiptKind,
     ) -> Result<MailReceiptSettlement, StoreFailure> {
         let _turn = self.execution.take_central_turn().await;
-        if connection.organization_id() != self.execution.organization()
-            || self
-                .restore_machine_connection_held(connection)
-                .await?
-                .is_err()
-        {
-            return Ok(MailReceiptSettlement::AuthorityLapsed);
+        if let Err(refusal) = self.restore_live_authority_held(connection).await? {
+            return Ok(MailReceiptSettlement::AuthorityLapsed(refusal.close));
         }
 
         let admitted_receipt = fleet_mail::AdmittedReceipt {
@@ -83,7 +78,9 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                 MailReceiptSettlement::Applied
             }
             fleet_mail::ApplyReceipt::Stop(result) => MailReceiptSettlement::Stop(result),
-            fleet_mail::ApplyReceipt::AuthorityLapsed => MailReceiptSettlement::AuthorityLapsed,
+            fleet_mail::ApplyReceipt::AuthorityLapsed(cause) => {
+                MailReceiptSettlement::AuthorityLapsed(cause)
+            }
         })
     }
 
@@ -94,12 +91,8 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         cursor: Option<&WelcomeDeliveryCursor>,
     ) -> Result<WelcomeDeliveryPage, StoreFailure> {
         let _turn = self.execution.take_central_turn().await;
-        if self
-            .restore_machine_connection_held(attachment)
-            .await?
-            .is_err()
-        {
-            return Ok(WelcomeDeliveryPage::AuthorityLapsed);
+        if let Err(refusal) = self.restore_live_authority_held(attachment).await? {
+            return Ok(WelcomeDeliveryPage::AuthorityLapsed(refusal.close));
         }
         let now = self.execution.now()?;
         let page = self
@@ -121,12 +114,8 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         message_id: &MessageId,
     ) -> Result<WindowedDeliveryDecision, StoreFailure> {
         let _turn = self.execution.take_central_turn().await;
-        if self
-            .restore_machine_connection_held(attachment)
-            .await?
-            .is_err()
-        {
-            return Ok(WindowedDeliveryDecision::AuthorityLapsed);
+        if let Err(refusal) = self.restore_live_authority_held(attachment).await? {
+            return Ok(WindowedDeliveryDecision::AuthorityLapsed(refusal.close));
         }
         let offer = self
             .direct_messages
@@ -153,7 +142,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         &self,
         caller: &WorkspaceCaller,
         message_id: &MessageId,
-    ) -> Result<Result<MessageStatus, RefusalReason>, StoreFailure> {
+    ) -> Result<Result<MessageStatus, RefusalReason>, crate::ApplyingRequestFailure> {
         let _turn = self.execution.take_central_turn().await;
         if let Err(refusal) = self
             .access()
@@ -165,7 +154,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             )
             .await?
         {
-            return Ok(Err(refusal));
+            return crate::applying_request_failure::applying_refusal(refusal, Err);
         }
         let Some(actor) = self.access().existing_caller_actor(caller.caller()).await? else {
             return Ok(Ok(MessageStatus::NotFound {}));

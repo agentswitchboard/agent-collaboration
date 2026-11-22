@@ -14,11 +14,14 @@ pub struct WorkspaceRuntime<Host: CentralStore, Stores: WorkspaceStores> {
     pub(crate) execution: FleetRuntime<Host, Stores>,
     pub(crate) stamp_store: Arc<dyn fleet_signin::stamp_store::StampStore>,
     pub(crate) mail_delivery_ready: Arc<dyn Fn(MailDeliveryReady) + Send + Sync>,
-    pub(crate) machine_revoked: Arc<dyn Fn(workspace_ids::MachineId) + Send + Sync>,
+    pub(crate) enrollment_invalidated:
+        Arc<dyn Fn(fleet_contracts::EnrollmentInvalidation) + Send + Sync>,
     pub(crate) signin_authority: crate::organization_authority_cache::OrganizationAuthority,
     #[cfg(feature = "test-support")]
     pub(crate) machine_restore_failure:
         std::sync::Mutex<Option<(usize, central_storage::StoreFailure)>>,
+    #[cfg(feature = "test-support")]
+    idle_renewal_send_failure: std::sync::atomic::AtomicBool,
 }
 impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores> {
     pub fn new(
@@ -32,14 +35,28 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             stamp_store,
             signin_authority: Default::default(),
             mail_delivery_ready: Arc::new(|_| {}),
-            machine_revoked: Arc::new(|_| {}),
+            enrollment_invalidated: Arc::new(|_| {}),
             #[cfg(feature = "test-support")]
             machine_restore_failure: Default::default(),
+            #[cfg(feature = "test-support")]
+            idle_renewal_send_failure: Default::default(),
         }
     }
 
     pub fn runtime(&self) -> &FleetRuntime<Host, Stores> {
         &self.execution
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn fail_next_idle_renewal_send(&self) {
+        self.idle_renewal_send_failure
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn take_idle_renewal_send_failure(&self) -> bool {
+        self.idle_renewal_send_failure
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
     }
 
     pub(crate) fn access(&self) -> WorkspaceAccess<'_, Host, Stores> {
@@ -63,11 +80,11 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         self.mail_delivery_ready = observer;
         self
     }
-    pub fn with_machine_revocation_observer(
+    pub fn with_enrollment_invalidation_observer(
         mut self,
-        observer: Arc<dyn Fn(workspace_ids::MachineId) + Send + Sync>,
+        observer: Arc<dyn Fn(fleet_contracts::EnrollmentInvalidation) + Send + Sync>,
     ) -> Self {
-        self.machine_revoked = observer;
+        self.enrollment_invalidated = observer;
         self
     }
     pub fn with_sign_in_verification(

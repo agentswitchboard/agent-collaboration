@@ -82,6 +82,7 @@ export const c2ProductReceiptSchema = z
         kind: z.literal("welcome"),
         machineId: uuid,
         centralTime: z.iso.datetime({ offset: true }),
+        effectiveExpiresAt: z.iso.datetime({ offset: true }),
       })
       .strict(),
     baselineRequest: request,

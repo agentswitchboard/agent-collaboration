@@ -294,8 +294,7 @@
         "workspaceCreated",
         "machineEnrolled",
         "machineRevoked",
-        "machineExpired",
-        "allowanceChanged"
+        "machineExpired"
       ],
       "type": "string"
     },

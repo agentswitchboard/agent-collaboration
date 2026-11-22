@@ -1,4 +1,5 @@
 use super::support::*;
+use collaboration_central_conformance::signin_fixtures::MACHINE_IDLE_LIMIT_SECONDS;
 
 #[expect(
     clippy::panic_in_result_fn,
@@ -25,6 +26,17 @@ async fn first_grant_uses_the_codes_exact_deadline_and_lapse_keeps_the_working_l
         let machine = f
             .rows("SELECT * FROM login_machines ORDER BY machine_id")
             .await?;
+        let allowance_pairs = "SELECT machine_id, workspace_id, state FROM login_machine_allowances ORDER BY machine_id, workspace_id";
+        assert_eq!(
+            f.rows(allowance_pairs).await?,
+            vec![
+                vec![text(INSTALLATION), text(WORKSPACE), text("active")],
+                vec![text(INSTALLATION), text(WORKSPACE_TWO), text("active")],
+            ]
+        );
+        let allowances = f
+            .rows("SELECT * FROM login_machine_allowances ORDER BY machine_id, workspace_id")
+            .await?;
         let immutable_pending = f.rows("SELECT approval_id,request_id,machine_id,label,allowed_workspaces,approved_by_person_id,permission_checked,base_generation,code_expires_at,created_at FROM login_machine_approvals WHERE label='Pending'").await?;
         let working = f
             .rows("SELECT * FROM login_machine_approvals WHERE label='Working'")
@@ -38,7 +50,9 @@ async fn first_grant_uses_the_codes_exact_deadline_and_lapse_keeps_the_working_l
             )
             .await?;
         f.advance(elapsed_ms).await?;
-        let answer = f.post(TOKEN, &token(&b, &b)).await?;
+        // At and after the deadline, lapse takes precedence over client mismatch.
+        let client_id = if elapsed_ms >= 30_000 { &a } else { &b };
+        let answer = f.post(TOKEN, &token(&b, client_id)).await?;
         if elapsed_ms >= 30_000 {
             assert_eq!(answer, (200, refused("enrollmentNotActive")));
             let ended_at = chrono::DateTime::from_timestamp_millis(
@@ -61,7 +75,20 @@ async fn first_grant_uses_the_codes_exact_deadline_and_lapse_keeps_the_working_l
                 f.rows("SELECT * FROM login_machines ORDER BY machine_id")
                     .await?
                     == machine,
-                "lapse leaves machine generation/current allowances alone"
+                "lapse leaves the machine row alone"
+            );
+            assert_eq!(
+                f.rows(allowance_pairs).await?,
+                vec![
+                    vec![text(INSTALLATION), text(WORKSPACE), text("active")],
+                    vec![text(INSTALLATION), text(WORKSPACE_TWO), text("active")]
+                ]
+            );
+            assert_eq!(
+                f.rows("SELECT * FROM login_machine_allowances ORDER BY machine_id, workspace_id")
+                    .await?,
+                allowances,
+                "lapse preserves the allowance pairs and their metadata from both approvals"
             );
             assert!(f.rows("SELECT approval_id,request_id,machine_id,label,allowed_workspaces,approved_by_person_id,permission_checked,base_generation,code_expires_at,created_at FROM login_machine_approvals WHERE label='Pending'").await? == immutable_pending);
             assert!(
@@ -97,10 +124,10 @@ async fn first_grant_uses_the_codes_exact_deadline_and_lapse_keeps_the_working_l
 
 #[expect(
     clippy::panic_in_result_fn,
-    reason = "Renewal and exact 30-day idle expiry must use the one injected clock and write automatic multi-record effects."
+    reason = "Renewal and exact 60-day idle expiry must use the one injected clock and write automatic multi-record effects."
 )]
 #[tokio::test]
-async fn renewal_extends_idle_deadline_and_thirty_days_without_grant_expires_once() -> Result<()> {
+async fn renewal_extends_idle_deadline_and_sixty_days_without_grant_expires_once() -> Result<()> {
     let f = MachineFixture::new().await?;
     let enrollment_id = enrollment(
         &f.post(
@@ -129,33 +156,38 @@ async fn renewal_extends_idle_deadline_and_thirty_days_without_grant_expires_onc
             .await?,
         (200, grant(&enrollment_id, INSTALLATION, f.now(), None))
     );
-    let renewed = f.now();
     assert_eq!(
         f.rows("SELECT enrollment_generation FROM login_machines")
             .await?,
         vec![vec![number(1)?]]
     );
-    f.advance(30 * 24 * 60 * 60 * 1000 - 1000).await?;
+    // Both intervals must fit within the organization statement lifetime.
+    f.advance(u64::try_from(MACHINE_IDLE_LIMIT_SECONDS * 2 / 3 * 1000)?)
+        .await?;
     assert_eq!(
         f.post(TOKEN, &token(&enrollment_id, &enrollment_id))
             .await?,
         (200, grant(&enrollment_id, INSTALLATION, f.now(), None)),
-        "a grant one second before idle expiry restarts the idle clock"
+        "a grant before idle expiry restarts the idle clock"
     );
-    let last = f.now();
-    assert!(last > renewed);
-    f.advance(30 * 24 * 60 * 60 * 1000).await?;
+    assert_eq!(
+        f.rows("SELECT unixepoch(last_grant_at) FROM login_machine_approvals")
+            .await?,
+        vec![vec![number(f.now())?]]
+    );
+    f.advance(u64::try_from(MACHINE_IDLE_LIMIT_SECONDS * 1000)?)
+        .await?;
     assert_eq!(
         f.post(TOKEN, &token(&enrollment_id, &enrollment_id))
             .await?,
         (200, refused("idleExpired"))
     );
     assert_eq!(
-        f.rows("SELECT state,enrollment_generation,allowed_workspaces FROM login_machines")
+        f.rows("SELECT state,enrollment_generation,(SELECT json_group_array(workspace_id) FROM (SELECT workspace_id FROM login_machine_allowances WHERE machine_id=login_machines.machine_id AND state='active' ORDER BY allowance_id)) FROM login_machines")
             .await?,
         vec![vec![text("revoked"), number(2)?, text("[]")]]
     );
-    let records=f.rows("SELECT request_id,kind,origin,actor_person_id,permission_checked,target_id FROM signin_change_records WHERE origin='automatic' ORDER BY id").await?;
+    let records=f.rows("SELECT request_id,kind,origin,actor_person_id,permission_checked,target_id,workspace_id,allowance_state FROM signin_change_records WHERE origin='automatic' ORDER BY id").await?;
     assert_eq!(
         records,
         vec![
@@ -165,23 +197,33 @@ async fn renewal_extends_idle_deadline_and_thirty_days_without_grant_expires_onc
                 text("automatic"),
                 central_storage::SqlValue::Null,
                 central_storage::SqlValue::Null,
-                text(&enrollment_id)
+                text(&enrollment_id),
+                central_storage::SqlValue::Null,
+                central_storage::SqlValue::Null
             ],
             vec![
-                text(format!("{enrollment_id}:allowanceChanged:{WORKSPACE}")),
-                text("allowanceChanged"),
+                text(format!(
+                    "{enrollment_id}:machineAllowanceChanged:{WORKSPACE}"
+                )),
+                text("machineAllowanceChanged"),
                 text("automatic"),
                 central_storage::SqlValue::Null,
                 central_storage::SqlValue::Null,
-                text(WORKSPACE)
+                text(INSTALLATION),
+                text(WORKSPACE),
+                text("withdrawn")
             ],
             vec![
-                text(format!("{enrollment_id}:allowanceChanged:{WORKSPACE_TWO}")),
-                text("allowanceChanged"),
+                text(format!(
+                    "{enrollment_id}:machineAllowanceChanged:{WORKSPACE_TWO}"
+                )),
+                text("machineAllowanceChanged"),
                 text("automatic"),
                 central_storage::SqlValue::Null,
                 central_storage::SqlValue::Null,
-                text(WORKSPACE_TWO)
+                text(INSTALLATION),
+                text(WORKSPACE_TWO),
+                text("withdrawn")
             ]
         ]
     );

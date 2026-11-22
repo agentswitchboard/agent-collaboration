@@ -39,12 +39,18 @@ pub(crate) struct Controls {
 enum Point {
     AfterReads,
     AfterStoreApplied,
+    BeforeWorkspaceRequestApplying,
     AfterWorkspaceExecute,
     EngineCompletionEntered,
     BeforeDrainCommit,
     AfterDrainCommit,
     BeforeTimerCommit,
     BeforeReceiptTransaction,
+    AfterIdleExpiryCommit,
+    AfterIdleRenewalPlatformSendError,
+    BeforePrivateEnrollmentInvalidation,
+    BeforeIdleEnrollmentCleanup,
+    AfterIdleEnrollmentCleanup,
     AfterTimerCommit,
     AfterEngineAttemptGate,
     AfterEngineLoad,
@@ -60,12 +66,18 @@ impl From<Point> for PausePoint {
         match point {
             Point::AfterReads => Self::AfterReads,
             Point::AfterStoreApplied => Self::AfterStoreApplied,
+            Point::BeforeWorkspaceRequestApplying => Self::BeforeWorkspaceRequestApplying,
             Point::AfterWorkspaceExecute => Self::AfterWorkspaceExecute,
             Point::EngineCompletionEntered => Self::EngineCompletionEntered,
             Point::BeforeDrainCommit => Self::BeforeDrainCommit,
             Point::AfterDrainCommit => Self::AfterDrainCommit,
             Point::BeforeTimerCommit => Self::BeforeTimerCommit,
             Point::BeforeReceiptTransaction => Self::BeforeReceiptTransaction,
+            Point::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
+            Point::AfterIdleRenewalPlatformSendError => Self::AfterIdleRenewalPlatformSendError,
+            Point::BeforePrivateEnrollmentInvalidation => Self::BeforePrivateEnrollmentInvalidation,
+            Point::BeforeIdleEnrollmentCleanup => Self::BeforeIdleEnrollmentCleanup,
+            Point::AfterIdleEnrollmentCleanup => Self::AfterIdleEnrollmentCleanup,
             Point::AfterTimerCommit => Self::AfterTimerCommit,
             Point::AfterEngineAttemptGate => Self::AfterEngineAttemptGate,
             Point::AfterEngineLoad => Self::AfterEngineLoad,
@@ -257,6 +269,10 @@ pub(super) async fn control(
         "/test/machine-restore-failure" => {
             let (skip, failure) = request.json().await?;
             runtime.fail_machine_restore_after(skip, failure);
+            Response::from_json(&true)
+        }
+        "/test/fail-idle-renewal-send" => {
+            runtime.fail_next_idle_renewal_send();
             Response::from_json(&true)
         }
         "/test/engine-probe-seed" => {

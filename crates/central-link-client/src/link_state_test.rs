@@ -24,10 +24,22 @@ fn connect(client: &mut LinkClient) -> ConnectionAttempt {
     let welcome = LinkFrame::Data(DataFrame::Welcome {
         machine_id: client.machine.clone(),
         central_time: client.clock.utc_now(),
+        effective_expires_at: workspace_model::Timestamp::from_timestamp(
+            client.clock.utc_now().timestamp() + 600,
+            0,
+        )
+        .unwrap(),
     });
     assert_eq!(
         client.receive(&attempt, welcome).unwrap(),
-        ClientEvent::Welcomed
+        ClientEvent::Welcomed {
+            central_time: client.clock.utc_now(),
+            effective_expires_at: workspace_model::Timestamp::from_timestamp(
+                client.clock.utc_now().timestamp() + 600,
+                0
+            )
+            .unwrap(),
+        }
     );
     attempt
 }
@@ -207,6 +219,11 @@ fn duplicate_wrong_welcome_reply_family_and_direction_never_consume_a_pending_ca
     let wrong_welcome = LinkFrame::Data(DataFrame::Welcome {
         machine_id: client.machine.clone(),
         central_time: client.clock.utc_now(),
+        effective_expires_at: workspace_model::Timestamp::from_timestamp(
+            client.clock.utc_now().timestamp() + 600,
+            0,
+        )
+        .unwrap(),
     });
     assert_eq!(
         client.receive(&attempt, wrong_welcome),
@@ -242,6 +259,11 @@ fn wrong_machine_welcome_is_refused_and_read_disconnect_has_no_durable_retry_id(
     let wrong = LinkFrame::Data(DataFrame::Welcome {
         machine_id: "01890f2e-7b4c-7cc0-98c4-000000000099".parse().unwrap(),
         central_time: client.clock.utc_now(),
+        effective_expires_at: workspace_model::Timestamp::from_timestamp(
+            client.clock.utc_now().timestamp() + 600,
+            0,
+        )
+        .unwrap(),
     });
     assert_eq!(
         client.receive(&attempt, wrong),
@@ -251,6 +273,11 @@ fn wrong_machine_welcome_is_refused_and_read_disconnect_has_no_durable_retry_id(
     let welcome = LinkFrame::Data(DataFrame::Welcome {
         machine_id: client.machine.clone(),
         central_time: client.clock.utc_now(),
+        effective_expires_at: workspace_model::Timestamp::from_timestamp(
+            client.clock.utc_now().timestamp() + 600,
+            0,
+        )
+        .unwrap(),
     });
     client.receive(&attempt, welcome).unwrap();
     let payload = RequestPayload::Workspace(WorkspaceRequest {
@@ -340,6 +367,11 @@ fn a_reconnect_whose_welcome_names_another_installation_is_invalid() {
     let other = LinkFrame::Data(DataFrame::Welcome {
         machine_id: "01890f2e-7b4c-7cc0-98c4-0000000000bb".parse().unwrap(),
         central_time: clock.utc_now(),
+        effective_expires_at: workspace_model::Timestamp::from_timestamp(
+            clock.utc_now().timestamp() + 600,
+            0,
+        )
+        .unwrap(),
     });
 
     let refused = client.receive(&attempt, other);

@@ -81,7 +81,7 @@ async fn live_admission_refuses_revoked_expired_wrong_credential_and_archived_di
     })).unwrap()).await.unwrap();
     assert!(matches!(
         renewal,
-        collaboration_central_core::identity_contract::MachineTokenDecision::Grant { .. }
+        fleet_contracts::MachineTokenDecision::Grant { .. }
     ));
     assert_eq!(
         call(
@@ -93,42 +93,83 @@ async fn live_admission_refuses_revoked_expired_wrong_credential_and_archived_di
         )
         .await
         .result,
-        m::WorkspaceResult::Refused(m::RefusalReason::MachineRevoked)
+        m::WorkspaceResult::CentralUnavailable
     );
     let renewed = f.fresh_caller(&f.caller).await;
+    let machine_id = text(f.caller.caller().machine_id());
+    let workspace_id = text(&f.workspace);
+    let edit = |sql, args| GuardedStatement {
+        statement: Statement { sql, args },
+        expect: RowExpectation::Exactly(1),
+    };
+    let run = |statements| StatementBatch {
+        statements,
+        alarm: AlarmUpdate::Unchanged,
+    };
+    let withdraw_allowance = || {
+        edit(
+            "UPDATE login_machine_allowances SET state='withdrawn' WHERE machine_id=? AND state='active'",
+            vec![machine_id.clone()],
+        )
+    };
+    let restore_allowance = || {
+        edit(
+            collaboration_central_conformance::REPLACE_FIXTURE_ALLOWANCES_SQL,
+            vec![
+                text(serde_json::to_string(&[&f.workspace]).unwrap()),
+                machine_id.clone(),
+            ],
+        )
+    };
     let edits = [
         (
-            "UPDATE login_machines SET state='revoked' WHERE machine_id=?",
-            text(f.caller.caller().machine_id()),
             m::RefusalReason::MachineRevoked,
-            "UPDATE login_machines SET state='enrolled' WHERE machine_id=?",
+            vec![
+                edit(
+                    "UPDATE login_machine_approvals SET state='ended',end_reason='owner',ended_at=last_grant_at,last_grant_at=NULL WHERE machine_id=? AND state='enrolled'",
+                    vec![machine_id.clone()],
+                ),
+                edit(
+                    "UPDATE login_machines SET state='revoked',enrollment_generation=enrollment_generation+1 WHERE machine_id=?",
+                    vec![machine_id.clone()],
+                ),
+                withdraw_allowance(),
+            ],
+            vec![
+                edit(
+                    "UPDATE login_machines SET state='enrolled',enrollment_generation=enrollment_generation-1 WHERE machine_id=?",
+                    vec![machine_id.clone()],
+                ),
+                edit(
+                    "UPDATE login_machine_approvals SET state='enrolled',end_reason=NULL,last_grant_at=ended_at,ended_at=NULL WHERE machine_id=? AND end_reason='owner'",
+                    vec![machine_id.clone()],
+                ),
+                restore_allowance(),
+            ],
         ),
         (
-            "UPDATE directory_workspaces SET state='archived' WHERE workspace_id=?",
-            text(&f.workspace),
             m::RefusalReason::WorkspaceNotAllowed,
-            "UPDATE directory_workspaces SET state='active' WHERE workspace_id=?",
+            vec![edit(
+                "UPDATE directory_workspaces SET state='archived' WHERE workspace_id=?",
+                vec![workspace_id.clone()],
+            )],
+            vec![edit(
+                "UPDATE directory_workspaces SET state='active' WHERE workspace_id=?",
+                vec![workspace_id],
+            )],
         ),
         (
-            "UPDATE login_machines SET allowed_workspaces='[]' WHERE machine_id=?",
-            text(f.caller.caller().machine_id()),
             m::RefusalReason::WorkspaceNotAllowed,
-            "UPDATE login_machines SET allowed_workspaces=? WHERE machine_id=?",
+            vec![withdraw_allowance()],
+            vec![restore_allowance()],
         ),
     ];
-    for (index, (sql, key, refusal, restore)) in edits.into_iter().enumerate() {
-        let run = |sql, args| StatementBatch {
-            statements: vec![GuardedStatement {
-                statement: Statement { sql, args },
-                expect: RowExpectation::Exactly(1),
-            }],
-            alarm: AlarmUpdate::Unchanged,
-        };
+    for (index, (refusal, change, restore)) in edits.into_iter().enumerate() {
         assert!(matches!(
             runtime
                 .runtime()
                 .statement_host()
-                .run_batch(run(sql, vec![key.clone()]))
+                .run_batch(run(change))
                 .await
                 .unwrap(),
             BatchOutcome::Applied { .. }
@@ -145,16 +186,11 @@ async fn live_admission_refuses_revoked_expired_wrong_credential_and_archived_di
             .result,
             m::WorkspaceResult::Refused(refusal)
         );
-        let args = if restore.contains("allowed_workspaces") {
-            vec![text(serde_json::to_string(&[&f.workspace]).unwrap()), key]
-        } else {
-            vec![key]
-        };
         assert!(matches!(
             runtime
                 .runtime()
                 .statement_host()
-                .run_batch(run(restore, args))
+                .run_batch(run(restore))
                 .await
                 .unwrap(),
             BatchOutcome::Applied { .. }

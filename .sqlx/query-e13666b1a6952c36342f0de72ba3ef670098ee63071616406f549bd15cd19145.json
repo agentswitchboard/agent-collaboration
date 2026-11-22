@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE signin_authorization_floors\nSET updated_at = updated_at\nWHERE id = ?\n  AND minimum_revision = ?\n  AND state = ?\n  AND permission_policy_digest = ?\n  AND request_reject_through_ms = ?\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "e13666b1a6952c36342f0de72ba3ef670098ee63071616406f549bd15cd19145"
+}

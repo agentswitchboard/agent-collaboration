@@ -1,6 +1,8 @@
 //! Shared Central fixtures for both central hosts' test suites.
 #![forbid(unsafe_code)]
 pub mod alarm_input_scenarios;
+mod machine_allowance_fixture;
+pub use machine_allowance_fixture::REPLACE_FIXTURE_ALLOWANCES_SQL;
 #[cfg(all(feature = "signin-test-support", not(target_arch = "wasm32")))]
 pub mod signin_fixtures;
 #[cfg(feature = "signin-test-support")]

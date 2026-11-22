@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT state AS workspace_state\nFROM directory_workspaces\nWHERE workspace_id = ?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "workspace_state",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "directory_workspaces",
+            "name": "state"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "07cb8e69b7884b35eef2e9013ea614b1be030ee9d3d7e952ab2df70a4dd70e6b"
+}
