@@ -1,0 +1,23 @@
+[package]
+name = "switchboard-session-payloads"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+autotests = false
+
+[dependencies]
+schemars.workspace = true
+serde.workspace = true
+workspace-ids.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+serde_path_to_error = "0.1.20"
+
+[lints]
+workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"

@@ -1,6 +1,6 @@
 use super::{
-    ApprovalRequestId, AreaId, MachineId, ProjectId, RouterRunId, SessionId, SessionRef,
-    WorkspaceId,
+    ApprovalRequestId, AreaId, MachineId, ProjectId, RouterRunId, SessionId, SessionOperationId,
+    SessionOperationIdError, SessionRef, WorkspaceId,
 };
 use serde::de::DeserializeOwned;
 use std::str::FromStr;
@@ -122,4 +122,59 @@ fn the_session_ref_schema_describes_two_strings() {
         serde_json::json!(["machineId", "sessionId"])
     );
     assert_eq!(schema["additionalProperties"], false, "{schema}");
+}
+
+// The UUID spellings and JSON bytes are independent of the identifier's serializer.
+#[test]
+fn session_operation_id_reads_only_canonical_uuid_v7() {
+    let valid = "01890f2e-7b4c-7cc0-98c4-000000000001";
+    let literal = r#""01890f2e-7b4c-7cc0-98c4-000000000001""#;
+    let expected = valid.parse::<SessionOperationId>().unwrap();
+    assert_eq!(expected.as_str(), valid);
+    assert_eq!(
+        serde_json::from_str::<SessionOperationId>(literal).unwrap(),
+        expected
+    );
+    assert_eq!(serde_json::to_string(&expected).unwrap(), literal);
+
+    for (reason, invalid, expected) in [
+        (
+            "uppercase",
+            "01890F2E-7B4C-7CC0-98C4-000000000001",
+            SessionOperationIdError::NonCanonical,
+        ),
+        (
+            "UUIDv4",
+            "01890f2e-7b4c-4cc0-98c4-000000000001",
+            SessionOperationIdError::WrongVersion,
+        ),
+        (
+            "non-RFC variant",
+            "01890f2e-7b4c-7cc0-08c4-000000000001",
+            SessionOperationIdError::WrongVariant,
+        ),
+        (
+            "braces",
+            "{01890f2e-7b4c-7cc0-98c4-000000000001}",
+            SessionOperationIdError::NonCanonical,
+        ),
+        ("empty", "", SessionOperationIdError::Malformed),
+    ] {
+        assert_eq!(
+            invalid.parse::<SessionOperationId>(),
+            Err(expected),
+            "SessionOperationId must reject {reason}"
+        );
+        assert_eq!(
+            SessionOperationId::try_from(invalid.to_owned()),
+            Err(expected),
+            "SessionOperationId checked conversion must reject {reason}"
+        );
+        let wire = serde_json::to_string(invalid).unwrap();
+        let error = serde_json::from_str::<SessionOperationId>(&wire).unwrap_err();
+        assert!(
+            error.to_string().contains(&expected.to_string()),
+            "SessionOperationId JSON reader must report {expected:?} for {reason}, got {error}"
+        );
+    }
 }

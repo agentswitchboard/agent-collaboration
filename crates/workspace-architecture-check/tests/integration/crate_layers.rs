@@ -42,6 +42,8 @@ struct ManifestDependency {
     kind: Option<DependencyKind>,
     path: Option<PathBuf>,
     source: Option<String>,
+    features: Vec<String>,
+    uses_default_features: bool,
 }
 
 #[derive(Deserialize)]
@@ -183,6 +185,7 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
     let metadata = read_metadata(&root, &[])?;
     test_support_policy::check_workspace(&metadata.packages, &metadata.workspace_members)?;
     workspace_boundaries::check_declared_session_owner_edges(&metadata)?;
+    workspace_boundaries::check_declared_session_read_edges(&metadata)?;
     harness_stage_policy::check_declared(&metadata)?;
     harness_stage_policy::check_resolved(&metadata)?;
     let graph = NonDevDependencyGraph::from_metadata(metadata);
@@ -321,6 +324,8 @@ fn harness_contracts_reject_workspace_dependencies() {
                         kind: Some(kind),
                         path: Some(PathBuf::from("/workspace/deciding-code")),
                         source: None,
+                        features: Vec::new(),
+                        uses_default_features: true,
                     }],
                 },
                 CargoPackage {
@@ -390,6 +395,8 @@ fn harness_contracts_reject_a_registry_dev_dependency_resolved_to_a_workspace_me
         kind: Some(DependencyKind::Dev),
         path: None,
         source: Some(harness_stage_policy::CRATES_IO.to_owned()),
+        features: Vec::new(),
+        uses_default_features: true,
     });
     workspace_boundaries::check_declared_session_owner_edges(&metadata)
         .expect("registry declaration has no path to check");
@@ -426,6 +433,8 @@ fn harness_carrier_declared_guard_rejects_inactive_workspace_edges() {
             kind: Some(kind),
             path: Some(PathBuf::from("/workspace/deciding-code")),
             source: None,
+            features: Vec::new(),
+            uses_default_features: true,
         });
         let observed = workspace_boundaries::check_declared_session_owner_edges(&metadata)
             .err()
@@ -458,6 +467,8 @@ fn harness_carrier_resolved_guard_rejects_workspace_edges() {
             kind: Some(kind),
             path: None,
             source: Some(harness_stage_policy::CRATES_IO.to_owned()),
+            features: Vec::new(),
+            uses_default_features: true,
         });
         workspace_boundaries::check_declared_session_owner_edges(&metadata)
             .expect("the registry declaration has no workspace path");
@@ -583,7 +594,9 @@ fn session_owner_policy_covers_inactive_optional_declarations() {
                         "rename": "clock-alias",
                         "kind": kind,
                         "optional": optional,
-                        "path": "/workspace/clock"
+                        "path": "/workspace/clock",
+                        "features": [],
+                        "uses_default_features": true
                     }]
                 },
                 {

@@ -298,6 +298,7 @@ const LAYER_POLICY: [(&str, &[&str]); 43] = [
 pub(super) fn layer_policy() -> impl Iterator<Item = (&'static str, &'static [&'static str])> {
     LAYER_POLICY
         .into_iter()
+        .chain(workspace_boundaries::SESSION_READ_CRATES)
         .chain(workspace_boundaries::FLEET_PURE_CRATES)
         .chain(workspace_boundaries::TIMER_CRATES)
         .chain([
