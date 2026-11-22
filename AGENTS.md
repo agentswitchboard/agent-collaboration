@@ -92,6 +92,24 @@ agents kept designing and building against it.
   enrollment procedure) until the owner asks for it.
 - When stored data makes you want to preserve it or to ask what happens to it
   across the change-over, the answer is already here: it is left behind.
+- The owner's production machines stay on 0.1.125 until the new system is
+  built. Nothing built here is deployed before then, so nothing here has to keep
+  0.1.125's behaviour, data or request forms working. Do not weigh a design by
+  what it costs an installed 0.1.125.
+- No stand-in for a system the owner has decided on. When work needs something
+  that is decided and not yet built (the approval system, sessions in central,
+  session secrets), build that thing's first complete component and hold the
+  step that depends on it. Do not invent an interim rule that lets the step
+  work without it, and do not ask the owner to choose among such rules. Build
+  by components; each component is complete.
+- A call that shows no proof of who it is does nothing on its own. What needs
+  the owner's say goes through the approval system. Nothing is deployed until
+  the approval system is done with central.
+- The owner's words, 22 November 2026: "I kept saying cut over, what did you
+  carry over?"; "Just build the approval system or some part to fit. Please
+  don't do shortcuts"; "Don't repeat same mistakes with keeping old stuff and
+  worrying about backward compatibility. I'm gonna stay on 125 until we build
+  this."
 
 ## Release And Homebrew Distribution
 
