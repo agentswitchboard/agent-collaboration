@@ -267,10 +267,38 @@ async fn zero_time_offer_journey(fixture: &Fixture) -> Result<()> {
         send_at(accepted - chrono::Duration::minutes(16)),
     )
     .await?;
-    assert!(matches!(
-        queued,
-        CentralMailResult::Done(CentralMailAnswer::Queued { .. })
-    ));
+    let CentralMailResult::Done(CentralMailAnswer::Queued {
+        message_id: zero_message,
+    }) = queued
+    else {
+        return Err("the zero-time send was not admitted".into());
+    };
+    let organization = signed::ORGANIZATION.to_owned().try_into()?;
+    let central = fixture.host.central(&organization).await?;
+    let store = central.runtime().statement_host();
+    use central_storage::{SqlValue, Statement};
+    let stored_mark = store.read(Statement {
+        sql: "SELECT created_at,delivery_window_ends_at,cancel_due_at FROM mail_messages WHERE message_id=?",
+        args: vec![SqlValue::Text(zero_message.to_string())],
+    }).await?.rows;
+    let [record] = stored_mark.as_slice() else {
+        return Err("missing zero-time send".into());
+    };
+    let [
+        SqlValue::Text(stored_acceptance),
+        SqlValue::Text(stored_cutoff),
+        SqlValue::Text(stored_mark),
+    ] = record.as_slice()
+    else {
+        return Err("expected acceptance, cutoff and mark from the stored row".into());
+    };
+    if stored_acceptance != stored_cutoff
+        || stored_acceptance.parse::<workspace_model::Timestamp>()? != accepted
+    {
+        return Err("the admitted zero-time send did not store cutoff equal to acceptance".into());
+    }
+    let mark: workspace_model::Timestamp = stored_mark.parse()?;
+
     let corrected = accepted - chrono::Duration::seconds(1);
     fixture.clock.set_utc(corrected);
     let positive = mail_reply(&mut live, &session, 71, send_at(corrected)).await?;
@@ -293,6 +321,23 @@ async fn zero_time_offer_journey(fixture: &Fixture) -> Result<()> {
     );
     send(&mut reopened, &LinkFrame::Ping).await?;
     assert_eq!(receive(&mut reopened).await?, LinkFrame::Pong);
+    fixture.clock.set_utc(mark);
+    central.after_event().await?;
+    let facts = store.read(Statement {
+        sql: "SELECT state, (SELECT count(*) FROM mail_messages WHERE message_kind='deliveryOutcome' AND json_extract(body,'$.messageId')=m.message_id AND json_extract(body,'$.outcome.kind')='deliveryNotConfirmed') FROM mail_messages m WHERE message_id=?",
+        args: vec![SqlValue::Text(zero_message.to_string())],
+    }).await?.rows;
+    if facts
+        != [vec![
+            SqlValue::Text("pastTheMark".into()),
+            SqlValue::Integer(1.try_into()?),
+        ]]
+    {
+        return Err(format!(
+            "the zero-window send did not produce one unconfirmed outcome at its mark: {facts:?}"
+        )
+        .into());
+    }
     Ok(())
 }
 

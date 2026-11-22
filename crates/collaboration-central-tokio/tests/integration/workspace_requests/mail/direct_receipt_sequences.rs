@@ -213,6 +213,64 @@ async fn journey(order: u8, reject_mark: bool) {
         .unwrap();
     let recipient = fixture.fresh_caller(&fixture.caller).await;
     let attachment = recipient.connection().attachment();
+    if order & 3 == 0 {
+        let saved_at = mark + chrono::Duration::milliseconds(137);
+        let first_outcome_row = || Statement {
+            sql: "SELECT message_id,body,created_at,updated_at FROM mail_messages WHERE message_kind='deliveryOutcome' AND json_extract(body,'$.messageId')=?",
+            args: vec![text(&message_id)],
+        };
+        let before = runtime
+            .runtime()
+            .statement_host()
+            .read(first_outcome_row())
+            .await
+            .unwrap();
+        assert_eq!(before.rows.len(), 1);
+        let late_delivery = ReceiptKind::Delivered {
+            arrived_at: saved_at,
+            waiting: Some(WaitingReason::WaitingOnAPerson),
+        };
+        assert_eq!(
+            runtime
+                .apply_delivery_receipt(&attachment, &message_id, late_delivery)
+                .await
+                .unwrap(),
+            MailReceiptSettlement::Applied
+        );
+        let row = runtime.runtime().statement_host().read(Statement {
+            sql: "SELECT state,delivered_arrived_at,delivered_waiting_reason FROM mail_messages WHERE message_id=?",
+            args: vec![text(&message_id)],
+        }).await.unwrap();
+        assert_eq!(
+            row.rows,
+            [vec![
+                text("pastTheMark"),
+                text(saved_at.to_rfc3339()),
+                text("waitingOnAPerson")
+            ]]
+        );
+        assert_eq!(
+            runtime
+                .request(&recipient, status_query(message_id.clone()))
+                .await
+                .unwrap()
+                .result,
+            status_answer(MessageStatus::Delivered {
+                arrived_at: saved_at,
+                waiting: Some(WaitingReason::WaitingOnAPerson),
+                deadline_passed: true,
+            })
+        );
+        assert_eq!(
+            runtime
+                .runtime()
+                .statement_host()
+                .read(first_outcome_row())
+                .await
+                .unwrap(),
+            before
+        );
+    }
     let first = runtime
         .apply_delivery_receipt(&attachment, &message_id, final_receipt.clone())
         .await

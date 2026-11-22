@@ -211,6 +211,52 @@ async fn journey(order: u8, reject_mark: bool) {
     }
     runtime.cold_alarm().await.unwrap();
 
+    if order & 3 == 0 {
+        let saved_at = mark + chrono::Duration::milliseconds(137);
+        let first_outcome_row = || Statement {
+            sql: "SELECT message_id,body,created_at,updated_at FROM mail_messages WHERE message_kind='deliveryOutcome' AND json_extract(body,'$.messageId')=?",
+            args: vec![text(&message_id)],
+        };
+        let before = runtime.read(first_outcome_row()).await.unwrap();
+        assert_eq!(before.rows.len(), 1);
+        let late_delivery = ReceiptKind::Delivered {
+            arrived_at: saved_at,
+            waiting: Some(WaitingReason::WaitingOnAPerson),
+        };
+        assert_eq!(
+            receipt(&fixture, &runtime, &message_id, late_delivery).await,
+            MailReceiptSettlement::Applied
+        );
+        let row = runtime.read(Statement {
+            sql: "SELECT state,delivered_arrived_at,delivered_waiting_reason FROM mail_messages WHERE message_id=?",
+            args: vec![text(&message_id)],
+        }).await.unwrap();
+        assert_eq!(
+            row.rows,
+            [vec![
+                text("pastTheMark"),
+                text(saved_at.to_rfc3339()),
+                text("waitingOnAPerson")
+            ]]
+        );
+        assert_eq!(
+            fixture
+                .host
+                .request(
+                    &fresh_auth(&fixture.host, &fixture.caller),
+                    status_query(message_id.clone())
+                )
+                .await
+                .unwrap()
+                .result,
+            status_answer(MessageStatus::Delivered {
+                arrived_at: saved_at,
+                waiting: Some(WaitingReason::WaitingOnAPerson),
+                deadline_passed: true,
+            })
+        );
+        assert_eq!(runtime.read(first_outcome_row()).await.unwrap(), before);
+    }
     let first = receipt(&fixture, &runtime, &message_id, final_receipt.clone()).await;
     let expected = if order & 2 != 0 {
         MailReceiptSettlement::Stop(ReceiptResult::Recorded)

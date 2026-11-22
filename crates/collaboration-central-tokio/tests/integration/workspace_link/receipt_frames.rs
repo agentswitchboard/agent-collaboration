@@ -267,19 +267,29 @@ async fn replay_after_lost_answer(fixture: &Fixture) -> Result<()> {
 
     let mut reopened = fixture.connect().await?;
     receive(&mut reopened).await?;
-    send(&mut reopened, &LinkFrame::Data(frame)).await?;
-    loop {
-        let LinkFrame::Data(reply) = receive(&mut reopened).await? else {
-            return Err("the receipt replay received an unexpected control frame".into());
+    let mut answers = Vec::new();
+    for _ in 0..2 {
+        send(&mut reopened, &LinkFrame::Data(frame.clone())).await?;
+        let positions = loop {
+            let LinkFrame::Data(reply) = receive(&mut reopened).await? else {
+                return Err("the receipt replay received an unexpected control frame".into());
+            };
+            match reply {
+                DataFrame::Deliver { .. } => {}
+                DataFrame::ReceiptResults {
+                    correlation_id,
+                    results,
+                } if correlation_id == correlation => break results,
+                other => return Err(format!("unexpected replay frame: {other:?}").into()),
+            }
         };
-        match reply {
-            DataFrame::Deliver { .. } => {}
-            DataFrame::ReceiptResults {
-                correlation_id,
-                results,
-            } if correlation_id == correlation && results == [ReceiptResult::Recorded; 2] => break,
-            other => return Err(format!("unexpected replay frame: {other:?}").into()),
-        }
+        answers.push(positions);
+    }
+    let [original, repeated] = answers.as_slice() else {
+        return Err("expected an answer to each complete frame".into());
+    };
+    if original.as_slice() != [ReceiptResult::Recorded; 2] || repeated != original {
+        return Err(format!("receipt answers changed by position: {answers:?}").into());
     }
     for message in [first, second] {
         if runtime

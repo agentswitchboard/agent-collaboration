@@ -268,17 +268,27 @@ async fn replay_after_lost_answer(fixture: &Fixture) -> Result<()> {
     evidence?;
 
     let mut reopened = ConnectedLink::open(fixture).await?;
-    fixture::send(&mut reopened.socket, &frame).await?;
-    loop {
-        let reply = fixture::receive(&mut reopened.socket).await?;
-        match reply {
-            DataFrame::Deliver { .. } => {}
-            DataFrame::ReceiptResults {
-                correlation_id,
-                results,
-            } if correlation_id == correlation && results == [ReceiptResult::Recorded; 2] => break,
-            other => return Err(format!("unexpected replay frame: {other:?}").into()),
-        }
+    let mut answers = Vec::new();
+    for _ in 0..2 {
+        fixture::send(&mut reopened.socket, &frame).await?;
+        let positions = loop {
+            let reply = fixture::receive(&mut reopened.socket).await?;
+            match reply {
+                DataFrame::Deliver { .. } => {}
+                DataFrame::ReceiptResults {
+                    correlation_id,
+                    results,
+                } if correlation_id == correlation => break results,
+                other => return Err(format!("unexpected replay frame: {other:?}").into()),
+            }
+        };
+        answers.push(positions);
+    }
+    let [original, repeated] = answers.as_slice() else {
+        return Err("expected an answer to each complete frame".into());
+    };
+    if original.as_slice() != [ReceiptResult::Recorded; 2] || repeated != original {
+        return Err(format!("receipt answers changed by position: {answers:?}").into());
     }
     for message in [first, second] {
         if runtime.read(facts(message)).await?.rows != expected("refused", 1)? {
