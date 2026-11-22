@@ -137,7 +137,7 @@ fn credential(revision: usize) -> RefreshCredential {
         enrollment_id: "019a0000-0000-7000-8000-000000000002"
             .parse()
             .expect("enrollment"),
-        central: crate::CentralAddresses {
+        central: crate::CentralEndpointIds {
             receiver: "019a0000-0000-7000-8000-000000000003"
                 .parse()
                 .expect("receiver"),

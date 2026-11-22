@@ -63,7 +63,7 @@ enrollment_identifier!(
 /// The two central endpoint ids sign-in supplies in a successful token response.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct CentralAddresses {
+pub struct CentralEndpointIds {
     pub receiver: CentralEndpointId,
     pub relay: CentralEndpointId,
 }

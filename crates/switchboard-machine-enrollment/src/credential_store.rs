@@ -3,7 +3,7 @@ use std::future::Future;
 
 use zeroize::Zeroizing;
 
-use crate::{CentralAddresses, EnrollmentId};
+use crate::{CentralEndpointIds, EnrollmentId};
 
 /// A secret from sign-in or the injected store. Only an explicit handoff can expose its bytes.
 #[derive(Clone, Eq, PartialEq)]
@@ -33,7 +33,7 @@ impl fmt::Debug for SecretValue {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RefreshCredential {
     pub enrollment_id: EnrollmentId,
-    pub central: CentralAddresses,
+    pub central: CentralEndpointIds,
     pub refresh_token: SecretValue,
 }
 

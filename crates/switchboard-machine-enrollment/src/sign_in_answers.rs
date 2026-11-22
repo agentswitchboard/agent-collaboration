@@ -3,7 +3,7 @@ use std::time::Duration;
 use serde::{Deserialize, de::IgnoredAny};
 use url::Url;
 
-use crate::{CentralAddresses, EnrollmentId, RefreshCredential, RouterClientId, SecretValue};
+use crate::{CentralEndpointIds, EnrollmentId, RefreshCredential, RouterClientId, SecretValue};
 
 /// The sign-in decoder reports invalid replies without preserving untrusted diagnostics.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -104,7 +104,7 @@ struct TokenBody {
     token_type: BearerTokenType,
     scope: OfflineScope,
     machine_client_id: EnrollmentId,
-    fleet_central: CentralAddresses,
+    fleet_central: CentralEndpointIds,
 }
 
 #[derive(Deserialize)]

@@ -1,6 +1,7 @@
 //! Machine device authorization and credential ownership on the Router side.
 mod credential_store;
 mod device_state;
+mod enrollment_binding;
 mod enrollment_identity;
 mod refresh_owner;
 mod sign_in_answers;
@@ -9,8 +10,12 @@ pub use credential_store::{CredentialStore, CredentialStoreError, RefreshCredent
 pub use device_state::{
     DeviceEnrollment, DeviceEnrollmentInput, DevicePollSchedule, EnrollmentEnd,
 };
+pub use enrollment_binding::{
+    BindingGeneration, EnrollmentBinding, EnrollmentContext, InvalidDeployment, SignInDeployment,
+    StoredEnrollment,
+};
 pub use enrollment_identity::{
-    CentralAddresses, CentralEndpointId, EnrollmentId, OrganizationId, RouterClientId,
+    CentralEndpointId, CentralEndpointIds, EnrollmentId, OrganizationId, RouterClientId,
 };
 pub use refresh_owner::{AccessBearer, BearerUnavailable, RefreshOwner, RefreshSource};
 pub use sign_in_answers::{

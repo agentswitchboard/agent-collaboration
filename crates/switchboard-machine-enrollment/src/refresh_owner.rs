@@ -5,7 +5,7 @@ use router_clock::{ClockInstant, RuntimeClock};
 use tokio::sync::Mutex;
 
 use crate::{
-    CentralAddresses, CredentialStore, CredentialStoreError, EnrollmentEnd, EnrollmentId,
+    CentralEndpointIds, CredentialStore, CredentialStoreError, EnrollmentEnd, EnrollmentId,
     RefreshAnswer, RefreshCredential, SecretValue,
 };
 
@@ -19,7 +19,7 @@ pub trait RefreshSource: Send + Sync {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AccessBearer {
     pub enrollment_id: EnrollmentId,
-    pub central: CentralAddresses,
+    pub central: CentralEndpointIds,
     pub access_token: SecretValue,
     pub expires_at: ClockInstant,
 }
