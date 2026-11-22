@@ -1,5 +1,5 @@
 use super::*;
-use workspace_ids::SessionRef;
+use workspace_ids::{MessageId, SessionRef};
 
 #[test]
 fn the_executed_direct_write_files_fit_the_owning_central_schema()
@@ -43,9 +43,6 @@ fn the_executed_direct_write_files_fit_the_owning_central_schema()
     macro_rules! route {
         ($file:literal, $($arg:expr),+) => { sqlx::query_file_as!(StoredReceiptRoute, $file, $($arg),+) };
     }
-    macro_rules! stored_system {
-        ($file:literal, $($arg:expr),+) => { sqlx::query_file_as!(StoredSystemState, $file, $($arg),+) };
-    }
     let _ = insert_send!(write, message, now, request, now);
     let _ = insert_outcome!(write, message, now);
     macro_rules! kind {
@@ -53,16 +50,6 @@ fn the_executed_direct_write_files_fit_the_owning_central_schema()
     }
     let _ = route_query!(route, id);
     let _ = owned_kind_query!(kind, id, target);
-    let _ = system_state_query!(stored_system, id, target, "notice");
-    let _ = system_update_query!(
-        write,
-        id,
-        target,
-        "notice",
-        "delivered",
-        None::<String>,
-        now
-    );
     let _ = clear_attempt!(write, id);
     let _ = lifecycle_update!(write, encoding, prior, now);
     Ok(())

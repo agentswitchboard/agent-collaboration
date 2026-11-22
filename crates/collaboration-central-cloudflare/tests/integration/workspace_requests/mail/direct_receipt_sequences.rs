@@ -248,6 +248,17 @@ async fn receipt(
     message: &MessageId,
     receipt: ReceiptKind,
 ) -> MailReceiptSettlement {
+    submit_receipt(fixture, runtime, message, receipt)
+        .await
+        .unwrap()
+}
+
+async fn submit_receipt(
+    fixture: &Fixture,
+    central: &RemoteRuntime,
+    message: &MessageId,
+    receipt: ReceiptKind,
+) -> Result<MailReceiptSettlement, StoreFailure> {
     let target = session(&fixture.caller);
     let authority = MachineConnectionAttachment::from_token_claims(
         fixture.caller.organization_id.clone(),
@@ -256,11 +267,10 @@ async fn receipt(
         fixture.caller.enrollment_id.clone().try_into().unwrap(),
         fleet_identity_protocol::UnixSeconds(fixture.clock.0.load(Ordering::SeqCst) / 1000 + 600),
     );
-    let reply: Result<MailReceiptSettlement, StoreFailure> = runtime
+    central
         .control("direct-receipt-fixture", &(authority, message, receipt))
         .await
-        .unwrap();
-    reply.unwrap()
+        .unwrap()
 }
 
 async fn queue_direct(
@@ -483,6 +493,28 @@ async fn a_seen_receipt_cannot_settle_a_notice_and_session_closed_keeps_its_reas
         stored_state().await,
         [vec![text("failed"), text("sessionClosed")]]
     );
+    for (tag, reason) in [("failed", ""), ("cancelled", "sessionClosed")] {
+        raw(
+            &runtime,
+            "UPDATE mail_messages SET state=?,failure_reason=? WHERE message_id=?",
+            vec![text(tag), text(reason), text(&notice_id)],
+        )
+        .await;
+        assert_eq!(
+            submit(notice_id.clone(), ReceiptKind::Seen { completed_at: now }).await,
+            MailReceiptSettlement::Stop(ReceiptResult::NotApplicable)
+        );
+        let receipt = ReceiptKind::Delivered {
+            arrived_at: now,
+            waiting: None,
+        };
+        let rejected = submit_receipt(&fixture, &runtime, &notice_id, receipt).await;
+        assert!(
+            matches!(rejected, Err(StoreFailure::Corrupt { .. })),
+            "{rejected:?}"
+        );
+        assert_eq!(stored_state().await, [vec![text(tag), text(reason)]]);
+    }
     fixture.host.close().await;
 }
 

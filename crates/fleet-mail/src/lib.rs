@@ -9,6 +9,7 @@ pub mod direct_store_reads;
 mod direct_store_sender;
 pub mod direct_store_writes;
 mod due_queries;
+mod mail_write_failure;
 pub mod message_deadline;
 mod message_effects;
 mod message_insert;
@@ -17,6 +18,7 @@ mod request_plan;
 mod stored_messages;
 mod system_message_expiry;
 mod system_message_expiry_store;
+mod system_receipt_settlement;
 
 pub use direct_store_port::*;
 pub use due_queries::{due_direct_messages, due_system_message_expiries};

@@ -1,6 +1,6 @@
 use super::super::support::*;
 use super::engine_probe_support::{integer, raw, runtime};
-use central_storage::Statement;
+use central_storage::{Statement, StoreFailure};
 use fleet_contracts::mail_link::MailReceiptSettlement;
 use fleet_runtime::{EngineCommitFault, EngineCommitFaultKind, PausePoint};
 use router_clock::RuntimeClock;
@@ -483,6 +483,34 @@ async fn a_seen_receipt_cannot_settle_a_notice_and_session_closed_keeps_its_reas
         stored_state().await,
         [vec![text("failed"), text("sessionClosed")]]
     );
+    for (tag, reason) in [("failed", ""), ("cancelled", "sessionClosed")] {
+        raw(
+            &runtime,
+            "UPDATE mail_messages SET state=?,failure_reason=? WHERE message_id=?",
+            vec![text(tag), text(reason), text(&notice_id)],
+        )
+        .await;
+        assert_eq!(
+            submit(notice_id.clone(), ReceiptKind::Seen { completed_at: now }).await,
+            MailReceiptSettlement::Stop(ReceiptResult::NotApplicable)
+        );
+        let receipt = ReceiptKind::Delivered {
+            arrived_at: now,
+            waiting: None,
+        };
+        let rejected = runtime
+            .apply_delivery_receipt(
+                &fixture.caller.connection().attachment(),
+                &notice_id,
+                receipt,
+            )
+            .await;
+        assert!(
+            matches!(rejected, Err(StoreFailure::Corrupt { .. })),
+            "{rejected:?}"
+        );
+        assert_eq!(stored_state().await, [vec![text(tag), text(reason)]]);
+    }
     fixture.host.close().await;
 }
 

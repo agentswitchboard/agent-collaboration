@@ -6,11 +6,12 @@ use crate::{
     },
     direct_message_rows::enum_text,
     direct_store_port::{
-        AdmittedDirectSend, AdmittedReceipt, ApplyReceipt, DirectReadFailure, DirectSendAdmission,
-        DirectSendResult, DirectWriteFailure,
+        AdmittedDirectSend, AdmittedReceipt, ApplyReceipt, DirectSendAdmission, DirectSendResult,
     },
     direct_store_reads::{StoredDirectState, read_stored_direct_message},
+    mail_write_failure::require_one_affected_row,
     message_deadline::{cancel_due_at, delivery_window_ends_at, system_message_deadline},
+    system_receipt_settlement::{SystemReceiptKind, settle_system_receipt},
 };
 use central_engine_model::{Context, Machine, TransitionError};
 use central_storage::{EngineAlarmPlan, StoreFailure};
@@ -26,14 +27,16 @@ use sqlx_core::{
     arguments::IntoArguments, column::ColumnIndex, database::Database, decode::Decode,
     encode::Encode, query::query, query_as::query_as, types::Type,
 };
-use workspace_ids::{MachineId, MessageId};
+use workspace_ids::MachineId;
 use workspace_model::{
     Timestamp,
     central_mail::{
         CentralMailAnswer, CentralMailRefusal, CentralMailResult, MessageBody, MessageRecord,
-        MessageSender, MessageState, ReceiptKind, ReceiptResult,
+        MessageSender, MessageState, ReceiptResult,
     },
 };
+
+pub use crate::mail_write_failure::DirectApplyFailure;
 
 /// Host plumbing consumes the owner's outcome and the existing typed alarm directive.
 pub struct DirectWriteOutcome<A> {
@@ -52,76 +55,6 @@ impl<A> DirectWriteOutcome<A> {
         Self {
             outcome,
             alarm: Some(EngineAlarmPlan::Recompute),
-        }
-    }
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum DirectApplyFailure {
-    #[error("direct-message statement was rejected: {0}")]
-    Sql(sqlx_core::Error),
-    #[error(transparent)]
-    Store(#[from] StoreFailure),
-    #[error("the applying guard no longer holds")]
-    Conflict,
-    #[error("the observed direct message cannot be decoded: {0}")]
-    CorruptObserved(StoreFailure),
-}
-impl From<sqlx_core::Error> for DirectApplyFailure {
-    fn from(error: sqlx_core::Error) -> Self {
-        Self::Sql(error)
-    }
-}
-
-impl From<DirectReadFailure> for DirectApplyFailure {
-    fn from(failure: DirectReadFailure) -> Self {
-        Self::Store(failure.into())
-    }
-}
-
-impl DirectWriteFailure {
-    pub fn from_store(error: StoreFailure) -> Self {
-        match error {
-            StoreFailure::Unavailable => Self::Read(DirectReadFailure::Unavailable),
-            StoreFailure::Corrupt { reason } => Self::Read(DirectReadFailure::Corrupt { reason }),
-            StoreFailure::AnswerLost => Self::AnswerLost,
-            StoreFailure::AlarmUnpublishable { reason } => Self::AlarmUnpublishable { reason },
-        }
-    }
-}
-
-impl From<DirectWriteFailure> for StoreFailure {
-    fn from(failure: DirectWriteFailure) -> Self {
-        match failure {
-            DirectWriteFailure::Read(failure) => failure.into(),
-            DirectWriteFailure::AnswerLost => Self::AnswerLost,
-            DirectWriteFailure::Conflict => Self::Unavailable,
-            DirectWriteFailure::AlarmUnpublishable { reason } => {
-                Self::AlarmUnpublishable { reason }
-            }
-        }
-    }
-}
-
-impl DirectApplyFailure {
-    pub fn into_write_failure(self) -> DirectWriteFailure {
-        match self {
-            Self::Conflict => DirectWriteFailure::Conflict,
-            Self::Sql(sqlx_core::Error::Database(error))
-                if matches!(
-                    error.kind(),
-                    sqlx_core::error::ErrorKind::UniqueViolation
-                        | sqlx_core::error::ErrorKind::ForeignKeyViolation
-                        | sqlx_core::error::ErrorKind::NotNullViolation
-                        | sqlx_core::error::ErrorKind::CheckViolation
-                ) =>
-            {
-                DirectWriteFailure::Conflict
-            }
-            Self::Sql(_) => DirectWriteFailure::Read(DirectReadFailure::Unavailable),
-            Self::Store(error) | Self::CorruptObserved(error) => {
-                DirectWriteFailure::from_store(error)
-            }
         }
     }
 }
@@ -173,16 +106,6 @@ macro_rules! select {
         query_as::<T::Database, _>(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $file)))$(.bind($arg))+
     };
 }
-fn require_one_affected_row<T: CentralTransaction>(
-    result: <T::Database as Database>::QueryResult,
-) -> Result<(), DirectApplyFailure> {
-    if T::rows_affected(result) == 1 {
-        Ok(())
-    } else {
-        Err(DirectApplyFailure::Conflict)
-    }
-}
-
 pub async fn apply_direct_send<T: CentralTransaction>(
     tx: &mut T,
     command: AdmittedDirectSend,
@@ -266,12 +189,6 @@ struct StoredReceiptRoute {
 struct StoredReceiptKind {
     message_kind: String,
 }
-#[derive(sqlx::FromRow)]
-struct StoredSystemState {
-    state: String,
-    failure_reason: Option<String>,
-}
-
 macro_rules! enrollment_query {
     ($emit:ident,$auth:expr) => {
         $emit!(
@@ -293,29 +210,6 @@ macro_rules! owned_kind_query {
             "src/queries/read_owned_receipt_kind.sql",
             $message.to_string(),
             $target.to_string()
-        )
-    };
-}
-macro_rules! system_state_query {
-    ($emit:ident,$message:expr,$target:expr,$kind:expr) => {
-        $emit!(
-            "src/queries/read_system_receipt_state.sql",
-            $message.to_string(),
-            $target.to_string(),
-            $kind.to_owned()
-        )
-    };
-}
-macro_rules! system_update_query {
-    ($emit:ident,$message:expr,$target:expr,$kind:expr,$state:expr,$failure:expr,$now:expr) => {
-        $emit!(
-            "src/queries/apply_system_receipt.sql",
-            $state.to_owned(),
-            $failure,
-            format_utc_millis($now),
-            $message.to_string(),
-            $target.to_string(),
-            $kind.to_owned()
         )
     };
 }
@@ -404,8 +298,9 @@ where
                 )),
             }
         }
-        kind @ ("notice" | "deliveryOutcome" | "wake" | "automation") => {
-            apply_system_receipt(
+        stored_kind => {
+            let kind = SystemReceiptKind::decode_storage_tag(stored_kind)?;
+            settle_system_receipt(
                 tx,
                 &command.message_id,
                 target,
@@ -414,65 +309,9 @@ where
                 command.now,
             )
             .await
+            .map(DirectWriteOutcome::without_alarm_recompute)
         }
-        _ => Err(corrupt("mail_messages.message_kind").into()),
     }
-}
-
-async fn apply_system_receipt<T: CentralTransaction>(
-    tx: &mut T,
-    message: &MessageId,
-    target: &MachineId,
-    kind: &str,
-    receipt: ReceiptKind,
-    now: Timestamp,
-) -> Result<DirectWriteOutcome<ApplyReceipt>, DirectApplyFailure>
-where
-    <T::Database as Database>::Arguments: IntoArguments<T::Database>,
-    String: Type<T::Database> + for<'q> Encode<'q, T::Database> + for<'r> Decode<'r, T::Database>,
-    Option<String>:
-        Type<T::Database> + for<'q> Encode<'q, T::Database> + for<'r> Decode<'r, T::Database>,
-    for<'r> &'r str: ColumnIndex<<T::Database as Database>::Row>,
-{
-    let (next, reason) = match receipt {
-        ReceiptKind::Delivered { .. } => ("delivered", None),
-        ReceiptKind::Refused { reason } => ("failed", Some(enum_text(reason)?)),
-        ReceiptKind::Seen { .. } | ReceiptKind::NotSeen { .. } => {
-            return Ok(DirectWriteOutcome::without_alarm_recompute(
-                ApplyReceipt::Stop(ReceiptResult::NotApplicable),
-            ));
-        }
-    };
-    let row: Option<StoredSystemState> = system_state_query!(select, message, target, kind)
-        .fetch_optional(tx.executor())
-        .await?;
-    let Some(row) = row else {
-        return Ok(DirectWriteOutcome::without_alarm_recompute(
-            ApplyReceipt::Stop(ReceiptResult::NoSuchMessage),
-        ));
-    };
-    match (row.state.as_str(), row.failure_reason.as_ref()) {
-        ("queued", None) => {}
-        ("delivered", None) | ("failed", Some(_)) | ("cancelled", _) => {
-            let result = if row.state == next && row.failure_reason == reason {
-                ReceiptResult::Recorded
-            } else {
-                ReceiptResult::AlreadySettled
-            };
-            return Ok(DirectWriteOutcome::without_alarm_recompute(
-                ApplyReceipt::Stop(result),
-            ));
-        }
-        _ => return Err(corrupt("mail_messages.state").into()),
-    }
-    let written = system_update_query!(execute, message, target, kind, next, reason, now)
-        .execute(tx.executor())
-        .await?;
-    require_one_affected_row::<T>(written)?;
-    // System writers continue to rely on the post-event completion for publication.
-    Ok(DirectWriteOutcome::without_alarm_recompute(
-        ApplyReceipt::Applied { ready: None },
-    ))
 }
 
 struct ReducerIds<'a>(&'a dyn IdSource);
