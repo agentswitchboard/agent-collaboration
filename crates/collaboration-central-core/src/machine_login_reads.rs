@@ -162,7 +162,7 @@ async fn superseded_client(
     };
     if previous.id == current.id
         || previous.machine_id != current.machine_id
-        || previous.ended_at_ms != Some(record.created_at_millis)
+        || previous.ended_at_ms != Some(record.created_at_millis.0)
         || record.origin != expected_origin
         || !matches!(
             previous.state,

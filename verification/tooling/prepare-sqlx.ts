@@ -62,12 +62,22 @@ export const sqlitePreparationTargets: readonly SqlitePreparationTarget[] = [
     databaseFilename: "fleet-mail-central-schema.sqlite",
   },
   {
+    packageName: "fleet-request-log",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-request-log-central-schema.sqlite",
+  },
+  {
     packageName: "collaboration-central-core",
     migrationSources: [centralMigrationSource],
     databaseFilename: "fleet-central-engine-fixtures-schema.sqlite",
     features: ["test-support"],
     fixtureMigration:
       "crates/fleet-storage-schema/tests/fixtures/engine_migrations/0001_engine_probe.sql",
+  },
+  {
+    packageName: "fleet-workspace-directory",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-central-workspace-directory.sqlite",
   },
   {
     packageName: "fleet-signin",

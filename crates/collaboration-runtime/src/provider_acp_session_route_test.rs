@@ -197,6 +197,7 @@ impl SessionEventHub for RecordingSessionBackend {
             });
         }
         let attachment = SessionEventAttachment {
+            latest_issued_sequence: snapshot.last().map_or(0, |event| event.sequence),
             snapshot,
             receiver,
             epoch: 0,

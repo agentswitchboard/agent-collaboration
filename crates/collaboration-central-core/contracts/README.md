@@ -30,3 +30,35 @@ while its trimmed value is within Rust's bound; full read equivalence is not cla
 Reserved and approved enrollments remain internal to the authority. F1
 defines no Rust `Principal` union. The Switchboard actor-union parsing and
 cross-repository real-output checks remain with their consuming tickets.
+
+## Sign-in TypeScript
+
+`central-sign-in.ts` is the generated TypeScript contract for Sign-in.
+Copy it from an exact Central commit and pin that commit in the consumer.
+Use `_Deserialize` for inputs to Central, including the signed headers and claims
+Central only reads. Use `_Serialize` for Central's replies and the canonical admin
+intent Central recomputes. Use the unsuffixed alias where the exporter emits a
+single phase. `organization-admin-intent-vector.json`
+contains a request, its canonical intent bytes, and the base64url SHA-256 digest.
+
+Validated IDs are JSON string aliases. Timestamp decoding accepts exact JSON
+integers from zero through `Number.MAX_SAFE_INTEGER`. Fence revisions start at
+one. TypeScript represents these values as `number`. Rust applies the wire bounds
+and the separate time and admission policy.
+
+The native export feature is opt-in and is excluded from production builds.
+Run the byte comparison, schema parity, and strict positive and negative
+fixture checks from the repository root.
+
+```sh
+pnpm --dir verification install --frozen-lockfile
+cargo nextest run --locked -p collaboration-central-core --features wire-export --lib --no-tests fail -E 'test(signin_wire_export_test)'
+```
+
+To update the generated declarations and canonical intent vector after a
+deliberate contract change, run the two generators before checking the fixtures.
+
+```sh
+UPDATE_CENTRAL_SIGNIN_TYPES=1 cargo test --locked -p collaboration-central-core --features wire-export --lib signin_wire_export_test::central_signin_types_match_generated_serde_wire -- --exact
+UPDATE_CENTRAL_SIGNIN_TYPES=1 cargo test --locked -p collaboration-central-core --features wire-export --lib signin_wire_export_test::canonical_signin_intent_hash_matches_shared_vector -- --exact
+```

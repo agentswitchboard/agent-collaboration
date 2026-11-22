@@ -15,14 +15,22 @@ pub struct DirectoryWorkspace {
     Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
 )]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct WorkspaceView {
     pub workspace_id: message_board::WorkspaceId,
     pub name: message_board::ResourceName,
     #[serde(deserialize_with = "crate::workspace_description::deserialize_description")]
+    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = message_board::Description))]
     #[schemars(schema_with = "crate::workspace_description::description_schema")]
     pub description: message_board::Description,
     pub state: message_board::WorkspaceState,
 }
+
+#[cfg(all(feature = "wire-export", not(target_arch = "wasm32")))]
+const _: fn(&WorkspaceView) -> &message_board::Description = |workspace| &workspace.description;
 
 impl From<DirectoryWorkspace> for workspace_model::Workspace {
     fn from(row: DirectoryWorkspace) -> Self {

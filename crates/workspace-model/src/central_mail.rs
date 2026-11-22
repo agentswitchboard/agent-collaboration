@@ -217,8 +217,7 @@ pub enum MessageBody {
         automation_id: AutomationId,
         text: PostText,
     },
-    /// Central's update to the sender after a refusal, cancellation or late
-    /// acceptance. It has a 24-hour delivery window and produces no outcome.
+    /// The sender's first outcome, offered for 24 hours.
     DeliveryOutcome {
         message_id: MessageId,
         /// The sender Router's outbox request that created the message.
@@ -237,14 +236,17 @@ pub enum MessageBody {
     deny_unknown_fields
 )]
 pub enum MessageOutcome {
-    /// Accepted by the recipient after central had cancelled it (a late Ack).
-    DeliveredAfterAll,
-    /// The recipient's Router refused it for good.
-    Refused { reason: MessageRefusal },
-    /// Not delivered within 15 minutes of when the agent sent it (owner,
-    /// record:218: "15 minutes you can't send in central or machine then tell
-    /// the sender and cancel send").
-    Cancelled { reason: MessageCancellation },
+    Refused {
+        reason: MessageRefusal,
+    },
+    NotSeen {
+        waiting: WaitingReason,
+    },
+    DeliveryNotConfirmed,
+    DeliveredSeenNotConfirmed {
+        arrived_at: Timestamp,
+        waiting: Option<WaitingReason>,
+    },
 }
 
 /// Why the recipient refused a message.
@@ -255,11 +257,53 @@ pub enum MessageRefusal {
     UnknownSession,
     /// More than one local harness claims the same provider session id.
     AmbiguousSession,
+    SessionClosed,
 }
 
-/// The recipient Router's answer to a delivered message: into its inbox, or
-/// refused for good. A valid message always goes into the inbox (owner,
-/// record:297), so there is no "send it again later".
+/// The Router's observation when the message was saved or expired.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum WaitingReason {
+    SessionNotOpen,
+    WaitingOnAPerson,
+    NeedsSignIn,
+    Busy,
+    NotKnown,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum ReceiptKind {
+    Delivered {
+        arrived_at: Timestamp,
+        waiting: Option<WaitingReason>,
+    },
+    Seen {
+        completed_at: Timestamp,
+    },
+    Refused {
+        reason: MessageRefusal,
+    },
+    NotSeen {
+        waiting: WaitingReason,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "camelCase")]
+pub enum ReceiptResult {
+    Recorded,
+    AlreadySettled,
+    NotApplicable,
+    NoSuchMessage,
+}
+
+/// The sender's view of a direct message's delivery.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
@@ -267,43 +311,24 @@ pub enum MessageRefusal {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
-pub enum DeliveryAnswer {
-    Accepted,
-    Refused { reason: MessageRefusal },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum MessageCancellation {
-    NotDeliveredWithin15Minutes,
-}
-
-/// The terminal failure stored by central for a direct message.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum MessageFailureReason {
-    UnknownSession,
-    AmbiguousSession,
-    SenderUnresolved,
-}
-
-impl From<MessageRefusal> for MessageFailureReason {
-    fn from(refusal: MessageRefusal) -> Self {
-        match refusal {
-            MessageRefusal::UnknownSession => Self::UnknownSession,
-            MessageRefusal::AmbiguousSession => Self::AmbiguousSession,
-        }
-    }
-}
-
-/// The sender's view of a direct message's delivery.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum MessageStatus {
-    Queued {},
-    Delivered {},
-    Failed { reason: MessageFailureReason },
-    Cancelled { reason: MessageCancellation },
+    Sent {
+        deadline_passed: bool,
+    },
+    Delivered {
+        arrived_at: Timestamp,
+        waiting: Option<WaitingReason>,
+        deadline_passed: bool,
+    },
+    Seen {
+        completed_at: Timestamp,
+    },
+    NotSeen {
+        waiting: WaitingReason,
+    },
+    Refused {
+        reason: MessageRefusal,
+    },
     NotFound {},
 }
 

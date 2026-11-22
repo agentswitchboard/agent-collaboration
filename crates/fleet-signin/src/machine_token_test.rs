@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 const ID: &str = "018f0000-0000-7000-8000-000000000001";
 const NOW: i64 = 1_800_000_000;
+const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 
 struct FixedClock;
 impl Clock for FixedClock {
@@ -101,6 +102,46 @@ fn token(key: &Ed25519KeyPair, claims: Value) -> String {
         json!({"alg":"EdDSA", "typ":"at+jwt", "kid":"key"}),
         claims,
     )
+}
+
+#[test]
+fn machine_wire_omits_reader_only_claims_and_rejects_any_workspace_claim() {
+    let mut accepted = claims();
+    accepted["sid"] = Value::Null;
+
+    let decoded = serde_json::from_value::<MachineAccessTokenClaims>(accepted.clone()).unwrap();
+    let mut produced = claims();
+    for ignored_claim in ["sub", "extension"] {
+        produced.as_object_mut().unwrap().remove(ignored_claim);
+    }
+    assert_eq!(serde_json::to_value(decoded).unwrap(), produced);
+    assert!(serde_json::from_value::<MachineAccessTokenClaims>(produced).is_ok());
+
+    for workspace in [Value::Null, json!(ID)] {
+        accepted["workspace_id"] = workspace;
+        let error = serde_json::from_value::<MachineAccessTokenClaims>(accepted.clone())
+            .err()
+            .unwrap();
+        assert!(error.to_string().contains("workspace_id is forbidden"));
+    }
+}
+
+#[test]
+fn machine_wire_times_decode_as_safe_integer_seconds() {
+    for field in ["iat", "exp", "grant_expires_at"] {
+        let mut specimen = claims();
+        specimen[field] = json!(MAX_SAFE_INTEGER);
+        let decoded = serde_json::from_value::<MachineAccessTokenClaims>(specimen.clone()).unwrap();
+        assert_eq!(
+            serde_json::to_value(decoded).unwrap()[field],
+            specimen[field]
+        );
+
+        for invalid in [json!(-1), json!(MAX_SAFE_INTEGER + 1), json!(1.5)] {
+            specimen[field] = invalid;
+            assert!(serde_json::from_value::<MachineAccessTokenClaims>(specimen.clone()).is_err());
+        }
+    }
 }
 
 #[tokio::test]
@@ -296,7 +337,7 @@ fn effective_deadline_must_fit_in_safe_milliseconds() {
     claim["exp"] = json!(limit);
     claim["grant_expires_at"] = json!(limit);
     assert_eq!(
-        serde_json::from_value::<Claims>(claim.clone())
+        serde_json::from_value::<MachineAccessTokenClaims>(claim.clone())
             .unwrap()
             .validate(&policy, limit - MACHINE_TOKEN_LIFETIME_SECONDS)
             .unwrap()
@@ -305,7 +346,7 @@ fn effective_deadline_must_fit_in_safe_milliseconds() {
     );
     claim["grant_expires_at"] = json!(limit + 1);
     assert_eq!(
-        serde_json::from_value::<Claims>(claim)
+        serde_json::from_value::<MachineAccessTokenClaims>(claim)
             .unwrap()
             .validate(&policy, limit - MACHINE_TOKEN_LIFETIME_SECONDS),
         Err(MachineTokenRefusal::Rejected)

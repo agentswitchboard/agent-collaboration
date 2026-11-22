@@ -2,7 +2,9 @@
 //!
 //! The caller admits the request and applies guarded plans under its own turn,
 //! with its own receipt.
-use central_storage::{GuardedStatement, ReadOutcome, Statement, StoreFailure};
+use central_storage::{
+    GuardedStatement, ReadOutcome, SafeInteger, SqlValue, Statement, StoreFailure,
+};
 use fleet_contracts::{
     DirectoryWorkspace, MAXIMUM_DESCRIPTION_BYTES, WorkspaceDirectory, WorkspaceView,
 };
@@ -24,42 +26,75 @@ fn decode(rows: &ReadOutcome) -> Result<Option<DirectoryWorkspace>, StoreFailure
         .transpose()
 }
 
+struct StoredWorkspaceRow {
+    workspace_id: Option<String>,
+    name: String,
+    description: String,
+    state: String,
+    created_at: String,
+    updated_at: String,
+}
+
 fn decode_row(
     rows: &ReadOutcome,
     row: &[central_storage::SqlValue],
 ) -> Result<DirectoryWorkspace, StoreFailure> {
-    let workspace_id = string(rows, row, "workspace_id")?
-        .parse()
-        .map_err(|_| corrupt("directory_workspaces.workspace_id"))?;
-    let stored_name = string(rows, row, "name")?;
-    let name = ResourceName::try_from(stored_name.to_owned())
-        .map_err(|_| corrupt("directory_workspaces.name"))?;
-    if name.as_str() != stored_name {
-        return Err(corrupt("directory_workspaces.name"));
+    let stored_text = |name| string(rows, row, name).map(str::to_owned);
+    StoredWorkspaceRow {
+        workspace_id: Some(stored_text("workspace_id")?),
+        name: stored_text("name")?,
+        description: stored_text("description")?,
+        state: stored_text("state")?,
+        created_at: stored_text("created_at")?,
+        updated_at: stored_text("updated_at")?,
     }
-    let stored_description = string(rows, row, "description")?;
-    if stored_description.len() > MAXIMUM_DESCRIPTION_BYTES {
-        return Err(corrupt("directory_workspaces.description"));
-    }
-    let description = Description::try_from(stored_description.to_owned())
-        .map_err(|_| corrupt("directory_workspaces.description"))?;
-    let state = match string(rows, row, "state")? {
-        "active" => WorkspaceState::Active,
-        "archived" => WorkspaceState::Archived,
-        _ => return Err(corrupt("directory_workspaces.state")),
-    };
-    for column in ["created_at", "updated_at"] {
-        let _: Timestamp = string(rows, row, column)?
-            .parse()
-            .map_err(|_| corrupt(&format!("workspaces.{column}")))?;
-    }
-    Ok(DirectoryWorkspace {
-        workspace_id,
-        name,
-        description,
-        state,
-    })
+    .decode()
 }
+
+impl StoredWorkspaceRow {
+    fn decode(self) -> Result<DirectoryWorkspace, StoreFailure> {
+        let workspace_id = self
+            .workspace_id
+            .ok_or_else(|| corrupt("directory_workspaces.workspace_id"))?
+            .try_into()
+            .map_err(|_| corrupt("directory_workspaces.workspace_id"))?;
+        let name = ResourceName::try_from(self.name.clone())
+            .map_err(|_| corrupt("directory_workspaces.name"))?;
+        if name.as_str() != self.name {
+            return Err(corrupt("directory_workspaces.name"));
+        }
+        if self.description.len() > MAXIMUM_DESCRIPTION_BYTES {
+            return Err(corrupt("directory_workspaces.description"));
+        }
+        let description = Description::try_from(self.description)
+            .map_err(|_| corrupt("directory_workspaces.description"))?;
+        let state = match self.state.as_str() {
+            "active" => WorkspaceState::Active,
+            "archived" => WorkspaceState::Archived,
+            _ => return Err(corrupt("directory_workspaces.state")),
+        };
+        for (column, timestamp) in [
+            ("created_at", self.created_at),
+            ("updated_at", self.updated_at),
+        ] {
+            let _: Timestamp = timestamp
+                .parse()
+                .map_err(|_| corrupt(&format!("workspaces.{column}")))?;
+        }
+        Ok(DirectoryWorkspace {
+            workspace_id,
+            name,
+            description,
+            state,
+        })
+    }
+}
+
+pub struct WorkspaceDirectoryPage {
+    pub workspaces: Vec<WorkspaceView>,
+    pub next: Option<message_board::WorkspaceId>,
+}
+
 pub struct CentralWorkspaceDirectory<'store, Host: CentralStore> {
     host: &'store Host,
 }
@@ -68,6 +103,44 @@ impl<'store, Host: CentralStore> CentralWorkspaceDirectory<'store, Host> {
     /// Borrows the central store of one organization.
     pub fn new(host: &'store Host) -> Self {
         Self { host }
+    }
+
+    /// Reads the organization directory in ID order, looking one row ahead.
+    pub async fn read_workspace_page(
+        &self,
+        after: Option<&message_board::WorkspaceId>,
+        limit: u16,
+    ) -> Result<WorkspaceDirectoryPage, StoreFailure> {
+        let cursor = after.map_or("", message_board::WorkspaceId::as_str);
+        let read_limit = i64::from(limit) + 1;
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        let _ = sqlx::query_file_as!(
+            StoredWorkspaceRow,
+            "src/queries/read_workspace_page.sql",
+            cursor,
+            read_limit
+        );
+        let read_limit =
+            SafeInteger::new(read_limit).map_err(|_| corrupt("directory_workspaces.page_limit"))?;
+        let rows = self
+            .host
+            .read(Statement {
+                sql: include_str!("queries/read_workspace_page.sql"),
+                args: vec![text(cursor), SqlValue::Integer(read_limit)],
+            })
+            .await?;
+        let mut workspaces = rows
+            .rows
+            .iter()
+            .map(|row| self.workspace_view(decode_row(&rows, row)?))
+            .collect::<Result<Vec<_>, _>>()?;
+        let has_more = workspaces.len() > usize::from(limit);
+        workspaces.truncate(usize::from(limit));
+        let next = workspaces
+            .last()
+            .filter(|_| has_more)
+            .map(|workspace| workspace.workspace_id.clone());
+        Ok(WorkspaceDirectoryPage { workspaces, next })
     }
 
     /// Reads the organization's full directory, including archived workspaces,

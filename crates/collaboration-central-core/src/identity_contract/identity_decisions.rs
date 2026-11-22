@@ -9,6 +9,10 @@ use std::num::NonZeroU32;
 use workspace_ids::MachineId;
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct DecideDeviceLogin {
     pub organization_id: OrganizationId,
     pub approver: PersonId,
@@ -17,30 +21,27 @@ pub struct DecideDeviceLogin {
     pub machine_id: MachineId,
     pub label: MachineLabel,
     pub allowed_workspaces: AllowedWorkspaces,
-    #[serde(deserialize_with = "nullable_nonnegative_unix_seconds")]
-    #[schemars(required, schema_with = "Option::<UnixSeconds>::json_schema", extend("minimum" = 0))]
-    pub approver_second_factor_at: Option<UnixSeconds>,
-    #[serde(deserialize_with = "nonnegative_unix_seconds")]
-    #[schemars(with = "UnixSeconds", extend("minimum" = 0))]
+    #[serde(deserialize_with = "required_nullable_approval_time")]
+    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = NullableApprovalTime))]
+    #[schemars(required, schema_with = "nullable_approval_time_schema")]
+    pub approver_second_factor_at: NullableApprovalTime,
     pub code_expires_at: UnixSeconds,
 }
-fn nonnegative_unix_seconds<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> Result<UnixSeconds, D::Error> {
-    let seconds = UnixSeconds::deserialize(deserializer)?;
-    if seconds.0 < 0 {
-        return Err(serde::de::Error::custom("Unix seconds must be nonnegative"));
-    }
-    Ok(seconds)
+type NullableApprovalTime = Option<UnixSeconds>;
+
+#[cfg(all(feature = "wire-export", not(target_arch = "wasm32")))]
+const _: fn(&DecideDeviceLogin) -> &NullableApprovalTime =
+    |request| &request.approver_second_factor_at;
+
+fn nullable_approval_time_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let seconds = UnixSeconds::json_schema(generator);
+    schemars::json_schema!({"anyOf": [seconds, {"type": "null"}]})
 }
-fn nullable_nonnegative_unix_seconds<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<UnixSeconds>, D::Error> {
-    let seconds = Option::<UnixSeconds>::deserialize(deserializer)?;
-    if seconds.is_some_and(|seconds| seconds.0 < 0) {
-        return Err(serde::de::Error::custom("Unix seconds must be nonnegative"));
-    }
-    Ok(seconds)
+
+fn required_nullable_approval_time<'de, Decoder: Deserializer<'de>>(
+    decoder: Decoder,
+) -> Result<NullableApprovalTime, Decoder::Error> {
+    NullableApprovalTime::deserialize(decoder)
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(
@@ -48,6 +49,10 @@ fn nullable_nonnegative_unix_seconds<'de, D: Deserializer<'de>>(
     rename_all = "camelCase",
     rename_all_fields = "camelCase",
     deny_unknown_fields
+)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
 )]
 pub enum DeviceLoginDecision {
     Approved {
@@ -66,6 +71,10 @@ pub enum DeviceLoginDecision {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum DeviceLoginRefusal {
     NotPermitted {},
     MachineInAnotherOrganization {},
@@ -75,6 +84,10 @@ pub enum DeviceLoginRefusal {
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct DecideMachineToken {
     pub organization_id: OrganizationId,
     pub enrollment_id: EnrollmentId,
@@ -82,6 +95,10 @@ pub struct DecideMachineToken {
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct EndedMachineClient {
     pub enrollment_id: EnrollmentId,
     pub client_id: ClientId,
@@ -93,15 +110,15 @@ pub struct EndedMachineClient {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum MachineTokenDecision {
     Grant {
         machine_id: MachineId,
         enrollment_id: EnrollmentId,
-        #[serde(deserialize_with = "nonnegative_unix_seconds")]
-        #[schemars(with = "UnixSeconds", extend("minimum" = 0))]
         decided_at: UnixSeconds,
-        #[serde(deserialize_with = "nonnegative_unix_seconds")]
-        #[schemars(with = "UnixSeconds", extend("minimum" = 0))]
         grant_expires_at: UnixSeconds,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         superseded: Option<EndedMachineClient>,
@@ -117,6 +134,10 @@ pub enum MachineTokenDecision {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum MachineTokenRefusal {
     EnrollmentNotActive {},
     Superseded {},
@@ -125,6 +146,10 @@ pub enum MachineTokenRefusal {
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct PresentedMachine {
     pub machine_id: MachineId,
 }

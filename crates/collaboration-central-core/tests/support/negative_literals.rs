@@ -3,6 +3,23 @@ use serde_json::{Value, json};
 pub fn explicit_negatives(name: &str, literals: &[Value]) -> Vec<Value> {
     let mut invalid = vec![Value::Null];
     match name {
+        "RevokeMachineEnrollmentRequest"
+        | "MachineEnrollmentRevocationResult"
+        | "ProvisionOrganization"
+        | "ProvisionOrganizationResult"
+        | "ReadOrganizationStatementDigest"
+        | "OrganizationStatementDigestReply" => {
+            for literal in literals {
+                for field in literal.as_object().unwrap().keys() {
+                    let mut missing = literal.clone();
+                    missing.as_object_mut().unwrap().remove(field);
+                    invalid.push(missing);
+                }
+            }
+            if name == "MachineEnrollmentRevocationResult" {
+                invalid.push(json!({"result":"refused","reason":"unrecognizedVariant"}));
+            }
+        }
         "AuthorizationRevision" | "AuthorizationRevisionAcknowledgement" => {
             for literal in literals {
                 for field in literal.as_object().unwrap().keys() {
@@ -42,6 +59,27 @@ pub fn explicit_negatives(name: &str, literals: &[Value]) -> Vec<Value> {
                 json!({"result":"refused","reason":"unrecognizedVariant"}),
                 json!({"result":"refused","reason":{"kind":"nameInUse"}}),
             ]);
+            let allowance = literals
+                .iter()
+                .filter_map(|value| value["records"].as_array())
+                .flatten()
+                .find(|record| record["kind"] == "machineAllowanceChanged")
+                .unwrap();
+            for field in ["machineId", "workspaceId", "state"] {
+                let mut missing = allowance.clone();
+                missing.as_object_mut().unwrap().remove(field);
+                invalid.push(json!({"result":"records","records":[missing]}));
+            }
+            for (field, value) in [
+                ("state", json!("inactive")),
+                ("machineId", json!(7)),
+                ("workspaceId", Value::Null),
+                ("targetId", allowance["machineId"].clone()),
+            ] {
+                let mut wrong = allowance.clone();
+                wrong[field] = value;
+                invalid.push(json!({"result":"records","records":[wrong]}));
+            }
         }
         "CreateWorkspaceRequest" => {
             let mut missing_description = literals[0].clone();
@@ -54,12 +92,18 @@ pub fn explicit_negatives(name: &str, literals: &[Value]) -> Vec<Value> {
             wrong_operation["operationId"] = json!("00000000-0000-4000-8000-000000000001");
             invalid.push(wrong_operation);
         }
-        "ReadChangeRecordsRequest" => {
+        "ReadChangeRecordsRequest" | "ListWorkspacesRequest" => {
             for limit in [json!(0), json!(101), json!(1.5)] {
                 let mut wrong_limit = literals[0].clone();
                 wrong_limit["limit"] = limit;
                 invalid.push(wrong_limit);
             }
+        }
+        "ListWorkspacesResult" => {
+            let first_row = literals.iter()
+                .find_map(|reply| reply["workspaces"].as_array()?.first()).unwrap();
+            invalid.push(json!({"result":"workspaces","workspaces":vec![first_row.clone(); 101],"next":null}));
+            invalid.push(json!({"result":"workspaces","workspaces":[]}));
         }
         "OrganizationAdminIntent" => {
             for literal in literals {

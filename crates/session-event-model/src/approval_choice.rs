@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 /// Effect of choosing an option offered by the agent. The option ID remains
 /// the agent's own identifier and is carried separately.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ApprovalEffect {
     Allow,
@@ -10,7 +10,7 @@ pub enum ApprovalEffect {
     Abort,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum ApprovalScope {
     Once,
@@ -25,7 +25,7 @@ impl ApprovalScope {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct StorageDestination(String);
 
@@ -69,7 +69,7 @@ impl std::fmt::Display for InvalidStorageDestination {
 
 impl std::error::Error for InvalidStorageDestination {}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ApprovalChoice {
     pub effect: ApprovalEffect,

@@ -2,7 +2,7 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use fleet_contracts::{OrganizationStatementDigest, StatementSeconds, StoredStatementRefusal};
 use fleet_identity_protocol::OrganizationId;
-use serde::{Deserialize, Deserializer};
+use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 
 pub(super) fn digest_compact_statement(statement: &str) -> OrganizationStatementDigest {
@@ -10,17 +10,25 @@ pub(super) fn digest_compact_statement(statement: &str) -> OrganizationStatement
     bytes.into()
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct StatementHeader {
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub struct OrganizationStampHeader {
     pub typ: String,
     pub alg: String,
     pub kid: String,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
-pub(super) struct StatementClaims {
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub struct OrganizationStampClaims {
     pub purpose: String,
     pub version: u32,
     pub iss: String,
@@ -29,19 +37,33 @@ pub(super) struct StatementClaims {
     pub organization_id: OrganizationId,
     pub iat: StatementSeconds,
     pub exp: StatementSeconds,
-    #[serde(default, deserialize_with = "present_predecessor")]
-    pub replaces: Option<OrganizationStatementDigest>,
+    #[serde(
+        default,
+        deserialize_with = "present_predecessor",
+        skip_serializing_if = "predecessor_missing"
+    )]
+    #[cfg_attr(
+        all(feature = "wire-export", not(target_arch = "wasm32")),
+        specta(type = StatementPredecessorDigest)
+    )]
+    pub replaces: Option<StatementPredecessorDigest>,
 }
+
+type StatementPredecessorDigest = OrganizationStatementDigest;
 
 fn present_predecessor<'de, Decoder: Deserializer<'de>>(
     decoder: Decoder,
-) -> Result<Option<OrganizationStatementDigest>, Decoder::Error> {
-    OrganizationStatementDigest::deserialize(decoder).map(Some)
+) -> Result<Option<StatementPredecessorDigest>, Decoder::Error> {
+    StatementPredecessorDigest::deserialize(decoder).map(Some)
+}
+
+fn predecessor_missing(predecessor: &Option<StatementPredecessorDigest>) -> bool {
+    predecessor.is_none()
 }
 
 pub(super) struct ParsedFleetStatement {
-    pub header: StatementHeader,
-    pub claims: StatementClaims,
+    pub header: OrganizationStampHeader,
+    pub claims: OrganizationStampClaims,
     pub signed: Vec<u8>,
     pub signature: Vec<u8>,
 }

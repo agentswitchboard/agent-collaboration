@@ -46,6 +46,7 @@ pub fn organization_signin_router<Port: OrganizationSignInPort>(port: Arc<Port>)
     for route in [
         AdminRoute::CreateWorkspace,
         AdminRoute::WorkspaceLookup,
+        AdminRoute::ListWorkspaces,
         AdminRoute::ReadChangeRecords,
         AdminRoute::EngineHealth,
         AdminRoute::EngineListRetired,
@@ -185,6 +186,9 @@ async fn forward_admin<Port: OrganizationSignInPort>(
     match port.admin(organization_id, input).await {
         Ok(OrganizationAdminAnswer::Unauthenticated) => StatusCode::UNAUTHORIZED.into_response(),
         Ok(OrganizationAdminAnswer::Answered(result)) => {
+            (StatusCode::OK, Json(result)).into_response()
+        }
+        Ok(OrganizationAdminAnswer::WorkspaceList(result)) => {
             (StatusCode::OK, Json(result)).into_response()
         }
         Ok(OrganizationAdminAnswer::MachineEnrollmentRevocation(result)) => {

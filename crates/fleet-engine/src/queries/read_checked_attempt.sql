@@ -1,0 +1,3 @@
+SELECT attempt_id, state, failure_count, next_try_at, last_failure, last_failure_detail,
+       first_failed_at, last_failed_at, retired_at, created_at, updated_at
+FROM engine_work_attempts WHERE machine_kind=? AND subject_key=?

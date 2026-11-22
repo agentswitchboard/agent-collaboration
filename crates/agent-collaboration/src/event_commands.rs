@@ -349,6 +349,7 @@ async fn observe(directory: &std::path::Path, input: ObserveInput) -> i32 {
             max_bytes: input.max_bytes,
             after_sequence: input.after_sequence,
             epoch: input.epoch,
+            service_epoch: None,
         },
         cancel.clone(),
         input.stream.then_some(observed),

@@ -6,6 +6,10 @@ use std::borrow::Cow;
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct OrganizationStatementDigest(String);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -70,6 +74,10 @@ impl JsonSchema for OrganizationStatementDigest {
 /// The provider's opaque, nonempty signing key identifier.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct IssuerKeyId(String);
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -112,6 +120,10 @@ impl JsonSchema for IssuerKeyId {
 /// A signed stamp time in nonnegative, exact JSON integer seconds.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "UnixSeconds", into = "UnixSeconds")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct StatementSeconds(UnixSeconds);
 
 const MAXIMUM_EXACT_SECONDS: i64 = 9_007_199_254_740_991;

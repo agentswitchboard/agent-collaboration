@@ -9,6 +9,10 @@ pub const AUTHORIZATION_REVISIONS_ROUTE: &str = "/internal/organization-authoriz
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum OrganizationFenceState {
     Active,
     Stopped,
@@ -17,6 +21,10 @@ pub enum OrganizationFenceState {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum PersonFenceState {
     Active,
     Inactive,
@@ -26,6 +34,12 @@ pub enum PersonFenceState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(try_from = "i64", into = "i64")]
 pub struct FenceRevision(i64);
+#[cfg(all(feature = "wire-export", not(target_arch = "wasm32")))]
+impl specta::Type for FenceRevision {
+    fn definition(types: &mut specta::Types) -> specta::datatype::DataType {
+        <specta_typescript::Number as specta::Type>::definition(types)
+    }
+}
 impl TryFrom<i64> for FenceRevision {
     type Error = FenceRevisionError;
     fn try_from(value: i64) -> Result<Self, Self::Error> {
@@ -62,6 +76,10 @@ pub struct FenceRevisionError;
 /// Lowercase hex SHA-256 of the sign-in service's canonical permission policy.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct PermissionPolicyDigest(String);
 impl TryFrom<String> for PermissionPolicyDigest {
     type Error = FenceRevisionError;
@@ -106,6 +124,10 @@ pub type FencePersonId = message_board::RecordId;
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum AuthorizationRevision {
     Organization {
         organization_id: OrganizationId,
@@ -138,6 +160,10 @@ impl AuthorizationRevision {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct AuthorizationRevisionAcknowledgement {
     /// The floor central retains after the commit; may exceed the sent revision.
     pub acknowledged_revision: FenceRevision,

@@ -67,14 +67,14 @@ fn message_status_shapes_refuse_extra_fields_and_open_reasons() {
         query,
         workspace_model::ListQuery::MessageStatus { .. }
     ));
-    use workspace_model::central_mail::{DeliveryAnswer, MessageFailureReason, MessageStatus};
+    use workspace_model::central_mail::{MessageRefusal, MessageStatus, ReceiptKind};
     for (reason, wire_reason) in [
-        (MessageFailureReason::UnknownSession, "unknownSession"),
-        (MessageFailureReason::AmbiguousSession, "ambiguousSession"),
-        (MessageFailureReason::SenderUnresolved, "senderUnresolved"),
+        (MessageRefusal::UnknownSession, "unknownSession"),
+        (MessageRefusal::AmbiguousSession, "ambiguousSession"),
+        (MessageRefusal::SessionClosed, "sessionClosed"),
     ] {
-        let failed = MessageStatus::Failed { reason };
-        let wire = json!({"kind":"failed","reason":wire_reason});
+        let failed = MessageStatus::Refused { reason };
+        let wire = json!({"kind":"refused","reason":wire_reason});
         assert_eq!(serde_json::to_value(failed).unwrap(), wire);
         assert_eq!(
             serde_json::from_value::<MessageStatus>(wire).unwrap(),
@@ -82,7 +82,7 @@ fn message_status_shapes_refuse_extra_fields_and_open_reasons() {
         );
     }
     assert!(
-        serde_json::from_value::<DeliveryAnswer>(
+        serde_json::from_value::<ReceiptKind>(
             json!({"kind":"refused","reason":"senderUnresolved"})
         )
         .is_err()

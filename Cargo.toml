@@ -12,6 +12,7 @@ members = [
     "crates/provider-session-machines",
     "crates/fleet-runtime-ports",
     "crates/fleet-runtime",
+    "crates/fleet-request-log",
     "crates/fleet-engine",
     "crates/fleet-lent-transaction",
     "crates/fleet-mail",
@@ -82,7 +83,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.1.157"
+version = "0.1.158"
 edition = "2024"
 license = "MIT OR Apache-2.0"
 publish = false
@@ -101,6 +102,7 @@ fleet-contracts = { path = "crates/fleet-contracts", version = "0.1.156" }
 fleet-rpc = { path = "crates/fleet-rpc", version = "0.1.157" }
 fleet-signin = { path = "crates/fleet-signin", version = "0.1.157" }
 fleet-workspace-service = { path = "crates/fleet-workspace-service", version = "0.1.157" }
+fleet-request-log = { path = "crates/fleet-request-log", version = "0.1.156" }
 fleet-runtime = { path = "crates/fleet-runtime", version = "0.1.156" }
 fleet-engine = { path = "crates/fleet-engine", version = "0.1.156" }
 fleet-lent-transaction = { path = "crates/fleet-lent-transaction", version = "0.1.157" }
@@ -180,6 +182,9 @@ security-framework = "3.7"
 # SQLx crates stay pinned for checked-query and custom driver compatibility.
 sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-tokio"] }
 sqlx-core = { version = "=0.9.0", default-features = false }
+specta = { version = "=2.0.0-rc.28", default-features = false }
+specta-serde = "=0.0.15"
+specta-typescript = "=0.0.15"
 sqlx-macros-core = { version = "=0.9.0", default-features = false }
 syn = { version = "2.0.118", features = ["full", "parsing"] }
 thiserror = "2.0.18"

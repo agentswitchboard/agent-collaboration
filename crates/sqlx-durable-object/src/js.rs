@@ -36,6 +36,7 @@ pub(crate) fn fetch(
     sql: &str,
     arguments: &[DoArgumentValue],
     limit: Option<usize>,
+    #[cfg(feature = "test-support")] fetch_observer: Option<&crate::database::FetchObserver>,
 ) -> Result<(Vec<DoRow>, u64), Error> {
     let cursor = exec(storage, sql, arguments)?;
 
@@ -72,6 +73,10 @@ pub(crate) fn fetch(
         }
     }
 
+    #[cfg(feature = "test-support")]
+    if let Some(observe) = fetch_observer {
+        observe(sql, whole_number_u64(cursor.rows_read()));
+    }
     Ok((
         DoRow::from_result(names, rows)?,
         whole_number_u64(cursor.rows_written()),
@@ -101,13 +106,27 @@ pub(crate) fn execute(
     arguments: &[DoArgumentValue],
     limit: Option<usize>,
 ) -> Result<(Vec<DoRow>, QueryResult), Error> {
-    let (rows, rows_written) = fetch(storage, sql, arguments, limit)?;
+    let (rows, rows_written) = fetch(
+        storage,
+        sql,
+        arguments,
+        limit,
+        #[cfg(feature = "test-support")]
+        None,
+    )?;
 
     if rows_written == 0 {
         return Ok((rows, QueryResult::default()));
     }
 
-    let (counts, _) = fetch(storage, "SELECT changes(), last_insert_rowid()", &[], None)?;
+    let (counts, _) = fetch(
+        storage,
+        "SELECT changes(), last_insert_rowid()",
+        &[],
+        None,
+        #[cfg(feature = "test-support")]
+        None,
+    )?;
     let counts = counts.first().ok_or_else(|| {
         Error::Protocol("`SELECT changes(), last_insert_rowid()` returned no row".into())
     })?;
@@ -149,7 +168,7 @@ fn exec(
 #[expect(
     clippy::cast_possible_truncation,
     clippy::cast_sign_loss,
-    reason = "a count of rows written is whole, non-negative and far below 2^53"
+    reason = "a platform row count is whole, non-negative and far below 2^53"
 )]
 fn whole_number_u64(value: f64) -> u64 {
     value as u64

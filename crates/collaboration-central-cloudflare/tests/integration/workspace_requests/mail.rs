@@ -4,6 +4,7 @@ mod automations;
 mod cold_alarm;
 mod corruption;
 mod direct_message_cancel;
+mod direct_receipt_sequences;
 mod engine_publication;
 mod requests;
 mod stored_row_use;

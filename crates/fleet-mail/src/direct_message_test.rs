@@ -1,223 +1,228 @@
 use super::*;
 use central_engine_model::check_transitions;
 use central_engine_test_support::timer::{ReplayIds, context, time};
+use mail::{MessageOutcome, MessageRefusal, MessageStatus, ReceiptKind, WaitingReason};
 
-fn session(name: &str) -> SessionRef {
-    SessionRef {
-        machine_id: "01890f2e-7b4c-7cc0-98c4-000000000001".parse().unwrap(),
-        session_id: name.to_owned().try_into().unwrap(),
+fn initial(tell_sender: bool) -> DirectReducerState {
+    let machine_id: MachineId = "01890f2e-7b4c-7cc0-98c4-000000000001".parse().unwrap();
+    DirectReducerState {
+        subject: DirectMessageSubject {
+            id: "01890f2e-7b4c-7cc0-98c4-0000000000a1".parse().unwrap(),
+            sender_session: tell_sender.then(|| SessionRef {
+                machine_id: machine_id.clone(),
+                session_id: "sender".to_owned().try_into().unwrap(),
+            }),
+            sender_request_id: "01890f2e-7b4c-7cc0-98c4-0000000000b1".parse().unwrap(),
+            recipient: machine_id,
+            cutoff: time(15),
+            mark: time(20),
+        },
+        lifecycle: DirectLifecycle::Queued,
     }
 }
 
-fn subject(sender_session: Option<SessionRef>) -> DirectMessageSubject {
-    DirectMessageSubject {
-        id: "01890f2e-7b4c-7cc0-98c4-0000000000a1".parse().unwrap(),
-        sender_session,
-        sender_request_id: "01890f2e-7b4c-7cc0-98c4-0000000000b1".parse().unwrap(),
-        cancel_due_at: time(20),
-    }
-}
-
-const REFUSED: mail::DeliveryAnswer = mail::DeliveryAnswer::Refused {
-    reason: mail::MessageRefusal::UnknownSession,
-};
-
-fn outcomes(effects: &[Effect]) -> Vec<mail::MessageOutcome> {
-    effects
-        .iter()
-        .map(|Effect::TellSender(notice)| {
+fn outcome(effects: &[DirectMessageEffect], state: &DirectReducerState) -> Option<MessageOutcome> {
+    match effects {
+        [] => None,
+        [DirectMessageEffect::TellSender(message)] => {
             let mail::MessageBody::DeliveryOutcome {
                 message_id,
                 request_id,
                 outcome,
-            } = &notice.body
+            } = &message.body
             else {
-                panic!("a sender notice is a DeliveryOutcome body: {notice:?}");
+                panic!("expected an outcome");
             };
-            let expected = subject(None);
-            assert_eq!(message_id, &expected.id);
-            assert_eq!(request_id, &expected.sender_request_id);
-            assert_eq!(notice.target, session("sender"));
-            assert_eq!(notice.sender, mail::MessageSender::Central);
-            assert_eq!(notice.state, mail::MessageState::Queued);
-            *outcome
-        })
-        .collect()
+            assert_eq!(message_id, &state.subject.id);
+            assert_eq!(request_id, &state.subject.sender_request_id);
+            assert_eq!(Some(&message.target), state.subject.sender_session.as_ref());
+            Some(*outcome)
+        }
+        _ => panic!("one transition may produce at most one outcome"),
+    }
 }
 
-/// The design's invariants over any interleaving of the cancel mark, early or
-/// moved due runs, and repeated Acks: never cancelled except at its mark; never
-/// delivered after a cancel except by an accepted Ack, which tells the sender
-/// "delivered after all"; once delivered or failed nothing changes; the sender
-/// hears at most one notice per transition and only when it has a session.
-#[hegel::test(test_cases = 400)]
-fn a_direct_message_ends_once_and_is_cancelled_only_at_its_mark(case: hegel::TestCase) {
-    use hegel::generators as gs;
-    let told = case.draw(gs::booleans());
-    let start = subject(told.then(|| session("sender")));
-    let mut state = State::Queued(start.clone());
-    let mut heard = Vec::new();
-    let mut settled: Option<State> = None;
-    for step in 0..case.draw(gs::integers::<u8>().min_value(1).max_value(40)) {
-        let now = time(case.draw(gs::integers::<i64>().min_value(0).max_value(60)));
-        let event = match case.draw(gs::integers::<u8>().max_value(4)) {
-            0 => Event::Due {
-                occurrence: start.cancel_due_at,
+fn event(choice: u8, observation_time: Timestamp) -> DirectMessageEvent {
+    match choice {
+        0 => DirectMessageEvent::Receipt(ReceiptKind::Delivered {
+            arrived_at: observation_time,
+            waiting: Some(WaitingReason::Busy),
+        }),
+        1 => DirectMessageEvent::Receipt(ReceiptKind::Seen {
+            completed_at: observation_time,
+        }),
+        2 => DirectMessageEvent::Receipt(ReceiptKind::NotSeen {
+            waiting: WaitingReason::SessionNotOpen,
+        }),
+        3 => DirectMessageEvent::Receipt(ReceiptKind::Refused {
+            reason: MessageRefusal::UnknownSession,
+        }),
+        4 => DirectMessageEvent::Receipt(ReceiptKind::Refused {
+            reason: MessageRefusal::SessionClosed,
+        }),
+        5 => DirectMessageEvent::Due {
+            occurrence: time(20),
+        },
+        _ => DirectMessageEvent::Due {
+            occurrence: time(21),
+        },
+    }
+}
+
+/// The model stores independent observations, and projects the status after each input.
+#[derive(Default)]
+struct Oracle {
+    saved_at: Option<Timestamp>,
+    first_final: Option<(u8, Timestamp)>,
+    marked: bool,
+}
+
+impl Oracle {
+    fn expected_message_status(&self, now: Timestamp) -> MessageStatus {
+        match self.first_final {
+            Some((1, completed_at)) => MessageStatus::Seen { completed_at },
+            Some((2, _)) => MessageStatus::NotSeen {
+                waiting: WaitingReason::SessionNotOpen,
             },
-            1 => Event::Due {
-                occurrence: time(case.draw(gs::integers::<i64>().min_value(0).max_value(60))),
+            Some((3, _)) => MessageStatus::Refused {
+                reason: MessageRefusal::UnknownSession,
             },
-            2 | 3 => Event::Ack(mail::DeliveryAnswer::Accepted),
-            _ => Event::Ack(REFUSED),
-        };
-        let before = state.clone();
-        match central_engine_test_support::checked_step::<DirectMessage>(
-            &state,
-            event.clone(),
-            now,
-            u64::from(step),
-        ) {
-            Ok((next, effects)) => {
-                let told_now = outcomes(&effects);
-                assert!(
-                    told || told_now.is_empty(),
-                    "a person sender has no session to tell"
-                );
-                assert!(told_now.len() <= 1);
-                if matches!(next, State::Cancelled(_)) && !matches!(before, State::Cancelled(_)) {
-                    assert!(
-                        matches!(event, Event::Due { occurrence } if occurrence == start.cancel_due_at),
-                        "cancelled only by the due run at its own mark"
-                    );
+            Some((4, _)) => MessageStatus::Refused {
+                reason: MessageRefusal::SessionClosed,
+            },
+            Some((other, _)) => panic!("invalid oracle ending {other}"),
+            None => {
+                let deadline_passed = self.marked || now >= time(15);
+                match self.saved_at {
+                    Some(arrived_at) => MessageStatus::Delivered {
+                        arrived_at,
+                        waiting: Some(WaitingReason::Busy),
+                        deadline_passed,
+                    },
+                    None => MessageStatus::Sent { deadline_passed },
                 }
-                if matches!(before, State::Cancelled(_)) {
-                    assert!(matches!(next, State::Delivered));
-                    assert!(matches!(event, Event::Ack(mail::DeliveryAnswer::Accepted)));
-                    if told {
-                        assert_eq!(told_now, vec![mail::MessageOutcome::DeliveredAfterAll]);
-                    }
-                }
-                if matches!(next, State::Delivered) && matches!(before, State::Queued(_)) {
-                    assert!(told_now.is_empty(), "a normal delivery sends no outcome");
-                }
-                assert!(
-                    settled.is_none(),
-                    "a settled message cannot change: {settled:?}"
-                );
-                if next.is_terminal() {
-                    settled = Some(next.clone());
-                }
-                heard.extend(told_now);
-                state = next;
             }
-            Err(TransitionError::Domain(DirectMessageRefusal::AlreadySettled)) => {
-                assert!(matches!(event, Event::Ack(_)));
-                assert!(!matches!(before, State::Queued(_)));
-            }
-            Err(TransitionError::Stale) => {
-                assert!(matches!(event, Event::Due { .. }));
-            }
-            Err(other) => panic!("unexpected refusal {other:?}"),
         }
     }
-    assert!(
-        heard.len() <= 2,
-        "at most cancelled then delivered after all: {heard:?}"
-    );
+
+    fn apply_oracle_event(
+        &mut self,
+        choice: u8,
+        at: Timestamp,
+    ) -> Result<Option<MessageOutcome>, TransitionError<DirectMessageRefusal>> {
+        let covered = TransitionError::Domain(DirectMessageRefusal::AlreadyRecorded);
+        let settled = TransitionError::Domain(DirectMessageRefusal::AlreadySettled);
+        if choice >= 5 {
+            if choice != 5 || self.marked || self.first_final.is_some() {
+                return Err(TransitionError::Stale);
+            }
+            self.marked = true;
+            return Ok(Some(match self.saved_at {
+                Some(arrived_at) => MessageOutcome::DeliveredSeenNotConfirmed {
+                    arrived_at,
+                    waiting: Some(WaitingReason::Busy),
+                },
+                None => MessageOutcome::DeliveryNotConfirmed,
+            }));
+        }
+        if choice == 0 {
+            if self.first_final.is_some() || self.saved_at.is_some() {
+                return Err(covered);
+            }
+            self.saved_at = Some(at);
+            return Ok(None);
+        }
+        if let Some((first, first_at)) = self.first_final {
+            return Err(if first == choice && (choice != 1 || first_at == at) {
+                covered
+            } else {
+                settled
+            });
+        }
+        self.first_final = Some((choice, at));
+        Ok(match (self.marked, choice) {
+            (true, _) | (false, 1) => None,
+            (false, 2) => Some(MessageOutcome::NotSeen {
+                waiting: WaitingReason::SessionNotOpen,
+            }),
+            (false, 3) => Some(MessageOutcome::Refused {
+                reason: MessageRefusal::UnknownSession,
+            }),
+            (false, 4) => Some(MessageOutcome::Refused {
+                reason: MessageRefusal::SessionClosed,
+            }),
+            (_, _) => {
+                return Err(TransitionError::Domain(
+                    DirectMessageRefusal::InvalidIdentifier,
+                ));
+            }
+        })
+    }
+}
+
+#[hegel::test(test_cases = 400)]
+fn every_generated_receipt_and_mark_matches_the_independent_oracle(case: hegel::TestCase) {
+    use hegel::generators as gs;
+    let session_sender = case.draw(gs::booleans());
+    let initial = initial(session_sender);
+    let mut state = initial.clone();
+    let mut oracle = Oracle::default();
+    let mut outcomes = 0;
+    for _ in 0..case.draw(gs::integers::<u8>().min_value(1).max_value(40)) {
+        let choice = case.draw(gs::integers::<u8>().max_value(6));
+        let at = time(case.draw(gs::integers::<i64>().max_value(40).min_value(0)));
+        let expected = oracle.apply_oracle_event(choice, at);
+        let actual =
+            DirectMessage::transition(&state, event(choice, at), &mut context(20, &mut ReplayIds));
+        match (expected, actual) {
+            (Ok(expected), Ok((next, effects))) => {
+                let actual = outcome(&effects, &initial);
+                assert_eq!(actual, if session_sender { expected } else { None });
+                outcomes += usize::from(actual.is_some());
+                assert_eq!(next.subject, initial.subject);
+                state = next;
+            }
+            (Err(expected), Err(actual)) => assert_eq!(actual, expected),
+            pair => panic!("oracle and reducer differ: {pair:?}"),
+        }
+        for now in [time(0), time(15), time(40)] {
+            assert_eq!(
+                state
+                    .lifecycle
+                    .project_message_status(initial.subject.cutoff, now),
+                oracle.expected_message_status(now)
+            );
+        }
+        assert_eq!(state.is_terminal(), oracle.first_final.is_some());
+        assert_eq!(
+            DirectMessage::next_due(&state),
+            (!oracle.marked && oracle.first_final.is_none()).then_some(initial.subject.mark)
+        );
+    }
+    assert!(outcomes <= 1);
 }
 
 #[test]
-fn every_direct_message_state_event_pair_matches_the_declared_edges() {
-    let states = [
-        State::Queued(subject(Some(session("sender")))),
-        State::Cancelled(subject(Some(session("sender")))),
-        State::Delivered,
-        State::Failed(mail::MessageFailureReason::UnknownSession),
-    ];
-    let cases = states.into_iter().flat_map(|state| {
-        [
-            Event::Due {
-                occurrence: time(20),
-            },
-            Event::Ack(mail::DeliveryAnswer::Accepted),
-            Event::Ack(REFUSED),
-        ]
+fn declared_edges_cover_every_receipt_and_mark_state_pair() {
+    let mut states = vec![initial(true)];
+    for kinds in [&[0][..], &[5], &[0, 5], &[1], &[2], &[3]] {
+        let mut state = initial(true);
+        for &kind in kinds {
+            state = DirectMessage::transition(
+                &state,
+                event(kind, time(8)),
+                &mut context(20, &mut ReplayIds),
+            )
+            .unwrap()
+            .0;
+        }
+        states.push(state);
+    }
+    let cases = states
         .into_iter()
-        .map(move |event| (state.clone(), event))
-    });
+        .flat_map(|state| (0..=6).map(move |choice| (state.clone(), event(choice, time(8)))));
     assert_eq!(
         check_transitions::<DirectMessage>(cases, &mut context(20, &mut ReplayIds)),
         Ok(())
     );
-}
-
-#[test]
-fn the_cancel_mark_cancels_and_tells_the_sender_and_a_late_ack_delivers_after_all() {
-    let queued = State::Queued(subject(Some(session("sender"))));
-    let (cancelled, effects) = DirectMessage::transition(
-        &queued,
-        Event::Due {
-            occurrence: time(20),
-        },
-        &mut context(20, &mut ReplayIds),
-    )
-    .unwrap();
-    assert_eq!(
-        outcomes(&effects),
-        vec![mail::MessageOutcome::Cancelled {
-            reason: mail::MessageCancellation::NotDeliveredWithin15Minutes
-        }]
-    );
-    assert_eq!(DirectMessage::next_due(&cancelled), None);
-    let (delivered, effects) = DirectMessage::transition(
-        &cancelled,
-        Event::Ack(mail::DeliveryAnswer::Accepted),
-        &mut context(40, &mut ReplayIds),
-    )
-    .unwrap();
-    assert_eq!(delivered, State::Delivered);
-    assert_eq!(
-        outcomes(&effects),
-        vec![mail::MessageOutcome::DeliveredAfterAll]
-    );
-}
-
-#[test]
-fn a_refusal_fails_the_message_with_its_reason_and_a_moved_mark_is_stale() {
-    let queued = State::Queued(subject(Some(session("sender"))));
-    let (failed, effects) = DirectMessage::transition(
-        &queued,
-        Event::Ack(REFUSED),
-        &mut context(3, &mut ReplayIds),
-    )
-    .unwrap();
-    assert_eq!(
-        failed,
-        State::Failed(mail::MessageFailureReason::UnknownSession)
-    );
-    assert_eq!(
-        outcomes(&effects),
-        vec![mail::MessageOutcome::Refused {
-            reason: mail::MessageRefusal::UnknownSession
-        }]
-    );
-    assert!(matches!(
-        DirectMessage::transition(
-            &queued,
-            Event::Due {
-                occurrence: time(25)
-            },
-            &mut context(25, &mut ReplayIds)
-        ),
-        Err(TransitionError::Stale)
-    ));
-    let (_, silent) = DirectMessage::transition(
-        &State::Queued(subject(None)),
-        Event::Due {
-            occurrence: time(20),
-        },
-        &mut context(20, &mut ReplayIds),
-    )
-    .unwrap();
-    assert!(silent.is_empty(), "a person sender gets no notice");
 }

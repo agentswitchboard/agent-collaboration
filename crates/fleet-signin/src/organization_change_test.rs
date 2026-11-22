@@ -13,7 +13,7 @@ fn record(kind: OrganizationChangeKind) -> OrganizationChangeRecord {
         kind,
         origin: OrganizationChangeOrigin::Automatic {},
         target_id: target.to_owned(),
-        created_at_millis: 1_800_000_000_000,
+        created_at_millis: UnixMillis::try_from(1_800_000_000_000).unwrap(),
     }
 }
 fn rows(record: &OrganizationChangeRecord) -> ReadOutcome {

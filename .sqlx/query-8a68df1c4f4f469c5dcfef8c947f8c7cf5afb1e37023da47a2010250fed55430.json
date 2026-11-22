@@ -1,0 +1,28 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT occurrence_ms AS \"occurrence_ms!: i64\", due_at_ms AS \"effective_due_ms!: i64\"\nFROM direct_message_due_rows\nWHERE is_subject=1 AND subject_key=? AND contributes_to_alarm=1\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "occurrence_ms!: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "effective_due_ms!: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "8a68df1c4f4f469c5dcfef8c947f8c7cf5afb1e37023da47a2010250fed55430"
+}

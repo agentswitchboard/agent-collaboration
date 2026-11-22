@@ -14,6 +14,10 @@ pub const ORGANIZATION_STATEMENT_DIGEST_ROUTE: &str = "/internal/organization-st
 /// Its signature and claims are checked by the organization verifier, not by this type.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct OrganizationStatement(String);
 
 /// Large enough for the closed stamp profile; a bound, not the profile check.
@@ -69,6 +73,10 @@ impl JsonSchema for OrganizationStatement {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct ProvisionOrganization {
     pub organization_id: OrganizationId,
     pub organization_statement: OrganizationStatement,
@@ -81,6 +89,10 @@ pub struct ProvisionOrganization {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum ProvisionOrganizationResult {
     Provisioned {},
 }
@@ -88,6 +100,10 @@ pub enum ProvisionOrganizationResult {
 /// Renewal names the organization whose stored statement it will replace.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct ReadOrganizationStatementDigest {
     pub organization_id: OrganizationId,
 }
@@ -95,6 +111,10 @@ pub struct ReadOrganizationStatementDigest {
 /// What renewal needs about the stored statement; the statement never crosses.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct OrganizationStatementDigestReply {
     /// Lowercase hex SHA-256 of the stored statement's compact bytes.
     pub digest: OrganizationStatementDigest,

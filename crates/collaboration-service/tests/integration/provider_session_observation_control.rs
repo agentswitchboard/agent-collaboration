@@ -99,6 +99,7 @@ async fn the_client_hands_on_each_streamed_event_before_the_call_returns() {
         max_bytes: 262_144,
         after_sequence: None,
         epoch: None,
+        service_epoch: None,
     };
 
     // Act
@@ -107,10 +108,8 @@ async fn the_client_hands_on_each_streamed_event_before_the_call_returns() {
             .observe_provider_session_streaming(request, Some(observed))
             .await
     });
-    let retained = tokio::time::timeout(std::time::Duration::from_secs(5), streamed.recv())
-        .await
-        .expect("the retained event streamed while the call was open")
-        .expect("streamed event");
+    let retained = streamed.recv().await.expect("streamed event");
+    let snapshot_end = streamed.recv().await.expect("snapshot end streamed");
     let still_open = !call.is_finished();
     fixture
         .hub
@@ -138,7 +137,12 @@ async fn the_client_hands_on_each_streamed_event_before_the_call_returns() {
         })
     );
     assert_eq!(live.event["sequence"], 2);
-    assert_eq!(result.events, vec![retained.event, live.event]);
+    assert_eq!(snapshot_end.event, snapshot_marker(epoch, 1));
+    assert_eq!(snapshot_end.cursor, retained.cursor);
+    assert_eq!(
+        result.events,
+        vec![retained.event, snapshot_end.event, live.event]
+    );
     assert_eq!(result.end_reason, ObservationEndReason::ResultLimitReached);
     served.stop().await.expect("API stops");
 }
@@ -167,6 +171,7 @@ async fn a_stale_epoch_streams_its_resync_marker_without_a_cursor() {
                 max_bytes: 262_144,
                 after_sequence: Some(1),
                 epoch: Some(epoch.expect("provider epoch") + 1),
+                service_epoch: None,
             },
             Some(observed),
         )
@@ -212,6 +217,7 @@ async fn a_stale_epoch_answers_its_resync_marker_even_when_the_budget_cannot_hol
                 max_bytes: 1,
                 after_sequence: Some(1),
                 epoch: Some(epoch.expect("provider epoch") + 1),
+                service_epoch: None,
             },
             Some(observed),
         )
@@ -256,6 +262,7 @@ async fn a_reset_during_an_open_call_streams_its_resync_marker_without_a_cursor(
         max_bytes: 262_144,
         after_sequence: None,
         epoch: None,
+        service_epoch: None,
     };
     let call = tokio::spawn(async move {
         client
@@ -265,6 +272,13 @@ async fn a_reset_during_an_open_call_streams_its_resync_marker_without_a_cursor(
     let retained = streamed.recv().await.expect("the retained event streamed");
     let baseline = streamed.recv().await.expect("the owner baseline streamed");
     assert_eq!(baseline.event["sequence"], 2);
+    let snapshot_end = streamed.recv().await.expect("snapshot end streamed");
+    let baseline_cursor = baseline.cursor.expect("retained position");
+    assert_eq!(
+        snapshot_end.event,
+        snapshot_marker(baseline_cursor.epoch, 2)
+    );
+    assert_eq!(snapshot_end.cursor, Some(baseline_cursor));
 
     // Act: the Session's history is invalidated while the call is open.
     resume.resume(None).await.expect("history reset");
@@ -324,10 +338,15 @@ async fn provider_observers_read_snapshot_and_live_order() {
             max_bytes: 262_144,
             after_sequence: None,
             epoch: None,
+            service_epoch: None,
         })
         .await
         .expect("bounded observation");
-    assert_eq!(observed.events, vec![first_snapshot, first_live.clone()]);
+    let marker = snapshot_marker(observed.epoch.expect("provider epoch"), 2);
+    assert_eq!(
+        observed.events,
+        vec![first_snapshot, first_live.clone(), marker.clone()]
+    );
     assert_eq!(
         observed.end_reason,
         ObservationEndReason::ResultLimitReached
@@ -341,10 +360,11 @@ async fn provider_observers_read_snapshot_and_live_order() {
             max_bytes: 262_144,
             after_sequence: Some(1),
             epoch: observed.epoch,
+            service_epoch: None,
         })
         .await
         .expect("paged observation");
-    assert_eq!(resumed.events, vec![first_live.clone()]);
+    assert_eq!(resumed.events, vec![first_live.clone(), marker]);
     assert_eq!(resumed.epoch, observed.epoch);
     let stale = bounded
         .observe_provider_session(BoundedObservationRequest {
@@ -354,6 +374,7 @@ async fn provider_observers_read_snapshot_and_live_order() {
             max_bytes: 262_144,
             after_sequence: Some(1),
             epoch: Some(observed.epoch.expect("provider epoch") + 1),
+            service_epoch: None,
         })
         .await
         .expect("stale epoch response");
@@ -380,10 +401,11 @@ async fn provider_observers_read_snapshot_and_live_order() {
         .observe_provider_session(BoundedObservationRequest {
             target: observed.target.clone(),
             timeout_seconds: 1,
-            max_events: 10,
+            max_events: 6,
             max_bytes: 1_048_576,
             after_sequence: None,
             epoch: None,
+            service_epoch: None,
         })
         .await
         .expect("oversized observation");
@@ -394,10 +416,11 @@ async fn provider_observers_read_snapshot_and_live_order() {
         .observe_provider_session(BoundedObservationRequest {
             target: observed.target.clone(),
             timeout_seconds: 1,
-            max_events: 10,
+            max_events: 1,
             max_bytes: 1_048_576,
             after_sequence: Some(5),
             epoch: observed.epoch,
+            service_epoch: None,
         })
         .await
         .expect("replay after the large item");
@@ -469,6 +492,7 @@ async fn metadata_payloads_remain_exact_in_retained_and_live_public_observation(
         max_bytes: 262_144,
         after_sequence: Some(1),
         epoch: Some(0),
+        service_epoch: None,
     };
     let (observed, mut streamed) = tokio::sync::mpsc::unbounded_channel();
 
@@ -478,10 +502,8 @@ async fn metadata_payloads_remain_exact_in_retained_and_live_public_observation(
             .observe_provider_session_streaming(request, Some(observed))
             .await
     });
-    let retained = tokio::time::timeout(std::time::Duration::from_secs(5), streamed.recv())
-        .await
-        .expect("retained metadata deadline")
-        .expect("retained metadata");
+    let retained = streamed.recv().await.expect("retained metadata");
+    let snapshot_end = streamed.recv().await.expect("snapshot end streamed");
     assert!(
         !call.is_finished(),
         "the observer must still be attached for live metadata"
@@ -502,10 +524,12 @@ async fn metadata_payloads_remain_exact_in_retained_and_live_public_observation(
         result.events,
         vec![
             json!({"sequence":2,"event":usage}),
+            snapshot_marker(0, 2),
             json!({"sequence":3,"event":commands})
         ]
     );
     assert_eq!(result.epoch, Some(0));
+    assert_eq!(snapshot_end.event, snapshot_marker(0, 2));
     assert_eq!(result.end_reason, ObservationEndReason::ResultLimitReached);
     assert_eq!(
         streamed.recv().await.expect("live metadata").cursor,
@@ -533,12 +557,187 @@ async fn single_event(
             max_bytes: 262_144,
             after_sequence,
             epoch,
+            service_epoch: None,
         })
         .await?;
     let event = observed
         .events
         .into_iter()
-        .next()
+        .find(|event| event["kind"] != "snapshotEnd")
         .ok_or("no event arrived")?;
     Ok((event, observed.epoch))
+}
+
+fn snapshot_marker(epoch: u64, sequence: u64) -> Value {
+    json!({"kind":"snapshotEnd","cursor":{"epoch":epoch,"afterSequence":sequence}})
+}
+
+// Rejects repeats, skipped retained records, and treating compacted intermediate updates as a gap.
+#[tokio::test]
+async fn pages_follow_the_retained_projection_through_compacted_updates() {
+    let fixture = provider_fixture().await.expect("provider fixture");
+    for (id, text) in [("updated", "start"), ("other", "between pages")] {
+        fixture
+            .hub
+            .publish(fixture.board_target.clone(), item(id, text))
+            .await
+            .unwrap();
+    }
+    let served = served_api::ServedApi::start(fixture.identity).unwrap();
+    let client = served.client("projection-pages").await.unwrap();
+    let mut request = BoundedObservationRequest {
+        target: fixture.target,
+        timeout_seconds: 30,
+        max_events: 1,
+        max_bytes: 262_144,
+        after_sequence: None,
+        epoch: None,
+        service_epoch: None,
+    };
+    let (first, first_trace) = trace_page(&client, request.clone()).await.unwrap();
+    assert_eq!(first.events.len(), 1);
+    assert_eq!(first.events[0]["sequence"], 1);
+    request.epoch = first.epoch;
+    request.service_epoch = Some(first.generation.service_epoch);
+    request.after_sequence = Some(1);
+    for text in ["intermediate", "latest"] {
+        fixture
+            .hub
+            .publish(
+                fixture.board_target.clone(),
+                SessionEvent::ItemUpdated {
+                    item: SessionItem {
+                        item_id: "updated".into(),
+                        kind: SessionItemKind::AgentMessage,
+                        text: Some(text.into()),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    let (second, second_trace) = trace_page(&client, request.clone()).await.unwrap();
+    request.after_sequence = Some(3);
+    let (third, third_trace) = trace_page(&client, request.clone()).await.unwrap();
+    fixture
+        .hub
+        .publish(fixture.board_target, item("later", "after the cut"))
+        .await
+        .unwrap();
+    request.after_sequence = Some(5);
+    let (fourth, fourth_trace) = trace_page(&client, request).await.unwrap();
+
+    assert_eq!(second.events.len(), 1);
+    assert_eq!(second.events[0]["sequence"], 3);
+    assert_eq!(third.events.len(), 2);
+    assert_eq!(third.events[0]["sequence"], 5);
+    assert_eq!(third.events[0]["event"]["item"]["text"], "latest");
+    assert_eq!(third.events[1], snapshot_marker(0, 5));
+    assert_eq!(fourth.events.len(), 2);
+    assert_eq!(fourth.events[0]["sequence"], 6);
+    assert_eq!(fourth.events[1], snapshot_marker(0, 6));
+    for page in [second, third, fourth] {
+        assert_eq!(page.end_reason, ObservationEndReason::ResultLimitReached);
+    }
+    save_trace(
+        "continued-observation.json",
+        &[first_trace, second_trace, third_trace, fourth_trace],
+        "One end-of-snapshot at the first cut. Forward sequence 6 as live and consume the later cut.",
+    ).unwrap();
+    served.stop().await.unwrap();
+}
+
+// Rejects a truncated event losing its continuation sequence or preventing the cut.
+#[tokio::test]
+async fn a_kept_oversized_replacement_precedes_the_cut_and_advances_it() {
+    let fixture = provider_fixture().await.expect("provider fixture");
+    fixture
+        .hub
+        .publish(
+            fixture.board_target.clone(),
+            item("big", &"x".repeat(1_000_000)),
+        )
+        .await
+        .unwrap();
+    let served = served_api::ServedApi::start(fixture.identity).unwrap();
+    let client = served.client("oversize-cut").await.unwrap();
+    let mut request = BoundedObservationRequest {
+        target: fixture.target,
+        timeout_seconds: 30,
+        max_events: 1,
+        max_bytes: 4096,
+        after_sequence: Some(1),
+        epoch: Some(0),
+        service_epoch: None,
+    };
+    let (page, page_trace) = trace_page(&client, request.clone()).await.unwrap();
+    assert_eq!(
+        page.events,
+        vec![
+            json!({"kind":"eventTooLarge","itemId":"big","sequence":2}),
+            snapshot_marker(0, 2)
+        ]
+    );
+    assert_eq!(
+        page_trace["notifications"][0]["cursor"],
+        snapshot_marker(0, 2)["cursor"]
+    );
+    assert_eq!(
+        page_trace["notifications"][1]["cursor"],
+        snapshot_marker(0, 2)["cursor"]
+    );
+    fixture
+        .hub
+        .publish(fixture.board_target, item("later", "continues"))
+        .await
+        .unwrap();
+    request.after_sequence = Some(2);
+    request.service_epoch = Some(page.generation.service_epoch);
+    let (next, next_trace) = trace_page(&client, request).await.unwrap();
+    assert_eq!(next.events[0]["sequence"], 3);
+    assert_eq!(next.events[1], snapshot_marker(0, 3));
+    save_trace(
+        "oversized-observation.json",
+        &[page_trace, next_trace],
+        "One gap when the oversized record arrives. The attachment emits no end-of-snapshot.",
+    )
+    .unwrap();
+    served.stop().await.unwrap();
+}
+
+async fn trace_page(
+    client: &CollaborationClient,
+    request: BoundedObservationRequest,
+) -> Result<
+    (collaboration_protocol::BoundedObservationResult, Value),
+    collaboration_client::ClientError,
+> {
+    let (sink, mut streamed) = tokio::sync::mpsc::unbounded_channel();
+    let result = client
+        .observe_provider_session_streaming(request.clone(), Some(sink))
+        .await?;
+    let mut notifications = Vec::new();
+    while let Ok(notification) = streamed.try_recv() {
+        notifications.push(notification);
+    }
+    assert_eq!(
+        notifications.iter().map(|n| &n.event).collect::<Vec<_>>(),
+        result.events.iter().collect::<Vec<_>>(),
+    );
+    let trace = json!({"request":request,"notifications":notifications,"result":result});
+    Ok((result, trace))
+}
+
+fn save_trace(
+    name: &str,
+    calls: &[Value],
+    expected_attachment: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    if let Some(directory) = std::env::var_os("PROVIDER_OBSERVATION_TRACE_DIRECTORY") {
+        let path = std::path::PathBuf::from(directory).join(name);
+        let trace = json!({"calls":calls,"expectedAttachment":expected_attachment});
+        std::fs::write(path, serde_json::to_vec_pretty(&trace)?)?;
+    }
+    Ok(())
 }

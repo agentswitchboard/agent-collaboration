@@ -45,6 +45,29 @@
       "const": 1,
       "type": "integer"
     },
+    "ListWorkspacesParams": {
+      "additionalProperties": false,
+      "properties": {
+        "after": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "limit": {
+          "$ref": "#/$defs/RecordPageLimit"
+        }
+      },
+      "required": [
+        "after",
+        "limit"
+      ],
+      "type": "object"
+    },
     "MachineRevocationParams": {
       "additionalProperties": false,
       "properties": {
@@ -52,10 +75,13 @@
           "type": "string"
         },
         "secondFactorAt": {
-          "format": "int64",
-          "type": [
-            "integer",
-            "null"
+          "anyOf": [
+            {
+              "$ref": "#/$defs/UnixSeconds"
+            },
+            {
+              "type": "null"
+            }
           ]
         }
       },
@@ -118,6 +144,39 @@
             },
             "target": {
               "$ref": "#/$defs/WorkspaceId"
+            },
+            "v": {
+              "$ref": "#/$defs/IntentVersionOne"
+            }
+          },
+          "required": [
+            "operation",
+            "v",
+            "organization",
+            "target",
+            "operationId",
+            "params"
+          ],
+          "type": "object"
+        },
+        {
+          "additionalProperties": false,
+          "properties": {
+            "operation": {
+              "const": "ListWorkspaces",
+              "type": "string"
+            },
+            "operationId": {
+              "type": "null"
+            },
+            "organization": {
+              "$ref": "#/$defs/OrganizationId"
+            },
+            "params": {
+              "$ref": "#/$defs/ListWorkspacesParams"
+            },
+            "target": {
+              "$ref": "#/$defs/OrganizationId"
             },
             "v": {
               "$ref": "#/$defs/IntentVersionOne"
@@ -362,6 +421,12 @@
     "RecordPageLimit": {
       "maximum": 100,
       "minimum": 1,
+      "type": "integer"
+    },
+    "UnixSeconds": {
+      "format": "int64",
+      "maximum": 9007199254740991,
+      "minimum": 0,
       "type": "integer"
     },
     "WorkspaceId": {

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM engine_work_attempts WHERE machine_kind='direct_message' AND subject_key=?\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "735086fafd2767598770d3f44484e8c820cf25da72a938fd31f714949fb4593a"
+}

@@ -9,6 +9,9 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+wire-export = ["dep:specta"]
+
 [dependencies]
 schemars = { workspace = true, features = ["chrono04"] }
 serde.workspace = true
@@ -21,6 +24,7 @@ petgraph = { version = "0.8.3", default-features = false, features = ["std"] }
 url.workspace = true
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+specta = { workspace = true, features = ["derive"], optional = true }
 uuid.workspace = true
 chrono.workspace = true
 

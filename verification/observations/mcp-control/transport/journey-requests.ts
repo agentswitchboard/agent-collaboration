@@ -1,3 +1,4 @@
+import type { ObservationPosition } from "../observations/observation-ledger.ts";
 // The exact tool arguments the journey sends, built from the plan's declared identities. Two
 // identity forms exist on the wire and are not interchangeable:
 // - ConversationActor (create `createdBy`/`approver`, prompt and cancel `requestedBy`): the
@@ -148,9 +149,19 @@ export function loadArguments(
   };
 }
 
+export function observationPositionArguments(cursor: ObservationPosition): Arguments {
+  const { epoch, afterSequence, serviceEpoch } = cursor;
+  if (afterSequence !== null) {
+    if (epoch === null || serviceEpoch === null)
+      throw new Error("observation continuation needs a stream epoch and Host run");
+    return { epoch, afterSequence, serviceEpoch };
+  }
+  return epoch === null ? {} : { epoch };
+}
+
 export function observeArguments(
   target: SessionRef,
-  cursor: { readonly epoch: bigint | null; readonly afterSequence: bigint | null },
+  cursor: ObservationPosition,
   timeoutSeconds: number,
 ): Arguments {
   return {
@@ -158,7 +169,6 @@ export function observeArguments(
     timeoutSeconds,
     maxEvents: 200,
     maxBytes: 1_048_576,
-    ...(cursor.afterSequence === null ? {} : { afterSequence: cursor.afterSequence }),
-    ...(cursor.epoch === null ? {} : { epoch: cursor.epoch }),
+    ...observationPositionArguments(cursor),
   };
 }

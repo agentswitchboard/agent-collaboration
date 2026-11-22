@@ -1,0 +1,16 @@
+[
+null,
+{"reason":"factorNotRecent","result":"refused","unexpectedField":true},
+{"reason":"factorNotRecent","result":"unrecognizedVariant"},
+{"reason":"factorNotRecent"},
+{"reason":"notPermitted","result":"refused","unexpectedField":true},
+{"reason":"notPermitted","result":"unrecognizedVariant"},
+{"reason":"notPermitted"},
+{"reason":"unrecognizedVariant","result":"refused"},
+{"result":"alreadyEnded","unexpectedField":true},
+{"result":"notFound","unexpectedField":true},
+{"result":"refused"},
+{"result":"revoked","unexpectedField":true},
+{"result":"unrecognizedVariant"},
+{}
+]

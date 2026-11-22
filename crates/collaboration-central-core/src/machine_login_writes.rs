@@ -62,7 +62,7 @@ pub(crate) fn statements(
                 enrollments.insert(next.id.as_str().to_owned(), next.clone());
             }
             EnrollmentChange::Record(record) => {
-                if record.created_at_millis != applying_ms {
+                if record.created_at_millis.0 != applying_ms {
                     return Err(corrupt("signin_change_records.created_at"));
                 }
                 statements.push(fleet_signin::organization_change::insert(record)?);

@@ -51,6 +51,9 @@ interface CaseOptions {
 	readonly extraTurn?: boolean;
 	readonly acceptedInput?: boolean;
 	readonly changedEpoch?: boolean;
+	readonly changedHostRun?: boolean;
+	readonly observationShape?: 'legacy';
+	readonly refusal?: 'bare' | 'numbered' | 'oversize';
 	readonly firstInspectGate?: Promise<void>;
 	readonly secondInspectGate?: Promise<void>;
 }
@@ -169,16 +172,49 @@ async function controlledRun(options: CaseOptions = {}): Promise<{
 									: []),
 							];
 				const page = observed === 0 ? undefined : options.replyPages?.[observed - 1];
+				const epoch = options.changedEpoch && observed > 0 ? 2 : 1;
+				const serviceEpoch =
+					options.changedHostRun && observed > 0 ? '00000000-0000-7000-8000-000000000099' : EPOCH;
+				const afterSequence = args['afterSequence'];
+				if (afterSequence === undefined) {
+					expect(args['serviceEpoch']).toBeUndefined();
+				} else {
+					expect(args).toMatchObject({
+						afterSequence: BigInt(sequence),
+						epoch: 1n,
+						serviceEpoch: EPOCH,
+					});
+				}
+				const refusal = observed === 0 ? undefined : options.refusal;
+				const endReason =
+					refusal === 'bare' || refusal === 'numbered'
+						? 'resyncRequired'
+						: (page?.endReason ?? 'deadlineReached');
+				const records: unknown[] = [];
+				if (refusal === 'bare') records.push({ kind: 'resyncRequired' });
+				else if (refusal === 'numbered')
+					records.push({
+						sequence: ++sequence,
+						event: { kind: 'resyncRequired', replayEpoch: epoch + 1 },
+					});
+				else if (refusal === 'oversize')
+					records.push({ kind: 'eventTooLarge', sequence: ++sequence, itemId: null });
+				else
+					records.push(
+						...(page?.events ?? events).map((event) => ({ sequence: ++sequence, event })),
+					);
+				if (options.observationShape !== 'legacy' && endReason === 'deadlineReached')
+					records.push({ kind: 'snapshotEnd', cursor: { epoch, afterSequence: sequence } });
 				value = {
 					target: options.foreignObservation
 						? { ...targetSession, sessionId: 'foreign' }
 						: targetSession,
-					generation: {},
+					generation: { serviceEpoch, generation: 1 },
 					attached: true,
 					continuationGap: true,
-					epoch: options.changedEpoch && observed > 0 ? 2 : 1,
-					endReason: page?.endReason ?? 'deadlineReached',
-					events: (page?.events ?? events).map((event) => ({ sequence: ++sequence, event })),
+					epoch,
+					endReason,
+					events: records,
 				};
 				observed += 1;
 			}
@@ -404,6 +440,10 @@ for (const [options, reason] of [
 	[{ extraTurn: true }, 'another input or turn shared the CLI Session'],
 	[{ acceptedInput: true }, 'another input or turn shared the CLI Session'],
 	[{ changedEpoch: true }, 'CLI MCP reply history is incomplete'],
+	[{ changedHostRun: true }, 'CLI MCP reply history is incomplete'],
+	[{ changedHostRun: true, refusal: 'bare' }, 'CLI MCP reply history is incomplete'],
+	[{ refusal: 'numbered' }, 'CLI MCP reply history is incomplete'],
+	[{ refusal: 'oversize' }, 'CLI MCP reply history is incomplete'],
 	[
 		{ outcome: { kind: 'ended', stop_reason: 'cancelled', local_cause: null } },
 		'CLI turn did not end normally',
@@ -528,7 +568,16 @@ test('a single legitimate turn spans result-limited pages with an exact continua
 			)
 			.filter((entry) => entry.step.startsWith('cli-reply-'));
 		expect(replyReads).toHaveLength(2);
-		expect(replyReads[1]?.arguments).toMatchObject({ epoch: 1n, afterSequence: 4n });
+		expect(replyReads[0]?.arguments).toMatchObject({
+			epoch: 1n,
+			afterSequence: 0n,
+			serviceEpoch: EPOCH,
+		});
+		expect(replyReads[1]?.arguments).toMatchObject({
+			epoch: 1n,
+			afterSequence: 4n,
+			serviceEpoch: EPOCH,
+		});
 	} finally {
 		await fixture.cleanup();
 	}
@@ -545,6 +594,21 @@ test('an unread result-limited tail at the existing read bound cannot write succ
 		await expect(fixture.drive()).rejects.toThrow('incomplete at its read bound');
 		expect(fixture.hasResult()).toBe(false);
 		expect(fixture.reads().split('"step":"cli-reply-').length - 1).toBe(10);
+	} finally {
+		await fixture.cleanup();
+	}
+});
+
+test('legacy numbered-only records still prove the CLI turn', async () => {
+	const fixture = await controlledRun({ observationShape: 'legacy' });
+	try {
+		await expect(fixture.drive()).resolves.toEqual(['prompt-composed', 'prompt-replied']);
+		expect(fixture.result()).toMatchObject({
+			target: targetSession,
+			inputId,
+			turnId,
+			reply: declaration.completion,
+		});
 	} finally {
 		await fixture.cleanup();
 	}

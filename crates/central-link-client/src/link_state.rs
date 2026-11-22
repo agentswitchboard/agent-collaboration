@@ -4,13 +4,13 @@ use crate::{
     pending_calls::{PendingCalls, ReplyDisposition},
 };
 use central_link_protocol::{
-    CorrelationId, DataFrame, LinkFrame, LinkRequest, ReplyPayload, RequestPayload,
-    TokenRenewalResult,
+    CorrelationId, DataFrame, DeliveryMessage, LinkFrame, LinkRequest, ReceiptBatch, ReceiptResult,
+    ReplyPayload, RequestPayload, TimeLeft, TokenRenewalResult,
 };
 use router_clock::{ClockInstant, RuntimeClock};
 use std::{sync::Arc, time::Duration};
 use workspace_ids::MachineId;
-use workspace_model::{Caller, ResolvedSender, Timestamp, central_mail::MessageRecord};
+use workspace_model::{Caller, ResolvedSender, Timestamp};
 
 const PING_INTERVAL: Duration = Duration::from_secs(20);
 const CALL_DEADLINE: Duration = Duration::from_secs(30);
@@ -83,14 +83,25 @@ pub enum ClientEvent {
     },
     /// A message central delivered to this Router (2c); repeats are safe.
     Deliver {
-        message: MessageRecord,
+        message: Box<DeliveryMessage>,
         sender: ResolvedSender,
+        time_left: Option<TimeLeft>,
+    },
+    ReceiptResults {
+        correlation_id: CorrelationId,
+        results: Vec<ReceiptResult>,
     },
     /// Central's answer to a RenewMachineToken the Host sent.
     TokenRenewal {
         correlation_id: CorrelationId,
         result: TokenRenewalResult,
     },
+}
+
+struct PendingReceiptFrame {
+    correlation_id: CorrelationId,
+    count: usize,
+    expires_at: ClockInstant,
 }
 
 pub struct LinkClient {
@@ -100,6 +111,7 @@ pub struct LinkClient {
     retry_delay: Duration,
     pending: PendingCalls,
     id_context: uuid::ContextV7,
+    pending_receipts: Option<PendingReceiptFrame>,
 }
 
 impl LinkClient {
@@ -114,6 +126,7 @@ impl LinkClient {
             retry_delay: INITIAL_RETRY,
             pending: PendingCalls::default(),
             id_context: uuid::ContextV7::new(),
+            pending_receipts: None,
         }
     }
 
@@ -140,12 +153,25 @@ impl LinkClient {
         connection
             .into_iter()
             .chain(self.pending.next_deadline())
+            .chain(
+                self.pending_receipts
+                    .as_ref()
+                    .map(|receipts| receipts.expires_at),
+            )
             .min()
     }
 
     /// Drain due actions before processing socket events; call again until None.
     pub fn poll_time(&mut self) -> Option<ClientAction> {
         let now = self.clock.monotonic_now();
+        if self
+            .pending_receipts
+            .as_ref()
+            .is_some_and(|receipts| now >= receipts.expires_at)
+        {
+            let failed = self.disconnect();
+            return Some(ClientAction::Reconnect { failed });
+        }
         let failed = self.pending.expire(now);
         if !failed.is_empty() {
             return Some(ClientAction::CallsExpired { failed });
@@ -210,6 +236,26 @@ impl LinkClient {
         }))
     }
 
+    /// One receipt frame is outstanding per connection. The Router owns its durable items.
+    pub fn begin_receipts(&mut self, receipts: ReceiptBatch) -> Result<LinkFrame, ClientError> {
+        if !matches!(self.state, ConnectionState::Connected { .. }) {
+            return Err(ClientError::CentralUnavailable);
+        }
+        if self.pending_receipts.is_some() {
+            return Err(ClientError::ReceiptFramePending);
+        }
+        let correlation_id = self.next_correlation();
+        self.pending_receipts = Some(PendingReceiptFrame {
+            correlation_id: correlation_id.clone(),
+            count: receipts.receipts().len(),
+            expires_at: self.clock.monotonic_now().after(CALL_DEADLINE),
+        });
+        Ok(LinkFrame::Data(DataFrame::Receipts {
+            correlation_id,
+            receipts,
+        }))
+    }
+
     /// Only DefinitelyNotSent guarantees no request bytes were sent.
     pub fn send_failed(
         &mut self,
@@ -271,10 +317,30 @@ impl LinkClient {
                 }),
                 ReplyDisposition::AlreadyResolved => Ok(ClientEvent::LateReply { correlation_id }),
             },
-            LinkFrame::Data(DataFrame::Deliver { message, sender }) => Ok(ClientEvent::Deliver {
-                message: *message,
+            LinkFrame::Data(DataFrame::Deliver {
+                message,
                 sender,
+                time_left,
+            }) => Ok(ClientEvent::Deliver {
+                message,
+                sender,
+                time_left,
             }),
+            LinkFrame::Data(DataFrame::ReceiptResults {
+                correlation_id,
+                results,
+            }) => {
+                if !self.pending_receipts.as_ref().is_some_and(|pending| {
+                    pending.correlation_id == correlation_id && pending.count == results.len()
+                }) {
+                    return Err(ClientError::InvalidReceiptResults);
+                }
+                self.pending_receipts = None;
+                Ok(ClientEvent::ReceiptResults {
+                    correlation_id,
+                    results,
+                })
+            }
             // The Host owns renewal correlation (it sent the frame); the client
             // only surfaces central's answer.
             LinkFrame::Data(DataFrame::MachineTokenRenewal {
@@ -291,7 +357,7 @@ impl LinkClient {
                 | DataFrame::RequestStatus { .. }
                 | DataFrame::RequestStatusReply { .. }
                 | DataFrame::Batch { .. }
-                | DataFrame::Ack { .. }
+                | DataFrame::Receipts { .. }
                 | DataFrame::RenewMachineToken { .. },
             ) => Err(ClientError::UnexpectedFrame),
         }
@@ -314,6 +380,7 @@ impl LinkClient {
             last_attempt,
         };
         self.retry_delay = self.retry_delay.saturating_mul(2).min(MAX_RETRY);
+        self.pending_receipts = None;
         self.pending.fail_all()
     }
 
@@ -328,6 +395,7 @@ impl LinkClient {
             attempt: attempt.clone(),
             reason,
         };
+        self.pending_receipts = None;
         Ok(self.pending.fail_all())
     }
 

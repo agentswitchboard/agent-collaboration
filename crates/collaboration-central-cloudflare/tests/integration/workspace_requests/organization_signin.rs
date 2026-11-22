@@ -8,6 +8,7 @@ mod floors;
 mod issuer_order;
 mod launcher_controls;
 mod linearization;
+mod list_workspaces;
 mod machine_login;
 mod observations;
 mod post_turn;

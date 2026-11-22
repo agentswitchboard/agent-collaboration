@@ -1,22 +1,25 @@
 //! Provider Session observation: bounded, resumable reads of the same hub attached faces use.
 //! Following a Session is a chain of these reads, each resuming after the last event.
-use crate::collaboration_rejection::{
-    CollaborationRejection, CollaborationRejectionReason, PublishedRejection,
+use super::{
+    observation_call_driver::{ObservationDriver, ObservedEventSink},
+    observation_call_machine::{
+        Admission, HistoryArrival, LiveArrival, ObservationArrival, ObservationEnding,
+        ObservationRecord, ObservationState, bare_gap,
+    },
+    observation_failure::ObservationFailure,
 };
 use collaboration_contracts::HubEvent;
 use collaboration_contracts::SessionEventAttachment;
 use collaboration_contracts::SessionEventHubError;
 use collaboration_protocol::{
     BoundedObservationRequest, BoundedObservationResult, ChannelDescription, CodexGeneration,
-    EndpointAvailability, ObservationEndReason, ObservationEventNotification,
-    ProviderObservationEventTooLarge, ProviderObservationEventTooLargeKind, SessionRef,
+    EndpointAvailability, ObservationCursor, ProviderObservationEventTooLarge,
+    ProviderObservationEventTooLargeKind, SessionRef, UuidIdentity,
 };
-use serde_json::{Value, json};
+use router_clock::RuntimeClock;
+use serde_json::Value;
 use session_event_model::SessionEvent;
 use tokio::sync::broadcast;
-
-/// Where an observation hands each event as it observes it, before its result.
-pub type ObservedEventSink = tokio::sync::mpsc::UnboundedSender<ObservationEventNotification>;
 
 /// Observation operations over the provider Session event hub.
 pub struct ObservationOperations {
@@ -24,6 +27,7 @@ pub struct ObservationOperations {
     pub(super) provider_session_hub:
         Option<std::sync::Arc<dyn collaboration_contracts::SessionEventHub>>,
     pub(super) directory: collaboration_runtime::EndpointDirectory,
+    clock: std::sync::Arc<dyn RuntimeClock>,
 }
 
 impl ObservationOperations {
@@ -31,12 +35,20 @@ impl ObservationOperations {
         identity: collaboration_contracts::RouterIdentity,
         provider_session_hub: Option<std::sync::Arc<dyn collaboration_contracts::SessionEventHub>>,
         directory: collaboration_runtime::EndpointDirectory,
+        clock: std::sync::Arc<dyn RuntimeClock>,
     ) -> Self {
         Self {
             identity,
             provider_session_hub,
             directory,
+            clock,
         }
+    }
+
+    /// The Host clock shared by the collector and its notification carrier.
+    #[must_use]
+    pub fn clock(&self) -> &dyn RuntimeClock {
+        self.clock.as_ref()
     }
 
     /// Collects events after `afterSequence` (in `epoch`) until a bound or the deadline,
@@ -69,153 +81,170 @@ async fn collect(
     {
         return Err(ObservationFailure::InvalidField);
     }
-    let deadline = tokio::time::Instant::now()
+    let continuation = ObservationContinuation::from_request(&request)?;
+    let clock = operations.clock();
+    let deadline = clock
+        .monotonic_now()
         .checked_add(std::time::Duration::from_secs(request.timeout_seconds))
         .ok_or(ObservationFailure::InvalidField)?;
-    let (attachment, generation) =
-        tokio::time::timeout_at(deadline, attach(&request.target, operations))
-            .await
-            .map_err(|_| ObservationFailure::Unavailable)??;
-    if request.after_sequence.is_some() && request.epoch.is_none() {
-        return Err(ObservationFailure::InvalidField);
-    }
-    let current_epoch = attachment.epoch;
-    let mut events = CollectedEvents {
-        events: Vec::new(),
-        bytes: 0,
-        epoch: current_epoch,
-        observed,
+    let mut driver = ObservationDriver::new(observed);
+    let attached = router_clock::timeout_at(clock, deadline, attach(&request.target, operations))
+        .await
+        .map_err(|_| ObservationFailure::Unavailable)
+        .and_then(std::convert::identity);
+    let (attachment, generation) = match attached {
+        Ok(attached) => attached,
+        Err(failure) => {
+            driver.dispatch(ObservationArrival::Admission(Admission::AttachFailed), 0)?;
+            return Err(failure);
+        }
     };
-    if request.epoch.is_some_and(|epoch| epoch != current_epoch) {
-        // The marker is this call's whole answer, so the event and byte budgets do not apply
-        // to it: it is always returned and streamed.
-        let marker = json!({"kind":"resyncRequired"});
-        events.stream(ObservationEventNotification::resync_marker(marker.clone()));
-        return Ok(BoundedObservationResult {
-            target: request.target,
-            generation,
-            attached: true,
-            events: vec![marker],
-            end_reason: ObservationEndReason::ResyncRequired,
-            continuation_gap: true,
-            epoch: Some(current_epoch),
-        });
-    }
-    let mut snapshot = attachment.snapshot.into_iter().filter(|event| {
-        request
-            .after_sequence
-            .is_none_or(|after| event.sequence > after)
-    });
-    let mut receiver = attachment.receiver;
-    let end_reason = loop {
-        let event = if let Some(event) = snapshot.next() {
-            if matches!(&event.event, SessionEvent::ResyncRequired { .. }) {
-                let _ = events.append_resync_marker(event_value_bounded(event), &request)?;
-                break ObservationEndReason::ResyncRequired;
-            }
-            event_value_bounded(event)
-        } else {
-            let received = tokio::select! {
-                () = tokio::time::sleep_until(deadline) => break ObservationEndReason::DeadlineReached,
-                received = receiver.recv() => received,
-            };
-            match received {
-                Ok(
-                    event @ HubEvent {
-                        event: SessionEvent::ResyncRequired { .. },
-                        ..
-                    },
-                ) => {
-                    let _ = events.append_resync_marker(event_value_bounded(event), &request)?;
-                    break ObservationEndReason::ResyncRequired;
-                }
-                Ok(event) => event_value_bounded(event),
-                Err(broadcast::error::RecvError::Lagged(_)) => {
-                    let _ =
-                        events.append_resync_marker(json!({"kind":"resyncRequired"}), &request)?;
-                    break ObservationEndReason::ResyncRequired;
-                }
-                Err(broadcast::error::RecvError::Closed) => {
-                    break ObservationEndReason::BackendDisconnected;
-                }
-            }
+
+    let ObservationContinuation {
+        epoch,
+        after_sequence,
+        service_epoch,
+    } = continuation;
+    let current_epoch = attachment.epoch;
+    let refused = epoch.is_some_and(|epoch| epoch != current_epoch)
+        || after_sequence.is_some_and(|sequence| sequence > attachment.latest_issued_sequence)
+        || service_epoch.is_some_and(|epoch| epoch != generation.service_epoch);
+    if refused {
+        driver.dispatch(
+            ObservationArrival::Admission(Admission::Refused),
+            current_epoch,
+        )?;
+    } else {
+        driver.dispatch(
+            ObservationArrival::Admission(Admission::Accepted),
+            current_epoch,
+        )?;
+        let mut cursor = ObservationCursor {
+            epoch: current_epoch,
+            after_sequence: after_sequence.unwrap_or(0),
         };
-        if !events.append(event, &request)? {
-            break ObservationEndReason::ResultLimitReached;
+        let mut budget = ObservationBudget {
+            remaining_records: request.max_events,
+            bytes: 0,
+            max_bytes: request.max_bytes,
+        };
+        let mut history = attachment
+            .snapshot
+            .into_iter()
+            .filter(|event| after_sequence.is_none_or(|after| event.sequence > after))
+            .peekable();
+        while driver.state == ObservationState::History {
+            let arrival = match history.next() {
+                None => HistoryArrival::Exhausted(cursor),
+                Some(event) if matches!(&event.event, SessionEvent::ResyncRequired { .. }) => {
+                    HistoryArrival::Gap(event_value(event)?)
+                }
+                Some(event) => {
+                    let sequence = event.sequence;
+                    match budget.admit(event)? {
+                        RecordAdmission::Room(record) => {
+                            cursor.after_sequence = sequence;
+                            HistoryArrival::Record(record)
+                        }
+                        RecordAdmission::Exact(record) if history.peek().is_none() => {
+                            cursor.after_sequence = sequence;
+                            HistoryArrival::LimitAtEnd(record, cursor)
+                        }
+                        RecordAdmission::Exact(record) => HistoryArrival::LimitWithMore(record),
+                        RecordAdmission::NoRoom => HistoryArrival::DoesNotFit,
+                    }
+                }
+            };
+            driver.dispatch(ObservationArrival::History(arrival), current_epoch)?;
         }
-        if events.events.len() == request.max_events || events.bytes == request.max_bytes {
-            break ObservationEndReason::ResultLimitReached;
+        let mut receiver = attachment.receiver;
+        while driver.state == ObservationState::Live {
+            let arrival = tokio::select! {
+                () = clock.sleep_until(deadline) => LiveArrival::Deadline,
+                received = receiver.recv() => match received {
+                    Ok(event) if matches!(&event.event, SessionEvent::ResyncRequired { .. }) => {
+                        LiveArrival::Gap(event_value(event)?)
+                    }
+                    Ok(event) => match budget.admit(event)? {
+                        RecordAdmission::Room(record) => LiveArrival::Record(record),
+                        RecordAdmission::Exact(record) => LiveArrival::Limit(record),
+                        RecordAdmission::NoRoom => LiveArrival::DoesNotFit,
+                    },
+                    Err(broadcast::error::RecvError::Lagged(_)) => LiveArrival::Gap(bare_gap()),
+                    Err(broadcast::error::RecvError::Closed) => LiveArrival::Disconnected,
+                },
+            };
+            driver.dispatch(ObservationArrival::Live(arrival), current_epoch)?;
         }
+    }
+    let ObservationState::Ended(ObservationEnding::Result(end_reason)) = driver.state else {
+        return Err(ObservationFailure::Unavailable);
     };
     Ok(BoundedObservationResult {
         target: request.target,
         generation,
         attached: true,
-        events: events.events,
+        events: driver.events,
         end_reason,
         continuation_gap: true,
         epoch: Some(current_epoch),
     })
 }
 
-/// The events one observation has collected, and where it streams each as it is collected.
-struct CollectedEvents {
-    events: Vec<Value>,
-    bytes: usize,
-    epoch: u64,
-    observed: Option<ObservedEventSink>,
+struct ObservationContinuation {
+    epoch: Option<u64>,
+    after_sequence: Option<u64>,
+    service_epoch: Option<UuidIdentity>,
 }
 
-impl CollectedEvents {
-    /// Adds a history event if it fits the request's bounds, streaming it with the cursor
-    /// that continues after it; `false` when it does not fit.
-    fn append(
-        &mut self,
-        event: Value,
-        request: &BoundedObservationRequest,
-    ) -> Result<bool, ObservationFailure> {
-        let streamed = ObservationEventNotification::provider_event(event.clone(), self.epoch);
-        self.push(event, streamed, request)
-    }
-
-    /// Adds a resync marker, from a stale epoch, a hub reset or a lagging reader. The history
-    /// must be attached again, so it streams with no cursor, numbered or not.
-    fn append_resync_marker(
-        &mut self,
-        marker: Value,
-        request: &BoundedObservationRequest,
-    ) -> Result<bool, ObservationFailure> {
-        let streamed = ObservationEventNotification::resync_marker(marker.clone());
-        self.push(marker, streamed, request)
-    }
-
-    fn push(
-        &mut self,
-        event: Value,
-        streamed: ObservationEventNotification,
-        request: &BoundedObservationRequest,
-    ) -> Result<bool, ObservationFailure> {
-        let encoded = serde_json::to_vec(&event).map_err(|_| ObservationFailure::Unavailable)?;
-        if self.events.len() >= request.max_events
-            || self
-                .bytes
-                .checked_add(encoded.len())
-                .is_none_or(|total| total > request.max_bytes.min(MAX_EVENT_BYTES))
+impl ObservationContinuation {
+    fn from_request(request: &BoundedObservationRequest) -> Result<Self, ObservationFailure> {
+        if request.epoch.is_none()
+            && (request.after_sequence.is_some() || request.service_epoch.is_some())
+            || request.service_epoch.is_some() && request.after_sequence.is_none()
         {
-            return Ok(false);
+            return Err(ObservationFailure::InvalidField);
         }
-        self.bytes += encoded.len();
-        self.stream(streamed);
-        self.events.push(event);
-        Ok(true)
+        Ok(Self {
+            epoch: request.epoch,
+            after_sequence: request.after_sequence,
+            service_epoch: request.service_epoch.clone(),
+        })
     }
+}
 
-    /// Hands one event to the caller's stream. A caller that stopped listening still gets
-    /// every event in the result.
-    fn stream(&self, notification: ObservationEventNotification) {
-        if let Some(observed) = &self.observed {
-            let _streamed = observed.send(notification);
+struct ObservationBudget {
+    remaining_records: usize,
+    bytes: usize,
+    max_bytes: usize,
+}
+
+enum RecordAdmission {
+    Room(ObservationRecord),
+    Exact(ObservationRecord),
+    NoRoom,
+}
+
+impl ObservationBudget {
+    fn admit(&mut self, event: HubEvent) -> Result<RecordAdmission, ObservationFailure> {
+        let sequence = event.sequence;
+        let (value, encoded_bytes) = event_value_bounded(event)?;
+        let Some(total_bytes) = self.bytes.checked_add(encoded_bytes) else {
+            return Ok(RecordAdmission::NoRoom);
+        };
+        if self.remaining_records == 0 || total_bytes > self.max_bytes.min(MAX_EVENT_BYTES) {
+            return Ok(RecordAdmission::NoRoom);
         }
+        self.remaining_records -= 1;
+        self.bytes = total_bytes;
+        let record = ObservationRecord { sequence, value };
+        Ok(
+            if self.remaining_records == 0 || self.bytes == self.max_bytes {
+                RecordAdmission::Exact(record)
+            } else {
+                RecordAdmission::Room(record)
+            },
+        )
     }
 }
 
@@ -265,11 +294,21 @@ async fn attach(
     Ok((attachment, generation))
 }
 
-fn event_value(event: HubEvent) -> Value {
-    json!({"sequence":event.sequence,"event":event.event})
+#[derive(serde::Serialize)]
+struct SequencedEvent {
+    sequence: u64,
+    event: SessionEvent,
 }
 
-fn event_value_bounded(event: HubEvent) -> Value {
+fn event_value(event: HubEvent) -> Result<Value, ObservationFailure> {
+    serde_json::to_value(SequencedEvent {
+        sequence: event.sequence,
+        event: event.event,
+    })
+    .map_err(|_| ObservationFailure::Unavailable)
+}
+
+fn event_value_bounded(event: HubEvent) -> Result<(Value, usize), ObservationFailure> {
     let sequence = event.sequence;
     let item_id = match &event.event {
         SessionEvent::ItemStarted { item } | SessionEvent::ItemUpdated { item } => {
@@ -278,64 +317,23 @@ fn event_value_bounded(event: HubEvent) -> Value {
         SessionEvent::ItemCompleted { item_id } => Some(item_id.clone()),
         _ => None,
     };
-    let value = event_value(event);
-    if serde_json::to_vec(&value).is_ok_and(|encoded| encoded.len() <= MAX_EVENT_BYTES) {
-        value
-    } else {
-        json!(ProviderObservationEventTooLarge {
-            kind: ProviderObservationEventTooLargeKind::EventTooLarge,
-            sequence,
-            item_id,
-        })
+    let value = event_value(event)?;
+    let encoded = serde_json::to_vec(&value).map_err(|_| ObservationFailure::Unavailable)?;
+    if encoded.len() <= MAX_EVENT_BYTES {
+        return Ok((value, encoded.len()));
     }
+    let replacement = serde_json::to_value(ProviderObservationEventTooLarge {
+        kind: ProviderObservationEventTooLargeKind::EventTooLarge,
+        sequence,
+        item_id,
+    })
+    .map_err(|_| ObservationFailure::Unavailable)?;
+    let bytes = serde_json::to_vec(&replacement)
+        .map_err(|_| ObservationFailure::Unavailable)?
+        .len();
+    Ok((replacement, bytes))
 }
 
-/// Why a provider observation failed: `{kind, stage, message}` on the wire.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum ObservationFailure {
-    #[error("Invalid provider observation request")]
-    InvalidField,
-    #[error("Provider Session was not found")]
-    NotFound,
-    #[error("Provider observation unavailable")]
-    Unavailable,
-}
-
-impl ObservationFailure {
-    #[must_use]
-    pub const fn kind(self) -> &'static str {
-        match self {
-            Self::InvalidField => "invalidField",
-            Self::NotFound => "notFound",
-            Self::Unavailable => "unavailable",
-        }
-    }
-}
-
-impl serde::Serialize for ObservationFailure {
-    fn serialize<TSerializer: serde::Serializer>(
-        &self,
-        serializer: TSerializer,
-    ) -> Result<TSerializer::Ok, TSerializer::Error> {
-        json!({"kind":self.kind(),"stage":"inspect","message":self.to_string()})
-            .serialize(serializer)
-    }
-}
-
-impl CollaborationRejection for ObservationFailure {
-    fn rejection_reason(&self) -> Option<CollaborationRejectionReason> {
-        match self {
-            Self::InvalidField => Some(CollaborationRejectionReason::InvalidShape),
-            Self::NotFound | Self::Unavailable => None,
-        }
-    }
-
-    fn published_rejection(&self) -> PublishedRejection {
-        let code = match self {
-            Self::InvalidField => PublishedRejection::INVALID_PARAMS,
-            Self::NotFound => PublishedRejection::NOT_FOUND,
-            Self::Unavailable => PublishedRejection::OPERATION_FAILED,
-        };
-        PublishedRejection::typed(code, self.to_string(), self)
-    }
-}
+#[cfg(test)]
+#[path = "provider_observation_operations_test.rs"]
+mod tests;

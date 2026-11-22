@@ -24,6 +24,7 @@ pub use fleet_runtime::{FleetRuntime, TurnGuard};
 pub use pause_points::{HeldPause, PausePoint, PausePoints};
 #[cfg(feature = "test-support")]
 pub use test_faults::{
-    EngineCommitFault, EngineCommitFaultKind, EngineReadFault, LegacyUnitInvocations, TestFaults,
+    DirectMarkAnswerLoss, EngineCommitFault, EngineCommitFaultKind, EngineReadFault,
+    LegacyUnitInvocations, TestFaults,
 };
 pub use workspace_turns::{WorkspaceTurn, WorkspaceTurns};

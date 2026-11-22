@@ -78,7 +78,7 @@ async fn lost_read_answer_before_effect_is_unavailable_and_never_cached() {
         Arc::new(fleet_storage_schema::workspace_migrations::workspace_migrator()),
     ));
     let lose = Arc::new(AtomicBool::new(true));
-    let runtime = WorkspaceRuntime::new(
+    let central_service = WorkspaceRuntime::new(
         FleetRuntime::open(
             f.caller.organization_id().clone(),
             central.clone(),
@@ -96,6 +96,7 @@ async fn lost_read_answer_before_effect_is_unavailable_and_never_cached() {
             Arc::new(|_| {}),
         ),
         central.clone(),
+        central.clone(),
     )
     .with_sign_in_verification(
         collaboration_central_tokio::NativeSignInTrust::new(settings(&f.keys.url))
@@ -112,7 +113,7 @@ async fn lost_read_answer_before_effect_is_unavailable_and_never_cached() {
         },
     };
     assert_eq!(
-        runtime
+        central_service
             .request(&f.caller, request.clone())
             .await
             .unwrap()
@@ -130,12 +131,18 @@ async fn lost_read_answer_before_effect_is_unavailable_and_never_cached() {
             .rows
             .is_empty()
     );
-    let replay = runtime.request(&f.caller, request.clone()).await.unwrap();
+    let replay = central_service
+        .request(&f.caller, request.clone())
+        .await
+        .unwrap();
     assert!(matches!(
         replay.result,
         m::WorkspaceResult::Done(m::WorkspaceAnswer::Created { .. })
     ));
-    assert_eq!(runtime.request(&f.caller, request).await.unwrap(), replay);
+    assert_eq!(
+        central_service.request(&f.caller, request).await.unwrap(),
+        replay
+    );
 
     let status = RequestStatusQuery {
         request_id: id(891),
@@ -143,11 +150,14 @@ async fn lost_read_answer_before_effect_is_unavailable_and_never_cached() {
     };
     lose.store(true, Ordering::SeqCst);
     assert_eq!(
-        runtime.request_status(&f.caller, &status).await,
+        central_service.request_status(&f.caller, &status).await,
         Err(StoreFailure::AnswerLost)
     );
     assert_eq!(
-        runtime.request_status(&f.caller, &status).await.unwrap(),
+        central_service
+            .request_status(&f.caller, &status)
+            .await
+            .unwrap(),
         RequestStatusAnswer::Answered(ReplyPayload::Workspace(replay))
     );
     central.close().await;

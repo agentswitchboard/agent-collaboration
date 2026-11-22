@@ -1,14 +1,62 @@
 //! Closed answers from a verified organization admin operation.
-use crate::person_request::AdmissionRefusal;
+use crate::person_request::{AdmissionRefusal, MAXIMUM_RECORD_PAGE};
 use fleet_contracts::WorkspaceView;
 use fleet_engine::EngineFailureClass;
-use fleet_signin::organization_change::OrganizationChangeRecord;
+use fleet_identity_protocol::UnixMillis;
+use fleet_signin::organization_change::{
+    ChangeRequestId, OrganizationChangeOrigin,
+    OrganizationChangeRecord as TargetedOrganizationChangeRecord,
+};
+use message_board::WorkspaceId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use workspace_ids::MachineId;
+
+/// The organization change page projects both subject shapes under one kind tag.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub enum OrganizationChangeRecord {
+    MachineAllowanceChanged {
+        #[schemars(with = "String", extend("format" = "uuid"))]
+        id: uuid::Uuid,
+        request_id: ChangeRequestId,
+        origin: OrganizationChangeOrigin,
+        machine_id: MachineId,
+        workspace_id: WorkspaceId,
+        state: MachineAllowanceState,
+        created_at_millis: UnixMillis,
+    },
+    #[serde(untagged)]
+    TargetedChange(TargetedOrganizationChangeRecord),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub enum MachineAllowanceState {
+    Active,
+    Withdrawn,
+}
 
 /// The closed set of engine kinds an admin sees; test-support machines are hidden.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum EngineKindName {
     WakeTimer,
     AutomationTimer,
@@ -22,6 +70,10 @@ pub enum EngineKindName {
 /// One registered engine kind in EngineHealth; zero counts are listed too.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct EngineKindHealth {
     pub kind: EngineKindName,
     pub failing: u32,
@@ -34,6 +86,10 @@ pub struct EngineKindHealth {
 /// One retired failure record in EngineListRetired, ascending by attempt ID.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct EngineRetiredItem {
     #[schemars(with = "String", extend("format" = "uuid"))]
     pub attempt_id: uuid::Uuid,
@@ -50,13 +106,91 @@ pub struct EngineRetiredItem {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OrganizationAdminAnswer {
     Answered(OrganizationAdminResult),
+    WorkspaceList(ListWorkspacesResult),
     MachineEnrollmentRevocation(MachineEnrollmentRevocationResult),
     Retained(RetainedOrganizationAdminAnswer),
     Unauthenticated,
 }
 
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "result", rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub enum ListWorkspacesResult {
+    Workspaces {
+        workspaces: WorkspacePageRows,
+        #[serde(deserialize_with = "Option::deserialize")]
+        #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = NullableWorkspacePageCursor))]
+        next: NullableWorkspacePageCursor,
+    },
+    Refused {
+        reason: AdminRefusal,
+    },
+}
+
+type NullableWorkspacePageCursor = Option<message_board::WorkspaceId>;
+
+#[cfg(all(feature = "wire-export", not(target_arch = "wasm32")))]
+const _: fn(&ListWorkspacesResult) -> Option<&NullableWorkspacePageCursor> = |result| match result {
+    ListWorkspacesResult::Workspaces { next, .. } => Some(next),
+    ListWorkspacesResult::Refused { .. } => None,
+};
+
+/// The bounded workspace collection returned by one successful page.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<WorkspaceView>", into = "Vec<WorkspaceView>")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub struct WorkspacePageRows(Vec<WorkspaceView>);
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "workspace page has {count} rows, exceeding the limit of {}",
+    MAXIMUM_RECORD_PAGE
+)]
+pub struct WorkspacePageTooLarge {
+    count: usize,
+}
+
+impl TryFrom<Vec<WorkspaceView>> for WorkspacePageRows {
+    type Error = WorkspacePageTooLarge;
+
+    fn try_from(workspaces: Vec<WorkspaceView>) -> Result<Self, Self::Error> {
+        let count = workspaces.len();
+        if count > usize::from(MAXIMUM_RECORD_PAGE) {
+            return Err(WorkspacePageTooLarge { count });
+        }
+        Ok(Self(workspaces))
+    }
+}
+
+impl From<WorkspacePageRows> for Vec<WorkspaceView> {
+    fn from(workspaces: WorkspacePageRows) -> Self {
+        workspaces.0
+    }
+}
+
+impl JsonSchema for WorkspacePageRows {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "WorkspacePageRows".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let items = generator.subschema_for::<WorkspaceView>();
+        schemars::json_schema!({"type":"array","items":items,"maxItems":MAXIMUM_RECORD_PAGE})
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "result", rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum MachineEnrollmentRevocationResult {
     Revoked {},
     NotFound {},
@@ -68,6 +202,10 @@ pub enum MachineEnrollmentRevocationResult {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum MachineEnrollmentRevocationRefusal {
     NotPermitted,
     FactorNotRecent,
@@ -94,6 +232,10 @@ impl RetainedOrganizationAdminAnswer {
     rename_all = "camelCase",
     rename_all_fields = "camelCase",
     deny_unknown_fields
+)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
 )]
 pub enum OrganizationAdminResult {
     Applied {
@@ -125,6 +267,10 @@ pub enum OrganizationAdminResult {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum AdminRefusal {
     NameInUse,
     NotPermitted,

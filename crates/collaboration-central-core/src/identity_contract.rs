@@ -18,9 +18,10 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 macro_rules! central_identity {
-    ($($name:ident),+ $(,)?) => {$ (
+    ($($(#[$attribute:meta])* $name:ident),+ $(,)?) => {$ (
         #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
         #[serde(transparent)]
+        $(#[$attribute])*
         pub struct $name(RecordId);
         impl JsonSchema for $name {
             fn schema_name() -> std::borrow::Cow<'static, str> { stringify!($name).into() }
@@ -40,4 +41,17 @@ macro_rules! central_identity {
         impl $name { #[must_use] pub fn as_str(&self) -> &str { self.0.as_str() } }
     )+};
 }
-central_identity!(PersonId, DeviceLoginRequestId, AdmissionId, CommandId);
+central_identity!(
+    #[cfg_attr(
+        all(feature = "wire-export", not(target_arch = "wasm32")),
+        derive(specta::Type)
+    )]
+    PersonId,
+    #[cfg_attr(
+        all(feature = "wire-export", not(target_arch = "wasm32")),
+        derive(specta::Type)
+    )]
+    DeviceLoginRequestId,
+    AdmissionId,
+    CommandId,
+);

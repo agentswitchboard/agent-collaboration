@@ -21,6 +21,7 @@ pub(crate) struct Controls {
     pub(super) zero_next_write_alarm: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub(super) lose_read: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub(super) legacy_workspace_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    pub(super) workspace_page_reads: std::sync::Arc<std::sync::Mutex<Option<Vec<u64>>>>,
     observations: RefCell<BTreeMap<workspace_ids::WorkspaceId, HeldPause>>,
     holds: RefCell<BTreeMap<(workspace_ids::WorkspaceId, Point), HeldPause>>,
     central_holds: RefCell<BTreeMap<Point, HeldPause>>,
@@ -41,6 +42,7 @@ enum Point {
     BeforeDrainCommit,
     AfterDrainCommit,
     BeforeTimerCommit,
+    BeforeReceiptTransaction,
     AfterTimerCommit,
     AfterEngineAttemptGate,
     AfterEngineLoad,
@@ -61,6 +63,7 @@ impl From<Point> for PausePoint {
             Point::BeforeDrainCommit => Self::BeforeDrainCommit,
             Point::AfterDrainCommit => Self::AfterDrainCommit,
             Point::BeforeTimerCommit => Self::BeforeTimerCommit,
+            Point::BeforeReceiptTransaction => Self::BeforeReceiptTransaction,
             Point::AfterTimerCommit => Self::AfterTimerCommit,
             Point::AfterEngineAttemptGate => Self::AfterEngineAttemptGate,
             Point::AfterEngineLoad => Self::AfterEngineLoad,
@@ -151,6 +154,31 @@ pub(super) async fn control(
     }
     let runtime = object.runtime(organization.clone()).await?;
     match path.as_str() {
+        "/test/direct-receipt-fixture" => {
+            let (authority, message, receipt): (
+                fleet_contracts::MachineConnectionAttachment,
+                workspace_ids::MessageId,
+                workspace_model::central_mail::ReceiptKind,
+            ) = request.json().await?;
+            Response::from_json(
+                &runtime
+                    .apply_delivery_receipt(&authority, &message, receipt)
+                    .await,
+            )
+        }
+        "/test/workspace-page-read-observations" => {
+            let arm = request.json::<bool>().await?;
+            let mut observations = object
+                .controls
+                .workspace_page_reads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            let observed = observations.take();
+            if arm {
+                *observations = Some(Vec::new());
+            }
+            Response::from_json(&observed)
+        }
         "/test/completion-attempts" => {
             Response::from_json(&runtime.runtime().completion_attempts())
         }

@@ -50,6 +50,7 @@ mod central_request_targets;
 mod central_statement_values;
 mod central_timer_plans;
 mod central_timers;
+mod direct_send_requests;
 mod mail_delivery_authority;
 mod notice_mailbox;
 mod workspace_drain;
@@ -80,3 +81,7 @@ mod private_machine_revocation;
 pub use organization_admin_contract::*;
 pub use organization_signin_http::organization_signin_router;
 pub use organization_signin_port::OrganizationSignInPort;
+
+#[cfg(test)]
+#[cfg(all(feature = "wire-export", not(target_arch = "wasm32")))]
+mod signin_wire_export_test;

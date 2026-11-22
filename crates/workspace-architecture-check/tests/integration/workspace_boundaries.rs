@@ -44,6 +44,7 @@ const CENTRAL_WORKER: &str = "collaboration-central-cloudflare";
 const FLEET_ACCESS: &str = "fleet-workspace-access";
 const FLEET_DIRECTORY: &str = "fleet-workspace-directory";
 const FLEET_ENGINE: &str = "fleet-engine";
+pub(super) const REQUEST_LOG: &str = "fleet-request-log";
 const FLEET_MAIL: &str = "fleet-mail";
 const FLEET_NOTICES: &str = "fleet-notices";
 const FLEET_WAKES: &str = "fleet-wakes";
@@ -87,6 +88,7 @@ pub(super) const MAIL_LAYER: (&str, &[&str]) = (
         "fleet-contracts",
         LENT_TRANSACTION,
         "fleet-engine",
+        "fleet-request-log",
         "fleet-runtime-ports",
         "fleet-workspace-access",
         "workspace-ids",

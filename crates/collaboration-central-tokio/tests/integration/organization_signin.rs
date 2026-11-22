@@ -6,6 +6,7 @@ mod deadlines;
 mod floors;
 mod issuer_order;
 mod linearization;
+mod list_workspaces;
 mod machine_login;
 mod observations;
 mod post_turn;

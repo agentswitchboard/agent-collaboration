@@ -1,11 +1,11 @@
 use crate::{
-    CorrelationId, DeliveryAnswer, LinkRequest, LinkRequestBatch, MachineTokenText, ProtocolError,
-    ReplyPayload, RequestStatusAnswer, RequestStatusQuery, TokenRenewalResult,
+    CorrelationId, DeliveryMessage, LinkRequest, LinkRequestBatch, MachineTokenText, ProtocolError,
+    ReceiptBatch, ReceiptResult, ReplyPayload, RequestStatusAnswer, RequestStatusQuery, TimeLeft,
+    TokenRenewalResult,
 };
 use serde::{Deserialize, Serialize};
 use workspace_ids::MachineId;
-use workspace_ids::MessageId;
-use workspace_model::{Caller, ResolvedSender, Timestamp, central_mail::MessageRecord};
+use workspace_model::{Caller, ResolvedSender, Timestamp};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrameDirection {
@@ -56,14 +56,18 @@ pub enum DataFrame {
     /// Central to the recipient's Router: a queued direct message, pushed at
     /// once when it is accepted and again on reconnect while inside its window.
     Deliver {
-        message: Box<MessageRecord>,
+        message: Box<DeliveryMessage>,
         sender: ResolvedSender,
+        #[serde(skip_serializing_if = "Option::is_none")]
+        time_left: Option<TimeLeft>,
     },
-    /// The recipient's Router to central: its answer to a delivered message,
-    /// sent on its minute flush (owner, record:218).
-    Ack {
-        message_id: MessageId,
-        answer: DeliveryAnswer,
+    Receipts {
+        correlation_id: CorrelationId,
+        receipts: ReceiptBatch,
+    },
+    ReceiptResults {
+        correlation_id: CorrelationId,
+        results: Vec<ReceiptResult>,
     },
     /// Router to central: a fresh machine token for the open connection.
     RenewMachineToken {
@@ -86,16 +90,23 @@ impl LinkFrame {
                 DataFrame::Request { .. }
                 | DataFrame::Batch { .. }
                 | DataFrame::RequestStatus { .. }
-                | DataFrame::Ack { .. }
+                | DataFrame::Receipts { .. }
                 | DataFrame::RenewMachineToken { .. } => direction == FrameDirection::ToCentral,
                 DataFrame::Welcome { .. }
                 | DataFrame::Reply { .. }
                 | DataFrame::RequestStatusReply { .. }
                 | DataFrame::Deliver { .. }
+                | DataFrame::ReceiptResults { .. }
                 | DataFrame::MachineTokenRenewal { .. } => direction == FrameDirection::ToRouter,
             },
         };
         if valid {
+            if let Self::Data(DataFrame::Deliver {
+                message, time_left, ..
+            }) = self
+            {
+                TimeLeft::validate_offer(message, *time_left)?;
+            }
             Ok(())
         } else {
             Err(ProtocolError::WrongDirection)
