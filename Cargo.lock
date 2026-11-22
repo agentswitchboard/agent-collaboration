@@ -2456,6 +2456,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "fleet-approvals"
+version = "0.1.158"
+dependencies = [
+ "approval-request-protocol",
+ "central-engine-model",
+ "hegeltest",
+ "serde",
+ "uuid",
+ "workspace-ids",
+]
+
+[[package]]
 name = "fleet-contracts"
 version = "0.1.158"
 dependencies = [

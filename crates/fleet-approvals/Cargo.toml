@@ -1,0 +1,20 @@
+[package]
+name = "fleet-approvals"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+autotests = false
+
+[lints]
+workspace = true
+
+[dependencies]
+approval-request-protocol.workspace = true
+central-engine-model.workspace = true
+serde.workspace = true
+workspace-ids.workspace = true
+
+[dev-dependencies]
+hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
+uuid.workspace = true
