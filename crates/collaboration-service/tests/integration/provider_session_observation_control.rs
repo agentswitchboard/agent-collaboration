@@ -99,6 +99,7 @@ async fn the_client_hands_on_each_streamed_event_before_the_call_returns() {
         max_bytes: 262_144,
         after_sequence: None,
         epoch: None,
+        service_epoch: None,
     };
 
     // Act
@@ -107,10 +108,8 @@ async fn the_client_hands_on_each_streamed_event_before_the_call_returns() {
             .observe_provider_session_streaming(request, Some(observed))
             .await
     });
-    let retained = tokio::time::timeout(std::time::Duration::from_secs(5), streamed.recv())
-        .await
-        .expect("the retained event streamed while the call was open")
-        .expect("streamed event");
+    let retained = streamed.recv().await.expect("streamed event");
+    let snapshot_end = streamed.recv().await.expect("snapshot end streamed");
     let still_open = !call.is_finished();
     fixture
         .hub
@@ -138,7 +137,12 @@ async fn the_client_hands_on_each_streamed_event_before_the_call_returns() {
         })
     );
     assert_eq!(live.event["sequence"], 2);
-    assert_eq!(result.events, vec![retained.event, live.event]);
+    assert_eq!(snapshot_end.event, snapshot_marker(epoch, 1));
+    assert_eq!(snapshot_end.cursor, retained.cursor);
+    assert_eq!(
+        result.events,
+        vec![retained.event, snapshot_end.event, live.event]
+    );
     assert_eq!(result.end_reason, ObservationEndReason::ResultLimitReached);
     served.stop().await.expect("API stops");
 }
@@ -167,6 +171,7 @@ async fn a_stale_epoch_streams_its_resync_marker_without_a_cursor() {
                 max_bytes: 262_144,
                 after_sequence: Some(1),
                 epoch: Some(epoch.expect("provider epoch") + 1),
+                service_epoch: None,
             },
             Some(observed),
         )
@@ -212,6 +217,7 @@ async fn a_stale_epoch_answers_its_resync_marker_even_when_the_budget_cannot_hol
                 max_bytes: 1,
                 after_sequence: Some(1),
                 epoch: Some(epoch.expect("provider epoch") + 1),
+                service_epoch: None,
             },
             Some(observed),
         )
@@ -256,6 +262,7 @@ async fn a_reset_during_an_open_call_streams_its_resync_marker_without_a_cursor(
         max_bytes: 262_144,
         after_sequence: None,
         epoch: None,
+        service_epoch: None,
     };
     let call = tokio::spawn(async move {
         client
@@ -265,6 +272,13 @@ async fn a_reset_during_an_open_call_streams_its_resync_marker_without_a_cursor(
     let retained = streamed.recv().await.expect("the retained event streamed");
     let baseline = streamed.recv().await.expect("the owner baseline streamed");
     assert_eq!(baseline.event["sequence"], 2);
+    let snapshot_end = streamed.recv().await.expect("snapshot end streamed");
+    let baseline_cursor = baseline.cursor.expect("retained position");
+    assert_eq!(
+        snapshot_end.event,
+        snapshot_marker(baseline_cursor.epoch, 2)
+    );
+    assert_eq!(snapshot_end.cursor, Some(baseline_cursor));
 
     // Act: the Session's history is invalidated while the call is open.
     resume.resume(None).await.expect("history reset");
@@ -324,10 +338,15 @@ async fn provider_observers_read_snapshot_and_live_order() {
             max_bytes: 262_144,
             after_sequence: None,
             epoch: None,
+            service_epoch: None,
         })
         .await
         .expect("bounded observation");
-    assert_eq!(observed.events, vec![first_snapshot, first_live.clone()]);
+    let marker = snapshot_marker(observed.epoch.expect("provider epoch"), 2);
+    assert_eq!(
+        observed.events,
+        vec![first_snapshot, first_live.clone(), marker.clone()]
+    );
     assert_eq!(
         observed.end_reason,
         ObservationEndReason::ResultLimitReached
@@ -341,10 +360,11 @@ async fn provider_observers_read_snapshot_and_live_order() {
             max_bytes: 262_144,
             after_sequence: Some(1),
             epoch: observed.epoch,
+            service_epoch: None,
         })
         .await
         .expect("paged observation");
-    assert_eq!(resumed.events, vec![first_live.clone()]);
+    assert_eq!(resumed.events, vec![first_live.clone(), marker]);
     assert_eq!(resumed.epoch, observed.epoch);
     let stale = bounded
         .observe_provider_session(BoundedObservationRequest {
@@ -354,6 +374,7 @@ async fn provider_observers_read_snapshot_and_live_order() {
             max_bytes: 262_144,
             after_sequence: Some(1),
             epoch: Some(observed.epoch.expect("provider epoch") + 1),
+            service_epoch: None,
         })
         .await
         .expect("stale epoch response");
@@ -384,6 +405,7 @@ async fn provider_observers_read_snapshot_and_live_order() {
             max_bytes: 1_048_576,
             after_sequence: None,
             epoch: None,
+            service_epoch: None,
         })
         .await
         .expect("oversized observation");
@@ -398,6 +420,7 @@ async fn provider_observers_read_snapshot_and_live_order() {
             max_bytes: 1_048_576,
             after_sequence: Some(5),
             epoch: observed.epoch,
+            service_epoch: None,
         })
         .await
         .expect("replay after the large item");
@@ -469,6 +492,7 @@ async fn metadata_payloads_remain_exact_in_retained_and_live_public_observation(
         max_bytes: 262_144,
         after_sequence: Some(1),
         epoch: Some(0),
+        service_epoch: None,
     };
     let (observed, mut streamed) = tokio::sync::mpsc::unbounded_channel();
 
@@ -478,10 +502,8 @@ async fn metadata_payloads_remain_exact_in_retained_and_live_public_observation(
             .observe_provider_session_streaming(request, Some(observed))
             .await
     });
-    let retained = tokio::time::timeout(std::time::Duration::from_secs(5), streamed.recv())
-        .await
-        .expect("retained metadata deadline")
-        .expect("retained metadata");
+    let retained = streamed.recv().await.expect("retained metadata");
+    let snapshot_end = streamed.recv().await.expect("snapshot end streamed");
     assert!(
         !call.is_finished(),
         "the observer must still be attached for live metadata"
@@ -502,10 +524,12 @@ async fn metadata_payloads_remain_exact_in_retained_and_live_public_observation(
         result.events,
         vec![
             json!({"sequence":2,"event":usage}),
+            snapshot_marker(0, 2),
             json!({"sequence":3,"event":commands})
         ]
     );
     assert_eq!(result.epoch, Some(0));
+    assert_eq!(snapshot_end.event, snapshot_marker(0, 2));
     assert_eq!(result.end_reason, ObservationEndReason::ResultLimitReached);
     assert_eq!(
         streamed.recv().await.expect("live metadata").cursor,
@@ -533,12 +557,17 @@ async fn single_event(
             max_bytes: 262_144,
             after_sequence,
             epoch,
+            service_epoch: None,
         })
         .await?;
     let event = observed
         .events
         .into_iter()
-        .next()
+        .find(|event| event["kind"] != "snapshotEnd")
         .ok_or("no event arrived")?;
     Ok((event, observed.epoch))
+}
+
+fn snapshot_marker(epoch: u64, sequence: u64) -> Value {
+    json!({"kind":"snapshotEnd","cursor":{"epoch":epoch,"afterSequence":sequence}})
 }

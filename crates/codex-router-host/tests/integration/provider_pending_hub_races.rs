@@ -186,6 +186,7 @@ impl HubEventFollow {
                         max_bytes: 1_048_576,
                         after_sequence: None,
                         epoch: None,
+                        service_epoch: None,
                     },
                     Some(observed),
                 )
@@ -200,12 +201,14 @@ impl HubEventFollow {
     }
 
     async fn next_message(&mut self) -> TestResult<Value> {
-        if let Some(notification) = self.events.recv().await {
+        while let Some(notification) = self.events.recv().await {
             if let Some(cursor) = notification.cursor {
                 self.epoch = Some(cursor.epoch);
                 self.after_sequence = Some(cursor.after_sequence);
             }
-            return Ok(notification.event);
+            if notification.event["kind"] != "snapshotEnd" {
+                return Ok(notification.event);
+            }
         }
         let result = (&mut self.call).await??;
         Err(format!(
@@ -361,6 +364,7 @@ async fn observation_resume_after_provider_retirement_is_unavailable() -> TestRe
         max_bytes: 1_048_576,
         after_sequence: Some(observer.after_sequence.ok_or("missing pending cursor")?),
         epoch: Some(observer.epoch.ok_or("missing observation epoch")?),
+        service_epoch: None,
     };
     let mut exit = tokio::net::UnixStream::connect(root.path().join("exit.sock")).await?;
     use tokio::io::AsyncWriteExt as _;

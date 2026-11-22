@@ -72,7 +72,7 @@ pub use native_claude_inventory::{
 pub use session_observation_contract::{
     BoundedObservationRequest, BoundedObservationResult, OBSERVATION_EVENT_NOTIFICATION,
     ObservationCursor, ObservationEndReason, ObservationEventNotification,
-    ProviderObservationEventTooLarge, ProviderObservationEventTooLargeKind,
+    ProviderObservationEventTooLarge, ProviderObservationEventTooLargeKind, ProviderSnapshotMarker,
 };
 mod backend_generation;
 mod delivery_rejection;

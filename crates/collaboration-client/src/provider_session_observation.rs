@@ -94,6 +94,7 @@ impl SessionObservation {
                         max_bytes: FOLLOW_MAX_BYTES,
                         after_sequence: None,
                         epoch: None,
+                        service_epoch: None,
                     },
                     None,
                 )
@@ -150,7 +151,10 @@ impl SessionObservation {
                     OperationError::before_dispatch("observation-collect", Some(target), error)),
             }
         } else {
-            if request.after_sequence.is_some() || request.epoch.is_some() {
+            if request.after_sequence.is_some()
+                || request.epoch.is_some()
+                || request.service_epoch.is_some()
+            {
                 return Err(OperationError::before_dispatch(
                     "observation-validation",
                     Some(target),
@@ -232,6 +236,7 @@ impl ProviderSessionFollow {
                         max_bytes: FOLLOW_MAX_BYTES,
                         after_sequence: self.after_sequence,
                         epoch: self.epoch,
+                        service_epoch: None,
                     },
                     None,
                 )

@@ -12,8 +12,10 @@
 //! (`codex_session_inventory`, `provider_session_inventory`).
 mod conversation_operations;
 mod journal_operations;
-#[cfg(test)]
+mod observation_call_driver;
 mod observation_call_machine;
+#[cfg(any(test, feature = "test-support"))]
+pub use observation_call_driver::test_support as observation_test_support;
 mod provider_observation_operations;
 mod session_native_control;
 mod session_operations;
