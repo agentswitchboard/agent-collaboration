@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT machine_id, enrollment_id FROM actor_sessions WHERE actor_id=?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "machine_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_sessions",
+            "name": "machine_id"
+          }
+        }
+      },
+      {
+        "name": "enrollment_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_sessions",
+            "name": "enrollment_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "bd55ec6454378b56bee6bb421a2c41dcf2d1c91eaa181f154c34900e8ff9ccf3"
+}

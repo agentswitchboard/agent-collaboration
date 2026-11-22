@@ -6,6 +6,8 @@
 mod case_object;
 #[path = "storage_cases/case_steps.rs"]
 mod case_steps;
+#[path = "storage_cases/session_cases.rs"]
+mod session_cases;
 
 pub use case_object::StorageCaseObject;
 

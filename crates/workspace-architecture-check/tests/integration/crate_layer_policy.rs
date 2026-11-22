@@ -1,7 +1,7 @@
 //! Allowed normal/build edges between workspace packages.
 use super::workspace_boundaries;
 
-const LAYER_POLICY: [(&str, &[&str]); 44] = [
+const LAYER_POLICY: [(&str, &[&str]); 45] = [
     ("workspace-ids", &[]),
     (
         "workspace-model",
@@ -95,9 +95,11 @@ const LAYER_POLICY: [(&str, &[&str]); 44] = [
     (
         "collaboration-central-cloudflare",
         &[
+            "central-engine-model",
             "central-link-protocol",
             "central-storage",
             "collaboration-central-core",
+            "fleet-actor-identity",
             "fleet-contracts",
             "fleet-engine",
             "fleet-identity-protocol",
@@ -160,6 +162,18 @@ const LAYER_POLICY: [(&str, &[&str]); 44] = [
             "fleet-runtime",
             "fleet-runtime-ports",
             "state-machine-core",
+            "workspace-ids",
+        ],
+    ),
+    (
+        "fleet-actor-identity",
+        &[
+            "central-engine-model",
+            "central-storage",
+            "fleet-identity-protocol",
+            "fleet-lent-transaction",
+            "fleet-machine-login",
+            "fleet-runtime-ports",
             "workspace-ids",
         ],
     ),

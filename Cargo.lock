@@ -1444,12 +1444,14 @@ version = "0.1.158"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "central-engine-model",
  "central-link-client",
  "central-link-protocol",
  "central-storage",
  "chrono",
  "collaboration-central-conformance",
  "collaboration-central-core",
+ "fleet-actor-identity",
  "fleet-contracts",
  "fleet-engine",
  "fleet-identity-protocol",
@@ -2459,6 +2461,34 @@ dependencies = [
  "crc32fast",
  "miniz_oxide 0.9.1",
  "zlib-rs",
+]
+
+[[package]]
+name = "fleet-actor-identity"
+version = "0.1.158"
+dependencies = [
+ "base64 0.22.1",
+ "central-engine-model",
+ "central-storage",
+ "chrono",
+ "fleet-identity-protocol",
+ "fleet-lent-transaction",
+ "fleet-machine-login",
+ "fleet-runtime-ports",
+ "fleet-storage-schema",
+ "fleet-store-sqlx",
+ "hegeltest",
+ "serde",
+ "sha2 0.10.9",
+ "sqlx",
+ "sqlx-core",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+ "workspace-ids",
+ "zeroize",
 ]
 
 [[package]]

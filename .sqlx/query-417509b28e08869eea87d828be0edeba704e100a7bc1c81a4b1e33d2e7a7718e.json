@@ -1,0 +1,230 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT s.actor_id,s.machine_id,s.enrollment_id,s.harness_session_id,s.create_operation_id,s.create_contents_digest,s.create_attempt,s.agent_program,s.session_kind,s.creator_kind,s.creator_actor_id,s.secret_hash,s.session_state,s.reserved_until,s.bound_at,s.settled_cause,s.settled_at,d.parent_actor_id FROM actor_sessions s LEFT JOIN actor_delegates d ON d.actor_id=s.actor_id WHERE s.actor_id=? AND s.machine_id=? AND s.enrollment_id=?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "actor_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_sessions",
+            "name": "actor_id"
+          }
+        }
+      },
+      {
+        "name": "machine_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_sessions",
+            "name": "machine_id"
+          }
+        }
+      },
+      {
+        "name": "enrollment_id",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_sessions",
+            "name": "enrollment_id"
+          }
+        }
+      },
+      {
+        "name": "harness_session_id",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_sessions",
+            "name": "harness_session_id"
+          }
+        }
+      },
+      {
+        "name": "create_operation_id",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_sessions",
+            "name": "create_operation_id"
+          }
+        }
+      },
+      {
+        "name": "create_contents_digest",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_sessions",
+            "name": "create_contents_digest"
+          }
+        }
+      },
+      {
+        "name": "create_attempt",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "actor_sessions",
+            "name": "create_attempt"
+          }
+        }
+      },
+      {
+        "name": "agent_program",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_sessions",
+            "name": "agent_program"
+          }
+        }
+      },
+      {
+        "name": "session_kind",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_sessions",
+            "name": "session_kind"
+          }
+        }
+      },
+      {
+        "name": "creator_kind",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_sessions",
+            "name": "creator_kind"
+          }
+        }
+      },
+      {
+        "name": "creator_actor_id",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_sessions",
+            "name": "creator_actor_id"
+          }
+        }
+      },
+      {
+        "name": "secret_hash",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_sessions",
+            "name": "secret_hash"
+          }
+        }
+      },
+      {
+        "name": "session_state",
+        "ordinal": 12,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_sessions",
+            "name": "session_state"
+          }
+        }
+      },
+      {
+        "name": "reserved_until",
+        "ordinal": 13,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_sessions",
+            "name": "reserved_until"
+          }
+        }
+      },
+      {
+        "name": "bound_at",
+        "ordinal": 14,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_sessions",
+            "name": "bound_at"
+          }
+        }
+      },
+      {
+        "name": "settled_cause",
+        "ordinal": 15,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_sessions",
+            "name": "settled_cause"
+          }
+        }
+      },
+      {
+        "name": "settled_at",
+        "ordinal": 16,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_sessions",
+            "name": "settled_at"
+          }
+        }
+      },
+      {
+        "name": "parent_actor_id",
+        "ordinal": 17,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_delegates",
+            "name": "parent_actor_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true
+    ]
+  },
+  "hash": "417509b28e08869eea87d828be0edeba704e100a7bc1c81a4b1e33d2e7a7718e"
+}

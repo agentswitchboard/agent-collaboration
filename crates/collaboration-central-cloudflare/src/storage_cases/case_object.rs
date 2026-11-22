@@ -231,6 +231,9 @@ impl StorageCaseObject {
                     &statement_store::read(&self.connection, read.statement().into()).await,
                 )
             }
+            "sessions" if migrator == CaseMigrator::Sessions => {
+                super::session_cases::apply(self.state.storage(), request.json().await?).await
+            }
             "alarm" => {
                 Response::from_json(&json!({ "alarmMs": self.state.storage().get_alarm().await? }))
             }

@@ -1,0 +1,46 @@
+[package]
+name = "fleet-actor-identity"
+autotests = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Central actor records and session lifecycle decisions"
+
+[lints]
+workspace = true
+
+[dependencies]
+central-engine-model.workspace = true
+base64.workspace = true
+central-storage.workspace = true
+fleet-lent-transaction.workspace = true
+fleet-machine-login.workspace = true
+fleet-runtime-ports.workspace = true
+sqlx-core.workspace = true
+sqlx = { version = "=0.9.0", default-features = false, features = ["derive"] }
+
+chrono = { version = "0.4.45", default-features = false, features = ["alloc"] }
+fleet-identity-protocol = { path = "../fleet-identity-protocol", version = "0.1.156" }
+serde.workspace = true
+sha2.workspace = true
+subtle = "2.6.1"
+thiserror.workspace = true
+zeroize.workspace = true
+
+workspace-ids.workspace = true
+
+[dev-dependencies]
+hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
+uuid.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+sqlx = { workspace = true, features = ["sqlite", "macros"] }
+fleet-storage-schema = { path = "../fleet-storage-schema", version = "0.1.158" }
+fleet-store-sqlx = { path = "../fleet-store-sqlx", version = "0.1.158" }
+tokio.workspace = true
+tempfile = "3.24"
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
