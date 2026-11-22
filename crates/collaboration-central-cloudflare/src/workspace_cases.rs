@@ -39,6 +39,7 @@ pub(crate) struct Controls {
 enum Point {
     AfterReads,
     AfterStoreApplied,
+    BeforeWorkspaceRequestApplying,
     AfterWorkspaceExecute,
     EngineCompletionEntered,
     BeforeDrainCommit,
@@ -65,6 +66,7 @@ impl From<Point> for PausePoint {
         match point {
             Point::AfterReads => Self::AfterReads,
             Point::AfterStoreApplied => Self::AfterStoreApplied,
+            Point::BeforeWorkspaceRequestApplying => Self::BeforeWorkspaceRequestApplying,
             Point::AfterWorkspaceExecute => Self::AfterWorkspaceExecute,
             Point::EngineCompletionEntered => Self::EngineCompletionEntered,
             Point::BeforeDrainCommit => Self::BeforeDrainCommit,

@@ -1,6 +1,8 @@
 //! Force revocation between reads and the applying turn on the actual public socket.
 use super::fixture::{Fixture, INSTALLATION, receive, send};
-use central_link_protocol::{DataFrame, LinkFrame, LinkRequest, ReplyPayload, RequestPayload};
+use central_link_protocol::{
+    DataFrame, LinkFrame, LinkRequest, MachineLinkCloseCode, ReplyPayload, RequestPayload,
+};
 use central_storage::{
     AlarmUpdate, BatchOutcome, GuardedStatement, RowExpectation, SqlValue, Statement,
     StatementBatch,
@@ -8,6 +10,8 @@ use central_storage::{
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 use collaboration_central_core::{MachineLoginControl, machine_login_control};
 use fleet_runtime::PausePoint;
+use futures_util::StreamExt;
+use reqwest_websocket::{Message, WebSocket};
 use serde_json::json;
 use workspace_model::{Caller, RefusalReason, WorkspaceAnswer, WorkspaceReply, WorkspaceResult};
 
@@ -150,9 +154,7 @@ async fn revocation_after_rule_reads_refuses_before_workspace_or_drain_effects()
         .await?;
     assert!(log.rows.is_empty());
     store.close().await;
-    socket
-        .close(reqwest_websocket::CloseCode::Normal, None)
-        .await?;
+    require_revoked_close(&mut socket).await?;
     fixture.close().await
 }
 
@@ -298,8 +300,16 @@ async fn revocation_committing_while_request_waits_for_applying_turn_prevents_wr
         assert!(rows.rows.is_empty(), "refused request wrote rows for {sql}");
     }
     store.close().await;
-    socket
-        .close(reqwest_websocket::CloseCode::Normal, None)
-        .await?;
+    require_revoked_close(&mut socket).await?;
     fixture.close().await
+}
+
+async fn require_revoked_close(socket: &mut WebSocket) -> Result<()> {
+    let close = socket.next().await;
+    if !matches!(close, Some(Ok(Message::Close { code, .. }))
+        if MachineLinkCloseCode::from_code(code.into()) == Some(MachineLinkCloseCode::Revoked))
+    {
+        return Err(format!("applying revocation must close with Revoked, got {close:?}").into());
+    }
+    Ok(())
 }

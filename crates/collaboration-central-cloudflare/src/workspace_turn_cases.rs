@@ -26,6 +26,7 @@ pub(super) async fn control(
                     | Point::AfterEngineLoad
                     | Point::BeforeSignInSample
                     | Point::AfterSignInSample
+                    | Point::BeforeWorkspaceRequestApplying
                     | Point::AfterWorkspaceExecute
                     | Point::EngineCompletionEntered
             ) {

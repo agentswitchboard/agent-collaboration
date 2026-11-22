@@ -34,10 +34,12 @@ mod workspace_runtime;
 #[cfg(feature = "test-support")]
 pub use machine_login_test_control::{MachineLoginControl, machine_login_control};
 pub use workspace_runtime::WorkspaceRuntime;
+mod applying_request_failure;
 mod organization_workspace_plans;
 mod workspace_directory_requests;
 mod workspace_item_reads;
 mod workspace_read_queries;
+pub use applying_request_failure::ApplyingRequestFailure;
 mod workspace_request_gate;
 mod workspace_request_status;
 mod workspace_rule_dispatch;

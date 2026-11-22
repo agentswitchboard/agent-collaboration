@@ -121,6 +121,7 @@ pub(crate) enum CaseStoreCall {
 pub(crate) enum CasePausePoint {
     AfterReads,
     AfterStoreApplied,
+    BeforeWorkspaceRequestApplying,
     AfterWorkspaceExecute,
     EngineCompletionEntered,
     AfterNoticesCommitted,
@@ -150,6 +151,7 @@ impl From<CasePausePoint> for PausePoint {
         match point {
             CasePausePoint::AfterReads => Self::AfterReads,
             CasePausePoint::AfterStoreApplied => Self::AfterStoreApplied,
+            CasePausePoint::BeforeWorkspaceRequestApplying => Self::BeforeWorkspaceRequestApplying,
             CasePausePoint::AfterWorkspaceExecute => Self::AfterWorkspaceExecute,
             CasePausePoint::EngineCompletionEntered => Self::EngineCompletionEntered,
             CasePausePoint::AfterNoticesCommitted => Self::AfterNoticesCommitted,
@@ -184,6 +186,7 @@ impl From<PausePoint> for CasePausePoint {
         match point {
             PausePoint::AfterReads => Self::AfterReads,
             PausePoint::AfterStoreApplied => Self::AfterStoreApplied,
+            PausePoint::BeforeWorkspaceRequestApplying => Self::BeforeWorkspaceRequestApplying,
             PausePoint::AfterWorkspaceExecute => Self::AfterWorkspaceExecute,
             PausePoint::EngineCompletionEntered => Self::EngineCompletionEntered,
             PausePoint::AfterNoticesCommitted => Self::AfterNoticesCommitted,

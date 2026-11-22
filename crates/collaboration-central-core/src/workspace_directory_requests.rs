@@ -1,9 +1,9 @@
 //! The organization's workspace directory over the machine request path:
 //! create, rename, archive, show and list. The directory is central's own
 //! `workspaces` table, not a workspace store.
-use crate::WorkspaceCaller;
 use crate::WorkspaceRuntime;
 use crate::workspace_request_gate::{reply, store_result};
+use crate::{ApplyingRequestFailure, WorkspaceCaller, applying_request_failure::applying_refusal};
 use central_storage::{AlarmUpdate, StatementBatch, StoreFailure};
 use fleet_contracts::WorkspaceDirectory;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
@@ -107,7 +107,7 @@ pub(crate) async fn execute<Host: CentralStore, Stores: WorkspaceStores>(
     caller: &WorkspaceCaller,
     request: &m::WorkspaceRequest,
     directory: DirectoryRequest<'_>,
-) -> Result<m::WorkspaceReply, StoreFailure> {
+) -> Result<m::WorkspaceReply, ApplyingRequestFailure> {
     match directory {
         DirectoryRequest::Show { workspace_id } => {
             let _central = runtime.execution.take_central_turn().await;
@@ -121,11 +121,13 @@ pub(crate) async fn execute<Host: CentralStore, Stores: WorkspaceStores>(
                 )
                 .await?
             {
-                return Ok(reply(m::WorkspaceResult::Refused(refusal)));
+                return applying_refusal(refusal, |reason| {
+                    reply(m::WorkspaceResult::Refused(reason))
+                });
             }
             let directory_store =
                 CentralWorkspaceDirectory::new(runtime.execution.statement_host());
-            show_directory_workspace(&directory_store, workspace_id).await
+            Ok(show_directory_workspace(&directory_store, workspace_id).await?)
         }
         DirectoryRequest::List {
             search,
@@ -144,7 +146,9 @@ pub(crate) async fn execute<Host: CentralStore, Stores: WorkspaceStores>(
                 )
                 .await?
             {
-                return Ok(reply(m::WorkspaceResult::Refused(refusal)));
+                return applying_refusal(refusal, |reason| {
+                    reply(m::WorkspaceResult::Refused(reason))
+                });
             }
             let directory_store =
                 CentralWorkspaceDirectory::new(runtime.execution.statement_host());
@@ -181,7 +185,7 @@ async fn write<Host: CentralStore, Stores: WorkspaceStores>(
     caller: &WorkspaceCaller,
     request: &m::WorkspaceRequest,
     directory: DirectoryRequest<'_>,
-) -> Result<m::WorkspaceReply, StoreFailure> {
+) -> Result<m::WorkspaceReply, ApplyingRequestFailure> {
     let identity = match caller.caller() {
         m::Caller::Session(session) => m::Identity::AgentSession {
             session: session.clone(),
@@ -208,7 +212,7 @@ async fn write<Host: CentralStore, Stores: WorkspaceStores>(
         )
         .await?
     {
-        return Ok(reply(m::WorkspaceResult::Refused(refusal)));
+        return applying_refusal(refusal, |reason| reply(m::WorkspaceResult::Refused(reason)));
     }
     let now = runtime.execution.now()?;
     let cutoff = (now - chrono::Duration::hours(24)).to_rfc3339();
@@ -270,7 +274,9 @@ async fn write<Host: CentralStore, Stores: WorkspaceStores>(
                 )
                 .await?
             {
-                return Ok(reply(m::WorkspaceResult::Refused(refusal)));
+                return applying_refusal(refusal, |reason| {
+                    reply(m::WorkspaceResult::Refused(reason))
+                });
             }
             let current: m::Workspace = directory_store
                 .read_by_id(workspace_id)
@@ -293,7 +299,7 @@ async fn write<Host: CentralStore, Stores: WorkspaceStores>(
             }
         }
         DirectoryRequest::Show { .. } | DirectoryRequest::List { .. } => {
-            return Err(corrupt("directory write"));
+            return Err(corrupt("directory write").into());
         }
     };
     statements.extend(fleet_request_log::retain_organization_request(

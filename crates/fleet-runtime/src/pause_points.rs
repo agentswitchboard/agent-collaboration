@@ -18,6 +18,7 @@ pub enum PausePoint {
     /// After the store applied the batch, before the drain.
     AfterStoreApplied,
     /// The workspace request has returned from execute.
+    BeforeWorkspaceRequestApplying,
     AfterWorkspaceExecute,
     /// The engine has entered completion and has yet to drive work.
     EngineCompletionEntered,

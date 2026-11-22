@@ -142,7 +142,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         &self,
         caller: &WorkspaceCaller,
         message_id: &MessageId,
-    ) -> Result<Result<MessageStatus, RefusalReason>, StoreFailure> {
+    ) -> Result<Result<MessageStatus, RefusalReason>, crate::ApplyingRequestFailure> {
         let _turn = self.execution.take_central_turn().await;
         if let Err(refusal) = self
             .access()
@@ -154,7 +154,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             )
             .await?
         {
-            return Ok(Err(refusal));
+            return crate::applying_request_failure::applying_refusal(refusal, Err);
         }
         let Some(actor) = self.access().existing_caller_actor(caller.caller()).await? else {
             return Ok(Ok(MessageStatus::NotFound {}));

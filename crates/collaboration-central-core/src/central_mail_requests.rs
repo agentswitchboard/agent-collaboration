@@ -1,6 +1,7 @@
 //! Central-only admitted request ledger; cached answers precede mutable decisions.
-use crate::WorkspaceCaller;
+use crate::{ApplyingRequestFailure, WorkspaceCaller, applying_request_failure::applying_refusal};
 use crate::{WorkspaceRuntime, central_statement_values, engine::query_registry::alarm_update};
+use central_link_protocol::ReplyPayload;
 use central_storage::{BatchOutcome, StatementBatch, StoreFailure};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use fleet_runtime_ports::{
@@ -15,15 +16,29 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         caller: &WorkspaceCaller,
         request: mail::CentralMailRequest,
     ) -> Result<mail::CentralMailResult, StoreFailure> {
+        match self.request_central_with_authority(caller, request).await {
+            Ok(reply) => Ok(reply),
+            Err(ApplyingRequestFailure::Authority(cause)) => {
+                Ok(ReplyPayload::mail_authority_refused(cause))
+            }
+            Err(ApplyingRequestFailure::Store(error)) => Err(error),
+        }
+    }
+
+    pub async fn request_central_with_authority(
+        &self,
+        caller: &WorkspaceCaller,
+        request: mail::CentralMailRequest,
+    ) -> Result<mail::CentralMailResult, ApplyingRequestFailure> {
         // The request path answers as on main; the due batch that follows checks
         // the organization stamp once for this event before any unit (P3).
         let result = self.execute_central(caller, request).await;
         // Due work and publication cannot replace this event's durable answer.
         let _ = self.after_event().await;
         match result {
-            Err(StoreFailure::Unavailable | StoreFailure::AnswerLost) => {
-                Ok(mail::CentralMailResult::CentralUnavailable)
-            }
+            Err(ApplyingRequestFailure::Store(
+                StoreFailure::Unavailable | StoreFailure::AnswerLost,
+            )) => Ok(mail::CentralMailResult::CentralUnavailable),
             result => result,
         }
     }
@@ -31,7 +46,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         &self,
         caller: &WorkspaceCaller,
         request: mail::CentralMailRequest,
-    ) -> Result<mail::CentralMailResult, StoreFailure> {
+    ) -> Result<mail::CentralMailResult, ApplyingRequestFailure> {
         use mail::{CentralMailRefusal as Refusal, CentralMailResult as Result};
         let _turn = self.execution.take_central_turn().await;
         if let Err(reason) = self
@@ -44,7 +59,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             )
             .await?
         {
-            return Ok(Result::Refused(Refusal::Workspace(reason)));
+            return applying_refusal(reason, |reason| Result::Refused(Refusal::Workspace(reason)));
         }
         let identity = match caller.caller() {
             m::Caller::Session(session) => m::Identity::AgentSession {
@@ -61,9 +76,9 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             &request.operation,
             mail::CentralMailOperation::SendMessage { .. }
         ) {
-            return self
+            return Ok(self
                 .execute_direct_send(identity, request, now, digest)
-                .await;
+                .await?);
         }
         let rows = self
             .execution
@@ -87,7 +102,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                 answer,
                 Result::Conflict | Result::OutcomeUnknown | Result::CentralUnavailable
             ) {
-                return Err(corrupt("runtime_request_log.answer"));
+                return Err(corrupt("runtime_request_log.answer").into());
             }
             // A committed request may have lost its alarm publication before its reply.
             let repair = async {
@@ -110,7 +125,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                 Err(
                     error
                     @ (StoreFailure::Corrupt { .. } | StoreFailure::AlarmUnpublishable { .. }),
-                ) => return Err(error),
+                ) => return Err(error.into()),
             }
             return Ok(answer);
         }
@@ -166,7 +181,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             Ok(_) => return Ok(Result::Conflict),
             Err(StoreFailure::AnswerLost) => return Ok(Result::OutcomeUnknown),
             Err(StoreFailure::Unavailable) => return Ok(Result::CentralUnavailable),
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into()),
         }
         #[cfg(feature = "test-support")]
         if self.execution.take_lost_reply(&request.request_id) {

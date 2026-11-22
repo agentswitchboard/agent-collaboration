@@ -7,7 +7,8 @@ use central_link_protocol::{
 };
 use collaboration_central_core::WorkspaceCaller;
 use collaboration_central_core::{
-    MachineLinkAdmission, MachineLinkRequestAuthority, RenewalTermination, project_renewal_refusal,
+    ApplyingRequestFailure, MachineLinkAdmission, MachineLinkRequestAuthority, RenewalTermination,
+    project_renewal_refusal,
 };
 use fleet_contracts::mail_link::MailReceiptSettlement;
 use fleet_contracts::{EnrollmentInvalidation, MachineConnectionAttachment};
@@ -525,21 +526,25 @@ impl CentralObject {
                 ));
             }
         };
-        let reply = match request.payload() {
-            RequestPayload::Workspace(operation) => ReplyPayload::Workspace(
-                runtime
-                    .request(&caller, operation.clone())
-                    .await
-                    .map_err(|error| worker::Error::RustError(error.to_string()))?,
-            ),
-            RequestPayload::Mail(operation) => ReplyPayload::Mail(
-                runtime
-                    .request_central(&caller, operation.clone())
-                    .await
-                    .map_err(|error| worker::Error::RustError(error.to_string()))?,
-            ),
+        let result = match request.payload() {
+            RequestPayload::Workspace(operation) => runtime
+                .request_with_authority(&caller, operation.clone())
+                .await
+                .map(ReplyPayload::Workspace),
+            RequestPayload::Mail(operation) => runtime
+                .request_central_with_authority(&caller, operation.clone())
+                .await
+                .map(ReplyPayload::Mail),
         };
-        Ok(MachineRequestResult::Reply(reply))
+        match result {
+            Ok(reply) => Ok(MachineRequestResult::Reply(reply)),
+            Err(ApplyingRequestFailure::Authority(cause)) => {
+                Ok(MachineRequestResult::AuthorityRefused(cause))
+            }
+            Err(ApplyingRequestFailure::Store(error)) => {
+                Err(worker::Error::RustError(error.to_string()))
+            }
+        }
     }
 
     #[cfg_attr(

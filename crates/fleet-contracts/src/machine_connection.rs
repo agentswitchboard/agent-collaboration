@@ -1,4 +1,4 @@
-use crate::{ClientId, MachineConnectionRefusal};
+use crate::{ClientId, mail_link::MachineLinkCloseCode};
 use central_storage::StoreFailure;
 use fleet_identity_protocol::{EnrollmentId, OrganizationId, UnixSeconds};
 use serde::{Deserialize, Serialize};
@@ -62,7 +62,7 @@ impl MachineConnectionAttachment {
 pub struct EnrollmentInvalidation {
     pub machine_id: MachineId,
     pub enrollment_id: EnrollmentId,
-    pub cause: crate::mail_link::MachineLinkCloseCode,
+    pub cause: MachineLinkCloseCode,
 }
 
 /// Restores the attachment against live login rows under the turn held by the caller.
@@ -76,5 +76,5 @@ pub trait LiveMachineConnection: Send + Sync {
     fn restore_held(
         &self,
         attachment: &MachineConnectionAttachment,
-    ) -> impl Future<Output = Result<Result<(), MachineConnectionRefusal>, StoreFailure>> + Send;
+    ) -> impl Future<Output = Result<Result<(), MachineLinkCloseCode>, StoreFailure>> + Send;
 }

@@ -6,27 +6,47 @@ use central_link_protocol::{
 };
 use central_storage::{BatchOutcome, SqlValue, Statement};
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
-use futures_util::StreamExt;
+use fleet_runtime::PausePoint;
+use futures_util::{FutureExt, StreamExt};
 use reqwest_websocket::Message;
 use std::time::Duration;
 use workspace_model::{RefusalReason, WorkspaceResult};
 
 #[tokio::test]
 async fn a_request_reply_agrees_with_each_authority_close_cause() -> Result<()> {
+    check_request_authority(AuthorityCheck::FrameEntry).await
+}
+
+#[tokio::test]
+async fn a_workspace_request_uses_the_authority_cause_found_after_frame_entry() -> Result<()> {
+    check_request_authority(AuthorityCheck::Applying).await
+}
+
+#[derive(Clone, Copy)]
+enum AuthorityCheck {
+    FrameEntry,
+    Applying,
+}
+
+async fn check_request_authority(check: AuthorityCheck) -> Result<()> {
     for state in [
         EnrollmentAtApply::StillEnrolled,
         EnrollmentAtApply::OwnerRevoked,
         EnrollmentAtApply::EndedForIdle,
     ] {
         let fixture = Fixture::new().await?;
-        let result = check_request_refusal(&fixture, state).await;
+        let result = check_request_refusal(&fixture, state, check).await;
         fixture.close().await?;
         result?;
     }
     Ok(())
 }
 
-async fn check_request_refusal(fixture: &Fixture, state: EnrollmentAtApply) -> Result<()> {
+async fn check_request_refusal(
+    fixture: &Fixture,
+    state: EnrollmentAtApply,
+    check: AuthorityCheck,
+) -> Result<()> {
     let mut socket = fixture.connect().await?;
     if !matches!(
         receive(&mut socket).await?,
@@ -43,15 +63,18 @@ async fn check_request_refusal(fixture: &Fixture, state: EnrollmentAtApply) -> R
         .central(&signed::ORGANIZATION.to_owned().try_into()?)
         .await?;
     let store = central.runtime().statement_host();
-    fixture.clock.advance(Duration::from_secs(601))?;
-    if let Some(reason) = state.stored_end_reason() {
-        // Stage the committed ending without its socket observer, to exercise the live check.
-        let _turn = central.runtime().take_central_turn().await;
-        let batch = stored_ending_batch(INSTALLATION, fixture.enrollment_id.as_str(), reason)?;
-        if !matches!(store.run_batch(batch).await?, BatchOutcome::Applied { .. }) {
-            return Err("failed to stage the stored ending".into());
+    let lapse_authority = || async {
+        fixture.clock.advance(Duration::from_secs(601))?;
+        if let Some(reason) = state.stored_end_reason() {
+            // Leave the old socket registered so the active authority check supplies the cause.
+            let _turn = central.runtime().take_central_turn().await;
+            let batch = stored_ending_batch(INSTALLATION, fixture.enrollment_id.as_str(), reason)?;
+            if !matches!(store.run_batch(batch).await?, BatchOutcome::Applied { .. }) {
+                return Err("failed to stage the stored ending".into());
+            }
         }
-    }
+        Ok::<(), Box<dyn std::error::Error + Send + Sync>>(())
+    };
     let expected_reply = match state {
         EnrollmentAtApply::StillEnrolled => WorkspaceResult::CentralUnavailable,
         EnrollmentAtApply::OwnerRevoked | EnrollmentAtApply::EndedForIdle => {
@@ -61,21 +84,38 @@ async fn check_request_refusal(fixture: &Fixture, state: EnrollmentAtApply) -> R
     let expected_close = state.expected_close();
     let correlation: central_link_protocol::CorrelationId =
         "019f0000-0000-7000-8000-00000000aa01".parse()?;
+    const REQUEST_ID: &str = "019f0000-0000-7000-8000-00000000aa02";
+    const WORKSPACE_NAME: &str = "Lapsed link must not write";
     let request = LinkRequest::new(
         correlation.clone(),
         caller()?,
-        create_workspace(
-            "019f0000-0000-7000-8000-00000000aa02",
-            "Lapsed link must not write",
-        )?,
+        create_workspace(REQUEST_ID, WORKSPACE_NAME)?,
     )?;
-    send(
-        &mut socket,
-        &LinkFrame::Data(DataFrame::Request {
-            request: Box::new(request),
-        }),
-    )
-    .await?;
+    let message = LinkFrame::Data(DataFrame::Request {
+        request: Box::new(request),
+    });
+    match check {
+        AuthorityCheck::FrameEntry => {
+            lapse_authority().await?;
+            send(&mut socket, &message).await?;
+        }
+        AuthorityCheck::Applying => {
+            let mut hold = central
+                .runtime()
+                .pause_points()
+                .hold_central(PausePoint::BeforeWorkspaceRequestApplying);
+            send(&mut socket, &message).await?;
+            tokio::select! {
+                () = hold.until_held() => {}
+                early = socket.next() => return Err(format!("request returned before the applying barrier: {early:?}").into()),
+            }
+            lapse_authority().await?;
+            if socket.next().now_or_never().is_some() {
+                return Err("request emitted a frame before applying authority was checked".into());
+            }
+            hold.release();
+        }
+    }
     let reply = receive(&mut socket).await?;
     if !matches!(&reply, LinkFrame::Data(DataFrame::Reply { correlation_id, result })
         if correlation_id == &correlation
@@ -92,11 +132,15 @@ async fn check_request_refusal(fixture: &Fixture, state: EnrollmentAtApply) -> R
         return Err(format!("expected {expected_close:?} after reply, got {closed:?}").into());
     }
     let rows = store.read(Statement {
-        sql: "SELECT count(*) FROM directory_workspaces WHERE name='Lapsed link must not write'",
-        args: vec![],
+        sql: "SELECT (SELECT count(*) FROM directory_workspaces WHERE name=?),(SELECT count(*) FROM runtime_request_log WHERE request_id=?)",
+        args: vec![SqlValue::Text(WORKSPACE_NAME.to_owned()), SqlValue::Text(REQUEST_ID.to_owned())],
     }).await?.rows;
-    if rows != [vec![SqlValue::Integer(0.try_into()?)]] {
-        return Err("refused request created a workspace".into());
+    let zero = SqlValue::Integer(0.try_into()?);
+    if rows != [vec![zero.clone(), zero]] {
+        return Err(format!(
+            "refused request created a workspace or retained a request answer: {rows:?}"
+        )
+        .into());
     }
     Ok(())
 }

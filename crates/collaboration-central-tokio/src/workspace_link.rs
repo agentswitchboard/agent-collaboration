@@ -16,8 +16,8 @@ use central_link_protocol::{
     TokenRenewalRefusal, TokenRenewalResult, decode_text, encode_text,
 };
 use collaboration_central_core::{
-    MachineLinkAdmission, MachineLinkRequestAuthority, RenewalTermination, WorkspaceRuntime,
-    project_renewal_refusal,
+    ApplyingRequestFailure, MachineLinkAdmission, MachineLinkRequestAuthority, RenewalTermination,
+    WorkspaceRuntime, project_renewal_refusal,
 };
 use collaboration_central_core::{ValidatedMachineConnection, WorkspaceCaller};
 use fleet_contracts::EnrollmentInvalidation;
@@ -607,28 +607,31 @@ async fn reply_to_request(
     }
     // Each request restores the connection against live rows first, as the
     // Worker does: after the deadline or a revocation it is refused.
-    let (result, outcome) = match runtime
+    let dispatched = match runtime
         .restore_machine_link_request(&connection.attachment())
         .await
     {
         Ok(MachineLinkRequestAuthority::Admitted(active)) => {
-            match dispatch_request(runtime, &active, request).await {
-                Ok(result) => (result, RequestOutcome::Replied),
-                Err(_) => {
-                    writes.close(socket, close_code::ERROR, "central unavailable");
-                    return RequestOutcome::Stopped;
-                }
-            }
+            dispatch_request(runtime, &active, request).await
         }
-        Ok(MachineLinkRequestAuthority::Refused(cause)) => (
+        Ok(MachineLinkRequestAuthority::Refused(cause)) => {
+            Err(ApplyingRequestFailure::Authority(cause))
+        }
+        Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) if in_batch => {
+            Ok(ReplyPayload::central_unavailable(request.payload()))
+        }
+        Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) | Err(_) => {
+            writes.close(socket, close_code::ERROR, "central unavailable");
+            return RequestOutcome::Stopped;
+        }
+    };
+    let (result, outcome) = match dispatched {
+        Ok(result) => (result, RequestOutcome::Replied),
+        Err(ApplyingRequestFailure::Authority(cause)) => (
             ReplyPayload::authority_refused(request.payload(), cause),
             RequestOutcome::AuthorityLapsed(cause),
         ),
-        Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) if in_batch => (
-            ReplyPayload::central_unavailable(request.payload()),
-            RequestOutcome::Replied,
-        ),
-        Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) | Err(_) => {
+        Err(ApplyingRequestFailure::Store(_)) => {
             writes.close(socket, close_code::ERROR, "central unavailable");
             return RequestOutcome::Stopped;
         }
@@ -653,7 +656,7 @@ async fn dispatch_request(
     runtime: &Runtime,
     connection: &ValidatedMachineConnection,
     request: &LinkRequest,
-) -> Result<ReplyPayload, central_storage::StoreFailure> {
+) -> Result<ReplyPayload, ApplyingRequestFailure> {
     let caller =
         match WorkspaceCaller::from_machine_link(connection.clone(), request.caller().clone()) {
             Ok(caller) => caller,
@@ -661,11 +664,11 @@ async fn dispatch_request(
         };
     match request.payload() {
         RequestPayload::Workspace(request) => runtime
-            .request(&caller, request.clone())
+            .request_with_authority(&caller, request.clone())
             .await
             .map(ReplyPayload::Workspace),
         RequestPayload::Mail(request) => runtime
-            .request_central(&caller, request.clone())
+            .request_central_with_authority(&caller, request.clone())
             .await
             .map(ReplyPayload::Mail),
     }

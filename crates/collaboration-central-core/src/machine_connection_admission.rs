@@ -214,16 +214,6 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
             .map_err(|refusal| refusal.close))
     }
 
-    /// Caller holds the existing central turn through the decision or effect it admits.
-    pub(crate) async fn restore_machine_connection_held(
-        &self,
-        attachment: &MachineConnectionAttachment,
-    ) -> Admission {
-        self.restore_live_authority_held(attachment)
-            .await
-            .map(|decision| decision.map_err(|refusal| refusal.reason))
-    }
-
     pub(crate) async fn restore_live_authority_held(
         &self,
         attachment: &MachineConnectionAttachment,
@@ -262,10 +252,10 @@ impl<Host: CentralStore, Stores: WorkspaceStores> LiveMachineConnection
     async fn restore_held(
         &self,
         attachment: &MachineConnectionAttachment,
-    ) -> Result<Result<(), MachineConnectionRefusal>, StoreFailure> {
-        self.restore_machine_connection_held(attachment)
+    ) -> Result<Result<(), MachineLinkCloseCode>, StoreFailure> {
+        self.restore_live_authority_held(attachment)
             .await
-            .map(|admission| admission.map(|_| ()))
+            .map(|admission| admission.map(|_| ()).map_err(|refusal| refusal.close))
     }
 }
 

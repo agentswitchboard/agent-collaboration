@@ -1,7 +1,9 @@
 //! Live request admission. Callers hold the central turn through the admitted effect.
 use crate::WorkspaceAccess;
 use central_storage::{ReadOutcome, SqlValue, Statement, StoreFailure};
-use fleet_contracts::{LiveMachineConnection, MachineConnectionAttachment};
+use fleet_contracts::{
+    LiveMachineConnection, MachineConnectionAttachment, mail_link::MachineLinkCloseCode,
+};
 use fleet_runtime_ports::stored_values::column;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
@@ -52,6 +54,11 @@ fn decode_workspace_state(rows: &ReadOutcome) -> Result<Option<WorkspaceState>, 
     }
 }
 
+pub enum WorkspaceAdmissionRefusal {
+    Authority(MachineLinkCloseCode),
+    Workspace(RefusalReason),
+}
+
 impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceAccess<'_, Host, Stores> {
     pub async fn admit_workspace(
         &self,
@@ -59,21 +66,25 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceAccess<'_, Host, Stor
         caller: &Caller,
         attachment: &MachineConnectionAttachment,
         workspace: Option<&WorkspaceId>,
-    ) -> Result<Result<(), RefusalReason>, StoreFailure> {
+    ) -> Result<Result<(), WorkspaceAdmissionRefusal>, StoreFailure> {
         if attachment.organization_id() != self.execution.organization()
             || caller.machine_id() != attachment.machine_id()
         {
-            return Ok(Err(RefusalReason::MachineRevoked));
+            return Ok(Err(WorkspaceAdmissionRefusal::Workspace(
+                RefusalReason::MachineRevoked,
+            )));
         }
-        if live.restore_held(attachment).await?.is_err() {
-            return Ok(Err(RefusalReason::MachineRevoked));
+        if let Err(cause) = live.restore_held(attachment).await? {
+            return Ok(Err(WorkspaceAdmissionRefusal::Authority(cause)));
         }
         if let Some(workspace) = workspace {
             if !live
                 .allows_workspace_held(attachment.machine_id(), workspace)
                 .await?
             {
-                return Ok(Err(RefusalReason::WorkspaceNotAllowed));
+                return Ok(Err(WorkspaceAdmissionRefusal::Workspace(
+                    RefusalReason::WorkspaceNotAllowed,
+                )));
             }
             let rows = self
                 .execution
@@ -81,7 +92,9 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceAccess<'_, Host, Stor
                 .read(read_workspace_state(workspace))
                 .await?;
             if decode_workspace_state(&rows)? != Some(WorkspaceState::Active) {
-                return Ok(Err(RefusalReason::WorkspaceNotAllowed));
+                return Ok(Err(WorkspaceAdmissionRefusal::Workspace(
+                    RefusalReason::WorkspaceNotAllowed,
+                )));
             }
         }
         Ok(Ok(()))

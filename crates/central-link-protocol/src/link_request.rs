@@ -175,12 +175,31 @@ impl ReplyPayload {
     /// Projects live authority loss into the reply that precedes the typed close.
     #[must_use]
     pub fn authority_refused(request: &RequestPayload, cause: MachineLinkCloseCode) -> Self {
-        match cause {
-            MachineLinkCloseCode::Expired => Self::central_unavailable(request),
-            MachineLinkCloseCode::Revoked | MachineLinkCloseCode::Inactive => {
-                Self::workspace_refused(request, RefusalReason::MachineRevoked)
+        match request {
+            RequestPayload::Workspace(_) => {
+                Self::Workspace(Self::workspace_authority_refused(cause))
             }
+            RequestPayload::Mail(_) => Self::Mail(Self::mail_authority_refused(cause)),
         }
+    }
+
+    #[must_use]
+    pub fn workspace_authority_refused(cause: MachineLinkCloseCode) -> WorkspaceReply {
+        WorkspaceReply {
+            result: project_authority_refusal(
+                cause,
+                WorkspaceResult::CentralUnavailable,
+                WorkspaceResult::Refused,
+            ),
+            actors: vec![],
+        }
+    }
+
+    #[must_use]
+    pub fn mail_authority_refused(cause: MachineLinkCloseCode) -> CentralMailResult {
+        project_authority_refusal(cause, CentralMailResult::CentralUnavailable, |reason| {
+            CentralMailResult::Refused(CentralMailRefusal::Workspace(reason))
+        })
     }
 
     #[must_use]
@@ -202,6 +221,19 @@ impl ReplyPayload {
             | (Self::Mail(_), RequestPayload::Mail(_)) => true,
             (Self::Workspace(_), RequestPayload::Mail(_))
             | (Self::Mail(_), RequestPayload::Workspace(_)) => false,
+        }
+    }
+}
+
+fn project_authority_refusal<Reply>(
+    cause: MachineLinkCloseCode,
+    unavailable: Reply,
+    refused: impl FnOnce(RefusalReason) -> Reply,
+) -> Reply {
+    match cause {
+        MachineLinkCloseCode::Expired => unavailable,
+        MachineLinkCloseCode::Revoked | MachineLinkCloseCode::Inactive => {
+            refused(RefusalReason::MachineRevoked)
         }
     }
 }
