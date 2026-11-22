@@ -7,6 +7,9 @@ use super::{
     load_service_identity, new_service_uuid, unix_seconds,
 };
 
+#[cfg(test)]
+pub(crate) type BeforeProviderRetention = Box<dyn FnOnce(&CollaborationRuntime) + Send>;
+
 impl CollaborationRuntime {
     /// Binds both private listeners before spawning tasks. No native process is started.
     pub async fn start(inputs: CollaborationRuntimeInputs) -> io::Result<Self> {
@@ -34,20 +37,41 @@ impl CollaborationRuntime {
         host_inputs: HostCollaborationInputs,
         provider_launches: Vec<crate::ExternalProviderStartup>,
         router_executable_check: std::sync::Arc<dyn collaboration_mcp::RouterExecutableCheck>,
+        worker_clock: std::sync::Arc<dyn router_clock::RuntimeClock>,
+        #[cfg(test)] before_retention: Option<BeforeProviderRetention>,
     ) -> io::Result<Self> {
+        let composition_started_at = std::time::Instant::now();
         let prepared_exposure = crate::tailscale_exposure::PreparedTailscaleExposure::prepare(
             host_inputs.remote_access,
         )
         .await?;
-        Box::pin(Self::start_with_optional_router_proxy_endpoint(
+        let mut runtime = Box::pin(Self::start_with_optional_router_proxy_endpoint(
             host_inputs.collaboration_runtime,
             provider_launches,
             router_executable_check,
             Some(host_inputs.router_proxy_endpoint),
             prepared_exposure,
-            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            worker_clock,
         ))
-        .await
+        .await?;
+        crate::record_debug_readiness_timing("collaborationRuntimeReady", composition_started_at);
+        #[cfg(test)]
+        if let Some(before_retention) = before_retention {
+            before_retention(&runtime);
+        }
+        let retention_started_at = std::time::Instant::now();
+        if let Err(error) = runtime
+            .configure_provider_operation_retention(host_inputs.provider_operation_retention_days)
+            .await
+        {
+            let cleanup = runtime.shutdown().await;
+            return Err(match cleanup {
+                Ok(()) => error,
+                Err(cleanup) => io::Error::other(format!("{error}; startup cleanup: {cleanup}")),
+            });
+        }
+        crate::record_debug_readiness_timing("providerRetentionConfigured", retention_started_at);
+        Ok(runtime)
     }
 
     #[cfg(feature = "runtime-test-support")]

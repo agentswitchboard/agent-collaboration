@@ -145,32 +145,15 @@ impl CollaborationLifecycle {
                     },
                     router_proxy_endpoint: self.router_proxy_endpoint,
                     remote_access: self.remote_access,
+                    provider_operation_retention_days: self.provider_operation_retention_days,
                 },
                 self.external_provider_startups.clone(),
                 std::sync::Arc::clone(&self.router_executable_check),
+                std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+                #[cfg(test)]
+                None,
             )
             .await?;
-            crate::record_debug_readiness_timing(
-                "collaborationRuntimeReady",
-                composition_started_at,
-            );
-            let retention_started_at = std::time::Instant::now();
-            if let Err(error) = runtime
-                .configure_provider_operation_retention(self.provider_operation_retention_days)
-                .await
-            {
-                let cleanup = runtime.shutdown().await;
-                return Err(match cleanup {
-                    Ok(()) => error,
-                    Err(cleanup) => {
-                        io::Error::other(format!("{error}; startup cleanup: {cleanup}"))
-                    }
-                });
-            }
-            crate::record_debug_readiness_timing(
-                "providerRetentionConfigured",
-                retention_started_at,
-            );
             if let Err(error) = runtime.start_scratch_sweep(
                 std::sync::Arc::new(crate::SystemScratchSweepClock),
                 std::sync::Arc::new(crate::LoggedScratchSweepEvents),
