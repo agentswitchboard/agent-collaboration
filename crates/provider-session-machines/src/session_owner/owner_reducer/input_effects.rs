@@ -655,6 +655,7 @@ impl OwnerTransition {
         if let Some(observed) = observed {
             self.next.ports.last_live_turn = Some(LastLiveTurn {
                 turn: input.turn,
+                operation: input.operation,
                 input: input.input.clone(),
                 outcome: observed.clone(),
                 observed_at_ms: self.observed_at_ms,

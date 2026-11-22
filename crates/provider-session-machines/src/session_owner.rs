@@ -151,6 +151,7 @@ pub struct PromptCompletion {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LastLiveTurn {
     pub turn: TurnId,
+    pub operation: uuid::Uuid,
     pub input: InputId,
     pub outcome: TurnOutcome,
     pub observed_at_ms: i64,

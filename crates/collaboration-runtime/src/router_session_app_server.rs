@@ -36,6 +36,15 @@ use tokio_tungstenite::{accept_async, tungstenite::Message};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+/// Native completion follows the Host's release of admission custody for that turn.
+pub trait NativeTurnCompletion: Send + Sync {
+    fn await_admission_release<'a>(
+        &'a self,
+        session: &'a SessionRef,
+        turn_id: &'a str,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + 'a>>;
+}
+
 pub struct RouterSessionAppServerContext {
     endpoint: SessionEndpointRef,
     actor: Identity,
@@ -43,6 +52,7 @@ pub struct RouterSessionAppServerContext {
     events: Arc<dyn SessionEventHub>,
     model_catalog: Arc<dyn crate::SessionModelCatalog>,
     project_trust: Option<Arc<dyn codex_native_integration::CodexProjectTrustLookup>>,
+    native_turn_completion: Option<Arc<dyn NativeTurnCompletion>>,
 }
 
 impl RouterSessionAppServerContext {
@@ -60,7 +70,14 @@ impl RouterSessionAppServerContext {
             events,
             model_catalog,
             project_trust: None,
+            native_turn_completion: None,
         }
+    }
+
+    #[must_use]
+    pub fn with_native_turn_completion(mut self, readiness: Arc<dyn NativeTurnCompletion>) -> Self {
+        self.native_turn_completion = Some(readiness);
+        self
     }
 
     #[must_use]
@@ -195,8 +212,11 @@ pub async fn serve_router_session_app_server_connection(
     context: Arc<RouterSessionAppServerContext>,
 ) -> Result<(), AppServerConnectionError> {
     let mut websocket = accept_async(stream).await?;
-    let (event_sender, mut event_receiver) =
-        mpsc::channel::<(SessionRef, Result<HubEvent, ()>)>(64);
+    let (event_sender, mut event_receiver) = mpsc::channel(64);
+    let events = NativeSessionEvents {
+        sender: event_sender,
+        turn_completion: context.native_turn_completion.clone(),
+    };
     let (response_sender, mut response_receiver) =
         mpsc::channel::<Result<HandledAppServerRequest, AppServerConnectionError>>(32);
     let (turn_sender, mut turn_receiver) =
@@ -296,7 +316,7 @@ pub async fn serve_router_session_app_server_connection(
                         };
                         let (subscription, epoch, sequence) = attach_session_events(
                             session.clone(), attachment, &mut forwarding, &mut websocket,
-                            &event_sender, &mut event_tasks, None,
+                            &events, &mut event_tasks, None,
                         ).await?;
                         delivered_sequences.insert(session.clone(), (epoch, sequence));
                         subscriptions.insert(session, subscription);
@@ -316,7 +336,7 @@ pub async fn serve_router_session_app_server_connection(
                         Ok(attachment) => {
                             let (subscription, epoch, sequence) = attach_session_events(
                                 session.clone(), attachment, &mut forwarding, &mut websocket,
-                                &event_sender, &mut event_tasks,
+                                &events, &mut event_tasks,
                                 delivered_sequences.get(&session).copied(),
                             ).await?;
                             delivered_sequences.insert(session.clone(), (epoch, sequence));
@@ -478,12 +498,32 @@ pub async fn serve_router_session_app_server_connection(
 mod request_dispatch;
 use request_dispatch::handle_app_server_rpc;
 
+struct NativeSessionEvents {
+    sender: mpsc::Sender<(SessionRef, Result<HubEvent, ()>)>,
+    turn_completion: Option<Arc<dyn NativeTurnCompletion>>,
+}
+
+async fn await_terminal_readiness(
+    completion: Option<&dyn NativeTurnCompletion>,
+    session: &SessionRef,
+    event: &HubEvent,
+) {
+    if let Some(completion) = completion
+        && let SessionEvent::TurnEnded {
+            turn_id,
+            outcome: session_event_model::TurnOutcome::Ended { .. },
+        } = &event.event
+    {
+        completion.await_admission_release(session, turn_id).await;
+    }
+}
+
 async fn attach_session_events(
     session: SessionRef,
     attachment: SessionEventAttachment,
     forwarding: &mut AppServerEventForwarding,
     websocket: &mut tokio_tungstenite::WebSocketStream<UnixStream>,
-    event_sender: &mpsc::Sender<(SessionRef, Result<HubEvent, ()>)>,
+    events: &NativeSessionEvents,
     event_tasks: &mut JoinSet<()>,
     replay_after: Option<(u64, u64)>,
 ) -> Result<(AbortHandle, u64, u64), AppServerConnectionError> {
@@ -492,6 +532,12 @@ async fn attach_session_events(
     let mut initial_settings = None;
     for event in attachment.snapshot {
         latest_sequence = latest_sequence.max(event.sequence);
+        let missed_event = replay_after.is_some_and(|(previous_epoch, sequence)| {
+            previous_epoch != epoch || event.sequence > sequence
+        });
+        if missed_event {
+            await_terminal_readiness(events.turn_completion.as_deref(), &session, &event).await;
+        }
         for notification in forwarding.project(&session, &event) {
             if replay_after.is_none() && matches!(event.event, SessionEvent::SettingsChanged { .. })
             {
@@ -500,9 +546,6 @@ async fn attach_session_events(
                 initial_settings = Some(notification);
                 continue;
             }
-            let missed_event = replay_after.is_some_and(|(previous_epoch, sequence)| {
-                previous_epoch != epoch || event.sequence > sequence
-            });
             if missed_event {
                 websocket
                     .send(Message::Text(notification.to_string().into()))
@@ -517,11 +560,15 @@ async fn attach_session_events(
             .await?;
     }
     let mut receiver = attachment.receiver;
-    let sender = event_sender.clone();
+    let sender = events.sender.clone();
+    let completion = events.turn_completion.clone();
     Ok((
         event_tasks.spawn(async move {
             loop {
                 let event = receiver.recv().await.map_err(|_| ());
+                if let Ok(event) = &event {
+                    await_terminal_readiness(completion.as_deref(), &session, event).await;
+                }
                 let needs_reattach = event.as_ref().map_or(true, |event| {
                     matches!(&event.event, SessionEvent::ResyncRequired { .. })
                 });

@@ -6,6 +6,17 @@ use super::ExternalProviderSupervisor;
 use crate::binding_store_fixture::BindingFixtureWait;
 
 impl ExternalProviderSupervisor {
+    pub(crate) fn hold_next_native_terminal_for_test(
+        &self,
+        endpoint: &collaboration_protocol::EndpointRef,
+    ) -> crate::binding_store_fixture::NativeTerminalFixture {
+        self.inner
+            .uncertainty
+            .slot(endpoint)
+            .fixture
+            .pause_native_terminal()
+    }
+
     pub fn with_fixture_hub(
         bindings: Vec<super::ExternalProviderBinding>,
         store: std::sync::Arc<tokio::sync::Mutex<collaboration_runtime::ProviderOperationStore>>,

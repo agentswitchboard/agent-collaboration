@@ -15,6 +15,8 @@ pub(crate) enum BindingFixtureWait {
 #[derive(Default)]
 pub(crate) struct BindingStoreFixture {
     terminal_write: WritePause<OperationId>,
+    next_native_terminal: WritePause<()>,
+    native_completion_wait: Mutex<Option<oneshot::Sender<()>>>,
     mode_write: WritePause<(SessionRef, String)>,
     waits: Mutex<BTreeMap<(SessionRef, BindingFixtureWait), oneshot::Sender<()>>>,
 }
@@ -58,6 +60,12 @@ impl<Key> WritePause<Key> {
     }
 }
 
+pub struct NativeTerminalFixture {
+    pub write_held: oneshot::Receiver<()>,
+    pub release_write: oneshot::Sender<()>,
+    pub completion_waiting: oneshot::Receiver<()>,
+}
+
 impl BindingStoreFixture {
     pub(crate) fn pause_terminal_write(
         &self,
@@ -70,6 +78,34 @@ impl BindingStoreFixture {
         self.terminal_write
             .hold(|waiting| waiting == operation)
             .await;
+        self.next_native_terminal.hold(|()| true).await;
+    }
+
+    pub(crate) fn pause_native_terminal(&self) -> NativeTerminalFixture {
+        let (write_held, release_write) = self.next_native_terminal.arm(());
+        let (send, completion_waiting) = oneshot::channel();
+        let old = self
+            .native_completion_wait
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace(send);
+        assert!(old.is_none(), "a native completion probe was already armed");
+        NativeTerminalFixture {
+            write_held,
+            release_write,
+            completion_waiting,
+        }
+    }
+
+    pub(crate) fn notice_native_completion_wait(&self) {
+        if let Some(waiter) = self
+            .native_completion_wait
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+        {
+            let _observer_gone = waiter.send(());
+        }
     }
 
     pub(crate) fn pause_mode_write(

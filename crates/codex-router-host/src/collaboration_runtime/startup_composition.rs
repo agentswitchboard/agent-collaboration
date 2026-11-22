@@ -404,6 +404,7 @@ impl CollaborationRuntime {
                         ),
                     ),
                 )
+                .with_native_turn_completion(supervisor.clone())
                 .with_project_trust(std::sync::Arc::new(
                     codex_native_integration::CodexHomeProjectTrust::new(inputs.codex_home.clone()),
                 ));

@@ -166,6 +166,20 @@ pub struct CollaborationRuntime {
 }
 
 impl CollaborationRuntime {
+    #[cfg(feature = "test-support")]
+    pub fn hold_next_native_terminal_for_test(
+        &self,
+        endpoint: collaboration_protocol::EndpointId,
+    ) -> Option<crate::binding_store_fixture::NativeTerminalFixture> {
+        let supervisor = self.external_provider_supervisor.as_ref()?;
+        Some(
+            supervisor.hold_next_native_terminal_for_test(&collaboration_protocol::EndpointRef {
+                service_id: self.service_id.clone(),
+                endpoint_id: endpoint,
+            }),
+        )
+    }
+
     #[cfg(feature = "runtime-test-support")]
     pub async fn attach_provider_events_for_test(
         &self,

@@ -475,3 +475,102 @@ async fn native_settings_reaches_provider_and_readback_retains_confirmed_partial
     runtime.shutdown().await?;
     Ok(())
 }
+
+#[tokio::test(flavor = "current_thread")]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "The exact correlated refusal must fail the native admission oracle."
+)]
+async fn native_completed_turn_does_not_leak_prior_admission_custody()
+-> Result<(), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir()?;
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))?;
+    let receipt = root.path().join("native-admission.jsonl");
+    let runtime = CollaborationRuntime::start_with_external_providers(
+        CollaborationRuntimeInputs {
+            owner_human_id: Some(message_board::HumanId::try_from(
+                "native-admission-owner".to_owned(),
+            )?),
+            directory: root.path().to_owned(),
+            codex_home: root.path().to_owned(),
+            backend_socket: root.path().join("backend.sock"),
+            mcp_bind: std::net::SocketAddr::from(([127, 0, 0, 1], 0)),
+            native_schema: None,
+            peer_registry_directory: None,
+            remote_control_server_name: None,
+        },
+        vec![ExternalProviderStartup::Launch(
+            ExternalProviderLaunchBinding::cursor(
+                PathBuf::from("node"),
+                vec![
+                    concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/../acp-client-runtime/tests/support/behavior-agent.ts"
+                    )
+                    .into(),
+                    receipt.display().to_string(),
+                    "manual".into(),
+                    "cursor_login".into(),
+                ],
+            )?,
+        )],
+    )
+    .await?;
+    let (mut client, _) = client_async(
+        "ws://localhost/rpc",
+        UnixStream::connect(root.path().join("router-sessions/cursor-local.sock")).await?,
+    )
+    .await?;
+    let mut notifications = Vec::new();
+    send(&mut client, 1, "thread/start", json!({"cwd":root.path()})).await?;
+    let started = reply(&mut client, 1, &mut notifications).await?;
+    let thread = started
+        .pointer("/result/thread/id")
+        .and_then(Value::as_str)
+        .ok_or("thread ID")?;
+    let hold = runtime
+        .hold_next_native_terminal_for_test(collaboration_protocol::EndpointId::try_from(
+            "cursor-local".to_owned(),
+        )?)
+        .ok_or("native supervisor")?;
+    send(
+        &mut client,
+        2,
+        "turn/start",
+        json!({"threadId":thread,"input":[{"type":"text","text":"before removal"}]}),
+    )
+    .await?;
+    let accepted = reply(&mut client, 2, &mut notifications).await?;
+    let first_turn = accepted
+        .pointer("/result/turn/id")
+        .and_then(Value::as_str)
+        .ok_or("initial turn ID")?;
+    tokio::time::timeout(BOUND, hold.write_held).await??;
+    let send_removal = json!({"threadId":thread,"input":[{"type":"text","text":"remove-skill"}]});
+    tokio::select! {
+        biased;
+        terminal = terminal(&mut client, first_turn, &mut notifications) => {
+            terminal?;
+            send(&mut client, 3, "turn/start", send_removal.clone()).await?;
+            let refused = reply(&mut client, 3, &mut notifications).await?;
+            drop(hold.release_write);
+            return Err(format!("native completion escaped while the prior write was held, next correlated reply: {refused}").into());
+        }
+        waiting = hold.completion_waiting => waiting?,
+    }
+    hold.release_write
+        .send(())
+        .map_err(|_| "terminal writer disappeared")?;
+    terminal(&mut client, first_turn, &mut notifications).await?;
+    send(&mut client, 3, "turn/start", send_removal).await?;
+    let removal = reply(&mut client, 3, &mut notifications).await?;
+    let removal_turn = removal
+        .pointer("/result/turn/id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| format!("removal was refused after terminal notification: {removal}"))?;
+    terminal(&mut client, removal_turn, &mut notifications).await?;
+    assert_eq!(receipts(&receipt)?.len(), 2);
+    drop(client);
+    runtime.shutdown().await?;
+    Ok(())
+}

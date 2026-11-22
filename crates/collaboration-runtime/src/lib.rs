@@ -58,8 +58,8 @@ pub use app_server_model_catalog::{
     SessionModelCatalog, SessionModelCatalogError, render_model_list,
 };
 pub use router_session_app_server::{
-    AppServerConnectionError, RouterSessionAppServerContext, RouterSessionAppServerListener,
-    serve_router_session_app_server_connection,
+    AppServerConnectionError, NativeTurnCompletion, RouterSessionAppServerContext,
+    RouterSessionAppServerListener, serve_router_session_app_server_connection,
 };
 mod session_delivery_router;
 pub use provider_acp_session_route::ProviderAcpSessionRoute;

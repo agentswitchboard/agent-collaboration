@@ -6,6 +6,8 @@ mod provider_operation_index;
 #[cfg(test)]
 pub(crate) use provider_operation_index::HeldResult;
 use provider_operation_index::{LiveOperation, LiveOperations, UncertaintyCells};
+#[path = "external_provider_supervisor/native_turn_completion.rs"]
+mod native_turn_completion;
 mod provider_operation_failure;
 mod provider_operation_finish;
 mod provider_operation_handoff;
