@@ -927,6 +927,10 @@ mod provider_delivery_submission;
 mod tests;
 #[cfg(test)]
 pub(crate) use provider_delivery_submission::ProviderPromptDispatch;
+#[cfg(test)]
+pub(crate) use tests::restore_recovery_tests::restore_recovery_fixture::{
+    RestoreRig, wait_request,
+};
 
 #[cfg(test)]
 #[path = "external_provider_supervisor/clock_injection_test.rs"]

@@ -25,6 +25,9 @@ mod explicit_app_server_restart;
 mod explicit_router_restart;
 mod external_provider_runtime;
 mod provider_acp_delivery_route;
+#[cfg(test)]
+#[path = "provider_acp_restore_seam_test.rs"]
+mod provider_acp_restore_seam_tests;
 mod provider_acp_route_claim;
 mod provider_queue_operation_registry;
 mod provider_session_command_port;

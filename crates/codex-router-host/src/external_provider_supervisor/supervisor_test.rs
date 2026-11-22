@@ -7,7 +7,7 @@ mod persistence_overlay_tests;
 #[path = "tests/reconcile_reservation_test.rs"]
 mod reconcile_reservation_tests;
 #[path = "tests/restore_recovery_test.rs"]
-mod restore_recovery_tests;
+pub(super) mod restore_recovery_tests;
 #[path = "tests/steered_input_join_test.rs"]
 mod steered_input_join_tests;
 #[path = "tests/uncertainty_admission_test.rs"]
@@ -155,17 +155,6 @@ pub(crate) fn requester() -> SessionRef {
     SessionRef {
         endpoint: endpoint(),
         session_id: SessionId::try_from("requester".to_owned()).expect("session ID"),
-    }
-}
-
-struct NoLivePeer;
-
-impl crate::LiveSessionOwnershipCheck for NoLivePeer {
-    fn check<'a>(
-        &'a self,
-        _target: &'a SessionRef,
-    ) -> collaboration_contracts::DeliveryFuture<'a, crate::LiveSessionOwnership> {
-        Box::pin(async { Ok(crate::LiveSessionOwnership::NotLive) })
     }
 }
 
