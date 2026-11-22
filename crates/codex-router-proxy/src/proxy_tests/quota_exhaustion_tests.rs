@@ -105,6 +105,7 @@ fn assembled_loopback_router_runtime_retries_http_quota_errors_until_account_can
         Ok(runtime) => runtime,
         Err(error) => panic!("router runtime should start: {error}"),
     };
+    let quota_writer = runtime.db_write_actor_for_test();
     let router_address = runtime.local_addr();
     let client_thread = thread::spawn(move || {
         send_loopback_request(
@@ -115,6 +116,7 @@ fn assembled_loopback_router_runtime_retries_http_quota_errors_until_account_can
     });
 
     let shutdown = tokio_util::sync::CancellationToken::new();
+    let _cancel_server_on_exit = shutdown.clone().drop_guard();
     let server_shutdown = shutdown.clone();
     let server_thread = thread::spawn(move || {
         runtime.serve_protocol_connections_until_cancelled(usize::MAX, server_shutdown)
@@ -150,7 +152,11 @@ fn assembled_loopback_router_runtime_retries_http_quota_errors_until_account_can
         Err(error) => panic!("mock upstream thread panicked: {error:?}"),
     }
 
-    wait_for_durable_quota_exhaustion(
+    quota_writer
+        .quota_barrier_for_test()
+        .blocking_recv()
+        .expect("quota writer should reach the FIFO barrier");
+    assert_durable_quota_exhaustion(
         &state,
         &mut quota_completions,
         &[primary.account_id(), secondary.account_id()],

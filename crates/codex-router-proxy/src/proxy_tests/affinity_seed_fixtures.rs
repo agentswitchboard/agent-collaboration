@@ -291,31 +291,31 @@ pub(super) fn assert_repository_selected_account(
     assert_eq!(selected.account_id(), expected_account_id, "{context}");
 }
 
-pub(super) fn wait_for_durable_quota_exhaustion(
+pub(super) fn assert_durable_quota_exhaustion(
     state: &SqliteStateStore,
     completions: &mut tokio::sync::mpsc::UnboundedReceiver<QuotaWriteCompletion>,
     accounts: &[&AccountId],
 ) {
-    must_ok(tokio::runtime::Builder::new_current_thread().build()).block_on(
-        assert_quota_exhaustion_after_write(state, completions, accounts),
-    );
-}
-
-pub(super) async fn assert_quota_exhaustion_after_write(
-    state: &SqliteStateStore,
-    completions: &mut tokio::sync::mpsc::UnboundedReceiver<QuotaWriteCompletion>,
-    accounts: &[&AccountId],
-) {
-    for &account_id in accounts {
-        let completion = completions
-            .recv()
-            .await
-            .expect("quota writer should report completion");
-        assert_eq!(&completion.account_id, account_id, "quota write account");
+    let mut remaining_accounts = accounts
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    for _ in accounts {
+        // The caller has already awaited a FIFO barrier or joined the writer.
+        let completion = completions.try_recv().unwrap_or_else(|error| {
+            panic!(
+                "quota writer finished without a completion for {remaining_accounts:?}: {error}"
+            );
+        });
         assert_eq!(
             completion.route_band,
             RouteBand::Responses,
             "quota write band"
+        );
+        let account_id = &completion.account_id;
+        assert!(
+            remaining_accounts.remove(account_id),
+            "unexpected or duplicate quota completion for {account_id:?}",
         );
         completion.result.unwrap_or_else(|error| {
             panic!(

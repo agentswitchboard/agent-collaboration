@@ -309,6 +309,11 @@ impl LoopbackRouterRuntime {
     }
 
     #[cfg(test)]
+    pub(crate) fn db_write_actor_for_test(&self) -> DbWriteActor {
+        self.db_write_actor.clone()
+    }
+
+    #[cfg(test)]
     pub(crate) fn start_for_test_with_maintenance_completion_sender(
         config: LoopbackRouterRuntimeConfig,
         completion_sender: std::sync::mpsc::Sender<crate::maintenance_actor::MaintenanceCompletion>,

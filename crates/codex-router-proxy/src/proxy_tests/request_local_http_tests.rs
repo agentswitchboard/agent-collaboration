@@ -438,7 +438,7 @@ fn request_local_http_auth_then_quota_preserves_true_quota_observation() {
         ["Bearer primary-token", "Bearer fallback-token"]
     );
     let state = must_ok(SqliteStateStore::open(&fixture.database_path));
-    wait_for_durable_quota_exhaustion(
+    assert_durable_quota_exhaustion(
         &state,
         &mut observed.quota_completions,
         &[fixture.fallback.account_id()],
@@ -469,7 +469,7 @@ fn request_local_http_quota_only_exhaustion_preserves_existing_signal() {
     );
     assert_eq!(observed.upstream_requests.len(), 2);
     let state = must_ok(SqliteStateStore::open(&fixture.database_path));
-    wait_for_durable_quota_exhaustion(
+    assert_durable_quota_exhaustion(
         &state,
         &mut observed.quota_completions,
         &[fixture.primary.account_id(), fixture.fallback.account_id()],

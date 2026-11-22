@@ -144,7 +144,7 @@ fn assembled_loopback_router_runtime_retries_http_quota_error_on_fallback_accoun
     // The retry excludes the primary in process before its queued SQLite
     // exhaustion write completes. Establish the durable row before asking
     // a new repository selector to make the post-retry decision.
-    wait_for_durable_quota_exhaustion(&state, &mut quota_completions, &[primary.account_id()]);
+    assert_durable_quota_exhaustion(&state, &mut quota_completions, &[primary.account_id()]);
     let runtime_state = must_ok(SqliteStateStore::open(&database_path));
     assert_repository_selected_account(
         &runtime_state,
@@ -253,6 +253,7 @@ fn assembled_loopback_router_runtime_retries_large_http_json_quota_error_on_fall
         Ok(runtime) => runtime,
         Err(error) => panic!("router runtime should start: {error}"),
     };
+    let quota_writer = runtime.db_write_actor_for_test();
     let router_address = runtime.local_addr();
     let lock_runtime = must_ok(
         tokio::runtime::Builder::new_current_thread()
@@ -275,6 +276,7 @@ fn assembled_loopback_router_runtime_retries_large_http_json_quota_error_on_fall
     });
 
     let shutdown = tokio_util::sync::CancellationToken::new();
+    let _cancel_server_on_exit = shutdown.clone().drop_guard();
     let server_shutdown = shutdown.clone();
     let server_thread = thread::spawn(move || {
         runtime.serve_protocol_connections_until_cancelled(usize::MAX, server_shutdown)
@@ -314,12 +316,13 @@ fn assembled_loopback_router_runtime_retries_large_http_json_quota_error_on_fall
             .expect("initial snapshot should remain readable");
     assert_eq!(before_commit.source(), QuotaSnapshotSource::MockEndpoint);
     assert_eq!(before_commit.remaining_headroom(), 90);
-    let exhausted_accounts = [primary.account_id()];
-    let mut quota_write = std::pin::pin!(assert_quota_exhaustion_after_write(
-        &state,
-        &mut quota_completions,
-        &exhausted_accounts,
-    ));
+    let quota_barrier = quota_writer.quota_barrier_for_test();
+    let mut quota_write = std::pin::pin!(async {
+        quota_barrier
+            .await
+            .expect("quota writer should reach the FIFO barrier");
+        assert_durable_quota_exhaustion(&state, &mut quota_completions, &[primary.account_id()]);
+    });
     assert!(
         quota_write.as_mut().now_or_never().is_none(),
         "quota assertion should stay pending while SQLite holds the writer lock",
@@ -351,7 +354,7 @@ fn assembled_loopback_router_runtime_retries_large_http_json_quota_error_on_fall
 
 #[test]
 fn selection_diagnostics_unreplayable_http_quota_error_uses_real_handler() {
-    // Reject a build that omits the unreplayable quota diagnostic or loses the queued write.
+    // Reject a build that retries an unreplayable request or loses its diagnostic or quota write.
     let temp_dir = ProxyTestTempDir::new("assembled_runtime_unreplayable_http_quota");
     let database_path = temp_dir.path().join("state.sqlite");
     let secret_path = temp_dir.path().join("secrets");
@@ -388,34 +391,45 @@ fn selection_diagnostics_unreplayable_http_quota_error_uses_real_handler() {
         Ok(address) => address,
         Err(error) => panic!("mock upstream address should read: {error}"),
     };
-    let (upstream_sender, upstream_receiver) = mpsc::channel();
+    must_ok(upstream_listener.set_nonblocking(true));
+    let upstream_shutdown = tokio_util::sync::CancellationToken::new();
+    let _cancel_upstream_on_exit = upstream_shutdown.clone().drop_guard();
+    let stop_upstream = upstream_shutdown.clone();
     let upstream_thread = thread::spawn(move || {
-        let (mut stream, _peer_address) = match upstream_listener.accept() {
-            Ok(connection) => connection,
-            Err(error) => panic!("mock upstream should accept first connection: {error}"),
-        };
-        let request = read_test_http_request(&mut stream);
-        let authorization = request
-            .lines()
-            .find(|line| line.starts_with("authorization: "))
-            .unwrap_or("<missing>")
-            .to_owned();
-        let body_exceeded_replay_limit =
-            request.contains("\"unreplayable_padding\":\"") && request.len() > 2 * 1024 * 1024;
-        if let Err(error) = upstream_sender.send((authorization, body_exceeded_replay_limit)) {
-            panic!("mock upstream authorization should record: {error}");
-        }
-        let quota_body = br#"{"type":"error","status":429,"error":{"type":"usage_limit_reached","code":"usage_limit_reached"}}"#;
-        if let Err(error) = write!(
-            stream,
-            "HTTP/1.1 429 Too Many Requests\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
-            quota_body.len()
-        ) {
-            panic!("mock upstream should write quota response headers: {error}");
-        }
-        if let Err(error) = stream.write_all(quota_body) {
-            panic!("mock upstream should write quota response body: {error}");
-        }
+        let upstream_runtime = must_ok(
+            tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build(),
+        );
+        upstream_runtime.block_on(async {
+            let listener = must_ok(tokio::net::TcpListener::from_std(upstream_listener));
+            let mut attempts = Vec::new();
+            loop {
+                let stream = tokio::select! {
+                    biased;
+                    accepted = listener.accept() => must_ok(accepted).0,
+                    () = stop_upstream.cancelled() => return attempts,
+                };
+                let mut stream = must_ok(stream.into_std());
+                must_ok(stream.set_nonblocking(false));
+                let request = read_test_http_request(&mut stream);
+                let authorization = request
+                    .lines()
+                    .find(|line| line.starts_with("authorization: "))
+                    .unwrap_or("<missing>")
+                    .to_owned();
+                let body_exceeded_replay_limit =
+                    request.contains("\"unreplayable_padding\":\"") && request.len() > 2 * 1024 * 1024;
+                attempts.push((authorization, body_exceeded_replay_limit));
+                let quota_body = br#"{"type":"error","status":429,"error":{"type":"usage_limit_reached","code":"usage_limit_reached"}}"#;
+                must_ok(write!(
+                    stream,
+                    "HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                    quota_body.len()
+                ));
+                must_ok(stream.write_all(quota_body));
+            }
+        })
     });
     let endpoint = match UpstreamEndpoint::new(format!("http://{upstream_address}/v1")) {
         Ok(endpoint) => endpoint,
@@ -445,6 +459,7 @@ fn selection_diagnostics_unreplayable_http_quota_error_uses_real_handler() {
                     Ok(runtime) => runtime,
                     Err(error) => panic!("router runtime should start: {error}"),
                 };
+            let quota_writer = runtime.db_write_actor_for_test();
             let router_address = runtime.local_addr();
             let unreplayable_body = format!(
                 r#"{{"model":"gpt-5","unreplayable_padding":"{}"}}"#,
@@ -459,6 +474,7 @@ fn selection_diagnostics_unreplayable_http_quota_error_uses_real_handler() {
             });
 
             let shutdown = tokio_util::sync::CancellationToken::new();
+            let _cancel_server_on_exit = shutdown.clone().drop_guard();
             let server_shutdown = shutdown.clone();
             let server_thread = thread::spawn(move || {
                 runtime.serve_protocol_connections_until_cancelled(usize::MAX, server_shutdown)
@@ -467,20 +483,6 @@ fn selection_diagnostics_unreplayable_http_quota_error_uses_real_handler() {
                 Ok(response) => response,
                 Err(error) => panic!("client thread panicked: {error:?}"),
             };
-            let first = upstream_receiver
-                .recv()
-                .unwrap_or_else(|error| panic!("first upstream auth should record: {error}"));
-            assert_eq!(first.0, "authorization: Bearer primary-token");
-            assert!(first.1);
-            assert!(
-                upstream_receiver
-                    .recv_timeout(Duration::from_millis(50))
-                    .is_err()
-            );
-            match upstream_thread.join() {
-                Ok(()) => {}
-                Err(error) => panic!("mock upstream thread panicked: {error:?}"),
-            }
             let response = observed_response;
             assert!(response.starts_with("HTTP/1.1 503 Service Unavailable\r\n"));
             let response_body = response
@@ -508,7 +510,11 @@ fn selection_diagnostics_unreplayable_http_quota_error_uses_real_handler() {
                 "the prepared selection's route band must remain on its rejection event"
             );
 
-            wait_for_durable_quota_exhaustion(
+            quota_writer
+                .quota_barrier_for_test()
+                .blocking_recv()
+                .expect("quota writer should reach the FIFO barrier");
+            assert_durable_quota_exhaustion(
                 &state,
                 &mut quota_completions,
                 &[primary.account_id()],
@@ -524,6 +530,13 @@ fn selection_diagnostics_unreplayable_http_quota_error_uses_real_handler() {
                 Ok(Err(error)) => panic!("router shutdown should succeed: {error}"),
                 Err(error) => panic!("router server thread panicked: {error:?}"),
             }
+            upstream_shutdown.cancel();
+            let attempts = upstream_thread.join().expect("mock upstream should finish");
+            assert_eq!(
+                attempts,
+                [("authorization: Bearer primary-token".to_owned(), true)],
+                "unreplayable request upstream attempts",
+            );
         },
     );
     assert!(!captured_logs.contains("acct_primary_unreplayable_quota"));
