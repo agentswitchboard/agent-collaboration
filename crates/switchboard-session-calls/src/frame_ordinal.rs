@@ -23,7 +23,7 @@ impl FrameOrdinal {
     }
 }
 
-/// Why a supplied frame number could not be accepted into the call's ordinal sequence.
+/// The checked frame-ordinal constructor returns this for a supplied number outside the call's range.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum FrameOrdinalError {
     #[error("frame ordinal must be positive")]
@@ -32,7 +32,7 @@ pub enum FrameOrdinalError {
     OutOfRange,
 }
 
-/// The Router reached the last representable frame number in the call.
+/// The Router's checked frame increment returns this when the call has reached its last ordinal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum FrameOrdinalExhausted {
     #[error("frame ordinal is at its maximum")]

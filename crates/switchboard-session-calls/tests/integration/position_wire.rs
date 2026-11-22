@@ -119,6 +119,18 @@ fn the_frame_ordinal_is_positive_and_cannot_wrap() {
     }
 }
 
+#[test]
+fn position_getters_preserve_the_full_u64_range() {
+    for number in [0, 1, 4_294_967_296, u64::MAX] {
+        assert_eq!(HistoryEpoch::from(number).get(), number, "epoch");
+        assert_eq!(
+            IssuedPosition::from(number).get(),
+            number,
+            "issued position"
+        );
+    }
+}
+
 #[hegel::test(test_cases = 300)]
 fn decimal_wire_numbers_have_one_canonical_spelling(case: hegel::TestCase) {
     use hegel::generators as gs;

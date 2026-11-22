@@ -4,7 +4,7 @@ use std::str::FromStr;
 
 use serde::{Deserialize, Serialize};
 
-/// Why supplied text could not be used as a Router-issued position number.
+/// The position parser returns this when text cannot represent a Router-issued epoch or position.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum DecimalPositionError {
     #[error("decimal text is empty")]
@@ -36,6 +36,14 @@ macro_rules! decimal_position_number {
         #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize, schemars::JsonSchema)]
         #[serde(try_from = "String", into = "String")]
         pub struct $name(u64);
+
+        impl $name {
+            /// Returns the exact supplied number.
+            #[must_use]
+            pub const fn get(self) -> u64 {
+                self.0
+            }
+        }
 
         impl FromStr for $name {
             type Err = DecimalPositionError;
