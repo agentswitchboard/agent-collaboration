@@ -2474,7 +2474,7 @@ dependencies = [
 
 [[package]]
 name = "fleet-lent-transaction"
-version = "0.1.157"
+version = "0.1.158"
 dependencies = [
  "sqlx",
 ]
@@ -2587,7 +2587,7 @@ dependencies = [
 
 [[package]]
 name = "fleet-signin"
-version = "0.1.157"
+version = "0.1.158"
 dependencies = [
  "base64 0.22.1",
  "central-engine-model",
