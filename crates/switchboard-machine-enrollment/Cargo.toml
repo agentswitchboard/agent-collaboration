@@ -1,0 +1,20 @@
+[package]
+name = "switchboard-machine-enrollment"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+autotests = false
+
+[dependencies]
+router-clock.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+url = { workspace = true, features = ["serde"] }
+uuid.workspace = true
+workspace-ids.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

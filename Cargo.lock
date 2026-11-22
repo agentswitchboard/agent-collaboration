@@ -5707,6 +5707,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchboard-machine-enrollment"
+version = "0.1.158"
+dependencies = [
+ "router-clock",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+ "url",
+ "uuid",
+ "workspace-ids",
+ "zeroize",
+]
+
+[[package]]
 name = "switchboard-session-calls"
 version = "0.1.158"
 dependencies = [
@@ -6451,6 +6465,7 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]
