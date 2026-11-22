@@ -434,6 +434,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "approval-request-protocol"
+version = "0.1.158"
+dependencies = [
+ "base64 0.22.1",
+ "chrono",
+ "hegeltest",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "specta",
+ "specta-serde",
+ "specta-typescript",
+ "thiserror 2.0.18",
+ "workspace-ids",
+]
+
+[[package]]
 name = "arrayvec"
 version = "0.7.8"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1494,6 +1511,7 @@ name = "collaboration-central-core"
 version = "0.1.158"
 dependencies = [
  "agent-automation",
+ "approval-request-protocol",
  "axum",
  "base64 0.22.1",
  "central-engine-model",
@@ -2445,6 +2463,7 @@ dependencies = [
 name = "fleet-contracts"
 version = "0.1.158"
 dependencies = [
+ "approval-request-protocol",
  "central-engine-model",
  "central-storage",
  "fleet-identity-protocol",

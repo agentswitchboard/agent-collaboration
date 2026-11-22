@@ -14,6 +14,7 @@ workspace = true
 wire-export = ["dep:specta","fleet-identity-protocol/wire-export","message-board/wire-export","workspace-ids/wire-export"]
 
 [dependencies]
+approval-request-protocol.workspace = true
 central-engine-model.workspace = true
 central-storage.workspace = true
 fleet-rpc.workspace = true

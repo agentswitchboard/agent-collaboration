@@ -476,6 +476,9 @@ jobs:
             cargo nextest run --locked --offline -p collaboration-central-core --features wire-export \
               --lib --no-tests fail -E "test(=$wire_test)"
           done
+      - name: Check approval request TypeScript wire contracts
+        if: matrix.shard == 1
+        run: cargo nextest run --locked --offline -p approval-request-protocol --features wire-export --test integration --no-tests fail -E "test(=typescript_export::approval_typescript_contains_expected_roots_and_matches_generation)"
       # Compile every test binary once and pack it as a nextest archive, so both
       # shards run the same binaries without contending for Cargo's build lock.
       # Keep each build selection and feature set identical to its run.
