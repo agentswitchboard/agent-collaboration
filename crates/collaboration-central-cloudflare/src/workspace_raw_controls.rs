@@ -147,6 +147,18 @@ pub(in crate::workspace_central_object) async fn raw_control(
             }
             Response::from_json(&result)
         }
+        "/test/raw-workspace-page-rows-read" => {
+            let (after, read_limit): (String, u16) = request.json().await?;
+            let cursor = storage.sql().exec(
+                include_str!("../../fleet-workspace-directory/src/queries/read_workspace_page.sql"),
+                vec![
+                    worker::SqlStorageValue::String(after),
+                    worker::SqlStorageValue::Integer(i64::from(read_limit)),
+                ],
+            )?;
+            let rows = cursor.to_array::<serde_json::Value>()?;
+            Response::from_json(&(rows.len(), cursor.rows_read()))
+        }
         "/test/raw-read" => {
             let statement: OwnedStatement = request.json().await?;
             if ![

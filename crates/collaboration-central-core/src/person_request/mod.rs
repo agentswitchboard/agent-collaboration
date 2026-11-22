@@ -8,7 +8,7 @@ mod request_verifier;
 
 pub use admin_operations::{
     AdminOperation, AdminOperationId, AdminRoute, CreateWorkspaceRequest, EngineAttemptRequest,
-    EngineHealthRequest, EngineListRetiredRequest, OrganizationAdminIntent,
+    EngineHealthRequest, EngineListRetiredRequest, ListWorkspacesRequest, OrganizationAdminIntent,
     ReadChangeRecordsRequest, RecordPageLimit, WorkspaceLookupRequest, WorkspaceName,
 };
 pub use refusal::PersonRequestRefusal;

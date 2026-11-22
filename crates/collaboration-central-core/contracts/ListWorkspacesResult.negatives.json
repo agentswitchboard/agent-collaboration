@@ -1,0 +1,16 @@
+[
+null,
+{"next":"019a3dce-2000-7000-8000-000000000002","result":"unrecognizedVariant","workspaces":[{"description":"","name":"Example","state":"archived","workspaceId":"019a3dce-2000-7000-8000-000000000002"}]},
+{"next":"019a3dce-2000-7000-8000-000000000002","result":"workspaces","unexpectedField":true,"workspaces":[{"description":"","name":"Example","state":"archived","workspaceId":"019a3dce-2000-7000-8000-000000000002"}]},
+{"next":"019a3dce-2000-7000-8000-000000000002","result":"workspaces","workspaces":[{"description":"","name":" ","state":"archived","workspaceId":"019a3dce-2000-7000-8000-000000000002"}]},
+{"next":"019a3dce-2000-7000-8000-000000000002","result":"workspaces","workspaces":[{"description":"","name":"Example","state":"archived","unexpectedField":true,"workspaceId":"019a3dce-2000-7000-8000-000000000002"}]},
+{"next":"019a3dce-2000-7000-8000-000000000002","result":"workspaces","workspaces":[{"description":"","name":"Example","state":"archived","workspace_id":"019a3dce-2000-7000-8000-000000000002"}]},
+{"next":"019a3dce-2000-7000-8000-000000000002","result":"workspaces","workspaces":[{"description":"","name":"Example","state":"unrecognizedVariant","workspaceId":"019a3dce-2000-7000-8000-000000000002"}]},
+{"next":"019a3dce-2000-7000-8000-000000000002","result":"workspaces","workspaces":[{"description":"","name":"\t\n","state":"archived","workspaceId":"019a3dce-2000-7000-8000-000000000002"}]},
+{"next":"019a3dce-2000-7000-8000-000000000002","result":"workspaces","workspaces":[{"description":"","name":"","state":"archived","workspaceId":"019a3dce-2000-7000-8000-000000000002"}]},
+{"next":"019a3dce-2000-7000-8000-000000000002","result":"workspaces","workspaces":[{"description":"","name":" ","state":"archived","workspaceId":"019a3dce-2000-7000-8000-000000000002"}]},
+{"next":null,"result":"unrecognizedVariant","workspaces":[]},
+{"next":null,"result":"workspaces","unexpectedField":true,"workspaces":[]},
+{"reason":"notPermitted","result":"refused","unexpectedField":true},
+{"reason":"notPermitted","result":"unrecognizedVariant"}
+]

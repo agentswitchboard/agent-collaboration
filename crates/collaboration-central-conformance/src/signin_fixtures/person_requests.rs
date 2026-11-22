@@ -16,6 +16,7 @@ pub const SESSION: &str = "019f0000-0000-7000-8000-00000000d206";
 pub const POLICY: &str = "af40ec7fb999c4ef7f9611f322bab013e05666b56cd1d3101fac1e9e001d074a";
 pub const CREATE: &str = "/organization-admin/v1/create-workspace";
 pub const LOOKUP: &str = "/organization-admin/v1/workspace-lookup";
+pub const LIST_WORKSPACES: &str = "/organization-admin/v1/list-workspaces";
 pub const RECORDS: &str = "/organization-admin/v1/change-records";
 
 /// Signed fixture identity; its key and credentials deliberately have no Debug.
@@ -151,6 +152,10 @@ pub fn lookup_intent(organization: &str, workspace: &str) -> Value {
 }
 pub fn records_intent(organization: &str, after: Option<&str>, limit: u32) -> Value {
     json!({"v":1,"operation":"ReadChangeRecords","organization":organization,"target":organization,"operationId":null,"params":{"after":after,"limit":limit}})
+}
+
+pub fn list_workspaces_intent(organization: &str, after: Option<&str>, limit: u32) -> Value {
+    json!({"v":1,"operation":"ListWorkspaces","organization":organization,"target":organization,"operationId":null,"params":{"after":after,"limit":limit}})
 }
 
 /// A person's DPoP key, generated per test; its public JWK is what the token binds.

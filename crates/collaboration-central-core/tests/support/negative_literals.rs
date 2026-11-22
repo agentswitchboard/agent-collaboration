@@ -54,7 +54,7 @@ pub fn explicit_negatives(name: &str, literals: &[Value]) -> Vec<Value> {
             wrong_operation["operationId"] = json!("00000000-0000-4000-8000-000000000001");
             invalid.push(wrong_operation);
         }
-        "ReadChangeRecordsRequest" => {
+        "ReadChangeRecordsRequest" | "ListWorkspacesRequest" => {
             for limit in [json!(0), json!(101), json!(1.5)] {
                 let mut wrong_limit = literals[0].clone();
                 wrong_limit["limit"] = limit;

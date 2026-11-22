@@ -50,9 +50,22 @@ pub struct EngineRetiredItem {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OrganizationAdminAnswer {
     Answered(OrganizationAdminResult),
+    WorkspaceList(ListWorkspacesResult),
     MachineEnrollmentRevocation(MachineEnrollmentRevocationResult),
     Retained(RetainedOrganizationAdminAnswer),
     Unauthenticated,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "result", rename_all = "camelCase", deny_unknown_fields)]
+pub enum ListWorkspacesResult {
+    Workspaces {
+        workspaces: Vec<WorkspaceView>,
+        next: Option<message_board::WorkspaceId>,
+    },
+    Refused {
+        reason: AdminRefusal,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]

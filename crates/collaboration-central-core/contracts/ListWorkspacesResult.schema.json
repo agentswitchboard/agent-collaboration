@@ -1,0 +1,152 @@
+{
+  "$defs": {
+    "AdminRefusal": {
+      "oneOf": [
+        {
+          "enum": [
+            "nameInUse",
+            "notPermitted",
+            "secondFactorRequired",
+            "refreshRequired",
+            "authorizationSyncRequired",
+            "expired",
+            "requestTime",
+            "requestReused",
+            "rejected"
+          ],
+          "type": "string"
+        },
+        {
+          "const": "conflict",
+          "description": "The same operation ID arrived with a different request.",
+          "type": "string"
+        },
+        {
+          "const": "notFound",
+          "description": "No failure record has this attempt ID (or a concurrent retry took it).",
+          "type": "string"
+        },
+        {
+          "const": "notRetired",
+          "description": "The record is failing, not retired.",
+          "type": "string"
+        },
+        {
+          "const": "discardUnsupported",
+          "description": "A notice unit or engine_source record has no subject to finish.",
+          "type": "string"
+        },
+        {
+          "const": "stale",
+          "description": "The subject moved; nothing changed.",
+          "type": "string"
+        },
+        {
+          "const": "subjectUnreadable",
+          "description": "Discard on a retired subject whose row will not decode; nothing changed.",
+          "type": "string"
+        }
+      ]
+    },
+    "ResourceName": {
+      "maxLength": 256,
+      "minLength": 1,
+      "pattern": "^(?:[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000](?:[\\s\\S]*[^\\u0009-\\u000d\\u0020\\u0085\\u00a0\\u1680\\u2000-\\u200a\\u2028\\u2029\\u202f\\u205f\\u3000])?)?$(?![\\s\\S])",
+      "type": "string",
+      "x-maxUtf8Bytes": 256
+    },
+    "WorkspaceId": {
+      "maxLength": 36,
+      "minLength": 36,
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
+      "type": "string"
+    },
+    "WorkspaceState": {
+      "enum": [
+        "active",
+        "archiving",
+        "archived"
+      ],
+      "type": "string"
+    },
+    "WorkspaceView": {
+      "additionalProperties": false,
+      "description": "The verified admin view of the org-owned workspace directory.",
+      "properties": {
+        "description": {
+          "maxLength": 2048,
+          "type": "string",
+          "x-maxUtf8Bytes": 2048
+        },
+        "name": {
+          "$ref": "#/$defs/ResourceName"
+        },
+        "state": {
+          "$ref": "#/$defs/WorkspaceState"
+        },
+        "workspaceId": {
+          "$ref": "#/$defs/WorkspaceId"
+        }
+      },
+      "required": [
+        "workspaceId",
+        "name",
+        "description",
+        "state"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "oneOf": [
+    {
+      "additionalProperties": false,
+      "properties": {
+        "next": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/WorkspaceId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "result": {
+          "const": "workspaces",
+          "type": "string"
+        },
+        "workspaces": {
+          "items": {
+            "$ref": "#/$defs/WorkspaceView"
+          },
+          "type": "array"
+        }
+      },
+      "required": [
+        "result",
+        "workspaces",
+        "next"
+      ],
+      "type": "object"
+    },
+    {
+      "additionalProperties": false,
+      "properties": {
+        "reason": {
+          "$ref": "#/$defs/AdminRefusal"
+        },
+        "result": {
+          "const": "refused",
+          "type": "string"
+        }
+      },
+      "required": [
+        "result",
+        "reason"
+      ],
+      "type": "object"
+    }
+  ],
+  "title": "ListWorkspacesResult"
+}
