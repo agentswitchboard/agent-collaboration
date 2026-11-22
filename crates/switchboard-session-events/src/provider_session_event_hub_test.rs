@@ -422,17 +422,18 @@ async fn locked_attach_on_one_session_does_not_stall_another_publish() {
         .expect("seed item");
     }
     let held = hub.hold_history_for_test(first).await;
-    hub.publish(
-        second,
-        SessionEvent::ItemStarted {
-            item: SessionItem {
-                item_id: "two".into(),
-                kind: SessionItemKind::UserMessage,
-                text: Some("world".into()),
-            },
-        },
-    )
-    .await
-    .expect("publish while the first session's history is held");
+    let published = {
+        let mut publication = std::pin::pin!(tokio::task::unconstrained(
+            hub.publish(second, started_item("two"))
+        ));
+        // B's history is seeded and uncontended, so it can complete in one
+        // poll even while A's history lock is held.
+        futures_util::poll!(&mut publication)
+    };
     drop(held);
+
+    let std::task::Poll::Ready(result) = published else {
+        panic!("publishing to the second session waited on the first session's history");
+    };
+    assert_eq!(result.expect("publish to the second session").sequence, 2);
 }
