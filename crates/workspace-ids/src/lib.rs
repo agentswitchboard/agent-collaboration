@@ -83,7 +83,11 @@ workspace_identifiers!(
     RouterRunId,
     /// One approval request raised by a Router.
     ApprovalRequestId,
+    /// The never-reused Central identity of one provider session incarnation.
+    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
+    CentralSessionId,
     /// One operation on a session, made by the caller before it sends, so a repeat can be recognised.
+    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
     SessionOperationId => SessionOperationIdError,
     PersonId,
     AreaId,
@@ -135,6 +139,10 @@ pub enum SessionOperationIdError {
     Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize, schemars::JsonSchema,
 )]
 #[serde(try_from = "String", into = "String")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct SessionId(String);
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
 #[error("SessionId must contain 1 to 4096 UTF-8 bytes without NUL")]
@@ -175,13 +183,47 @@ impl SessionId {
 /// the session, by its machine id, and the provider's session id. Used on the
 /// wire, at central and by agents. It has no endpoint: which harness holds a
 /// session is the Router's own business.
-#[derive(
-    Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize, schemars::JsonSchema,
-)]
+#[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct SessionRef {
     pub machine_id: MachineId,
     pub session_id: SessionId,
+}
+
+impl<'de> Deserialize<'de> for SessionRef {
+    fn deserialize<Decoder: serde::Deserializer<'de>>(
+        decoder: Decoder,
+    ) -> Result<Self, Decoder::Error> {
+        struct SessionAddressReader;
+
+        impl<'de> serde::de::Visitor<'de> for SessionAddressReader {
+            type Value = SessionRef;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a named session address")
+            }
+
+            fn visit_map<Map: serde::de::MapAccess<'de>>(
+                self,
+                fields: Map,
+            ) -> Result<Self::Value, Map::Error> {
+                #[derive(Deserialize)]
+                #[serde(remote = "SessionRef", rename_all = "camelCase", deny_unknown_fields)]
+                struct AddressFields {
+                    machine_id: MachineId,
+                    session_id: SessionId,
+                }
+
+                AddressFields::deserialize(serde::de::value::MapAccessDeserializer::new(fields))
+            }
+        }
+
+        decoder.deserialize_map(SessionAddressReader)
+    }
 }
 
 #[cfg(test)]

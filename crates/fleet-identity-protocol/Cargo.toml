@@ -10,11 +10,17 @@ publish.workspace = true
 workspace = true
 
 [features]
-wire-export = ["dep:specta","dep:specta-typescript","message-board/wire-export"]
+wire-export = ["dep:specta","dep:specta-serde","dep:specta-typescript","message-board/wire-export","workspace-ids/wire-export"]
 
 [dependencies]
 serde.workspace = true
 schemars.workspace = true
+base64.workspace = true
+serde_json_canonicalizer.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+workspace-ids.workspace = true
+zeroize.workspace = true
 chrono = { version = "=0.4.45", default-features = false, features = ["std", "serde"] }
 message-board = { path = "../message-board", version = "0.1.118" }
 
@@ -28,4 +34,5 @@ path = "tests/integration/main.rs"
 
 [target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 specta = { workspace = true, features = ["derive"], optional = true }
+specta-serde = { workspace = true, optional = true }
 specta-typescript = { workspace = true, optional = true }
