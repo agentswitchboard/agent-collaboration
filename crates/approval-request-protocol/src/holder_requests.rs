@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use workspace_ids::{ApprovalRequestId, RouterRunId};
 
-use crate::{CentralTime, Ending, HolderReport, ParkedCallHolder, ProviderHolder};
+use crate::{CancelReason, CentralTime, Ending, HolderReport, ParkedCallHolder, ProviderHolder};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -50,14 +50,27 @@ pub enum RaiseReply {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
 )]
-pub struct StopRequest {
-    pub request_id: ApprovalRequestId,
-    pub router_run: RouterRunId,
+pub enum StopRequest {
+    Provider {
+        request_id: ApprovalRequestId,
+        router_run: RouterRunId,
+        cause: ProviderStopCause,
+    },
+    UnprovenCall {
+        request_id: ApprovalRequestId,
+        router_run: RouterRunId,
+        cause: CallStopCause,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -68,7 +81,9 @@ pub struct StopRequest {
 )]
 pub enum StopReply {
     /// Identical acknowledgement for a previously unseen ID and for an existing wait.
-    StopReceipt {},
+    StopReceipt {
+        ending: StopReceiptEnding,
+    },
     Refused {
         refusal: HolderRefusal,
     },
@@ -143,4 +158,71 @@ pub enum RunRefusal {
 pub enum HolderRefusal {
     NotVisible {},
     Run { refusal: RunRefusal },
+}
+
+impl StopRequest {
+    #[must_use]
+    pub const fn cause(&self) -> HolderStopCause {
+        match self {
+            Self::Provider { cause, .. } => match cause {
+                ProviderStopCause::TurnStopped => HolderStopCause::TurnStopped,
+                ProviderStopCause::SessionClosed => HolderStopCause::SessionClosed,
+                ProviderStopCause::ProviderConnectionLost => {
+                    HolderStopCause::ProviderConnectionLost
+                }
+            },
+            Self::UnprovenCall {
+                cause: CallStopCause::CallWithdrawn,
+                ..
+            } => HolderStopCause::CallWithdrawn,
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub enum ProviderStopCause {
+    TurnStopped,
+    SessionClosed,
+    ProviderConnectionLost,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub enum CallStopCause {
+    CallWithdrawn,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub enum HolderStopCause {
+    TurnStopped,
+    SessionClosed,
+    ProviderConnectionLost,
+    CallWithdrawn,
+}
+
+/// Which ending stands after a Stop. The receipt carries no handover or answer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub enum StopReceiptEnding {
+    Cancelled { reason: CancelReason },
+    TimedOut {},
+    DecidedEarlier {},
 }

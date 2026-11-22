@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use workspace_ids::{ApprovalRequestId, PersonId, SessionRef};
 
-use crate::{Answer, CentralTime, OfferView};
+use crate::{Answer, CentralTime, HolderStopCause, OfferView};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
@@ -67,17 +67,16 @@ pub enum EndingView {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
 )]
 pub enum CancelReason {
-    WaitStopped,
-    SessionClosed,
-    RequesterGone,
-    SessionEnded,
-    EnrollmentEnded,
+    Stopped { cause: HolderStopCause },
+    RequesterGone {},
+    SessionEnded {},
+    EnrollmentEnded {},
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
