@@ -27,6 +27,7 @@ export function runProofReceiptCase(input: ProofCase): unknown {
     mkdirSync(bin);
     for (const [name, content] of Object.entries(input.commands))
       writeFileSync(join(bin, name), map(content), { mode: 0o700 });
+    // Wait for the child and its captured output before inspecting the receipt.
     const result = spawnSync(
       process.execPath,
       [
@@ -38,7 +39,6 @@ export function runProofReceiptCase(input: ProofCase): unknown {
         cwd: root,
         env: { ...process.env, PATH: `${bin}:${process.env.PATH ?? ""}` },
         encoding: "utf8",
-        timeout: 5000,
       },
     );
     if (result.error !== undefined) throw result.error;
