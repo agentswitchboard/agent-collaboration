@@ -1120,7 +1120,6 @@ dependencies = [
  "tungstenite 0.28.0",
  "ui-preference-store",
  "unicode-width 0.2.2",
- "workspace-ids",
 ]
 
 [[package]]

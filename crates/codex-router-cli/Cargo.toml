@@ -74,7 +74,6 @@ fs2.workspace = true
 jsonc-parser = { workspace = true, features = ["serde"] }
 router-clock.workspace = true
 switchboard-machine-enrollment = { path = "../switchboard-machine-enrollment", version = "0.1.158" }
-workspace-ids.workspace = true
 
 [dev-dependencies]
 nix = { workspace = true, features = ["process", "signal"] }

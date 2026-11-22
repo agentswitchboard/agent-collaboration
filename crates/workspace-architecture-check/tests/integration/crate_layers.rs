@@ -6,6 +6,9 @@ use std::process::Command;
 
 use serde::Deserialize;
 
+#[path = "enrollment_dependency_policy.rs"]
+mod enrollment_dependency_policy;
+
 #[path = "harness_stage_policy.rs"]
 mod harness_stage_policy;
 
@@ -186,6 +189,8 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
     test_support_policy::check_workspace(&metadata.packages, &metadata.workspace_members)?;
     workspace_boundaries::check_declared_session_owner_edges(&metadata)?;
     workspace_boundaries::check_declared_session_read_edges(&metadata)?;
+    enrollment_dependency_policy::check_declared(&metadata)?;
+    enrollment_dependency_policy::check_resolved(&metadata)?;
     harness_stage_policy::check_declared(&metadata)?;
     harness_stage_policy::check_resolved(&metadata)?;
     let graph = NonDevDependencyGraph::from_metadata(metadata);
@@ -216,6 +221,7 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
     workspace_boundaries::check_boundaries(&graph)?;
     // Cargo features are additive. This resolution includes selectable optional edges.
     let enabled_metadata = read_metadata(&root, &["--all-features"])?;
+    enrollment_dependency_policy::check_resolved(&enabled_metadata)?;
     harness_stage_policy::check_resolved(&enabled_metadata)?;
     workspace_boundaries::check_harness_layers(&NonDevDependencyGraph::from_metadata(
         enabled_metadata,

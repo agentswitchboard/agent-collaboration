@@ -1,4 +1,6 @@
 //! Machine device authorization and credential ownership on the Router side.
+pub use workspace_ids::MachineId;
+
 mod credential_store;
 mod credential_value;
 mod device_state;

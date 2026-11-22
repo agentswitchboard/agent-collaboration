@@ -5,10 +5,9 @@ use clap::Parser;
 use router_clock::RuntimeClock;
 use switchboard_machine_enrollment::{
     CredentialStore, DeviceInstructions, EnrollmentEnd, EnrollmentFailure, EnrollmentRequest,
-    InvalidReason, OrganizationId, SignInClient, SignInClientError, SignInDeployment,
+    InvalidReason, MachineId, OrganizationId, SignInClient, SignInClientError, SignInDeployment,
     SignInFailure,
 };
-use workspace_ids::MachineId;
 
 /// The enroll command parses these values from the person's arguments.
 pub struct EnrollArguments {
