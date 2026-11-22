@@ -18,7 +18,7 @@ mod revocation_journey;
 pub use person_requests::{
     CREATE, LIST_WORKSPACES, LOOKUP, MEMBER, MEMBER_SUBJECT, ORGANIZATION, OWNER, OWNER_SUBJECT,
     POLICY, Person, ProofKey, RECORDS, SESSION, canonical, create_body, create_intent,
-    fresh_request_id, list_workspaces_intent, lookup_intent, records_intent, sha256_url,
+    fresh_request_id, list_workspaces_body, list_workspaces_intent, lookup_intent, records_intent, sha256_url,
 };
 pub use revocation_journey::RevocationJourney;
 

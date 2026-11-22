@@ -26,13 +26,7 @@ async fn list_page(
     limit: Option<u32>,
 ) -> Result<Reply> {
     let organization = &person.organization;
-    let mut body = json!({"organizationId":organization});
-    if let Some(after) = after {
-        body["after"] = json!(after);
-    }
-    if let Some(limit) = limit {
-        body["limit"] = json!(limit);
-    }
+    let body = signed::list_workspaces_body(organization, after, limit);
     fixture
         .person(
             signed::LIST_WORKSPACES,

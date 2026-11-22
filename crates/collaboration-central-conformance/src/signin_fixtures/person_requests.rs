@@ -154,6 +154,17 @@ pub fn records_intent(organization: &str, after: Option<&str>, limit: u32) -> Va
     json!({"v":1,"operation":"ReadChangeRecords","organization":organization,"target":organization,"operationId":null,"params":{"after":after,"limit":limit}})
 }
 
+pub fn list_workspaces_body(organization: &str, after: Option<&str>, limit: Option<u32>) -> Value {
+    let mut body = serde_json::Map::from_iter([("organizationId".to_owned(), json!(organization))]);
+    if let Some(after) = after {
+        body.insert("after".to_owned(), json!(after));
+    }
+    if let Some(limit) = limit {
+        body.insert("limit".to_owned(), json!(limit));
+    }
+    Value::Object(body)
+}
+
 pub fn list_workspaces_intent(organization: &str, after: Option<&str>, limit: u32) -> Value {
     json!({"v":1,"operation":"ListWorkspaces","organization":organization,"target":organization,"operationId":null,"params":{"after":after,"limit":limit}})
 }

@@ -28,13 +28,7 @@ async fn list_page(
     limit: Option<u32>,
 ) -> (u16, Value) {
     let organization = &person.organization;
-    let mut body = json!({"organizationId":organization});
-    if let Some(after) = after {
-        body["after"] = json!(after);
-    }
-    if let Some(limit) = limit {
-        body["limit"] = json!(limit);
-    }
+    let body = signed::list_workspaces_body(organization, after, limit);
     let headers = person
         .headers(
             signed::LIST_WORKSPACES,
@@ -138,6 +132,7 @@ async fn list_workspaces_refuses_wrong_permission_invalid_pages_and_corrupt_stat
             (401, Value::Null)
         );
     }
+    fixture.host.central(&OTHER_ORG.to_owned().try_into().unwrap()).await;
     let stamp = signed::stamp(OTHER_ORG, NOW_SECONDS).unwrap();
     assert_eq!(
         fixture
@@ -150,7 +145,7 @@ async fn list_workspaces_refuses_wrong_permission_invalid_pages_and_corrupt_stat
         200
     );
     for mut floor in [org_revision(3, "active"), person_revision(4, "active")] {
-        floor["organizationId"] = json!(OTHER_ORG);
+        floor.as_object_mut().unwrap().insert("organizationId".to_owned(), json!(OTHER_ORG));
         assert_eq!(fixture.post(REVISIONS, &floor).await.0, 200);
     }
     let other_reader = Person::owner(OTHER_ORG, NOW_SECONDS).unwrap();
