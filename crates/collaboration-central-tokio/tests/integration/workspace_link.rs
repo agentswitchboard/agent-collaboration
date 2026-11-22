@@ -466,7 +466,7 @@ async fn public_machine_link_fixture_uses_the_supplied_clock_and_mints_fresh_tok
             .client()?
             .get(format!(
                 "{origin}/v1/organizations/{}/link",
-                fixture.organization_id
+                fixture.organization_id.as_str()
             ))
             .bearer_auth(renewed_token)
             .upgrade()
