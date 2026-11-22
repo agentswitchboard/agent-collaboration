@@ -64,7 +64,7 @@ pub(super) struct LiveOperation {
 
 impl LiveOperation {
     /// An operation held live with no binding, as a test does.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(super) fn pending() -> Self {
         Self::new(
             None,
@@ -313,13 +313,13 @@ impl LiveOperation {
 }
 
 /// A held operation's result, for a test that locks it as a reader would.
-#[cfg(test)]
-pub(crate) struct HeldResult(pub(super) Arc<LiveOperation>);
+#[cfg(any(test, feature = "test-support"))]
+pub struct HeldResult(pub(super) Arc<LiveOperation>);
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 impl HeldResult {
     /// Takes the result lock now, without waiting, or `None` when it is taken.
-    pub(crate) fn try_hold(&self) -> Option<impl Sized + '_> {
+    pub fn try_hold(&self) -> Option<impl Sized + '_> {
         self.0.result.try_lock().ok()
     }
 }

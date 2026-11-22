@@ -146,7 +146,15 @@ impl WakeDrivenWorkerLoop {
                 "sleeping"
             );
             self.observation.armed(deadline).await;
-            if !self.sleep_until_woken(deadline, &shutdown).await {
+            #[cfg(any(test, feature = "test-support"))]
+            let wake = self
+                .observation
+                .clone()
+                .poll_source_wait(self.sleep_until_woken(deadline, &shutdown))
+                .await;
+            #[cfg(not(any(test, feature = "test-support")))]
+            let wake = self.sleep_until_woken(deadline, &shutdown).await;
+            if !wake {
                 return;
             }
             self.observation.woke();

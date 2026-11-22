@@ -39,9 +39,10 @@ pub(crate) const AUTO_SESSION_MODE: &str = "auto";
 mod provider_acp_busy_prompt;
 mod provider_acp_session_route;
 mod router_session_app_server;
-pub use app_server_model_catalog::{
-    InvalidProviderModelEntry, ProviderModelEntry, ProviderModelReasoning, ProviderReasoningChoice,
-    SessionModelCatalog, SessionModelCatalogError, render_model_list,
+#[cfg(test)]
+use collaboration_contracts::{InvalidProviderModelEntry, ProviderReasoningChoice};
+use collaboration_contracts::{
+    ProviderModelReasoning, SessionModelCatalog, SessionModelCatalogError,
 };
 pub use router_session_app_server::{
     AppServerConnectionError, RouterSessionAppServerContext, RouterSessionAppServerListener,
@@ -82,7 +83,7 @@ mod wake_driven_worker_observation;
 pub use wake_driven_worker_loop::{BatchOutcome, WakeDrivenWorkerLoop, WakeSource, WorkerPass};
 pub use wake_driven_worker_observation::WorkerObservation;
 #[cfg(any(test, feature = "test-support"))]
-pub use wake_driven_worker_observation::{LoopSnapshot, SleepGate};
+pub use wake_driven_worker_observation::{LoopSnapshot, SleepGate, SourceWaitProbe};
 
 /// Test-only hooks for causal runtime steps observed through the application.
 #[cfg(feature = "test-support")]

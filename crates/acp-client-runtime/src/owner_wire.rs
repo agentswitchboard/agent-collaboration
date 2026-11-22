@@ -47,7 +47,20 @@ enum AcpFrame {
     },
     Cancel(CancelNotification),
     Open(OpenFrame),
+    #[cfg(feature = "test-observation")]
+    FixtureDispatchFence(FixtureDispatchPoint, oneshot::Sender<Result<(), Error>>),
 }
+
+#[cfg(feature = "test-observation")]
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub enum FixtureDispatchPoint {
+    Cancel,
+    Restore,
+}
+
+#[cfg(feature = "test-observation")]
+type FixtureDispatchObservation =
+    Option<(FixtureDispatchPoint, oneshot::Sender<Result<(), Error>>)>;
 
 enum ResponseKind {
     Prompt {
@@ -75,6 +88,8 @@ pub struct OwnerAcpWire {
     restore_updates: Arc<crate::owner_restore_updates::RestoreUpdates>,
     cursor_plans: Arc<crate::provider_cursor_plan_items::CursorPlanItems>,
     behavior: Arc<dyn crate::ProviderBehavior>,
+    #[cfg(feature = "test-observation")]
+    fixture_dispatch: Mutex<FixtureDispatchObservation>,
 }
 
 pub(crate) struct PromptTerminal {
@@ -158,12 +173,43 @@ impl OwnerAcpWire {
                 restore_updates: restore_updates.clone(),
                 cursor_plans: Arc::default(),
                 behavior,
+                #[cfg(feature = "test-observation")]
+                fixture_dispatch: Mutex::default(),
             },
             OwnerAcpOutput {
                 output,
                 restore_updates,
             },
         )
+    }
+
+    /// Arms a one-shot wire fence for an actual owner dispatch attempt.
+    #[cfg(feature = "test-observation")]
+    pub fn observe_dispatch_for_test(
+        &self,
+        point: FixtureDispatchPoint,
+    ) -> oneshot::Receiver<Result<(), Error>> {
+        let (complete, observed) = oneshot::channel();
+        self.fixture_dispatch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .replace((point, complete));
+        observed
+    }
+
+    /// Called at the completed owner step whether the preceding frame was enqueued or lost.
+    #[cfg(feature = "test-observation")]
+    pub fn fence_dispatch_for_test(&self, run: TransportRun, point: FixtureDispatchPoint) {
+        let observation = self
+            .fixture_dispatch
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take_if(|(armed, _)| *armed == point);
+        if let Some((point, complete)) = observation {
+            let _enqueued = self
+                .transport
+                .enqueue_control(run, AcpFrame::FixtureDispatchFence(point, complete));
+        }
     }
 
     pub fn open_route(&self, run: TransportRun, session: String) {
@@ -666,6 +712,19 @@ impl OwnerAcpOutput {
                     if connection.send_notification(notification).is_err() {
                         tracing::debug!("ACP cancel could not leave the ordered writer");
                     }
+                }
+                #[cfg(feature = "test-observation")]
+                AcpFrame::FixtureDispatchFence(point, complete) => {
+                    let after = match point {
+                        FixtureDispatchPoint::Cancel => "session/cancel",
+                        FixtureDispatchPoint::Restore => "session/load",
+                    };
+                    let result = UntypedMessage::new(
+                        "fixture/orderedDispatchFence",
+                        serde_json::json!({"after":after}),
+                    )
+                    .and_then(|fence| connection.send_notification(fence));
+                    let _fixture_gone = complete.send(result);
                 }
                 AcpFrame::Request {
                     message,

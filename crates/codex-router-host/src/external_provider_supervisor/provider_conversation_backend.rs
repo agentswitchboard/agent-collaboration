@@ -184,7 +184,7 @@ impl ProviderConversationBackend for ExternalProviderSupervisor {
                     let completion_inner = Arc::clone(&backend.inner);
                     let completion_backend = backend.clone();
                     backend.spawn_operation_for_handoff(operation_id.clone(), live, async move {
-                        let scratch_folder = match super::provider_session_scratch::prepare_provider_session_scratch(scratch_root.as_deref()).await {
+                        let scratch_folder = match super::provider_session_scratch::prepare_provider_session_scratch(scratch_root.as_deref(), completion_inner.clock.as_ref()).await {
                             Ok(scratch_folder) => scratch_folder,
                             Err(message) => {
                                 return ProviderOperationCompletion::Failure(failure(

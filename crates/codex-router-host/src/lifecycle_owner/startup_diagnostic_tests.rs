@@ -73,9 +73,14 @@ async fn failed_startup_trace(script: &str) -> String {
         .with_max_level(tracing::Level::DEBUG)
         .with_writer(trace.clone())
         .finish();
-    let outcome = super::start_router(&config, Some(&command))
-        .with_subscriber(subscriber)
-        .await;
+    let outcome = super::start_router(
+        &config,
+        Some(&command),
+        &router_clock::SystemRuntimeClock::new(),
+        None,
+    )
+    .with_subscriber(subscriber)
+    .await;
     assert!(matches!(outcome, Err(HostError::RouterUnavailable)));
     let child_pid = std::fs::read_to_string(root.path().join("child-pid"))
         .expect("fixture child ran")

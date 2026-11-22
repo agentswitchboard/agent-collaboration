@@ -28,10 +28,10 @@ export class FixtureControlSocket {
     | { readonly kind: "closed" }
     | { readonly kind: "failed"; readonly error: Error } = { kind: "open" };
   private wake: (() => void) | undefined;
-  private readonly timeoutMs: number;
+  private readonly timeoutMs: number | null;
   constructor(
     target: string | { readonly host: string; readonly port: number },
-    timeoutMs: number = 15_000,
+    timeoutMs: number | null = 15_000,
   ) {
     this.timeoutMs = timeoutMs;
     this.socket = typeof target === "string" ? createConnection(target) : createConnection(target);
@@ -49,13 +49,16 @@ export class FixtureControlSocket {
     });
   }
   async connected(): Promise<void> {
-    await withinFixtureDeadline(once(this.socket, "connect"), this.timeoutMs);
+    await this.waitForControl(once(this.socket, "connect"));
   }
   async expect(byte: string): Promise<void> {
-    await withinFixtureDeadline(this.readByte(byte), this.timeoutMs);
+    await this.waitForControl(this.readByte(byte));
   }
   async waitForByte(): Promise<void> {
-    await withinFixtureDeadline(this.readByte(), this.timeoutMs);
+    await this.waitForControl(this.readByte());
+  }
+  private waitForControl<TResult>(pending: Promise<TResult>): Promise<TResult> {
+    return this.timeoutMs === null ? pending : withinFixtureDeadline(pending, this.timeoutMs);
   }
   private async readByte(expected?: string): Promise<void> {
     while (this.pending.length === 0) {

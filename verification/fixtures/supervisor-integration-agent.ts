@@ -17,8 +17,8 @@ if (mode === "initialization-authentication")
 const agent = new AcpExchange(
   mode === "initialization-authentication"
     ? (request): void => {
-        const method = z.string().parse(request.method);
-        appendFileSync(requireArgument(3), `${method}\n`);
+        if (typeof request.method === "string")
+          appendFileSync(requireArgument(3), `${request.method}\n`);
       }
     : undefined,
 );
@@ -42,7 +42,12 @@ const capabilities =
     : mode === "lifecycle"
       ? { sessionCapabilities: { resume: {}, close: {} } }
       : {};
-agent.respond(await agent.read(mode === "lifecycle" ? "initialize" : undefined), {
+const heldAuthentication =
+  authenticationScenario === "held" || authenticationScenario === "timeout";
+const initialize = heldAuthentication
+  ? await agent.readByFence("initialize")
+  : await agent.read(mode === "lifecycle" ? "initialize" : undefined);
+agent.respond(initialize, {
   protocolVersion: 1,
   agentCapabilities: capabilities,
   agentInfo: { name, version: "1" },
@@ -57,7 +62,9 @@ else if (mode === "lifecycle") {
   agent.respond(await agent.read("session/close"), {});
 } else if (mode === "initialization-authentication") {
   if (authenticationScenario !== "not-requested") {
-    const authentication = await agent.read("authenticate");
+    const authentication = heldAuthentication
+      ? await agent.readByFence("authenticate")
+      : await agent.read("authenticate");
     assert.deepEqual(authentication.params, { methodId: "cursor_login" });
     if (authenticationScenario === "held" || authenticationScenario === "timeout")
       await agent.socketSignal(

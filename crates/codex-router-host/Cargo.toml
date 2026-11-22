@@ -9,7 +9,11 @@ publish.workspace = true
 [features]
 # Scenario tests only (design note §11.8): the terminal-write named point and
 # the FIFO's retry delay. Enabled only from this crate's own dev-dependencies.
-test-support = []
+test-support = [
+    "acp-client-runtime/test-observation",
+    "switchboard-session-events/test-support",
+    "switchboard-session-store/test-support",
+]
 runtime-test-support = [
     "router-clock/test-support",
     "collaboration-runtime/test-support",

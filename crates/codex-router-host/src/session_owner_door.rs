@@ -61,7 +61,7 @@ pub struct SessionOwnerDoor {
     tasks: TaskTracker,
     sessions: Mutex<BTreeMap<SessionRef, Arc<SessionOwnerAddress>>>,
     snapshot_observer: Arc<Mutex<Option<Arc<dyn SessionOwnerSnapshotObserver>>>>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     preparation_fixture: Arc<crate::session_owner_preparation_fixture::PreparationFixture>,
 }
 
@@ -74,7 +74,7 @@ pub struct SessionOwnerAddress {
     calls: Arc<SessionOwnerCalls>,
     storage: SessionOwnerStorage,
     wire: Arc<OwnerAcpWire>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     preparation_fixture: Arc<crate::session_owner_preparation_fixture::PreparationFixture>,
 }
 
@@ -93,7 +93,7 @@ impl SessionOwnerDoor {
         store: Arc<AsyncMutex<ProviderOperationStore>>,
         hub: Arc<ProviderSessionEventHub>,
         retired: CancellationToken,
-        #[cfg(test)] preparation_fixture: Arc<
+        #[cfg(any(test, feature = "test-support"))] preparation_fixture: Arc<
             crate::session_owner_preparation_fixture::PreparationFixture,
         >,
     ) -> Self {
@@ -115,7 +115,7 @@ impl SessionOwnerDoor {
             tasks: TaskTracker::new(),
             sessions: Mutex::default(),
             snapshot_observer: Arc::default(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             preparation_fixture,
         }
     }
@@ -127,7 +127,7 @@ impl SessionOwnerDoor {
         self.registry.install_binding_permit(binding);
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub(crate) async fn wait_for_accepted_mark_fixture(
         &self,
         target: &SessionRef,
@@ -216,9 +216,9 @@ impl SessionOwnerDoor {
             SessionOwnerPublisher::new(inbox, self.clock.clone(), self.tasks.clone()),
             calls.clone(),
             work_roots,
-            #[cfg(test)]
-            self.preparation_fixture.clone(),
         );
+        #[cfg(any(test, feature = "test-support"))]
+        let ports = ports.with_preparation_fixture(self.preparation_fixture.clone());
         let retired = self.retired.clone();
         let stop = self.shutdown.clone();
         let completion = registered_owner.handle.completion_port();
@@ -266,7 +266,7 @@ impl SessionOwnerDoor {
             calls,
             storage,
             wire: self.wire.clone(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             preparation_fixture: self.preparation_fixture.clone(),
         });
         Ok((session, ports))
@@ -598,7 +598,7 @@ impl SessionOwnerAddress {
         let terminal = self.calls.expect_settlement(input.operation);
         let accepted = self.calls.expect_acceptance(input.operation);
         let admission = self.admit(command).await;
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         let (admission, ack_finished) = match self.preparation_fixture.take_delivery_ack_pause() {
             Some(pause) => pause.resolve(admission).await,
             None => (admission, None),
@@ -619,7 +619,7 @@ impl SessionOwnerAddress {
                 Err(error)
             }
         };
-        #[cfg(test)]
+        #[cfg(any(test, feature = "test-support"))]
         if let Some(finished) = ack_finished {
             let _test_withdrew_probe = finished.send(());
         }
@@ -685,8 +685,8 @@ impl SessionOwnerAddress {
         self.calls.wait_for_replies().await;
     }
 
-    #[cfg(test)]
-    pub(crate) fn hold_provider_writer_capacity(&self) -> impl Sized + use<> {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn hold_provider_writer_capacity(&self) -> impl Sized + use<> {
         self.wire.hold_writer_capacity_for_test()
     }
 }

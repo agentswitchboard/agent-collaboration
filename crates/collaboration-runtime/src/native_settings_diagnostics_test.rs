@@ -1,5 +1,5 @@
 use super::{Outcome, Presence, Projection, Reply, Token, project};
-use crate::app_server_model_catalog::ProviderModelEntry;
+use collaboration_contracts::ProviderModelEntry;
 use serde_json::{Value, json};
 
 fn catalog(id: &str) -> Vec<ProviderModelEntry> {

@@ -309,6 +309,14 @@ impl SessionOwnerStorage {
         let mut changes = lane.subscribe_dispatch_eligibility();
         let offer =
             lane.offer_dispatch(address.incarnation, operation.clone(), input.clone(), kind);
+        #[cfg(any(test, feature = "test-support"))]
+        if queued {
+            lane.notice_fixture_wait(
+                crate::binding_store_fixture::BindingFixtureWait::QueuedDispatchOffered(
+                    operation.clone(),
+                ),
+            );
+        }
         if queued
             && matches!(offer, Err(SessionStoreOfferError::DispatchBusy { .. }))
             && let Some(mut changes) = changes.take()

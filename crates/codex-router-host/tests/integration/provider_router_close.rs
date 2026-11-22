@@ -37,6 +37,7 @@ struct RouterCloseFixture {
 
 impl RouterCloseFixture {
     async fn start(hold_prompt: bool) -> Self {
+        let fixture_clock = crate::provider_test_clock();
         let root = tempfile::tempdir().expect("fixture root");
         let wire = root.path().join("wire.json");
         let mut target = target();
@@ -49,6 +50,7 @@ impl RouterCloseFixture {
         let runtime = ExternalProviderRuntime::initialize(
             provider_fixture_launch::launch("cursor-settings-agent.ts", arguments),
             Arc::new(acp_provider_adapters::StandardAcpBehavior),
+            fixture_clock.clone(),
         )
         .await
         .expect("fixture provider");
@@ -82,6 +84,7 @@ impl RouterCloseFixture {
                 runtime,
             }],
             store,
+            fixture_clock.clone(),
         )
         .expect("fixture Host");
         Self {

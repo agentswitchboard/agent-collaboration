@@ -1,12 +1,14 @@
 //! Bind listeners, prepare service owners and start the Host runtime.
 use super::{
     BackendPublication, BoundCollaborationApi, CancellationToken, CollaborationRuntime,
-    CollaborationRuntimeInputs, EndpointAvailability, EndpointId, EndpointRef,
-    HostCollaborationInputs, JoinSet, NativeRelayListener, NonEmptyText, RemoteControlServerName,
-    RouterExecutableRelation, SchemaDigest, SocketAddr, create_private_socket_directory,
-    current_observation_timestamp, io, load_installation_peer, load_service_identity,
-    new_service_uuid, unix_seconds,
+    CollaborationRuntimeInputs, EndpointId, EndpointRef, HostCollaborationInputs, JoinSet,
+    NativeRelayListener, NonEmptyText, RemoteControlServerName, RouterExecutableRelation,
+    SchemaDigest, SocketAddr, create_private_socket_directory, io, load_installation_peer,
+    load_service_identity, new_service_uuid,
 };
+
+#[cfg(test)]
+pub(crate) type BeforeProviderRetention = Box<dyn FnOnce(&CollaborationRuntime) + Send>;
 
 impl CollaborationRuntime {
     /// Binds both private listeners before spawning tasks. No native process is started.
@@ -35,20 +37,54 @@ impl CollaborationRuntime {
         host_inputs: HostCollaborationInputs,
         provider_launches: Vec<crate::ExternalProviderStartup>,
         router_executable_check: std::sync::Arc<dyn collaboration_mcp::RouterExecutableCheck>,
+        worker_clock: std::sync::Arc<dyn router_clock::RuntimeClock>,
+        #[cfg(test)] before_retention: Option<BeforeProviderRetention>,
     ) -> io::Result<Self> {
+        let composition_started_at = worker_clock.monotonic_now();
+        crate::debug_readiness_timing::record_with_clock(
+            "collaborationRuntimeBegin",
+            composition_started_at,
+            worker_clock.as_ref(),
+        );
         let prepared_exposure = crate::tailscale_exposure::PreparedTailscaleExposure::prepare(
             host_inputs.remote_access,
         )
         .await?;
-        Box::pin(Self::start_with_optional_router_proxy_endpoint(
+        let mut runtime = Box::pin(Self::start_with_optional_router_proxy_endpoint(
             host_inputs.collaboration_runtime,
             provider_launches,
             router_executable_check,
             Some(host_inputs.router_proxy_endpoint),
             prepared_exposure,
-            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            worker_clock.clone(),
         ))
-        .await
+        .await?;
+        crate::debug_readiness_timing::record_with_clock(
+            "collaborationRuntimeReady",
+            composition_started_at,
+            worker_clock.as_ref(),
+        );
+        #[cfg(test)]
+        if let Some(before_retention) = before_retention {
+            before_retention(&runtime);
+        }
+        let retention_started_at = worker_clock.monotonic_now();
+        if let Err(error) = runtime
+            .configure_provider_operation_retention(host_inputs.provider_operation_retention_days)
+            .await
+        {
+            let cleanup = runtime.shutdown().await;
+            return Err(match cleanup {
+                Ok(()) => error,
+                Err(cleanup) => io::Error::other(format!("{error}; startup cleanup: {cleanup}")),
+            });
+        }
+        crate::debug_readiness_timing::record_with_clock(
+            "providerRetentionConfigured",
+            retention_started_at,
+            worker_clock.as_ref(),
+        );
+        Ok(runtime)
     }
 
     #[cfg(feature = "runtime-test-support")]
@@ -128,7 +164,7 @@ impl CollaborationRuntime {
             .map_err(io::Error::other)?;
             let journal = std::sync::Arc::new(lifecycle_observation::LifecycleStore::new(database));
             journal
-                .prepare(unix_seconds()?)
+                .prepare(worker_clock.utc_now().timestamp())
                 .await
                 .map_err(io::Error::other)?;
             Ok::<_, io::Error>(journal)
@@ -399,7 +435,7 @@ impl CollaborationRuntime {
                     std::sync::Arc::clone(&commands),
                     std::sync::Arc::clone(&events),
                     std::sync::Arc::new(
-                        crate::provider_model_catalog::SupervisorModelCatalog::new(
+                        crate::provider_model_catalog_adapter::SupervisorModelCatalog::new(
                             std::sync::Arc::clone(supervisor),
                         ),
                     ),
@@ -461,23 +497,15 @@ impl CollaborationRuntime {
         for app_server in provider_app_servers {
             tasks.spawn(app_server.run(shutdown.clone()));
         }
-        for (retirement, mut description) in provider_retirements {
-            let directory = endpoint_directory.clone();
-            provider_retirement_tasks.spawn(async move {
-                retirement.cancelled().await;
-                description.availability = EndpointAvailability::Unavailable {
-                    observed_at: current_observation_timestamp()?,
-                    reason: NonEmptyText::try_from("provider process retired".to_owned())
-                        .map_err(io::Error::other)?,
-                    fix: Some(
-                        NonEmptyText::try_from(
-                            "restart the Host to relaunch the provider".to_owned(),
-                        )
-                        .map_err(io::Error::other)?,
-                    ),
-                };
-                directory.publish(description)
-            });
+        for (retirement, description) in provider_retirements {
+            provider_retirement_tasks.spawn(
+                crate::provider_startup_composition::publish_provider_retirement(
+                    retirement,
+                    description,
+                    endpoint_directory.clone(),
+                    worker_clock.clone(),
+                ),
+            );
         }
         let maintenance = journal.as_ref().map(|journal| {
             let maintenance_store = std::sync::Arc::clone(journal);
@@ -501,6 +529,8 @@ impl CollaborationRuntime {
             provider_delivery_route,
             session_delivery_router,
             provider_retention: None,
+            #[cfg(test)]
+            provider_retention_observation: None,
             open_scratch_scopes,
             scratch_sweep: None,
             directory: inputs.directory,
@@ -547,3 +577,7 @@ impl CollaborationRuntime {
         Ok(runtime)
     }
 }
+
+#[cfg(test)]
+#[path = "startup_composition_test.rs"]
+mod tests;
