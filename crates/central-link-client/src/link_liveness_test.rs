@@ -31,13 +31,21 @@ fn call_deadline_preempts_a_healthy_auto_response_heartbeat() {
 #[test]
 fn missing_welcome_closes_at_ten_seconds_and_retries_after_backoff() {
     let (mut client, clock) = fixture();
-    assert!(matches!(
-        client.poll_time(),
-        Some(ClientAction::Connect { .. })
-    ));
+    let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
+        panic!("connect action required")
+    };
     assert_eq!(
         client.next_deadline(),
-        Some(ClockInstant::ZERO.after(Duration::from_secs(10)))
+        None,
+        "Connect alone cannot arm the Welcome limit"
+    );
+    clock.advance(Duration::from_secs(12)).unwrap();
+    assert_eq!(client.poll_time(), None);
+
+    client.dial_started(&attempt).unwrap();
+    assert_eq!(
+        client.next_deadline(),
+        Some(ClockInstant::ZERO.after(Duration::from_secs(22)))
     );
     clock.advance(Duration::from_secs(9)).unwrap();
     assert_eq!(client.poll_time(), None);
@@ -123,6 +131,7 @@ fn frames_before_welcome_are_protocol_errors() {
     let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
         panic!("connect")
     };
+    client.dial_started(&attempt).unwrap();
     let delivery = LinkFrame::Data(DataFrame::Deliver { time_left: Some(central_link_protocol::TimeLeft::try_from(1_u32).unwrap()), sender: workspace_model::ResolvedSender::Central {}, message: Box::new(serde_json::from_value(serde_json::json!({"messageId":"01890f2e-7b4c-7cc0-98c4-000000000009","sender":{"kind":"central"},"target":{"machineId":"01890f2e-7b4c-7cc0-98c4-000000000002","sessionId":"s"},"body":{"kind":"direct","body":"hello","delivery":"auto","replyTo":null},"state":{"kind":"queued"},"source":null})).unwrap())});
     for frame in [
         LinkFrame::Pong,
@@ -145,15 +154,20 @@ fn close_then_refuse_keeps_the_most_recent_attempt_refused() {
     client.closed(&attempt).unwrap();
     assert!(
         client
-            .refused(&attempt, RefusalReason::MachineRevoked)
+            .finish_attempt(
+                &attempt,
+                AttemptOutcome::EnrollmentEnded {
+                    cause: EnrollmentEnd::Revoked
+                }
+            )
             .is_ok()
     );
     clock.advance(Duration::from_secs(100)).unwrap();
     assert_eq!(client.poll_time(), None);
     assert_eq!(
         client.status(),
-        LinkStatus::Refused {
-            reason: RefusalReason::MachineRevoked
+        LinkStatus::EnrollmentEnded {
+            cause: EnrollmentEnd::Revoked
         }
     );
 }
@@ -301,7 +315,12 @@ fn refusal_order_is_idempotent_and_an_old_attempt_cannot_refuse_a_new_one() {
     assert_eq!(client.closed(&old).unwrap().len(), 1);
     assert!(
         client
-            .refused(&old, RefusalReason::MachineRevoked)
+            .finish_attempt(
+                &old,
+                AttemptOutcome::EnrollmentEnded {
+                    cause: EnrollmentEnd::Revoked
+                }
+            )
             .unwrap()
             .is_empty()
     );
@@ -310,7 +329,12 @@ fn refusal_order_is_idempotent_and_an_old_attempt_cannot_refuse_a_new_one() {
     client.reenrolled();
     let current = connect(&mut client);
     assert_eq!(
-        client.refused(&old, RefusalReason::MachineRevoked),
+        client.finish_attempt(
+            &old,
+            AttemptOutcome::EnrollmentEnded {
+                cause: EnrollmentEnd::Revoked
+            }
+        ),
         Err(ClientError::StaleConnection)
     );
     clock.advance(Duration::from_secs(20)).unwrap();
@@ -320,7 +344,12 @@ fn refusal_order_is_idempotent_and_an_old_attempt_cannot_refuse_a_new_one() {
         Err(ClientError::StaleConnection)
     );
     client
-        .refused(&current, RefusalReason::CredentialRefused)
+        .finish_attempt(
+            &current,
+            AttemptOutcome::Fault {
+                kind: LinkFault::FreshCredentialRefused,
+            },
+        )
         .unwrap();
     assert!(client.closed(&current).unwrap().is_empty());
     clock.advance(Duration::from_secs(100)).unwrap();
@@ -333,6 +362,7 @@ fn welcome_cancels_its_deadline_and_late_socket_close_does_not_double_backoff() 
     let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
         panic!("connect")
     };
+    client.dial_started(&attempt).unwrap();
     clock.advance(Duration::from_secs(9)).unwrap();
     client
         .receive(

@@ -4,7 +4,8 @@ mod link_state;
 mod pending_calls;
 
 pub use link_state::{
-    ClientAction, ClientEvent, ConnectionAttempt, LinkClient, LinkStatus, RefusalReason,
+    AttemptOutcome, ClientAction, ClientEvent, ConnectionAttempt, EnrollmentEnd, LinkClient,
+    LinkFault, LinkStatus,
 };
 pub use pending_calls::{CallFailure, FailedCall, SendFailure};
 

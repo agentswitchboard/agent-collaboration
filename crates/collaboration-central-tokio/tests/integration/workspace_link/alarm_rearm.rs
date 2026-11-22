@@ -50,6 +50,7 @@ async fn reconnect_journey(fixture: &Fixture) -> Result<()> {
     let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
         return Err("fixture client did not start".into());
     };
+    client.dial_started(&attempt)?;
     let mut original = fixture.connect().await?;
     if !matches!(
         client.receive(&attempt, receive(&mut original).await?)?,
@@ -57,6 +58,7 @@ async fn reconnect_journey(fixture: &Fixture) -> Result<()> {
     ) {
         return Err("fixture original connection did not Welcome".into());
     }
+    client.ready(&attempt)?;
     let baseline = call(
         &mut client,
         &attempt,
@@ -265,6 +267,7 @@ async fn unavailable_rearm_journey(fixture: &Fixture, logs: &CapturedRearmLogs) 
     let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
         return Err("failure fixture client did not start".into());
     };
+    client.dial_started(&attempt)?;
     let mut original = fixture.connect().await?;
     if !matches!(
         client.receive(&attempt, receive(&mut original).await?)?,
@@ -272,6 +275,7 @@ async fn unavailable_rearm_journey(fixture: &Fixture, logs: &CapturedRearmLogs) 
     ) {
         return Err("failure fixture original connection did not Welcome".into());
     }
+    client.ready(&attempt)?;
     let baseline = call(
         &mut client,
         &attempt,

@@ -5,8 +5,8 @@ use crate::{
 };
 use central_link_protocol::{
     CentralCallReply, CorrelationId, DataFrame, DeliveryMessage, LinkFrame, LinkRequest, MacCall,
-    ReceiptBatch, ReceiptResult, ReplyPayload, RequestPayload, TimeLeft, TokenRenewalResult,
-    TypedCallResult,
+    MachineLinkCloseCode, ReceiptBatch, ReceiptResult, ReplyPayload, RequestPayload, TimeLeft,
+    TokenRenewalResult, TypedCallResult,
 };
 use router_clock::{ClockInstant, RuntimeClock};
 use std::{sync::Arc, time::Duration};
@@ -19,17 +19,39 @@ const WELCOME_DEADLINE: Duration = Duration::from_secs(10);
 const INITIAL_RETRY: Duration = Duration::from_secs(1);
 const MAX_RETRY: Duration = Duration::from_secs(30);
 
+/// Why the socket owner permanently retires an enrollment.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RefusalReason {
-    CredentialRefused,
-    MachineRevoked,
+pub enum EnrollmentEnd {
+    Revoked,
+    Inactive,
+    LeaseRefused,
+    ConnectionEnrollmentEnded,
 }
 
+/// A local configuration or credential fault classified by the socket owner.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LinkFault {
+    MalformedAddress,
+    FreshCredentialRefused,
+    LeaseSource,
+}
+
+/// The socket owner's disposition of the current connection attempt.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttemptOutcome {
+    Retry,
+    EnrollmentEnded { cause: EnrollmentEnd },
+    Fault { kind: LinkFault },
+}
+
+/// The client's transport progress and readiness, driven by the socket owner.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LinkStatus {
     Connecting,
+    Welcomed { machine_id: MachineId },
     Connected { machine_id: MachineId },
-    Refused { reason: RefusalReason },
+    EnrollmentEnded { cause: EnrollmentEnd },
+    Fault { kind: LinkFault },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -40,19 +62,31 @@ enum ConnectionState {
         reconnect_at: ClockInstant,
         last_attempt: Option<ConnectionAttempt>,
     },
+    PreparingDial {
+        attempt: ConnectionAttempt,
+    },
     AwaitingWelcome {
         attempt: ConnectionAttempt,
         expires_at: ClockInstant,
     },
-    Connected {
+    Welcomed {
+        readiness: Readiness,
         attempt: ConnectionAttempt,
         next_ping: ClockInstant,
         heartbeat: Heartbeat,
     },
-    Refused {
+    Parked {
         attempt: ConnectionAttempt,
-        reason: RefusalReason,
+        reason: ParkReason,
     },
+}
+enum Readiness {
+    WaitingForRegistration,
+    Ready,
+}
+enum ParkReason {
+    EnrollmentEnded(EnrollmentEnd),
+    Fault(LinkFault),
 }
 enum Heartbeat {
     Idle,
@@ -143,14 +177,60 @@ impl LinkClient {
 
     pub fn status(&self) -> LinkStatus {
         match &self.state {
-            ConnectionState::Waiting { .. } | ConnectionState::AwaitingWelcome { .. } => {
-                LinkStatus::Connecting
-            }
-            ConnectionState::Connected { .. } => LinkStatus::Connected {
+            ConnectionState::Waiting { .. }
+            | ConnectionState::PreparingDial { .. }
+            | ConnectionState::AwaitingWelcome { .. } => LinkStatus::Connecting,
+            ConnectionState::Welcomed {
+                readiness: Readiness::WaitingForRegistration,
+                ..
+            } => LinkStatus::Welcomed {
                 machine_id: self.machine.clone(),
             },
-            ConnectionState::Refused { reason, .. } => LinkStatus::Refused { reason: *reason },
+            ConnectionState::Welcomed {
+                readiness: Readiness::Ready,
+                ..
+            } => LinkStatus::Connected {
+                machine_id: self.machine.clone(),
+            },
+            ConnectionState::Parked { reason, .. } => match reason {
+                ParkReason::EnrollmentEnded(cause) => LinkStatus::EnrollmentEnded { cause: *cause },
+                ParkReason::Fault(kind) => LinkStatus::Fault { kind: *kind },
+            },
         }
+    }
+
+    /// Arm the Welcome deadline when the owner starts the dial with a usable lease.
+    pub fn dial_started(&mut self, attempt: &ConnectionAttempt) -> Result<(), ClientError> {
+        self.check_attempt(attempt)?;
+        if !matches!(self.state, ConnectionState::PreparingDial { .. }) {
+            return Err(ClientError::UnexpectedFrame);
+        }
+        self.state = ConnectionState::AwaitingWelcome {
+            attempt: attempt.clone(),
+            expires_at: self.clock.monotonic_now().after(WELCOME_DEADLINE),
+        };
+        Ok(())
+    }
+
+    /// The owner has observed the current connection's registration acknowledgement.
+    pub fn ready(&mut self, attempt: &ConnectionAttempt) -> Result<(), ClientError> {
+        self.check_attempt(attempt)?;
+        let ConnectionState::Welcomed { readiness, .. } = &mut self.state else {
+            return Err(ClientError::UnexpectedFrame);
+        };
+        *readiness = Readiness::Ready;
+        self.retry_delay = INITIAL_RETRY;
+        Ok(())
+    }
+
+    fn is_ready(&self) -> bool {
+        matches!(
+            self.state,
+            ConnectionState::Welcomed {
+                readiness: Readiness::Ready,
+                ..
+            }
+        )
     }
 
     /// The Host drives this deadline through the same clock; no task is spawned here.
@@ -158,8 +238,8 @@ impl LinkClient {
         let connection = match self.state {
             ConnectionState::Waiting { reconnect_at, .. } => Some(reconnect_at),
             ConnectionState::AwaitingWelcome { expires_at, .. } => Some(expires_at),
-            ConnectionState::Connected { next_ping, .. } => Some(next_ping),
-            ConnectionState::Refused { .. } => None,
+            ConnectionState::Welcomed { next_ping, .. } => Some(next_ping),
+            ConnectionState::PreparingDial { .. } | ConnectionState::Parked { .. } => None,
         };
         connection
             .into_iter()
@@ -190,9 +270,8 @@ impl LinkClient {
         match &mut self.state {
             ConnectionState::Waiting { reconnect_at, .. } if now >= *reconnect_at => {
                 let attempt = ConnectionAttempt(self.next_correlation());
-                self.state = ConnectionState::AwaitingWelcome {
+                self.state = ConnectionState::PreparingDial {
                     attempt: attempt.clone(),
-                    expires_at: now.after(WELCOME_DEADLINE),
                 };
                 Some(ClientAction::Connect { attempt })
             }
@@ -200,7 +279,7 @@ impl LinkClient {
                 let failed = self.disconnect();
                 Some(ClientAction::Reconnect { failed })
             }
-            ConnectionState::Connected {
+            ConnectionState::Welcomed {
                 next_ping,
                 heartbeat,
                 ..
@@ -221,9 +300,10 @@ impl LinkClient {
                 }
             },
             ConnectionState::Waiting { .. }
-            | ConnectionState::Connected { .. }
+            | ConnectionState::PreparingDial { .. }
+            | ConnectionState::Welcomed { .. }
             | ConnectionState::AwaitingWelcome { .. }
-            | ConnectionState::Refused { .. } => None,
+            | ConnectionState::Parked { .. } => None,
         }
     }
 
@@ -232,7 +312,7 @@ impl LinkClient {
         caller: Caller,
         payload: RequestPayload,
     ) -> Result<LinkFrame, ClientError> {
-        if !matches!(self.state, ConnectionState::Connected { .. }) {
+        if !self.is_ready() {
             return Err(ClientError::CentralUnavailable);
         }
         let request = LinkRequest::new(self.next_correlation(), caller, payload)
@@ -248,7 +328,7 @@ impl LinkClient {
 
     /// One receipt frame is outstanding per connection. The Router owns its durable items.
     pub fn begin_receipts(&mut self, receipts: ReceiptBatch) -> Result<LinkFrame, ClientError> {
-        if !matches!(self.state, ConnectionState::Connected { .. }) {
+        if !self.is_ready() {
             return Err(ClientError::CentralUnavailable);
         }
         if self.pending_receipts.is_some() {
@@ -290,28 +370,28 @@ impl LinkClient {
             effective_expires_at,
         }) = &frame
         {
-            if !matches!(self.state, ConnectionState::AwaitingWelcome { .. })
+            if !matches!(self.state, ConnectionState::AwaitingWelcome { expires_at, .. } if self.clock.monotonic_now() < expires_at)
                 || machine_id != &self.machine
             {
                 return Err(ClientError::InvalidWelcome);
             }
-            self.state = ConnectionState::Connected {
+            self.state = ConnectionState::Welcomed {
+                readiness: Readiness::WaitingForRegistration,
                 attempt: attempt.clone(),
                 next_ping: self.clock.monotonic_now().after(PING_INTERVAL),
                 heartbeat: Heartbeat::Idle,
             };
-            self.retry_delay = INITIAL_RETRY;
             return Ok(ClientEvent::Welcomed {
                 central_time: *central_time,
                 effective_expires_at: *effective_expires_at,
             });
         }
-        if !matches!(self.state, ConnectionState::Connected { .. }) {
+        if !matches!(self.state, ConnectionState::Welcomed { .. }) {
             return Err(ClientError::UnexpectedFrame);
         }
         match frame {
             LinkFrame::Pong => {
-                let ConnectionState::Connected { heartbeat, .. } = &mut self.state else {
+                let ConnectionState::Welcomed { heartbeat, .. } = &mut self.state else {
                     return Err(ClientError::UnexpectedFrame);
                 };
                 *heartbeat = Heartbeat::Idle;
@@ -392,10 +472,10 @@ impl LinkClient {
     pub fn closed(&mut self, attempt: &ConnectionAttempt) -> Result<Vec<FailedCall>, ClientError> {
         self.check_most_recent_attempt(attempt)?;
         match self.state {
-            ConnectionState::AwaitingWelcome { .. } | ConnectionState::Connected { .. } => {
-                Ok(self.disconnect())
-            }
-            ConnectionState::Waiting { .. } | ConnectionState::Refused { .. } => Ok(Vec::new()),
+            ConnectionState::PreparingDial { .. }
+            | ConnectionState::AwaitingWelcome { .. }
+            | ConnectionState::Welcomed { .. } => Ok(self.disconnect()),
+            ConnectionState::Waiting { .. } | ConnectionState::Parked { .. } => Ok(Vec::new()),
         }
     }
 
@@ -410,14 +490,46 @@ impl LinkClient {
         self.pending.end_connection()
     }
 
-    /// A refusal may precede or follow closed for the latest attempt, but never a newer one.
-    pub fn refused(
+    /// Retire the exact attempt with the outcome observed by its owner.
+    pub fn finish_attempt(
         &mut self,
         attempt: &ConnectionAttempt,
-        reason: RefusalReason,
+        outcome: AttemptOutcome,
+    ) -> Result<Vec<FailedCall>, ClientError> {
+        match outcome {
+            AttemptOutcome::Retry => self.closed(attempt),
+            AttemptOutcome::EnrollmentEnded { cause } => {
+                self.park(attempt, ParkReason::EnrollmentEnded(cause))
+            }
+            AttemptOutcome::Fault { kind } => self.park(attempt, ParkReason::Fault(kind)),
+        }
+    }
+
+    /// Consume Central's decoded close code without interpreting its reason text.
+    pub fn close_received(
+        &mut self,
+        attempt: &ConnectionAttempt,
+        code: Option<MachineLinkCloseCode>,
+    ) -> Result<Vec<FailedCall>, ClientError> {
+        let outcome = match code {
+            Some(MachineLinkCloseCode::Revoked) => AttemptOutcome::EnrollmentEnded {
+                cause: EnrollmentEnd::Revoked,
+            },
+            Some(MachineLinkCloseCode::Inactive) => AttemptOutcome::EnrollmentEnded {
+                cause: EnrollmentEnd::Inactive,
+            },
+            Some(MachineLinkCloseCode::Expired) | None => AttemptOutcome::Retry,
+        };
+        self.finish_attempt(attempt, outcome)
+    }
+
+    fn park(
+        &mut self,
+        attempt: &ConnectionAttempt,
+        reason: ParkReason,
     ) -> Result<Vec<FailedCall>, ClientError> {
         self.check_most_recent_attempt(attempt)?;
-        self.state = ConnectionState::Refused {
+        self.state = ConnectionState::Parked {
             attempt: attempt.clone(),
             reason,
         };
@@ -427,25 +539,28 @@ impl LinkClient {
 
     fn check_attempt(&self, attempt: &ConnectionAttempt) -> Result<(), ClientError> {
         match &self.state {
-            ConnectionState::AwaitingWelcome {
+            ConnectionState::PreparingDial { attempt: current }
+            | ConnectionState::AwaitingWelcome {
                 attempt: current, ..
             }
-            | ConnectionState::Connected {
+            | ConnectionState::Welcomed {
                 attempt: current, ..
             } if current == attempt => Ok(()),
             ConnectionState::Waiting { .. }
+            | ConnectionState::PreparingDial { .. }
             | ConnectionState::AwaitingWelcome { .. }
-            | ConnectionState::Connected { .. }
-            | ConnectionState::Refused { .. } => Err(ClientError::StaleConnection),
+            | ConnectionState::Welcomed { .. }
+            | ConnectionState::Parked { .. } => Err(ClientError::StaleConnection),
         }
     }
 
     fn most_recent_attempt(&self) -> Option<&ConnectionAttempt> {
         match &self.state {
             ConnectionState::Waiting { last_attempt, .. } => last_attempt.as_ref(),
-            ConnectionState::AwaitingWelcome { attempt, .. }
-            | ConnectionState::Connected { attempt, .. }
-            | ConnectionState::Refused { attempt, .. } => Some(attempt),
+            ConnectionState::PreparingDial { attempt }
+            | ConnectionState::AwaitingWelcome { attempt, .. }
+            | ConnectionState::Welcomed { attempt, .. }
+            | ConnectionState::Parked { attempt, .. } => Some(attempt),
         }
     }
 
@@ -470,8 +585,7 @@ impl LinkClient {
     }
 
     pub fn reenrolled(&mut self) {
-        if matches!(self.state, ConnectionState::Refused { .. }) {
-            self.retry_delay = INITIAL_RETRY;
+        if matches!(self.state, ConnectionState::Parked { .. }) {
             self.state = ConnectionState::Waiting {
                 reconnect_at: self.clock.monotonic_now(),
                 last_attempt: None,

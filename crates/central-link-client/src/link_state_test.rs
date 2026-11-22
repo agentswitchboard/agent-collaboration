@@ -21,6 +21,7 @@ fn connect(client: &mut LinkClient) -> ConnectionAttempt {
     let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
         panic!("connect action required")
     };
+    client.dial_started(&attempt).unwrap();
     let welcome = LinkFrame::Data(DataFrame::Welcome {
         machine_id: client.machine.clone(),
         central_time: client.clock.utc_now(),
@@ -41,6 +42,7 @@ fn connect(client: &mut LinkClient) -> ConnectionAttempt {
             .unwrap(),
         }
     );
+    client.ready(&attempt).unwrap();
     attempt
 }
 fn caller() -> Caller {
@@ -131,7 +133,12 @@ fn down_pre_welcome_and_refused_calls_fail_without_queueing() {
     );
     assert!(
         client
-            .refused(&attempt, RefusalReason::MachineRevoked)
+            .finish_attempt(
+                &attempt,
+                AttemptOutcome::EnrollmentEnded {
+                    cause: EnrollmentEnd::Revoked
+                }
+            )
             .unwrap()
             .is_empty()
     );
@@ -240,8 +247,36 @@ fn reconnect_backoff_caps_at_thirty_and_welcome_resets_it() {
         assert_eq!(client.poll_time(), None);
         clock.advance(Duration::from_millis(1)).unwrap();
     }
-    let attempt = connect(&mut client);
+    let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
+        panic!("connect at the cap");
+    };
+    client.dial_started(&attempt).unwrap();
+    let central_time = clock.utc_now();
+    client
+        .receive(
+            &attempt,
+            LinkFrame::Data(DataFrame::Welcome {
+                machine_id: client.machine.clone(),
+                central_time,
+                effective_expires_at: workspace_model::Timestamp::from_timestamp(
+                    central_time.timestamp() + 600,
+                    0,
+                )
+                .unwrap(),
+            }),
+        )
+        .unwrap();
     client.closed(&attempt).unwrap();
+    clock.advance(Duration::from_secs(1)).unwrap();
+    assert_eq!(
+        client.poll_time(),
+        None,
+        "Welcome alone cannot reset the grown backoff"
+    );
+    clock.advance(Duration::from_secs(29)).unwrap();
+
+    let ready_attempt = connect(&mut client);
+    client.closed(&ready_attempt).unwrap();
     clock.advance(Duration::from_millis(999)).unwrap();
     assert_eq!(client.poll_time(), None);
     clock.advance(Duration::from_millis(1)).unwrap();
@@ -295,6 +330,7 @@ fn wrong_machine_welcome_is_refused_and_read_disconnect_has_no_durable_retry_id(
     let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
         panic!("connect")
     };
+    client.dial_started(&attempt).unwrap();
     let wrong = LinkFrame::Data(DataFrame::Welcome {
         machine_id: "01890f2e-7b4c-7cc0-98c4-000000000099".parse().unwrap(),
         central_time: client.clock.utc_now(),
@@ -319,6 +355,7 @@ fn wrong_machine_welcome_is_refused_and_read_disconnect_has_no_durable_retry_id(
         .unwrap(),
     });
     client.receive(&attempt, welcome).unwrap();
+    client.ready(&attempt).unwrap();
     let payload = RequestPayload::Workspace(WorkspaceRequest {
         request_id: None,
         workspace_id: Some("01890f2e-7b4c-7cc0-98c4-000000000003".parse().unwrap()),
@@ -403,6 +440,7 @@ fn a_reconnect_whose_welcome_names_another_installation_is_invalid() {
     let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
         panic!("reconnect action required")
     };
+    client.dial_started(&attempt).unwrap();
     let other = LinkFrame::Data(DataFrame::Welcome {
         machine_id: "01890f2e-7b4c-7cc0-98c4-0000000000bb".parse().unwrap(),
         central_time: clock.utc_now(),
@@ -537,4 +575,128 @@ fn an_open_connection_keeps_only_its_recent_legacy_replies() {
         client.receive(&attempt, reply(completed[0].clone())),
         Err(ClientError::UnknownCorrelation)
     );
+}
+
+#[test]
+fn welcomed_link_serves_transport_frames_and_holds_ordinary_requests_until_ready() {
+    let (mut client, clock) = fixture();
+    let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
+        panic!("connect action required");
+    };
+    let central_time = clock.utc_now();
+    let effective_expires_at =
+        workspace_model::Timestamp::from_timestamp(central_time.timestamp() + 300, 0).unwrap();
+    let welcome = LinkFrame::Data(DataFrame::Welcome {
+        machine_id: client.machine.clone(),
+        central_time,
+        effective_expires_at,
+    });
+    client.dial_started(&attempt).unwrap();
+    assert_eq!(
+        client.receive(&attempt, welcome),
+        Ok(ClientEvent::Welcomed {
+            central_time,
+            effective_expires_at
+        }),
+    );
+    assert_eq!(
+        client.begin_request(caller(), payload()),
+        Err(ClientError::CentralUnavailable)
+    );
+    assert!(matches!(client.status(), LinkStatus::Welcomed { .. }));
+    let delivery = decode_text(
+        r#"{"kind":"deliver","timeLeft":1,"sender":{"kind":"central"},"message":{"messageId":"01890f2e-7b4c-7cc0-98c4-000000000009","sender":{"kind":"central"},"target":{"machineId":"01890f2e-7b4c-7cc0-98c4-000000000002","sessionId":"s"},"body":{"kind":"direct","body":"hello","delivery":"auto","replyTo":null},"state":{"kind":"queued"},"source":null}}"#,
+        FrameDirection::ToRouter,
+    ).unwrap();
+    assert!(matches!(
+        client.receive(&attempt, delivery),
+        Ok(ClientEvent::Deliver { .. })
+    ));
+    let correlation_id: CorrelationId = "01890f2e-7b4c-7cc0-98c4-000000000010".parse().unwrap();
+    let result = central_link_protocol::TokenRenewalResult::Renewed {
+        central_time,
+        effective_expires_at,
+    };
+    assert_eq!(
+        client.receive(
+            &attempt,
+            LinkFrame::Data(DataFrame::MachineTokenRenewal {
+                correlation_id: correlation_id.clone(),
+                result: result.clone()
+            })
+        ),
+        Ok(ClientEvent::TokenRenewal {
+            correlation_id,
+            result
+        }),
+    );
+    clock.advance(Duration::from_secs(20)).unwrap();
+    assert_eq!(client.poll_time(), Some(ClientAction::SendPing));
+    assert_eq!(
+        client.receive(&attempt, LinkFrame::Pong),
+        Ok(ClientEvent::Pong)
+    );
+    client.ready(&attempt).unwrap();
+    assert!(client.begin_request(caller(), payload()).is_ok());
+}
+
+#[test]
+fn typed_close_before_welcome_distinguishes_final_enrollment_loss_from_expiry() {
+    for (code, expected) in [
+        (
+            MachineLinkCloseCode::Revoked,
+            LinkStatus::EnrollmentEnded {
+                cause: EnrollmentEnd::Revoked,
+            },
+        ),
+        (
+            MachineLinkCloseCode::Inactive,
+            LinkStatus::EnrollmentEnded {
+                cause: EnrollmentEnd::Inactive,
+            },
+        ),
+        (MachineLinkCloseCode::Expired, LinkStatus::Connecting),
+    ] {
+        let (mut client, clock) = fixture();
+        let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
+            panic!("connect action required");
+        };
+        client.dial_started(&attempt).unwrap();
+        assert!(
+            client
+                .close_received(&attempt, Some(code))
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(client.status(), expected);
+        clock.advance(Duration::from_secs(60)).unwrap();
+        assert_eq!(
+            matches!(client.poll_time(), Some(ClientAction::Connect { .. })),
+            code == MachineLinkCloseCode::Expired,
+        );
+    }
+}
+
+#[test]
+fn an_explicit_fault_parks_the_attempt_until_the_owner_retries() {
+    let (mut client, clock) = fixture();
+    let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
+        panic!("connect action required");
+    };
+    let kind = LinkFault::MalformedAddress;
+    assert!(
+        client
+            .finish_attempt(&attempt, AttemptOutcome::Fault { kind })
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(client.status(), LinkStatus::Fault { kind });
+    assert_eq!(client.next_deadline(), None);
+    clock.advance(Duration::from_secs(60)).unwrap();
+    assert_eq!(client.poll_time(), None);
+    client.reenrolled();
+    assert!(matches!(
+        client.poll_time(),
+        Some(ClientAction::Connect { .. })
+    ));
 }
