@@ -93,6 +93,8 @@ pub(super) fn check_package_tree(
     let mut cargo_tree_command = Command::new("cargo");
     cargo_tree_command.args([
         "tree",
+        "--color",
+        "never",
         "--locked",
         "--offline",
         "-p",
@@ -102,7 +104,8 @@ pub(super) fn check_package_tree(
         "--prefix",
         "none",
         "--format",
-        "{p}\t{f}",
+        // Cargo appends its repeat marker after the formatted columns.
+        "{p}\t{f}\t",
     ]);
     if let Some(target_triple) = target_triple {
         cargo_tree_command.args(["--target", target_triple]);
@@ -219,14 +222,7 @@ fn check_session_read_tree_features(
         }
         _ => return Ok(()),
     };
-    let enabled_features = enabled_features
-        .strip_suffix("(*)")
-        .unwrap_or(enabled_features)
-        .trim();
-    let actual: BTreeSet<_> = enabled_features
-        .split(',')
-        .filter(|feature| !feature.is_empty())
-        .collect();
+    let actual = parse_cargo_tree_features(enabled_features);
     let allowed = allowed.iter().copied().collect();
     if actual != allowed {
         return Err(format!(
@@ -235,3 +231,17 @@ fn check_session_read_tree_features(
     }
     Ok(())
 }
+
+fn parse_cargo_tree_features(enabled_features: &str) -> BTreeSet<&str> {
+    let feature_list = enabled_features
+        .split_once(['\t', ' '])
+        .map_or(enabled_features, |(features, _)| features);
+    feature_list
+        .split(',')
+        .filter(|feature| !feature.is_empty())
+        .collect()
+}
+
+#[cfg(test)]
+#[path = "workspace_package_tree_policy_test.rs"]
+mod tests;
