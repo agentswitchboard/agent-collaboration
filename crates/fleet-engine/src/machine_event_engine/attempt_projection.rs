@@ -31,33 +31,30 @@ fn corrupt_attempt_field(name: &str, raw: &SqlValue) -> AttemptCorruption {
     }
 }
 
-pub(super) trait ProjectionStorage {
+pub trait ProjectionStorage {
     type Column<Value>;
 }
 
-pub(super) enum ObservedStorage {}
+pub enum ObservedStorage {}
 
 impl ProjectionStorage for ObservedStorage {
     type Column<Value> = ObservedColumn<Value>;
 }
 
-#[cfg(test)]
-pub(super) enum CheckedStorage {}
-
-#[cfg(test)]
+pub enum CheckedStorage {}
 impl ProjectionStorage for CheckedStorage {
     type Column<Value> = Value;
 }
 
 /// A host cell retains the original SQL value even when decoding it fails.
-pub(super) struct ObservedColumn<Value> {
+pub struct ObservedColumn<Value> {
     name: &'static str,
     raw: SqlValue,
     expected: PhantomData<Value>,
 }
 
 impl<Value> ObservedColumn<Value> {
-    pub(super) fn new(name: &'static str, raw: SqlValue) -> Self {
+    pub fn new(name: &'static str, raw: SqlValue) -> Self {
         Self {
             name,
             raw,
@@ -69,8 +66,12 @@ impl<Value> ObservedColumn<Value> {
         corrupt_attempt_field(self.name, &self.raw)
     }
 
-    pub(super) fn into_raw(self) -> SqlValue {
+    pub fn into_raw(self) -> SqlValue {
         self.raw
+    }
+
+    pub fn raw(&self) -> &SqlValue {
+        &self.raw
     }
 
     fn require_text(&self) -> Result<&str, AttemptCorruption> {
@@ -89,12 +90,27 @@ impl<Value> ObservedColumn<Value> {
 }
 
 impl ObservedColumn<String> {
+    pub fn stored_text(&self) -> Result<&str, central_storage::StoreFailure> {
+        self.text()
+            .map_err(|_| fleet_runtime_ports::workspace_decode_error::corrupt(self.name))
+    }
+
     pub(super) fn text(&self) -> Result<&str, AttemptCorruption> {
         self.require_text()
     }
 }
 
 impl ObservedColumn<Option<String>> {
+    pub fn stored_text(&self) -> Result<&str, central_storage::StoreFailure> {
+        self.text()
+            .map_err(|_| fleet_runtime_ports::workspace_decode_error::corrupt(self.name))
+    }
+
+    pub fn stored_optional_text(&self) -> Result<Option<&str>, central_storage::StoreFailure> {
+        self.nullable_text()
+            .map_err(|_| fleet_runtime_ports::workspace_decode_error::corrupt(self.name))
+    }
+
     pub(super) fn text(&self) -> Result<&str, AttemptCorruption> {
         self.require_text()
     }

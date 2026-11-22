@@ -541,7 +541,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
             Err(super::machine_store_adapter::SubjectLoadFailure::CorruptSubjectRow {
                 observed_subject_version: version,
                 ..
-            }) => version,
+            }) => *version,
             Err(super::machine_store_adapter::SubjectLoadFailure::StorageAnswerLost) => {
                 return MachineEventOutcome::StorageAnswerLost;
             }
@@ -551,7 +551,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
         };
         self.record_attempt_failure(
             &adapter.failure_attempt_subject(key),
-            adapter.write_attempt_failure_sql(),
+            adapter.attempt_failure_writer(),
             &version,
             central_engine_model::ItemFailureClass::CorruptRow {
                 column: due_column.into(),

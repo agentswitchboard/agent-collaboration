@@ -1,16 +1,12 @@
+use super::attempt_bindings::{ObservedBind, attempt_statement};
 #[cfg(test)]
 use super::attempt_records::CheckedFullAttemptProjection;
-use super::{
-    attempt_bindings::{AttemptBind, ObservedBind, attempt_statement},
-    attempt_records::encode_attempt_failure_detail,
-};
-use central_engine_model::{AttemptState, FailureRecord};
-use central_storage::{
-    GuardedStatement, RowExpectation, SafeInteger, SqlValue, Statement, StoreFailure,
-};
+use central_engine_model::FailureRecord;
+#[cfg(any(test, feature = "test-support"))]
+use central_storage::SqlValue;
+use central_storage::{GuardedStatement, RowExpectation, SafeInteger, Statement, StoreFailure};
 use fleet_contracts::{AttemptGuard, EngineSubject};
-use fleet_runtime_ports::stored_values::format_utc_millis;
-use fleet_runtime_ports::{guarded_statements::exact, workspace_decode_error::corrupt};
+use fleet_runtime_ports::workspace_decode_error::corrupt;
 
 /// The literal predicate belongs to the adapter that owns the subject. No UPDATE
 /// of the subject is used as a guard: that would retrigger its failed statement.
@@ -74,51 +70,55 @@ pub fn plan_observed_attempt_delete(
     }
 }
 
-fn encode_attempt_integer_bind(value: i64) -> Result<SafeInteger, StoreFailure> {
+pub fn encode_attempt_integer_bind(value: i64) -> Result<SafeInteger, StoreFailure> {
     value
         .try_into()
         .map_err(|_| corrupt("engine_work_attempts.failure_count"))
 }
 
 /// Bind slots 1..19; an adapter's subject-version values start at slot 20.
-macro_rules! attempt_upsert_bindings {
-    ($emit:ident, $subject:ident, $record:ident, $prior:ident) => {{
+#[doc(hidden)]
+#[macro_export]
+macro_rules! engine_attempt_upsert_bindings {
+    ($emit:ident, $subject:ident, $record:ident, $prior:ident $(; [$($leading:tt)*] [$($extra:tt)*])?) => {{
         let (state, next_try, retired) = match $record.state {
-            AttemptState::Failing { next_try_at } => {
-                ("failing", Some(format_utc_millis(next_try_at)), None)
+            $crate::owner_sql::AttemptState::Failing { next_try_at } => {
+                ("failing", Some($crate::owner_sql::format_utc_millis(next_try_at)), None)
             }
-            AttemptState::Retired { retired_at } => {
-                ("retired", None, Some(format_utc_millis(retired_at)))
+            $crate::owner_sql::AttemptState::Retired { retired_at } => {
+                ("retired", None, Some($crate::owner_sql::format_utc_millis(retired_at)))
             }
         };
-        let absent_guard = AttemptGuard {
-            attempt_id: SqlValue::Null,
-            state: SqlValue::Null,
-            failure_count: SqlValue::Null,
-            last_failure: SqlValue::Null,
-            updated_at: SqlValue::Null,
+        let absent_guard = $crate::owner_sql::AttemptGuard {
+            attempt_id: $crate::owner_sql::SqlValue::Null,
+            state: $crate::owner_sql::SqlValue::Null,
+            failure_count: $crate::owner_sql::SqlValue::Null,
+            last_failure: $crate::owner_sql::SqlValue::Null,
+            updated_at: $crate::owner_sql::SqlValue::Null,
         };
         let guard = $prior.unwrap_or(&absent_guard);
         $emit!(
+            $($($leading)*)?
             attempt_id = $record.attempt_id.to_string(),
             machine_kind = $subject.kind.0.to_owned(),
             subject_key = $subject.key.0.clone(),
             attempt_state = state.to_owned(),
-            failure_count = encode_attempt_integer_bind(i64::from($record.failure_count.get()))?,
+            failure_count = $crate::owner_sql::encode_attempt_integer_bind(i64::from($record.failure_count.get()))?,
             next_try_at = next_try,
             last_failure = $record.last_failure.storage_tag().to_owned(),
-            last_failure_detail = encode_attempt_failure_detail(&$record.last_failure),
-            first_failed_at = format_utc_millis($record.first_failed_at),
-            last_failed_at = format_utc_millis($record.last_failed_at),
+            last_failure_detail = $crate::owner_sql::encode_attempt_failure_detail(&$record.last_failure),
+            first_failed_at = $crate::owner_sql::format_utc_millis($record.first_failed_at),
+            last_failed_at = $crate::owner_sql::format_utc_millis($record.last_failed_at),
             retired_at = retired,
-            created_at = format_utc_millis($record.created_at),
-            updated_at = format_utc_millis($record.updated_at),
-            has_prior = encode_attempt_integer_bind(i64::from($prior.is_some()))?,
-            observed_attempt_id = ObservedBind::<String>::new(guard.attempt_id.clone()),
-            observed_state = ObservedBind::<String>::new(guard.state.clone()),
-            observed_count = ObservedBind::<i64>::new(guard.failure_count.clone()),
-            observed_failure = ObservedBind::<String>::new(guard.last_failure.clone()),
-            observed_update = ObservedBind::<String>::new(guard.updated_at.clone()),
+            created_at = $crate::owner_sql::format_utc_millis($record.created_at),
+            updated_at = $crate::owner_sql::format_utc_millis($record.updated_at),
+            has_prior = $crate::owner_sql::encode_attempt_integer_bind(i64::from($prior.is_some()))?,
+            observed_attempt_id = $crate::owner_sql::ObservedBind::<String>::new(guard.attempt_id.clone()),
+            observed_state = $crate::owner_sql::ObservedBind::<String>::new(guard.state.clone()),
+            observed_count = $crate::owner_sql::ObservedBind::<i64>::new(guard.failure_count.clone()),
+            observed_failure = $crate::owner_sql::ObservedBind::<String>::new(guard.last_failure.clone()),
+            observed_update = $crate::owner_sql::ObservedBind::<String>::new(guard.updated_at.clone()),
+            $($($extra)*)?
         )
     }};
 }
@@ -135,13 +135,19 @@ pub(super) fn plan_control_attempt_upsert(
     }
 
     Ok(GuardedStatement {
-        statement: attempt_upsert_bindings!(checked_control_statement, subject, record, prior),
+        statement: crate::engine_attempt_upsert_bindings!(
+            checked_control_statement,
+            subject,
+            record,
+            prior
+        ),
         expect: RowExpectation::Exactly(1),
     })
 }
 
 /// The owning adapter supplies its subject predicate and any extra version bindings.
-pub(crate) fn plan_guarded_attempt_upsert(
+#[cfg(any(test, feature = "test-support"))]
+pub fn plan_guarded_attempt_upsert(
     sql: &'static str,
     subject: &EngineSubject,
     record: &FailureRecord,
@@ -150,12 +156,13 @@ pub(crate) fn plan_guarded_attempt_upsert(
 ) -> Result<GuardedStatement, StoreFailure> {
     macro_rules! guarded_subject_arguments {
         ($($bind:ident = $value:expr),+ $(,)?) => {
-            vec![$(AttemptBind::into_storage($value)),+]
+            vec![$(super::attempt_bindings::AttemptBind::into_storage($value)),+]
         };
     }
-    let mut args = attempt_upsert_bindings!(guarded_subject_arguments, subject, record, prior);
+    let mut args =
+        crate::engine_attempt_upsert_bindings!(guarded_subject_arguments, subject, record, prior);
     args.extend(subject_version);
-    Ok(exact(sql, args))
+    Ok(fleet_runtime_ports::guarded_statements::exact(sql, args))
 }
 
 #[cfg(test)]

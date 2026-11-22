@@ -41,7 +41,7 @@ pub(crate) async fn finish_registered_discard<H: CentralStore, S: WorkspaceStore
     match registered.admin_machine_kind() {
         EngineKindName::WakeTimer => {
             registered
-                .commit_subject_discard::<fleet_wakes::WakeFinish>(
+                .commit_subject_discard::<fleet_wakes::WakeFinish, _>(
                     wake_finish_store(),
                     FinishEvent::Discard,
                 )
@@ -49,7 +49,7 @@ pub(crate) async fn finish_registered_discard<H: CentralStore, S: WorkspaceStore
         }
         EngineKindName::AutomationTimer => {
             registered
-                .commit_subject_discard::<fleet_schedules::AutomationFinish>(
+                .commit_subject_discard::<fleet_schedules::AutomationFinish, _>(
                     automation_finish_store(),
                     FinishEvent::Discard,
                 )

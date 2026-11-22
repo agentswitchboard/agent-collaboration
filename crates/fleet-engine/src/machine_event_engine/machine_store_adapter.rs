@@ -1,35 +1,46 @@
-use central_engine_model::{InstanceKey, ItemFailureClass, Machine};
+use central_engine_model::{FailureRecord, InstanceKey, ItemFailureClass, Machine};
 use central_storage::{CorruptReason, GuardedStatement, ReadOutcome, StoreFailure};
-use fleet_contracts::{EngineSubject, MailDeliveryReady, SubjectVersion};
+use fleet_contracts::{AttemptGuard, EngineSubject, MailDeliveryReady, SubjectVersion};
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use std::future::Future;
 
-pub struct VersionedSubjectState<State> {
+pub struct VersionedSubjectState<State, Version> {
     pub decoded_state: State,
-    pub observed_subject_version: SubjectVersion,
+    pub observed_subject_version: Version,
 }
 
-pub enum SubjectLoadFailure {
+pub enum SubjectLoadFailure<Version> {
     CorruptSubjectRow {
         failure_class: ItemFailureClass,
-        observed_subject_version: SubjectVersion,
+        observed_subject_version: Box<Version>,
     },
     StorageAnswerLost,
     StoreReadFailed(StoreFailure),
 }
 
+/// Builds the observed owner's attempt write from its original guard cells.
+pub type SubjectAttemptWriter<Version> = fn(
+    &EngineSubject,
+    &FailureRecord,
+    Option<&AttemptGuard>,
+    &Version,
+) -> Result<GuardedStatement, StoreFailure>;
+
+type SubjectLoadResult<State, Version> =
+    Result<Option<VersionedSubjectState<State, Version>>, SubjectLoadFailure<Version>>;
+
 /// One machine's row codec and static statements. Reducers never see SQL.
 pub trait MachineStoreAdapter<SubjectMachine: Machine>: Sync {
+    type Version: Send + Sync;
+
     fn load_subject_state(
         &self,
         key: &InstanceKey,
-    ) -> impl Future<
-        Output = Result<Option<VersionedSubjectState<SubjectMachine::State>>, SubjectLoadFailure>,
-    > + Send;
+    ) -> impl Future<Output = SubjectLoadResult<SubjectMachine::State, Self::Version>> + Send;
     fn plan_subject_state_write(
         &self,
         key: &InstanceKey,
-        prior: &VersionedSubjectState<SubjectMachine::State>,
+        prior: &VersionedSubjectState<SubjectMachine::State, Self::Version>,
         next: &SubjectMachine::State,
     ) -> Result<GuardedStatement, StoreFailure>;
     fn plan_machine_effect_writes(
@@ -43,7 +54,7 @@ pub trait MachineStoreAdapter<SubjectMachine: Machine>: Sync {
     ) -> Option<MailDeliveryReady> {
         None
     }
-    fn write_attempt_failure_sql(&self) -> &'static str;
+    fn attempt_failure_writer(&self) -> SubjectAttemptWriter<Self::Version>;
     fn failure_attempt_subject(&self, key: &InstanceKey) -> EngineSubject {
         EngineSubject {
             kind: SubjectMachine::KIND,
@@ -62,7 +73,9 @@ pub(crate) fn classify_corrupt_subject_row(reason: CorruptReason) -> ItemFailure
     }
 }
 
-pub fn classify_subject_read_failure(failure: StoreFailure) -> SubjectLoadFailure {
+pub fn classify_subject_read_failure<Version>(
+    failure: StoreFailure,
+) -> SubjectLoadFailure<Version> {
     match failure {
         StoreFailure::AnswerLost => SubjectLoadFailure::StorageAnswerLost,
         failure @ (StoreFailure::Unavailable
@@ -70,14 +83,14 @@ pub fn classify_subject_read_failure(failure: StoreFailure) -> SubjectLoadFailur
         | StoreFailure::AlarmUnpublishable { .. }) => SubjectLoadFailure::StoreReadFailed(failure),
     }
 }
-pub fn classify_subject_decode_failure(
+pub fn classify_subject_decode_failure<Version>(
     failure: StoreFailure,
-    version: SubjectVersion,
-) -> SubjectLoadFailure {
+    version: Version,
+) -> SubjectLoadFailure<Version> {
     match failure {
         StoreFailure::Corrupt { reason } => SubjectLoadFailure::CorruptSubjectRow {
             failure_class: classify_corrupt_subject_row(reason),
-            observed_subject_version: version,
+            observed_subject_version: Box::new(version),
         },
         failure @ (StoreFailure::Unavailable
         | StoreFailure::AnswerLost
@@ -86,7 +99,7 @@ pub fn classify_subject_decode_failure(
 }
 pub fn read_observed_subject_version(
     rows: &ReadOutcome,
-) -> Result<Option<SubjectVersion>, SubjectLoadFailure> {
+) -> Result<Option<SubjectVersion>, SubjectLoadFailure<SubjectVersion>> {
     match rows.rows.as_slice() {
         [] => Ok(None),
         [row] => Ok(Some(SubjectVersion(row.clone()))),
