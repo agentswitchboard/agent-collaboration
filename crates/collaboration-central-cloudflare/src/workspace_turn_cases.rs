@@ -16,6 +16,7 @@ pub(super) async fn control(
             if !matches!(
                 point,
                 Point::BeforeTimerCommit
+                    | Point::BeforeReceiptTransaction
                     | Point::AfterTimerCommit
                     | Point::AfterEngineLoad
                     | Point::BeforeSignInSample
