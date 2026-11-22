@@ -40,7 +40,7 @@
 import { field } from "../exact-json.ts";
 import { requireArgument } from "./acp-stdio.ts";
 import { AcpExchange } from "./acp-exchange.ts";
-import { FixtureControlSocket } from "./fixture-control-socket.ts";
+import { sendSocketNotice } from "./fixture-socket-notice.ts";
 import { fileAppears, startReleaseBarrier } from "./release-barrier.ts";
 import { selectOption } from "./provider-settings-options.ts";
 
@@ -159,7 +159,12 @@ const refuse = (request: Record<string, unknown>, message: string): void => {
 requests: for (;;) {
   const request = await agent.readRequest();
   if (request === undefined) break;
-  if (request.id === undefined && request.method !== "session/cancel") continue;
+  if (
+    request.id === undefined &&
+    request.method !== "session/cancel" &&
+    request.method !== "fixture/orderedDispatchFence"
+  )
+    continue;
   switch (request.method) {
     case "session/new": {
       const sessionId = `fixture-session-${observed.sessions.length + 1}`;
@@ -273,6 +278,14 @@ requests: for (;;) {
       agent.endTurn(request);
       break;
     }
+    case "fixture/orderedDispatchFence": {
+      if (!behaviours.has("observe-first-held-restore"))
+        throw new Error("unexpected restore fence");
+      if (field(request, "params", "after") !== "session/load")
+        throw new Error("wrong restore fence");
+      await sendSocketNotice(`${receipt}.restore.sock`, observed.restores.length === 1 ? "l" : "m");
+      break;
+    }
     case "session/load":
     case "session/resume": {
       const sessionId = String(field(request, "params", "sessionId"));
@@ -293,14 +306,7 @@ requests: for (;;) {
       if (behaviours.has("restore-fast-on")) currentFast.set(sessionId, "true");
       agent.receipt(receipt, observed);
       if (behaviours.has("disconnect-during-restore")) break requests;
-      if (behaviours.has("silent-first-restore") && observed.restores.length === 1) {
-        if (behaviours.has("observe-first-held-restore")) {
-          const observation = new FixtureControlSocket(`${receipt}.restore.sock`, null);
-          await observation.connected();
-          observation.close();
-        }
-        break;
-      }
+      if (behaviours.has("silent-first-restore") && observed.restores.length === 1) break;
       const invalidParams = behaviours.has("restore-session-not-found")
         ? `Session "${sessionId}" not found`
         : behaviours.has("restore-other-session-not-found")

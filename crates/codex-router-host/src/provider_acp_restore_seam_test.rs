@@ -122,26 +122,50 @@ async fn a_cold_auto_restore_timeout_finishes_the_input_without_holding_it() {
         "the loaded-only attempt reached ACP"
     );
 
+    let checkpoint = host
+        .runtime_for(&rig.target.endpoint)
+        .expect("fixture runtime")
+        .observe_provider_dispatch_for_fixture(
+            acp_client_runtime::owner_wire::FixtureDispatchPoint::Restore,
+        );
     let mut cold_delivery = Box::pin(route.deliver(
         auto_message(rig.target.clone(), "retire this input", LoadPolicy::MayLoad),
         &UnstoredAttemptEvidenceSink,
     ));
     let timeout = std::time::Duration::from_secs(30);
-    let parked = tokio::select! {
-        observed = wire.accept() => Ok(observed),
-        receipt = &mut cold_delivery => Err(receipt),
+    let fenced = tokio::select! {
+        completed = checkpoint => matches!(completed, Ok(Ok(()))),
+        _receipt = &mut cold_delivery => false,
+    };
+    if !fenced {
+        drop(cold_delivery);
+        route.shutdown_queue().await;
+        host.shutdown().await.expect("stop Host");
+        panic!("the completed restore attempt must put its independent fence on the ordered wire");
+    }
+    use tokio::io::AsyncReadExt as _;
+    let marker = async {
+        let (mut fixture, _) = wire.accept().await?;
+        fixture.read_u8().await
+    };
+    let observed = tokio::select! {
+        marker = marker => marker.ok(),
+        _receipt = &mut cold_delivery => None,
     };
     let deadline_armed = rig
         .clock
         .has_not_due_check_now(ClockInstant::ZERO.after(timeout));
-    if !matches!(parked, Ok(Ok(_))) || !deadline_armed {
-        drop(parked);
+    if observed != Some(b'l') || !deadline_armed {
         drop(cold_delivery);
         route.shutdown_queue().await;
         host.shutdown().await.expect("stop Host");
+        assert_eq!(
+            observed,
+            Some(b'l'),
+            "session/load must reach the live provider before its ordered dispatch fence"
+        );
         panic!("a held ACP restore must arm the 30-second Host deadline before settling");
     }
-    drop(parked);
     rig.clock.advance(timeout).expect("reach restore deadline");
     let actual = cold_delivery.await.expect("terminal cold delivery receipt");
     assert!(

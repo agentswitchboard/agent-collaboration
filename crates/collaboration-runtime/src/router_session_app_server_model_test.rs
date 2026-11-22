@@ -516,9 +516,10 @@ async fn native_model_list_distinguishes_missing_from_unavailable() {
             backend,
             catalog,
         ));
+        let (dispatched, mut dispatches) = mpsc::unbounded_channel();
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.expect("native peer");
-            serve_router_session_app_server_connection(stream, context).await
+            super::serve_app_server_connection(stream, context, Some(dispatched)).await
         });
         let (mut client, _) = client_async(
             "ws://localhost/rpc",
@@ -526,28 +527,73 @@ async fn native_model_list_distinguishes_missing_from_unavailable() {
         )
         .await
         .expect("native channel");
+        let start = json!({"id":1,"method":"thread/start","params":{"cwd":root.path()}});
+        client
+            .send(Message::Text(start.to_string().into()))
+            .await
+            .expect("thread/start sent");
+        loop {
+            let frame = client
+                .next()
+                .await
+                .expect("thread/start reply")
+                .expect("frame");
+            let value: Value =
+                serde_json::from_str(frame.to_text().expect("text frame")).expect("RPC");
+            if value["id"] == 1 {
+                assert!(value["result"]["thread"]["id"].is_string(), "{value}");
+                break;
+            }
+        }
+
         for request in [
-            json!({"id":1,"method":"thread/start","params":{"cwd":root.path()}}),
             json!({"id":2,"method":"model/list","params":{}}),
+            json!({"id":3,"method":"skills/list","params":{}}),
         ] {
             client
                 .send(Message::Text(request.to_string().into()))
                 .await
                 .expect("RPC sent");
-            loop {
-                let frame = client.next().await.expect("native reply").expect("frame");
-                let value: Value =
-                    serde_json::from_str(frame.to_text().expect("text frame")).expect("RPC");
-                if value["id"] == request["id"] {
-                    if request["id"] == 1 {
-                        assert!(value["result"]["thread"]["id"].is_string(), "{value}");
-                    } else {
-                        assert_eq!(value, expected);
-                    }
-                    break;
-                }
+        }
+        let mut catalogue_reply = None;
+        loop {
+            let frame = client
+                .next()
+                .await
+                .expect("skills/list fence")
+                .expect("frame");
+            let value: Value =
+                serde_json::from_str(frame.to_text().expect("text frame")).expect("RPC");
+            match value["id"].as_u64() {
+                Some(2) => catalogue_reply = Some(value),
+                Some(3) => break,
+                _ => {}
             }
         }
+        let dispatched = dispatches.try_recv().ok();
+        if dispatched != Some(json!(2)) {
+            client.close(None).await.expect("close native fixture");
+            server.await.expect("server task").expect("server stopped");
+            panic!(
+                "model/list id 2 must dispatch before the real request loop reaches skills/list"
+            );
+        }
+        let catalogue_reply = match catalogue_reply {
+            Some(reply) => reply,
+            None => loop {
+                let frame = client
+                    .next()
+                    .await
+                    .expect("dispatched native reply")
+                    .expect("frame");
+                let value: Value =
+                    serde_json::from_str(frame.to_text().expect("text frame")).expect("RPC");
+                if value["id"] == 2 {
+                    break value;
+                }
+            },
+        };
+        assert_eq!(catalogue_reply, expected);
         client.close(None).await.expect("native close");
         server.await.expect("server task").expect("server stopped");
     }

@@ -165,14 +165,13 @@ async fn output_limit_cancels_and_settles_before_late_updates_can_reach_next_pro
         .await
         .expect("session created");
 
-    let writer_finished = runtime
-        .client
-        .owner_wire()
-        .first_cancel_write_finished_for_test();
+    let ordered_checkpoint = runtime.observe_provider_dispatch_for_fixture(
+        acp_client_runtime::owner_wire::FixtureDispatchPoint::Cancel,
+    );
     let mut overflow =
         Box::pin(runtime.prompt("fixture-session".to_owned(), "overflow".to_owned()));
     let cancel_processed = tokio::select! {
-        () = writer_finished.cancelled() => true,
+        checkpoint = ordered_checkpoint => matches!(checkpoint, Ok(Ok(()))),
         _result = &mut overflow => false,
         () = settled.cancelled() => false,
     };
@@ -180,11 +179,8 @@ async fn output_limit_cancels_and_settles_before_late_updates_can_reach_next_pro
         drop(overflow);
         drop(control);
         runtime.shutdown().await;
-        panic!("the ordered writer must process cancel while the output-limited prompt is held");
+        panic!("the completed cancel attempt must put its independent fence on the ordered wire");
     }
-    tokio::io::AsyncWriteExt::write_all(&mut control, b"w")
-        .await
-        .expect("release the cancel wire check");
     let mut cancel_marker = [0u8; 1];
     let cancel_observed = tokio::select! {
         biased;
@@ -195,7 +191,9 @@ async fn output_limit_cancels_and_settles_before_late_updates_can_reach_next_pro
         drop(overflow);
         drop(control);
         runtime.shutdown().await;
-        panic!("session/cancel must reach the provider before the independent replies");
+        panic!(
+            "session/cancel must reach the live provider before its ordered dispatch fence; observed {cancel_marker:?}"
+        );
     }
     let outcome = overflow.await;
     let mut barrier_signal = [0u8; 1];

@@ -377,6 +377,14 @@ impl ExternalProviderRuntime {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn observe_provider_dispatch_for_fixture(
+        &self,
+        point: acp_client_runtime::owner_wire::FixtureDispatchPoint,
+    ) -> tokio::sync::oneshot::Receiver<Result<(), agent_client_protocol::Error>> {
+        self.client.owner_wire().observe_dispatch_for_test(point)
+    }
+
     pub fn retirement(&self) -> CancellationToken {
         self.client.retirement()
     }

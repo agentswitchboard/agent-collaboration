@@ -17,35 +17,43 @@ try {
     sessionUpdate: "agent_message_chunk",
     content: { type: "text", text: "x".repeat(1024 * 1024 + 1) },
   });
-  await control.expect("w");
-  await agent.readByFence("session/cancel");
-  control.send("c");
-  agent.endTurn(first, "cancelled");
-  agent.update({
-    sessionUpdate: "agent_message_chunk",
-    content: { type: "text", text: "LATE_OUTPUT" },
-  });
-  agent.send({
-    jsonrpc: "2.0",
-    id: 99,
-    method: "probe/unknown",
-    params: { sessionId: "fixture-session" },
-  });
-  agent.send({ jsonrpc: "2.0", id: 100, method: "fixture/fence", params: {} });
-  const barrier = await agent.read();
-  assert.equal(barrier.id, 99n);
-  assert.ok(Object.hasOwn(barrier, "error"));
-  const fence = await agent.read();
-  assert.equal(fence.id, 100n);
-  assert.ok(Object.hasOwn(fence, "error"));
-  control.send("r");
-  const second = await agent.read("session/prompt");
-  agent.update({
-    sessionUpdate: "agent_message_chunk",
-    content: { type: "text", text: "CURRENT_OUTPUT" },
-  });
-  agent.endTurn(second);
-  await agent.drain();
+  const beforeFence = await agent.read();
+  const sawCancel = beforeFence.method === "session/cancel";
+  const fenceRequest = sawCancel ? await agent.read() : beforeFence;
+  assert.equal(fenceRequest.method, "fixture/orderedDispatchFence");
+  assert.deepEqual(fenceRequest.params, { after: "session/cancel" });
+  if (!sawCancel) {
+    control.send("m");
+    await control.waitForByte();
+  } else {
+    control.send("c");
+    agent.endTurn(first, "cancelled");
+    agent.update({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "LATE_OUTPUT" },
+    });
+    agent.send({
+      jsonrpc: "2.0",
+      id: 99,
+      method: "probe/unknown",
+      params: { sessionId: "fixture-session" },
+    });
+    agent.send({ jsonrpc: "2.0", id: 100, method: "fixture/fence", params: {} });
+    const barrier = await agent.read();
+    assert.equal(barrier.id, 99n);
+    assert.ok(Object.hasOwn(barrier, "error"));
+    const fence = await agent.read();
+    assert.equal(fence.id, 100n);
+    assert.ok(Object.hasOwn(fence, "error"));
+    control.send("r");
+    const second = await agent.read("session/prompt");
+    agent.update({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "CURRENT_OUTPUT" },
+    });
+    agent.endTurn(second);
+    await agent.drain();
+  }
 } finally {
   control.close();
   agent.close();

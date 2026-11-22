@@ -685,6 +685,7 @@ async fn failed_queued_prompt_advances_to_the_next_accepted_item() {
     let second_id =
         collaboration_protocol::OperationId::try_from(second_request.attempt.as_str().to_owned())
             .expect("second queue operation ID");
+    let mut second_dispatch = supervisor.observe_queued_dispatch_offer_fixture(&target, &second_id);
     for queued_request in [first_request, second_request] {
         assert!(matches!(
             route
@@ -701,29 +702,43 @@ async fn failed_queued_prompt_advances_to_the_next_accepted_item() {
         .write_all(b"x")
         .await
         .expect("release active prompt");
-    let event_result = crate::provider_socket_event(&listener, &fixture_retirement).await;
-    if event_result.is_err() {
-        let first_state = collaboration_contracts::ProviderConversationBackend::show(
-            supervisor.as_ref(),
-            collaboration_protocol::ConversationOperationShowRequest {
-                operation_id: first_id.clone(),
-            },
-        )
-        .await
-        .expect("first operation diagnostic");
-        let second_state = collaboration_contracts::ProviderConversationBackend::show(
-            supervisor.as_ref(),
-            collaboration_protocol::ConversationOperationShowRequest {
-                operation_id: second_id.clone(),
-            },
-        )
-        .await
-        .expect("second operation diagnostic");
+    let _first_settled = collaboration_contracts::ProviderConversationBackend::wait(
+        supervisor.as_ref(),
+        collaboration_protocol::ConversationOperationWaitRequest {
+            operation_id: first_id.clone(),
+            timeout_seconds: collaboration_protocol::PositiveSeconds::try_from(2)
+                .expect("wait seconds"),
+        },
+    )
+    .await;
+    let first = collaboration_contracts::ProviderConversationBackend::show(
+        supervisor.as_ref(),
+        collaboration_protocol::ConversationOperationShowRequest {
+            operation_id: first_id.clone(),
+        },
+    )
+    .await
+    .expect("first operation remains inspectable");
+    assert_eq!(
+        first.stage,
+        collaboration_protocol::ProviderOperationStage::Terminal
+    );
+    assert_eq!(
+        first.effect,
+        collaboration_protocol::ProviderOperationEffect::None
+    );
+    if let Err(error) = second_dispatch.try_recv() {
+        drop(second_dispatch);
+        drop(active_event);
+        route.shutdown_queue().await;
+        supervisor.shutdown().await.expect("stop live FIFO fixture");
         panic!(
-            "second queued prompt event missing; first={first_state:?}; second={second_state:?}"
+            "the owner must offer the second queue head after settling the first refusal: {error}"
         );
     }
-    let (mut event, _) = event_result.expect("second queued prompt event");
+    let (mut event, _) = crate::provider_socket_event(&listener, &fixture_retirement)
+        .await
+        .expect("second queued prompt event");
     let mut received = [0_u8; 6];
     event.read_exact(&mut received).await.expect("event bytes");
     assert_eq!(&received, b"second");
@@ -741,22 +756,6 @@ async fn failed_queued_prompt_advances_to_the_next_accepted_item() {
         second_settlement.output,
         collaboration_protocol::ConversationOperationWaitOutput::Available { .. }
     ));
-    let first = collaboration_contracts::ProviderConversationBackend::show(
-        supervisor.as_ref(),
-        collaboration_protocol::ConversationOperationShowRequest {
-            operation_id: first_id,
-        },
-    )
-    .await
-    .expect("first operation remains inspectable");
-    assert_eq!(
-        first.stage,
-        collaboration_protocol::ProviderOperationStage::Terminal
-    );
-    assert_eq!(
-        first.effect,
-        collaboration_protocol::ProviderOperationEffect::None
-    );
     let second = collaboration_contracts::ProviderConversationBackend::show(
         supervisor.as_ref(),
         collaboration_protocol::ConversationOperationShowRequest {

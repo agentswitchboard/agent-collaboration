@@ -223,6 +223,20 @@ pub async fn serve_router_session_app_server_connection(
     stream: UnixStream,
     context: Arc<RouterSessionAppServerContext>,
 ) -> Result<(), AppServerConnectionError> {
+    serve_app_server_connection(
+        stream,
+        context,
+        #[cfg(test)]
+        None,
+    )
+    .await
+}
+
+async fn serve_app_server_connection(
+    stream: UnixStream,
+    context: Arc<RouterSessionAppServerContext>,
+    #[cfg(test)] model_dispatch: Option<mpsc::UnboundedSender<Value>>,
+) -> Result<(), AppServerConnectionError> {
     let mut websocket = accept_async(stream).await?;
     let (event_sender, mut event_receiver) =
         mpsc::channel::<(SessionRef, Result<HubEvent, ()>)>(64);
@@ -398,12 +412,20 @@ pub async fn serve_router_session_app_server_connection(
             let session = skill_bindings.model_session().cloned();
             let catalog_reader = Arc::clone(&context.model_catalog);
             let sender = response_sender.clone();
+            #[cfg(test)]
+            let (observed_id, pending_workers) = (id.clone(), request_tasks.len());
             request_tasks.spawn(send_model_list_response(
                 id,
                 session,
                 catalog_reader,
                 sender,
             ));
+            #[cfg(test)]
+            if request_tasks.len() > pending_workers
+                && let Some(dispatched) = &model_dispatch
+            {
+                let _fixture_gone = dispatched.send(observed_id);
+            }
             continue;
         }
         if request.get("method").and_then(Value::as_str) == Some("skills/list") {
