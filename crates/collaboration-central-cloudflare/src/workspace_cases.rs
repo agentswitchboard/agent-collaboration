@@ -23,6 +23,7 @@ pub(crate) struct Controls {
     pub(super) legacy_workspace_calls: std::sync::Arc<std::sync::atomic::AtomicUsize>,
     pub(super) workspace_page_reads: std::sync::Arc<std::sync::Mutex<Option<Vec<u64>>>>,
     pub(super) retired_page_reads: std::sync::Arc<std::sync::Mutex<Option<Vec<u64>>>>,
+    pub(super) direct_mark_guard_reads: std::sync::Arc<std::sync::Mutex<Option<Vec<u64>>>>,
     observations: RefCell<BTreeMap<workspace_ids::WorkspaceId, HeldPause>>,
     holds: RefCell<BTreeMap<(workspace_ids::WorkspaceId, Point), HeldPause>>,
     central_holds: RefCell<BTreeMap<Point, HeldPause>>,
@@ -185,6 +186,15 @@ pub(super) async fn control(
             let mut observations = object
                 .controls
                 .retired_page_reads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            Response::from_json(&std::mem::replace(&mut *observations, arm.then(Vec::new)))
+        }
+        "/test/direct-mark-guard-read-observations" => {
+            let arm = request.json::<bool>().await?;
+            let mut observations = object
+                .controls
+                .direct_mark_guard_reads
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             Response::from_json(&std::mem::replace(&mut *observations, arm.then(Vec::new)))

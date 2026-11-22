@@ -3,6 +3,7 @@ mod automation_occurrences;
 mod automations;
 mod corruption;
 mod delivery_ack;
+mod direct_mark_guard;
 mod direct_message_cancel;
 mod direct_receipt_sequences;
 mod message_status;
