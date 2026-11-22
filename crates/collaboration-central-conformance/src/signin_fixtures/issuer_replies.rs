@@ -81,7 +81,7 @@ impl HeldIssuerFetch {
         (&mut self.arrived).await
     }
 
-    pub fn respond(self, reply: IssuerReply) -> crate::ConformanceResult<()> {
+    pub fn send_issuer_reply(self, reply: IssuerReply) -> crate::ConformanceResult<()> {
         self.answer
             .send(reply)
             .map_err(|_| "issuer fetch no longer awaiting its reply".into())

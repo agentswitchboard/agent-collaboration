@@ -165,14 +165,14 @@ fn alarm_out_of_range(rows: &[DoRow]) -> StoreFailure {
 
 #[cfg(feature = "test-support")]
 #[derive(Debug)]
-struct AlarmInputExecutor<'a, E> {
-    inner: E,
-    dispatches: &'a std::sync::atomic::AtomicUsize,
+struct ReadCountingSqlExecutor<'a, StorageExecutor> {
+    storage_executor: StorageExecutor,
+    read_dispatches: &'a std::sync::atomic::AtomicUsize,
 }
 
 #[cfg(feature = "test-support")]
-impl<'c, E: sqlx_core::executor::Executor<'c, Database = Do>> sqlx_core::executor::Executor<'c>
-    for AlarmInputExecutor<'c, E>
+impl<'c, StorageExecutor: sqlx_core::executor::Executor<'c, Database = Do>>
+    sqlx_core::executor::Executor<'c> for ReadCountingSqlExecutor<'c, StorageExecutor>
 {
     type Database = Do;
 
@@ -188,7 +188,7 @@ impl<'c, E: sqlx_core::executor::Executor<'c, Database = Do>> sqlx_core::executo
         'c: 'e,
         Q: 'q + sqlx_core::executor::Execute<'q, Do>,
     {
-        self.inner.execute(query)
+        self.storage_executor.execute(query)
     }
 
     fn execute_many<'e, 'q: 'e, Q>(
@@ -202,7 +202,7 @@ impl<'c, E: sqlx_core::executor::Executor<'c, Database = Do>> sqlx_core::executo
         'c: 'e,
         Q: 'q + sqlx_core::executor::Execute<'q, Do>,
     {
-        self.inner.execute_many(query)
+        self.storage_executor.execute_many(query)
     }
 
     fn fetch_many<'e, 'q: 'e, Q>(
@@ -216,9 +216,9 @@ impl<'c, E: sqlx_core::executor::Executor<'c, Database = Do>> sqlx_core::executo
         'c: 'e,
         Q: 'q + sqlx_core::executor::Execute<'q, Do>,
     {
-        self.dispatches
+        self.read_dispatches
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.inner.fetch_many(query)
+        self.storage_executor.fetch_many(query)
     }
 
     fn fetch_optional<'e, 'q: 'e, Q>(
@@ -229,9 +229,9 @@ impl<'c, E: sqlx_core::executor::Executor<'c, Database = Do>> sqlx_core::executo
         'c: 'e,
         Q: 'q + sqlx_core::executor::Execute<'q, Do>,
     {
-        self.dispatches
+        self.read_dispatches
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.inner.fetch_optional(query)
+        self.storage_executor.fetch_optional(query)
     }
 
     fn prepare_with<'e>(
@@ -245,7 +245,7 @@ impl<'c, E: sqlx_core::executor::Executor<'c, Database = Do>> sqlx_core::executo
     where
         'c: 'e,
     {
-        self.inner.prepare_with(sql, parameters)
+        self.storage_executor.prepare_with(sql, parameters)
     }
 
     fn describe<'e>(
@@ -258,40 +258,42 @@ impl<'c, E: sqlx_core::executor::Executor<'c, Database = Do>> sqlx_core::executo
     where
         'c: 'e,
     {
-        self.inner.describe(sql)
+        self.storage_executor.describe(sql)
     }
 }
 
-struct WorkerTransaction<'a, T> {
-    inner: &'a T,
+struct WorkerExecutorLender<'a, StorageExecutor> {
+    storage_executor: &'a StorageExecutor,
     #[cfg(feature = "test-support")]
-    dispatches: std::sync::atomic::AtomicUsize,
+    read_dispatches: std::sync::atomic::AtomicUsize,
 }
 
-impl<'a, T> WorkerTransaction<'a, T> {
-    fn new(inner: &'a T) -> Self {
+impl<'a, StorageExecutor> WorkerExecutorLender<'a, StorageExecutor> {
+    fn from_storage_executor(storage_executor: &'a StorageExecutor) -> Self {
         Self {
-            inner,
+            storage_executor,
             #[cfg(feature = "test-support")]
-            dispatches: std::sync::atomic::AtomicUsize::new(0),
+            read_dispatches: std::sync::atomic::AtomicUsize::new(0),
         }
     }
 }
 
-impl<T> fleet_lent_transaction::CentralTransaction for WorkerTransaction<'_, T>
+impl<StorageExecutor> fleet_lent_transaction::CentralTransaction
+    for WorkerExecutorLender<'_, StorageExecutor>
 where
-    for<'executor> &'executor T: sqlx_core::executor::Executor<'executor, Database = Do>,
+    for<'executor> &'executor StorageExecutor:
+        sqlx_core::executor::Executor<'executor, Database = Do>,
 {
     type Database = Do;
 
     fn executor(&mut self) -> impl sqlx_core::executor::Executor<'_, Database = Do> {
         #[cfg(feature = "test-support")]
-        return AlarmInputExecutor {
-            inner: self.inner,
-            dispatches: &self.dispatches,
+        return ReadCountingSqlExecutor {
+            storage_executor: self.storage_executor,
+            read_dispatches: &self.read_dispatches,
         };
         #[cfg(not(feature = "test-support"))]
-        self.inner
+        self.storage_executor
     }
 
     fn rows_affected(result: <Do as sqlx_core::database::Database>::QueryResult) -> u64 {
@@ -303,13 +305,18 @@ pub(crate) async fn read_timed_due_rows(
     connection: &DoConnection,
     query: fleet_runtime_ports::DueListQuery,
 ) -> Result<Vec<fleet_runtime_ports::DueRow>, StoreFailure> {
-    fleet_engine::read_timed_due_rows(&mut WorkerTransaction::new(connection), query).await
+    fleet_engine::read_timed_due_rows(
+        &mut WorkerExecutorLender::from_storage_executor(connection),
+        query,
+    )
+    .await
 }
 
 pub(crate) async fn engine_alarm_inputs(
     connection: &DoConnection,
 ) -> Result<EngineAlarmTimes, StoreFailure> {
-    fleet_engine::read_alarm_inputs(&mut WorkerTransaction::new(connection)).await
+    fleet_engine::read_alarm_inputs(&mut WorkerExecutorLender::from_storage_executor(connection))
+        .await
 }
 
 async fn run_in_transaction(
@@ -372,14 +379,15 @@ async fn apply_alarm(
                     clock.ok_or(BatchStop::Failed(StoreFailure::AlarmUnpublishable {
                         reason: AlarmPublicationFailure::ClockUnavailable,
                     }))?;
-                let mut alarm_transaction = WorkerTransaction::new(transaction);
-                let times = match plan {
+                let mut alarm_executor_lender =
+                    WorkerExecutorLender::from_storage_executor(transaction);
+                let alarm_inputs = match plan {
                     central_storage::EngineAlarmPlan::Clear => EngineAlarmTimes {
                         earliest_on_grid_due_unix_millis: None,
                         earliest_legacy_due_unix_millis: None,
                     },
                     central_storage::EngineAlarmPlan::Recompute => {
-                        fleet_engine::read_alarm_inputs(&mut alarm_transaction)
+                        fleet_engine::read_alarm_inputs(&mut alarm_executor_lender)
                             .await
                             .map_err(BatchStop::Failed)?
                     }
@@ -387,11 +395,11 @@ async fn apply_alarm(
                 #[cfg(feature = "test-support")]
                 worker::console_log!(
                     "Central alarm input SELECTs: {}",
-                    alarm_transaction
-                        .dispatches
+                    alarm_executor_lender
+                        .read_dispatches
                         .load(std::sync::atomic::Ordering::Relaxed)
                 );
-                decide(times, clock.now().unix_millis(), &mut |_| {}).map_err(|reason| {
+                decide(alarm_inputs, clock.now().unix_millis(), &mut |_| {}).map_err(|reason| {
                     BatchStop::Failed(StoreFailure::AlarmUnpublishable { reason })
                 })?
             }
@@ -523,16 +531,18 @@ fn statement_is_rejected(error: &sqlx_core::Error) -> bool {
 
 pub(crate) async fn write_stamp(
     connection: &DoConnection,
-    write: fleet_signin::stamp_store::StampWrite,
+    stamp_write: fleet_signin::stamp_store::StampWrite,
     policy: AlarmPolicy,
 ) -> Result<BatchOutcome, StoreFailure> {
     use fleet_signin::stamp_store::StampWriteStop;
 
-    let alarm = OwnedAlarmUpdate::Engine(central_storage::EngineAlarmPlan::Recompute);
-    let result = connection
+    let alarm_update = OwnedAlarmUpdate::Engine(central_storage::EngineAlarmPlan::Recompute);
+    let transaction_result = connection
         .transaction(move |transaction| async move {
-            let rows = write
-                .apply(&mut WorkerTransaction::new(&transaction))
+            let affected_rows = stamp_write
+                .apply_stamp_and_audit(&mut WorkerExecutorLender::from_storage_executor(
+                    &transaction,
+                ))
                 .await
                 .map_err(|stop| match stop {
                     StampWriteStop::Guard {
@@ -551,9 +561,9 @@ pub(crate) async fn write_stamp(
                     },
                     StampWriteStop::Store(error) => BatchStop::Failed(error),
                 })?;
-            let publication = apply_alarm(&transaction, &alarm, policy).await?;
-            Ok((rows.into(), publication))
+            let alarm_publication = apply_alarm(&transaction, &alarm_update, policy).await?;
+            Ok((affected_rows.into(), alarm_publication))
         })
         .await;
-    batch_receipt(result)
+    batch_receipt(transaction_result)
 }

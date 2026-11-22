@@ -16,7 +16,7 @@ pub enum ScriptedKeyReply {
 }
 
 impl ScriptedKeyReply {
-    fn wire(self) -> ConformanceResult<IssuerReply> {
+    fn into_issuer_reply(self) -> ConformanceResult<IssuerReply> {
         Ok(match self {
             Self::FirstKey => {
                 IssuerReply::Document(published_keys_except(&["stamp-b".to_owned()])?)
@@ -37,7 +37,7 @@ impl ScriptedKeyReply {
                 document: published_keys()?,
                 max_age_seconds,
             }),
-            Self::Malformed | Self::Transient => self.wire(),
+            Self::Malformed | Self::Transient => self.into_issuer_reply(),
         }
     }
 }
@@ -79,7 +79,7 @@ struct IssuerOracle {
 }
 
 impl IssuerOracle {
-    fn received(&mut self, reply: ScriptedKeyReply, receipt: i64) {
+    fn record_issuer_receipt(&mut self, reply: ScriptedKeyReply, receipt: i64) {
         let keys = match reply {
             ScriptedKeyReply::FirstKey => PublishedKeys::FirstOnly,
             ScriptedKeyReply::BothKeys => PublishedKeys::Both,
@@ -119,10 +119,10 @@ pub async fn prove_issuer_trace(
         8,
     )?;
 
-    let before = host.issuer().fetches();
-    let (status, _) = host.revision().await?;
+    let before = host.issuer_fixture().fetches();
+    let (status, _) = host.post_standing_revision().await?;
     expect_reply(
-        host.issuer(),
+        host.issuer_fixture(),
         "prepare standing with the retained A key",
         before,
         0,
@@ -130,7 +130,7 @@ pub async fn prove_issuer_trace(
         200,
     )?;
 
-    probe(
+    probe_issuer_key(
         host,
         &mut oracle,
         &stale_successor,
@@ -141,7 +141,7 @@ pub async fn prove_issuer_trace(
     )
     .await?;
     now = retained_receipt + FRESH_FOR_MS - 1;
-    probe(
+    probe_issuer_key(
         host,
         &mut oracle,
         &stale_successor,
@@ -157,7 +157,7 @@ pub async fn prove_issuer_trace(
         ScriptedKeyReply::Malformed,
         ScriptedKeyReply::FirstKey,
     ] {
-        probe(
+        probe_issuer_key(
             host,
             &mut oracle,
             &stale_successor,
@@ -171,7 +171,7 @@ pub async fn prove_issuer_trace(
 
     for (index, step) in plan.probes.iter().enumerate() {
         now += step.advance_ms;
-        probe(
+        probe_issuer_key(
             host,
             &mut oracle,
             &stale_successor,
@@ -196,13 +196,13 @@ async fn complete_cold_pair(
     };
     use ScriptedKeyReply::{BothKeys, FirstKey, Malformed};
 
-    let issuer = host.issuer();
+    let issuer = host.issuer_fixture();
     let before = issuer.fetches();
     let mut earlier_reply = issuer.hold_next_fetch();
-    let mut earlier = std::pin::pin!(host.offer(first));
+    let mut earlier = std::pin::pin!(host.offer_signed_stamp(first));
     await_fetch(&mut earlier_reply, earlier.as_mut()).await?;
     let mut later_reply = issuer.hold_next_fetch();
-    let mut later = std::pin::pin!(host.offer(first));
+    let mut later = std::pin::pin!(host.offer_signed_stamp(first));
     await_fetch(&mut later_reply, later.as_mut()).await?;
     if issuer.fetches() != before + 2 {
         return Err("two cold dispatches must each reach one issuer fetch".into());
@@ -223,7 +223,7 @@ async fn complete_cold_pair(
             ((later_reply, later), (earlier_reply, earlier))
         };
     first_response_gate
-        .respond(first_response.wire_with_max_age(plan.advertised_max_age_seconds)?)?;
+        .send_issuer_reply(first_response.wire_with_max_age(plan.advertised_max_age_seconds)?)?;
     expect_reply(
         issuer,
         "first cold response",
@@ -232,11 +232,11 @@ async fn complete_cold_pair(
         first_request.await?,
         200,
     )?;
-    oracle.received(first_response, first_receipt);
+    oracle.record_issuer_receipt(first_response, first_receipt);
 
     host.set_receipt_time(last_receipt).await?;
     last_response_gate
-        .respond(last_response.wire_with_max_age(plan.advertised_max_age_seconds)?)?;
+        .send_issuer_reply(last_response.wire_with_max_age(plan.advertised_max_age_seconds)?)?;
     let last_status = last_request.await?;
     let (expected, retained_receipt) = if matches!(plan.order, MalformedCompletionArrivesLast) {
         (503, first_receipt)
@@ -251,11 +251,11 @@ async fn complete_cold_pair(
         last_status,
         expected,
     )?;
-    oracle.received(last_response, last_receipt);
+    oracle.record_issuer_receipt(last_response, last_receipt);
     Ok((last_receipt, retained_receipt))
 }
 
-async fn probe(
+async fn probe_issuer_key(
     host: &impl TrustTraceHost,
     oracle: &mut IssuerOracle,
     stale_successor: &str,
@@ -265,7 +265,7 @@ async fn probe(
     label: impl std::fmt::Display,
 ) -> ConformanceResult<()> {
     host.set_receipt_time(now).await?;
-    let issuer = host.issuer();
+    let issuer = host.issuer_fixture();
     let before = issuer.fetches();
     let expected_fetches = usize::from(!oracle.can_answer(key, now));
     let expected_status = if expected_fetches == 0 {
@@ -274,8 +274,10 @@ async fn probe(
             IssuerProbeKey::Successor => 409,
         }
     } else {
-        issuer.hold_next_fetch().respond(response.wire()?)?;
-        oracle.received(response, now);
+        issuer
+            .hold_next_fetch()
+            .send_issuer_reply(response.into_issuer_reply()?)?;
+        oracle.record_issuer_receipt(response, now);
         match (key, response) {
             (_, ScriptedKeyReply::Malformed | ScriptedKeyReply::Transient) => 503,
             (IssuerProbeKey::Stored, ScriptedKeyReply::FirstKey | ScriptedKeyReply::BothKeys) => {
@@ -287,7 +289,7 @@ async fn probe(
     };
     let actual = match key {
         IssuerProbeKey::Stored => host.digest_status().await?,
-        IssuerProbeKey::Successor => host.offer(stale_successor).await?,
+        IssuerProbeKey::Successor => host.offer_signed_stamp(stale_successor).await?,
     };
     expect_reply(
         issuer,

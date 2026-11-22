@@ -485,4 +485,4 @@ impl Drop for BatchWaiter {
 }
 
 #[path = "object_storage_stamp.rs"]
-mod stamp;
+mod object_storage_stamp;

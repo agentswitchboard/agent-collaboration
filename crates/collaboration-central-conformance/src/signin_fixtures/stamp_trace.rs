@@ -10,7 +10,7 @@ pub struct StampTrace {
 }
 
 impl StampTrace {
-    pub fn new(organization: &str) -> ConformanceResult<Self> {
+    pub fn from_fixture_organization(organization: &str) -> ConformanceResult<Self> {
         let first = stamp(organization, NOW_SECONDS)?;
         Ok(Self {
             statements: [
@@ -26,7 +26,11 @@ impl StampTrace {
 
     /// Four offers and one digest read. Each step predicts the expected wire
     /// reply and store from the fixture's fixed predecessor relationships.
-    pub fn step(&mut self, operation: u8, organization: &str) -> (Value, u16, Value) {
+    pub fn advance_stamp_trace(
+        &mut self,
+        operation: u8,
+        organization: &str,
+    ) -> (Value, u16, Value) {
         if operation == 4 {
             let addressed = json!({"organizationId": organization});
             return match self.retained {
@@ -35,7 +39,7 @@ impl StampTrace {
                     addressed,
                     200,
                     json!({
-                        "digest": digest(self.statement(index)),
+                        "digest": digest(self.fixture_statement_at(index)),
                         "expiresAt": NOW_SECONDS - 60 + super::LIFETIME_SECONDS + i64::try_from(index).unwrap_or(0),
                         "signingKeyId": "stamp-a",
                     }),
@@ -43,8 +47,7 @@ impl StampTrace {
             };
         }
         let offer = usize::from(operation);
-        let body =
-            json!({"organizationId": organization, "organizationStatement": self.statement(offer)});
+        let body = json!({"organizationId": organization, "organizationStatement": self.fixture_statement_at(offer)});
         let status = if offer == 3 {
             422
         } else {
@@ -67,14 +70,14 @@ impl StampTrace {
     }
 
     pub fn retained_statement(&self) -> Option<&str> {
-        self.retained.map(|index| self.statement(index))
+        self.retained.map(|index| self.fixture_statement_at(index))
     }
 
     pub fn audit_count(&self) -> usize {
         self.audit_count
     }
 
-    fn statement(&self, index: usize) -> &str {
+    fn fixture_statement_at(&self, index: usize) -> &str {
         self.statements.get(index).map_or("", String::as_str)
     }
 }

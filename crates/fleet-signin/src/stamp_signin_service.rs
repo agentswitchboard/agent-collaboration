@@ -7,8 +7,8 @@ use crate::{
     organization_change::{
         OrganizationChangeKind, OrganizationChangeOrigin, OrganizationChangeRecord,
     },
+    stamp_standing_cache::{StampStanding, StandingCache},
     stamp_store::{StampStore, StampWrite},
-    standing::{StampStanding, StandingCache},
 };
 use central_storage::{AlarmUpdate, BatchOutcome, EngineAlarmPlan, StatementBatch, StoreFailure};
 use fleet_contracts::{
@@ -51,7 +51,7 @@ pub struct SignInService<'owner, Host: CentralStore, Stores: WorkspaceStores> {
 }
 
 impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
-    pub fn new(
+    pub fn for_owning_runtime(
         execution: &'owner FleetRuntime<H, S>,
         store: &'owner dyn StampStore,
         standing: &'owner StandingCache,
@@ -83,7 +83,7 @@ impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
                     Some(check.verify_statement(stamp.statement()).await)
                 }
             };
-            authority.record(
+            authority.record_stamp_observation(
                 &stored,
                 verified
                     .as_ref()
@@ -153,7 +153,7 @@ impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
             );
             Failure::InvalidStatement
         })?;
-        let stored_trusted = self.standing.standing(now) != StampStanding::Refused;
+        let stored_trusted = self.standing.cached_standing_at(now) != StampStanding::Refused;
         let stored = self.store.read_stamp().await?;
         let replay = if stored_trusted {
             ReplayStanding::TrustedAt(now)
@@ -181,7 +181,7 @@ impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
             StampApplication::Write(stamp) => stamp,
             StampApplication::RepairReplay => {
                 let repair = async {
-                    applied(
+                    require_applied_alarm_repair(
                         self.execution
                             .statement_host()
                             .run_batch(StatementBatch {
@@ -198,7 +198,7 @@ impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
                         Failure::Unavailable
                     }
                 })?;
-                self.standing.forget();
+                self.standing.invalidate_cached_standing();
                 return Ok(ProvisionOrganizationResult::Provisioned {});
             }
         };
@@ -218,7 +218,11 @@ impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
             request_id: request_id.try_into()?,
             kind,
             origin: OrganizationChangeOrigin::SignInProvisioning {},
-            target_id: stamp.accepted().organization_id().as_str().to_owned(),
+            target_id: stamp
+                .accepted_organization_stamp()
+                .organization_id()
+                .as_str()
+                .to_owned(),
             created_at_millis: now.unix_millis(),
         };
 
@@ -240,7 +244,7 @@ impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
             BatchOutcome::StatementRejected { .. } => return Err(Failure::Unavailable),
             _ => return Err(Failure::StaleStatement),
         }
-        self.standing.forget();
+        self.standing.invalidate_cached_standing();
         #[cfg(feature = "test-support")]
         if self.execution.test_faults().take_lost_provisioning_reply() {
             return Err(Failure::OutcomeUnknown);
@@ -278,7 +282,7 @@ impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
         Ok(verified.into())
     }
 }
-fn applied(outcome: BatchOutcome) -> Result<(), StoreFailure> {
+fn require_applied_alarm_repair(outcome: BatchOutcome) -> Result<(), StoreFailure> {
     match outcome {
         BatchOutcome::Applied { .. } => Ok(()),
         BatchOutcome::GuardFailed { .. }

@@ -23,6 +23,7 @@ use crate::account_selection::mark_runtime_quota_exhausted;
 use crate::account_selection::release_account_reservation;
 use crate::credential_runtime::ProxyCredentialResolver;
 use crate::db_write_actor::DbWriteActor;
+use crate::db_write_actor::QuotaWriteCompletion;
 use crate::db_write_actor::SqliteDbWriteRepository;
 use crate::headers::Header;
 use crate::headers::HeaderCollection;

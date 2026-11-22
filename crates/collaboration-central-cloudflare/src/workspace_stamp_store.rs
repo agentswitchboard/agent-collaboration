@@ -15,14 +15,17 @@ impl StampStore for CentralStatements {
         }))
     }
 
-    fn write_stamp(&self, write: StampWrite) -> BoxFuture<'_, Result<BatchOutcome, StoreFailure>> {
+    fn write_stamp(
+        &self,
+        stamp_write: StampWrite,
+    ) -> BoxFuture<'_, Result<BatchOutcome, StoreFailure>> {
         Box::pin(SendFuture::new(async move {
             let policy = AlarmPolicy::Engine(
                 self.state.storage(),
                 self.clock.clone(),
                 self.engine_decider(true),
             );
-            statement_store::write_stamp(&self.connection, write, policy).await
+            statement_store::write_stamp(&self.connection, stamp_write, policy).await
         }))
     }
 }

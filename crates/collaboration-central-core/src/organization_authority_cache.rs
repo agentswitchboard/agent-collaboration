@@ -29,7 +29,7 @@ impl OrganizationAuthority {
         if let Ok(mut current) = self.check.write() {
             *current = check;
         }
-        self.cache.forget();
+        self.cache.invalidate_cached_standing();
     }
 
     pub(crate) fn check(&self) -> Option<Arc<dyn SignInVerification>> {
@@ -37,7 +37,7 @@ impl OrganizationAuthority {
     }
 
     pub(crate) fn standing(&self, now: SyncTime) -> StampStanding {
-        self.cache.standing(now)
+        self.cache.cached_standing_at(now)
     }
 }
 

@@ -100,7 +100,7 @@ async fn machine_link_distinguishes_issuer_cache_outages_from_unknown_keys() -> 
             fixture
                 .keys()
                 .hold_next_fetch()
-                .respond(signed::IssuerReply::Document(document))?;
+                .send_issuer_reply(signed::IssuerReply::Document(document))?;
         }
         let response = fixture
             .client()?
@@ -120,7 +120,7 @@ async fn machine_link_distinguishes_issuer_cache_outages_from_unknown_keys() -> 
             fixture
                 .keys()
                 .hold_next_fetch()
-                .respond(signed::IssuerReply::Document(document))?;
+                .send_issuer_reply(signed::IssuerReply::Document(document))?;
         }
         let correlation = "019f0000-0000-7000-8000-00000000c361";
         send(&mut socket, &renew_frame(correlation, &unknown)?).await?;

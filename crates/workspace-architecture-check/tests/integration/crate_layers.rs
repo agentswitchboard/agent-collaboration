@@ -193,7 +193,7 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
         .check_policy()
         .inspect_err(|error| eprintln!("{error}"))?;
     workspace_boundaries::check_boundaries(&graph)?;
-    workspace_boundaries::check_pure_dependency_tree(&root)?;
+    workspace_boundaries::check_workspace_package_trees(&root)?;
     Ok(())
 }
 

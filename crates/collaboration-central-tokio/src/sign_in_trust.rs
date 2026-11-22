@@ -55,46 +55,38 @@ impl NativeSignInTrust {
             client: self.client.clone(),
             source: self.settings.jwks_url.clone(),
         };
-        Ok(Arc::new(SignInVerifiers {
-            statements: FleetOrganizationStatementVerifier::new(
-                NativeEd25519,
-                keys(),
-                self.cache.clone(),
-                clock.clone(),
-                trust,
-            ),
-            persons: PersonRequestVerifier::new(
-                IssuerSignatureVerifier::new(
-                    NativeEd25519,
-                    keys(),
-                    self.cache.clone(),
-                    clock.clone(),
-                ),
-                NativeEs256,
-                clock.clone(),
-                PersonRequestPolicy {
-                    issuer: self.settings.issuer.clone(),
-                    audience: self.settings.admin_audience.clone(),
-                    public_origin: self.settings.public_origin.clone(),
-                },
-            ),
-            machines: MachineTokenVerifier::new(
-                IssuerSignatureVerifier::new(
-                    NativeEd25519,
-                    keys(),
-                    self.cache.clone(),
-                    clock.clone(),
-                ),
-                clock,
-                MachineTokenPolicy {
-                    issuer: self.settings.issuer.clone(),
-                    audience: self.settings.machine_audience.clone(),
-                },
-            ),
-            sign_in_service: self.settings.service_id.clone(),
-            #[cfg(feature = "test-support")]
-            issuer_cache: self.cache.clone(),
-        }))
+        let statement_verifier = FleetOrganizationStatementVerifier::new(
+            NativeEd25519,
+            keys(),
+            self.cache.clone(),
+            clock.clone(),
+            trust,
+        );
+        let person_request_verifier = PersonRequestVerifier::new(
+            IssuerSignatureVerifier::new(NativeEd25519, keys(), self.cache.clone(), clock.clone()),
+            NativeEs256,
+            clock.clone(),
+            PersonRequestPolicy {
+                issuer: self.settings.issuer.clone(),
+                audience: self.settings.admin_audience.clone(),
+                public_origin: self.settings.public_origin.clone(),
+            },
+        );
+        let machine_token_verifier = MachineTokenVerifier::new(
+            IssuerSignatureVerifier::new(NativeEd25519, keys(), self.cache.clone(), clock.clone()),
+            clock,
+            MachineTokenPolicy {
+                issuer: self.settings.issuer.clone(),
+                audience: self.settings.machine_audience.clone(),
+            },
+        );
+        Ok(Arc::new(SignInVerifiers::from_host_verifiers(
+            statement_verifier,
+            person_request_verifier,
+            machine_token_verifier,
+            self.settings.service_id.clone(),
+            &self.cache,
+        )))
     }
 }
 
