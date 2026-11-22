@@ -18,6 +18,12 @@ pub fn accepted_reads(name: &str, literals: &[Value]) -> Vec<Value> {
                 reads.push(json!({"input":input,"canonical":literal}));
             }
         }
+        if name == "ListWorkspacesRequest" && literal["after"].is_null() && literal["limit"] == 100
+        {
+            reads.push(
+                json!({"input":{"organizationId":literal["organizationId"]},"canonical":literal}),
+            );
+        }
         if name == "MachineTokenClaims" {
             let mut input = literal.clone();
             input["iss"] = json!("https://issuer.example.invalid");

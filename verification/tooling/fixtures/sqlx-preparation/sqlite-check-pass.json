@@ -507,6 +507,58 @@
       {
         "command": ["<root>/tmp/rust-tools/bin/sqlx", "database", "create"],
         "environment": {
+          "DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-workspace-directory.sqlite"
+        }
+      },
+      {
+        "command": [
+          "<root>/tmp/rust-tools/bin/sqlx",
+          "migrate",
+          "run",
+          "--source",
+          "crates/fleet-storage-schema/migrations/central"
+        ],
+        "environment": {
+          "DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-workspace-directory.sqlite"
+        }
+      },
+      {
+        "command": [
+          "cargo",
+          "clean",
+          "--package",
+          "path+file://<root>/crates/fleet-workspace-directory"
+        ],
+        "environment": {
+          "SQLX_OFFLINE": "true",
+          "RUSTC_WRAPPER": "<wrapper>",
+          "SQLX_PREPARE_PACKAGE": "fleet-workspace-directory",
+          "SQLX_PREPARE_MANIFEST_DIR": "<root>/crates/fleet-workspace-directory",
+          "SQLX_PREPARE_DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-workspace-directory.sqlite",
+          "SQLX_PREPARE_METADATA_DIR": "<root>/tmp/<schema>/fleet-workspace-directory-metadata"
+        }
+      },
+      {
+        "command": [
+          "cargo",
+          "check",
+          "--locked",
+          "--package",
+          "path+file://<root>/crates/fleet-workspace-directory",
+          "--all-targets"
+        ],
+        "environment": {
+          "SQLX_OFFLINE": "true",
+          "RUSTC_WRAPPER": "<wrapper>",
+          "SQLX_PREPARE_PACKAGE": "fleet-workspace-directory",
+          "SQLX_PREPARE_MANIFEST_DIR": "<root>/crates/fleet-workspace-directory",
+          "SQLX_PREPARE_DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-workspace-directory.sqlite",
+          "SQLX_PREPARE_METADATA_DIR": "<root>/tmp/<schema>/fleet-workspace-directory-metadata"
+        }
+      },
+      {
+        "command": ["<root>/tmp/rust-tools/bin/sqlx", "database", "create"],
+        "environment": {
           "DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-signin.sqlite"
         }
       },
@@ -564,7 +616,8 @@
         "query-fleet-signin.json": "fleet-signin",
         "query-fleet-wakes.json": "fleet-wakes",
         "query-fleet-workspace-service.json": "fleet-workspace-service",
-        "query-ui-preference-store.json": "ui-preference-store"
+        "query-ui-preference-store.json": "ui-preference-store",
+        "query-fleet-workspace-directory.json": "fleet-workspace-directory"
       }
     },
     "stderr": ""

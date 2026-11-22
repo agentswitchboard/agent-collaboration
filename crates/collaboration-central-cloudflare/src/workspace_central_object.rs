@@ -258,6 +258,24 @@ impl CentralObject {
     }
 
     fn statement_host(&self) -> Arc<CentralStatements> {
+        let connection = DoConnection::new(self.state.storage());
+        #[cfg(feature = "test-support")]
+        let connection = {
+            let observations = self.controls.workspace_page_reads.clone();
+            connection.with_fetch_observer(move |sql, rows_read| {
+                if sql
+                    == include_str!(
+                        "../../fleet-workspace-directory/src/queries/read_workspace_page.sql"
+                    )
+                    && let Some(armed) = observations
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_mut()
+                {
+                    armed.push(rows_read);
+                }
+            })
+        };
         Arc::new(CentralStatements {
             #[cfg(feature = "test-support")]
             faults: self.controls.faults.clone(),
@@ -267,7 +285,7 @@ impl CentralObject {
             witness_env: SendWrapper::new(self.env.clone()),
             #[cfg(feature = "test-support")]
             witnesses: self.witnesses.clone(),
-            connection: SendWrapper::new(DoConnection::new(self.state.storage())),
+            connection: SendWrapper::new(connection),
             state: self.state.clone(),
             clock: self.clock.clone(),
             decide_alarm: fleet_runtime::engine_alarm_decider(self.due_batches.clone()),

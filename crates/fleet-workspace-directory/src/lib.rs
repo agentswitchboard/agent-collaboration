@@ -3,4 +3,4 @@
 
 mod workspace_directory_rows;
 
-pub use workspace_directory_rows::CentralWorkspaceDirectory;
+pub use workspace_directory_rows::{CentralWorkspaceDirectory, WorkspaceDirectoryPage};

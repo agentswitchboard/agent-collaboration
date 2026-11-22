@@ -16,6 +16,7 @@ pub(crate) fn is_signin_path(path: &str) -> bool {
         "/internal/machine-token-decisions",
         AdminRoute::CreateWorkspace.path(),
         AdminRoute::WorkspaceLookup.path(),
+        AdminRoute::ListWorkspaces.path(),
         AdminRoute::ReadChangeRecords.path(),
         AdminRoute::EngineHealth.path(),
         AdminRoute::EngineListRetired.path(),
