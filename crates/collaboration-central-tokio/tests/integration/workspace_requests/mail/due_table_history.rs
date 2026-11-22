@@ -127,24 +127,28 @@ fn real_writes_and_dispatch_keep_the_due_projection_in_step(tc: TestCase) {
             let start = fixture.clock.utc_now();
             let wake = set_wake(&fixture, 19000, at(start, wake_minutes, 0, 0)).await;
             assert_due_projection(&fixture, "set wake").await;
-            let schedule = request(
-                &fixture,
-                19001,
-                Op::SetAutomation {
-                    target: session(&fixture.caller),
-                    timing: serde_json::from_value(serde_json::json!({
-                        "kind": "after",
-                        "seconds": schedule_minutes * 60,
-                    }))
-                    .unwrap(),
-                    text: "history schedule".to_owned().try_into().unwrap(),
-                },
-            )
-            .await;
-            let Answer::AutomationSet { automation_id, .. } = schedule else {
-                panic!("schedule admitted");
+            let schedule_operation = || Op::SetAutomation {
+                target: session(&fixture.caller),
+                timing: serde_json::from_value(serde_json::json!({
+                    "kind": "after",
+                    "seconds": schedule_minutes * 60,
+                })).unwrap(),
+                text: "history schedule".to_owned().try_into().unwrap(),
             };
+            let schedule = request(&fixture, 19001, schedule_operation()).await;
+            assert!(matches!(schedule, Answer::AutomationSet { .. }));
             assert_due_projection(&fixture, "set automation").await;
+
+            let Answer::AutomationSet { automation_id, .. } =
+                request(&fixture, 19004, schedule_operation()).await else {
+                    panic!("schedule to disable admitted");
+                };
+            assert_due_projection(&fixture, "set automation to disable").await;
+            assert!(matches!(
+                request(&fixture, 19005, Op::DisableAutomation { automation_id }).await,
+                Answer::AutomationDisabled { .. }
+            ));
+            assert_due_projection(&fixture, "schedule disabled").await;
 
             let send = || Op::SendMessage {
                 to: session(&fixture.caller),
@@ -185,12 +189,6 @@ fn real_writes_and_dispatch_keep_the_due_projection_in_step(tc: TestCase) {
                     Answer::WakeCancelled { .. }
                 ));
                 assert_due_projection(&fixture, "wake cancelled").await;
-            } else if initial_receipt {
-                assert!(matches!(
-                    request(&fixture, 19004, Op::DisableAutomation { automation_id }).await,
-                    Answer::AutomationDisabled { .. }
-                ));
-                assert_due_projection(&fixture, "schedule disabled").await;
             }
 
             for (minute, label) in [

@@ -71,6 +71,23 @@ async fn leaving_cancels_the_fired_collated_notice_and_retains_direct_message() 
     assert_eq!(items.len(), 1);
     assert_eq!(items[0].position, position);
     let notice_id = notice_id.clone();
+    let projected_mail = || Statement {
+        sql: "SELECT work_kind, subject_key FROM engine_due_entries WHERE subject_key IN (?, ?) ORDER BY work_kind",
+        args: vec![text(&notice_id), text(&direct_id)],
+    };
+    assert_eq!(
+        runtime
+            .runtime()
+            .statement_host()
+            .read(projected_mail())
+            .await
+            .unwrap()
+            .rows,
+        [
+            [text("direct_message"), text(&direct_id)],
+            [text("system_message_expiry"), text(&notice_id)]
+        ],
+    );
     let windows = runtime.runtime().statement_host().read(Statement { sql: "SELECT (SELECT COUNT(*) FROM mail_notification_windows WHERE recipient_actor=? AND window_id IN (SELECT window_id FROM mail_notification_window_items WHERE thread_id=?)), (SELECT COUNT(*) FROM mail_notification_window_items WHERE change_id=?)", args: vec![text(&recipient), text(&thread), text(&items[0].change_id)] }).await.unwrap();
     assert_eq!(
         windows.rows,
@@ -109,6 +126,16 @@ async fn leaving_cancels_the_fired_collated_notice_and_retains_direct_message() 
     assert_eq!(
         direct.rows,
         vec![vec![text(&direct_id), text("queued"), text("direct")]]
+    );
+    assert_eq!(
+        runtime
+            .runtime()
+            .statement_host()
+            .read(projected_mail())
+            .await
+            .unwrap()
+            .rows,
+        [[text("direct_message"), text(&direct_id)]],
     );
     f.host.close().await;
 }
