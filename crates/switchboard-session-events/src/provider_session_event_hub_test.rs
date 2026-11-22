@@ -5,7 +5,7 @@ use session_event_model::{SessionEvent, SessionItem, SessionItemKind};
 use tokio::sync::Mutex;
 
 use super::ProviderSessionEventHub;
-use collaboration_contracts::SessionEventHub;
+use collaboration_contracts::{HubEvent, SessionEventHub};
 use switchboard_session_store::ProviderOperationStore;
 
 #[tokio::test]
@@ -421,19 +421,33 @@ async fn locked_attach_on_one_session_does_not_stall_another_publish() {
         .await
         .expect("seed item");
     }
+    let mut attachment = hub
+        .attach(second.clone())
+        .await
+        .expect("attach to second session");
+    let expected = HubEvent {
+        sequence: 2,
+        event: started_item("two"),
+    };
+
     let held = hub.hold_history_for_test(first).await;
     let published = {
         let mut publication = std::pin::pin!(tokio::task::unconstrained(
-            hub.publish(second, started_item("two"))
+            hub.publish(second, expected.event.clone())
         ));
         // B's history is seeded and uncontended, so it can complete in one
         // poll even while A's history lock is held.
         futures_util::poll!(&mut publication)
     };
+    let delivered = attachment.receiver.try_recv();
     drop(held);
 
     let std::task::Poll::Ready(result) = published else {
         panic!("publishing to the second session waited on the first session's history");
     };
-    assert_eq!(result.expect("publish to the second session").sequence, 2);
+    assert_eq!(result.expect("publish to the second session"), expected);
+    assert_eq!(
+        delivered.expect("the second session's subscriber received the item while A was held"),
+        expected
+    );
 }
