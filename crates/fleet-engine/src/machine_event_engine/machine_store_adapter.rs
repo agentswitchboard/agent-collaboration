@@ -26,6 +26,9 @@ pub type SubjectAttemptWriter<Version> = fn(
     &Version,
 ) -> Result<GuardedStatement, StoreFailure>;
 
+type SubjectLoadResult<State, Version> =
+    Result<Option<VersionedSubjectState<State, Version>>, SubjectLoadFailure<Version>>;
+
 /// One machine's row codec and static statements. Reducers never see SQL.
 pub trait MachineStoreAdapter<SubjectMachine: Machine>: Sync {
     type Version: Send + Sync;
@@ -33,12 +36,7 @@ pub trait MachineStoreAdapter<SubjectMachine: Machine>: Sync {
     fn load_subject_state(
         &self,
         key: &InstanceKey,
-    ) -> impl Future<
-        Output = Result<
-            Option<VersionedSubjectState<SubjectMachine::State, Self::Version>>,
-            SubjectLoadFailure<Self::Version>,
-        >,
-    > + Send;
+    ) -> impl Future<Output = SubjectLoadResult<SubjectMachine::State, Self::Version>> + Send;
     fn plan_subject_state_write(
         &self,
         key: &InstanceKey,
