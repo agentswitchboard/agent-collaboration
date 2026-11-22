@@ -4,7 +4,7 @@ use super::{
     CollaborationRuntimeInputs, EndpointId, EndpointRef, HostCollaborationInputs, JoinSet,
     NativeRelayListener, NonEmptyText, RemoteControlServerName, RouterExecutableRelation,
     SchemaDigest, SocketAddr, create_private_socket_directory, io, load_installation_peer,
-    load_service_identity, new_service_uuid, unix_seconds,
+    load_service_identity, new_service_uuid,
 };
 
 #[cfg(test)]
@@ -40,7 +40,12 @@ impl CollaborationRuntime {
         worker_clock: std::sync::Arc<dyn router_clock::RuntimeClock>,
         #[cfg(test)] before_retention: Option<BeforeProviderRetention>,
     ) -> io::Result<Self> {
-        let composition_started_at = std::time::Instant::now();
+        let composition_started_at = worker_clock.monotonic_now();
+        crate::debug_readiness_timing::record_with_clock(
+            "collaborationRuntimeBegin",
+            composition_started_at,
+            worker_clock.as_ref(),
+        );
         let prepared_exposure = crate::tailscale_exposure::PreparedTailscaleExposure::prepare(
             host_inputs.remote_access,
         )
@@ -51,15 +56,19 @@ impl CollaborationRuntime {
             router_executable_check,
             Some(host_inputs.router_proxy_endpoint),
             prepared_exposure,
-            worker_clock,
+            worker_clock.clone(),
         ))
         .await?;
-        crate::record_debug_readiness_timing("collaborationRuntimeReady", composition_started_at);
+        crate::debug_readiness_timing::record_with_clock(
+            "collaborationRuntimeReady",
+            composition_started_at,
+            worker_clock.as_ref(),
+        );
         #[cfg(test)]
         if let Some(before_retention) = before_retention {
             before_retention(&runtime);
         }
-        let retention_started_at = std::time::Instant::now();
+        let retention_started_at = worker_clock.monotonic_now();
         if let Err(error) = runtime
             .configure_provider_operation_retention(host_inputs.provider_operation_retention_days)
             .await
@@ -70,7 +79,11 @@ impl CollaborationRuntime {
                 Err(cleanup) => io::Error::other(format!("{error}; startup cleanup: {cleanup}")),
             });
         }
-        crate::record_debug_readiness_timing("providerRetentionConfigured", retention_started_at);
+        crate::debug_readiness_timing::record_with_clock(
+            "providerRetentionConfigured",
+            retention_started_at,
+            worker_clock.as_ref(),
+        );
         Ok(runtime)
     }
 
@@ -151,7 +164,7 @@ impl CollaborationRuntime {
             .map_err(io::Error::other)?;
             let journal = std::sync::Arc::new(lifecycle_observation::LifecycleStore::new(database));
             journal
-                .prepare(unix_seconds()?)
+                .prepare(worker_clock.utc_now().timestamp())
                 .await
                 .map_err(io::Error::other)?;
             Ok::<_, io::Error>(journal)
@@ -564,3 +577,7 @@ impl CollaborationRuntime {
         Ok(runtime)
     }
 }
+
+#[cfg(test)]
+#[path = "startup_composition_test.rs"]
+mod tests;
