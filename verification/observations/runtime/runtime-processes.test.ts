@@ -126,7 +126,6 @@ function rawStartTime(environment: NodeJS.ProcessEnv): string {
   const result = spawnSync("/bin/ps", ["-p", String(process.pid), "-o", "lstart="], {
     encoding: "utf8",
     env: environment,
-    timeout: 5000,
   });
   if (result.error !== undefined || result.status !== 0)
     throw new Error(
@@ -163,15 +162,16 @@ function readThisProcessAs(environment: NodeJS.ProcessEnv): z.infer<typeof readi
       new URL("./process-ownership.ts", import.meta.url).href,
       String(process.pid),
     ],
-    { encoding: "utf8", env: environment, timeout: 15_000 },
+    { encoding: "utf8", env: environment },
   );
+  if (result.error !== undefined) throw result.error;
   assert.equal(result.status, 0, result.stderr);
   return readingSchema.parse(JSON.parse(result.stdout));
 }
 
 test(
   "a live process keeps one exact identity across capture and recheck whatever the caller's locale",
-  { timeout: 30_000, skip: hostPsIgnoresCallerLocale() },
+  { skip: hostPsIgnoresCallerLocale() },
   (): void => {
     const fromC = readThisProcessAs(C_CALLER);
     const fromEnCa = readThisProcessAs(EN_CA_CALLER);

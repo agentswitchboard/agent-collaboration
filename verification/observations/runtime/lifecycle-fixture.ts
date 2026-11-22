@@ -3,6 +3,7 @@ import { basename, join } from "node:path";
 import { spawn, type ChildProcess } from "node:child_process";
 import { createInterface } from "node:readline";
 import { once } from "node:events";
+import { setImmediate } from "node:timers/promises";
 import { decode } from "../../exact-json.ts";
 import { binaryQualificationSchema, type IdentityRecord } from "../shared/evidence-models.ts";
 import { lookupProcessIdentity, sameIdentity } from "./process-ownership.ts";
@@ -62,6 +63,11 @@ export async function releaseHarmlessChild(
   child.stderr?.destroy();
 }
 
+interface LifecycleFixtureOptions {
+  readonly mismatch?: boolean;
+  readonly onInterruptReady?: () => void;
+}
+
 export class LifecycleFixture {
   readonly plan: RuntimePlan;
   readonly ownerProfile = 'url="http://127.0.0.1:43127/v1"\n# owner edit\n';
@@ -76,7 +82,11 @@ export class LifecycleFixture {
   private inventoryTimeoutEmitted = false;
   private scenario: string;
 
-  constructor(root: string, scenario: string, mismatch: boolean = false) {
+  private readonly onInterruptReady: (() => void) | undefined;
+
+  constructor(root: string, scenario: string, options: LifecycleFixtureOptions = {}) {
+    const { mismatch = false, onInterruptReady } = options;
+    this.onInterruptReady = onInterruptReady;
     this.scenario = scenario;
     const routerRoot = join(root, "router-root");
     mkdirSync(routerRoot, { mode: 0o700 });
@@ -181,11 +191,13 @@ export class LifecycleFixture {
 
   private hostReady(): void {
     this.ready = true;
-    if (this.scenario === "interrupt")
+    if (this.scenario === "interrupt") {
       saveRecord(join(this.plan.evidence, "signal-ready.json"), {
         identities: this.children.map(({ identity }) => identity),
         profileBefore: readFileSync(this.plan.profile).toString("base64"),
       });
+      this.onInterruptReady?.();
+    }
     if (this.scenario === "profile-after-host") writeFileSync(this.plan.profile, this.ownerProfile);
     if (this.scenario === "config-after-host")
       writeFileSync(this.plan.codex_config, this.ownerConfig);
@@ -228,13 +240,12 @@ export class LifecycleFixture {
       this.prelaunchExpired = true;
   };
 
-  async drive(): Promise<Error | null> {
+  async drive(signal?: AbortSignal): Promise<Error | null> {
     const overrides = {
       wallNow: this.wallNow,
-      delay: (): Promise<void> =>
-        new Promise((resolve): void => {
-          setImmediate(resolve);
-        }),
+      delay: async (): Promise<void> => {
+        await setImmediate(undefined, signal === undefined ? undefined : { signal });
+      },
       process: { ...processOperations, table: this.table },
       gitHead: (): string => this.plan.source_head,
       assertPortAvailable: async (): Promise<void> => {},
