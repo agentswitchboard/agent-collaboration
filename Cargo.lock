@@ -5170,7 +5170,6 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
- "switchboard-harness-contracts",
  "uuid",
 ]
 
@@ -5693,9 +5692,6 @@ checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 name = "switchboard-harness-contracts"
 version = "0.1.158"
 dependencies = [
- "schemars 1.2.2",
- "serde",
- "serde_json",
  "uuid",
 ]
 

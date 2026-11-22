@@ -434,13 +434,26 @@ fn check_closed_workspace_edges(
     let Some(source) = graph.workspace_id(package) else {
         return Ok(());
     };
-    for (destination, kind) in graph.edges.get(source).into_iter().flatten() {
+    let normal_and_build = graph
+        .edges
+        .get(source)
+        .into_iter()
+        .flatten()
+        .map(|(destination, kind)| (destination, *kind));
+    let harness_dev = graph
+        .dev_edges
+        .get(source)
+        .filter(|_| package == HARNESS_CONTRACTS.0)
+        .into_iter()
+        .flatten()
+        .map(|destination| (destination, DependencyKind::Dev));
+    for (destination, kind) in normal_and_build.chain(harness_dev) {
         if graph.workspace_members.contains(destination) {
             let target = graph
                 .names
                 .get(destination)
                 .ok_or("dependency name absent")?;
-            check_closed_workspace_edge(package, target, *kind, allowed)?;
+            check_closed_workspace_edge(package, target, kind, allowed)?;
         }
     }
     Ok(())

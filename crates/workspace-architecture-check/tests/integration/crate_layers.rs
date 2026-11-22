@@ -205,6 +205,14 @@ fn fixture_graph(
     destination: &str,
     kinds: Vec<Option<DependencyKind>>,
 ) -> NonDevDependencyGraph {
+    NonDevDependencyGraph::from_metadata(fixture_metadata(source, destination, kinds))
+}
+
+fn fixture_metadata(
+    source: &str,
+    destination: &str,
+    kinds: Vec<Option<DependencyKind>>,
+) -> CargoMetadata {
     let packages: Vec<_> = [
         ("contracts", "collaboration-contracts"),
         ("runtime", "collaboration-runtime"),
@@ -236,7 +244,7 @@ fn fixture_graph(
     })
     .collect();
     let workspace_members = packages.iter().map(|package| package.id.clone()).collect();
-    NonDevDependencyGraph::from_metadata(CargoMetadata {
+    CargoMetadata {
         packages,
         workspace_members,
         resolve: CargoResolve {
@@ -251,7 +259,7 @@ fn fixture_graph(
                 }],
             }],
         },
-    })
+    }
 }
 
 #[test]
@@ -322,6 +330,39 @@ fn harness_contracts_reject_workspace_dependencies() {
             );
         }
     }
+}
+
+#[test]
+fn harness_contracts_reject_a_registry_dev_dependency_resolved_to_a_workspace_member() {
+    let mut metadata = fixture_metadata(
+        "harness-contracts",
+        "deciding-code",
+        vec![Some(DependencyKind::Dev)],
+    );
+    let declaration = metadata
+        .packages
+        .iter_mut()
+        .find(|package| package.id == "harness-contracts")
+        .expect("harness manifest fixture");
+    declaration.dependencies.push(ManifestDependency {
+        name: "provider-session-machines".to_owned(),
+        kind: Some(DependencyKind::Dev),
+        path: None,
+    });
+    workspace_boundaries::check_declared_session_owner_edges(&metadata)
+        .expect("registry declaration has no path to check");
+
+    let graph = NonDevDependencyGraph::from_metadata(metadata);
+    let resolved = workspace_boundaries::check_boundaries(&graph)
+        .err()
+        .map(|error| error.to_string());
+    assert_eq!(
+        resolved.as_deref(),
+        Some(
+            "BD1: forbidden Dev dependency switchboard-harness-contracts -> provider-session-machines"
+        ),
+        "resolved harness dev dependency",
+    );
 }
 
 #[test]
