@@ -147,11 +147,7 @@ pub(crate) async fn execute<Host: CentralStore, Stores: WorkspaceStores>(
             .execution
             .read_workspace(
                 workspace,
-                fleet_runtime::workspace_request_log::lookup(
-                    fleet_runtime::workspace_request_log::RequestLogStore::Workspace,
-                    request_id,
-                    &cutoff,
-                ),
+                fleet_runtime::workspace_request_log::lookup_workspace_request(request_id, &cutoff),
             )
             .await?;
         if let Some(answer) =
@@ -242,17 +238,16 @@ pub(crate) async fn execute<Host: CentralStore, Stores: WorkspaceStores>(
         .request_id
         .as_ref()
         .ok_or_else(|| corrupt("request_id"))?;
-    batch
-        .statements
-        .extend(fleet_runtime::workspace_request_log::retain(
-            fleet_runtime::workspace_request_log::RequestLogStore::Workspace,
+    batch.statements.extend(
+        fleet_runtime::workspace_request_log::retain_workspace_request(
             request_id,
             &actor,
             &digest,
             &answer,
             &now.to_rfc3339(),
             &cutoff,
-        )?);
+        )?,
+    );
     {
         // The workspace turn precedes central, matching the drain's lock order.
         // Revocation and the admitted batch cannot pass each other inside this turn.

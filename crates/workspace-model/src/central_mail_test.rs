@@ -1,6 +1,6 @@
 use super::{
-    CentralMailOperation, CentralMailRequest, CentralMailResult, MessageBody, MessageCancellation,
-    MessageDelivery, MessageOutcome, MessageRefusal, MessageSender, MessageState,
+    CentralMailOperation, CentralMailRequest, CentralMailResult, MessageBody, MessageDelivery,
+    MessageOutcome, MessageRefusal, MessageSender, MessageState, WaitingReason,
 };
 use serde_json::json;
 
@@ -186,8 +186,8 @@ fn a_direct_body_keeps_the_message_it_answers() {
 fn a_delivery_outcome_body_has_closed_wire_names_and_refuses_unknown_outcomes() {
     let outcomes = [
         (
-            MessageOutcome::DeliveredAfterAll,
-            json!({"kind": "deliveredAfterAll"}),
+            MessageOutcome::DeliveryNotConfirmed,
+            json!({"kind": "deliveryNotConfirmed"}),
         ),
         (
             MessageOutcome::Refused {
@@ -196,10 +196,10 @@ fn a_delivery_outcome_body_has_closed_wire_names_and_refuses_unknown_outcomes() 
             json!({"kind": "refused", "reason": "unknownSession"}),
         ),
         (
-            MessageOutcome::Cancelled {
-                reason: MessageCancellation::NotDeliveredWithin15Minutes,
+            MessageOutcome::NotSeen {
+                waiting: WaitingReason::Busy,
             },
-            json!({"kind": "cancelled", "reason": "notDeliveredWithin15Minutes"}),
+            json!({"kind": "notSeen", "waiting": "busy"}),
         ),
     ];
     for (outcome, outcome_wire) in outcomes {
@@ -215,7 +215,10 @@ fn a_delivery_outcome_body_has_closed_wire_names_and_refuses_unknown_outcomes() 
         );
         assert_eq!(serde_json::to_value(body).unwrap(), wire);
     }
-    for outcome in [json!({"kind": "delivered"}), json!({"kind": "expired"})] {
+    for outcome in [
+        json!({"kind": "deliveredAfterAll"}),
+        json!({"kind": "cancelled"}),
+    ] {
         assert!(
             serde_json::from_value::<MessageBody>(json!({
                 "kind": "deliveryOutcome",

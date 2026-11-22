@@ -2,19 +2,13 @@
 use workspace_ids::MessageId;
 use workspace_model::{ResolvedSender, Timestamp, central_mail::MessageRecord};
 
-/// The result of applying an Ack to the central message row.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MailAckSettlement {
+/// Per-receipt applying decision. Authority failure aborts its whole frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum MailReceiptSettlement {
     Applied,
-    Ignored(MailAckIgnored),
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum MailAckIgnored {
-    UnknownMessage,
-    WrongMachine,
-    AlreadySettled,
-    MachineAuthorityLapsed,
+    Stop(workspace_model::central_mail::ReceiptResult),
+    AuthorityLapsed,
 }
 
 pub const WELCOME_PAGE_SIZE: usize = central_engine_model::DueBatchPolicy::DEFAULT.per_kind_cap;
@@ -55,7 +49,5 @@ pub struct ResolvedMailDelivery {
 pub enum WindowedDeliveryDecision {
     Ready(ResolvedMailDelivery),
     Ineligible,
-    /// Central terminally settled the message without offering a frame.
-    SenderUnresolved,
     AuthorityLapsed,
 }

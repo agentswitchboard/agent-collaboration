@@ -55,7 +55,15 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceAccess<'_, Host, Stor
                 person_id: person_id.clone(),
             },
         };
-        let (kind, encoded) = identity_fields(&identity)?;
+        self.read_existing_identity_actor(&identity).await
+    }
+
+    /// Read the actor for an identity without creating one.
+    pub async fn read_existing_identity_actor(
+        &self,
+        identity: &Identity,
+    ) -> Result<Option<ActorIdentityId>, StoreFailure> {
+        let (kind, encoded) = identity_fields(identity)?;
         let rows = self
             .execution
             .statement_host()

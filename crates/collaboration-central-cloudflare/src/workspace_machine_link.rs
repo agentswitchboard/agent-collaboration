@@ -1,13 +1,14 @@
 //! Hibernating machine connections dispatch independent requests through the owning core.
 use super::{CentralObject, OrgRuntime, OrganizationId};
 use central_link_protocol::{
-    DataFrame, FrameDirection, LinkFrame, LinkRequest, LinkRequestBatch, ReplyPayload,
-    RequestPayload, RequestRefusal, RequestStatusAnswer, RequestStatusQuery,
+    DataFrame, FrameDirection, LinkFrame, LinkRequest, LinkRequestBatch, ReceiptBatch,
+    ReceiptResult, ReplyPayload, RequestPayload, RequestRefusal, RequestStatusAnswer,
+    RequestStatusQuery, TimeLeft,
 };
 use collaboration_central_core::MachineLinkRequestAuthority;
 use collaboration_central_core::WorkspaceCaller;
 use fleet_contracts::MachineConnectionAttachment;
-use fleet_contracts::mail_link::{MailAckIgnored, MailAckSettlement};
+use fleet_contracts::mail_link::MailReceiptSettlement;
 use fleet_runtime_ports::Clock;
 use worker::{
     Request, Response, Result, WebSocket, WebSocketIncomingMessage, WebSocketPair,
@@ -28,9 +29,9 @@ enum IncomingRequests {
         caller: workspace_model::Caller,
         query: RequestStatusQuery,
     },
-    Ack {
-        message_id: workspace_ids::MessageId,
-        answer: central_link_protocol::DeliveryAnswer,
+    Receipts {
+        correlation_id: central_link_protocol::CorrelationId,
+        receipts: ReceiptBatch,
     },
 }
 enum MachineRequestResult {
@@ -128,9 +129,13 @@ impl CentralObject {
                 caller,
                 query,
             },
-            LinkFrame::Data(DataFrame::Ack { message_id, answer }) => {
-                IncomingRequests::Ack { message_id, answer }
-            }
+            LinkFrame::Data(DataFrame::Receipts {
+                correlation_id,
+                receipts,
+            }) => IncomingRequests::Receipts {
+                correlation_id,
+                receipts,
+            },
             // Literal ping/pong is answered by the platform without calling this handler.
             LinkFrame::Ping
             | LinkFrame::Pong
@@ -139,6 +144,7 @@ impl CentralObject {
                 | DataFrame::Reply { .. }
                 | DataFrame::RequestStatusReply { .. }
                 | DataFrame::Deliver { .. }
+                | DataFrame::ReceiptResults { .. }
                 | DataFrame::MachineTokenRenewal { .. },
             ) => return close(&socket, "unsupported link event"),
         };
@@ -168,21 +174,35 @@ impl CentralObject {
         requests: IncomingRequests,
     ) -> Result<()> {
         match requests {
-            IncomingRequests::Ack { message_id, answer } => {
-                match runtime
-                    .acknowledge_delivery(&attachment, &message_id, answer)
-                    .await
-                {
-                    Ok(MailAckSettlement::Ignored(MailAckIgnored::MachineAuthorityLapsed)) => {
-                        close(&socket, "machine authority expired or revoked")
+            IncomingRequests::Receipts {
+                correlation_id,
+                receipts,
+            } => {
+                let mut results = Vec::with_capacity(receipts.receipts().len());
+                for receipt in receipts.receipts() {
+                    match runtime
+                        .apply_delivery_receipt(
+                            &attachment,
+                            &receipt.message_id,
+                            receipt.kind.clone(),
+                        )
+                        .await
+                    {
+                        Ok(MailReceiptSettlement::Applied) => results.push(ReceiptResult::Recorded),
+                        Ok(MailReceiptSettlement::Stop(result)) => results.push(result),
+                        Ok(MailReceiptSettlement::AuthorityLapsed) => {
+                            return close(&socket, "machine authority expired or revoked");
+                        }
+                        Err(_) => return socket.close(Some(1011), Some("central unavailable")),
                     }
-                    Ok(MailAckSettlement::Ignored(reason @ MailAckIgnored::WrongMachine)) => {
-                        worker::console_warn!("machine_delivery_ack_ignored reason={reason:?}");
-                        Ok(())
-                    }
-                    Ok(_) => Ok(()),
-                    Err(_) => socket.close(Some(1011), Some("central unavailable")),
                 }
+                send(
+                    &socket,
+                    DataFrame::ReceiptResults {
+                        correlation_id,
+                        results,
+                    },
+                )
             }
             IncomingRequests::Status {
                 correlation_id,
@@ -353,20 +373,39 @@ impl CentralObject {
                 if socket.as_ref().ready_state() != web_sys::WebSocket::OPEN {
                     return Ok(false);
                 }
-                if self.clock.now().unix_millis() < delivery.expires_at.timestamp_millis() {
-                    send(
-                        socket,
-                        DataFrame::Deliver {
-                            message: delivery.message,
-                            sender: delivery.sender,
-                        },
-                    )?;
+                let now = chrono::DateTime::from_timestamp_millis(self.clock.now().unix_millis())
+                    .ok_or_else(|| {
+                    worker::Error::RustError("offer clock unavailable".into())
+                })?;
+                if now >= delivery.expires_at {
+                    return Ok(true);
                 }
+                let time_left = if matches!(
+                    delivery.message.body,
+                    workspace_model::central_mail::MessageBody::Direct { .. }
+                ) {
+                    let Some(time_left) =
+                        TimeLeft::at_handoff(delivery.message.created_at, delivery.expires_at, now)
+                    else {
+                        return Ok(true);
+                    };
+                    Some(time_left)
+                } else {
+                    None
+                };
+                send(
+                    socket,
+                    DataFrame::Deliver {
+                        message: Box::new(central_link_protocol::DeliveryMessage::from(
+                            *delivery.message,
+                        )),
+                        sender: delivery.sender,
+                        time_left,
+                    },
+                )?;
                 Ok(true)
             }
-            WindowedDeliveryDecision::Ineligible | WindowedDeliveryDecision::SenderUnresolved => {
-                Ok(true)
-            }
+            WindowedDeliveryDecision::Ineligible => Ok(true),
             WindowedDeliveryDecision::AuthorityLapsed => {
                 close(socket, "machine authority expired or revoked")?;
                 Ok(false)

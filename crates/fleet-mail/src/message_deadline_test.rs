@@ -23,7 +23,7 @@ fn the_cancel_lands_on_the_first_mark_at_least_17_minutes_after_sending() {
     ];
     for (sent, accepted, expected) in cases {
         assert_eq!(
-            cancel_due_at(at(sent), at(accepted)),
+            direct_receipt_mark(at(sent), at(accepted)),
             at(expected),
             "sent {sent} accepted {accepted}"
         );
@@ -67,7 +67,7 @@ fn the_cancel_is_on_the_grid_after_the_window_and_margin_and_within_one_step(tc:
     );
     let sent = accepted + skew;
 
-    let due = cancel_due_at(at(sent), at(accepted));
+    let due = direct_receipt_mark(at(sent), at(accepted));
 
     let clamped = sent.clamp(accepted - 15 * MINUTE, accepted);
     let due_ms = due.timestamp_millis() - BASE;

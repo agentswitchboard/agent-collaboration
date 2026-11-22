@@ -2,7 +2,7 @@
 use super::{
     CENTRAL_WORKER, FLEET_ACCESS, FLEET_DIRECTORY, FLEET_ENGINE, FLEET_MAIL, FLEET_NOTICES,
     FLEET_PURE_CRATES, FLEET_SCHEDULES, FLEET_TIMER_POLICY, FLEET_WAKES, LENT_TRANSACTION,
-    PURE_CRATES, TIMER_CRATES, WORKSPACE_SERVICE, is_effectful,
+    PURE_CRATES, REQUEST_LOG, TIMER_CRATES, WORKSPACE_SERVICE, is_effectful,
 };
 use std::{path::Path, process::Command};
 
@@ -36,6 +36,7 @@ pub(in crate::crate_layers) fn check_workspace_package_trees(
             FLEET_ACCESS,
             FLEET_ENGINE,
             FLEET_MAIL,
+            REQUEST_LOG,
             FLEET_NOTICES,
             FLEET_DIRECTORY,
             WORKSPACE_SERVICE,
@@ -64,6 +65,7 @@ pub(super) fn check_package_targets(
             | FLEET_DIRECTORY
             | FLEET_ENGINE
             | FLEET_MAIL
+            | REQUEST_LOG
             | FLEET_NOTICES
             | FLEET_WAKES
             | FLEET_SCHEDULES
@@ -114,6 +116,7 @@ pub(super) fn check_package_tree(
         WORKSPACE_SERVICE
             | FLEET_ENGINE
             | FLEET_MAIL
+            | REQUEST_LOG
             | FLEET_NOTICES
             | FLEET_WAKES
             | FLEET_SCHEDULES
@@ -167,6 +170,7 @@ pub(super) fn check_package_tree_output(
             FLEET_ACCESS
                 | FLEET_ENGINE
                 | FLEET_MAIL
+                | REQUEST_LOG
                 | FLEET_NOTICES
                 | FLEET_WAKES
                 | FLEET_SCHEDULES

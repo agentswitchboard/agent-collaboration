@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE mail_messages SET state=?, failure_reason=?, updated_at=?\nWHERE message_id=? AND target_machine_id=? AND message_kind=? AND state='queued'\n  AND failure_reason IS NULL\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "652da3e3b5c0932a132321801cbe9b44a6eff4eea184e18fad50cbcf3522dc16"
+}

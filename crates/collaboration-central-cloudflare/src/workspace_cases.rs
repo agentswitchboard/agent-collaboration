@@ -42,6 +42,7 @@ enum Point {
     BeforeDrainCommit,
     AfterDrainCommit,
     BeforeTimerCommit,
+    BeforeReceiptTransaction,
     AfterTimerCommit,
     AfterEngineAttemptGate,
     AfterEngineLoad,
@@ -62,6 +63,7 @@ impl From<Point> for PausePoint {
             Point::BeforeDrainCommit => Self::BeforeDrainCommit,
             Point::AfterDrainCommit => Self::AfterDrainCommit,
             Point::BeforeTimerCommit => Self::BeforeTimerCommit,
+            Point::BeforeReceiptTransaction => Self::BeforeReceiptTransaction,
             Point::AfterTimerCommit => Self::AfterTimerCommit,
             Point::AfterEngineAttemptGate => Self::AfterEngineAttemptGate,
             Point::AfterEngineLoad => Self::AfterEngineLoad,
@@ -152,6 +154,18 @@ pub(super) async fn control(
     }
     let runtime = object.runtime(organization.clone()).await?;
     match path.as_str() {
+        "/test/direct-receipt-fixture" => {
+            let (authority, message, receipt): (
+                fleet_contracts::MachineConnectionAttachment,
+                workspace_ids::MessageId,
+                workspace_model::central_mail::ReceiptKind,
+            ) = request.json().await?;
+            Response::from_json(
+                &runtime
+                    .apply_delivery_receipt(&authority, &message, receipt)
+                    .await,
+            )
+        }
         "/test/workspace-page-read-observations" => {
             let arm = request.json::<bool>().await?;
             let mut observations = object

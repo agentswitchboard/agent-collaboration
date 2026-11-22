@@ -4,42 +4,49 @@ use central_storage::StoreFailure;
 use fleet_contracts::{
     MachineConnectionAttachment,
     mail_link::{
-        MailAckIgnored, MailAckSettlement, WelcomeDeliveryCursor, WelcomeDeliveryPage,
-        WindowedDeliveryDecision,
+        MailReceiptSettlement, WelcomeDeliveryCursor, WelcomeDeliveryPage, WindowedDeliveryDecision,
     },
 };
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use workspace_ids::{MessageId, SessionRef};
 use workspace_model::{
     RefusalReason,
-    central_mail::{DeliveryAnswer, MessageStatus, SessionQueue},
+    central_mail::{MessageStatus, ReceiptKind, SessionQueue},
 };
 
 impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores> {
-    pub async fn acknowledge_delivery(
+    pub async fn apply_delivery_receipt(
         &self,
         connection: &MachineConnectionAttachment,
         message_id: &MessageId,
-        answer: DeliveryAnswer,
-    ) -> Result<MailAckSettlement, StoreFailure> {
-        let result = self
-            .settle_delivery_ack(connection, message_id, answer)
-            .await;
+        receipt: ReceiptKind,
+    ) -> Result<MailReceiptSettlement, StoreFailure> {
+        let result = self.settle_receipt(connection, message_id, receipt).await;
+        #[cfg(feature = "test-support")]
+        if matches!(&result, Ok(MailReceiptSettlement::Applied)) {
+            self.execution
+                .pause_points()
+                .reached_engine(
+                    fleet_runtime::PausePoint::AfterEngineCommit,
+                    message_id.as_str(),
+                )
+                .await;
+        }
         if matches!(
             &result,
-            Ok(MailAckSettlement::Applied) | Err(StoreFailure::AnswerLost)
+            Ok(MailReceiptSettlement::Applied) | Err(StoreFailure::AnswerLost)
         ) {
             let _ = self.after_event().await;
         }
         result
     }
 
-    async fn settle_delivery_ack(
+    async fn settle_receipt(
         &self,
         connection: &MachineConnectionAttachment,
         message_id: &MessageId,
-        answer: DeliveryAnswer,
-    ) -> Result<MailAckSettlement, StoreFailure> {
+        receipt: ReceiptKind,
+    ) -> Result<MailReceiptSettlement, StoreFailure> {
         let _turn = self.execution.take_central_turn().await;
         if connection.organization_id() != self.execution.organization()
             || self
@@ -47,13 +54,37 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                 .await?
                 .is_err()
         {
-            return Ok(MailAckSettlement::Ignored(
-                MailAckIgnored::MachineAuthorityLapsed,
-            ));
+            return Ok(MailReceiptSettlement::AuthorityLapsed);
         }
 
-        fleet_mail::settle_delivery_ack_held(self, connection.machine_id(), message_id, answer)
+        let admitted_receipt = fleet_mail::AdmittedReceipt {
+            authority: connection.clone(),
+            message_id: message_id.clone(),
+            receipt,
+            clock: self.execution.shared_clock(),
+            ids: self.execution.shared_ids(),
+        };
+        #[cfg(feature = "test-support")]
+        self.execution
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::BeforeReceiptTransaction)
+            .await;
+
+        let applied = self
+            .direct_messages
+            .apply_receipt(admitted_receipt)
             .await
+            .map_err(StoreFailure::from)?;
+        Ok(match applied {
+            fleet_mail::ApplyReceipt::Applied { ready } => {
+                if let Some(ready) = ready {
+                    (self.mail_delivery_ready)(ready);
+                }
+                MailReceiptSettlement::Applied
+            }
+            fleet_mail::ApplyReceipt::Stop(result) => MailReceiptSettlement::Stop(result),
+            fleet_mail::ApplyReceipt::AuthorityLapsed => MailReceiptSettlement::AuthorityLapsed,
+        })
     }
 
     /// Read the next page of direct and system messages with an open window.
@@ -71,13 +102,15 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             return Ok(WelcomeDeliveryPage::AuthorityLapsed);
         }
         let now = self.execution.now()?;
-        let page = fleet_mail::windowed_welcome_page_held(
-            self.execution.statement_host(),
-            attachment.machine_id(),
-            cursor,
-            now,
-        )
-        .await?;
+        let page = self
+            .direct_messages
+            .read_offer_page(fleet_mail::OfferPageLookup {
+                recipient: attachment.machine_id().clone(),
+                after: cursor.cloned(),
+                now,
+            })
+            .await
+            .map_err(StoreFailure::from)?;
         Ok(WelcomeDeliveryPage::Ready(page))
     }
 
@@ -95,13 +128,25 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         {
             return Ok(WindowedDeliveryDecision::AuthorityLapsed);
         }
-        fleet_mail::prepare_windowed_delivery_held(
-            self,
-            &self.access(),
-            attachment.machine_id(),
-            message_id,
-        )
-        .await
+        let offer = self
+            .direct_messages
+            .read_offer(fleet_mail::DirectOfferLookup {
+                message_id: message_id.clone(),
+                recipient: attachment.machine_id().clone(),
+                now: self.execution.now()?,
+            })
+            .await
+            .map_err(StoreFailure::from)?;
+        if let Some(offer) = offer {
+            return Ok(WindowedDeliveryDecision::Ready(
+                fleet_contracts::mail_link::ResolvedMailDelivery {
+                    message: Box::new(offer.message),
+                    sender: offer.sender,
+                    expires_at: offer.cutoff,
+                },
+            ));
+        }
+        Ok(WindowedDeliveryDecision::Ineligible)
     }
 
     pub(crate) async fn direct_message_status(
@@ -125,12 +170,15 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         let Some(actor) = self.access().existing_caller_actor(caller.caller()).await? else {
             return Ok(Ok(MessageStatus::NotFound {}));
         };
-        Ok(Ok(fleet_mail::direct_message_status_held(
-            self.execution.statement_host(),
-            &actor,
-            message_id,
-        )
-        .await?))
+        Ok(Ok(self
+            .direct_messages
+            .read_status(fleet_mail::OwnedDirectStatus {
+                message_id: message_id.clone(),
+                sender: actor,
+                now: self.execution.now()?,
+            })
+            .await
+            .map_err(StoreFailure::from)?))
     }
 
     /// Reads queued messages without consuming them, in stable message-UUIDv7 order.

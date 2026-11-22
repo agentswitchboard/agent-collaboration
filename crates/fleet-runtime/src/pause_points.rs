@@ -26,6 +26,7 @@ pub enum PausePoint {
     BeforeDrainCommit,
     AfterDrainCommit,
     BeforeTimerCommit,
+    BeforeReceiptTransaction,
     AfterTimerCommit,
     /// Engine points are keyed by instance (`hold_engine`): after a due event
     /// passed the attempt check, before it loads the instance; after `handle`

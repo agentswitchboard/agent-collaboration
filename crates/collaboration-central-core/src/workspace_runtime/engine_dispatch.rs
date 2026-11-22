@@ -7,8 +7,7 @@ use fleet_engine::{
     TimedSourceSchedule, WholeDueUnitControl, WholeUnitOutcome,
 };
 use fleet_mail::{
-    DirectMessage, DirectMessageEvent, DirectMessageStore, ExpireAt, SystemMessageExpiry,
-    SystemMessageExpiryStore, insert_message,
+    DirectMark, ExpireAt, SystemMessageExpiry, SystemMessageExpiryStore, insert_message,
 };
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use fleet_schedules::{self as automation_timer, AutomationStore};
@@ -132,12 +131,28 @@ impl<H: CentralStore, S: WorkspaceStores> TimedDueDispatch<WorkspaceRuntime<H, S
                     .await
             }
             DueKind::DirectMessage => {
+                let subject = fleet_contracts::EngineSubject {
+                    kind: central_engine_model::MachineKind("direct_message"),
+                    key: row.key,
+                };
+                let (Ok(message_id), Some(occurrence), Ok(now)) = (
+                    subject.key.0.parse(),
+                    EngineTime::from_timestamp_millis(row.occurrence_ms),
+                    runtime.execution.now(),
+                ) else {
+                    return TimedRowOutcome::CentralStoreFailed;
+                };
+                let store = &runtime.direct_messages;
                 engine
-                    .run_due_machine_instance::<DirectMessage, _>(
-                        &DirectMessageStore::new(runtime),
-                        row,
-                        "mail_messages.cancel_due_at",
-                        |occurrence| DirectMessageEvent::Due { occurrence },
+                    .run_checked_due_machine_instance(
+                        &subject,
+                        store.apply_mark(DirectMark {
+                            message_id,
+                            occurrence,
+                            now,
+                            ids: runtime.execution.shared_ids(),
+                        }),
+                        |rejection, now| store.charge_rejected_mark(rejection, now),
                     )
                     .await
             }
