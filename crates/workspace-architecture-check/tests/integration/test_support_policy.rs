@@ -50,6 +50,9 @@ fn central_engine_fixtures_require_a_dev_edge() {
                 name: "central-engine-test-support".to_owned(),
                 kind,
                 path: None,
+                source: None,
+                features: vec![],
+                uses_default_features: true,
             }],
         };
         assert_eq!(

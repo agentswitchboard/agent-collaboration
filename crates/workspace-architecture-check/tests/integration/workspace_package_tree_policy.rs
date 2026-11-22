@@ -2,9 +2,9 @@
 use super::{
     CENTRAL_WORKER, FLEET_ACCESS, FLEET_DIRECTORY, FLEET_ENGINE, FLEET_MAIL, FLEET_NOTICES,
     FLEET_PURE_CRATES, FLEET_SCHEDULES, FLEET_TIMER_POLICY, FLEET_WAKES, LENT_TRANSACTION,
-    PURE_CRATES, REQUEST_LOG, TIMER_CRATES, WORKSPACE_SERVICE, is_effectful,
+    PURE_CRATES, REQUEST_LOG, SESSION_READ_CRATES, TIMER_CRATES, WORKSPACE_SERVICE, is_effectful,
 };
-use std::{path::Path, process::Command};
+use std::{collections::BTreeSet, path::Path, process::Command};
 
 pub(super) const SERVICE_SUPPORT_PACKAGES: &[&str] = &[
     "sqlx",
@@ -30,6 +30,7 @@ pub(in crate::crate_layers) fn check_workspace_package_trees(
     for package_name in PURE_CRATES
         .into_iter()
         .chain(FLEET_PURE_CRATES)
+        .chain(SESSION_READ_CRATES)
         .map(|(package_name, _)| package_name)
         .chain([
             LENT_TRANSACTION,
@@ -73,6 +74,9 @@ pub(super) fn check_package_targets(
     ) || FLEET_PURE_CRATES
         .iter()
         .any(|(dependency_name, _)| *dependency_name == package_name)
+        || SESSION_READ_CRATES
+            .iter()
+            .any(|(name, _)| *name == package_name)
     {
         check_package_tree(workspace_root, package_name, Some(FLEET_WASM_TARGET)).map_err(
             |error| format!("{package_name} dependency tree for {FLEET_WASM_TARGET}: {error}"),
@@ -89,6 +93,8 @@ pub(super) fn check_package_tree(
     let mut cargo_tree_command = Command::new("cargo");
     cargo_tree_command.args([
         "tree",
+        "--color",
+        "never",
         "--locked",
         "--offline",
         "-p",
@@ -98,7 +104,8 @@ pub(super) fn check_package_tree(
         "--prefix",
         "none",
         "--format",
-        "{p}\t{f}",
+        // Cargo appends its repeat marker after the formatted columns.
+        "{p}\t{f}\t",
     ]);
     if let Some(target_triple) = target_triple {
         cargo_tree_command.args(["--target", target_triple]);
@@ -138,12 +145,18 @@ pub(super) fn check_package_tree_output(
     allowed_support_packages: &[&str],
     package_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let private_read_root = SESSION_READ_CRATES
+        .iter()
+        .any(|(name, _)| *name == package_name);
     for package_line in dependency_tree.lines() {
         let (package_identity, enabled_features) =
             package_line.split_once('\t').unwrap_or((package_line, ""));
         let Some(dependency_name) = package_identity.split_whitespace().next() else {
             continue;
         };
+        if private_read_root {
+            check_session_read_tree_features(package_name, dependency_name, enabled_features)?;
+        }
         if package_name == LENT_TRANSACTION {
             if dependency_name.starts_with("sqlx-") && dependency_name != "sqlx-core" {
                 return Err(format!(
@@ -192,3 +205,43 @@ pub(super) fn check_package_tree_output(
     }
     Ok(())
 }
+
+fn check_session_read_tree_features(
+    root: &str,
+    dependency: &str,
+    enabled_features: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let allowed: &[&str] = match dependency {
+        "workspace-ids" => &[],
+        "schemars" => &["default", "derive", "schemars_derive", "std"],
+        "serde" => &["alloc", "default", "derive", "serde_derive", "std"],
+        "thiserror" => &["default", "std"],
+        name if name == root => &[],
+        name if name == "specta" || name.starts_with("specta-") => {
+            return Err(format!("BD1: {root} reaches schema export package {dependency}").into());
+        }
+        _ => return Ok(()),
+    };
+    let actual = parse_cargo_tree_features(enabled_features);
+    let allowed = allowed.iter().copied().collect();
+    if actual != allowed {
+        return Err(format!(
+            "BD1: forbidden resolved features {root} -> {dependency}: {actual:?}, expected {allowed:?}"
+        ).into());
+    }
+    Ok(())
+}
+
+fn parse_cargo_tree_features(enabled_features: &str) -> BTreeSet<&str> {
+    let feature_list = enabled_features
+        .split_once(['\t', ' '])
+        .map_or(enabled_features, |(features, _)| features);
+    feature_list
+        .split(',')
+        .filter(|feature| !feature.is_empty())
+        .collect()
+}
+
+#[cfg(test)]
+#[path = "workspace_package_tree_policy_test.rs"]
+mod tests;
