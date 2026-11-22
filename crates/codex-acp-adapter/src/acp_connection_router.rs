@@ -296,8 +296,9 @@ pub async fn serve_acp_router_connection_until<
         }
     }.await;
     closed.cancel();
-    // Routes join their own work when the connection token closes. With no
+    // Readers that wait for input EOF must see their senders close. With no
     // output consumer left, close that channel before waiting for forwarders.
+    drop(route_inputs);
     drop(route_output_receiver);
     while route_tasks.join_next().await.is_some() {}
     let transport_result = transport
