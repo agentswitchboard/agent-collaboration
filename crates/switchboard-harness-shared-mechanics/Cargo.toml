@@ -1,0 +1,18 @@
+[package]
+autotests = false
+name = "switchboard-harness-shared-mechanics"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+switchboard-harness-contracts.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+
+[dev-dependencies]
+hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
+
+[lints]
+workspace = true
