@@ -18,6 +18,7 @@ mod job_layer_tests;
 
 pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 4] = [
     (FLEET_RPC, &[]),
+    (APPROVAL_REQUEST_PROTOCOL, &["workspace-ids"]),
     (
         "fleet-runtime-ports",
         &["central-engine-model", "central-storage", "workspace-ids"],
@@ -25,6 +26,7 @@ pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 4] = [
     (
         "fleet-contracts",
         &[
+            APPROVAL_REQUEST_PROTOCOL,
             "central-engine-model",
             "central-storage",
             "fleet-identity-protocol",
@@ -47,6 +49,7 @@ pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 4] = [
 ];
 pub(super) const LENT_TRANSACTION: &str = "fleet-lent-transaction";
 const FLEET_RPC: &str = "fleet-rpc";
+pub(super) const APPROVAL_REQUEST_PROTOCOL: &str = "approval-request-protocol";
 const WORKSPACE_SERVICE: &str = "fleet-workspace-service";
 const CENTRAL_CORE: &str = "collaboration-central-core";
 const CENTRAL_WORKER: &str = "collaboration-central-cloudflare";
