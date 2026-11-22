@@ -3,6 +3,7 @@ resolver = "3"
 members = [
     "crates/central-link-protocol",
     "crates/central-link-client",
+    "crates/switchboard-central-link",
     "crates/workspace-ids",
     "crates/workspace-model",
     "crates/workspace-rules",

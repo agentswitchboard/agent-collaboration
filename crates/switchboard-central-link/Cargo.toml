@@ -1,0 +1,21 @@
+[package]
+name = "switchboard-central-link"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+autotests = false
+
+[dependencies]
+central-link-client = { path = "../central-link-client" }
+central-link-protocol.workspace = true
+router-clock.workspace = true
+state-machine-core.workspace = true
+workspace-ids.workspace = true
+
+[dev-dependencies]
+hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
+router-clock = { workspace = true, features = ["test-support"] }
+
+[lints]
+workspace = true
