@@ -12,6 +12,7 @@ use codex_router_host::AppServerChild;
 use codex_router_host::AppServerEndpointError;
 use codex_router_host::AppServerReadiness;
 use codex_router_host::AppServerShutdownDeadlines;
+use codex_router_host::ChildProcessObservation;
 use codex_router_host::ExpectedExit;
 use codex_router_host::ProcessGroupChild;
 use codex_router_host::ROUTER_SHUTDOWN_TIMEOUT;
@@ -89,11 +90,23 @@ async fn owned_app_server_is_isolated_and_receives_one_exact_pid_sigterm()
         .env("CODEX_ROUTER_HOST_SIGNAL_READY_SOCKET", &ready_socket)
         .kill_on_drop(true);
     let mut process = ProcessGroupChild::spawn(&mut command)?;
-    tokio::select! {
-        connection = ready.accept() => drop(connection?),
-        exited = process.wait() => {
-            return Err(format!("signal fixture exited before readiness: {}", exited?).into());
+    let mut observations = process.observe_process_for_test();
+    let readiness = process_watchdog("signal fixture readiness", async {
+        tokio::select! {
+            connection = ready.accept() => {
+                drop(connection?);
+                Ok::<_, Box<dyn std::error::Error>>(())
+            }
+            exited = process.wait() => {
+                Err(format!("signal fixture exited before readiness: {}", exited?).into())
+            }
         }
+    })
+    .await;
+    if let Err(error) = readiness {
+        process.kill_fixture_for_test()?;
+        process_watchdog("reaping unready signal fixture", process.wait()).await??;
+        return Err(error);
     }
     let process_id = process.process_id();
     let process_group_id = rustix::process::getpgid(Some(
@@ -107,16 +120,39 @@ async fn owned_app_server_is_isolated_and_receives_one_exact_pid_sigterm()
     )?;
 
     let mut app_server = AppServerChild::new(process, identity);
-    // An active blocking task prevents Tokio from advancing the paused clock
-    // while the OS delivers SIGTERM and the test reaps the fixture process.
-    let (release_clock, keep_clock_paused) = tokio::sync::oneshot::channel::<()>();
-    let clock_guard = tokio::task::spawn_blocking(move || keep_clock_paused.blocking_recv());
-    let outcome = app_server.shutdown().await;
-    drop(release_clock);
-    let _released = clock_guard.await?;
+    let outcome = process_watchdog("exact PID SIGTERM and reap", app_server.shutdown())
+        .await
+        .and_then(|outcome| outcome.map_err(Into::into));
+    let mut observed = Vec::new();
+    while let Ok(event) = observations.try_recv() {
+        observed.push(event);
+    }
+    // Capture the proof before rescue. Even an early success must not leave
+    // a fixture behind after the assertion reports the missing reap.
+    if !observed
+        .iter()
+        .any(|event| matches!(event, ChildProcessObservation::Reaped { .. }))
+    {
+        app_server.kill_fixture_for_test()?;
+        process_watchdog("reaping failed signal fixture", app_server.wait_for_exit()).await??;
+    }
+    let outcome = outcome?;
+    check(
+        observed
+            == [
+                ChildProcessObservation::SignalledPid {
+                    pid: process_id,
+                    signal: rustix::process::Signal::TERM,
+                },
+                ChildProcessObservation::Reaped { pid: process_id },
+            ],
+        &format!(
+            "expected one exact PID TERM followed by reap before success, observed {observed:?}"
+        ),
+    )?;
 
     check_equal(
-        outcome?,
+        outcome,
         ShutdownOutcome::Graceful,
         "SIGTERM-aware app-server must stop gracefully",
     )?;
@@ -141,6 +177,27 @@ async fn owned_app_server_is_isolated_and_receives_one_exact_pid_sigterm()
         "graceful path must not record SIGKILL",
     )?;
     Ok(())
+}
+
+// The independent watchdog also pins the virtual clock while the OS child
+// is running. Only its failure decision uses elapsed wall time.
+async fn process_watchdog<T>(
+    phase: &'static str,
+    future: impl std::future::Future<Output = T>,
+) -> Result<T, Box<dyn std::error::Error>> {
+    let (finished, wait) = std::sync::mpsc::channel::<()>();
+    let mut watchdog =
+        tokio::task::spawn_blocking(move || wait.recv_timeout(Duration::from_secs(5)));
+    let result = tokio::select! {
+        result = future => Ok(result),
+        expired = &mut watchdog => {
+            let _watchdog_result = expired?;
+            return Err(format!("independent watchdog expired during {phase}").into());
+        }
+    };
+    drop(finished);
+    let _cancelled = watchdog.await?;
+    result
 }
 
 #[tokio::test]
