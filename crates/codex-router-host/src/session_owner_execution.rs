@@ -12,7 +12,9 @@ use acp_client_runtime::{
     owner_session_setting::{OwnerSettingWirePlan, RestoreSettingPlan},
     owner_session_stream::OwnerStreamTarget,
     owner_wire::OwnerAcpWire,
-    session_owner_task::{OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts},
+    session_owner_task::{
+        OwnerCallerWakes, OwnerCompletionPort, OwnerTaskError, SessionOwnerPorts,
+    },
 };
 use collaboration_protocol::{ProviderIdentity, SessionRef};
 use provider_session_machines::{
@@ -509,6 +511,7 @@ impl SessionOwnerPorts for SessionOwnerExecution {
         owner: OwnerAddress,
         effect: OwnerEffect,
         completions: &OwnerCompletionPort,
+        caller_wakes: &mut OwnerCallerWakes,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
         match effect {
             OwnerEffect::RecordDeliveryEvidence(placement) => {
@@ -702,16 +705,16 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                 {
                     self.storage.forget_setting(*setting);
                 }
-                self.calls.settle(reply, true);
+                self.calls.settle(reply, true, Some(caller_wakes));
                 Ok(None)
             }
             OwnerEffect::ReplyUnsaved(reply) => {
                 self.storage.release_dispatch_wait(&reply);
-                self.calls.settle(reply, false);
+                self.calls.settle(reply, false, Some(caller_wakes));
                 Ok(None)
             }
             OwnerEffect::RestoreSettled { operation, result } => {
-                self.calls.deliver_restore(operation, result);
+                self.calls.deliver_restore(operation, result, caller_wakes);
                 Ok(None)
             }
             OwnerEffect::RetireRoute(run) => {
@@ -732,7 +735,7 @@ impl SessionOwnerPorts for SessionOwnerExecution {
             }
             OwnerEffect::InputQueued(input) => {
                 self.calls
-                    .accepted(input.operation, InputAcceptance::Queued);
+                    .accepted(input.operation, InputAcceptance::Queued, Some(caller_wakes));
                 Ok(None)
             }
             OwnerEffect::SettingQueued { .. } => {
@@ -741,7 +744,7 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                 Ok(None)
             }
             OwnerEffect::PromptTaken(input) => {
-                self.calls.prompt_taken(input.clone());
+                self.calls.prompt_taken(input.clone(), caller_wakes);
                 Ok(self.submitted_input(input))
             }
             OwnerEffect::SteerSubmitted(input) => Ok(self.submitted_input(input)),
@@ -760,7 +763,7 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                     );
                 }
                 self.calls
-                    .settle_cancel(&authorization, operation, Ok(drain));
+                    .settle_cancel(&authorization, operation, Ok(drain), caller_wakes);
                 Ok(None)
             }
             OwnerEffect::CancelNotSent {
@@ -769,7 +772,7 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                 reason,
             } => {
                 self.calls
-                    .settle_cancel(&authorization, operation, Err(reason));
+                    .settle_cancel(&authorization, operation, Err(reason), caller_wakes);
                 Ok(None)
             }
             OwnerEffect::ProviderStartedTurn(input) => {

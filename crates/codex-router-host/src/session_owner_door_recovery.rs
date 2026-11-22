@@ -114,7 +114,7 @@ impl SessionOwnerDoor {
                         reason: RevokeReason::ConnectionLost,
                     }
                 };
-                callers.settle(reply, saved);
+                callers.settle(reply, saved, None);
             }
             callers.stop();
         });
