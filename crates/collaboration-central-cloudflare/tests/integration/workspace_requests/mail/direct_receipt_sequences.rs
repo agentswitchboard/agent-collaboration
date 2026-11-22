@@ -273,7 +273,7 @@ async fn submit_receipt(
         .unwrap()
 }
 
-async fn queue_direct(
+pub(super) async fn queue_direct(
     fixture: &Fixture,
     sent_at: workspace_model::Timestamp,
     request_number: u32,

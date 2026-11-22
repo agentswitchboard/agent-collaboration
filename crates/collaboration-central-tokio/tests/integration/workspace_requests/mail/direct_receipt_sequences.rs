@@ -253,7 +253,7 @@ async fn journey(order: u8, reject_mark: bool) {
     assert_eq!(actual, status_answer(expected_status));
 }
 
-async fn queue_direct(
+pub(super) async fn queue_direct(
     fixture: &Fixture,
     now: workspace_model::Timestamp,
     request_number: u32,

@@ -423,7 +423,11 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
         }
     }
 
-    /// One due machine instance as its own unit: `(done, central_down)`.
+    /// Direct sends and changing direct receipts request an alarm recomputation
+    /// with their applying write. The due mark and the failure charge each settle
+    /// independently, then this batch recomputes once to avoid paying for the
+    /// alarm query (318 rows in the sparse fixture) per due item.
+    /// Returns the completion and Central failure flags for the due dispatch.
     pub async fn run_checked_due_machine_instance<Rejected, Charge>(
         &self,
         subject: &EngineSubject,
