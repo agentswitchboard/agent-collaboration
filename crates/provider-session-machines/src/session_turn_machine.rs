@@ -6,9 +6,7 @@ use state_machine_core::{
     EventTag, RefusalTag, StateMachine, StateMachineResult, StateTag, Transition, TransitionError,
 };
 
-/// One turn's identity (a UUIDv7 minted at the handover, design note §13.1).
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
-pub struct TurnId(pub uuid::Uuid);
+pub use switchboard_harness_contracts::TurnId;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SessionTurn {
