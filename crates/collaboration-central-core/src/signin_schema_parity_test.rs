@@ -1,4 +1,6 @@
-use crate::organization_admin_contract::MachineEnrollmentRevocationResult;
+use crate::organization_admin_contract::{
+    MachineEnrollmentRevocationResult, OrganizationAdminResult,
+};
 use crate::person_request::RevokeMachineEnrollmentRequest;
 use fleet_contracts::{
     OrganizationStatementDigestReply, ProvisionOrganization, ProvisionOrganizationResult,
@@ -13,6 +15,14 @@ mod schema_validation;
 
 #[test]
 fn provisioning_and_revocation_wire_contracts() {
+    contract_artifacts::assert_contract::<OrganizationAdminResult>(
+        "OrganizationAdminResult",
+        serde_json::from_str(include_str!(
+            "../contracts/OrganizationAdminResult.fixtures.json"
+        ))
+        .unwrap(),
+        false,
+    );
     contract_artifacts::assert_request_contract::<RevokeMachineEnrollmentRequest>(
         "RevokeMachineEnrollmentRequest",
         vec![json!({

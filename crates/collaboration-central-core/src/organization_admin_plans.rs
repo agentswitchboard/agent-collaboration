@@ -3,6 +3,7 @@ use crate::{
     AdminRefusal, ListWorkspacesResult, MachineEnrollmentRevocationRefusal,
     MachineEnrollmentRevocationResult, OrganizationAdminAnswer, OrganizationAdminResult,
     WorkspaceRuntime,
+    organization_admin_contract::OrganizationChangeRecord,
     organization_authority_cache::StampStanding,
     person_admission_plans::prepare_person_admission,
     person_request::{
@@ -142,6 +143,10 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                     request.limit.get(),
                 )
                 .await?;
+                let records = records
+                    .into_iter()
+                    .map(OrganizationChangeRecord::TargetedChange)
+                    .collect();
                 OrganizationAdminAnswer::Answered(OrganizationAdminResult::Records { records })
             }
             AdminOperation::EngineHealth(_) => {
