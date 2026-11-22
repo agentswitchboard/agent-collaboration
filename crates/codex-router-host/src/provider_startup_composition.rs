@@ -93,7 +93,13 @@ pub(crate) async fn compose_provider_startup(
                 reason,
                 fix,
             } => {
-                endpoints.push(unavailable_endpoint(service_id, provider, reason, fix)?);
+                endpoints.push(unavailable_endpoint(
+                    service_id,
+                    provider,
+                    reason,
+                    fix,
+                    clock.as_ref(),
+                )?);
             }
             ExternalProviderStartup::Launch(binding) if store.is_none() => {
                 endpoints.push(unavailable_endpoint(
@@ -101,6 +107,7 @@ pub(crate) async fn compose_provider_startup(
                     binding.provider,
                     text("provider operation storage unavailable")?,
                     text("repair the router root storage and restart the Host")?,
+                    clock.as_ref(),
                 )?);
             }
             ExternalProviderStartup::Launch(binding) => {
@@ -116,6 +123,7 @@ pub(crate) async fn compose_provider_startup(
                         binding.provider,
                         text("global Claude executable is unavailable on the Host launch PATH")?,
                         text("install Claude Code globally, ensure claude is on the Host PATH, then restart the Host")?,
+                        clock.as_ref(),
                     )?);
                     continue;
                 }
@@ -136,7 +144,11 @@ pub(crate) async fn compose_provider_startup(
                 {
                     ProviderKind::Cursor => Arc::new(acp_provider_adapters::CursorAcpBehavior),
                     ProviderKind::ClaudeCode => {
-                        let prepared = acp_provider_adapters::prepare_claude_launch(launch).await;
+                        let prepared =
+                            acp_provider_adapters::prepare_claude_launch(launch, |budget| {
+                                clock.sleep_for(budget)
+                            })
+                            .await;
                         match &prepared.qualification {
                             Ok(identity) => tracing::info!(
                                 node = %identity.node.display(), node_version = %identity.node_version,
@@ -238,7 +250,7 @@ pub(crate) async fn compose_provider_startup(
                             endpoint,
                             label: binding.label,
                             availability: EndpointAvailability::Available {
-                                observed_at: observed_at()?,
+                                observed_at: observed_at(clock.as_ref())?,
                             },
                             channels: vec![ChannelDescription::ExternalProvider {
                                 transport: ProviderTransport::StdioAcp,
@@ -292,6 +304,7 @@ pub(crate) async fn compose_provider_startup(
                             binding.provider,
                             text(&provider_startup_failure_reason(&executable, &error))?,
                             text(fix)?,
+                            clock.as_ref(),
                         )?);
                     }
                 }
@@ -300,8 +313,14 @@ pub(crate) async fn compose_provider_startup(
     }
     let supervisor = match store {
         Some(store) if !endpoints.is_empty() => Some(Arc::new(
-            ExternalProviderSupervisor::new_with_hub(bindings, store, hub.clone(), scratch_root)
-                .map_err(io::Error::other)?,
+            ExternalProviderSupervisor::new_with_hub(
+                bindings,
+                store,
+                hub.clone(),
+                scratch_root,
+                clock,
+            )
+            .map_err(io::Error::other)?,
         )),
         _ => None,
     };
@@ -331,6 +350,7 @@ fn unavailable_endpoint(
     provider: ProviderKind,
     reason: NonEmptyText,
     fix: NonEmptyText,
+    clock: &dyn router_clock::RuntimeClock,
 ) -> io::Result<EndpointDescription> {
     let (endpoint_id, label) = match provider {
         ProviderKind::ClaudeCode => ("claude-local", "Claude Code"),
@@ -343,7 +363,7 @@ fn unavailable_endpoint(
         },
         label: text(label)?,
         availability: EndpointAvailability::Unavailable {
-            observed_at: observed_at()?,
+            observed_at: observed_at(clock)?,
             reason,
             fix: Some(fix),
         },
@@ -351,11 +371,28 @@ fn unavailable_endpoint(
     })
 }
 
-fn observed_at() -> io::Result<ObservationTimestamp> {
+fn observed_at(clock: &dyn router_clock::RuntimeClock) -> io::Result<ObservationTimestamp> {
     ObservationTimestamp::try_from(
-        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        clock
+            .utc_now()
+            .to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
     )
     .map_err(io::Error::other)
+}
+
+pub(crate) async fn publish_provider_retirement(
+    retirement: CancellationToken,
+    mut description: EndpointDescription,
+    directory: collaboration_runtime::EndpointDirectory,
+    clock: Arc<dyn router_clock::RuntimeClock>,
+) -> io::Result<()> {
+    retirement.cancelled().await;
+    description.availability = EndpointAvailability::Unavailable {
+        observed_at: observed_at(clock.as_ref())?,
+        reason: text("provider process retired")?,
+        fix: Some(text("restart the Host to relaunch the provider")?),
+    };
+    directory.publish(description)
 }
 
 fn text(value: &str) -> io::Result<NonEmptyText> {

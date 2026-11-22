@@ -21,6 +21,7 @@ async fn check_reconcile_started_during_reservation(read_point: ReconcileReadPoi
     let runtime = ExternalProviderRuntime::initialize(
         create_fixture(),
         Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -33,6 +34,7 @@ async fn check_reconcile_started_during_reservation(read_point: ReconcileReadPoi
             runtime,
         }],
         Arc::new(Mutex::new(store)),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .expect("supervisor initializes");
     let operation_id = OperationId::generate();

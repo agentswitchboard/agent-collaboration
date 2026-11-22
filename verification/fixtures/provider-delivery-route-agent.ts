@@ -16,7 +16,7 @@ if (mode === "queue") {
   await sendSocketNotice(requireArgument(3), "queued-prompt");
   agent.endTurn(first);
 } else {
-  const held = new FixtureControlSocket(requireArgument(3));
+  const held = new FixtureControlSocket(requireArgument(3), null);
   try {
     await held.connected();
     held.send("first");

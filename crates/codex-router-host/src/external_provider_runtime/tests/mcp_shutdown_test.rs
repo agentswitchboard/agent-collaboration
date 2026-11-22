@@ -11,6 +11,7 @@ async fn observe_mcp_fixture(
     let runtime = ExternalProviderRuntime::initialize(
         named_mcp_tool_call_fixture(raw_output, response_text, split_result_before_status),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -146,6 +147,7 @@ async fn overlapping_prompt_cannot_replace_a_taken_turns_approval_context() {
     let runtime = ExternalProviderRuntime::initialize(
         cancellation_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -205,6 +207,7 @@ async fn shutdown_joins_runtime_and_settles_held_prompt() {
     let runtime = ExternalProviderRuntime::initialize(
         cancellation_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -231,6 +234,7 @@ async fn shutdown_records_runtime_owner_join_failure() {
     let runtime = ExternalProviderRuntime::initialize(
         conversation_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -249,6 +253,7 @@ async fn shutdown_drains_more_than_completion_channel_capacity_of_held_loads() {
         ExternalProviderRuntime::initialize(
             saturated_load_admission_fixture(&admission_log, &process_id_path),
             std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+            crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
         )
         .await
         .expect("fixture initializes"),
@@ -278,7 +283,7 @@ async fn shutdown_drains_more_than_completion_channel_capacity_of_held_loads() {
             Err(ExternalProviderRuntimeError::TransportFailure)
         ));
     }
-    assert_process_reaped(&process_id_path).await;
+    assert_process_reaped(&process_id_path);
 }
 
 #[cfg(unix)]
@@ -289,6 +294,7 @@ async fn prompt_cancel_remains_responsive_during_create_admission() {
     let runtime = ExternalProviderRuntime::initialize(
         concurrent_admission_cancel_fixture("session/new", &observed),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -335,6 +341,7 @@ async fn prompt_cancel_remains_responsive_during_load_admission() {
     let runtime = ExternalProviderRuntime::initialize(
         concurrent_admission_cancel_fixture("session/load", &observed),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -397,6 +404,7 @@ async fn late_cancel_for_prior_operation_cannot_cancel_successor_prompt() {
     let runtime = ExternalProviderRuntime::initialize(
         successor_prompt_fixture(&release_path),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -448,6 +456,7 @@ async fn aggregate_prompt_output_is_bounded_across_valid_frames() {
     let runtime = ExternalProviderRuntime::initialize(
         aggregate_output_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -474,6 +483,7 @@ async fn load_history_replay_is_not_returned_as_the_next_prompt_output() {
     let runtime = ExternalProviderRuntime::initialize(
         load_replay_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -513,6 +523,7 @@ async fn live_external_provider_create_and_prompt() {
     let runtime = ExternalProviderRuntime::initialize(
         launch.clone(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await
     .expect("provider initializes");
@@ -539,6 +550,7 @@ async fn live_external_provider_create_and_prompt() {
     let resumed = ExternalProviderRuntime::initialize(
         launch,
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await
     .expect("provider reinitializes for load");
@@ -586,6 +598,7 @@ async fn live_external_provider_explicit_cancel() {
             environment: Vec::new(),
         },
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await
     .expect("provider initializes");
@@ -612,10 +625,7 @@ async fn live_external_provider_explicit_cancel() {
             .cancel_active_prompt(provider_session_id.clone())
             .await
             .expect("provider accepts cancel notification");
-        let outcome = tokio::time::timeout(Duration::from_secs(15), prompt)
-            .await
-            .expect("cancelled prompt settles")
-            .expect("cancelled prompt outcome");
+        let outcome = prompt.await.expect("cancelled prompt outcome");
         eprintln!(
             "cancelled provider target={provider_session_id} stop={:?}",
             outcome.stop_reason

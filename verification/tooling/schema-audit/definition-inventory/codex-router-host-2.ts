@@ -141,11 +141,11 @@ export const rows: InventoryRow[] = [
   },
   {
     file: "crates/codex-router-host/src/provider_model_catalog.rs",
-    line: 47,
+    line: 16,
     owner: "router-vocabulary",
     kind: "rust-type",
     defines:
-      "ACP model config option choices and ModelReasoning to ProviderModelEntry/ProviderReasoningChoice (47-86) with the provider-default fallback entry (38-45)",
+      "ACP model config option choices and ModelReasoning to ProviderModelEntry/ProviderReasoningChoice (16-55) with the provider-default fallback entry (7-14)",
     usedBy: [{ crate: "codex-router-host" }],
     duplicateGroup: "provider-setting-mapping",
     disposition: "duplicate",

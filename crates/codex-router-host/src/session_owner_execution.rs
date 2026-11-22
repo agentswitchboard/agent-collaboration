@@ -52,7 +52,7 @@ pub struct SessionOwnerExecution {
     routes: BTreeMap<SessionGeneration, OwnerRun>,
     created: Option<OwnerOpenedSession>,
     work_roots: crate::provider_work_roots::ProviderWorkRoots,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     preparation_fixture: Arc<crate::session_owner_preparation_fixture::PreparationFixture>,
 }
 
@@ -76,13 +76,6 @@ struct ActiveTurnApproval {
 }
 
 impl SessionOwnerExecution {
-    #[cfg_attr(
-        test,
-        expect(
-            clippy::too_many_arguments,
-            reason = "Tests inject the Host preparation seam."
-        )
-    )]
     pub(crate) fn new(
         target: SessionRef,
         wire: Arc<OwnerAcpWire>,
@@ -93,9 +86,6 @@ impl SessionOwnerExecution {
         publisher: SessionOwnerPublisher,
         calls: Arc<SessionOwnerCalls>,
         work_roots: crate::provider_work_roots::ProviderWorkRoots,
-        #[cfg(test)] preparation_fixture: Arc<
-            crate::session_owner_preparation_fixture::PreparationFixture,
-        >,
     ) -> Self {
         let tasks = storage.task_tracker();
         let cancel_drains = acp_client_runtime::OwnerCancelDrainExecutor::new(approvals.clone());
@@ -112,9 +102,18 @@ impl SessionOwnerExecution {
             opens: Arc::default(),
             routes: BTreeMap::new(),
             created: None,
-            #[cfg(test)]
-            preparation_fixture,
+            #[cfg(any(test, feature = "test-support"))]
+            preparation_fixture: Arc::default(),
         }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn with_preparation_fixture(
+        mut self,
+        fixture: Arc<crate::session_owner_preparation_fixture::PreparationFixture>,
+    ) -> Self {
+        self.preparation_fixture = fixture;
+        self
     }
 
     fn session_id(&self) -> String {
@@ -524,7 +523,13 @@ impl SessionOwnerPorts for SessionOwnerExecution {
             }
             OwnerEffect::Store(request) => self.storage.execute(owner, request, completions),
             OwnerEffect::Wire(SessionWireRequest::Restore { run, via }) => {
-                self.restore(owner, run, via, completions)
+                let result = self.restore(owner, run, via, completions);
+                #[cfg(any(test, feature = "test-support"))]
+                self.wire.fence_dispatch_for_test(
+                    Self::transport_run(owner, run.generation),
+                    acp_client_runtime::owner_wire::FixtureDispatchPoint::Restore,
+                );
+                result
             }
             OwnerEffect::Wire(SessionWireRequest::RestoreMode {
                 run,
@@ -585,7 +590,7 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                         stage: PreparationStage::HostSetup,
                     },
                 };
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 {
                     let failed = move || RestorePreparation::Failed {
                         run,
@@ -636,9 +641,16 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                 expired,
             } => {
                 let session = self.session_id();
+                #[cfg(any(test, feature = "test-support"))]
+                let run = Self::transport_run(owner, authorization.run);
                 let result = self
                     .cancel_drains
                     .take(&self.wire, session, authorization, expired);
+                #[cfg(any(test, feature = "test-support"))]
+                self.wire.fence_dispatch_for_test(
+                    run,
+                    acp_client_runtime::owner_wire::FixtureDispatchPoint::Cancel,
+                );
                 Ok(Some(OwnerEvent::Dispatch(result)))
             }
             OwnerEffect::Revoke { authorization, .. } => {

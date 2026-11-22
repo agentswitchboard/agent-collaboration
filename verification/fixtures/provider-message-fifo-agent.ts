@@ -37,7 +37,7 @@ async function gatedPrompt(notice: string): Promise<Record<string, unknown>> {
             { type: "text", text: "queued text" },
           ],
     );
-  const socket = new FixtureControlSocket(path);
+  const socket = new FixtureControlSocket(path, null);
   try {
     await socket.connected();
     socket.send(notice);

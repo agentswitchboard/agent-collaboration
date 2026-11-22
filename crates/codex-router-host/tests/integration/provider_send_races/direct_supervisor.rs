@@ -19,6 +19,7 @@ pub(super) struct DirectSupervisor {
 
 impl DirectSupervisor {
     pub(super) async fn start(behaviours: &[&str], sessions: usize) -> Self {
+        let fixture_clock = crate::provider_test_clock();
         let root = tempfile::tempdir().expect("provider root");
         let receipt = root.path().join("wire.json");
         let runtime = ExternalProviderRuntime::initialize(
@@ -27,6 +28,7 @@ impl DirectSupervisor {
                 send_race_arguments(&receipt, behaviours),
             ),
             Arc::new(acp_provider_adapters::StandardAcpBehavior),
+            fixture_clock.clone(),
         )
         .await
         .expect("fixture provider");
@@ -44,6 +46,7 @@ impl DirectSupervisor {
                     runtime,
                 }],
                 Arc::clone(&store),
+                fixture_clock.clone(),
             )
             .expect("supervisor"),
         );
@@ -61,7 +64,7 @@ impl DirectSupervisor {
             Arc::clone(&supervisor),
             store,
             Arc::new(NoLivePeer),
-            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            fixture_clock.clone(),
         );
         Self {
             root,

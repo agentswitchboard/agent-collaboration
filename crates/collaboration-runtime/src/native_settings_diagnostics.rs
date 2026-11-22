@@ -1,6 +1,6 @@
 //! Opt-in, redacted evidence for one controlled native client; no wire or policy changes.
 
-use crate::app_server_model_catalog::ProviderModelEntry;
+use collaboration_contracts::ProviderModelEntry;
 use serde_json::Value;
 
 const TARGET: &str = "collaboration_runtime::native_settings_diagnostic";

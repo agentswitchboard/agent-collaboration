@@ -48,6 +48,10 @@ impl CollaborationRuntime {
             clock,
         )
         .await;
+        #[cfg(test)]
+        {
+            self.provider_retention_observation = Some(worker_loop.observation());
+        }
         let shutdown = self.shutdown.clone();
         self.provider_retention = Some(tokio::spawn(async move {
             worker_loop.run(&mut pass, shutdown).await;

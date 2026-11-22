@@ -30,6 +30,7 @@ const UNSAVED_APPLIED: &str =
 /// "applied"; the row stays MayHaveDispatched; no retry and no second send.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_settlement_that_fails_to_save_answers_its_outcome_and_durable_stage() {
+    let fixture_clock = crate::provider_test_clock();
     // Arrange
     let root = tempfile::tempdir().expect("fixture root");
     let receipt = root.path().join("wire.json");
@@ -41,6 +42,7 @@ async fn a_settlement_that_fails_to_save_answers_its_outcome_and_durable_stage()
             vec!["reactive".to_owned(), receipt.display().to_string()],
         ),
         Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        fixture_clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -75,6 +77,7 @@ async fn a_settlement_that_fails_to_save_answers_its_outcome_and_durable_stage()
                 runtime,
             }],
             Arc::clone(&store),
+            fixture_clock.clone(),
         )
         .expect("supervisor"),
     );

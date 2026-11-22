@@ -41,9 +41,22 @@ pub async fn probe_router(
     endpoint: SocketAddr,
     deadline: Duration,
 ) -> Result<RouterProbeResult, RouterProbeError> {
-    let started_at = tokio::time::Instant::now();
+    probe_router_with_clock(endpoint, deadline, &router_clock::SystemRuntimeClock::new()).await
+}
+
+pub(crate) async fn probe_router_with_clock(
+    endpoint: SocketAddr,
+    deadline: Duration,
+    clock: &dyn router_clock::RuntimeClock,
+) -> Result<RouterProbeResult, RouterProbeError> {
+    let started_at = clock.monotonic_now();
     let deadline_at = started_at + deadline;
-    let mut stream = match tokio::time::timeout_at(deadline_at, TcpStream::connect(endpoint)).await
+    let mut stream = match router_clock::timeout_at(
+        clock,
+        deadline_at,
+        TcpStream::connect(endpoint),
+    )
+    .await
     {
         Ok(Ok(stream)) => stream,
         Ok(Err(error)) => {
@@ -51,7 +64,7 @@ pub async fn probe_router(
             tracing::debug!(target: "codex_router_host::startup_diagnostics", {
                 event.name = "codex_router.host.router_connect_unavailable",
                 connect_error = ?error.kind(),
-                elapsed_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+                elapsed_ms = u64::try_from(clock.monotonic_now().saturating_duration_since(started_at).as_millis()).unwrap_or(u64::MAX),
                 }, "Router connect failed"
             );
             #[cfg(not(debug_assertions))]
@@ -63,14 +76,14 @@ pub async fn probe_router(
             tracing::debug!(target: "codex_router_host::startup_diagnostics", {
                 event.name = "codex_router.host.router_connect_unavailable",
                 connect_error = ?std::io::ErrorKind::TimedOut,
-                elapsed_ms = u64::try_from(started_at.elapsed().as_millis()).unwrap_or(u64::MAX),
+                elapsed_ms = u64::try_from(clock.monotonic_now().saturating_duration_since(started_at).as_millis()).unwrap_or(u64::MAX),
                 }, "Router connect timed out"
             );
             return Ok(RouterProbeResult::Unavailable);
         }
     };
     let request = format!("GET /healthz HTTP/1.1\r\nhost: {endpoint}\r\nconnection: close\r\n\r\n");
-    match tokio::time::timeout_at(deadline_at, stream.write_all(request.as_bytes())).await {
+    match router_clock::timeout_at(clock, deadline_at, stream.write_all(request.as_bytes())).await {
         Ok(Ok(())) => {}
         Ok(Err(error)) => return Err(RouterProbeError::Write(error)),
         Err(_) => return Ok(RouterProbeResult::Incompatible),
@@ -78,8 +91,12 @@ pub async fn probe_router(
 
     let mut response_bytes = Vec::new();
     let mut limited_stream = stream.take(MAX_ROUTER_HEALTH_RESPONSE_BYTES + 1);
-    match tokio::time::timeout_at(deadline_at, limited_stream.read_to_end(&mut response_bytes))
-        .await
+    match router_clock::timeout_at(
+        clock,
+        deadline_at,
+        limited_stream.read_to_end(&mut response_bytes),
+    )
+    .await
     {
         Ok(Ok(_read_bytes)) => {}
         Ok(Err(error)) => return Err(RouterProbeError::Read(error)),

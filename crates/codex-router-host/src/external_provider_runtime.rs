@@ -94,7 +94,7 @@ pub struct ExternalProviderRuntime {
     client: AgentSessionClient<HostInteractionPort>,
     owner_ingress: Arc<SessionOwnerIngress>,
     owner_door: std::sync::OnceLock<Arc<crate::session_owner_door::SessionOwnerDoor>>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) preparation_fixture:
         Arc<crate::session_owner_preparation_fixture::PreparationFixture>,
     #[cfg(test)]
@@ -135,6 +135,35 @@ impl ExternalProviderRuntime {
         self.client.prepare_owner_prompt(input, &capabilities)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fault_restore_preparation(&self) {
+        self.preparation_fixture.fault_restore();
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn has_restore_preparation_fault(&self) -> bool {
+        self.preparation_fixture.fault_pending()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pause_restore_preparation(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        self.preparation_fixture.pause_restore()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pause_delivery_ack(
+        &self,
+        lose_ack: bool,
+    ) -> crate::provider_test_support::DeliveryAckControl {
+        self.preparation_fixture.pause_delivery_ack(lose_ack)
+    }
+
     pub fn session_owner_door(
         &self,
         store: Arc<tokio::sync::Mutex<switchboard_session_store::ProviderOperationStore>>,
@@ -149,7 +178,7 @@ impl ExternalProviderRuntime {
                     store,
                     hub,
                     self.retirement(),
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "test-support"))]
                     self.preparation_fixture.clone(),
                 ));
                 self.owner_ingress.attach(&door);
@@ -158,24 +187,27 @@ impl ExternalProviderRuntime {
             .clone()
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn initialize(
         launch: ExternalProviderLaunch,
         behavior: Arc<dyn acp_client_runtime::ProviderBehavior>,
+        clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, ExternalProviderRuntimeError> {
         let owner_ingress = Arc::new(SessionOwnerIngress::default());
         let interaction_port = Arc::new(HostInteractionPort(owner_ingress.clone()));
-        let client = AgentSessionClient::initialize(
+        let client = AgentSessionClient::initialize_with_clock(
             launch,
             Arc::clone(&interaction_port),
             owner_ingress.clone(),
             behavior,
+            clock,
         )
         .await?;
         Ok(Self {
             client,
             owner_ingress,
             owner_door: std::sync::OnceLock::new(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             preparation_fixture: Arc::default(),
             #[cfg(test)]
             fixture: tokio::sync::OnceCell::new(),
@@ -185,12 +217,14 @@ impl ExternalProviderRuntime {
         })
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn initialize_with_mcp_http(
         launch: ExternalProviderLaunch,
         model_picker: acp_client_runtime::ProviderModelPicker,
         server_name: impl Into<String>,
         server_url: impl Into<String>,
         behavior: Arc<dyn acp_client_runtime::ProviderBehavior>,
+        clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, ExternalProviderRuntimeError> {
         let owner_ingress = Arc::new(SessionOwnerIngress::default());
         let interaction_port = Arc::new(HostInteractionPort(owner_ingress.clone()));
@@ -202,14 +236,14 @@ impl ExternalProviderRuntime {
             Arc::clone(&interaction_port),
             owner_ingress.clone(),
             behavior,
-            Arc::new(router_clock::SystemRuntimeClock::new()),
+            clock,
         )
         .await?;
         Ok(Self {
             client,
             owner_ingress,
             owner_door: std::sync::OnceLock::new(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             preparation_fixture: Arc::default(),
             #[cfg(test)]
             fixture: tokio::sync::OnceCell::new(),
@@ -250,7 +284,7 @@ impl ExternalProviderRuntime {
             client,
             owner_ingress,
             owner_door: std::sync::OnceLock::new(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             preparation_fixture: Arc::default(),
             #[cfg(test)]
             fixture: tokio::sync::OnceCell::new(),
@@ -286,6 +320,7 @@ impl ExternalProviderRuntime {
         launch: ExternalProviderLaunch,
         initialize_timeout: Duration,
         behavior: Arc<dyn acp_client_runtime::ProviderBehavior>,
+        clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, ExternalProviderRuntimeError> {
         let owner_ingress = Arc::new(SessionOwnerIngress::default());
         let interaction_port = Arc::new(HostInteractionPort(owner_ingress.clone()));
@@ -295,6 +330,7 @@ impl ExternalProviderRuntime {
             Arc::clone(&interaction_port),
             owner_ingress.clone(),
             behavior,
+            clock,
         )
         .await?;
         Ok(Self {
@@ -339,6 +375,14 @@ impl ExternalProviderRuntime {
             Some(observed) => connection.with_session_model(&observed),
             None => connection,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_provider_dispatch_for_fixture(
+        &self,
+        point: acp_client_runtime::owner_wire::FixtureDispatchPoint,
+    ) -> tokio::sync::oneshot::Receiver<Result<(), agent_client_protocol::Error>> {
+        self.client.owner_wire().observe_dispatch_for_test(point)
     }
 
     pub fn retirement(&self) -> CancellationToken {
@@ -449,7 +493,7 @@ mod robustness_tests;
 #[path = "external_provider_runtime/runtime_test.rs"]
 mod tests;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[path = "external_provider_runtime/acp_scripted_fixture.rs"]
 pub(crate) mod acp_scripted_fixture;
 #[cfg(test)]
