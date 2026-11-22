@@ -16,7 +16,7 @@ use collaboration_central_core::ValidatedMachineConnection;
 use collaboration_central_core::{MachineLoginControl, machine_login_control};
 use fleet_contracts::MachineTokenDecision;
 use futures_util::StreamExt;
-use reqwest_websocket::{CloseCode, Message, WebSocket};
+use reqwest_websocket::{Message, WebSocket};
 use serde_json::json;
 use std::time::Duration;
 use workspace_model::{RefusalReason, WorkspaceResult};
@@ -270,8 +270,8 @@ async fn a_renewal_just_before_the_deadline_renews_and_at_or_after_it_is_refused
     assert!(
         matches!(
             &closed,
-            Some(Ok(Message::Close { code: CloseCode::Policy, reason }))
-                if reason == "machine authority expired or revoked"
+            Some(Ok(Message::Close { code, .. }))
+                if central_link_protocol::MachineLinkCloseCode::from_code((*code).into()) == Some(central_link_protocol::MachineLinkCloseCode::Expired)
         ),
         "the lapsed link closes: {closed:?}"
     );
@@ -502,8 +502,8 @@ async fn a_batch_after_the_deadline_refuses_every_member_and_then_closes() -> Re
     assert!(
         matches!(
             &closed,
-            Some(Ok(Message::Close { code: CloseCode::Policy, reason }))
-                if reason == "machine authority expired or revoked"
+            Some(Ok(Message::Close { code, .. }))
+                if central_link_protocol::MachineLinkCloseCode::from_code((*code).into()) == Some(central_link_protocol::MachineLinkCloseCode::Expired)
         ),
         "the lapsed link closes after the batch: {closed:?}"
     );

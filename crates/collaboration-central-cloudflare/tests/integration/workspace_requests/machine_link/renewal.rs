@@ -7,7 +7,7 @@ use central_link_protocol::RequestPayload;
 use central_link_protocol::{DataFrame, TokenRenewalRefusal, TokenRenewalResult};
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 use futures_util::StreamExt;
-use reqwest_websocket::{CloseCode, Message};
+use reqwest_websocket::Message;
 use runtime_primitives::Clock;
 use std::time::Duration;
 use workspace_model::{
@@ -463,10 +463,12 @@ async fn lapsed_batch_journey(fixture: &Fixture) -> Result<()> {
         }
     }
     match closed {
-        Some(Ok(Message::Close {
-            code: CloseCode::Policy,
-            reason,
-        })) if reason == "machine authority expired or revoked" => Ok(()),
+        Some(Ok(Message::Close { code, .. }))
+            if central_link_protocol::MachineLinkCloseCode::from_code(code.into())
+                == Some(central_link_protocol::MachineLinkCloseCode::Expired) =>
+        {
+            Ok(())
+        }
         other => Err(format!("the lapsed link closes after the batch: {other:?}").into()),
     }
 }

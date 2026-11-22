@@ -73,7 +73,7 @@ pub struct AdmittedReceipt {
 pub enum ApplyReceipt {
     Applied { ready: Option<MailDeliveryReady> },
     Stop(ReceiptResult),
-    AuthorityLapsed,
+    AuthorityLapsed(fleet_contracts::mail_link::MachineLinkCloseCode),
 }
 
 pub struct DirectMark {

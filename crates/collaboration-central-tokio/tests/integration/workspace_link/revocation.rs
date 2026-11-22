@@ -39,8 +39,11 @@ async fn revocation_journey(fixture: &Fixture) -> Result<()> {
     revocation
         .expect(&owner, enrollment, json!({"result":"revoked"}))
         .await?;
-    if !matches!(socket.next().await, Some(Ok(Message::Close { .. }))) {
-        return Err("revocation must close the idle socket before another request".into());
+    if !matches!(socket.next().await, Some(Ok(Message::Close { code, .. }))
+        if central_link_protocol::MachineLinkCloseCode::from_code(code.into())
+            == Some(central_link_protocol::MachineLinkCloseCode::Revoked))
+    {
+        return Err("revocation must close the idle socket with the Revoked code".into());
     }
     revocation
         .expect(&owner, enrollment, json!({"result":"alreadyEnded"}))

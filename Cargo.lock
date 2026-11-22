@@ -2446,6 +2446,7 @@ name = "fleet-contracts"
 version = "0.1.158"
 dependencies = [
  "central-engine-model",
+ "central-link-protocol",
  "central-storage",
  "fleet-identity-protocol",
  "fleet-rpc",

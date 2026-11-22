@@ -415,7 +415,8 @@ async fn receipt_expiry_journey(fixture: &Fixture) -> Result<()> {
     }
     let reply = socket.socket.next().await;
     let store = central.statement_host();
-    if !matches!(reply, Some(Ok(Message::Close { .. }))) {
+    if !matches!(reply, Some(Ok(Message::Close { code, .. })) if central_link_protocol::MachineLinkCloseCode::from_code(code.into()) == Some(central_link_protocol::MachineLinkCloseCode::Expired))
+    {
         return Err(format!(
             "expired applying receipt yielded a frame instead of close: {reply:?}"
         )

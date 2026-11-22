@@ -36,7 +36,7 @@ enum IncomingRequests {
 }
 enum MachineRequestResult {
     Reply(ReplyPayload),
-    AuthorityRefused,
+    AuthorityRefused(central_link_protocol::MachineLinkCloseCode),
     Unavailable,
 }
 
@@ -196,8 +196,8 @@ impl CentralObject {
                     {
                         Ok(MailReceiptSettlement::Applied) => results.push(ReceiptResult::Recorded),
                         Ok(MailReceiptSettlement::Stop(result)) => results.push(result),
-                        Ok(MailReceiptSettlement::AuthorityLapsed) => {
-                            return close(&socket, "machine authority expired or revoked");
+                        Ok(MailReceiptSettlement::AuthorityLapsed(cause)) => {
+                            return close_authority(&socket, cause);
                         }
                         Err(_) => return socket.close(Some(1011), Some("central unavailable")),
                     }
@@ -215,10 +215,14 @@ impl CentralObject {
                 caller,
                 query,
             } => {
-                let active = match runtime.restore_machine_connection(&attachment).await {
-                    Ok(Ok(active)) => active,
-                    Ok(Err(_)) => return close(&socket, "machine authority expired or revoked"),
-                    Err(_) => return socket.close(Some(1011), Some("central unavailable")),
+                let active = match runtime.restore_machine_link_request(&attachment).await {
+                    Ok(MachineLinkRequestAuthority::Admitted(active)) => active,
+                    Ok(MachineLinkRequestAuthority::Refused(cause)) => {
+                        return close_authority(&socket, cause);
+                    }
+                    Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) | Err(_) => {
+                        return socket.close(Some(1011), Some("central unavailable"));
+                    }
                 };
                 let result = match WorkspaceCaller::from_machine_link(active, caller) {
                     Ok(caller) => runtime.request_status(&caller, &query).await,
@@ -256,12 +260,12 @@ impl CentralObject {
                     .await?
                 {
                     MachineRequestResult::Reply(reply) => {
-                        self.send_reply_and_close_if_lapsed(&socket, &request, reply, false)
+                        self.send_reply_and_close_if_lapsed(&socket, &request, reply, None)
                     }
                     // The request is answered before the close, as on the native host.
-                    MachineRequestResult::AuthorityRefused => {
+                    MachineRequestResult::AuthorityRefused(cause) => {
                         let reply = refused_reply(request.payload(), RefusalReason::MachineRevoked);
-                        self.send_reply_and_close_if_lapsed(&socket, &request, reply, true)
+                        self.send_reply_and_close_if_lapsed(&socket, &request, reply, Some(cause))
                     }
                     MachineRequestResult::Unavailable => {
                         close(&socket, "machine admission unavailable")
@@ -269,7 +273,7 @@ impl CentralObject {
                 }
             }
             IncomingRequests::Batch(requests) => {
-                let mut lapsed = false;
+                let mut lapsed = None;
                 let mut members = requests.requests().iter().peekable();
                 while let Some(request) = members.next() {
                     // Every member restores live provenance and enters its own applying turn.
@@ -279,8 +283,8 @@ impl CentralObject {
                         .await?
                     {
                         MachineRequestResult::Reply(reply) => reply,
-                        MachineRequestResult::AuthorityRefused => {
-                            lapsed = true;
+                        MachineRequestResult::AuthorityRefused(cause) => {
+                            lapsed = lapsed.or(Some(cause));
                             refused_reply(request.payload(), RefusalReason::MachineRevoked)
                         }
                         MachineRequestResult::Unavailable => {
@@ -288,7 +292,11 @@ impl CentralObject {
                         }
                     };
                     // A lapsed authority closes the link with the last member's reply.
-                    let close_after_reply = lapsed && members.peek().is_none();
+                    let close_after_reply = if members.peek().is_none() {
+                        lapsed
+                    } else {
+                        None
+                    };
                     self.send_reply_and_close_if_lapsed(
                         &socket,
                         request,
@@ -314,8 +322,11 @@ impl CentralObject {
                 .windowed_welcome_page(attachment, cursor.as_ref())
                 .await
                 .map_err(|error| worker::Error::RustError(error.to_string()))?;
-            let WelcomeDeliveryPage::Ready(rows) = page else {
-                return close(socket, "machine authority expired or revoked");
+            let rows = match page {
+                WelcomeDeliveryPage::Ready(rows) => rows,
+                WelcomeDeliveryPage::AuthorityLapsed(cause) => {
+                    return close_authority(socket, cause);
+                }
             };
             cursor = rows
                 .last()
@@ -412,8 +423,8 @@ impl CentralObject {
                 Ok(true)
             }
             WindowedDeliveryDecision::Ineligible => Ok(true),
-            WindowedDeliveryDecision::AuthorityLapsed => {
-                close(socket, "machine authority expired or revoked")?;
+            WindowedDeliveryDecision::AuthorityLapsed(cause) => {
+                close_authority(socket, cause)?;
                 Ok(false)
             }
         }
@@ -433,7 +444,7 @@ impl CentralObject {
                 Ok(MachineLinkRequestAuthority::Admitted(_)) => {
                     super::workspace_link_witness::RestoreOutcome::Admitted
                 }
-                Ok(MachineLinkRequestAuthority::Refused) => {
+                Ok(MachineLinkRequestAuthority::Refused(_)) => {
                     super::workspace_link_witness::RestoreOutcome::Refused
                 }
                 Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) | Err(_) => {
@@ -443,8 +454,8 @@ impl CentralObject {
         );
         let connection = match restored {
             Ok(MachineLinkRequestAuthority::Admitted(connection)) => connection,
-            Ok(MachineLinkRequestAuthority::Refused) => {
-                return Ok(MachineRequestResult::AuthorityRefused);
+            Ok(MachineLinkRequestAuthority::Refused(cause)) => {
+                return Ok(MachineRequestResult::AuthorityRefused(cause));
             }
             Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) => {
                 return Ok(MachineRequestResult::Unavailable);
@@ -490,7 +501,7 @@ impl CentralObject {
         socket: &WebSocket,
         request: &LinkRequest,
         reply: ReplyPayload,
-        close_after_reply: bool,
+        close_after_reply: Option<central_link_protocol::MachineLinkCloseCode>,
     ) -> Result<()> {
         send(
             socket,
@@ -499,8 +510,8 @@ impl CentralObject {
                 result: Box::new(reply),
             },
         )?;
-        if close_after_reply {
-            close(socket, "machine authority expired or revoked")?;
+        if let Some(cause) = close_after_reply {
+            close_authority(socket, cause)?;
         }
 
         #[cfg(feature = "test-support")]
@@ -527,6 +538,13 @@ fn send(socket: &WebSocket, frame: DataFrame) -> Result<()> {
             .map_err(|error| worker::Error::RustError(error.to_string()))?;
     socket.send_with_str(text)
 }
+fn close_authority(
+    socket: &WebSocket,
+    cause: central_link_protocol::MachineLinkCloseCode,
+) -> Result<()> {
+    socket.close(Some(cause.code()), None::<&str>)
+}
+
 fn close(socket: &WebSocket, reason: &str) -> Result<()> {
     socket.close(Some(1008), Some(reason))
 }

@@ -2,8 +2,11 @@
 use crate::ValidatedMachineConnection;
 use crate::{
     WorkspaceRuntime,
-    machine_connection::{Admission, validate_live, validate_shape},
+    machine_connection::{
+        Admission, LiveAdmission, classify_live, refuse_authority, validate_live, validate_shape,
+    },
 };
+use central_link_protocol::MachineLinkCloseCode;
 use central_storage::StoreFailure;
 use fleet_contracts::{
     LiveMachineConnection, MachineConnectionAttachment, MachineConnectionRefusal,
@@ -16,7 +19,7 @@ use workspace_ids::MachineId;
 /// Live authority for one ordinary link request or one member of a write batch.
 pub enum MachineLinkRequestAuthority {
     Admitted(ValidatedMachineConnection),
-    Refused,
+    Refused(MachineLinkCloseCode),
     TemporarilyUnavailable,
 }
 
@@ -25,9 +28,9 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         &self,
         attachment: &MachineConnectionAttachment,
     ) -> Result<MachineLinkRequestAuthority, StoreFailure> {
-        match self.restore_machine_connection(attachment).await {
+        match self.restore_live_authority(attachment).await {
             Ok(Ok(connection)) => Ok(MachineLinkRequestAuthority::Admitted(connection)),
-            Ok(Err(_)) => Ok(MachineLinkRequestAuthority::Refused),
+            Ok(Err(refused)) => Ok(MachineLinkRequestAuthority::Refused(refused.close)),
             Err(StoreFailure::Unavailable | StoreFailure::AnswerLost) => {
                 Ok(MachineLinkRequestAuthority::TemporarilyUnavailable)
             }
@@ -156,12 +159,21 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         &self,
         attachment: &MachineConnectionAttachment,
     ) -> Admission {
+        self.restore_live_authority(attachment)
+            .await
+            .map(|decision| decision.map_err(|refusal| refusal.reason))
+    }
+
+    async fn restore_live_authority(
+        &self,
+        attachment: &MachineConnectionAttachment,
+    ) -> LiveAdmission {
         let _turn = self.execution.take_central_turn_for_admission().await;
         #[cfg(feature = "test-support")]
         if let Some(failure) = self.take_machine_restore_failure() {
             return Err(failure);
         }
-        self.restore_machine_connection_held(attachment).await
+        self.restore_live_authority_held(attachment).await
     }
 
     /// Fail one restore after the specified number of successful fixture restores.
@@ -195,12 +207,13 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         &self,
         attachment: &MachineConnectionAttachment,
         register: impl FnOnce() -> Value,
-    ) -> Result<Result<Value, MachineConnectionRefusal>, StoreFailure> {
+    ) -> Result<Result<Value, MachineLinkCloseCode>, StoreFailure> {
         let _turn = self.execution.take_central_turn_for_admission().await;
         Ok(self
-            .restore_machine_connection_held(attachment)
+            .restore_live_authority_held(attachment)
             .await?
-            .map(|_| register()))
+            .map(|_| register())
+            .map_err(|refusal| refusal.close))
     }
 
     /// Caller holds the existing central turn through the decision or effect it admits.
@@ -208,10 +221,20 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         &self,
         attachment: &MachineConnectionAttachment,
     ) -> Admission {
+        self.restore_live_authority_held(attachment)
+            .await
+            .map(|decision| decision.map_err(|refusal| refusal.reason))
+    }
+
+    pub(crate) async fn restore_live_authority_held(
+        &self,
+        attachment: &MachineConnectionAttachment,
+    ) -> LiveAdmission {
         if attachment.organization_id() != self.execution.organization() {
-            return Ok(Err(
+            return refuse_authority(
                 MachineConnectionRefusal::MachineInAnotherOrganization {},
-            ));
+                MachineLinkCloseCode::Inactive,
+            );
         }
         validate_shape(attachment)?;
         let time = self
@@ -220,7 +243,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         let facts = self
             .connection_facts(attachment.machine_id(), attachment.enrollment_id())
             .await?;
-        validate_live(
+        classify_live(
             attachment,
             self.execution.organization(),
             &facts,

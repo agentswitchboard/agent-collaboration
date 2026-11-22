@@ -1,8 +1,9 @@
 //! The latest welcomed socket locally owns delivery for an organization machine.
+use central_link_protocol::MachineLinkCloseCode;
 use fleet_identity_protocol::OrganizationId;
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, Mutex, OnceLock, PoisonError},
 };
 use tokio::sync::mpsc;
 use tokio_util::sync::CancellationToken;
@@ -13,6 +14,7 @@ type MachineKey = (OrganizationId, MachineId);
 struct PushSocket {
     sender: mpsc::Sender<MessageId>,
     replaced: CancellationToken,
+    authority_close: Arc<OnceLock<MachineLinkCloseCode>>,
 }
 
 #[derive(Clone, Default)]
@@ -27,12 +29,14 @@ impl MachinePushRegistry {
         let key = (organization, machine);
         let (sender, receiver) = mpsc::channel(fleet_contracts::mail_link::WELCOME_PAGE_SIZE);
         let replaced = CancellationToken::new();
+        let authority_close = Arc::new(OnceLock::new());
         let mut sockets = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(older) = sockets.insert(
             key.clone(),
             PushSocket {
                 sender: sender.clone(),
                 replaced: replaced.clone(),
+                authority_close: authority_close.clone(),
             },
         ) {
             older.replaced.cancel();
@@ -42,13 +46,15 @@ impl MachinePushRegistry {
             key,
             sender,
             replaced,
+            authority_close,
             receiver,
         }
     }
 
-    pub(crate) fn disconnect(&self, organization: &OrganizationId, machine: &MachineId) {
+    pub(crate) fn revoke(&self, organization: &OrganizationId, machine: &MachineId) {
         let mut sockets = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         if let Some(socket) = sockets.remove(&(organization.clone(), machine.clone())) {
+            let _ = socket.authority_close.set(MachineLinkCloseCode::Revoked);
             socket.replaced.cancel();
         }
     }
@@ -74,6 +80,7 @@ pub(crate) struct MachinePushRegistration {
     key: MachineKey,
     sender: mpsc::Sender<MessageId>,
     pub(crate) replaced: CancellationToken,
+    pub(crate) authority_close: Arc<OnceLock<MachineLinkCloseCode>>,
     pub(crate) receiver: mpsc::Receiver<MessageId>,
 }
 

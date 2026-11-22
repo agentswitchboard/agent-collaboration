@@ -245,11 +245,17 @@ where
     // expires. Re-read enrollment and sample the clock inside that transaction.
     let applying_time = Timestamp::from_timestamp_millis(command.clock.now().unix_millis())
         .ok_or_else(|| corrupt("clock"))?;
-    if applying_time.timestamp() >= authority.effective_expires_at().0
-        || enrollment.is_none_or(|row| row.machine_id != target.as_str())
-    {
+    use fleet_contracts::mail_link::MachineLinkCloseCode;
+    let lapse = if applying_time.timestamp() >= authority.effective_expires_at().0 {
+        Some(MachineLinkCloseCode::Expired)
+    } else if enrollment.is_none_or(|row| row.machine_id != target.as_str()) {
+        Some(MachineLinkCloseCode::Inactive)
+    } else {
+        None
+    };
+    if let Some(cause) = lapse {
         return Ok(DirectWriteOutcome::without_alarm_recompute(
-            ApplyReceipt::AuthorityLapsed,
+            ApplyReceipt::AuthorityLapsed(cause),
         ));
     }
     let row: Option<StoredReceiptRoute> = route_query!(bind_receipt_projection, command.message_id)

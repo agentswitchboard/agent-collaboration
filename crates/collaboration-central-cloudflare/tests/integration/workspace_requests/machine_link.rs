@@ -22,7 +22,7 @@ use collaboration_central_conformance::{ConformanceResult as Result, signin_fixt
 use fixture::{ConnectedLink, Exchange, Fixture, MACHINE_ID, ORGANIZATION, OTHER_ORGANIZATION};
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use receipt::{AreaReceipt, HibernationReceipt};
-use reqwest_websocket::{CloseCode, Message, RequestBuilderExt};
+use reqwest_websocket::{Message, RequestBuilderExt};
 use runtime_primitives::Clock;
 use std::{io::Write, panic::AssertUnwindSafe, path::PathBuf, time::Duration};
 use workspace_model::{
@@ -566,11 +566,15 @@ async fn denied_journey(fixture: &Fixture, change: AuthorityChange) -> Result<()
     if !refused {
         return Err(format!("stale authority must answer MachineRevoked first: {reply:?}").into());
     }
+    let expected_close = match change {
+        AuthorityChange::Expiry => central_link_protocol::MachineLinkCloseCode::Expired,
+        AuthorityChange::Revocation => central_link_protocol::MachineLinkCloseCode::Revoked,
+        AuthorityChange::Supersession => central_link_protocol::MachineLinkCloseCode::Inactive,
+    };
     match link.socket.next().await {
-        Some(Ok(Message::Close {
-            code: CloseCode::Policy,
-            reason,
-        })) if reason == "machine authority expired or revoked" => {}
+        Some(Ok(Message::Close { code, .. }))
+            if central_link_protocol::MachineLinkCloseCode::from_code(code.into())
+                == Some(expected_close) => {}
         other => {
             return Err(format!(
                 "stale authority must close the original socket before a semantic effect: {other:?}"

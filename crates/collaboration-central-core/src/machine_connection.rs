@@ -1,6 +1,9 @@
 //! Verified token provenance becomes a connection only after live organization admission.
+use central_link_protocol::MachineLinkCloseCode;
 use central_storage::StoreFailure;
-use fleet_contracts::{ClientId, MachineConnectionAttachment, MachineConnectionRefusal};
+use fleet_contracts::{
+    ClientId, EnrollmentRevocationReason, MachineConnectionAttachment, MachineConnectionRefusal,
+};
 use fleet_identity_protocol::{EnrollmentId, OrganizationId, UnixSeconds};
 use fleet_machine_login::enrollment_row_values::identifier;
 use fleet_machine_login::policy::{EnrollmentFacts, MachineState, StoredEnrollmentState};
@@ -46,6 +49,21 @@ impl ValidatedMachineConnection {
 pub(crate) type Admission =
     Result<Result<ValidatedMachineConnection, MachineConnectionRefusal>, StoreFailure>;
 
+pub(crate) struct LiveAuthorityRefusal {
+    pub reason: MachineConnectionRefusal,
+    pub close: MachineLinkCloseCode,
+}
+
+pub(crate) type LiveAdmission =
+    Result<Result<ValidatedMachineConnection, LiveAuthorityRefusal>, StoreFailure>;
+
+pub(crate) fn refuse_authority(
+    reason: MachineConnectionRefusal,
+    close: MachineLinkCloseCode,
+) -> LiveAdmission {
+    Ok(Err(LiveAuthorityRefusal { reason, close }))
+}
+
 pub(crate) fn validate_shape(attachment: &MachineConnectionAttachment) -> Result<(), StoreFailure> {
     let _: OrganizationId = identifier(
         attachment.organization_id().as_str(),
@@ -74,45 +92,79 @@ pub(crate) fn validate_live(
     facts: &EnrollmentFacts,
     now_ms: i64,
 ) -> Admission {
+    classify_live(attachment, organization, facts, now_ms)
+        .map(|decision| decision.map_err(|refusal| refusal.reason))
+}
+
+pub(crate) fn classify_live(
+    attachment: &MachineConnectionAttachment,
+    organization: &OrganizationId,
+    facts: &EnrollmentFacts,
+    now_ms: i64,
+) -> LiveAdmission {
+    use MachineLinkCloseCode::{Expired, Inactive, Revoked};
+
     validate_shape(attachment)?;
     if attachment.organization_id() != organization || &facts.organization_id != organization {
-        return Ok(Err(
+        return refuse_authority(
             MachineConnectionRefusal::MachineInAnotherOrganization {},
-        ));
+            Inactive,
+        );
     }
     if now_ms.div_euclid(1000) >= attachment.effective_expires_at().0 {
-        return Ok(Err(MachineConnectionRefusal::EnrollmentNotActive {}));
+        return refuse_authority(MachineConnectionRefusal::EnrollmentNotActive {}, Expired);
     }
     let Some(machine) = &facts.machine else {
-        return Ok(Err(MachineConnectionRefusal::UnknownMachine {}));
+        return refuse_authority(MachineConnectionRefusal::UnknownMachine {}, Inactive);
     };
     let Some(enrollment) = &facts.enrollment else {
-        return Ok(Err(MachineConnectionRefusal::EnrollmentNotActive {}));
+        return refuse_authority(MachineConnectionRefusal::EnrollmentNotActive {}, Inactive);
     };
     if &machine.machine_id != attachment.machine_id()
         || &enrollment.machine_id != attachment.machine_id()
         || &enrollment.id != attachment.enrollment_id()
-        || machine.state != MachineState::Enrolled
     {
-        return Ok(Err(MachineConnectionRefusal::EnrollmentNotActive {}));
+        return refuse_authority(MachineConnectionRefusal::EnrollmentNotActive {}, Inactive);
+    }
+    // Keep the previous refusal for an inactive machine, while distinguishing
+    // an explicit owner revocation from an enrollment that ended another way.
+    let refused_close = if matches!(
+        enrollment.state,
+        StoredEnrollmentState::Revoked {
+            reason: EnrollmentRevocationReason::Owner {},
+            ..
+        }
+    ) {
+        Revoked
+    } else {
+        Inactive
+    };
+    if machine.state != MachineState::Enrolled {
+        return refuse_authority(
+            MachineConnectionRefusal::EnrollmentNotActive {},
+            refused_close,
+        );
     }
     if facts.active.as_ref().map(|active| &active.id) != Some(&enrollment.id) {
-        return Ok(Err(MachineConnectionRefusal::Superseded {}));
+        return refuse_authority(MachineConnectionRefusal::Superseded {}, refused_close);
     }
     if attachment.client_id().as_str() != attachment.enrollment_id().as_str() {
-        return Ok(Err(MachineConnectionRefusal::WrongClient {}));
+        return refuse_authority(MachineConnectionRefusal::WrongClient {}, Inactive);
     }
     match &enrollment.state {
         StoredEnrollmentState::Enrolled { client_id, .. }
             if client_id == attachment.client_id() => {}
         StoredEnrollmentState::Enrolled { .. } => {
-            return Ok(Err(MachineConnectionRefusal::WrongClient {}));
+            return refuse_authority(MachineConnectionRefusal::WrongClient {}, Inactive);
         }
         StoredEnrollmentState::Approved
         | StoredEnrollmentState::Lapsed
         | StoredEnrollmentState::Revoked { .. }
         | StoredEnrollmentState::Expired { .. } => {
-            return Ok(Err(MachineConnectionRefusal::EnrollmentNotActive {}));
+            return refuse_authority(
+                MachineConnectionRefusal::EnrollmentNotActive {},
+                refused_close,
+            );
         }
     }
     Ok(Ok(ValidatedMachineConnection {

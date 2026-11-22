@@ -367,7 +367,10 @@ impl CentralObject {
                 .with_machine_revocation_observer(Arc::new(move |machine_id| {
                     for socket in state_for_revocation.get_websockets_with_tag(machine_id.as_str())
                     {
-                        let _ = socket.close(Some(1008), Some("machine authority revoked"));
+                        let _ = socket.close(
+                            Some(central_link_protocol::MachineLinkCloseCode::Revoked.code()),
+                            None::<&str>,
+                        );
                     }
                 })),
         );

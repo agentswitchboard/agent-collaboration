@@ -267,7 +267,7 @@ impl TokioWorkspaceHost {
                     registry.offer(&organization_key, &delivery.machine_id, delivery.message_id);
                 }))
                 .with_machine_revocation_observer(Arc::new(move |machine_id| {
-                    revocation_registry.disconnect(&revocation_org, &machine_id);
+                    revocation_registry.revoke(&revocation_org, &machine_id);
                 })),
         );
         central.recompute_alarm().await?;

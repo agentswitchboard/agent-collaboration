@@ -11,9 +11,9 @@ use axum::{
     routing::get,
 };
 use central_link_protocol::{
-    DataFrame, FrameDirection, LinkFrame, LinkRequest, ProtocolError, ReceiptResult, ReplyPayload,
-    RequestPayload, RequestRefusal, RequestStatusAnswer, TimeLeft, TokenRenewalRefusal,
-    TokenRenewalResult, decode_text, encode_text,
+    DataFrame, FrameDirection, LinkFrame, LinkRequest, MachineLinkCloseCode, ProtocolError,
+    ReceiptResult, ReplyPayload, RequestPayload, RequestRefusal, RequestStatusAnswer, TimeLeft,
+    TokenRenewalRefusal, TokenRenewalResult, decode_text, encode_text,
 };
 use collaboration_central_core::{MachineLinkRequestAuthority, WorkspaceRuntime};
 use collaboration_central_core::{ValidatedMachineConnection, WorkspaceCaller};
@@ -22,7 +22,7 @@ use fleet_contracts::mail_link::{
 };
 use fleet_identity_protocol::OrganizationId;
 use futures_util::FutureExt;
-use std::sync::Arc;
+use std::sync::{Arc, OnceLock};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 use workspace_model::{
     RefusalReason, WorkspaceReply, WorkspaceResult,
@@ -164,18 +164,26 @@ async fn serve_link(
             )
         })
         .await;
-    let Ok(Ok(mut registration)) = registration else {
-        close_link(
-            &mut socket,
-            &state.stop,
-            close_code::POLICY,
-            "machine authority expired or revoked",
-        );
-        return;
+    let mut registration = match registration {
+        Ok(Ok(registration)) => registration,
+        Ok(Err(cause)) => {
+            close_link(&mut socket, &state.stop, cause.code(), "");
+            return;
+        }
+        Err(_) => {
+            close_link(
+                &mut socket,
+                &state.stop,
+                close_code::ERROR,
+                "central unavailable",
+            );
+            return;
+        }
     };
     let writes = LinkWrites {
         stop: &state.stop,
         replaced: &registration.replaced,
+        authority_close: &registration.authority_close,
     };
     if !writes.send(&mut socket, &welcome).await {
         return;
@@ -240,8 +248,8 @@ async fn serve_link(
                     .await
                 {
                     RequestOutcome::Replied => {}
-                    RequestOutcome::AuthorityLapsed => {
-                        writes.close_lapsed(&mut socket);
+                    RequestOutcome::AuthorityLapsed(cause) => {
+                        writes.close_authority(&mut socket, cause);
                         return;
                     }
                     RequestOutcome::Stopped => return,
@@ -250,7 +258,7 @@ async fn serve_link(
             LinkFrame::Data(DataFrame::Batch { requests }) => {
                 // Every member is answered, as on the Worker; a lapsed authority
                 // refuses each member and closes the link after the batch.
-                let mut lapsed = false;
+                let mut lapsed = None;
                 for request in requests.into_requests() {
                     match reply_to_request(
                         &mut socket,
@@ -263,12 +271,14 @@ async fn serve_link(
                     .await
                     {
                         RequestOutcome::Replied => {}
-                        RequestOutcome::AuthorityLapsed => lapsed = true,
+                        RequestOutcome::AuthorityLapsed(cause) => {
+                            lapsed = lapsed.or(Some(cause));
+                        }
                         RequestOutcome::Stopped => return,
                     }
                 }
-                if lapsed {
-                    writes.close_lapsed(&mut socket);
+                if let Some(cause) = lapsed {
+                    writes.close_authority(&mut socket, cause);
                     return;
                 }
             }
@@ -291,15 +301,15 @@ async fn serve_link(
                 query,
             }) => {
                 let active = match runtime
-                    .restore_machine_connection(&connection.attachment())
+                    .restore_machine_link_request(&connection.attachment())
                     .await
                 {
-                    Ok(Ok(active)) => active,
-                    Ok(Err(_)) => {
-                        writes.close_lapsed(&mut socket);
+                    Ok(MachineLinkRequestAuthority::Admitted(active)) => active,
+                    Ok(MachineLinkRequestAuthority::Refused(cause)) => {
+                        writes.close_authority(&mut socket, cause);
                         return;
                     }
-                    Err(_) => {
+                    Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) | Err(_) => {
                         writes.close(&mut socket, close_code::ERROR, "central unavailable");
                         return;
                     }
@@ -339,8 +349,8 @@ async fn serve_link(
                     {
                         Ok(MailReceiptSettlement::Applied) => results.push(ReceiptResult::Recorded),
                         Ok(MailReceiptSettlement::Stop(result)) => results.push(result),
-                        Ok(MailReceiptSettlement::AuthorityLapsed) => {
-                            writes.close_lapsed(&mut socket);
+                        Ok(MailReceiptSettlement::AuthorityLapsed(cause)) => {
+                            writes.close_authority(&mut socket, cause);
                             return;
                         }
                         Err(_) => {
@@ -386,8 +396,13 @@ async fn send_welcome_backlog(
             () = writes.replaced.cancelled() => return false,
             page = runtime.windowed_welcome_page(&attachment, cursor.as_ref()) => page,
         };
-        let Ok(WelcomeDeliveryPage::Ready(rows)) = page else {
-            return false;
+        let rows = match page {
+            Ok(WelcomeDeliveryPage::Ready(rows)) => rows,
+            Ok(WelcomeDeliveryPage::AuthorityLapsed(cause)) => {
+                writes.close_authority(socket, cause);
+                return false;
+            }
+            Err(_) => return false,
         };
         cursor = rows
             .last()
@@ -433,7 +448,11 @@ async fn offer_windowed_delivery(
         Ok(WindowedDeliveryDecision::Ineligible) => {
             return true;
         }
-        Ok(WindowedDeliveryDecision::AuthorityLapsed) | Err(_) => return false,
+        Ok(WindowedDeliveryDecision::AuthorityLapsed(cause)) => {
+            writes.close_authority(socket, cause);
+            return false;
+        }
+        Err(_) => return false,
     };
     let Some(now) =
         chrono::DateTime::from_timestamp_millis(state.host.current_time().unix_millis())
@@ -503,7 +522,7 @@ enum RequestOutcome {
     Replied,
     /// The connection's authority expired or was revoked: the request was
     /// answered Refused(MachineRevoked) and the link must close.
-    AuthorityLapsed,
+    AuthorityLapsed(MachineLinkCloseCode),
     /// The link stopped or failed; it is already closed or closing.
     Stopped,
 }
@@ -534,9 +553,9 @@ async fn reply_to_request(
                 }
             }
         }
-        Ok(MachineLinkRequestAuthority::Refused) => (
+        Ok(MachineLinkRequestAuthority::Refused(cause)) => (
             refused_reply(request.payload(), RefusalReason::MachineRevoked),
-            RequestOutcome::AuthorityLapsed,
+            RequestOutcome::AuthorityLapsed(cause),
         ),
         Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) if in_batch => (
             ReplyPayload::central_unavailable(request.payload()),
@@ -605,6 +624,7 @@ async fn dispatch_request(
 struct LinkWrites<'a> {
     stop: &'a CancellationToken,
     replaced: &'a CancellationToken,
+    authority_close: &'a OnceLock<MachineLinkCloseCode>,
 }
 
 impl LinkWrites<'_> {
@@ -620,17 +640,17 @@ impl LinkWrites<'_> {
         }
     }
 
-    fn close_lapsed(&self, socket: &mut WebSocket) {
-        self.close(
-            socket,
-            close_code::POLICY,
-            "machine authority expired or revoked",
-        );
+    fn close_authority(&self, socket: &mut WebSocket, cause: MachineLinkCloseCode) {
+        self.close(socket, cause.code(), "");
     }
 
     fn close(&self, socket: &mut WebSocket, code: u16, reason: &'static str) {
         let (code, reason) = if self.replaced.is_cancelled() {
-            (close_code::NORMAL, "machine link ended")
+            self.authority_close
+                .get()
+                .map_or((close_code::NORMAL, "machine link ended"), |cause| {
+                    (cause.code(), "")
+                })
         } else {
             (code, reason)
         };
