@@ -1,10 +1,7 @@
-use crate::organization_admin_contract::{
-    MachineEnrollmentRevocationResult, OrganizationAdminResult,
-};
-use crate::person_request::RevokeMachineEnrollmentRequest;
+use crate::organization_admin_contract::OrganizationAdminResult;
 use fleet_contracts::{
-    OrganizationStatementDigestReply, ProvisionOrganization, ProvisionOrganizationResult,
-    ReadOrganizationStatementDigest,
+    MachineEnrollmentRevocationResult, OrganizationStatementDigestReply, ProvisionOrganization,
+    ProvisionOrganizationResult, ReadOrganizationStatementDigest, RevokeMachineEnrollmentRequest,
 };
 use serde_json::json;
 

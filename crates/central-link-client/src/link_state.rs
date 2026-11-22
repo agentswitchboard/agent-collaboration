@@ -10,7 +10,7 @@ use central_link_protocol::{
 use router_clock::{ClockInstant, RuntimeClock};
 use std::{sync::Arc, time::Duration};
 use workspace_ids::MachineId;
-use workspace_model::{Caller, ResolvedSender};
+use workspace_model::{Caller, ResolvedSender, Timestamp};
 
 const PING_INTERVAL: Duration = Duration::from_secs(20);
 const CALL_DEADLINE: Duration = Duration::from_secs(30);
@@ -69,7 +69,10 @@ pub enum ClientAction {
 
 #[derive(Debug, Eq, PartialEq)]
 pub enum ClientEvent {
-    Welcomed,
+    Welcomed {
+        central_time: Timestamp,
+        effective_expires_at: Timestamp,
+    },
     Pong,
     Reply {
         correlation_id: CorrelationId,
@@ -271,7 +274,12 @@ impl LinkClient {
         frame: LinkFrame,
     ) -> Result<ClientEvent, ClientError> {
         self.check_attempt(attempt)?;
-        if let LinkFrame::Data(DataFrame::Welcome { machine_id, .. }) = &frame {
+        if let LinkFrame::Data(DataFrame::Welcome {
+            machine_id,
+            central_time,
+            effective_expires_at,
+        }) = &frame
+        {
             if !matches!(self.state, ConnectionState::AwaitingWelcome { .. })
                 || machine_id != &self.machine
             {
@@ -283,7 +291,10 @@ impl LinkClient {
                 heartbeat: Heartbeat::Idle,
             };
             self.retry_delay = INITIAL_RETRY;
-            return Ok(ClientEvent::Welcomed);
+            return Ok(ClientEvent::Welcomed {
+                central_time: *central_time,
+                effective_expires_at: *effective_expires_at,
+            });
         }
         if !matches!(self.state, ConnectionState::Connected { .. }) {
             return Err(ClientError::UnexpectedFrame);

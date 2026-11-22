@@ -162,7 +162,7 @@ fn welcome_reply_deliver_and_receipts_are_closed_and_directional() {
     let fixtures = [
         (
             FrameDirection::ToRouter,
-            json!({"kind":"welcome","machineId":id,"centralTime":"2030-01-01T00:00:00Z"}),
+            json!({"kind":"welcome","machineId":id,"centralTime":"2030-01-01T00:00:00Z","effectiveExpiresAt":"2030-01-01T00:10:00Z"}),
         ),
         (
             FrameDirection::ToRouter,
@@ -198,6 +198,15 @@ fn welcome_reply_deliver_and_receipts_are_closed_and_directional() {
         bad["extra"] = json!(true);
         assert!(decode_text(&bad.to_string(), direction).is_err());
     }
+    let welcome_without_deadline =
+        json!({"kind":"welcome","machineId":id,"centralTime":"2030-01-01T00:00:00Z"});
+    assert!(
+        decode_text(
+            &welcome_without_deadline.to_string(),
+            FrameDirection::ToRouter
+        )
+        .is_err()
+    );
     for fixture in [
         json!({"kind":"unknown"}),
         json!({"kind":"ack"}),

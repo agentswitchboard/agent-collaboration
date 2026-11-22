@@ -18,6 +18,7 @@ pub enum PausePoint {
     /// After the store applied the batch, before the drain.
     AfterStoreApplied,
     /// The workspace request has returned from execute.
+    BeforeWorkspaceRequestApplying,
     AfterWorkspaceExecute,
     /// The engine has entered completion and has yet to drive work.
     EngineCompletionEntered,
@@ -27,6 +28,11 @@ pub enum PausePoint {
     AfterDrainCommit,
     BeforeTimerCommit,
     BeforeReceiptTransaction,
+    AfterIdleExpiryCommit,
+    AfterIdleRenewalPlatformSendError,
+    BeforePrivateEnrollmentInvalidation,
+    BeforeIdleEnrollmentCleanup,
+    AfterIdleEnrollmentCleanup,
     AfterTimerCommit,
     /// Engine points are keyed by instance (`hold_engine`): after a due event
     /// passed the attempt check, before it loads the instance; after `handle`

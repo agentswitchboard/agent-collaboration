@@ -107,6 +107,12 @@ async fn one_indexed_alarm_select_reads_its_own_write_and_clear_dispatches_none(
     .trim();
     for (filename, production) in [("production.sqlite", true), ("fixture.sqlite", false)] {
         let storage = central(&root.path().join(filename), catalog(production, true, true));
+        let counts = storage.read(Statement {
+            sql: "SELECT COUNT(*) AS allowances, (SELECT COUNT(*) FROM engine_due_entries) AS due_entries FROM login_machine_allowances",
+            args: vec![],
+        }).await.unwrap();
+        let zero = SqlValue::Integer(0.try_into().unwrap());
+        assert_eq!(counts.rows, [[zero.clone(), zero]]);
         storage
             .run_batch(batch(&[STAMP], AlarmUpdate::Unchanged))
             .await

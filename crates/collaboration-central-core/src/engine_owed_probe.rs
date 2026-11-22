@@ -71,7 +71,9 @@ impl<Host: fleet_runtime_ports::CentralStore, Stores: fleet_runtime_ports::Works
             )
             .await?
         {
-            return Ok(EngineRequestOutcome::NotPermitted { reason });
+            return Ok(EngineRequestOutcome::NotPermitted {
+                reason: crate::applying_request_failure::probe_refusal(reason)?,
+            });
         }
         let identity = match caller.caller() {
             workspace_model::Caller::Session(session) => workspace_model::Identity::AgentSession {

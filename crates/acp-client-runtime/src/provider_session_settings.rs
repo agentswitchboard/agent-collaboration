@@ -1,6 +1,7 @@
 //! Typed provider Session settings at the ACP client boundary.
 use provider_session_machines::{EffectiveProviderSettings, ProviderSettingKind};
 
+/// The Router's caller supplies these requested settings when it asks the harness to configure a session.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct RequestedProviderSettings {
     pub mode: Option<String>,
@@ -21,6 +22,7 @@ impl RequestedProviderSettings {
 
 /// What a request asks of the agent's fast option, and where it came from
 /// (D1 spec R7, R10). The Router never turns fast on.
+/// The caller or Router create defaults select what the harness should do with the fast setting.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub enum FastRequest {
     /// Don't touch fast: `--fast auto`, and every setter that isn't about fast.

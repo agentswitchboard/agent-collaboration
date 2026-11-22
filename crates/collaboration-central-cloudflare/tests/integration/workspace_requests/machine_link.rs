@@ -5,10 +5,13 @@ mod batch_restore;
 mod caller_authority;
 mod delivery;
 mod fixture;
+mod idle_expiry;
+mod private_enrollment_invalidation;
 mod probe_diagnostic;
 mod receipt;
 mod receipt_frames;
 mod renewal;
+mod request_authority;
 mod request_status;
 mod revocation;
 mod witness_assertions;
@@ -22,7 +25,7 @@ use collaboration_central_conformance::{ConformanceResult as Result, signin_fixt
 use fixture::{ConnectedLink, Exchange, Fixture, MACHINE_ID, ORGANIZATION, OTHER_ORGANIZATION};
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use receipt::{AreaReceipt, HibernationReceipt};
-use reqwest_websocket::{CloseCode, Message, RequestBuilderExt};
+use reqwest_websocket::{Message, RequestBuilderExt};
 use runtime_primitives::Clock;
 use std::{io::Write, panic::AssertUnwindSafe, path::PathBuf, time::Duration};
 use workspace_model::{
@@ -63,6 +66,38 @@ async fn receipt_result(
         })
     {
         return Err("receipt result or correlation changed".into());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn signed_machine_bearer_with_retired_installation_id_is_refused() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    ConnectedLink::open(&fixture).await?.close().await?;
+
+    let signed_bearer = signed::resign_machine_token(
+        &fixture.token,
+        &[(
+            "principal",
+            serde_json::json!({
+                "kind": "machine",
+                "machine_id": MACHINE_ID,
+                "enrollment_id": fixture.enrollment,
+                "installation_id": MACHINE_ID,
+            }),
+        )],
+    )?;
+    let status = fixture
+        .client
+        .get(fixture.link_url(ORGANIZATION))
+        .bearer_auth(signed_bearer)
+        .upgrade()
+        .send()
+        .await?
+        .status();
+    fixture.close().await?;
+    if status != reqwest::StatusCode::UNAUTHORIZED {
+        return Err(format!("retired installation_id must return HTTP 401, got {status}").into());
     }
     Ok(())
 }
@@ -270,7 +305,9 @@ async fn baseline(
         DataFrame::Welcome {
             machine_id,
             central_time,
+            effective_expires_at,
         } if machine_id.as_str() == MACHINE_ID
+            && effective_expires_at.timestamp() == signed::NOW_SECONDS + 600
             && central_time.timestamp_millis() == fixture.clock.now().unix_millis() => {}
         _ => return Err("Welcome must expose the machine_id and one injected clock".into()),
     }
@@ -456,7 +493,6 @@ async fn route_and_caller_refusals(fixture: &Fixture) -> Result<()> {
 enum AuthorityChange {
     Expiry,
     Revocation,
-    Supersession,
 }
 
 #[tokio::test]
@@ -470,8 +506,18 @@ async fn hibernating_socket_refuses_revoked_enrollment() -> Result<()> {
 }
 
 #[tokio::test]
-async fn hibernating_socket_refuses_superseded_enrollment() -> Result<()> {
-    authority_refusal(AuthorityChange::Supersession).await
+async fn hibernating_socket_closes_on_private_supersession_before_a_guarded_frame() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let result = async {
+        let (mut link, _, _, _, _) = baseline(&fixture).await?;
+        fixture.host.c2_witness(WitnessPhase::Evicting).await?;
+        fixture.host.c2_evict(&fixture.organization).await?;
+        private_enrollment_invalidation::supersede_and_require_old_close(&fixture, &mut link.socket)
+            .await
+    }
+    .await;
+    fixture.close().await?;
+    result
 }
 
 async fn authority_refusal(change: AuthorityChange) -> Result<()> {
@@ -487,7 +533,7 @@ async fn denied_journey(fixture: &Fixture, change: AuthorityChange) -> Result<()
         AuthorityChange::Expiry => {}
         AuthorityChange::Revocation => {
             let ended: std::result::Result<
-                Option<collaboration_central_core::identity_contract::EndedMachineClient>,
+                Option<fleet_contracts::EndedMachineClient>,
                 central_storage::StoreFailure,
             > = fixture
                 .runtime()
@@ -507,7 +553,6 @@ async fn denied_journey(fixture: &Fixture, change: AuthorityChange) -> Result<()
                 return Err("real revocation did not end the original client".into());
             }
         }
-        AuthorityChange::Supersession => fixture.supersede().await?,
     }
     let before = fixture.host.c2_witness(WitnessPhase::Evicting).await?;
     fixture.host.c2_evict(&fixture.organization).await?;
@@ -521,22 +566,30 @@ async fn denied_journey(fixture: &Fixture, change: AuthorityChange) -> Result<()
     fixture.host.c2_witness(WitnessPhase::Deciding).await?;
     let request = link.request_as(fixture::session_caller()?, create_area(&workspace)?)?;
     fixture::send(&mut link.socket, &request).await?;
-    // Both hosts answer the request MachineRevoked under its correlation, then
-    // close: the Router's only way on is a fresh connection.
+    let (expected_reply, expected_close) = match change {
+        AuthorityChange::Expiry => (
+            WorkspaceResult::CentralUnavailable,
+            central_link_protocol::MachineLinkCloseCode::Expired,
+        ),
+        AuthorityChange::Revocation => (
+            WorkspaceResult::Refused(RefusalReason::MachineRevoked),
+            central_link_protocol::MachineLinkCloseCode::Revoked,
+        ),
+    };
     let reply = fixture::receive(&mut link.socket).await?;
     let refused = matches!(
         &reply,
         DataFrame::Reply { correlation_id, .. } if correlation_id == correlation(&request)?
-    ) && workspace_reply(&reply)?.result
-        == WorkspaceResult::Refused(RefusalReason::MachineRevoked);
+    ) && workspace_reply(&reply)?.result == expected_reply;
     if !refused {
-        return Err(format!("stale authority must answer MachineRevoked first: {reply:?}").into());
+        return Err(
+            format!("{expected_close:?} must answer {expected_reply:?} first: {reply:?}").into(),
+        );
     }
     match link.socket.next().await {
-        Some(Ok(Message::Close {
-            code: CloseCode::Policy,
-            reason,
-        })) if reason == "machine authority expired or revoked" => {}
+        Some(Ok(Message::Close { code, .. }))
+            if central_link_protocol::MachineLinkCloseCode::from_code(code.into())
+                == Some(expected_close) => {}
         other => {
             return Err(format!(
                 "stale authority must close the original socket before a semantic effect: {other:?}"

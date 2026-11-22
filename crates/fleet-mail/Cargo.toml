@@ -18,6 +18,7 @@ central-storage.workspace = true
 fleet-contracts.workspace = true
 fleet-engine.workspace = true
 fleet-lent-transaction.workspace = true
+fleet-machine-login.workspace = true
 fleet-runtime-ports.workspace = true
 fleet-request-log.workspace = true
 futures-util.workspace = true

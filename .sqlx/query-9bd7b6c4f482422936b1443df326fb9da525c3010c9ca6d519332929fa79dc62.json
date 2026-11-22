@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE login_machine_approvals\nSET updated_at=updated_at\nWHERE approval_id=?\n  AND state='enrolled'\n  AND ?-unixepoch(last_grant_at)>=?\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "9bd7b6c4f482422936b1443df326fb9da525c3010c9ca6d519332929fa79dc62"
+}

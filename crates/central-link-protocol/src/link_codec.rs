@@ -32,6 +32,7 @@ pub enum DataFrame {
     Welcome {
         machine_id: MachineId,
         central_time: Timestamp,
+        effective_expires_at: Timestamp,
     },
     Request {
         request: Box<LinkRequest>,

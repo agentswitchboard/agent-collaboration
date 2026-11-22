@@ -1,7 +1,7 @@
 //! Allowed normal/build edges between workspace packages.
 use super::workspace_boundaries;
 
-const LAYER_POLICY: [(&str, &[&str]); 41] = [
+const LAYER_POLICY: [(&str, &[&str]); 44] = [
     ("workspace-ids", &[]),
     (
         "workspace-model",
@@ -27,7 +27,15 @@ const LAYER_POLICY: [(&str, &[&str]); 41] = [
     ),
     ("central-storage", &[]),
     ("state-machine-core", &[]),
-    ("provider-session-machines", &["state-machine-core"]),
+    (
+        "provider-session-machines",
+        &[
+            "state-machine-core",
+            workspace_boundaries::HARNESS_CONTRACTS.0,
+        ],
+    ),
+    workspace_boundaries::HARNESS_CONTRACTS,
+    workspace_boundaries::HARNESS_SHARED_MECHANICS,
     (
         "central-engine-model",
         &["central-storage", "state-machine-core"],
@@ -48,6 +56,7 @@ const LAYER_POLICY: [(&str, &[&str]); 41] = [
             "central-storage",
             "fleet-contracts",
             "fleet-identity-protocol",
+            "fleet-machine-login",
             "fleet-rpc",
             "fleet-runtime-ports",
             "fleet-runtime",
@@ -154,6 +163,20 @@ const LAYER_POLICY: [(&str, &[&str]); 41] = [
             "workspace-ids",
         ],
     ),
+    (
+        "fleet-machine-login",
+        &[
+            "central-storage",
+            "fleet-contracts",
+            "fleet-identity-protocol",
+            "fleet-lent-transaction",
+            "fleet-runtime-ports",
+            "fleet-signin",
+            "message-board",
+            "state-machine-core",
+            "workspace-ids",
+        ],
+    ),
     (workspace_boundaries::LENT_TRANSACTION, &[]),
     ("fleet-storage-schema", &[]),
     (
@@ -201,6 +224,8 @@ const LAYER_POLICY: [(&str, &[&str]); 41] = [
             "state-machine-core",
             "provider-session-machines",
             "router-clock",
+            workspace_boundaries::HARNESS_CONTRACTS.0,
+            workspace_boundaries::HARNESS_SHARED_MECHANICS.0,
         ],
     ),
     (
@@ -288,6 +313,7 @@ const LAYER_POLICY: [(&str, &[&str]); 41] = [
 pub(super) fn layer_policy() -> impl Iterator<Item = (&'static str, &'static [&'static str])> {
     LAYER_POLICY
         .into_iter()
+        .chain(workspace_boundaries::SESSION_READ_CRATES)
         .chain(workspace_boundaries::FLEET_PURE_CRATES)
         .chain(workspace_boundaries::TIMER_CRATES)
         .chain([

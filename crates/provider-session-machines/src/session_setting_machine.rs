@@ -7,14 +7,7 @@ use state_machine_core::{
     EventTag, RefusalTag, StateMachine, StateMachineResult, StateTag, Transition, TransitionError,
 };
 
-/// A setting's value as the agent names it (an option or mode ID).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct SettingValueId(pub String);
-
-/// One change attempt's identity (a UUIDv7), so an older change's result
-/// is recognised.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct SettingApplication(pub uuid::Uuid);
+pub use switchboard_harness_contracts::{SettingApplication, SettingValueId};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum UnresolvedCause {

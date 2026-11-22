@@ -31,6 +31,8 @@ pub const PUBLIC_ORIGIN: &str = "https://central.example.invalid";
 pub const NOW_SECONDS: i64 = 1_900_000_000;
 /// 120 days, the owner's statement lifetime.
 pub const LIFETIME_SECONDS: i64 = 10_368_000;
+/// The ruled machine login deadline, independent of the production policy constant.
+pub const MACHINE_IDLE_LIMIT_SECONDS: i64 = 60 * 24 * 60 * 60;
 
 pub fn signing_key(seed: u8) -> ConformanceResult<Ed25519KeyPair> {
     // Public test fixture only: never a deployment signing key.
@@ -281,3 +283,5 @@ pub use issuer_trace::{
 };
 pub use standing_trace::{StandingProbe, StandingSample, prove_standing_trace};
 pub use trust_trace::TrustTraceHost;
+
+pub mod machine_lifecycle;

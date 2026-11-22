@@ -10,6 +10,7 @@ pub const ORGANIZATION_TABLES: &[&str] = &[
     "directory_workspaces",
     "engine_due_entries",
     "engine_work_attempts",
+    "login_machine_allowances",
     "login_machine_approvals",
     "login_machines",
     "mail_messages",

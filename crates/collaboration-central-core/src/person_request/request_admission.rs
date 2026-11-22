@@ -7,7 +7,7 @@ use central_storage::StoreFailure;
 use serde::{Deserialize, Serialize};
 
 /// Changes need a second factor passed within this many seconds (F2a's window).
-pub const SECOND_FACTOR_WINDOW_SECONDS: i64 = 900;
+pub use fleet_contracts::PERSON_SECOND_FACTOR_WINDOW_SECONDS as SECOND_FACTOR_WINDOW_SECONDS;
 
 /// A fence revision: a positive JavaScript-safe integer.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd)]

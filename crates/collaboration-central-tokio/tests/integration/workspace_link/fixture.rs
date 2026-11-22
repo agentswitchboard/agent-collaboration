@@ -1,12 +1,10 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use central_link_protocol::{FrameDirection, LinkFrame, decode_text, encode_text};
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
-use collaboration_central_core::{
-    SignInTrustSettings,
-    identity_contract::{DeviceLoginDecision, MachineTokenDecision},
-};
+use collaboration_central_core::SignInTrustSettings;
 use collaboration_central_tokio::{OrganizationSignInLink, TokioWorkspaceHost, WorkspaceLink};
 use fleet_contracts::ProvisionOrganization;
+use fleet_contracts::{DeviceLoginDecision, MachineTokenDecision};
 use futures_util::{SinkExt, StreamExt};
 use reqwest_websocket::{Message, RequestBuilderExt, WebSocket};
 use router_clock::ManualClock;

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE login_machines\nSET label=?,state=?,enrollment_generation=?,updated_at=?\nWHERE machine_id=?\n  AND enrollment_generation=?\n  AND state=?\n  AND label=?\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "3f49f4b4d3b5f409a021bde23acccd27d2f03f6d904c698643c9e8273d6cdd76"
+}

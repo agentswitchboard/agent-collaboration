@@ -18,7 +18,7 @@ fn renew_and_its_answer_have_the_approved_wire_shape_and_directions() {
     let renewed = json!({
         "kind": "machineTokenRenewal",
         "correlationId": CORRELATION,
-        "result": {"kind": "renewed", "effectiveExpiresAt": "2030-03-17T18:46:40Z"},
+        "result": {"kind": "renewed", "effectiveExpiresAt": "2030-03-17T18:46:40Z", "centralTime": "2030-03-17T18:36:40Z"},
     })
     .to_string();
     let refused = json!({
@@ -27,6 +27,16 @@ fn renew_and_its_answer_have_the_approved_wire_shape_and_directions() {
         "result": {"kind": "refused", "reason": "enrollmentNotActive"},
     })
     .to_string();
+
+    let mut missing_clock: serde_json::Value = serde_json::from_str(&renewed).unwrap();
+    missing_clock["result"]
+        .as_object_mut()
+        .unwrap()
+        .remove("centralTime");
+    assert!(decode_text(&missing_clock.to_string(), FrameDirection::ToRouter).is_err());
+    let mut unknown_field: serde_json::Value = serde_json::from_str(&renewed).unwrap();
+    unknown_field["result"]["unrecognized"] = json!(true);
+    assert!(decode_text(&unknown_field.to_string(), FrameDirection::ToRouter).is_err());
 
     let renewed = decode_text(&renewed, FrameDirection::ToRouter).unwrap();
     let refused = decode_text(&refused, FrameDirection::ToRouter).unwrap();

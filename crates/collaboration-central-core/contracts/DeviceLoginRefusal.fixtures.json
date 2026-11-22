@@ -2,5 +2,6 @@
 {"kind":"notPermitted"},
 {"kind":"machineInAnotherOrganization"},
 {"kind":"unknownWorkspace"},
+{"kind":"requestConflict"},
 {"kind":"secondFactorRequired","withinSeconds":900}
 ]
