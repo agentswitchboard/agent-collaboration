@@ -200,15 +200,13 @@ impl Fixture {
         let runtime = host.central(&organization()).await.unwrap();
         assert!(runtime.runtime().statement_host().read(Statement { sql: "SELECT name FROM sqlite_schema WHERE type='table' AND name='machine_credentials'", args: vec![] }).await.unwrap().rows.is_empty());
         runtime
-            .provision_organization(
-                &collaboration_central_core::identity_contract::ProvisionOrganization {
-                    organization_id: organization(),
-                    organization_statement: signed::stamp(organization().as_str(), now - 3600)
-                        .unwrap()
-                        .try_into()
-                        .unwrap(),
-                },
-            )
+            .provision_organization(&fleet_contracts::ProvisionOrganization {
+                organization_id: organization(),
+                organization_statement: signed::stamp(organization().as_str(), now - 3600)
+                    .unwrap()
+                    .try_into()
+                    .unwrap(),
+            })
             .await
             .unwrap();
         seed_machine(&host, &id(2), 4, now).await;
@@ -271,12 +269,10 @@ impl Fixture {
         let statement =
             signed::renewal(organization().as_str(), previous, at.timestamp(), 0).unwrap();
         runtime
-            .provision_organization(
-                &collaboration_central_core::identity_contract::ProvisionOrganization {
-                    organization_id: organization(),
-                    organization_statement: statement.try_into().unwrap(),
-                },
-            )
+            .provision_organization(&fleet_contracts::ProvisionOrganization {
+                organization_id: organization(),
+                organization_statement: statement.try_into().unwrap(),
+            })
             .await
             .unwrap();
         let at = chrono::DateTime::from_timestamp(at.timestamp(), 0)
@@ -466,13 +462,10 @@ pub async fn admitted_organization<C: runtime_primitives::Clock + ?Sized>(
     let now = clock.now().unix_millis().div_euclid(1000);
     let runtime = host.central(organization).await?;
     runtime
-        .provision_organization(
-            &collaboration_central_core::identity_contract::ProvisionOrganization {
-                organization_id: organization.clone(),
-                organization_statement: signed::stamp(organization.as_str(), now - 3600)?
-                    .try_into()?,
-            },
-        )
+        .provision_organization(&fleet_contracts::ProvisionOrganization {
+            organization_id: organization.clone(),
+            organization_statement: signed::stamp(organization.as_str(), now - 3600)?.try_into()?,
+        })
         .await?;
     seed_machine_for(host, organization, &id(2), 4, now).await;
     let token = signed::machine_token(

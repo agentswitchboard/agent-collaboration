@@ -165,6 +165,19 @@ impl SqliteObjectStore {
         }
     }
 
+    /// Borrow an owning connection for a local typed read.
+    pub async fn read_checked<Output>(
+        &self,
+        read: impl AsyncFnOnce(&mut SqliteConnection) -> Result<Output, StoreFailure>,
+    ) -> Result<Output, StoreFailure> {
+        let mut connection = self
+            .pool
+            .acquire()
+            .await
+            .map_err(|_| StoreFailure::Unavailable)?;
+        read(&mut connection).await
+    }
+
     pub async fn read(&self, statement: Statement) -> Result<ReadOutcome, StoreFailure> {
         let mut connection = self
             .pool
@@ -311,6 +324,23 @@ fn statement_is_rejected(code: Option<&str>) -> bool {
         code.and_then(|code| code.parse::<i32>().ok()),
         Some(19 | 20 | 531 | 1043 | 1811 | 2323 | 2579 | 2835 | 3091)
     )
+}
+
+/// Classify the SQLite statement error after a typed transaction rolled back.
+pub fn batch_statement_failure(
+    error: &sqlx::Error,
+    index: u32,
+) -> Result<BatchOutcome, StoreFailure> {
+    let sqlx::Error::Database(error) = error else {
+        return Err(StoreFailure::Unavailable);
+    };
+    if let Some(kind) = constraint_kind(error.kind()) {
+        Ok(BatchOutcome::ConstraintViolated { index, kind })
+    } else if statement_is_rejected(error.code().as_deref()) {
+        Ok(BatchOutcome::StatementRejected { index })
+    } else {
+        Err(StoreFailure::Unavailable)
+    }
 }
 
 #[cfg(test)]

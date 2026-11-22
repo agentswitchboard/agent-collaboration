@@ -1,0 +1,284 @@
+//! Allowed normal/build edges between workspace packages.
+use super::workspace_boundaries;
+
+const LAYER_POLICY: [(&str, &[&str]); 40] = [
+    ("workspace-ids", &[]),
+    (
+        "workspace-model",
+        &[
+            "workspace-ids",
+            "agent-automation",
+            "collaboration-mail-protocol",
+            "message-board",
+        ],
+    ),
+    (
+        "central-link-protocol",
+        &["workspace-ids", "workspace-model"],
+    ),
+    (
+        "central-link-client",
+        &[
+            "central-link-protocol",
+            "workspace-model",
+            "workspace-ids",
+            "router-clock",
+        ],
+    ),
+    ("central-storage", &[]),
+    ("state-machine-core", &[]),
+    ("provider-session-machines", &["state-machine-core"]),
+    (
+        "central-engine-model",
+        &["central-storage", "state-machine-core"],
+    ),
+    (
+        "collaboration-central-core",
+        &[
+            "fleet-engine",
+            "fleet-mail",
+            "fleet-notices",
+            "fleet-wakes",
+            "fleet-schedules",
+            "fleet-timer-policy",
+            "agent-automation",
+            "central-engine-model",
+            "central-link-protocol",
+            "central-storage",
+            "fleet-contracts",
+            "fleet-identity-protocol",
+            "fleet-rpc",
+            "fleet-runtime-ports",
+            "fleet-runtime",
+            "fleet-signin",
+            "fleet-workspace-access",
+            "fleet-workspace-directory",
+            "message-board",
+            "workspace-ids",
+            "workspace-model",
+            "workspace-rules",
+        ],
+    ),
+    (
+        "collaboration-central-tokio",
+        &[
+            "central-link-protocol",
+            "central-storage",
+            "collaboration-central-core",
+            "fleet-contracts",
+            "fleet-engine",
+            "fleet-identity-protocol",
+            "fleet-lent-transaction",
+            "fleet-rpc",
+            "fleet-runtime-ports",
+            "fleet-runtime",
+            "fleet-signin",
+            "fleet-storage-schema",
+            "fleet-store-sqlx",
+            "fleet-workspace-service",
+            "router-clock",
+            "workspace-ids",
+            "workspace-model",
+        ],
+    ),
+    (
+        "collaboration-central-cloudflare",
+        &[
+            "central-link-protocol",
+            "central-storage",
+            "collaboration-central-core",
+            "fleet-contracts",
+            "fleet-engine",
+            "fleet-identity-protocol",
+            "fleet-lent-transaction",
+            "fleet-rpc",
+            "fleet-runtime-ports",
+            "fleet-runtime",
+            "fleet-signin",
+            "fleet-storage-schema",
+            "fleet-workspace-service",
+            "message-board",
+            "sqlx-durable-object",
+            "sqlx-durable-object-core",
+            "workspace-ids",
+            "workspace-model",
+        ],
+    ),
+    (
+        "fleet-runtime",
+        &[
+            "central-engine-model",
+            "central-storage",
+            "fleet-contracts",
+            "fleet-identity-protocol",
+            "fleet-runtime-ports",
+            "workspace-ids",
+            "workspace-model",
+        ],
+    ),
+    (
+        "fleet-workspace-access",
+        &[
+            "central-storage",
+            "fleet-contracts",
+            "fleet-runtime",
+            "fleet-runtime-ports",
+            "workspace-ids",
+            "workspace-model",
+        ],
+    ),
+    ("fleet-engine", workspace_boundaries::ENGINE_EDGES),
+    (
+        "fleet-signin",
+        &[
+            "central-storage",
+            "fleet-contracts",
+            "fleet-identity-protocol",
+            "fleet-lent-transaction",
+            "fleet-runtime",
+            "fleet-runtime-ports",
+            "state-machine-core",
+            "workspace-ids",
+        ],
+    ),
+    (workspace_boundaries::LENT_TRANSACTION, &[]),
+    ("fleet-storage-schema", &[]),
+    (
+        "fleet-store-sqlx",
+        &["central-storage", "fleet-runtime-ports"],
+    ),
+    ("workspace-rules", &["workspace-model", "central-storage"]),
+    ("router-clock", &[]),
+    ("node-test-fixture", &[]),
+    ("ui-preference-store", &[]),
+    ("sqlite-storage-maintenance", &[]),
+    ("codex-router-quota", &[]),
+    ("codex-router-selection", &["codex-router-quota"]),
+    (
+        "codex-router-proxy",
+        &["codex-router-quota", "codex-router-selection"],
+    ),
+    (
+        "codex-router-quota-service",
+        &[
+            "codex-router-quota",
+            "codex-router-selection",
+            "codex-router-proxy",
+        ],
+    ),
+    ("agent-collaboration-tui", &[]),
+    (
+        "agent-router-quota-tui",
+        &["codex-router-quota-service", "agent-collaboration-tui"],
+    ),
+    ("collaboration-contracts", &[]),
+    ("vendor-protocol", &[]),
+    (
+        "acp-provider-adapters",
+        &[
+            "acp-client-runtime",
+            "provider-session-machines",
+            "vendor-protocol",
+        ],
+    ),
+    (
+        "acp-client-runtime",
+        &[
+            "vendor-protocol",
+            "state-machine-core",
+            "provider-session-machines",
+            "router-clock",
+        ],
+    ),
+    (
+        "collaboration-runtime",
+        &[
+            "collaboration-contracts",
+            "sqlite-storage-maintenance",
+            "router-clock",
+        ],
+    ),
+    (
+        "collaboration-service",
+        &[
+            "collaboration-contracts",
+            "collaboration-runtime",
+            "router-clock",
+        ],
+    ),
+    (
+        "agent-session-inventory",
+        &[
+            "node-test-fixture",
+            "collaboration-contracts",
+            "collaboration-runtime",
+            "collaboration-service",
+        ],
+    ),
+    (
+        "agent-session-tui",
+        &[
+            "ui-preference-store",
+            "agent-session-inventory",
+            "agent-collaboration-tui",
+            "collaboration-contracts",
+            "collaboration-runtime",
+            "collaboration-service",
+        ],
+    ),
+    (
+        "agent-collaboration",
+        &[
+            "agent-session-inventory",
+            "agent-session-tui",
+            "agent-collaboration-tui",
+            "collaboration-contracts",
+            "collaboration-runtime",
+            "collaboration-service",
+        ],
+    ),
+    (
+        "codex-router-host",
+        &[
+            "acp-client-runtime",
+            "acp-provider-adapters",
+            "router-clock",
+            "state-machine-core",
+            "provider-session-machines",
+            "collaboration-contracts",
+            "collaboration-runtime",
+            "collaboration-service",
+        ],
+    ),
+    (
+        "codex-router-cli",
+        &[
+            // The central serve composition root owns the two listeners and clock.
+            "collaboration-central-core",
+            "collaboration-central-tokio",
+            "router-clock",
+            // The quota composition root wires its preference adapter to this leaf store.
+            "ui-preference-store",
+            "codex-router-quota-service",
+            "agent-router-quota-tui",
+            "agent-collaboration-tui",
+            "codex-router-host",
+            "codex-router-proxy",
+            "codex-router-selection",
+            "collaboration-runtime",
+            "collaboration-service",
+        ],
+    ),
+];
+
+pub(super) fn layer_policy() -> impl Iterator<Item = (&'static str, &'static [&'static str])> {
+    LAYER_POLICY
+        .into_iter()
+        .chain(workspace_boundaries::FLEET_PURE_CRATES)
+        .chain(workspace_boundaries::TIMER_CRATES)
+        .chain([
+            workspace_boundaries::MAIL_LAYER,
+            workspace_boundaries::NOTICES_LAYER,
+            workspace_boundaries::DIRECTORY_LAYER,
+        ])
+}

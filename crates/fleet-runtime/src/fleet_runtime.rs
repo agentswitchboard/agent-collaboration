@@ -45,6 +45,8 @@ pub struct FleetRuntime<Host: CentralStore, Stores: WorkspaceStores> {
     #[cfg(feature = "test-support")]
     pauses: crate::PausePoints,
     #[cfg(feature = "test-support")]
+    test_faults: crate::TestFaults,
+    #[cfg(feature = "test-support")]
     legacy_invocations: std::sync::Mutex<LegacyUnitInvocations>,
     #[cfg(feature = "test-support")]
     lost_answers: std::sync::Mutex<std::collections::BTreeSet<workspace_model::RequestId>>,
@@ -86,9 +88,17 @@ impl<Host: CentralStore, Stores: WorkspaceStores> FleetRuntime<Host, Stores> {
             #[cfg(feature = "test-support")]
             pauses: crate::PausePoints::default(),
             #[cfg(feature = "test-support")]
+            test_faults: crate::TestFaults::default(),
+            #[cfg(feature = "test-support")]
             lost_answers: Default::default(),
         }
     }
+    /// Runtime-owned fault state for reached operations, separate from host storage faults.
+    #[cfg(feature = "test-support")]
+    pub fn test_faults(&self) -> &crate::TestFaults {
+        &self.test_faults
+    }
+
     pub fn organization(&self) -> &OrganizationId {
         &self.organization
     }

@@ -3,4 +3,6 @@
 
 mod sqlite_object_store;
 
-pub use sqlite_object_store::{AlarmChange, SqliteObjectStore, StoreOpenFailure};
+pub use sqlite_object_store::{
+    AlarmChange, SqliteObjectStore, StoreOpenFailure, batch_statement_failure,
+};

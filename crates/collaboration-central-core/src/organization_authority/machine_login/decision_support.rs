@@ -1,10 +1,10 @@
 //! Caller-sampled decision time, fixed policy durations and audit identities.
-use crate::organization_change_rows::{
-    ChangeRequestId, OrganizationChangeKind, OrganizationChangeOrigin, OrganizationChangeRecord,
-};
 use central_storage::StoreFailure;
 use fleet_identity_protocol::UnixSeconds;
 use fleet_runtime_ports::IdSource;
+use fleet_signin::organization_change::{
+    ChangeRequestId, OrganizationChangeKind, OrganizationChangeOrigin, OrganizationChangeRecord,
+};
 use uuid::Uuid;
 
 pub(crate) const IDLE_EXPIRY_SECONDS: i64 = 30 * 24 * 60 * 60;

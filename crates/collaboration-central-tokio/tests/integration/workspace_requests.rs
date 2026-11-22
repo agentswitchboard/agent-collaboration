@@ -153,15 +153,13 @@ async fn admission_checks_real_rows_and_orgs_keep_distinct_central_databases() {
         id::<m::WorkspaceId>(99).to_string().try_into().unwrap();
     let second_runtime = f.host.central(&other).await.unwrap();
     second_runtime
-        .provision_organization(
-            &collaboration_central_core::identity_contract::ProvisionOrganization {
-                organization_id: other.clone(),
-                organization_statement: signed::stamp(other.as_str(), now - 3600)
-                    .unwrap()
-                    .try_into()
-                    .unwrap(),
-            },
-        )
+        .provision_organization(&fleet_contracts::ProvisionOrganization {
+            organization_id: other.clone(),
+            organization_statement: signed::stamp(other.as_str(), now - 3600)
+                .unwrap()
+                .try_into()
+                .unwrap(),
+        })
         .await
         .unwrap();
     let token = signed::machine_token(

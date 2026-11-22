@@ -78,22 +78,25 @@ async fn lost_read_answer_before_effect_is_unavailable_and_never_cached() {
         Arc::new(fleet_storage_schema::workspace_migrations::workspace_migrator()),
     ));
     let lose = Arc::new(AtomicBool::new(true));
-    let runtime = WorkspaceRuntime::new(FleetRuntime::open(
-        f.caller.organization_id().clone(),
+    let runtime = WorkspaceRuntime::new(
+        FleetRuntime::open(
+            f.caller.organization_id().clone(),
+            central.clone(),
+            LoseFirstRead {
+                stores: TokioWorkspaceStores::with_fixture_store(
+                    f.root.path().join("workspace-stores"),
+                    f.workspace.clone(),
+                    store.clone(),
+                ),
+                lose: lose.clone(),
+            },
+            Arc::new(clock.clone()),
+            Arc::new(ClockIds::new(clock.clone())),
+            due_batches,
+            Arc::new(|_| {}),
+        ),
         central.clone(),
-        LoseFirstRead {
-            stores: TokioWorkspaceStores::with_fixture_store(
-                f.root.path().join("workspace-stores"),
-                f.workspace.clone(),
-                store.clone(),
-            ),
-            lose: lose.clone(),
-        },
-        Arc::new(clock.clone()),
-        Arc::new(ClockIds::new(clock.clone())),
-        due_batches,
-        Arc::new(|_| {}),
-    ))
+    )
     .with_sign_in_verification(
         collaboration_central_tokio::NativeSignInTrust::new(settings(&f.keys.url))
             .unwrap()

@@ -22,3 +22,6 @@ serde.workspace = true
 thiserror.workspace = true
 workspace-ids.workspace = true
 workspace-model.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

@@ -146,28 +146,6 @@ pub enum DisabledMachineClient {
     AlreadyDisabled {},
     NotThisEnrollment {},
 }
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(
-    tag = "kind",
-    rename_all = "snake_case",
-    rename_all_fields = "snake_case",
-    deny_unknown_fields
-)]
-pub enum MachinePrincipal {
-    Machine {
-        machine_id: MachineId,
-        enrollment_id: EnrollmentId,
-    },
-}
-/// Only extension claims live here; the token checker validates the registered claims separately.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub struct MachineTokenClaims {
-    pub principal: MachinePrincipal,
-    pub organization_id: OrganizationId,
-    pub grant_expires_at: UnixSeconds,
-}
-
 #[cfg(test)]
 #[path = "identity_decisions_test.rs"]
 mod tests;

@@ -5,6 +5,10 @@ use crate::{
 };
 use collaboration_central_core::WorkspaceCaller;
 use fleet_contracts::{
+    OrganizationStatementDigestReply, ProvisionOrganization, ProvisionOrganizationResult,
+    ReadOrganizationStatementDigest,
+};
+use fleet_contracts::{
     WorkspaceRequest as WorkspaceRpcRequest, WorkspaceResponse, WorkspaceServiceProtocol,
     WorkspaceStatusFailure,
 };
@@ -17,14 +21,10 @@ use central_storage::{
 };
 use collaboration_central_core::{
     OrganizationAdminAnswer, OrganizationSignInPort, SignInTrustSettings, WorkspaceRuntime,
-    identity_contract::{
-        AuthorizationRevision, AuthorizationRevisionAcknowledgement,
-        OrganizationStatementDigestReply, ProvisionOrganization, ProvisionOrganizationResult,
-        ReadOrganizationStatementDigest,
-    },
+    identity_contract::{AuthorizationRevision, AuthorizationRevisionAcknowledgement},
     person_request::PersonRequestInput,
 };
-use fleet_contracts::OrganizationProvisioningFailure;
+use fleet_contracts::AuthorizationRevisionFailure;
 use fleet_identity_protocol::OrganizationId;
 use fleet_runtime::{ClockIds, FleetRuntime};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
@@ -234,24 +234,24 @@ impl TokioWorkspaceHost {
                 fleet_runtime::engine_alarm_decider(due_batches.clone()),
             ),
         );
-        let runtime = WorkspaceRuntime::new(FleetRuntime::open(
-            organization.clone(),
+        let runtime = WorkspaceRuntime::new(
+            FleetRuntime::open(
+                organization.clone(),
+                storage.clone(),
+                self.stores.clone(),
+                clock.clone(),
+                ids,
+                due_batches,
+                Arc::new(crate::native_logging::observe),
+            ),
             storage,
-            self.stores.clone(),
-            clock.clone(),
-            ids,
-            due_batches,
-            Arc::new(crate::native_logging::observe),
-        ));
+        );
         let runtime = match &self.sign_in {
             Some(trust) => match trust.for_organization(organization.clone(), clock) {
                 Ok(check) => runtime.with_sign_in_verification(check),
                 // The default checker explicitly refuses every offered statement with
                 // InvalidConfiguration, at the core observation boundary.
-                Err(fleet_contracts::FleetOrganizationStatementRefusal::InvalidConfiguration) => {
-                    runtime
-                }
-                Err(_) => return Err(StoreFailure::Unavailable),
+                Err(fleet_signin::organization_authority::InvalidStampTrust) => runtime,
             },
             None => runtime,
         };
@@ -343,10 +343,10 @@ impl OrganizationSignInPort for TokioWorkspaceHost {
     async fn provision(
         &self,
         request: &ProvisionOrganization,
-    ) -> Result<ProvisionOrganizationResult, OrganizationProvisioningFailure> {
+    ) -> Result<ProvisionOrganizationResult, fleet_contracts::ProvisionFailure> {
         self.central(&request.organization_id)
             .await
-            .map_err(|_| OrganizationProvisioningFailure::Unavailable)?
+            .map_err(|_| fleet_contracts::ProvisionFailure::Unavailable)?
             .provision(request)
             .await
     }
@@ -354,10 +354,10 @@ impl OrganizationSignInPort for TokioWorkspaceHost {
     async fn digest(
         &self,
         request: &ReadOrganizationStatementDigest,
-    ) -> Result<OrganizationStatementDigestReply, OrganizationProvisioningFailure> {
+    ) -> Result<OrganizationStatementDigestReply, fleet_contracts::DigestFailure> {
         self.central(&request.organization_id)
             .await
-            .map_err(|_| OrganizationProvisioningFailure::Unavailable)?
+            .map_err(|_| fleet_contracts::DigestFailure::Unavailable)?
             .digest(request)
             .await
     }
@@ -365,10 +365,10 @@ impl OrganizationSignInPort for TokioWorkspaceHost {
     async fn revision(
         &self,
         request: &AuthorizationRevision,
-    ) -> Result<AuthorizationRevisionAcknowledgement, OrganizationProvisioningFailure> {
+    ) -> Result<AuthorizationRevisionAcknowledgement, AuthorizationRevisionFailure> {
         self.central(request.organization_id())
             .await
-            .map_err(|_| OrganizationProvisioningFailure::Unavailable)?
+            .map_err(|_| AuthorizationRevisionFailure::Unavailable)?
             .revision(request)
             .await
     }

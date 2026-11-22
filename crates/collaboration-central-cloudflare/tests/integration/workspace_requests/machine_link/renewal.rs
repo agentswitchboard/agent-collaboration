@@ -430,52 +430,5 @@ async fn lapsed_batch_journey(fixture: &Fixture) -> Result<()> {
     }
 }
 
-#[tokio::test]
-async fn a_renewal_whose_key_cannot_be_fetched_is_central_unavailable() -> Result<()> {
-    let fixture = Fixture::new().await?;
-    let result = key_fetch_journey(&fixture).await;
-    fixture.close().await?;
-    result
-}
-
-async fn key_fetch_journey(fixture: &Fixture) -> Result<()> {
-    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-    let (mut link, _, workspace, _, _) = baseline(fixture).await?;
-    fixture.keys().fail_fetches();
-    // A fresh token whose header names a key central never cached.
-    let fresh = fresh(fixture, 0, 900)?;
-    let rest = fresh.split_once('.').ok_or("token header")?.1;
-    let header =
-        URL_SAFE_NO_PAD.encode(br#"{"alg":"EdDSA","typ":"at+jwt","kid":"stamp-uncached"}"#);
-
-    let answer = renewal(
-        &mut link,
-        renew(
-            "019f0000-0000-7000-8000-00000000c351",
-            &format!("{header}.{rest}"),
-        )?,
-    )
-    .await?;
-    let still_open = link
-        .call_as(
-            fixture::session_caller()?,
-            area(
-                "019f0000-0000-7000-8000-00000000cf51",
-                "Still open",
-                &workspace,
-            )?,
-        )
-        .await?;
-
-    let unavailable = TokenRenewalResult::Refused {
-        reason: TokenRenewalRefusal::CentralUnavailable,
-    };
-    if answer != unavailable {
-        return Err(format!("an unreachable key set is CentralUnavailable: {answer:?}").into());
-    }
-    if !is_done(&still_open.reply) {
-        return Err(format!("the link stays up: {:?}", still_open.reply).into());
-    }
-    drop(link);
-    Ok(())
-}
+#[path = "renewal_issuer_cases.rs"]
+mod issuer_cases;
