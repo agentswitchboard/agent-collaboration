@@ -7,8 +7,8 @@ use central_engine_model::TransitionError;
 use crate::approval_lifecycle_admission::{is_assigned_parent, is_destination};
 use crate::approval_lifecycle_effects::{ApprovalChange, finish, reply};
 use crate::{
-    AdmittedDecider, ApprovalActor, ApprovalDecisionReply, ApprovalDestination, ApprovalEffect,
-    ApprovalReceipt, ApprovalRefusal, ApprovalRequestKey, ApprovalSession, ApprovalState,
+    AdmittedDecider, ApprovalActor, ApprovalDecisionReply, ApprovalEffect, ApprovalReceipt,
+    ApprovalRefusal, ApprovalRequestKey, ApprovalSession, ApprovalState, DestinationReply,
     FactorStanding, RetainedApproval, SavedDecision,
 };
 
@@ -33,26 +33,38 @@ pub(super) fn decide(
     now: CentralTime,
 ) -> ApprovalChange {
     let actor = decider.actor();
+    let identity = actor.identity();
     let Some(saved) = visible(state, key, &actor).filter(|_| request.request_id == key.request_id)
     else {
         return reply(
             state,
-            ApprovalReceipt::Decide(ApprovalDecisionReply::NotVisible {}),
+            ApprovalReceipt::decide_for(key, identity, ApprovalDecisionReply::NotVisible {}),
         );
     };
     if let Some(prior) = prior {
-        let result = if &prior.key == key
-            && prior.actor == actor
-            && prior.value == request.value
-            && prior.operation_id == request.operation_id
+        if &prior.key != key
+            || prior.actor != actor
+            || prior.value != request.value
+            || prior.operation_id != request.operation_id
         {
-            prior.reply.clone()
-        } else {
-            ApprovalDecisionReply::OperationConflict {}
-        };
-        return reply(state, ApprovalReceipt::Decide(result));
+            return reply(
+                state,
+                ApprovalReceipt::decide_for(
+                    key,
+                    identity,
+                    ApprovalDecisionReply::OperationConflict {},
+                ),
+            );
+        }
+        prior
+            .reply
+            .for_recipient(key, &identity)
+            .map_err(|_| TransitionError::Domain(ApprovalRefusal::InvalidRetainedEnding))?;
+        return reply(
+            state,
+            ApprovalReceipt::Decide(Box::new(prior.reply.clone())),
+        );
     }
-    let identity = actor.identity();
     let admitted = checked_destination(saved, &identity)?;
     let (next, mut effects, result) = match state {
         ApprovalState::Ended { closed, .. } => (
@@ -64,8 +76,8 @@ pub(super) fn decide(
                     &crate::approval_lifecycle_effects::ending_frame(saved, closed),
                 )
                 .map_err(|_| TransitionError::Domain(ApprovalRefusal::InvalidRetainedEnding))?
-                .view()
-                .clone(),
+                .for_recipient(&identity)
+                .map_err(|_| TransitionError::Domain(ApprovalRefusal::InvalidRetainedEnding))?,
             },
         ),
         ApprovalState::Waiting { .. } if now >= saved.window.deadline() => {
@@ -91,7 +103,7 @@ pub(super) fn decide(
                     effects,
                     ApprovalDecisionReply::SavedDecision {
                         answer: request.value.clone(),
-                        by: identity,
+                        by: identity.clone(),
                     },
                 )
             } else {
@@ -101,18 +113,21 @@ pub(super) fn decide(
         ApprovalState::Unraised | ApprovalState::StoppedBeforeRaise { .. } => {
             return reply(
                 state,
-                ApprovalReceipt::Decide(ApprovalDecisionReply::NotVisible {}),
+                ApprovalReceipt::decide_for(key, identity, ApprovalDecisionReply::NotVisible {}),
             );
         }
     };
+    let bound = DestinationReply::new(key, identity, result);
     effects.push(ApprovalEffect::SaveDecision(Box::new(SavedDecision {
         key: key.clone(),
         actor,
         operation_id: request.operation_id,
         value: request.value,
-        reply: result.clone(),
+        reply: bound.clone(),
     })));
-    effects.push(ApprovalEffect::Reply(ApprovalReceipt::Decide(result)));
+    effects.push(ApprovalEffect::Reply(ApprovalReceipt::Decide(Box::new(
+        bound,
+    ))));
     Ok((next, effects))
 }
 
@@ -123,18 +138,26 @@ pub(super) fn read(
     now: CentralTime,
 ) -> ApprovalChange {
     let Some(saved) = visible(state, key, actor) else {
-        return reply(state, ApprovalReceipt::Read(None));
+        return reply(
+            state,
+            ApprovalReceipt::read_for(key, actor.identity(), None),
+        );
     };
     if matches!(state, ApprovalState::Waiting { .. }) && now >= saved.window.deadline() {
         let (next, mut effects) = finish(saved, Ending::TimedOut {}, Delivery::Owed {}, now)?;
         let view = project_view(&next, saved, actor)?;
-        effects.push(ApprovalEffect::Reply(ApprovalReceipt::Read(Some(
-            Box::new(view),
-        ))));
+        effects.push(ApprovalEffect::Reply(ApprovalReceipt::read_for(
+            key,
+            actor.identity(),
+            Some(view),
+        )));
         return Ok((next, effects));
     }
     let view = project_view(state, saved, actor)?;
-    reply(state, ApprovalReceipt::Read(Some(Box::new(view))))
+    reply(
+        state,
+        ApprovalReceipt::read_for(key, actor.identity(), Some(view)),
+    )
 }
 
 fn project_view(
@@ -161,7 +184,7 @@ fn project_view(
             return Err(TransitionError::Stale);
         }
     }
-    .map(|view| view.view().clone())
+    .and_then(|view| view.for_recipient(&identity))
     .map_err(|_| TransitionError::Domain(ApprovalRefusal::InvalidRetainedEnding))
 }
 
@@ -181,9 +204,10 @@ pub(super) fn pass_on(
     now: CentralTime,
 ) -> ApprovalChange {
     let actor = ApprovalActor::Session(parent.clone());
+    let for_parent = |payload| ApprovalReceipt::pass_on_for(key, actor.identity(), payload);
     let Some(saved) = visible(state, key, &actor).filter(|saved| is_assigned_parent(saved, parent))
     else {
-        return reply(state, ApprovalReceipt::PassOn(PassOnReply::NotVisible {}));
+        return reply(state, for_parent(PassOnReply::NotVisible {}));
     };
     let forwarded = saved.waiting_status == WaitingStatus::PassedOn;
     match state {
@@ -194,33 +218,27 @@ pub(super) fn pass_on(
             } else {
                 PassOnReply::TooLate {}
             };
-            effects.push(ApprovalEffect::Reply(ApprovalReceipt::PassOn(result)));
+            effects.push(ApprovalEffect::Reply(for_parent(result)));
             Ok((next, effects))
         }
         ApprovalState::Waiting { .. } if !forwarded => {
             let mut saved = Box::new(saved.clone());
             saved.waiting_status = WaitingStatus::PassedOn;
-            saved
-                .routing
-                .destinations
-                .insert(ApprovalDestination::People);
             Ok((
                 ApprovalState::Waiting { saved },
-                vec![ApprovalEffect::Reply(ApprovalReceipt::PassOn(
-                    PassOnReply::Forwarded {},
-                ))],
+                vec![ApprovalEffect::Reply(for_parent(PassOnReply::Forwarded {}))],
             ))
         }
         ApprovalState::Waiting { .. } | ApprovalState::Ended { .. } => reply(
             state,
-            ApprovalReceipt::PassOn(if forwarded {
+            for_parent(if forwarded {
                 PassOnReply::Forwarded {}
             } else {
                 PassOnReply::Ended {}
             }),
         ),
         ApprovalState::Unraised | ApprovalState::StoppedBeforeRaise { .. } => {
-            reply(state, ApprovalReceipt::PassOn(PassOnReply::NotVisible {}))
+            reply(state, for_parent(PassOnReply::NotVisible {}))
         }
     }
 }

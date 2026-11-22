@@ -1,3 +1,3 @@
 # Fleet approvals tests
 
-Colocated unit tests exercise the pure lifecycle and delivery machine. The fixed cases guard the approval rules, the declared-edge checks cover the state/event matrix, and the Hegel model compares generated histories against a separate description. No host, storage or network is involved.
+The integration aggregate exercises the public organization-scoped applying entry point, with fixed histories and a separately written model for requests, authority, and holder delivery. The sibling unit test checks row successors and typed refusals against the declared edge table.

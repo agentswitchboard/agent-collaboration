@@ -4,8 +4,8 @@ use approval_request_protocol::{
 use central_engine_model::TransitionError;
 
 use crate::{
-    ApprovalEffect, ApprovalReceipt, ApprovalRefusal, ApprovalState, EndedApproval,
-    RetainedApproval, SessionNoticePhase,
+    ApprovalEffect, ApprovalReceipt, ApprovalRefusal, ApprovalRouting, ApprovalState,
+    EndedApproval, RetainedApproval,
 };
 
 pub(super) type ApprovalChange =
@@ -15,17 +15,14 @@ pub(super) fn reply(state: &ApprovalState, receipt: ApprovalReceipt) -> Approval
     Ok((state.clone(), vec![ApprovalEffect::Reply(receipt)]))
 }
 
-pub(super) fn notices(saved: &RetainedApproval, phase: SessionNoticePhase) -> Vec<ApprovalEffect> {
-    saved
-        .routing
-        .delegated_parent
-        .iter()
-        .map(|session| ApprovalEffect::StoreSessionNotice {
+pub(super) fn parent_notice(saved: &RetainedApproval) -> Option<ApprovalEffect> {
+    match &saved.routing {
+        ApprovalRouting::Owner => None,
+        ApprovalRouting::Delegate { admitted_parent } => Some(ApprovalEffect::StoreSessionNotice {
             key: saved.key.clone(),
-            session: session.clone(),
-            phase,
-        })
-        .collect()
+            session: admitted_parent.clone(),
+        }),
+    }
 }
 
 pub(super) fn finish(
@@ -41,10 +38,9 @@ pub(super) fn finish(
         ended_at: now,
         delivery,
     };
-    let mut effects = notices(saved, SessionNoticePhase::Ended);
-    effects.push(ApprovalEffect::ClearDue {
+    let mut effects = vec![ApprovalEffect::ClearDue {
         key: saved.key.clone(),
-    });
+    }];
     if delivery == (Delivery::Owed {}) {
         effects.push(offer_ending(saved, &closed));
     }

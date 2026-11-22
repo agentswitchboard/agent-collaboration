@@ -2,11 +2,11 @@ use approval_request_protocol::{
     DeliverEndingReply, DeliverEndingRequest, Delivery, Ending, StopReceiptEnding, StopReply,
 };
 
-use crate::{ApprovalCollectionEvent, ApprovalReceipt, ApprovalRun, FactorStanding};
+use fleet_approvals::{ApprovalCollectionEvent, ApprovalRun, FactorStanding};
 
 use super::fixtures::{
-    answer, closed, decide_event, key, offered_frame, person, provider, provider_stop, raise_event,
-    reply, routing, run_event, setup,
+    ObservedReply as ApprovalReceipt, answer, closed, decide_event, key, offered_frame, person,
+    provider, provider_stop, raise_event, reply, routing, run_event, setup,
 };
 
 fn observed(
@@ -29,11 +29,7 @@ fn holder_delivery_settles_only_on_exact_received_or_authoritative_not_held() {
     for key in [&item, &different] {
         run_event(
             &mut book,
-            raise_event(
-                &run,
-                provider(key, &requester, "Bound"),
-                routing(None, true),
-            ),
+            raise_event(&run, provider(key, &requester, "Bound"), routing(None)),
             0,
         );
     }
@@ -134,7 +130,7 @@ fn a_standing_stop_closes_only_unpaid_delivery_and_keeps_the_original_ending() {
     let paid = key(&run, 2);
     for item in [&unpaid, &paid] {
         let raise = provider(item, &requester, "Original");
-        run_event(&mut book, raise_event(&run, raise, routing(None, true)), 0);
+        run_event(&mut book, raise_event(&run, raise, routing(None)), 0);
     }
     run_event(
         &mut book,
@@ -167,7 +163,7 @@ fn a_standing_stop_closes_only_unpaid_delivery_and_keeps_the_original_ending() {
         );
         assert_eq!(
             reply(&effects),
-            &ApprovalReceipt::Stop(StopReply::Stands {
+            ApprovalReceipt::Stop(StopReply::Stands {
                 ending: StopReceiptEnding::DecidedEarlier {}
             })
         );

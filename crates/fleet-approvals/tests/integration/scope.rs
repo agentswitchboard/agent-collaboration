@@ -3,15 +3,15 @@ use approval_request_protocol::{
     StopReply,
 };
 
-use crate::{
-    ApprovalCollection, ApprovalCollectionEffect, ApprovalCollectionEvent, ApprovalReceipt,
-    ApprovalRun, ApprovalState, FactorStanding, ProviderSessionAvailability,
+use fleet_approvals::{
+    ApprovalCollection, ApprovalCollectionEffect, ApprovalCollectionEvent, ApprovalRun,
+    ApprovalState, FactorStanding, ProviderSessionAvailability,
 };
 
 use super::fixtures::{
-    HOUR, answer, closed, decide_event, enrollment, key, offered_frame, person, provider,
-    provider_stop, raise_event, register, reply, router_run, routing, run_event, session, setup,
-    time,
+    HOUR, ObservedReply as ApprovalReceipt, answer, closed, decide_event, enrollment, key,
+    offered_frame, person, provider, provider_stop, raise_event, register, reply, router_run,
+    routing, run_event, session, setup, time,
 };
 
 #[test]
@@ -21,7 +21,7 @@ fn ending_one_session_settles_its_whole_batch_and_rejects_an_unavailable_first_r
     let later = key(&run, 2);
     let other = key(&run, 3);
     let another_session = session(&run.enrollment, 8010);
-    let route = routing(None, true);
+    let route = routing(None);
     run_event(
         &mut book,
         raise_event(&run, provider(&old, &requester, "Older"), route.clone()),
@@ -90,7 +90,7 @@ fn ending_one_session_settles_its_whole_batch_and_rejects_an_unavailable_first_r
     ] {
         assert_eq!(
             reply(&run_event(&mut book, event, HOUR)),
-            &ApprovalReceipt::Raise(RaiseReply::SessionEnded {})
+            ApprovalReceipt::Raise(RaiseReply::SessionEnded {})
         );
     }
     assert!(!book.requests.contains_key(&never_opened));
@@ -102,7 +102,7 @@ fn capacity_counts_waiting_plus_unpaid_and_never_rejects_an_exact_replay() {
     let (mut book, run, requester, _) = setup();
     let first = key(&run, 1);
     let first_raise = provider(&first, &requester, "First");
-    let route = routing(None, true);
+    let route = routing(None);
     let initial_receipt = run_event(
         &mut book,
         raise_event(&run, first_raise.clone(), route.clone()),
@@ -133,7 +133,7 @@ fn capacity_counts_waiting_plus_unpaid_and_never_rejects_an_exact_replay() {
     );
     assert_eq!(
         reply(&run_event(&mut book, attempt.clone(), 1)),
-        &ApprovalReceipt::Raise(RaiseReply::TooManyOutstanding {})
+        ApprovalReceipt::Raise(RaiseReply::TooManyOutstanding {})
     );
     assert!(!book.requests.contains_key(&excess));
     assert_eq!(
@@ -160,11 +160,11 @@ fn capacity_counts_waiting_plus_unpaid_and_never_rejects_an_exact_replay() {
 }
 
 #[test]
-fn restart_and_enrollment_supersession_fence_before_lookup_and_settle_exact_scopes() {
+fn restart_fences_old_authority_and_same_organization_id_reuse_reports_only_collision() {
     let (mut book, old, requester, _) = setup();
     let waiting = key(&old, 1);
     let owed = key(&old, 2);
-    let route = routing(None, true);
+    let route = routing(None);
     for row in [&waiting, &owed] {
         run_event(
             &mut book,
@@ -222,7 +222,15 @@ fn restart_and_enrollment_supersession_fence_before_lookup_and_settle_exact_scop
     );
     assert_eq!(
         reply(&run_event(&mut book, conflict, 2)),
-        &ApprovalReceipt::Raise(RaiseReply::ContentsDiffer {})
+        ApprovalReceipt::Raise(RaiseReply::ContentsDiffer {})
+    );
+    let compared_stop = ApprovalCollectionEvent::Stop {
+        run: incoming.clone(),
+        request: provider_stop(&provider(&conflicting_id, &requester, "Different new body")),
+    };
+    assert_eq!(
+        reply(&run_event(&mut book, compared_stop, 2)),
+        ApprovalReceipt::Stop(StopReply::NotVisible {})
     );
     assert!(!book.requests.contains_key(&conflicting_id));
     let lost_raise = key(&old, 3);
@@ -230,7 +238,7 @@ fn restart_and_enrollment_supersession_fence_before_lookup_and_settle_exact_scop
     let old_event = raise_event(&old, old_raise.clone(), route.clone());
     assert_eq!(
         reply(&run_event(&mut book, old_event.clone(), 2)),
-        &ApprovalReceipt::Raise(RaiseReply::AuthorityRefused {
+        ApprovalReceipt::Raise(RaiseReply::AuthorityRefused {
             refusal: RunRefusal::RunRetired {}
         })
     );
@@ -275,7 +283,7 @@ fn restart_and_enrollment_supersession_fence_before_lookup_and_settle_exact_scop
     );
     assert_eq!(
         reply(&run_event(&mut book, old_event, HOUR + 3)),
-        &ApprovalReceipt::Raise(RaiseReply::AuthorityRefused {
+        ApprovalReceipt::Raise(RaiseReply::AuthorityRefused {
             refusal: RunRefusal::EnrollmentEnded {}
         })
     );
@@ -288,7 +296,7 @@ fn restart_and_enrollment_supersession_fence_before_lookup_and_settle_exact_scop
             },
             HOUR + 3
         )),
-        &ApprovalReceipt::Stop(StopReply::AuthorityRefused {
+        ApprovalReceipt::Stop(StopReply::AuthorityRefused {
             refusal: RunRefusal::EnrollmentEnded {}
         })
     );
@@ -323,11 +331,11 @@ fn a_holder_frame_before_registration_cannot_create_a_request() {
     let event = raise_event(
         &run,
         provider(&request, &session(&authority, 8882), "Request"),
-        routing(None, true),
+        routing(None),
     );
     assert_eq!(
         reply(&run_event(&mut book, event.clone(), 0)),
-        &ApprovalReceipt::Raise(RaiseReply::AuthorityRefused {
+        ApprovalReceipt::Raise(RaiseReply::AuthorityRefused {
             refusal: RunRefusal::RunNotRegistered {},
         })
     );

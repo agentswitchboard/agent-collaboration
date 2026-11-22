@@ -3,14 +3,13 @@ use approval_request_protocol::{
     OfferedOptionId, OfferedOptions, OptionEffect, OptionLifetime, ProviderHolder,
     ProviderStopCause, Raise, RegisterRunReply, RetainedOptionStorage, StopRequest, Title,
 };
-use central_engine_model::{Context, IdSource, Machine};
+use central_engine_model::{Context, IdSource};
 use fleet_identity_protocol::EnrollmentId;
 use workspace_ids::{ApprovalRequestId, MachineId, PersonId, RequestId, RouterRunId};
 
-use crate::{
-    AdmittedDecider, ApprovalApply, ApprovalCollection, ApprovalCollectionEffect,
-    ApprovalCollectionEvent, ApprovalDestination, ApprovalEffect, ApprovalEnrollment,
-    ApprovalEvent, ApprovalLifecycle, ApprovalReceipt, ApprovalRequestKey, ApprovalRouting,
+use fleet_approvals::{
+    AdmittedDecider, ApprovalCollection, ApprovalCollectionEffect, ApprovalCollectionEvent,
+    ApprovalEffect, ApprovalEnrollment, ApprovalReceipt, ApprovalRequestKey, ApprovalRouting,
     ApprovalRun, ApprovalSession, ApprovalState, EndedApproval, FactorStanding,
     ProviderSessionAvailability,
 };
@@ -127,17 +126,12 @@ fn offered(number: u8, effect: OptionEffect, lasts: OptionLifetime) -> OfferedOp
     }
 }
 
-pub(super) fn routing(parent: Option<&ApprovalSession>, include_people: bool) -> ApprovalRouting {
-    let mut destinations = std::collections::BTreeSet::new();
-    if let Some(parent) = parent {
-        destinations.insert(ApprovalDestination::Session(parent.clone()));
-    }
-    if include_people {
-        destinations.insert(ApprovalDestination::People);
-    }
-    ApprovalRouting {
-        destinations,
-        delegated_parent: parent.cloned(),
+pub(super) fn routing(parent: Option<&ApprovalSession>) -> ApprovalRouting {
+    match parent {
+        Some(admitted_parent) => ApprovalRouting::Delegate {
+            admitted_parent: admitted_parent.clone(),
+        },
+        None => ApprovalRouting::Owner,
     }
 }
 
@@ -147,7 +141,6 @@ pub(super) fn run_event(
     at: i64,
 ) -> Vec<ApprovalCollectionEffect> {
     let (next, effects) = book
-        .clone()
         .apply(
             event,
             &mut Context {
@@ -158,25 +151,6 @@ pub(super) fn run_event(
         .unwrap();
     *book = next;
     effects
-}
-
-pub(super) fn row_event(
-    state: &ApprovalState,
-    event: ApprovalEvent,
-    sampled: i64,
-    floor: i64,
-) -> central_engine_model::TransitionResult<ApprovalLifecycle> {
-    ApprovalLifecycle::transition(
-        state,
-        ApprovalApply {
-            high_water: time(floor),
-            event,
-        },
-        &mut Context {
-            now: time(sampled),
-            ids: &mut UnusedIds,
-        },
-    )
 }
 
 pub(super) fn register(
@@ -264,12 +238,48 @@ pub(super) fn closed<'a>(
     closed
 }
 
-pub(super) fn reply(effects: &[ApprovalCollectionEffect]) -> &ApprovalReceipt {
+pub(super) fn raw_reply(effects: &[ApprovalCollectionEffect]) -> &ApprovalReceipt {
     let Some(ApprovalCollectionEffect::Request(ApprovalEffect::Reply(receipt))) = effects.last()
     else {
         panic!("expected a final operation reply, got {effects:?}");
     };
     receipt
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum ObservedReply {
+    Raise(approval_request_protocol::RaiseReply),
+    Stop(approval_request_protocol::StopReply),
+    Decide(fleet_approvals::ApprovalDecisionReply),
+    Read(Option<approval_request_protocol::RequestView>),
+    PassOn(approval_request_protocol::PassOnReply),
+}
+
+// Directed cases use this view for payload assertions. The recipient-security and
+// ledger tests pass their expected request and recipient to the public gate explicitly.
+pub(super) fn reply(effects: &[ApprovalCollectionEffect]) -> ObservedReply {
+    match raw_reply(effects) {
+        ApprovalReceipt::Raise(payload) => ObservedReply::Raise(payload.clone()),
+        ApprovalReceipt::Stop(payload) => ObservedReply::Stop(payload.clone()),
+        ApprovalReceipt::Decide(bound) => ObservedReply::Decide(
+            bound
+                .for_recipient(bound.request(), bound.recipient())
+                .unwrap()
+                .clone(),
+        ),
+        ApprovalReceipt::Read(bound) => ObservedReply::Read(
+            bound
+                .for_recipient(bound.request(), bound.recipient())
+                .unwrap()
+                .clone(),
+        ),
+        ApprovalReceipt::PassOn(bound) => ObservedReply::PassOn(
+            bound
+                .for_recipient(bound.request(), bound.recipient())
+                .unwrap()
+                .clone(),
+        ),
+    }
 }
 
 pub(super) fn offered_frame(effects: &[ApprovalCollectionEffect]) -> DeliverEndingRequest {

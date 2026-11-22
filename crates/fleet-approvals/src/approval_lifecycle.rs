@@ -7,16 +7,16 @@ use central_engine_model::{
     Context, EngineTime, Machine, MachineKind, Transition, TransitionError, supported_time,
 };
 
-use crate::approval_lifecycle_admission::{matches_key, stop_binding};
+use crate::approval_lifecycle_admission::{applying_time, matches_key, stop_binding};
 use crate::approval_lifecycle_delivery::{receive, reoffer};
 use crate::approval_lifecycle_destinations::{decide, pass_on, read};
 use crate::approval_lifecycle_effects::{
-    ApprovalChange, finish, notices, reply, standing, with_delivery,
+    ApprovalChange, finish, parent_notice, reply, standing, with_delivery,
 };
 use crate::{
     ApprovalActor, ApprovalApply, ApprovalEffect, ApprovalEvent, ApprovalReceipt, ApprovalRefusal,
     ApprovalRequestKey, ApprovalRouting, ApprovalState, ProviderSessionAvailability,
-    RaiseAdmission, RetainedApproval, SessionNoticePhase,
+    RaiseAdmission, RetainedApproval,
 };
 
 pub const MAX_OUTSTANDING_PER_RUN: usize = 256;
@@ -36,7 +36,7 @@ impl Machine for ApprovalLifecycle {
         apply: ApprovalApply,
         context: &mut Context<'_>,
     ) -> ApprovalChange {
-        let now = context.now.max(apply.high_water);
+        let now = applying_time(context.now, apply.high_water)?;
         match apply.event {
             ApprovalEvent::Raise {
                 key,
@@ -143,7 +143,14 @@ fn apply_raise(
                 routing,
                 waiting_status: WaitingStatus::Pending,
             };
-            let mut effects = notices(&saved, SessionNoticePhase::Raised);
+            if let ApprovalRouting::Delegate { admitted_parent } = &saved.routing
+                && saved.provider_session().session_id == admitted_parent.session_id
+            {
+                return Err(TransitionError::Domain(
+                    ApprovalRefusal::InvalidInitialRoute,
+                ));
+            }
+            let mut effects: Vec<_> = parent_notice(&saved).into_iter().collect();
             effects.push(ApprovalEffect::RegisterDue {
                 key: saved.key.clone(),
                 deadline: window.deadline(),
@@ -306,5 +313,5 @@ fn deadline_ending(saved: &RetainedApproval, before_deadline: Ending, now: Centr
 }
 
 #[cfg(test)]
-#[path = "approval_lifecycle_test.rs"]
+#[path = "approval_lifecycle_edges_test.rs"]
 mod tests;

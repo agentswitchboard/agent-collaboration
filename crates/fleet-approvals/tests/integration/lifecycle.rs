@@ -4,27 +4,17 @@ use approval_request_protocol::{
     WaitingStatus,
 };
 
-use crate::ApprovalDecisionReply as DecideReply;
+use fleet_approvals::ApprovalDecisionReply as DecideReply;
 
-use crate::{
-    AdmittedDecider, ApprovalCollectionEffect, ApprovalCollectionEvent, ApprovalDestination,
-    ApprovalEffect, ApprovalReceipt, ApprovalState, FactorStanding,
+use fleet_approvals::{
+    AdmittedDecider, ApprovalCollectionEffect, ApprovalCollectionEvent, ApprovalEffect,
+    ApprovalState, FactorStanding,
 };
 
-#[path = "approval_lifecycle_delivery_test.rs"]
-mod delivery;
-#[path = "approval_lifecycle_edges_test.rs"]
-mod edges;
-#[path = "approval_lifecycle_fixture_test.rs"]
-mod fixtures;
-#[path = "approval_lifecycle_model_test.rs"]
-mod model;
-#[path = "approval_lifecycle_scope_test.rs"]
-mod scope;
-
-use fixtures::{
-    HOUR, answer, closed, decide_event, key, person, person_id, provider, provider_stop,
-    raise_event, reply, routing, run_event, session, setup, time, view_event,
+use super::fixtures::{
+    self, HOUR, ObservedReply as ApprovalReceipt, answer, closed, decide_event, key, person,
+    person_id, provider, provider_stop, raise_event, raw_reply, reply, routing, run_event, session,
+    setup, time, view_event,
 };
 
 #[test]
@@ -38,7 +28,7 @@ fn decide_binds_the_operation_and_keeps_its_original_audience_result() {
             raise_event(
                 &active_run,
                 provider(key, &requester, "Review"),
-                routing(None, true),
+                routing(None),
             ),
             0,
         );
@@ -54,14 +44,14 @@ fn decide_binds_the_operation_and_keeps_its_original_audience_result() {
     else {
         panic!("expected the original saved decision");
     };
-    assert_eq!(*saved_answer, answer(5));
+    assert_eq!(saved_answer, answer(5));
     assert_eq!(
-        *by,
+        by,
         DecidedBy::Person {
             person_id: person_id(11)
         }
     );
-    let saved_result = reply(&result).clone();
+    let saved_result = raw_reply(&result).clone();
 
     let after_loss = run_event(&mut book, decide, 2);
     assert_eq!(
@@ -77,7 +67,7 @@ fn decide_binds_the_operation_and_keeps_its_original_audience_result() {
     ] {
         assert_eq!(
             reply(&run_event(&mut book, conflicting, 2)),
-            &ApprovalReceipt::Decide(DecideReply::OperationConflict {})
+            ApprovalReceipt::Decide(DecideReply::OperationConflict {})
         );
     }
     let mut wrong_target = decide_event(&first, winner, 105, answer(2));
@@ -87,7 +77,7 @@ fn decide_binds_the_operation_and_keeps_its_original_audience_result() {
     *key = other.clone();
     assert_eq!(
         reply(&run_event(&mut book, wrong_target, 2)),
-        &ApprovalReceipt::Decide(DecideReply::NotVisible {})
+        ApprovalReceipt::Decide(DecideReply::NotVisible {})
     );
     assert!(matches!(
         book.requests[&other],
@@ -147,7 +137,7 @@ fn applying_factor_and_offer_are_checked_before_the_deadline() {
             raise_event(
                 &active_run,
                 provider(&item, &requester, "Review"),
-                routing(Some(&parent), false),
+                routing(Some(&parent)),
             ),
             0,
         );
@@ -159,7 +149,7 @@ fn applying_factor_and_offer_are_checked_before_the_deadline() {
         );
         assert_eq!(
             reply(&run_event(&mut book, request_from_requester, 0)),
-            &ApprovalReceipt::Decide(DecideReply::NotVisible {})
+            ApprovalReceipt::Decide(DecideReply::NotVisible {})
         );
         let forward = ApprovalCollectionEvent::PassOn {
             key: item.clone(),
@@ -170,7 +160,7 @@ fn applying_factor_and_offer_are_checked_before_the_deadline() {
         };
         assert_eq!(
             reply(&run_event(&mut book, forward, 0)),
-            &ApprovalReceipt::PassOn(PassOnReply::Forwarded {})
+            ApprovalReceipt::PassOn(PassOnReply::Forwarded {})
         );
         for (actor, suffix) in [
             (AdmittedDecider::Session(parent.clone()), 10),
@@ -180,7 +170,7 @@ fn applying_factor_and_offer_are_checked_before_the_deadline() {
             let refused = decide_event(&item, actor, op, answer(slot));
             assert_eq!(
                 reply(&run_event(&mut book, refused, 0)),
-                &ApprovalReceipt::Decide(DecideReply::Invalid {})
+                ApprovalReceipt::Decide(DecideReply::Invalid {})
             );
         }
         let fresh = decide_event(
@@ -202,7 +192,7 @@ fn forwarding_checks_the_exact_live_assigned_parent_and_replays_success() {
     let first = key(&active_run, 1);
     let second = key(&active_run, 2);
     let other_session = session(&active_run.enrollment, 8004);
-    let route = routing(Some(&parent), false);
+    let route = routing(Some(&parent));
     for key in [&first, &second] {
         run_event(
             &mut book,
@@ -214,7 +204,9 @@ fn forwarding_checks_the_exact_live_assigned_parent_and_replays_success() {
             0,
         );
     }
-    let forward = |target: &crate::ApprovalRequestKey, body: &crate::ApprovalRequestKey, actor| {
+    let forward = |target: &fleet_approvals::ApprovalRequestKey,
+                   body: &fleet_approvals::ApprovalRequestKey,
+                   actor| {
         ApprovalCollectionEvent::PassOn {
             key: target.clone(),
             parent: actor,
@@ -229,7 +221,7 @@ fn forwarding_checks_the_exact_live_assigned_parent_and_replays_success() {
     ] {
         assert_eq!(
             reply(&run_event(&mut book, wrong, 1)),
-            &ApprovalReceipt::PassOn(PassOnReply::NotVisible {})
+            ApprovalReceipt::PassOn(PassOnReply::NotVisible {})
         );
     }
     let before = book.requests[&first].retained().unwrap().window;
@@ -237,27 +229,25 @@ fn forwarding_checks_the_exact_live_assigned_parent_and_replays_success() {
     let changed = run_event(&mut book, action.clone(), 2);
     assert_eq!(
         reply(&changed),
-        &ApprovalReceipt::PassOn(PassOnReply::Forwarded {})
+        ApprovalReceipt::PassOn(PassOnReply::Forwarded {})
     );
     let retained = book.requests[&first].retained().unwrap();
-    assert_eq!(retained.waiting_status, WaitingStatus::PassedOn);
+    assert_eq!(retained.waiting_status(), WaitingStatus::PassedOn);
     assert_eq!(retained.window, before);
-    assert!(
-        retained
-            .routing
-            .destinations
-            .contains(&ApprovalDestination::Session(parent.clone()))
+    assert_eq!(
+        retained.routing,
+        fleet_approvals::ApprovalRouting::Delegate {
+            admitted_parent: parent.clone()
+        }
     );
-    assert!(
-        retained
-            .routing
-            .destinations
-            .contains(&ApprovalDestination::People)
-    );
+    assert!(matches!(
+        reply(&run_event(&mut book, view_event(&first, 12), 2)),
+        ApprovalReceipt::Read(Some(_))
+    ));
 
     assert_eq!(
         reply(&run_event(&mut book, action.clone(), HOUR)),
-        &ApprovalReceipt::PassOn(PassOnReply::Forwarded {})
+        ApprovalReceipt::PassOn(PassOnReply::Forwarded {})
     );
     assert_eq!(
         closed(&book, &first).ending.clone().into_ending(),
@@ -269,7 +259,7 @@ fn forwarding_checks_the_exact_live_assigned_parent_and_replays_success() {
             forward(&second, &second, parent.clone()),
             HOUR
         )),
-        &ApprovalReceipt::PassOn(PassOnReply::TooLate {})
+        ApprovalReceipt::PassOn(PassOnReply::TooLate {})
     );
     run_event(
         &mut book,
@@ -278,7 +268,7 @@ fn forwarding_checks_the_exact_live_assigned_parent_and_replays_success() {
     );
     assert_eq!(
         reply(&run_event(&mut book, action, HOUR + 1)),
-        &ApprovalReceipt::PassOn(PassOnReply::NotVisible {})
+        ApprovalReceipt::PassOn(PassOnReply::NotVisible {})
     );
 }
 
@@ -300,39 +290,39 @@ fn stop_marker_binds_contents_and_deadline_wins_a_matching_waiting_stop() {
     };
     assert_eq!(
         reply(&run_event(&mut book, stop(provider_stop(&original)), 0)),
-        &ApprovalReceipt::Stop(StopReply::Stands { ending: cancelled })
+        ApprovalReceipt::Stop(StopReply::Stands { ending: cancelled })
     );
     assert_eq!(
         reply(&run_event(&mut book, stop(provider_stop(&changed)), 0)),
-        &ApprovalReceipt::Stop(StopReply::NotVisible {})
+        ApprovalReceipt::Stop(StopReply::NotVisible {})
     );
     assert_eq!(
         reply(&run_event(
             &mut book,
-            raise_event(&active_run, changed, routing(None, true)),
+            raise_event(&active_run, changed, routing(None)),
             0
         )),
-        &ApprovalReceipt::Raise(RaiseReply::ContentsDiffer {})
+        ApprovalReceipt::Raise(RaiseReply::ContentsDiffer {})
     );
     assert_eq!(
         reply(&run_event(
             &mut book,
-            raise_event(&active_run, original, routing(None, true)),
+            raise_event(&active_run, original, routing(None)),
             0
         )),
-        &ApprovalReceipt::Raise(RaiseReply::AlreadyStopped {})
+        ApprovalReceipt::Raise(RaiseReply::AlreadyStopped {})
     );
 
     let real = provider(&raised, &requester, "Exact");
     run_event(
         &mut book,
-        raise_event(&active_run, real.clone(), routing(None, true)),
+        raise_event(&active_run, real.clone(), routing(None)),
         0,
     );
     let effects = run_event(&mut book, stop(provider_stop(&real)), HOUR);
     assert_eq!(
         reply(&effects),
-        &ApprovalReceipt::Stop(StopReply::Stands {
+        ApprovalReceipt::Stop(StopReply::Stands {
             ending: StopReceiptEnding::TimedOut {}
         })
     );
@@ -359,7 +349,7 @@ fn a_rollback_cannot_override_deadline_and_alarm_tokens_are_exact() {
         raise_event(
             &active_run,
             provider(&item, &requester, "Review"),
-            routing(None, true),
+            routing(None),
         ),
         0,
     );
@@ -384,7 +374,7 @@ fn a_rollback_cannot_override_deadline_and_alarm_tokens_are_exact() {
     let effects = run_event(&mut book, decision, HOUR - 1);
     assert_eq!(
         reply(&effects),
-        &ApprovalReceipt::Decide(DecideReply::TooLate {})
+        ApprovalReceipt::Decide(DecideReply::TooLate {})
     );
     assert_eq!(closed(&book, &item).ended_at, time(HOUR));
     assert_eq!(closed(&book, &item).delivery, Delivery::Owed {});
@@ -403,7 +393,7 @@ fn a_visible_read_materializes_the_timeout_and_hidden_read_changes_no_row() {
         raise_event(
             &active_run,
             provider(&item, &requester, "Review"),
-            routing(Some(&parent), false),
+            routing(Some(&parent)),
         ),
         0,
     );
@@ -413,13 +403,13 @@ fn a_visible_read_materializes_the_timeout_and_hidden_read_changes_no_row() {
         raise_event(
             &active_run,
             provider(&owner_item, &requester, "Owner"),
-            routing(None, true),
+            routing(None),
         ),
         0,
     );
     assert_eq!(
         reply(&run_event(&mut book, view_event(&item, 12), HOUR)),
-        &ApprovalReceipt::Read(None)
+        ApprovalReceipt::Read(None)
     );
     assert!(matches!(
         book.requests[&item],
@@ -447,7 +437,7 @@ fn parent_decides_a_delegate_request_as_its_exact_central_session() {
         raise_event(
             &run,
             provider(&item, &requester, "Delegate"),
-            routing(Some(&parent), false),
+            routing(Some(&parent)),
         ),
         0,
     );
@@ -456,7 +446,7 @@ fn parent_decides_a_delegate_request_as_its_exact_central_session() {
     )));
     assert_eq!(
         reply(&run_event(&mut book, view_event(&item, 10), 0)),
-        &ApprovalReceipt::Read(None)
+        ApprovalReceipt::Read(None)
     );
     let exact = decide_event(
         &item,
@@ -467,7 +457,7 @@ fn parent_decides_a_delegate_request_as_its_exact_central_session() {
     let decided = run_event(&mut book, exact.clone(), 1);
     assert_eq!(
         reply(&decided),
-        &ApprovalReceipt::Decide(DecideReply::SavedDecision {
+        ApprovalReceipt::Decide(DecideReply::SavedDecision {
             answer: answer(1),
             by: DecidedBy::Session {
                 session: parent.session_id
@@ -504,7 +494,7 @@ fn provider_question_uses_its_declared_fields_and_offers_the_exact_answer() {
             .unwrap(),
         },
     };
-    run_event(&mut book, raise_event(&run, raise, routing(None, true)), 0);
+    run_event(&mut book, raise_event(&run, raise, routing(None)), 0);
     let decide = |operation, fields| {
         decide_event(
             &item,
@@ -518,7 +508,7 @@ fn provider_question_uses_its_declared_fields_and_offers_the_exact_answer() {
     let invalid = run_event(&mut book, decide(101, vec![]), 1);
     assert_eq!(
         reply(&invalid),
-        &ApprovalReceipt::Decide(DecideReply::Invalid {})
+        ApprovalReceipt::Decide(DecideReply::Invalid {})
     );
     let fields = vec![QuestionFieldAnswer {
         field_id,
@@ -547,21 +537,13 @@ fn provider_question_uses_its_declared_fields_and_offers_the_exact_answer() {
 fn an_equal_raise_replays_the_first_window_and_changed_contents_leave_the_row_alone() {
     let (mut book, run, requester, _) = setup();
     let item = key(&run, 1);
-    let first = raise_event(
-        &run,
-        provider(&item, &requester, "Original"),
-        routing(None, true),
-    );
-    let first_reply = reply(&run_event(&mut book, first.clone(), 0)).clone();
+    let first = raise_event(&run, provider(&item, &requester, "Original"), routing(None));
+    let first_reply = raw_reply(&run_event(&mut book, first.clone(), 0)).clone();
     let original = book.requests[&item].clone();
-    let conflicting = raise_event(
-        &run,
-        provider(&item, &requester, "Changed"),
-        routing(None, true),
-    );
+    let conflicting = raise_event(&run, provider(&item, &requester, "Changed"), routing(None));
     assert_eq!(
         reply(&run_event(&mut book, conflicting, 1)),
-        &ApprovalReceipt::Raise(RaiseReply::ContentsDiffer {})
+        ApprovalReceipt::Raise(RaiseReply::ContentsDiffer {})
     );
     assert_eq!(book.requests[&item], original);
     assert_eq!(

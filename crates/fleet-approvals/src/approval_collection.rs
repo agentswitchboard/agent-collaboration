@@ -6,13 +6,13 @@ use approval_request_protocol::{
 use central_engine_model::{Context, Machine, TransitionError};
 use workspace_ids::RouterRunId;
 
-use crate::approval_lifecycle_admission::stop_binding;
+use crate::approval_lifecycle_admission::{applying_time, stop_binding};
 use crate::{
     ActiveApprovalEnrollment, ApprovalActor, ApprovalApply, ApprovalCollection,
     ApprovalCollectionEffect, ApprovalCollectionEvent, ApprovalDecisionReply, ApprovalEffect,
     ApprovalEnrollment, ApprovalEvent, ApprovalLifecycle, ApprovalReceipt, ApprovalRefusal,
-    ApprovalRequestKey, ApprovalRun, ApprovalSession, ApprovalState, ProviderSessionAvailability,
-    RaiseAdmission,
+    ApprovalRequestKey, ApprovalRouting, ApprovalRun, ApprovalSession, ApprovalState,
+    ProviderSessionAvailability, RaiseAdmission,
 };
 
 type CollectionChange =
@@ -21,11 +21,21 @@ type CollectionChange =
 impl ApprovalCollection {
     /// Apply one organization-scoped input. The writer commits the resulting facts and effects together.
     pub fn apply(
+        &self,
+        event: ApprovalCollectionEvent,
+        context: &mut Context<'_>,
+    ) -> CollectionChange {
+        let floor = applying_time(context.now, self.high_water)?;
+        let mut next = self.clone();
+        next.high_water = floor;
+        next.apply_at_floor(event, context)
+    }
+
+    fn apply_at_floor(
         mut self,
         event: ApprovalCollectionEvent,
         context: &mut Context<'_>,
     ) -> CollectionChange {
-        self.high_water = self.high_water.max(context.now);
         let mut effects = Vec::new();
         match event {
             ApprovalCollectionEvent::RegisterRun { run } => {
@@ -64,6 +74,15 @@ impl ApprovalCollection {
                         return Ok((self, effects));
                     }
                     let provider_session = self.provider_session(&key, &raise, provider_session);
+                    if !self.requests.contains_key(&key)
+                        && provider_session == ProviderSessionAvailability::Live
+                        && let ApprovalRouting::Delegate { admitted_parent } = &routing
+                        && !self.active_actor(&ApprovalActor::Session(admitted_parent.clone()))
+                    {
+                        return Err(TransitionError::Domain(
+                            ApprovalRefusal::InvalidInitialRoute,
+                        ));
+                    }
                     let outstanding = if self.requests.contains_key(&key) {
                         0
                     } else {
@@ -168,7 +187,11 @@ impl ApprovalCollection {
                 } else {
                     push_reply(
                         &mut effects,
-                        ApprovalReceipt::Decide(ApprovalDecisionReply::NotVisible {}),
+                        ApprovalReceipt::decide_for(
+                            &key,
+                            actor.actor().identity(),
+                            ApprovalDecisionReply::NotVisible {},
+                        ),
                     );
                 }
             }
@@ -202,7 +225,11 @@ impl ApprovalCollection {
                 } else {
                     push_reply(
                         &mut effects,
-                        ApprovalReceipt::PassOn(PassOnReply::NotVisible {}),
+                        ApprovalReceipt::pass_on_for(
+                            &key,
+                            actor.identity(),
+                            PassOnReply::NotVisible {},
+                        ),
                     );
                 }
             }
@@ -287,7 +314,9 @@ impl ApprovalCollection {
     ) -> Result<(), TransitionError<ApprovalRefusal>> {
         match self.apply_request(key, event, context, effects) {
             Ok(()) | Err(TransitionError::Stale) => Ok(()),
-            Err(error) => Err(error),
+            Err(error @ (TransitionError::Domain(_) | TransitionError::NotAllowed { .. })) => {
+                Err(error)
+            }
         }
     }
 

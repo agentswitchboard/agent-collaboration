@@ -1,4 +1,4 @@
-use std::collections::BTreeSet;
+use std::fmt;
 
 use approval_request_protocol::{
     Answer, ApprovalWindow, CentralTime, DecideRequest, DecidedBy, DeliverEndingReply,
@@ -6,6 +6,8 @@ use approval_request_protocol::{
     RaiseReply, RequestContentsDigest, RequestView, StopReply, StopRequest, WaitingStatus,
 };
 use central_engine_model::{EventTag, RefusalTag, StateTag};
+
+use crate::DestinationReply;
 use fleet_identity_protocol::EnrollmentId;
 use serde::{Deserialize, Serialize};
 use workspace_ids::{
@@ -36,16 +38,11 @@ pub struct ApprovalSession {
     pub session_id: CentralSessionId,
 }
 
-#[derive(Clone, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub enum ApprovalDestination {
-    People,
-    Session(ApprovalSession),
-}
-
+/// The initial audience resolved from the requesting session's Central record.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ApprovalRouting {
-    pub destinations: BTreeSet<ApprovalDestination>,
-    pub delegated_parent: Option<ApprovalSession>,
+pub enum ApprovalRouting {
+    Owner,
+    Delegate { admitted_parent: ApprovalSession },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -99,10 +96,14 @@ pub struct RetainedApproval {
     pub contents_digest: RequestContentsDigest,
     pub window: ApprovalWindow,
     pub routing: ApprovalRouting,
-    pub waiting_status: WaitingStatus,
+    pub(crate) waiting_status: WaitingStatus,
 }
 
 impl RetainedApproval {
+    pub fn waiting_status(&self) -> WaitingStatus {
+        self.waiting_status
+    }
+
     pub fn provider_session(&self) -> ApprovalSession {
         let (Raise::ProviderApproval { holder, .. } | Raise::ProviderQuestion { holder, .. }) =
             &self.raise;
@@ -188,13 +189,24 @@ impl StateTag for ApprovalState {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Eq, PartialEq)]
 pub struct SavedDecision {
     pub key: ApprovalRequestKey,
     pub actor: ApprovalActor,
     pub operation_id: RequestId,
-    pub value: Answer,
-    pub reply: ApprovalDecisionReply,
+    pub(crate) value: Answer,
+    pub reply: DestinationReply<ApprovalDecisionReply>,
+}
+
+impl fmt::Debug for SavedDecision {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("SavedDecision")
+            .field("key", &self.key)
+            .field("actor", &self.actor)
+            .field("operation_id", &self.operation_id)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -274,12 +286,6 @@ impl EventTag for ApprovalApply {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum SessionNoticePhase {
-    Raised,
-    Ended,
-}
-
 /// An applying result for a person or session. The owning route uses its checked wire builder.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ApprovalDecisionReply {
@@ -294,10 +300,36 @@ pub enum ApprovalDecisionReply {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ApprovalReceipt {
     Raise(RaiseReply),
-    Decide(ApprovalDecisionReply),
-    Read(Option<Box<RequestView>>),
-    PassOn(PassOnReply),
+    Decide(Box<DestinationReply<ApprovalDecisionReply>>),
+    Read(Box<DestinationReply<Option<RequestView>>>),
+    PassOn(Box<DestinationReply<PassOnReply>>),
     Stop(StopReply),
+}
+
+impl ApprovalReceipt {
+    pub(crate) fn decide_for(
+        key: &ApprovalRequestKey,
+        recipient: DecidedBy,
+        payload: ApprovalDecisionReply,
+    ) -> Self {
+        Self::Decide(Box::new(DestinationReply::new(key, recipient, payload)))
+    }
+
+    pub(crate) fn read_for(
+        key: &ApprovalRequestKey,
+        recipient: DecidedBy,
+        payload: Option<RequestView>,
+    ) -> Self {
+        Self::Read(Box::new(DestinationReply::new(key, recipient, payload)))
+    }
+
+    pub(crate) fn pass_on_for(
+        key: &ApprovalRequestKey,
+        recipient: DecidedBy,
+        payload: PassOnReply,
+    ) -> Self {
+        Self::PassOn(Box::new(DestinationReply::new(key, recipient, payload)))
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -306,7 +338,6 @@ pub enum ApprovalEffect {
     StoreSessionNotice {
         key: ApprovalRequestKey,
         session: ApprovalSession,
-        phase: SessionNoticePhase,
     },
     RegisterDue {
         key: ApprovalRequestKey,
@@ -327,6 +358,8 @@ pub enum ApprovalRefusal {
     InvalidRetainedEnding,
     InvalidDigest,
     DeadlineOutOfRange,
+    ApplyingTimeOutOfRange,
+    InvalidInitialRoute,
 }
 
 impl RefusalTag for ApprovalRefusal {
@@ -335,6 +368,8 @@ impl RefusalTag for ApprovalRefusal {
             Self::InvalidRetainedEnding => "invalid_retained_ending",
             Self::InvalidDigest => "invalid_digest",
             Self::DeadlineOutOfRange => "deadline_out_of_range",
+            Self::ApplyingTimeOutOfRange => "applying_time_out_of_range",
+            Self::InvalidInitialRoute => "invalid_initial_route",
         }
     }
 }

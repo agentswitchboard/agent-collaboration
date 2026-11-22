@@ -17,5 +17,11 @@ serde.workspace = true
 workspace-ids.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
+
 hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
 uuid.workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"

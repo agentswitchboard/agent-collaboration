@@ -1,29 +1,37 @@
-use approval_request_protocol::{RequestContentsDigest, StopRequest};
+use approval_request_protocol::{CentralTime, RequestContentsDigest, StopRequest, WaitingStatus};
+use central_engine_model::{TransitionError, supported_time};
 use workspace_ids::{ApprovalRequestId, RouterRunId};
 
 use crate::{
-    ApprovalActor, ApprovalDestination, ApprovalRequestKey, ApprovalSession, RetainedApproval,
+    ApprovalActor, ApprovalRefusal, ApprovalRequestKey, ApprovalRouting, ApprovalSession,
+    RetainedApproval,
 };
 
 pub(super) fn is_destination(saved: &RetainedApproval, actor: &ApprovalActor) -> bool {
     match actor {
-        ApprovalActor::Person(_) => saved
-            .routing
-            .destinations
-            .contains(&ApprovalDestination::People),
-        ApprovalActor::Session(session) => {
-            saved.provider_session().session_id != session.session_id
-                && saved
-                    .routing
-                    .destinations
-                    .contains(&ApprovalDestination::Session(session.clone()))
+        ApprovalActor::Person(_) => {
+            saved.routing == ApprovalRouting::Owner
+                || saved.waiting_status == WaitingStatus::PassedOn
         }
+        ApprovalActor::Session(session) => is_assigned_parent(saved, session),
     }
 }
 
 pub(super) fn is_assigned_parent(saved: &RetainedApproval, parent: &ApprovalSession) -> bool {
-    saved.routing.delegated_parent.as_ref() == Some(parent)
-        && is_destination(saved, &ApprovalActor::Session(parent.clone()))
+    matches!(&saved.routing, ApprovalRouting::Delegate { admitted_parent } if admitted_parent == parent)
+        && saved.provider_session().session_id != parent.session_id
+}
+
+pub(super) fn applying_time(
+    sample: CentralTime,
+    floor: CentralTime,
+) -> Result<CentralTime, TransitionError<ApprovalRefusal>> {
+    if !supported_time(sample) || !supported_time(floor) {
+        return Err(TransitionError::Domain(
+            ApprovalRefusal::ApplyingTimeOutOfRange,
+        ));
+    }
+    Ok(sample.max(floor))
 }
 
 pub(crate) fn stop_binding(
