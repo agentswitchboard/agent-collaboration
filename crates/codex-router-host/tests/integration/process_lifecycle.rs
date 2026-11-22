@@ -29,6 +29,7 @@ use codex_router_test_support::router_health::RouterHealthFixture;
 use codex_router_test_support::router_health::RouterHealthFixtureResponse;
 use codex_router_test_support::signal_recording::SignalFixtureMode;
 use codex_router_test_support::signal_recording::run_signal_fixture;
+use codex_router_test_support::signal_recording::run_signal_fixture_with_ready;
 use tokio::process::Command;
 
 static TEMP_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -75,15 +76,25 @@ fn shutdown_deadlines_reject_kill_boundary_at_or_after_total() {
     );
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn owned_app_server_is_isolated_and_receives_one_exact_pid_sigterm()
 -> Result<(), Box<dyn std::error::Error>> {
     let directory = TestDirectory::new("graceful")?;
     let event_file = directory.path().join("events.log");
+    let ready_socket = directory.path().join("ready.sock");
+    let ready = tokio::net::UnixListener::bind(&ready_socket)?;
     let identity = executable_identity(&std::env::current_exe()?).await?;
     let mut command = signal_fixture_command(SignalFixtureMode::ExitOnTerminate, &event_file)?;
-    let process = ProcessGroupChild::spawn(&mut command)?;
-    wait_for_fixture_ready(&event_file).await?;
+    command
+        .env("CODEX_ROUTER_HOST_SIGNAL_READY_SOCKET", &ready_socket)
+        .kill_on_drop(true);
+    let mut process = ProcessGroupChild::spawn(&mut command)?;
+    tokio::select! {
+        connection = ready.accept() => drop(connection?),
+        exited = process.wait() => {
+            return Err(format!("signal fixture exited before readiness: {}", exited?).into());
+        }
+    }
     let process_id = process.process_id();
     let process_group_id = rustix::process::getpgid(Some(
         rustix::process::Pid::from_raw(i32::try_from(process_id)?)
@@ -96,10 +107,16 @@ async fn owned_app_server_is_isolated_and_receives_one_exact_pid_sigterm()
     )?;
 
     let mut app_server = AppServerChild::new(process, identity);
-    let outcome = app_server.shutdown().await?;
+    // An active blocking task prevents Tokio from advancing the paused clock
+    // while the OS delivers SIGTERM and the test reaps the fixture process.
+    let (release_clock, keep_clock_paused) = tokio::sync::oneshot::channel::<()>();
+    let clock_guard = tokio::task::spawn_blocking(move || keep_clock_paused.blocking_recv());
+    let outcome = app_server.shutdown().await;
+    drop(release_clock);
+    let _released = clock_guard.await?;
 
     check_equal(
-        outcome,
+        outcome?,
         ShutdownOutcome::Graceful,
         "SIGTERM-aware app-server must stop gracefully",
     )?;
@@ -564,7 +581,15 @@ async fn signal_recording_child_entrypoint() -> Result<(), Box<dyn std::error::E
         Some("exit-on-second-terminate") => SignalFixtureMode::ExitOnSecondTerminate,
         _ => return Err("unknown signal fixture mode".into()),
     };
-    run_signal_fixture(mode, Path::new(&event_file)).await?;
+    let event_file = Path::new(&event_file);
+    if let Some(ready_socket) = std::env::var_os("CODEX_ROUTER_HOST_SIGNAL_READY_SOCKET") {
+        run_signal_fixture_with_ready(mode, event_file, || {
+            std::os::unix::net::UnixStream::connect(ready_socket).map(drop)
+        })
+        .await?;
+    } else {
+        run_signal_fixture(mode, event_file).await?;
+    }
     Ok(())
 }
 
