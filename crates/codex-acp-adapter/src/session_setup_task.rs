@@ -10,7 +10,6 @@ use std::{path::PathBuf, sync::Arc};
 
 pub(crate) struct SetupTaskInputs {
     pub known_session: Option<AcpSessionBinding>,
-    pub adopt_unmaterialized: bool,
     pub backend_path: PathBuf,
     pub schemas: Arc<NativePayloadSchemas>,
     pub generation: CodexGeneration,
@@ -21,9 +20,23 @@ pub(crate) struct SetupTaskInputs {
     pub cancellation_barrier: Option<crate::CancellationBarrier>,
     pub scratch_scopes: Arc<dyn crate::ScratchScopeRegister>,
 }
+pub(crate) type SetupOutcome = Result<(Vec<Value>, Value), SessionSetupError>;
+
 pub(crate) struct SetupTaskOutput {
     pub binding: Option<AcpSessionBinding>,
-    pub outcome: Result<(Vec<Value>, Value), SessionSetupError>,
+    pub outcome: SetupOutcome,
+}
+
+pub(crate) async fn run_held_adoption(
+    binding: &AcpSessionBinding,
+    generation: &CodexGeneration,
+    params: &Value,
+) -> SetupOutcome {
+    let mut catalog = AcpSchemaCatalog::load().map_err(|_| SessionSetupError::SchemaUnavailable)?;
+    binding
+        .adopt_unmaterialized(&mut catalog, generation, params)
+        .await?;
+    Ok((Vec::new(), binding.setup_result()))
 }
 pub(crate) async fn run_session_setup(inputs: SetupTaskInputs) -> SetupTaskOutput {
     let mut catalog = match AcpSchemaCatalog::load() {
@@ -36,16 +49,6 @@ pub(crate) async fn run_session_setup(inputs: SetupTaskInputs) -> SetupTaskOutpu
         }
     };
     if let Some(mut session) = inputs.known_session {
-        if inputs.adopt_unmaterialized {
-            let outcome = session
-                .adopt_unmaterialized(&mut catalog, &inputs.generation, &inputs.params)
-                .await
-                .map(|()| (Vec::new(), session.setup_result()));
-            return SetupTaskOutput {
-                binding: Some(session),
-                outcome,
-            };
-        }
         let outcome = match session
             .resume_with_receipt(&mut catalog, &inputs.generation, &inputs.params)
             .await
@@ -197,7 +200,7 @@ pub(crate) async fn run_session_setup(inputs: SetupTaskInputs) -> SetupTaskOutpu
 
 #[cfg(test)]
 mod tests {
-    use super::{SetupTaskInputs, run_session_setup};
+    use super::{SetupTaskInputs, run_held_adoption, run_session_setup};
 
     /// These setup cases don't observe scratch scopes.
     struct IgnoredScratchScopes;
@@ -359,7 +362,6 @@ mod tests {
         let resumed = run_session_setup(SetupTaskInputs {
             scratch_scopes: Arc::new(IgnoredScratchScopes),
             known_session: Some(binding),
-            adopt_unmaterialized: false,
             backend_path: PathBuf::new(),
             schemas: Arc::clone(&schemas),
             generation: generation.clone(),
@@ -380,26 +382,13 @@ mod tests {
         );
         let mut binding = resumed.binding.unwrap();
         binding.materialized = false;
-        let adopted = run_session_setup(SetupTaskInputs {
-            scratch_scopes: Arc::new(IgnoredScratchScopes),
-            known_session: Some(binding),
-            adopt_unmaterialized: true,
-            backend_path: PathBuf::new(),
-            schemas,
-            generation,
-            params,
-            create_new: false,
-            operation_id: None,
-            recorder: Arc::new(AcceptingRecorder),
-            cancellation_barrier: None,
-        })
-        .await;
-        let (_, result) = adopted.outcome.unwrap();
+        let (_, result) = run_held_adoption(&binding, &generation, &params)
+            .await
+            .unwrap();
         assert_eq!(
             result["_meta"]["codexRouter"]["permissionDifferences"],
             expected
         );
-        assert!(adopted.binding.is_some());
         fixture.await.unwrap();
     }
 }

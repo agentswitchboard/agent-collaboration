@@ -188,6 +188,7 @@ impl RestoreConnection {
                 actor: Some(acp_actor().expect("actor")),
                 client_profile: None,
                 client_supports_elicitation_form: false,
+                frontend_close: Default::default(),
             },
         );
         Self {

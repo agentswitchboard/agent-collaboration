@@ -61,6 +61,8 @@ mod pinned_native_tests;
 pub struct AcpSessionBinding {
     pub(crate) session_id: String,
     pub(crate) generation: CodexGeneration,
+    // Assigned at creation by the route admitted to this native generation.
+    pub(crate) admission_retirement: Option<tokio_util::sync::CancellationToken>,
     pub(crate) materialized: bool,
     working_directory: PathBuf,
     configuration: Option<McpConfiguration>,
@@ -430,6 +432,7 @@ impl AcpSessionBinding {
         Ok(Self {
             session_id,
             generation: inputs.generation,
+            admission_retirement: None,
             materialized: false,
             working_directory: expected_cwd,
             configuration: Some(configuration),
@@ -450,6 +453,17 @@ impl AcpSessionBinding {
     #[must_use]
     pub fn is_unmaterialized(&self) -> bool {
         !self.materialized
+    }
+    /// The admission signal follows an unmaterialized binding while its holder lends it out.
+    #[must_use]
+    pub fn admission_retirement(&self) -> Option<&tokio_util::sync::CancellationToken> {
+        self.admission_retirement.as_ref()
+    }
+
+    #[must_use]
+    pub fn is_retired(&self) -> bool {
+        self.admission_retirement()
+            .is_some_and(tokio_util::sync::CancellationToken::is_cancelled)
     }
     #[must_use]
     pub fn generation(&self) -> &CodexGeneration {
@@ -548,6 +562,7 @@ impl AcpSessionBinding {
         let mut session = Self {
             session_id,
             generation: inputs.generation.clone(),
+            admission_retirement: None,
             materialized: true,
             working_directory,
             configuration: None,
@@ -684,6 +699,11 @@ async fn normalized_directory(value: &str) -> Result<PathBuf, SessionSetupError>
             other => normalized.push(other.as_os_str()),
         }
     }
+    #[cfg(feature = "test-support")]
+    crate::test_support::binding_preservation::hold_at(
+        crate::test_support::binding_preservation::PreservationPhase::DuringDirectoryNormalization,
+    )
+    .await;
     tokio::task::spawn_blocking(move || match std::fs::canonicalize(&normalized) {
         Ok(canonical) => Ok(canonical),
         // Native setup will reject an absent cwd. Keep lexical normalization

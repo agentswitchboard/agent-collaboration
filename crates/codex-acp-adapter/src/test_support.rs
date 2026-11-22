@@ -2,3 +2,6 @@
 pub mod conversation_operation_recorder;
 pub mod native_permission_echo;
 pub mod recording_scratch_scopes;
+
+#[cfg(feature = "test-support")]
+pub mod binding_preservation;

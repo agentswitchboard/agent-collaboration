@@ -26,7 +26,7 @@ impl UnmaterializedBindingStore for TestBindingHolder {
         HeldBindingCheckout::Missing
     }
     fn restore(&self, _binding: AcpSessionBinding) {}
-    fn finish(&self, _session_id: &str) {}
+    fn finish(&self, _session_id: &str, _generation: &collaboration_protocol::CodexGeneration) {}
     fn host_tasks(&self) -> tokio_util::task::TaskTracker {
         tokio_util::task::TaskTracker::new()
     }

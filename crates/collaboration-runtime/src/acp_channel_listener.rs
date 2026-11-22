@@ -110,7 +110,16 @@ impl AcpChannelListener {
                         Box::new(route) as Box<dyn AcpSessionRoute>
                     }));
                     let stop = connections_stop.child_token();
-                    tasks.spawn(async move { let _permit = permit; serve_acp_router_connection_until(stream, routes, stop).await });
+                    #[cfg(test)]
+                    let probe = codex_acp_adapter::test_support::binding_preservation::current()
+                        .filter(|probe| probe.is_armed());
+                    tasks.spawn(async move {
+                        let _permit = permit;
+                        let connection = serve_acp_router_connection_until(stream, routes, stop);
+                        #[cfg(test)]
+                        let connection = codex_acp_adapter::test_support::binding_preservation::scope(probe, connection);
+                        connection.await
+                    });
                 }
             }
         };
@@ -122,6 +131,10 @@ impl AcpChannelListener {
         while tasks.join_next().await.is_some() {}
         if result.is_err() {
             self.generations.retire()?;
+        }
+        #[cfg(test)]
+        if let Some(probe) = codex_acp_adapter::test_support::binding_preservation::current() {
+            probe.listener_draining.cancel();
         }
         self.holder.drain_host_tasks().await;
         result
@@ -221,3 +234,7 @@ mod tests {
         std::fs::remove_dir(root).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "acp_channel_binding_preservation_test.rs"]
+mod binding_preservation_tests;

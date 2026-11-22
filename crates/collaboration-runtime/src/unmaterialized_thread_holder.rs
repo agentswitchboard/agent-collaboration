@@ -1,10 +1,30 @@
 //! Host-lifetime ownership of unfinished Codex creates and detached prompt drains.
 use codex_acp_adapter::{AcpSessionBinding, HeldBindingCheckout, UnmaterializedBindingStore};
-use std::{collections::BTreeMap, sync::Mutex};
+use collaboration_protocol::CodexGeneration;
+use std::{
+    collections::{BTreeMap, btree_map::Entry},
+    sync::Mutex,
+};
+
+use tokio_util::sync::CancellationToken;
 
 enum HeldThread {
     Ready(Box<AcpSessionBinding>),
-    Busy,
+    Busy {
+        generation: CodexGeneration,
+        retirement: Option<CancellationToken>,
+    },
+}
+
+impl HeldThread {
+    fn is_retired(&self) -> bool {
+        match self {
+            Self::Ready(binding) => binding.is_retired(),
+            Self::Busy { retirement, .. } => retirement
+                .as_ref()
+                .is_some_and(CancellationToken::is_cancelled),
+        }
+    }
 }
 
 #[derive(Default)]
@@ -24,7 +44,8 @@ impl UnmaterializedThreadHolder {
         self.threads
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .contains_key(session_id)
+            .get(session_id)
+            .is_some_and(|thread| !thread.is_retired())
     }
 
     pub async fn drain_host_tasks(&self) {
@@ -37,14 +58,16 @@ impl UnmaterializedThreadHolder {
 pub(crate) struct HeldBindingCleanup<'a> {
     holder: &'a UnmaterializedThreadHolder,
     session_id: String,
+    generation: CodexGeneration,
     active: bool,
 }
 
 impl<'a> HeldBindingCleanup<'a> {
-    pub(crate) fn new(holder: &'a UnmaterializedThreadHolder, session_id: &str) -> Self {
+    pub(crate) fn new(holder: &'a UnmaterializedThreadHolder, binding: &AcpSessionBinding) -> Self {
         Self {
             holder,
-            session_id: session_id.into(),
+            session_id: binding.session_id().into(),
+            generation: binding.generation().clone(),
             active: true,
         }
     }
@@ -54,7 +77,7 @@ impl<'a> HeldBindingCleanup<'a> {
     }
 
     pub(crate) fn finish(&mut self) {
-        self.holder.finish(&self.session_id);
+        self.holder.finish(&self.session_id, &self.generation);
         self.disarm();
     }
 }
@@ -62,7 +85,7 @@ impl<'a> HeldBindingCleanup<'a> {
 impl Drop for HeldBindingCleanup<'_> {
     fn drop(&mut self) {
         if self.active {
-            self.holder.finish(&self.session_id);
+            self.holder.finish(&self.session_id, &self.generation);
         }
     }
 }
@@ -72,13 +95,16 @@ impl UnmaterializedBindingStore for UnmaterializedThreadHolder {
         if !binding.is_unmaterialized() {
             return;
         }
-        self.threads
+        let mut threads = self
+            .threads
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .insert(
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if !binding.is_retired() {
+            threads.insert(
                 binding.session_id().to_owned(),
                 HeldThread::Ready(Box::new(binding)),
             );
+        }
     }
 
     fn checkout(&self, session_id: &str) -> HeldBindingCheckout {
@@ -86,26 +112,53 @@ impl UnmaterializedBindingStore for UnmaterializedThreadHolder {
             .threads
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        match threads.insert(session_id.to_owned(), HeldThread::Busy) {
-            Some(HeldThread::Ready(binding)) => HeldBindingCheckout::Ready(binding),
-            Some(HeldThread::Busy) => HeldBindingCheckout::Busy,
-            None => {
-                threads.remove(session_id);
-                HeldBindingCheckout::Missing
+        let Some((key, thread)) = threads.remove_entry(session_id) else {
+            return HeldBindingCheckout::Missing;
+        };
+        if thread.is_retired() {
+            return HeldBindingCheckout::Missing;
+        }
+        match thread {
+            HeldThread::Ready(binding) => {
+                threads.insert(
+                    key,
+                    HeldThread::Busy {
+                        generation: binding.generation().clone(),
+                        retirement: binding.admission_retirement().cloned(),
+                    },
+                );
+                HeldBindingCheckout::Ready(binding)
+            }
+            busy @ HeldThread::Busy { .. } => {
+                threads.insert(key, busy);
+                HeldBindingCheckout::Busy
             }
         }
     }
 
     fn restore(&self, binding: AcpSessionBinding) {
-        self.hold(binding);
-    }
-
-    fn finish(&self, session_id: &str) {
         let mut threads = self
             .threads
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if matches!(threads.get(session_id), Some(HeldThread::Busy)) {
+        if let Entry::Occupied(mut slot) = threads.entry(binding.session_id().to_owned())
+            && matches!(slot.get(), HeldThread::Busy { generation, .. } if generation == binding.generation())
+        {
+            if binding.is_retired() || !binding.is_unmaterialized() {
+                slot.remove();
+            } else {
+                slot.insert(HeldThread::Ready(Box::new(binding)));
+            }
+        }
+    }
+
+    fn finish(&self, session_id: &str, generation: &CodexGeneration) {
+        let mut threads = self
+            .threads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        if matches!(threads.get(session_id), Some(HeldThread::Busy { generation: owner, .. }) if owner == generation)
+        {
             threads.remove(session_id);
         }
     }

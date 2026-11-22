@@ -45,7 +45,7 @@ impl UnmaterializedBindingStore for TestBindingHolder {
     fn restore(&self, binding: AcpSessionBinding) {
         self.hold(binding);
     }
-    fn finish(&self, _session_id: &str) {}
+    fn finish(&self, _session_id: &str, _generation: &collaboration_protocol::CodexGeneration) {}
     fn host_tasks(&self) -> tokio_util::task::TaskTracker {
         self.host_tasks.clone()
     }
