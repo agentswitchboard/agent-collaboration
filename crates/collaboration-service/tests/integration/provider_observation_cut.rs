@@ -49,10 +49,15 @@ impl SessionEventHub for CutHub {
         Box::pin(async {
             let (sender, receiver) = broadcast::channel(self.live_capacity);
             for event in &self.already_live {
-                sender.send(event.clone()).expect("queued live event");
+                sender
+                    .send(event.clone())
+                    .map_err(|_| SessionEventHubError::Unavailable)?;
             }
             if self.keep_open {
-                self.open_senders.lock().unwrap().push(sender);
+                self.open_senders
+                    .lock()
+                    .map_err(|_| SessionEventHubError::Unavailable)?
+                    .push(sender);
             }
             Ok(SessionEventAttachment {
                 epoch: EPOCH,
@@ -76,9 +81,12 @@ impl SessionEventHub for CutHub {
     }
 }
 
-fn identity(run: &str, clock: Arc<ManualClock>, hub: CutHub) -> ApplicationFixture {
-    ApplicationFixture::new(SERVICE, run)
-        .unwrap()
+fn identity(
+    run: &str,
+    clock: Arc<ManualClock>,
+    hub: CutHub,
+) -> Result<ApplicationFixture, Box<dyn std::error::Error>> {
+    Ok(ApplicationFixture::new(SERVICE, run)?
         .with_clock(clock)
         .with_provider_session_hub(Arc::new(hub))
         .with_endpoints(vec![serde_json::from_value(json!({
@@ -89,15 +97,17 @@ fn identity(run: &str, clock: Arc<ManualClock>, hub: CutHub) -> ApplicationFixtu
                 "bindingId":"fixture-binding","bindingGeneration":7,
                 "runtime":{"provider":"claudeCode","runtimeName":"fixture"},
                 "capabilities":[{"name":"create","status":"supported","evidence":"advertised"}]}]
-        })).unwrap()])
-        .unwrap()
+        }))?])?)
 }
 
-fn request(max_events: usize, max_bytes: usize) -> BoundedObservationRequest {
+fn request(
+    max_events: usize,
+    max_bytes: usize,
+) -> Result<BoundedObservationRequest, serde_json::Error> {
     serde_json::from_value(json!({
         "target":{"endpoint":{"serviceId":SERVICE,"endpointId":"claude-local"},"sessionId":"cut-fixture"},
         "timeoutSeconds":30,"maxEvents":max_events,"maxBytes":max_bytes
-    })).unwrap()
+    }))
 }
 
 fn item(sequence: u64) -> HubEvent {
@@ -130,12 +140,14 @@ fn marker_notification(sequence: u64) -> ObservationEventNotification {
 async fn read(
     client: &CollaborationClient,
     request: BoundedObservationRequest,
-) -> (BoundedObservationResult, Vec<ObservationEventNotification>) {
+) -> Result<
+    (BoundedObservationResult, Vec<ObservationEventNotification>),
+    collaboration_client::ClientError,
+> {
     let (sink, mut notifications) = mpsc::unbounded_channel();
     let result = client
         .observe_provider_session_streaming(request, Some(sink))
-        .await
-        .unwrap();
+        .await?;
     let mut streamed = Vec::new();
     while let Ok(event) = notifications.try_recv() {
         streamed.push(event);
@@ -147,7 +159,7 @@ async fn read(
             .collect::<Vec<_>>(),
         result.events.iter().collect::<Vec<_>>()
     );
-    (result, streamed)
+    Ok((result, streamed))
 }
 
 // Rejects a cut missing or misplaced between retained and already-queued live records.
@@ -156,12 +168,12 @@ async fn the_public_tool_streams_the_cut_before_queued_live_while_the_call_is_op
     let clock = Arc::new(ManualClock::new(Default::default()));
     let mut hub = CutHub::new(vec![item(1), item(2)], vec![item(3)]);
     hub.keep_open = true;
-    let api = ServedApi::start(identity(FIRST_RUN, clock.clone(), hub)).unwrap();
+    let api = ServedApi::start(identity(FIRST_RUN, clock.clone(), hub).unwrap()).unwrap();
     let client = api.client("snapshot-cut").await.unwrap();
     let (sink, mut notifications) = mpsc::unbounded_channel();
     let call = tokio::spawn(async move {
         client
-            .observe_provider_session_streaming(request(10, 4096), Some(sink))
+            .observe_provider_session_streaming(request(10, 4096).unwrap(), Some(sink))
             .await
     });
     let first = notifications.recv().await.expect("first kept event");
@@ -225,9 +237,12 @@ async fn the_cut_matches_the_five_result_limit_cases() {
     ];
     for (history, live, max_events, max_bytes, events) in cases {
         let clock = Arc::new(ManualClock::new(Default::default()));
-        let api = ServedApi::start(identity(FIRST_RUN, clock, CutHub::new(history, live))).unwrap();
+        let api = ServedApi::start(identity(FIRST_RUN, clock, CutHub::new(history, live)).unwrap())
+            .unwrap();
         let client = api.client("snapshot-limit").await.unwrap();
-        let (result, _) = read(&client, request(max_events, max_bytes)).await;
+        let (result, _) = read(&client, request(max_events, max_bytes).unwrap())
+            .await
+            .unwrap();
 
         assert_eq!(
             result.events, events,
@@ -244,13 +259,14 @@ async fn an_empty_cut_uses_the_start_or_supplied_position() {
     for (history, supplied, expected) in [(vec![], None, 0), (vec![item(19)], Some(19), 19)] {
         let clock = Arc::new(ManualClock::new(Default::default()));
         let api =
-            ServedApi::start(identity(FIRST_RUN, clock, CutHub::new(history, vec![]))).unwrap();
+            ServedApi::start(identity(FIRST_RUN, clock, CutHub::new(history, vec![])).unwrap())
+                .unwrap();
         let client = api.client("empty-snapshot").await.unwrap();
-        let mut input = request(1, 1);
+        let mut input = request(1, 1).unwrap();
         input.epoch = supplied.map(|_| EPOCH);
         input.after_sequence = supplied;
 
-        let (result, notifications) = read(&client, input).await;
+        let (result, notifications) = read(&client, input).await.unwrap();
 
         assert_eq!(result.events, vec![marker(expected)]);
         assert_eq!(notifications, vec![marker_notification(expected)]);
@@ -263,34 +279,40 @@ async fn an_empty_cut_uses_the_start_or_supplied_position() {
 #[tokio::test]
 async fn continuation_refuses_the_old_host_without_refusing_the_current_or_legacy_call() {
     let clock = Arc::new(ManualClock::new(Default::default()));
-    let api = ServedApi::start(identity(
-        FIRST_RUN,
-        clock,
-        CutHub::new(vec![item(1), item(2)], vec![]),
-    ))
+    let api = ServedApi::start(
+        identity(
+            FIRST_RUN,
+            clock,
+            CutHub::new(vec![item(1), item(2)], vec![]),
+        )
+        .unwrap(),
+    )
     .unwrap();
     let client = api.client("first-host").await.unwrap();
-    let (first, _) = read(&client, request(2, 4096)).await;
+    let (first, _) = read(&client, request(2, 4096).unwrap()).await.unwrap();
     let old_identity = first.generation.service_epoch;
     assert_eq!(first.events.last(), Some(&marker(2)));
     api.stop().await.unwrap();
 
     let clock = Arc::new(ManualClock::new(Default::default()));
-    let api = ServedApi::start(identity(
-        NEXT_RUN,
-        clock,
-        CutHub::new(vec![item(1), item(2), item(3)], vec![]),
-    ))
+    let api = ServedApi::start(
+        identity(
+            NEXT_RUN,
+            clock,
+            CutHub::new(vec![item(1), item(2), item(3)], vec![]),
+        )
+        .unwrap(),
+    )
     .unwrap();
     let client = api.client("second-host").await.unwrap();
-    let (current, _) = read(&client, request(3, 4096)).await;
+    let (current, _) = read(&client, request(3, 4096).unwrap()).await.unwrap();
     let current_identity = current.generation.service_epoch;
-    let mut input = request(1, 4096);
+    let mut input = request(1, 4096).unwrap();
     input.after_sequence = Some(2);
     input.epoch = first.epoch;
 
     input.service_epoch = Some(old_identity);
-    let (refused, notifications) = read(&client, input.clone()).await;
+    let (refused, notifications) = read(&client, input.clone()).await.unwrap();
     assert_eq!(refused.events, vec![json!({"kind":"resyncRequired"})]);
     assert_eq!(refused.end_reason, ObservationEndReason::ResyncRequired);
     assert_eq!(
@@ -302,7 +324,7 @@ async fn continuation_refuses_the_old_host_without_refusing_the_current_or_legac
 
     for guard in [Some(current_identity), None] {
         input.service_epoch = guard;
-        let (continued, _) = read(&client, input.clone()).await;
+        let (continued, _) = read(&client, input.clone()).await.unwrap();
         assert_eq!(continued.events, vec![numbered(&item(3)), marker(3)]);
         assert_eq!(
             continued.end_reason,
@@ -316,18 +338,16 @@ async fn continuation_refuses_the_old_host_without_refusing_the_current_or_legac
 #[tokio::test]
 async fn a_position_ahead_of_the_attachment_is_refused_even_when_it_is_waiting_live() {
     let clock = Arc::new(ManualClock::new(Default::default()));
-    let api = ServedApi::start(identity(
-        FIRST_RUN,
-        clock,
-        CutHub::new(vec![item(1)], vec![item(2)]),
-    ))
+    let api = ServedApi::start(
+        identity(FIRST_RUN, clock, CutHub::new(vec![item(1)], vec![item(2)])).unwrap(),
+    )
     .unwrap();
     let client = api.client("future-position").await.unwrap();
-    let mut input = request(10, 1);
+    let mut input = request(10, 1).unwrap();
     input.after_sequence = Some(2);
     input.epoch = Some(EPOCH);
 
-    let (refused, notifications) = read(&client, input).await;
+    let (refused, notifications) = read(&client, input).await.unwrap();
 
     assert_eq!(refused.events, vec![json!({"kind":"resyncRequired"})]);
     assert_eq!(refused.end_reason, ObservationEndReason::ResyncRequired);
@@ -355,10 +375,10 @@ async fn captured_restart_and_live_lag_end_the_call_with_an_unbudgeted_gap() {
         (lag, 1, vec![marker(0), json!({"kind":"resyncRequired"})]),
     ] {
         let clock = Arc::new(ManualClock::new(Default::default()));
-        let api = ServedApi::start(identity(FIRST_RUN, clock, fixture)).unwrap();
+        let api = ServedApi::start(identity(FIRST_RUN, clock, fixture).unwrap()).unwrap();
         let client = api.client("snapshot-gap").await.unwrap();
 
-        let (result, notifications) = read(&client, request(10, limit)).await;
+        let (result, notifications) = read(&client, request(10, limit).unwrap()).await.unwrap();
 
         assert_eq!(result.events, events);
         assert_eq!(result.end_reason, ObservationEndReason::ResyncRequired);

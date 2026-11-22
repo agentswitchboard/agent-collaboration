@@ -1,31 +1,25 @@
 //! Provider Session observation: bounded, resumable reads of the same hub attached faces use.
 //! Following a Session is a chain of these reads, each resuming after the last event.
 use super::{
-    observation_call_driver::ObservationDriver,
+    observation_call_driver::{ObservationDriver, ObservedEventSink},
     observation_call_machine::{
         Admission, HistoryArrival, LiveArrival, ObservationArrival, ObservationEnding,
         ObservationRecord, ObservationState, bare_gap,
     },
-};
-use crate::collaboration_rejection::{
-    CollaborationRejection, CollaborationRejectionReason, PublishedRejection,
+    observation_failure::ObservationFailure,
 };
 use collaboration_contracts::HubEvent;
 use collaboration_contracts::SessionEventAttachment;
 use collaboration_contracts::SessionEventHubError;
 use collaboration_protocol::{
     BoundedObservationRequest, BoundedObservationResult, ChannelDescription, CodexGeneration,
-    EndpointAvailability, ObservationCursor, ObservationEventNotification,
-    ProviderObservationEventTooLarge, ProviderObservationEventTooLargeKind, SessionRef,
-    UuidIdentity,
+    EndpointAvailability, ObservationCursor, ProviderObservationEventTooLarge,
+    ProviderObservationEventTooLargeKind, SessionRef, UuidIdentity,
 };
 use router_clock::RuntimeClock;
 use serde_json::{Value, json};
 use session_event_model::SessionEvent;
 use tokio::sync::broadcast;
-
-/// Where an observation hands each event as it observes it, before its result.
-pub type ObservedEventSink = tokio::sync::mpsc::UnboundedSender<ObservationEventNotification>;
 
 /// Observation operations over the provider Session event hub.
 pub struct ObservationOperations {
@@ -338,56 +332,6 @@ fn event_value_bounded(event: HubEvent) -> Result<(Value, usize), ObservationFai
         .map_err(|_| ObservationFailure::Unavailable)?
         .len();
     Ok((replacement, bytes))
-}
-
-/// Why a provider observation failed: `{kind, stage, message}` on the wire.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum ObservationFailure {
-    #[error("Invalid provider observation request")]
-    InvalidField,
-    #[error("Provider Session was not found")]
-    NotFound,
-    #[error("Provider observation unavailable")]
-    Unavailable,
-}
-
-impl ObservationFailure {
-    #[must_use]
-    pub const fn kind(self) -> &'static str {
-        match self {
-            Self::InvalidField => "invalidField",
-            Self::NotFound => "notFound",
-            Self::Unavailable => "unavailable",
-        }
-    }
-}
-
-impl serde::Serialize for ObservationFailure {
-    fn serialize<TSerializer: serde::Serializer>(
-        &self,
-        serializer: TSerializer,
-    ) -> Result<TSerializer::Ok, TSerializer::Error> {
-        json!({"kind":self.kind(),"stage":"inspect","message":self.to_string()})
-            .serialize(serializer)
-    }
-}
-
-impl CollaborationRejection for ObservationFailure {
-    fn rejection_reason(&self) -> Option<CollaborationRejectionReason> {
-        match self {
-            Self::InvalidField => Some(CollaborationRejectionReason::InvalidShape),
-            Self::NotFound | Self::Unavailable => None,
-        }
-    }
-
-    fn published_rejection(&self) -> PublishedRejection {
-        let code = match self {
-            Self::InvalidField => PublishedRejection::INVALID_PARAMS,
-            Self::NotFound => PublishedRejection::NOT_FOUND,
-            Self::Unavailable => PublishedRejection::OPERATION_FAILED,
-        };
-        PublishedRejection::typed(code, self.to_string(), self)
-    }
 }
 
 #[cfg(test)]

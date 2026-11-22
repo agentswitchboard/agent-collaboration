@@ -594,7 +594,7 @@ async fn pages_follow_the_retained_projection_through_compacted_updates() {
         epoch: None,
         service_epoch: None,
     };
-    let (first, first_trace) = trace_page(&client, request.clone()).await;
+    let (first, first_trace) = trace_page(&client, request.clone()).await.unwrap();
     assert_eq!(first.events.len(), 1);
     assert_eq!(first.events[0]["sequence"], 1);
     request.epoch = first.epoch;
@@ -617,16 +617,16 @@ async fn pages_follow_the_retained_projection_through_compacted_updates() {
             .unwrap();
     }
 
-    let (second, second_trace) = trace_page(&client, request.clone()).await;
+    let (second, second_trace) = trace_page(&client, request.clone()).await.unwrap();
     request.after_sequence = Some(3);
-    let (third, third_trace) = trace_page(&client, request.clone()).await;
+    let (third, third_trace) = trace_page(&client, request.clone()).await.unwrap();
     fixture
         .hub
         .publish(fixture.board_target, item("later", "after the cut"))
         .await
         .unwrap();
     request.after_sequence = Some(5);
-    let (fourth, fourth_trace) = trace_page(&client, request).await;
+    let (fourth, fourth_trace) = trace_page(&client, request).await.unwrap();
 
     assert_eq!(second.events.len(), 1);
     assert_eq!(second.events[0]["sequence"], 3);
@@ -644,7 +644,7 @@ async fn pages_follow_the_retained_projection_through_compacted_updates() {
         "continued-observation.json",
         &[first_trace, second_trace, third_trace, fourth_trace],
         "One end-of-snapshot at the first cut. Forward sequence 6 as live and consume the later cut.",
-    );
+    ).unwrap();
     served.stop().await.unwrap();
 }
 
@@ -671,7 +671,7 @@ async fn a_kept_oversized_replacement_precedes_the_cut_and_advances_it() {
         epoch: Some(0),
         service_epoch: None,
     };
-    let (page, page_trace) = trace_page(&client, request.clone()).await;
+    let (page, page_trace) = trace_page(&client, request.clone()).await.unwrap();
     assert_eq!(
         page.events,
         vec![
@@ -694,26 +694,29 @@ async fn a_kept_oversized_replacement_precedes_the_cut_and_advances_it() {
         .unwrap();
     request.after_sequence = Some(2);
     request.service_epoch = Some(page.generation.service_epoch);
-    let (next, next_trace) = trace_page(&client, request).await;
+    let (next, next_trace) = trace_page(&client, request).await.unwrap();
     assert_eq!(next.events[0]["sequence"], 3);
     assert_eq!(next.events[1], snapshot_marker(0, 3));
     save_trace(
         "oversized-observation.json",
         &[page_trace, next_trace],
         "One gap when the oversized record arrives. The attachment emits no end-of-snapshot.",
-    );
+    )
+    .unwrap();
     served.stop().await.unwrap();
 }
 
 async fn trace_page(
     client: &CollaborationClient,
     request: BoundedObservationRequest,
-) -> (collaboration_protocol::BoundedObservationResult, Value) {
+) -> Result<
+    (collaboration_protocol::BoundedObservationResult, Value),
+    collaboration_client::ClientError,
+> {
     let (sink, mut streamed) = tokio::sync::mpsc::unbounded_channel();
     let result = client
         .observe_provider_session_streaming(request.clone(), Some(sink))
-        .await
-        .unwrap();
+        .await?;
     let mut notifications = Vec::new();
     while let Ok(notification) = streamed.try_recv() {
         notifications.push(notification);
@@ -723,13 +726,18 @@ async fn trace_page(
         result.events.iter().collect::<Vec<_>>(),
     );
     let trace = json!({"request":request,"notifications":notifications,"result":result});
-    (result, trace)
+    Ok((result, trace))
 }
 
-fn save_trace(name: &str, calls: &[Value], expected_attachment: &str) {
+fn save_trace(
+    name: &str,
+    calls: &[Value],
+    expected_attachment: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
     if let Some(directory) = std::env::var_os("PROVIDER_OBSERVATION_TRACE_DIRECTORY") {
         let path = std::path::PathBuf::from(directory).join(name);
         let trace = json!({"calls":calls,"expectedAttachment":expected_attachment});
-        std::fs::write(path, serde_json::to_vec_pretty(&trace).unwrap()).unwrap();
+        std::fs::write(path, serde_json::to_vec_pretty(&trace)?)?;
     }
+    Ok(())
 }

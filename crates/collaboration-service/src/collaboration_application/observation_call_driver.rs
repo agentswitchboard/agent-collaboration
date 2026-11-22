@@ -1,15 +1,18 @@
 //! Applies the call machine's ordered effects to the result and notification sink.
 use super::{
-    ObservationFailure, ObservedEventSink,
     observation_call_machine::{
         ObservationArrival, ObservationCallMachine, ObservationEffect, ObservationState,
     },
+    observation_failure::ObservationFailure,
 };
 use collaboration_protocol::{
     ObservationCursor, ObservationEventNotification, ProviderSnapshotMarker,
 };
 use serde_json::Value;
 use state_machine_core::StateMachine;
+
+/// Where an observation hands each event as it observes it, before its result.
+pub type ObservedEventSink = tokio::sync::mpsc::UnboundedSender<ObservationEventNotification>;
 
 pub(super) struct ObservationDriver {
     pub(super) state: ObservationState,

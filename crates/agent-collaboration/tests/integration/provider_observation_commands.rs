@@ -25,7 +25,7 @@ impl SessionEventHub for CutThenGap {
                     sequence: 1,
                     event: SessionEvent::ResyncRequired { replay_epoch: 1 },
                 })
-                .unwrap();
+                .map_err(|_| SessionEventHubError::Unavailable)?;
             Ok(SessionEventAttachment {
                 snapshot: vec![],
                 receiver,
@@ -50,11 +50,13 @@ fn marker() -> Value {
     json!({"kind":"snapshotEnd","cursor":{"epoch":0,"afterSequence":0}})
 }
 
-async fn run_command(command: &str, extra: &[&str]) -> (Option<i32>, Vec<Value>) {
-    let root = tempfile::tempdir_in("/tmp").unwrap();
-    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
-    let app = ApplicationFixture::new(SERVICE, RUN)
-        .unwrap()
+async fn run_command(
+    command: &str,
+    extra: &[&str],
+) -> Result<(Option<i32>, Vec<Value>), Box<dyn std::error::Error>> {
+    let root = tempfile::tempdir_in("/tmp")?;
+    std::fs::set_permissions(root.path(), std::fs::Permissions::from_mode(0o700))?;
+    let app = ApplicationFixture::new(SERVICE, RUN)?
         .with_clock(Arc::new(router_clock::ManualClock::new(Default::default())))
         .with_provider_session_hub(Arc::new(CutThenGap))
         .with_endpoints(vec![serde_json::from_value(json!({
@@ -65,10 +67,9 @@ async fn run_command(command: &str, extra: &[&str]) -> (Option<i32>, Vec<Value>)
                 "bindingId":"fixture","bindingGeneration":1,
                 "runtime":{"provider":"claudeCode","runtimeName":"fixture"},
                 "capabilities":[{"name":"create","status":"supported","evidence":"advertised"}]}]
-        })).unwrap()])
-        .unwrap()
+        }))?])?
         .build();
-    let served = ServedCollaborationApi::start(root.path(), app).unwrap();
+    let served = ServedCollaborationApi::start(root.path(), app)?;
     let output = tokio::process::Command::new(env!("CARGO_BIN_EXE_agent-collaboration"))
         .args([
             "events",
@@ -83,26 +84,24 @@ async fn run_command(command: &str, extra: &[&str]) -> (Option<i32>, Vec<Value>)
         .arg(root.path())
         .args(extra)
         .output()
-        .await
-        .unwrap();
+        .await?;
     assert!(
         output.stderr.is_empty(),
         "{}",
         String::from_utf8_lossy(&output.stderr)
     );
-    let records = String::from_utf8(output.stdout)
-        .unwrap()
+    let records = String::from_utf8(output.stdout)?
         .lines()
-        .map(|line| serde_json::from_str(line).unwrap())
-        .collect();
-    served.stop().await.unwrap();
-    (output.status.code(), records)
+        .map(serde_json::from_str)
+        .collect::<Result<_, _>>()?;
+    served.stop().await?;
+    Ok((output.status.code(), records))
 }
 
 // Rejects an observe command that drops the marker from either streamed output or the result.
 #[tokio::test]
 async fn observe_prints_snapshot_end_before_the_final_result() {
-    let (exit, records) = run_command("observe", &["--stream"]).await;
+    let (exit, records) = run_command("observe", &["--stream"]).await.unwrap();
     assert_eq!(exit, Some(0));
     let [snapshot, gap, result] = records.as_slice() else {
         panic!("wrong observation output: {records:?}")
@@ -116,7 +115,7 @@ async fn observe_prints_snapshot_end_before_the_final_result() {
 // Rejects a listen command that skips the marker or treats it as the end of the attachment.
 #[tokio::test]
 async fn listen_prints_snapshot_end_and_stops_at_the_gap() {
-    let (exit, records) = run_command("listen", &[]).await;
+    let (exit, records) = run_command("listen", &[]).await.unwrap();
     assert_eq!(exit, Some(3));
     let [ready, snapshot, gap] = records.as_slice() else {
         panic!("wrong listen output: {records:?}")

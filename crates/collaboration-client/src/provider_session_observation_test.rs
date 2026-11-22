@@ -29,14 +29,14 @@ impl LocalCollaboration for ScriptedWatch {
     }
 
     fn endpoints(&self) -> Result<EndpointInventory, ClientError> {
-        Ok(serde_json::from_value(json!({"sequence":1,"serviceEpoch":SERVICE_EPOCH,
+        serde_json::from_value(json!({"sequence":1,"serviceEpoch":SERVICE_EPOCH,
             "endpoints":[{"endpoint":{"serviceId":SERVICE_ID,"endpointId":"claude-local"},
             "label":"Fixture","availability":{"state":"available","observedAt":"2026-11-21T00:00:00Z"},
             "channels":[{"kind":"externalProvider","transport":"stdioAcp",
               "bindingId":"fixture","bindingGeneration":1,
               "runtime":{"provider":"claudeCode","runtimeName":"fixture"},
               "capabilities":[{"name":"create","status":"supported","evidence":"advertised"}]}]}]
-        })).unwrap())
+        })).map_err(|_| ClientError::Protocol("invalid scripted endpoint inventory"))
     }
 
     fn create_provider_conversation(

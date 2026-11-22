@@ -206,7 +206,7 @@ impl HubEventFollow {
                 self.epoch = Some(cursor.epoch);
                 self.after_sequence = Some(cursor.after_sequence);
             }
-            if notification.event["kind"] != "snapshotEnd" {
+            if notification.event.get("kind").and_then(Value::as_str) != Some("snapshotEnd") {
                 return Ok(notification.event);
             }
         }
