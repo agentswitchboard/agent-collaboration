@@ -20,6 +20,7 @@ impl SessionOwnerPorts for RealHubPorts {
         owner: OwnerAddress,
         effect: OwnerEffect,
         completions: &OwnerCompletionPort,
+        caller_wakes: &mut acp_client_runtime::session_owner_task::OwnerCallerWakes,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
         match effect {
             OwnerEffect::Publish(batch) => {
@@ -28,6 +29,7 @@ impl SessionOwnerPorts for RealHubPorts {
                     owner,
                     OwnerEffect::Publish(batch.clone()),
                     completions,
+                    caller_wakes,
                 )?;
                 self.publisher.publish(owner, batch, completions)
             }
@@ -36,13 +38,16 @@ impl SessionOwnerPorts for RealHubPorts {
                     owner,
                     OwnerEffect::Wire(SessionWireRequest::Close(run)),
                     completions,
+                    caller_wakes,
                 )?;
                 Ok(rejected.or(Some(OwnerEvent::Wire(SessionWireResult::Close {
                     run,
                     outcome: WireOutcome::Confirmed(()),
                 }))))
             }
-            effect => self.wire_and_store.execute(owner, effect, completions),
+            effect => self
+                .wire_and_store
+                .execute(owner, effect, completions, caller_wakes),
         }
     }
 }
