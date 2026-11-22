@@ -50,6 +50,7 @@ members = [
     "crates/collaboration-runtime",
     "crates/switchboard-session-events",
     "crates/switchboard-session-payloads",
+    "crates/switchboard-session-calls",
     "crates/switchboard-session-store",
     "crates/collaboration-protocol",
     "crates/collaboration-central-core",
