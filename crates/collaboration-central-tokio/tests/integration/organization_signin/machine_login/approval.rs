@@ -238,11 +238,10 @@ async fn new_approval_refuses_codes_at_or_before_applying_now_without_effects_an
 
 #[expect(
     clippy::panic_in_result_fn,
-    reason = "An overflowing wire deadline must return a no-effect policy refusal and leave the same request usable for a valid approval and Grant."
+    reason = "Each deadline failure must leave the same request usable for a valid approval and Grant."
 )]
 #[tokio::test]
-async fn overflowing_new_approval_deadline_is_not_permitted_without_effects_and_future_retry_grants()
--> Result<()> {
+async fn approval_deadline_boundary_failures_leave_the_request_reusable() -> Result<()> {
     let f = MachineFixture::new().await?;
     let mut request = approval(
         0xd701,
@@ -251,23 +250,31 @@ async fn overflowing_new_approval_deadline_is_not_permitted_without_effects_and_
         &[WORKSPACE, WORKSPACE_TWO],
         f.now(),
     );
-    // Exactly representable by JavaScript and i64, but seconds-to-ms overflows.
-    // This must reach policy as a valid wire integer rather than round or fail 400.
-    request["codeExpiresAt"] = json!(10_000_000_000_000_000_i64);
     let before = snapshot(&f).await?;
+    for unsafe_deadline in [9_007_199_254_740_992_i64, i64::MAX] {
+        request["codeExpiresAt"] = json!(unsafe_deadline);
+        assert_eq!(
+            f.post(DEVICE, &request).await?,
+            (400, json!({"kind":"wrong-operation"})),
+            "unsafe seconds must be rejected at decode"
+        );
+        assert_eq!(
+            snapshot(&f).await?,
+            before,
+            "unsafe deadline changed stored facts"
+        );
+    }
+
+    // The last exact JSON integer decodes, but its millisecond value cannot be stored.
+    request["codeExpiresAt"] = json!(9_007_199_254_740_991_i64);
+    assert_eq!(f.post(DEVICE, &request).await?, (503, Value::Null));
     assert_eq!(
-        f.post(DEVICE, &request).await?,
-        (
-            200,
-            json!({"result":"refused","reason":{"kind":"notPermitted"}})
-        )
-    );
-    assert!(
-        snapshot(&f).await? == before,
-        "overflow refusal reserved approval, changed machine or emitted audit records"
+        snapshot(&f).await?,
+        before,
+        "unstoreable deadline changed stored facts"
     );
 
-    // A refusal leaves request identity reusable with a representable future code.
+    // Both failures leave request identity reusable with a storeable future code.
     request["codeExpiresAt"] = json!(f.now() + 1);
     let approved = f.post(DEVICE, &request).await?;
     assert_eq!(approved.0, 200);

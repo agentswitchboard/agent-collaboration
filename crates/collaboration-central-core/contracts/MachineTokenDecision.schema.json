@@ -91,6 +91,8 @@
     },
     "UnixSeconds": {
       "format": "int64",
+      "maximum": 9007199254740991,
+      "minimum": 0,
       "type": "integer"
     }
   },
@@ -100,15 +102,13 @@
       "additionalProperties": false,
       "properties": {
         "decidedAt": {
-          "$ref": "#/$defs/UnixSeconds",
-          "minimum": 0
+          "$ref": "#/$defs/UnixSeconds"
         },
         "enrollmentId": {
           "$ref": "#/$defs/EnrollmentId"
         },
         "grantExpiresAt": {
-          "$ref": "#/$defs/UnixSeconds",
-          "minimum": 0
+          "$ref": "#/$defs/UnixSeconds"
         },
         "machineId": {
           "$ref": "#/$defs/MachineId"

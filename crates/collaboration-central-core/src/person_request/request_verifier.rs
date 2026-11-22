@@ -8,6 +8,7 @@ use super::{
         CompactJwt, MAX_SAFE_INTEGER, decode, from_json, sha256_url, uuid_v7, uuid_v7_millis,
     },
     refusal::PersonRequestRefusal,
+    signed_claims::{PersonClaims, PersonTokenHeader, ProofClaims, ProofHeader},
 };
 use fleet_identity_protocol::OrganizationId;
 use fleet_runtime_ports::{
@@ -64,78 +65,6 @@ pub struct VerifiedPersonRequest {
     pub operation: AdminOperation,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct TokenHeader {
-    alg: String,
-    kid: String,
-    typ: Option<String>,
-}
-
-/// RFC 7519 allows one audience string or an array of them.
-#[derive(Deserialize)]
-#[serde(untagged)]
-enum Audience {
-    One(String),
-    Many(Vec<String>),
-}
-impl Audience {
-    fn names(&self, expected: &str) -> bool {
-        match self {
-            Self::One(one) => one == expected,
-            Self::Many(many) => many.iter().any(|one| one == expected),
-        }
-    }
-}
-
-#[derive(Deserialize)]
-struct Confirmation {
-    jkt: String,
-}
-
-#[derive(Deserialize)]
-struct PersonClaims {
-    iss: String,
-    aud: Audience,
-    sub: String,
-    sid: String,
-    iat: i64,
-    exp: i64,
-    cnf: Confirmation,
-    token_profile: String,
-    organization_id: String,
-    authorization_subject_id: String,
-    person_revision: i64,
-    organization_revision: i64,
-    permission_policy_digest: String,
-    permissions: Vec<String>,
-    second_factor_at: Option<i64>,
-    #[serde(default)]
-    second_factor_method: Option<String>,
-    session_expires_at_ms: i64,
-    authorization_snapshot_at_ms: i64,
-    authorization_snapshot_valid_until_ms: i64,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProofHeader {
-    typ: String,
-    alg: String,
-    jwk: ProofJwk,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct ProofClaims {
-    jti: String,
-    htm: String,
-    htu: String,
-    iat: i64,
-    ath: String,
-    intent: String,
-}
-
 pub struct PersonRequestVerifier<Ed, Es, Keys> {
     signatures: IssuerSignatureVerifier<Ed, Keys>,
     proofs: Es,
@@ -172,7 +101,7 @@ impl<Ed: Ed25519Verification, Es: Es256Verification, Keys: IssuerKeySource>
             .filter(|token| !token.is_empty() && !token.contains(char::is_whitespace))
             .ok_or(PersonRequestRefusal::DpopRequired)?;
         let parsed_token = CompactJwt::parse(token)?;
-        let header: TokenHeader = from_json(
+        let header: PersonTokenHeader = from_json(
             &parsed_token.header,
             PersonRequestRefusal::UnsupportedHeader,
         )?;
@@ -240,6 +169,7 @@ impl<Ed: Ed25519Verification, Es: Es256Verification, Keys: IssuerKeySource>
         }
         let proof_time_ms = claims
             .iat
+            .0
             .checked_mul(1000)
             .ok_or(PersonRequestRefusal::ProofTime)?;
         if !in_request_window(proof_time_ms, now_ms) {
@@ -253,11 +183,12 @@ impl<Ed: Ed25519Verification, Es: Es256Verification, Keys: IssuerKeySource>
         if claims.ath != sha256_url(token.as_bytes()) {
             return Err(PersonRequestRefusal::TokenHash);
         }
+        let second_factor_at = person.second_factor_at.map(|timestamp| timestamp.0);
         let operation = AdminOperation::parse_for_person(
             input.route,
             input.body.as_bytes(),
             &person.sub,
-            person.second_factor_at,
+            second_factor_at,
         )?;
         let intent_digest = operation.intent_digest()?;
         if claims.intent != intent_digest {
@@ -276,11 +207,11 @@ impl<Ed: Ed25519Verification, Es: Es256Verification, Keys: IssuerKeySource>
             session_id: person.sid,
             organization_id,
             authorization_subject_id: person.authorization_subject_id,
-            person_revision: person.person_revision,
-            organization_revision: person.organization_revision,
+            person_revision: person.person_revision.get(),
+            organization_revision: person.organization_revision.get(),
             permission_policy_digest: person.permission_policy_digest,
             permissions: person.permissions,
-            second_factor_at: person.second_factor_at,
+            second_factor_at,
             request_id,
             request_time_ms,
             proof_time_ms,
@@ -344,36 +275,30 @@ fn validate_person(
     ] {
         uuid_v7(id, PersonRequestRefusal::PersonClaims)?;
     }
-    let revision = 1..=MAX_SAFE_INTEGER;
     if decode(&person.cnf.jkt, PersonRequestRefusal::PersonClaims)?.len() != 32
-        || person.iat < 0
-        || person.iat > now_ms.div_euclid(1000)
+        || person.iat.0 > now_ms.div_euclid(1000)
         || person.exp <= person.iat
-        || !revision.contains(&person.person_revision)
-        || !revision.contains(&person.organization_revision)
         || person.permission_policy_digest.is_empty()
         || person
             .second_factor_at
-            .is_some_and(|at| !(0..=MAX_SAFE_INTEGER / 1000).contains(&at))
+            .is_some_and(|at| at.0 > MAX_SAFE_INTEGER / 1000)
         || person.second_factor_at.is_some() != person.second_factor_method.is_some()
     {
         return Err(PersonRequestRefusal::PersonClaims);
     }
     let jwt_expiry_ms = person
         .exp
+        .0
         .checked_mul(1000)
         .filter(|value| *value <= MAX_SAFE_INTEGER)
         .ok_or(PersonRequestRefusal::ExpiryBounds)?;
-    let snapshot = person.authorization_snapshot_at_ms;
-    let snapshot_deadline = person.authorization_snapshot_valid_until_ms;
-    let session_deadline = person.session_expires_at_ms;
-    if snapshot < 0
-        || snapshot > now_ms
+    let snapshot = person.authorization_snapshot_at_ms.0;
+    let snapshot_deadline = person.authorization_snapshot_valid_until_ms.0;
+    let session_deadline = person.session_expires_at_ms.0;
+    if snapshot > now_ms
         || snapshot_deadline <= snapshot
-        || snapshot_deadline > MAX_SAFE_INTEGER
         || snapshot_deadline - snapshot > 300_000
         || session_deadline <= snapshot
-        || session_deadline > MAX_SAFE_INTEGER
     {
         return Err(PersonRequestRefusal::ExpiryBounds);
     }

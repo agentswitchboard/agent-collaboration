@@ -9,6 +9,10 @@ use serde::{Deserialize, Serialize};
 /// The closed set of engine kinds an admin sees; test-support machines are hidden.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum EngineKindName {
     WakeTimer,
     AutomationTimer,
@@ -22,6 +26,10 @@ pub enum EngineKindName {
 /// One registered engine kind in EngineHealth; zero counts are listed too.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct EngineKindHealth {
     pub kind: EngineKindName,
     pub failing: u32,
@@ -34,6 +42,10 @@ pub struct EngineKindHealth {
 /// One retired failure record in EngineListRetired, ascending by attempt ID.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct EngineRetiredItem {
     #[schemars(with = "String", extend("format" = "uuid"))]
     pub attempt_id: uuid::Uuid,
@@ -58,20 +70,37 @@ pub enum OrganizationAdminAnswer {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "result", rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum ListWorkspacesResult {
     Workspaces {
         workspaces: WorkspacePageRows,
         #[serde(deserialize_with = "Option::deserialize")]
-        next: Option<message_board::WorkspaceId>,
+        #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = NullableWorkspacePageCursor))]
+        next: NullableWorkspacePageCursor,
     },
     Refused {
         reason: AdminRefusal,
     },
 }
 
+type NullableWorkspacePageCursor = Option<message_board::WorkspaceId>;
+
+#[cfg(all(feature = "wire-export", not(target_arch = "wasm32")))]
+const _: fn(&ListWorkspacesResult) -> Option<&NullableWorkspacePageCursor> = |result| match result {
+    ListWorkspacesResult::Workspaces { next, .. } => Some(next),
+    ListWorkspacesResult::Refused { .. } => None,
+};
+
 /// The bounded workspace collection returned by one successful page.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "Vec<WorkspaceView>", into = "Vec<WorkspaceView>")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct WorkspacePageRows(Vec<WorkspaceView>);
 
 #[derive(Debug, thiserror::Error)]
@@ -114,6 +143,10 @@ impl JsonSchema for WorkspacePageRows {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(tag = "result", rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum MachineEnrollmentRevocationResult {
     Revoked {},
     NotFound {},
@@ -125,6 +158,10 @@ pub enum MachineEnrollmentRevocationResult {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum MachineEnrollmentRevocationRefusal {
     NotPermitted,
     FactorNotRecent,
@@ -151,6 +188,10 @@ impl RetainedOrganizationAdminAnswer {
     rename_all = "camelCase",
     rename_all_fields = "camelCase",
     deny_unknown_fields
+)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
 )]
 pub enum OrganizationAdminResult {
     Applied {
@@ -182,6 +223,10 @@ pub enum OrganizationAdminResult {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum AdminRefusal {
     NameInUse,
     NotPermitted,

@@ -182,6 +182,9 @@ security-framework = "3.7"
 # SQLx crates stay pinned for checked-query and custom driver compatibility.
 sqlx = { version = "=0.9.0", default-features = false, features = ["runtime-tokio"] }
 sqlx-core = { version = "=0.9.0", default-features = false }
+specta = { version = "=2.0.0-rc.28", default-features = false }
+specta-serde = "=0.0.15"
+specta-typescript = "=0.0.15"
 sqlx-macros-core = { version = "=0.9.0", default-features = false }
 syn = { version = "2.0.118", features = ["full", "parsing"] }
 thiserror = "2.0.18"

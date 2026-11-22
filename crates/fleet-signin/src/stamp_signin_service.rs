@@ -223,7 +223,10 @@ impl<'owner, H: CentralStore, S: WorkspaceStores> SignInService<'owner, H, S> {
                 .organization_id()
                 .as_str()
                 .to_owned(),
-            created_at_millis: now.unix_millis(),
+            created_at_millis: now
+                .unix_millis()
+                .try_into()
+                .map_err(|_| Failure::Unavailable)?,
         };
 
         let write = StampWrite {

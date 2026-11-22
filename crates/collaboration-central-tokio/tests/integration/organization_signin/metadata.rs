@@ -165,7 +165,7 @@ async fn legacy_signed_create_audit_binds_distinct_request_and_target() -> Resul
             permission_checked: "workspace:create".into(),
         },
         target_id: target.into(),
-        created_at_millis: at_ms,
+        created_at_millis: at_ms.try_into()?,
     })?;
 
     // Signed create binds one operation ID to both columns. Exercise its
