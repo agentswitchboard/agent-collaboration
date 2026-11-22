@@ -24,7 +24,7 @@ mod system_receipt_settlement;
 pub use direct_store_port::*;
 pub use due_queries::{due_direct_messages, due_system_message_expiries};
 pub use message_insert::insert_message;
-pub use queued_notices::{plan_cancel_queued_notices_held, validate_queued_notices_held};
+pub use queued_notices::plan_cancel_queued_notices_held;
 pub use request_plan::plan_sourced_notice;
 pub use stored_messages::queued_for_session_held;
 pub use system_message_expiry::{

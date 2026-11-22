@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT\n    machine_kind AS \"kind!: String\",\n    subject_key AS \"key!: String\",\n    due_at_ms AS \"effective_due_ms?: i64\",\n    1 AS \"is_reference!: i64\"\nFROM engine_due_attempt_controls\nWHERE machine_kind IN ('engine_source', 'legacy_notice_windows', 'legacy_workspace_drains')\nUNION ALL\nSELECT work_kind, subject_key, effective_due_ms, 0\nFROM engine_due_entries\nWHERE entry_role = 'source_control'\n",
+  "query": "SELECT\n    machine_kind AS \"kind!: String\",\n    subject_key AS \"key!: String\",\n    due_at_ms AS \"effective_due_ms?: i64\"\nFROM engine_due_attempt_controls\nWHERE machine_kind IN ('engine_source', 'legacy_notice_windows', 'legacy_workspace_drains')\n",
   "describe": {
     "columns": [
       {
@@ -30,12 +30,6 @@
         "ordinal": 2,
         "type_info": "Integer",
         "origin": "Expression"
-      },
-      {
-        "name": "is_reference!: i64",
-        "ordinal": 3,
-        "type_info": "Integer",
-        "origin": "Expression"
       }
     ],
     "parameters": {
@@ -44,9 +38,8 @@
     "nullable": [
       false,
       false,
-      true,
-      false
+      true
     ]
   },
-  "hash": "fead0c92a3350a71dab90d187155afc0e52e9798d973ffc6933adb5967f3079d"
+  "hash": "6795f4b60ff5dbfd02ce0d68cab2805ea9aa2c56897a6025030fcaa841fde0bd"
 }

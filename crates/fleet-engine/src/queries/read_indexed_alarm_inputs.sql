@@ -1,4 +1,4 @@
-WITH legacy_minima(due_at_ms) AS (
+WITH notice_window_minimum(due_at_ms) AS (
     SELECT CASE WHEN EXISTS (
         SELECT 1 FROM engine_due_entries
         WHERE work_kind = 'legacy_notice_windows'
@@ -14,7 +14,8 @@ WITH legacy_minima(due_at_ms) AS (
         FROM mail_notification_windows INDEXED BY notification_windows_due
         WHERE due_at IS NOT NULL ORDER BY due_at LIMIT 1
     ) END
-    UNION ALL
+),
+workspace_drain_minimum(due_at_ms) AS (
     SELECT CASE WHEN EXISTS (
         SELECT 1 FROM engine_due_entries
         WHERE work_kind = 'legacy_workspace_drains'
@@ -52,7 +53,7 @@ grid_minima(due_at_ms) AS (
     FROM grid_kinds k
 )
 SELECT
-    CASE WHEN EXISTS (SELECT 1 FROM signin_provisioned_for_engine)
-        THEN (SELECT MIN(due_at_ms) FROM grid_minima) END AS "on_grid_due?: i64",
-    CASE WHEN EXISTS (SELECT 1 FROM signin_provisioned_for_engine)
-        THEN (SELECT MIN(due_at_ms) FROM legacy_minima) END AS "legacy_due?: i64"
+    (SELECT MIN(due_at_ms) FROM grid_minima) AS "on_grid_due?: i64",
+    (SELECT due_at_ms FROM notice_window_minimum) AS "notice_window_due?: i64",
+    (SELECT due_at_ms FROM workspace_drain_minimum) AS "workspace_drain_due?: i64"
+WHERE EXISTS (SELECT 1 FROM signin_provisioned_for_engine)

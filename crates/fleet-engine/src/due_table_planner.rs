@@ -87,15 +87,6 @@ pub fn plan_due_table_change(
                 ),
             ]
         }
-        DueTableChange::RemoveCancelledNotice(key) => vec![guarded(
-            crate::checked_engine_statement!(
-                query_file,
-                [],
-                "src/queries/remove_cancelled_notice_due.sql",
-                message_id = key.0.clone(),
-            ),
-            any,
-        )],
     })
 }
 

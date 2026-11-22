@@ -1,6 +1,6 @@
 //! Fold workspace changes into window updates and queued-notice edits.
 use crate::{
-    NoticeMailbox,
+    NoticeCancellation, NoticeMailbox,
     notice_actor::route_notice_actor,
     notice_recipients::targeted_recipients,
     recipient_cadence::notice_due,
@@ -33,8 +33,7 @@ pub async fn plan_workspace_notices_held<Host: CentralStore, Stores: WorkspaceSt
     rows: &WorkspaceRows,
     now: Timestamp,
 ) -> Result<WorkspaceNoticePlan, StoreFailure> {
-    let queued_notices = mailbox.validate_queued_notices_held().await?;
-    let mut cancelled_notices = false;
+    let mut cancellations = Vec::new();
     let host = execution.statement_host();
     let access = WorkspaceAccess::new(execution);
     let mut windows = notification_windows(host).await?;
@@ -55,14 +54,12 @@ pub async fn plan_workspace_notices_held<Host: CentralStore, Stores: WorkspaceSt
                 _ => None,
             };
             if member.is_some() || matches!(event, m::ChangeEvent::Resolved) {
-                cancelled_notices = true;
+                cancellations.push(NoticeCancellation {
+                    thread: thread.clone(),
+                    recipient: member.cloned(),
+                });
                 plan.statements
                     .push(delete_window_items_for_thread(workspace, thread, member));
-                plan.statements.extend(
-                    mailbox
-                        .plan_cancel_queued_notices_held(workspace, thread, member, now)
-                        .await?,
-                );
                 continue;
             }
         }
@@ -120,19 +117,11 @@ pub async fn plan_workspace_notices_held<Host: CentralStore, Stores: WorkspaceSt
             plan.window_items_added += 1;
         }
     }
-    // The cancellation's second SQL step can touch every notice that was
-    // queued at the start of this Central turn. The plan cannot insert queued
-    // mail, so its original validated IDs cover the batch's affected set.
-    if cancelled_notices {
-        for id in queued_notices {
-            plan.statements.extend(fleet_engine::plan_due_table_change(
-                &fleet_engine::DueTableChange::RemoveCancelledNotice(
-                    central_engine_model::InstanceKey(id.to_string()),
-                ),
-                now,
-            )?);
-        }
-    }
+    plan.statements.extend(
+        mailbox
+            .plan_cancel_queued_notices_held(workspace, &cancellations, now)
+            .await?,
+    );
     plan.statements.push(delete_empty_windows());
     Ok(plan)
 }

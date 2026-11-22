@@ -359,3 +359,137 @@ async fn owner_attempts_preserve_the_exact_competing_prior_update() {
         run_prior_attempt_race(owner, AttemptRace::Update).await;
     }
 }
+
+#[tokio::test]
+async fn system_expiry_failure_updates_projection_through_retirement_and_admin_retry() {
+    let engine = EngineOrg::new().await;
+    let thread = engine.thread().await;
+    let actor = engine.observer(&thread).await;
+    engine.post(&thread).await;
+    let window = engine
+        .rows(
+            "SELECT due_at FROM mail_notification_windows WHERE recipient_actor=?",
+            vec![text(actor)],
+        )
+        .await;
+    let SqlValue::Text(window_due) = &window[0][0] else {
+        panic!("stored window due time")
+    };
+    engine.set(window_due.parse().unwrap());
+    engine.after_event().await;
+
+    const KIND: &str = "system_message_expiry";
+    let notices = engine.rows("SELECT message_id,delivery_window_ends_at FROM mail_messages WHERE message_kind='notice' ORDER BY message_id LIMIT 1", vec![]).await;
+    let [SqlValue::Text(key), SqlValue::Text(stored_expiry)] = notices[0].as_slice() else {
+        panic!("the owner must publish a notice with its deadline");
+    };
+    assert_eq!(notices.len(), 1);
+    let expiry: Time = stored_expiry.parse().unwrap();
+    assert_expiry_projection(&engine, key, expiry, Some(expiry), expiry).await;
+
+    engine.raw("CREATE TRIGGER reject_notice_expiry BEFORE UPDATE OF state ON mail_messages WHEN OLD.message_kind='notice' AND OLD.message_id=(SELECT MIN(message_id) FROM mail_messages WHERE message_kind='notice') AND NEW.failure_reason='expired24Hours' BEGIN SELECT RAISE(ABORT,'rejected expiry'); END", vec![]).await;
+    engine.set(expiry);
+    engine.after_event().await;
+    let next_try = expiry + minutes(5);
+    assert_eq!(
+        engine.record(KIND, key).await,
+        [[
+            text("failing"),
+            integer(1),
+            stamp(next_try),
+            text("statement_rejected")
+        ]]
+    );
+    assert_expiry_projection(&engine, key, expiry, Some(next_try), expiry).await;
+
+    engine.set(next_try);
+    engine.after_event().await;
+    assert_eq!(
+        engine.record(KIND, key).await,
+        [[
+            text("retired"),
+            integer(2),
+            SqlValue::Null,
+            text("statement_rejected")
+        ]]
+    );
+    assert_expiry_projection(&engine, key, expiry, None, expiry).await;
+
+    let attempt = engine.attempt_id(KIND, key).await;
+    engine
+        .raw("DROP TRIGGER reject_notice_expiry", vec![])
+        .await;
+    assert_eq!(
+        engine.retry(&attempt).await,
+        serde_json::json!({"result":"engineRetried"})
+    );
+    assert!(engine.record(KIND, key).await.is_empty());
+    assert_expiry_projection(&engine, key, expiry, Some(expiry), expiry).await;
+
+    engine.set(next_try + chrono::Duration::seconds(30));
+    engine.after_event().await;
+    assert_eq!(
+        engine
+            .rows(
+                "SELECT state,failure_reason FROM mail_messages WHERE message_id=?",
+                vec![text(key)]
+            )
+            .await,
+        [[text("cancelled"), text("expired24Hours")]],
+    );
+    assert!(engine.rows("SELECT subject_key FROM engine_due_entries WHERE work_kind='system_message_expiry' AND subject_key=?", vec![text(key)]).await.is_empty());
+    engine.close().await;
+}
+
+async fn assert_expiry_projection(
+    engine: &EngineOrg,
+    key: &str,
+    occurrence: Time,
+    effective: Option<Time>,
+    cutoff: Time,
+) {
+    let effective_ms = effective.map(|time| time.timestamp_millis());
+    let cell = |value: Option<i64>| value.map_or(SqlValue::Null, integer);
+    assert_eq!(
+        engine.rows("SELECT state,delivery_window_ends_at,failure_reason FROM mail_messages WHERE message_id=?", vec![text(key)]).await,
+        [[text("queued"), stamp(occurrence), SqlValue::Null]],
+    );
+    assert_eq!(
+        engine.rows("SELECT occurrence_ms,base_due_ms,effective_due_ms FROM engine_due_entries WHERE work_kind='system_message_expiry' AND subject_key=?", vec![text(key)]).await,
+        [[integer(occurrence.timestamp_millis()), integer(occurrence.timestamp_millis()), cell(effective_ms)]],
+        "the guarded system expiry branch must refresh its projection"
+    );
+    let reference = engine
+        .rows(
+            include_str!("../../../../../fleet-mail/src/queries/read_due_system_expiries.sql"),
+            vec![integer(cutoff.timestamp_millis()), integer(250)],
+        )
+        .await;
+    let runtime = engine.runtime().await;
+    let projected: Vec<(String, i64, i64)> = runtime
+        .control("engine-due-system-expiries", &cutoff.timestamp_millis())
+        .await
+        .unwrap();
+    let projected: Vec<_> = projected
+        .into_iter()
+        .map(|(key, occurrence, effective)| {
+            vec![text(key), integer(occurrence), integer(effective)]
+        })
+        .collect();
+    let alarm: Result<[Option<i64>; 2], central_storage::StoreFailure> =
+        runtime.control("engine-alarm-inputs", &()).await.unwrap();
+    let actual = alarm.unwrap();
+
+    assert_eq!(projected, reference, "that cutoff's ordered expiry list");
+    assert_eq!(actual, [effective_ms, None], "both actual alarm inputs");
+    assert_eq!(
+        engine
+            .rows(
+                include_str!("../../../../../fleet-engine/src/queries/read_alarm_inputs.sql"),
+                vec![]
+            )
+            .await,
+        [[cell(actual[0]), cell(actual[1])]],
+        "the alarm inputs equal the frozen view"
+    );
+}

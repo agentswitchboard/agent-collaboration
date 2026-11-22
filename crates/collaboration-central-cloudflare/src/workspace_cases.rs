@@ -337,6 +337,7 @@ pub(super) async fn control(
         "/test/central-batch"
         | "/test/central-read"
         | "/test/engine-due-schedules"
+        | "/test/engine-due-system-expiries"
         | "/test/store"
         | "/test/store-failing-upgrade"
         | "/test/reset-store"

@@ -13,6 +13,21 @@ struct StoredAlarmInputs {
     legacy_due: Option<i64>,
 }
 
+#[derive(Default, sqlx::FromRow)]
+struct StoredIndexedAlarmInputs {
+    #[sqlx(rename = "on_grid_due?: i64")]
+    on_grid_due: Option<i64>,
+    #[sqlx(rename = "notice_window_due?: i64")]
+    notice_window_due: Option<i64>,
+    #[sqlx(rename = "workspace_drain_due?: i64")]
+    workspace_drain_due: Option<i64>,
+}
+
+struct IndexedAlarmSnapshot {
+    times: EngineAlarmTimes,
+    legacy_by_kind: [(DueKind, Option<i64>); 2],
+}
+
 macro_rules! indexed_alarm_query {
     ($emit:ident, $tags:expr) => {
         $emit!("src/queries/read_indexed_alarm_inputs.sql", $tags)
@@ -60,20 +75,44 @@ where
         + for<'row> Decode<'row, CentralTransactionLender::Database>,
     for<'row> &'row str: ColumnIndex<<CentralTransactionLender::Database as Database>::Row>,
 {
-    macro_rules! bind_alarm {
-        ($file:literal $(, $arg:expr)*) => {
-            sqlx::query_as::<CentralTransactionLender::Database, StoredAlarmInputs>(
+    Ok(read_alarm_snapshot(transaction).await?.times)
+}
+
+async fn read_alarm_snapshot<CentralTransactionLender: CentralTransaction>(
+    transaction: &mut CentralTransactionLender,
+) -> Result<IndexedAlarmSnapshot, StoreFailure>
+where
+    <CentralTransactionLender::Database as Database>::Arguments:
+        IntoArguments<CentralTransactionLender::Database>,
+    String: Type<CentralTransactionLender::Database>
+        + for<'q> Encode<'q, CentralTransactionLender::Database>,
+    i64: Type<CentralTransactionLender::Database>
+        + for<'row> Decode<'row, CentralTransactionLender::Database>,
+    for<'row> &'row str: ColumnIndex<<CentralTransactionLender::Database as Database>::Row>,
+{
+    macro_rules! bind_indexed_alarm {
+        ($file:literal, $tags:expr) => {
+            sqlx::query_as::<CentralTransactionLender::Database, StoredIndexedAlarmInputs>(
                 include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $file)),
-            )$(.bind($arg))*
+            )
+            .bind($tags)
         };
     }
-    let row = indexed_alarm_query!(bind_alarm, grid_tags()?)
-        .fetch_one(transaction.executor())
+    let row = indexed_alarm_query!(bind_indexed_alarm, grid_tags()?)
+        .fetch_optional(transaction.executor())
         .await
-        .map_err(|error| map_central_query_failure(error, "engine alarm input"))?;
+        .map_err(|error| map_central_query_failure(error, "engine alarm input"))?
+        .unwrap_or_default();
     let on_grid_due = row.on_grid_due;
     #[cfg(feature = "test-support")]
     let on_grid_due = {
+        macro_rules! bind_fixture_alarm {
+            ($file:literal) => {
+                sqlx::query_as::<CentralTransactionLender::Database, StoredAlarmInputs>(
+                    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $file)),
+                )
+            };
+        }
         macro_rules! bind_presence {
             ($file:literal) => {
                 sqlx::query_as::<CentralTransactionLender::Database, StoredFixturePresence>(
@@ -86,7 +125,7 @@ where
             .await
             .map_err(|error| map_central_query_failure(error, "engine fixture alarm schema"))?;
         if installed.installed == 1 {
-            let fixture = crate::check_fixture_alarm_query!(bind_alarm)
+            let fixture = crate::check_fixture_alarm_query!(bind_fixture_alarm)
                 .fetch_one(transaction.executor())
                 .await
                 .map_err(|error| map_central_query_failure(error, "engine fixture alarm input"))?;
@@ -98,15 +137,26 @@ where
             on_grid_due
         }
     };
-    Ok(EngineAlarmTimes {
+    let legacy_by_kind = [
+        (
+            DueKind::LegacyNoticeWindows,
+            validate_optional_alarm_millis(row.notice_window_due, "notice window alarm input")?,
+        ),
+        (
+            DueKind::LegacyWorkspaceDrains,
+            validate_optional_alarm_millis(row.workspace_drain_due, "workspace drain alarm input")?,
+        ),
+    ];
+    let times = EngineAlarmTimes {
         earliest_on_grid_due_unix_millis: validate_optional_alarm_millis(
             on_grid_due,
             "engine alarm input",
         )?,
-        earliest_legacy_due_unix_millis: validate_optional_alarm_millis(
-            row.legacy_due,
-            "engine alarm input",
-        )?,
+        earliest_legacy_due_unix_millis: legacy_by_kind.iter().filter_map(|(_, due)| *due).min(),
+    };
+    Ok(IndexedAlarmSnapshot {
+        times,
+        legacy_by_kind,
     })
 }
 
@@ -339,4 +389,4 @@ mod tests;
 
 #[path = "due_table_comparison.rs"]
 mod comparison;
-pub use comparison::{DueTableDifference, compare_due_table};
+pub use comparison::{DueItemTimes, DueTableDifference, InvalidDueEntry, compare_due_table};

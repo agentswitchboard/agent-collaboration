@@ -9,7 +9,7 @@ fn aggregate_sql_describes_the_rows_executed_by_both_hosts() {
 fn indexed_queries_describe_the_shipped_rows() {
     macro_rules! check_alarm {
         ($file:literal, $tags:expr) => {
-            sqlx::query_file_as!(super::StoredAlarmInputs, $file, $tags)
+            sqlx::query_file_as!(super::StoredIndexedAlarmInputs, $file, $tags)
         };
     }
     let _ = indexed_alarm_query!(check_alarm, super::grid_tags().unwrap());

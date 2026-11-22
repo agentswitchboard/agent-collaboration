@@ -3,7 +3,7 @@ use central_engine_model::{AlarmDecisionError, EngineTime, InstanceKey, supporte
 use central_storage::StoreFailure;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DueKind {
     WakeTimer,
@@ -125,6 +125,4 @@ pub enum DueTableChange {
     /// The immediately preceding guarded owner insert may be a conflict no-op.
     PublishInsertedItem(DueOwnerTiming),
     RemoveItem(DueItemKey),
-    /// A notice cleanup names its observed queued messages before the writes.
-    RemoveCancelledNotice(InstanceKey),
 }

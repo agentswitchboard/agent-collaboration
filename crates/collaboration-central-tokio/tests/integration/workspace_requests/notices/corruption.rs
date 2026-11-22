@@ -473,3 +473,67 @@ async fn workspace_drain_preset_validates_the_deadline_before_any_write() {
     assert!(retained.rows.is_empty());
     fixture.host.close().await;
 }
+
+#[tokio::test]
+async fn cadence_retime_writes_canonical_utc_and_rejects_the_next_mark_above_the_ceiling() {
+    use workspace_model::central_mail::{
+        CentralMailAnswer, CentralMailOperation, CentralMailRequest, CentralMailResult,
+    };
+
+    let mut fixture = Fixture::new().await;
+    let area = fixture.area(7600).await;
+    let thread = fixture.thread(7601, area).await;
+    let (observer, actor) = joined_observer(&fixture, &thread).await;
+    fixture.call(7602, post(&thread, vec![])).await;
+    let runtime = fixture
+        .host
+        .central(fixture.caller.organization_id())
+        .await
+        .unwrap();
+    let store = runtime.runtime().statement_host();
+    let snapshot = || Statement {
+        sql: "SELECT a.notice_cadence,w.due_at,w.updated_at,(SELECT COUNT(*) FROM runtime_request_log WHERE request_id=?1) FROM mail_notification_windows w JOIN access_actor_identities a ON a.actor_identity_id=w.recipient_actor WHERE w.recipient_actor=?2",
+        args: vec![text(id::<m::RequestId>(7604)), text(&actor)],
+    };
+    let operation = |number, cadence| CentralMailRequest {
+        request_id: id(number),
+        operation: CentralMailOperation::SetNoticeCadence { cadence },
+    };
+    let now = fixture.clock.utc_now();
+    assert_eq!(
+        fixture
+            .host
+            .request_central(&observer, operation(7603, m::NoticeCadence::M15))
+            .await
+            .unwrap(),
+        CentralMailResult::Done(CentralMailAnswer::NoticeCadenceSet {
+            cadence: m::NoticeCadence::M15
+        }),
+    );
+    let before = store.read(snapshot()).await.unwrap();
+    let expected = chrono::DateTime::<chrono::Utc>::from_timestamp(
+        (now.timestamp().div_euclid(900) + 1) * 900,
+        0,
+    )
+    .unwrap();
+    assert_eq!(
+        before.rows[0][1],
+        text(expected.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+    );
+
+    let edge = m::Timestamp::from_timestamp_millis(
+        collaboration_central_core::MAX_ALARM_UNIX_MILLIS - 30_000,
+    )
+    .unwrap();
+    fixture.relocate_authority(edge).await;
+    let observer = fixture.fresh_caller(&observer).await;
+    let result = fixture
+        .host
+        .request_central(&observer, operation(7604, m::NoticeCadence::M55))
+        .await;
+    assert!(
+        matches!(result, Err(StoreFailure::Corrupt { reason: CorruptReason::BadValue { column } }) if column == "mail_notification_windows.due_at")
+    );
+    assert_eq!(store.read(snapshot()).await.unwrap(), before);
+    fixture.host.close().await;
+}
