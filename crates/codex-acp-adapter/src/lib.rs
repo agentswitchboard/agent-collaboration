@@ -26,8 +26,8 @@ mod stored_session_listing;
 pub mod test_support;
 pub use acp_connection_dispatch::{AcpConnectionInputs, AcpStoredSessions, serve_acp_connection};
 pub use acp_connection_router::{
-    AcpConnectionContext, AcpRouteFuture, AcpSessionRoute, serve_acp_router_connection,
-    serve_acp_router_connection_until,
+    AcpConnectionContext, AcpFrontendClose, AcpRouteFuture, AcpSessionRoute,
+    serve_acp_router_connection, serve_acp_router_connection_until,
 };
 pub use acp_connection_transport::{
     AcpRouterChannels, AcpWireChannels, acp_connection_channels, run_acp_transport,

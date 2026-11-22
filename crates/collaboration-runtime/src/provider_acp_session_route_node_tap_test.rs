@@ -205,6 +205,7 @@ impl RouteHarness {
                 actor: Some(actor),
                 client_profile: None,
                 client_supports_elicitation_form: false,
+                frontend_close: Default::default(),
             },
         ));
         let (read, write) = tokio::io::split(client);
