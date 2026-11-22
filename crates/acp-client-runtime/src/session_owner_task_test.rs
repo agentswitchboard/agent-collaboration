@@ -1,4 +1,5 @@
 use super::*;
+use provider_session_machines::session_lifecycle_machine::SessionLifecycle;
 use provider_session_machines::session_owner::{
     ConnectionEpoch, CreateOutcome, CreateProgress, OwnerIncarnation, PublicationBatch,
     PublicationResult, PublicationStatus, RemoteEffect, SessionWireRequest,
@@ -18,6 +19,7 @@ impl SessionOwnerPorts for RecordingPorts {
         _: OwnerAddress,
         effect: OwnerEffect,
         _: &OwnerCompletionPort,
+        _caller_wakes: &mut crate::session_owner_task::OwnerCallerWakes,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
         let immediate = match &effect {
             OwnerEffect::Publish(
@@ -221,4 +223,388 @@ async fn publication_rebases_on_the_injected_clock_without_another_command() {
         .await
         .expect("confirmed rebase restores Current");
     fixture.finish().await;
+}
+
+struct CreateReplySnapshotProbe {
+    snapshot: watch::Receiver<SessionSnapshot>,
+    reply: Option<oneshot::Sender<(SessionLifecycle, SessionLifecycle)>>,
+}
+
+impl SessionOwnerPorts for CreateReplySnapshotProbe {
+    fn execute(
+        &mut self,
+        _: OwnerAddress,
+        effect: OwnerEffect,
+        _: &OwnerCompletionPort,
+        caller_wakes: &mut OwnerCallerWakes,
+    ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
+        Ok(match effect {
+            OwnerEffect::Wire(SessionWireRequest::Create { operation }) => {
+                Some(OwnerEvent::Create(CreateProgress::ProviderId {
+                    operation,
+                    provider_id: "fixture-session".into(),
+                }))
+            }
+            OwnerEffect::AdoptProviderId { operation, .. } => {
+                Some(OwnerEvent::Create(CreateProgress::Adopted {
+                    operation,
+                    facts: Box::default(),
+                }))
+            }
+            OwnerEffect::Publish(
+                PublicationBatch::Commit { id, .. } | PublicationBatch::Rebase { id, .. },
+            ) => Some(OwnerEvent::Publication(PublicationResult::Applied(id))),
+            OwnerEffect::CreateSettled {
+                outcome: CreateOutcome::Adopted(generation),
+                ..
+            } => {
+                // The observation runs synchronously at the actual send, not at preparation.
+                let reply = self.reply.take().expect("one successful create");
+                let snapshot = self.snapshot.clone();
+                caller_wakes.observe_send(move || {
+                    reply
+                        .send((
+                            snapshot.borrow().lifecycle,
+                            SessionLifecycle::Live { generation },
+                        ))
+                        .expect("create caller still listens");
+                });
+                None
+            }
+            _ => None,
+        })
+    }
+}
+
+// Rejects successful create replying before callers can read the newly live session.
+#[test]
+fn successful_create_replies_with_live_snapshot_visible() {
+    let address = OwnerAddress {
+        incarnation: OwnerIncarnation(Uuid::now_v7()),
+        connection_epoch: ConnectionEpoch(Uuid::now_v7()),
+    };
+    let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
+    let (mut task, caller) =
+        SessionOwnerTask::new(address, clock, NonZeroUsize::MIN, NonZeroUsize::MIN);
+    let (reply, mut received) = oneshot::channel();
+    let mut ports = CreateReplySnapshotProbe {
+        snapshot: caller.snapshots(),
+        reply: Some(reply),
+    };
+
+    task.process(
+        OwnerMailboxEvent {
+            owner: address,
+            event: OwnerEvent::Command(SessionOwnerCommand::Create {
+                operation: Uuid::now_v7(),
+            }),
+        },
+        None,
+        &mut ports,
+    )
+    .expect("drive the real owner through successful create");
+
+    let (at_reply, expected) = received.try_recv().expect("create delivered success");
+    assert_eq!(caller.snapshots().borrow().lifecycle, expected);
+    assert_eq!(
+        at_reply, expected,
+        "successful create replied before publishing its Live snapshot"
+    );
+}
+
+fn unpublished_live_owner() -> (SessionOwnerTask, SessionOwnerHandle, OwnerAddress) {
+    let address = OwnerAddress {
+        incarnation: OwnerIncarnation(Uuid::now_v7()),
+        connection_epoch: ConnectionEpoch(Uuid::now_v7()),
+    };
+    let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
+    let (mut task, caller) =
+        SessionOwnerTask::new(address, clock, NonZeroUsize::MIN, NonZeroUsize::MIN);
+    let operation = Uuid::now_v7();
+    for event in [
+        OwnerEvent::Command(SessionOwnerCommand::Create { operation }),
+        OwnerEvent::Create(CreateProgress::ProviderId {
+            operation,
+            provider_id: "fixture-session".into(),
+        }),
+        OwnerEvent::Create(CreateProgress::Adopted {
+            operation,
+            facts: Box::default(),
+        }),
+    ] {
+        task.machine
+            .handle(
+                OwnerMailboxEvent {
+                    owner: address,
+                    event,
+                },
+                0,
+            )
+            .expect("commit an owner transition without publishing the watch");
+    }
+    assert!(matches!(
+        task.machine.snapshot().lifecycle,
+        SessionLifecycle::Live { .. }
+    ));
+    assert!(matches!(
+        caller.snapshots().borrow().lifecycle,
+        SessionLifecycle::NotLoaded { .. }
+    ));
+    (task, caller, address)
+}
+
+type Acknowledgement = oneshot::Receiver<Result<(), OwnerCommandRefusal>>;
+
+struct OutboxOrderProbe {
+    order: Arc<std::sync::Mutex<Vec<&'static str>>>,
+    snapshot: watch::Receiver<SessionSnapshot>,
+    acknowledgement: Arc<std::sync::Mutex<Acknowledgement>>,
+}
+
+impl SessionOwnerPorts for OutboxOrderProbe {
+    fn execute(
+        &mut self,
+        _: OwnerAddress,
+        effect: OwnerEffect,
+        _: &OwnerCompletionPort,
+        caller_wakes: &mut OwnerCallerWakes,
+    ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
+        if matches!(effect, OwnerEffect::RetireRoute(_)) {
+            self.order
+                .lock()
+                .map_err(|_| OwnerTaskError::ExecutorStopped)?
+                .push("ordinary effect");
+            return Ok(Some(OwnerEvent::ConnectionLost));
+        }
+        let wake = match effect {
+            OwnerEffect::RestoreSettled { .. } => "restore result",
+            OwnerEffect::InputQueued(_) => "queued acceptance",
+            _ => return Err(OwnerTaskError::ExecutorStopped),
+        };
+        self.order
+            .lock()
+            .map_err(|_| OwnerTaskError::ExecutorStopped)?
+            .push("prepare caller");
+        let order = self.order.clone();
+        let snapshot = self.snapshot.clone();
+        let acknowledgement = self.acknowledgement.clone();
+        caller_wakes.observe_send(move || {
+            record_ordered_wake(&snapshot, &acknowledgement, &order, wake);
+        });
+        Ok(Some(OwnerEvent::Create(CreateProgress::Failed {
+            operation: Uuid::now_v7(),
+            remote: RemoteEffect::None,
+        })))
+    }
+}
+
+fn record_ordered_wake(
+    snapshot: &watch::Receiver<SessionSnapshot>,
+    acknowledgement: &std::sync::Mutex<Acknowledgement>,
+    order: &std::sync::Mutex<Vec<&'static str>>,
+    wake: &'static str,
+) {
+    assert!(
+        matches!(snapshot.borrow().lifecycle, SessionLifecycle::Live { .. }),
+        "caller wake preceded publication"
+    );
+    assert!(matches!(
+        acknowledgement.lock().expect("acknowledgement").try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+    order.lock().expect("order").push(wake);
+}
+
+fn assert_outbox_wake_order(
+    effects: impl FnOnce(provider_session_machines::SessionGeneration) -> [OwnerEffect; 2],
+    wakes: [&'static str; 2],
+) {
+    let (mut task, handle, owner) = unpublished_live_owner();
+    let SessionLifecycle::Live { generation } = task.machine.snapshot().lifecycle else {
+        panic!("prepared owner must be live");
+    };
+    let (accepted, acknowledgement) = oneshot::channel();
+    let acknowledgement = Arc::new(std::sync::Mutex::new(acknowledgement));
+    let order = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut ports = OutboxOrderProbe {
+        order: order.clone(),
+        snapshot: handle.snapshots(),
+        acknowledgement: acknowledgement.clone(),
+    };
+
+    task.execute_outbox(
+        OwnerOutbox {
+            owner,
+            effects: effects(generation)
+                .into_iter()
+                .chain([OwnerEffect::RetireRoute(generation)])
+                .collect(),
+        },
+        Some(accepted),
+        &mut ports,
+        |event| {
+            order.lock().expect("order").push(match event.event {
+                OwnerEvent::Create(_) => "first immediate event",
+                OwnerEvent::ConnectionLost => "second immediate event",
+                _ => panic!("unexpected immediate event"),
+            })
+        },
+    )
+    .expect("carry out the committed outbox");
+
+    assert_eq!(
+        *order.lock().expect("order"),
+        [
+            "prepare caller",
+            "first immediate event",
+            "prepare caller",
+            "first immediate event",
+            "ordinary effect",
+            "second immediate event",
+            wakes[0],
+            wakes[1]
+        ]
+    );
+    acknowledgement
+        .lock()
+        .expect("acknowledgement")
+        .try_recv()
+        .expect("acknowledged after publication and wakes")
+        .expect("command accepted");
+}
+
+fn restore_effect(generation: provider_session_machines::SessionGeneration) -> OwnerEffect {
+    use provider_session_machines::session_lifecycle_machine::LoadAttempt;
+    use provider_session_machines::session_owner::{
+        RestoreDisposition, RestorePhase, RestoreResult, RunAttempt,
+    };
+
+    OwnerEffect::RestoreSettled {
+        operation: Uuid::now_v7(),
+        result: RestoreResult {
+            attempt: RunAttempt {
+                generation,
+                attempt: LoadAttempt(Uuid::now_v7()),
+            },
+            phase: RestorePhase::Attempted,
+            disposition: RestoreDisposition::Restored {
+                earlier_unanswered: false,
+            },
+            observed: Default::default(),
+        },
+    }
+}
+
+fn queued_effect(generation: provider_session_machines::SessionGeneration) -> OwnerEffect {
+    use provider_session_machines::{session_owner::OwnerInput, session_turn_machine::TurnId};
+
+    OwnerEffect::InputQueued(OwnerInput {
+        generation,
+        operation: Uuid::now_v7(),
+        input: session_event_model::InputId::generate(),
+        turn: TurnId(Uuid::now_v7()),
+    })
+}
+
+#[test]
+fn restore_reply_wakes_after_the_outbox_and_publication() {
+    assert_outbox_wake_order(
+        |generation| [restore_effect(generation), queued_effect(generation)],
+        ["restore result", "queued acceptance"],
+    );
+}
+
+#[test]
+fn queued_acceptance_wakes_after_the_outbox_and_publication() {
+    assert_outbox_wake_order(
+        |generation| [queued_effect(generation), restore_effect(generation)],
+        ["queued acceptance", "restore result"],
+    );
+}
+
+struct FailingEffectProbe {
+    prepared: Option<oneshot::Sender<&'static str>>,
+    unprepared: Option<oneshot::Sender<&'static str>>,
+    recovered: mpsc::UnboundedSender<oneshot::Sender<&'static str>>,
+}
+
+impl SessionOwnerPorts for FailingEffectProbe {
+    fn execute(
+        &mut self,
+        _: OwnerAddress,
+        effect: OwnerEffect,
+        _: &OwnerCompletionPort,
+        caller_wakes: &mut OwnerCallerWakes,
+    ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
+        if matches!(effect, OwnerEffect::RetireRoute(_)) {
+            return Err(OwnerTaskError::ExecutorStopped);
+        }
+        let recovered = self.recovered.clone();
+        let sender = self.prepared.take().expect("one prepared wake");
+        caller_wakes.send_or_recover(sender, "success", move |sender| {
+            let _test_gone = recovered.send(sender);
+        });
+        Ok(None)
+    }
+}
+
+#[test]
+fn failed_effect_returns_prepared_caller_to_recovery_without_publishing() {
+    let (mut task, handle, owner) = unpublished_live_owner();
+    let SessionLifecycle::Live { generation } = task.machine.snapshot().lifecycle else {
+        panic!("prepared owner must be live");
+    };
+    let (prepared, mut prepared_reply) = oneshot::channel();
+    let (unprepared, mut unprepared_reply) = oneshot::channel();
+    let (recovered, mut recovered_senders) = mpsc::unbounded_channel();
+    let (acknowledge, mut acknowledgement) = oneshot::channel();
+    let mut ports = FailingEffectProbe {
+        prepared: Some(prepared),
+        unprepared: Some(unprepared),
+        recovered,
+    };
+
+    assert_eq!(
+        task.execute_outbox(
+            OwnerOutbox {
+                owner,
+                effects: vec![
+                    OwnerEffect::CreateSettled {
+                        operation: Uuid::now_v7(),
+                        outcome: CreateOutcome::Adopted(generation)
+                    },
+                    OwnerEffect::RetireRoute(generation),
+                ]
+            },
+            Some(acknowledge),
+            &mut ports,
+            |_| panic!("no immediate events"),
+        ),
+        Err(OwnerTaskError::ExecutorStopped)
+    );
+
+    assert!(matches!(
+        handle.snapshots().borrow().lifecycle,
+        SessionLifecycle::NotLoaded { .. }
+    ));
+    assert_eq!(
+        prepared_reply.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    );
+    assert!(matches!(
+        acknowledgement.try_recv(),
+        Err(oneshot::error::TryRecvError::Closed)
+    ));
+    recovered_senders
+        .try_recv()
+        .expect("return the prepared caller to recovery")
+        .send("owner failed")
+        .expect("caller receives the recovery answer");
+    assert_eq!(prepared_reply.try_recv(), Ok("owner failed"));
+    // A caller whose effect never ran still belongs to the failed executor.
+    drop(ports.unprepared.take());
+    assert_eq!(
+        unprepared_reply.try_recv(),
+        Err(oneshot::error::TryRecvError::Closed)
+    );
 }

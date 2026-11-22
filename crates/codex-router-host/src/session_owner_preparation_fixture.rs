@@ -12,6 +12,7 @@ pub(crate) struct PreparationFixture {
     create_pause: Mutex<Option<PreparationPause>>,
     delivery_ack: Mutex<Option<DeliveryAckPause>>,
     recovery_pause: Mutex<Option<PreparationPause>>,
+    refuse_replacement: AtomicBool,
     restore_fault: AtomicBool,
 }
 
@@ -21,15 +22,23 @@ struct PreparationPause {
 }
 
 pub(crate) struct DeliveryAckPause {
-    reached: PreparationPause,
+    reached: oneshot::Sender<DeliveryAcknowledgement>,
+    release: oneshot::Receiver<()>,
     pub(crate) finished: oneshot::Sender<()>,
     pub(crate) lose_ack: bool,
 }
 
 pub(crate) struct DeliveryAckControl {
-    pub(crate) reached: oneshot::Receiver<()>,
+    pub(crate) reached: oneshot::Receiver<DeliveryAcknowledgement>,
     pub(crate) release: oneshot::Sender<()>,
     pub(crate) finished: oneshot::Receiver<()>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+pub(crate) enum DeliveryAcknowledgement {
+    Accepted,
+    Refused,
+    OwnerStopped,
 }
 
 impl DeliveryAckPause {
@@ -40,8 +49,15 @@ impl DeliveryAckPause {
         Result<(), crate::session_owner_door::OwnerDoorError>,
         Option<oneshot::Sender<()>>,
     ) {
-        let _test_withdrew_pause = self.reached.entered.send(());
-        let _test_withdrew_resume = self.reached.release.await;
+        let observed = match &admission {
+            Ok(()) => DeliveryAcknowledgement::Accepted,
+            Err(crate::session_owner_door::OwnerDoorError::OwnerStopped) => {
+                DeliveryAcknowledgement::OwnerStopped
+            }
+            Err(_) => DeliveryAcknowledgement::Refused,
+        };
+        let _test_withdrew_pause = self.reached.send(observed);
+        let _test_withdrew_resume = self.release.await;
         let admission = if self.lose_ack {
             Err(crate::session_owner_door::OwnerDoorError::OwnerStopped)
         } else {
@@ -61,10 +77,8 @@ impl PreparationFixture {
             .lock()
             .expect("fixture lock")
             .replace(DeliveryAckPause {
-                reached: PreparationPause {
-                    entered,
-                    release: released,
-                },
+                reached: entered,
+                release: released,
                 finished,
                 lose_ack,
             });
@@ -82,6 +96,14 @@ impl PreparationFixture {
 
     pub(crate) fn pause_recovery(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         Self::arm(&self.recovery_pause)
+    }
+
+    pub(crate) fn refuse_next_replacement(&self) {
+        self.refuse_replacement.store(true, Ordering::Release);
+    }
+
+    pub(crate) fn take_replacement_refusal(&self) -> bool {
+        self.refuse_replacement.swap(false, Ordering::AcqRel)
     }
 
     pub(crate) fn hold_recovery(&self) -> Option<oneshot::Receiver<()>> {

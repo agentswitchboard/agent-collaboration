@@ -177,6 +177,8 @@ pub use owned_router::RouterShutdownError;
 pub use owned_router::RouterShutdownOutcome;
 pub use process_group_child::ChildCommandSpec;
 pub use process_group_child::ChildOutput;
+#[cfg(feature = "test-support")]
+pub use process_group_child::ChildProcessObservation;
 pub use process_group_child::ProcessGroupChild;
 pub use process_group_child::ProcessGroupError;
 pub use router_compatibility::RouterProbeError;

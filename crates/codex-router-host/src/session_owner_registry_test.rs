@@ -135,6 +135,7 @@ impl SessionOwnerPorts for ScenarioPorts {
         address: OwnerAddress,
         effect: OwnerEffect,
         completions: &OwnerCompletionPort,
+        _caller_wakes: &mut acp_client_runtime::session_owner_task::OwnerCallerWakes,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
         let event = match effect {
             OwnerEffect::Store(SessionStoreRequest::ReadRestoreSetup(run)) => {

@@ -21,7 +21,7 @@ async fn recovered_prompt_failure(taken: bool, recovery_first: bool) {
     let prompt = host.prompt(rig.prompt_request(operation.clone(), "in-flight admission"));
     tokio::pin!(prompt);
     tokio::select! {
-        result = acknowledgement.reached => result.expect("delivery acknowledgement edge"),
+        result = acknowledgement.reached => { let _observed = result.expect("delivery acknowledgement edge"); },
         result = &mut prompt => panic!("prompt answered before its acknowledgement edge: {result:?}"),
     }
     drop(capacity);
@@ -177,4 +177,226 @@ async fn a_lost_admission_ack_keeps_taken_recovery_when_the_caller_is_first() {
 #[tokio::test]
 async fn a_lost_admission_ack_keeps_taken_recovery_when_recovery_is_first() {
     recovered_prompt_failure(true, true).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn staged_queue_receipt_is_reclassified_after_owner_fails_before_publish() {
+    queued_receipt_after_owner_failure(true).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn staged_queue_waiters_close_when_no_owner_can_replace_the_failed_owner() {
+    queued_receipt_after_owner_failure(false).await;
+}
+
+async fn queued_receipt_after_owner_failure(replace_owner: bool) {
+    use crate::session_owner_calls::InputAcceptance;
+    use crate::session_owner_preparation_fixture::DeliveryAcknowledgement;
+    use provider_session_machines::session_owner::{
+        OwnerInput, PromptAdmission, RevokeReason, SessionOwnerReply,
+    };
+    use provider_session_machines::session_turn_machine::TurnId;
+    use tokio::sync::oneshot::error::TryRecvError;
+
+    let rig = RestoreRig::new();
+    rig.seed_session().await;
+    let host = rig.open_host("silent-prompts").await;
+    rig.assert_loads(&host).await;
+    let owner = host.session_owner_for(&rig.target).expect("live owner");
+    let mut snapshots = owner.snapshots();
+    let before = snapshots.borrow_and_update().clone();
+    let SessionLifecycle::Live { generation } = before.lifecycle else {
+        panic!("the queue requires a live owner");
+    };
+    assert!(before.queue.is_empty());
+
+    let runtime = host.runtime_for(&rig.target.endpoint).expect("runtime");
+    let acknowledgement = runtime.preparation_fixture.pause_delivery_ack(false);
+    let recovery = if replace_owner {
+        Some(runtime.preparation_fixture.pause_recovery())
+    } else {
+        runtime.preparation_fixture.refuse_next_replacement();
+        None
+    };
+    let capacity = owner.hold_completion_capacity();
+    assert!(!capacity.is_empty());
+    let input = OwnerInput {
+        input: session_event_model::InputId::generate(),
+        operation: uuid::Uuid::now_v7(),
+        generation,
+        turn: TurnId(uuid::Uuid::now_v7()),
+    };
+    let content = acp_client_runtime::ProviderPromptContent::from_session_contents(
+        vec![
+            session_event_model::PromptContent::text("awaiting a dispatch mark".to_owned())
+                .expect("text"),
+        ],
+        &acp_client_runtime::ProviderCapabilityReport::default(),
+    )
+    .expect("provider text");
+    let delivery = owner.start_delivery(
+        input.clone(),
+        content,
+        SessionOwnerCommand::Prompt {
+            input: input.clone(),
+            admission: PromptAdmission::Queue,
+        },
+    );
+    tokio::pin!(delivery);
+    let ack = tokio::select! {
+        reached = acknowledgement.reached => reached.expect("observe the real acknowledgement"),
+        _ = &mut delivery => panic!("delivery bypassed its acknowledgement probe"),
+    };
+    assert_eq!(ack, DeliveryAcknowledgement::OwnerStopped);
+    assert_eq!(
+        *snapshots.borrow(),
+        before,
+        "failed reduction published its queue"
+    );
+    drop(capacity);
+    acknowledgement
+        .release
+        .send(())
+        .expect("release the acknowledgement probe");
+    let mut delivery = delivery.await.expect("failed-owner result receivers");
+    acknowledgement
+        .finished
+        .await
+        .expect("door returned the real caller handles");
+
+    if let Some((reached, release)) = recovery {
+        reached
+            .await
+            .expect("replacement has settled its writer evidence");
+        assert_ne!(
+            host.session_owner_for(&rig.target)
+                .expect("replacement")
+                .snapshots()
+                .borrow()
+                .owner,
+            before.owner
+        );
+        assert_eq!(
+            delivery.accepted.try_recv(),
+            Err(TryRecvError::Empty),
+            "the failed reduction must retain the acceptance waiter for recovery"
+        );
+        assert!(matches!(
+            delivery.terminal.try_recv(),
+            Err(TryRecvError::Empty)
+        ));
+        release
+            .send(())
+            .expect("let the real replacement settle the caller");
+        assert_eq!(
+            delivery.accepted.await.expect("recovered acceptance"),
+            InputAcceptance::Unsent {
+                reason: Some(RevokeReason::ConnectionLost)
+            }
+        );
+        let terminal = delivery.terminal.await.expect("recovered terminal");
+        assert!(
+            !terminal.saved,
+            "completion reservation failed before the lane took the mark"
+        );
+        assert!(
+            matches!(terminal.reply, SessionOwnerReply::InputUnsent { input: actual, reason: RevokeReason::ConnectionLost } if actual == input)
+        );
+    } else {
+        assert!(
+            delivery.accepted.await.is_err(),
+            "no replacement must close the prepared acceptance"
+        );
+        assert!(
+            delivery.terminal.await.is_err(),
+            "no replacement must close the terminal waiter"
+        );
+    }
+    assert_eq!(rig.wire_receipt()["prompts"], serde_json::json!([]));
+    host.shutdown().await.expect("drain the fixture");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn real_create_result_wakes_with_the_adopted_owner_already_live() {
+    use provider_session_machines::session_owner::SessionSnapshot;
+    use std::{
+        future::Future as _,
+        sync::{Arc, Mutex},
+        task::{Context, Wake, Waker},
+    };
+    use tokio::sync::{oneshot, watch};
+
+    struct ObserveCreateWake {
+        snapshot: watch::Receiver<SessionSnapshot>,
+        observed: Mutex<Option<oneshot::Sender<SessionLifecycle>>>,
+    }
+
+    impl Wake for ObserveCreateWake {
+        fn wake(self: Arc<Self>) {
+            if let Some(observed) = self.observed.lock().expect("wake observer").take() {
+                let _observer_gone = observed.send(self.snapshot.borrow().lifecycle);
+            }
+        }
+    }
+
+    let rig = RestoreRig::new();
+    let host = rig.open_host("restored-in-auto").await;
+    let runtime = host
+        .runtime_for(&rig.target.endpoint)
+        .expect("provider runtime");
+    let (before_adoption, release_create) = runtime.preparation_fixture.pause_create();
+    let door = host
+        .owner_door(&rig.target.endpoint)
+        .expect("real owner door");
+    let operation = OperationId::generate();
+    let create = door.create(
+        rig.target.endpoint.clone(),
+        operation.clone(),
+        acp_client_runtime::owner_session_open::OwnerSessionOpenSetup {
+            cwd: rig.root.path().to_owned(),
+            scratch_folder: None,
+            work_roots: Default::default(),
+        },
+        acp_client_runtime::RequestedProviderSettings::default(),
+        Default::default(),
+    );
+    tokio::pin!(create);
+    tokio::select! {
+        reached = before_adoption => reached.expect("hold create after provider ID"),
+        _ = &mut create => panic!("create settled before the provider ID hold"),
+    };
+    let snapshot = door
+        .provisional_snapshots_for_test(&operation)
+        .expect("provisional owner watch");
+    assert!(matches!(
+        snapshot.borrow().lifecycle,
+        SessionLifecycle::NotLoaded { .. }
+    ));
+    let (observed, at_wake) = oneshot::channel();
+    {
+        let waker = Waker::from(Arc::new(ObserveCreateWake {
+            snapshot,
+            observed: Mutex::new(Some(observed)),
+        }));
+        assert!(
+            create
+                .as_mut()
+                .poll(&mut Context::from_waker(&waker))
+                .is_pending(),
+            "register at the actual create-result receiver while adoption is held"
+        );
+    }
+    release_create
+        .send(())
+        .expect("allow adoption and create settlement");
+    let at_wake = at_wake
+        .await
+        .expect("the real result sender wakes its caller");
+    let created = create.await.expect("create completed");
+    assert!(!created.created.provider_session_id.is_empty());
+    assert!(
+        matches!(at_wake, SessionLifecycle::Live { .. }),
+        "Host create result woke its caller before the adopted snapshot was live: {at_wake:?}"
+    );
+    host.shutdown().await.expect("drain the fixture");
 }

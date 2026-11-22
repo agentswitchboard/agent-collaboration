@@ -207,6 +207,11 @@ impl AppServerChild {
         }
     }
 
+    #[cfg(feature = "test-support")]
+    pub fn kill_fixture_for_test(&mut self) -> std::io::Result<()> {
+        self.process.kill_fixture_for_test()
+    }
+
     /// Waits for an unexpected or expected retained-child exit.
     pub async fn wait_for_exit(&mut self) -> Result<std::process::ExitStatus, ProcessGroupError> {
         self.process.wait().await

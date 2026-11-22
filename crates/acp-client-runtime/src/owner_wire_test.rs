@@ -23,6 +23,7 @@ impl SessionOwnerPorts for PromptPorts {
         _: OwnerAddress,
         effect: OwnerEffect,
         _: &OwnerCompletionPort,
+        _caller_wakes: &mut crate::session_owner_task::OwnerCallerWakes,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
         Ok(match effect {
             OwnerEffect::Wire(SessionWireRequest::Create { operation }) => {
