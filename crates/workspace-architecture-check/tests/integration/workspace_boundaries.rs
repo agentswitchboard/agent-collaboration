@@ -1,8 +1,16 @@
 //! BD1's closed workspace dependencies and BD4's transitive proxy boundary.
 use super::{DependencyKind, NonDevDependencyGraph};
 use std::collections::{BTreeMap, BTreeSet};
+#[cfg(test)]
 use std::path::Path;
-use std::process::Command;
+
+#[path = "workspace_package_tree_policy.rs"]
+mod workspace_package_tree_policy;
+pub(super) use workspace_package_tree_policy::check_workspace_package_trees;
+#[cfg(test)]
+use workspace_package_tree_policy::{
+    SERVICE_SUPPORT_PACKAGES, check_package_targets, check_package_tree, check_package_tree_output,
+};
 
 #[cfg(test)]
 #[path = "job_layer_tests.rs"]
@@ -33,18 +41,6 @@ const FLEET_RPC: &str = "fleet-rpc";
 const WORKSPACE_SERVICE: &str = "fleet-workspace-service";
 const CENTRAL_CORE: &str = "collaboration-central-core";
 const CENTRAL_WORKER: &str = "collaboration-central-cloudflare";
-const SERVICE_SUPPORT_PACKAGES: &[&str] = &[
-    "sqlx",
-    "sqlx-core",
-    "sqlx-macros",
-    "sqlx-macros-core",
-    "futures-core",
-    "futures-intrusive",
-    "futures-io",
-    "futures-sink",
-    "futures-task",
-    "futures-util",
-];
 const FLEET_ACCESS: &str = "fleet-workspace-access";
 const FLEET_DIRECTORY: &str = "fleet-workspace-directory";
 const FLEET_ENGINE: &str = "fleet-engine";
@@ -130,9 +126,6 @@ pub(super) const ENGINE_EDGES: &[&str] = &[
     "fleet-runtime-ports",
     "workspace-model",
 ];
-const FLEET_WASM_TARGET: &str = "wasm32-unknown-unknown";
-// Chrono's wasm support reaches these runtime-independent helpers via js-sys.
-const FLEET_WASM_SUPPORT_PACKAGES: &[&str] = &["futures-core", "futures-task", "futures-util"];
 
 const PURE_CRATES: [(&str, &[&str]); 8] = [
     ("workspace-ids", &[]),
@@ -420,153 +413,10 @@ fn check_workspace_driver_edges(
     Ok(())
 }
 
-/// Workspace metadata merges features from unrelated roots (notably uuid's wasm
-/// support). A package-scoped tree checks the actual pure-rule dependency closure.
-pub(super) fn check_pure_dependency_tree(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
-    for package in PURE_CRATES
-        .into_iter()
-        .chain(FLEET_PURE_CRATES)
-        .map(|(package, _)| package)
-        .chain([
-            FLEET_ACCESS,
-            FLEET_ENGINE,
-            FLEET_MAIL,
-            FLEET_NOTICES,
-            FLEET_DIRECTORY,
-            WORKSPACE_SERVICE,
-        ])
-        .chain(TIMER_CRATES.into_iter().map(|(package, _)| package))
-    {
-        check_package_targets(root, package)?;
-    }
-    check_package_tree(root, CENTRAL_WORKER, Some(FLEET_WASM_TARGET))
-}
-
-fn check_package_targets(root: &Path, package: &str) -> Result<(), Box<dyn std::error::Error>> {
-    check_package_tree(root, package, None)?;
-    if matches!(
-        package,
-        LENT_TRANSACTION
-            | WORKSPACE_SERVICE
-            | FLEET_ACCESS
-            | FLEET_DIRECTORY
-            | FLEET_ENGINE
-            | FLEET_MAIL
-            | FLEET_NOTICES
-            | FLEET_WAKES
-            | FLEET_SCHEDULES
-            | FLEET_TIMER_POLICY
-    ) || FLEET_PURE_CRATES.iter().any(|(name, _)| *name == package)
-    {
-        check_package_tree(root, package, Some(FLEET_WASM_TARGET)).map_err(|error| {
-            format!("{package} dependency tree for {FLEET_WASM_TARGET}: {error}")
-        })?;
-    }
-    Ok(())
-}
-
-fn check_package_tree(
-    root: &Path,
-    package: &str,
-    target: Option<&str>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let mut cargo = Command::new("cargo");
-    cargo.args([
-        "tree",
-        "--locked",
-        "--offline",
-        "-p",
-        package,
-        "-e",
-        "normal,build",
-        "--prefix",
-        "none",
-        "--format",
-        "{p}\t{f}",
-    ]);
-    if let Some(triple) = target {
-        cargo.args(["--target", triple]);
-    }
-    let output = cargo.current_dir(root).output()?;
-    if !output.status.success() {
-        return Err(format!(
-            "pure dependency tree failed: {}",
-            String::from_utf8_lossy(&output.stderr)
-        )
-        .into());
-    }
-    let allowed_support = if matches!(
-        package,
-        WORKSPACE_SERVICE
-            | FLEET_ENGINE
-            | FLEET_MAIL
-            | FLEET_NOTICES
-            | FLEET_WAKES
-            | FLEET_SCHEDULES
-    ) {
-        SERVICE_SUPPORT_PACKAGES
-    } else if target == Some(FLEET_WASM_TARGET) {
-        FLEET_WASM_SUPPORT_PACKAGES
-    } else {
-        &[]
-    };
-    check_tree_output(&String::from_utf8(output.stdout)?, allowed_support, package)
-}
-fn check_tree_output(
-    tree: &str,
-    allowed_support: &[&str],
-    package: &str,
-) -> Result<(), Box<dyn std::error::Error>> {
-    for line in tree.lines() {
-        let (identity, features) = line.split_once('\t').unwrap_or((line, ""));
-        let Some(name) = identity.split_whitespace().next() else {
-            continue;
-        };
-        if package == LENT_TRANSACTION {
-            if name.starts_with("sqlx-") && name != "sqlx-core" {
-                return Err(
-                    format!("{LENT_TRANSACTION} reaches SQLx backend or tooling {name}").into(),
-                );
-            }
-            continue;
-        }
-        if package == CENTRAL_WORKER {
-            if matches!(name, "sqlx-sqlite" | "libsqlite3-sys") {
-                return Err(format!("R1: Cloudflare reaches stock SQLite through {name}").into());
-            }
-            continue;
-        }
-        if !is_effectful(name) || allowed_support.contains(&name) {
-            continue;
-        }
-        if matches!(
-            package,
-            FLEET_ACCESS
-                | FLEET_ENGINE
-                | FLEET_MAIL
-                | FLEET_NOTICES
-                | FLEET_WAKES
-                | FLEET_SCHEDULES
-        ) && name == "tokio"
-        {
-            let features = features.strip_suffix(" (*)").unwrap_or(features).trim();
-            if matches!(features, "" | "sync") {
-                continue;
-            }
-            return Err(format!(
-                "BD2: {package} reaches Tokio features {features}; only sync is allowed"
-            )
-            .into());
-        }
-        return Err(format!("BD2: pure rules transitively reach {name}").into());
-    }
-    Ok(())
-}
-
 #[test]
 fn pure_package_tree_rejects_effectful_transitive_dependencies() {
     assert!(
-        check_tree_output(
+        check_package_tree_output(
             "workspace-rules v1\nserde v1\ntokio v1",
             &[],
             "workspace-rules"
@@ -574,10 +424,11 @@ fn pure_package_tree_rejects_effectful_transitive_dependencies() {
         .is_err()
     );
     assert!(
-        check_tree_output("workspace-rules v1\nsqlx-sqlite v1", &[], "workspace-rules").is_err()
+        check_package_tree_output("workspace-rules v1\nsqlx-sqlite v1", &[], "workspace-rules")
+            .is_err()
     );
     assert!(
-        check_tree_output(
+        check_package_tree_output(
             "workspace-rules v1\nworkspace-model v1\nuuid v1\nserde v1",
             &[],
             "workspace-rules",
@@ -589,10 +440,10 @@ fn pure_package_tree_rejects_effectful_transitive_dependencies() {
 #[test]
 fn access_dependency_tree_allows_tokio_sync_but_rejects_the_executor() {
     let valid = "fleet-workspace-access v1\t\ntokio v1\tsync";
-    assert!(check_tree_output(valid, &[], FLEET_ACCESS).is_ok());
+    assert!(check_package_tree_output(valid, &[], FLEET_ACCESS).is_ok());
 
     let invalid = "fleet-workspace-access v1\t\ntokio v1\trt,sync";
-    let violation = check_tree_output(invalid, &[], FLEET_ACCESS)
+    let violation = check_package_tree_output(invalid, &[], FLEET_ACCESS)
         .expect_err("workspace access cannot enable the Tokio executor");
     assert_eq!(
         violation.to_string(),
@@ -725,7 +576,7 @@ fn workspace_rpc_rejects_effects_and_concrete_sqlite_in_the_package_tree() {
         (CENTRAL_WORKER, &[][..], "libsqlite3-sys"),
     ] {
         let violation =
-            check_tree_output(&format!("{package} v1\n{dependency} v1"), allowed, package)
+            check_package_tree_output(&format!("{package} v1\n{dependency} v1"), allowed, package)
                 .expect_err("the workspace RPC layer must reject this dependency");
         assert!(violation.to_string().contains(dependency));
     }
@@ -770,7 +621,7 @@ fn graph(edges: &[(&str, &str, DependencyKind)]) -> NonDevDependencyGraph {
 #[test]
 fn lent_transaction_allows_sqlx_without_a_backend() {
     let neutral = "fleet-lent-transaction v1\nsqlx v0.9\nsqlx-core v0.9";
-    assert!(check_tree_output(neutral, &[], LENT_TRANSACTION).is_ok());
+    assert!(check_package_tree_output(neutral, &[], LENT_TRANSACTION).is_ok());
     for backend in [
         "sqlx-sqlite",
         "sqlx-postgres",
@@ -778,7 +629,7 @@ fn lent_transaction_allows_sqlx_without_a_backend() {
         "sqlx-durable-object",
     ] {
         let with_backend = format!("{neutral}\n{backend} v0.9");
-        assert!(check_tree_output(&with_backend, &[], LENT_TRANSACTION).is_err());
+        assert!(check_package_tree_output(&with_backend, &[], LENT_TRANSACTION).is_err());
     }
 }
 

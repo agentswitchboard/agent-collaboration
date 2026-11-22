@@ -19,10 +19,13 @@ impl StampStore for ObjectStorage {
         })
     }
 
-    fn write_stamp(&self, write: StampWrite) -> BoxFuture<'_, Result<BatchOutcome, StoreFailure>> {
+    fn write_stamp(
+        &self,
+        stamp_write: StampWrite,
+    ) -> BoxFuture<'_, Result<BatchOutcome, StoreFailure>> {
         Box::pin(async move {
             let _order = self.lock_batch_order().await;
-            let result = self.write_stamp_in_order(write).await;
+            let result = self.write_stamp_in_order(stamp_write).await;
             self.record_publication_status(true, &result);
             result
         })
@@ -30,7 +33,10 @@ impl StampStore for ObjectStorage {
 }
 
 impl ObjectStorage {
-    async fn write_stamp_in_order(&self, write: StampWrite) -> Result<BatchOutcome, StoreFailure> {
+    async fn write_stamp_in_order(
+        &self,
+        stamp_write: StampWrite,
+    ) -> Result<BatchOutcome, StoreFailure> {
         if self.engine_publication.is_none() {
             return Err(StoreFailure::AlarmUnpublishable {
                 reason: AlarmPublicationFailure::ClockUnavailable,
@@ -40,23 +46,24 @@ impl ObjectStorage {
             .opened()
             .await?
             .run_transaction(async move |connection| {
-                let rows = match write.apply(&mut NativeTransaction(connection)).await {
-                    Ok(rows) => rows,
-                    Err(stop) => return Ok(ControlFlow::Break(stop)),
-                };
-                let times = Self::read_engine_inputs(connection).await?;
-                Ok(ControlFlow::Continue((rows, times)))
+                let affected_rows =
+                    match stamp_write.apply(&mut NativeTransaction(connection)).await {
+                        Ok(affected_rows) => affected_rows,
+                        Err(stop) => return Ok(ControlFlow::Break(stop)),
+                    };
+                let alarm_inputs = Self::read_engine_inputs(connection).await?;
+                Ok(ControlFlow::Continue((affected_rows, alarm_inputs)))
             })
             .await?
         {
-            ControlFlow::Continue((rows, times)) => {
+            ControlFlow::Continue((affected_rows, alarm_inputs)) => {
                 #[cfg(feature = "test-support")]
                 self.central_publication_pauses
                     .reached_central(fleet_runtime::PausePoint::AfterStoreApplied)
                     .await;
                 let publication = self.publish_engine_alarm(
-                    times.earliest_on_grid_due_unix_millis,
-                    times.earliest_legacy_due_unix_millis,
+                    alarm_inputs.earliest_on_grid_due_unix_millis,
+                    alarm_inputs.earliest_legacy_due_unix_millis,
                 );
                 #[cfg(feature = "test-support")]
                 if let central_storage::AlarmPublication::Failed { reason } = &publication {
@@ -66,7 +73,7 @@ impl ObjectStorage {
                         .push(*reason);
                 }
                 Ok(BatchOutcome::Applied {
-                    rows_affected: rows.into(),
+                    rows_affected: affected_rows.into(),
                     publication,
                 })
             }

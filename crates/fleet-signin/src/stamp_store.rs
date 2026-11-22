@@ -91,12 +91,6 @@ pub enum StampWriteStop {
     Store(#[from] StoreFailure),
 }
 
-impl From<sqlx::Error> for StampWriteStop {
-    fn from(_: sqlx::Error) -> Self {
-        Self::Store(StoreFailure::Unavailable)
-    }
-}
-
 struct StampTiming {
     now_ms: i64,
     now_seconds: i64,
