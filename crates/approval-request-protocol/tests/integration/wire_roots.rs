@@ -107,8 +107,7 @@ macro_rules! expected_wire_roots {
             json!({"kind":"unprovenCall","requestId":REQUEST_ID,"holder":{"routerRun":RUN_ID},"offer":call_offer()}));
         $root!(RaiseReply,
             json!({"kind":"raiseReceipt","receipt":{"requestId":REQUEST_ID,"raisedAt":RAISED_AT,"deadline":DEADLINE}}),
-            json!({"kind":"alreadyStopped"}), json!({"kind":"contentsDiffer"}),
-            json!({"kind":"refused","refusal":"runRetired"}));
+            json!({"kind":"alreadyStopped"}), json!({"kind":"contentsDiffer"}));
         $root!(StopRequest,
             json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"cause":"turnStopped"}),
             json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"cause":"sessionClosed"}),
@@ -128,7 +127,8 @@ macro_rules! expected_wire_roots {
         $root!(ReportDeliveryRequest,
             json!({"requestId":REQUEST_ID,"routerRun":RUN_ID,"report":"applied"}));
         $root!(ReportDeliveryReply,
-            json!({"kind":"deliveryRecorded"}), json!({"kind":"reportDiffers"}), json!({"kind":"noHandoverOwed"}));
+            json!({"kind":"deliveryRecorded"}), json!({"kind":"reportDiffers"}), json!({"kind":"noHandoverOwed"}),
+            json!({"kind":"refused","refusal":{"kind":"run","refusal":"runRetired"}}));
         $root!(ListPersonRequests, json!({}));
         $root!(ListPersonRequestsReply, json!({"kind":"listed","requests":[request_view()]}));
         $root!(ReadPersonRequest, json!({"requestId":REQUEST_ID}));

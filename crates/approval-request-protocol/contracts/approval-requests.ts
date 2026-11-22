@@ -194,7 +194,8 @@ export type RaiseReceipt = {
 	deadline: string,
 };
 
-export type RaiseReply = { kind: "raiseReceipt"; receipt: RaiseReceipt } | { kind: "alreadyStopped" } | { kind: "contentsDiffer" } | { kind: "refused"; refusal: RunRefusal };
+/**  Outcome of a Raise after the holder run is admitted. */
+export type RaiseReply = { kind: "raiseReceipt"; receipt: RaiseReceipt } | { kind: "alreadyStopped" } | { kind: "contentsDiffer" };
 
 export type Raise_Deserialize = { kind: "providerApproval"; requestId: ApprovalRequestId; holder: ProviderHolder; offer: ApprovalOffer_Deserialize } | { kind: "providerQuestion"; requestId: ApprovalRequestId; holder: ProviderHolder; offer: QuestionOffer_Deserialize } | { kind: "unprovenCall"; requestId: ApprovalRequestId; holder: ParkedCallHolder; offer: CallOffer };
 
