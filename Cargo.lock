@@ -203,6 +203,7 @@ dependencies = [
  "session-event-model",
  "sha2 0.10.9",
  "sqlx",
+ "switchboard-session-store",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -274,6 +275,8 @@ dependencies = [
  "serde",
  "serde_json",
  "sqlx",
+ "switchboard-session-events",
+ "switchboard-session-store",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -1208,6 +1211,8 @@ dependencies = [
  "sha2 0.10.9",
  "sqlx",
  "state-machine-core",
+ "switchboard-session-events",
+ "switchboard-session-store",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -1668,6 +1673,8 @@ dependencies = [
  "serde_json",
  "session-event-model",
  "sqlx",
+ "switchboard-session-events",
+ "switchboard-session-store",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -1723,7 +1730,8 @@ dependencies = [
  "serde_json",
  "session-event-model",
  "sqlite-storage-maintenance",
- "sqlx",
+ "switchboard-session-events",
+ "switchboard-session-store",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -1764,6 +1772,8 @@ dependencies = [
  "session-event-model",
  "sqlx",
  "state-machine-core",
+ "switchboard-session-events",
+ "switchboard-session-store",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -2785,9 +2795,9 @@ checksum = "77ce24cb58228fbb8aa041425bb1050850ac19177686ea6e0f41a70416f56fdb"
 
 [[package]]
 name = "form_urlencoded"
-version = "1.2.2"
+version = "1.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "cb4cb245038516f5f85277875cdaa4f7d2c9a0fa0468de06ed190163b1581fcf"
+checksum = "afa489199eaffb1211795df1c6236ce1ad0d41a6fa45250add73e3b02420f06e"
 dependencies = [
  "percent-encoding",
 ]
@@ -5677,6 +5687,44 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
+name = "switchboard-session-events"
+version = "0.1.158"
+dependencies = [
+ "chrono",
+ "codex-router-test-support",
+ "collaboration-contracts",
+ "collaboration-protocol",
+ "futures-util",
+ "message-board",
+ "router-clock",
+ "serde",
+ "serde_json",
+ "session-event-model",
+ "switchboard-session-store",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "switchboard-session-store"
+version = "0.1.158"
+dependencies = [
+ "chrono",
+ "collaboration-protocol",
+ "serde",
+ "serde_json",
+ "sqlite-storage-maintenance",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
 name = "syn"
 version = "2.0.118"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6351,9 +6399,9 @@ checksum = "8ecb6da28b8a351d773b68d5825ac39017e680750f980f3a1a85cd8dd28a47c1"
 
 [[package]]
 name = "url"
-version = "2.5.8"
+version = "2.5.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ff67a8a4397373c3ef660812acab3268222035010ab8680ec4215f38ba3d0eed"
+checksum = "f00cd2407bb42c0ef17be88d4cf020f5cceffd121665bac9b8b9493a369b3b1a"
 dependencies = [
  "form_urlencoded",
  "idna",

@@ -5,10 +5,10 @@ use collaboration_client::protocol::{
     EndpointDescription, ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess,
     SessionRef,
 };
-use collaboration_runtime::ProviderOperationStore;
-use collaboration_runtime::ProviderSessionRecord;
 use collaboration_service::ApplicationFixture;
 use serde_json::{Value, json};
+use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_store::ProviderSessionRecord;
 use tokio::sync::Mutex;
 
 #[tokio::test]

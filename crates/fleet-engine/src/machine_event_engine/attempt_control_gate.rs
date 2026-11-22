@@ -1,14 +1,12 @@
 use super::engine_host_binding::{EngineHost, FleetEngine};
 use super::{
-    attempt_statements::{UPSERT_CONTROL_ATTEMPT_SQL, plan_observed_attempt_delete},
+    attempt_statements::plan_observed_attempt_delete,
     attempt_store::read_guarded_attempt,
     transition_batch_writes::{BatchApplyFailure, classify_batch_application},
 };
 use central_engine_model::{AttemptState, RetirementThreshold};
 use central_storage::{AlarmUpdate, StatementBatch, StoreFailure};
-use fleet_contracts::{
-    ControlGate, EngineSubject, FailureOutcome, ObservedControl, SubjectVersion,
-};
+use fleet_contracts::{ControlGate, EngineSubject, FailureOutcome, ObservedControl};
 use fleet_runtime_ports::CentralStore as _;
 
 impl<Host: EngineHost> FleetEngine<'_, Host> {
@@ -35,13 +33,11 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                 },
             },
             Err(corruption) => match self
-                .write_observed_attempt_failure(
+                .write_observed_control_attempt_failure(
                     subject,
-                    UPSERT_CONTROL_ATTEMPT_SQL,
-                    &SubjectVersion(vec![]),
                     corruption.to_corrupt_row_failure(),
                     threshold,
-                    Some(&stored),
+                    &stored,
                 )
                 .await
             {

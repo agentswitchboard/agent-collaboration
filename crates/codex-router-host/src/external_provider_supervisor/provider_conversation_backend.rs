@@ -404,7 +404,7 @@ impl ProviderConversationBackend for ExternalProviderSupervisor {
                         request.requested_policy,
                         request.requested_by,
                         request.approver,
-                        collaboration_runtime::ProviderSessionResumeInputs::default(),
+                        switchboard_session_store::ProviderSessionResumeInputs::default(),
                         backend.inner.now_ms(),
                     ));
                     let completion_backend = backend.clone();

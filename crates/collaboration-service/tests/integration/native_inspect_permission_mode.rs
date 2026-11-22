@@ -14,12 +14,12 @@ use collaboration_protocol::{
 };
 use collaboration_runtime::{
     CodexConversationOperationRecorder, NativeControlBackend, NativeGenerationGate,
-    ProviderOperationStore,
 };
 use collaboration_service::ApplicationFixture;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, os::unix::fs::DirBuilderExt, sync::Arc};
+use switchboard_session_store::ProviderOperationStore;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::served_api;

@@ -588,3 +588,6 @@ async fn health_reports_alarm_missing_while_timed_work_waits_without_an_alarm() 
     assert_eq!(engine.health().await["alarmMissing"], false);
     engine.close().await;
 }
+
+#[path = "engine_retired_paging.rs"]
+mod retired_paging;

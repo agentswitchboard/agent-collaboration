@@ -206,7 +206,8 @@ pub struct EngineHealthRequest {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct EngineListRetiredRequest {
     pub organization_id: OrganizationId,
-    /// The last attempt ID of the previous page; absent or null for the first.
+    /// The exclusive continuation returned by the previous scan, even if its items were empty.
+    /// Absent or null starts a new walk.
     #[serde(default)]
     #[schemars(with = "Option<String>", extend("format" = "uuid"))]
     pub after: Option<uuid::Uuid>,

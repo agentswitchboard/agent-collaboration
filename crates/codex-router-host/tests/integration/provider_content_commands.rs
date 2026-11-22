@@ -8,10 +8,10 @@ use codex_router_host::{
 use collaboration_protocol::{
     ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess, SessionId,
 };
-use collaboration_runtime::ProviderOperationStore;
-use collaboration_runtime::ProviderSessionRecord;
 use session_event_model::{InputId, PromptContent};
 use std::{path::PathBuf, sync::Arc};
+use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_store::ProviderSessionRecord;
 
 use crate::provider_acp_message_fifo_support as support;
 use support::{NoLivePeer, available_directory, provider_binding, target};

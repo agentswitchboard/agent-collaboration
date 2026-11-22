@@ -8,8 +8,6 @@ use collaboration_protocol::{
     EndpointId, EndpointRef, ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess,
     SessionId, SessionRef,
 };
-use collaboration_runtime::ProviderOperationStore;
-use collaboration_runtime::ProviderSessionRecord;
 use serde_json::Value;
 use std::{
     io::{self, Write},
@@ -17,6 +15,8 @@ use std::{
     path::Path,
     sync::{Arc, Mutex},
 };
+use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_store::ProviderSessionRecord;
 use tracing_subscriber::{fmt::MakeWriter, util::SubscriberInitExt};
 
 const PRIVATE_PROVIDER_MARKER: &str = "ACP_PROVIDER_PRIVATE_MARKER_8F39B1";

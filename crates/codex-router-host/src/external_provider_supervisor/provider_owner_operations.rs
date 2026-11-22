@@ -10,7 +10,6 @@ use collaboration_protocol::{
     ConversationOperationFailureStage, ConversationOperationSettlement, OperationId,
     ProviderHistoryAvailability, ProviderOperationEffect, SessionRef,
 };
-use collaboration_runtime::ProviderSessionRecord;
 use provider_session_machines::{
     ProviderSettingKind,
     session_lifecycle_answers::refusal_answer,
@@ -25,6 +24,7 @@ use provider_session_machines::{
     },
     session_setting_machine::UnresolvedCause,
 };
+use switchboard_session_store::ProviderSessionRecord;
 
 pub(super) async fn restore(
     supervisor: &ExternalProviderSupervisor,

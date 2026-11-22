@@ -8,12 +8,12 @@ use collaboration_protocol::{
     BoundedObservationRequest, EndpointDescription, ObservationEndReason, ProviderRequestedPolicy,
     ProviderWorkingDirectory, RouterAccess, SessionRef,
 };
-use collaboration_runtime::ProviderOperationStore;
-use collaboration_runtime::ProviderSessionEventHub;
-use collaboration_runtime::ProviderSessionRecord;
 use collaboration_service::ApplicationFixture;
 use serde_json::{Value, json};
 use session_event_model::{SessionEvent, SessionItem, SessionItemKind};
+use switchboard_session_events::ProviderSessionEventHub;
+use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_store::ProviderSessionRecord;
 use tokio::sync::Mutex;
 
 /// A Router whose provider endpoint's Session hub has one retained event.
@@ -57,7 +57,12 @@ async fn provider_fixture() -> Result<ProviderFixture, Box<dyn std::error::Error
             resume: Default::default(),
         })
         .await?;
-    let hub = Arc::new(ProviderSessionEventHub::with_capacity(store, 2));
+    let clock = Arc::new(router_clock::SystemRuntimeClock::new());
+    let hub = Arc::new(ProviderSessionEventHub::with_capacity(
+        store,
+        clock.clone(),
+        2,
+    ));
     let board_target: message_board::SessionRef =
         serde_json::from_value(serde_json::to_value(&target)?)?;
     hub.publish(board_target.clone(), item("item-1", "first"))
@@ -70,8 +75,9 @@ async fn provider_fixture() -> Result<ProviderFixture, Box<dyn std::error::Error
             "runtime":{"provider":"claudeCode","runtimeName":"fixture"},
             "capabilities":[{"name":"create","status":"supported","evidence":"advertised"}]}]
     }))?;
-    let identity =
-        ApplicationFixture::new(service_id, epoch)?.with_provider_session_hub(hub.clone());
+    let identity = ApplicationFixture::new(service_id, epoch)?
+        .with_provider_session_hub(hub.clone())
+        .with_clock(clock);
     identity.endpoint_directory().publish(description)?;
     Ok(ProviderFixture {
         _root: root,

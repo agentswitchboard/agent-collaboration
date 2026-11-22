@@ -74,7 +74,7 @@ export const rows: InventoryRow[] = [
     owner: "router-vocabulary",
     kind: "rust-type",
     defines:
-      "N5 event hub port vocabulary (no Serde, crossed in process): HubEvent {sequence, event: SessionEvent} L14 and HubSessionSummary {session, approver, working_directory, updated_at_seconds, preview, name, model, mode, state} L31, produced by collaboration-runtime provider_session_event_hub.rs and consumed by the app-server face router_session_app_server.rs:10-11, app_server_event_forwarding.rs and provider_acp_event_projection.rs; the attachment structs L19, L25 carry channel receivers, not message shapes; the canonical definitions, no second copy found",
+      "N5 event hub port vocabulary (no Serde, crossed in process): HubEvent {sequence, event: SessionEvent} L14 and HubSessionSummary {session, approver, working_directory, updated_at_seconds, preview, name, model, mode, state} L31, produced by switchboard-session-events provider_session_event_hub.rs and consumed by the app-server face router_session_app_server.rs:10-11, app_server_event_forwarding.rs and provider_acp_event_projection.rs; the attachment structs L19, L25 carry channel receivers, not message shapes; the canonical definitions, no second copy found",
     usedBy: [{ part: "N5" }, { part: "N1" }, { part: "N3" }, { part: "N9" }],
     duplicateGroup: null,
     disposition: "boundary-encoding",

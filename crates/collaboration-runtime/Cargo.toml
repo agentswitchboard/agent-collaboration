@@ -21,8 +21,8 @@ message-board = { path = "../message-board", version = "0.1.20" }
 session-event-model = { path = "../session-event-model", version = "0.1.39" }
 agent-automation = { path = "../agent-automation", version = "0.1.16" }
 base64.workspace = true
-sqlx = { workspace = true, features = ["sqlite"] }
 sqlite-storage-maintenance = { path = "../sqlite-storage-maintenance", version = "0.1.118" }
+switchboard-session-store.workspace = true
 codex-acp-adapter = { path = "../codex-acp-adapter", version = "0.1.14" }
 codex-native-integration.workspace = true
 chrono.workspace = true
@@ -40,6 +40,7 @@ tracing.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+switchboard-session-events = { workspace = true, features = ["test-support"] }
 acp-provider-adapters = { path = "../acp-provider-adapters", version = "0.1.114", features = ["test-support"] }
 codex-router-test-support = { path = "../codex-router-test-support", version = "0.1.4" }
 router-clock = { workspace = true, features = ["test-support"] }

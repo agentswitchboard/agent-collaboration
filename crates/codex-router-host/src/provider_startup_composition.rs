@@ -10,10 +10,10 @@ use collaboration_protocol::{
     ProviderCapabilityName, ProviderCapabilityStatus, ProviderKind, ProviderRuntimeIdentity,
     ProviderTransport, UuidIdentity,
 };
-use collaboration_runtime::ProviderOperationStore;
-use collaboration_runtime::ProviderSessionEventHub;
 use collaboration_runtime::new_service_uuid;
 use std::{io, sync::Arc};
+use switchboard_session_events::ProviderSessionEventHub;
+use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -74,9 +74,12 @@ pub(crate) async fn compose_provider_startup(
     hook_directory: Option<std::path::PathBuf>,
     clock: Arc<dyn router_clock::RuntimeClock>,
 ) -> io::Result<ProviderStartupComposition> {
-    let hub = store
-        .as_ref()
-        .map(|store| Arc::new(ProviderSessionEventHub::new(Arc::clone(store))));
+    let hub = store.as_ref().map(|store| {
+        Arc::new(ProviderSessionEventHub::new(
+            Arc::clone(store),
+            clock.clone(),
+        ))
+    });
     let mut bindings = Vec::new();
     let mut endpoints = Vec::with_capacity(configured.len());
     let mut retirements = Vec::new();

@@ -1,6 +1,5 @@
 use super::checked_attempts::{CheckedDueFailure, CheckedDueUnit};
 use super::{
-    attempt_statements::UPSERT_CONTROL_ATTEMPT_SQL,
     engine_host_binding::{EngineHost, FleetEngine},
     machine_event_execution::MachineEventOutcome,
     machine_store_adapter::classify_corrupt_subject_row,
@@ -14,7 +13,7 @@ use central_storage::{
 };
 use fleet_contracts::{
     AlarmNotPublished, AlarmResult, ControlGate, EngineSubject, EventCompletion, FailureOutcome,
-    LegacyUnitOutcome, SubjectVersion,
+    LegacyUnitOutcome,
 };
 use fleet_runtime_ports::{CentralStore, workspace_decode_error::corrupt};
 use futures_util::{StreamExt, stream};
@@ -269,12 +268,11 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                 Err(DueDiscoveryError::ReadFailed(StoreFailure::AnswerLost)) => {}
                 Err(DueDiscoveryError::ReadFailed(StoreFailure::Corrupt { reason })) => {
                     if matches!(
-                        self.record_attempt_failure(
+                        self.record_control_attempt_failure_for_workspaces(
                             &subject,
-                            UPSERT_CONTROL_ATTEMPT_SQL,
-                            &SubjectVersion(vec![]),
                             classify_corrupt_subject_row(reason),
-                            RetirementThreshold::DEFAULT
+                            RetirementThreshold::DEFAULT,
+                            &[]
                         )
                         .await,
                         FailureOutcome::StoreDown(_)
@@ -406,10 +404,8 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                 Some(class) => (
                     empty,
                     matches!(
-                        self.record_attempt_failure_for_workspaces(
+                        self.record_control_attempt_failure_for_workspaces(
                             &subject,
-                            UPSERT_CONTROL_ATTEMPT_SQL,
-                            &SubjectVersion(vec![]),
                             class,
                             threshold,
                             outcome.affected_workspaces(),

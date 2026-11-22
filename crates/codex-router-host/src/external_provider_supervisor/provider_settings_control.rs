@@ -8,8 +8,8 @@ use collaboration_protocol::{
     ProviderSettingsFailureKind, ProviderSettingsMappingStatus, ProviderSettingsResult,
     ProviderSettingsSetRequest, SessionRef,
 };
-use collaboration_runtime::ProviderSessionRecord;
 use provider_session_machines::session_lifecycle_answers::state_answer;
+use switchboard_session_store::ProviderSessionRecord;
 
 #[expect(
     clippy::result_large_err,

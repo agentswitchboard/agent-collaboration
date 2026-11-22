@@ -6,12 +6,18 @@ mod machine_event_engine;
 pub use central_engine_model::FailureRecord;
 
 pub use machine_event_engine::admin_failure_class::EngineFailureClass;
+
+#[cfg(feature = "test-support")]
+pub fn is_retired_attempt_page_sql(sql: &str) -> bool {
+    sql == include_str!("queries/read_retired_attempt_page.sql")
+        || sql == include_str!("queries/read_retired_attempt_continuation.sql")
+}
 pub use machine_event_engine::attempt_administration::{
     AdminMachineKindRegistry, AttemptRefusal, DiscardOutcome, DiscardSubjectStatements,
     EngineHealthFacts, MachineKindAttemptHealth, PreparedAttemptDiscard, RetiredAttemptSummary,
 };
 pub use machine_event_engine::attempt_statements::{
-    UPSERT_CONTROL_ATTEMPT_SQL, plan_attempt_delete, plan_observed_attempt_delete,
+    plan_attempt_delete, plan_observed_attempt_delete,
 };
 pub use machine_event_engine::checked_attempts::{
     CheckedAttempt, CheckedDueFailure, CheckedDueUnit, checked_statement_rejection,

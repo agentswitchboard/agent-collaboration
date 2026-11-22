@@ -193,7 +193,7 @@ async fn immediate_prompt_owner_refusal_answers_at_l_with_terminal_storage_held(
         .pause_delivery_ack(false);
     let mut submit = host.submit_owner_prompt(request);
     tokio::select! {
-        reached = ack.reached => reached.expect("the owner decided while its turn was running"),
+        reached = ack.reached => { let _observed = reached.expect("the owner decided while its turn was running"); },
         answer = &mut submit => panic!("submission answered before owner acknowledgement: {answer:?}"),
     }
 

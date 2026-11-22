@@ -22,8 +22,8 @@ use collaboration_protocol::{
     MessageText, OperationId, PositiveSeconds, ProviderRequestedPolicy, ProviderWorkingDirectory,
     RouterAccess, SessionId, SessionRef,
 };
-use collaboration_runtime::{ProviderOperationStore, ProviderSessionRecord};
 use std::{path::PathBuf, sync::Arc};
+use switchboard_session_store::{ProviderOperationStore, ProviderSessionRecord};
 use tokio::sync::Mutex;
 
 struct RouterCloseFixture {

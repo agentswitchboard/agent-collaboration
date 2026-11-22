@@ -5,9 +5,9 @@ use crate::{
     external_provider_supervisor::PromptBusyPolicy, session_owner_calls::InputAcceptance,
 };
 use collaboration_protocol::{OperationId, SessionRef};
-use collaboration_runtime::ProviderOperationStore;
 use session_event_model::InputId;
 use std::sync::{Arc, Weak};
+use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
 
 /// Holds the supervisor and the operation store weakly: the supervisor owns the

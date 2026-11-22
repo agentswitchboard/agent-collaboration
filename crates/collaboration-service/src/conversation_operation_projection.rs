@@ -1,6 +1,6 @@
 //! Public metadata projection for stored conversation operations.
 use collaboration_protocol::{ConversationOperationSnapshot, ObservationTimestamp};
-use collaboration_runtime::ProviderOperationRecord;
+use switchboard_session_store::ProviderOperationRecord;
 
 pub fn conversation_operation_snapshot(
     record: ProviderOperationRecord,

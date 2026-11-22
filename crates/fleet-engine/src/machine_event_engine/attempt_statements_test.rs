@@ -1,4 +1,4 @@
-use super::{UPSERT_CONTROL_ATTEMPT_SQL, plan_guarded_attempt_upsert};
+use super::{plan_control_attempt_upsert, plan_guarded_attempt_upsert};
 use central_engine_model::{
     EngineTime, FailureRecord, InstanceKey, ItemFailureClass, MachineKind, RetirementThreshold,
     after_failure,
@@ -87,8 +87,7 @@ async fn an_old_attempt_count_cannot_replace_the_newer_record() {
     assert_eq!(
         execute_attempt_statement(
             &mut connection,
-            plan_guarded_attempt_upsert(UPSERT_CONTROL_ATTEMPT_SQL, &subject, &first, None, vec![])
-                .unwrap()
+            plan_control_attempt_upsert(&subject, &first, None).unwrap()
         )
         .await,
         1
@@ -98,14 +97,7 @@ async fn an_old_attempt_count_cannot_replace_the_newer_record() {
     assert_eq!(
         execute_attempt_statement(
             &mut connection,
-            plan_guarded_attempt_upsert(
-                UPSERT_CONTROL_ATTEMPT_SQL,
-                &subject,
-                &second,
-                Some(&prior),
-                vec![]
-            )
-            .unwrap()
+            plan_control_attempt_upsert(&subject, &second, Some(&prior),).unwrap()
         )
         .await,
         1
@@ -113,14 +105,7 @@ async fn an_old_attempt_count_cannot_replace_the_newer_record() {
     assert_eq!(
         execute_attempt_statement(
             &mut connection,
-            plan_guarded_attempt_upsert(
-                UPSERT_CONTROL_ATTEMPT_SQL,
-                &subject,
-                &second,
-                Some(&prior),
-                vec![]
-            )
-            .unwrap()
+            plan_control_attempt_upsert(&subject, &second, Some(&prior),).unwrap()
         )
         .await,
         0
@@ -146,8 +131,7 @@ async fn a_deleted_control_record_is_not_recreated_by_an_old_failure() {
     assert_eq!(
         execute_attempt_statement(
             &mut connection,
-            plan_guarded_attempt_upsert(UPSERT_CONTROL_ATTEMPT_SQL, &subject, &first, None, vec![])
-                .unwrap()
+            plan_control_attempt_upsert(&subject, &first, None).unwrap()
         )
         .await,
         1
@@ -161,14 +145,7 @@ async fn a_deleted_control_record_is_not_recreated_by_an_old_failure() {
     assert_eq!(
         execute_attempt_statement(
             &mut connection,
-            plan_guarded_attempt_upsert(
-                UPSERT_CONTROL_ATTEMPT_SQL,
-                &subject,
-                &second,
-                Some(&prior),
-                vec![]
-            )
-            .unwrap()
+            plan_control_attempt_upsert(&subject, &second, Some(&prior),).unwrap()
         )
         .await,
         0

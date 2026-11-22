@@ -389,7 +389,7 @@ async fn initialize_admission_with_clock(
     clock: Arc<router_clock::ManualClock>,
 ) -> Result<ExternalProviderRuntime, ExternalProviderRuntimeError> {
     let store = Arc::new(tokio::sync::Mutex::new(
-        collaboration_runtime::ProviderOperationStore::open(&root.join("operations.sqlite"))
+        switchboard_session_store::ProviderOperationStore::open(&root.join("operations.sqlite"))
             .await
             .expect("isolated operation store"),
     ));
@@ -401,7 +401,10 @@ async fn initialize_admission_with_clock(
     ExternalProviderRuntime::initialize_with_fixture_clock(
         fixture,
         Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        Arc::new(collaboration_runtime::ProviderSessionEventHub::new(store)),
+        Arc::new(switchboard_session_events::ProviderSessionEventHub::new(
+            store,
+            clock.clone(),
+        )),
         endpoint,
         clock,
     )

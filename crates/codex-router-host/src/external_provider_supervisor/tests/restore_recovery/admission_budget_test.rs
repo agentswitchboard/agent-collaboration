@@ -244,7 +244,7 @@ async fn late_dispatch_acknowledgement_returns_known_unsent_before_releasing_the
         request.requested_policy,
         request.requested_by,
         request.approver,
-        collaboration_runtime::ProviderSessionResumeInputs::default(),
+        switchboard_session_store::ProviderSessionResumeInputs::default(),
         host.inner.now_ms(),
     ));
     let handoff = host.run_operation_for_handoff(
@@ -533,7 +533,7 @@ async fn held_terminal_write_cannot_delay_an_explicit_restore_preflight_refusal(
         request.requested_policy,
         request.requested_by,
         request.approver,
-        collaboration_runtime::ProviderSessionResumeInputs::default(),
+        switchboard_session_store::ProviderSessionResumeInputs::default(),
         host.inner.now_ms(),
     ));
     let completion = crate::external_provider_supervisor::provider_owner_operations::restore(
