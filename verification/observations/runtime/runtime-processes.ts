@@ -55,13 +55,23 @@ export function parseProcessTable(stdout: string): Map<number, ProcessIdentity> 
 export function processTable(): Map<number, ProcessIdentity> {
   // ps prints lstart in the caller's locale and identity compares birth exactly, so this and
   // lookupProcessIdentity pin C: a capture and its recheck agree whoever launches them.
-  const result = spawnSync("/bin/ps", ["-axo", "pid=,ppid=,ruid=,uid=,pgid=,lstart=,comm="], {
+  const executable = "/bin/ps";
+  const arguments_ = ["-axo", "pid=,ppid=,ruid=,uid=,pgid=,lstart=,comm="];
+  const result = spawnSync(executable, arguments_, {
     encoding: "utf8",
     env: { ...process.env, LC_ALL: "C" },
-    timeout: 5000,
+    // This bound only stops a hung process-table command; successful reads wait for its exit.
+    timeout: 120_000,
+    killSignal: "SIGKILL",
     maxBuffer: Number.MAX_SAFE_INTEGER,
   });
-  if (result.error !== undefined) throw result.error;
+  if (result.error !== undefined) {
+    if ("code" in result.error && result.error.code === "ETIMEDOUT")
+      throw new ProcessWaitTimeout(`${executable} ${arguments_.join(" ")} hung`, {
+        cause: result.error,
+      });
+    throw result.error;
+  }
   if (result.status !== 0)
     throw Object.assign(new Error(result.stderr.trim()), { name: "CalledProcessError" });
   return parseProcessTable(result.stdout);
