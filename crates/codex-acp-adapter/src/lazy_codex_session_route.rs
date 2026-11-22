@@ -1,8 +1,8 @@
 //! Codex route admission scoped to active Codex Sessions, not the ACP socket.
 use crate::acp_connection_dispatch::route_codex_sessions;
 use crate::{
-    AcpConnectionContext, AcpConnectionInputs, AcpOutputSender, AcpRouteFuture, AcpRouterChannels,
-    AcpSessionRoute, bounded_acp_output,
+    AcpConnectionContext, AcpConnectionInputs, AcpFrontendClose, AcpOutputSender, AcpRouteFuture,
+    AcpRouterChannels, AcpSessionRoute, bounded_acp_output,
 };
 use collaboration_protocol::UuidIdentity;
 use serde_json::{Value, json};
@@ -42,12 +42,13 @@ impl AcpSessionRoute for LazyCodexSessionRoute {
     fn run(
         self: Box<Self>,
         router: AcpRouterChannels,
-        _context: AcpConnectionContext,
+        context: AcpConnectionContext,
     ) -> AcpRouteFuture {
         Box::pin(serve_lazy_codex_sessions(
             router,
             self.admission,
             self.service_id,
+            context.frontend_close,
         ))
     }
 }
@@ -95,6 +96,7 @@ async fn serve_lazy_codex_sessions(
     mut router: AcpRouterChannels,
     admission: Arc<dyn CodexAdmissionSource>,
     service_id: UuidIdentity,
+    frontend_close: AcpFrontendClose,
 ) -> io::Result<()> {
     let (event_sender, mut event_receiver) = mpsc::channel::<GenerationEvent>(1024);
     let mut active: Option<ActiveGeneration> = None;
@@ -153,16 +155,33 @@ async fn serve_lazy_codex_sessions(
                             let inner = AcpRouterChannels { input: input_receiver, output, closed: closed.clone() };
                             let sender = event_sender.clone();
                             let local_service = service_id.clone();
-                            let task = tokio::spawn(async move {
+                            let peer_eof = frontend_close.peer_eof.clone();
+                            let host_tasks = inputs.holder.host_tasks();
+                            #[cfg(feature = "test-support")]
+                            let disposal = crate::test_support::binding_preservation::ObserveGenerationDisposal(crate::test_support::binding_preservation::current());
+                            let generation_task = async move {
+                                #[cfg(feature = "test-support")]
+                                let _disposal = disposal;
                                 let run = route_codex_sessions(inner, inputs, Some(local_service));
                                 let forward = async {
                                     while let Some(frame) = output_receiver.recv().await {
                                         if sender.send(GenerationEvent::Frame { epoch, frame: (*frame).clone() }).await.is_err() { break; }
                                     }
                                 };
-                                let (_run_result, ()) = tokio::join!(run, forward);
+                                // A detached prompt may still own an output sender after handoff.
+                                let forward_until_peer_eof = async {
+                                    tokio::select! {
+                                        () = peer_eof.cancelled() => {},
+                                        () = forward => {},
+                                    }
+                                };
+                                let (_run_result, ()) = tokio::join!(run, forward_until_peer_eof);
                                 let _sent = sender.send(GenerationEvent::Closed { epoch }).await;
-                            });
+                            };
+                            #[cfg(feature = "test-support")]
+                            let generation_task = crate::test_support::binding_preservation::scope(crate::test_support::binding_preservation::current(), generation_task);
+                            // Count the generation before EOF can detach its outer handle.
+                            let task = host_tasks.spawn(generation_task);
                             let sender = event_sender.clone();
                             let watcher_closed = router.closed.clone();
                             let retirement = retired.clone();
@@ -191,7 +210,26 @@ async fn serve_lazy_codex_sessions(
     }
     if let Some(current) = active {
         current.closed.cancel();
-        current.task.abort();
+        #[cfg(feature = "test-support")]
+        let probe = crate::test_support::binding_preservation::current();
+        #[cfg(feature = "test-support")]
+        if let Some(probe) = &probe {
+            if probe.phase() == crate::test_support::binding_preservation::PreservationPhase::BeforeRegistryHandoff {
+                probe.reached.cancelled().await;
+            } else {
+                probe.generation_disposed.cancelled().await;
+            }
+        }
+        if !frontend_close.peer_eof.is_cancelled()
+            || frontend_close.host_stop.is_cancelled()
+            || current.retirement.is_cancelled()
+        {
+            current.task.abort();
+        }
+        #[cfg(feature = "test-support")]
+        if let Some(probe) = probe {
+            probe.lazy_close_issued.cancel();
+        }
     }
     Ok(())
 }

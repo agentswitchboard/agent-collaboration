@@ -11,6 +11,7 @@ pub struct AcpWireChannels {
     input: AcpOutputSender,
     output: mpsc::Receiver<QueuedAcpFrame>,
     closed: CancellationToken,
+    pub(crate) peer_eof: CancellationToken,
 }
 pub struct AcpRouterChannels {
     pub input: mpsc::Receiver<QueuedAcpFrame>,
@@ -26,6 +27,7 @@ pub fn acp_connection_channels() -> (AcpWireChannels, AcpRouterChannels) {
             input,
             output: output_receiver,
             closed: closed.clone(),
+            peer_eof: CancellationToken::new(),
         },
         AcpRouterChannels {
             input: input_receiver,
@@ -44,6 +46,7 @@ pub async fn run_acp_transport<TStream: AsyncRead + AsyncWrite + Unpin>(
         while let Some(frame) = read_acp_frame(&mut read).await? {
             channels.input.send(frame).await?;
         }
+        channels.peer_eof.cancel();
         Ok::<_, io::Error>(())
     };
     let transmit = async {

@@ -17,6 +17,7 @@ use tokio::{
     sync::mpsc,
     task::JoinSet,
 };
+use tokio_util::sync::CancellationToken;
 
 pub type AcpRouteFuture = Pin<Box<dyn Future<Output = io::Result<()>> + Send>>;
 
@@ -47,6 +48,14 @@ pub struct AcpConnectionContext {
     pub actor: Option<Identity>,
     pub client_profile: Option<ProfileAdvertisement>,
     pub client_supports_elicitation_form: bool,
+    pub frontend_close: AcpFrontendClose,
+}
+
+/// Close signals from the transport and its caller.
+#[derive(Clone, Default)]
+pub struct AcpFrontendClose {
+    pub(crate) peer_eof: CancellationToken,
+    pub(crate) host_stop: CancellationToken,
 }
 
 fn rpc_error(id: Value, code: i32, message: &'static str) -> Value {
@@ -118,6 +127,10 @@ pub async fn serve_acp_router_connection_until<
 ) -> io::Result<()> {
     let (wire, mut connection) = acp_connection_channels();
     let closed = connection.closed.clone();
+    let frontend_close = AcpFrontendClose {
+        peer_eof: wire.peer_eof.clone(),
+        host_stop: stop.clone(),
+    };
     let transport = tokio::spawn(run_acp_transport(stream, wire));
     let mut schema = AcpSchemaCatalog::load().map_err(io::Error::other)?;
     let mut negotiation = AcpNegotiation::default();
@@ -236,6 +249,7 @@ pub async fn serve_acp_router_connection_until<
                         if initialized && let Some(routes) = unused_routes.take() {
                             let context = AcpConnectionContext {
                                 actor,
+                                frontend_close: frontend_close.clone(),
                                 client_profile: params.pointer("/_meta/sessionProfile")
                                     .and_then(|profile| serde_json::from_value(profile.clone()).ok()),
                                 client_supports_elicitation_form: params
@@ -256,7 +270,7 @@ pub async fn serve_acp_router_connection_until<
                                 let output = route_output_sender.clone();
                                 let route_endpoint = endpoint.clone();
                                 let route_context = context.clone();
-                                route_tasks.spawn(async move {
+                                let route_task = async move {
                                     let forward = async {
                                         while let Some(frame) = output_receiver.recv().await {
                                             if output.send(RouteOutput::Frame {
@@ -274,7 +288,10 @@ pub async fn serve_acp_router_connection_until<
                                     let _sent = output.send(RouteOutput::Closed {
                                         endpoint: route_endpoint, result,
                                     }).await;
-                                });
+                                };
+                                #[cfg(feature = "test-support")]
+                                let route_task = crate::test_support::binding_preservation::scope(crate::test_support::binding_preservation::current(), route_task);
+                                route_tasks.spawn(route_task);
                                 route_inputs.insert(endpoint, input_sender);
                             }
                         }
@@ -307,6 +324,12 @@ pub async fn serve_acp_router_connection_until<
         // outside would drop the provider route's tasks unjoined.
         while route_tasks.join_next().await.is_some() {}
     } else {
+        #[cfg(feature = "test-support")]
+        if let Some(probe) = crate::test_support::binding_preservation::current().filter(|probe| {
+            probe.phase() == crate::test_support::binding_preservation::PreservationPhase::BeforeRegistryHandoff
+        }) {
+            probe.release_outer_abort.cancelled().await;
+        }
         route_tasks.abort_all();
         while route_tasks.join_next().await.is_some() {}
     }

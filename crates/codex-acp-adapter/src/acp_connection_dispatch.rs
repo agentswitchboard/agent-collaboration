@@ -1,8 +1,10 @@
 //! ACP connection routing over bounded carriers and one shared native backend.
-use crate::session_setup_task::{SetupTaskInputs, SetupTaskOutput, run_session_setup};
+use crate::session_setup_task::{
+    SetupOutcome, SetupTaskInputs, SetupTaskOutput, run_held_adoption, run_session_setup,
+};
 use crate::{
-    AcpConnectionContext, AcpRouteFuture, AcpRouterChannels, AcpSchemaCatalog, AcpSessionRegistry,
-    AcpSessionRoute, ConversationOperationRecorder, HeldBindingCheckout,
+    AcpConnectionContext, AcpRouteFuture, AcpRouterChannels, AcpSchemaCatalog, AcpSessionBinding,
+    AcpSessionRegistry, AcpSessionRoute, ConversationOperationRecorder, HeldBindingCheckout,
     UnmaterializedBindingStore, serve_acp_router_connection,
 };
 use codex_native_integration::NativePayloadSchemas;
@@ -66,10 +68,13 @@ pub(crate) async fn route_codex_sessions(
     );
     let mut catalog_requests: tokio::task::JoinSet<(Value, io::Result<Value>)> =
         tokio::task::JoinSet::new();
-    let mut setup_requests: tokio::task::JoinSet<(Value, Option<String>, SetupTaskOutput)> =
+    let mut setup_requests: tokio::task::JoinSet<(Value, Option<String>, SetupCompletion)> =
         tokio::task::JoinSet::new();
     let result=async {
         loop {
+            let collect_setup = !setup_requests.is_empty();
+            #[cfg(feature = "test-support")]
+            let collect_setup = collect_setup && !crate::test_support::binding_preservation::hold_collection();
             let frame=tokio::select! {
                 _=router.closed.cancelled()=>break Ok(()),
                 _=inputs.retired.cancelled()=>break Ok(()),
@@ -83,18 +88,30 @@ pub(crate) async fn route_codex_sessions(
                     router.output.send(response).await?;
                     continue;
                 },
-                completed=setup_requests.join_next(),if !setup_requests.is_empty()=>{
+                completed=setup_requests.join_next(),if collect_setup=>{
                     let Some(Ok((id, requested_session, completed)))=completed else {break Err(io::Error::other("ACP setup task failed"));};
                     if let Some(session_id)=requested_session.as_ref() {
                         sessions.finish_failed_load(session_id);
-                        if completed.outcome.is_ok() { sessions.clear_cancellation_barrier(session_id); }
+                        if completed.outcome().is_ok() { sessions.clear_cancellation_barrier(session_id); }
                     }
-                    if let Some(binding)=completed.binding && let Err((_,binding))=sessions.insert(binding) {
-                        inputs.holder.restore(*binding);
-                        router.output.send(error(id,-32603,"Session capacity unavailable")).await?;
-                        continue;
-                    }
-                    match completed.outcome {
+                    let outcome = match completed {
+                        SetupCompletion::Ordinary(completed) => {
+                            if let Some(binding) = completed.binding && let Err((_, binding)) = sessions.insert(binding) {
+                                inputs.holder.hold(*binding);
+                                router.output.send(error(id, -32603, "Session capacity unavailable")).await?;
+                                continue;
+                            }
+                            completed.outcome
+                        }
+                        SetupCompletion::Held { checkout, outcome } => {
+                            if outcome.is_ok() && checkout.install_in(&mut sessions).is_err() {
+                                router.output.send(error(id, -32603, "Session capacity unavailable")).await?;
+                                continue;
+                            }
+                            outcome
+                        }
+                    };
+                    match outcome {
                         Ok((history,result))=>{
                             if requested_session.is_none() {
                                 let Some(session_id)=result.get("sessionId").and_then(Value::as_str) else {
@@ -103,12 +120,10 @@ pub(crate) async fn route_codex_sessions(
                                 };
                                 match inputs.holder.checkout(session_id) {
                                     HeldBindingCheckout::Ready(binding) => {
-                                        if let Err((_,binding)) = sessions.insert(*binding) {
-                                            inputs.holder.restore(*binding);
+                                        if CheckedOutBinding::new(Arc::clone(&inputs.holder), *binding).install_in(&mut sessions).is_err() {
                                             router.output.send(error(id,-32603,"Session capacity unavailable")).await?;
                                             continue;
                                         }
-                                        inputs.holder.finish(session_id);
                                     }
                                     HeldBindingCheckout::Busy | HeldBindingCheckout::Missing => {
                                         router.output.send(error(id,-32603,"Created session binding unavailable")).await?;
@@ -154,19 +169,18 @@ pub(crate) async fn route_codex_sessions(
                         router.output.send(error(id,-32603,"Session setup capacity unavailable")).await?;continue;
                     }
                     let requested_session=if create_new {None} else {params.get("sessionId").and_then(Value::as_str).map(str::to_owned)};
-                    let mut known_session=if let Some(session_id)=requested_session.as_ref() {
+                    let known_session=if let Some(session_id)=requested_session.as_ref() {
                         match sessions.reserve_load(session_id,setup_requests.len()) {
                             Ok(binding)=>binding,
                             Err(crate::SessionRegistryError::Busy)=>{router.output.send(busy_error(id,"Session busy or capacity unavailable")).await?;continue;},
                             Err(_)=>{router.output.send(error(id,-32600,"Session busy or capacity unavailable")).await?;continue;},
                         }
                     } else {None};
-                    let mut adopted_held = false;
+                    let mut checked_out = None;
                     if known_session.is_none() && let Some(session_id) = requested_session.as_ref() {
                         match inputs.holder.checkout(session_id) {
                             HeldBindingCheckout::Ready(binding) => {
-                                known_session = Some(*binding);
-                                adopted_held = true;
+                                checked_out = Some(CheckedOutBinding::new(Arc::clone(&inputs.holder), *binding));
                             }
                             HeldBindingCheckout::Busy => {
                                 sessions.finish_failed_load(session_id);
@@ -176,14 +190,37 @@ pub(crate) async fn route_codex_sessions(
                             HeldBindingCheckout::Missing => {}
                         }
                     }
+                    if let Some(checkout) = checked_out {
+                        let generation = inputs.generation.clone();
+                        let setup_work = async move {
+                            let outcome = checkout.adopt(&generation, &params).await;
+                            drop(frame);
+                            #[cfg(feature = "test-support")]
+                            if outcome.is_ok() {
+                                crate::test_support::binding_preservation::observe_setup_completed();
+                            }
+                            (id, requested_session, SetupCompletion::Held { checkout, outcome })
+                        };
+                        #[cfg(feature = "test-support")]
+                        let setup_work = crate::test_support::binding_preservation::scope(
+                            crate::test_support::binding_preservation::current(), async move {
+                                crate::test_support::binding_preservation::hold_at(crate::test_support::binding_preservation::PreservationPhase::BeforeSetupPoll).await;
+                                setup_work.await
+                            },
+                        );
+                        setup_requests.spawn(setup_work);
+                        continue;
+                    }
                     let cancellation_barrier=requested_session.as_ref().and_then(|session| sessions.cancellation_barrier(session));
-                    let setup=SetupTaskInputs { cancellation_barrier, known_session, adopt_unmaterialized:adopted_held, backend_path:inputs.backend_path.clone(), schemas:Arc::clone(&inputs.schemas), generation:inputs.generation.clone(), params, create_new, operation_id, recorder:Arc::clone(&inputs.recorder), scratch_scopes:Arc::clone(&inputs.scratch_scopes) };
-                    let holder=Arc::clone(&inputs.holder);
+                    let setup=SetupTaskInputs { cancellation_barrier, known_session, backend_path:inputs.backend_path.clone(), schemas:Arc::clone(&inputs.schemas), generation:inputs.generation.clone(), params, create_new, operation_id, recorder:Arc::clone(&inputs.recorder), scratch_scopes:Arc::clone(&inputs.scratch_scopes) };
                     if create_new {
+                        let holder=Arc::clone(&inputs.holder);
+                        let retirement = inputs.retired.clone();
                         let (result_sender,result_receiver)=tokio::sync::oneshot::channel();
                         holder.host_tasks().spawn(async move {
                             let mut outcome=run_session_setup(setup).await;
-                            if let Some(binding)=outcome.binding.take() {
+                            if let Some(mut binding)=outcome.binding.take() {
+                                binding.admission_retirement = Some(retirement);
                                 holder.hold(binding);
                             }
                             let _sent=result_sender.send(outcome);
@@ -194,24 +231,13 @@ pub(crate) async fn route_codex_sessions(
                                 outcome:Err(crate::SessionSetupError::OutcomeUnknown),
                             });
                             drop(frame);
-                            (id,None,outcome)
+                            (id,None,SetupCompletion::Ordinary(outcome))
                         });
                     } else {
                         setup_requests.spawn(async move {
-                            let mut checkout = match (adopted_held, requested_session.as_ref()) {
-                                (true, Some(session_id)) => Some(CheckedOutBinding::new(holder, session_id.clone())),
-                                _ => None,
-                            };
-                            let mut outcome=run_session_setup(setup).await;
-                            if let Some(checkout) = checkout.as_mut() {
-                                if outcome.outcome.is_err() && let Some(binding)=outcome.binding.take() {
-                                    checkout.restore(binding);
-                                } else {
-                                    checkout.finish();
-                                }
-                            }
+                            let outcome = run_session_setup(setup).await;
                             drop(frame);
-                            (id,requested_session,outcome)
+                            (id, requested_session, SetupCompletion::Ordinary(outcome))
                         });
                     }
                 },
@@ -241,35 +267,81 @@ pub(crate) async fn route_codex_sessions(
     while setup_requests.join_next().await.is_some() {}
     catalog_requests.abort_all();
     while catalog_requests.join_next().await.is_some() {}
+    #[cfg(feature = "test-support")]
+    crate::test_support::binding_preservation::hold_at(
+        crate::test_support::binding_preservation::PreservationPhase::BeforeRegistryHandoff,
+    )
+    .await;
+    #[cfg(feature = "test-support")]
+    crate::test_support::binding_preservation::hold_at(
+        crate::test_support::binding_preservation::PreservationPhase::HostStopBeforeHandoff,
+    )
+    .await;
     sessions.shutdown().await;
     result
 }
-struct CheckedOutBinding {
-    holder: Arc<dyn UnmaterializedBindingStore>,
-    session_id: String,
-    active: bool,
+enum SetupCompletion {
+    Ordinary(SetupTaskOutput),
+    Held {
+        checkout: CheckedOutBinding,
+        outcome: SetupOutcome,
+    },
 }
-impl CheckedOutBinding {
-    fn new(holder: Arc<dyn UnmaterializedBindingStore>, session_id: String) -> Self {
-        Self {
-            holder,
-            session_id,
-            active: true,
+impl SetupCompletion {
+    fn outcome(&self) -> &SetupOutcome {
+        match self {
+            Self::Ordinary(completed) => &completed.outcome,
+            Self::Held { outcome, .. } => outcome,
         }
     }
-    fn restore(&mut self, binding: crate::AcpSessionBinding) {
-        self.holder.restore(binding);
-        self.active = false;
+}
+
+struct CheckedOutBinding {
+    holder: Arc<dyn UnmaterializedBindingStore>,
+    binding: Option<AcpSessionBinding>,
+}
+impl CheckedOutBinding {
+    fn new(holder: Arc<dyn UnmaterializedBindingStore>, binding: AcpSessionBinding) -> Self {
+        Self {
+            holder,
+            binding: Some(binding),
+        }
     }
-    fn finish(&mut self) {
-        self.holder.finish(&self.session_id);
-        self.active = false;
+
+    async fn adopt(&self, generation: &CodexGeneration, params: &Value) -> SetupOutcome {
+        let binding = self
+            .binding
+            .as_ref()
+            .ok_or(crate::SessionSetupError::OutcomeUnknown)?;
+        run_held_adoption(binding, generation, params).await
+    }
+
+    fn install_in(
+        mut self,
+        sessions: &mut AcpSessionRegistry,
+    ) -> Result<(), crate::SessionRegistryError> {
+        let binding = self
+            .binding
+            .take()
+            .ok_or(crate::SessionRegistryError::NotLoaded)?;
+        let session_id = binding.session_id().to_owned();
+        let generation = binding.generation().clone();
+        match sessions.insert(binding) {
+            Ok(()) => {
+                self.holder.finish(&session_id, &generation);
+                Ok(())
+            }
+            Err((error, binding)) => {
+                self.binding = Some(*binding);
+                Err(error)
+            }
+        }
     }
 }
 impl Drop for CheckedOutBinding {
     fn drop(&mut self) {
-        if self.active {
-            self.holder.finish(&self.session_id);
+        if let Some(binding) = self.binding.take() {
+            self.holder.restore(binding);
         }
     }
 }
