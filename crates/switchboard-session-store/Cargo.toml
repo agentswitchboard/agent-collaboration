@@ -24,3 +24,7 @@ tokio.workspace = true
 
 [dev-dependencies]
 tempfile = "3.27.0"
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
