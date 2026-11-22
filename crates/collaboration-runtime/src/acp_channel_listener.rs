@@ -116,8 +116,8 @@ impl AcpChannelListener {
         };
         // Each connection ends through its own cleanup on the shutdown token
         // and joins its routes. Provider routes join their prompt and observer
-        // tasks; the lazy Codex route aborts its inner generation task without
-        // awaiting it.
+        // tasks. The lazy Codex route joins its inner cleanup after handing
+        // detached prompts to the Host tracker.
         connections_stop.cancel();
         while tasks.join_next().await.is_some() {}
         if result.is_err() {
@@ -221,3 +221,7 @@ mod tests {
         std::fs::remove_dir(root).unwrap();
     }
 }
+
+#[cfg(test)]
+#[path = "acp_channel_lazy_handoff_test.rs"]
+mod lazy_handoff_tests;

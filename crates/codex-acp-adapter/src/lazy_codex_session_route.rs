@@ -64,7 +64,6 @@ struct ActiveGeneration {
 
 enum GenerationEvent {
     Frame { epoch: u64, frame: Value },
-    Retired { epoch: u64 },
     Closed { epoch: u64 },
 }
 
@@ -80,8 +79,7 @@ async fn retire_active_generation(
     let Some(current) = active.take() else {
         return Ok(());
     };
-    current.closed.cancel();
-    current.task.abort();
+    close_generation(current.closed, current.task).await;
     retired_sessions.extend(current.session_ids);
     for (_, id) in current.pending {
         output
@@ -89,6 +87,11 @@ async fn retire_active_generation(
             .await?;
     }
     Ok(())
+}
+
+async fn close_generation(closed: CancellationToken, task: JoinHandle<()>) {
+    closed.cancel();
+    let _generation_stopped = task.await;
 }
 
 async fn serve_lazy_codex_sessions(
@@ -100,9 +103,14 @@ async fn serve_lazy_codex_sessions(
     let mut active: Option<ActiveGeneration> = None;
     let mut retired_sessions = BTreeSet::<String>::new();
     let mut next_epoch = 0_u64;
-    loop {
-        tokio::select! {
-            _ = router.closed.cancelled() => break,
+    let result = async {
+        loop {
+            let retired = active.as_ref().map(|current| current.retirement.clone());
+            tokio::select! {
+                _ = router.closed.cancelled() => break,
+                () = wait_for_retirement(retired) => {
+                    retire_active_generation(&mut active, &mut retired_sessions, &router.output).await?;
+                }
             event = event_receiver.recv() => {
                 let Some(event) = event else { break; };
                 match event {
@@ -118,7 +126,7 @@ async fn serve_lazy_codex_sessions(
                         }
                         router.output.send(frame).await?;
                     }
-                    GenerationEvent::Retired { epoch } | GenerationEvent::Closed { epoch } => {
+                    GenerationEvent::Closed { epoch } => {
                         if active.as_ref().is_none_or(|current| current.epoch != epoch) { continue; }
                         retire_active_generation(&mut active, &mut retired_sessions, &router.output).await?;
                     }
@@ -146,32 +154,37 @@ async fn serve_lazy_codex_sessions(
                         Ok(inputs) => {
                             next_epoch = next_epoch.saturating_add(1);
                             let epoch = next_epoch;
-                            let retired = inputs.retired.clone();
+                            let retirement = inputs.retired.clone();
                             let closed = router.closed.child_token();
                             let (input, input_receiver) = bounded_acp_output(closed.clone());
                             let (output, mut output_receiver) = bounded_acp_output(closed.clone());
                             let inner = AcpRouterChannels { input: input_receiver, output, closed: closed.clone() };
                             let sender = event_sender.clone();
                             let local_service = service_id.clone();
+                            let generation_closed = closed.clone();
                             let task = tokio::spawn(async move {
                                 let run = route_codex_sessions(inner, inputs, Some(local_service));
+                                tokio::pin!(run);
                                 let forward = async {
                                     while let Some(frame) = output_receiver.recv().await {
                                         if sender.send(GenerationEvent::Frame { epoch, frame: (*frame).clone() }).await.is_err() { break; }
                                     }
                                 };
-                                let (_run_result, ()) = tokio::join!(run, forward);
-                                let _sent = sender.send(GenerationEvent::Closed { epoch }).await;
-                            });
-                            let sender = event_sender.clone();
-                            let watcher_closed = router.closed.clone();
-                            let retirement = retired.clone();
-                            tokio::spawn(async move {
                                 tokio::select! {
-                                    () = retired.cancelled() => {
-                                        let _sent = sender.send(GenerationEvent::Retired { epoch }).await;
+                                    _routing_ended = &mut run => {}
+                                    () = generation_closed.cancelled() => {
+                                        let _handoff = run.await;
+                                        return;
                                     }
-                                    () = watcher_closed.cancelled() => {}
+                                    () = forward => {
+                                        generation_closed.cancel();
+                                        let _handoff = run.await;
+                                        return;
+                                    }
+                                }
+                                tokio::select! {
+                                    () = generation_closed.cancelled() => {}
+                                    _sent = sender.send(GenerationEvent::Closed { epoch }) => {}
                                 }
                             });
                             active = Some(ActiveGeneration { epoch, input, closed, retirement, task, session_ids: BTreeSet::new(), pending: BTreeMap::new() });
@@ -187,11 +200,20 @@ async fn serve_lazy_codex_sessions(
                 }
                 current.input.send((*frame).clone()).await?;
             }
+            }
         }
-    }
+        Ok(())
+    }.await;
+    drop(event_receiver);
     if let Some(current) = active {
-        current.closed.cancel();
-        current.task.abort();
+        close_generation(current.closed, current.task).await;
     }
-    Ok(())
+    result
+}
+
+async fn wait_for_retirement(retired: Option<CancellationToken>) {
+    match retired {
+        Some(retired) => retired.cancelled().await,
+        None => std::future::pending().await,
+    }
 }
