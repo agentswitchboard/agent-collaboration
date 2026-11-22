@@ -235,7 +235,10 @@ where
     let enrollment: Option<StoredReceiptEnrollment> = enrollment_query!(select, authority)
         .fetch_optional(tx.executor())
         .await?;
-    if command.now.timestamp() >= authority.effective_expires_at().0
+    // Sample after the owner has lent its write transaction and re-read enrollment.
+    let applying_time = Timestamp::from_timestamp_millis(command.clock.now().unix_millis())
+        .ok_or_else(|| corrupt("clock"))?;
+    if applying_time.timestamp() >= authority.effective_expires_at().0
         || enrollment.is_none_or(|row| row.machine_id != target.as_str())
     {
         return Ok(DirectWriteOutcome::without_alarm_recompute(
@@ -279,7 +282,7 @@ where
                 &stored,
                 Some(target),
                 DirectMessageEvent::Receipt(command.receipt),
-                command.now,
+                applying_time,
                 command.ids.as_ref(),
             )
             .await?
@@ -306,7 +309,7 @@ where
                 target,
                 kind,
                 command.receipt,
-                command.now,
+                applying_time,
             )
             .await
             .map(DirectWriteOutcome::without_alarm_recompute)

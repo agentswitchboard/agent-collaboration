@@ -57,15 +57,22 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             return Ok(MailReceiptSettlement::AuthorityLapsed);
         }
 
+        let admitted_receipt = fleet_mail::AdmittedReceipt {
+            authority: connection.clone(),
+            message_id: message_id.clone(),
+            receipt,
+            clock: self.execution.shared_clock(),
+            ids: self.execution.shared_ids(),
+        };
+        #[cfg(feature = "test-support")]
+        self.execution
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::BeforeReceiptTransaction)
+            .await;
+
         let applied = self
             .direct_messages
-            .apply_receipt(fleet_mail::AdmittedReceipt {
-                authority: connection.clone(),
-                message_id: message_id.clone(),
-                receipt,
-                now: self.execution.now()?,
-                ids: self.execution.shared_ids(),
-            })
+            .apply_receipt(admitted_receipt)
             .await
             .map_err(StoreFailure::from)?;
         Ok(match applied {

@@ -295,3 +295,72 @@ async fn replay_after_lost_answer(fixture: &Fixture) -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn an_applying_receipt_checks_expiry_after_waiting_for_its_transaction() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let result = receipt_expiry_journey(&fixture).await;
+    fixture.close().await?;
+    result
+}
+
+async fn receipt_expiry_journey(fixture: &Fixture) -> Result<()> {
+    use central_storage::SqlValue;
+    use fleet_runtime::PausePoint;
+    use workspace_model::central_mail::{CentralMailAnswer, MessageRefusal};
+    let sent_at = chrono::DateTime::from_timestamp(signed::NOW_SECONDS, 0).ok_or("fixture UTC")?;
+    let recipient = workspace_ids::SessionRef {
+        machine_id: INSTALLATION.parse()?,
+        session_id: "receipt-expiry-barrier".to_owned().try_into()?,
+    };
+    let mut socket = fixture.connect().await?;
+    receive(&mut socket).await?;
+    let send_result = super::delivery::mail_reply(&mut socket, &recipient, 83, serde_json::json!({
+        "kind":"sendMessage","to":recipient,"body":"held receipt","delivery":"auto","replyTo":null,"sentAt":sent_at,
+    })).await?;
+    let CentralMailResult::Done(CentralMailAnswer::Queued { message_id }) = send_result else {
+        return Err("the receipt test send was not admitted".into());
+    };
+    receive(&mut socket).await?;
+    let organization = signed::ORGANIZATION.to_owned().try_into()?;
+    let central = fixture.host.central(&organization).await?;
+    let mut hold = central
+        .runtime()
+        .pause_points()
+        .hold_central(PausePoint::BeforeReceiptTransaction);
+    let receipt_frame = DataFrame::Receipts {
+        correlation_id: "019f0000-0000-7000-8000-00000000ce94".parse()?,
+        receipts: ReceiptBatch::new(vec![Receipt {
+            message_id: message_id.clone(),
+            kind: ReceiptKind::Refused {
+                reason: MessageRefusal::UnknownSession,
+            },
+        }])?,
+    };
+    send(&mut socket, &LinkFrame::Data(receipt_frame)).await?;
+    hold.until_held().await;
+    let advanced = fixture.clock.advance(Duration::from_secs(600));
+    hold.release();
+    advanced?;
+    let reply = socket.next().await;
+    let store = central.runtime().statement_host();
+    if !matches!(reply, Some(Ok(Message::Close { .. }))) {
+        return Err(format!(
+            "expired applying receipt yielded a frame instead of close: {reply:?}"
+        )
+        .into());
+    }
+    let rows = store.read(central_storage::Statement {
+        sql: "SELECT state, (SELECT count(*) FROM mail_messages WHERE message_kind='deliveryOutcome') FROM mail_messages WHERE message_id=?",
+        args: vec![SqlValue::Text(message_id.to_string())],
+    }).await?.rows;
+    if rows
+        != [vec![
+            SqlValue::Text("queued".into()),
+            SqlValue::Integer(0.try_into()?),
+        ]]
+    {
+        return Err(format!("expired receipt changed owning rows: {rows:?}").into());
+    }
+    Ok(())
+}

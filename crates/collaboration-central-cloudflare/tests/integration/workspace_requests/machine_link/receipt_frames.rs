@@ -287,3 +287,86 @@ async fn replay_after_lost_answer(fixture: &Fixture) -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn an_applying_receipt_checks_expiry_after_waiting_for_its_transaction() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let result = receipt_expiry_journey(&fixture).await;
+    fixture.close().await?;
+    result
+}
+
+async fn receipt_expiry_journey(fixture: &Fixture) -> Result<()> {
+    use central_storage::SqlValue;
+
+    use workspace_model::central_mail::{CentralMailAnswer, CentralMailResult, MessageRefusal};
+    let sent_at = chrono::DateTime::from_timestamp(signed::NOW_SECONDS, 0).ok_or("fixture UTC")?;
+    let mut socket = ConnectedLink::open(fixture).await?;
+    let Caller::Session(recipient) = fixture::session_caller()? else {
+        return Err("fixture must be a session".into());
+    };
+    let request = serde_json::from_value(serde_json::json!({
+        "requestId":"019f0000-0000-7000-8000-00000000ce83",
+        "operation":{"kind":"sendMessage","to":recipient,"body":"held receipt","delivery":"auto","replyTo":null,"sentAt":sent_at}
+    }))?;
+    let (_, replies) = socket
+        .batch(vec![central_link_protocol::RequestPayload::Mail(request)])
+        .await?;
+    let [DataFrame::Reply { result, .. }] = replies.as_slice() else {
+        return Err("the receipt test send did not reply".into());
+    };
+    let ReplyPayload::Mail(CentralMailResult::Done(CentralMailAnswer::Queued { message_id })) =
+        result.as_ref()
+    else {
+        return Err("the receipt test send was not admitted".into());
+    };
+    fixture::receive(&mut socket.socket).await?;
+    let central = fixture.runtime();
+    let pause = "beforeReceiptTransaction";
+    if !central.control::<bool>("hold-central", &pause).await? {
+        return Err("could not arm receipt barrier".into());
+    }
+    let receipt_frame = DataFrame::Receipts {
+        correlation_id: "019f0000-0000-7000-8000-00000000ce94".parse()?,
+        receipts: ReceiptBatch::new(vec![Receipt {
+            message_id: message_id.clone(),
+            kind: ReceiptKind::Refused {
+                reason: MessageRefusal::UnknownSession,
+            },
+        }])?,
+    };
+    fixture::send(&mut socket.socket, &receipt_frame).await?;
+    if !central
+        .control::<bool>("until-held-central", &pause)
+        .await?
+    {
+        return Err("receipt did not enter the applying barrier".into());
+    }
+    let advanced = super::renewal::advance(fixture, 600).await;
+    let released = central.control::<bool>("release-central", &pause).await?;
+    advanced?;
+    if !released {
+        return Err("receipt barrier was not released".into());
+    }
+    let reply = socket.socket.next().await;
+    let store = central.statement_host();
+    if !matches!(reply, Some(Ok(Message::Close { .. }))) {
+        return Err(format!(
+            "expired applying receipt yielded a frame instead of close: {reply:?}"
+        )
+        .into());
+    }
+    let rows = store.read(central_storage::Statement {
+        sql: "SELECT state, (SELECT count(*) FROM mail_messages WHERE message_kind='deliveryOutcome') FROM mail_messages WHERE message_id=?",
+        args: vec![SqlValue::Text(message_id.to_string())],
+    }).await?.rows;
+    if rows
+        != [vec![
+            SqlValue::Text("queued".into()),
+            SqlValue::Integer(0.try_into()?),
+        ]]
+    {
+        return Err(format!("expired receipt changed owning rows: {rows:?}").into());
+    }
+    Ok(())
+}

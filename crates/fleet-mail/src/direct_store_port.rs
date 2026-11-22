@@ -4,7 +4,7 @@ use central_engine_model::{FailureRecord, ItemFailureClass};
 use central_storage::{AlarmPublicationFailure, CorruptReason};
 use fleet_contracts::{MachineConnectionAttachment, MailDeliveryReady};
 use fleet_engine::{CheckedDueFailure, CheckedDueUnit};
-use fleet_runtime_ports::IdSource;
+use fleet_runtime_ports::{Clock, IdSource};
 use futures_util::future::BoxFuture;
 use std::sync::Arc;
 use workspace_ids::{MachineId, MessageId, RequestId, SessionRef};
@@ -65,7 +65,7 @@ pub struct AdmittedReceipt {
     pub authority: MachineConnectionAttachment,
     pub message_id: MessageId,
     pub receipt: ReceiptKind,
-    pub now: Timestamp,
+    pub clock: Arc<dyn Clock>,
     pub ids: Arc<dyn IdSource>,
 }
 
