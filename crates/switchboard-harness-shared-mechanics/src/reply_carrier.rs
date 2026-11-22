@@ -113,6 +113,9 @@ impl<Address: Send + 'static, Message: Send + 'static> CarrierSender<Address, Me
                 .acquire_owned()
                 .await
                 .map_err(|_| EventRefusal::Stopped)?;
+            if self.sender.is_closed() {
+                return Err(EventRefusal::Stopped);
+            }
             self.sender
                 .send(StampedMessage {
                     address,
@@ -125,8 +128,9 @@ impl<Address: Send + 'static, Message: Send + 'static> CarrierSender<Address, Me
         tokio::select! {
             biased;
             () = retired.cancelled() => Err(EventRefusal::Retired),
-            () = self.sender.closed() => Err(EventRefusal::Stopped),
             result = send => result,
+            // Only a pending send needs a receiver-closure waiter.
+            () = self.sender.closed() => Err(EventRefusal::Stopped),
         }
     }
 

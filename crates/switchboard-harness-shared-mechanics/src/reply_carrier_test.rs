@@ -325,3 +325,37 @@ fn receiver_stop_wakes_a_send_blocked_by_a_retained_message() {
         (17, 31)
     );
 }
+
+#[test]
+fn ready_stream_send_only_registers_the_retirement_waiter() {
+    let (sender, mut receiver) = reply_carrier::<u8, u8>(NonZeroUsize::MIN);
+    let retired = CancellationToken::new();
+    let wake = Arc::new(RecordedWake::default());
+    let waker = Waker::from(Arc::clone(&wake));
+    let mut context = Context::from_waker(&waker);
+    let retirement_only_refs = {
+        let mut cancellation = std::pin::pin!(retired.cancelled());
+        assert!(cancellation.as_mut().poll(&mut context).is_pending());
+        Arc::strong_count(&wake)
+    };
+
+    let mut send = std::pin::pin!(sender.send_stream(17, 31, &retired, |message| {
+        assert_eq!(
+            Arc::strong_count(&wake),
+            retirement_only_refs,
+            "a ready send must not register a receiver-close waiter"
+        );
+        message
+    }));
+    assert_eq!(send.as_mut().poll(&mut context), Poll::Ready(Ok(())));
+    assert_eq!(received(&mut receiver), Some((17, 31)));
+
+    drop(receiver);
+    let mut stopped = std::pin::pin!(sender.send_stream(17, 32, &retired, |_| {
+        panic!("a send to an already stopped receiver must not map the observation");
+    }));
+    assert_eq!(
+        stopped.as_mut().poll(&mut context),
+        Poll::Ready(Err(EventRefusal::Stopped))
+    );
+}
