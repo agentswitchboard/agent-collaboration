@@ -31,11 +31,11 @@ impl CollaborationLifecycle {
         child: &AppServerChild,
         remote_control_server_name: Option<RemoteControlServerName>,
         router_executable_check: std::sync::Arc<dyn collaboration_mcp::RouterExecutableCheck>,
+        clock: Arc<router_clock::SystemRuntimeClock>,
     ) -> io::Result<Option<Self>> {
         let Some(directory) = config.collaboration_directory() else {
             return Ok(None);
         };
-        let clock = Arc::new(router_clock::SystemRuntimeClock::new());
         let preparation_started_at = clock.monotonic_now();
         let router_secret_root = config.coordination_paths().router_secret_root();
         let external_provider_startups =

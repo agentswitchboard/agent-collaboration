@@ -8,11 +8,15 @@ use std::path::PathBuf;
 const TEST_ROUTER_SECRET_ROOT_ENV: &str = "CODEX_ROUTER_HOST_TEST_SECRET_ROOT";
 const TEST_ROUTER_ENDPOINT_ENV: &str = "CODEX_ROUTER_HOST_TEST_ENDPOINT";
 const TEST_ROUTER_TOKEN_OBSERVATION_ENV: &str = "CODEX_ROUTER_HOST_TEST_TOKEN_OBSERVATION";
+const TEST_ROUTER_READY_CONTROL_ENV: &str = "CODEX_ROUTER_HOST_TEST_READY_CONTROL";
 
 #[tokio::test]
 async fn owned_router_startup_provisions_once_before_router_and_claude_acp_launches() {
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
     let fixture_clock = crate::external_provider_runtime::acp_scripted_fixture::manual_clock();
     let router_root = tempfile::tempdir().expect("isolated Router root");
+    let ready_path = router_root.path().join("ready.sock");
+    let ready_control = tokio::net::UnixListener::bind(&ready_path).expect("readiness control");
     let secret_root = router_root.path().join("secrets");
     let router_token_observation_path = router_root.path().join("router-token-at-startup");
     let claude_token_observation_path = router_root.path().join("claude-token-at-launch");
@@ -48,9 +52,47 @@ async fn owned_router_startup_provisions_once_before_router_and_claude_acp_launc
                 TEST_ROUTER_TOKEN_OBSERVATION_ENV,
                 router_token_observation_path.as_os_str(),
             )
+            .with_environment(TEST_ROUTER_READY_CONTROL_ENV, ready_path.as_os_str())
             .with_output(crate::ChildOutput::Null);
 
-    let (router_condition, mut router_child) = start_router(&config, Some(&router_command))
+    let (retry_observed, retry) = tokio::sync::oneshot::channel();
+    let mut startup = Box::pin(start_router(
+        &config,
+        Some(&router_command),
+        fixture_clock.as_ref(),
+        Some(retry_observed),
+    ));
+    tokio::select! {
+        observed = retry => observed.expect("unsupported socket must arm a Router retry"),
+        result = &mut startup => {
+            assert!(result.is_err(), "fixture cannot bind before the retry is observed");
+            panic!("Router finished startup before its first readiness retry");
+        }
+    }
+    let retry_at = router_clock::ClockInstant::ZERO.after(ROUTER_READINESS_RETRY);
+    let retry_armed = fixture_clock.has_not_due_check_now(retry_at);
+    let ready = async {
+        let (mut fixture, _) = ready_control
+            .accept()
+            .await
+            .expect("Router fixture control");
+        fixture
+            .write_all(b"b")
+            .await
+            .expect("allow fixture to bind health socket");
+        assert_eq!(fixture.read_u8().await.expect("health socket ready"), b'r');
+    };
+    tokio::select! {
+        () = ready => {}
+        result = &mut startup => {
+            assert!(result.is_err(), "Router completed before its ready signal");
+            panic!("Router startup failed while waiting for its owned fixture to bind");
+        }
+    }
+    fixture_clock
+        .advance(ROUTER_READINESS_RETRY)
+        .expect("advance shared readiness clock");
+    let (router_condition, mut router_child) = startup
         .await
         .expect("Host startup convergence starts its owned Router");
     let router_shutdown = match router_child.as_mut() {
@@ -58,6 +100,10 @@ async fn owned_router_startup_provisions_once_before_router_and_claude_acp_launc
         None => panic!("tokenless root must start an owned Router child"),
     };
     router_shutdown.expect("stop the isolated Router fixture");
+    assert!(
+        retry_armed,
+        "the owned Router readiness retry must arm the same manual clock as ACP"
+    );
 
     let router_token = load_current_local_router_token(&secret_root);
     assert!(
@@ -178,7 +224,13 @@ async fn router_health_fixture_consumes_headers_before_closing() {
         )
         .with_output(crate::ChildOutput::Null);
     let mut child = RouterChild::spawn(&mut command.command()).expect("start Router fixture");
-    let ready = await_router_readiness(endpoint, std::time::Duration::from_secs(10)).await;
+    let ready = await_router_readiness(
+        endpoint,
+        Duration::from_secs(10),
+        &router_clock::SystemRuntimeClock::new(),
+        None,
+    )
+    .await;
     if !matches!(&ready, Ok(RouterProbeResult::Compatible)) {
         child.shutdown().await.expect("stop unready Router fixture");
     }
@@ -235,9 +287,25 @@ async fn router_child_reads_host_token_and_serves_health() {
     std::fs::write(&observation_path, token.token().expose_secret())
         .expect("record token observed at Router process start");
 
+    use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
+    let mut ready_control = if let Some(path) = std::env::var_os(TEST_ROUTER_READY_CONTROL_ENV) {
+        let mut control = tokio::net::UnixStream::connect(PathBuf::from(path))
+            .await
+            .expect("connect readiness control");
+        assert_eq!(control.read_u8().await.expect("bind command"), b'b');
+        Some(control)
+    } else {
+        None
+    };
     let listener = tokio::net::TcpListener::bind(endpoint)
         .await
         .expect("bind isolated Router endpoint");
+    if let Some(control) = &mut ready_control {
+        control
+            .write_all(b"r")
+            .await
+            .expect("report bound health listener");
+    }
     let health = axum::Router::new().route(
         "/healthz",
         axum::routing::get(|| async {

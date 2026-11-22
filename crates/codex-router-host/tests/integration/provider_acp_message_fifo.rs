@@ -420,7 +420,6 @@ async fn cursor_queue_drains_after_control_prompt_settles() {
 
 #[tokio::test]
 async fn permanent_queued_load_failure_is_inspectable_and_does_not_stop_fifo() {
-    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir().expect("provider root");
     let load_marker = root.path().join("load-marker.txt");
     let target = target();
@@ -471,7 +470,7 @@ async fn permanent_queued_load_failure_is_inspectable_and_does_not_stop_fifo() {
                 runtime,
             }],
             Arc::clone(&store),
-            fixture_clock.clone(),
+            clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -521,7 +520,16 @@ async fn permanent_queued_load_failure_is_inspectable_and_does_not_stop_fifo() {
     );
     node_test_fixture::release_fixture(&load_marker, ".release-first")
         .expect("release A's refusal");
-    wait_for_permanent_queue_failure(&supervisor, first_id).await;
+    wait_for_permanent_queue_failure(&supervisor, first_id.clone()).await;
+    let first_admitted_at = collaboration_contracts::ProviderConversationBackend::show(
+        supervisor.as_ref(),
+        collaboration_protocol::ConversationOperationShowRequest {
+            operation_id: first_id,
+        },
+    )
+    .await
+    .expect("read first queued operation")
+    .admitted_at;
     submit_second
         .send(())
         .expect("offer the stale plan to the owner");
@@ -544,6 +552,11 @@ async fn permanent_queued_load_failure_is_inspectable_and_does_not_stop_fifo() {
 
     route.shutdown_queue().await;
     supervisor.shutdown().await.expect("supervisor shutdown");
+    assert_eq!(
+        String::from(first_admitted_at),
+        "1970-01-01T00:00:00.000Z",
+        "the supervisor must stamp queue admission with the shared provider clock"
+    );
 }
 
 #[expect(
