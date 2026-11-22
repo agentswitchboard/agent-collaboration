@@ -51,6 +51,7 @@ pub enum RaiseReply {
     AlreadyStopped {},
     AlreadyEnded {},
     ContentsDiffer {},
+    TooManyOutstanding {},
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

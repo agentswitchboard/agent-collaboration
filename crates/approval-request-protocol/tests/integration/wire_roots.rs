@@ -107,7 +107,7 @@ macro_rules! expected_wire_roots {
             json!({"kind":"unprovenCall","requestId":REQUEST_ID,"holder":{"routerRun":RUN_ID},"offer":call_offer()}));
         $root!(RaiseReply,
             json!({"kind":"raiseReceipt","receipt":{"requestId":REQUEST_ID,"raisedAt":RAISED_AT,"deadline":DEADLINE}}),
-            json!({"kind":"alreadyStopped"}), json!({"kind":"alreadyEnded"}), json!({"kind":"contentsDiffer"}));
+            json!({"kind":"alreadyStopped"}), json!({"kind":"alreadyEnded"}), json!({"kind":"contentsDiffer"}), json!({"kind":"tooManyOutstanding"}));
         $root!(StopRequest,
             json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"cause":"turnStopped"}),
             json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"cause":"sessionClosed"}),
