@@ -13,6 +13,7 @@ use fleet_signin::organization_authority::{
     FleetOrganizationStatementVerifier, StoredStatementFacts, VerifiedFleetOrganizationStatement,
 };
 use futures_util::future::BoxFuture;
+use std::sync::Arc;
 
 /// Hosts build one per organization runtime, bound to that organization, the
 /// sign-in issuer and audiences, its published keys and the host's crypto.
@@ -47,7 +48,30 @@ pub struct SignInVerifiers<Ed, Es, StatementKeys, PersonKeys> {
     pub machines: MachineTokenVerifier<Ed, PersonKeys>,
     pub sign_in_service: Option<message_board::ServiceId>,
     #[cfg(feature = "test-support")]
-    pub issuer_cache: std::sync::Arc<fleet_signin::IssuerKeyCache>,
+    issuer_cache: Arc<fleet_signin::IssuerKeyCache>,
+}
+
+impl<Ed, Es, StatementKeys, PersonKeys> SignInVerifiers<Ed, Es, StatementKeys, PersonKeys> {
+    /// Build the verifier set while Core owns its feature-dependent test hooks.
+    #[must_use]
+    pub fn from_host_verifiers(
+        statements: FleetOrganizationStatementVerifier<Ed, StatementKeys>,
+        persons: PersonRequestVerifier<Ed, Es, PersonKeys>,
+        machines: MachineTokenVerifier<Ed, PersonKeys>,
+        sign_in_service: Option<message_board::ServiceId>,
+        issuer_cache: &Arc<fleet_signin::IssuerKeyCache>,
+    ) -> Self {
+        #[cfg(not(feature = "test-support"))]
+        let _ = issuer_cache;
+        Self {
+            statements,
+            persons,
+            machines,
+            sign_in_service,
+            #[cfg(feature = "test-support")]
+            issuer_cache: Arc::clone(issuer_cache),
+        }
+    }
 }
 
 impl<Ed, Es, StatementKeys, PersonKeys> fleet_signin::StampVerification
