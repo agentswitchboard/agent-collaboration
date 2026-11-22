@@ -15,13 +15,13 @@ fn private_stamp_trace_matches_the_wire_and_persisted_oracle(case: TestCase) {
         .unwrap();
     runtime.block_on(async {
         let mut fixture = Fixture::new().await.unwrap();
-        let mut model = StampTrace::new(A).unwrap();
+        let mut model = StampTrace::from_fixture_organization(A).unwrap();
         for operation in operations {
             if operation == 5 {
                 fixture.reopen().await.unwrap();
             }
             let operation = operation.min(4);
-            let (body, expected_status, expected_reply) = model.step(operation, A);
+            let (body, expected_status, expected_reply) = model.advance_stamp_trace(operation, A);
             let path = if operation == 4 { DIGEST } else { PROVISION };
             let response = fixture.post(path, &body).await.unwrap();
             let reply = if response.body.is_empty() { Value::Null } else { response.value().unwrap() };

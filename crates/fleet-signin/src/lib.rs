@@ -12,11 +12,11 @@ pub use issuer_key_cache::IssuerCacheOperation;
 pub use issuer_key_cache::IssuerKeyCache;
 pub use issuer_signature_verifier::IssuerSignatureVerifier;
 
-mod standing;
-pub use standing::{StampStanding, StandingCache};
+mod stamp_standing_cache;
+pub use stamp_standing_cache::{StampStanding, StandingCache};
 
 pub mod organization_change;
 pub mod stamp_store;
 
-mod service;
-pub use service::{SignInService, StampVerification, StoredStampVerificationFailure};
+mod stamp_signin_service;
+pub use stamp_signin_service::{SignInService, StampVerification, StoredStampVerificationFailure};

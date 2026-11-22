@@ -4,7 +4,7 @@ use fleet_runtime_ports::SyncTime;
 use hegel::{TestCase, generators as gs};
 use state_machine_core::check_state_machine_transitions;
 
-fn observations() -> [StampHealth; 4] {
+fn standing_observation_cases() -> [StampHealth; 4] {
     [
         StampHealth::Unchecked,
         StampHealth::Unprovisioned,
@@ -18,7 +18,7 @@ fn observations() -> [StampHealth; 4] {
 
 #[test]
 fn the_standing_table_covers_every_state_and_event() {
-    let states = observations();
+    let states = standing_observation_cases();
     let events = states.map(StandingEvent::Observed);
     let pairs = states.into_iter().flat_map(|state| {
         events
@@ -37,13 +37,13 @@ fn standing_uses_the_first_definitive_observation_after_each_invalidation(case: 
     let mut first_definitive = None;
     for _ in 0..case.draw(gs::integers::<usize>().min_value(1).max_value(32)) {
         let action = case.draw(gs::integers::<usize>().max_value(4));
-        if let Some(observed) = observations().get(action) {
-            cache.apply(StandingEvent::Observed(*observed));
+        if let Some(observed) = standing_observation_cases().get(action) {
+            cache.apply_standing_cache_event(StandingEvent::Observed(*observed));
             if action != 0 && first_definitive.is_none() {
                 first_definitive = Some(action);
             }
         } else {
-            cache.forget();
+            cache.invalidate_cached_standing();
             first_definitive = None;
         }
 
@@ -54,7 +54,10 @@ fn standing_uses_the_first_definitive_observation_after_each_invalidation(case: 
                 Some(2) if (10_000..20_000).contains(&now) => StampStanding::Valid,
                 _ => StampStanding::Refused,
             };
-            assert_eq!(cache.standing(SyncTime::from_unix_millis(now)), expected);
+            assert_eq!(
+                cache.cached_standing_at(SyncTime::from_unix_millis(now)),
+                expected
+            );
         }
     }
 }

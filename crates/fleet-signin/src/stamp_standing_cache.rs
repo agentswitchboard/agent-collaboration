@@ -159,7 +159,7 @@ impl StandingCache {
             .unwrap_or(true)
     }
 
-    pub(crate) fn record(
+    pub(crate) fn record_stamp_observation(
         &self,
         stored: &StoredStampRead,
         verified: Option<
@@ -178,14 +178,14 @@ impl StandingCache {
             ) => StampHealth::Unchecked,
             (StoredStampRead::Stamped(_), _) => StampHealth::Refused,
         };
-        self.apply(StandingEvent::Observed(next));
+        self.apply_standing_cache_event(StandingEvent::Observed(next));
     }
 
-    pub fn forget(&self) {
-        self.apply(StandingEvent::Invalidate);
+    pub fn invalidate_cached_standing(&self) {
+        self.apply_standing_cache_event(StandingEvent::Invalidate);
     }
 
-    fn apply(&self, event: StandingEvent) {
+    fn apply_standing_cache_event(&self, event: StandingEvent) {
         if let Ok(mut health) = self.health.lock()
             && let Ok((next, _)) = StandingMachine::transition(&health, event)
         {
@@ -194,7 +194,7 @@ impl StandingCache {
     }
 
     /// The stamp's standing at the caller's sampled time.
-    pub fn standing(&self, now: SyncTime) -> StampStanding {
+    pub fn cached_standing_at(&self, now: SyncTime) -> StampStanding {
         let Ok(health) = self.health.lock() else {
             return StampStanding::Refused;
         };
@@ -217,5 +217,5 @@ impl StandingCache {
 }
 
 #[cfg(test)]
-#[path = "standing_test.rs"]
-mod tests;
+#[path = "stamp_standing_cache_test.rs"]
+mod standing_cache_tests;

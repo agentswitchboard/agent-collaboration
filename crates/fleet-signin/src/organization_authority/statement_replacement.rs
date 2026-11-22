@@ -77,7 +77,7 @@ pub(crate) enum StampMutation {
 }
 
 impl StampMutation {
-    pub(crate) fn accepted(&self) -> &StoredOrganizationStamp {
+    pub(crate) fn accepted_organization_stamp(&self) -> &StoredOrganizationStamp {
         match self {
             Self::Initialize(accepted) | Self::Replace { accepted, .. } => accepted,
         }

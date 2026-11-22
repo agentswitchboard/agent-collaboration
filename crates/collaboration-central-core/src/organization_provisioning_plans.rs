@@ -15,7 +15,7 @@ use std::sync::Arc;
 
 impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
     fn sign_in_service(&self) -> SignInService<'_, H, S> {
-        SignInService::new(
+        SignInService::for_owning_runtime(
             &self.execution,
             self.stamp_store.as_ref(),
             &self.signin_authority.cache,

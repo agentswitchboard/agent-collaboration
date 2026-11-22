@@ -6,7 +6,7 @@ use collaboration_central_conformance::{
 use serde_json::json;
 
 impl IssuerOrderHost for Fixture {
-    fn issuer(&self) -> &SignInKeys {
+    fn issuer_fixture(&self) -> &SignInKeys {
         &self.keys
     }
 
@@ -17,7 +17,7 @@ impl IssuerOrderHost for Fixture {
         Ok(())
     }
 
-    async fn offer(&self, compact: &str) -> Result<u16> {
+    async fn offer_signed_stamp(&self, compact: &str) -> Result<u16> {
         Ok(self
             .post(
                 PROVISION,

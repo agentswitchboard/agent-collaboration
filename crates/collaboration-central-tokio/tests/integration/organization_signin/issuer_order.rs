@@ -2,7 +2,7 @@ use super::support::{A, Fixture, Result, signed};
 use signed::{IssuerOrder, IssuerOrderHost, SignInKeys, prove_issuer_completion_order};
 
 impl IssuerOrderHost for Fixture {
-    fn issuer(&self) -> &SignInKeys {
+    fn issuer_fixture(&self) -> &SignInKeys {
         &self.keys
     }
 
@@ -13,7 +13,7 @@ impl IssuerOrderHost for Fixture {
         Ok(())
     }
 
-    async fn offer(&self, compact: &str) -> Result<u16> {
+    async fn offer_signed_stamp(&self, compact: &str) -> Result<u16> {
         Ok(self.provision(A, compact).await?.status)
     }
 

@@ -5,7 +5,7 @@ use serde_json::Value;
 use std::future::Future;
 
 pub trait TrustTraceHost: IssuerOrderHost {
-    fn revision(&self) -> impl Future<Output = ConformanceResult<(u16, Value)>>;
+    fn post_standing_revision(&self) -> impl Future<Output = ConformanceResult<(u16, Value)>>;
     fn reopen_owner(&mut self) -> impl Future<Output = ConformanceResult<()>>;
 }
 

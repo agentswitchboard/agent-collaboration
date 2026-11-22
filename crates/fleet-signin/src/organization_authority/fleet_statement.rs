@@ -32,7 +32,7 @@ impl FleetOrganizationStatementTrust {
     /// use fleet_contracts::FleetOrganizationStatementRefusal;
     /// use fleet_identity_protocol::OrganizationId;
     /// use fleet_signin::organization_authority::FleetOrganizationStatementTrust;
-    /// fn configure(organization: OrganizationId) {
+    /// fn configure_stamp_trust(organization: OrganizationId) {
     ///     let _: Result<_, FleetOrganizationStatementRefusal> =
     ///         FleetOrganizationStatementTrust::new("https://issuer".into(), "central".into(), organization);
     /// }
@@ -235,9 +235,9 @@ impl<Crypto: Ed25519Verification, Keys: IssuerKeySource>
 ///
 /// ```compile_fail,E0308
 /// use fleet_signin::organization_authority::{StoredStatementFacts, VerifiedFleetOrganizationStatement};
-/// fn apply(_verified: &VerifiedFleetOrganizationStatement) {}
+/// fn require_verified_stamp(_verified: &VerifiedFleetOrganizationStatement) {}
 /// fn cannot_authorize(facts: &StoredStatementFacts) {
-///     apply(facts);
+///     require_verified_stamp(facts);
 /// }
 /// ```
 #[derive(Debug)]
@@ -279,7 +279,7 @@ impl From<StoredStatementFacts> for OrganizationStatementDigestReply {
 ///
 /// ```compile_fail,E0624
 /// use fleet_signin::organization_authority::VerifiedFleetOrganizationStatement;
-/// fn recheck(verified: &VerifiedFleetOrganizationStatement, now: fleet_runtime_ports::SyncTime) {
+/// fn recheck_verified_stamp_time(verified: &VerifiedFleetOrganizationStatement, now: fleet_runtime_ports::SyncTime) {
 ///     let _ = verified.require_valid_at(now);
 /// }
 /// ```

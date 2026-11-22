@@ -269,7 +269,7 @@ struct WorkerExecutorLender<'a, StorageExecutor> {
 }
 
 impl<'a, StorageExecutor> WorkerExecutorLender<'a, StorageExecutor> {
-    fn new(storage_executor: &'a StorageExecutor) -> Self {
+    fn from_storage_executor(storage_executor: &'a StorageExecutor) -> Self {
         Self {
             storage_executor,
             #[cfg(feature = "test-support")]
@@ -305,13 +305,18 @@ pub(crate) async fn read_timed_due_rows(
     connection: &DoConnection,
     query: fleet_runtime_ports::DueListQuery,
 ) -> Result<Vec<fleet_runtime_ports::DueRow>, StoreFailure> {
-    fleet_engine::read_timed_due_rows(&mut WorkerExecutorLender::new(connection), query).await
+    fleet_engine::read_timed_due_rows(
+        &mut WorkerExecutorLender::from_storage_executor(connection),
+        query,
+    )
+    .await
 }
 
 pub(crate) async fn engine_alarm_inputs(
     connection: &DoConnection,
 ) -> Result<EngineAlarmTimes, StoreFailure> {
-    fleet_engine::read_alarm_inputs(&mut WorkerExecutorLender::new(connection)).await
+    fleet_engine::read_alarm_inputs(&mut WorkerExecutorLender::from_storage_executor(connection))
+        .await
 }
 
 async fn run_in_transaction(
@@ -374,7 +379,8 @@ async fn apply_alarm(
                     clock.ok_or(BatchStop::Failed(StoreFailure::AlarmUnpublishable {
                         reason: AlarmPublicationFailure::ClockUnavailable,
                     }))?;
-                let mut alarm_executor_lender = WorkerExecutorLender::new(transaction);
+                let mut alarm_executor_lender =
+                    WorkerExecutorLender::from_storage_executor(transaction);
                 let alarm_inputs = match plan {
                     central_storage::EngineAlarmPlan::Clear => EngineAlarmTimes {
                         earliest_on_grid_due_unix_millis: None,
@@ -534,7 +540,9 @@ pub(crate) async fn write_stamp(
     let transaction_result = connection
         .transaction(move |transaction| async move {
             let affected_rows = stamp_write
-                .apply(&mut WorkerExecutorLender::new(&transaction))
+                .apply_stamp_and_audit(&mut WorkerExecutorLender::from_storage_executor(
+                    &transaction,
+                ))
                 .await
                 .map_err(|stop| match stop {
                     StampWriteStop::Guard {

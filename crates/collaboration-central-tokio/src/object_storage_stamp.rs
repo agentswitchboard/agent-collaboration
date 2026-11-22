@@ -46,11 +46,13 @@ impl ObjectStorage {
             .opened()
             .await?
             .run_transaction(async move |connection| {
-                let affected_rows =
-                    match stamp_write.apply(&mut NativeTransaction(connection)).await {
-                        Ok(affected_rows) => affected_rows,
-                        Err(stop) => return Ok(ControlFlow::Break(stop)),
-                    };
+                let affected_rows = match stamp_write
+                    .apply_stamp_and_audit(&mut NativeTransaction(connection))
+                    .await
+                {
+                    Ok(affected_rows) => affected_rows,
+                    Err(stop) => return Ok(ControlFlow::Break(stop)),
+                };
                 let alarm_inputs = Self::read_engine_inputs(connection).await?;
                 Ok(ControlFlow::Continue((affected_rows, alarm_inputs)))
             })

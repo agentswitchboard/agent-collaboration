@@ -105,7 +105,7 @@ fn real_host_issuer_trace_matches_receipts_and_key_membership(case: TestCase) {
 }
 
 impl TrustTraceHost for Fixture {
-    async fn revision(&self) -> ConformanceResult<(u16, Value)> {
+    async fn post_standing_revision(&self) -> ConformanceResult<(u16, Value)> {
         Ok(self.post(REVISIONS, &org_revision(3, "active")).await)
     }
     async fn reopen_owner(&mut self) -> ConformanceResult<()> {

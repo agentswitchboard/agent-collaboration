@@ -97,7 +97,7 @@ struct StampTiming {
     issued: i64,
     expires: i64,
 }
-fn timing(write: &StampWrite) -> Result<StampTiming, StoreFailure> {
+fn checked_stamp_write_timing(write: &StampWrite) -> Result<StampTiming, StoreFailure> {
     let exact = |value| {
         central_storage::SafeInteger::new(value)
             .map(central_storage::SafeInteger::get)
@@ -123,15 +123,22 @@ fn exact_one(index: u32, rows_affected: u64) -> Result<(), StampWriteStop> {
 }
 
 impl StampWrite {
-    pub async fn apply<T: CentralTransaction>(self, tx: &mut T) -> Result<[u64; 2], StampWriteStop>
+    pub async fn apply_stamp_and_audit<T: CentralTransaction>(
+        self,
+        tx: &mut T,
+    ) -> Result<[u64; 2], StampWriteStop>
     where
         <T::Database as Database>::Arguments: IntoArguments<T::Database>,
         String: Type<T::Database> + for<'q> Encode<'q, T::Database>,
         Option<String>: Type<T::Database> + for<'q> Encode<'q, T::Database>,
         i64: Type<T::Database> + for<'q> Encode<'q, T::Database>,
     {
-        let time = timing(&self)?;
-        let body = self.mutation.accepted().statement().to_owned();
+        let time = checked_stamp_write_timing(&self)?;
+        let body = self
+            .mutation
+            .accepted_organization_stamp()
+            .statement()
+            .to_owned();
         let audit = self.audit.insert_values()?;
         let audit_timestamp = audit.timestamp.get();
         let result = match self.mutation {

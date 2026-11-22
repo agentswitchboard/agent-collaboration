@@ -112,7 +112,7 @@ async fn issuer_cache_journey(fixture: &Fixture) -> Result<()> {
             fixture
                 .keys()
                 .hold_next_fetch()
-                .respond(signed::IssuerReply::Document(document))?;
+                .send_issuer_reply(signed::IssuerReply::Document(document))?;
         }
         let response = fixture
             .client
@@ -136,7 +136,7 @@ async fn issuer_cache_journey(fixture: &Fixture) -> Result<()> {
             fixture
                 .keys()
                 .hold_next_fetch()
-                .respond(signed::IssuerReply::Document(document))?;
+                .send_issuer_reply(signed::IssuerReply::Document(document))?;
         }
         let answer = renewal(
             &mut link,

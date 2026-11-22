@@ -106,4 +106,4 @@ pub struct OrganizationStatementDigestReply {
 
 #[cfg(test)]
 #[path = "organization_provisioning_test.rs"]
-mod tests;
+mod provisioning_contract_tests;
