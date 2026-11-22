@@ -23,30 +23,33 @@ fn stored() -> StoredDirectState {
 #[test]
 fn stored_direct_state_requires_the_evidence_its_tag_claims() {
     let mut row = stored();
-    assert_eq!(row.decode().unwrap().lifecycle, DirectLifecycle::Queued);
+    assert_eq!(
+        row.decode_direct_message().unwrap().lifecycle,
+        DirectLifecycle::Queued
+    );
     row.state = "delivered".into();
-    assert!(row.decode().is_err());
+    assert!(row.decode_direct_message().is_err());
     row.delivered_arrived_at = Some("2100-01-01T00:01:30Z".into());
     assert!(matches!(
-        row.decode().unwrap().lifecycle,
+        row.decode_direct_message().unwrap().lifecycle,
         DirectLifecycle::Delivered(_)
     ));
     row.state = "seen".into();
-    assert!(row.decode().is_err());
+    assert!(row.decode_direct_message().is_err());
     row.seen_completed_at = Some("2100-01-01T00:01:30Z".into());
     assert!(matches!(
-        row.decode().unwrap().lifecycle,
+        row.decode_direct_message().unwrap().lifecycle,
         DirectLifecycle::Final {
             receipt: FinalReceipt::Seen { .. },
             ..
         }
     ));
     row.failure_reason = Some("sessionClosed".into());
-    assert!(row.decode().is_err());
+    assert!(row.decode_direct_message().is_err());
     row.seen_completed_at = None;
     row.state = "refused".into();
     assert!(matches!(
-        row.decode().unwrap().lifecycle,
+        row.decode_direct_message().unwrap().lifecycle,
         DirectLifecycle::Final {
             receipt: FinalReceipt::Refused {
                 reason: mail::MessageRefusal::SessionClosed
@@ -65,6 +68,6 @@ fn a_direct_mark_must_follow_acceptance_and_the_cutoff_on_the_grid() {
     ] {
         let mut row = stored();
         row.cancel_due_at = mark.map(str::to_owned);
-        assert!(row.decode().is_err());
+        assert!(row.decode_direct_message().is_err());
     }
 }

@@ -357,8 +357,8 @@ async fn backlog_page_journey(fixture: &Fixture) -> Result<()> {
     {
         return Err("backlog template did not have its live offer".into());
     }
-    let runtime = fixture.runtime();
-    let store = runtime.statement_host();
+    let central = fixture.runtime();
+    let store = central.statement_host();
     let page_size = fleet_contracts::mail_link::WELCOME_PAGE_SIZE;
     let seed = store.run_batch(StatementBatch {
         statements: vec![GuardedStatement {

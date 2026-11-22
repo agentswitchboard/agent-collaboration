@@ -46,7 +46,7 @@ fn enum_value<T: serde::de::DeserializeOwned>(value: &str, field: &str) -> Resul
 }
 
 impl StoredDirectState {
-    pub(crate) fn decode(&self) -> Result<DirectMessageRow, StoreFailure> {
+    pub(crate) fn decode_direct_message(&self) -> Result<DirectMessageRow, StoreFailure> {
         if self.message_kind != "direct" {
             return Err(corrupt("mail_messages.message_kind"));
         }
@@ -80,11 +80,11 @@ impl StoredDirectState {
             recipient: parse(&self.target_machine_id, "mail_messages.target_machine_id")?,
             cutoff,
             mark,
-            lifecycle: self.lifecycle()?,
+            lifecycle: self.decode_lifecycle()?,
         })
     }
 
-    fn lifecycle(&self) -> Result<DirectLifecycle, StoreFailure> {
+    fn decode_lifecycle(&self) -> Result<DirectLifecycle, StoreFailure> {
         let arrived = self
             .delivered_arrived_at
             .as_deref()

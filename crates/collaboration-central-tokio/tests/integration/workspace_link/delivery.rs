@@ -114,11 +114,11 @@ async fn delivery_journey(fixture: &Fixture) -> Result<()> {
     if receive(&mut replacement).await? != LinkFrame::Pong {
         return Err("replacement link did not handle the receipt and remain usable".into());
     }
-    let runtime = fixture
+    let central = fixture
         .host
         .central(&signed::ORGANIZATION.to_owned().try_into()?)
         .await?;
-    let rows = runtime
+    let rows = central
         .runtime()
         .statement_host()
         .read(central_storage::Statement {
@@ -164,7 +164,7 @@ async fn delivery_journey(fixture: &Fixture) -> Result<()> {
         sql: "SELECT message_id,message_kind,state,updated_at FROM mail_messages ORDER BY message_id",
         args: vec![],
     };
-    let before = runtime
+    let before = central
         .runtime()
         .statement_host()
         .read(settled_rows())
@@ -187,7 +187,7 @@ async fn delivery_journey(fixture: &Fixture) -> Result<()> {
     if receive(&mut reconnected).await? != LinkFrame::Pong {
         return Err("the replayed receipt must remain silent and keep the socket open".into());
     }
-    if runtime
+    if central
         .runtime()
         .statement_host()
         .read(settled_rows())
@@ -379,8 +379,8 @@ async fn backlog_page_journey(fixture: &Fixture) -> Result<()> {
         return Err("backlog template did not have its live offer".into());
     }
     let organization = signed::ORGANIZATION.to_owned().try_into()?;
-    let runtime = fixture.host.central(&organization).await?;
-    let store = runtime.runtime().statement_host();
+    let central = fixture.host.central(&organization).await?;
+    let store = central.runtime().statement_host();
     let page_size = fleet_contracts::mail_link::WELCOME_PAGE_SIZE;
     let seed = store.run_batch(StatementBatch {
         statements: vec![GuardedStatement {

@@ -23,8 +23,8 @@ fn the_stored_message_and_its_outcome_follow_the_receipt_sequence(case: hegel::T
 async fn journey(order: u8, reject_mark: bool) {
     let fixture = Fixture::new().await;
     let sent_at = chrono::DateTime::from_timestamp(FIXTURE_NOW, 0).unwrap();
-    let mark = fleet_mail::message_deadline::cancel_due_at(sent_at, sent_at);
-    let runtime = fixture.host.central(&fixture.caller.organization_id).await;
+    let mark = fleet_mail::message_deadline::direct_receipt_mark(sent_at, sent_at);
+    let central = fixture.host.central(&fixture.caller.organization_id).await;
     let message_id = queue_direct(&fixture, sent_at, 981001).await;
 
     let mut outcome = if order & 1 == 0 {
@@ -38,7 +38,7 @@ async fn journey(order: u8, reject_mark: bool) {
     };
     if order & 1 != 0 {
         assert_eq!(
-            receipt(&fixture, &runtime, &message_id, delivered.clone()).await,
+            receipt(&fixture, &central, &message_id, delivered.clone()).await,
             MailReceiptSettlement::Applied
         );
     }
@@ -87,7 +87,7 @@ async fn journey(order: u8, reject_mark: bool) {
         };
     if order & 2 != 0 {
         assert_eq!(
-            receipt(&fixture, &runtime, &message_id, final_receipt.clone()).await,
+            receipt(&fixture, &central, &message_id, final_receipt.clone()).await,
             MailReceiptSettlement::Applied
         );
         outcome = immediate_outcome;
@@ -97,8 +97,8 @@ async fn journey(order: u8, reject_mark: bool) {
             (mark - chrono::Duration::minutes(1)).timestamp_millis(),
             Ordering::SeqCst,
         );
-        runtime.after_event().await.unwrap();
-        let before = runtime
+        central.after_event().await.unwrap();
+        let before = central
             .read(Statement {
                 sql: "SELECT state FROM mail_messages WHERE message_id=?",
                 args: vec![text(&message_id)],
@@ -116,16 +116,16 @@ async fn journey(order: u8, reject_mark: bool) {
     }
     let reject_due_write = reject_mark && order & 2 == 0;
     if reject_due_write {
-        raw(&runtime, REJECT_OUTCOME, vec![]).await;
+        raw(&central, REJECT_OUTCOME, vec![]).await;
     }
     fixture
         .clock
         .0
         .store(mark.timestamp_millis(), Ordering::SeqCst);
-    runtime.after_event().await.unwrap();
+    central.after_event().await.unwrap();
     if reject_due_write {
         assert_store(
-            &runtime,
+            &central,
             &message_id,
             if order & 1 == 0 {
                 "queued"
@@ -135,7 +135,7 @@ async fn journey(order: u8, reject_mark: bool) {
             None,
         )
         .await;
-        let attempts = runtime
+        let attempts = central
             .read(Statement {
                 sql: "SELECT state,failure_count,last_failure FROM engine_work_attempts WHERE machine_kind='direct_message' AND subject_key=?",
                 args: vec![text(&message_id)],
@@ -150,14 +150,14 @@ async fn journey(order: u8, reject_mark: bool) {
                 text("statement_rejected")
             ]]
         );
-        raw(&runtime, "DROP TRIGGER reject_direct_outcome", vec![]).await;
+        raw(&central, "DROP TRIGGER reject_direct_outcome", vec![]).await;
         let at = mark + chrono::Duration::minutes(5);
         fixture
             .clock
             .0
             .store(at.timestamp_millis(), Ordering::SeqCst);
-        runtime.after_event().await.unwrap();
-        let attempts = runtime
+        central.after_event().await.unwrap();
+        let attempts = central
             .read(Statement {
                 sql: "SELECT attempt_id FROM engine_work_attempts WHERE machine_kind='direct_message' AND subject_key=?",
                 args: vec![text(&message_id)],
@@ -170,7 +170,7 @@ async fn journey(order: u8, reject_mark: bool) {
         );
     }
     assert_store(
-        &runtime,
+        &central,
         &message_id,
         if order & 2 != 0 {
             terminal
@@ -209,7 +209,7 @@ async fn journey(order: u8, reject_mark: bool) {
             .0
             .store(mark.timestamp_millis(), Ordering::SeqCst);
     }
-    runtime.cold_alarm().await.unwrap();
+    central.cold_alarm().await.unwrap();
 
     if order & 3 == 0 {
         let saved_at = mark + chrono::Duration::milliseconds(137);
@@ -217,17 +217,17 @@ async fn journey(order: u8, reject_mark: bool) {
             sql: "SELECT message_id,body,created_at,updated_at FROM mail_messages WHERE message_kind='deliveryOutcome' AND json_extract(body,'$.messageId')=?",
             args: vec![text(&message_id)],
         };
-        let before = runtime.read(first_outcome_row()).await.unwrap();
+        let before = central.read(first_outcome_row()).await.unwrap();
         assert_eq!(before.rows.len(), 1);
         let late_delivery = ReceiptKind::Delivered {
             arrived_at: saved_at,
             waiting: Some(WaitingReason::WaitingOnAPerson),
         };
         assert_eq!(
-            receipt(&fixture, &runtime, &message_id, late_delivery).await,
+            receipt(&fixture, &central, &message_id, late_delivery).await,
             MailReceiptSettlement::Applied
         );
-        let row = runtime.read(Statement {
+        let row = central.read(Statement {
             sql: "SELECT state,delivered_arrived_at,delivered_waiting_reason FROM mail_messages WHERE message_id=?",
             args: vec![text(&message_id)],
         }).await.unwrap();
@@ -255,9 +255,9 @@ async fn journey(order: u8, reject_mark: bool) {
                 deadline_passed: true,
             })
         );
-        assert_eq!(runtime.read(first_outcome_row()).await.unwrap(), before);
+        assert_eq!(central.read(first_outcome_row()).await.unwrap(), before);
     }
-    let first = receipt(&fixture, &runtime, &message_id, final_receipt.clone()).await;
+    let first = receipt(&fixture, &central, &message_id, final_receipt.clone()).await;
     let expected = if order & 2 != 0 {
         MailReceiptSettlement::Stop(ReceiptResult::Recorded)
     } else {
@@ -265,18 +265,18 @@ async fn journey(order: u8, reject_mark: bool) {
     };
     assert_eq!(first, expected);
     assert_eq!(
-        receipt(&fixture, &runtime, &message_id, final_receipt).await,
+        receipt(&fixture, &central, &message_id, final_receipt).await,
         MailReceiptSettlement::Stop(ReceiptResult::Recorded)
     );
     assert_eq!(
-        receipt(&fixture, &runtime, &message_id, delivered).await,
+        receipt(&fixture, &central, &message_id, delivered).await,
         MailReceiptSettlement::Stop(ReceiptResult::Recorded)
     );
     assert_eq!(
-        receipt(&fixture, &runtime, &message_id, contradiction).await,
+        receipt(&fixture, &central, &message_id, contradiction).await,
         MailReceiptSettlement::Stop(ReceiptResult::AlreadySettled)
     );
-    assert_store(&runtime, &message_id, terminal, outcome).await;
+    assert_store(&central, &message_id, terminal, outcome).await;
     let caller = fresh_auth(&fixture.host, &fixture.caller);
     let actual = fixture
         .host
@@ -290,11 +290,11 @@ async fn journey(order: u8, reject_mark: bool) {
 
 async fn receipt(
     fixture: &Fixture,
-    runtime: &RemoteRuntime,
+    central: &RemoteRuntime,
     message: &MessageId,
     receipt: ReceiptKind,
 ) -> MailReceiptSettlement {
-    submit_receipt(fixture, runtime, message, receipt)
+    submit_receipt(fixture, central, message, receipt)
         .await
         .unwrap()
 }
@@ -352,13 +352,13 @@ pub(super) async fn queue_direct(
 #[tokio::test]
 async fn a_rejected_direct_mark_rolls_back_and_a_superseding_receipt_prevents_the_charge() {
     let fixture = Fixture::new().await;
-    let runtime = runtime(&fixture).await;
+    let central = runtime(&fixture).await;
     let now = chrono::DateTime::from_timestamp(FIXTURE_NOW, 0).unwrap();
-    let mark = fleet_mail::message_deadline::cancel_due_at(now, now);
+    let mark = fleet_mail::message_deadline::direct_receipt_mark(now, now);
     let message_id = queue_direct(&fixture, now, 981002).await;
-    raw(&runtime, REJECT_OUTCOME, vec![]).await;
+    raw(&central, REJECT_OUTCOME, vec![]).await;
 
-    let mut held = runtime
+    let mut held = central
         .pause_points()
         .hold_engine(PausePoint::BeforeEngineFailureWrite, message_id.as_str())
         .await;
@@ -367,14 +367,14 @@ async fn a_rejected_direct_mark_rolls_back_and_a_superseding_receipt_prevents_th
         .0
         .store(mark.timestamp_millis(), Ordering::SeqCst);
     let batch = tokio::spawn({
-        let runtime = runtime.clone();
-        async move { runtime.after_event().await }
+        let central = central.clone();
+        async move { central.after_event().await }
     });
     held.until_held().await;
 
-    assert_store(&runtime, &message_id, "queued", None).await;
+    assert_store(&central, &message_id, "queued", None).await;
     let attempts = || async {
-        runtime.read(Statement {
+        central.read(Statement {
             sql: "SELECT attempt_id FROM engine_work_attempts WHERE machine_kind='direct_message' AND subject_key=?",
             args: vec![text(&message_id)],
         }).await.unwrap().rows
@@ -383,7 +383,7 @@ async fn a_rejected_direct_mark_rolls_back_and_a_superseding_receipt_prevents_th
     assert_eq!(
         receipt(
             &fixture,
-            &runtime,
+            &central,
             &message_id,
             ReceiptKind::Seen { completed_at: now }
         )
@@ -393,7 +393,7 @@ async fn a_rejected_direct_mark_rolls_back_and_a_superseding_receipt_prevents_th
     held.release().await;
     batch.await.unwrap().unwrap();
 
-    assert_store(&runtime, &message_id, "seen", None).await;
+    assert_store(&central, &message_id, "seen", None).await;
     assert!(
         attempts().await.is_empty(),
         "the rolled-back version was superseded"
@@ -418,9 +418,9 @@ async fn an_unobserved_direct_mark_commit_never_charges_an_attempt() {
         ),
     ] {
         let fixture = Fixture::new().await;
-        let runtime = runtime(&fixture).await;
+        let central = runtime(&fixture).await;
         let now = chrono::DateTime::from_timestamp(FIXTURE_NOW, 0).unwrap();
-        let mark = fleet_mail::message_deadline::cancel_due_at(now, now);
+        let mark = fleet_mail::message_deadline::direct_receipt_mark(now, now);
         let message_id = queue_direct(&fixture, now, number).await;
 
         let fault = EngineCommitFault {
@@ -428,7 +428,7 @@ async fn an_unobserved_direct_mark_commit_never_charges_an_attempt() {
             kind,
         };
         assert!(
-            runtime
+            central
                 .control::<bool>("engine-commit-fault", &fault)
                 .await
                 .unwrap()
@@ -437,16 +437,16 @@ async fn an_unobserved_direct_mark_commit_never_charges_an_attempt() {
             .clock
             .0
             .store(mark.timestamp_millis(), Ordering::SeqCst);
-        runtime.after_event().await.unwrap();
+        central.after_event().await.unwrap();
 
         assert!(
-            !runtime
+            !central
                 .control::<bool>("engine-commit-fault-pending", &())
                 .await
                 .unwrap()
         );
-        assert_store(&runtime, &message_id, expected_state, expected_outcome).await;
-        let attempts = runtime.read(Statement {
+        assert_store(&central, &message_id, expected_state, expected_outcome).await;
+        let attempts = central.read(Statement {
             sql: "SELECT attempt_id FROM engine_work_attempts WHERE machine_kind='direct_message' AND subject_key=?",
             args: vec![text(&message_id)],
         }).await.unwrap();
@@ -461,11 +461,11 @@ async fn an_unobserved_direct_mark_commit_never_charges_an_attempt() {
 #[tokio::test]
 async fn a_seen_receipt_cannot_settle_a_notice_and_session_closed_keeps_its_reason() {
     let fixture = Fixture::new().await;
-    let runtime = runtime(&fixture).await;
+    let central = runtime(&fixture).await;
     let now = chrono::DateTime::from_timestamp(FIXTURE_NOW, 0).unwrap();
     let notice_id: workspace_ids::MessageId = id(981005);
     let recipient = session(&fixture.caller);
-    raw(&runtime,
+    raw(&central,
         "INSERT INTO mail_messages(message_id,sender,target_machine_id,target_session,message_kind,body,state,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)",
         vec![
             text(&notice_id),
@@ -480,7 +480,7 @@ async fn a_seen_receipt_cannot_settle_a_notice_and_session_closed_keeps_its_reas
         ],
     ).await;
     let stored_state = || async {
-        runtime
+        central
             .read(Statement {
                 sql: "SELECT state,failure_reason FROM mail_messages WHERE message_id=?",
                 args: vec![text(&notice_id)],
@@ -490,7 +490,7 @@ async fn a_seen_receipt_cannot_settle_a_notice_and_session_closed_keeps_its_reas
             .rows
     };
     let submit = async |message_id: workspace_ids::MessageId, receipt| {
-        self::receipt(&fixture, &runtime, &message_id, receipt).await
+        self::receipt(&fixture, &central, &message_id, receipt).await
     };
     assert_eq!(
         submit(notice_id.clone(), ReceiptKind::Seen { completed_at: now }).await,
@@ -541,7 +541,7 @@ async fn a_seen_receipt_cannot_settle_a_notice_and_session_closed_keeps_its_reas
     );
     for (tag, reason) in [("failed", ""), ("cancelled", "sessionClosed")] {
         raw(
-            &runtime,
+            &central,
             "UPDATE mail_messages SET state=?,failure_reason=? WHERE message_id=?",
             vec![text(tag), text(reason), text(&notice_id)],
         )
@@ -554,7 +554,7 @@ async fn a_seen_receipt_cannot_settle_a_notice_and_session_closed_keeps_its_reas
             arrived_at: now,
             waiting: None,
         };
-        let rejected = submit_receipt(&fixture, &runtime, &notice_id, receipt).await;
+        let rejected = submit_receipt(&fixture, &central, &notice_id, receipt).await;
         assert!(
             matches!(rejected, Err(StoreFailure::Corrupt { .. })),
             "{rejected:?}"
@@ -567,12 +567,12 @@ async fn a_seen_receipt_cannot_settle_a_notice_and_session_closed_keeps_its_reas
 #[tokio::test]
 async fn an_eligible_direct_mark_records_a_corrupt_typed_row_without_settling_it() {
     let fixture = Fixture::new().await;
-    let runtime = runtime(&fixture).await;
+    let central = runtime(&fixture).await;
     let now = chrono::DateTime::from_timestamp(FIXTURE_NOW, 0).unwrap();
-    let mark = fleet_mail::message_deadline::cancel_due_at(now, now);
+    let mark = fleet_mail::message_deadline::direct_receipt_mark(now, now);
     let message_id = queue_direct(&fixture, now, 981006).await;
     raw(
-        &runtime,
+        &central,
         "UPDATE mail_messages SET sender=x'01' WHERE message_id=?",
         vec![text(&message_id)],
     )
@@ -582,10 +582,10 @@ async fn an_eligible_direct_mark_records_a_corrupt_typed_row_without_settling_it
         .clock
         .0
         .store(mark.timestamp_millis(), Ordering::SeqCst);
-    runtime.after_event().await.unwrap();
+    central.after_event().await.unwrap();
 
-    assert_store(&runtime, &message_id, "queued", None).await;
-    let attempts = runtime.read(Statement {
+    assert_store(&central, &message_id, "queued", None).await;
+    let attempts = central.read(Statement {
         sql: "SELECT state,failure_count,last_failure,last_failure_detail FROM engine_work_attempts WHERE machine_kind='direct_message' AND subject_key=?",
         args: vec![text(&message_id)],
     }).await.unwrap();
@@ -605,12 +605,12 @@ async fn an_eligible_direct_mark_records_a_corrupt_typed_row_without_settling_it
 }
 
 async fn assert_store(
-    runtime: &RemoteRuntime,
+    central: &RemoteRuntime,
     message_id: &MessageId,
     state: &str,
     outcome: Option<&str>,
 ) {
-    let rows = runtime.read(Statement {
+    let rows = central.read(Statement {
         sql: "SELECT state,(SELECT json_extract(body,'$.outcome.kind') FROM mail_messages WHERE message_kind='deliveryOutcome') AS outcome,(SELECT COUNT(*) FROM mail_messages WHERE message_kind='deliveryOutcome') AS outcome_count FROM mail_messages WHERE message_id=?",
         args: vec![text(message_id)],
     }).await.unwrap();

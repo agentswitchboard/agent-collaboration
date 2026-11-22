@@ -21,9 +21,9 @@ fn set(time: Time) -> AlarmPublication {
 }
 
 /// Moves the observer's open window to `due`, keeping its items.
-async fn window_due_at(runtime: &Runtime, due: Time) {
+async fn window_due_at(central_service: &Runtime, due: Time) {
     raw(
-        runtime,
+        central_service,
         "UPDATE mail_notification_windows SET due_at=?",
         vec![stamp(due)],
     )
@@ -33,34 +33,37 @@ async fn window_due_at(runtime: &Runtime, due: Time) {
 #[tokio::test]
 async fn a_publication_held_before_a_newer_claim_publishes_the_newer_floor() {
     let fixture = Fixture::new().await;
-    let runtime = runtime(&fixture).await;
+    let central_service = runtime(&fixture).await;
     let start = fixture.clock.utc_now();
     open_notice_window(&fixture, 32000).await;
-    due_batch_at(&fixture, &runtime, at(start, 4, 0, 0)).await;
-    window_due_at(&runtime, at(start, 5, 0, 0)).await;
-    driver_settled(&fixture, &runtime).await;
+    due_batch_at(&fixture, &central_service, at(start, 4, 0, 0)).await;
+    window_due_at(&central_service, at(start, 5, 0, 0)).await;
+    driver_settled(&fixture, &central_service).await;
     fixture.set_utc(at(start, 4, 20, 0)).await;
     // Event A, inside the spacing, holds its only batch after commit and
     // before its alarm decision, with the 10:04:00 start still current.
-    let mut held = runtime.runtime().statement_host().hold_alarm_publication();
+    let mut held = central_service
+        .runtime()
+        .statement_host()
+        .hold_alarm_publication();
     let event_a = tokio::spawn({
-        let runtime = runtime.clone();
-        async move { runtime.after_event().await }
+        let central_service = central_service.clone();
+        async move { central_service.after_event().await }
     });
     held.until_held().await;
     fixture.set_utc(at(start, 4, 58, 0)).await;
     let event_b = tokio::spawn({
-        let runtime = runtime.clone();
-        async move { runtime.after_event().await }
+        let central_service = central_service.clone();
+        async move { central_service.after_event().await }
     });
     // B claimed before its first await and now queues behind A's batch.
-    runtime
+    central_service
         .runtime()
         .statement_host()
         .until_batch_waiting()
         .await;
     assert_eq!(
-        runtime
+        central_service
             .runtime()
             .due_batch_snapshot()
             .last_start_unix_millis,
@@ -82,25 +85,25 @@ async fn a_publication_held_before_a_newer_claim_publishes_the_newer_floor() {
         completion_b.work.windows_fired, 0,
         "the window is not run early"
     );
-    assert_eq!(alarm_ms(&runtime), ms(at(start, 5, 28, 0)));
+    assert_eq!(alarm_ms(&central_service), ms(at(start, 5, 28, 0)));
     assert_eq!(
-        window_due(&runtime).await,
+        window_due(&central_service).await,
         vec![vec![stamp(at(start, 5, 0, 0))]]
     );
-    assert_eq!(notices(&runtime).await, 0);
+    assert_eq!(notices(&central_service).await, 0);
     fixture.host.close().await;
 }
 
 #[tokio::test]
 async fn a_request_held_across_a_capped_batch_publishes_the_continuation() {
     let fixture = Fixture::new().await;
-    let runtime = runtime(&fixture).await;
+    let central_service = runtime(&fixture).await;
     let start = fixture.clock.utc_now();
-    due_batch_at(&fixture, &runtime, at(start, 4, 0, 0)).await;
+    due_batch_at(&fixture, &central_service, at(start, 4, 0, 0)).await;
     let group = probe_id(32100);
     for index in 0..251 {
         seed_probe(
-            &runtime,
+            &central_service,
             probe_id(32200 + index),
             group,
             Some(at(start, 5, 0, 0)),
@@ -109,18 +112,18 @@ async fn a_request_held_across_a_capped_batch_publishes_the_continuation() {
         .await;
     }
     let (traffic, traffic_group) = (probe_id(32101), probe_id(32102));
-    seed_probe(&runtime, traffic, traffic_group, None, "traffic").await;
-    let mut held = runtime
+    seed_probe(&central_service, traffic, traffic_group, None, "traffic").await;
+    let mut held = central_service
         .runtime()
         .pause_points()
         .hold_engine(PausePoint::AfterEngineCommit, &traffic.to_string());
-    driver_settled(&fixture, &runtime).await;
+    driver_settled(&fixture, &central_service).await;
     fixture.set_utc(at(start, 4, 20, 0)).await;
     let request_a = tokio::spawn({
-        let runtime = runtime.clone();
+        let central_service = central_service.clone();
         let caller = fixture.caller.clone();
         async move {
-            runtime
+            central_service
                 .request_probe(&caller, probe_request(32103, traffic, ProbeEvent::Run))
                 .await
         }
@@ -128,20 +131,25 @@ async fn a_request_held_across_a_capped_batch_publishes_the_continuation() {
     held.until_held().await;
     fixture.set_utc(at(start, 4, 58, 0)).await;
 
-    let completion_b = runtime.after_event().await.unwrap();
+    let completion_b = central_service.after_event().await.unwrap();
 
     assert_eq!(completion_b.publication, set(at(start, 5, 28, 0)));
-    assert!(runtime.runtime().due_batch_snapshot().leftovers_pending);
+    assert!(
+        central_service
+            .runtime()
+            .due_batch_snapshot()
+            .leftovers_pending
+    );
     assert_eq!(
         count(
-            &runtime,
+            &central_service,
             "SELECT COUNT(*) FROM engine_probe_items WHERE group_id=? AND state='fired'",
             vec![text(group)]
         )
         .await,
         250
     );
-    driver_settled(&fixture, &runtime).await;
+    driver_settled(&fixture, &central_service).await;
     fixture.set_utc(at(start, 4, 59, 0)).await;
     held.release();
     assert!(matches!(
@@ -149,14 +157,14 @@ async fn a_request_held_across_a_capped_batch_publishes_the_continuation() {
         collaboration_central_core::engine_probe::EngineRequestOutcome::Answer { .. }
     ));
     assert_eq!(
-        alarm_ms(&runtime),
+        alarm_ms(&central_service),
         ms(at(start, 5, 28, 0)),
         "A, published last, kept the continuation, not the 10:05:00 due"
     );
     fixture.host.close().await;
 }
 
-/// Pass-through workspace calls for a hand-built runtime.
+/// Pass-through workspace calls for a hand-built central_service.
 #[derive(Clone)]
 struct WorkspaceStore(Arc<ObjectStorage>);
 impl WorkspaceStores for WorkspaceStore {
@@ -189,9 +197,9 @@ async fn a_claim_waits_for_a_publication_between_its_decision_and_its_write() {
     let fixture = Fixture::new().await;
     let start = fixture.clock.utc_now();
     {
-        let runtime = runtime(&fixture).await;
+        let central_service = runtime(&fixture).await;
         open_notice_window(&fixture, 32300).await;
-        window_due_at(&runtime, at(start, 5, 0, 0)).await;
+        window_due_at(&central_service, at(start, 5, 0, 0)).await;
     }
     fixture.host.close().await;
     let due_batches = Arc::new(fleet_runtime::DueBatchState::default());
@@ -229,7 +237,7 @@ async fn a_claim_waits_for_a_publication_between_its_decision_and_its_write() {
             .join(format!("{}.sqlite", fixture.workspace)),
         Arc::new(fleet_storage_schema::workspace_migrations::workspace_migrator()),
     ));
-    let runtime = Arc::new(WorkspaceRuntime::new(
+    let central_service = Arc::new(WorkspaceRuntime::new(
         FleetRuntime::open(
             fixture.caller.organization_id().clone(),
             central.clone(),
@@ -243,7 +251,7 @@ async fn a_claim_waits_for_a_publication_between_its_decision_and_its_write() {
     ));
     fixture.set_utc(at(start, 4, 0, 0)).await;
     assert_eq!(
-        runtime.after_event().await.unwrap().publication,
+        central_service.after_event().await.unwrap().publication,
         set(at(start, 5, 0, 0))
     );
     fixture.set_utc(at(start, 4, 20, 0)).await;
@@ -254,8 +262,8 @@ async fn a_claim_waits_for_a_publication_between_its_decision_and_its_write() {
         release: release_receiver,
     });
     let event_a = tokio::spawn({
-        let runtime = runtime.clone();
-        async move { runtime.after_event().await }
+        let central_service = central_service.clone();
+        async move { central_service.after_event().await }
     });
     assert_eq!(
         decided.await.unwrap(),
@@ -264,8 +272,8 @@ async fn a_claim_waits_for_a_publication_between_its_decision_and_its_write() {
     );
     fixture.set_utc(at(start, 4, 58, 0)).await;
     let event_b = tokio::spawn({
-        let runtime = runtime.clone();
-        async move { runtime.after_event().await }
+        let central_service = central_service.clone();
+        async move { central_service.after_event().await }
     });
 
     // Either B's claim waits on the critical section, or it lands at 10:04:58
@@ -305,19 +313,19 @@ async fn a_claim_waits_for_a_publication_between_its_decision_and_its_write() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_events_released_together_run_exactly_one_due_batch() {
     let fixture = Fixture::new().await;
-    let runtime = runtime(&fixture).await;
+    let central_service = runtime(&fixture).await;
     let start = fixture.clock.utc_now();
-    due_batch_at(&fixture, &runtime, at(start, 4, 0, 0)).await;
-    let before = runtime.runtime().legacy_unit_invocations();
+    due_batch_at(&fixture, &central_service, at(start, 4, 0, 0)).await;
+    let before = central_service.runtime().legacy_unit_invocations();
     fixture.set_utc(at(start, 4, 31, 0)).await;
     let barrier = Arc::new(tokio::sync::Barrier::new(2));
     let events: Vec<_> = (0..2)
         .map(|_| {
-            let runtime = runtime.clone();
+            let central_service = central_service.clone();
             let barrier = barrier.clone();
             tokio::spawn(async move {
                 barrier.wait().await;
-                runtime.after_event().await
+                central_service.after_event().await
             })
         })
         .collect();
@@ -326,14 +334,14 @@ async fn two_events_released_together_run_exactly_one_due_batch() {
         event.await.unwrap().unwrap();
     }
 
-    let after = runtime.runtime().legacy_unit_invocations();
+    let after = central_service.runtime().legacy_unit_invocations();
     assert_eq!(
         (after.windows - before.windows, after.drains - before.drains),
         (1, 1),
         "exactly one due batch ran its notice units"
     );
     assert_eq!(
-        runtime
+        central_service
             .runtime()
             .due_batch_snapshot()
             .last_start_unix_millis,
@@ -345,40 +353,44 @@ async fn two_events_released_together_run_exactly_one_due_batch() {
 #[tokio::test]
 async fn a_wake_due_with_a_window_fires_early_and_the_window_waits_for_its_slot() {
     let fixture = Fixture::new().await;
-    let runtime = runtime(&fixture).await;
+    let central_service = runtime(&fixture).await;
     let start = fixture.clock.utc_now();
     open_notice_window(&fixture, 32400).await;
     assert_eq!(
-        window_due(&runtime).await,
+        window_due(&central_service).await,
         vec![vec![stamp(at(start, 15, 0, 0))]]
     );
     let wake = set_wake(&fixture, 32410, at(start, 15, 0, 0)).await;
     let windows = count(
-        &runtime,
+        &central_service,
         "SELECT COUNT(*) FROM mail_notification_windows",
         vec![],
     )
     .await;
     assert!(windows > 0);
 
-    due_batch_at(&fixture, &runtime, at(start, 14, 40, 0)).await;
+    due_batch_at(&fixture, &central_service, at(start, 14, 40, 0)).await;
 
     assert_eq!(
-        wake_state(&runtime, &wake).await,
+        wake_state(&central_service, &wake).await,
         text("done"),
         "20 s early"
     );
-    assert_eq!(notices(&runtime).await, 0, "the window is not run early");
-    assert_eq!(alarm_ms(&runtime), ms(at(start, 15, 10, 0)));
-    driver_fires_at(&fixture, &runtime, at(start, 15, 10, 0)).await;
     assert_eq!(
-        notices(&runtime).await,
+        notices(&central_service).await,
+        0,
+        "the window is not run early"
+    );
+    assert_eq!(alarm_ms(&central_service), ms(at(start, 15, 10, 0)));
+    driver_fires_at(&fixture, &central_service, at(start, 15, 10, 0)).await;
+    assert_eq!(
+        notices(&central_service).await,
         windows,
         "each window sent its notice"
     );
-    due_batch_at(&fixture, &runtime, at(start, 15, 41, 0)).await;
+    due_batch_at(&fixture, &central_service, at(start, 15, 41, 0)).await;
     assert_eq!(
-        notices(&runtime).await,
+        notices(&central_service).await,
         windows,
         "each notice went out once"
     );
@@ -388,14 +400,21 @@ async fn a_wake_due_with_a_window_fires_early_and_the_window_waits_for_its_slot(
 #[tokio::test]
 async fn another_valid_stamp_refuses_every_event_and_touches_nothing() {
     let fixture = Fixture::new().await;
-    let runtime = runtime(&fixture).await;
+    let central_service = runtime(&fixture).await;
     let start = fixture.clock.utc_now();
     let (due, due_group) = (probe_id(32500), probe_id(32501));
     let (traffic, traffic_group) = (probe_id(32502), probe_id(32503));
-    seed_probe(&runtime, due, due_group, Some(at(start, 5, 0, 0)), "due").await;
-    seed_probe(&runtime, traffic, traffic_group, None, "traffic").await;
-    due_batch_at(&fixture, &runtime, at(start, 1, 0, 0)).await;
-    let previous = alarm_ms(&runtime);
+    seed_probe(
+        &central_service,
+        due,
+        due_group,
+        Some(at(start, 5, 0, 0)),
+        "due",
+    )
+    .await;
+    seed_probe(&central_service, traffic, traffic_group, None, "traffic").await;
+    due_batch_at(&fixture, &central_service, at(start, 1, 0, 0)).await;
+    let previous = alarm_ms(&central_service);
     assert_eq!(previous, ms(at(start, 5, 0, 0)));
     let other: uuid::Uuid = id::<workspace_model::WorkspaceId>(32504)
         .to_string()
@@ -403,7 +422,7 @@ async fn another_valid_stamp_refuses_every_event_and_touches_nothing() {
         .unwrap();
     assert_eq!(other.get_version_num(), 7);
     raw(
-        &runtime,
+        &central_service,
         "UPDATE signin_organization_identity SET id=?",
         vec![text(other)],
     )
@@ -413,11 +432,11 @@ async fn another_valid_stamp_refuses_every_event_and_touches_nothing() {
             column: "signin_organization_identity.id".to_owned(),
         },
     };
-    driver_settled(&fixture, &runtime).await;
+    driver_settled(&fixture, &central_service).await;
     fixture.set_utc(at(start, 5, 0, 0)).await;
 
-    let fan_out = runtime.after_event().await;
-    let request = runtime
+    let fan_out = central_service.after_event().await;
+    let request = central_service
         .request_probe(
             &fixture.caller,
             probe_request(32505, traffic, ProbeEvent::Run),
@@ -433,15 +452,15 @@ async fn another_valid_stamp_refuses_every_event_and_touches_nothing() {
     assert_eq!(request, Err(refused));
     for (item, group) in [(due, due_group), (traffic, traffic_group)] {
         assert_eq!(
-            probe_facts(&runtime, item, group).await,
+            probe_facts(&central_service, item, group).await,
             vec![text("waiting"), integer(0), integer(0)],
             "no instance is touched"
         );
     }
-    assert_eq!(receipts(&runtime, 32505).await, 0);
+    assert_eq!(receipts(&central_service, 32505).await, 0);
     assert_eq!(
         count(
-            &runtime,
+            &central_service,
             "SELECT COUNT(*) FROM engine_work_attempts",
             vec![]
         )
@@ -449,17 +468,22 @@ async fn another_valid_stamp_refuses_every_event_and_touches_nothing() {
         0,
         "no record is written"
     );
-    assert_eq!(alarm_ms(&runtime), previous);
+    assert_eq!(alarm_ms(&central_service), previous);
 
-    raw(&runtime, "DELETE FROM signin_organization_identity", vec![]).await;
-    runtime.after_event().await.unwrap();
+    raw(
+        &central_service,
+        "DELETE FROM signin_organization_identity",
+        vec![],
+    )
+    .await;
+    central_service.after_event().await.unwrap();
     assert_eq!(
-        alarm_ms(&runtime),
+        alarm_ms(&central_service),
         None,
         "unprovisioned: the alarm is cleared"
     );
     assert_eq!(
-        probe_facts(&runtime, due, due_group).await,
+        probe_facts(&central_service, due, due_group).await,
         vec![text("waiting"), integer(0), integer(0)]
     );
     fixture.host.close().await;

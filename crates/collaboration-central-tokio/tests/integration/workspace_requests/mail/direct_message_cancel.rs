@@ -46,7 +46,7 @@ async fn an_unconfirmed_direct_message_passes_its_mark_and_the_sender_is_told() 
     let Result::Done(Answer::Queued { message_id }) = answer else {
         panic!("send refused: {answer:?}")
     };
-    let mark = fleet_mail::message_deadline::cancel_due_at(sent_at, sent_at);
+    let mark = fleet_mail::message_deadline::direct_receipt_mark(sent_at, sent_at);
     let stored = |sql: &'static str| {
         let runtime = &runtime;
         let message_id = message_id.clone();

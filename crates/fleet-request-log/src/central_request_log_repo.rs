@@ -55,7 +55,7 @@ macro_rules! prune_binds {
         $emit!("src/queries/prune_central_requests.sql", $cutoff.to_owned())
     };
 }
-macro_rules! plain {
+macro_rules! bind_organization_log_write {
     ($file:literal, $($arg:expr),+ $(,)?) => {
         query::<T::Database>(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $file)))$(.bind($arg))+
     };
@@ -73,15 +73,19 @@ where
         + for<'row> Decode<'row, T::Database>,
     &'static str: ColumnIndex<<T::Database as Database>::Row>,
 {
-    macro_rules! typed {
+    macro_rules! bind_retained_organization_read {
         ($file:literal, $($arg:expr),+) => {
             query_as::<T::Database, StoredRequestRow>(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $file)))$(.bind($arg))+
         };
     }
-    let row = read_binds!(typed, request, cutoff.to_rfc3339())
-        .fetch_optional(tx.executor())
-        .await
-        .map_err(|_| central_storage::StoreFailure::Unavailable)?;
+    let row = read_binds!(
+        bind_retained_organization_read,
+        request,
+        cutoff.to_rfc3339()
+    )
+    .fetch_optional(tx.executor())
+    .await
+    .map_err(|_| central_storage::StoreFailure::Unavailable)?;
     row.map(|row| {
         Ok(RetainedRequest {
             caller: row.caller.parse().map_err(|_| {
@@ -104,7 +108,7 @@ where
 {
     let timestamp = entry.at.to_rfc3339();
     retain_binds!(
-        plain,
+        bind_organization_log_write,
         entry.request_id,
         entry.caller,
         entry.digest,
@@ -124,7 +128,7 @@ where
     <T::Database as Database>::Arguments: IntoArguments<T::Database>,
     String: Type<T::Database> + for<'value> Encode<'value, T::Database>,
 {
-    prune_binds!(plain, cutoff.to_rfc3339())
+    prune_binds!(bind_organization_log_write, cutoff.to_rfc3339())
         .execute(tx.executor())
         .await
         .map(T::rows_affected)

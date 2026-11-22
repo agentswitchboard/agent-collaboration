@@ -55,7 +55,7 @@ async fn direct_send_admits_an_enrolled_machine_without_a_session_actor() {
 
     let wake = Operation::SetWake {
         target: unregistered.clone(),
-        due_at: fleet_mail::message_deadline::cancel_due_at(
+        due_at: fleet_mail::message_deadline::direct_receipt_mark(
             router_clock::RuntimeClock::utc_now(fixture.clock.as_ref()),
             router_clock::RuntimeClock::utc_now(fixture.clock.as_ref()),
         ),

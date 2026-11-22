@@ -44,7 +44,11 @@ pub(crate) enum DirectLifecycle {
 }
 
 impl DirectLifecycle {
-    pub(crate) fn status(self, cutoff: Timestamp, now: Timestamp) -> mail::MessageStatus {
+    pub(crate) fn project_message_status(
+        self,
+        cutoff: Timestamp,
+        now: Timestamp,
+    ) -> mail::MessageStatus {
         use mail::MessageStatus;
         let delivered = |observation: SavedDelivery, deadline_passed| MessageStatus::Delivered {
             arrived_at: observation.arrived_at,

@@ -9,7 +9,7 @@ use crate::{
     direct_store_port::{AdmittedDirectSend, AdmittedReceipt, ApplyReceipt, DirectSendResult},
     direct_store_reads::{StoredDirectState, read_stored_direct_message},
     mail_write_failure::require_one_affected_row,
-    message_deadline::{cancel_due_at, delivery_window_ends_at, system_message_deadline},
+    message_deadline::{delivery_window_ends_at, direct_receipt_mark, system_message_deadline},
     system_receipt_settlement::{SystemReceiptKind, settle_system_receipt},
 };
 use central_engine_model::{Context, Machine, TransitionError};
@@ -95,12 +95,12 @@ macro_rules! insert_outcome {
         )
     };
 }
-macro_rules! execute {
+macro_rules! bind_direct_mail_write {
     ($file:literal, $($arg:expr),+ $(,)?) => {
         query::<T::Database>(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $file)))$(.bind($arg))+
     };
 }
-macro_rules! select {
+macro_rules! bind_receipt_projection {
     ($file:literal, $($arg:expr),+ $(,)?) => {
         query_as::<T::Database, _>(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $file)))$(.bind($arg))+
     };
@@ -137,9 +137,9 @@ where
             updated_at: command.accepted_at,
         };
         let result = insert_send!(
-            execute,
+            bind_direct_mail_write,
             message,
-            cancel_due_at(command.sent_at, command.accepted_at),
+            direct_receipt_mark(command.sent_at, command.accepted_at),
             command.request.request_id,
             delivery_window_ends_at(command.sent_at, command.accepted_at)
         )
@@ -237,9 +237,10 @@ where
 {
     let authority = command.authority;
     let target = authority.machine_id();
-    let enrollment: Option<StoredReceiptEnrollment> = enrollment_query!(select, authority)
-        .fetch_optional(tx.executor())
-        .await?;
+    let enrollment: Option<StoredReceiptEnrollment> =
+        enrollment_query!(bind_receipt_projection, authority)
+            .fetch_optional(tx.executor())
+            .await?;
     // Sample after the owner has lent its write transaction and re-read enrollment.
     let applying_time = Timestamp::from_timestamp_millis(command.clock.now().unix_millis())
         .ok_or_else(|| corrupt("clock"))?;
@@ -250,7 +251,7 @@ where
             ApplyReceipt::AuthorityLapsed,
         ));
     }
-    let row: Option<StoredReceiptRoute> = route_query!(select, command.message_id)
+    let row: Option<StoredReceiptRoute> = route_query!(bind_receipt_projection, command.message_id)
         .fetch_optional(tx.executor())
         .await?;
     let Some(row) = row else {
@@ -267,9 +268,10 @@ where
             ApplyReceipt::Stop(ReceiptResult::NoSuchMessage),
         ));
     }
-    let kind: Option<StoredReceiptKind> = owned_kind_query!(select, command.message_id, target)
-        .fetch_optional(tx.executor())
-        .await?;
+    let kind: Option<StoredReceiptKind> =
+        owned_kind_query!(bind_receipt_projection, command.message_id, target)
+            .fetch_optional(tx.executor())
+            .await?;
     let Some(kind) = kind else {
         return Ok(DirectWriteOutcome::without_alarm_recompute(
             ApplyReceipt::Stop(ReceiptResult::NoSuchMessage),
@@ -370,7 +372,7 @@ where
     for<'r> &'r str: ColumnIndex<<T::Database as Database>::Row>,
 {
     let row = stored
-        .decode()
+        .decode_direct_message()
         .map_err(DirectApplyFailure::CorruptObserved)?;
     if recipient.is_some_and(|recipient| recipient != &row.recipient) {
         return Ok(AppliedTransition::Missing);
@@ -415,7 +417,7 @@ where
         ) => return Err(corrupt("mail_messages.transition").into()),
     };
     let encoding = DirectStateUpdate::new(next.lifecycle)?;
-    let result = lifecycle_update!(execute, encoding, &state, now)
+    let result = lifecycle_update!(bind_direct_mail_write, encoding, &state, now)
         .execute(tx.executor())
         .await?;
     require_one_affected_row::<T>(result)?;
@@ -423,13 +425,13 @@ where
     for DirectMessageEffect::TellSender(message) in effects {
         let cutoff = system_message_deadline(message.created_at)
             .ok_or_else(|| corrupt("mail_messages.delivery_window_ends_at"))?;
-        let result = insert_outcome!(execute, message, cutoff)
+        let result = insert_outcome!(bind_direct_mail_write, message, cutoff)
             .execute(tx.executor())
             .await?;
         require_one_affected_row::<T>(result)?;
         ready = Some((&message).into());
     }
-    clear_attempt!(execute, state.subject.id)
+    clear_attempt!(bind_direct_mail_write, state.subject.id)
         .execute(tx.executor())
         .await?;
     Ok(AppliedTransition::Changed(ready))

@@ -78,7 +78,7 @@ struct Oracle {
 }
 
 impl Oracle {
-    fn status(&self, now: Timestamp) -> MessageStatus {
+    fn expected_message_status(&self, now: Timestamp) -> MessageStatus {
         match self.first_final {
             Some((1, completed_at)) => MessageStatus::Seen { completed_at },
             Some((2, _)) => MessageStatus::NotSeen {
@@ -187,8 +187,10 @@ fn every_generated_receipt_and_mark_matches_the_independent_oracle(case: hegel::
         }
         for now in [time(0), time(15), time(40)] {
             assert_eq!(
-                state.lifecycle.status(initial.subject.cutoff, now),
-                oracle.status(now)
+                state
+                    .lifecycle
+                    .project_message_status(initial.subject.cutoff, now),
+                oracle.expected_message_status(now)
             );
         }
         assert_eq!(state.is_terminal(), oracle.first_final.is_some());

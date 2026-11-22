@@ -74,7 +74,7 @@ async fn revoke_between_receipts(fixture: &Fixture) -> Result<()> {
         messages.push(message_id);
     }
     let organization = signed::ORGANIZATION.to_owned().try_into()?;
-    let runtime = fixture.host.central(&organization).await?;
+    let central = fixture.host.central(&organization).await?;
     let private = reqwest::Client::builder()
         .no_proxy()
         .unix_socket(fixture.signin_socket.clone())
@@ -86,7 +86,7 @@ async fn revoke_between_receipts(fixture: &Fixture) -> Result<()> {
         now: signed::NOW_SECONDS,
     };
     let owner = revocation.prepare().await?;
-    let mut held = runtime.runtime().pause_points().hold_engine(
+    let mut held = central.runtime().pause_points().hold_engine(
         fleet_runtime::PausePoint::AfterEngineCommit,
         messages
             .first()
@@ -148,7 +148,7 @@ async fn revoke_between_receipts(fixture: &Fixture) -> Result<()> {
             }
         }
     }
-    let rows = runtime.runtime().statement_host().read(central_storage::Statement {
+    let rows = central.runtime().statement_host().read(central_storage::Statement {
         sql: "SELECT state, failure_reason FROM mail_messages WHERE message_id IN (?,?) ORDER BY message_id",
         args: messages.iter().map(|id| central_storage::SqlValue::Text(id.to_string())).collect(),
     }).await?;
@@ -207,8 +207,8 @@ async fn replay_after_lost_answer(fixture: &Fixture) -> Result<()> {
         return Err("the lost-answer proof requires two messages".into());
     };
     let organization = signed::ORGANIZATION.to_owned().try_into()?;
-    let runtime = fixture.host.central(&organization).await?;
-    let mut hold = runtime
+    let central = fixture.host.central(&organization).await?;
+    let mut hold = central
         .runtime()
         .pause_points()
         .hold_engine(fleet_runtime::PausePoint::AfterEngineCommit, first.as_str());
@@ -241,14 +241,14 @@ async fn replay_after_lost_answer(fixture: &Fixture) -> Result<()> {
         ]])
     };
     let evidence = async {
-        if runtime
+        if central
             .runtime()
             .statement_host()
             .read(facts(first))
             .await?
             .rows
             != expected("refused", 1)?
-            || runtime
+            || central
                 .runtime()
                 .statement_host()
                 .read(facts(second))
@@ -292,7 +292,7 @@ async fn replay_after_lost_answer(fixture: &Fixture) -> Result<()> {
         return Err(format!("receipt answers changed by position: {answers:?}").into());
     }
     for message in [first, second] {
-        if runtime
+        if central
             .runtime()
             .statement_host()
             .read(facts(message))

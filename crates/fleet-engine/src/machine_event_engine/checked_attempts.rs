@@ -28,7 +28,9 @@ struct StoredCheckedAttempt {
     updated_at: String,
 }
 impl StoredCheckedAttempt {
-    fn decode(self) -> Result<Result<FailureRecord, ItemFailureClass>, StoreFailure> {
+    fn decode_checked_attempt(
+        self,
+    ) -> Result<Result<FailureRecord, ItemFailureClass>, StoreFailure> {
         let text = |value: Option<String>| value.map_or(SqlValue::Null, SqlValue::Text);
         let fields = [
             ("attempt_id", text(self.attempt_id)),
@@ -192,19 +194,19 @@ where
     i64: Type<T::Database> + for<'row> Decode<'row, T::Database>,
     for<'row> &'row str: ColumnIndex<<T::Database as Database>::Row>,
 {
-    macro_rules! typed {
+    macro_rules! bind_checked_attempt_read {
         ($file:literal, $($arg:expr),+ $(,)?) => {
             sqlx::query_as::<T::Database, StoredCheckedAttempt>(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $file)))$(.bind($arg))+
         };
     }
-    let row = attempt_read!(typed, subject)
+    let row = attempt_read!(bind_checked_attempt_read, subject)
         .fetch_optional(transaction.executor())
         .await
         .map_err(|_| StoreFailure::Unavailable)?;
     let Some(row) = row else {
         return Ok(CheckedAttempt::Ready(None));
     };
-    Ok(match row.decode()? {
+    Ok(match row.decode_checked_attempt()? {
         Ok(record) => match record.state {
             AttemptState::Retired { .. } => CheckedAttempt::Deferred,
             AttemptState::Failing { next_try_at } if next_try_at > now => CheckedAttempt::Deferred,
@@ -249,15 +251,22 @@ where
             ("retired", None, Some(format_utc_millis(retired_at)))
         }
     };
-    macro_rules! write {
+    macro_rules! bind_checked_attempt_write {
         ($file:literal, $($arg:expr),+ $(,)?) => {
             sqlx::query::<T::Database>(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $file)))$(.bind($arg))+
         };
     }
-    let result = attempt_write!(write, subject, record, state, next, retired)
-        .execute(transaction.executor())
-        .await
-        .map_err(|_| StoreFailure::Unavailable)?;
+    let result = attempt_write!(
+        bind_checked_attempt_write,
+        subject,
+        record,
+        state,
+        next,
+        retired
+    )
+    .execute(transaction.executor())
+    .await
+    .map_err(|_| StoreFailure::Unavailable)?;
     if T::rows_affected(result) != 1 {
         return Err(corrupt("engine_work_attempts.failure_update"));
     }

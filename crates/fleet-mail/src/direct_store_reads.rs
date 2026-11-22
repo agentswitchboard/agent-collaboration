@@ -105,7 +105,9 @@ struct StoredOffer {
 }
 
 impl StoredOffer {
-    fn decode(self) -> Result<fleet_contracts::mail_link::WindowedDelivery, DirectReadFailure> {
+    fn decode_offered_message(
+        self,
+    ) -> Result<fleet_contracts::mail_link::WindowedDelivery, DirectReadFailure> {
         use workspace_model::central_mail::{
             MessageBody, MessageRecord, MessageState, NoticeSource,
         };
@@ -244,7 +246,7 @@ macro_rules! state_query {
         $emit!("src/queries/read_direct_state.sql", $message.to_string())
     };
 }
-macro_rules! runtime_query {
+macro_rules! bind_direct_message_read {
     ($file:literal, $($arg:expr),+ $(,)?) => {
         query_as::<T::Database, _>(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $file)))$(.bind($arg))+
     };
@@ -264,15 +266,18 @@ where
 {
     let sender = serde_json::to_string(&MessageSender::Actor(status.sender))
         .map_err(|_| DirectReadFailure::from_store(corrupt("mail_messages.sender")))?;
-    let row: Option<StoredDirectState> = status_query!(runtime_query, status.message_id, sender)
-        .fetch_optional(tx.executor())
-        .await
-        .map_err(classify_direct_read_failure)?;
+    let row: Option<StoredDirectState> =
+        status_query!(bind_direct_message_read, status.message_id, sender)
+            .fetch_optional(tx.executor())
+            .await
+            .map_err(classify_direct_read_failure)?;
     let Some(row) = row else {
         return Ok(MessageStatus::NotFound {});
     };
-    let row = row.decode().map_err(DirectReadFailure::from_store)?;
-    Ok(row.lifecycle.status(row.cutoff, status.now))
+    let row = row
+        .decode_direct_message()
+        .map_err(DirectReadFailure::from_store)?;
+    Ok(row.lifecycle.project_message_status(row.cutoff, status.now))
 }
 
 pub async fn read_offer<T: CentralTransaction>(
@@ -287,14 +292,14 @@ where
     Option<String>: Type<T::Database> + for<'row> Decode<'row, T::Database>,
     for<'row> &'row str: ColumnIndex<<T::Database as Database>::Row>,
 {
-    let row: Option<StoredOffer> = offer_query!(runtime_query, lookup)
+    let row: Option<StoredOffer> = offer_query!(bind_direct_message_read, lookup)
         .fetch_optional(tx.executor())
         .await
         .map_err(classify_direct_read_failure)?;
     let Some(row) = row else {
         return Ok(None);
     };
-    let offer = row.decode()?;
+    let offer = row.decode_offered_message()?;
     let sender = crate::direct_store_sender::resolve_offer_sender(tx, &offer.message).await?;
     Ok(Some(DirectOffer {
         message: offer.message,
@@ -320,11 +325,13 @@ where
 {
     let limit = i64::try_from(fleet_contracts::mail_link::WELCOME_PAGE_SIZE)
         .map_err(|_| DirectReadFailure::from_store(corrupt("mail page size")))?;
-    let rows: Vec<StoredOffer> = offer_page_query!(runtime_query, lookup, limit)
+    let rows: Vec<StoredOffer> = offer_page_query!(bind_direct_message_read, lookup, limit)
         .fetch_all(tx.executor())
         .await
         .map_err(classify_direct_read_failure)?;
-    rows.into_iter().map(StoredOffer::decode).collect()
+    rows.into_iter()
+        .map(StoredOffer::decode_offered_message)
+        .collect()
 }
 
 pub(crate) async fn read_stored_direct_message<T: CentralTransaction>(
@@ -339,7 +346,7 @@ where
     Option<String>: Type<T::Database> + for<'row> Decode<'row, T::Database>,
     for<'row> &'row str: ColumnIndex<<T::Database as Database>::Row>,
 {
-    state_query!(runtime_query, message)
+    state_query!(bind_direct_message_read, message)
         .fetch_optional(tx.executor())
         .await
         .map_err(classify_direct_read_failure)

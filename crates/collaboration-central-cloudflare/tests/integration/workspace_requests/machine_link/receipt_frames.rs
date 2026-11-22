@@ -82,7 +82,7 @@ async fn revoke_between_receipts(fixture: &Fixture) -> Result<()> {
         }
         messages.push(message_id.clone());
     }
-    let runtime = fixture.runtime();
+    let central = fixture.runtime();
     let origin = fixture.host.signin_origin();
     let revocation = signed::RevocationJourney {
         client: &fixture.client,
@@ -91,7 +91,7 @@ async fn revoke_between_receipts(fixture: &Fixture) -> Result<()> {
         now: signed::NOW_SECONDS,
     };
     let owner = revocation.prepare().await?;
-    let hold = runtime
+    let hold = central
         .hold_engine(
             "afterEngineCommit",
             messages
@@ -120,7 +120,7 @@ async fn revoke_between_receipts(fixture: &Fixture) -> Result<()> {
         },
     )
     .await?;
-    runtime.until_held_engine(hold).await;
+    central.until_held_engine(hold).await;
     let revoked = revocation
         .expect(
             &owner,
@@ -128,7 +128,7 @@ async fn revoke_between_receipts(fixture: &Fixture) -> Result<()> {
             serde_json::json!({"result":"revoked"}),
         )
         .await;
-    runtime.release_engine(hold).await;
+    central.release_engine(hold).await;
     revoked?;
     loop {
         let next = link.socket.next().await;
@@ -156,7 +156,7 @@ async fn revoke_between_receipts(fixture: &Fixture) -> Result<()> {
         }
     }
     fixture.host.c2_evict(&fixture.organization).await?;
-    let rows = runtime.read(Statement {
+    let rows = central.read(Statement {
         sql: "SELECT state, failure_reason FROM mail_messages WHERE message_id IN (?,?) ORDER BY message_id",
         args: messages.iter().map(|id| SqlValue::Text(id.to_string())).collect(),
     }).await?;
@@ -222,8 +222,8 @@ async fn replay_after_lost_answer(fixture: &Fixture) -> Result<()> {
     let [first, second] = messages.as_slice() else {
         return Err("the lost-answer proof requires two messages".into());
     };
-    let runtime = fixture.runtime();
-    let hold = runtime
+    let central = fixture.runtime();
+    let hold = central
         .hold_engine("afterEngineCommit", first.as_str())
         .await;
     let correlation: CorrelationId = "019f0000-0000-7000-8000-00000000ce99".parse()?;
@@ -243,7 +243,7 @@ async fn replay_after_lost_answer(fixture: &Fixture) -> Result<()> {
         )?,
     };
     fixture::send(&mut socket.socket, &frame).await?;
-    runtime.until_held_engine(hold).await;
+    central.until_held_engine(hold).await;
     let facts = |message: &workspace_ids::MessageId| central_storage::Statement {
         sql: "SELECT state,(SELECT COUNT(*) FROM mail_messages WHERE message_kind='deliveryOutcome' AND json_extract(body,'$.messageId')=m.message_id) FROM mail_messages m WHERE m.message_id=?",
         args: vec![Cell::Text(message.to_string())],
@@ -255,8 +255,8 @@ async fn replay_after_lost_answer(fixture: &Fixture) -> Result<()> {
         ]])
     };
     let evidence = async {
-        if runtime.read(facts(first)).await?.rows != expected("refused", 1)?
-            || runtime.read(facts(second)).await?.rows != expected("queued", 0)?
+        if central.read(facts(first)).await?.rows != expected("refused", 1)?
+            || central.read(facts(second)).await?.rows != expected("queued", 0)?
         {
             return Err("the first receipt must commit before the second receipt begins".into());
         }
@@ -264,7 +264,7 @@ async fn replay_after_lost_answer(fixture: &Fixture) -> Result<()> {
     }
     .await;
     drop(socket);
-    runtime.release_engine(hold).await;
+    central.release_engine(hold).await;
     evidence?;
 
     let mut reopened = ConnectedLink::open(fixture).await?;
@@ -291,7 +291,7 @@ async fn replay_after_lost_answer(fixture: &Fixture) -> Result<()> {
         return Err(format!("receipt answers changed by position: {answers:?}").into());
     }
     for message in [first, second] {
-        if runtime.read(facts(message)).await?.rows != expected("refused", 1)? {
+        if central.read(facts(message)).await?.rows != expected("refused", 1)? {
             return Err("replay must settle both receipts with one outcome each".into());
         }
     }

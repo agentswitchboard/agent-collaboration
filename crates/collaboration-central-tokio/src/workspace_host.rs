@@ -235,7 +235,7 @@ impl TokioWorkspaceHost {
                 fleet_runtime::engine_alarm_decider(due_batches.clone()),
             ),
         );
-        let runtime = WorkspaceRuntime::new(
+        let central = WorkspaceRuntime::new(
             FleetRuntime::open(
                 organization.clone(),
                 storage.clone(),
@@ -247,24 +247,24 @@ impl TokioWorkspaceHost {
             ),
             storage,
         );
-        let runtime = match &self.sign_in {
+        let central = match &self.sign_in {
             Some(trust) => match trust.for_organization(organization.clone(), clock) {
-                Ok(check) => runtime.with_sign_in_verification(check),
+                Ok(check) => central.with_sign_in_verification(check),
                 // The default checker explicitly refuses every offered statement with
                 // InvalidConfiguration, at the core observation boundary.
                 Err(fleet_contracts::FleetOrganizationStatementRefusal::InvalidConfiguration) => {
-                    runtime
+                    central
                 }
                 Err(_) => return Err(StoreFailure::Unavailable),
             },
-            None => runtime,
+            None => central,
         };
         let registry = self.push_registry.clone();
         let organization_key = organization.clone();
         let revocation_registry = self.push_registry.clone();
         let revocation_org = organization.clone();
-        let runtime = Arc::new(
-            runtime
+        let central = Arc::new(
+            central
                 .with_mail_delivery_observer(Arc::new(move |delivery| {
                     registry.offer(&organization_key, &delivery.machine_id, delivery.message_id);
                 }))
@@ -272,13 +272,13 @@ impl TokioWorkspaceHost {
                     revocation_registry.disconnect(&revocation_org, &machine_id);
                 })),
         );
-        runtime.recompute_alarm().await?;
+        central.recompute_alarm().await?;
         self.alarms.lock().await.push(WorkspaceAlarmOwner::start(
-            runtime.clone(),
+            central.clone(),
             self.clock.clone(),
         ));
-        orgs.insert(organization.clone(), runtime.clone());
-        Ok(runtime)
+        orgs.insert(organization.clone(), central.clone());
+        Ok(central)
     }
     pub fn current_time(&self) -> runtime_primitives::SyncTime {
         self.clock.now()

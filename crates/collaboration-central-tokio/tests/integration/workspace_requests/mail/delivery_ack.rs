@@ -64,7 +64,7 @@ async fn a_late_seen_receipt_changes_only_the_record_and_other_machines_cannot_s
         MailReceiptSettlement::Stop(ReceiptResult::NoSuchMessage)
     );
 
-    let cancel_at = fleet_mail::message_deadline::cancel_due_at(sent_at, sent_at);
+    let cancel_at = fleet_mail::message_deadline::direct_receipt_mark(sent_at, sent_at);
     fixture.set_utc(cancel_at).await;
     runtime.after_event().await.unwrap();
     let recipient = fixture

@@ -53,12 +53,12 @@ where
         .now
         .checked_add_signed(central_engine_model::DueBatchPolicy::DEFAULT.look_ahead)
         .ok_or_else(|| CheckedDueFailure::from_store(corrupt("mail_messages.cancel_due_at")))?;
-    macro_rules! select {
+    macro_rules! bind_due_mark_guard {
         ($file:literal, $($arg:expr),+) => {
             query_as::<T::Database, StoredMarkGuard>(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $file)))$(.bind($arg))+
         };
     }
-    let due = mark_guard!(select, mark.message_id)
+    let due = mark_guard!(bind_due_mark_guard, mark.message_id)
         .fetch_optional(transaction.executor())
         .await
         .map_err(|_| CheckedDueFailure::Unavailable)?;

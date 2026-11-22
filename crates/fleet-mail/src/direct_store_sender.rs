@@ -36,7 +36,7 @@ macro_rules! label_query {
         )
     };
 }
-macro_rules! execute {
+macro_rules! bind_sender_lookup {
     ($file:literal, $argument:expr) => {
         sqlx::query_as::<T::Database, _>(include_str!(concat!(
             env!("CARGO_MANIFEST_DIR"),
@@ -56,7 +56,7 @@ where
     String: Type<T::Database> + for<'q> Encode<'q, T::Database> + for<'r> Decode<'r, T::Database>,
     for<'r> &'r str: ColumnIndex<<T::Database as Database>::Row>,
 {
-    let row: Option<StoredSender> = actor_query!(execute, actor)
+    let row: Option<StoredSender> = actor_query!(bind_sender_lookup, actor)
         .fetch_optional(tx.executor())
         .await
         .map_err(|_| StoreFailure::Unavailable)?;
@@ -88,7 +88,7 @@ where
     };
     match identity {
         Some(Identity::AgentSession { session }) => {
-            let row: Option<StoredLabel> = label_query!(execute, session.machine_id)
+            let row: Option<StoredLabel> = label_query!(bind_sender_lookup, session.machine_id)
                 .fetch_optional(tx.executor())
                 .await
                 .map_err(|_| DirectReadFailure::Unavailable)?;
