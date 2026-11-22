@@ -162,7 +162,10 @@ pub(crate) fn requires_fresh_factor(raise: &Raise, answer: &Answer) -> bool {
             .as_slice()
             .iter()
             .any(|option| &option.id == option_id && option.needs_person_with_fresh_factor()),
-        _ => false,
+        (Raise::ProviderApproval { .. }, Answer::Question { .. })
+        | (Raise::ProviderQuestion { .. }, Answer::Approval { .. } | Answer::Question { .. }) => {
+            false
+        }
     }
 }
 
