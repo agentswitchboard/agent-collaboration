@@ -116,7 +116,7 @@ fn fleet_signed_bindings() -> [(&'static str, Vec<WireSpecimen>, WireSpecimen); 
             stamp_header.clone(),
             stamp_header,
             invalid_stamp_header,
-            Serialize,
+            Deserialize,
         ),
         stamp_binding,
         checked_binding::<MachineAccessTokenHeader>(
@@ -124,7 +124,7 @@ fn fleet_signed_bindings() -> [(&'static str, Vec<WireSpecimen>, WireSpecimen); 
             machine_header.clone(),
             machine_header,
             invalid_machine_header,
-            Serialize,
+            Deserialize,
         ),
         checked_binding::<MachineAccessTokenClaims>(
             "MachineAccessTokenClaims",
@@ -235,7 +235,29 @@ pub(super) fn invalid_specimens() -> Vec<(&'static str, WireSpecimen)> {
             .into_iter()
             .map(|(name, _, invalid)| (name, invalid)),
     )
+    .chain(allowance_record_negatives())
     .collect()
+}
+
+fn allowance_record_negatives() -> impl Iterator<Item = (&'static str, WireSpecimen)> {
+    let negatives: Vec<Value> =
+        read_contract_json(&contract_directory().join("OrganizationAdminResult.negatives.json"));
+    negatives
+        .into_iter()
+        .filter(|reply| reply["records"][0]["kind"] == "machineAllowanceChanged")
+        .enumerate()
+        .flat_map(|(index, reply)| {
+            [Serialize, Deserialize].map(move |phase| {
+                (
+                    "OrganizationChangeRecord",
+                    wire_specimen(
+                        format!("invalid machine allowance record {}", index + 1),
+                        phase,
+                        reply["records"][0].clone(),
+                    ),
+                )
+            })
+        })
 }
 
 fn check_integer<Contract: DeserializeOwned + serde::Serialize>(base: &Value, field: &str) {
