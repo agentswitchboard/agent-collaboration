@@ -1,0 +1,52 @@
+use crate::approval_wire_codec::approval_wire_record;
+use crate::approval_wire_codec::approval_wire_union;
+
+use crate::approval_values::{OfferedOptionId, QuestionFieldId, QuestionNumber};
+
+approval_wire_union! {
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub enum Answer {
+    Approval { option_id: OfferedOptionId },
+    Question { answer: QuestionAnswer },
+}
+}
+
+approval_wire_union! {
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub enum QuestionAnswer {
+    Answered { fields: Vec<QuestionFieldAnswer> },
+    Declined {},
+}
+}
+
+approval_wire_record! {
+[deny_unknown_fields]
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub struct QuestionFieldAnswer {
+    pub field_id: QuestionFieldId,
+    pub value: QuestionAnswerValue,
+}
+}
+
+approval_wire_union! {
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
+pub enum QuestionAnswerValue {
+    SelectedOptions { selected_option_ids: Vec<OfferedOptionId> },
+    Text { value: String },
+    Number { value: QuestionNumber },
+    Boolean { value: bool },
+}
+}
