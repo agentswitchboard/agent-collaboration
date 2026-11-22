@@ -3,6 +3,7 @@ mod automation_occurrences;
 mod automations;
 mod cold_alarm;
 mod corruption;
+mod direct_mark_guard;
 mod direct_message_cancel;
 mod direct_receipt_sequences;
 mod engine_publication;
