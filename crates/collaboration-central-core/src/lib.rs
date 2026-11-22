@@ -27,7 +27,9 @@ mod machine_login_rows;
 #[cfg(feature = "test-support")]
 mod machine_login_test_control;
 mod machine_login_writes;
-pub use machine_connection_admission::{MachineLinkRequestAuthority, MachineTokenRenewalRefusal};
+pub use machine_connection_admission::{
+    MachineLinkRequestAuthority, MachineTokenRenewalRefusal, RenewedMachineConnection,
+};
 mod workspace_caller;
 pub use workspace_caller::WorkspaceCaller;
 mod workspace_runtime;

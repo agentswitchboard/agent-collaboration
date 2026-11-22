@@ -150,7 +150,7 @@ fn approving_again_preserves_the_machine_key_generation_active_state_and_existin
 }
 
 #[test]
-fn n03_returns_the_first_three_field_snapshot_after_mutable_inputs_and_state_change() {
+fn approval_replays_original_workspace_order_and_duplicates_across_enrollment_states() {
     for state in [
         StoredEnrollmentState::Approved,
         StoredEnrollmentState::Lapsed,
@@ -164,10 +164,8 @@ fn n03_returns_the_first_three_field_snapshot_after_mutable_inputs_and_state_cha
         },
     ] {
         let mut request = approval();
-        request.label = label("different");
-        request.allowed_workspaces = vec![workspace(99)].try_into().unwrap();
-        request.approver_second_factor_at = None;
-        request.code_expires_at = UnixSeconds(NOW_S - 1);
+        request.allowed_workspaces = vec![workspace(51), workspace(50)].try_into().unwrap();
+        request.approver_second_factor_at = Some(UnixSeconds(NOW_S + 1));
         let ended_at_ms = if matches!(
             state,
             StoredEnrollmentState::Approved | StoredEnrollmentState::Enrolled { .. }
@@ -178,6 +176,9 @@ fn n03_returns_the_first_three_field_snapshot_after_mutable_inputs_and_state_cha
         };
         let earlier = StoredEnrollment {
             request_id: request.request_id.clone(),
+            allowed_workspaces: vec![workspace(50), workspace(51), workspace(50)]
+                .try_into()
+                .unwrap(),
             ended_at_ms,
             state,
             ..approved(40, 0)
@@ -201,7 +202,48 @@ fn n03_returns_the_first_three_field_snapshot_after_mutable_inputs_and_state_cha
 }
 
 #[test]
-fn sd8_org_and_peer_checks_precede_even_an_existing_approval() {
+fn retained_approval_rejects_each_changed_bound_value_without_minting_or_writing() {
+    let original = approval();
+    let mut facts = empty_facts();
+    facts.prior_approval = Some(StoredEnrollment {
+        request_id: original.request_id.clone(),
+        ..approved(40, 0)
+    });
+    let changed_requests = [
+        DecideDeviceLogin {
+            label: label("changed"),
+            ..original.clone()
+        },
+        DecideDeviceLogin {
+            approver: id(99).try_into().unwrap(),
+            ..original.clone()
+        },
+        DecideDeviceLogin {
+            code_expires_at: UnixSeconds(NOW_S + 601),
+            ..original.clone()
+        },
+        DecideDeviceLogin {
+            allowed_workspaces: vec![workspace(50)].try_into().unwrap(),
+            ..original
+        },
+    ];
+    let ids = CountingIds::new();
+
+    for changed_request in changed_requests {
+        let decision =
+            decide_device_login(&changed_request, &facts, NOW_MS, time(NOW_MS), &ids).unwrap();
+        assert_eq!(
+            decision,
+            Decided::unchanged(DeviceLoginDecision::Refused {
+                reason: DeviceLoginRefusal::RequestConflict {},
+            })
+        );
+    }
+    assert_eq!(ids.minted(), 0);
+}
+
+#[test]
+fn an_existing_approval_outlives_sd8_but_does_not_cross_organization_scope() {
     let mut facts = empty_facts();
     facts.prior_approval = Some(StoredEnrollment {
         request_id: approval().request_id,
@@ -219,14 +261,21 @@ fn sd8_org_and_peer_checks_precede_even_an_existing_approval() {
     let mut wrong_peer = serde_json::to_value(approval()).unwrap();
     wrong_peer["peer"] = serde_json::json!(id(99));
     assert!(serde_json::from_value::<DecideDeviceLogin>(wrong_peer).is_err());
-    for (request, received) in [(approval(), NOW_MS - SD8_MILLIS - 1), (wrong_org, NOW_MS)] {
-        assert_eq!(
-            decide_device_login(&request, &facts, received, time(NOW_MS), &ids).unwrap(),
-            Decided::unchanged(DeviceLoginDecision::Refused {
-                reason: DeviceLoginRefusal::NotPermitted {}
-            })
-        );
-    }
+    let after_sd8 = decide_device_login(
+        &approval(),
+        &facts,
+        NOW_MS - SD8_MILLIS - 1,
+        time(NOW_MS),
+        &ids,
+    )
+    .unwrap();
+    assert_eq!(within, after_sd8);
+    assert_eq!(
+        decide_device_login(&wrong_org, &facts, NOW_MS, time(NOW_MS), &ids).unwrap(),
+        Decided::unchanged(DeviceLoginDecision::Refused {
+            reason: DeviceLoginRefusal::NotPermitted {},
+        })
+    );
     assert_eq!(ids.minted(), 0);
 }
 

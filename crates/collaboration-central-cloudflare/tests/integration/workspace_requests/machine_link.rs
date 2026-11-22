@@ -33,6 +33,38 @@ const WORKSPACE_NAME: &str = "Real hibernation workspace";
 const AREA_NAME: &str = "Area created after actual hibernation";
 
 #[tokio::test]
+async fn signed_machine_bearer_with_retired_installation_id_is_refused() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    ConnectedLink::open(&fixture).await?.close().await?;
+
+    let signed_bearer = signed::resign_machine_token(
+        &fixture.token,
+        &[(
+            "principal",
+            serde_json::json!({
+                "kind": "machine",
+                "machine_id": MACHINE_ID,
+                "enrollment_id": fixture.enrollment,
+                "installation_id": MACHINE_ID,
+            }),
+        )],
+    )?;
+    let status = fixture
+        .client
+        .get(fixture.link_url(ORGANIZATION))
+        .bearer_auth(signed_bearer)
+        .upgrade()
+        .send()
+        .await?
+        .status();
+    fixture.close().await?;
+    if status != reqwest::StatusCode::UNAUTHORIZED {
+        return Err(format!("retired installation_id must return HTTP 401, got {status}").into());
+    }
+    Ok(())
+}
+
+#[tokio::test]
 async fn worker_keeps_the_link_open_after_an_unknown_ack() -> Result<()> {
     let fixture = Fixture::new().await?;
     let result = async {
@@ -237,7 +269,9 @@ async fn baseline(
         DataFrame::Welcome {
             machine_id,
             central_time,
+            effective_expires_at,
         } if machine_id.as_str() == MACHINE_ID
+            && effective_expires_at.timestamp() == signed::NOW_SECONDS + 600
             && central_time.timestamp_millis() == fixture.clock.now().unix_millis() => {}
         _ => return Err("Welcome must expose the machine_id and one injected clock".into()),
     }

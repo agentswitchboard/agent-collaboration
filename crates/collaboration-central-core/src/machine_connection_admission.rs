@@ -136,7 +136,11 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         let renewed = attachment_from_verified(&verified);
         Ok(
             match validate_live(&renewed, self.execution.organization(), &facts, time.now_ms)? {
-                Ok(connection) => Ok(connection),
+                Ok(connection) => Ok(RenewedMachineConnection {
+                    connection,
+                    central_time: chrono::DateTime::from_timestamp_millis(time.now_ms)
+                        .ok_or(StoreFailure::Unavailable)?,
+                }),
                 Err(MachineConnectionRefusal::WrongClient {}) => Err(Refusal::DifferentEnrollment),
                 Err(
                     MachineConnectionRefusal::UnknownMachine {}
@@ -255,7 +259,13 @@ pub enum MachineTokenRenewalRefusal {
     DifferentEnrollment,
 }
 
-type Renewal = Result<Result<ValidatedMachineConnection, MachineTokenRenewalRefusal>, StoreFailure>;
+/// The renewed authority and the Central clock sample used to admit it.
+pub struct RenewedMachineConnection {
+    pub connection: ValidatedMachineConnection,
+    pub central_time: workspace_model::Timestamp,
+}
+
+type Renewal = Result<Result<RenewedMachineConnection, MachineTokenRenewalRefusal>, StoreFailure>;
 
 impl<Host: CentralStore, Stores: WorkspaceStores> LiveMachineConnection
     for WorkspaceRuntime<Host, Stores>

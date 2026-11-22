@@ -62,6 +62,11 @@ impl CentralObject {
         else {
             return Response::error("clock unavailable", 503);
         };
+        let Some(effective_expires_at) =
+            chrono::DateTime::from_timestamp(connection.effective_expires_at().0, 0)
+        else {
+            return Response::error("machine admission unavailable", 503);
+        };
         let pair = WebSocketPair::new()?;
         pair.server.serialize_attachment(connection.attachment())?;
         let auto_response =
@@ -71,6 +76,7 @@ impl CentralObject {
         let welcome = DataFrame::Welcome {
             machine_id: connection.machine_id().clone(),
             central_time,
+            effective_expires_at,
         };
         if let Err(failure) = runtime.recompute_alarm().await {
             worker::console_warn!("post_welcome_alarm_recompute_failed failure={failure:?}");
@@ -508,14 +514,16 @@ async fn renew(
     Ok(
         match runtime.renew_machine_connection(&current, token).await {
             Ok(Ok(renewed)) => {
-                let Some(effective_expires_at) =
-                    chrono::DateTime::from_timestamp(renewed.effective_expires_at().0, 0)
-                else {
+                let Some(effective_expires_at) = chrono::DateTime::from_timestamp(
+                    renewed.connection.effective_expires_at().0,
+                    0,
+                ) else {
                     return Ok(refused(TokenRenewalRefusal::CentralUnavailable));
                 };
-                socket.serialize_attachment(renewed.attachment())?;
+                socket.serialize_attachment(renewed.connection.attachment())?;
                 TokenRenewalResult::Renewed {
                     effective_expires_at,
+                    central_time: renewed.central_time,
                 }
             }
             Ok(Err(refusal)) => refused(match refusal {

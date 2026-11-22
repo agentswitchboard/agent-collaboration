@@ -96,6 +96,10 @@ async fn renewal_journey(fixture: &Fixture) -> Result<()> {
     if renewed
         != (TokenRenewalResult::Renewed {
             effective_expires_at: expected,
+            central_time: chrono::DateTime::from_timestamp_millis(
+                fixture.clock.now().unix_millis(),
+            )
+            .ok_or("renewal clock")?,
         })
     {
         return Err(format!("the fresh token must renew the socket: {renewed:?}").into());
@@ -236,6 +240,8 @@ async fn deadline_journey(fixture: &Fixture) -> Result<()> {
     if just_before
         != (TokenRenewalResult::Renewed {
             effective_expires_at: renewed_to,
+            central_time: chrono::DateTime::from_timestamp(signed::NOW_SECONDS + 599, 0)
+                .ok_or("renewal clock")?,
         })
     {
         return Err(format!("one second before the deadline must renew: {just_before:?}").into());
@@ -261,6 +267,17 @@ async fn every_refused_renewal_keeps_the_deadline_through_eviction() -> Result<(
 async fn refusals_journey(fixture: &Fixture) -> Result<()> {
     // Arrange: the open socket counts until +600.
     let (mut link, _, workspace, _, _) = baseline(fixture).await?;
+    let DataFrame::Welcome {
+        effective_expires_at,
+        ..
+    } = &link.welcome
+    else {
+        return Err("expected the initial Welcome deadline".into());
+    };
+    let initial_lifetime = u64::try_from(effective_expires_at.timestamp() - signed::NOW_SECONDS)?;
+    if initial_lifetime != 600 {
+        return Err("Welcome must advertise the original grant deadline".into());
+    }
     let other_machine = signed::machine_token(
         ORGANIZATION,
         OTHER_INSTALLATION,
@@ -310,7 +327,7 @@ async fn refusals_journey(fixture: &Fixture) -> Result<()> {
     fixture.host.c2_evict(&fixture.organization).await?;
     // The restored attachment still carries +600: a write at +599 lands, and
     // at +600 even a valid fresh token cannot renew it.
-    advance(fixture, 599).await?;
+    advance(fixture, initial_lifetime - 1).await?;
     let before = link
         .call_as(
             fixture::session_caller()?,
@@ -347,7 +364,31 @@ async fn refusals_journey(fixture: &Fixture) -> Result<()> {
         return Err(format!("the old deadline still admits +599: {:?}", before.reply).into());
     }
     if at_deadline != not_active() {
-        return Err(format!("the old deadline still ends at +600: {at_deadline:?}").into());
+        return Err(format!("the advertised deadline refuses renewal: {at_deadline:?}").into());
+    }
+    let expired = link
+        .call_as(
+            fixture::session_caller()?,
+            area(
+                "019f0000-0000-7000-8000-00000000cf32",
+                "At the deadline",
+                &workspace,
+            )?,
+        )
+        .await?;
+    if !matches!(
+        &expired.reply,
+        DataFrame::Reply { result, .. } if matches!(
+            result.as_ref(),
+            central_link_protocol::ReplyPayload::Workspace(reply)
+                if reply.result == WorkspaceResult::Refused(RefusalReason::MachineRevoked)
+        )
+    ) {
+        return Err(format!(
+            "the advertised deadline must refuse the write: {:?}",
+            expired.reply
+        )
+        .into());
     }
     drop(link);
     Ok(())

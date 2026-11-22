@@ -36,7 +36,12 @@ pub(super) fn correlation(frame: &LinkFrame) -> Result<CorrelationId> {
 pub(super) async fn connect_client(
     fixture: &Fixture,
     token: &str,
-) -> Result<(LinkClient, ConnectionAttempt, WebSocket)> {
+) -> Result<(
+    LinkClient,
+    ConnectionAttempt,
+    WebSocket,
+    workspace_model::Timestamp,
+)> {
     let mut client = LinkClient::new(INSTALLATION.parse()?, fixture.clock.clone());
     let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
         return Err("client did not start a connection attempt".into());
@@ -50,10 +55,14 @@ pub(super) async fn connect_client(
         .await?
         .into_websocket()
         .await?;
-    if client.receive(&attempt, receive(&mut socket).await?)? != ClientEvent::Welcomed {
+    let ClientEvent::Welcomed {
+        effective_expires_at,
+        ..
+    } = client.receive(&attempt, receive(&mut socket).await?)?
+    else {
         return Err("authenticated link did not Welcome its machine_id".into());
-    }
-    Ok((client, attempt, socket))
+    };
+    Ok((client, attempt, socket, effective_expires_at))
 }
 
 pub(super) async fn workspace_reply(

@@ -10,7 +10,7 @@ use central_storage::StoreFailure;
 use fleet_identity_protocol::EnrollmentId;
 use fleet_runtime_ports::IdSource;
 use fleet_signin::organization_change::{OrganizationChangeKind, OrganizationChangeOrigin};
-use std::num::NonZeroU32;
+use std::{collections::BTreeSet, num::NonZeroU32};
 
 pub(crate) const SD8_MILLIS: i64 = 5_000;
 
@@ -22,21 +22,37 @@ pub(crate) fn decide_device_login(
     ids: &dyn IdSource,
 ) -> Result<Decided<DeviceLoginDecision>, StoreFailure> {
     let refuse = |reason| Ok(Decided::unchanged(DeviceLoginDecision::Refused { reason }));
-    if request.organization_id != facts.organization_id
-        || time.now_ms.saturating_sub(received_at_ms) > SD8_MILLIS
-    {
+    if request.organization_id != facts.organization_id {
         return refuse(DeviceLoginRefusal::NotPermitted {});
     }
     let machine_id = request.machine_id.clone();
-    // N03: after admission and SD8, request identity owns the first snapshot
-    // for its original machine_id.
-    // Mutable labels, workspaces, factor freshness and enrollment state cannot
-    // replace that answer or create another effect.
+    // A retained request ID belongs to its original machine and bound inputs.
+    // Compare workspace sets while returning the original ordered snapshot.
+    // Receipt age and factor freshness are predicates of a new approval.
     if let Some(earlier) = &facts.prior_approval {
         if earlier.machine_id != machine_id {
             return refuse(DeviceLoginRefusal::NotPermitted {});
         }
+        if earlier.label != request.label
+            || earlier.approved_by != request.approver
+            || earlier.code_expires_at != request.code_expires_at
+            || earlier
+                .allowed_workspaces
+                .as_slice()
+                .iter()
+                .collect::<BTreeSet<_>>()
+                != request
+                    .allowed_workspaces
+                    .as_slice()
+                    .iter()
+                    .collect::<BTreeSet<_>>()
+        {
+            return refuse(DeviceLoginRefusal::RequestConflict {});
+        }
         return Ok(Decided::unchanged(approved(earlier)));
+    }
+    if time.now_ms.saturating_sub(received_at_ms) > SD8_MILLIS {
+        return refuse(DeviceLoginRefusal::NotPermitted {});
     }
     let Some(deadline_ms) = request.code_expires_at.0.checked_mul(1000) else {
         return refuse(DeviceLoginRefusal::NotPermitted {});

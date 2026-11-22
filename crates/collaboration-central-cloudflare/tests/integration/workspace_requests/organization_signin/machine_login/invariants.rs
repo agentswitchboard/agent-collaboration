@@ -204,7 +204,7 @@ async fn bounded_three_login_sequences_preserve_one_enrolled_and_fence_every_sta
                 replay,
                 (
                     200,
-                    json!({"result":"approved","enrollmentId":stale,"label":format!("Login {stale_slot}"),"allowedWorkspaces":[WORKSPACE]})
+                    json!({"result":"refused","reason":{"kind":"requestConflict"}})
                 )
             );
             assert!(snapshot(&f).await? == before);

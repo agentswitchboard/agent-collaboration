@@ -55,7 +55,10 @@ impl std::fmt::Debug for MachineTokenText {
 pub enum TokenRenewalResult {
     /// The connection now counts until this instant: the new token's
     /// min(exp + 60 s, grant_expires_at). It may be later than before.
-    Renewed { effective_expires_at: Timestamp },
+    Renewed {
+        effective_expires_at: Timestamp,
+        central_time: Timestamp,
+    },
     /// The old expiry stands; the socket stays open until it refuses a frame.
     Refused { reason: TokenRenewalRefusal },
 }

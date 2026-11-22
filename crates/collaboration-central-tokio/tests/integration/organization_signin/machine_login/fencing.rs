@@ -131,9 +131,9 @@ async fn a_new_approval_leaves_old_login_active_until_grant_then_supersedes_once
         replay,
         (
             200,
-            json!({"result":"approved","enrollmentId":a,"label":"A","allowedWorkspaces":[WORKSPACE]})
+            json!({"result":"refused","reason":{"kind":"requestConflict"}})
         ),
-        "N03 retains the original snapshot after the enrollment ends"
+        "changed bound fields conflict even after the enrollment ends"
     );
     assert!(
         snapshot(&f).await? == before,

@@ -31,7 +31,8 @@ async fn renew_machine_token_extends_the_open_connection_and_a_refusal_keeps_its
 -> Result<()> {
     // Arrange: an ordinary client opens with the actual initial 600-second grant.
     let fixture = Fixture::new().await?;
-    let (mut client, attempt, mut socket) = connect_client(&fixture, &fixture.token).await?;
+    let (mut client, attempt, mut socket, initial_expiry) =
+        connect_client(&fixture, &fixture.token).await?;
     let runtime = fixture
         .host
         .central(&signed::ORGANIZATION.to_owned().try_into()?)
@@ -43,6 +44,10 @@ async fn renew_machine_token_extends_the_open_connection_and_a_refusal_keeps_its
     assert_eq!(
         connection.effective_expires_at().0,
         signed::NOW_SECONDS + 600
+    );
+    assert_eq!(
+        initial_expiry.timestamp(),
+        connection.effective_expires_at().0
     );
 
     // A token that fails sign-in verification is refused; the old expiry stands.
@@ -79,6 +84,8 @@ async fn renew_machine_token_extends_the_open_connection_and_a_refusal_keeps_its
         TokenRenewalResult::Renewed {
             effective_expires_at: chrono::DateTime::from_timestamp(signed::NOW_SECONDS + 900, 0)
                 .ok_or("renewed expiry")?,
+            central_time: chrono::DateTime::from_timestamp(signed::NOW_SECONDS + 300, 0)
+                .ok_or("renewal clock")?,
         }
     );
 
@@ -201,7 +208,7 @@ fn at(seconds: i64) -> Result<chrono::DateTime<chrono::Utc>> {
 async fn a_renewal_just_before_the_deadline_renews_and_at_or_after_it_is_refused() -> Result<()> {
     // Arrange: the connection counts until +600.
     let fixture = Fixture::new().await?;
-    let (mut client, attempt, mut socket) = connect_client(&fixture, &fixture.token).await?;
+    let (mut client, attempt, mut socket, _) = connect_client(&fixture, &fixture.token).await?;
     let runtime = fixture
         .host
         .central(&signed::ORGANIZATION.to_owned().try_into()?)
@@ -251,6 +258,7 @@ async fn a_renewal_just_before_the_deadline_renews_and_at_or_after_it_is_refused
         just_before,
         TokenRenewalResult::Renewed {
             effective_expires_at: at(1199)?,
+            central_time: at(599)?,
         }
     );
     assert_eq!(at_deadline, not_active());
@@ -288,7 +296,8 @@ async fn a_renewal_just_before_the_deadline_renews_and_at_or_after_it_is_refused
 async fn every_refused_renewal_keeps_the_current_deadline() -> Result<()> {
     // Arrange: the connection counts until +600.
     let fixture = Fixture::new().await?;
-    let (mut client, attempt, mut socket) = connect_client(&fixture, &fixture.token).await?;
+    let (mut client, attempt, mut socket, initial_expiry) =
+        connect_client(&fixture, &fixture.token).await?;
     let runtime = fixture
         .host
         .central(&signed::ORGANIZATION.to_owned().try_into()?)
@@ -326,11 +335,12 @@ async fn every_refused_renewal_keeps_the_current_deadline() -> Result<()> {
         send(&mut socket, &renew_frame(correlation, token)?).await?;
         answers.push(answer_to(&mut socket, correlation).await?);
     }
-    // The first deadline still decides: a write at +599 lands, at +600 it does not.
+    // The first advertised deadline still decides: a write just before it lands.
+    assert_eq!(initial_expiry.timestamp(), signed::NOW_SECONDS + 600);
     let mut writes = Vec::new();
     for (advance, request_id, name) in [
         (
-            599,
+            u64::try_from(initial_expiry.timestamp() - signed::NOW_SECONDS - 1)?,
             "019f0000-0000-7000-8000-00000000d311",
             "Before the deadline",
         ),
@@ -395,7 +405,7 @@ async fn every_refused_renewal_keeps_the_current_deadline() -> Result<()> {
 async fn a_renewal_after_live_revocation_is_refused_as_enrollment_not_active() -> Result<()> {
     // Arrange: a valid fresh token, decided before the revocation.
     let fixture = Fixture::new().await?;
-    let (_client, _attempt, mut socket) = connect_client(&fixture, &fixture.token).await?;
+    let (_client, _attempt, mut socket, _) = connect_client(&fixture, &fixture.token).await?;
     let runtime = fixture
         .host
         .central(&signed::ORGANIZATION.to_owned().try_into()?)
@@ -444,7 +454,7 @@ async fn a_renewal_after_live_revocation_is_refused_as_enrollment_not_active() -
 async fn a_batch_after_the_deadline_refuses_every_member_and_then_closes() -> Result<()> {
     // Arrange: the connection counts until +600; two writes wait in one batch.
     let fixture = Fixture::new().await?;
-    let (_client, _attempt, mut socket) = connect_client(&fixture, &fixture.token).await?;
+    let (_client, _attempt, mut socket, _) = connect_client(&fixture, &fixture.token).await?;
     let members = [
         (
             "019f0000-0000-7000-8000-00000000c341",

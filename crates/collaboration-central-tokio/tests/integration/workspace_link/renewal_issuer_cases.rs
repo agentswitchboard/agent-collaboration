@@ -26,7 +26,7 @@ fn with_uncached_key(token: &str) -> Result<String> {
 async fn a_renewal_whose_key_cannot_be_fetched_is_central_unavailable() -> Result<()> {
     // Arrange: sign-in's key set becomes unreachable.
     let fixture = Fixture::new().await?;
-    let (_client, _attempt, mut socket) = connect_client(&fixture, &fixture.token).await?;
+    let (_client, _attempt, mut socket, _) = connect_client(&fixture, &fixture.token).await?;
     fixture.keys().fail_fetches();
     let token = with_uncached_key(&fixture.token)?;
 
@@ -60,7 +60,7 @@ async fn machine_link_distinguishes_issuer_cache_outages_from_unknown_keys() -> 
     use fleet_signin::IssuerCacheOperation;
     use reqwest_websocket::RequestBuilderExt;
     let fixture = Fixture::new().await?;
-    let (mut client, attempt, mut socket) = connect_client(&fixture, &fixture.token).await?;
+    let (mut client, attempt, mut socket, _) = connect_client(&fixture, &fixture.token).await?;
     let organization = signed::ORGANIZATION;
     let owner = fixture
         .host

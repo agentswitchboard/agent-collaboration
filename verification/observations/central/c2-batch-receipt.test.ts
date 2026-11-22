@@ -162,7 +162,12 @@ function validReceipt(): C2BatchReceipt {
     kind: "c2BatchHibernation",
     organization,
     machineId,
-    welcome: { kind: "welcome", machineId, centralTime: "2030-03-17T17:46:40Z" },
+    welcome: {
+      kind: "welcome",
+      machineId,
+      centralTime: "2030-03-17T17:46:40Z",
+      effectiveExpiresAt: "2030-03-17T17:56:40Z",
+    },
     baselineRequest: requests.baselineRequest,
     baselineReply: reply(baselineId, {
       kind: "workspaceCreated",

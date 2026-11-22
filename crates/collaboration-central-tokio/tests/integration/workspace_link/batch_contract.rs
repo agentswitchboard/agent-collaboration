@@ -43,7 +43,10 @@ async fn native_batch_keeps_order_and_continues_after_a_middle_semantic_refusal(
         return Err("client did not start a connection attempt".into());
     };
     let mut socket = fixture.connect().await?;
-    if client.receive(&attempt, receive(&mut socket).await?)? != ClientEvent::Welcomed {
+    if !matches!(
+        client.receive(&attempt, receive(&mut socket).await?)?,
+        ClientEvent::Welcomed { .. }
+    ) {
         return Err("normal machine_id did not receive Welcome".into());
     }
     let create = client.begin_request(

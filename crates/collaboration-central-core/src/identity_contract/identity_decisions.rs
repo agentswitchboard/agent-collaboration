@@ -70,6 +70,7 @@ pub enum DeviceLoginRefusal {
     NotPermitted {},
     MachineInAnotherOrganization {},
     UnknownWorkspace {},
+    RequestConflict {},
     SecondFactorRequired { within_seconds: NonZeroU32 },
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -126,25 +127,6 @@ pub enum MachineTokenRefusal {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PresentedMachine {
     pub machine_id: MachineId,
-}
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub struct DisableMachineClient {
-    pub organization_id: OrganizationId,
-    pub enrollment_id: EnrollmentId,
-    pub client_id: ClientId,
-}
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(
-    tag = "result",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum DisabledMachineClient {
-    Disabled {},
-    AlreadyDisabled {},
-    NotThisEnrollment {},
 }
 #[cfg(test)]
 #[path = "identity_decisions_test.rs"]

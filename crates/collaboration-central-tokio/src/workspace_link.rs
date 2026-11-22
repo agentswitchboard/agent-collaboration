@@ -109,13 +109,23 @@ async fn upgrade_link(
     else {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     };
+    let Some(effective_expires_at) =
+        chrono::DateTime::from_timestamp(connection.effective_expires_at().0, 0)
+    else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let welcome = LinkFrame::Data(DataFrame::Welcome {
+        machine_id: connection.machine_id().clone(),
+        central_time,
+        effective_expires_at,
+    });
     if state.stop.is_cancelled() {
         return StatusCode::SERVICE_UNAVAILABLE.into_response();
     }
     upgrade
         .on_upgrade(move |socket| async move {
             let _task = task;
-            serve_link(socket, state, runtime, connection, central_time).await;
+            serve_link(socket, state, runtime, connection, welcome).await;
         })
         .into_response()
 }
@@ -141,12 +151,8 @@ async fn serve_link(
     state: Arc<LinkState>,
     runtime: Arc<Runtime>,
     mut connection: ValidatedMachineConnection,
-    central_time: workspace_model::Timestamp,
+    welcome: LinkFrame,
 ) {
-    let welcome = LinkFrame::Data(DataFrame::Welcome {
-        machine_id: connection.machine_id().clone(),
-        central_time,
-    });
     // Keep Welcome queued locally until its safety attempt finishes, so observing it is a barrier.
     if let Err(failure) = runtime.recompute_alarm().await {
         tracing::warn!(failure = ?failure, "post_welcome_alarm_recompute_failed");
@@ -436,13 +442,14 @@ async fn renew(
     match runtime.renew_machine_connection(connection, token).await {
         Ok(Ok(renewed)) => {
             let Some(effective_expires_at) =
-                chrono::DateTime::from_timestamp(renewed.effective_expires_at().0, 0)
+                chrono::DateTime::from_timestamp(renewed.connection.effective_expires_at().0, 0)
             else {
                 return refused(TokenRenewalRefusal::CentralUnavailable);
             };
-            *connection = renewed;
+            *connection = renewed.connection;
             TokenRenewalResult::Renewed {
                 effective_expires_at,
+                central_time: renewed.central_time,
             }
         }
         Ok(Err(refusal)) => refused(match refusal {

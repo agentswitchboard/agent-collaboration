@@ -261,7 +261,10 @@ impl ConnectedLink {
             .into_websocket()
             .await?;
         let welcome = receive(&mut socket).await?;
-        if client.receive(&attempt, LinkFrame::Data(welcome.clone()))? != ClientEvent::Welcomed {
+        if !matches!(
+            client.receive(&attempt, LinkFrame::Data(welcome.clone()))?,
+            ClientEvent::Welcomed { .. }
+        ) {
             return Err("ordinary client did not accept Welcome".into());
         }
         Ok(Self {
