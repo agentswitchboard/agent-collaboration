@@ -46,10 +46,12 @@ fn central_engine_fixtures_require_a_dev_edge() {
             id: "fleet-wakes".to_owned(),
             name: "fleet-wakes".to_owned(),
             manifest_path: std::path::PathBuf::from("/workspace/fleet-wakes/Cargo.toml"),
+            source: None,
             dependencies: vec![ManifestDependency {
                 name: "central-engine-test-support".to_owned(),
                 kind,
                 path: None,
+                source: None,
             }],
         };
         assert_eq!(

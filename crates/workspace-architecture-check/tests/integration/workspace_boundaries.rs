@@ -281,10 +281,7 @@ pub(super) fn check_boundaries(
     check_closed_workspace_edges(graph, DIRECTORY_LAYER.0, DIRECTORY_LAYER.1)?;
     check_closed_workspace_edges(graph, SESSION_STORE.0, SESSION_STORE.1)?;
     check_closed_workspace_edges(graph, SESSION_EVENTS.0, SESSION_EVENTS.1)?;
-    for (package, allowed) in HARNESS_LAYERS {
-        check_closed_workspace_edges(graph, package, allowed)?;
-        check_harness_reachability(graph, package, allowed)?;
-    }
+    check_harness_layers(graph)?;
     check_job_reachability(
         graph,
         FLEET_WAKES,
@@ -474,6 +471,16 @@ fn is_harness_layer(package: &str) -> bool {
     HARNESS_LAYERS.iter().any(|(name, _)| *name == package)
 }
 
+pub(super) fn check_harness_layers(
+    graph: &NonDevDependencyGraph,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (package, allowed) in HARNESS_LAYERS {
+        check_closed_workspace_edges(graph, package, allowed)?;
+        check_harness_reachability(graph, package, allowed)?;
+    }
+    Ok(())
+}
+
 fn check_harness_reachability(
     graph: &NonDevDependencyGraph,
     package: &str,
@@ -486,17 +493,22 @@ fn check_harness_reachability(
     let test_dependencies = graph.dev_edges.get(source).into_iter().flatten();
     for root in std::iter::once(source).chain(test_dependencies.map(String::as_str)) {
         for destination in reachable(graph, root) {
-            if destination != source && graph.workspace_members.contains(destination) {
-                let target = graph
-                    .names
-                    .get(destination)
-                    .ok_or("dependency name absent")?;
-                if !allowed.contains(&target.as_str()) {
-                    return Err(format!(
-                        "BD1: forbidden reachable dependency {package} -> {target}"
-                    )
-                    .into());
-                }
+            let target = graph
+                .names
+                .get(destination)
+                .ok_or("dependency name absent")?;
+            if package == HARNESS_CONTRACTS.0 && matches!(target.as_str(), "tokio" | "tokio-util") {
+                return Err(
+                    format!("BD1: forbidden reachable runtime {package} -> {target}").into(),
+                );
+            }
+            if destination != source
+                && graph.workspace_members.contains(destination)
+                && !allowed.contains(&target.as_str())
+            {
+                return Err(
+                    format!("BD1: forbidden reachable dependency {package} -> {target}").into(),
+                );
             }
         }
     }

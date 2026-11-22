@@ -6,6 +6,9 @@ use std::process::Command;
 
 use serde::Deserialize;
 
+#[path = "harness_stage_policy.rs"]
+mod harness_stage_policy;
+
 #[path = "test_support_policy.rs"]
 mod test_support_policy;
 
@@ -28,6 +31,7 @@ struct CargoPackage {
     id: String,
     name: String,
     manifest_path: PathBuf,
+    source: Option<String>,
     #[serde(default)]
     dependencies: Vec<ManifestDependency>,
 }
@@ -37,6 +41,7 @@ struct ManifestDependency {
     name: String,
     kind: Option<DependencyKind>,
     path: Option<PathBuf>,
+    source: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -152,12 +157,14 @@ struct LayerPolicyViolation {
     kind: DependencyKind,
 }
 
-#[test]
-fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error::Error>> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+fn read_metadata(
+    root: &Path,
+    feature_arguments: &[&str],
+) -> Result<CargoMetadata, Box<dyn std::error::Error>> {
     let output = Command::new("cargo")
         .args(["metadata", "--locked", "--offline", "--format-version", "1"])
-        .current_dir(&root)
+        .args(feature_arguments)
+        .current_dir(root)
         .output()?;
     if !output.status.success() {
         return Err(format!(
@@ -167,9 +174,17 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
         )
         .into());
     }
-    let metadata: CargoMetadata = serde_json::from_slice(&output.stdout)?;
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
+
+#[test]
+fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error::Error>> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let metadata = read_metadata(&root, &[])?;
     test_support_policy::check_workspace(&metadata.packages, &metadata.workspace_members)?;
     workspace_boundaries::check_declared_session_owner_edges(&metadata)?;
+    harness_stage_policy::check_declared(&metadata)?;
+    harness_stage_policy::check_resolved(&metadata)?;
     let graph = NonDevDependencyGraph::from_metadata(metadata);
     for (source, destinations) in &graph.dev_edges {
         if !graph.workspace_members.contains(source) {
@@ -196,6 +211,12 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
         .check_policy()
         .inspect_err(|error| eprintln!("{error}"))?;
     workspace_boundaries::check_boundaries(&graph)?;
+    // Cargo features are additive. This resolution includes selectable optional edges.
+    let enabled_metadata = read_metadata(&root, &["--all-features"])?;
+    harness_stage_policy::check_resolved(&enabled_metadata)?;
+    workspace_boundaries::check_harness_layers(&NonDevDependencyGraph::from_metadata(
+        enabled_metadata,
+    ))?;
     workspace_boundaries::check_workspace_package_trees(&root)?;
     Ok(())
 }
@@ -241,6 +262,7 @@ fn fixture_metadata(
         id: id.to_owned(),
         name: name.to_owned(),
         manifest_path: PathBuf::from(format!("/workspace/{id}/Cargo.toml")),
+        source: None,
         dependencies: Vec::new(),
     })
     .collect();
@@ -279,34 +301,40 @@ fn harness_contracts_reject_workspace_dependencies() {
                     id: "store".to_owned(),
                     name: "switchboard-session-store".to_owned(),
                     manifest_path: PathBuf::from("/workspace/store/Cargo.toml"),
+                    source: None,
                     dependencies: Vec::new(),
                 },
                 CargoPackage {
                     id: "events".to_owned(),
                     name: "switchboard-session-events".to_owned(),
                     manifest_path: PathBuf::from("/workspace/events/Cargo.toml"),
+                    source: None,
                     dependencies: Vec::new(),
                 },
                 CargoPackage {
                     id: "harness".to_owned(),
                     name: contract.to_owned(),
                     manifest_path: PathBuf::from("/workspace/harness/Cargo.toml"),
+                    source: None,
                     dependencies: vec![ManifestDependency {
                         name: deciding_code.to_owned(),
                         kind: Some(kind),
                         path: Some(PathBuf::from("/workspace/deciding-code")),
+                        source: None,
                     }],
                 },
                 CargoPackage {
                     id: "deciding-code".to_owned(),
                     name: deciding_code.to_owned(),
                     manifest_path: PathBuf::from("/workspace/deciding-code/Cargo.toml"),
+                    source: None,
                     dependencies: Vec::new(),
                 },
                 CargoPackage {
                     id: "harness-carrier".to_owned(),
                     name: "switchboard-harness-shared-mechanics".to_owned(),
                     manifest_path: PathBuf::from("/workspace/harness-carrier/Cargo.toml"),
+                    source: None,
                     dependencies: Vec::new(),
                 },
             ],
@@ -361,6 +389,7 @@ fn harness_contracts_reject_a_registry_dev_dependency_resolved_to_a_workspace_me
         name: "provider-session-machines".to_owned(),
         kind: Some(DependencyKind::Dev),
         path: None,
+        source: Some(harness_stage_policy::CRATES_IO.to_owned()),
     });
     workspace_boundaries::check_declared_session_owner_edges(&metadata)
         .expect("registry declaration has no path to check");
@@ -396,6 +425,7 @@ fn harness_carrier_declared_guard_rejects_inactive_workspace_edges() {
             name: "provider-session-machines".to_owned(),
             kind: Some(kind),
             path: Some(PathBuf::from("/workspace/deciding-code")),
+            source: None,
         });
         let observed = workspace_boundaries::check_declared_session_owner_edges(&metadata)
             .err()
@@ -427,6 +457,7 @@ fn harness_carrier_resolved_guard_rejects_workspace_edges() {
             name: "provider-session-machines".to_owned(),
             kind: Some(kind),
             path: None,
+            source: Some(harness_stage_policy::CRATES_IO.to_owned()),
         });
         workspace_boundaries::check_declared_session_owner_edges(&metadata)
             .expect("the registry declaration has no workspace path");
