@@ -57,7 +57,16 @@ impl AuthRejectionFixture {
     }
 
     pub(super) fn start(&self, upstream_address: std::net::SocketAddr) -> LoopbackRouterRuntime {
-        let config = LoopbackRouterRuntimeConfig::new(
+        must_ok(LoopbackRouterRuntime::start_for_test(
+            self.config(upstream_address),
+        ))
+    }
+
+    pub(super) fn config(
+        &self,
+        upstream_address: std::net::SocketAddr,
+    ) -> LoopbackRouterRuntimeConfig {
+        LoopbackRouterRuntimeConfig::new(
             must_ok(LoopbackBindAddress::new("127.0.0.1", 0)),
             must_ok(UpstreamEndpoint::new(format!(
                 "http://{upstream_address}/v1"
@@ -69,8 +78,7 @@ impl AuthRejectionFixture {
                 TokenGeneration::new(1),
             ),
         )
-        .with_quota_clock(1_030, 60);
-        must_ok(LoopbackRouterRuntime::start_for_test(config))
+        .with_quota_clock(1_030, 60)
     }
 
     pub(super) fn maintenance(&self) -> Option<CredentialMaintenanceRecord> {
