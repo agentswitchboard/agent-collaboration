@@ -25,6 +25,7 @@ pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 3] = [
     (
         "fleet-contracts",
         &[
+            "approval-request-protocol",
             "central-engine-model",
             "central-storage",
             "fleet-identity-protocol",
@@ -145,7 +146,17 @@ pub(super) const ENGINE_EDGES: &[&str] = &[
     "workspace-model",
 ];
 
-const PURE_CRATES: [(&str, &[&str]); 8] = [
+const APPROVAL_HOLDER: (&str, &[&str]) = (
+    "switchboard-approval-holder",
+    &[
+        "approval-request-protocol",
+        "state-machine-core",
+        "workspace-ids",
+    ],
+);
+
+const PURE_CRATES: [(&str, &[&str]); 9] = [
+    APPROVAL_HOLDER,
     ("workspace-ids", &[]),
     (
         "workspace-model",
@@ -410,6 +421,39 @@ pub(super) fn check_declared_session_owner_edges(
                 check_closed_workspace_edge(owner, &dependency.name, kind, allowed)?;
             }
         }
+    }
+    Ok(())
+}
+
+pub(super) fn check_declared_approval_holder_edges(
+    metadata: &CargoMetadata,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let (owner, normal_edges) = APPROVAL_HOLDER;
+    let workspace_packages = || {
+        metadata
+            .packages
+            .iter()
+            .filter(|package| metadata.workspace_members.contains(&package.id))
+    };
+    let holder = workspace_packages()
+        .find(|package| package.name == owner)
+        .ok_or_else(|| format!("closed dependency policy package missing: {owner}"))?;
+    for dependency in &holder.dependencies {
+        let kind = dependency.kind.unwrap_or(DependencyKind::Normal);
+        if kind == DependencyKind::Dev {
+            continue;
+        }
+        let workspace_edge = dependency.path.as_deref().is_some_and(|path| {
+            workspace_packages().any(|package| {
+                package.name == dependency.name && package.manifest_path.parent() == Some(path)
+            })
+        });
+        let allowed = if kind == DependencyKind::Normal && workspace_edge {
+            normal_edges
+        } else {
+            &[]
+        };
+        check_closed_workspace_edge(owner, &dependency.name, kind, allowed)?;
     }
     Ok(())
 }
@@ -767,3 +811,7 @@ fn proxy_boundary_rejects_direct_and_transitive_normal_and_build_edges() {
         .is_ok()
     );
 }
+
+#[cfg(test)]
+#[path = "approval_holder_dependency_test.rs"]
+mod approval_holder_dependency_tests;

@@ -170,6 +170,7 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
     let metadata: CargoMetadata = serde_json::from_slice(&output.stdout)?;
     test_support_policy::check_workspace(&metadata.packages, &metadata.workspace_members)?;
     workspace_boundaries::check_declared_session_owner_edges(&metadata)?;
+    workspace_boundaries::check_declared_approval_holder_edges(&metadata)?;
     let graph = NonDevDependencyGraph::from_metadata(metadata);
     for (source, destinations) in &graph.dev_edges {
         if !graph.workspace_members.contains(source) {
