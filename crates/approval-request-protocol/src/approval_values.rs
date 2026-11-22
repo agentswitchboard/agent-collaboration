@@ -1,3 +1,4 @@
+use crate::approval_wire_codec::approval_wire_record;
 use serde::{Deserialize, Serialize};
 use serde_json::Number;
 
@@ -75,9 +76,64 @@ approval_text!(Title, Some(TITLE_MAX_CHARACTERS), false);
 approval_text!(Description, Some(DESCRIPTION_MAX_CHARACTERS), false);
 approval_text!(Subject, Some(SUBJECT_MAX_CHARACTERS), false);
 approval_text!(Label, Some(LABEL_MAX_CHARACTERS), false);
-// Provider IDs remain opaque and compare exactly, including whitespace.
-approval_text!(OfferedOptionId, None, true);
-approval_text!(QuestionFieldId, None, true);
+const MAX_OPTION_ORDINAL: u8 = 16;
+const MAX_FIELD_ORDINAL: u8 = 32;
+pub const MAX_OFFERED_OPTIONS: usize = MAX_OPTION_ORDINAL as usize;
+pub const MAX_QUESTION_FIELDS: usize = MAX_FIELD_ORDINAL as usize;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("approval ordinal {value} must be between 1 and {maximum}")]
+pub struct InvalidApprovalOrdinal {
+    value: u8,
+    maximum: u8,
+}
+
+macro_rules! approval_ordinal {
+    ($name:ident, $maximum:expr) => {
+        #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+        #[serde(try_from = "u8", into = "u8")]
+        #[cfg_attr(
+            all(feature = "wire-export", not(target_arch = "wasm32")),
+            derive(specta::Type)
+        )]
+        pub struct $name(u8);
+
+        impl $name {
+            pub fn new(value: u8) -> Result<Self, InvalidApprovalOrdinal> {
+                Self::try_from(value)
+            }
+
+            #[must_use]
+            pub const fn get(&self) -> u8 {
+                self.0
+            }
+        }
+
+        impl TryFrom<u8> for $name {
+            type Error = InvalidApprovalOrdinal;
+
+            fn try_from(value: u8) -> Result<Self, Self::Error> {
+                if (1..=$maximum).contains(&value) {
+                    Ok(Self(value))
+                } else {
+                    Err(InvalidApprovalOrdinal {
+                        value,
+                        maximum: $maximum,
+                    })
+                }
+            }
+        }
+
+        impl From<$name> for u8 {
+            fn from(value: $name) -> Self {
+                value.0
+            }
+        }
+    };
+}
+
+approval_ordinal!(OfferedOptionId, MAX_OPTION_ORDINAL);
+approval_ordinal!(QuestionFieldId, MAX_FIELD_ORDINAL);
 approval_text!(CallOperationName, Some(TITLE_MAX_CHARACTERS), true);
 
 /// SHA-256 of the parked invocation, in canonical lowercase hexadecimal.
@@ -123,6 +179,81 @@ impl InvocationDigest {
 }
 
 pub type CentralTime = chrono::DateTime<chrono::Utc>;
+
+approval_wire_record! {
+    [deny_unknown_fields]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
+    struct ApprovalWindowFields {
+        raised_at: CentralTime,
+        deadline: CentralTime,
+    }
+}
+
+/// The immutable first-save time and exact one-hour deadline.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "ApprovalWindowFields", into = "ApprovalWindowFields")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub struct ApprovalWindow(ApprovalWindowFields);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum InvalidApprovalWindow {
+    #[error("the one-hour approval deadline is out of range")]
+    DeadlineOutOfRange,
+    #[error("the approval deadline must be exactly one hour after first save")]
+    DeadlineMismatch,
+}
+
+impl ApprovalWindow {
+    pub fn from_first_save(raised_at: CentralTime) -> Result<Self, InvalidApprovalWindow> {
+        let deadline = raised_at
+            .checked_add_signed(chrono::Duration::hours(1))
+            .ok_or(InvalidApprovalWindow::DeadlineOutOfRange)?;
+        Ok(Self(ApprovalWindowFields {
+            raised_at,
+            deadline,
+        }))
+    }
+
+    pub fn new(
+        raised_at: CentralTime,
+        deadline: CentralTime,
+    ) -> Result<Self, InvalidApprovalWindow> {
+        let window = Self::from_first_save(raised_at)?;
+        if window.deadline() == deadline {
+            Ok(window)
+        } else {
+            Err(InvalidApprovalWindow::DeadlineMismatch)
+        }
+    }
+
+    #[must_use]
+    pub const fn raised_at(self) -> CentralTime {
+        self.0.raised_at
+    }
+
+    #[must_use]
+    pub const fn deadline(self) -> CentralTime {
+        self.0.deadline
+    }
+}
+
+impl TryFrom<ApprovalWindowFields> for ApprovalWindow {
+    type Error = InvalidApprovalWindow;
+
+    fn try_from(fields: ApprovalWindowFields) -> Result<Self, Self::Error> {
+        Self::new(fields.raised_at, fields.deadline)
+    }
+}
+
+impl From<ApprovalWindow> for ApprovalWindowFields {
+    fn from(window: ApprovalWindow) -> Self {
+        window.0
+    }
+}
 
 /// Exact on both sides of the JSON transport, including TypeScript.
 #[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]

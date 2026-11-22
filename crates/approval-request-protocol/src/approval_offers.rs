@@ -1,3 +1,5 @@
+use crate::approval_wire_codec::approval_wire_record;
+use crate::approval_wire_codec::approval_wire_union;
 use serde::{Deserialize, Serialize};
 use workspace_ids::{ApprovalRequestId, RouterRunId, SessionRef};
 
@@ -18,13 +20,8 @@ pub enum RequestKind {
     UnprovenCall,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
+approval_wire_union! {
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -43,8 +40,10 @@ pub enum Raise {
     UnprovenCall {
         request_id: ApprovalRequestId,
         holder: ParkedCallHolder,
+        invocation: InvocationDigest,
         offer: CallOffer,
     },
+}
 }
 
 impl Raise {
@@ -82,8 +81,8 @@ impl Raise {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+approval_wire_union! {
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -92,6 +91,7 @@ pub enum OfferView {
     ProviderApproval { offer: ApprovalOffer },
     ProviderQuestion { offer: QuestionOffer },
     UnprovenCall { offer: CallOffer },
+}
 }
 
 impl OfferView {
@@ -105,20 +105,23 @@ impl OfferView {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+approval_wire_record! {
+[deny_unknown_fields]
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
 )]
 pub struct ProviderHolder {
     #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = crate::typescript_shapes::SessionRef))]
-    pub session: SessionRef,
+    pub session: SessionRef => "crate::approval_wire_codec::decode_named_map",
     pub router_run: RouterRunId,
 }
+}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+approval_wire_record! {
+[deny_unknown_fields]
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -126,9 +129,11 @@ pub struct ProviderHolder {
 pub struct ParkedCallHolder {
     pub router_run: RouterRunId,
 }
+}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+approval_wire_record! {
+[deny_unknown_fields]
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -139,9 +144,11 @@ pub struct ApprovalOffer {
     pub subject: Option<Subject>,
     pub options: OfferedOptions,
 }
+}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+approval_wire_record! {
+[deny_unknown_fields]
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -150,9 +157,11 @@ pub struct QuestionOffer {
     pub prompt: Description,
     pub fields: QuestionFields,
 }
+}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+approval_wire_record! {
+[deny_unknown_fields]
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -160,22 +169,20 @@ pub struct QuestionOffer {
 pub struct CallOffer {
     pub operation: CallOperationName,
     pub summary: Description,
-    pub invocation: InvocationDigest,
     pub options: OfferedOptions,
 }
+}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub struct OfferedOption {
-    pub id: OfferedOptionId,
-    pub label: Label,
-    pub effect: OptionEffect,
-    pub lasts: OptionDuration,
-    pub kept: KeptWhere,
+approval_wire_record! {
+    [deny_unknown_fields]
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
+    pub struct OfferedOption {
+        pub id: OfferedOptionId,
+        pub label: Label,
+        pub effect: OptionEffect,
+        pub lasts: OptionLifetime,
+    }
 }
 
 impl OfferedOption {
@@ -183,8 +190,8 @@ impl OfferedOption {
     pub const fn needs_person_with_fresh_factor(&self) -> bool {
         matches!(
             self.lasts,
-            OptionDuration::KeptUntilChanged | OptionDuration::NotVerified
-        ) || matches!(self.kept, KeptWhere::NotVerified)
+            OptionLifetime::KeptUntilChanged { .. } | OptionLifetime::NotVerified {}
+        )
     }
 }
 
@@ -200,18 +207,34 @@ pub enum OptionEffect {
     Abort,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+approval_wire_union! {
+/// A verified lifetime determines which storage targets can be named.
+/// A file cannot be declared as the storage for a turn-only option.
+///
+/// ```compile_fail,E0308
+/// use approval_request_protocol::{OptionLifetime, RetainedOptionStorage};
+/// let _ = OptionLifetime::ThisTurn { kept: RetainedOptionStorage::AgentRulesFile };
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
 )]
-pub enum OptionDuration {
-    ThisRequest,
-    ThisTurn,
-    ThisSession,
-    KeptUntilChanged,
-    NotVerified,
+pub enum OptionLifetime {
+    /// Only the current operation is authorized; no authorization is kept.
+    ThisRequest {},
+    ThisTurn {
+        kept: TransientOptionStorage,
+    },
+    ThisSession {
+        kept: TransientOptionStorage,
+    },
+    KeptUntilChanged {
+        kept: RetainedOptionStorage,
+    },
+    /// The adapter cannot verify the duration or the destination.
+    NotVerified {},
+}
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -220,12 +243,20 @@ pub enum OptionDuration {
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
 )]
-pub enum KeptWhere {
+pub enum TransientOptionStorage {
     Nowhere,
     AgentMemory,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub enum RetainedOptionStorage {
     AgentSettingsFile,
     AgentRulesFile,
-    NotVerified,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

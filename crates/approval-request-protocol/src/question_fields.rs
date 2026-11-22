@@ -1,11 +1,12 @@
+use crate::approval_wire_codec::approval_wire_record;
+use crate::approval_wire_codec::approval_wire_union;
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
 
-use crate::approval_values::{Description, Label, OfferedOptionId, QuestionFieldId};
-
-pub const MAX_OFFERED_OPTIONS: usize = 16;
-pub const MAX_QUESTION_FIELDS: usize = 32;
+use crate::approval_values::{
+    Description, Label, MAX_OFFERED_OPTIONS, MAX_QUESTION_FIELDS, OfferedOptionId, QuestionFieldId,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum InvalidOfferedOptions {
@@ -31,8 +32,9 @@ pub(crate) fn validate_options<'a>(
     Ok(())
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+approval_wire_record! {
+[deny_unknown_fields]
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -41,14 +43,10 @@ pub struct ChoiceOption {
     pub option_id: OfferedOptionId,
     pub label: Label,
 }
+}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
+approval_wire_union! {
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -77,17 +75,16 @@ pub enum QuestionField {
         label: Label,
         description: Option<Description>,
         required: bool,
-        options: Vec<ChoiceOption>,
+        options: ChoiceOptions,
     },
     MultiChoice {
         field_id: QuestionFieldId,
         label: Label,
         description: Option<Description>,
         required: bool,
-        options: Vec<ChoiceOption>,
-        min: Option<u8>,
-        max: Option<u8>,
+        selection: MultiChoiceSelection,
     },
+}
 }
 
 impl QuestionField {
@@ -112,33 +109,108 @@ impl QuestionField {
             | Self::MultiChoice { required, .. } => *required,
         }
     }
+}
 
-    fn validate(&self) -> Result<(), InvalidQuestionFields> {
-        match self {
-            Self::Text { .. } | Self::Number { .. } | Self::Boolean { .. } => Ok(()),
-            Self::SingleChoice { options, .. } => {
-                validate_options(
-                    options.len(),
-                    options.iter().map(|option| &option.option_id),
-                )?;
-                Ok(())
-            }
-            Self::MultiChoice {
-                options, min, max, ..
-            } => {
-                validate_options(
-                    options.len(),
-                    options.iter().map(|option| &option.option_id),
-                )?;
-                let minimum = min.map_or(0, usize::from);
-                let maximum = max.map_or(options.len(), usize::from);
-                if minimum > maximum || maximum > options.len() {
-                    Err(InvalidQuestionFields::SelectionRange)
-                } else {
-                    Ok(())
-                }
-            }
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<ChoiceOption>", into = "Vec<ChoiceOption>")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub struct ChoiceOptions(Vec<ChoiceOption>);
+
+impl ChoiceOptions {
+    pub fn new(options: Vec<ChoiceOption>) -> Result<Self, InvalidOfferedOptions> {
+        Self::try_from(options)
+    }
+
+    #[must_use]
+    pub fn as_slice(&self) -> &[ChoiceOption] {
+        &self.0
+    }
+}
+
+impl TryFrom<Vec<ChoiceOption>> for ChoiceOptions {
+    type Error = InvalidOfferedOptions;
+
+    fn try_from(options: Vec<ChoiceOption>) -> Result<Self, Self::Error> {
+        validate_options(
+            options.len(),
+            options.iter().map(|option| &option.option_id),
+        )?;
+        Ok(Self(options))
+    }
+}
+
+impl From<ChoiceOptions> for Vec<ChoiceOption> {
+    fn from(options: ChoiceOptions) -> Self {
+        options.0
+    }
+}
+
+approval_wire_record! {
+    [deny_unknown_fields]
+    #[derive(Clone, Debug, Eq, PartialEq)]
+    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
+    struct MultiChoiceSelectionFields {
+        options: ChoiceOptions,
+        min: Option<u8>,
+        max: Option<u8>,
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(
+    try_from = "MultiChoiceSelectionFields",
+    into = "MultiChoiceSelectionFields"
+)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub struct MultiChoiceSelection(MultiChoiceSelectionFields);
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("selection range must fit the field's options")]
+pub struct InvalidChoiceRange;
+
+impl MultiChoiceSelection {
+    pub fn new(
+        options: ChoiceOptions,
+        min: Option<u8>,
+        max: Option<u8>,
+    ) -> Result<Self, InvalidChoiceRange> {
+        Self::try_from(MultiChoiceSelectionFields { options, min, max })
+    }
+
+    #[must_use]
+    pub fn options(&self) -> &[ChoiceOption] {
+        self.0.options.as_slice()
+    }
+
+    #[must_use]
+    pub fn counts(&self) -> std::ops::RangeInclusive<usize> {
+        self.0.min.map_or(0, usize::from)..=self.0.max.map_or(self.options().len(), usize::from)
+    }
+}
+
+impl TryFrom<MultiChoiceSelectionFields> for MultiChoiceSelection {
+    type Error = InvalidChoiceRange;
+
+    fn try_from(fields: MultiChoiceSelectionFields) -> Result<Self, Self::Error> {
+        let selection = Self(fields);
+        let bounds = selection.counts();
+        if bounds.is_empty() || *bounds.end() > selection.options().len() {
+            Err(InvalidChoiceRange)
+        } else {
+            Ok(selection)
         }
+    }
+}
+
+impl From<MultiChoiceSelection> for MultiChoiceSelectionFields {
+    fn from(selection: MultiChoiceSelection) -> Self {
+        selection.0
     }
 }
 
@@ -148,10 +220,6 @@ pub enum InvalidQuestionFields {
     Count,
     #[error("question field IDs must be unique")]
     DuplicateField,
-    #[error("invalid field options: {0}")]
-    Options(#[from] InvalidOfferedOptions),
-    #[error("selection range must fit the field's options")]
-    SelectionRange,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -185,7 +253,6 @@ impl TryFrom<Vec<QuestionField>> for QuestionFields {
             if !seen.insert(field.field_id()) {
                 return Err(InvalidQuestionFields::DuplicateField);
             }
-            field.validate()?;
         }
         Ok(Self(fields))
     }

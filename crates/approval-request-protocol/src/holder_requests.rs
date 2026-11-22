@@ -1,13 +1,15 @@
+use crate::approval_wire_codec::approval_wire_record;
+use crate::approval_wire_codec::approval_wire_union;
 use serde::{Deserialize, Serialize};
 use workspace_ids::{ApprovalRequestId, RouterRunId};
 
 use crate::{
-    CancelReason, CentralTime, Ending, HolderReport, HolderStopCause, ParkedCallHolder,
-    ProviderHolder,
+    ApprovalWindow, CallStopCause, CancelReason, HolderReport, HolderStopCause, ProviderStopCause,
 };
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+approval_wire_record! {
+[deny_unknown_fields]
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -15,9 +17,10 @@ use crate::{
 pub struct RegisterRunRequest {
     pub router_run: RouterRunId,
 }
+}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+approval_wire_union! {
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -26,26 +29,29 @@ pub enum RegisterRunReply {
     RunRegistered {},
     RunRetired {},
 }
+}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+approval_wire_record! {
+[deny_unknown_fields]
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
 )]
 pub struct RaiseReceipt {
     pub request_id: ApprovalRequestId,
-    pub raised_at: CentralTime,
-    pub deadline: CentralTime,
+    pub window: ApprovalWindow,
+}
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+approval_wire_union! {
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
 )]
 /// Outcome of a Raise after the holder run is admitted.
+/// The admission layer returns a typed RunRefusal before a RaiseReply exists.
 pub enum RaiseReply {
     RaiseReceipt { receipt: RaiseReceipt },
     AlreadyStopped {},
@@ -53,14 +59,10 @@ pub enum RaiseReply {
     ContentsDiffer {},
     TooManyOutstanding {},
 }
+}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
+approval_wire_union! {
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -77,9 +79,10 @@ pub enum StopRequest {
         cause: CallStopCause,
     },
 }
+}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+approval_wire_union! {
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -93,33 +96,11 @@ pub enum StopReply {
         refusal: HolderRefusal,
     },
 }
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub enum OfferEnding {
-    Provider {
-        request_id: ApprovalRequestId,
-        holder: ProviderHolder,
-        ending: Ending,
-    },
-    UnprovenCall {
-        request_id: ApprovalRequestId,
-        holder: ParkedCallHolder,
-        ending: Ending,
-    },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
+approval_wire_record! {
+[deny_unknown_fields]
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -129,9 +110,10 @@ pub struct ReportDeliveryRequest {
     pub router_run: RouterRunId,
     pub report: HolderReport,
 }
+}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+approval_wire_union! {
+#[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -139,8 +121,12 @@ pub struct ReportDeliveryRequest {
 pub enum ReportDeliveryReply {
     DeliveryRecorded {},
     ReportDiffers {},
+    /// Final after erasure, even for an equal earlier report. Central retains no report to compare.
     NoHandoverOwed {},
-    Refused { refusal: HolderRefusal },
+    Refused {
+        refusal: HolderRefusal,
+    },
+}
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -154,8 +140,8 @@ pub enum RunRefusal {
     RunRetired,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+approval_wire_union! {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -164,18 +150,13 @@ pub enum HolderRefusal {
     NotVisible {},
     Run { refusal: RunRefusal },
 }
+}
 
 impl StopRequest {
     #[must_use]
     pub const fn cause(&self) -> HolderStopCause {
         match self {
-            Self::Provider { cause, .. } => match cause {
-                ProviderStopCause::TurnStopped => HolderStopCause::TurnStopped,
-                ProviderStopCause::SessionClosed => HolderStopCause::SessionClosed,
-                ProviderStopCause::ProviderConnectionLost => {
-                    HolderStopCause::ProviderConnectionLost
-                }
-            },
+            Self::Provider { cause, .. } => cause.holder_cause(),
             Self::UnprovenCall {
                 cause: CallStopCause::CallWithdrawn,
                 ..
@@ -184,31 +165,9 @@ impl StopRequest {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub enum ProviderStopCause {
-    TurnStopped,
-    SessionClosed,
-    ProviderConnectionLost,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub enum CallStopCause {
-    CallWithdrawn,
-}
-
+approval_wire_union! {
 /// Which ending stands after a Stop. The receipt carries no handover or answer.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -217,4 +176,5 @@ pub enum StopReceiptEnding {
     Cancelled { reason: CancelReason },
     TimedOut {},
     DecidedEarlier {},
+}
 }
