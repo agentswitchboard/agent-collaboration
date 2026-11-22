@@ -2,11 +2,9 @@ use std::time::Duration;
 
 use super::{
     DecodeAnswerError, InvalidReason, PollAnswer, RefreshAnswer, SignInFailure,
-    decode_device_authorization, decode_discovery, decode_poll, decode_refresh,
-    decode_start_failure,
+    decode_device_authorization, decode_poll, decode_refresh, decode_start_failure,
 };
 
-const DISCOVERY: &[u8] = br#"{"client_id":"019a0000-0000-7000-8000-000000000001"}"#;
 const DEVICE: &[u8] = br#"{
   "device_code":"private-device-code",
   "user_code":"MACH-TEST",
@@ -30,11 +28,7 @@ const GRANT: &str = r#"{
 }"#;
 
 #[test]
-fn discovery_and_device_start_read_only_the_contract_fields() {
-    assert_eq!(
-        decode_discovery(DISCOVERY).map(|id| id.to_string()),
-        Ok("019a0000-0000-7000-8000-000000000001".to_owned())
-    );
+fn device_start_reads_only_the_contract_fields() {
     let device = decode_device_authorization(DEVICE).expect("valid sign-in response");
     assert_eq!(device.instructions.user_code, "MACH-TEST");
     assert_eq!(

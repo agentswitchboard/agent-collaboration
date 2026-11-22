@@ -1,31 +1,39 @@
 //! Machine device authorization and credential ownership on the Router side.
 mod credential_store;
+mod credential_value;
 mod device_state;
+mod discovery_answer;
+mod enrollment_attempt;
 mod enrollment_binding;
 mod enrollment_identity;
+mod enrollment_outcome;
 mod refresh_owner;
 mod sign_in_answers;
+mod sign_in_client;
 
 pub use credential_store::{
-    ConditionalWrite, CredentialStore, CredentialStoreError, RefreshCredential, SecretValue,
-    StoreDurability,
+    ConditionalWrite, CredentialStore, CredentialStoreError, StoreDurability,
 };
-pub use device_state::{
-    DeviceEnrollment, DeviceEnrollmentInput, DevicePollSchedule, EnrollmentEnd,
-};
+pub use credential_value::{RefreshCredential, SecretValue};
+pub use device_state::{DeviceEnrollment, DeviceEnrollmentInput, DevicePollSchedule};
 pub use enrollment_binding::{
-    BindingGeneration, EnrollmentBinding, EnrollmentContext, EnrollmentKey, InvalidDeployment,
-    SignInDeployment, StoredEnrollment,
+    BindingGeneration, EnrollmentBinding, EnrollmentContext, EnrollmentKey, EnrollmentReceipt,
+    InvalidDeployment, SignInDeployment, StoredEnrollment,
 };
 pub use enrollment_identity::{
     CentralEndpointId, CentralEndpointIds, EnrollmentId, OrganizationId, RouterClientId,
 };
+pub use enrollment_outcome::{EnrollmentEnd, InvalidReason};
 pub use refresh_owner::{
     AccessLease, AccessRequest, LeaseConfigurationFault, LeaseUnavailable, RefreshOwner,
     RefreshSource,
 };
 pub use sign_in_answers::{
-    DecodeAnswerError, DeviceAuthorization, DeviceInstructions, InvalidReason, PollAnswer,
-    RefreshAnswer, SignInFailure, TokenGrant, decode_device_authorization, decode_discovery,
-    decode_poll, decode_refresh, decode_start_failure,
+    DecodeAnswerError, DeviceAuthorization, DeviceInstructions, PollAnswer, RefreshAnswer,
+    SignInFailure, TokenGrant, decode_device_authorization, decode_poll, decode_refresh,
+    decode_start_failure,
 };
+
+pub use discovery_answer::{CentralLinkTemplate, DiscoveryAnswer, decode_discovery};
+pub use enrollment_attempt::EnrollmentFailure;
+pub use sign_in_client::{EnrollmentRequest, SignInClient, SignInClientError};

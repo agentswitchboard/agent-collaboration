@@ -1,7 +1,7 @@
 use url::{Host, Url};
 use workspace_ids::MachineId;
 
-use crate::{EnrollmentEnd, EnrollmentId, OrganizationId, RefreshCredential};
+use crate::{CentralEndpointIds, EnrollmentEnd, EnrollmentId, OrganizationId, RefreshCredential};
 
 /// The store starts at zero and advances this version on every binding transition.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
@@ -127,6 +127,14 @@ impl StoredEnrollment {
             Self::Ended { generation, .. } => *generation,
         }
     }
+}
+
+/// The command receives this receipt only after sign-in's new binding has been stored.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct EnrollmentReceipt {
+    pub generation: BindingGeneration,
+    pub enrollment_id: EnrollmentId,
+    pub central: CentralEndpointIds,
 }
 
 #[cfg(test)]

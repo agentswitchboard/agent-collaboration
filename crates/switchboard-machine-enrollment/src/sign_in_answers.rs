@@ -3,24 +3,13 @@ use std::time::Duration;
 use serde::{Deserialize, de::IgnoredAny};
 use url::Url;
 
-use crate::{CentralEndpointIds, EnrollmentId, RefreshCredential, RouterClientId, SecretValue};
+use crate::{CentralEndpointIds, EnrollmentId, InvalidReason, RefreshCredential, SecretValue};
 
 /// The sign-in decoder reports invalid replies without preserving untrusted diagnostics.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum DecodeAnswerError {
     #[error("sign-in returned an invalid answer")]
     Malformed,
-}
-
-/// The sign-in decoder classifies the refusal codes that callers can act on safely.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum InvalidReason {
-    GrantRefused,
-    InvalidClient,
-    InvalidRequest,
-    UnknownError,
-    MalformedAnswer,
-    UnexpectedStatus,
 }
 
 /// Sign-in supplies these two human-facing values when a device attempt starts.
@@ -78,12 +67,6 @@ pub enum SignInFailure {
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
-struct DiscoveryBody {
-    client_id: RouterClientId,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 struct DeviceBody {
     device_code: String,
     user_code: String,
@@ -130,10 +113,6 @@ fn json_body<'body, Body: Deserialize<'body>>(
     body: &'body [u8],
 ) -> Result<Body, DecodeAnswerError> {
     serde_json::from_slice(body).map_err(|_| DecodeAnswerError::Malformed)
-}
-
-pub fn decode_discovery(body: &[u8]) -> Result<RouterClientId, DecodeAnswerError> {
-    Ok(json_body::<DiscoveryBody>(body)?.client_id)
 }
 
 pub fn decode_device_authorization(body: &[u8]) -> Result<DeviceAuthorization, DecodeAnswerError> {

@@ -550,6 +550,23 @@ fn a_lost_answer_then_a_definitive_refusal_ends_the_binding() {
     );
 }
 
+#[test]
+fn an_expired_access_answer_keeps_the_rotated_refresh_credential() {
+    let fixture = Fixture::new();
+    fixture.server.block.store(true, Ordering::SeqCst);
+    let mut waiting = std::pin::pin!(fixture.owner.lease(AccessRequest::Usable));
+    assert!(poll_once(waiting.as_mut()).is_pending());
+    fixture.advance(60);
+    fixture.server.block.store(false, Ordering::SeqCst);
+
+    expect_lease(poll_once(waiting.as_mut()), 3, 2);
+    assert_eq!(fixture.store.token(), Some(refresh_secret(2)));
+    assert_eq!(
+        fixture.server.sent(),
+        vec![refresh_secret(0), refresh_secret(1)]
+    );
+}
+
 #[hegel::test(seed = Some(1351), test_cases = 100)]
 fn generated_refresh_callers_match_the_rotation_model(case: hegel::TestCase) {
     let fixture = Fixture::new();

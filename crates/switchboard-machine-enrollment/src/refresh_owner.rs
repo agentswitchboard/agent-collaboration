@@ -336,11 +336,7 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
             context: previous.context,
             credential: grant.credential,
         };
-        let deadline = self
-            .clock
-            .monotonic_now()
-            .after(WRITE_RETRY_LIMIT)
-            .min(usable_until);
+        let deadline = self.clock.monotonic_now().after(WRITE_RETRY_LIMIT);
         loop {
             let now = self.clock.monotonic_now();
             if now >= deadline {
