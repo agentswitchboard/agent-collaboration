@@ -519,3 +519,6 @@ async fn a_published_result_a_reader_holds_still_arms_its_expiry() {
     assert!(!operations.holds(&operation).await);
     worker.stop().await;
 }
+
+#[path = "provider_retention_startup_test.rs"]
+mod startup;

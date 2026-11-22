@@ -501,6 +501,8 @@ impl CollaborationRuntime {
             provider_delivery_route,
             session_delivery_router,
             provider_retention: None,
+            #[cfg(test)]
+            provider_retention_observation: None,
             open_scratch_scopes,
             scratch_sweep: None,
             directory: inputs.directory,

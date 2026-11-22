@@ -142,6 +142,8 @@ pub struct CollaborationRuntime {
     provider_delivery_route: Option<std::sync::Arc<crate::ProviderAcpDeliveryRoute>>,
     session_delivery_router: Option<std::sync::Arc<collaboration_runtime::SessionDeliveryRouter>>,
     provider_retention: Option<tokio::task::JoinHandle<()>>,
+    #[cfg(test)]
+    provider_retention_observation: Option<collaboration_runtime::WorkerObservation>,
     /// Scratch scopes with a Codex session open in this Host.
     open_scratch_scopes: std::sync::Arc<collaboration_runtime::OpenScratchScopes>,
     scratch_sweep: Option<tokio::task::JoinHandle<()>>,
