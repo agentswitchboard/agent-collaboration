@@ -12,6 +12,8 @@
 //! (`codex_session_inventory`, `provider_session_inventory`).
 mod conversation_operations;
 mod journal_operations;
+#[cfg(test)]
+mod observation_call_machine;
 mod provider_observation_operations;
 mod session_native_control;
 mod session_operations;
