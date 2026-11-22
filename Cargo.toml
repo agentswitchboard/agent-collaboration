@@ -33,6 +33,7 @@ members = [
     "crates/fleet-contracts",
     "crates/fleet-rpc",
     "crates/fleet-signin",
+    "crates/fleet-machine-login",
     "crates/fleet-workspace-service",
     "crates/router-clock",
     "crates/tailnet-verification-host",
@@ -112,6 +113,7 @@ fleet-runtime-test-support = { path = "crates/fleet-runtime-test-support", versi
 fleet-contracts = { path = "crates/fleet-contracts", version = "0.1.156" }
 fleet-rpc = { path = "crates/fleet-rpc", version = "0.1.157" }
 fleet-signin = { path = "crates/fleet-signin", version = "0.1.157" }
+fleet-machine-login = { path = "crates/fleet-machine-login", version = "0.1.158" }
 fleet-workspace-service = { path = "crates/fleet-workspace-service", version = "0.1.157" }
 fleet-request-log = { path = "crates/fleet-request-log", version = "0.1.156" }
 fleet-runtime = { path = "crates/fleet-runtime", version = "0.1.156" }

@@ -29,6 +29,8 @@ fn rows(record: &OrganizationChangeRecord) -> ReadOutcome {
             "target_id",
             "created_at",
             "updated_at",
+            "workspace_id",
+            "allowance_state",
         ]
         .map(str::to_owned)
         .to_vec(),
@@ -42,14 +44,16 @@ fn machine_kinds_and_automatic_origin_round_trip_through_the_production_row_code
         OrganizationChangeKind::MachineEnrolled,
         OrganizationChangeKind::MachineRevoked,
         OrganizationChangeKind::MachineExpired,
-        OrganizationChangeKind::AllowanceChanged,
     ] {
         let expected = record(kind);
         let outcome = rows(&expected);
         assert_eq!(outcome.rows[0][3], text("automatic"));
         assert_eq!(outcome.rows[0][4], SqlValue::Null);
         assert_eq!(outcome.rows[0][5], SqlValue::Null);
-        assert_eq!(decode(&outcome, &outcome.rows[0]).unwrap(), expected);
+        assert_eq!(
+            decode(&outcome, &outcome.rows[0]).unwrap(),
+            StoredOrganizationChange::TargetedChange(expected)
+        );
     }
 }
 
@@ -69,6 +73,34 @@ fn automatic_origin_rejects_person_or_permission_cells_instead_of_dropping_them(
         decode(&outcome, &outcome.rows[0]),
         Err(corrupt("origin", ""))
     );
+}
+
+#[test]
+fn malformed_allowance_cells_are_reported_by_the_checked_row_decoder() {
+    let mut outcome = rows(&record(OrganizationChangeKind::WorkspaceCreated));
+    let row = &mut outcome.rows[0];
+    row[2] = text(MACHINE_ALLOWANCE_CHANGE_KIND);
+    row[9] = text("018f1111-2222-7000-8000-000000000010");
+    row[10] = text("withdrawn");
+    let StoredOrganizationChange::MachineAllowanceChanged(change) =
+        decode(&outcome, &outcome.rows[0]).unwrap()
+    else {
+        panic!("stored allowance did not project as a typed record");
+    };
+    assert_eq!(change.state, MachineAllowanceState::Withdrawn);
+
+    for (column, invalid, field) in [
+        (6, text("bad machine"), "target_id"),
+        (9, SqlValue::Null, "workspace_id"),
+        (9, text("bad workspace"), "workspace_id"),
+        (10, SqlValue::Null, "allowance_state"),
+        (10, text("unknown"), "allowance_state"),
+        (2, text("workspaceCreated"), "workspace_id"),
+    ] {
+        let mut malformed = outcome.rows[0].clone();
+        malformed[column] = invalid;
+        assert_eq!(decode(&outcome, &malformed), Err(corrupt(field, "")));
+    }
 }
 
 struct ReadOnlyRows(ReadOutcome);

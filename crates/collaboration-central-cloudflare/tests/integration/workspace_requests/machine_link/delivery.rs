@@ -84,7 +84,9 @@ async fn delivery_journey(fixture: &Fixture) -> Result<()> {
     if !matches!(wrong_machine.next().await, Some(Ok(Message::Text(pong))) if pong=="pong") {
         return Err("a wrong-machine receipt must keep the socket open".into());
     }
-    wrong_machine.close(CloseCode::Normal, None).await?;
+    wrong_machine
+        .close(reqwest_websocket::CloseCode::Normal, None)
+        .await?;
     let mut replacement = ConnectedLink::open(fixture).await?;
     if fixture::receive(&mut replacement.socket).await? != offered {
         return Err("replacement did not receive the original unacknowledged record".into());

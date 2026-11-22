@@ -43,12 +43,12 @@ pub trait OrganizationSignInPort: Send + Sync + 'static {
     ) -> impl Future<Output = Result<OrganizationAdminAnswer, StoreFailure>> + Send;
     fn device_login(
         &self,
-        request: &crate::identity_contract::DecideDeviceLogin,
-    ) -> impl Future<Output = Result<crate::identity_contract::DeviceLoginDecision, StoreFailure>> + Send;
+        request: &fleet_contracts::DecideDeviceLogin,
+    ) -> impl Future<Output = Result<fleet_contracts::DeviceLoginDecision, StoreFailure>> + Send;
     fn machine_token(
         &self,
-        request: &crate::identity_contract::DecideMachineToken,
-    ) -> impl Future<Output = Result<crate::identity_contract::MachineTokenDecision, StoreFailure>> + Send;
+        request: &fleet_contracts::DecideMachineToken,
+    ) -> impl Future<Output = Result<fleet_contracts::MachineTokenDecision, StoreFailure>> + Send;
 }
 impl<H: fleet_runtime_ports::CentralStore, S: fleet_runtime_ports::WorkspaceStores>
     OrganizationSignInPort for crate::WorkspaceRuntime<H, S>
@@ -91,16 +91,16 @@ impl<H: fleet_runtime_ports::CentralStore, S: fleet_runtime_ports::WorkspaceStor
     }
     async fn device_login(
         &self,
-        request: &crate::identity_contract::DecideDeviceLogin,
-    ) -> Result<crate::identity_contract::DeviceLoginDecision, StoreFailure> {
+        request: &fleet_contracts::DecideDeviceLogin,
+    ) -> Result<fleet_contracts::DeviceLoginDecision, StoreFailure> {
         let answer = self.decide_device_login(request).await;
         self.after_signin_event().await;
         answer
     }
     async fn machine_token(
         &self,
-        request: &crate::identity_contract::DecideMachineToken,
-    ) -> Result<crate::identity_contract::MachineTokenDecision, StoreFailure> {
+        request: &fleet_contracts::DecideMachineToken,
+    ) -> Result<fleet_contracts::MachineTokenDecision, StoreFailure> {
         let answer = self.decide_machine_token(request).await;
         self.after_signin_event().await;
         answer

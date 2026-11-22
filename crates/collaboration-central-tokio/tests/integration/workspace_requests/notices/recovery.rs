@@ -309,7 +309,7 @@ async fn another_workspace_cannot_extend_a_pending_drain_deadline() {
             .run_batch(StatementBatch {
                 statements: vec![GuardedStatement {
                     statement: Statement {
-                        sql: "UPDATE login_machines SET allowed_workspaces=? WHERE machine_id=?",
+                        sql: collaboration_central_conformance::REPLACE_FIXTURE_ALLOWANCES_SQL,
                         args: vec![
                             text(
                                 serde_json::to_string(&vec![
@@ -321,7 +321,7 @@ async fn another_workspace_cannot_extend_a_pending_drain_deadline() {
                             text(f.caller.caller().machine_id())
                         ]
                     },
-                    expect: RowExpectation::Exactly(1),
+                    expect: RowExpectation::Exactly(2),
                 }],
                 alarm: AlarmUpdate::Unchanged
             })

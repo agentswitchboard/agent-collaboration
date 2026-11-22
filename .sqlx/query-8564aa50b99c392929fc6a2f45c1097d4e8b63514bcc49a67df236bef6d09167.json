@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO login_machines(machine_id,label,state,enrollment_generation,created_at,updated_at)\nVALUES (?,?,?,?,?,?)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "8564aa50b99c392929fc6a2f45c1097d4e8b63514bcc49a67df236bef6d09167"
+}

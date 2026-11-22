@@ -17,27 +17,29 @@ pub mod signin_test_observation;
 #[cfg(feature = "test-support")]
 pub mod storage_conformance;
 
-mod machine_connection;
-pub use machine_connection::ValidatedMachineConnection;
+pub use fleet_machine_login::link_authority::ValidatedMachineConnection;
+pub use fleet_machine_login::link_transitions::{
+    MachineTokenRenewalRefusal, RenewedMachineConnection,
+};
 mod machine_connection_admission;
 mod machine_login_plans;
-mod machine_login_reads;
-mod machine_login_row_values;
-mod machine_login_rows;
 #[cfg(feature = "test-support")]
 mod machine_login_test_control;
-mod machine_login_writes;
-pub use machine_connection_admission::{MachineLinkRequestAuthority, MachineTokenRenewalRefusal};
+pub use machine_connection_admission::{
+    MachineLinkAdmission, MachineLinkRequestAuthority, RenewalTermination, project_renewal_refusal,
+};
 mod workspace_caller;
 pub use workspace_caller::WorkspaceCaller;
 mod workspace_runtime;
 #[cfg(feature = "test-support")]
 pub use machine_login_test_control::{MachineLoginControl, machine_login_control};
 pub use workspace_runtime::WorkspaceRuntime;
+mod applying_request_failure;
 mod organization_workspace_plans;
 mod workspace_directory_requests;
 mod workspace_item_reads;
 mod workspace_read_queries;
+pub use applying_request_failure::ApplyingRequestFailure;
 mod workspace_request_gate;
 mod workspace_request_status;
 mod workspace_rule_dispatch;
@@ -75,6 +77,7 @@ mod organization_provisioning_plans;
 mod organization_signin_http;
 mod organization_signin_port;
 mod person_admission_plans;
+mod person_proof_repository;
 mod private_machine_revocation;
 pub use organization_admin_contract::*;
 pub use organization_signin_http::organization_signin_router;

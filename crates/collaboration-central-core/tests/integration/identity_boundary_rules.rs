@@ -1,7 +1,8 @@
 #[cfg(test)]
 use crate::schema_validation;
 
-use collaboration_central_core::identity_contract::{DecideDeviceLogin, MachineEnrollment};
+use collaboration_central_core::identity_contract::MachineEnrollment;
+use fleet_contracts::DecideDeviceLogin;
 use fleet_identity_protocol::ReportSessionActivity;
 use schemars::JsonSchema;
 use serde::{Serialize, de::DeserializeOwned};

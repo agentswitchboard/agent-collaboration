@@ -1523,6 +1523,7 @@ dependencies = [
  "fleet-contracts",
  "fleet-engine",
  "fleet-identity-protocol",
+ "fleet-machine-login",
  "fleet-mail",
  "fleet-notices",
  "fleet-request-log",
@@ -2480,6 +2481,7 @@ version = "0.1.158"
 dependencies = [
  "approval-request-protocol",
  "central-engine-model",
+ "central-link-protocol",
  "central-storage",
  "fleet-identity-protocol",
  "fleet-rpc",
@@ -2540,6 +2542,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "fleet-machine-login"
+version = "0.1.158"
+dependencies = [
+ "central-engine-model",
+ "central-storage",
+ "chrono",
+ "fleet-contracts",
+ "fleet-identity-protocol",
+ "fleet-lent-transaction",
+ "fleet-runtime-ports",
+ "fleet-signin",
+ "hegeltest",
+ "message-board",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "sqlx-core",
+ "state-machine-core",
+ "tokio",
+ "uuid",
+ "workspace-ids",
+]
+
+[[package]]
 name = "fleet-mail"
 version = "0.1.158"
 dependencies = [
@@ -2550,6 +2576,7 @@ dependencies = [
  "fleet-contracts",
  "fleet-engine",
  "fleet-lent-transaction",
+ "fleet-machine-login",
  "fleet-request-log",
  "fleet-runtime-ports",
  "fleet-workspace-access",
@@ -2758,6 +2785,7 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_json_canonicalizer",
+ "sqlx",
  "workspace-ids",
  "workspace-model",
 ]
@@ -2770,6 +2798,7 @@ dependencies = [
  "fleet-contracts",
  "fleet-runtime-ports",
  "message-board",
+ "serde_json",
  "sqlx",
  "workspace-model",
 ]

@@ -67,6 +67,14 @@ async fn persisted_invalid_lifecycle_identifiers_times_and_generation_refuse_emp
             "negative machine generation",
             "UPDATE login_machines SET enrollment_generation=-1",
         ),
+        (
+            "positive generation inconsistent with the active approval",
+            "UPDATE login_machines SET enrollment_generation=2",
+        ),
+        (
+            "active approval attached to a revoked machine",
+            "UPDATE login_machines SET state='revoked'",
+        ),
     ] {
         let f = MachineFixture::new().await?;
         let enrollment_id = enrollment(
@@ -121,8 +129,11 @@ async fn persisted_invalid_lifecycle_identifiers_times_and_generation_refuse_emp
             "UPDATE login_machine_approvals SET state='enrolled',end_reason=NULL,ended_at=NULL,request_id=?,machine_client_id=?,last_grant_at=?",
             original[0].clone(),
         ).await?;
-        f.execute("UPDATE login_machines SET enrollment_generation=1", vec![])
-            .await?;
+        f.execute(
+            "UPDATE login_machines SET state='enrolled',enrollment_generation=1",
+            vec![],
+        )
+        .await?;
         assert!(
             owning_snapshot(&f).await? == healthy,
             "{domain}: repair did not restore the exact valid store"

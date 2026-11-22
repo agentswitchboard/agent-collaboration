@@ -1,13 +1,10 @@
 //! Fixture wire projections are built only from the owning machine row codecs.
-use crate::{
-    identity_contract::{AllowedWorkspaces, DeviceLoginRequestId, EnrollmentRevocationReason},
-    machine_login_row_values::{seconds_timestamp, timestamp},
-    machine_login_rows,
-    organization_authority::machine_login::{MachineState, StoredEnrollmentState},
-};
 use central_storage::{ReadOutcome, SafeInteger, SqlValue, StoreFailure};
 use fleet_contracts::ClientId;
+use fleet_contracts::{AllowedWorkspaces, DeviceLoginRequestId, EnrollmentRevocationReason};
 use fleet_identity_protocol::EnrollmentId;
+use fleet_machine_login::enrollment_row_values::{seconds_timestamp, timestamp};
+use fleet_machine_login::policy::{MachineState, StoredEnrollmentState};
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use message_board::WorkspaceId;
 use serde::{Deserialize, Serialize};
@@ -109,14 +106,17 @@ pub(super) fn decode_machine_observation(
         .rows
         .first()
         .ok_or_else(|| corrupt("signin_observation.machine"))?;
-    let checked = machine_login_rows::machine(&rows, row)?;
+    let checked = fleet_machine_login::enrollment_row_codec::machine(&rows, row)?;
     Ok(ObservedMachine {
         machine_id: checked.machine_id,
         state: match checked.state {
             MachineState::Enrolled => ObservedMachineState::Enrolled,
             MachineState::Revoked => ObservedMachineState::Revoked,
         },
-        allowed_workspaces: checked.allowed_workspaces,
+        allowed_workspaces: fleet_runtime_ports::stored_values::json(
+            fleet_runtime_ports::stored_values::string(&rows, row, "active_workspaces")?,
+            "signin_observation.active_workspaces",
+        )?,
         enrollment_generation: checked.generation.get(),
     })
 }
@@ -129,7 +129,7 @@ pub(super) fn decode_approval_observation(
         .rows
         .first()
         .ok_or_else(|| corrupt("signin_observation.machine_approval"))?;
-    let checked = machine_login_rows::enrollment(&rows, row)?;
+    let checked = fleet_machine_login::enrollment_row_codec::enrollment(&rows, row)?;
     let (state, end_reason, machine_client_id, last_grant_at) = match checked.state {
         StoredEnrollmentState::Approved => (ObservedApprovalState::Approved, None, None, None),
         StoredEnrollmentState::Enrolled {

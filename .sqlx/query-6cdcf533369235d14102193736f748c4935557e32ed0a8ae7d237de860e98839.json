@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE login_machine_allowances\nSET updated_at = updated_at\nWHERE machine_id = ?1 AND workspace_id = ?2 AND allowance_id = ?3 AND state = ?4\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "6cdcf533369235d14102193736f748c4935557e32ed0a8ae7d237de860e98839"
+}

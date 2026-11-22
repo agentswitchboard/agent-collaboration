@@ -1,0 +1,206 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT a.approval_id,a.request_id,a.label,a.allowed_workspaces,a.state,a.end_reason,a.approved_by_person_id,a.permission_checked,a.base_generation,a.code_expires_at,a.machine_client_id,a.last_grant_at,a.ended_at,a.created_at,a.updated_at,m.machine_id FROM login_machine_approvals a LEFT JOIN login_machines m ON m.machine_id=a.machine_id WHERE a.approval_id=?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "approval_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machine_approvals",
+            "name": "approval_id"
+          }
+        }
+      },
+      {
+        "name": "request_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machine_approvals",
+            "name": "request_id"
+          }
+        }
+      },
+      {
+        "name": "label",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machine_approvals",
+            "name": "label"
+          }
+        }
+      },
+      {
+        "name": "allowed_workspaces",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machine_approvals",
+            "name": "allowed_workspaces"
+          }
+        }
+      },
+      {
+        "name": "state",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machine_approvals",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "name": "end_reason",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machine_approvals",
+            "name": "end_reason"
+          }
+        }
+      },
+      {
+        "name": "approved_by_person_id",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machine_approvals",
+            "name": "approved_by_person_id"
+          }
+        }
+      },
+      {
+        "name": "permission_checked",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machine_approvals",
+            "name": "permission_checked"
+          }
+        }
+      },
+      {
+        "name": "base_generation",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "login_machine_approvals",
+            "name": "base_generation"
+          }
+        }
+      },
+      {
+        "name": "code_expires_at",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machine_approvals",
+            "name": "code_expires_at"
+          }
+        }
+      },
+      {
+        "name": "machine_client_id",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machine_approvals",
+            "name": "machine_client_id"
+          }
+        }
+      },
+      {
+        "name": "last_grant_at",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machine_approvals",
+            "name": "last_grant_at"
+          }
+        }
+      },
+      {
+        "name": "ended_at",
+        "ordinal": 12,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machine_approvals",
+            "name": "ended_at"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 13,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machine_approvals",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 14,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machine_approvals",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "name": "machine_id",
+        "ordinal": 15,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machines",
+            "name": "machine_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "00a83871c7805bfc9e988fefff6667cbd4a4f0923e744fdf3f75ef2f0f4c62b7"
+}
