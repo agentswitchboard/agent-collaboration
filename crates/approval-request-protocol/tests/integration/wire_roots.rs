@@ -23,14 +23,18 @@ fn holder() -> Value {
     json!({ "session": session_ref(), "routerRun": RUN_ID })
 }
 
+fn offered_options() -> Value {
+    json!([{
+        "id": "once", "label": "Continue", "effect": "allow", "lasts": "thisRequest", "kept": "nowhere"
+    }])
+}
+
 fn approval_offer() -> Value {
     json!({
         "title": "Use the tool",
         "description": null,
         "subject": "Read config",
-        "options": [{
-            "id": "once", "label": "Continue", "effect": "allow", "lasts": "thisRequest", "kept": "nowhere"
-        }]
+        "options": offered_options()
     })
 }
 
@@ -49,7 +53,7 @@ fn question_offer() -> Value {
 fn call_offer() -> Value {
     json!({"operation": "writeConfig", "summary": "Write config",
         "invocation": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-        "options": approval_offer()["options"] })
+        "options": offered_options() })
 }
 
 fn offered_approval() -> Value {
@@ -165,55 +169,52 @@ macro_rules! expected_wire_roots {
     }};
 }
 
-fn round_trip_root<WireRoot: Debug + DeserializeOwned + Serialize>(specimen: Value) {
+fn round_trip_root<WireRoot: Debug + DeserializeOwned + Serialize>(
+    specimen: Value,
+) -> Result<(), String> {
     let wire_text = specimen.to_string();
-    let decoded = serde_json::from_str::<WireRoot>(&wire_text).unwrap_or_else(|error| {
-        panic!(
-            "{} rejected {specimen}: {error}",
-            std::any::type_name::<WireRoot>()
-        )
-    });
+    let root_name = std::any::type_name::<WireRoot>();
+    let decoded = serde_json::from_str::<WireRoot>(&wire_text)
+        .map_err(|error| format!("{root_name} rejected {specimen}: {error}"))?;
+    let serialized = serde_json::to_string(&decoded).map_err(|error| error.to_string())?;
     let regenerated: Value =
-        serde_json::from_str(&serde_json::to_string(&decoded).unwrap()).unwrap();
-    assert_eq!(
-        regenerated,
-        specimen,
-        "{}",
-        std::any::type_name::<WireRoot>()
-    );
+        serde_json::from_str(&serialized).map_err(|error| error.to_string())?;
+    if regenerated != specimen {
+        return Err(format!(
+            "{root_name}: expected {specimen}, got {regenerated}"
+        ));
+    }
 
-    if specimen.get("kind").is_some() || specimen.is_string() {
-        let mut unknown_kind = specimen.clone();
-        if unknown_kind.is_string() {
-            unknown_kind = json!("unrecognisedKind");
-        } else {
-            unknown_kind["kind"] = json!("unrecognisedKind");
-        }
-        assert!(
-            serde_json::from_str::<WireRoot>(&unknown_kind.to_string()).is_err(),
-            "{} accepted an unknown variant",
-            std::any::type_name::<WireRoot>()
-        );
+    let mut unknown_kind = specimen.clone();
+    if let Some(kind) = unknown_kind.get_mut("kind") {
+        *kind = json!("unrecognisedKind");
+    } else if unknown_kind.is_string() {
+        unknown_kind = json!("unrecognisedKind");
+    }
+    if unknown_kind != specimen
+        && serde_json::from_str::<WireRoot>(&unknown_kind.to_string()).is_ok()
+    {
+        return Err(format!("{root_name} accepted an unknown variant"));
     }
 
     if let Some(mut extra_field) = specimen.as_object().cloned() {
         extra_field.insert("unrecognisedField".to_owned(), json!(true));
-        assert!(
-            serde_json::from_str::<WireRoot>(&Value::Object(extra_field).to_string()).is_err(),
-            "{} accepted an extra field",
-            std::any::type_name::<WireRoot>()
-        );
+        if serde_json::from_str::<WireRoot>(&Value::Object(extra_field).to_string()).is_ok() {
+            return Err(format!("{root_name} accepted an extra field"));
+        }
     }
+    Ok(())
 }
 
 #[test]
-fn expected_rust_roots_round_trip_through_serde() {
+fn expected_rust_roots_round_trip_through_serde() -> Result<(), String> {
     macro_rules! check_shape {
         ($wire_type:ident, $($specimen:expr),+ $(,)?) => {
-            $(round_trip_root::<approval_request_protocol::$wire_type>($specimen);)+
+            $(round_trip_root::<approval_request_protocol::$wire_type>($specimen)?;)+
         };
     }
     expected_wire_roots!(check_shape);
+    Ok(())
 }
 
 #[cfg(all(feature = "wire-export", not(target_arch = "wasm32")))]
