@@ -376,12 +376,11 @@ impl SessionOwnerPorts for OutboxOrderProbe {
                 .push("ordinary effect");
             return Ok(Some(OwnerEvent::ConnectionLost));
         }
-        if !matches!(
-            effect,
-            OwnerEffect::RestoreSettled { .. } | OwnerEffect::InputQueued(_)
-        ) {
-            return Err(OwnerTaskError::ExecutorStopped);
-        }
+        let wake = match effect {
+            OwnerEffect::RestoreSettled { .. } => "restore result",
+            OwnerEffect::InputQueued(_) => "queued acceptance",
+            _ => return Err(OwnerTaskError::ExecutorStopped),
+        };
         self.order
             .lock()
             .map_err(|_| OwnerTaskError::ExecutorStopped)?
@@ -390,7 +389,7 @@ impl SessionOwnerPorts for OutboxOrderProbe {
         let snapshot = self.snapshot.clone();
         let acknowledgement = self.acknowledgement.clone();
         caller_wakes.observe_send(move || {
-            record_ordered_wake(&snapshot, &acknowledgement, &order);
+            record_ordered_wake(&snapshot, &acknowledgement, &order, wake);
         });
         Ok(Some(OwnerEvent::Create(CreateProgress::Failed {
             operation: Uuid::now_v7(),
@@ -403,6 +402,7 @@ fn record_ordered_wake(
     snapshot: &watch::Receiver<SessionSnapshot>,
     acknowledgement: &std::sync::Mutex<Acknowledgement>,
     order: &std::sync::Mutex<Vec<&'static str>>,
+    wake: &'static str,
 ) {
     assert!(
         matches!(snapshot.borrow().lifecycle, SessionLifecycle::Live { .. }),
@@ -412,11 +412,12 @@ fn record_ordered_wake(
         acknowledgement.lock().expect("acknowledgement").try_recv(),
         Err(oneshot::error::TryRecvError::Empty)
     ));
-    order.lock().expect("order").push("wake caller");
+    order.lock().expect("order").push(wake);
 }
 
 fn assert_outbox_wake_order(
-    effect: impl FnOnce(provider_session_machines::SessionGeneration) -> OwnerEffect,
+    effects: impl FnOnce(provider_session_machines::SessionGeneration) -> [OwnerEffect; 2],
+    wakes: [&'static str; 2],
 ) {
     let (mut task, handle, owner) = unpublished_live_owner();
     let SessionLifecycle::Live { generation } = task.machine.snapshot().lifecycle else {
@@ -434,7 +435,10 @@ fn assert_outbox_wake_order(
     task.execute_outbox(
         OwnerOutbox {
             owner,
-            effects: vec![effect(generation), OwnerEffect::RetireRoute(generation)],
+            effects: effects(generation)
+                .into_iter()
+                .chain([OwnerEffect::RetireRoute(generation)])
+                .collect(),
         },
         Some(accepted),
         &mut ports,
@@ -453,9 +457,12 @@ fn assert_outbox_wake_order(
         [
             "prepare caller",
             "first immediate event",
+            "prepare caller",
+            "first immediate event",
             "ordinary effect",
             "second immediate event",
-            "wake caller"
+            wakes[0],
+            wakes[1]
         ]
     );
     acknowledgement
@@ -466,14 +473,13 @@ fn assert_outbox_wake_order(
         .expect("command accepted");
 }
 
-#[test]
-fn restore_reply_wakes_after_the_outbox_and_publication() {
+fn restore_effect(generation: provider_session_machines::SessionGeneration) -> OwnerEffect {
     use provider_session_machines::session_lifecycle_machine::LoadAttempt;
     use provider_session_machines::session_owner::{
         RestoreDisposition, RestorePhase, RestoreResult, RunAttempt,
     };
 
-    assert_outbox_wake_order(|generation| OwnerEffect::RestoreSettled {
+    OwnerEffect::RestoreSettled {
         operation: Uuid::now_v7(),
         result: RestoreResult {
             attempt: RunAttempt {
@@ -486,21 +492,34 @@ fn restore_reply_wakes_after_the_outbox_and_publication() {
             },
             observed: Default::default(),
         },
-    });
+    }
+}
+
+fn queued_effect(generation: provider_session_machines::SessionGeneration) -> OwnerEffect {
+    use provider_session_machines::{session_owner::OwnerInput, session_turn_machine::TurnId};
+
+    OwnerEffect::InputQueued(OwnerInput {
+        generation,
+        operation: Uuid::now_v7(),
+        input: session_event_model::InputId::generate(),
+        turn: TurnId(Uuid::now_v7()),
+    })
+}
+
+#[test]
+fn restore_reply_wakes_after_the_outbox_and_publication() {
+    assert_outbox_wake_order(
+        |generation| [restore_effect(generation), queued_effect(generation)],
+        ["restore result", "queued acceptance"],
+    );
 }
 
 #[test]
 fn queued_acceptance_wakes_after_the_outbox_and_publication() {
-    use provider_session_machines::{session_owner::OwnerInput, session_turn_machine::TurnId};
-
-    assert_outbox_wake_order(|generation| {
-        OwnerEffect::InputQueued(OwnerInput {
-            generation,
-            operation: Uuid::now_v7(),
-            input: session_event_model::InputId::generate(),
-            turn: TurnId(Uuid::now_v7()),
-        })
-    });
+    assert_outbox_wake_order(
+        |generation| [queued_effect(generation), restore_effect(generation)],
+        ["queued acceptance", "restore result"],
+    );
 }
 
 struct FailingEffectProbe {

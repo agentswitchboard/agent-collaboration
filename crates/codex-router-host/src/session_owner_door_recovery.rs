@@ -57,6 +57,10 @@ impl SessionOwnerDoor {
         if self.shutdown.is_cancelled() {
             return None;
         }
+        #[cfg(test)]
+        if self.preparation_fixture.take_replacement_refusal() {
+            return None;
+        }
         let failed = previous.owner.address.incarnation;
         let FailedOwnerSettlement {
             replacement,

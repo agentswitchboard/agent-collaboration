@@ -174,6 +174,14 @@ impl SessionOwnerRegistry {
         }
     }
 
+    #[cfg(test)]
+    pub(crate) fn provisional_owner(&self, operation: &OperationId) -> Option<RegisteredOwner> {
+        self.entries()
+            .creates
+            .get(operation)
+            .map(|entry| entry.owner.clone())
+    }
+
     pub fn adopt(
         &self,
         operation: &OperationId,

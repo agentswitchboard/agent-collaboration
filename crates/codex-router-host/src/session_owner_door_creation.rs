@@ -45,6 +45,18 @@ struct ProvisionalCreate {
 }
 
 impl SessionOwnerDoor {
+    #[cfg(test)]
+    pub(crate) fn provisional_snapshots_for_test(
+        &self,
+        operation: &OperationId,
+    ) -> Option<
+        tokio::sync::watch::Receiver<provider_session_machines::session_owner::SessionSnapshot>,
+    > {
+        self.registry
+            .provisional_owner(operation)
+            .map(|owner| owner.handle.snapshots())
+    }
+
     pub(crate) async fn create(
         self: &Arc<Self>,
         endpoint: EndpointRef,
