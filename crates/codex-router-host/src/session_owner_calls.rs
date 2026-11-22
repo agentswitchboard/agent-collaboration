@@ -2,7 +2,7 @@
 
 use crate::session_owner_delivery_evidence::OwnerDeliveryEvidence;
 use acp_client_runtime::ProviderPromptContent;
-use acp_client_runtime::session_owner_task::OwnerCompletion;
+use acp_client_runtime::session_owner_task::{OwnerCallerWakes, OwnerCompletion};
 use collaboration_protocol::ProviderIdentity;
 use provider_session_machines::{
     SessionGeneration,
@@ -16,7 +16,7 @@ use provider_session_machines::{
 use session_event_model::InputId;
 use std::{
     collections::BTreeMap,
-    sync::{Mutex, MutexGuard},
+    sync::{Arc, Mutex, MutexGuard},
 };
 use tokio::sync::{Notify, oneshot};
 use tokio_util::task::TaskTracker;
@@ -111,9 +111,14 @@ impl SessionOwnerCalls {
         lock(&self.approvals).insert(input, context);
     }
 
-    pub(crate) fn deliver_restore(&self, operation: Uuid, result: RestoreResult) {
+    pub(crate) fn deliver_restore(
+        &self,
+        operation: Uuid,
+        result: RestoreResult,
+        caller_wakes: &mut OwnerCallerWakes,
+    ) {
         if let Some(caller) = lock(&self.dependent_restores).remove(&operation) {
-            let _caller_gone = caller.send(result);
+            caller_wakes.send(caller, result);
         }
     }
 
@@ -184,21 +189,42 @@ impl SessionOwnerCalls {
     }
 
     pub(crate) fn settle_cancel(
-        &self,
+        self: &Arc<Self>,
         authorization: &DispatchAuthorization,
         operation: Uuid,
         receipt: CancelReceipt,
+        caller_wakes: &mut OwnerCallerWakes,
     ) {
         let AuthorizationTarget::ExistingTurn { turn } = authorization.target else {
             return;
         };
-        self.answer_cancel(CancelTarget::Operation(operation), receipt.clone());
-        self.answer_cancel(CancelTarget::Turn(authorization.run, turn), receipt);
+        self.answer_cancel(
+            CancelTarget::Operation(operation),
+            receipt.clone(),
+            Some(caller_wakes),
+        );
+        self.answer_cancel(
+            CancelTarget::Turn(authorization.run, turn),
+            receipt,
+            Some(caller_wakes),
+        );
     }
 
-    fn answer_cancel(&self, target: CancelTarget, receipt: CancelReceipt) {
+    fn answer_cancel(
+        self: &Arc<Self>,
+        target: CancelTarget,
+        receipt: CancelReceipt,
+        caller_wakes: Option<&mut OwnerCallerWakes>,
+    ) {
         if let Some(waiter) = lock(&self.cancels).remove(&target) {
-            let _caller_gone = waiter.send(receipt);
+            if let Some(wakes) = caller_wakes {
+                let callers = self.clone();
+                wakes.send_or_recover(waiter, receipt, move |waiter| {
+                    lock(&callers.cancels).entry(target).or_insert(waiter);
+                });
+            } else {
+                let _caller_gone = waiter.send(receipt);
+            }
             self.reply_changed.notify_waiters();
         }
     }
@@ -221,15 +247,35 @@ impl SessionOwnerCalls {
         receive
     }
 
-    pub(crate) fn accepted(&self, operation: Uuid, acceptance: InputAcceptance) {
+    pub(crate) fn accepted(
+        self: &Arc<Self>,
+        operation: Uuid,
+        acceptance: InputAcceptance,
+        caller_wakes: Option<&mut OwnerCallerWakes>,
+    ) {
         if let Some(waiter) = lock(&self.acceptance).remove(&operation) {
-            let _caller_gone = waiter.send(acceptance);
+            if let Some(wakes) = caller_wakes {
+                let callers = self.clone();
+                wakes.send_or_recover(waiter, acceptance, move |waiter| {
+                    lock(&callers.acceptance).entry(operation).or_insert(waiter);
+                });
+            } else {
+                let _caller_gone = waiter.send(acceptance);
+            }
         }
     }
 
-    pub(crate) fn prompt_taken(&self, input: OwnerInput) {
+    pub(crate) fn prompt_taken(
+        self: &Arc<Self>,
+        input: OwnerInput,
+        caller_wakes: &mut OwnerCallerWakes,
+    ) {
         self.record_active_turn(&input);
-        self.accepted(input.operation, InputAcceptance::Started);
+        self.accepted(
+            input.operation,
+            InputAcceptance::Started,
+            Some(caller_wakes),
+        );
     }
 
     pub(crate) fn record_active_turn(&self, input: &OwnerInput) {
@@ -268,7 +314,13 @@ impl SessionOwnerCalls {
         receive
     }
 
-    pub(crate) fn settle(&self, reply: SessionOwnerReply, saved: bool) {
+    pub(crate) fn settle(
+        self: &Arc<Self>,
+        reply: SessionOwnerReply,
+        saved: bool,
+        mut caller_wakes: Option<&mut OwnerCallerWakes>,
+    ) {
+        let mut recovery_input = None;
         let operation = match &reply {
             SessionOwnerReply::RestoreFinished(result) => result.attempt.attempt.0,
             SessionOwnerReply::CloseFinished { run, .. } => run.attempt.0,
@@ -280,6 +332,9 @@ impl SessionOwnerCalls {
             | SessionOwnerReply::SteerInvalidReply { input }
             | SessionOwnerReply::InputUnsent { input, .. } => {
                 self.release_input(&input.input);
+                if caller_wakes.is_some() {
+                    recovery_input = Some(input.clone());
+                }
                 input.operation
             }
             SessionOwnerReply::SettingFinished { setting, .. }
@@ -297,7 +352,11 @@ impl SessionOwnerCalls {
                 }
                 other => Err(*other),
             };
-            self.answer_cancel(CancelTarget::Operation(operation), receipt);
+            self.answer_cancel(
+                CancelTarget::Operation(operation),
+                receipt,
+                caller_wakes.as_deref_mut(),
+            );
         }
         let acceptance = match &reply {
             SessionOwnerReply::SteerStarted { .. } => InputAcceptance::ProviderStarted,
@@ -318,13 +377,30 @@ impl SessionOwnerCalls {
             } => InputAcceptance::Unsent { reason: None },
             _ => InputAcceptance::Unknown,
         };
-        self.accepted(operation, acceptance);
+        self.accepted(operation, acceptance, caller_wakes.as_deref_mut());
         if let Some(caller) = lock(&self.replies).remove(&operation) {
-            let _caller_gone = caller.send(OwnedSettlement {
+            let settlement = OwnedSettlement {
                 reply,
                 saved,
                 turn_approver: joined.and_then(|target| target.different_approver),
-            });
+            };
+            match (caller_wakes, recovery_input) {
+                (Some(wakes), Some(input)) => {
+                    let callers = self.clone();
+                    wakes.send_or_recover(caller, settlement, move |caller| {
+                        // Only the failed-owner path can see these entries again. It
+                        // classifies the input from the retained wire and store evidence.
+                        lock(&callers.outstanding)
+                            .entry(input.input.clone())
+                            .or_insert(input);
+                        lock(&callers.replies).entry(operation).or_insert(caller);
+                    });
+                }
+                (Some(wakes), None) => wakes.send(caller, settlement),
+                (None, _) => {
+                    let _caller_gone = caller.send(settlement);
+                }
+            }
             self.reply_changed.notify_waiters();
         }
     }

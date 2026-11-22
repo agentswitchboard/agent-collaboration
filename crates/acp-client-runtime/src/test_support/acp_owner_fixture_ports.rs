@@ -525,6 +525,7 @@ impl<P: InteractionPort> SessionOwnerPorts for FixturePorts<P> {
         address: OwnerAddress,
         effect: OwnerEffect,
         completions: &OwnerCompletionPort,
+        _caller_wakes: &mut crate::session_owner_task::OwnerCallerWakes,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
         match effect {
             OwnerEffect::RecordDeliveryEvidence(_) => Err(OwnerTaskError::ExecutorStopped),

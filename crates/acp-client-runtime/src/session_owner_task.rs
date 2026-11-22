@@ -1,8 +1,8 @@
 //! Run one pure provider session owner and execute its committed outbox.
 
 use provider_session_machines::session_owner::{
-    OwnerAddress, OwnerDeadline, OwnerEffect, OwnerEvent, OwnerMailboxEvent, SessionOwnerCommand,
-    SessionOwnerMachine, SessionOwnerRejection, SessionSnapshot,
+    OwnerAddress, OwnerDeadline, OwnerEffect, OwnerEvent, OwnerMailboxEvent, OwnerOutbox,
+    SessionOwnerCommand, SessionOwnerMachine, SessionOwnerRejection, SessionSnapshot,
 };
 use router_clock::{ClockInstant, RuntimeClock};
 use std::{
@@ -167,7 +167,65 @@ pub trait SessionOwnerPorts {
         address: OwnerAddress,
         effect: OwnerEffect,
         completions: &OwnerCompletionPort,
+        caller_wakes: &mut OwnerCallerWakes,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError>;
+}
+
+/// Prepared caller deliveries for one reduction, in effect order.
+pub struct OwnerCallerWakes {
+    deliveries: Vec<Box<dyn FnOnce(bool) + Send>>,
+}
+
+impl OwnerCallerWakes {
+    fn new() -> Self {
+        Self {
+            deliveries: Vec::new(),
+        }
+    }
+
+    /// Prepare a result. An unpublished reduction closes the reply channel.
+    pub fn send<T: Send + 'static>(&mut self, sender: oneshot::Sender<T>, value: T) {
+        self.send_or_recover(sender, value, drop);
+    }
+
+    /// Prepare a result, or return its sender to its owner if publication fails.
+    pub fn send_or_recover<T: Send + 'static>(
+        &mut self,
+        sender: oneshot::Sender<T>,
+        value: T,
+        recover: impl FnOnce(oneshot::Sender<T>) + Send + 'static,
+    ) {
+        self.deliveries.push(Box::new(move |published| {
+            if published {
+                let _caller_gone = sender.send(value);
+            } else {
+                recover(sender);
+            }
+        }));
+    }
+
+    #[cfg(test)]
+    fn observe_send(&mut self, observe: impl FnOnce() + Send + 'static) {
+        self.deliveries.push(Box::new(move |published| {
+            if published {
+                observe();
+            }
+        }));
+    }
+
+    fn publish(mut self) {
+        for delivery in self.deliveries.drain(..) {
+            delivery(true);
+        }
+    }
+}
+
+impl Drop for OwnerCallerWakes {
+    fn drop(&mut self) {
+        for delivery in self.deliveries.drain(..) {
+            delivery(false);
+        }
+    }
 }
 
 struct ArmedDeadline {
@@ -175,6 +233,7 @@ struct ArmedDeadline {
     deadline: OwnerDeadline,
 }
 
+/// A caller is never told an outcome before a reader can see the state that produced it.
 pub struct SessionOwnerTask {
     machine: SessionOwnerMachine,
     commands: mpsc::Receiver<Submission>,
@@ -276,39 +335,53 @@ impl SessionOwnerTask {
                     continue;
                 }
             };
-            let committed_at = self.clock.monotonic_now();
-            let address = outbox.owner;
-            for effect in outbox.effects {
-                if let OwnerEffect::Arm { deadline, budget } = effect {
-                    self.deadlines
-                        .entry(committed_at.after(budget))
-                        .or_default()
-                        .push_back(ArmedDeadline { address, deadline });
-                } else if let Some(event) = ports.execute(address, effect, &self.completion_port)? {
-                    ready.push_back((
-                        OwnerMailboxEvent {
-                            owner: address,
-                            event,
-                        },
-                        None,
-                    ));
-                }
+            self.execute_outbox(outbox, accepted, ports, |event| {
+                ready.push_back((event, None));
+            })?;
+        }
+        Ok(())
+    }
+
+    fn execute_outbox(
+        &mut self,
+        outbox: OwnerOutbox,
+        accepted: Option<oneshot::Sender<Result<(), OwnerCommandRefusal>>>,
+        ports: &mut impl SessionOwnerPorts,
+        mut enqueue: impl FnMut(OwnerMailboxEvent),
+    ) -> Result<(), OwnerTaskError> {
+        let committed_at = self.clock.monotonic_now();
+        let address = outbox.owner;
+        let mut caller_wakes = OwnerCallerWakes::new();
+        for effect in outbox.effects {
+            if let OwnerEffect::Arm { deadline, budget } = effect {
+                self.deadlines
+                    .entry(committed_at.after(budget))
+                    .or_default()
+                    .push_back(ArmedDeadline { address, deadline });
+            } else if let Some(event) =
+                ports.execute(address, effect, &self.completion_port, &mut caller_wakes)?
+            {
+                enqueue(OwnerMailboxEvent {
+                    owner: address,
+                    event,
+                });
             }
-            self.deadlines.retain(|_, alarms| {
-                alarms.retain(|alarm| self.machine.has_pending_deadline(&alarm.deadline));
-                !alarms.is_empty()
-            });
-            let snapshot = self.machine.snapshot();
-            self.snapshots.send_if_modified(|published| {
-                if *published == snapshot {
-                    return false;
-                }
-                *published = snapshot;
-                true
-            });
-            if let Some(accepted) = accepted {
-                let _reader_gone = accepted.send(Ok(()));
+        }
+        self.deadlines.retain(|_, alarms| {
+            alarms.retain(|alarm| self.machine.has_pending_deadline(&alarm.deadline));
+            !alarms.is_empty()
+        });
+        let snapshot = self.machine.snapshot();
+        self.snapshots.send_if_modified(|published| {
+            if *published == snapshot {
+                return false;
             }
+            *published = snapshot;
+            true
+        });
+        caller_wakes.publish();
+        if let Some(accepted) = accepted {
+            let _reader_gone = accepted.send(Ok(()));
         }
         Ok(())
     }
