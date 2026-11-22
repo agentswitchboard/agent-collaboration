@@ -6,6 +6,9 @@ use std::process::Command;
 
 use serde::Deserialize;
 
+#[path = "central_link_dependency_policy.rs"]
+mod central_link_dependency_policy;
+
 #[path = "harness_stage_policy.rs"]
 mod harness_stage_policy;
 
@@ -188,6 +191,7 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
     workspace_boundaries::check_declared_session_read_edges(&metadata)?;
     harness_stage_policy::check_declared(&metadata)?;
     harness_stage_policy::check_resolved(&metadata)?;
+    central_link_dependency_policy::check(&metadata)?;
     let graph = NonDevDependencyGraph::from_metadata(metadata);
     for (source, destinations) in &graph.dev_edges {
         if !graph.workspace_members.contains(source) {
