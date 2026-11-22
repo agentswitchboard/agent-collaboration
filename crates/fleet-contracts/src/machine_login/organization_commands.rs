@@ -29,3 +29,6 @@ pub enum EnrollmentRevocationReason {
     Owner {},
     Superseded {},
 }
+
+/// Maximum time since second factor for a machine authorization change.
+pub const PERSON_SECOND_FACTOR_WINDOW_SECONDS: i64 = 900;

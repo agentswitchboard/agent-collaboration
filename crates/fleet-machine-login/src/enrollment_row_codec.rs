@@ -1,7 +1,7 @@
 //! Decode owning machine/login rows into the pure policy's checked facts.
 use crate::{
-    machine_login_row_values as values,
-    organization_authority::machine_login::{
+    enrollment_row_values as values,
+    policy::{
         EnrollmentGeneration, MachineRow, MachineState, StoredEnrollment, StoredEnrollmentState,
     },
 };
@@ -22,7 +22,7 @@ fn label(value: &str, field: &str) -> Result<message_board::MachineLabel, StoreF
     Ok(parsed)
 }
 
-pub(crate) fn machine(rows: &ReadOutcome, row: &[SqlValue]) -> Result<MachineRow, StoreFailure> {
+pub fn machine(rows: &ReadOutcome, row: &[SqlValue]) -> Result<MachineRow, StoreFailure> {
     values::row_millis(rows, row, "created_at")
         .map_err(|_| corrupt("login_machines.created_at"))?;
     values::row_millis(rows, row, "updated_at")
@@ -50,10 +50,7 @@ pub(crate) fn machine(rows: &ReadOutcome, row: &[SqlValue]) -> Result<MachineRow
     })
 }
 
-pub(crate) fn enrollment(
-    rows: &ReadOutcome,
-    row: &[SqlValue],
-) -> Result<StoredEnrollment, StoreFailure> {
+pub fn enrollment(rows: &ReadOutcome, row: &[SqlValue]) -> Result<StoredEnrollment, StoreFailure> {
     let approved_at_ms = values::row_millis(rows, row, "created_at")
         .map_err(|_| corrupt("login_machine_approvals.created_at"))?;
     values::row_millis(rows, row, "updated_at")
@@ -148,7 +145,7 @@ pub(crate) fn enrollment(
     })
 }
 
-pub(crate) fn only_row<T>(
+pub fn only_row<T>(
     rows: &ReadOutcome,
     decode: impl FnOnce(&ReadOutcome, &[SqlValue]) -> Result<T, StoreFailure>,
     field: &str,
@@ -161,5 +158,5 @@ pub(crate) fn only_row<T>(
 }
 
 #[cfg(test)]
-#[path = "machine_login_rows_test.rs"]
+#[path = "enrollment_row_codec_test.rs"]
 mod tests;

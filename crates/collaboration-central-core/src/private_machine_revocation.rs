@@ -1,14 +1,14 @@
 //! Apply a verified revocation and its fresh-proof reservation in one org turn.
 use crate::{
     MachineEnrollmentRevocationResult as ResultKind, OrganizationAdminAnswer, WorkspaceRuntime,
-    organization_authority::machine_login::{
-        self, DecisionTime, EnrollmentQuery, StoredEnrollmentState,
-    },
-    person_request::{AdminOperationId, VerifiedPersonRequest},
+    person_request::VerifiedPersonRequest,
 };
 use central_storage::{AlarmUpdate, BatchOutcome, GuardedStatement, StatementBatch, StoreFailure};
 use fleet_contracts::PersonId;
 use fleet_identity_protocol::EnrollmentId;
+use fleet_machine_login::policy::{
+    self as machine_login, DecisionTime, EnrollmentQuery, StoredEnrollmentState,
+};
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 
@@ -21,7 +21,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         mut statements: Vec<GuardedStatement>,
         now_ms: i64,
     ) -> Result<OrganizationAdminAnswer, StoreFailure> {
-        let facts = crate::machine_login_reads::facts(
+        let facts = fleet_machine_login::enrollment_reads::facts(
             self.execution.statement_host(),
             self.execution.organization().clone(),
             &EnrollmentQuery {
@@ -48,8 +48,9 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                         .map_err(|_| corrupt("person_request.person_id"))?;
                     // The proof ID correlates this one audit effect. The wire
                     // operation has no operationId and retries use a fresh proof.
-                    let audit_request = AdminOperationId::try_from(request.request_id.to_string())
-                        .map_err(|_| corrupt("person_request.request_id"))?;
+                    let audit_request =
+                        message_board::RecordId::try_from(request.request_id.to_string())
+                            .map_err(|_| corrupt("person_request.request_id"))?;
                     let revocation = machine_login::revoke_machine_enrollment(
                         &facts,
                         &actor,
@@ -61,7 +62,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                     if revocation.answer.is_none() {
                         return Err(corrupt("login_machine_approvals.enrolled"));
                     }
-                    statements.extend(crate::machine_login_writes::statements(
+                    statements.extend(fleet_machine_login::enrollment_writes::statements(
                         &facts,
                         &revocation.changes,
                         now_ms,

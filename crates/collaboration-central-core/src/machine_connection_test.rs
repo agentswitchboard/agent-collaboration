@@ -1,9 +1,7 @@
 use super::*;
 use crate::WorkspaceCaller;
-use crate::organization_authority::machine_login::{
-    EnrollmentGeneration, MachineRow, StoredEnrollment,
-};
 use fleet_identity_protocol::UnixSeconds;
+use fleet_machine_login::policy::{EnrollmentGeneration, MachineRow, StoredEnrollment};
 use workspace_model::Caller;
 
 const NOW_MS: i64 = 1_800_000_000_123;

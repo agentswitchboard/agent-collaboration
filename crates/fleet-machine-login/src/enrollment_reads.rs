@@ -1,10 +1,8 @@
 //! Read only the machine-login facts named by an organization-serialized query.
 use crate::{
-    machine_login_row_values::{identifier, nonnegative_integer},
-    machine_login_rows::{enrollment, machine, only_row},
-    organization_authority::machine_login::{
-        EnrollmentFacts, EnrollmentQuery, StoredEnrollment, StoredEnrollmentState,
-    },
+    enrollment_row_codec::{enrollment, machine, only_row},
+    enrollment_row_values::{identifier, nonnegative_integer},
+    policy::{EnrollmentFacts, EnrollmentQuery, StoredEnrollment, StoredEnrollmentState},
 };
 use central_storage::{Statement, StoreFailure};
 use fleet_contracts::{EndedMachineClient, EnrollmentRevocationReason};
@@ -19,7 +17,7 @@ const BY_REQUEST: &str = "SELECT a.approval_id,a.request_id,a.label,a.allowed_wo
 const BY_ENROLLMENT: &str = "SELECT a.approval_id,a.request_id,a.label,a.allowed_workspaces,a.state,a.end_reason,a.approved_by_person_id,a.permission_checked,a.base_generation,a.code_expires_at,a.machine_client_id,a.last_grant_at,a.ended_at,a.created_at,a.updated_at,m.machine_id FROM login_machine_approvals a LEFT JOIN login_machines m ON m.machine_id=a.machine_id WHERE a.approval_id=?";
 const ACTIVE: &str = "SELECT a.approval_id,a.request_id,a.label,a.allowed_workspaces,a.state,a.end_reason,a.approved_by_person_id,a.permission_checked,a.base_generation,a.code_expires_at,a.machine_client_id,a.last_grant_at,a.ended_at,a.created_at,a.updated_at,m.machine_id FROM login_machine_approvals a LEFT JOIN login_machines m ON m.machine_id=a.machine_id WHERE a.machine_id=? AND a.state='enrolled'";
 
-pub(crate) async fn facts(
+pub async fn facts(
     host: &impl CentralStore,
     organization_id: OrganizationId,
     query: &EnrollmentQuery,
@@ -95,7 +93,7 @@ pub(crate) async fn facts(
             .await?;
         only_row(
             &rows,
-            crate::machine_login_rows::enrollment,
+            crate::enrollment_row_codec::enrollment,
             "login_machine_approvals.enrolled",
         )?
     } else {
@@ -181,5 +179,5 @@ async fn superseded_client(
 }
 
 #[cfg(test)]
-#[path = "machine_login_reads_test.rs"]
+#[path = "enrollment_reads_test.rs"]
 mod tests;

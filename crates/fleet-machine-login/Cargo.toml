@@ -1,0 +1,29 @@
+[package]
+name = "fleet-machine-login"
+autotests = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+description = "Central machine enrollment and allowance decisions"
+
+[lints]
+workspace = true
+
+[dependencies]
+central-storage.workspace = true
+chrono = { version = "0.4.45", default-features = false, features = ["alloc"] }
+fleet-contracts.workspace = true
+fleet-identity-protocol = { path = "../fleet-identity-protocol", version = "0.1.156" }
+fleet-runtime-ports.workspace = true
+fleet-signin.workspace = true
+message-board = { path = "../message-board", version = "0.1.93" }
+serde.workspace = true
+serde_json.workspace = true
+state-machine-core.workspace = true
+uuid = { workspace = true, features = ["serde"] }
+workspace-ids.workspace = true
+
+[dev-dependencies]
+central-engine-model.workspace = true
+tokio.workspace = true

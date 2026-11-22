@@ -8,7 +8,7 @@ use fleet_runtime_ports::{
 };
 use uuid::Uuid;
 
-pub(crate) fn identifier<T: TryFrom<String>>(value: &str, field: &str) -> Result<T, StoreFailure> {
+pub fn identifier<T: TryFrom<String>>(value: &str, field: &str) -> Result<T, StoreFailure> {
     let parsed = Uuid::parse_str(value).map_err(|_| corrupt(field))?;
     if !fleet_runtime_ports::uuid_v7(parsed) || parsed.to_string() != value {
         return Err(corrupt(field));
@@ -16,7 +16,7 @@ pub(crate) fn identifier<T: TryFrom<String>>(value: &str, field: &str) -> Result
     T::try_from(value.to_owned()).map_err(|_| corrupt(field))
 }
 
-pub(crate) fn private_id(value: &str, field: &str) -> Result<Uuid, StoreFailure> {
+pub fn private_id(value: &str, field: &str) -> Result<Uuid, StoreFailure> {
     let parsed = Uuid::parse_str(value).map_err(|_| corrupt(field))?;
     if !fleet_runtime_ports::uuid_v7(parsed) || parsed.to_string() != value {
         return Err(corrupt(field));
@@ -24,7 +24,7 @@ pub(crate) fn private_id(value: &str, field: &str) -> Result<Uuid, StoreFailure>
     Ok(parsed)
 }
 
-pub(crate) fn optional_text<'a>(
+pub fn optional_text<'a>(
     rows: &ReadOutcome,
     row: &'a [SqlValue],
     field: &str,
@@ -36,7 +36,7 @@ pub(crate) fn optional_text<'a>(
     }
 }
 
-pub(crate) fn nonnegative_integer(
+pub fn nonnegative_integer(
     rows: &ReadOutcome,
     row: &[SqlValue],
     field: &str,
@@ -47,7 +47,7 @@ pub(crate) fn nonnegative_integer(
     }
 }
 
-pub(crate) fn millis(value: &str, field: &str) -> Result<i64, StoreFailure> {
+pub fn millis(value: &str, field: &str) -> Result<i64, StoreFailure> {
     let parsed: DateTime<Utc> = value.parse().map_err(|_| corrupt(field))?;
     let milliseconds = parsed.timestamp_millis();
     if milliseconds < 0 || !parsed.timestamp_subsec_nanos().is_multiple_of(1_000_000) {
@@ -57,7 +57,7 @@ pub(crate) fn millis(value: &str, field: &str) -> Result<i64, StoreFailure> {
     Ok(milliseconds)
 }
 
-pub(crate) fn seconds(value: &str, field: &str) -> Result<UnixSeconds, StoreFailure> {
+pub fn seconds(value: &str, field: &str) -> Result<UnixSeconds, StoreFailure> {
     let milliseconds = millis(value, field)?;
     if milliseconds % 1000 != 0 {
         return Err(corrupt(field));
@@ -65,15 +65,11 @@ pub(crate) fn seconds(value: &str, field: &str) -> Result<UnixSeconds, StoreFail
     Ok(UnixSeconds(milliseconds / 1000))
 }
 
-pub(crate) fn row_millis(
-    rows: &ReadOutcome,
-    row: &[SqlValue],
-    field: &str,
-) -> Result<i64, StoreFailure> {
+pub fn row_millis(rows: &ReadOutcome, row: &[SqlValue], field: &str) -> Result<i64, StoreFailure> {
     millis(string(rows, row, field)?, field)
 }
 
-pub(crate) fn timestamp(milliseconds: i64, field: &str) -> Result<String, StoreFailure> {
+pub fn timestamp(milliseconds: i64, field: &str) -> Result<String, StoreFailure> {
     if milliseconds < 0 {
         return Err(corrupt(field));
     }
@@ -83,7 +79,7 @@ pub(crate) fn timestamp(milliseconds: i64, field: &str) -> Result<String, StoreF
         .ok_or_else(|| corrupt(field))
 }
 
-pub(crate) fn seconds_timestamp(value: UnixSeconds, field: &str) -> Result<String, StoreFailure> {
+pub fn seconds_timestamp(value: UnixSeconds, field: &str) -> Result<String, StoreFailure> {
     timestamp(
         value.0.checked_mul(1000).ok_or_else(|| corrupt(field))?,
         field,
@@ -91,5 +87,5 @@ pub(crate) fn seconds_timestamp(value: UnixSeconds, field: &str) -> Result<Strin
 }
 
 #[cfg(test)]
-#[path = "machine_login_row_values_test.rs"]
+#[path = "enrollment_row_values_test.rs"]
 mod tests;

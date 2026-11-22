@@ -1,7 +1,7 @@
 //! Static guarded statements for a pure decision, in its declared atomic order.
 use crate::{
-    machine_login_row_values as values,
-    organization_authority::machine_login::{
+    enrollment_row_values as values,
+    policy::{
         EnrollmentChange, EnrollmentFacts, IDLE_EXPIRY_SECONDS, MachineRow, MachineState,
         StoredEnrollment, StoredEnrollmentState,
     },
@@ -15,7 +15,7 @@ use fleet_runtime_ports::{
 use serde::Serialize;
 use std::collections::BTreeMap;
 
-pub(crate) fn statements(
+pub fn statements(
     facts: &EnrollmentFacts,
     changes: &[EnrollmentChange],
     applying_ms: i64,
@@ -365,5 +365,5 @@ fn time_guard(
 }
 
 #[cfg(test)]
-#[path = "machine_login_writes_test.rs"]
+#[path = "enrollment_writes_test.rs"]
 mod tests;

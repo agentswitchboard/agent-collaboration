@@ -1503,6 +1503,7 @@ dependencies = [
  "fleet-contracts",
  "fleet-engine",
  "fleet-identity-protocol",
+ "fleet-machine-login",
  "fleet-mail",
  "fleet-notices",
  "fleet-request-log",
@@ -2502,6 +2503,26 @@ name = "fleet-lent-transaction"
 version = "0.1.158"
 dependencies = [
  "sqlx",
+]
+
+[[package]]
+name = "fleet-machine-login"
+version = "0.1.158"
+dependencies = [
+ "central-engine-model",
+ "central-storage",
+ "chrono",
+ "fleet-contracts",
+ "fleet-identity-protocol",
+ "fleet-runtime-ports",
+ "fleet-signin",
+ "message-board",
+ "serde",
+ "serde_json",
+ "state-machine-core",
+ "tokio",
+ "uuid",
+ "workspace-ids",
 ]
 
 [[package]]

@@ -5,17 +5,17 @@ use super::enrollment_records::{
     StoredEnrollmentState,
 };
 use super::machine_token_decision::append_allowance_records;
-use crate::person_request::AdminOperationId;
 use central_storage::StoreFailure;
 use fleet_contracts::{EndedMachineClient, EnrollmentRevocationReason, PersonId};
 use fleet_runtime_ports::IdSource;
 use fleet_signin::organization_change::{OrganizationChangeKind, OrganizationChangeOrigin};
+use message_board::RecordId;
 
 /// None means the machine_id has no currently enrolled login.
-pub(crate) fn revoke_machine_enrollment(
+pub fn revoke_machine_enrollment(
     facts: &EnrollmentFacts,
     person: &PersonId,
-    operation: &AdminOperationId,
+    operation: &RecordId,
     permission_checked: &'static str,
     time: DecisionTime,
     ids: &dyn IdSource,

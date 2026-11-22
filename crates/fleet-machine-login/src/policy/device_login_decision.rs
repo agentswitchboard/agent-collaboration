@@ -1,20 +1,21 @@
 //! Approval reserves a snapshot; it never activates a login.
+use super::allowance_transitions::{AllowanceEvent, AllowanceStatus, allowance_effect};
 use super::decision_support::{DecisionIds, DecisionTime};
 use super::enrollment_records::{
     Decided, EnrollmentChange, EnrollmentFacts, EnrollmentGeneration, MachineRow, MachineState,
     StoredEnrollment, StoredEnrollmentState,
 };
-use crate::person_request::SECOND_FACTOR_WINDOW_SECONDS;
 use central_storage::StoreFailure;
+use fleet_contracts::PERSON_SECOND_FACTOR_WINDOW_SECONDS;
 use fleet_contracts::{DecideDeviceLogin, DeviceLoginDecision, DeviceLoginRefusal};
 use fleet_identity_protocol::EnrollmentId;
 use fleet_runtime_ports::IdSource;
-use fleet_signin::organization_change::{MachineAllowanceState, OrganizationChangeOrigin};
+use fleet_signin::organization_change::OrganizationChangeOrigin;
 use std::{collections::BTreeSet, num::NonZeroU32};
 
-pub(crate) const SD8_MILLIS: i64 = 5_000;
+pub const SD8_MILLIS: i64 = 5_000;
 
-pub(crate) fn decide_device_login(
+pub fn decide_device_login(
     request: &DecideDeviceLogin,
     facts: &EnrollmentFacts,
     received_at_ms: i64,
@@ -69,7 +70,7 @@ pub(crate) fn decide_device_login(
             time.now_ms,
         )
     {
-        let within_seconds = u32::try_from(SECOND_FACTOR_WINDOW_SECONDS)
+        let within_seconds = u32::try_from(PERSON_SECOND_FACTOR_WINDOW_SECONDS)
             .ok()
             .and_then(NonZeroU32::new)
             .ok_or(StoreFailure::Unavailable)?;
@@ -88,16 +89,16 @@ pub(crate) fn decide_device_login(
     };
     machine.label = request.label.clone();
     // Approval adds allowances; it does not withdraw existing ones (B3/R39).
-    let added: Vec<_> = request
-        .allowed_workspaces
-        .as_slice()
-        .iter()
-        .filter(|workspace| !machine.allowed_workspaces.contains(workspace))
-        .cloned()
-        .collect();
-    for workspace in &added {
-        if !machine.allowed_workspaces.contains(workspace) {
+    let mut added = Vec::new();
+    for workspace in request.allowed_workspaces.as_slice() {
+        let status = if machine.allowed_workspaces.contains(workspace) {
+            AllowanceStatus::Active
+        } else {
+            AllowanceStatus::Absent
+        };
+        if let Some(effect) = allowance_effect(status, AllowanceEvent::ApprovalSelectedWorkspace)? {
             machine.allowed_workspaces.push(workspace.clone());
+            added.push((workspace, effect));
         }
     }
     let enrollment = StoredEnrollment {
@@ -123,22 +124,17 @@ pub(crate) fn decide_device_login(
         person_id: request.approver.as_str().to_owned(),
         permission_checked: "machine:enroll".to_owned(),
     };
-    let mut recorded = Vec::new();
-    for workspace in added {
-        if recorded.contains(&workspace) {
-            continue;
-        }
+    for (workspace, effect) in added {
         changes.push(EnrollmentChange::RecordAllowance(
             ids.record_allowance_change(
                 request.request_id.as_str(),
                 &origin,
                 &enrollment.machine_id,
-                &workspace,
-                MachineAllowanceState::Active,
+                workspace,
+                effect,
                 time,
             )?,
         ));
-        recorded.push(workspace);
     }
     Ok(Decided::writing(
         approved(&enrollment),
@@ -158,7 +154,7 @@ fn second_factor_fresh(second_factor_at: Option<i64>, now_ms: i64) -> bool {
     second_factor_at
         .and_then(|at| at.checked_mul(1000))
         .and_then(|at| now_ms.checked_sub(at))
-        .is_some_and(|age| (0..=SECOND_FACTOR_WINDOW_SECONDS * 1000).contains(&age))
+        .is_some_and(|age| (0..=PERSON_SECOND_FACTOR_WINDOW_SECONDS * 1000).contains(&age))
 }
 
 #[cfg(test)]

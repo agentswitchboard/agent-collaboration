@@ -1,10 +1,10 @@
 //! Closed test-support dispatch to the real private revocation decision.
 use crate::WorkspaceRuntime;
-use crate::organization_authority::machine_login::{self, EnrollmentQuery};
 use crate::person_request::AdminOperationId;
 use central_storage::StoreFailure;
 use fleet_contracts::{EndedMachineClient, PersonId};
 use fleet_identity_protocol::EnrollmentId;
+use fleet_machine_login::policy::{self as machine_login, EnrollmentQuery};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use serde::{Deserialize, Serialize};
 use workspace_ids::MachineId;
@@ -45,7 +45,7 @@ pub async fn machine_login_control<H: CentralStore, S: WorkspaceStores>(
                 enrollment: Some(enrollment_id.clone()),
                 ..EnrollmentQuery::default()
             };
-            let facts = crate::machine_login_reads::facts(
+            let facts = fleet_machine_login::enrollment_reads::facts(
                 runtime.execution.statement_host(),
                 runtime.execution.organization().clone(),
                 &query,
@@ -61,7 +61,9 @@ pub async fn machine_login_control<H: CentralStore, S: WorkspaceStores>(
             let decided = machine_login::revoke_machine_enrollment(
                 &facts,
                 &person_id,
-                &operation_id,
+                &String::from(operation_id)
+                    .try_into()
+                    .map_err(|_| StoreFailure::Unavailable)?,
                 "machine:revoke",
                 time,
                 runtime.execution.ids(),

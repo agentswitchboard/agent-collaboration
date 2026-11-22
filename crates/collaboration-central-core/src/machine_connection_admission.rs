@@ -3,13 +3,13 @@ use crate::ValidatedMachineConnection;
 use crate::{
     WorkspaceRuntime,
     machine_connection::{Admission, validate_live, validate_shape},
-    organization_authority::machine_login::{EnrollmentFacts, EnrollmentQuery},
 };
 use central_storage::StoreFailure;
 use fleet_contracts::{
     LiveMachineConnection, MachineConnectionAttachment, MachineConnectionRefusal,
 };
 use fleet_identity_protocol::EnrollmentId;
+use fleet_machine_login::policy::{EnrollmentFacts, EnrollmentQuery};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use workspace_ids::MachineId;
 
@@ -233,7 +233,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         machine_id: &MachineId,
         enrollment: &EnrollmentId,
     ) -> Result<EnrollmentFacts, StoreFailure> {
-        crate::machine_login_reads::facts(
+        fleet_machine_login::enrollment_reads::facts(
             self.execution.statement_host(),
             self.execution.organization().clone(),
             &EnrollmentQuery {

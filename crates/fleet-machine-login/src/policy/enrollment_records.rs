@@ -13,7 +13,7 @@ use workspace_ids::MachineId;
 
 /// A generation is an exact cross-host SQL integer; exhaustion never wraps.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub(crate) struct EnrollmentGeneration(u64);
+pub struct EnrollmentGeneration(u64);
 impl TryFrom<u64> for EnrollmentGeneration {
     type Error = StoreFailure;
     fn try_from(value: u64) -> Result<Self, Self::Error> {
@@ -24,10 +24,10 @@ impl TryFrom<u64> for EnrollmentGeneration {
     }
 }
 impl EnrollmentGeneration {
-    pub(crate) const fn get(self) -> u64 {
+    pub const fn get(self) -> u64 {
         self.0
     }
-    pub(crate) fn next(self) -> Result<Self, StoreFailure> {
+    pub fn next(self) -> Result<Self, StoreFailure> {
         Self::try_from(
             self.0
                 .checked_add(1)
@@ -37,13 +37,13 @@ impl EnrollmentGeneration {
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) enum MachineState {
+pub enum MachineState {
     Enrolled,
     Revoked,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct MachineRow {
+pub struct MachineRow {
     pub machine_id: MachineId,
     pub label: MachineLabel,
     pub allowed_workspaces: Vec<WorkspaceId>,
@@ -52,7 +52,7 @@ pub(crate) struct MachineRow {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum StoredEnrollmentState {
+pub enum StoredEnrollmentState {
     Approved,
     Lapsed,
     Enrolled {
@@ -69,7 +69,7 @@ pub(crate) enum StoredEnrollmentState {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct StoredEnrollment {
+pub struct StoredEnrollment {
     pub id: EnrollmentId,
     pub machine_id: MachineId,
     pub request_id: DeviceLoginRequestId,
@@ -83,7 +83,7 @@ pub(crate) struct StoredEnrollment {
     pub ended_at_ms: Option<i64>,
 }
 impl StoredEnrollment {
-    pub(crate) fn ended_client(&self) -> Option<EndedMachineClient> {
+    pub fn ended_client(&self) -> Option<EndedMachineClient> {
         let client_id = match &self.state {
             StoredEnrollmentState::Enrolled { client_id, .. }
             | StoredEnrollmentState::Revoked { client_id, .. }
@@ -98,7 +98,7 @@ impl StoredEnrollment {
 }
 
 #[derive(Clone, Debug, Default)]
-pub(crate) struct EnrollmentQuery {
+pub struct EnrollmentQuery {
     pub machine_id: Option<MachineId>,
     pub request: Option<DeviceLoginRequestId>,
     pub enrollment: Option<EnrollmentId>,
@@ -106,7 +106,7 @@ pub(crate) struct EnrollmentQuery {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct EnrollmentFacts {
+pub struct EnrollmentFacts {
     pub organization_id: OrganizationId,
     pub organization_has_enrollment: bool,
     pub prior_approval: Option<StoredEnrollment>,
@@ -118,7 +118,7 @@ pub(crate) struct EnrollmentFacts {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) enum EnrollmentChange {
+pub enum EnrollmentChange {
     InsertEnrollment(StoredEnrollment),
     ReplaceEnrollment(StoredEnrollment),
     PutMachine(MachineRow),
@@ -126,20 +126,20 @@ pub(crate) enum EnrollmentChange {
     RecordAllowance(MachineAllowanceChange),
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(crate) struct Decided<T> {
+pub struct Decided<T> {
     pub answer: T,
     pub changes: Vec<EnrollmentChange>,
     pub written_at_ms: Option<i64>,
 }
 impl<T> Decided<T> {
-    pub(crate) fn unchanged(answer: T) -> Self {
+    pub fn unchanged(answer: T) -> Self {
         Self {
             answer,
             changes: Vec::new(),
             written_at_ms: None,
         }
     }
-    pub(crate) fn writing(answer: T, changes: Vec<EnrollmentChange>, now_ms: i64) -> Self {
+    pub fn writing(answer: T, changes: Vec<EnrollmentChange>, now_ms: i64) -> Self {
         Self {
             answer,
             changes,

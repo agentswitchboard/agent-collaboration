@@ -1,4 +1,5 @@
 //! Activation is generation-fenced; renewal rechecks live client and idle state.
+use super::allowance_transitions::{AllowanceEvent, AllowanceStatus, allowance_effect};
 use super::decision_support::{DecisionIds, DecisionTime, IDLE_EXPIRY_SECONDS};
 use super::enrollment_records::{
     Decided, EnrollmentChange, EnrollmentFacts, MachineRow, MachineState, StoredEnrollment,
@@ -12,11 +13,9 @@ use fleet_contracts::{
 use fleet_identity_protocol::UnixSeconds;
 use fleet_runtime_ports::IdSource;
 use fleet_signin::machine_token::MACHINE_TOKEN_LIFETIME_SECONDS;
-use fleet_signin::organization_change::{
-    MachineAllowanceState, OrganizationChangeKind, OrganizationChangeOrigin,
-};
+use fleet_signin::organization_change::{OrganizationChangeKind, OrganizationChangeOrigin};
 
-pub(crate) fn decide_machine_token(
+pub fn decide_machine_token(
     request: &DecideMachineToken,
     facts: &EnrollmentFacts,
     time: DecisionTime,
@@ -234,6 +233,10 @@ pub(super) fn append_allowance_records(
     time: DecisionTime,
     ids: &DecisionIds<'_>,
 ) -> Result<(), StoreFailure> {
+    let Some(effect) = allowance_effect(AllowanceStatus::Active, AllowanceEvent::EnrollmentEnded)?
+    else {
+        return Ok(());
+    };
     let mut recorded = Vec::new();
     for workspace in &machine.allowed_workspaces {
         if recorded.contains(workspace) {
@@ -245,7 +248,7 @@ pub(super) fn append_allowance_records(
                 origin,
                 &machine.machine_id,
                 workspace,
-                MachineAllowanceState::Withdrawn,
+                effect,
                 time,
             )?,
         ));

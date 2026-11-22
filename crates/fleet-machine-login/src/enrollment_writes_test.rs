@@ -1,5 +1,5 @@
 use super::*;
-use crate::organization_authority::machine_login::EnrollmentGeneration;
+use crate::policy::EnrollmentGeneration;
 use fleet_identity_protocol::UnixSeconds;
 
 fn machine() -> MachineRow {

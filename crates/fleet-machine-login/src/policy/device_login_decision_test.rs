@@ -374,7 +374,7 @@ fn first_machine_exemption_and_later_machine_factor_boundaries_are_preserved() {
     ));
     facts.organization_has_enrollment = true;
     let now_ms = NOW_S * 1000;
-    let window = crate::person_request::SECOND_FACTOR_WINDOW_SECONDS;
+    let window = fleet_contracts::PERSON_SECOND_FACTOR_WINDOW_SECONDS;
     for factor in [None, Some(NOW_S - window - 1), Some(NOW_S + 1)] {
         let request = DecideDeviceLogin {
             approver_second_factor_at: factor.map(UnixSeconds),

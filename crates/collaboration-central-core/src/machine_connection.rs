@@ -1,11 +1,9 @@
 //! Verified token provenance becomes a connection only after live organization admission.
-use crate::{
-    machine_login_row_values::identifier,
-    organization_authority::machine_login::{EnrollmentFacts, MachineState, StoredEnrollmentState},
-};
 use central_storage::StoreFailure;
 use fleet_contracts::{ClientId, MachineConnectionAttachment, MachineConnectionRefusal};
 use fleet_identity_protocol::{EnrollmentId, OrganizationId, UnixSeconds};
+use fleet_machine_login::enrollment_row_values::identifier;
+use fleet_machine_login::policy::{EnrollmentFacts, MachineState, StoredEnrollmentState};
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use workspace_ids::MachineId;
 

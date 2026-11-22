@@ -8,14 +8,14 @@ use fleet_signin::organization_change::{
 };
 use uuid::Uuid;
 
-pub(crate) const IDLE_EXPIRY_SECONDS: i64 = 30 * 24 * 60 * 60;
+pub const IDLE_EXPIRY_SECONDS: i64 = 30 * 24 * 60 * 60;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct DecisionTime {
+pub struct DecisionTime {
     pub now_ms: i64,
 }
 impl DecisionTime {
-    pub(crate) const fn seconds(self) -> UnixSeconds {
+    pub const fn seconds(self) -> UnixSeconds {
         UnixSeconds(self.now_ms.div_euclid(1000))
     }
 }

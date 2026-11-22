@@ -1,12 +1,12 @@
 //! One org turn owns machine-login reads, applying time and the guarded batch.
 use crate::WorkspaceRuntime;
-use crate::organization_authority::machine_login::{
-    self, Decided, DecisionTime, EnrollmentFacts, EnrollmentQuery,
-};
 use crate::organization_authority_cache::StampStanding;
 use central_storage::{AlarmUpdate, BatchOutcome, StatementBatch, StoreFailure};
 use fleet_contracts::{
     DecideDeviceLogin, DecideMachineToken, DeviceLoginDecision, MachineTokenDecision,
+};
+use fleet_machine_login::policy::{
+    self as machine_login, Decided, DecisionTime, EnrollmentFacts, EnrollmentQuery,
 };
 use fleet_runtime_ports::SyncTime;
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
@@ -30,7 +30,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
             workspaces: request.allowed_workspaces.as_slice().to_vec(),
             ..EnrollmentQuery::default()
         };
-        let facts = crate::machine_login_reads::facts(
+        let facts = fleet_machine_login::enrollment_reads::facts(
             self.execution.statement_host(),
             self.execution.organization().clone(),
             &query,
@@ -61,7 +61,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
             enrollment: Some(request.enrollment_id.clone()),
             ..EnrollmentQuery::default()
         };
-        let facts = crate::machine_login_reads::facts(
+        let facts = fleet_machine_login::enrollment_reads::facts(
             self.execution.statement_host(),
             self.execution.organization().clone(),
             &query,
@@ -112,8 +112,11 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                 "machine_login.applying_time",
             ));
         }
-        let statements =
-            crate::machine_login_writes::statements(facts, &decided.changes, time.now_ms)?;
+        let statements = fleet_machine_login::enrollment_writes::statements(
+            facts,
+            &decided.changes,
+            time.now_ms,
+        )?;
         #[cfg(feature = "test-support")]
         self.execution
             .pause_points()

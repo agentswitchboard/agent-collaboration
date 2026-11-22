@@ -17,6 +17,7 @@ test-support = ["fleet-signin/test-support", "fleet-engine/test-support", "fleet
 
 [dependencies]
 fleet-signin.workspace = true
+fleet-machine-login.workspace = true
 fleet-rpc.workspace = true
 central-storage.workspace = true
 central-link-protocol.workspace = true
