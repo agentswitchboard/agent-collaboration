@@ -10,9 +10,9 @@ use collaboration_protocol::{
     DeliveryOutcome, MessageContent, MessageDelivery, MessageText, ProviderOperationKind,
     ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess, SessionId,
 };
-use collaboration_runtime::ProviderOperationStore;
-use collaboration_runtime::ProviderSessionRecord;
 use std::{path::PathBuf, sync::Arc, time::Duration};
+use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_store::ProviderSessionRecord;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 use crate::provider_acp_message_fifo_support;

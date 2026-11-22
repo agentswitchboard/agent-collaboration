@@ -8,9 +8,7 @@ use collaboration_protocol::{
     EndpointDescription, OBSERVATION_EVENT_NOTIFICATION, ProviderRequestedPolicy,
     ProviderWorkingDirectory, RouterAccess, SessionRef,
 };
-use collaboration_runtime::ProviderOperationStore;
 use collaboration_runtime::ProviderSessionEventHub;
-use collaboration_runtime::ProviderSessionRecord;
 use collaboration_service::ApplicationFixture;
 use rmcp::{
     ClientHandler, RoleClient,
@@ -20,6 +18,8 @@ use rmcp::{
 use router_clock::{ClockInstant, ManualClock, RuntimeClock};
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc, time::Duration};
+use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_store::ProviderSessionRecord;
 use tokio::sync::{Mutex, mpsc};
 
 /// An MCP client that hands the test each observation event notification it receives.

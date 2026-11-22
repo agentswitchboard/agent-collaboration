@@ -16,6 +16,7 @@ router-clock.workspace = true
 state-machine-core.workspace = true
 collaboration-contracts = { version = "0.1.105", path = "../collaboration-contracts" }
 collaboration-runtime = { version = "0.1.105", path = "../collaboration-runtime" }
+switchboard-session-store.workspace = true
 runtime-primitives = { workspace = true, features = ["tokio"] }
 collaboration-mail-protocol = { path = "../collaboration-mail-protocol", version = "0.1.93" }
 message-board = { path = "../message-board", version = "0.1.20" }

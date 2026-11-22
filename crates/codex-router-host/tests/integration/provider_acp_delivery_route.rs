@@ -26,12 +26,12 @@ use collaboration_protocol::{
     ProviderOperationStage, ProviderReconciliationState, ProviderRequestedPolicy,
     ProviderWorkingDirectory, PushId, RouterAccess,
 };
-use collaboration_runtime::{
-    EndpointDirectory, ProviderOperationAdmission, ProviderOperationStore, ProviderSessionRecord,
-    SessionDeliveryRouter,
-};
+use collaboration_runtime::{EndpointDirectory, SessionDeliveryRouter};
 use serde_json::Value;
 use std::{path::PathBuf, sync::Arc, time::Duration};
+use switchboard_session_store::{
+    ProviderOperationAdmission, ProviderOperationStore, ProviderSessionRecord,
+};
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
 #[path = "../support/provider_delivery_fixture.rs"]

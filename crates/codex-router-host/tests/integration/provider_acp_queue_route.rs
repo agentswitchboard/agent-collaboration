@@ -23,13 +23,13 @@ use collaboration_protocol::{
     PushId, RouterAccess, SessionId, SessionRef, UuidIdentity,
 };
 use collaboration_runtime::EndpointDirectory;
-use collaboration_runtime::ProviderOperationStore;
-use collaboration_runtime::ProviderSessionRecord;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
     time::Duration,
 };
+use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_store::ProviderSessionRecord;
 use tokio::io::AsyncReadExt as _;
 
 struct NoLivePeer;

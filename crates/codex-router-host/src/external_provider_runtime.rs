@@ -137,7 +137,7 @@ impl ExternalProviderRuntime {
 
     pub fn session_owner_door(
         &self,
-        store: Arc<tokio::sync::Mutex<collaboration_runtime::ProviderOperationStore>>,
+        store: Arc<tokio::sync::Mutex<switchboard_session_store::ProviderOperationStore>>,
         hub: Arc<collaboration_runtime::ProviderSessionEventHub>,
     ) -> Arc<crate::session_owner_door::SessionOwnerDoor> {
         self.owner_door

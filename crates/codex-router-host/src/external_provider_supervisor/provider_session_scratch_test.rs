@@ -70,7 +70,7 @@ async fn supervisor_create_grants_the_agent_a_fresh_session_folder() {
     .await
     .unwrap();
     let store =
-        collaboration_runtime::ProviderOperationStore::open(&base.join("operations.sqlite"))
+        switchboard_session_store::ProviderOperationStore::open(&base.join("operations.sqlite"))
             .await
             .unwrap();
     let binding = crate::external_provider_supervisor::tests::binding();

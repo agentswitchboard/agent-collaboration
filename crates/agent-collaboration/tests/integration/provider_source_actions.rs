@@ -9,10 +9,10 @@ use collaboration_protocol::{
     OperationId, ProviderIdentity, ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess,
     SessionRef,
 };
-use collaboration_runtime::ProviderOperationStore;
-use collaboration_runtime::ProviderSessionRecord;
 use serde_json::{Value, json};
 use std::{os::unix::fs::PermissionsExt as _, time::Duration};
+use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_store::ProviderSessionRecord;
 
 use agent_session_inventory::test_support::recorded_api_listener;
 

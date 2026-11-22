@@ -1,8 +1,9 @@
 //! Native inventory must page using observed activity, without changing durable records.
 use super::test_support::ScriptedSessionBackend;
 use super::*;
-use crate::{ProviderOperationStore, ProviderSessionEventHub, ProviderSessionRecord};
+use crate::ProviderSessionEventHub;
 use session_event_model::{SessionItem, SessionItemKind, SessionSettings};
+use switchboard_session_store::{ProviderOperationStore, ProviderSessionRecord};
 use tokio::sync::Mutex;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;

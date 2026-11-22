@@ -12,12 +12,10 @@ use collaboration_protocol::{
     MessageContent, MessageDelivery, MessageText, OperationId, PositiveSeconds,
     ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess, SessionId,
 };
-use collaboration_runtime::{
-    HistoricalTurn, ProviderOperationStore, ProviderSessionEventHub, ProviderSessionRecord,
-    render_historical_turn,
-};
+use collaboration_runtime::{HistoricalTurn, ProviderSessionEventHub, render_historical_turn};
 use serde_json::{Value, json};
 use session_event_model::{SessionEvent, SessionItemKind, StopReason, TurnOutcome};
+use switchboard_session_store::{ProviderOperationStore, ProviderSessionRecord};
 use tokio::sync::Mutex;
 
 const METADATA_PROVIDER: &str = concat!(

@@ -7,7 +7,7 @@ use collaboration_protocol::{
     ConversationBindingIdentity, OperationId, ProviderOperationEffect, ProviderOperationKind,
     ProviderOperationStage, ProviderReconciliationState, SessionId, SessionRef,
 };
-use collaboration_runtime::ProviderOperationRecord;
+use switchboard_session_store::ProviderOperationRecord;
 
 fn record(kind: ProviderOperationKind, target: Option<SessionRef>) -> ProviderOperationRecord {
     ProviderOperationRecord {
@@ -76,7 +76,7 @@ fn a_reused_id_matches_only_the_same_kind_and_session() {
 /// restart finds it "admitted, never sent"; a settled row is never reopened.
 #[tokio::test]
 async fn a_refused_send_returns_its_row_to_admitted_and_never_reopens_a_settled_one() {
-    use collaboration_runtime::{ProviderOperationAdmission, ProviderOperationStore};
+    use switchboard_session_store::{ProviderOperationAdmission, ProviderOperationStore};
     let root = tempfile::tempdir().expect("store root");
     let mut store = ProviderOperationStore::open(&root.path().join("operations.sqlite"))
         .await

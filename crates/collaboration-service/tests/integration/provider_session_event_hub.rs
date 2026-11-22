@@ -4,15 +4,15 @@ use crate::provider_history::ResumePublicationFixture;
 use collaboration_contracts::SessionEventHub;
 use collaboration_protocol::{ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess};
 use collaboration_runtime::HubReceiveError;
-use collaboration_runtime::ProviderOperationStore;
 use collaboration_runtime::ProviderSessionEventHub;
-use collaboration_runtime::ProviderSessionRecord;
 use collaboration_runtime::receive_hub_event;
 use message_board::SessionRef;
 use session_event_model::{
     ConfigValue, ConfigValueState, PendingInteraction, SessionEvent, SessionItem, SessionItemKind,
     SessionSettings, SessionState, StopReason, TurnLostReason, TurnOutcome,
 };
+use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_store::ProviderSessionRecord;
 use tokio::sync::Mutex;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;

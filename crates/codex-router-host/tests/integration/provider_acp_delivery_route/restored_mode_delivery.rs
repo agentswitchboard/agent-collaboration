@@ -10,9 +10,9 @@ use collaboration_contracts::{ProviderConversationBackend, SessionDeliveryRoute}
 use collaboration_protocol::{
     DeliveryOutcome, OperationId, ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess,
 };
-use collaboration_runtime::{ProviderOperationStore, ProviderSessionRecord};
 use serde_json::Value;
 use std::sync::Arc;
+use switchboard_session_store::{ProviderOperationStore, ProviderSessionRecord};
 
 #[tokio::test]
 async fn an_already_loaded_session_accepts_delivery_despite_a_mode_difference() {
@@ -79,7 +79,7 @@ async fn an_already_loaded_session_accepts_delivery_despite_a_mode_difference() 
             created_by: target.clone().into(),
             approver: target.clone().into(),
             updated_at_ms: 1,
-            resume: collaboration_runtime::ProviderSessionResumeInputs {
+            resume: switchboard_session_store::ProviderSessionResumeInputs {
                 requested_mode: Some("acceptEdits".into()),
                 ..Default::default()
             },

@@ -12,24 +12,15 @@ mod private_socket_listener;
 pub use native_relay_listener::NativeRelayListener;
 pub use private_socket_listener::{OwnerOnlySocket, SocketCleanup};
 mod codex_conversation_operation_recorder;
-mod provider_operation_store;
 pub use codex_conversation_operation_recorder::{
     CodexConversationOperationRecorder, CodexPermissionModes,
     UnavailableConversationOperationRecorder,
 };
 mod provider_session_event_hub;
-mod provider_session_record;
-pub use provider_operation_store::StoredUncertainOperation;
-pub use provider_operation_store::{
-    PROVIDER_OPERATION_RETENTION_MONTHS, ProviderOperationAdmission,
-    ProviderOperationAdmissionResult, ProviderOperationRecord, ProviderOperationStore,
-    ProviderOperationStoreError, provider_operation_retention_cutoff_ms,
-};
 #[cfg(any(test, feature = "test-support"))]
 pub use provider_session_event_hub::HeldSessionHistory;
 pub use provider_session_event_hub::owner_inbox;
 pub use provider_session_event_hub::{HubReceiveError, ProviderSessionEventHub, receive_hub_event};
-pub use provider_session_record::{ProviderSessionRecord, ProviderSessionResumeInputs};
 mod app_server_event_forwarding;
 mod app_server_item_metadata;
 mod app_server_item_translation;

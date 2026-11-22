@@ -59,10 +59,6 @@ use collaboration_protocol::{
     ProviderOperationStage, ProviderReconciliationState, ProviderSessionInspectRequest,
     ProviderSettingsAcceptRequest, ProviderSettingsSetRequest, SessionId, SessionRef,
 };
-use collaboration_runtime::ProviderOperationAdmission;
-use collaboration_runtime::ProviderOperationAdmissionResult;
-use collaboration_runtime::ProviderOperationRecord;
-use collaboration_runtime::ProviderOperationStore;
 use collaboration_service::conversation_operation_snapshot as snapshot_from_record;
 use std::{
     collections::HashMap,
@@ -70,6 +66,10 @@ use std::{
     sync::{Arc, Mutex as StdMutex},
     time::Duration,
 };
+use switchboard_session_store::ProviderOperationAdmission;
+use switchboard_session_store::ProviderOperationAdmissionResult;
+use switchboard_session_store::ProviderOperationRecord;
+use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
 use tokio_util::task::TaskTracker;
 

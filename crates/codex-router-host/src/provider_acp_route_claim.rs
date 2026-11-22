@@ -7,8 +7,8 @@ use collaboration_contracts::RouteUnavailableReason;
 use collaboration_contracts::UnsentCause;
 use collaboration_protocol::{EndpointAvailability, EndpointRef, SessionRef, UuidIdentity};
 use collaboration_runtime::EndpointDirectory;
-use collaboration_runtime::ProviderOperationStore;
 use std::{collections::HashSet, sync::Arc};
+use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
 
 pub(crate) struct ProviderAcpRouteClaim {
@@ -160,8 +160,8 @@ mod tests {
         ObservationTimestamp, SessionId, SessionRef, UuidIdentity,
     };
     use collaboration_runtime::EndpointDirectory;
-    use collaboration_runtime::ProviderOperationStore;
     use std::sync::Arc;
+    use switchboard_session_store::ProviderOperationStore;
 
     #[tokio::test]
     async fn disabled_provider_claim_preserves_catalog_reason_and_fix() {

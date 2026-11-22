@@ -28,7 +28,8 @@ use tokio::{
 };
 
 use super::ProviderAcpSessionRoute;
-use crate::{ProviderOperationStore, ProviderSessionEventHub};
+use crate::ProviderSessionEventHub;
+use switchboard_session_store::ProviderOperationStore;
 
 const N9: ProtocolNode = ProtocolNode::N9ProviderAcpRoute;
 const ACP_CLIENT: EdgeParty = EdgeParty::McpCaller;
@@ -154,7 +155,7 @@ impl RouteHarness {
         let owner: collaboration_protocol::ProviderIdentity =
             serde_json::from_value(json!({"humanId":"owner"})).expect("owner");
         store
-            .record_session(&crate::ProviderSessionRecord {
+            .record_session(&switchboard_session_store::ProviderSessionRecord {
                 target: serde_json::from_value(serde_json::to_value(&session).expect("target"))
                     .expect("target"),
                 working_directory: root.path().display().to_string().try_into().expect("cwd"),

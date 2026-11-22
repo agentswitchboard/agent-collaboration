@@ -5,8 +5,8 @@ use session_event_model::{SessionEvent, SessionItem, SessionItemKind};
 use tokio::sync::Mutex;
 
 use super::ProviderSessionEventHub;
-use crate::ProviderOperationStore;
 use collaboration_contracts::SessionEventHub;
+use switchboard_session_store::ProviderOperationStore;
 
 #[tokio::test]
 async fn publish_uses_injected_clock_for_inventory_activity() {
@@ -25,7 +25,7 @@ async fn publish_uses_injected_clock_for_inventory_activity() {
     let owner: collaboration_protocol::ProviderIdentity =
         serde_json::from_value(serde_json::json!({"humanId": "owner"})).expect("owner");
     store
-        .record_session(&crate::ProviderSessionRecord {
+        .record_session(&switchboard_session_store::ProviderSessionRecord {
             target: serde_json::from_value(serde_json::to_value(&session).expect("target"))
                 .expect("target"),
             working_directory: root.path().display().to_string().try_into().expect("cwd"),
@@ -72,7 +72,7 @@ async fn inventory_uses_first_user_message_and_existing_session_title() {
     let owner: collaboration_protocol::ProviderIdentity =
         serde_json::from_value(serde_json::json!({"humanId":"owner"})).expect("owner");
     store
-        .record_session(&crate::ProviderSessionRecord {
+        .record_session(&switchboard_session_store::ProviderSessionRecord {
             target: serde_json::from_value(serde_json::to_value(&session).expect("target"))
                 .expect("target"),
             working_directory: root.path().display().to_string().try_into().expect("cwd"),

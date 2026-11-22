@@ -314,7 +314,7 @@ impl ExternalProviderSupervisor {
         let acceptance = self.retain_operation(operation.clone(), Some(target.clone()), async move {
             let receipt = if can_queue
                 && owner
-                    .defer_queued_admission(collaboration_runtime::ProviderOperationAdmission {
+                    .defer_queued_admission(switchboard_session_store::ProviderOperationAdmission {
                         operation_id: operation.clone(),
                         operation_kind: ProviderOperationKind::ConversationPrompt,
                         binding:

@@ -16,9 +16,10 @@ use collaboration_protocol::{
     ProviderBindingId, ProviderBindingIdentity, ProviderKind, ProviderRuntimeIdentity,
     ProviderTransport, SessionId, SessionRef,
 };
-use collaboration_runtime::{ProviderOperationStore, ProviderSessionEventHub};
+use collaboration_runtime::ProviderSessionEventHub;
 use session_event_model::{InputId, PromptContent, SessionEvent, StopReason, TurnOutcome};
 use std::{sync::Arc, task::Poll, time::Duration};
+use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
 
 struct NoLivePeer;

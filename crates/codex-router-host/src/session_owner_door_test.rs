@@ -5,13 +5,13 @@ use crate::{
 };
 use collaboration_contracts::SessionEventHub;
 use collaboration_protocol::{ConversationBindingIdentity, OperationId, ProviderOperationKind};
-use collaboration_runtime::ProviderOperationAdmission;
 use provider_session_machines::{
     session_lifecycle_machine::{CloseAttempt, SessionLifecycle},
     session_owner::{CloseOutcome, RestoreDisposition, SessionOwnerReply},
     session_turn_machine::TurnId,
 };
 use session_event_model::{InputId, PromptContent, SessionState};
+use switchboard_session_store::ProviderOperationAdmission;
 
 async fn operation(
     fixture: &StoreFixture,

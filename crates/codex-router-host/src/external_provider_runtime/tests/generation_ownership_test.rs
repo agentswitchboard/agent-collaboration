@@ -37,9 +37,11 @@ async fn hub_runtime_with(behaviours: &[&str]) -> HubRuntime {
     let root = tempfile::tempdir().expect("fixture root");
     let receipt = root.path().join("wire.json");
     let store = Arc::new(tokio::sync::Mutex::new(
-        collaboration_runtime::ProviderOperationStore::open(&root.path().join("operations.sqlite"))
-            .await
-            .expect("store"),
+        switchboard_session_store::ProviderOperationStore::open(
+            &root.path().join("operations.sqlite"),
+        )
+        .await
+        .expect("store"),
     ));
     let clock = Arc::new(router_clock::SystemRuntimeClock::new());
     let hub = Arc::new(collaboration_runtime::ProviderSessionEventHub::new(

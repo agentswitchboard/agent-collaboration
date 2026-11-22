@@ -21,10 +21,11 @@ use collaboration_protocol::{
     ProviderCapabilityName, ProviderCapabilityStatus, ProviderKind, ProviderRuntimeIdentity,
     ProviderTransport, ProviderWorkingDirectory, RouterAccess,
 };
-use collaboration_runtime::{EndpointDirectory, ProviderSessionRecord};
+use collaboration_runtime::EndpointDirectory;
 use message_board::SessionRef as BoardSessionRef;
 use session_event_model::{PromptContent, ProviderSubmission, SettingApplicationIntent};
 use std::path::PathBuf;
+use switchboard_session_store::ProviderSessionRecord;
 
 #[path = "provider_session_command_port_acp_failure_test.rs"]
 mod acp_failures;

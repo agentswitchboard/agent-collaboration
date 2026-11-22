@@ -5,13 +5,13 @@ use collaboration_protocol::{
     EndpointDescription, ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess,
     SessionRef,
 };
-use collaboration_runtime::ProviderOperationStore;
 use collaboration_runtime::ProviderSessionEventHub;
-use collaboration_runtime::ProviderSessionRecord;
 use collaboration_service::ApplicationFixture;
 use node_test_fixture as node_fixture;
 use serde_json::{Value, json};
 use std::{os::unix::fs::PermissionsExt, path::PathBuf, sync::Arc};
+use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_store::ProviderSessionRecord;
 use tokio::sync::Mutex;
 
 pub(super) const SERVICE: &str = "00000000-0000-4000-8000-000000000001";

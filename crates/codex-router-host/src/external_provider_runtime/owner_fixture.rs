@@ -8,10 +8,6 @@ use collaboration_protocol::{
     ConversationBindingIdentity, ProviderBindingIdentity, ProviderIdentity, ProviderOperationKind,
     ProviderRequestedPolicy, RouterAccess, SessionId,
 };
-use collaboration_runtime::{
-    ProviderOperationAdmission, ProviderOperationStore, ProviderSessionRecord,
-    ProviderSessionResumeInputs,
-};
 use provider_session_machines::{
     session_lifecycle_machine::{CloseAttempt, SessionLifecycle},
     session_owner::{
@@ -21,6 +17,10 @@ use provider_session_machines::{
     session_turn_machine::{SessionTurn, TurnId},
 };
 use session_event_model::{InputId, ProviderSubmission};
+use switchboard_session_store::{
+    ProviderOperationAdmission, ProviderOperationStore, ProviderSessionRecord,
+    ProviderSessionResumeInputs,
+};
 use tokio::sync::Mutex;
 use uuid::Uuid;
 

@@ -12,8 +12,9 @@ pub struct ApplicationFixture {
     clock: Option<std::sync::Arc<dyn router_clock::RuntimeClock>>,
     pub(crate) journal: Option<std::sync::Arc<lifecycle_observation::LifecycleStore>>,
     pub(crate) native_backend: Option<collaboration_runtime::NativeControlBackend>,
-    pub(crate) provider_operations:
-        Option<std::sync::Arc<tokio::sync::Mutex<collaboration_runtime::ProviderOperationStore>>>,
+    pub(crate) provider_operations: Option<
+        std::sync::Arc<tokio::sync::Mutex<switchboard_session_store::ProviderOperationStore>>,
+    >,
     pub(crate) provider_session_hub:
         Option<std::sync::Arc<dyn collaboration_contracts::SessionEventHub>>,
     pub(crate) claude_code_sessions:
@@ -72,7 +73,9 @@ impl ApplicationFixture {
 
     pub fn with_provider_operation_store(
         mut self,
-        store: std::sync::Arc<tokio::sync::Mutex<collaboration_runtime::ProviderOperationStore>>,
+        store: std::sync::Arc<
+            tokio::sync::Mutex<switchboard_session_store::ProviderOperationStore>,
+        >,
     ) -> Self {
         self.provider_operations = Some(store);
         self

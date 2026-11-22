@@ -217,10 +217,12 @@ async fn concrete_hub_epoch_resync_reattaches_same_tui_socket()
         serde_json::from_value(serde_json::to_value(&backend.session)?)?;
     let owner: collaboration_protocol::ProviderIdentity =
         serde_json::from_value(json!({"humanId":"owner"}))?;
-    let mut store =
-        crate::ProviderOperationStore::open(&directory.path().join("operations.sqlite")).await?;
+    let mut store = switchboard_session_store::ProviderOperationStore::open(
+        &directory.path().join("operations.sqlite"),
+    )
+    .await?;
     store
-        .record_session(&crate::ProviderSessionRecord {
+        .record_session(&switchboard_session_store::ProviderSessionRecord {
             target: stored_target,
             working_directory: ProviderWorkingDirectory::try_from(
                 directory.path().display().to_string(),

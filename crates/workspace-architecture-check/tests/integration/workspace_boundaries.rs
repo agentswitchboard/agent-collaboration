@@ -50,6 +50,10 @@ const FLEET_NOTICES: &str = "fleet-notices";
 const FLEET_WAKES: &str = "fleet-wakes";
 const FLEET_SCHEDULES: &str = "fleet-schedules";
 const FLEET_TIMER_POLICY: &str = "fleet-timer-policy";
+const SESSION_STORE: (&str, &[&str]) = (
+    "switchboard-session-store",
+    &["collaboration-protocol", "sqlite-storage-maintenance"],
+);
 pub(super) const TIMER_CRATES: [(&str, &[&str]); 3] = [
     (
         FLEET_WAKES,
@@ -258,6 +262,7 @@ pub(super) fn check_boundaries(
     check_closed_workspace_edges(graph, MAIL_LAYER.0, MAIL_LAYER.1)?;
     check_closed_workspace_edges(graph, NOTICES_LAYER.0, NOTICES_LAYER.1)?;
     check_closed_workspace_edges(graph, DIRECTORY_LAYER.0, DIRECTORY_LAYER.1)?;
+    check_closed_workspace_edges(graph, SESSION_STORE.0, SESSION_STORE.1)?;
     check_job_reachability(
         graph,
         FLEET_WAKES,

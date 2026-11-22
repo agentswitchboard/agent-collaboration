@@ -13,7 +13,7 @@ use acp_client_runtime::{
     ProviderPromptContent, owner_wire::OwnerAcpWire, session_owner_task::OwnerMailboxUnavailable,
 };
 use collaboration_protocol::SessionRef;
-use collaboration_runtime::{ProviderOperationStore, ProviderSessionEventHub};
+use collaboration_runtime::ProviderSessionEventHub;
 use provider_session_machines::{
     session_lifecycle_machine::{LoadAttempt, RestoreVia},
     session_owner::{
@@ -27,6 +27,7 @@ use std::{
     num::NonZeroUsize,
     sync::{Arc, Mutex},
 };
+use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::oneshot;
 use tokio::sync::{Mutex as AsyncMutex, watch};
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
@@ -452,7 +453,7 @@ impl SessionOwnerAddress {
         &self,
         operation: Uuid,
         via: RestoreVia,
-        record: Box<collaboration_runtime::ProviderSessionRecord>,
+        record: Box<switchboard_session_store::ProviderSessionRecord>,
     ) -> Result<OwnedSettlement, OwnerDoorError> {
         let attempt = LoadAttempt(operation);
         self.storage.expect_explicit_restore(attempt, record);
@@ -627,7 +628,7 @@ impl SessionOwnerAddress {
 
     pub(crate) fn defer_queued_admission(
         &self,
-        admission: collaboration_runtime::ProviderOperationAdmission,
+        admission: switchboard_session_store::ProviderOperationAdmission,
     ) -> Result<(), crate::session_store_lane::SessionStoreOfferError> {
         self.storage
             .defer_queued_admission(self.owner.address.incarnation, admission)

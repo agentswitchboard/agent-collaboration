@@ -128,8 +128,9 @@ fn cursor_after(row: &ProviderInventoryRow, cursor: &ProviderInventoryCursor) ->
 pub struct ProviderSessionInventory {
     identity: collaboration_contracts::RouterIdentity,
     directory: collaboration_runtime::EndpointDirectory,
-    provider_operations:
-        Option<std::sync::Arc<tokio::sync::Mutex<collaboration_runtime::ProviderOperationStore>>>,
+    provider_operations: Option<
+        std::sync::Arc<tokio::sync::Mutex<switchboard_session_store::ProviderOperationStore>>,
+    >,
     provider_session_hub: Option<std::sync::Arc<dyn collaboration_contracts::SessionEventHub>>,
     claude_code_sessions:
         Option<std::sync::Arc<claude_code_peer_messaging::ClaudeCodeSessionRegistry>>,
@@ -141,7 +142,7 @@ impl ProviderSessionInventory {
         identity: collaboration_contracts::RouterIdentity,
         directory: collaboration_runtime::EndpointDirectory,
         provider_operations: Option<
-            std::sync::Arc<tokio::sync::Mutex<collaboration_runtime::ProviderOperationStore>>,
+            std::sync::Arc<tokio::sync::Mutex<switchboard_session_store::ProviderOperationStore>>,
         >,
         provider_session_hub: Option<std::sync::Arc<dyn collaboration_contracts::SessionEventHub>>,
         claude_code_sessions: Option<

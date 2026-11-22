@@ -69,7 +69,7 @@ async fn initialization_authentication_precedes_models_and_is_once_per_connectio
         store
             .lock()
             .await
-            .record_session(&collaboration_runtime::ProviderSessionRecord {
+            .record_session(&switchboard_session_store::ProviderSessionRecord {
                 target: target.clone(),
                 working_directory: ProviderWorkingDirectory::try_from(
                     root.path().display().to_string(),

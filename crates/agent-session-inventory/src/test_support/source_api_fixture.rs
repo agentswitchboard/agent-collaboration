@@ -127,9 +127,9 @@ impl SourceApiFixture {
             use collaboration_client::protocol::{
                 ProviderRequestedPolicy, RouterAccess, SessionRef,
             };
-            use collaboration_runtime::ProviderOperationStore;
             use collaboration_runtime::ProviderSessionEventHub;
-            use collaboration_runtime::ProviderSessionRecord;
+            use switchboard_session_store::ProviderOperationStore;
+            use switchboard_session_store::ProviderSessionRecord;
             let target: SessionRef = serde_json::from_value(serde_json::json!({
                 "endpoint":{"serviceId":service,"endpointId":"claude-local"},"sessionId":"shared-source-id"
             })).unwrap();

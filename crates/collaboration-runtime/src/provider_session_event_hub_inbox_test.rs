@@ -1,6 +1,6 @@
 use super::*;
-use crate::ProviderOperationStore;
 use collaboration_contracts::SessionEventHub;
+use switchboard_session_store::ProviderOperationStore;
 
 async fn hub() -> (tempfile::TempDir, Arc<ProviderSessionEventHub>) {
     let root = tempfile::tempdir().expect("temporary store");

@@ -3,10 +3,11 @@
 use super::*;
 use crate::session_owner_calls::InputAcceptance;
 use collaboration_contracts::SessionEventHub;
-use collaboration_runtime::{ProviderSessionEventHub, ProviderSessionRecord};
+use collaboration_runtime::ProviderSessionEventHub;
 use session_event_model::{
     InputId, PromptContent, ProviderSubmission, SelectedSkill, SkillInvocationName,
 };
+use switchboard_session_store::ProviderSessionRecord;
 
 #[tokio::test]
 async fn selected_skill_removed_while_fifo_waits_is_refused_without_a_provider_prompt() {

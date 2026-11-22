@@ -26,8 +26,9 @@ pub struct ConversationOperations {
     pub(super) identity: collaboration_contracts::RouterIdentity,
     pub(super) provider_conversations:
         Option<std::sync::Arc<dyn collaboration_contracts::ProviderConversationBackend>>,
-    pub(super) provider_operations:
-        Option<std::sync::Arc<tokio::sync::Mutex<collaboration_runtime::ProviderOperationStore>>>,
+    pub(super) provider_operations: Option<
+        std::sync::Arc<tokio::sync::Mutex<switchboard_session_store::ProviderOperationStore>>,
+    >,
     pub(super) codex_conversation_recorder:
         Option<std::sync::Arc<collaboration_runtime::CodexConversationOperationRecorder>>,
     pub(super) directory: collaboration_runtime::EndpointDirectory,
@@ -74,7 +75,7 @@ impl ConversationOperations {
             std::sync::Arc<dyn collaboration_contracts::ProviderConversationBackend>,
         >,
         provider_operations: Option<
-            std::sync::Arc<tokio::sync::Mutex<collaboration_runtime::ProviderOperationStore>>,
+            std::sync::Arc<tokio::sync::Mutex<switchboard_session_store::ProviderOperationStore>>,
         >,
         codex_conversation_recorder: Option<
             std::sync::Arc<collaboration_runtime::CodexConversationOperationRecorder>,
@@ -366,7 +367,8 @@ impl ConversationOperations {
     async fn codex_record(
         &self,
         operation_id: &OperationId,
-    ) -> Result<Option<collaboration_runtime::ProviderOperationRecord>, ConversationFailure> {
+    ) -> Result<Option<switchboard_session_store::ProviderOperationRecord>, ConversationFailure>
+    {
         let Some(store) = self.provider_operations.as_ref() else {
             return Ok(None);
         };
@@ -672,7 +674,7 @@ fn local_failure(
 
 #[expect(clippy::result_large_err, reason = "Preserve typed failure payloads.")]
 fn codex_snapshot(
-    record: collaboration_runtime::ProviderOperationRecord,
+    record: switchboard_session_store::ProviderOperationRecord,
 ) -> Result<ConversationOperationSnapshot, ConversationFailure> {
     crate::conversation_operation_snapshot(record)
         .map_err(|_| ConversationFailure::InvalidStoredOperation)

@@ -6,10 +6,6 @@ use collaboration_protocol::{
     ConversationBindingIdentity, OperationId, ProviderOperationEffect, ProviderOperationKind,
     ProviderOperationStage, ProviderPromptStopReason, ProviderReconciliationState, SessionRef,
 };
-use collaboration_runtime::{
-    ProviderOperationAdmission, ProviderOperationRecord, ProviderOperationStore,
-    ProviderOperationStoreError, ProviderSessionRecord,
-};
 use provider_session_machines::session_owner::{OwnerIncarnation, OwnerInput};
 use router_clock::{ClockInstant, RuntimeClock};
 use session_event_model::InputId;
@@ -17,6 +13,10 @@ use std::{
     collections::{BTreeMap, VecDeque},
     sync::{Arc, Mutex, MutexGuard},
     time::Duration,
+};
+use switchboard_session_store::{
+    ProviderOperationAdmission, ProviderOperationRecord, ProviderOperationStore,
+    ProviderOperationStoreError, ProviderSessionRecord,
 };
 use tokio::sync::{Mutex as AsyncMutex, Notify, oneshot};
 use tokio_util::sync::CancellationToken;

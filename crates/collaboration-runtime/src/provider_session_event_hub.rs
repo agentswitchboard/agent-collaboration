@@ -16,7 +16,7 @@ use collaboration_contracts::HubFuture;
 
 use collaboration_contracts::HubSessionSummary;
 
-use crate::ProviderOperationStore;
+use switchboard_session_store::ProviderOperationStore;
 
 use collaboration_contracts::SessionEventAttachment;
 

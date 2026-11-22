@@ -898,5 +898,5 @@ impl ProviderOperationStore {
 }
 
 #[cfg(test)]
-#[path = "provider_operation_store_tests.rs"]
+#[path = "provider_operation_store_test.rs"]
 mod tests;

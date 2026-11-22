@@ -10,8 +10,9 @@ use collaboration_protocol::{
     ConversationResumeRequest, DeliveryCorrelationId, EndpointAvailability, EndpointDescription,
     MessageContent, MessageDelivery, ObservationTimestamp,
 };
-use collaboration_runtime::{EndpointDirectory, ProviderSessionEventHub, ProviderSessionRecord};
+use collaboration_runtime::{EndpointDirectory, ProviderSessionEventHub};
 use router_clock::ManualClock;
+use switchboard_session_store::ProviderSessionRecord;
 
 pub(super) fn admission_pause() -> (
     AdmissionTestPause,
