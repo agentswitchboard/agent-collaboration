@@ -4,7 +4,7 @@ use super::{
     FLEET_PURE_CRATES, FLEET_SCHEDULES, FLEET_TIMER_POLICY, FLEET_WAKES, LENT_TRANSACTION,
     PURE_CRATES, REQUEST_LOG, SESSION_READ_CRATES, TIMER_CRATES, WORKSPACE_SERVICE, is_effectful,
 };
-use std::{path::Path, process::Command};
+use std::{collections::BTreeSet, path::Path, process::Command};
 
 pub(super) const SERVICE_SUPPORT_PACKAGES: &[&str] = &[
     "sqlx",
@@ -74,16 +74,13 @@ pub(super) fn check_package_targets(
     ) || FLEET_PURE_CRATES
         .iter()
         .any(|(dependency_name, _)| *dependency_name == package_name)
+        || SESSION_READ_CRATES
+            .iter()
+            .any(|(name, _)| *name == package_name)
     {
         check_package_tree(workspace_root, package_name, Some(FLEET_WASM_TARGET)).map_err(
             |error| format!("{package_name} dependency tree for {FLEET_WASM_TARGET}: {error}"),
         )?;
-    }
-    if SESSION_READ_CRATES
-        .iter()
-        .any(|(name, _)| *name == package_name)
-    {
-        check_package_tree(workspace_root, package_name, Some(FLEET_WASM_TARGET))?;
     }
     Ok(())
 }
@@ -145,12 +142,18 @@ pub(super) fn check_package_tree_output(
     allowed_support_packages: &[&str],
     package_name: &str,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    let private_read_root = SESSION_READ_CRATES
+        .iter()
+        .any(|(name, _)| *name == package_name);
     for package_line in dependency_tree.lines() {
         let (package_identity, enabled_features) =
             package_line.split_once('\t').unwrap_or((package_line, ""));
         let Some(dependency_name) = package_identity.split_whitespace().next() else {
             continue;
         };
+        if private_read_root {
+            check_session_read_tree_features(package_name, dependency_name, enabled_features)?;
+        }
         if package_name == LENT_TRANSACTION {
             if dependency_name.starts_with("sqlx-") && dependency_name != "sqlx-core" {
                 return Err(format!(
@@ -196,6 +199,39 @@ pub(super) fn check_package_tree_output(
             .into());
         }
         return Err(format!("BD2: pure rules transitively reach {dependency_name}").into());
+    }
+    Ok(())
+}
+
+fn check_session_read_tree_features(
+    root: &str,
+    dependency: &str,
+    enabled_features: &str,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let allowed: &[&str] = match dependency {
+        "workspace-ids" => &[],
+        "schemars" => &["default", "derive", "schemars_derive", "std"],
+        "serde" => &["alloc", "default", "derive", "serde_derive", "std"],
+        "thiserror" => &["default", "std"],
+        name if name == root => &[],
+        name if name == "specta" || name.starts_with("specta-") => {
+            return Err(format!("BD1: {root} reaches schema export package {dependency}").into());
+        }
+        _ => return Ok(()),
+    };
+    let enabled_features = enabled_features
+        .strip_suffix("(*)")
+        .unwrap_or(enabled_features)
+        .trim();
+    let actual: BTreeSet<_> = enabled_features
+        .split(',')
+        .filter(|feature| !feature.is_empty())
+        .collect();
+    let allowed = allowed.iter().copied().collect();
+    if actual != allowed {
+        return Err(format!(
+            "BD1: forbidden resolved features {root} -> {dependency}: {actual:?}, expected {allowed:?}"
+        ).into());
     }
     Ok(())
 }

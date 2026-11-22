@@ -38,6 +38,8 @@ struct ManifestDependency {
     kind: Option<DependencyKind>,
     path: Option<PathBuf>,
     source: Option<String>,
+    features: Vec<String>,
+    uses_default_features: bool,
 }
 
 #[derive(Deserialize)]
@@ -333,7 +335,9 @@ fn session_owner_policy_covers_inactive_optional_declarations() {
                         "rename": "clock-alias",
                         "kind": kind,
                         "optional": optional,
-                        "path": "/workspace/clock"
+                        "path": "/workspace/clock",
+                        "features": [],
+                        "uses_default_features": true
                     }]
                 },
                 {

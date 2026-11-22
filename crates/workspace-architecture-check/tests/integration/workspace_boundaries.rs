@@ -268,6 +268,7 @@ pub(super) fn check_boundaries(
         }
         check_workspace_driver_edges(graph, source)?;
     }
+    check_resolved_session_read_dev_edges(graph)?;
     check_closed_workspace_edges(
         graph,
         WORKSPACE_SERVICE,
@@ -449,14 +450,56 @@ pub(super) fn check_declared_session_read_edges(
                 && dependency.path.is_none();
             let allowed: &[&str] = match (kind, workspace_edge, registry_edge) {
                 (DependencyKind::Normal, true, false) => allowed_workspace,
-                (DependencyKind::Normal, false, true) => &["serde", "schemars", "thiserror"],
-                (DependencyKind::Dev, false, true) if owner == "switchboard-session-calls" => {
-                    &["serde_json", "serde_path_to_error", "hegeltest"]
+                (DependencyKind::Normal, false, true) if owner == "switchboard-session-calls" => {
+                    &["serde", "schemars", "thiserror"]
                 }
-                (DependencyKind::Dev, false, true) => &["serde_json", "serde_path_to_error"],
+                (DependencyKind::Normal, false, true) => &["serde", "schemars"],
+                (DependencyKind::Dev, false, true) => allowed_session_read_dev_dependencies(owner),
                 _ => &[],
             };
             check_closed_workspace_edge(owner, &dependency.name, kind, allowed)?;
+            let allowed_features: &[&str] = match dependency.name.as_str() {
+                "serde" => &["derive"],
+                "hegeltest" => &["static-engine"],
+                _ => &[],
+            };
+            if dependency.features != allowed_features || !dependency.uses_default_features {
+                return Err(format!(
+                    "BD1: forbidden {kind:?} feature settings {owner} -> {}: features {:?}, default features: {}",
+                    dependency.name, dependency.features, dependency.uses_default_features
+                ).into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn allowed_session_read_dev_dependencies(owner: &str) -> &'static [&'static str] {
+    if owner == "switchboard-session-calls" {
+        &["serde_json", "serde_path_to_error", "hegeltest"]
+    } else {
+        &["serde_json", "serde_path_to_error"]
+    }
+}
+
+fn check_resolved_session_read_dev_edges(
+    graph: &NonDevDependencyGraph,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (owner, _) in SESSION_READ_CRATES {
+        let Some(source) = graph.workspace_id(owner) else {
+            continue;
+        };
+        for destination in graph.dev_edges.get(source).into_iter().flatten() {
+            let target = graph
+                .names
+                .get(destination)
+                .ok_or("dependency name absent")?;
+            let allowed = if graph.workspace_members.contains(destination) {
+                &[]
+            } else {
+                allowed_session_read_dev_dependencies(owner)
+            };
+            check_closed_workspace_edge(owner, target, DependencyKind::Dev, allowed)?;
         }
     }
     Ok(())
