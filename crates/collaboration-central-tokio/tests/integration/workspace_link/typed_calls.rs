@@ -382,3 +382,56 @@ async fn socket_barrier(socket: &mut WebSocket) -> Result<()> {
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn mac_typed_call_capacity_refuses_before_emitting_a_frame_and_reuses_a_slot() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let observed = verify_mac_call_capacity(&fixture).await;
+    fixture.close().await?;
+    observed
+}
+
+async fn verify_mac_call_capacity(fixture: &Fixture) -> Result<()> {
+    let mut socket = connect(fixture).await?;
+    let mut pending = Vec::new();
+    let capacity = u32::try_from(central_link_protocol::MAX_PENDING_TYPED_CALLS)?;
+    for sequence in 0..capacity {
+        pending.push(start_mac_call(fixture, &mut socket, sequence).await?);
+    }
+
+    let organization = signed::ORGANIZATION.to_owned().try_into()?;
+    let machine: MachineId = INSTALLATION.parse()?;
+    let overflow = fixture.host.call_machine::<MacProbe>(
+        &organization,
+        &machine,
+        probe_request(machine.clone(), capacity),
+    );
+    tokio::select! {
+        result = overflow => expect_call_failure(result, CallFailure::NeverReached)?,
+        frame = receive(&mut socket) => {
+            return Err(format!("an over-capacity call emitted a frame: {:?}", frame?).into());
+        }
+    }
+    socket_barrier(&mut socket).await?;
+
+    let completed = pending.remove(0);
+    let retired = completed.correlation.clone();
+    answer_mac_call(&mut socket, &retired, INSTALLATION, 0).await?;
+    expect_probe_reply(completed, 0).await?;
+    let replacement = start_mac_call(fixture, &mut socket, capacity + 1).await?;
+    assert_ne!(replacement.correlation, retired);
+    answer_mac_call(
+        &mut socket,
+        &replacement.correlation,
+        INSTALLATION,
+        capacity + 1,
+    )
+    .await?;
+    expect_probe_reply(replacement, capacity + 1).await?;
+
+    socket.close(CloseCode::Normal, None).await?;
+    for attempt in pending {
+        expect_call_failure(attempt.result.await?, CallFailure::AnswerLost)?;
+    }
+    Ok(())
+}

@@ -15,7 +15,7 @@ pub use link_typed_calls::{
     MacLinkRpc, TypedCallResult,
 };
 pub use request_status::{RequestRefusal, RequestStatusAnswer, RequestStatusQuery};
-pub use typed_call_correlations::TypedCallCorrelations;
+pub use typed_call_correlations::{MAX_PENDING_TYPED_CALLS, TypedCallCorrelations};
 
 pub use link_close::MachineLinkCloseCode;
 pub use link_codec::{DataFrame, FrameDirection, LinkFrame, decode_text, encode_text};

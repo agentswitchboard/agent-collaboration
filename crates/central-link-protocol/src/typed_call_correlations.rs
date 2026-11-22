@@ -1,25 +1,31 @@
 //! Per-connection routing of typed replies to live waiters.
 use crate::CorrelationId;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, VecDeque};
+
+pub const MAX_PENDING_TYPED_CALLS: usize = 64;
+const MAX_RECENT_TYPED_CORRELATIONS: usize = 128;
 
 pub struct TypedCallCorrelations<Waiter> {
     pending: BTreeMap<CorrelationId, Waiter>,
-    issued: BTreeSet<CorrelationId>,
+    resolved: VecDeque<CorrelationId>,
 }
 
 impl<Waiter> Default for TypedCallCorrelations<Waiter> {
     fn default() -> Self {
         Self {
             pending: BTreeMap::new(),
-            issued: BTreeSet::new(),
+            resolved: VecDeque::new(),
         }
     }
 }
 
 impl<Waiter> TypedCallCorrelations<Waiter> {
-    /// Reserve a fresh ID for this attempt, including across timed-out attempts.
+    /// Reserve space before dispatch. A retry must mint a fresh correlation.
     pub fn register(&mut self, correlation: CorrelationId, waiter: Waiter) -> Result<(), Waiter> {
-        if !self.issued.insert(correlation.clone()) {
+        if self.pending.len() == MAX_PENDING_TYPED_CALLS
+            || self.pending.contains_key(&correlation)
+            || self.resolved.contains(&correlation)
+        {
             return Err(waiter);
         }
         self.pending.insert(correlation, waiter);
@@ -28,11 +34,17 @@ impl<Waiter> TypedCallCorrelations<Waiter> {
 
     /// Replies, duplicate replies and replies after retirement use the same lookup.
     pub fn retire(&mut self, correlation: &CorrelationId) -> Option<Waiter> {
-        self.pending.remove(correlation)
+        let waiter = self.pending.remove(correlation)?;
+        if self.resolved.len() == MAX_RECENT_TYPED_CORRELATIONS {
+            self.resolved.pop_front();
+        }
+        self.resolved.push_back(correlation.clone());
+        Some(waiter)
     }
 
     /// Return every unsettled attempt when the connection ends.
     pub fn drain_pending(&mut self) -> impl Iterator<Item = Waiter> {
+        self.resolved.clear();
         std::mem::take(&mut self.pending).into_values()
     }
 }

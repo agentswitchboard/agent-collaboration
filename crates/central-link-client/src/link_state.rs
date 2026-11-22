@@ -190,7 +190,6 @@ impl LinkClient {
         match &mut self.state {
             ConnectionState::Waiting { reconnect_at, .. } if now >= *reconnect_at => {
                 let attempt = ConnectionAttempt(self.next_correlation());
-                self.pending.begin_connection();
                 self.state = ConnectionState::AwaitingWelcome {
                     attempt: attempt.clone(),
                     expires_at: now.after(WELCOME_DEADLINE),
@@ -408,7 +407,7 @@ impl LinkClient {
         };
         self.retry_delay = self.retry_delay.saturating_mul(2).min(MAX_RETRY);
         self.pending_receipts = None;
-        self.pending.fail_all()
+        self.pending.end_connection()
     }
 
     /// A refusal may precede or follow closed for the latest attempt, but never a newer one.
@@ -423,7 +422,7 @@ impl LinkClient {
             reason,
         };
         self.pending_receipts = None;
-        Ok(self.pending.fail_all())
+        Ok(self.pending.end_connection())
     }
 
     fn check_attempt(&self, attempt: &ConnectionAttempt) -> Result<(), ClientError> {

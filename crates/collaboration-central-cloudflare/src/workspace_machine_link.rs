@@ -1,9 +1,10 @@
 //! Hibernating machine connections dispatch independent requests through the owning core.
+use super::workspace_typed_link::{PendingMacCalls, SOCKET_TAG_PREFIX};
 use super::{CentralObject, OrgRuntime, OrganizationId};
 use central_link_protocol::{
-    DataFrame, FrameDirection, LinkFrame, LinkRequest, LinkRequestBatch, ReceiptBatch,
-    ReceiptResult, ReplyPayload, RequestPayload, RequestRefusal, RequestStatusAnswer,
-    RequestStatusQuery, TimeLeft,
+    CentralCall, CorrelationId, DataFrame, FrameDirection, LinkCallRefusal, LinkFrame, LinkRequest,
+    LinkRequestBatch, ProtocolError, ReceiptBatch, ReceiptResult, ReplyPayload, RequestPayload,
+    RequestRefusal, RequestStatusAnswer, RequestStatusQuery, TimeLeft, TypedCallResult,
 };
 use collaboration_central_core::WorkspaceCaller;
 use collaboration_central_core::{
@@ -12,7 +13,7 @@ use collaboration_central_core::{
 };
 use fleet_contracts::mail_link::MailReceiptSettlement;
 use fleet_contracts::{EnrollmentInvalidation, MachineConnectionAttachment};
-use fleet_runtime_ports::Clock;
+use fleet_runtime_ports::{Clock, IdSource};
 use worker::{
     Request, Response, Result, WebSocket, WebSocketIncomingMessage, WebSocketPair,
     WebSocketRequestResponsePair,
@@ -21,6 +22,10 @@ use worker::{
 enum IncomingRequests {
     Single(Box<LinkRequest>),
     Batch(LinkRequestBatch),
+    Typed {
+        correlation_id: CorrelationId,
+        request: Option<CentralCall>,
+    },
     Renewal {
         correlation_id: central_link_protocol::CorrelationId,
         token: central_link_protocol::MachineTokenText,
@@ -62,7 +67,7 @@ impl CentralObject {
             }
             Ok(MachineLinkAdmission::Ended(ended)) => {
                 let upgrade = close_ended_connect(ended.cause);
-                close_enrollment_sockets(&self.state, &ended, None);
+                close_enrollment_sockets(&self.state, &self.pending_mac_calls, &ended, None);
                 return upgrade;
             }
             Ok(_) => return Response::error("machine refused", 401),
@@ -93,10 +98,12 @@ impl CentralObject {
             worker::console_warn!("post_welcome_alarm_recompute_failed failure={failure:?}");
         }
         let tag = connection.machine_id().as_str();
+        let physical_tag = format!("{SOCKET_TAG_PREFIX}{}", self.link_ids.new_id());
         let older = match runtime
             .register_active_machine(&connection.attachment(), || {
                 let older = self.state.get_websockets_with_tag(tag);
-                self.state.accept_websocket_with_tags(&pair.server, &[tag]);
+                self.state
+                    .accept_websocket_with_tags(&pair.server, &[tag, &physical_tag]);
                 older
             })
             .await
@@ -107,6 +114,7 @@ impl CentralObject {
         };
         send(&pair.server, welcome)?;
         for socket in older {
+            self.pending_mac_calls.close_socket(&self.state, &socket);
             let _ = socket.close(Some(1000), Some("machine link replaced"));
         }
         self.send_welcome_mail(&runtime, &pair.server, &connection.attachment())
@@ -124,9 +132,40 @@ impl CentralObject {
         };
         let frame = match central_link_protocol::decode_text(&text, FrameDirection::ToCentral) {
             Ok(frame) => frame,
+            Err(ProtocolError::UnknownTypedCall { correlation_id }) => {
+                return self
+                    .handle_machine_request(
+                        &socket,
+                        IncomingRequests::Typed {
+                            correlation_id,
+                            request: None,
+                        },
+                    )
+                    .await;
+            }
             Err(_) => return close(&socket, "invalid link frame"),
         };
         let requests = match frame {
+            LinkFrame::Data(DataFrame::CallCentral {
+                correlation_id,
+                request,
+            }) => IncomingRequests::Typed {
+                correlation_id,
+                request: Some(*request),
+            },
+            LinkFrame::Data(DataFrame::MacCallReply {
+                correlation_id,
+                result,
+            }) => {
+                self.pending_mac_calls.answer(
+                    &self.state,
+                    &socket,
+                    &correlation_id,
+                    *result,
+                    self.clock.now(),
+                );
+                return Ok(());
+            }
             LinkFrame::Data(DataFrame::Request { request }) => IncomingRequests::Single(request),
             LinkFrame::Data(DataFrame::Batch { requests }) => IncomingRequests::Batch(requests),
             LinkFrame::Data(DataFrame::RenewMachineToken {
@@ -161,22 +200,32 @@ impl CentralObject {
                 | DataFrame::RequestStatusReply { .. }
                 | DataFrame::Deliver { .. }
                 | DataFrame::ReceiptResults { .. }
-                | DataFrame::MachineTokenRenewal { .. },
+                | DataFrame::MachineTokenRenewal { .. }
+                | DataFrame::CentralCallReply { .. }
+                | DataFrame::CallMac { .. },
             ) => return close(&socket, "unsupported link event"),
         };
+        self.handle_machine_request(&socket, requests).await
+    }
+
+    async fn handle_machine_request(
+        &self,
+        socket: &WebSocket,
+        requests: IncomingRequests,
+    ) -> Result<()> {
         let attachment = match socket.deserialize_attachment::<MachineConnectionAttachment>() {
             Ok(Some(attachment)) => attachment,
-            _ => return close(&socket, "connection identity missing"),
+            _ => return close(socket, "connection identity missing"),
         };
         let organization = attachment.organization_id().clone();
         if self.check_physical_organization(&organization).is_err() {
-            return close(&socket, "connection organization mismatch");
+            return close(socket, "connection organization mismatch");
         }
         #[cfg(feature = "test-support")]
         super::signin_launcher_controls::sample_clock(self, &organization).await?;
         let runtime = self.runtime(organization).await?;
         let result = self
-            .dispatch_machine_event(&runtime, socket, attachment, requests)
+            .dispatch_machine_event(&runtime, socket.clone(), attachment, requests)
             .await;
         self.flush_ready_mail(&runtime).await;
         result
@@ -190,6 +239,36 @@ impl CentralObject {
         requests: IncomingRequests,
     ) -> Result<()> {
         match requests {
+            IncomingRequests::Typed {
+                correlation_id,
+                request,
+            } => {
+                let Ok(result) = runtime
+                    .dispatch_typed_central_call(&attachment, request)
+                    .await
+                else {
+                    self.pending_mac_calls.close_socket(&self.state, &socket);
+                    return socket.close(Some(1011), Some("central unavailable"));
+                };
+                let lapsed = match &result {
+                    TypedCallResult::Refused {
+                        reason: LinkCallRefusal::AuthorityLapsed { cause },
+                    } => Some(*cause),
+                    _ => None,
+                };
+                send(
+                    &socket,
+                    DataFrame::CentralCallReply {
+                        correlation_id,
+                        result: Box::new(result),
+                    },
+                )?;
+                if let Some(cause) = lapsed {
+                    self.pending_mac_calls.close_socket(&self.state, &socket);
+                    close_authority(&socket, cause)?;
+                }
+                Ok(())
+            }
             IncomingRequests::Receipts {
                 correlation_id,
                 receipts,
@@ -297,7 +376,12 @@ impl CentralObject {
                             .pause_points()
                             .reached_central(fleet_runtime::PausePoint::BeforeIdleEnrollmentCleanup)
                             .await;
-                        close_enrollment_sockets(&self.state, &ended, Some(&socket));
+                        close_enrollment_sockets(
+                            &self.state,
+                            &self.pending_mac_calls,
+                            &ended,
+                            Some(&socket),
+                        );
                         #[cfg(feature = "test-support")]
                         runtime
                             .runtime()
@@ -592,8 +676,9 @@ fn close_authority(
     socket.close(Some(cause.code()), None::<&str>)
 }
 
-pub(crate) fn close_enrollment_sockets(
+pub(super) fn close_enrollment_sockets(
     state: &worker::State,
+    pending_mac_calls: &PendingMacCalls,
     invalidation: &EnrollmentInvalidation,
     current: Option<&WebSocket>,
 ) {
@@ -605,6 +690,7 @@ pub(crate) fn close_enrollment_sockets(
             socket.deserialize_attachment::<MachineConnectionAttachment>(),
             Ok(Some(attachment)) if attachment.enrollment_id() == &invalidation.enrollment_id
         ) {
+            pending_mac_calls.close_socket(state, &socket);
             let _ = close_authority(&socket, invalidation.cause);
         }
     }

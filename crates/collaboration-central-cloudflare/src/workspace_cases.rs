@@ -131,7 +131,16 @@ pub(crate) async fn route(
     };
     let organization: OrganizationId =
         serde_json::from_value(serde_json::Value::String(organization.to_owned()))?;
+    if operation == "typed-mac-call" {
+        return Ok(Ok(super::workspace_typed_link::probe(
+            env,
+            organization,
+            request,
+        )
+        .await?));
+    }
     let address = ObjectAddress::Central(organization);
+
     let headers = Headers::new();
     crate::cloudflare_transport::address_header(&headers, &address)?;
     let body = request.bytes().await?;

@@ -492,3 +492,49 @@ fn only_the_current_connections_exact_receipt_answer_retires_its_positions() {
         },
     );
 }
+
+#[test]
+fn a_full_request_table_refuses_before_producing_a_frame_and_reuses_a_freed_slot() {
+    let (mut client, _) = fixture();
+    let attempt = connect(&mut client);
+    let pending = (0..64).map(|_| request(&mut client)).collect::<Vec<_>>();
+
+    assert_eq!(
+        client.begin_request(caller(), payload()),
+        Err(ClientError::NeverReached)
+    );
+    assert!(matches!(
+        client.receive(&attempt, reply(pending[0].clone())),
+        Ok(ClientEvent::Reply { .. })
+    ));
+    let replacement = request(&mut client);
+    assert!(!pending.contains(&replacement));
+    assert_eq!(client.closed(&attempt).unwrap().len(), 64);
+}
+
+#[test]
+fn an_open_connection_keeps_only_its_recent_legacy_replies() {
+    let (mut client, _) = fixture();
+    let attempt = connect(&mut client);
+    let completed = (0..129)
+        .map(|_| {
+            let correlation = request(&mut client);
+            assert!(matches!(
+                client.receive(&attempt, reply(correlation.clone())),
+                Ok(ClientEvent::Reply { .. })
+            ));
+            correlation
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        client.receive(&attempt, reply(completed[128].clone())),
+        Ok(ClientEvent::LateReply {
+            correlation_id: completed[128].clone(),
+        })
+    );
+    assert_eq!(
+        client.receive(&attempt, reply(completed[0].clone())),
+        Err(ClientError::UnknownCorrelation)
+    );
+}

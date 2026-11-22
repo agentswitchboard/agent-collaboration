@@ -14,6 +14,7 @@ mod renewal;
 mod request_authority;
 mod request_status;
 mod revocation;
+mod typed_calls;
 mod witness_assertions;
 
 use super::workerd_host::c2_controls::{

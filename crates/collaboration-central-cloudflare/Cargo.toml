@@ -15,7 +15,7 @@ crate-type = ["cdylib"]
 [features]
 link = []
 # The storage boundary's workerd cases (Verification O1); never in a production bundle.
-test-support = ["fleet-engine/test-support", "fleet-runtime/test-support", "fleet-storage-schema/test-support", "collaboration-central-core/test-support", "sqlx-durable-object/test-support", "dep:sqlx"]
+test-support = ["fleet-engine/test-support", "fleet-runtime/test-support", "fleet-storage-schema/test-support", "collaboration-central-core/test-support", "central-link-protocol/test-support", "sqlx-durable-object/test-support", "dep:sqlx"]
 
 [dependencies]
 fleet-lent-transaction.workspace = true

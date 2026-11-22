@@ -1,12 +1,12 @@
 //! Outbound calls and their answer waiters belong to one admitted socket.
 use central_link_protocol::{
-    CorrelationId, DataFrame, LinkFrame, MacCall, MacCallReply, TypedCallCorrelations,
-    TypedCallResult,
+    CorrelationId, DataFrame, LinkFrame, MAX_PENDING_TYPED_CALLS, MacCall, MacCallReply,
+    TypedCallCorrelations, TypedCallResult,
 };
 use fleet_rpc::CallFailure;
 use router_clock::{ClockInstant, RuntimeClock};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
 
 type MacAnswer = TypedCallResult<MacCallReply>;
@@ -15,6 +15,7 @@ type CallOutcome = Result<MacAnswer, CallFailure>;
 struct ConnectionCalls {
     pending: Mutex<TypedCallCorrelations<ReplyWaiter>>,
     ended: CancellationToken,
+    capacity: Arc<Semaphore>,
 }
 
 impl ConnectionCalls {
@@ -62,11 +63,11 @@ pub(crate) struct MacCallReceiver {
 }
 
 pub(crate) fn channel(ended: CancellationToken) -> (MacCallSender, MacCallReceiver) {
-    const MAX_QUEUED_CALLS: usize = 64;
-    let (sender, receiver) = mpsc::channel(MAX_QUEUED_CALLS);
+    let (sender, receiver) = mpsc::channel(MAX_PENDING_TYPED_CALLS);
     let calls = Arc::new(ConnectionCalls {
         pending: Mutex::default(),
         ended,
+        capacity: Arc::new(Semaphore::new(MAX_PENDING_TYPED_CALLS)),
     });
     (
         MacCallSender {
@@ -91,6 +92,13 @@ impl MacCallSender {
         request: MacCall,
         deadline: ClockInstant,
     ) -> Result<PendingMacCall, CallFailure> {
+        // The same budget covers calls waiting to get on the wire and awaiting a reply.
+        let slot = self
+            .calls
+            .capacity
+            .clone()
+            .try_acquire_owned()
+            .map_err(|_| CallFailure::NeverReached)?;
         let (answer, receiver) = oneshot::channel();
         self.queue
             .try_send(QueuedMacCall {
@@ -104,6 +112,7 @@ impl MacCallSender {
             calls: self.calls.clone(),
             answer: receiver,
             deadline,
+            _slot: slot,
         })
     }
 }
@@ -125,9 +134,10 @@ impl MacCallReceiver {
         {
             return None;
         }
-        pending
-            .register(queued.correlation.clone(), queued.waiter)
-            .ok()?;
+        if let Err(waiter) = pending.register(queued.correlation.clone(), queued.waiter) {
+            let _ = waiter.answer.send(Err(CallFailure::NeverReached));
+            return None;
+        }
         Some(LinkFrame::Data(DataFrame::CallMac {
             correlation_id: queued.correlation,
             request: queued.request,
@@ -160,6 +170,7 @@ pub(crate) struct PendingMacCall {
     calls: Arc<ConnectionCalls>,
     answer: oneshot::Receiver<CallOutcome>,
     deadline: ClockInstant,
+    _slot: OwnedSemaphorePermit,
 }
 
 impl PendingMacCall {
