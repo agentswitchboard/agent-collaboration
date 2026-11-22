@@ -92,10 +92,22 @@ const eventTooLargeSchema = z.strictObject({
 // `resyncRequired` event instead. Either way the history must be attached again.
 const bareResyncMarkerSchema = z.strictObject({ kind: z.literal("resyncRequired") });
 
+export const observationCursorSchema = z.strictObject({
+  epoch: z.bigint(),
+  afterSequence: z.bigint(),
+});
+export type ObservationCursor = z.infer<typeof observationCursorSchema>;
+
+const snapshotEndSchema = z.strictObject({
+  kind: z.literal("snapshotEnd"),
+  cursor: observationCursorSchema,
+});
+
 export const observedEventSchema = z.union([
   z.strictObject({ sequence: z.bigint(), event: sessionEventSchema }),
   eventTooLargeSchema,
   bareResyncMarkerSchema,
+  snapshotEndSchema,
 ]);
 export type ObservedEvent = z.infer<typeof observedEventSchema>;
 
@@ -117,12 +129,6 @@ export const boundedObservationResultSchema = z.strictObject({
   epoch: z.bigint().nullable().optional(),
 });
 export type BoundedObservationResult = z.infer<typeof boundedObservationResultSchema>;
-
-export const observationCursorSchema = z.strictObject({
-  epoch: z.bigint(),
-  afterSequence: z.bigint(),
-});
-export type ObservationCursor = z.infer<typeof observationCursorSchema>;
 
 export const OBSERVATION_NOTIFICATION_METHOD = "notifications/codexRouter/observationEvent";
 export const observationNotificationSchema = z.strictObject({

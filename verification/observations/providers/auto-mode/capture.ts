@@ -239,6 +239,8 @@ export function observationMetadata(value: unknown, target: CapturePlan["target"
     ...observation,
     events: observation.events.map((entry): unknown => {
       const envelope = looseRecord.parse(entry);
+      if (envelope["kind"] === "snapshotEnd")
+        return { kind: envelope["kind"], cursor: envelope["cursor"] };
       if (envelope["event"] === undefined)
         return { kind: envelope["kind"], sequence: envelope["sequence"] };
       const event = looseRecord.parse(envelope["event"]);

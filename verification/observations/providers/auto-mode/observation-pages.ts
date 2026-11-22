@@ -47,7 +47,7 @@ function requireCompleteLedger(
 function cursorAfter(ledger: ContinuousLedger): PageCursor {
   return {
     epoch: ledger.epoch,
-    afterSequence: ledger.events.at(-1)?.sequence ?? ledger.baselineSequence,
+    afterSequence: ledger.lastSequence,
   };
 }
 

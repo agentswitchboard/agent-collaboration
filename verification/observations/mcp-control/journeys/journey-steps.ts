@@ -103,11 +103,7 @@ export function nextCursor(
   const ledger = foldObservationReads(target, reads, baselineReads);
   if (ledger.kind !== "continuous")
     throw new Error(`observation is ${ledger.kind}; it cannot be continued`);
-  const last = ledger.events.at(-1)?.sequence ?? null;
-  const tooLarge = ledger.tooLarge.at(-1)?.sequence ?? null;
-  const highest =
-    last === null ? tooLarge : tooLarge === null ? last : last > tooLarge ? last : tooLarge;
-  return { epoch: ledger.epoch, afterSequence: highest ?? ledger.baselineSequence };
+  return { epoch: ledger.epoch, afterSequence: ledger.lastSequence };
 }
 
 /** Continues from `reads` until the post-baseline history holds `turns` ended turns. */

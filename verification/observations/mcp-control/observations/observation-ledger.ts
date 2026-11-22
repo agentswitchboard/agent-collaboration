@@ -36,6 +36,7 @@ export type ObservationLedger =
   | {
       readonly kind: "continuous";
       readonly epoch: bigint;
+      readonly lastSequence: bigint | null;
       /** The baseline's last sequence; null when the baseline held no numbered event. */
       readonly baselineSequence: bigint | null;
       /** The baseline's own numbered events, such as history a reattach replayed. */
@@ -100,6 +101,7 @@ export function foldObservationReads(
   return {
     kind: "continuous",
     epoch: fold.epoch,
+    lastSequence: fold.last,
     baselineSequence: fold.baselineSequence,
     baselineEvents: fold.baselineEvents,
     baselineTooLarge: fold.baselineTooLarge,
@@ -142,7 +144,16 @@ function foldRead(
   fold.epoch = result.epoch;
   const notified = checkNotifications(read, result.epoch);
   if (notified !== null) return rejected(index, notified);
+  let receivedCut = false;
   for (const [position, event] of result.events.entries()) {
+    if ("kind" in event && event.kind === "snapshotEnd") {
+      if (receivedCut) return rejected(index, "a call sent a second snapshotEnd");
+      if (event.cursor.epoch !== result.epoch || event.cursor.afterSequence !== (fold.last ?? 0n))
+        return rejected(index, "snapshotEnd carries the wrong position");
+      receivedCut = true;
+      fold.last = event.cursor.afterSequence;
+      continue;
+    }
     const outcome = foldEvent(fold, event, position === result.events.length - 1, result);
     if (outcome === "resync") return { kind: "resyncRequired", read: index };
     if (outcome !== null) return rejected(index, outcome);
@@ -155,7 +166,7 @@ function foldRead(
 
 function isOnlyBareResync(result: BoundedObservationResult): boolean {
   const only = result.events.length === 1 ? result.events[0] : undefined;
-  return only !== undefined && eventSequence(only) === null;
+  return only !== undefined && "kind" in only && only.kind === "resyncRequired";
 }
 
 /** null when the event is accepted; "resync" for a final marker; otherwise why it is refused. */
@@ -198,9 +209,11 @@ function checkNotifications(read: ObservationRead, epoch: bigint): string | null
       return `notification ${index} is not the result's event ${index}`;
     const sequence = eventSequence(event);
     const expected: ObservationCursor | null =
-      sequence === null || ("event" in event && event.event.kind === "resyncRequired")
-        ? null
-        : { epoch, afterSequence: sequence };
+      "kind" in event && event.kind === "snapshotEnd"
+        ? event.cursor
+        : sequence === null || ("event" in event && event.event.kind === "resyncRequired")
+          ? null
+          : { epoch, afterSequence: sequence };
     if (encode(notification.cursor ?? null) !== encode(expected))
       return `notification ${index} carries the wrong cursor`;
   }

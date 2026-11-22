@@ -69,3 +69,32 @@ test("the default single-read baseline is unchanged, and a broken chain inside t
   const skipped = foldObservationReads(TARGET, [read(null, [1, 2], true), read(3, [4], false)], 2);
   assert.equal(skipped.kind, "rejected");
 });
+
+// Rejects dropping a marker-only cursor, accepting duplicate cuts, or trusting a wrong outer cursor.
+test("a quiet snapshot initializes the next position and its cursor must agree on both surfaces", () => {
+  const baseline = read(null, [], false);
+  const cursor = { epoch: 4n, afterSequence: 0n };
+  const marker = { kind: "snapshotEnd", cursor } as const;
+  const quiet = {
+    ...baseline,
+    result: { ...baseline.result, events: [marker] },
+    notifications: [{ event: marker, cursor }],
+  };
+  const recent = foldObservationReads(TARGET, [quiet, read(0, [1], false)]);
+  assert.equal(recent.kind, "continuous");
+  if (recent.kind === "continuous") {
+    assert.equal(recent.baselineSequence, 0n);
+    assert.equal(recent.lastSequence, 1n);
+  }
+  assert.equal(
+    foldObservationReads(TARGET, [
+      { ...quiet, result: { ...quiet.result, events: [marker, marker] } },
+    ]).kind,
+    "rejected",
+  );
+  assert.equal(
+    foldObservationReads(TARGET, [{ ...quiet, notifications: [{ event: marker, cursor: null }] }])
+      .kind,
+    "rejected",
+  );
+});
