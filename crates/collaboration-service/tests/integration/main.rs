@@ -32,6 +32,7 @@ mod native_inspect_permission_mode;
 mod native_listener_recovery;
 mod native_relay_handshake;
 mod provider_conversation_dispatch;
+mod provider_observation_cut;
 mod provider_operation_store;
 mod provider_session_control;
 mod provider_session_event_hub;

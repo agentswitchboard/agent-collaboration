@@ -571,3 +571,142 @@ async fn single_event(
 fn snapshot_marker(epoch: u64, sequence: u64) -> Value {
     json!({"kind":"snapshotEnd","cursor":{"epoch":epoch,"afterSequence":sequence}})
 }
+
+// Rejects repeats, skipped retained records, and treating compacted intermediate updates as a gap.
+#[tokio::test]
+async fn pages_follow_the_retained_projection_through_compacted_updates() {
+    let fixture = provider_fixture().await.expect("provider fixture");
+    for (id, text) in [("updated", "start"), ("other", "between pages")] {
+        fixture
+            .hub
+            .publish(fixture.board_target.clone(), item(id, text))
+            .await
+            .unwrap();
+    }
+    let served = served_api::ServedApi::start(fixture.identity).unwrap();
+    let client = served.client("projection-pages").await.unwrap();
+    let mut request = BoundedObservationRequest {
+        target: fixture.target,
+        timeout_seconds: 30,
+        max_events: 1,
+        max_bytes: 262_144,
+        after_sequence: None,
+        epoch: None,
+        service_epoch: None,
+    };
+    let first = client
+        .observe_provider_session(request.clone())
+        .await
+        .unwrap();
+    assert_eq!(first.events.len(), 1);
+    assert_eq!(first.events[0]["sequence"], 1);
+    request.epoch = first.epoch;
+    request.service_epoch = Some(first.generation.service_epoch);
+    request.after_sequence = Some(1);
+    for text in ["intermediate", "latest"] {
+        fixture
+            .hub
+            .publish(
+                fixture.board_target.clone(),
+                SessionEvent::ItemUpdated {
+                    item: SessionItem {
+                        item_id: "updated".into(),
+                        kind: SessionItemKind::AgentMessage,
+                        text: Some(text.into()),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+    }
+
+    let second = client
+        .observe_provider_session(request.clone())
+        .await
+        .unwrap();
+    request.after_sequence = Some(3);
+    let third = client
+        .observe_provider_session(request.clone())
+        .await
+        .unwrap();
+    fixture
+        .hub
+        .publish(fixture.board_target, item("later", "after the cut"))
+        .await
+        .unwrap();
+    request.after_sequence = Some(5);
+    let fourth = client.observe_provider_session(request).await.unwrap();
+
+    assert_eq!(second.events.len(), 1);
+    assert_eq!(second.events[0]["sequence"], 3);
+    assert_eq!(third.events.len(), 2);
+    assert_eq!(third.events[0]["sequence"], 5);
+    assert_eq!(third.events[0]["event"]["item"]["text"], "latest");
+    assert_eq!(third.events[1], snapshot_marker(0, 5));
+    assert_eq!(fourth.events.len(), 2);
+    assert_eq!(fourth.events[0]["sequence"], 6);
+    assert_eq!(fourth.events[1], snapshot_marker(0, 6));
+    for page in [second, third, fourth] {
+        assert_eq!(page.end_reason, ObservationEndReason::ResultLimitReached);
+    }
+    served.stop().await.unwrap();
+}
+
+// Rejects a truncated event losing its continuation sequence or preventing the cut.
+#[tokio::test]
+async fn a_kept_oversized_replacement_precedes_the_cut_and_advances_it() {
+    let fixture = provider_fixture().await.expect("provider fixture");
+    fixture
+        .hub
+        .publish(
+            fixture.board_target.clone(),
+            item("big", &"x".repeat(1_000_000)),
+        )
+        .await
+        .unwrap();
+    let served = served_api::ServedApi::start(fixture.identity).unwrap();
+    let client = served.client("oversize-cut").await.unwrap();
+    let mut request = BoundedObservationRequest {
+        target: fixture.target,
+        timeout_seconds: 30,
+        max_events: 1,
+        max_bytes: 4096,
+        after_sequence: Some(1),
+        epoch: Some(0),
+        service_epoch: None,
+    };
+    let (sink, mut notification) = tokio::sync::mpsc::unbounded_channel();
+    let page = client
+        .observe_provider_session_streaming(request.clone(), Some(sink))
+        .await
+        .unwrap();
+    assert_eq!(
+        page.events,
+        vec![
+            json!({"kind":"eventTooLarge","itemId":"big","sequence":2}),
+            snapshot_marker(0, 2)
+        ]
+    );
+    for expected in &page.events {
+        let observed = notification.try_recv().unwrap();
+        assert_eq!(&observed.event, expected);
+        assert_eq!(
+            observed.cursor,
+            Some(collaboration_protocol::ObservationCursor {
+                epoch: 0,
+                after_sequence: 2
+            })
+        );
+    }
+    fixture
+        .hub
+        .publish(fixture.board_target, item("later", "continues"))
+        .await
+        .unwrap();
+    request.after_sequence = Some(2);
+    request.service_epoch = Some(page.generation.service_epoch);
+    let next = client.observe_provider_session(request).await.unwrap();
+    assert_eq!(next.events[0]["sequence"], 3);
+    assert_eq!(next.events[1], snapshot_marker(0, 3));
+    served.stop().await.unwrap();
+}
