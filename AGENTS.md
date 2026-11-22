@@ -105,11 +105,18 @@ agents kept designing and building against it.
 - A call that shows no proof of who it is does nothing on its own. What needs
   the owner's say goes through the approval system. Nothing is deployed until
   the approval system is done with central.
+- The approval system is built whole: the request and its lifecycle, central's
+  store, the link, the owner's signed-in way to answer, the Mac's half,
+  delegates and pass-on, attached clients, and questions. Building it by
+  components sets the order of the work; it does not make a smaller system
+  acceptable. No part of it is replaced by a question to the owner about doing
+  less, and nothing that depends on approvals is served until the whole system
+  is done with central.
 - The owner's words, 22 November 2026: "I kept saying cut over, what did you
   carry over?"; "Just build the approval system or some part to fit. Please
   don't do shortcuts"; "Don't repeat same mistakes with keeping old stuff and
   worrying about backward compatibility. I'm gonna stay on 125 until we build
-  this."
+  this."; "Build the whole thing".
 
 ## Release And Homebrew Distribution
 
