@@ -3,7 +3,10 @@ use std::future::Future;
 
 use zeroize::Zeroizing;
 
-use crate::{CentralEndpointIds, EnrollmentId};
+use crate::{
+    BindingGeneration, CentralEndpointIds, EnrollmentBinding, EnrollmentEnd, EnrollmentId,
+    StoredEnrollment,
+};
 
 /// A secret from sign-in or the injected store. Only an explicit handoff can expose its bytes.
 #[derive(Clone, Eq, PartialEq)]
@@ -29,7 +32,7 @@ impl fmt::Debug for SecretValue {
     }
 }
 
-/// The durable credential assembled by the client from sign-in's successful token response.
+/// The client reads these credential fields from sign-in’s successful token response.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RefreshCredential {
     pub enrollment_id: EnrollmentId,
@@ -48,15 +51,47 @@ pub enum CredentialStoreError {
     Remove,
 }
 
-/// The caller supplies this store for the current Mac's enrollment.
+/// The store reports whether the expected generation still owned a mutation.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ConditionalWrite {
+    Applied,
+    Superseded,
+}
+
+/// The store reports whether writing can produce a credential another process can read.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StoreDurability {
+    Durable,
+    MemoryOnly,
+}
+
+/// Composition supplies this coherent, generation-fenced store for one Mac.
 pub trait CredentialStore: Send + Sync {
-    fn read(
-        &self,
-    ) -> impl Future<Output = Result<Option<RefreshCredential>, CredentialStoreError>> + Send;
-    /// Commits the replacement before returning success. On failure the old value remains.
+    /// Whether an interactive command can report a durable enrollment.
+    fn durability(&self) -> StoreDurability;
+
+    fn read(&self) -> impl Future<Output = Result<StoredEnrollment, CredentialStoreError>> + Send;
+
+    /// Atomically commits the complete binding at expected + 1 if expected is current.
+    /// On error or cancellation, no uncommitted write may become visible later.
     fn replace(
         &self,
-        credential: RefreshCredential,
-    ) -> impl Future<Output = Result<(), CredentialStoreError>> + Send;
-    fn remove(&self) -> impl Future<Output = Result<(), CredentialStoreError>> + Send;
+        expected: BindingGeneration,
+        binding: &EnrollmentBinding,
+    ) -> impl Future<Output = Result<ConditionalWrite, CredentialStoreError>> + Send;
+
+    /// Removes the current secret and records an ending at expected + 1.
+    fn remove(
+        &self,
+        expected: BindingGeneration,
+        why: EnrollmentEnd,
+    ) -> impl Future<Output = Result<ConditionalWrite, CredentialStoreError>> + Send;
+
+    /// Records an ending at expected + 1 if physical secret removal failed.
+    /// A reader of the marker must never return the old binding.
+    fn mark_unusable(
+        &self,
+        expected: BindingGeneration,
+        why: EnrollmentEnd,
+    ) -> impl Future<Output = Result<ConditionalWrite, CredentialStoreError>> + Send;
 }

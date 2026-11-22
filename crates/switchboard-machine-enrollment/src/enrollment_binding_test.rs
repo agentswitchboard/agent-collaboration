@@ -1,6 +1,6 @@
 use url::Url;
 
-use super::{BindingGeneration, EnrollmentEnd, SignInDeployment, StoredEnrollment};
+use super::{BindingGeneration, EnrollmentEnd, EnrollmentKey, SignInDeployment, StoredEnrollment};
 
 #[test]
 fn a_durable_ending_keeps_its_generation_and_never_wraps() {
@@ -8,6 +8,17 @@ fn a_durable_ending_keeps_its_generation_and_never_wraps() {
     let ended = StoredEnrollment::Ended {
         generation: last,
         why: EnrollmentEnd::Revoked,
+        key: EnrollmentKey {
+            organization_id: "019a0000-0000-7000-8000-000000000001"
+                .parse()
+                .expect("organization"),
+            machine_id: "019a0000-0000-7000-8000-000000000002"
+                .parse()
+                .expect("machine"),
+            enrollment_id: "019a0000-0000-7000-8000-000000000003"
+                .parse()
+                .expect("enrollment"),
+        },
     };
     assert_eq!(ended.generation(), last);
     assert_eq!(last.successor(), None);

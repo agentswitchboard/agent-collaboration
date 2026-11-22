@@ -10,89 +10,141 @@ use std::{
 };
 
 use hegel::generators as gs;
-use router_clock::ManualClock;
+use router_clock::{ManualClock, RuntimeClock};
 
 use crate::{
-    CredentialStore, CredentialStoreError, EnrollmentEnd, InvalidReason, RefreshAnswer,
-    RefreshCredential, SecretValue, TokenGrant,
+    BindingGeneration, CentralEndpointIds, ConditionalWrite, CredentialStore, CredentialStoreError,
+    EnrollmentBinding, EnrollmentContext, EnrollmentEnd, InvalidReason, RefreshAnswer,
+    RefreshCredential, SecretValue, SignInDeployment, StoreDurability, StoredEnrollment,
+    TokenGrant,
 };
 
-use super::{BearerUnavailable, RefreshOwner, RefreshSource};
+use super::{
+    AccessRequest, LeaseConfigurationFault, LeaseUnavailable, RefreshOwner, RefreshSource,
+};
 
-#[derive(Default)]
 struct StoreState {
-    credential: Mutex<Option<RefreshCredential>>,
-    hold_writes: AtomicBool,
-    fail_writes: AtomicBool,
-}
-
-impl StoreState {
-    fn current(&self) -> Option<RefreshCredential> {
-        self.credential.lock().expect("fake store").clone()
-    }
-
-    fn write(&self, credential: Option<RefreshCredential>) {
-        *self.credential.lock().expect("fake store") = credential;
-    }
-
-    fn current_token(&self) -> Option<String> {
-        self.current()
-            .map(|c| c.refresh_token.expose_secret().to_owned())
-    }
+    saved: Mutex<StoredEnrollment>,
+    hold_write: AtomicBool,
+    fail_write: AtomicBool,
+    fail_remove: AtomicBool,
+    fail_marker: AtomicBool,
 }
 
 #[derive(Clone)]
 struct FakeStore(Arc<StoreState>);
 
-impl CredentialStore for FakeStore {
-    fn read(
-        &self,
-    ) -> impl Future<Output = Result<Option<RefreshCredential>, CredentialStoreError>> + Send {
-        ready(Ok(self.0.current()))
+impl FakeStore {
+    fn snapshot(&self) -> StoredEnrollment {
+        self.0.saved.lock().expect("fake store").clone()
     }
 
-    async fn replace(&self, credential: RefreshCredential) -> Result<(), CredentialStoreError> {
+    fn token(&self) -> Option<SecretValue> {
+        match self.snapshot() {
+            StoredEnrollment::Active(binding) => Some(binding.credential.refresh_token),
+            _ => None,
+        }
+    }
+
+    fn write(
+        &self,
+        expected: BindingGeneration,
+        replacement: StoredEnrollment,
+    ) -> ConditionalWrite {
+        let mut saved = self.0.saved.lock().expect("fake store");
+        if saved.generation() != expected {
+            return ConditionalWrite::Superseded;
+        }
+        assert_eq!(expected.successor(), Some(replacement.generation()));
+        *saved = replacement;
+        ConditionalWrite::Applied
+    }
+
+    fn end(&self, expected: BindingGeneration, why: EnrollmentEnd) -> ConditionalWrite {
+        let snapshot = self.snapshot();
+        if snapshot.generation() != expected {
+            return ConditionalWrite::Superseded;
+        }
+        let key = snapshot.key().expect("ending requires an enrollment");
+        let generation = expected.successor().expect("fixture generation");
+        self.write(
+            expected,
+            StoredEnrollment::Ended {
+                generation,
+                why,
+                key,
+            },
+        )
+    }
+}
+
+impl CredentialStore for FakeStore {
+    fn durability(&self) -> StoreDurability {
+        StoreDurability::Durable
+    }
+
+    fn read(&self) -> impl Future<Output = Result<StoredEnrollment, CredentialStoreError>> + Send {
+        ready(Ok(self.snapshot()))
+    }
+
+    async fn replace(
+        &self,
+        expected: BindingGeneration,
+        binding: &EnrollmentBinding,
+    ) -> Result<ConditionalWrite, CredentialStoreError> {
         poll_fn(|_| {
-            if self.0.hold_writes.load(Ordering::SeqCst) {
+            if self.0.hold_write.load(Ordering::SeqCst) {
                 Poll::Pending
             } else {
                 Poll::Ready(())
             }
         })
         .await;
-        if self.0.fail_writes.load(Ordering::SeqCst) {
+        if self.0.fail_write.load(Ordering::SeqCst) {
             return Err(CredentialStoreError::Replace);
         }
-        self.0.write(Some(credential));
-        Ok(())
+        Ok(self.write(expected, StoredEnrollment::Active(binding.clone())))
     }
 
-    fn remove(&self) -> impl Future<Output = Result<(), CredentialStoreError>> + Send {
-        self.0.write(None);
-        ready(Ok(()))
+    fn remove(
+        &self,
+        expected: BindingGeneration,
+        why: EnrollmentEnd,
+    ) -> impl Future<Output = Result<ConditionalWrite, CredentialStoreError>> + Send {
+        ready(if self.0.fail_remove.load(Ordering::SeqCst) {
+            Err(CredentialStoreError::Remove)
+        } else {
+            Ok(self.end(expected, why))
+        })
     }
-}
 
-#[derive(Clone, Copy)]
-enum ServerStep {
-    Rotate,
-    Lost,
+    fn mark_unusable(
+        &self,
+        expected: BindingGeneration,
+        why: EnrollmentEnd,
+    ) -> impl Future<Output = Result<ConditionalWrite, CredentialStoreError>> + Send {
+        ready(if self.0.fail_marker.load(Ordering::SeqCst) {
+            Err(CredentialStoreError::Replace)
+        } else {
+            Ok(self.end(expected, why))
+        })
+    }
 }
 
 struct SignInState {
-    calls: AtomicUsize,
+    sent: Mutex<Vec<SecretValue>>,
     block: AtomicBool,
-    version: AtomicUsize,
-    step: Mutex<ServerStep>,
+    revision: AtomicUsize,
+    lose_answer: AtomicBool,
 }
 
 impl SignInState {
-    fn expected_step(&self) -> ServerStep {
-        *self.step.lock().expect("script step")
+    fn sent(&self) -> Vec<SecretValue> {
+        self.sent.lock().expect("requests").clone()
     }
 
-    fn set_step(&self, step: ServerStep) {
-        *self.step.lock().expect("script step") = step;
+    fn record(&self, token: &SecretValue) {
+        self.sent.lock().expect("requests").push(token.clone());
     }
 }
 
@@ -100,8 +152,8 @@ impl SignInState {
 struct FakeSignIn(Arc<SignInState>);
 
 impl RefreshSource for FakeSignIn {
-    async fn refresh(&self, supplied: &RefreshCredential) -> RefreshAnswer {
-        self.0.calls.fetch_add(1, Ordering::SeqCst);
+    async fn refresh(&self, credential: &RefreshCredential) -> RefreshAnswer {
+        self.0.record(&credential.refresh_token);
         poll_fn(|_| {
             if self.0.block.load(Ordering::SeqCst) {
                 Poll::Pending
@@ -110,34 +162,61 @@ impl RefreshSource for FakeSignIn {
             }
         })
         .await;
-        let current = self.0.version.load(Ordering::SeqCst);
-        if *supplied != credential(current) {
+
+        let current = self.0.revision.load(Ordering::SeqCst);
+        if credential.refresh_token != refresh_secret(current) {
             return RefreshAnswer::Refused {
                 reason: InvalidReason::GrantRefused,
             };
         }
-        let next = self.0.version.fetch_add(1, Ordering::SeqCst) + 1;
-        match self.0.expected_step() {
-            ServerStep::Rotate => RefreshAnswer::Rotated(TokenGrant {
-                credential: credential(next),
-                access_token: secret(format!("access-{next}")),
-                expires_in: Duration::from_secs(1),
-            }),
-            ServerStep::Lost => RefreshAnswer::Unavailable { retry_after: None },
+        let next = self.0.revision.fetch_add(1, Ordering::SeqCst) + 1;
+        if self.0.lose_answer.load(Ordering::SeqCst) {
+            RefreshAnswer::Unavailable { retry_after: None }
+        } else {
+            RefreshAnswer::Rotated(TokenGrant {
+                credential: wire_credential(next),
+                access_token: access_secret(next),
+                expires_in: Duration::from_secs(60),
+            })
         }
     }
 }
 
-fn secret(value: String) -> SecretValue {
-    SecretValue::new(value).expect("fixture secret")
+fn secret(text: String) -> SecretValue {
+    SecretValue::new(text).expect("fictional fixture value")
 }
 
-fn credential(revision: usize) -> RefreshCredential {
+fn refresh_secret(revision: usize) -> SecretValue {
+    secret(format!("refresh-{revision}"))
+}
+
+fn access_secret(revision: usize) -> SecretValue {
+    secret(format!("access-{revision}"))
+}
+
+fn generation(value: u64) -> BindingGeneration {
+    BindingGeneration::from_persisted(value)
+}
+
+fn context() -> EnrollmentContext {
+    EnrollmentContext {
+        organization_id: "019a0000-0000-7000-8000-000000000001"
+            .parse()
+            .expect("organization"),
+        deployment: SignInDeployment::new("https://signin.example/".parse().expect("origin"))
+            .expect("valid deployment"),
+        machine_id: "019a0000-0000-7000-8000-000000000005"
+            .parse()
+            .expect("machine"),
+    }
+}
+
+fn wire_credential(revision: usize) -> RefreshCredential {
     RefreshCredential {
         enrollment_id: "019a0000-0000-7000-8000-000000000002"
             .parse()
             .expect("enrollment"),
-        central: crate::CentralEndpointIds {
+        central: CentralEndpointIds {
             receiver: "019a0000-0000-7000-8000-000000000003"
                 .parse()
                 .expect("receiver"),
@@ -145,39 +224,59 @@ fn credential(revision: usize) -> RefreshCredential {
                 .parse()
                 .expect("relay"),
         },
-        refresh_token: secret(format!("refresh-{revision}")),
+        refresh_token: refresh_secret(revision),
     }
 }
 
-struct RefreshFixture {
-    store: Arc<StoreState>,
+fn binding(version: u64, revision: usize) -> EnrollmentBinding {
+    EnrollmentBinding {
+        generation: generation(version),
+        context: context(),
+        credential: wire_credential(revision),
+    }
+}
+
+struct Fixture {
+    store: FakeStore,
     server: Arc<SignInState>,
     owner: RefreshOwner<FakeStore, FakeSignIn>,
     clock: Arc<ManualClock>,
 }
 
-impl RefreshFixture {
+impl Fixture {
     fn new() -> Self {
-        let store = Arc::new(StoreState::default());
-        store.write(Some(credential(0)));
+        let store = FakeStore(Arc::new(StoreState {
+            saved: Mutex::new(StoredEnrollment::Active(binding(1, 0))),
+            hold_write: AtomicBool::new(false),
+            fail_write: AtomicBool::new(false),
+            fail_remove: AtomicBool::new(false),
+            fail_marker: AtomicBool::new(false),
+        }));
         let server = Arc::new(SignInState {
-            calls: AtomicUsize::new(0),
+            sent: Mutex::new(Vec::new()),
             block: AtomicBool::new(false),
-            version: AtomicUsize::new(0),
-            step: Mutex::new(ServerStep::Rotate),
+            revision: AtomicUsize::new(0),
+            lose_answer: AtomicBool::new(false),
         });
         let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
         let owner = RefreshOwner::new(
-            FakeStore(Arc::clone(&store)),
+            store.clone(),
             FakeSignIn(Arc::clone(&server)),
-            Arc::clone(&clock) as Arc<dyn router_clock::RuntimeClock + Send + Sync>,
+            Arc::clone(&clock) as Arc<dyn RuntimeClock + Send + Sync>,
+            context(),
         );
         Self {
             store,
             server,
-            owner,
             clock,
+            owner,
         }
+    }
+
+    fn advance(&self, seconds: u64) {
+        self.clock
+            .advance(Duration::from_secs(seconds))
+            .expect("injected clock advance");
     }
 }
 
@@ -185,168 +284,342 @@ fn poll_once<T>(future: Pin<&mut impl Future<Output = T>>) -> Poll<T> {
     future.poll(&mut Context::from_waker(Waker::noop()))
 }
 
-#[test]
-fn concurrent_bearer_requests_share_the_same_refresh() {
-    let fixture = RefreshFixture::new();
-    fixture.server.block.store(true, Ordering::SeqCst);
-    let mut first = std::pin::pin!(fixture.owner.bearer());
-    let mut second = std::pin::pin!(fixture.owner.bearer());
+fn expect_lease(
+    status: Poll<Result<super::AccessLease, LeaseUnavailable>>,
+    version: u64,
+    revision: usize,
+) {
+    assert!(
+        matches!(
+            status,
+            Poll::Ready(Ok(lease)) if lease.token == access_secret(revision)
+                && lease.binding_generation == generation(version)
+        ),
+        "lease must match the committed generation"
+    );
+}
 
+#[test]
+fn concurrent_callers_join_one_owner_and_a_newer_request_advances_the_lease() {
+    let fixture = Fixture::new();
+    fixture.server.block.store(true, Ordering::SeqCst);
+    let mut first = std::pin::pin!(fixture.owner.lease(AccessRequest::Usable));
+    let mut second = std::pin::pin!(fixture.owner.lease(AccessRequest::NewerThan(generation(1))));
     assert!(poll_once(first.as_mut()).is_pending());
     assert!(poll_once(second.as_mut()).is_pending());
-    assert_eq!(fixture.server.calls.load(Ordering::SeqCst), 1);
+    assert_eq!(fixture.server.sent(), vec![refresh_secret(0)]);
     fixture.server.block.store(false, Ordering::SeqCst);
 
-    let first_result = poll_once(first.as_mut());
-    let second_result = poll_once(second.as_mut());
-    assert_ne!(first_result, Poll::Pending);
-    assert_eq!(first_result, second_result);
-    assert!(
-        matches!(first_result, Poll::Ready(Ok(bearer)) if bearer.access_token.expose_secret() == "access-1")
+    expect_lease(poll_once(first.as_mut()), 2, 1);
+    expect_lease(poll_once(second.as_mut()), 2, 1);
+    expect_lease(
+        poll_once(std::pin::pin!(fixture.owner.lease(AccessRequest::Usable))),
+        2,
+        1,
+    );
+    expect_lease(
+        poll_once(std::pin::pin!(
+            fixture.owner.lease(AccessRequest::NewerThan(generation(2)))
+        )),
+        3,
+        2,
+    );
+    assert_eq!(
+        fixture.server.sent(),
+        vec![refresh_secret(0), refresh_secret(1)]
     );
 }
 
 #[test]
-fn a_new_bearer_is_still_pending_during_the_store_commit() {
-    let fixture = RefreshFixture::new();
-    fixture.store.hold_writes.store(true, Ordering::SeqCst);
-    let mut waiting = std::pin::pin!(fixture.owner.bearer());
+fn one_of_two_store_writers_from_the_same_generation_wins() {
+    let fixture = Fixture::new();
+    let other_process = fixture.store.clone();
+    let candidate_a = binding(2, 1);
+    let candidate_b = binding(2, 2);
+    let replacement = fixture.store.replace(generation(1), &candidate_a);
+    let competitor = other_process.replace(generation(1), &candidate_b);
 
+    assert_eq!(
+        poll_once(std::pin::pin!(replacement)),
+        Poll::Ready(Ok(ConditionalWrite::Applied))
+    );
+    assert_eq!(
+        poll_once(std::pin::pin!(competitor)),
+        Poll::Ready(Ok(ConditionalWrite::Superseded))
+    );
+    assert_eq!(
+        fixture.store.snapshot(),
+        StoredEnrollment::Active(candidate_a)
+    );
+}
+
+#[test]
+fn a_late_refresh_cannot_restore_an_ended_binding() {
+    let fixture = Fixture::new();
+    let old = fixture.store.snapshot().key().expect("enrollment");
+    fixture.server.block.store(true, Ordering::SeqCst);
+    let mut refresh = std::pin::pin!(fixture.owner.lease(AccessRequest::Usable));
+    assert!(poll_once(refresh.as_mut()).is_pending());
+    assert_eq!(
+        poll_once(std::pin::pin!(
+            fixture.owner.end_enrollment(&old, EnrollmentEnd::Revoked)
+        )),
+        Poll::Ready(Ok(ConditionalWrite::Applied))
+    );
+    let ended = fixture.store.snapshot();
+    fixture.server.block.store(false, Ordering::SeqCst);
+
+    assert_eq!(
+        poll_once(refresh.as_mut()),
+        Poll::Ready(Err(LeaseUnavailable::Ended {
+            why: EnrollmentEnd::Revoked
+        }))
+    );
+    assert_eq!(fixture.store.snapshot(), ended);
+    assert_eq!(fixture.server.sent(), vec![refresh_secret(0)]);
+}
+
+#[test]
+fn an_old_ending_closes_the_latest_version_but_never_a_replacement() {
+    let fixture = Fixture::new();
+    let old = fixture.store.snapshot().key().expect("enrollment");
+    expect_lease(
+        poll_once(std::pin::pin!(fixture.owner.lease(AccessRequest::Usable))),
+        2,
+        1,
+    );
+    assert_eq!(
+        poll_once(std::pin::pin!(
+            fixture.owner.end_enrollment(&old, EnrollmentEnd::Revoked)
+        )),
+        Poll::Ready(Ok(ConditionalWrite::Applied))
+    );
+    assert!(matches!(
+        fixture.store.snapshot(),
+        StoredEnrollment::Ended { generation: version, why: EnrollmentEnd::Revoked, .. } if version == generation(3)
+    ));
+
+    let mut successor = binding(4, 2);
+    successor.credential.enrollment_id = "019a0000-0000-7000-8000-000000000007"
+        .parse()
+        .expect("successor");
+    assert_eq!(
+        fixture
+            .store
+            .write(generation(3), StoredEnrollment::Active(successor.clone())),
+        ConditionalWrite::Applied
+    );
+    assert_eq!(
+        poll_once(std::pin::pin!(
+            fixture.owner.end_enrollment(&old, EnrollmentEnd::Revoked)
+        )),
+        Poll::Ready(Ok(ConditionalWrite::Superseded))
+    );
+    assert_eq!(
+        fixture.store.snapshot(),
+        StoredEnrollment::Active(successor)
+    );
+}
+
+#[test]
+fn a_late_final_refusal_never_removes_the_successor() {
+    let fixture = Fixture::new();
+    fixture.server.block.store(true, Ordering::SeqCst);
+    fixture.server.revision.store(9, Ordering::SeqCst);
+    let mut refresh = std::pin::pin!(fixture.owner.lease(AccessRequest::Usable));
+    assert!(poll_once(refresh.as_mut()).is_pending());
+
+    let mut successor = binding(2, 17);
+    successor.context.organization_id = "019a0000-0000-7000-8000-000000000007"
+        .parse()
+        .expect("new organization");
+    assert_eq!(
+        fixture
+            .store
+            .write(generation(1), StoredEnrollment::Active(successor.clone())),
+        ConditionalWrite::Applied
+    );
+    fixture.server.block.store(false, Ordering::SeqCst);
+
+    assert_eq!(
+        poll_once(refresh.as_mut()),
+        Poll::Ready(Err(LeaseConfigurationFault::BindingContext.into()))
+    );
+    assert_eq!(
+        fixture.store.snapshot(),
+        StoredEnrollment::Active(successor)
+    );
+    assert_eq!(fixture.server.sent(), vec![refresh_secret(0)]);
+}
+
+#[test]
+fn rotated_pair_is_held_while_only_the_local_write_retries() {
+    let fixture = Fixture::new();
+    fixture.store.0.fail_write.store(true, Ordering::SeqCst);
+    let mut first = std::pin::pin!(fixture.owner.lease(AccessRequest::Usable));
+    let mut waiting = std::pin::pin!(fixture.owner.lease(AccessRequest::Usable));
+
+    assert!(poll_once(first.as_mut()).is_pending());
+    assert_eq!(fixture.store.token(), Some(refresh_secret(0)));
     assert!(poll_once(waiting.as_mut()).is_pending());
-    assert_eq!(fixture.store.current_token().as_deref(), Some("refresh-0"));
-    fixture.store.hold_writes.store(false, Ordering::SeqCst);
+    assert_eq!(fixture.server.sent(), vec![refresh_secret(0)]);
+    fixture.store.0.fail_write.store(false, Ordering::SeqCst);
+    fixture.advance(1);
 
-    assert!(
-        matches!(poll_once(waiting.as_mut()), Poll::Ready(Ok(bearer)) if bearer.access_token.expose_secret() == "access-1")
-    );
-    assert_eq!(fixture.store.current_token().as_deref(), Some("refresh-1"));
+    expect_lease(poll_once(first.as_mut()), 2, 1);
+    expect_lease(poll_once(waiting.as_mut()), 2, 1);
+    assert_eq!(fixture.store.token(), Some(refresh_secret(1)));
+    assert_eq!(fixture.server.sent(), vec![refresh_secret(0)]);
 }
 
 #[test]
-fn a_failed_write_never_releases_the_new_access_token() {
-    let fixture = RefreshFixture::new();
-    fixture.store.fail_writes.store(true, Ordering::SeqCst);
-    let result = poll_once(std::pin::pin!(fixture.owner.bearer()));
+fn exhausted_write_retry_never_reuses_the_spent_token_even_if_marking_fails() {
+    let fixture = Fixture::new();
+    fixture.store.0.fail_write.store(true, Ordering::SeqCst);
+    fixture.store.0.fail_remove.store(true, Ordering::SeqCst);
+    fixture.store.0.fail_marker.store(true, Ordering::SeqCst);
+    let mut refresh = std::pin::pin!(fixture.owner.lease(AccessRequest::Usable));
+    assert!(poll_once(refresh.as_mut()).is_pending());
+    fixture.advance(5);
 
+    let lost = Poll::Ready(Err(LeaseUnavailable::Ended {
+        why: EnrollmentEnd::LocalCredentialLost,
+    }));
+    assert_eq!(poll_once(refresh.as_mut()), lost);
+    assert_eq!(fixture.store.token(), Some(refresh_secret(0)));
     assert_eq!(
-        result,
-        Poll::Ready(Err(BearerUnavailable::Store(CredentialStoreError::Replace)))
+        poll_once(std::pin::pin!(fixture.owner.lease(AccessRequest::Usable))),
+        lost
     );
-    assert_eq!(fixture.store.current_token().as_deref(), Some("refresh-0"));
+    assert_eq!(fixture.server.sent(), vec![refresh_secret(0)]);
 }
 
 #[test]
-fn a_lost_reply_and_final_refusal_end_and_remove_the_credential() {
-    let fixture = RefreshFixture::new();
-    fixture.server.set_step(ServerStep::Lost);
+fn a_durable_unusable_marker_is_observed_by_a_new_owner() {
+    let fixture = Fixture::new();
+    fixture.store.0.fail_remove.store(true, Ordering::SeqCst);
+    let old = fixture.store.snapshot().key().expect("enrollment");
     assert_eq!(
-        poll_once(std::pin::pin!(fixture.owner.bearer())),
-        Poll::Ready(Err(BearerUnavailable::SignInUnreachable {
+        poll_once(std::pin::pin!(
+            fixture.owner.end_enrollment(&old, EnrollmentEnd::Inactive)
+        )),
+        Poll::Ready(Ok(ConditionalWrite::Applied))
+    );
+
+    let restarted = RefreshOwner::new(
+        fixture.store.clone(),
+        FakeSignIn(Arc::clone(&fixture.server)),
+        Arc::clone(&fixture.clock) as Arc<dyn RuntimeClock + Send + Sync>,
+        context(),
+    );
+    assert_eq!(
+        poll_once(std::pin::pin!(restarted.lease(AccessRequest::Usable))),
+        Poll::Ready(Err(LeaseUnavailable::Ended {
+            why: EnrollmentEnd::Inactive
+        }))
+    );
+    assert!(fixture.server.sent().is_empty());
+}
+
+#[test]
+fn a_lost_answer_then_a_definitive_refusal_ends_the_binding() {
+    let fixture = Fixture::new();
+    fixture.server.lose_answer.store(true, Ordering::SeqCst);
+    assert_eq!(
+        poll_once(std::pin::pin!(fixture.owner.lease(AccessRequest::Usable))),
+        Poll::Ready(Err(LeaseUnavailable::SignInUnreachable {
             retry_after: None
         }))
     );
-    assert_eq!(fixture.store.current_token().as_deref(), Some("refresh-0"));
-    let ended = Poll::Ready(Err(BearerUnavailable::Ended {
+    assert_eq!(fixture.store.token(), Some(refresh_secret(0)));
+    let ended = Poll::Ready(Err(LeaseUnavailable::Ended {
         why: EnrollmentEnd::RefreshRefused,
-        cleanup: Ok(()),
     }));
-
-    assert_eq!(poll_once(std::pin::pin!(fixture.owner.bearer())), ended);
-    assert_eq!(fixture.store.current_token(), None);
-    assert_eq!(poll_once(std::pin::pin!(fixture.owner.bearer())), ended);
-    assert_eq!(fixture.server.calls.load(Ordering::SeqCst), 2);
-}
-
-#[derive(Debug, Eq, PartialEq)]
-enum ModelResult {
-    Bearer(usize),
-    Lost,
-    WriteFailed,
-    Ended,
+    assert_eq!(
+        poll_once(std::pin::pin!(fixture.owner.lease(AccessRequest::Usable))),
+        ended
+    );
+    assert!(fixture.store.token().is_none());
+    assert_eq!(
+        poll_once(std::pin::pin!(fixture.owner.lease(AccessRequest::Usable))),
+        ended
+    );
+    assert_eq!(
+        fixture.server.sent(),
+        vec![refresh_secret(0), refresh_secret(0)]
+    );
 }
 
 #[hegel::test(seed = Some(1351), test_cases = 100)]
 fn generated_refresh_callers_match_the_rotation_model(case: hegel::TestCase) {
-    let fixture = RefreshFixture::new();
-    let rounds = case.draw(gs::integers::<u8>().min_value(1).max_value(15));
-    let (mut server_version, mut disk_version, mut calls) = (0, Some(0), 0);
-    let mut ended = false;
+    let fixture = Fixture::new();
+    let steps = case.draw(gs::integers::<u8>().min_value(1).max_value(20));
+    let (mut remote, mut disk, mut version) = (0, Some(0), 1);
+    let mut expected_calls = Vec::new();
 
-    for _ in 0..rounds {
-        let order = case.draw(gs::booleans());
+    for _ in 0..steps {
         let lose = case.draw(gs::booleans());
         let fail_write = case.draw(gs::booleans());
-        fixture.server.set_step(if lose {
-            ServerStep::Lost
-        } else {
-            ServerStep::Rotate
-        });
+        let reverse_order = case.draw(gs::booleans());
+        fixture.server.lose_answer.store(lose, Ordering::SeqCst);
         fixture
             .store
-            .fail_writes
+            .0
+            .fail_write
             .store(fail_write, Ordering::SeqCst);
-        fixture.server.block.store(!ended, Ordering::SeqCst);
-        let mut left = std::pin::pin!(fixture.owner.bearer());
-        let mut right = std::pin::pin!(fixture.owner.bearer());
-        let (first, second) = if order {
-            (&mut left, &mut right)
-        } else {
+        fixture.server.block.store(disk.is_some(), Ordering::SeqCst);
+        let mut left = std::pin::pin!(fixture.owner.lease(AccessRequest::Usable));
+        let mut right = std::pin::pin!(fixture.owner.lease(AccessRequest::Usable));
+        let (first, second) = if reverse_order {
             (&mut right, &mut left)
+        } else {
+            (&mut left, &mut right)
         };
-        if !ended {
+
+        if let Some(old_revision) = disk {
             assert!(poll_once(first.as_mut()).is_pending());
             assert!(poll_once(second.as_mut()).is_pending());
-        }
-        fixture.server.block.store(false, Ordering::SeqCst);
-
-        let model = if ended {
-            ModelResult::Ended
-        } else {
-            calls += 1;
-            if disk_version != Some(server_version) {
-                disk_version = None;
-                ended = true;
-                ModelResult::Ended
+            expected_calls.push(refresh_secret(old_revision));
+            fixture.server.block.store(false, Ordering::SeqCst);
+            if old_revision != remote {
+                disk = None;
+                version += 1;
+                let ended = Poll::Ready(Err(LeaseUnavailable::Ended {
+                    why: EnrollmentEnd::RefreshRefused,
+                }));
+                assert_eq!(poll_once(first.as_mut()), ended);
+                assert_eq!(poll_once(second.as_mut()), ended);
             } else {
-                server_version += 1;
+                remote += 1;
                 if lose {
-                    ModelResult::Lost
-                } else if fail_write {
-                    ModelResult::WriteFailed
+                    let lost = Poll::Ready(Err(LeaseUnavailable::SignInUnreachable {
+                        retry_after: None,
+                    }));
+                    assert_eq!(poll_once(first.as_mut()), lost);
+                    assert_eq!(poll_once(second.as_mut()), lost);
                 } else {
-                    disk_version = Some(server_version);
-                    ModelResult::Bearer(server_version)
+                    if fail_write {
+                        assert!(poll_once(first.as_mut()).is_pending());
+                        assert!(poll_once(second.as_mut()).is_pending());
+                        fixture.store.0.fail_write.store(false, Ordering::SeqCst);
+                        fixture.advance(1);
+                    }
+                    disk = Some(remote);
+                    version += 1;
+                    expect_lease(poll_once(first.as_mut()), version, remote);
+                    expect_lease(poll_once(second.as_mut()), version, remote);
                 }
             }
-        };
-        let observe = |outcome| match outcome {
-            Poll::Ready(Ok(bearer)) => {
-                let super::AccessBearer { access_token, .. } = bearer;
-                let revision = access_token
-                    .expose_secret()
-                    .strip_prefix("access-")
-                    .expect("bearer marker")
-                    .parse()
-                    .expect("bearer version");
-                ModelResult::Bearer(revision)
-            }
-            Poll::Ready(Err(BearerUnavailable::SignInUnreachable { .. })) => ModelResult::Lost,
-            Poll::Ready(Err(BearerUnavailable::Store(CredentialStoreError::Replace))) => {
-                ModelResult::WriteFailed
-            }
-            Poll::Ready(Err(BearerUnavailable::Ended {
-                cleanup: Ok(()), ..
-            })) => ModelResult::Ended,
-            other => panic!("unexpected refresh result {other:?}"),
-        };
-        assert_eq!(observe(poll_once(first.as_mut())), model);
-        assert_eq!(observe(poll_once(second.as_mut())), model);
-        let expected_disk_token = disk_version.map(|revision| format!("refresh-{revision}"));
-        assert_eq!(fixture.store.current_token(), expected_disk_token);
-        assert_eq!(fixture.server.calls.load(Ordering::SeqCst), calls);
-        fixture
-            .clock
-            .advance(Duration::from_secs(1))
-            .expect("advance fixture clock");
+        } else {
+            let ended = Poll::Ready(Err(LeaseUnavailable::Ended {
+                why: EnrollmentEnd::RefreshRefused,
+            }));
+            assert_eq!(poll_once(first.as_mut()), ended);
+            assert_eq!(poll_once(second.as_mut()), ended);
+        }
+        assert_eq!(fixture.store.snapshot().generation(), generation(version));
+        assert_eq!(fixture.store.token(), disk.map(refresh_secret));
+        assert_eq!(fixture.server.sent(), expected_calls);
+        fixture.advance(60);
     }
 }
