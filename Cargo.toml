@@ -10,6 +10,7 @@ members = [
     "crates/central-storage",
     "crates/central-engine-model",
     "crates/state-machine-core",
+    "crates/switchboard-approval-holder",
     "crates/provider-session-machines",
     "crates/switchboard-harness-contracts",
     "crates/fleet-runtime-ports",
