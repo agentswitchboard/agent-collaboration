@@ -5710,6 +5710,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchboard-session-payloads"
+version = "0.1.158"
+dependencies = [
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "workspace-ids",
+]
+
+[[package]]
 name = "switchboard-session-store"
 version = "0.1.158"
 dependencies = [
