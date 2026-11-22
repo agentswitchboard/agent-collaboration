@@ -27,3 +27,7 @@ pub use request_verifier::{
 pub(crate) use signed_claims::{
     PersonClaims, PersonTokenHeader, ProofClaims, ProofHeader, signed_claims_specimens,
 };
+
+#[cfg(test)]
+#[path = "approval_digest_parity_test.rs"]
+mod approval_digest_parity_test;
