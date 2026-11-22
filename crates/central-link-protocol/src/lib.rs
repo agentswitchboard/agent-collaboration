@@ -1,4 +1,5 @@
 //! The closed Router–central wire vocabulary, without a runtime or storage driver.
+mod link_close;
 mod link_codec;
 mod link_delivery;
 mod link_renewal;
@@ -7,6 +8,7 @@ mod request_status;
 
 pub use request_status::{RequestRefusal, RequestStatusAnswer, RequestStatusQuery};
 
+pub use link_close::MachineLinkCloseCode;
 pub use link_codec::{DataFrame, FrameDirection, LinkFrame, decode_text, encode_text};
 pub use link_delivery::{
     DeliveryMessage, DirectOfferBody, DirectOfferMessage, MAX_RECEIPTS, MAX_TIME_LEFT_MS, Receipt,

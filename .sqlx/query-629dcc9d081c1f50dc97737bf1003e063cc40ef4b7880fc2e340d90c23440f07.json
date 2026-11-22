@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT workspace_id\nFROM directory_workspaces\nORDER BY workspace_id\nLIMIT 1 OFFSET ?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "workspace_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "directory_workspaces",
+            "name": "workspace_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true
+    ]
+  },
+  "hash": "629dcc9d081c1f50dc97737bf1003e063cc40ef4b7880fc2e340d90c23440f07"
+}

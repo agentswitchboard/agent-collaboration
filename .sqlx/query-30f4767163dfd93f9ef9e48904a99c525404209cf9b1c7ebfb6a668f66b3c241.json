@@ -1,0 +1,86 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT workspace.workspace_id, workspace.name, workspace.description,\n       workspace.state, workspace.created_at, workspace.updated_at\nFROM json_each(?1) AS permitted\nCROSS JOIN directory_workspaces AS workspace\n  ON workspace.workspace_id = permitted.value\nWHERE (?2 = 1 OR workspace.state <> 'archived')\n  AND (?3 IS NULL\n       OR instr(lower(workspace.name), lower(?3)) > 0\n       OR instr(lower(workspace.description), lower(?3)) > 0)\n  AND (?4 IS NULL\n       OR (?5 = 1 AND workspace.workspace_id > ?4)\n       OR (?5 = 0 AND workspace.workspace_id < ?4))\nORDER BY CASE WHEN ?5 = 1 THEN workspace.workspace_id END ASC,\n         CASE WHEN ?5 = 0 THEN workspace.workspace_id END DESC\nLIMIT ?6\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "workspace_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "directory_workspaces",
+            "name": "workspace_id"
+          }
+        }
+      },
+      {
+        "name": "name",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "directory_workspaces",
+            "name": "name"
+          }
+        }
+      },
+      {
+        "name": "description",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "directory_workspaces",
+            "name": "description"
+          }
+        }
+      },
+      {
+        "name": "state",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "directory_workspaces",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "directory_workspaces",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "directory_workspaces",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "30f4767163dfd93f9ef9e48904a99c525404209cf9b1c7ebfb6a668f66b3c241"
+}

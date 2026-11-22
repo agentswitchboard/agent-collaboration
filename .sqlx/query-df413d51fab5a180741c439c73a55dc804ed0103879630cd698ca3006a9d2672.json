@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE login_machines\nSET updated_at = updated_at\nWHERE machine_id = ?1\n  AND enrollment_generation = ?2\n  AND state = ?3\n  AND label = ?4\n  AND (\n      (?5 IS NULL AND login_machines.state = 'revoked' AND NOT EXISTS (\n          SELECT 1 FROM login_machine_approvals\n          WHERE machine_id = ?1 AND state = 'enrolled'\n      )) OR (login_machines.state = 'enrolled' AND EXISTS (\n          SELECT 1 FROM login_machine_approvals\n          WHERE machine_id = ?1 AND approval_id = ?5 AND state = 'enrolled'\n            AND base_generation + 1 = ?2\n      ))\n  )\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "df413d51fab5a180741c439c73a55dc804ed0103879630cd698ca3006a9d2672"
+}

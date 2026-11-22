@@ -1,0 +1,21 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT EXISTS(SELECT 1 FROM login_machine_approvals) AS has_enrollment\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "has_enrollment",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "f635f7ef71bd094148edb415f670799dd5ac299d4c388e50d41f7084216b778b"
+}

@@ -1,17 +1,11 @@
 //! Central-owned organization and issuer-decision contracts.
 mod authorization_revisions;
-mod device_login_values;
 mod enrollment_records;
-mod identity_decisions;
 mod machine_ids;
-mod organization_commands;
 
 pub use authorization_revisions::*;
-pub use device_login_values::*;
 pub use enrollment_records::*;
-pub use identity_decisions::*;
 pub use machine_ids::*;
-pub use organization_commands::*;
 
 use message_board::{IdentityValidationError, RecordId};
 use schemars::JsonSchema;
@@ -41,17 +35,4 @@ macro_rules! central_identity {
         impl $name { #[must_use] pub fn as_str(&self) -> &str { self.0.as_str() } }
     )+};
 }
-central_identity!(
-    #[cfg_attr(
-        all(feature = "wire-export", not(target_arch = "wasm32")),
-        derive(specta::Type)
-    )]
-    PersonId,
-    #[cfg_attr(
-        all(feature = "wire-export", not(target_arch = "wasm32")),
-        derive(specta::Type)
-    )]
-    DeviceLoginRequestId,
-    AdmissionId,
-    CommandId,
-);
+central_identity!(AdmissionId, CommandId,);

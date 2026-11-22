@@ -54,7 +54,7 @@ pub(super) async fn exercise_notice_cadences(f: &mut Fixture) {
             .run_batch(StatementBatch {
                 statements: vec![GuardedStatement {
                     statement: Statement {
-                        sql: "UPDATE login_machines SET allowed_workspaces=? WHERE machine_id=?",
+                        sql: collaboration_central_conformance::REPLACE_FIXTURE_ALLOWANCES_SQL,
                         args: vec![
                             text(
                                 serde_json::to_string(&vec![
@@ -66,7 +66,7 @@ pub(super) async fn exercise_notice_cadences(f: &mut Fixture) {
                             text(f.caller.caller().machine_id())
                         ]
                     },
-                    expect: RowExpectation::Exactly(1)
+                    expect: RowExpectation::Exactly(2)
                 }],
                 alarm: AlarmUpdate::Unchanged
             })

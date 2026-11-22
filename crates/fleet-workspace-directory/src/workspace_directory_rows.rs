@@ -26,16 +26,16 @@ fn decode(rows: &ReadOutcome) -> Result<Option<DirectoryWorkspace>, StoreFailure
         .transpose()
 }
 
-struct StoredWorkspaceRow {
-    workspace_id: Option<String>,
-    name: String,
-    description: String,
-    state: String,
-    created_at: String,
-    updated_at: String,
+pub(super) struct StoredWorkspaceRow {
+    pub(super) workspace_id: Option<String>,
+    pub(super) name: String,
+    pub(super) description: String,
+    pub(super) state: String,
+    pub(super) created_at: String,
+    pub(super) updated_at: String,
 }
 
-fn decode_row(
+pub(super) fn decode_row(
     rows: &ReadOutcome,
     row: &[central_storage::SqlValue],
 ) -> Result<DirectoryWorkspace, StoreFailure> {
@@ -96,7 +96,7 @@ pub struct WorkspaceDirectoryPage {
 }
 
 pub struct CentralWorkspaceDirectory<'store, Host: CentralStore> {
-    host: &'store Host,
+    pub(super) host: &'store Host,
 }
 
 impl<'store, Host: CentralStore> CentralWorkspaceDirectory<'store, Host> {
@@ -141,16 +141,6 @@ impl<'store, Host: CentralStore> CentralWorkspaceDirectory<'store, Host> {
             .filter(|_| has_more)
             .map(|workspace| workspace.workspace_id.clone());
         Ok(WorkspaceDirectoryPage { workspaces, next })
-    }
-
-    /// Reads the organization's full directory, including archived workspaces,
-    /// in workspace ID order after the caller has admitted the request.
-    pub async fn read_all(&self) -> Result<Vec<DirectoryWorkspace>, StoreFailure> {
-        let rows = self.host.read(Statement {
-            sql: "SELECT workspace_id,name,description,state,created_at,updated_at FROM directory_workspaces ORDER BY workspace_id",
-            args: vec![],
-        }).await?;
-        rows.rows.iter().map(|row| decode_row(&rows, row)).collect()
     }
 }
 

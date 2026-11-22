@@ -23,7 +23,10 @@ async fn idle_expiry_fences_a_still_claimable_approval_and_fresh_approval_can_ac
         (200, grant(&first, INSTALLATION, f.now(), None))
     );
     let first_granted_at = f.now();
-    f.advance((30 * 24 * 60 * 60 - 60) * 1000).await?;
+    f.advance(u64::try_from(
+        (signed::MACHINE_IDLE_LIMIT_SECONDS - 60) * 1000,
+    )?)
+    .await?;
     let pending_body = approval(0xdb02, INSTALLATION, "Pending E2", &[WORKSPACE], f.now());
     let code_expires_at = pending_body["codeExpiresAt"].as_i64().unwrap();
     let pending_reply = f.post(DEVICE, &pending_body).await?;
@@ -34,7 +37,7 @@ async fn idle_expiry_fences_a_still_claimable_approval_and_fresh_approval_can_ac
         json!({"result":"approved","enrollmentId":pending,"label":"Pending E2","allowedWorkspaces":[WORKSPACE]})
     );
     assert_eq!(
-        f.rows("SELECT state,enrollment_generation,label,allowed_workspaces FROM login_machines")
+        f.rows("SELECT state,enrollment_generation,label,(SELECT json_group_array(workspace_id) FROM (SELECT workspace_id FROM login_machine_allowances WHERE machine_id=login_machines.machine_id AND state='active' ORDER BY allowance_id)) FROM login_machines")
             .await?,
         vec![vec![
             text("enrolled"),
@@ -53,19 +56,22 @@ async fn idle_expiry_fences_a_still_claimable_approval_and_fresh_approval_can_ac
         vec![vec![text(&first)]]
     );
     assert_eq!(
-        f.rows("SELECT request_id,kind,origin,actor_person_id,permission_checked,target_id FROM signin_change_records WHERE kind='allowanceChanged' ORDER BY id").await?,
+        f.rows("SELECT request_id,kind,origin,actor_person_id,permission_checked,target_id,workspace_id,allowance_state FROM signin_change_records WHERE kind='machineAllowanceChanged' ORDER BY id").await?,
         vec![vec![
-            text(format!("{}:allowanceChanged:{WORKSPACE}", id(0xdb02))),
-            text("allowanceChanged"), text("person"), text(signed::OWNER),
-            text("machine:enroll"), text(WORKSPACE),
+            text(format!("{}:machineAllowanceChanged:{WORKSPACE}", id(0xdb02))),
+            text("machineAllowanceChanged"), text("person"), text(signed::OWNER),
+            text("machine:enroll"), text(INSTALLATION), text(WORKSPACE), text("active"),
         ]]
     );
 
     // Act: E1's exact idle boundary revokes it while E2's real code remains live.
     f.advance(60_000).await?;
-    assert_eq!(f.now(), first_granted_at + 30 * 24 * 60 * 60);
+    assert_eq!(
+        f.now(),
+        first_granted_at + signed::MACHINE_IDLE_LIMIT_SECONDS
+    );
     assert!(f.now() < code_expires_at);
-    f.execute("CREATE TRIGGER fail_idle_expiry BEFORE INSERT ON signin_change_records WHEN NEW.kind='allowanceChanged' AND NEW.origin='automatic' BEGIN SELECT RAISE(ABORT,'fixture final idle allowance record failure'); END",vec![]).await?;
+    f.execute("CREATE TRIGGER fail_idle_expiry BEFORE INSERT ON signin_change_records WHEN NEW.kind='machineAllowanceChanged' AND NEW.origin='automatic' BEGIN SELECT RAISE(ABORT,'fixture final idle allowance record failure'); END",vec![]).await?;
     let before_failed_expiry = snapshot(&f).await?;
     assert_eq!(
         f.post(TOKEN, &token(&first, &first)).await?,
@@ -81,7 +87,7 @@ async fn idle_expiry_fences_a_still_claimable_approval_and_fresh_approval_can_ac
         (200, refused("idleExpired"))
     );
     assert_eq!(
-        f.rows("SELECT state,allowed_workspaces FROM login_machines")
+        f.rows("SELECT state,(SELECT json_group_array(workspace_id) FROM (SELECT workspace_id FROM login_machine_allowances WHERE machine_id=login_machines.machine_id AND state='active' ORDER BY allowance_id)) FROM login_machines")
             .await?,
         vec![vec![text("revoked"), text("[]")]]
     );
@@ -101,7 +107,7 @@ async fn idle_expiry_fences_a_still_claimable_approval_and_fresh_approval_can_ac
         "the stale first claim changed machine, approvals, records or credentials"
     );
     assert_eq!(
-        f.rows("SELECT state,enrollment_generation,allowed_workspaces FROM login_machines")
+        f.rows("SELECT state,enrollment_generation,(SELECT json_group_array(workspace_id) FROM (SELECT workspace_id FROM login_machine_allowances WHERE machine_id=login_machines.machine_id AND state='active' ORDER BY allowance_id)) FROM login_machines")
             .await?,
         vec![vec![text("revoked"), number(2)?, text("[]")]]
     );
@@ -115,10 +121,10 @@ async fn idle_expiry_fences_a_still_claimable_approval_and_fresh_approval_can_ac
         vec![vec![text("approved"), number(1)?, central_storage::SqlValue::Null]]
     );
     assert_eq!(
-        f.rows("SELECT request_id,kind,origin,target_id FROM signin_change_records WHERE origin='automatic' ORDER BY id").await?,
+        f.rows("SELECT request_id,kind,origin,target_id,workspace_id,allowance_state FROM signin_change_records WHERE origin='automatic' ORDER BY id").await?,
         vec![
-            vec![text(format!("{first}:machineExpired:{first}")), text("machineExpired"), text("automatic"), text(&first)],
-            vec![text(format!("{first}:allowanceChanged:{WORKSPACE}")), text("allowanceChanged"), text("automatic"), text(WORKSPACE)],
+            vec![text(format!("{first}:machineExpired:{first}")), text("machineExpired"), text("automatic"), text(&first), central_storage::SqlValue::Null, central_storage::SqlValue::Null],
+            vec![text(format!("{first}:machineAllowanceChanged:{WORKSPACE}")), text("machineAllowanceChanged"), text("automatic"), text(INSTALLATION), text(WORKSPACE), text("withdrawn")],
         ]
     );
 
@@ -142,7 +148,7 @@ async fn idle_expiry_fences_a_still_claimable_approval_and_fresh_approval_can_ac
         (200, grant(&fresh, INSTALLATION, f.now(), None))
     );
     assert_eq!(
-        f.rows("SELECT state,enrollment_generation,allowed_workspaces FROM login_machines")
+        f.rows("SELECT state,enrollment_generation,(SELECT json_group_array(workspace_id) FROM (SELECT workspace_id FROM login_machine_allowances WHERE machine_id=login_machines.machine_id AND state='active' ORDER BY allowance_id)) FROM login_machines")
             .await?,
         vec![vec![
             text("enrolled"),

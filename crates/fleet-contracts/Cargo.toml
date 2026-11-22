@@ -16,6 +16,7 @@ wire-export = ["dep:specta","fleet-identity-protocol/wire-export","message-board
 [dependencies]
 approval-request-protocol.workspace = true
 central-engine-model.workspace = true
+central-link-protocol.workspace = true
 central-storage.workspace = true
 fleet-rpc.workspace = true
 fleet-identity-protocol = { path = "../fleet-identity-protocol", version = "0.1.156" }

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE login_machine_approvals\nSET state=?,end_reason=?,machine_client_id=?,last_grant_at=?,ended_at=?,updated_at=?\nWHERE approval_id=?\n  AND machine_id=?\n  AND state=?\n  AND end_reason IS ?\n  AND machine_client_id IS ?\n  AND unixepoch(last_grant_at) IS ?\n  AND ended_at IS NULL\n  AND base_generation=?\n  AND unixepoch(code_expires_at)=?\n  AND request_id=?\n  AND label=?\n  AND json(allowed_workspaces)=json(?)\n  AND approved_by_person_id=?\n  AND permission_checked='machine:enroll'\n  AND unixepoch(created_at)*1000+CAST(substr(strftime('%f',created_at),4,3) AS INTEGER)=?\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 19
+    },
+    "nullable": []
+  },
+  "hash": "bef854b2c28a667814e2f8f66873d82e22c68369535b393264c274c9dfc952b2"
+}

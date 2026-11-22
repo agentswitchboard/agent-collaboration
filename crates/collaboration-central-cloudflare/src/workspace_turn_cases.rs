@@ -17,10 +17,16 @@ pub(super) async fn control(
                 point,
                 Point::BeforeTimerCommit
                     | Point::BeforeReceiptTransaction
+                    | Point::AfterIdleExpiryCommit
+                    | Point::AfterIdleRenewalPlatformSendError
+                    | Point::BeforePrivateEnrollmentInvalidation
+                    | Point::BeforeIdleEnrollmentCleanup
+                    | Point::AfterIdleEnrollmentCleanup
                     | Point::AfterTimerCommit
                     | Point::AfterEngineLoad
                     | Point::BeforeSignInSample
                     | Point::AfterSignInSample
+                    | Point::BeforeWorkspaceRequestApplying
                     | Point::AfterWorkspaceExecute
                     | Point::EngineCompletionEntered
             ) {

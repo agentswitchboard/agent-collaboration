@@ -1,4 +1,5 @@
 //! Shared values for mailbox delivery over a machine link.
+pub use central_link_protocol::MachineLinkCloseCode;
 use workspace_ids::MessageId;
 use workspace_model::{ResolvedSender, Timestamp, central_mail::MessageRecord};
 
@@ -8,7 +9,7 @@ use workspace_model::{ResolvedSender, Timestamp, central_mail::MessageRecord};
 pub enum MailReceiptSettlement {
     Applied,
     Stop(workspace_model::central_mail::ReceiptResult),
-    AuthorityLapsed,
+    AuthorityLapsed(MachineLinkCloseCode),
 }
 
 pub const WELCOME_PAGE_SIZE: usize = central_engine_model::DueBatchPolicy::DEFAULT.per_kind_cap;
@@ -36,7 +37,7 @@ impl WindowedDelivery {
 
 pub enum WelcomeDeliveryPage {
     Ready(Vec<WindowedDelivery>),
-    AuthorityLapsed,
+    AuthorityLapsed(MachineLinkCloseCode),
 }
 
 /// The row and its current sender at one authorized push to the addressed machine.
@@ -49,5 +50,5 @@ pub struct ResolvedMailDelivery {
 pub enum WindowedDeliveryDecision {
     Ready(ResolvedMailDelivery),
     Ineligible,
-    AuthorityLapsed,
+    AuthorityLapsed(MachineLinkCloseCode),
 }

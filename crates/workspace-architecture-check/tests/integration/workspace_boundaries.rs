@@ -28,6 +28,7 @@ pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 4] = [
         &[
             APPROVAL_REQUEST_PROTOCOL,
             "central-engine-model",
+            "central-link-protocol",
             "central-storage",
             "fleet-identity-protocol",
             FLEET_RPC,
@@ -112,6 +113,7 @@ pub(super) const MAIL_LAYER: (&str, &[&str]) = (
         "fleet-contracts",
         LENT_TRANSACTION,
         "fleet-engine",
+        "fleet-machine-login",
         "fleet-request-log",
         "fleet-runtime-ports",
         "fleet-workspace-access",
