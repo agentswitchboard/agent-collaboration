@@ -1,8 +1,9 @@
 use super::{
-    Arc, CancellationToken, DB_WRITE_SHUTDOWN_DRAIN_GRACE_MS, DbWriteCommand, DbWriteRepository,
-    HashMap, Instant, JoinHandle, Mutex, QueueLagEvent, QueuedDbWriteCommand, RouteBandQueueHealth,
-    ScheduledSessionAffinity, SessionAffinityScheduleKey, apply_db_write_command_result,
-    emit_db_write_queue_lag_observed, handle_db_write_command, mpsc, queue_lag_millis_since,
+    Arc, CancellationToken, DB_WRITE_SHUTDOWN_DRAIN_GRACE_MS, DbWriteCommand, DbWriteQueueItem,
+    DbWriteRepository, HashMap, Instant, JoinHandle, Mutex, QueueLagEvent, QueuedDbWriteCommand,
+    RouteBandQueueHealth, ScheduledSessionAffinity, SessionAffinityScheduleKey,
+    apply_db_write_command_result, emit_db_write_queue_lag_observed, handle_db_write_command, mpsc,
+    queue_lag_millis_since,
 };
 
 pub(super) async fn await_db_write_task_shutdown(task: Option<JoinHandle<()>>) {
@@ -24,7 +25,7 @@ pub(super) async fn await_db_write_task_shutdown(task: Option<JoinHandle<()>>) {
 
 pub(super) async fn run_session_affinity_scheduler(
     repository: Arc<dyn DbWriteRepository>,
-    mut receiver: mpsc::Receiver<QueuedDbWriteCommand>,
+    mut receiver: mpsc::Receiver<DbWriteQueueItem>,
     shutdown: CancellationToken,
     schedule_capacity: usize,
     last_queue_lag_event: Arc<Mutex<Option<QueueLagEvent>>>,
@@ -40,7 +41,10 @@ pub(super) async fn run_session_affinity_scheduler(
             biased;
             () = shutdown.cancelled() => {
                 receiver.close();
-                while let Ok(command) = receiver.try_recv() {
+                while let Ok(item) = receiver.try_recv() {
+                    let Some(command) = item.into_write() else {
+                        continue;
+                    };
                     process_session_affinity_trigger(
                         repository.as_ref(),
                         command,
@@ -56,14 +60,17 @@ pub(super) async fn run_session_affinity_scheduler(
                 ).await;
                 return;
             }
-            command = receiver.recv() => {
-                let Some(command) = command else {
+            item = receiver.recv() => {
+                let Some(item) = item else {
                     flush_all_pending_session_affinities(
                         repository.as_ref(),
                         &mut schedules,
                         &last_queue_lag_event,
                     ).await;
                     return;
+                };
+                let Some(command) = item.into_write() else {
+                    continue;
                 };
                 process_session_affinity_trigger(
                     repository.as_ref(),

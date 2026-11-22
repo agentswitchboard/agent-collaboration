@@ -9,6 +9,10 @@ static LOG_CAPTURE_LOCK: Mutex<()> = Mutex::new(());
 static ASYNC_LOG_CAPTURE_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 pub(crate) fn capture_log_output(emit: impl FnOnce()) -> String {
+    capture_log_output_with_snapshot(|_| emit())
+}
+
+pub(crate) fn capture_log_output_with_snapshot(emit: impl FnOnce(&dyn Fn() -> String)) -> String {
     let _guard = LOG_CAPTURE_LOCK
         .lock()
         .unwrap_or_else(|error| panic!("log capture lock should be available: {error}"));
@@ -18,7 +22,7 @@ pub(crate) fn capture_log_output(emit: impl FnOnce()) -> String {
         .with_writer(captured.clone())
         .finish();
 
-    tracing::subscriber::with_default(subscriber, emit);
+    tracing::subscriber::with_default(subscriber, || emit(&|| captured.rendered()));
     captured.rendered()
 }
 
