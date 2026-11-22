@@ -77,6 +77,7 @@ mod organization_provisioning_plans;
 mod organization_signin_http;
 mod organization_signin_port;
 mod person_admission_plans;
+mod person_proof_repository;
 mod private_machine_revocation;
 pub use organization_admin_contract::*;
 pub use organization_signin_http::organization_signin_router;

@@ -1,20 +1,17 @@
 //! Prepare fresh-proof reservation; the caller appends its effect to the same batch.
 use crate::{
     authorization_floor_rows::{
-        integer, organization_guard, person_guard, read_organization_floor, read_person_floor,
+        organization_guard, person_guard, read_organization_floor, read_person_floor,
     },
+    person_proof_repository::{reserve_admitted_proof, used_proof_exists},
     person_request::{
         AdmissionRefusal, VerifiedPersonRequest,
         request_admission::{admission_before_person, decide_admission, request_time_refusal},
     },
 };
-use central_storage::{GuardedStatement, SqlValue, Statement, StoreFailure};
+use central_storage::{GuardedStatement, StoreFailure};
 use fleet_runtime_ports::CentralStore;
-use fleet_runtime_ports::{
-    guarded_statements::{exact, text},
-    stored_values::string,
-    workspace_decode_error::corrupt,
-};
+use fleet_runtime_ports::workspace_decode_error::corrupt;
 use workspace_model::Timestamp;
 
 pub(crate) struct PersonAdmissionPlan {
@@ -50,19 +47,7 @@ pub(crate) async fn prepare_person_admission(
         Ok(admitted) => admitted,
         Err(refusal) => return Ok(Err(refusal)),
     };
-    let marker = host
-        .read(Statement {
-            sql: "SELECT id FROM admin_used_requests WHERE id=?",
-            args: vec![text(request.request_id)],
-        })
-        .await?;
-    if marker.rows.len() > 1 {
-        return Err(corrupt("admin_used_requests.id"));
-    }
-    if let Some(row) = marker.rows.first() {
-        if string(&marker, row, "id")? != request.request_id.to_string() {
-            return Err(corrupt("admin_used_requests.id"));
-        }
+    if used_proof_exists(host, request.request_id).await? {
         return Ok(Err(AdmissionRefusal::RequestReused));
     }
     let organization = organization.ok_or_else(|| corrupt("signin_authorization_floors.id"))?;
@@ -71,40 +56,7 @@ pub(crate) async fn prepare_person_admission(
     let statements = vec![
         organization_guard(organization_id, &organization)?,
         person_guard(organization_id, &request.person_id, &person)?,
-        exact(
-            "INSERT INTO admin_used_requests(id,organization_id,request_time_ms,operation_id,actor_person_id,actor_session_id,intent_digest,proof_key_thumbprint,created_at,updated_at) SELECT ?1,?2,?3,?4,?5,?6,?7,?8,?9,?9 WHERE ?9<?10 AND ?3>?9-65000 AND ?3<=?9+5000 AND ?11>?9-65000 AND ?11<=?9+5000 AND (?13=0 OR (?12 IS NOT NULL AND ?12*1000<=?9 AND ?9-?12*1000<=900000)) AND ?3>(SELECT request_reject_through_ms FROM signin_authorization_floors WHERE id=?2) AND NOT EXISTS(SELECT 1 FROM admin_used_requests WHERE id=?1)",
-            vec![
-                text(request.request_id),
-                text(organization_id),
-                integer(
-                    request.request_time_ms,
-                    "admin_used_requests.request_time_ms",
-                )?,
-                request
-                    .operation
-                    .operation_id()
-                    .map_or(SqlValue::Null, |id| text(id.as_str())),
-                text(&request.person_id),
-                text(&request.session_id),
-                text(&request.intent_digest),
-                text(&request.proof_key_thumbprint),
-                integer(now_ms, "admin_used_requests.created_at")?,
-                integer(
-                    request.effective_expiry_ms,
-                    "person_request.effective_expiry_ms",
-                )?,
-                integer(request.proof_time_ms, "person_request.proof_time_ms")?,
-                request
-                    .second_factor_at
-                    .map(|at| integer(at, "person_request.second_factor_at"))
-                    .transpose()?
-                    .unwrap_or(SqlValue::Null),
-                integer(
-                    i64::from(request.operation.route().changes_state()),
-                    "person_request.changes_state",
-                )?,
-            ],
-        ),
+        reserve_admitted_proof(request, now_ms)?,
     ];
     Ok(Ok(PersonAdmissionPlan { statements }))
 }
