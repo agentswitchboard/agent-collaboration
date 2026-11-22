@@ -1,9 +1,6 @@
 //! HTTP policy shared by both hosts' private sign-in links.
 use crate::{
-    identity_contract::{
-        AUTHORIZATION_REVISIONS_ROUTE, AuthorizationRevision, ORGANIZATION_STATEMENT_DIGEST_ROUTE,
-        PROVISION_ORGANIZATION_ROUTE, ProvisionOrganization, ReadOrganizationStatementDigest,
-    },
+    identity_contract::{AUTHORIZATION_REVISIONS_ROUTE, AuthorizationRevision},
     organization_admin_contract::OrganizationAdminAnswer,
     organization_signin_port::OrganizationSignInPort,
     person_request::{AdminRoute, PersonRequestInput},
@@ -16,7 +13,11 @@ use axum::{
     response::{IntoResponse, Response},
     routing::post,
 };
-use fleet_contracts::OrganizationProvisioningFailure;
+use fleet_contracts::AuthorizationRevisionFailure;
+use fleet_contracts::{
+    ORGANIZATION_STATEMENT_DIGEST_ROUTE, PROVISION_ORGANIZATION_ROUTE, ProvisionOrganization,
+    ReadOrganizationStatementDigest,
+};
 use fleet_identity_protocol::OrganizationId;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -97,7 +98,18 @@ async fn provision<Port: OrganizationSignInPort>(
     };
     match port.provision(&request).await {
         Ok(answer) => (StatusCode::OK, Json(answer)).into_response(),
-        Err(failure) => failure_status(failure).into_response(),
+        Err(failure) => {
+            use fleet_contracts::ProvisionFailure;
+            match failure {
+                ProvisionFailure::OrganizationMismatch => StatusCode::FORBIDDEN,
+                ProvisionFailure::InvalidStatement => StatusCode::UNPROCESSABLE_ENTITY,
+                ProvisionFailure::StaleStatement => StatusCode::CONFLICT,
+                ProvisionFailure::Unavailable | ProvisionFailure::OutcomeUnknown => {
+                    StatusCode::SERVICE_UNAVAILABLE
+                }
+            }
+            .into_response()
+        }
     }
 }
 
@@ -110,7 +122,15 @@ async fn statement_digest<Port: OrganizationSignInPort>(
     };
     match port.digest(&request).await {
         Ok(answer) => (StatusCode::OK, Json(answer)).into_response(),
-        Err(failure) => failure_status(failure).into_response(),
+        Err(failure) => {
+            use fleet_contracts::DigestFailure;
+            match failure {
+                DigestFailure::OrganizationMismatch => StatusCode::FORBIDDEN,
+                DigestFailure::Unprovisioned => StatusCode::NOT_FOUND,
+                DigestFailure::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+            }
+            .into_response()
+        }
     }
 }
 
@@ -181,17 +201,13 @@ async fn forward_admin<Port: OrganizationSignInPort>(
 }
 
 /// Failure bodies are empty; only a 200 publishes a closed result.
-fn failure_status(failure: OrganizationProvisioningFailure) -> StatusCode {
+fn failure_status(failure: AuthorizationRevisionFailure) -> StatusCode {
     match failure {
-        OrganizationProvisioningFailure::OrganizationMismatch => StatusCode::FORBIDDEN,
-        OrganizationProvisioningFailure::InvalidStatement => StatusCode::UNPROCESSABLE_ENTITY,
-        OrganizationProvisioningFailure::StaleStatement => StatusCode::CONFLICT,
-        OrganizationProvisioningFailure::OrganizationFloorMissing => {
-            StatusCode::PRECONDITION_FAILED
-        }
-        OrganizationProvisioningFailure::Unprovisioned => StatusCode::NOT_FOUND,
-        OrganizationProvisioningFailure::Unavailable
-        | OrganizationProvisioningFailure::OutcomeUnknown => StatusCode::SERVICE_UNAVAILABLE,
+        AuthorizationRevisionFailure::OrganizationMismatch => StatusCode::FORBIDDEN,
+        AuthorizationRevisionFailure::Conflict => StatusCode::CONFLICT,
+        AuthorizationRevisionFailure::OrganizationFloorMissing => StatusCode::PRECONDITION_FAILED,
+        AuthorizationRevisionFailure::Unavailable
+        | AuthorizationRevisionFailure::OutcomeUnknown => StatusCode::SERVICE_UNAVAILABLE,
     }
 }
 

@@ -229,15 +229,18 @@ async fn a_claim_waits_for_a_publication_between_its_decision_and_its_write() {
             .join(format!("{}.sqlite", fixture.workspace)),
         Arc::new(fleet_storage_schema::workspace_migrations::workspace_migrator()),
     ));
-    let runtime = Arc::new(WorkspaceRuntime::new(FleetRuntime::open(
-        fixture.caller.organization_id().clone(),
+    let runtime = Arc::new(WorkspaceRuntime::new(
+        FleetRuntime::open(
+            fixture.caller.organization_id().clone(),
+            central.clone(),
+            WorkspaceStore(workspace.clone()),
+            Arc::new(clock.clone()),
+            Arc::new(ClockIds::new(clock)),
+            due_batches.clone(),
+            Arc::new(|_| {}),
+        ),
         central.clone(),
-        WorkspaceStore(workspace.clone()),
-        Arc::new(clock.clone()),
-        Arc::new(ClockIds::new(clock)),
-        due_batches.clone(),
-        Arc::new(|_| {}),
-    )));
+    ));
     fixture.set_utc(at(start, 4, 0, 0)).await;
     assert_eq!(
         runtime.after_event().await.unwrap().publication,

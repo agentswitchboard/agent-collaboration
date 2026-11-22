@@ -210,7 +210,7 @@ async fn native_factory_refuses_invalid_trust_configuration() -> TestResult {
     );
     assert!(matches!(
         verifier,
-        Err(FleetOrganizationStatementRefusal::InvalidConfiguration)
+        Err(fleet_signin::organization_authority::InvalidStampTrust)
     ));
     Ok(())
 }

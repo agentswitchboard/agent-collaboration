@@ -62,7 +62,7 @@ pub struct ObjectStorage {
 
 struct NativeTransaction<'a>(&'a mut sqlx::SqliteConnection);
 
-impl fleet_engine::CentralTransaction for NativeTransaction<'_> {
+impl fleet_lent_transaction::CentralTransaction for NativeTransaction<'_> {
     type Database = sqlx::Sqlite;
 
     fn executor(&mut self) -> impl sqlx::Executor<'_, Database = Self::Database> {
@@ -127,8 +127,17 @@ impl ObjectStorage {
         let _order = self.lock_batch_order().await;
         let publishes = !matches!(batch.alarm, central_storage::AlarmUpdate::Unchanged);
         let result = self.run_ordered_batch(batch).await;
+        self.record_publication_status(publishes, &result);
+        result
+    }
+
+    fn record_publication_status(
+        &self,
+        publishes: bool,
+        result: &Result<BatchOutcome, StoreFailure>,
+    ) {
         if publishes && let Some(engine) = &self.engine_publication {
-            let status = match &result {
+            let status = match result {
                 Ok(BatchOutcome::Applied {
                     publication: AlarmPublication::Set { .. } | AlarmPublication::Cleared,
                     ..
@@ -159,7 +168,6 @@ impl ObjectStorage {
                 self.publication_status.send_replace(status);
             }
         }
-        result
     }
 
     async fn run_ordered_batch(&self, batch: StatementBatch) -> Result<BatchOutcome, StoreFailure> {
@@ -246,6 +254,10 @@ impl ObjectStorage {
 
     fn publish_engine_alarm(&self, grid: Option<i64>, legacy: Option<i64>) -> AlarmPublication {
         let decide = || -> Result<Option<i64>, AlarmPublicationFailure> {
+            #[cfg(feature = "test-support")]
+            if let Some(failure) = self.faults.take_alarm_publication_failure() {
+                return Err(failure);
+            }
             let publication = self
                 .engine_publication
                 .as_ref()
@@ -401,6 +413,15 @@ impl ObjectStorage {
     }
 
     #[cfg(feature = "test-support")]
+    pub fn fail_next_alarm_publication(&self, failure: AlarmPublicationFailure) {
+        self.faults.arm_alarm_publication(failure);
+    }
+    #[cfg(feature = "test-support")]
+    pub fn alarm_batch_fault_pending(&self) -> bool {
+        self.faults.alarm_batch_pending()
+    }
+
+    #[cfg(feature = "test-support")]
     pub fn fail_next_alarm_batch(&self, failure: StoreFailure) {
         self.faults.arm_alarm_batch(failure);
     }
@@ -462,3 +483,6 @@ impl Drop for BatchWaiter {
         self.0.send_modify(|count| *count = count.saturating_sub(1));
     }
 }
+
+#[path = "object_storage_stamp.rs"]
+mod object_storage_stamp;

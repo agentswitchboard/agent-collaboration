@@ -119,7 +119,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                 OrganizationAdminResult::Found { workspace: found }
             }
             AdminOperation::ReadChangeRecords(request) => OrganizationAdminResult::Records {
-                records: crate::organization_change_rows::read_page(
+                records: fleet_signin::organization_change::read_page(
                     self.execution.statement_host(),
                     request.after,
                     request.limit.get(),

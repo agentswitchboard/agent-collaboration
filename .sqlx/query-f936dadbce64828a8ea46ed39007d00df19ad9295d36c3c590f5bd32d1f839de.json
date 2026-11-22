@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT id,organization_statement FROM signin_organization_identity ORDER BY id LIMIT 2\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "signin_organization_identity",
+            "name": "id"
+          }
+        }
+      },
+      {
+        "name": "organization_statement",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "signin_organization_identity",
+            "name": "organization_statement"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "f936dadbce64828a8ea46ed39007d00df19ad9295d36c3c590f5bd32d1f839de"
+}

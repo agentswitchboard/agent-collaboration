@@ -185,3 +185,45 @@ async fn complete_stamp_metadata_and_record_identity_survive_renewal_and_setup_r
     .await;
     f.close().await;
 }
+
+#[tokio::test]
+async fn legacy_signed_create_audit_binds_distinct_request_and_target() {
+    use central_storage::{AlarmUpdate, BatchOutcome, StatementBatch};
+    use fleet_signin::organization_change::{
+        OrganizationChangeKind, OrganizationChangeOrigin, OrganizationChangeRecord, insert,
+    };
+
+    let f = Fixture::new().await;
+    let request = "019f0000-0000-7000-8000-00000000da11";
+    let target = "019f0000-0000-7000-8000-00000000da12";
+    let at_ms = NOW_SECONDS * 1_000;
+    let audit = insert(&OrganizationChangeRecord {
+        id: "019f0000-0000-7000-8000-00000000da13".parse().unwrap(),
+        request_id: request.to_owned().try_into().unwrap(),
+        kind: OrganizationChangeKind::WorkspaceCreated,
+        origin: OrganizationChangeOrigin::Person {
+            person_id: signed::OWNER.to_owned(),
+            permission_checked: "workspace:create".into(),
+        },
+        target_id: target.into(),
+        created_at_millis: at_ms,
+    })
+    .unwrap();
+
+    // Execute the signed-create statement through the real legacy DO batch.
+    let answer = f
+        .runtime()
+        .await
+        .run_batch(StatementBatch {
+            statements: vec![audit],
+            alarm: AlarmUpdate::Unchanged,
+        })
+        .await
+        .unwrap();
+    assert!(matches!(answer, BatchOutcome::Applied { .. }));
+    assert_eq!(
+        f.read("SELECT request_id, target_id, actor_person_id, permission_checked, created_at, updated_at FROM signin_change_records WHERE kind='workspaceCreated'").await.rows,
+        vec![vec![text(request), text(target), text(signed::OWNER), text("workspace:create"), number(at_ms), number(at_ms)]],
+    );
+    f.close().await;
+}

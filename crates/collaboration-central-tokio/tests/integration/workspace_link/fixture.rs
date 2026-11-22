@@ -3,9 +3,10 @@ use central_link_protocol::{FrameDirection, LinkFrame, decode_text, encode_text}
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 use collaboration_central_core::{
     SignInTrustSettings,
-    identity_contract::{DeviceLoginDecision, MachineTokenDecision, ProvisionOrganization},
+    identity_contract::{DeviceLoginDecision, MachineTokenDecision},
 };
 use collaboration_central_tokio::{OrganizationSignInLink, TokioWorkspaceHost, WorkspaceLink};
+use fleet_contracts::ProvisionOrganization;
 use futures_util::{SinkExt, StreamExt};
 use reqwest_websocket::{Message, RequestBuilderExt, WebSocket};
 use router_clock::ManualClock;

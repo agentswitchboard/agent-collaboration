@@ -54,24 +54,10 @@ impl CentralStore for CentralStatements {
             if let Some(failure) = self.faults.take_alarm_batch_failure(&batch) {
                 return Err(failure);
             }
-            let decide_alarm = self.decide_alarm.clone();
-            #[cfg(feature = "test-support")]
-            let decide_alarm = if !batch.statements.is_empty()
-                && matches!(batch.alarm, central_storage::AlarmUpdate::Engine(_))
-                && self
-                    .zero_next_write_alarm
-                    .swap(false, std::sync::atomic::Ordering::SeqCst)
-            {
-                // The store calls this after the guarded SQL. Workerd rejects epoch zero at setAlarm.
-                let zero_alarm: central_storage::EngineAlarmDecider =
-                    Arc::new(move |times, now, write| {
-                        decide_alarm(times, now, write)?;
-                        Ok(Some(0))
-                    });
-                zero_alarm
-            } else {
-                decide_alarm
-            };
+            let decide_alarm = self.engine_decider(
+                !batch.statements.is_empty()
+                    && matches!(batch.alarm, central_storage::AlarmUpdate::Engine(_)),
+            );
             #[cfg(feature = "test-support")]
             let (decide_alarm, captured_alarm) = workspace_link_witness::capture_alarm_inputs(
                 &self.witness_env,
@@ -310,29 +296,29 @@ impl CentralObject {
         self.migrate().await?;
         let host = self.statement_host();
         let clock: Arc<dyn fleet_runtime_ports::Clock> = Arc::new(self.clock.clone());
-        let runtime = WorkspaceRuntime::new(FleetRuntime::open(
-            organization.clone(),
+        let runtime = WorkspaceRuntime::new(
+            FleetRuntime::open(
+                organization.clone(),
+                host.clone(),
+                WorkspaceTransport {
+                    env: Arc::new(SendWrapper::new(self.env.clone())),
+                    #[cfg(feature = "test-support")]
+                    lose_read: self.controls.lose_read.clone(),
+                    #[cfg(feature = "test-support")]
+                    legacy_workspace_calls: self.controls.legacy_workspace_calls.clone(),
+                },
+                clock.clone(),
+                Arc::new(ClockIds::new(self.clock.clone())),
+                self.due_batches.clone(),
+                Arc::new(crate::signin_observation::observe_signin),
+            ),
             host,
-            WorkspaceTransport {
-                env: Arc::new(SendWrapper::new(self.env.clone())),
-                #[cfg(feature = "test-support")]
-                lose_read: self.controls.lose_read.clone(),
-                #[cfg(feature = "test-support")]
-                legacy_workspace_calls: self.controls.legacy_workspace_calls.clone(),
-            },
-            clock.clone(),
-            Arc::new(ClockIds::new(self.clock.clone())),
-            self.due_batches.clone(),
-            Arc::new(crate::signin_observation::observe_signin),
-        ));
+        );
         let runtime = match crate::organization_signin_link::trust_settings(&self.env) {
             Ok(Some(settings)) => {
                 match CloudflareSignInTrust::new(settings).for_organization(organization, clock) {
                     Ok(check) => runtime.with_sign_in_verification(check),
-                    Err(
-                        fleet_contracts::FleetOrganizationStatementRefusal::InvalidConfiguration,
-                    ) => runtime,
-                    Err(_) => return Err(StoreFailure::Unavailable),
+                    Err(fleet_signin::organization_authority::InvalidStampTrust) => runtime,
                 }
             }
             // Invalid/missing trust never permits sign-in. The default checker
@@ -365,9 +351,10 @@ impl CentralObject {
     ) -> std::result::Result<Option<(OrganizationId, Arc<OrgRuntime>)>, AlarmFailure> {
         self.migrate().await.map_err(AlarmFailure::Store)?;
         let host = self.statement_host();
-        let identity = collaboration_central_core::prepare_central_alarm(host.as_ref())
-            .await
-            .map_err(AlarmFailure::Store)?;
+        let identity =
+            collaboration_central_core::prepare_central_alarm(host.as_ref(), host.as_ref())
+                .await
+                .map_err(AlarmFailure::Store)?;
         let collaboration_central_core::CentralOrganizationIdentity::Stamped { organization_id } =
             identity
         else {
@@ -530,3 +517,29 @@ mod workspace_machine_link;
 #[cfg(feature = "test-support")]
 #[path = "workspace_link_witness.rs"]
 mod workspace_link_witness;
+
+impl CentralStatements {
+    fn engine_decider(&self, _writes_engine_alarm: bool) -> central_storage::EngineAlarmDecider {
+        let decide_alarm = self.decide_alarm.clone();
+        #[cfg(feature = "test-support")]
+        let decide_alarm = if _writes_engine_alarm
+            && self
+                .zero_next_write_alarm
+                .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            // The store calls this after the guarded SQL. Workerd rejects epoch zero at setAlarm.
+            let zero_alarm: central_storage::EngineAlarmDecider =
+                Arc::new(move |times, now, write| {
+                    decide_alarm(times, now, write)?;
+                    Ok(Some(0))
+                });
+            zero_alarm
+        } else {
+            decide_alarm
+        };
+        decide_alarm
+    }
+}
+
+#[path = "workspace_stamp_store.rs"]
+mod stamp_store;

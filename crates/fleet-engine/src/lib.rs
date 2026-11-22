@@ -27,4 +27,4 @@ pub use machine_event_engine::machine_store_adapter::{
 pub use machine_event_engine::request_receipt_store::{EngineReceipt, EngineRefusal};
 
 mod central_queries;
-pub use central_queries::{CentralTransaction, read_alarm_inputs, read_timed_due_rows};
+pub use central_queries::{read_alarm_inputs, read_timed_due_rows};

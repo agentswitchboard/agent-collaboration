@@ -13,6 +13,10 @@ const source = new URL("../../", import.meta.url);
 const migrations = new URL("crates/fleet-storage-schema/migrations/central/", source);
 const dueMigration = "0005_engine_due_views.sql";
 const dueSchema = readFileSync(new URL(dueMigration, migrations), "utf8");
+const signinAlarmSchema = readFileSync(
+  new URL("0006_signin_provisioned_for_engine.sql", migrations),
+  "utf8",
+);
 const oldSchema = readdirSync(migrations)
   .filter((name): boolean => name < dueMigration)
   .sort()
@@ -129,7 +133,7 @@ async function plan(object: string): Promise<string> {
 
 test("the shipped Workerd alarm fits 330 reads and loses the bound without the expiry index", async (context): Promise<void> => {
   const fixtures = seedHistory(10_000, 50, 50);
-  await prepare("indexed", [...oldSchema, dueSchema, ...fixtures]);
+  await prepare("indexed", [...oldSchema, dueSchema, signinAlarmSchema, ...fixtures]);
   const actual = await run("indexed", nextAlarm);
   assert.deepEqual(pair(actual.rows, true), [300_000, 300_000]);
   assert.equal(actual.rowsWritten, 0);
@@ -151,14 +155,14 @@ test("the shipped Workerd alarm fits 330 reads and loses the bound without the e
   assert.doesNotMatch(paths, /SCAN automation_(?:wakes|schedules)$/m);
 
   const noExpiry = replaceRequired(dueSchema, /CREATE INDEX messages_system_expiry_due [^;]+;/, "");
-  await prepare("lost-expiry", [...oldSchema, noExpiry, ...fixtures]);
+  await prepare("lost-expiry", [...oldSchema, noExpiry, signinAlarmSchema, ...fixtures]);
   const lostExpiry = await run("lost-expiry", nextAlarm);
   assert.deepEqual(lostExpiry.rows, actual.rows);
   assert.ok(lostExpiry.rowsRead > 330, JSON.stringify(lostExpiry));
   assert.doesNotMatch(await plan("lost-expiry"), /messages_system_expiry_due/);
 
   const noWake = replaceRequired(dueSchema, "INDEXED BY wakes_due", "NOT INDEXED");
-  await prepare("lost-wake", [...oldSchema, noWake, ...fixtures]);
+  await prepare("lost-wake", [...oldSchema, noWake, signinAlarmSchema, ...fixtures]);
   const lostWake = await run("lost-wake", nextAlarm);
   assert.deepEqual(lostWake.rows, actual.rows);
   assert.ok(lostWake.rowsRead > 330, JSON.stringify(lostWake));
@@ -182,8 +186,8 @@ test("a null source ID still masks its wake, and the old ID-based rule is detect
     "INSERT INTO automation_wakes VALUES ('01890f2e-7b4c-7cc0-98c4-000000000022','target','1970-01-01T00:05:00.000Z','wake','active','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z')",
     "INSERT INTO engine_work_attempts VALUES (NULL,'engine_source','wake_timer','retired',1,NULL,'statement_rejected',NULL,'1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z')",
   ];
-  await prepare("masked", [...oldSchema, dueSchema, ...fixtures]);
-  await prepare("mask-regression", [...oldSchema, badSchema, ...fixtures]);
+  await prepare("masked", [...oldSchema, dueSchema, signinAlarmSchema, ...fixtures]);
+  await prepare("mask-regression", [...oldSchema, badSchema, signinAlarmSchema, ...fixtures]);
   assert.deepEqual(pair((await run("masked", oldAlarm)).rows, false), [null, null]);
   assert.deepEqual(pair((await run("masked", nextAlarm)).rows, true), [null, null]);
   assert.deepEqual(pair((await run("mask-regression", nextAlarm)).rows, true), [300_000, null]);
@@ -292,7 +296,9 @@ test("a populated masked job and fixed active history agree on both backends", a
         true,
       );
       const migrationStarted = performance.now();
+      await run(name, signinAlarmSchema, true);
       native.exec(dueSchema);
+      native.exec(signinAlarmSchema);
       const stockMigrationMs = performance.now() - migrationStarted;
       const actual = await run(name, nextAlarm);
       const notices =
@@ -334,13 +340,21 @@ test("a populated masked job and fixed active history agree on both backends", a
   assert.deepEqual(selections[0], selections[1]);
 });
 
-test("the common checked SELECT runs with a fresh Workerd fixture overlay", async (): Promise<void> => {
+test("the checked SELECT in a Workerd fixture overlay requires exactly one stamp", async (): Promise<void> => {
   await prepare("overlay", [
     ...oldSchema,
     dueSchema,
+    signinAlarmSchema,
     overlay,
-    "INSERT INTO signin_organization_identity VALUES ('fixture-stamp','fixture',1,1)",
     "INSERT INTO engine_alarm_only_items VALUES ('01890f2e-7b4c-7cc0-98c4-000000000031','1970-01-01T00:15:00.000Z','waiting','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z')",
   ]);
+  assert.deepEqual(pair((await run("overlay", nextAlarm)).rows, true), [null, null]);
+  await prepare("overlay", [
+    "INSERT INTO signin_organization_identity VALUES ('fixture-stamp','fixture',1,1)",
+  ]);
   assert.deepEqual(pair((await run("overlay", nextAlarm)).rows, true), [900_000, null]);
+  await prepare("overlay", [
+    "INSERT INTO signin_organization_identity VALUES ('other-stamp','fixture',1,1)",
+  ]);
+  assert.deepEqual(pair((await run("overlay", nextAlarm)).rows, true), [null, null]);
 });

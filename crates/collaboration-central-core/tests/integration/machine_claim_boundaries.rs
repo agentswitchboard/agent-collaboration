@@ -1,7 +1,7 @@
-#[cfg(test)]
 use crate::schema_validation;
+#[cfg(test)]
+use fleet_contracts::{MachinePrincipal, MachineTokenClaims};
 
-use collaboration_central_core::identity_contract::{MachinePrincipal, MachineTokenClaims};
 use serde_json::json;
 
 #[test]

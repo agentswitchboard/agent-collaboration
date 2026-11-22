@@ -2,19 +2,33 @@
 //! core has constructed the real transaction. No stand-in replaces storage.
 use central_engine_model::InstanceKey;
 use central_storage::{
-    AlarmUpdate, BatchOutcome, CorruptReason, SqlValue, Statement, StatementBatch, StoreFailure,
+    AlarmPublicationFailure, AlarmUpdate, BatchOutcome, CorruptReason, SqlValue, Statement,
+    StatementBatch, StoreFailure,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::{Mutex, PoisonError};
+use std::sync::{
+    Mutex, PoisonError,
+    atomic::{AtomicBool, Ordering},
+};
 
 #[derive(Default)]
 pub struct TestFaults {
     commit: Mutex<Option<EngineCommitFault>>,
     read: Mutex<Option<EngineReadFault>>,
     alarm_batch: Mutex<Option<StoreFailure>>,
+    alarm_publication: Mutex<Option<AlarmPublicationFailure>>,
+    lost_provisioning_reply: AtomicBool,
 }
 
 impl TestFaults {
+    pub fn arm_lost_provisioning_reply(&self) {
+        self.lost_provisioning_reply.store(true, Ordering::SeqCst);
+    }
+
+    pub fn take_lost_provisioning_reply(&self) -> bool {
+        self.lost_provisioning_reply.swap(false, Ordering::SeqCst)
+    }
+
     pub fn arm_commit(&self, fault: EngineCommitFault) {
         *self.commit.lock().unwrap_or_else(PoisonError::into_inner) = Some(fault);
     }
@@ -67,11 +81,32 @@ impl TestFaults {
         }
     }
 
+    pub fn arm_alarm_publication(&self, failure: AlarmPublicationFailure) {
+        *self
+            .alarm_publication
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(failure);
+    }
+
+    pub fn take_alarm_publication_failure(&self) -> Option<AlarmPublicationFailure> {
+        self.alarm_publication
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take()
+    }
+
     pub fn arm_alarm_batch(&self, failure: StoreFailure) {
         *self
             .alarm_batch
             .lock()
             .unwrap_or_else(PoisonError::into_inner) = Some(failure);
+    }
+
+    pub fn alarm_batch_pending(&self) -> bool {
+        self.alarm_batch
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .is_some()
     }
 
     pub fn take_alarm_batch_failure(&self, batch: &StatementBatch) -> Option<StoreFailure> {

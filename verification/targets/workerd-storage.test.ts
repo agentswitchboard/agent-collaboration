@@ -11,6 +11,7 @@ import { z } from "zod";
 import { createFixtureDirectory } from "../test-support/fixture-directory.ts";
 import {
   WorkerdStorage,
+  centralLinkTestBundle,
   centralTestBundle,
   workerdLauncherTimeSchema,
   type WorkerdBundle,
@@ -236,7 +237,8 @@ async function assertBridgeControls(props: {
   const touch = async (id: string): Promise<unknown> => {
     const response = await fetch(`${baseUrl}/test-support/workspace/${id}/raw-signin-observe`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      // Use a fresh connection for clock observations (UW-18).
+      headers: { "content-type": "application/json", Connection: "close" },
       body: "{}",
     });
     assert.equal(response.status, 200);
@@ -711,5 +713,59 @@ test("actual central samples launcher time once per object instance", async (): 
     );
   } finally {
     await controlled.close();
+  }
+});
+
+test("private provision checks the CENTRAL binding before decoding the full body", async (): Promise<void> => {
+  const link = centralLinkTestBundle();
+  const publicWorker = centralTestBundle();
+  const route = "/internal/organization-provisioning";
+  const organizationId = "019f0000-0000-7000-8000-00000000d251";
+  const request = {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      organizationId,
+      organizationStatement: 17,
+    }),
+  };
+  const clock = (): number => 1_800_000_000_000;
+  const unavailable = await WorkerdStorage.start(link);
+  try {
+    const response = await fetch(new URL(route, unavailable.origin), request);
+    assert.equal(
+      response.headers.get("x-collaboration-central-entry"),
+      "collaboration-central-link-entry",
+    );
+    assert.equal(response.status, 503);
+    assert.equal(await response.text(), "");
+  } finally {
+    await unavailable.close();
+  }
+
+  const ready = await WorkerdStorage.start(
+    {
+      ...publicWorker,
+      durableObjects: { ...publicWorker.durableObjects, CENTRAL: "CentralObject" },
+    },
+    { linkBundle: link, jwks: { sourceUrl, fixtureUrl } },
+    clock,
+  );
+  try {
+    const response = await fetch(new URL(`/private${route}`, ready.origin), request);
+    assert.equal(
+      response.headers.get("x-collaboration-central-entry"),
+      "collaboration-central-link-entry",
+    );
+    assert.equal(response.status, 400);
+    assert.equal(await response.text(), '{"kind":"wrong-operation"}');
+    const digest = await fetch(
+      new URL("/private/internal/organization-statement-digest", ready.origin),
+      { ...request, body: JSON.stringify({ organizationId }) },
+    );
+    assert.equal(digest.status, 404);
+    assert.equal(await digest.text(), "");
+  } finally {
+    await ready.close();
   }
 });

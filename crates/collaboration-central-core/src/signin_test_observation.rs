@@ -2,7 +2,6 @@
 //! The raw compact statement is returned only to the fixture caller; never log it.
 use crate::{
     identity_contract::{FenceRevision, OrganizationFenceState, PersonFenceState},
-    organization_change_rows::{ChangeRequestId, OrganizationChangeKind},
     person_request::AdminOperationId,
 };
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
@@ -13,6 +12,7 @@ use fleet_runtime_ports::{
     stored_values::{json, string},
     workspace_decode_error::corrupt,
 };
+use fleet_signin::organization_change::{ChangeRequestId, OrganizationChangeKind};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use uuid::Uuid;

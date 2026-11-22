@@ -12,269 +12,9 @@ mod test_support_policy;
 #[path = "workspace_boundaries.rs"]
 mod workspace_boundaries;
 
-const LAYER_POLICY: [(&str, &[&str]); 38] = [
-    ("workspace-ids", &[]),
-    (
-        "workspace-model",
-        &[
-            "workspace-ids",
-            "agent-automation",
-            "collaboration-mail-protocol",
-            "message-board",
-        ],
-    ),
-    (
-        "central-link-protocol",
-        &["workspace-ids", "workspace-model"],
-    ),
-    (
-        "central-link-client",
-        &[
-            "central-link-protocol",
-            "workspace-model",
-            "workspace-ids",
-            "router-clock",
-        ],
-    ),
-    ("central-storage", &[]),
-    ("state-machine-core", &[]),
-    ("provider-session-machines", &["state-machine-core"]),
-    (
-        "central-engine-model",
-        &["central-storage", "state-machine-core"],
-    ),
-    (
-        "collaboration-central-core",
-        &[
-            "fleet-engine",
-            "fleet-mail",
-            "fleet-notices",
-            "fleet-wakes",
-            "fleet-schedules",
-            "fleet-timer-policy",
-            "agent-automation",
-            "central-engine-model",
-            "central-link-protocol",
-            "central-storage",
-            "fleet-contracts",
-            "fleet-identity-protocol",
-            "fleet-rpc",
-            "fleet-runtime-ports",
-            "fleet-runtime",
-            "fleet-workspace-access",
-            "fleet-workspace-directory",
-            "message-board",
-            "workspace-ids",
-            "workspace-model",
-            "workspace-rules",
-        ],
-    ),
-    (
-        "collaboration-central-tokio",
-        &[
-            "central-link-protocol",
-            "central-storage",
-            "collaboration-central-core",
-            "fleet-contracts",
-            "fleet-engine",
-            "fleet-identity-protocol",
-            "fleet-rpc",
-            "fleet-runtime-ports",
-            "fleet-runtime",
-            "fleet-storage-schema",
-            "fleet-store-sqlx",
-            "fleet-workspace-service",
-            "router-clock",
-            "workspace-ids",
-            "workspace-model",
-        ],
-    ),
-    (
-        "collaboration-central-cloudflare",
-        &[
-            "central-link-protocol",
-            "central-storage",
-            "collaboration-central-core",
-            "fleet-contracts",
-            "fleet-engine",
-            "fleet-identity-protocol",
-            "fleet-rpc",
-            "fleet-runtime-ports",
-            "fleet-runtime",
-            "fleet-storage-schema",
-            "fleet-workspace-service",
-            "message-board",
-            "sqlx-durable-object",
-            "sqlx-durable-object-core",
-            "workspace-ids",
-            "workspace-model",
-        ],
-    ),
-    (
-        "fleet-runtime",
-        &[
-            "central-engine-model",
-            "central-storage",
-            "fleet-contracts",
-            "fleet-identity-protocol",
-            "fleet-runtime-ports",
-            "workspace-ids",
-            "workspace-model",
-        ],
-    ),
-    (
-        "fleet-workspace-access",
-        &[
-            "central-storage",
-            "fleet-contracts",
-            "fleet-runtime",
-            "fleet-runtime-ports",
-            "workspace-ids",
-            "workspace-model",
-        ],
-    ),
-    ("fleet-engine", workspace_boundaries::ENGINE_EDGES),
-    ("fleet-storage-schema", &[]),
-    (
-        "fleet-store-sqlx",
-        &["central-storage", "fleet-runtime-ports"],
-    ),
-    ("workspace-rules", &["workspace-model", "central-storage"]),
-    ("router-clock", &[]),
-    ("node-test-fixture", &[]),
-    ("ui-preference-store", &[]),
-    ("sqlite-storage-maintenance", &[]),
-    ("codex-router-quota", &[]),
-    ("codex-router-selection", &["codex-router-quota"]),
-    (
-        "codex-router-proxy",
-        &["codex-router-quota", "codex-router-selection"],
-    ),
-    (
-        "codex-router-quota-service",
-        &[
-            "codex-router-quota",
-            "codex-router-selection",
-            "codex-router-proxy",
-        ],
-    ),
-    ("agent-collaboration-tui", &[]),
-    (
-        "agent-router-quota-tui",
-        &["codex-router-quota-service", "agent-collaboration-tui"],
-    ),
-    ("collaboration-contracts", &[]),
-    ("vendor-protocol", &[]),
-    (
-        "acp-provider-adapters",
-        &[
-            "acp-client-runtime",
-            "provider-session-machines",
-            "vendor-protocol",
-        ],
-    ),
-    (
-        "acp-client-runtime",
-        &[
-            "vendor-protocol",
-            "state-machine-core",
-            "provider-session-machines",
-            "router-clock",
-        ],
-    ),
-    (
-        "collaboration-runtime",
-        &[
-            "collaboration-contracts",
-            "sqlite-storage-maintenance",
-            "router-clock",
-        ],
-    ),
-    (
-        "collaboration-service",
-        &[
-            "collaboration-contracts",
-            "collaboration-runtime",
-            "router-clock",
-            "state-machine-core",
-        ],
-    ),
-    (
-        "agent-session-inventory",
-        &[
-            "node-test-fixture",
-            "collaboration-contracts",
-            "collaboration-runtime",
-            "collaboration-service",
-        ],
-    ),
-    (
-        "agent-session-tui",
-        &[
-            "ui-preference-store",
-            "agent-session-inventory",
-            "agent-collaboration-tui",
-            "collaboration-contracts",
-            "collaboration-runtime",
-            "collaboration-service",
-        ],
-    ),
-    (
-        "agent-collaboration",
-        &[
-            "agent-session-inventory",
-            "agent-session-tui",
-            "agent-collaboration-tui",
-            "collaboration-contracts",
-            "collaboration-runtime",
-            "collaboration-service",
-        ],
-    ),
-    (
-        "codex-router-host",
-        &[
-            "acp-client-runtime",
-            "acp-provider-adapters",
-            "router-clock",
-            "state-machine-core",
-            "provider-session-machines",
-            "collaboration-contracts",
-            "collaboration-runtime",
-            "collaboration-service",
-        ],
-    ),
-    (
-        "codex-router-cli",
-        &[
-            // The central serve composition root owns the two listeners and clock.
-            "collaboration-central-core",
-            "collaboration-central-tokio",
-            "router-clock",
-            // The quota composition root wires its preference adapter to this leaf store.
-            "ui-preference-store",
-            "codex-router-quota-service",
-            "agent-router-quota-tui",
-            "agent-collaboration-tui",
-            "codex-router-host",
-            "codex-router-proxy",
-            "codex-router-selection",
-            "collaboration-runtime",
-            "collaboration-service",
-        ],
-    ),
-];
-
-fn layer_policy() -> impl Iterator<Item = (&'static str, &'static [&'static str])> {
-    LAYER_POLICY
-        .into_iter()
-        .chain(workspace_boundaries::FLEET_PURE_CRATES)
-        .chain(workspace_boundaries::TIMER_CRATES)
-        .chain([
-            workspace_boundaries::MAIL_LAYER,
-            workspace_boundaries::NOTICES_LAYER,
-            workspace_boundaries::DIRECTORY_LAYER,
-        ])
-}
+#[path = "crate_layer_policy.rs"]
+mod crate_layer_policy;
+use crate_layer_policy::layer_policy;
 
 #[derive(Deserialize)]
 struct CargoMetadata {
@@ -453,7 +193,7 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
         .check_policy()
         .inspect_err(|error| eprintln!("{error}"))?;
     workspace_boundaries::check_boundaries(&graph)?;
-    workspace_boundaries::check_pure_dependency_tree(&root)?;
+    workspace_boundaries::check_workspace_package_trees(&root)?;
     Ok(())
 }
 
@@ -471,6 +211,8 @@ fn fixture_graph(
         ("fleet-ports", "fleet-runtime-ports"),
         ("fleet-contracts", "fleet-contracts"),
         ("fleet-runtime", "fleet-runtime"),
+        ("fleet-signin", "fleet-signin"),
+        ("central-core", "collaboration-central-core"),
         ("fleet-access", "fleet-workspace-access"),
         ("fleet-storage-schema", "fleet-storage-schema"),
         ("fleet-store-sqlx", "fleet-store-sqlx"),
@@ -594,6 +336,29 @@ fn only_the_native_central_host_can_reach_the_executor_directly() {
                 .expect_err("the portable crate cannot use the native executor");
             assert_eq!(violation.source_name, package);
             assert_eq!(violation.destination_name, "fleet-store-sqlx");
+            assert_eq!(violation.kind, kind.unwrap_or(DependencyKind::Normal));
+        }
+    }
+}
+
+#[test]
+fn fleet_signin_can_use_the_runtime_but_cannot_reach_core_or_host_adapters() {
+    for kind in [None, Some(DependencyKind::Build)] {
+        assert!(
+            fixture_graph("fleet-signin", "fleet-runtime", vec![kind])
+                .check_policy()
+                .is_ok()
+        );
+        for (target, name) in [
+            ("central-core", "collaboration-central-core"),
+            ("central-native", "collaboration-central-tokio"),
+            ("central-worker", "collaboration-central-cloudflare"),
+        ] {
+            let violation = fixture_graph("fleet-signin", target, vec![kind])
+                .check_policy()
+                .expect_err("sign-in must not depend upward on a composer or host");
+            assert_eq!(violation.source_name, "fleet-signin");
+            assert_eq!(violation.destination_name, name);
             assert_eq!(violation.kind, kind.unwrap_or(DependencyKind::Normal));
         }
     }

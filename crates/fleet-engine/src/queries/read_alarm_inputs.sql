@@ -3,4 +3,4 @@ SELECT
   MIN(CASE WHEN due_lane = 'legacy' THEN due_at_ms END) AS "legacy_due?: i64"
 FROM engine_due_rows
 WHERE contributes_to_alarm = 1
-  AND (SELECT COUNT(*) FROM signin_organization_identity) = 1;
+  AND EXISTS (SELECT 1 FROM signin_provisioned_for_engine);

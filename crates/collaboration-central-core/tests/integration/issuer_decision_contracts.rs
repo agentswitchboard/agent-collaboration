@@ -1,13 +1,13 @@
 //! Literal wire oracles and serializer-generated artifact freshness.
-#[cfg(test)]
 use crate::contract_artifacts;
 use collaboration_central_core::identity_contract::{
     AllowedWorkspaces, DecideDeviceLogin, DecideMachineToken, DeviceLoginDecision,
     DeviceLoginRefusal, DisableMachineClient, DisabledMachineClient, EndedMachineClient,
-    EnrollPermission, MachinePrincipal, MachineTokenClaims, MachineTokenDecision,
-    MachineTokenRefusal, PresentedMachine,
+    EnrollPermission, MachineTokenDecision, MachineTokenRefusal, PresentedMachine,
 };
 use fleet_contracts::MachineConnectionRefusal;
+#[cfg(test)]
+use fleet_contracts::{MachinePrincipal, MachineTokenClaims};
 use serde_json::json;
 
 #[test]
