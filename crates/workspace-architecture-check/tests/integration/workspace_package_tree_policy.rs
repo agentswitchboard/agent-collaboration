@@ -2,7 +2,7 @@
 use super::{
     CENTRAL_WORKER, FLEET_ACCESS, FLEET_DIRECTORY, FLEET_ENGINE, FLEET_MAIL, FLEET_NOTICES,
     FLEET_PURE_CRATES, FLEET_SCHEDULES, FLEET_TIMER_POLICY, FLEET_WAKES, LENT_TRANSACTION,
-    PURE_CRATES, REQUEST_LOG, TIMER_CRATES, WORKSPACE_SERVICE, is_effectful,
+    PURE_CRATES, REQUEST_LOG, SESSION_READ_CRATES, TIMER_CRATES, WORKSPACE_SERVICE, is_effectful,
 };
 use std::{path::Path, process::Command};
 
@@ -30,6 +30,7 @@ pub(in crate::crate_layers) fn check_workspace_package_trees(
     for package_name in PURE_CRATES
         .into_iter()
         .chain(FLEET_PURE_CRATES)
+        .chain(SESSION_READ_CRATES)
         .map(|(package_name, _)| package_name)
         .chain([
             LENT_TRANSACTION,
@@ -77,6 +78,12 @@ pub(super) fn check_package_targets(
         check_package_tree(workspace_root, package_name, Some(FLEET_WASM_TARGET)).map_err(
             |error| format!("{package_name} dependency tree for {FLEET_WASM_TARGET}: {error}"),
         )?;
+    }
+    if SESSION_READ_CRATES
+        .iter()
+        .any(|(name, _)| *name == package_name)
+    {
+        check_package_tree(workspace_root, package_name, Some(FLEET_WASM_TARGET))?;
     }
     Ok(())
 }

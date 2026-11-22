@@ -144,6 +144,11 @@ pub(super) const ENGINE_EDGES: &[&str] = &[
     "workspace-model",
 ];
 
+pub(super) const SESSION_READ_CRATES: [(&str, &[&str]); 2] = [
+    ("switchboard-session-payloads", &["workspace-ids"]),
+    ("switchboard-session-calls", &["workspace-ids"]),
+];
+
 const PURE_CRATES: [(&str, &[&str]); 8] = [
     ("workspace-ids", &[]),
     (
@@ -238,7 +243,11 @@ pub(super) fn check_boundaries(
             }
         }
     }
-    for (name, allowed) in PURE_CRATES.into_iter().chain(FLEET_PURE_CRATES) {
+    for (name, allowed) in PURE_CRATES
+        .into_iter()
+        .chain(FLEET_PURE_CRATES)
+        .chain(SESSION_READ_CRATES)
+    {
         let Some(source) = graph.workspace_id(name) else {
             continue;
         };
@@ -407,6 +416,47 @@ pub(super) fn check_declared_session_owner_edges(
             {
                 check_closed_workspace_edge(owner, &dependency.name, kind, allowed)?;
             }
+        }
+    }
+    Ok(())
+}
+
+// Only the declaration inventory sees every inactive optional dependency.
+pub(super) fn check_declared_session_read_edges(
+    metadata: &CargoMetadata,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let workspace_packages: Vec<_> = metadata
+        .packages
+        .iter()
+        .filter(|package| metadata.workspace_members.contains(&package.id))
+        .collect();
+    for (owner, allowed_workspace) in SESSION_READ_CRATES {
+        let package = workspace_packages
+            .iter()
+            .find(|package| package.name == owner)
+            .ok_or_else(|| format!("closed dependency policy package missing: {owner}"))?;
+        for dependency in &package.dependencies {
+            let kind = dependency.kind.unwrap_or(DependencyKind::Normal);
+            let workspace_edge = dependency.path.as_deref().is_some_and(|path| {
+                workspace_packages.iter().any(|package| {
+                    package.name == dependency.name && package.manifest_path.parent() == Some(path)
+                })
+            });
+            let registry_edge = dependency
+                .source
+                .as_deref()
+                .is_some_and(|source| source.starts_with("registry+"))
+                && dependency.path.is_none();
+            let allowed: &[&str] = match (kind, workspace_edge, registry_edge) {
+                (DependencyKind::Normal, true, false) => allowed_workspace,
+                (DependencyKind::Normal, false, true) => &["serde", "schemars", "thiserror"],
+                (DependencyKind::Dev, false, true) if owner == "switchboard-session-calls" => {
+                    &["serde_json", "serde_path_to_error", "hegeltest"]
+                }
+                (DependencyKind::Dev, false, true) => &["serde_json", "serde_path_to_error"],
+                _ => &[],
+            };
+            check_closed_workspace_edge(owner, &dependency.name, kind, allowed)?;
         }
     }
     Ok(())
@@ -752,3 +802,7 @@ fn proxy_boundary_rejects_direct_and_transitive_normal_and_build_edges() {
         .is_ok()
     );
 }
+
+#[cfg(test)]
+#[path = "session_read_dependency_test.rs"]
+mod session_read_dependency_tests;
