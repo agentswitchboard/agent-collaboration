@@ -162,7 +162,11 @@ async fn command_port_rig(fixture: AgentFixture) -> CommandPortRig {
             .await
             .expect("store"),
     ));
-    let hub = Arc::new(ProviderSessionEventHub::new(Arc::clone(&store)));
+    let clock = Arc::new(router_clock::SystemRuntimeClock::new());
+    let hub = Arc::new(ProviderSessionEventHub::new(
+        Arc::clone(&store),
+        clock.clone(),
+    ));
     let seed_target = protocol_target("session-1");
     let binding = provider_binding(&seed_target);
     let board_endpoint: SessionEndpointRef =
@@ -203,7 +207,7 @@ async fn command_port_rig(fixture: AgentFixture) -> CommandPortRig {
         Arc::clone(&hub),
         board_endpoint,
         behavior,
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        clock,
     )
     .await
     .expect("provider runtime");

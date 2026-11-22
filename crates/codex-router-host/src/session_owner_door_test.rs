@@ -46,7 +46,10 @@ async fn owner_door_uses_the_real_acp_connection_for_restore_prompt_and_close() 
     let board: message_board::SessionRef =
         collaboration_protocol::ProviderIdentity::session_to_board(&target)
             .expect("board identity");
-    let hub = Arc::new(ProviderSessionEventHub::new(fixture.store.clone()));
+    let hub = Arc::new(ProviderSessionEventHub::new(
+        fixture.store.clone(),
+        fixture.clock.clone(),
+    ));
     let wire_receipt = fixture.path.with_file_name("owner-wire.json");
     let runtime = ExternalProviderRuntime::initialize_with_mcp_http_and_hub(
         launch_fixture_agent(

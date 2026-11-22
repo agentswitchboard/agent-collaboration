@@ -386,6 +386,7 @@ impl ExternalProviderSupervisor {
         let owner_hub = hub.unwrap_or_else(|| {
             Arc::new(collaboration_runtime::ProviderSessionEventHub::new(
                 Arc::clone(&store),
+                clock.clone(),
             ))
         });
         let mut runtimes = HashMap::with_capacity(bindings.len());

@@ -65,7 +65,10 @@ async fn fixture() -> HubFixture {
         .await
         .expect("inventory");
     HubFixture {
-        hub: ProviderSessionEventHub::new(Arc::new(Mutex::new(store))),
+        hub: ProviderSessionEventHub::new(
+            Arc::new(Mutex::new(store)),
+            Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+        ),
         session,
         _root: root,
     }

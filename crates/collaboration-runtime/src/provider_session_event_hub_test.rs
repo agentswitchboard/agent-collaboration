@@ -9,6 +9,55 @@ use crate::ProviderOperationStore;
 use collaboration_contracts::SessionEventHub;
 
 #[tokio::test]
+async fn publish_uses_injected_clock_for_inventory_activity() {
+    let root = tempfile::tempdir().expect("root");
+    let mut store = ProviderOperationStore::open(&root.path().join("operations.sqlite"))
+        .await
+        .expect("store");
+    let session: SessionRef = serde_json::from_value(serde_json::json!({
+        "endpoint": {
+            "serviceId": "019abcde-f001-7a23-8b45-6789abcdef24",
+            "endpointId": "claude-local"
+        },
+        "sessionId": "clock-observation"
+    }))
+    .expect("session");
+    let owner: collaboration_protocol::ProviderIdentity =
+        serde_json::from_value(serde_json::json!({"humanId": "owner"})).expect("owner");
+    store
+        .record_session(&crate::ProviderSessionRecord {
+            target: serde_json::from_value(serde_json::to_value(&session).expect("target"))
+                .expect("target"),
+            working_directory: root.path().display().to_string().try_into().expect("cwd"),
+            requested_policy: collaboration_protocol::ProviderRequestedPolicy {
+                access: collaboration_protocol::RouterAccess::WriteRestricted,
+            },
+            created_by: owner.clone(),
+            approver: owner,
+            updated_at_ms: 10,
+            resume: Default::default(),
+        })
+        .await
+        .expect("record session");
+    let clock = Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH));
+    let hub = ProviderSessionEventHub::new(Arc::new(Mutex::new(store)), clock.clone());
+
+    let observed_at_seconds = 1_700_012_345;
+    clock.set_utc(chrono::DateTime::from_timestamp(observed_at_seconds, 0).expect("fixture time"));
+    hub.publish(session.clone(), started_item("clock observation"))
+        .await
+        .expect("publish activity");
+    let sessions = hub
+        .sessions(session.endpoint.clone())
+        .await
+        .expect("sessions");
+
+    assert_eq!(sessions.len(), 1);
+    assert_eq!(sessions[0].session, session);
+    assert_eq!(sessions[0].updated_at_seconds, observed_at_seconds);
+}
+
+#[tokio::test]
 async fn inventory_uses_first_user_message_and_existing_session_title() {
     // Arrange: durable inventory plus the same retained events used by attachments.
     let root = tempfile::tempdir().expect("root");
@@ -37,7 +86,10 @@ async fn inventory_uses_first_user_message_and_existing_session_title() {
         })
         .await
         .expect("inventory");
-    let hub = ProviderSessionEventHub::new(Arc::new(Mutex::new(store)));
+    let hub = ProviderSessionEventHub::new(
+        Arc::new(Mutex::new(store)),
+        Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+    );
     let first_id = uuid::Uuid::now_v7().to_string();
     for (item_id, kind, text) in [
         (
@@ -137,7 +189,10 @@ async fn closed_and_unloaded_sessions_admit_fresh_history_replay() {
         let store = ProviderOperationStore::open(&root.path().join("operations.sqlite"))
             .await
             .expect("store");
-        let hub = ProviderSessionEventHub::new(Arc::new(Mutex::new(store)));
+        let hub = ProviderSessionEventHub::new(
+            Arc::new(Mutex::new(store)),
+            Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+        );
         let session: SessionRef = serde_json::from_value(serde_json::json!({"endpoint":{"serviceId":"00000000-0000-4000-8000-000000000001","endpointId":"cursor-local"},"sessionId":"restorable"})).expect("session");
         hub.publish(
             session.clone(),
@@ -176,7 +231,10 @@ async fn concurrent_publication_lands_on_exactly_one_side_of_the_attachment() {
     let store = ProviderOperationStore::open(&root.path().join("operations.sqlite"))
         .await
         .expect("store");
-    let hub = ProviderSessionEventHub::new(Arc::new(Mutex::new(store)));
+    let hub = ProviderSessionEventHub::new(
+        Arc::new(Mutex::new(store)),
+        Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+    );
 
     for publication_first in [true, false] {
         let session: SessionRef = serde_json::from_value(serde_json::json!({
@@ -274,7 +332,10 @@ async fn assert_active_replay_preserves_state(state: session_event_model::Sessio
     let store = ProviderOperationStore::open(&root.path().join("operations.sqlite"))
         .await
         .expect("store");
-    let hub = ProviderSessionEventHub::new(Arc::new(Mutex::new(store)));
+    let hub = ProviderSessionEventHub::new(
+        Arc::new(Mutex::new(store)),
+        Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+    );
     let session: SessionRef = serde_json::from_value(serde_json::json!({"endpoint":{"serviceId":"00000000-0000-4000-8000-000000000001","endpointId":"claude-local"},"sessionId":"active"})).expect("session");
     hub.publish(
         session.clone(),
@@ -332,7 +393,10 @@ async fn locked_attach_on_one_session_does_not_stall_another_publish() {
     let store = ProviderOperationStore::open(&root.path().join("operations.sqlite"))
         .await
         .expect("store");
-    let hub = Arc::new(ProviderSessionEventHub::new(Arc::new(Mutex::new(store))));
+    let hub = Arc::new(ProviderSessionEventHub::new(
+        Arc::new(Mutex::new(store)),
+        Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+    ));
     let first: SessionRef = serde_json::from_value(serde_json::json!({
         "endpoint":{"serviceId":"00000000-0000-4000-8000-000000000001","endpointId":"claude-local"},
         "sessionId":"first"

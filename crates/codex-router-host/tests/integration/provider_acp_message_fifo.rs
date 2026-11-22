@@ -436,6 +436,7 @@ async fn permanent_queued_load_failure_is_inspectable_and_does_not_stop_fifo() {
         Arc::new(acp_provider_adapters::StandardAcpBehavior),
         Arc::new(collaboration_runtime::ProviderSessionEventHub::new(
             store.clone(),
+            clock.clone(),
         )),
         endpoint,
         clock.clone(),

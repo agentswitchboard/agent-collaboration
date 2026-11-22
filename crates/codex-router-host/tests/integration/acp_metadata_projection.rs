@@ -55,7 +55,10 @@ async fn check_metadata_projection(replay: bool) {
         })
         .await
         .expect("fixture setup");
-    let hub = Arc::new(ProviderSessionEventHub::new(store.clone()));
+    let hub = Arc::new(ProviderSessionEventHub::new(
+        store.clone(),
+        Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+    ));
     let board: message_board::SessionRef =
         collaboration_protocol::ProviderIdentity::session_to_board(&target).expect("board target");
     let mut attached = hub

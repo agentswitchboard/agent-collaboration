@@ -123,6 +123,7 @@ async fn steering_session_on_clock(
     ));
     let hub = Arc::new(collaboration_runtime::ProviderSessionEventHub::new(
         Arc::clone(&store),
+        clock.clone(),
     ));
     let hub_target: message_board::SessionRef =
         serde_json::from_value(serde_json::to_value(&target).expect("target JSON"))

@@ -134,7 +134,10 @@ impl ExternalProviderRuntime {
                             .await
                             .map_err(fixture_error)?,
                     ));
-                    let hub = Arc::new(ProviderSessionEventHub::new(store.clone()));
+                    let hub = Arc::new(ProviderSessionEventHub::new(
+                        store.clone(),
+                        self.owner_clock(),
+                    ));
                     (Some(directory), store, hub, binding)
                 };
                 let door = self.session_owner_door(store.clone(), hub);

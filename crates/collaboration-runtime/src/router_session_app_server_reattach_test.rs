@@ -234,9 +234,10 @@ async fn concrete_hub_epoch_resync_reattaches_same_tui_socket()
             resume: Default::default(),
         })
         .await?;
-    let hub = Arc::new(crate::ProviderSessionEventHub::new(Arc::new(Mutex::new(
-        store,
-    ))));
+    let hub = Arc::new(crate::ProviderSessionEventHub::new(
+        Arc::new(Mutex::new(store)),
+        Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+    ));
     let incarnation = uuid::Uuid::now_v7();
     let (inbox, publication) = hub.owner_inbox(backend.session.clone(), NonZeroUsize::MIN);
     inbox.install_incarnation(None, incarnation)?;

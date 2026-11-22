@@ -41,7 +41,11 @@ async fn hub_runtime_with(behaviours: &[&str]) -> HubRuntime {
             .await
             .expect("store"),
     ));
-    let hub = Arc::new(collaboration_runtime::ProviderSessionEventHub::new(store));
+    let clock = Arc::new(router_clock::SystemRuntimeClock::new());
+    let hub = Arc::new(collaboration_runtime::ProviderSessionEventHub::new(
+        store,
+        clock.clone(),
+    ));
     let hub_target: message_board::SessionRef = serde_json::from_value(serde_json::json!({
         "endpoint": {
             "serviceId": "0ff962c5-7fa3-4c18-a5ca-1bbe8db09e89",
@@ -64,7 +68,7 @@ async fn hub_runtime_with(behaviours: &[&str]) -> HubRuntime {
         Arc::clone(&hub),
         hub_target.endpoint.clone(),
         Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        clock,
     )
     .await
     .expect("fixture provider");

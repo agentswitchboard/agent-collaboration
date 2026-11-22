@@ -39,7 +39,7 @@ impl FailureRoute {
                 .await
                 .expect("fixture store"),
         ));
-        let hub = Arc::new(ProviderSessionEventHub::new(store.clone()));
+        let hub = Arc::new(ProviderSessionEventHub::new(store.clone(), clock.clone()));
         let target = protocol_target("saved-session");
         let binding = provider_binding(&target);
         let actor = ProviderIdentity::Session(target.clone())

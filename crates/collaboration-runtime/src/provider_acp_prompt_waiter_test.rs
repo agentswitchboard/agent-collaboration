@@ -88,8 +88,10 @@ async fn busy_prompt_rebase_reply_with_history(
     // The retained-terminal case loses the marker to receiver lag. The other
     // case receives the marker from its original attachment.
     let subscriber_capacity = if retained.is_some() { 1 } else { 256 };
+    let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
     let hub = Arc::new(ProviderSessionEventHub::with_capacity(
         Arc::new(tokio::sync::Mutex::new(store)),
+        clock.clone(),
         subscriber_capacity,
     ));
     let session: SessionRef = serde_json::from_value(json!({
@@ -132,13 +134,12 @@ async fn busy_prompt_rebase_reply_with_history(
         .get(&session)
         .expect("connection observer")
         .clone();
-    let clock = ManualClock::new(chrono::DateTime::UNIX_EPOCH);
     let mut waiter = std::pin::pin!(stream_prompt(PromptEventStream {
         output,
         id: json!(4),
         turn_id: TURN.to_owned(),
         events: hub.as_ref(),
-        clock: &clock,
+        clock: clock.as_ref(),
         session: session.clone(),
         attachment,
         observed,

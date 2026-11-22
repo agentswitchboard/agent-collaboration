@@ -276,8 +276,10 @@ async fn router_queue_drains_provider_prompts_in_fifo_order() {
         .await
         .expect("operation store opens");
     let store = Arc::new(Mutex::new(store));
+    let clock = Arc::new(router_clock::SystemRuntimeClock::new());
     let hub = Arc::new(collaboration_runtime::ProviderSessionEventHub::new(
         Arc::clone(&store),
+        clock.clone(),
     ));
     let hub_endpoint: message_board::SessionEndpointRef =
         serde_json::from_value(serde_json::to_value(endpoint()).expect("endpoint JSON"))
@@ -290,7 +292,7 @@ async fn router_queue_drains_provider_prompts_in_fifo_order() {
         Arc::clone(&hub),
         hub_endpoint,
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        clock,
     )
     .await
     .expect("fixture initializes");

@@ -168,9 +168,11 @@ impl RouteHarness {
             })
             .await
             .expect("inventory");
-        let hub = Arc::new(ProviderSessionEventHub::new(Arc::new(AsyncMutex::new(
-            store,
-        ))));
+        let clock = Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH));
+        let hub = Arc::new(ProviderSessionEventHub::new(
+            Arc::new(AsyncMutex::new(store)),
+            clock.clone(),
+        ));
         for event in [
             SessionEvent::CapabilitiesChanged {
                 capabilities: CapabilityReport::default(),
@@ -194,7 +196,7 @@ impl RouteHarness {
             session.endpoint.clone(),
             Arc::clone(&commands) as Arc<dyn SessionCommandPort>,
             Arc::clone(&hub) as Arc<dyn SessionEventHub>,
-            Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+            clock,
         );
         tokio::spawn(Box::new(route).run(
             router,

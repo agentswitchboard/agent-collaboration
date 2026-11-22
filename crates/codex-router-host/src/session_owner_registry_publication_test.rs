@@ -65,7 +65,10 @@ async fn a_refused_closed_batch_rebases_the_real_hub_without_another_owner_comma
     let shutdown = CancellationToken::new();
     let lane_worker = tokio::spawn(lane_task.run(shutdown.clone()));
 
-    let hub = Arc::new(ProviderSessionEventHub::new(fixture.store.clone()));
+    let hub = Arc::new(ProviderSessionEventHub::new(
+        fixture.store.clone(),
+        fixture.clock.clone(),
+    ));
     let (inbox, inbox_task) = hub.owner_inbox(board_session.clone(), NonZeroUsize::MIN);
     let address = session.owner.address;
     inbox

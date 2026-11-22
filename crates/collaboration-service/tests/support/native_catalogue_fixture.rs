@@ -75,7 +75,8 @@ impl CatalogueFixture {
                 resume: Default::default(),
             })
             .await?;
-        let hub = Arc::new(ProviderSessionEventHub::new(store.clone()));
+        let clock = Arc::new(router_clock::SystemRuntimeClock::new());
+        let hub = Arc::new(ProviderSessionEventHub::new(store.clone(), clock.clone()));
         hub.publish(
             serde_json::from_value(serde_json::to_value(&target)?)?,
             session_event_model::SessionEvent::TurnStarted {
@@ -86,6 +87,7 @@ impl CatalogueFixture {
         .await?;
         let identity = ApplicationFixture::new(SERVICE, EPOCH)?
             .with_endpoints(vec![description])?
+            .with_clock(clock)
             .with_provider_operation_store(store)
             .with_provider_session_hub(hub)
             .with_claude_code_sessions(Arc::new(ClaudeCodeSessionRegistry::new(peers.clone())))

@@ -57,7 +57,8 @@ async fn latest_observed_activity_moves_ahead_of_newer_stored_sessions_with_cons
             })
             .await?;
     }
-    let hub = Arc::new(ProviderSessionEventHub::new(store.clone()));
+    let clock = Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH));
+    let hub = Arc::new(ProviderSessionEventHub::new(store.clone(), clock.clone()));
     // Merely attaching must not invent activity for B.
     let _attachment = hub.attach(second.clone()).await?;
     let context = Arc::new(RouterSessionAppServerContext::new(
@@ -72,7 +73,8 @@ async fn latest_observed_activity_moves_ahead_of_newer_stored_sessions_with_cons
     assert_eq!(before["data"][0]["updatedAt"], 2);
 
     // Act: A has later activity despite its older durable settlement timestamp.
-    let earliest = chrono::Utc::now().timestamp();
+    let observed_at_seconds = 42;
+    clock.advance(std::time::Duration::from_secs(observed_at_seconds))?;
     for event in [
         SessionEvent::TurnStarted {
             turn_id: Uuid::now_v7().to_string(),
@@ -91,15 +93,10 @@ async fn latest_observed_activity_moves_ahead_of_newer_stored_sessions_with_cons
     ] {
         hub.publish(first.clone(), event).await?;
     }
-    let latest = chrono::Utc::now().timestamp();
     let after = list(context.clone(), Value::Null).await?;
     // Assert: rendered time and paging both use the hub's observation time.
     assert_eq!(after["data"][0]["id"], thread_alias(&first));
-    let observed = after["data"][0]["updatedAt"].as_i64().ok_or("updatedAt")?;
-    assert!(
-        (earliest..=latest).contains(&observed),
-        "activity time {observed}, expected {earliest}..={latest}"
-    );
+    assert_eq!(after["data"][0]["updatedAt"], observed_at_seconds);
     let next = list(context.clone(), after["nextCursor"].clone()).await?;
     assert_eq!(next["data"][0]["id"], thread_alias(&second));
     assert_eq!(next["data"][0]["updatedAt"], 2);
@@ -130,7 +127,7 @@ async fn latest_observed_activity_moves_ahead_of_newer_stored_sessions_with_cons
     );
 
     // A fresh hub has no observations and falls back to the original record times.
-    let reopened = Arc::new(ProviderSessionEventHub::new(store));
+    let reopened = Arc::new(ProviderSessionEventHub::new(store, clock));
     let reopened_context = Arc::new(RouterSessionAppServerContext::new(
         backend.endpoint.clone(),
         ScriptedSessionBackend::actor()?,

@@ -32,6 +32,13 @@ impl ApplicationFixture {
         self
     }
 
+    #[must_use]
+    pub fn clock_for_fixture(&mut self) -> std::sync::Arc<dyn router_clock::RuntimeClock> {
+        self.clock
+            .get_or_insert_with(|| std::sync::Arc::new(router_clock::SystemRuntimeClock::new()))
+            .clone()
+    }
+
     pub fn with_installation_peer(
         mut self,
         peer: collaboration_protocol::InstallationPeerId,

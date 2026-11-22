@@ -116,7 +116,8 @@ async fn provider_inventory_control_reads_durable_rows_with_hub_state() {
         })
         .await
         .expect("record older session");
-    let hub = Arc::new(ProviderSessionEventHub::new(store.clone()));
+    let clock = Arc::new(router_clock::SystemRuntimeClock::new());
+    let hub = Arc::new(ProviderSessionEventHub::new(store.clone(), clock.clone()));
     let description: EndpointDescription = serde_json::from_value(json!({
         "endpoint":target.endpoint,"label":"Claude fixture",
         "availability":{"state":"available","observedAt":"2026-09-26T00:00:00Z"},
@@ -147,6 +148,7 @@ async fn provider_inventory_control_reads_durable_rows_with_hub_state() {
         .expect("identity")
         .with_endpoints(vec![description, cursor_description, no_channel])
         .expect("endpoint")
+        .with_clock(clock)
         .with_provider_operation_store(store)
         .with_provider_session_hub(hub.clone())
         .with_claude_code_sessions(Arc::new(ClaudeCodeSessionRegistry::new(registry_directory)));

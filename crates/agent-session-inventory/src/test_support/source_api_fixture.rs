@@ -158,10 +158,11 @@ impl SourceApiFixture {
                 })
                 .await
                 .unwrap();
+            let clock = identity.clock_for_fixture();
             identity = identity
                 .with_provider_operation_store(std::sync::Arc::clone(&store))
                 .with_provider_session_hub(std::sync::Arc::new(
-                    ProviderSessionEventHub::with_capacity(store, 16),
+                    ProviderSessionEventHub::with_capacity(store, clock, 16),
                 ));
             identity.endpoint_directory().publish(serde_json::from_value(serde_json::json!({
                 "endpoint":target.endpoint,"label":"Source provider","availability":{"state":"unprobed"},
