@@ -80,8 +80,10 @@ workspace_identifiers!(
     #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
     MachineId,
     /// One Router process run registered with central.
+    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
     RouterRunId,
     /// One approval request raised by a Router.
+    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
     ApprovalRequestId,
     /// The never-reused Central identity of one provider session incarnation.
     #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]

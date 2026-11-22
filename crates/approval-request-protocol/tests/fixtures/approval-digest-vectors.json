@@ -1,0 +1,59 @@
+[
+  {
+    "kind": "providerApproval",
+    "raise": {
+      "body": {
+        "kind": "providerApproval",
+        "requestId": "01934a50-1000-7000-8000-000000000001",
+        "holder": {
+          "sessionId": "01934a50-1000-7000-8000-000000000013",
+          "routerRun": "01934a50-1000-7000-8000-000000000002"
+        },
+        "offer": {
+          "title": "Review café",
+          "description": "Review\nquoted \"text\"",
+          "subject": null,
+          "options": [
+            {
+              "id": 1,
+              "label": "Allow once",
+              "effect": "allow",
+              "lasts": {
+                "kind": "thisRequest"
+              }
+            }
+          ]
+        }
+      },
+      "canonical": "{\"holder\":{\"routerRun\":\"01934a50-1000-7000-8000-000000000002\",\"sessionId\":\"01934a50-1000-7000-8000-000000000013\"},\"kind\":\"providerApproval\",\"offer\":{\"description\":\"Review\\nquoted \\\"text\\\"\",\"options\":[{\"effect\":\"allow\",\"id\":1,\"label\":\"Allow once\",\"lasts\":{\"kind\":\"thisRequest\"}}],\"subject\":null,\"title\":\"Review café\"},\"requestId\":\"01934a50-1000-7000-8000-000000000001\"}",
+      "digest": "-m866d6rWYipUBaKm2V0g6ctU1_duBNi_k44yd1CW18"
+    }
+  },
+  {
+    "kind": "providerQuestion",
+    "raise": {
+      "body": {
+        "kind": "providerQuestion",
+        "requestId": "01934a50-1000-7000-8000-000000000001",
+        "holder": {
+          "sessionId": "01934a50-1000-7000-8000-000000000014",
+          "routerRun": "01934a50-1000-7000-8000-000000000002"
+        },
+        "offer": {
+          "prompt": "Which distance?",
+          "fields": [
+            {
+              "kind": "number",
+              "fieldId": 1,
+              "label": "Metres",
+              "description": null,
+              "required": true
+            }
+          ]
+        }
+      },
+      "canonical": "{\"holder\":{\"routerRun\":\"01934a50-1000-7000-8000-000000000002\",\"sessionId\":\"01934a50-1000-7000-8000-000000000014\"},\"kind\":\"providerQuestion\",\"offer\":{\"fields\":[{\"description\":null,\"fieldId\":1,\"kind\":\"number\",\"label\":\"Metres\",\"required\":true}],\"prompt\":\"Which distance?\"},\"requestId\":\"01934a50-1000-7000-8000-000000000001\"}",
+      "digest": "268EIFaAguF5uPRHt_OqQig0cn-fDHmCKeBpo5Fm3W4"
+    }
+  }
+]
