@@ -27,6 +27,7 @@ dependencies = [
  "session-event-model",
  "state-machine-core",
  "switchboard-harness-contracts",
+ "switchboard-harness-shared-mechanics",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -5693,6 +5694,16 @@ name = "switchboard-harness-contracts"
 version = "0.1.158"
 dependencies = [
  "uuid",
+]
+
+[[package]]
+name = "switchboard-harness-shared-mechanics"
+version = "0.1.158"
+dependencies = [
+ "hegeltest",
+ "switchboard-harness-contracts",
+ "tokio",
+ "tokio-util",
 ]
 
 [[package]]
