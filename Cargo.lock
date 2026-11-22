@@ -2510,14 +2510,21 @@ dependencies = [
 name = "fleet-identity-protocol"
 version = "0.1.158"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "jsonschema",
  "message-board",
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
+ "sha2 0.10.9",
  "specta",
+ "specta-serde",
  "specta-typescript",
+ "thiserror 2.0.18",
+ "workspace-ids",
+ "zeroize",
 ]
 
 [[package]]

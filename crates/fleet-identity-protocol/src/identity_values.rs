@@ -54,7 +54,6 @@ identity_value!(
     RecordId
 );
 identity_value!(RemoteStartId, RecordId);
-identity_value!(IsolationInstanceId, RecordId);
 identity_value!(InstallationId, ServiceId);
 
 macro_rules! bounded_value {
@@ -85,21 +84,6 @@ macro_rules! bounded_value {
 bounded_value!(AbsolutePath, 4096, "^/[^\\u0000]*$", |value: &str| !value
     .contains('\0')
     && value.starts_with('/'));
-bounded_value!(RepositoryLocator, 2048, "^[^\\u0000]+$", |value: &str| {
-    !value.contains('\0')
-});
-bounded_value!(ModelName, 256, "^[^\\u0000]+$", |value: &str| !value
-    .contains('\0'));
-bounded_value!(
-    CommitId,
-    64,
-    "^(?:[0-9a-f]{40}|[0-9a-f]{64})$",
-    |value: &str| matches!(value.len(), 40 | 64)
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-);
-
 const MAXIMUM_WIRE_TIMESTAMP: i64 = 9_007_199_254_740_991;
 
 macro_rules! unix_wire_timestamp {
