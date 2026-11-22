@@ -14,7 +14,7 @@ function page(cursor: PageCursor, sequences: readonly bigint[], limited: boolean
     request: cursor,
     result: boundedObservationResultSchema.parse({
       target,
-      generation: {},
+      generation: { serviceEpoch: "e" },
       attached: true,
       epoch: 3n,
       continuationGap: true,
@@ -55,9 +55,9 @@ test("a multi-page baseline drains before input and continuation begins after it
     },
   });
   assert.deepEqual(cursors, [
-    { epoch: null, afterSequence: null },
-    { epoch: 3n, afterSequence: 2n },
-    { epoch: 3n, afterSequence: 3n },
+    { epoch: null, afterSequence: null, serviceEpoch: null },
+    { epoch: 3n, afterSequence: 2n, serviceEpoch: "e" },
+    { epoch: 3n, afterSequence: 3n, serviceEpoch: "e" },
   ]);
   assert.deepEqual(recorded, [0, 1, 2]);
   assert.equal(continued.baselineReads, 2);
@@ -139,7 +139,10 @@ test("a binding change cannot be hidden behind an unchanged hub epoch", async ()
       previous: baseline,
       readPage: async (cursor): Promise<ObservationRead> => {
         const result = page(cursor, [2n], false);
-        return { ...result, result: { ...result.result, generation: { changed: true } } };
+        return {
+          ...result,
+          result: { ...result.result, generation: { serviceEpoch: "e", changed: true } },
+        };
       },
       recordPage: (): void => {},
     }),

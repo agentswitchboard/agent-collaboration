@@ -1,3 +1,4 @@
+import { observationPositionArguments } from "../../mcp-control/transport/journey-requests.ts";
 // D1 step driver: node .../auto-mode/capture.ts PLAN.json [--check].
 // --check reads local declarations/source/signatures only; no socket or model input.
 // A run snapshots one already-owned Session, optionally sends exactly one declared prompt,
@@ -303,8 +304,7 @@ async function providerEventPages(input: {
           maxBytes: 1_048_576,
           maxEvents: 500,
           timeoutSeconds: 1,
-          ...(cursor.epoch === null ? {} : { epoch: cursor.epoch }),
-          ...(cursor.afterSequence === null ? {} : { afterSequence: cursor.afterSequence }),
+          ...observationPositionArguments(cursor),
         },
         { timeoutMs: Math.min(remaining, 11_000) },
       );

@@ -20,9 +20,21 @@ import {
   type SessionRef,
 } from "./observation-models.ts";
 
-/** One `events_observe` call: the cursor it sent, its result and its streamed notifications. */
+export interface ObservationPosition {
+  readonly epoch: bigint | null;
+  readonly afterSequence: bigint | null;
+  readonly serviceEpoch: string | null;
+}
+
+export const initialObservationPosition: ObservationPosition = {
+  epoch: null,
+  afterSequence: null,
+  serviceEpoch: null,
+};
+
+/** One bounded call and its actual notification prefix. */
 export interface ObservationRead {
-  readonly request: { readonly epoch: bigint | null; readonly afterSequence: bigint | null };
+  readonly request: ObservationPosition;
   readonly result: BoundedObservationResult;
   readonly notifications: readonly ObservationNotification[];
 }
@@ -37,6 +49,7 @@ export type ObservationLedger =
       readonly kind: "continuous";
       readonly epoch: bigint;
       readonly lastSequence: bigint | null;
+      readonly serviceEpoch: string;
       /** The baseline's last sequence; null when the baseline held no numbered event. */
       readonly baselineSequence: bigint | null;
       /** The baseline's own numbered events, such as history a reattach replayed. */
@@ -55,6 +68,7 @@ export type ObservationLedger =
 
 interface Fold {
   epoch: bigint | null;
+  serviceEpoch: string | null;
   last: bigint | null;
   baselineSequence: bigint | null;
   baselineEvents: NumberedEvent[];
@@ -77,6 +91,7 @@ export function foldObservationReads(
   if (reads.length === 0) return { kind: "rejected", read: 0, reason: "no baseline read" };
   const fold: Fold = {
     epoch: null,
+    serviceEpoch: null,
     last: null,
     baselineSequence: null,
     baselineEvents: [],
@@ -96,12 +111,13 @@ export function foldObservationReads(
       fold.tooLarge = [];
     }
   }
-  if (fold.epoch === null)
+  if (fold.epoch === null || fold.serviceEpoch === null)
     return { kind: "rejected", read: 0, reason: "a provider observation reported no epoch" };
   return {
     kind: "continuous",
     epoch: fold.epoch,
     lastSequence: fold.last,
+    serviceEpoch: fold.serviceEpoch,
     baselineSequence: fold.baselineSequence,
     baselineEvents: fold.baselineEvents,
     baselineTooLarge: fold.baselineTooLarge,
@@ -127,23 +143,36 @@ function foldRead(
   if (fold.disconnected) return rejected(index, "a read continued after the backend disconnected");
   const expectedCursor =
     index === 0
-      ? { epoch: null, afterSequence: null }
-      : { epoch: fold.epoch, afterSequence: fold.last };
+      ? initialObservationPosition
+      : {
+          epoch: fold.epoch,
+          afterSequence: fold.last,
+          serviceEpoch: fold.last === null ? null : fold.serviceEpoch,
+        };
   if (
     request.epoch !== expectedCursor.epoch ||
-    request.afterSequence !== expectedCursor.afterSequence
+    request.afterSequence !== expectedCursor.afterSequence ||
+    request.serviceEpoch !== expectedCursor.serviceEpoch
   )
     return rejected(index, "the request did not continue from the last observed cursor");
   if (result.epoch === null || result.epoch === undefined)
     return rejected(index, "a provider observation reported no epoch");
-  if (fold.epoch !== null && result.epoch !== fold.epoch) {
-    return result.endReason === "resyncRequired" && isOnlyBareResync(result)
-      ? { kind: "resyncRequired", read: index }
-      : rejected(index, "the epoch changed without a resync marker");
-  }
-  fold.epoch = result.epoch;
   const notified = checkNotifications(read, result.epoch);
   if (notified !== null) return rejected(index, notified);
+  const changedRun =
+    fold.serviceEpoch !== null && result.generation.serviceEpoch !== fold.serviceEpoch;
+  if (changedRun || (fold.epoch !== null && result.epoch !== fold.epoch)) {
+    return result.endReason === "resyncRequired" && isOnlyBareResync(result)
+      ? { kind: "resyncRequired", read: index }
+      : rejected(
+          index,
+          changedRun
+            ? "the Host run changed without an admission refusal"
+            : "the epoch changed without a resync marker",
+        );
+  }
+  fold.epoch = result.epoch;
+  fold.serviceEpoch = result.generation.serviceEpoch;
   let receivedCut = false;
   for (const [position, event] of result.events.entries()) {
     if ("kind" in event && event.kind === "snapshotEnd") {

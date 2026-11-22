@@ -2,6 +2,8 @@
 // have no epoch/cursor and are deliberately outside this provider-only path.
 import {
   foldObservationReads,
+  initialObservationPosition,
+  type ObservationPosition,
   type ObservationRead,
   type ObservationLedger,
 } from "../../mcp-control/observations/observation-ledger.ts";
@@ -9,10 +11,7 @@ import type { SessionRef } from "../../mcp-control/observations/observation-mode
 import { isDeepStrictEqual } from "node:util";
 
 type ContinuousLedger = Extract<ObservationLedger, { readonly kind: "continuous" }>;
-export interface PageCursor {
-  readonly epoch: bigint | null;
-  readonly afterSequence: bigint | null;
-}
+export type PageCursor = ObservationPosition;
 export interface ProviderPages {
   readonly reads: readonly ObservationRead[];
   readonly baselineReads: number;
@@ -48,6 +47,7 @@ function cursorAfter(ledger: ContinuousLedger): PageCursor {
   return {
     epoch: ledger.epoch,
     afterSequence: ledger.lastSequence,
+    serviceEpoch: ledger.lastSequence === null ? null : ledger.serviceEpoch,
   };
 }
 
@@ -69,7 +69,7 @@ export async function captureProviderPages(input: {
       ? null
       : requireCompleteLedger(input.target, reads, input.previous.baselineReads);
   for (let page = 0; page < maxPages; page += 1) {
-    const cursor = ledger === null ? { epoch: null, afterSequence: null } : cursorAfter(ledger);
+    const cursor = ledger === null ? initialObservationPosition : cursorAfter(ledger);
     const read = await input.readPage(cursor);
     reads.push(read);
     // Preserve even a rejected page before evaluating it; no mutation is retried.

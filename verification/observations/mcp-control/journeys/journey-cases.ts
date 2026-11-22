@@ -1,3 +1,4 @@
+import { initialObservationPosition } from "../observations/observation-ledger.ts";
 // The lifecycle cases, each on its own fresh Session so the G2 isolation rule holds: a real
 // baseline, exactly one known prompt operation, then the oracle. Stored roles and operation sets
 // come from the owning store; replies, cursors and terminal facts from the actual MCP results.
@@ -193,7 +194,7 @@ export function baseline(
   step: string,
   target: SessionRef,
 ): Promise<ObservationRead> {
-  return observe(inputs.context, step, target, { epoch: null, afterSequence: null }, 1);
+  return observe(inputs.context, step, target, initialObservationPosition, 1);
 }
 
 /** The peer's rows for this Session, read now; null for a real provider, which keeps none. */

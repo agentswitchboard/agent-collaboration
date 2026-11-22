@@ -1,3 +1,7 @@
+import {
+  initialObservationPosition,
+  type ObservationPosition,
+} from "../observations/observation-ledger.ts";
 // The recorded MCP exchanges the cases are built from. Every call's arguments and raw outcome
 // are appended to `exchanges.jsonl` before anything is decided from them, so a verdict can be
 // rechecked from evidence. No step retries a mutation: an unconfirmed outcome is recorded and
@@ -71,7 +75,7 @@ export async function observe(
   context: JourneyContext,
   step: string,
   target: SessionRef,
-  cursor: { readonly epoch: bigint | null; readonly afterSequence: bigint | null },
+  cursor: ObservationPosition,
   timeoutSeconds: number,
 ): Promise<ObservationRead> {
   const outcome = await callTool(
@@ -99,11 +103,15 @@ export function nextCursor(
   target: SessionRef,
   reads: readonly ObservationRead[],
   baselineReads = 1,
-): { readonly epoch: bigint; readonly afterSequence: bigint | null } {
+): ObservationPosition {
   const ledger = foldObservationReads(target, reads, baselineReads);
   if (ledger.kind !== "continuous")
     throw new Error(`observation is ${ledger.kind}; it cannot be continued`);
-  return { epoch: ledger.epoch, afterSequence: ledger.lastSequence };
+  return {
+    epoch: ledger.epoch,
+    afterSequence: ledger.lastSequence,
+    serviceEpoch: ledger.lastSequence === null ? null : ledger.serviceEpoch,
+  };
 }
 
 /** Continues from `reads` until the post-baseline history holds `turns` ended turns. */
@@ -147,9 +155,7 @@ export async function observeReplayBaseline(
   step: string,
   target: SessionRef,
 ): Promise<ObservationRead[] | null> {
-  const reads = [
-    await observe(context, `${step}-0`, target, { epoch: null, afterSequence: null }, 1),
-  ];
+  const reads = [await observe(context, `${step}-0`, target, initialObservationPosition, 1)];
   for (let read = 1; read < REPLAY_BASELINE_READS; read += 1) {
     if (reads.at(-1)?.result.endReason !== "resultLimitReached") return reads;
     reads.push(

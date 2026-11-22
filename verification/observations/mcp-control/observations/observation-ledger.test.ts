@@ -23,10 +23,11 @@ function read(
     request: {
       epoch: after === null ? null : 4n,
       afterSequence: after === null ? null : BigInt(after),
+      serviceEpoch: after === null ? null : "e",
     },
     result: boundedObservationResultSchema.parse({
       target: TARGET,
-      generation: {},
+      generation: { serviceEpoch: "e" },
       attached: true,
       events: sequences.map(event),
       endReason: limited ? "resultLimitReached" : "deadlineReached",
@@ -96,5 +97,45 @@ test("a quiet snapshot initializes the next position and its cursor must agree o
     foldObservationReads(TARGET, [{ ...quiet, notifications: [{ event: marker, cursor: null }] }])
       .kind,
     "rejected",
+  );
+});
+
+test("a matching stream epoch and overlapping sequences cannot splice two Host runs", () => {
+  const baseline = read(null, [1, 2], false);
+  const prior = {
+    ...baseline,
+    result: { ...baseline.result, generation: { serviceEpoch: "run-a" } },
+  };
+  const later = read(2, [3], false);
+  const guarded = {
+    ...later,
+    request: { ...later.request, serviceEpoch: "run-a" },
+    result: { ...later.result, generation: { serviceEpoch: "run-b" } },
+  };
+  assert.deepEqual(foldObservationReads(TARGET, [prior, guarded]), {
+    kind: "rejected",
+    read: 1,
+    reason: "the Host run changed without an admission refusal",
+  });
+  const gap = { kind: "resyncRequired" } as const;
+  const refusal = {
+    ...guarded,
+    result: { ...guarded.result, endReason: "resyncRequired" as const, events: [gap] },
+    notifications: [{ event: gap, cursor: null }],
+  };
+  assert.deepEqual(foldObservationReads(TARGET, [prior, refusal]), {
+    kind: "resyncRequired",
+    read: 1,
+  });
+  assert.deepEqual(
+    foldObservationReads(TARGET, [
+      prior,
+      {
+        ...refusal,
+        result: { ...refusal.result, epoch: 5n },
+        notifications: [{ event: gap, cursor: { epoch: 5n, afterSequence: 2n } }],
+      },
+    ]),
+    { kind: "rejected", read: 1, reason: "notification 0 carries the wrong cursor" },
   );
 });
