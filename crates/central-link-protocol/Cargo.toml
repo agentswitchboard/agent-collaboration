@@ -6,7 +6,11 @@ license.workspace = true
 publish = false
 autotests = false
 
+[features]
+test-support = []
+
 [dependencies]
+fleet-rpc.workspace = true
 schemars.workspace = true
 workspace-model.workspace = true
 workspace-ids.workspace = true

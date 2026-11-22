@@ -166,7 +166,7 @@ const PURE_CRATES: [(&str, &[&str]); 8] = [
     ),
     (
         "central-link-protocol",
-        &["workspace-ids", "workspace-model"],
+        &["fleet-rpc", "workspace-ids", "workspace-model"],
     ),
     ("central-storage", &[]),
     ("state-machine-core", &[]),

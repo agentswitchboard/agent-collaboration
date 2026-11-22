@@ -1,5 +1,8 @@
-use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::{future::Future, marker::PhantomData};
+use serde::{
+    Deserialize, Serialize,
+    de::{DeserializeOwned, Deserializer, MapAccess, Visitor, value::MapAccessDeserializer},
+};
+use std::{fmt, future::Future, marker::PhantomData};
 
 pub trait Rpc: Send + Sync {
     type Target: Serialize + DeserializeOwned + Clone + Eq + Send + Sync;
@@ -7,11 +10,49 @@ pub trait Rpc: Send + Sync {
     type Reply: Serialize + DeserializeOwned + Send;
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Envelope<Target, Body> {
     pub target: Target,
     pub body: Body,
+}
+
+impl<'de, Target: Deserialize<'de>, Body: Deserialize<'de>> Deserialize<'de>
+    for Envelope<Target, Body>
+{
+    fn deserialize<Input: Deserializer<'de>>(input: Input) -> Result<Self, Input::Error> {
+        struct NamedEnvelope<Target, Body>(PhantomData<(Target, Body)>);
+
+        impl<'de, Target: Deserialize<'de>, Body: Deserialize<'de>> Visitor<'de>
+            for NamedEnvelope<Target, Body>
+        {
+            type Value = Envelope<Target, Body>;
+
+            fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+                formatter.write_str("an RPC envelope with named target and body fields")
+            }
+
+            fn visit_map<Fields: MapAccess<'de>>(
+                self,
+                fields: Fields,
+            ) -> Result<Self::Value, Fields::Error> {
+                #[derive(Deserialize)]
+                #[serde(deny_unknown_fields)]
+                struct EnvelopeFields<Target, Body> {
+                    target: Target,
+                    body: Body,
+                }
+
+                let envelope = EnvelopeFields::deserialize(MapAccessDeserializer::new(fields))?;
+                Ok(Envelope {
+                    target: envelope.target,
+                    body: envelope.body,
+                })
+            }
+        }
+
+        input.deserialize_map(NamedEnvelope(PhantomData))
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

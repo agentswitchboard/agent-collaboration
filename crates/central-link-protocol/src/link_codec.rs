@@ -1,7 +1,9 @@
 use crate::{
-    CorrelationId, DeliveryMessage, LinkRequest, LinkRequestBatch, MachineTokenText, ProtocolError,
-    ReceiptBatch, ReceiptResult, ReplyPayload, RequestStatusAnswer, RequestStatusQuery, TimeLeft,
-    TokenRenewalResult,
+    CentralCall, CentralCallReply, CorrelationId, DeliveryMessage, LinkRequest, LinkRequestBatch,
+    MacCall, MacCallReply, MachineTokenText, ProtocolError, ReceiptBatch, ReceiptResult,
+    ReplyPayload, RequestStatusAnswer, RequestStatusQuery, TimeLeft, TokenRenewalResult,
+    TypedCallResult,
+    link_typed_calls::{named_map, unregistered_call},
 };
 use serde::{Deserialize, Serialize};
 use workspace_ids::MachineId;
@@ -69,6 +71,26 @@ pub enum DataFrame {
         correlation_id: CorrelationId,
         results: Vec<ReceiptResult>,
     },
+    CallCentral {
+        correlation_id: CorrelationId,
+        #[serde(deserialize_with = "named_map")]
+        request: Box<CentralCall>,
+    },
+    CentralCallReply {
+        correlation_id: CorrelationId,
+        #[serde(deserialize_with = "named_map")]
+        result: Box<TypedCallResult<CentralCallReply>>,
+    },
+    CallMac {
+        correlation_id: CorrelationId,
+        #[serde(deserialize_with = "named_map")]
+        request: Box<MacCall>,
+    },
+    MacCallReply {
+        correlation_id: CorrelationId,
+        #[serde(deserialize_with = "named_map")]
+        result: Box<TypedCallResult<MacCallReply>>,
+    },
     /// Router to central: a fresh machine token for the open connection.
     RenewMachineToken {
         correlation_id: CorrelationId,
@@ -87,12 +109,16 @@ impl LinkFrame {
             Self::Ping => direction == FrameDirection::ToCentral,
             Self::Pong => direction == FrameDirection::ToRouter,
             Self::Data(data) => match data {
-                DataFrame::Request { .. }
+                DataFrame::CallCentral { .. }
+                | DataFrame::MacCallReply { .. }
+                | DataFrame::Request { .. }
                 | DataFrame::Batch { .. }
                 | DataFrame::RequestStatus { .. }
                 | DataFrame::Receipts { .. }
                 | DataFrame::RenewMachineToken { .. } => direction == FrameDirection::ToCentral,
-                DataFrame::Welcome { .. }
+                DataFrame::CallMac { .. }
+                | DataFrame::CentralCallReply { .. }
+                | DataFrame::Welcome { .. }
                 | DataFrame::Reply { .. }
                 | DataFrame::RequestStatusReply { .. }
                 | DataFrame::Deliver { .. }
@@ -118,7 +144,21 @@ pub fn decode_text(text: &str, direction: FrameDirection) -> Result<LinkFrame, P
     let frame = match text {
         "ping" => LinkFrame::Ping,
         "pong" => LinkFrame::Pong,
-        _ => LinkFrame::Data(serde_json::from_str(text)?),
+        _ => {
+            let mut parser = serde_json::Deserializer::from_str(text);
+            let data = match named_map(&mut parser) {
+                Ok(data) => data,
+                Err(error) => match unregistered_call(text) {
+                    Some((call_direction, correlation_id)) if call_direction == direction => {
+                        return Err(ProtocolError::UnknownTypedCall { correlation_id });
+                    }
+                    Some(_) => return Err(ProtocolError::WrongDirection),
+                    None => return Err(error.into()),
+                },
+            };
+            parser.end()?;
+            LinkFrame::Data(data)
+        }
     };
     frame.check_direction(direction)?;
     Ok(frame)

@@ -4,9 +4,18 @@ mod link_codec;
 mod link_delivery;
 mod link_renewal;
 mod link_request;
+mod link_typed_calls;
 mod request_status;
+mod typed_call_correlations;
 
+#[cfg(any(test, feature = "test-support"))]
+pub use link_typed_calls::test_calls;
+pub use link_typed_calls::{
+    CentralCall, CentralCallReply, CentralLinkRpc, LinkCallRefusal, MacCall, MacCallReply,
+    MacLinkRpc, TypedCallResult,
+};
 pub use request_status::{RequestRefusal, RequestStatusAnswer, RequestStatusQuery};
+pub use typed_call_correlations::TypedCallCorrelations;
 
 pub use link_close::MachineLinkCloseCode;
 pub use link_codec::{DataFrame, FrameDirection, LinkFrame, decode_text, encode_text};
@@ -36,4 +45,6 @@ pub enum ProtocolError {
     InvalidOffer,
     #[error("frame is not allowed in this direction")]
     WrongDirection,
+    #[error("unregistered typed link call")]
+    UnknownTypedCall { correlation_id: CorrelationId },
 }

@@ -844,6 +844,7 @@ dependencies = [
 name = "central-link-protocol"
 version = "0.1.158"
 dependencies = [
+ "fleet-rpc",
  "schemars 1.2.2",
  "serde",
  "serde_json",
@@ -2592,6 +2593,7 @@ dependencies = [
 name = "fleet-rpc"
 version = "0.1.158"
 dependencies = [
+ "schemars 1.2.2",
  "serde",
 ]
 
