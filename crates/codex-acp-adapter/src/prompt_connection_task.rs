@@ -61,25 +61,26 @@ pub async fn run_prompt_task(mut inputs: PromptTaskInputs) -> PromptTaskCompleti
             &inputs.params,
         );
         tokio::pin!(start);
-        tokio::select! {
-            biased;
-            _=inputs.retired.cancelled()=>return PromptTaskCompletion::default(),
-            command=inputs.commands.recv(),if commands_open=>{
-                let terminal=match command {
-                    Some(PromptCommand::Cancel)=>Some(cancelled_response(&inputs.request_id,"unknown")),
-                    None=>{
-                        commands_open=false;
-                        frontend_detached=true;
-                        inputs.commands.close();
-                        None
+        loop {
+            tokio::select! {
+                biased;
+                () = inputs.retired.cancelled() => return PromptTaskCompletion::default(),
+                command = inputs.commands.recv(), if commands_open => match command {
+                    Some(PromptCommand::Cancel) => return PromptTaskCompletion {
+                        cancellation_barrier: Some(crate::CancellationBarrier::UnknownTurn),
+                        binding: None,
+                        terminal: Some(cancelled_response(&inputs.request_id, "unknown")),
                     },
-                };
-                if commands_open || terminal.is_some() {
-                    return PromptTaskCompletion {cancellation_barrier:Some(crate::CancellationBarrier::UnknownTurn),binding:None,terminal};
-                }
-                start.await
-            },
-            result=&mut start=>result,
+                    None => {
+                        commands_open = false;
+                        frontend_detached = true;
+                        inputs.commands.close();
+                        #[cfg(feature = "test-support")]
+                        crate::test_support::binding_preservation::observe_prompt_detachment();
+                    },
+                },
+                result = &mut start => break result,
+            }
         }
     };
     let mut pending = match pending {
@@ -100,6 +101,10 @@ pub async fn run_prompt_task(mut inputs: PromptTaskInputs) -> PromptTaskCompleti
             };
         }
     };
+    #[cfg(feature = "test-support")]
+    if let Some(probe) = crate::test_support::binding_preservation::current() {
+        probe.prompt_started.cancel();
+    }
     loop {
         // A frontend detach leaves the in-flight native read intact. Once it
         // yields a refusal, the actor owns the write outside this select.
@@ -116,6 +121,8 @@ pub async fn run_prompt_task(mut inputs: PromptTaskInputs) -> PromptTaskCompleti
                             commands_open=false;
                             frontend_detached=true;
                             inputs.commands.close();
+                            #[cfg(feature = "test-support")]
+                            crate::test_support::binding_preservation::observe_prompt_detachment();
                         },
                     },
                     event=&mut next=>break NextStep::Event(event),

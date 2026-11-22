@@ -130,7 +130,7 @@ impl CodexAppServerDeliveryRoute {
             HeldBindingCheckout::Ready(mut binding) => {
                 let mut checkout = crate::unmaterialized_thread_holder::HeldBindingCleanup::new(
                     &self.holder,
-                    binding.session_id(),
+                    &binding,
                 );
                 if binding.generation() != &generation {
                     checkout.finish();

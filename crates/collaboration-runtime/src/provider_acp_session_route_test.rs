@@ -280,6 +280,7 @@ async fn session_new_asks_for_auto() -> Result<(), Box<dyn std::error::Error>> {
             actor: Some(acp_actor()?),
             client_profile: None,
             client_supports_elicitation_form: false,
+            frontend_close: Default::default(),
         },
     ));
 
@@ -371,6 +372,7 @@ impl BusyRouteHarness {
                 actor: Some(acp_actor()?),
                 client_profile: None,
                 client_supports_elicitation_form: false,
+                frontend_close: Default::default(),
             },
         ));
         let mut harness = Self {
