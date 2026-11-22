@@ -690,17 +690,17 @@ enum DeliveryReturnOrder {
 
 #[tokio::test(flavor = "current_thread")]
 async fn delivery_restore_cannot_make_a_retired_binding_shadow_its_successor() {
-    run_scenario(assert_retired_delivery_does_not_shadow_successor(
+    run_scenario(Box::pin(assert_retired_delivery_does_not_shadow_successor(
         DeliveryReturnOrder::BeforeSuccessor,
-    ))
+    )))
     .await;
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn retired_busy_delivery_cannot_shadow_its_successor() {
-    run_scenario(assert_retired_delivery_does_not_shadow_successor(
+    run_scenario(Box::pin(assert_retired_delivery_does_not_shadow_successor(
         DeliveryReturnOrder::DuringSuccessorResume,
-    ))
+    )))
     .await;
 }
 
