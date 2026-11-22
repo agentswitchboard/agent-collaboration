@@ -8,8 +8,6 @@ use fleet_runtime_ports::{
     workspace_decode_error::corrupt,
 };
 
-const READ_ATTEMPT_BY_SUBJECT_SQL: &str = "SELECT attempt_id,machine_kind,subject_key,state,failure_count,next_try_at,last_failure,last_failure_detail,first_failed_at,last_failed_at,retired_at,created_at,updated_at FROM engine_work_attempts WHERE machine_kind=? AND subject_key=?";
-
 /// The literal predicate belongs to the adapter that owns the subject. No UPDATE
 /// of the subject is used as a guard: that would retrigger its failed statement.
 #[macro_export]
@@ -26,19 +24,32 @@ macro_rules! guarded_attempt_upsert_sql {
     };
 }
 
-pub const UPSERT_CONTROL_ATTEMPT_SQL: &str = guarded_attempt_upsert_sql!("1");
+pub const UPSERT_CONTROL_ATTEMPT_SQL: &str = include_str!("../queries/upsert_control_attempt.sql");
 
 pub(crate) fn build_attempt_read_statement(subject: &EngineSubject) -> Statement {
+    let kind = subject.kind.0;
+    let key = subject.key.0.as_str();
+    #[cfg(test)]
+    let _ = sqlx::query_file_as!(
+        super::attempt_records::FullAttemptProjection,
+        "src/queries/read_full_attempt_by_subject.sql",
+        kind,
+        key
+    );
     Statement {
-        sql: READ_ATTEMPT_BY_SUBJECT_SQL,
-        args: vec![text(subject.kind.0), text(&subject.key.0)],
+        sql: include_str!("../queries/read_full_attempt_by_subject.sql"),
+        args: vec![text(kind), text(key)],
     }
 }
 
 pub fn plan_attempt_delete(subject: &EngineSubject) -> GuardedStatement {
+    let kind = subject.kind.0;
+    let key = subject.key.0.as_str();
+    #[cfg(test)]
+    let _ = sqlx::query_file!("src/queries/delete_attempt_by_subject.sql", kind, key);
     any(
-        "DELETE FROM engine_work_attempts WHERE machine_kind=? AND subject_key=?",
-        vec![text(subject.kind.0), text(&subject.key.0)],
+        include_str!("../queries/delete_attempt_by_subject.sql"),
+        vec![text(kind), text(key)],
     )
 }
 
@@ -49,11 +60,25 @@ pub fn plan_observed_attempt_delete(
     subject: &EngineSubject,
     observed: &AttemptGuard,
 ) -> GuardedStatement {
+    let kind = subject.kind.0;
+    let key = subject.key.0.as_str();
+    // Guard cells retain their storage class even when the observed row is corrupt.
+    #[cfg(test)]
+    let _ = sqlx::query_file!(
+        "src/queries/delete_observed_attempt.sql",
+        kind,
+        key,
+        None::<String>,
+        None::<String>,
+        None::<i64>,
+        None::<String>,
+        None::<String>
+    );
     any(
-        "DELETE FROM engine_work_attempts WHERE machine_kind=? AND subject_key=? AND attempt_id IS ? AND state IS ? AND failure_count IS ? AND last_failure IS ? AND updated_at IS ?",
+        include_str!("../queries/delete_observed_attempt.sql"),
         vec![
-            text(subject.kind.0),
-            text(&subject.key.0),
+            text(kind),
+            text(key),
             observed.attempt_id.clone(),
             observed.state.clone(),
             observed.failure_count.clone(),
@@ -122,6 +147,29 @@ pub(crate) fn plan_guarded_attempt_upsert(
             SqlValue::Null,
         ]),
     }
+    #[cfg(test)]
+    let _ = sqlx::query_file!(
+        "src/queries/upsert_control_attempt.sql",
+        record.attempt_id.to_string(),
+        subject.kind.0,
+        &subject.key.0,
+        state,
+        i64::from(record.failure_count.get()),
+        None::<String>,
+        record.last_failure.storage_tag(),
+        encode_attempt_failure_detail(&record.last_failure),
+        format_utc_millis(record.first_failed_at),
+        format_utc_millis(record.last_failed_at),
+        None::<String>,
+        format_utc_millis(record.created_at),
+        format_utc_millis(record.updated_at),
+        i64::from(prior.is_some()),
+        None::<String>,
+        None::<String>,
+        None::<i64>,
+        None::<String>,
+        None::<String>
+    );
     args.extend(subject_version);
     Ok(exact(sql, args))
 }

@@ -1,0 +1,59 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT machine_kind,SUM(CASE WHEN state='failing' THEN 1 ELSE 0 END) AS failing,SUM(CASE WHEN state='retired' THEN 1 ELSE 0 END) AS retired,MIN(first_failed_at) AS oldest,(SELECT b.last_failure FROM engine_work_attempts b WHERE b.machine_kind=a.machine_kind ORDER BY b.last_failed_at DESC,b.attempt_id DESC LIMIT 1) AS last_failure FROM engine_work_attempts a GROUP BY machine_kind\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "machine_kind",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "engine_work_attempts",
+            "name": "machine_kind"
+          }
+        }
+      },
+      {
+        "name": "failing",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "retired",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "oldest",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "last_failure",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "engine_work_attempts",
+            "name": "last_failure"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "d88f3e3b8c01b67f0553352c54e35ef1ac711bbf6104a854bddd2d8c1aa5b795"
+}

@@ -215,6 +215,13 @@ pub(crate) fn decode_attempt_with_guard(
         [row] => row,
         _ => return Err(corrupt("engine_work_attempts.subject")),
     };
+    decode_observed_attempt_row(query_result, column_values).map(Some)
+}
+
+pub(super) fn decode_observed_attempt_row(
+    query_result: &ReadOutcome,
+    column_values: &[SqlValue],
+) -> Result<StoredAttempt, StoreFailure> {
     let get = |name| column(query_result, column_values, name).cloned();
     let observed_attempt_guard = AttemptGuard {
         attempt_id: get("attempt_id")?,
@@ -223,14 +230,14 @@ pub(crate) fn decode_attempt_with_guard(
         last_failure: get("last_failure")?,
         updated_at: get("updated_at")?,
     };
-    Ok(Some(StoredAttempt {
+    Ok(StoredAttempt {
         observed_attempt_guard,
         decoded_failure_record: AttemptRow {
             query_result,
             column_values,
         }
         .decode_attempt_record(),
-    }))
+    })
 }
 
 pub(crate) fn encode_attempt_failure_detail(failure: &ItemFailureClass) -> Option<String> {
@@ -252,6 +259,29 @@ pub(crate) fn encode_attempt_failure_detail(failure: &ItemFailureClass) -> Optio
         ItemFailureClass::Refused { refusal } => Some(refusal.clone()),
         ItemFailureClass::StatementRejected | ItemFailureClass::OtherStoreUnavailable => None,
     }
+}
+
+/// Schema shape for the full attempt reads. The owning batch decoder preserves
+/// the original cells of a corrupt row so the Engine can guard its repair.
+#[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "SQLx checks the projected columns and their types"
+)]
+pub(super) struct FullAttemptProjection {
+    pub(super) attempt_id: Option<String>,
+    pub(super) machine_kind: String,
+    pub(super) subject_key: String,
+    pub(super) state: String,
+    pub(super) failure_count: i64,
+    pub(super) next_try_at: Option<String>,
+    pub(super) last_failure: String,
+    pub(super) last_failure_detail: Option<String>,
+    pub(super) first_failed_at: String,
+    pub(super) last_failed_at: String,
+    pub(super) retired_at: Option<String>,
+    pub(super) created_at: String,
+    pub(super) updated_at: String,
 }
 
 #[cfg(test)]

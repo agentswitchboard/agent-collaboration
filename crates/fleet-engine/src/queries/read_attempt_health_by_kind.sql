@@ -1,0 +1,1 @@
+SELECT machine_kind,SUM(CASE WHEN state='failing' THEN 1 ELSE 0 END) AS failing,SUM(CASE WHEN state='retired' THEN 1 ELSE 0 END) AS retired,MIN(first_failed_at) AS oldest,(SELECT b.last_failure FROM engine_work_attempts b WHERE b.machine_kind=a.machine_kind ORDER BY b.last_failed_at DESC,b.attempt_id DESC LIMIT 1) AS last_failure FROM engine_work_attempts a GROUP BY machine_kind

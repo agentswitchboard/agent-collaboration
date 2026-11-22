@@ -1,7 +1,9 @@
 //! Attempt-only administration and host-bound discard.
+#[cfg(test)]
+use super::attempt_records::FullAttemptProjection;
 use super::{
     admin_failure_class::EngineFailureClass,
-    attempt_records::decode_attempt_with_guard,
+    attempt_records::decode_observed_attempt_row,
     engine_host_binding::{EngineHost, FleetEngine},
     event_source_policy::{EventExecutionPolicy, EventSource, ReceiptStatements},
     machine_event_execution::MachineEventOutcome,
@@ -96,10 +98,6 @@ impl<Host: EngineHost, SubjectMachine: Machine> MachineStoreAdapter<SubjectMachi
     }
 }
 
-const READ_ATTEMPT_BY_ID_SQL: &str = "SELECT attempt_id,machine_kind,subject_key,state,failure_count,next_try_at,last_failure,last_failure_detail,first_failed_at,last_failed_at,retired_at,created_at,updated_at FROM engine_work_attempts WHERE attempt_id=?";
-const READ_RETIRED_ATTEMPT_PAGE_SQL: &str = "SELECT attempt_id,machine_kind,subject_key,state,failure_count,next_try_at,last_failure,last_failure_detail,first_failed_at,last_failed_at,retired_at,created_at,updated_at FROM engine_work_attempts WHERE state='retired' AND (?1 IS NULL OR attempt_id>?1) ORDER BY attempt_id LIMIT ?2";
-const READ_ATTEMPT_HEALTH_BY_KIND_SQL: &str = "SELECT machine_kind,SUM(CASE WHEN state='failing' THEN 1 ELSE 0 END) AS failing,SUM(CASE WHEN state='retired' THEN 1 ELSE 0 END) AS retired,MIN(first_failed_at) AS oldest,(SELECT b.last_failure FROM engine_work_attempts b WHERE b.machine_kind=a.machine_kind ORDER BY b.last_failed_at DESC,b.attempt_id DESC LIMIT 1) AS last_failure FROM engine_work_attempts a GROUP BY machine_kind";
-
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct MachineKindAttemptHealth<AdminMachineKind> {
     pub machine_kind: AdminMachineKind,
@@ -166,6 +164,16 @@ fn decode_attempt_failure_class(tag: &str) -> Result<EngineFailureClass, StoreFa
         _ => return Err(corrupt("engine_work_attempts.last_failure")),
     })
 }
+fn read_machine_kind_tag<'rows>(
+    rows: &'rows ReadOutcome,
+    row: &'rows [SqlValue],
+) -> Result<&'rows str, StoreFailure> {
+    match read_result_column(rows, row, "machine_kind")? {
+        SqlValue::Text(kind) => Ok(kind),
+        _ => Err(corrupt("engine_work_attempts.machine_kind")),
+    }
+}
+
 fn read_unsigned_attempt_count(
     rows: &ReadOutcome,
     row: &[SqlValue],
@@ -187,19 +195,14 @@ fn read_nullable_text_column(
         _ => Err(corrupt(name)),
     }
 }
-fn copy_single_row_outcome(rows: &ReadOutcome, row: &[SqlValue]) -> ReadOutcome {
-    ReadOutcome {
-        columns: rows.columns.clone(),
-        rows: vec![row.to_vec()],
-    }
-}
 /// The guarded delete that retry and discard both commit: only a still-retired
 /// record with this id goes, so a concurrent second change finds nothing.
 fn plan_retired_attempt_delete(attempt_id: uuid::Uuid) -> GuardedStatement {
-    exact(
-        "DELETE FROM engine_work_attempts WHERE attempt_id=? AND state='retired'",
-        vec![text(attempt_id)],
-    )
+    let attempt_id = attempt_id.to_string();
+    const SQL: &str = include_str!("../queries/delete_retired_attempt.sql");
+    #[cfg(test)]
+    let _ = sqlx::query_file!("src/queries/delete_retired_attempt.sql", &attempt_id);
+    exact(SQL, vec![SqlValue::Text(attempt_id)])
 }
 
 /// Discard's receipt statements are the caller's admission writes and answer
@@ -217,15 +220,79 @@ impl<SubjectMachine: Machine> EventSource<SubjectMachine> for DiscardEventSource
     }
 }
 
+fn plan_retired_attempt_page(
+    after: Option<String>,
+    read_limit: i64,
+) -> Result<Statement, StoreFailure> {
+    #[cfg(test)]
+    let _ = sqlx::query_file_as!(
+        FullAttemptProjection,
+        "src/queries/read_retired_attempt_page.sql",
+        &after,
+        read_limit
+    );
+    Ok(Statement {
+        sql: include_str!("../queries/read_retired_attempt_page.sql"),
+        args: vec![
+            after.map_or(SqlValue::Null, SqlValue::Text),
+            SqlValue::Integer(read_limit.try_into().map_err(|_| corrupt("limit"))?),
+        ],
+    })
+}
+
+#[cfg(test)]
+#[allow(
+    dead_code,
+    reason = "SQLx checks the storage shape of the health aggregate"
+)]
+struct AttemptHealthProjection {
+    machine_kind: Option<String>,
+    failing: Option<i64>,
+    retired: Option<i64>,
+    oldest: Option<String>,
+    last_failure: Option<String>,
+}
+
+struct DecodedAttemptHealth {
+    oldest_failure_at: Option<EngineTime>,
+    failing_attempt_count: u32,
+    retired_attempt_count: u32,
+    latest_failure_class: Option<EngineFailureClass>,
+}
+
+impl DecodedAttemptHealth {
+    fn read_visible_health(rows: &ReadOutcome, row: &[SqlValue]) -> Result<Self, StoreFailure> {
+        let oldest_failure_at = read_nullable_text_column(rows, row, "oldest")?
+            .map(|time| {
+                time.parse::<EngineTime>()
+                    .map_err(|_| corrupt("engine_work_attempts.first_failed_at"))
+            })
+            .transpose()?;
+        Ok(Self {
+            oldest_failure_at,
+            failing_attempt_count: read_unsigned_attempt_count(rows, row, "failing")?,
+            retired_attempt_count: read_unsigned_attempt_count(rows, row, "retired")?,
+            latest_failure_class: read_nullable_text_column(rows, row, "last_failure")?
+                .map(|tag| decode_attempt_failure_class(&tag))
+                .transpose()?,
+        })
+    }
+}
+
 impl<'host, Host: EngineHost> FleetEngine<'host, Host> {
     pub async fn read_engine_attempt_health<AdminMachineKind: Copy + Eq + Send + Sync>(
         &self,
         registry: &AdminMachineKindRegistry<'_, AdminMachineKind>,
     ) -> Result<EngineHealthFacts<AdminMachineKind>, StoreFailure> {
+        #[cfg(test)]
+        let _ = sqlx::query_file_as!(
+            AttemptHealthProjection,
+            "src/queries/read_attempt_health_by_kind.sql"
+        );
         let rows = self
             .central_store()
             .read(Statement {
-                sql: READ_ATTEMPT_HEALTH_BY_KIND_SQL,
+                sql: include_str!("../queries/read_attempt_health_by_kind.sql"),
                 args: vec![],
             })
             .await?;
@@ -241,31 +308,22 @@ impl<'host, Host: EngineHost> FleetEngine<'host, Host> {
             })
             .collect::<Vec<_>>();
         for row in &rows.rows {
-            let admin_kind = match read_result_column(&rows, row, "machine_kind")? {
-                SqlValue::Text(admin_kind) => decode_registered_admin_kind(admin_kind, registry)?,
-                _ => return Err(corrupt("engine_work_attempts.machine_kind")),
-            };
+            let machine_kind = read_machine_kind_tag(&rows, row)?;
+            let admin_kind = decode_registered_admin_kind(machine_kind, registry)?;
             let Some(admin_kind) = admin_kind else {
                 continue;
             };
-            let oldest_failure_at = read_nullable_text_column(&rows, row, "oldest")?
-                .map(|time| {
-                    time.parse::<EngineTime>()
-                        .map_err(|_| corrupt("engine_work_attempts.first_failed_at"))
-                })
-                .transpose()?;
+            let stored_health = DecodedAttemptHealth::read_visible_health(&rows, row)?;
             let entry = kinds
                 .iter_mut()
                 .find(|entry| entry.machine_kind == admin_kind)
                 .ok_or_else(|| corrupt("engine_work_attempts.machine_kind"))?;
             *entry = MachineKindAttemptHealth {
                 machine_kind: admin_kind,
-                failing_attempt_count: read_unsigned_attempt_count(&rows, row, "failing")?,
-                retired_attempt_count: read_unsigned_attempt_count(&rows, row, "retired")?,
-                oldest_first_failed_at: oldest_failure_at,
-                latest_failure_class: read_nullable_text_column(&rows, row, "last_failure")?
-                    .map(|tag| decode_attempt_failure_class(&tag))
-                    .transpose()?,
+                failing_attempt_count: stored_health.failing_attempt_count,
+                retired_attempt_count: stored_health.retired_attempt_count,
+                oldest_first_failed_at: stored_health.oldest_failure_at,
+                latest_failure_class: stored_health.latest_failure_class,
             };
         }
         let alarm = self.central_store().published_alarm().await?;
@@ -294,22 +352,14 @@ impl<'host, Host: EngineHost> FleetEngine<'host, Host> {
     > {
         let rows = self
             .central_store()
-            .read(Statement {
-                sql: READ_RETIRED_ATTEMPT_PAGE_SQL,
-                args: vec![
-                    after.map_or(SqlValue::Null, text),
-                    SqlValue::Integer(
-                        (i64::from(limit) + 1)
-                            .try_into()
-                            .map_err(|_| corrupt("limit"))?,
-                    ),
-                ],
-            })
+            .read(plan_retired_attempt_page(
+                after.map(|cursor| cursor.to_string()),
+                i64::from(limit) + 1,
+            )?)
             .await?;
         let mut items = Vec::new();
         for row in &rows.rows {
-            let stored = decode_attempt_with_guard(&copy_single_row_outcome(&rows, row))?
-                .ok_or_else(|| corrupt("engine_work_attempts.attempt_id"))?;
+            let stored = decode_observed_attempt_row(&rows, row)?;
             let record = stored
                 .decoded_failure_record
                 .map_err(|corruption| corrupt(&corruption.column_path))?;
@@ -351,11 +401,18 @@ impl<'host, Host: EngineHost> FleetEngine<'host, Host> {
         registry: &AdminMachineKindRegistry<'_, AdminMachineKind>,
         attempt_id: uuid::Uuid,
     ) -> Result<Result<(AdminMachineKind, String, InstanceKey), AttemptRefusal>, StoreFailure> {
+        let attempt_id = attempt_id.to_string();
+        #[cfg(test)]
+        let _ = sqlx::query_file_as!(
+            FullAttemptProjection,
+            "src/queries/read_admin_attempt_by_id.sql",
+            &attempt_id
+        );
         let rows = self
             .central_store()
             .read(Statement {
-                sql: READ_ATTEMPT_BY_ID_SQL,
-                args: vec![text(attempt_id)],
+                sql: include_str!("../queries/read_admin_attempt_by_id.sql"),
+                args: vec![SqlValue::Text(attempt_id)],
             })
             .await?;
         let Some(row) = rows.rows.first() else {
@@ -372,8 +429,7 @@ impl<'host, Host: EngineHost> FleetEngine<'host, Host> {
             SqlValue::Text(subject_key) => subject_key.clone(),
             _ => return Err(corrupt("engine_work_attempts.subject_key")),
         };
-        let stored = decode_attempt_with_guard(&copy_single_row_outcome(&rows, row))?
-            .ok_or_else(|| corrupt("engine_work_attempts.attempt_id"))?;
+        let stored = decode_observed_attempt_row(&rows, row)?;
         match &stored.decoded_failure_record {
             Ok(record) if matches!(record.state, AttemptState::Retired { .. }) => Ok(Ok((
                 admin_kind,
@@ -532,3 +588,7 @@ fn map_subject_discard_outcome<State, Error>(
         MachineEventOutcome::StorageFailed(failure) => Err(failure),
     }
 }
+
+#[cfg(test)]
+#[path = "attempt_administration_test.rs"]
+mod tests;
