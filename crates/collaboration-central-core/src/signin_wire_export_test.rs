@@ -6,6 +6,7 @@ use crate::identity_contract::{
 };
 use crate::organization_admin_contract::{
     ListWorkspacesResult, MachineEnrollmentRevocationResult, OrganizationAdminResult,
+    OrganizationChangeRecord,
 };
 use crate::person_request::{
     AdminOperation, AdminRoute, CreateWorkspaceRequest, ListWorkspacesRequest,
@@ -20,7 +21,6 @@ use fleet_identity_protocol::{EnrollmentId, OrganizationId, UnixMillis, UnixSeco
 use fleet_signin::{
     machine_token::{MachineAccessTokenClaims, MachineAccessTokenHeader},
     organization_authority::{OrganizationStampClaims, OrganizationStampHeader},
-    organization_change::OrganizationChangeRecord,
 };
 use message_board::MachineLabel;
 use serde_json::{Value, json};
@@ -66,14 +66,22 @@ struct WireRoot {
     name: &'static str,
     register: fn(Types) -> Types,
     specimens: fn(&str) -> Vec<WireSpecimen>,
+    central_reads_only: bool,
 }
 
 macro_rules! wire_root {
+    (read_only $wire:ident, $specimens:expr) => {
+        WireRoot {
+            central_reads_only: true,
+            ..wire_root!($wire, $specimens)
+        }
+    };
     ($wire:ident, $specimens:expr) => {
         WireRoot {
             name: stringify!($wire),
             register: |types| types.register::<$wire>(),
             specimens: $specimens,
+            central_reads_only: false,
         }
     };
 }
@@ -90,7 +98,7 @@ const SIGNIN_ROOTS: &[WireRoot] = &[
     wire_root!(MachineTokenRefusal, core_reply),
     wire_root!(PresentedMachine, core_request),
     wire_root!(MachinePrincipal, core_request),
-    wire_root!(MachineTokenClaims, core_request),
+    wire_root!(read_only MachineTokenClaims, core_request),
     wire_root!(CreateWorkspaceRequest, core_request),
     wire_root!(WorkspaceLookupRequest, core_request),
     wire_root!(ListWorkspacesRequest, core_request),
@@ -118,14 +126,14 @@ const SIGNIN_ROOTS: &[WireRoot] = &[
     wire_root!(UnixSeconds, identity_specimens),
     wire_root!(UnixMillis, identity_specimens),
     wire_root!(OrganizationAdminIntent, admin_intent_specimens),
-    wire_root!(PersonTokenHeader, checked_signed_specimens),
-    wire_root!(PersonClaims, checked_signed_specimens),
-    wire_root!(ProofHeader, checked_signed_specimens),
-    wire_root!(ProofClaims, checked_signed_specimens),
-    wire_root!(OrganizationStampHeader, checked_signed_specimens),
-    wire_root!(OrganizationStampClaims, checked_signed_specimens),
-    wire_root!(MachineAccessTokenHeader, checked_signed_specimens),
-    wire_root!(MachineAccessTokenClaims, checked_signed_specimens),
+    wire_root!(read_only PersonTokenHeader, checked_signed_specimens),
+    wire_root!(read_only PersonClaims, checked_signed_specimens),
+    wire_root!(read_only ProofHeader, checked_signed_specimens),
+    wire_root!(read_only ProofClaims, checked_signed_specimens),
+    wire_root!(read_only OrganizationStampHeader, checked_signed_specimens),
+    wire_root!(read_only OrganizationStampClaims, checked_signed_specimens),
+    wire_root!(read_only MachineAccessTokenHeader, checked_signed_specimens),
+    wire_root!(read_only MachineAccessTokenClaims, checked_signed_specimens),
 ];
 
 fn contract_directory() -> PathBuf {
@@ -243,10 +251,13 @@ fn change_records_replies(_: &str) -> Vec<WireSpecimen> {
                 _ => Vec::new(),
             }
         })
-        .map(|record| WireSpecimen {
-            label: format!("change-record reply {}", record.request_id.as_str()),
-            phase: Serialize,
-            value: serde_json::to_value(record).unwrap(),
+        .flat_map(|record| {
+            let record = serde_json::to_value(record).unwrap();
+            [Serialize, Deserialize].map(|phase| WireSpecimen {
+                label: format!("change record {} ({})", record["requestId"], phase.suffix()),
+                phase,
+                value: record.clone(),
+            })
         })
         .collect()
 }
@@ -275,19 +286,27 @@ fn exported_typescript() -> String {
     let types = SIGNIN_ROOTS
         .iter()
         .fold(Types::default(), |types, root| (root.register)(types));
+    let mut header = concat!(
+        "// Phase suffixes are from Central's perspective.\n",
+        "// Use _Deserialize for requests and signed payloads Central only reads.\n",
+        "// Use _Serialize for replies Central produces and the canonical admin intent it recomputes.\n",
+        "// Use the unsuffixed type when there are no separate phase aliases.\n",
+        "// Central only reads these signed roots:\n",
+    )
+    .to_owned();
+    for root in SIGNIN_ROOTS.iter().filter(|root| root.central_reads_only) {
+        writeln!(header, "//   {}", root.name).expect("append read-only root");
+    }
     let exported = specta_typescript::Typescript::default()
-        .header(concat!(
-            "// Phase suffixes are from Central's perspective.\n",
-            "// Parse replies from Central as _Serialize. Send requests assignable to _Deserialize.\n",
-            "// Construct signed payloads and canonical intents using their _Serialize form.\n",
-            "// Use the unsuffixed type when there are no separate phase aliases.",
-        ))
+        .header(header)
         .export(&types, specta_serde::PhasesFormat)
         .expect("export Central Sign-in wire types");
     let mut generated = String::with_capacity(exported.len());
     for line in exported.lines() {
         writeln!(generated, "{}", line.trim_end()).expect("append TypeScript line");
     }
+    generated
+        .push_str("\nexport type OrganizationChangeKind = OrganizationChangeRecord[\"kind\"];\n");
     generated
 }
 

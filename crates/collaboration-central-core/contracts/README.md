@@ -36,10 +36,10 @@ cross-repository real-output checks remain with their consuming tickets.
 
 `central-sign-in.ts` is the generated TypeScript contract for Sign-in.
 Copy it from an exact Central commit and pin that commit in the consumer.
-Use `_Deserialize` for inputs to Central and `_Serialize` for Central replies.
-Use the `_Serialize` shape when constructing the signed intent, person token,
-proof, organization stamp, and machine token payloads. Use the unsuffixed
-alias where the exporter emits a single phase. `organization-admin-intent-vector.json`
+Use `_Deserialize` for inputs to Central, including the signed headers and claims
+Central only reads. Use `_Serialize` for Central's replies and the canonical admin
+intent Central recomputes. Use the unsuffixed alias where the exporter emits a
+single phase. `organization-admin-intent-vector.json`
 contains a request, its canonical intent bytes, and the base64url SHA-256 digest.
 
 Validated IDs are JSON string aliases. Timestamp decoding accepts exact JSON

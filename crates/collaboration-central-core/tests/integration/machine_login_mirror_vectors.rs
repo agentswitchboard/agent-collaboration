@@ -1,10 +1,10 @@
 //! Exact issuer-owned vectors from switchboard b1c9f6f6, with no local verdict changes.
 //! The pinned source bytes stay intact. Contract 1 changes only the machine identity fields.
+use collaboration_central_core::OrganizationChangeRecord;
 use collaboration_central_core::identity_contract::{
     DecideDeviceLogin, DecideMachineToken, DeviceLoginDecision, DeviceLoginRefusal,
     MachineTokenDecision, MachineTokenRefusal,
 };
-use fleet_signin::organization_change::OrganizationChangeRecord;
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::Value;
 use sha2::{Digest, Sha256};

@@ -2,9 +2,53 @@
 use crate::person_request::{AdmissionRefusal, MAXIMUM_RECORD_PAGE};
 use fleet_contracts::WorkspaceView;
 use fleet_engine::EngineFailureClass;
-use fleet_signin::organization_change::OrganizationChangeRecord;
+use fleet_identity_protocol::UnixMillis;
+use fleet_signin::organization_change::{
+    ChangeRequestId, OrganizationChangeOrigin,
+    OrganizationChangeRecord as TargetedOrganizationChangeRecord,
+};
+use message_board::WorkspaceId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
+use workspace_ids::MachineId;
+
+/// The organization change page projects both subject shapes under one kind tag.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub enum OrganizationChangeRecord {
+    MachineAllowanceChanged {
+        #[schemars(with = "String", extend("format" = "uuid"))]
+        id: uuid::Uuid,
+        request_id: ChangeRequestId,
+        origin: OrganizationChangeOrigin,
+        machine_id: MachineId,
+        workspace_id: WorkspaceId,
+        state: MachineAllowanceState,
+        created_at_millis: UnixMillis,
+    },
+    #[serde(untagged)]
+    TargetedChange(TargetedOrganizationChangeRecord),
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub enum MachineAllowanceState {
+    Active,
+    Withdrawn,
+}
 
 /// The closed set of engine kinds an admin sees; test-support machines are hidden.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
