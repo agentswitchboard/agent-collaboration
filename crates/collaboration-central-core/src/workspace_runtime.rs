@@ -19,6 +19,8 @@ pub struct WorkspaceRuntime<Host: CentralStore, Stores: WorkspaceStores> {
     #[cfg(feature = "test-support")]
     pub(crate) machine_restore_failure:
         std::sync::Mutex<Option<(usize, central_storage::StoreFailure)>>,
+    #[cfg(feature = "test-support")]
+    idle_renewal_send_failure: std::sync::atomic::AtomicBool,
 }
 impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores> {
     pub fn new(
@@ -35,11 +37,25 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             machine_revoked: Arc::new(|_| {}),
             #[cfg(feature = "test-support")]
             machine_restore_failure: Default::default(),
+            #[cfg(feature = "test-support")]
+            idle_renewal_send_failure: Default::default(),
         }
     }
 
     pub fn runtime(&self) -> &FleetRuntime<Host, Stores> {
         &self.execution
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn fail_next_idle_renewal_send(&self) {
+        self.idle_renewal_send_failure
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn take_idle_renewal_send_failure(&self) -> bool {
+        self.idle_renewal_send_failure
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
     }
 
     pub(crate) fn access(&self) -> WorkspaceAccess<'_, Host, Stores> {

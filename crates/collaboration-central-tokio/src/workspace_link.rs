@@ -15,7 +15,9 @@ use central_link_protocol::{
     ReceiptResult, ReplyPayload, RequestPayload, RequestRefusal, RequestStatusAnswer, TimeLeft,
     TokenRenewalRefusal, TokenRenewalResult, decode_text, encode_text,
 };
-use collaboration_central_core::{MachineLinkRequestAuthority, WorkspaceRuntime};
+use collaboration_central_core::{
+    IdleEndedEnrollment, MachineLinkAdmission, MachineLinkRequestAuthority, WorkspaceRuntime,
+};
 use collaboration_central_core::{ValidatedMachineConnection, WorkspaceCaller};
 use fleet_contracts::mail_link::{
     MailReceiptSettlement, WELCOME_PAGE_SIZE, WelcomeDeliveryPage, WindowedDeliveryDecision,
@@ -98,8 +100,32 @@ async fn upgrade_link(
         Ok(runtime) => runtime,
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
-    let connection = match runtime.admit_machine_connection(token).await {
-        Ok(Ok(connection)) if connection.organization_id() == &organization => connection,
+    let connection = match runtime.admit_machine_link(token).await {
+        Ok(MachineLinkAdmission::Admitted(connection))
+            if connection.organization_id() == &organization =>
+        {
+            connection
+        }
+        Ok(MachineLinkAdmission::IdleEnded(ended)) => {
+            let failed_state = state.clone();
+            let failed_org = organization.clone();
+            let failed_ended = ended.clone();
+            return upgrade
+                .on_failed_upgrade(move |_| {
+                    close_idle_enrollment(&failed_state, &failed_org, &failed_ended)
+                })
+                .on_upgrade(move |mut socket| async move {
+                    let _task = task;
+                    close_link(
+                        &mut socket,
+                        &state.stop,
+                        MachineLinkCloseCode::Inactive.code(),
+                        "",
+                    );
+                    close_idle_enrollment(&state, &organization, &ended);
+                })
+                .into_response();
+        }
         Ok(_) => return StatusCode::UNAUTHORIZED.into_response(),
         Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
     };
@@ -161,6 +187,7 @@ async fn serve_link(
             state.host.push_registry.register(
                 connection.organization_id().clone(),
                 connection.machine_id().clone(),
+                connection.enrollment_id().clone(),
             )
         })
         .await;
@@ -286,12 +313,34 @@ async fn serve_link(
                 correlation_id,
                 token,
             }) => {
-                let result = renew(&runtime, &mut connection, token.expose()).await;
+                let (result, ended) = renew(&runtime, &mut connection, token.expose()).await;
                 let answer = LinkFrame::Data(DataFrame::MachineTokenRenewal {
                     correlation_id,
                     result,
                 });
-                if !writes.send(&mut socket, &answer).await {
+                #[cfg(feature = "test-support")]
+                let fail_send = ended.is_some() && runtime.take_idle_renewal_send_failure();
+                #[cfg(not(feature = "test-support"))]
+                let fail_send = false;
+                let sent = !fail_send && writes.send(&mut socket, &answer).await;
+                if let Some(ended) = ended {
+                    writes.close_authority(&mut socket, MachineLinkCloseCode::Inactive);
+                    #[cfg(feature = "test-support")]
+                    runtime
+                        .runtime()
+                        .pause_points()
+                        .reached_central(fleet_runtime::PausePoint::BeforeIdleEnrollmentCleanup)
+                        .await;
+                    close_idle_enrollment(&state, connection.organization_id(), &ended);
+                    #[cfg(feature = "test-support")]
+                    runtime
+                        .runtime()
+                        .pause_points()
+                        .reached_central(fleet_runtime::PausePoint::AfterIdleEnrollmentCleanup)
+                        .await;
+                    return;
+                }
+                if !sent {
                     return;
                 }
             }
@@ -491,9 +540,9 @@ async fn renew(
     runtime: &Runtime,
     connection: &mut ValidatedMachineConnection,
     token: &str,
-) -> TokenRenewalResult {
+) -> (TokenRenewalResult, Option<IdleEndedEnrollment>) {
     use collaboration_central_core::MachineTokenRenewalRefusal as Refusal;
-    let refused = |reason| TokenRenewalResult::Refused { reason };
+    let refused = |reason| (TokenRenewalResult::Refused { reason }, None);
     match runtime.renew_machine_connection(connection, token).await {
         Ok(Ok(renewed)) => {
             let Some(effective_expires_at) =
@@ -502,19 +551,41 @@ async fn renew(
                 return refused(TokenRenewalRefusal::CentralUnavailable);
             };
             *connection = renewed.connection;
-            TokenRenewalResult::Renewed {
-                effective_expires_at,
-                central_time: renewed.central_time,
-            }
+            (
+                TokenRenewalResult::Renewed {
+                    effective_expires_at,
+                    central_time: renewed.central_time,
+                },
+                None,
+            )
         }
+        Ok(Err(Refusal::IdleEnded(ended))) => (
+            TokenRenewalResult::Refused {
+                reason: TokenRenewalRefusal::EnrollmentNotActive,
+            },
+            Some(ended),
+        ),
         Ok(Err(refusal)) => refused(match refusal {
             Refusal::TokenRejected => TokenRenewalRefusal::TokenRejected,
             Refusal::EnrollmentNotActive => TokenRenewalRefusal::EnrollmentNotActive,
             Refusal::DifferentMachine => TokenRenewalRefusal::DifferentMachine,
             Refusal::DifferentEnrollment => TokenRenewalRefusal::DifferentEnrollment,
+            Refusal::IdleEnded(_) => TokenRenewalRefusal::EnrollmentNotActive,
         }),
         Err(_) => refused(TokenRenewalRefusal::CentralUnavailable),
     }
+}
+
+fn close_idle_enrollment(
+    state: &LinkState,
+    organization: &OrganizationId,
+    ended: &IdleEndedEnrollment,
+) {
+    state.host.push_registry.close_idle_enrollment(
+        organization,
+        &ended.machine_id,
+        &ended.enrollment_id,
+    );
 }
 
 /// What became of one request frame on the link.

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE login_machines\nSET machine_id=machine_id\nWHERE machine_id=?1\n  AND enrollment_generation=?2\n  AND state=?3\n  AND label=?4\n  AND (SELECT count(*) FROM login_machine_allowances WHERE machine_id=?1 AND state='active')=json_array_length(?5)\n  AND NOT EXISTS (\n      SELECT 1 FROM login_machine_allowances AS allowance\n      WHERE allowance.machine_id=?1 AND allowance.state='active'\n        AND NOT EXISTS (SELECT 1 FROM json_each(?5) WHERE value=allowance.workspace_id)\n  )\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "54c2000a321e1c3fb37bda01fb20d1c119ec134e3c09e4730dd244288a3311dd"
+}

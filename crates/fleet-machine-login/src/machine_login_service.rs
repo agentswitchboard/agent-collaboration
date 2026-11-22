@@ -12,7 +12,7 @@ use fleet_contracts::{
 };
 use fleet_identity_protocol::{EnrollmentId, OrganizationId};
 use fleet_runtime_ports::{CentralStore, IdSource, workspace_decode_error::corrupt};
-use workspace_ids::MachineId;
+use workspace_ids::{MachineId, WorkspaceId};
 
 pub struct MachineLoginService<'turn, Host> {
     store: &'turn Host,
@@ -132,6 +132,31 @@ impl<'turn, Host: CentralStore> MachineLoginService<'turn, Host> {
         query: &EnrollmentQuery,
     ) -> Result<EnrollmentFacts, StoreFailure> {
         enrollment_reads::facts(self.store, self.organization.clone(), query).await
+    }
+
+    pub async fn active_workspaces(
+        &self,
+        machine: &MachineId,
+    ) -> Result<Vec<WorkspaceId>, StoreFailure> {
+        enrollment_reads::read_active_allowances(self.store, machine)
+            .await?
+            .into_iter()
+            .map(|id| {
+                id.as_str()
+                    .parse()
+                    .map_err(|_| corrupt("login_machine_allowances.workspace_id"))
+            })
+            .collect()
+    }
+
+    pub fn prepare_idle_expiry(
+        &self,
+        facts: &EnrollmentFacts,
+        time: DecisionTime,
+    ) -> Result<Option<MachineLoginPlan<()>>, StoreFailure> {
+        policy::expire_current_if_idle(facts, time, self.ids)?
+            .map(|decided| prepare_plan(facts, decided, time))
+            .transpose()
     }
 }
 

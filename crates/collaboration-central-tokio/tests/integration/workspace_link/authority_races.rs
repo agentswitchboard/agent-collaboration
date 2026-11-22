@@ -67,7 +67,7 @@ async fn revocation_after_rule_reads_refuses_before_workspace_or_drain_effects()
             .run_batch(StatementBatch {
                 statements: vec![GuardedStatement {
                     statement: Statement {
-                        sql: "UPDATE login_machines SET allowed_workspaces=? WHERE machine_id=?",
+                        sql: collaboration_central_conformance::REPLACE_FIXTURE_ALLOWANCES_SQL,
                         args: vec![SqlValue::Text(allowed), SqlValue::Text(INSTALLATION.into())]
                     },
                     expect: RowExpectation::Exactly(1)
@@ -205,7 +205,7 @@ async fn revocation_committing_while_request_waits_for_applying_turn_prevents_wr
             .run_batch(StatementBatch {
                 statements: vec![GuardedStatement {
                     statement: Statement {
-                        sql: "UPDATE login_machines SET allowed_workspaces=? WHERE machine_id=?",
+                        sql: collaboration_central_conformance::REPLACE_FIXTURE_ALLOWANCES_SQL,
                         args: vec![
                             SqlValue::Text(serde_json::to_string(&[&workspace])?),
                             SqlValue::Text(INSTALLATION.into())

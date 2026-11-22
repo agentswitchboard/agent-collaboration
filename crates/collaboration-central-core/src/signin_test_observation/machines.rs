@@ -113,7 +113,10 @@ pub(super) fn decode_machine_observation(
             MachineState::Enrolled => ObservedMachineState::Enrolled,
             MachineState::Revoked => ObservedMachineState::Revoked,
         },
-        allowed_workspaces: checked.allowed_workspaces,
+        allowed_workspaces: fleet_runtime_ports::stored_values::json(
+            fleet_runtime_ports::stored_values::string(&rows, row, "active_workspaces")?,
+            "signin_observation.active_workspaces",
+        )?,
         enrollment_generation: checked.generation.get(),
     })
 }

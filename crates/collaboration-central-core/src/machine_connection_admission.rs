@@ -12,7 +12,7 @@ use fleet_contracts::{
     LiveMachineConnection, MachineConnectionAttachment, MachineConnectionRefusal,
 };
 use fleet_identity_protocol::EnrollmentId;
-use fleet_machine_login::policy::{EnrollmentFacts, EnrollmentQuery};
+use fleet_machine_login::policy::{EnrollmentFacts, EnrollmentQuery, StoredEnrollmentState};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use workspace_ids::MachineId;
 
@@ -21,6 +21,18 @@ pub enum MachineLinkRequestAuthority {
     Admitted(ValidatedMachineConnection),
     Refused(MachineLinkCloseCode),
     TemporarilyUnavailable,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct IdleEndedEnrollment {
+    pub machine_id: MachineId,
+    pub enrollment_id: EnrollmentId,
+}
+
+pub enum MachineLinkAdmission {
+    Admitted(ValidatedMachineConnection),
+    Refused(MachineConnectionRefusal),
+    IdleEnded(IdleEndedEnrollment),
 }
 
 impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
@@ -41,6 +53,19 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
     }
 
     pub async fn admit_machine_connection(&self, token: &str) -> Admission {
+        Ok(match self.admit_machine_link(token).await? {
+            MachineLinkAdmission::Admitted(connection) => Ok(connection),
+            MachineLinkAdmission::Refused(reason) => Err(reason),
+            MachineLinkAdmission::IdleEnded(_) => {
+                Err(MachineConnectionRefusal::EnrollmentNotActive {})
+            }
+        })
+    }
+
+    pub async fn admit_machine_link(
+        &self,
+        token: &str,
+    ) -> Result<MachineLinkAdmission, StoreFailure> {
         let check = self
             .signin_authority
             .check()
@@ -48,7 +73,9 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         let verified = match check.verify_machine_token(token).await {
             Ok(verified) => verified,
             Err(fleet_signin::machine_token::MachineTokenRefusal::Rejected) => {
-                return Ok(Err(MachineConnectionRefusal::EnrollmentNotActive {}));
+                return Ok(MachineLinkAdmission::Refused(
+                    MachineConnectionRefusal::EnrollmentNotActive {},
+                ));
             }
             Err(fleet_signin::machine_token::MachineTokenRefusal::Unavailable) => {
                 return Err(StoreFailure::Unavailable);
@@ -56,7 +83,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         };
         let _turn = self.execution.take_central_turn_for_admission().await;
         if verified.organization_id() != self.execution.organization() {
-            return Ok(Err(
+            return Ok(MachineLinkAdmission::Refused(
                 MachineConnectionRefusal::MachineInAnotherOrganization {},
             ));
         }
@@ -65,12 +92,34 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
             .connection_facts(verified.machine_id(), verified.enrollment_id())
             .await?;
         let attachment = attachment_from_verified(&verified);
-        validate_live(
+        let decision = validate_live(
             &attachment,
             self.execution.organization(),
             &facts,
             time.now_ms,
-        )
+        )?;
+        match decision {
+            Ok(connection) => {
+                if self.commit_idle_expiry(&facts, time).await? {
+                    Ok(MachineLinkAdmission::IdleEnded(idle_ended(&attachment)))
+                } else {
+                    Ok(MachineLinkAdmission::Admitted(connection))
+                }
+            }
+            Err(reason) => {
+                let previously_expired = facts.enrollment.as_ref().is_some_and(|enrollment| {
+                    &enrollment.machine_id == attachment.machine_id()
+                        && &enrollment.id == attachment.enrollment_id()
+                        && matches!(&enrollment.state, StoredEnrollmentState::Expired { client_id }
+                            if client_id == attachment.client_id())
+                });
+                if previously_expired {
+                    Ok(MachineLinkAdmission::IdleEnded(idle_ended(&attachment)))
+                } else {
+                    Ok(MachineLinkAdmission::Refused(reason))
+                }
+            }
+        }
     }
 
     /// Renews an open connection's machine token (fleet-access R40/V32, B3):
@@ -139,11 +188,17 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         let renewed = attachment_from_verified(&verified);
         Ok(
             match validate_live(&renewed, self.execution.organization(), &facts, time.now_ms)? {
-                Ok(connection) => Ok(RenewedMachineConnection {
-                    connection,
-                    central_time: chrono::DateTime::from_timestamp_millis(time.now_ms)
-                        .ok_or(StoreFailure::Unavailable)?,
-                }),
+                Ok(connection) => {
+                    if self.commit_idle_expiry(&facts, time).await? {
+                        Err(Refusal::IdleEnded(idle_ended(&renewed)))
+                    } else {
+                        Ok(RenewedMachineConnection {
+                            connection,
+                            central_time: chrono::DateTime::from_timestamp_millis(time.now_ms)
+                                .ok_or(StoreFailure::Unavailable)?,
+                        })
+                    }
+                }
                 Err(MachineConnectionRefusal::WrongClient {}) => Err(Refusal::DifferentEnrollment),
                 Err(
                     MachineConnectionRefusal::UnknownMachine {}
@@ -153,6 +208,26 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                 ) => Err(Refusal::EnrollmentNotActive),
             },
         )
+    }
+
+    async fn commit_idle_expiry(
+        &self,
+        facts: &EnrollmentFacts,
+        time: fleet_machine_login::policy::DecisionTime,
+    ) -> Result<bool, StoreFailure> {
+        let Some(plan) = self
+            .machine_login_service()
+            .prepare_idle_expiry(facts, time)?
+        else {
+            return Ok(false);
+        };
+        self.apply_machine_login(plan).await?;
+        #[cfg(feature = "test-support")]
+        self.execution
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::AfterIdleExpiryCommit)
+            .await;
+        Ok(true)
     }
 
     pub async fn restore_machine_connection(
@@ -267,7 +342,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
 }
 
 /// Why central refused to renew an open connection's machine token.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MachineTokenRenewalRefusal {
     /// The token failed sign-in verification.
     TokenRejected,
@@ -277,6 +352,8 @@ pub enum MachineTokenRenewalRefusal {
     DifferentMachine,
     /// It names another enrollment or client than the connection.
     DifferentEnrollment,
+    /// Idle expiry committed under the turn. The transport settles the reply and scoped close.
+    IdleEnded(IdleEndedEnrollment),
 }
 
 /// The renewed authority and the Central clock sample used to admit it.
@@ -290,6 +367,15 @@ type Renewal = Result<Result<RenewedMachineConnection, MachineTokenRenewalRefusa
 impl<Host: CentralStore, Stores: WorkspaceStores> LiveMachineConnection
     for WorkspaceRuntime<Host, Stores>
 {
+    async fn active_workspaces_held(
+        &self,
+        machine: &MachineId,
+    ) -> Result<Vec<workspace_ids::WorkspaceId>, StoreFailure> {
+        self.machine_login_service()
+            .active_workspaces(machine)
+            .await
+    }
+
     async fn restore_held(
         &self,
         attachment: &MachineConnectionAttachment,
@@ -310,4 +396,11 @@ fn attachment_from_verified(
         verified.client_id().clone(),
         verified.effective_expires_at(),
     )
+}
+
+fn idle_ended(attachment: &MachineConnectionAttachment) -> IdleEndedEnrollment {
+    IdleEndedEnrollment {
+        machine_id: attachment.machine_id().clone(),
+        enrollment_id: attachment.enrollment_id().clone(),
+    }
 }

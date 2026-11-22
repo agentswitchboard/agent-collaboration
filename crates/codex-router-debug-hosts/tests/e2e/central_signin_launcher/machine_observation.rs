@@ -2,6 +2,7 @@
 use super::{TestResult, child_process::LauncherChild, provision, push_floors_and_read};
 use collaboration_central_conformance::signin_fixtures as signed;
 use collaboration_central_core::signin_test_observation::SignInObservation;
+use fleet_machine_login::policy::IDLE_EXPIRY_SECONDS;
 use serde_json::{Value, json};
 
 const DEVICE: &str = "/internal/device-login-decisions";
@@ -358,7 +359,7 @@ async fn private_observe_first_after_idle_expiry_accepts_automatic_records_and_p
         token(&child, &a).await? == grant(&a, now, None),
         "idle fixture first grant differs"
     );
-    let idle_at = now + 30 * 24 * 60 * 60;
+    let idle_at = now + IDLE_EXPIRY_SECONDS;
     assert_eq!(child.set_time_ms((idle_at - 60) * 1000).await?, 1);
     let b = approve(
         &child,

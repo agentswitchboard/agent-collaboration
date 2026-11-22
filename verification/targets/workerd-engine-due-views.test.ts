@@ -359,13 +359,14 @@ test("the checked SELECT in a Workerd fixture overlay requires exactly one stamp
   assert.deepEqual(pair((await run("overlay", nextAlarm)).rows, true), [null, null]);
 });
 
+const sparseDirectReceiptHistory = [
+  // Finished history uses the new terminal/marked tags. Delivered is unfinished.
+  "UPDATE mail_messages SET state='seen',seen_completed_at='1970-01-01T00:01:00.000Z' WHERE message_kind='direct' AND state='delivered'",
+  "UPDATE mail_messages SET state='pastTheMark' WHERE message_kind='direct' AND state='cancelled'",
+  "UPDATE mail_messages SET state='delivered',delivered_arrived_at='1970-01-01T00:00:01.000Z' WHERE message_kind='direct' AND state='queued'",
+];
+
 test("the final Central schema keeps delivered direct marks within 330 sparse reads", async (context) => {
-  const states = [
-    // Finished history uses the new terminal/marked tags. Delivered is unfinished.
-    "UPDATE mail_messages SET state='seen',seen_completed_at='1970-01-01T00:01:00.000Z' WHERE message_kind='direct' AND state='delivered'",
-    "UPDATE mail_messages SET state='pastTheMark' WHERE message_kind='direct' AND state='cancelled'",
-    "UPDATE mail_messages SET state='delivered',delivered_arrived_at='1970-01-01T00:00:01.000Z' WHERE message_kind='direct' AND state='queued'",
-  ];
   const finalSchema = readFileSync(new URL("0007_direct_message_receipts.sql", migrations), "utf8");
   const fixtures = seedHistory(10_000, 50, 50);
   for (const [name, ddl, limit] of [
@@ -376,7 +377,14 @@ test("the final Central schema keeps delivered direct marks within 330 sparse re
       false,
     ],
   ] as const) {
-    await prepare(name, [...oldSchema, dueSchema, signinAlarmSchema, ddl, ...fixtures, ...states]);
+    await prepare(name, [
+      ...oldSchema,
+      dueSchema,
+      signinAlarmSchema,
+      ddl,
+      ...fixtures,
+      ...sparseDirectReceiptHistory,
+    ]);
     const alarm = await run(name, nextAlarm);
 
     assert.deepEqual(pair(alarm.rows, true), [300_000, 300_000]);
@@ -384,6 +392,29 @@ test("the final Central schema keeps delivered direct marks within 330 sparse re
     assert.equal(alarm.rowsRead <= 330, limit, JSON.stringify(alarm));
     context.diagnostic(JSON.stringify({ name, rowsRead: alarm.rowsRead }));
   }
+});
+
+test("the Workerd alarm stays within 330 reads with machine allowance rows", async (context) => {
+  const receipts = readFileSync(new URL("0007_direct_message_receipts.sql", migrations), "utf8");
+  const allowances = readFileSync(new URL("0008_machine_allowance_audit.sql", migrations), "utf8");
+  const object = "machine-allowances-alarm-budget";
+  await prepare(object, [
+    ...oldSchema,
+    dueSchema,
+    signinAlarmSchema,
+    receipts,
+    allowances,
+    ...seedHistory(10_000, 50, 50, "machine-allowances"),
+    ...sparseDirectReceiptHistory,
+    "INSERT INTO login_machine_allowances SELECT workspace_id, (SELECT machine_id FROM login_machines LIMIT 1), workspace_id, 'active', 'fixture', 'automatic', created_at, updated_at FROM directory_workspaces ORDER BY workspace_id LIMIT 1000",
+  ]);
+  const stored = await run(object, "SELECT count(*) AS allowances FROM login_machine_allowances");
+  assert.deepEqual(stored.rows, [{ allowances: 1000 }]);
+  const alarm = await run(object, nextAlarm);
+  assert.deepEqual(pair(alarm.rows, true), [300_000, 300_000]);
+  assert.equal(alarm.rowsWritten, 0);
+  assert.ok(alarm.rowsRead <= 330, JSON.stringify(alarm));
+  context.diagnostic(JSON.stringify({ allowanceRows: 1000, alarmRowsRead: alarm.rowsRead }));
 });
 
 test("system offer and expiry inputs preserve every stored shape from main", async (context) => {

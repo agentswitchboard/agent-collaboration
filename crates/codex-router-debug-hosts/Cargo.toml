@@ -103,5 +103,6 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+fleet-machine-login.workspace = true
 collaboration-central-conformance = { path = "../collaboration-central-conformance", version = "0.1.150", default-features = false, features = ["signin-test-support"] }
 reqwest = { workspace = true, features = ["json"] }

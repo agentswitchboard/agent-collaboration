@@ -64,7 +64,7 @@ async fn revocation_journey(fixture: &Fixture) -> Result<()> {
         .central(&signed::ORGANIZATION.to_owned().try_into()?)
         .await?;
     let readback = runtime.runtime().statement_host().read(Statement {
-        sql: "SELECT m.state AS machine_state,m.allowed_workspaces,m.enrollment_generation,a.state,a.end_reason,a.permission_checked,(SELECT COUNT(*) FROM signin_change_records WHERE kind='machineRevoked' AND target_id=a.approval_id AND actor_person_id=? AND permission_checked='machine:revoke') AS audit_records FROM login_machine_approvals a JOIN login_machines m USING(machine_id) WHERE a.approval_id=?",
+        sql: "SELECT m.state AS machine_state,(SELECT json_group_array(workspace_id) FROM (SELECT workspace_id FROM login_machine_allowances WHERE machine_id=m.machine_id AND state='active' ORDER BY allowance_id)),m.enrollment_generation,a.state,a.end_reason,a.permission_checked,(SELECT COUNT(*) FROM signin_change_records WHERE kind='machineRevoked' AND target_id=a.approval_id AND actor_person_id=? AND permission_checked='machine:revoke') AS audit_records FROM login_machine_approvals a JOIN login_machines m USING(machine_id) WHERE a.approval_id=?",
         args: vec![SqlValue::Text(owner.id), SqlValue::Text(enrollment.to_owned())],
     }).await?;
     if readback.rows

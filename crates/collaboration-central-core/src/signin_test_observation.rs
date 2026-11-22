@@ -164,7 +164,10 @@ UNION ALL SELECT 5,workspace_id,json_object('kind','workspace','row',json_object
 ), machines_and_approvals AS (
 SELECT 6 AS row_group,machine_id AS row_id,json_object('kind','machine','row',json_object(
  'machine_id',machine_id,'label',label,'state',state,
- 'allowed_workspaces',allowed_workspaces,'enrollment_generation',enrollment_generation,
+ 'active_workspaces','' || (SELECT json_group_array(workspace_id) FROM (
+    SELECT workspace_id FROM login_machine_allowances
+    WHERE machine_id=login_machines.machine_id AND state='active' ORDER BY allowance_id
+  )),'enrollment_generation',enrollment_generation,
  'created_at',created_at,'updated_at',updated_at)) AS payload
  FROM login_machines
 UNION ALL SELECT 7,a.approval_id,json_object('kind','machineApproval','row',json_object(

@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT allowance_id, workspace_id, state, change_request_id, change_origin, created_at, updated_at\nFROM login_machine_allowances\nWHERE machine_id = ?\nORDER BY allowance_id\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "allowance_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machine_allowances",
+            "name": "allowance_id"
+          }
+        }
+      },
+      {
+        "name": "workspace_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machine_allowances",
+            "name": "workspace_id"
+          }
+        }
+      },
+      {
+        "name": "state",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machine_allowances",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "name": "change_request_id",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machine_allowances",
+            "name": "change_request_id"
+          }
+        }
+      },
+      {
+        "name": "change_origin",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machine_allowances",
+            "name": "change_origin"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machine_allowances",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machine_allowances",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "ce52750d0aa575d842ed790c0ecda260e6059b252c592d34cf57b537c4de8bec"
+}

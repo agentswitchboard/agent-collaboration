@@ -214,3 +214,110 @@ async fn bounded_three_login_sequences_preserve_one_enrolled_and_fence_every_sta
     }
     Ok(())
 }
+
+#[derive(Clone, Copy)]
+enum EndEnrollment {
+    OwnerRevoke,
+    IdleExpiry,
+}
+
+async fn assert_allowance_pairs(
+    fixture: &MachineFixture,
+    expected_pairs: &[(&str, &str)],
+    active_records: i64,
+    withdrawn_records: i64,
+) -> Result<()> {
+    let expected: Vec<_> = expected_pairs
+        .iter()
+        .map(|(workspace, state)| vec![text(workspace), text(state)])
+        .collect();
+    let rows = fixture
+        .rows("SELECT workspace_id,state FROM login_machine_allowances")
+        .await?;
+    assert_eq!(rows.len(), expected.len());
+    for pair in expected {
+        assert!(
+            rows.contains(&pair),
+            "missing expected allowance pair {pair:?} in {rows:?}"
+        );
+    }
+    assert_eq!(
+        fixture
+            .rows("SELECT count(*) FILTER (WHERE allowance_state='active'),count(*) FILTER (WHERE allowance_state='withdrawn') FROM signin_change_records WHERE kind='machineAllowanceChanged'")
+            .await?,
+        vec![vec![number(active_records), number(withdrawn_records)]]
+    );
+    Ok(())
+}
+
+#[tokio::test]
+async fn generated_allowance_traces_survive_reopen_and_terminalization() -> Result<()> {
+    use fleet_machine_login::policy::IDLE_EXPIRY_SECONDS;
+
+    for (selected, omitted) in [(WORKSPACE, WORKSPACE_TWO), (WORKSPACE_TWO, WORKSPACE)] {
+        for end in [EndEnrollment::OwnerRevoke, EndEnrollment::IdleExpiry] {
+            let mut f = MachineFixture::new().await?;
+            let selected_approval =
+                approval(0xe001, INSTALLATION, "Selected", &[selected], f.now());
+            let (status, approved) = f.post(DEVICE, &selected_approval).await?;
+            assert_eq!(status, 200);
+            let active = enrollment(&approved)?;
+            assert_allowance_pairs(&f, &[(selected, "active")], 1, 0).await?;
+            assert_eq!(f.post(DEVICE, &selected_approval).await?, (200, approved));
+            assert_allowance_pairs(&f, &[(selected, "active")], 1, 0).await?;
+
+            assert_eq!(
+                f.post(TOKEN, &token(&active, &active)).await?,
+                (200, grant(&active, INSTALLATION, f.now(), None))
+            );
+            let other = approval(0xe002, INSTALLATION, "Omitted", &[omitted], f.now());
+            assert_eq!(f.post(DEVICE, &other).await?.0, 200);
+            assert_allowance_pairs(&f, &[(selected, "active"), (omitted, "active")], 2, 0).await?;
+            f.reopen().await?;
+            assert_allowance_pairs(&f, &[(selected, "active"), (omitted, "active")], 2, 0).await?;
+
+            match end {
+                EndEnrollment::OwnerRevoke => {
+                    let ended = f
+                        .revoke(0xe100, INSTALLATION, &active)
+                        .await??
+                        .ok_or("the owner did not revoke the current enrollment")?;
+                    assert_eq!(
+                        serde_json::to_value(ended)?,
+                        json!({"enrollmentId":active,"clientId":active})
+                    );
+                }
+                EndEnrollment::IdleExpiry => {
+                    f.advance(u64::try_from(IDLE_EXPIRY_SECONDS * 1000)?)
+                        .await?;
+                    assert_eq!(
+                        f.post(TOKEN, &token(&active, &active)).await?,
+                        (200, refused("idleExpired"))
+                    );
+                }
+            }
+            assert_allowance_pairs(&f, &[(selected, "withdrawn"), (omitted, "withdrawn")], 2, 2)
+                .await?;
+            assert_eq!(
+                f.post(TOKEN, &token(&active, &active)).await?,
+                (200, refused("enrollmentNotActive"))
+            );
+            assert_allowance_pairs(&f, &[(selected, "withdrawn"), (omitted, "withdrawn")], 2, 2)
+                .await?;
+
+            let replacement = approval(0xe003, INSTALLATION, "Replacement", &[selected], f.now());
+            let (_, answer) = f.post(DEVICE, &replacement).await?;
+            let replacement = enrollment(&answer)?;
+            assert_allowance_pairs(&f, &[(selected, "active"), (omitted, "withdrawn")], 3, 2)
+                .await?;
+            assert_eq!(
+                f.post(TOKEN, &token(&replacement, &replacement)).await?,
+                (200, grant(&replacement, INSTALLATION, f.now(), None))
+            );
+            assert_allowance_pairs(&f, &[(selected, "active"), (omitted, "withdrawn")], 3, 2)
+                .await?;
+            f.close().await?;
+        }
+    }
+    Ok(())
+}

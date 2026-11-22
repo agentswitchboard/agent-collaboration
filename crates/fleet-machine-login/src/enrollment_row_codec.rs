@@ -34,10 +34,7 @@ pub fn machine(rows: &ReadOutcome, row: &[SqlValue]) -> Result<MachineRow, Store
             .parse()
             .map_err(|_| corrupt("login_machines.machine_id"))?,
         label: label(string(rows, row, "label")?, "login_machines.label")?,
-        allowed_workspaces: json(
-            string(rows, row, "allowed_workspaces")?,
-            "login_machines.allowed_workspaces",
-        )?,
+        allowed_workspaces: Vec::new(),
         generation: EnrollmentGeneration::try_from(
             u64::try_from(generation.get())
                 .map_err(|_| corrupt("login_machines.enrollment_generation"))?,

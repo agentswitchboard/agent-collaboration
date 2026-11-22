@@ -7,6 +7,14 @@ async fn change_page(fixture: &MachineFixture) -> Result<(u16, Value)> {
 #[tokio::test]
 async fn signed_change_page_decodes_machine_allowances_and_rejects_corrupt_rows() -> Result<()> {
     let fixture = MachineFixture::new().await?;
+    let schema = fixture.rows("PRAGMA table_info(login_machines)").await?;
+    if schema.is_empty()
+        || schema
+            .iter()
+            .any(|row| row.get(1) == Some(&text("allowed_workspaces")))
+    {
+        return Err("fresh machine schema must exclude the retired live allowance column".into());
+    }
     verify_change_page(fixture, None).await
 }
 

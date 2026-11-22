@@ -122,7 +122,7 @@ async fn lost_reply_after_commit_replays_one_durable_write_on_a_new_correlation(
         .run_batch(StatementBatch {
             statements: vec![GuardedStatement {
                 statement: Statement {
-                    sql: "UPDATE login_machines SET allowed_workspaces=? WHERE machine_id=?",
+                    sql: collaboration_central_conformance::REPLACE_FIXTURE_ALLOWANCES_SQL,
                     args: vec![
                         SqlValue::Text(serde_json::to_string(&vec![
                             workspace.workspace_id.clone(),

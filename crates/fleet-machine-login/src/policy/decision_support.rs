@@ -8,7 +8,7 @@ use fleet_signin::organization_change::{
 };
 use uuid::Uuid;
 
-pub const IDLE_EXPIRY_SECONDS: i64 = 30 * 24 * 60 * 60;
+pub const IDLE_EXPIRY_SECONDS: i64 = 60 * 24 * 60 * 60;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DecisionTime {

@@ -11,6 +11,7 @@ pub use decision_support::{DecisionTime, IDLE_EXPIRY_SECONDS};
 pub use device_login_decision::decide_device_login;
 pub use enrollment_records::*;
 pub use machine_token_decision::decide_machine_token;
+pub(crate) use machine_token_decision::expire_current_if_idle;
 pub use revoke_enrollment::revoke_machine_enrollment;
 
 #[cfg(test)]

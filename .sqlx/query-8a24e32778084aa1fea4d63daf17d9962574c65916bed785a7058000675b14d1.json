@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT machine_id,label,state,allowed_workspaces,enrollment_generation,created_at,updated_at FROM login_machines WHERE machine_id=?\n",
+  "query": "SELECT machine_id,label,state,enrollment_generation,created_at,updated_at FROM login_machines WHERE machine_id=?\n",
   "describe": {
     "columns": [
       {
@@ -37,19 +37,8 @@
         }
       },
       {
-        "name": "allowed_workspaces",
-        "ordinal": 3,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "login_machines",
-            "name": "allowed_workspaces"
-          }
-        }
-      },
-      {
         "name": "enrollment_generation",
-        "ordinal": 4,
+        "ordinal": 3,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -60,7 +49,7 @@
       },
       {
         "name": "created_at",
-        "ordinal": 5,
+        "ordinal": 4,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -71,7 +60,7 @@
       },
       {
         "name": "updated_at",
-        "ordinal": 6,
+        "ordinal": 5,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -90,9 +79,8 @@
       false,
       false,
       false,
-      false,
       false
     ]
   },
-  "hash": "af310ea3b0bc3cac1ca1aa248fec152fb2d36c9196fe84cedb52a5cfbe33be9a"
+  "hash": "8a24e32778084aa1fea4d63daf17d9962574c65916bed785a7058000675b14d1"
 }

@@ -254,16 +254,15 @@ async fn malformed_stored_domains_and_foreign_binding_never_become_complete_obse
 
 async fn machine_store() -> SqliteConnection {
     let mut connection = stamped_store(1).await;
-    query::<Sqlite>("INSERT INTO login_machines VALUES(?,'Observed machine','enrolled',?,7,?,?)")
+    query::<Sqlite>("INSERT INTO login_machines VALUES(?,'Observed machine','enrolled',7,?,?)")
         .bind(fixture_id(0xe000))
-        .bind(serde_json::to_string(&vec![fixture_id(0x9000)]).unwrap())
         .bind(TIME)
         .bind(TIME)
         .execute(&mut connection)
         .await
         .unwrap();
     query::<Sqlite>(
-        "INSERT INTO login_machines VALUES(?,'Second observed machine','revoked','[]',0,?,?)",
+        "INSERT INTO login_machines VALUES(?,'Second observed machine','revoked',0,?,?)",
     )
     .bind(fixture_id(0xe040))
     .bind(TIME)
@@ -271,6 +270,15 @@ async fn machine_store() -> SqliteConnection {
     .execute(&mut connection)
     .await
     .unwrap();
+    query::<Sqlite>("INSERT INTO login_machine_allowances(allowance_id,machine_id,workspace_id,state,change_request_id,change_origin,created_at,updated_at) VALUES (?,?,?,'active','fixture','automatic',?,?)")
+        .bind(fixture_id(0xe001))
+        .bind(fixture_id(0xe000))
+        .bind(fixture_id(0x9000))
+        .bind(TIME)
+        .bind(TIME)
+        .execute(&mut connection)
+        .await
+        .unwrap();
     // Insert reverse identifiers and creation times so ID order is the wrong oracle.
     for (index, created, state, reason, client, last, ended) in [
         (

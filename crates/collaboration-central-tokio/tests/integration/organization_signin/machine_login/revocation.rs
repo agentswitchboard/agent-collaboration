@@ -79,7 +79,7 @@ async fn revocation_repeat_and_aba_never_reactivate_old_approvals_and_new_approv
         serde_json::to_value(ended)?,
         json!({"enrollmentId":b,"clientId":b})
     );
-    assert_eq!(f.rows("SELECT state,enrollment_generation,allowed_workspaces FROM login_machines WHERE machine_id='019f0000-0000-7000-8000-00000000bc05'").await?,vec![vec![text("revoked"),number(2)?,text("[]")]]);
+    assert_eq!(f.rows("SELECT state,enrollment_generation,(SELECT json_group_array(workspace_id) FROM (SELECT workspace_id FROM login_machine_allowances WHERE machine_id=login_machines.machine_id AND state='active' ORDER BY allowance_id)) FROM login_machines WHERE machine_id='019f0000-0000-7000-8000-00000000bc05'").await?,vec![vec![text("revoked"),number(2)?,text("[]")]]);
     assert_eq!(
         f.rows(
             "SELECT * FROM login_machines WHERE machine_id='019f0000-0000-7000-8000-00000000bc06'"
@@ -273,7 +273,7 @@ async fn owner_revocation_final_record_failure_keeps_active_client_generation_an
         json!({"enrollmentId":a,"clientId":a})
     );
     assert_eq!(
-        f.rows("SELECT state,enrollment_generation,allowed_workspaces FROM login_machines")
+        f.rows("SELECT state,enrollment_generation,(SELECT json_group_array(workspace_id) FROM (SELECT workspace_id FROM login_machine_allowances WHERE machine_id=login_machines.machine_id AND state='active' ORDER BY allowance_id)) FROM login_machines")
             .await?,
         vec![vec![text("revoked"), number(2)?, text("[]")]]
     );

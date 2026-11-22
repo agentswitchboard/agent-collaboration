@@ -5,8 +5,10 @@ use central_link_protocol::{
     ReceiptResult, ReplyPayload, RequestPayload, RequestRefusal, RequestStatusAnswer,
     RequestStatusQuery, TimeLeft,
 };
-use collaboration_central_core::MachineLinkRequestAuthority;
 use collaboration_central_core::WorkspaceCaller;
+use collaboration_central_core::{
+    IdleEndedEnrollment, MachineLinkAdmission, MachineLinkRequestAuthority,
+};
 use fleet_contracts::MachineConnectionAttachment;
 use fleet_contracts::mail_link::MailReceiptSettlement;
 use fleet_runtime_ports::Clock;
@@ -53,8 +55,17 @@ impl CentralObject {
             return Response::error("machine token required", 401);
         };
         let runtime = self.runtime(organization.clone()).await?;
-        let connection = match runtime.admit_machine_connection(&token).await {
-            Ok(Ok(connection)) if connection.organization_id() == &organization => connection,
+        let connection = match runtime.admit_machine_link(&token).await {
+            Ok(MachineLinkAdmission::Admitted(connection))
+                if connection.organization_id() == &organization =>
+            {
+                connection
+            }
+            Ok(MachineLinkAdmission::IdleEnded(ended)) => {
+                let upgrade = close_idle_connect();
+                self.close_idle_enrollment(&ended, None);
+                return upgrade;
+            }
             Ok(_) => return Response::error("machine refused", 401),
             Err(_) => return Response::error("machine admission unavailable", 503),
         };
@@ -245,14 +256,46 @@ impl CentralObject {
                 correlation_id,
                 token,
             } => {
-                let result = renew(&socket, runtime.as_ref(), &attachment, token.expose()).await?;
-                send(
-                    &socket,
-                    DataFrame::MachineTokenRenewal {
-                        correlation_id,
-                        result,
-                    },
-                )
+                let (result, ended) =
+                    renew(&socket, runtime.as_ref(), &attachment, token.expose()).await?;
+                #[cfg(feature = "test-support")]
+                let fail_send = ended.is_some() && runtime.take_idle_renewal_send_failure();
+                #[cfg(not(feature = "test-support"))]
+                let fail_send = false;
+                let reply = if fail_send {
+                    Err(worker::Error::RustError(
+                        "fixture idle renewal send failed".into(),
+                    ))
+                } else {
+                    send(
+                        &socket,
+                        DataFrame::MachineTokenRenewal {
+                            correlation_id,
+                            result,
+                        },
+                    )
+                };
+                if let Some(ended) = ended {
+                    let closed = close_authority(
+                        &socket,
+                        central_link_protocol::MachineLinkCloseCode::Inactive,
+                    );
+                    #[cfg(feature = "test-support")]
+                    runtime
+                        .runtime()
+                        .pause_points()
+                        .reached_central(fleet_runtime::PausePoint::BeforeIdleEnrollmentCleanup)
+                        .await;
+                    self.close_idle_enrollment(&ended, Some(&socket));
+                    #[cfg(feature = "test-support")]
+                    runtime
+                        .runtime()
+                        .pause_points()
+                        .reached_central(fleet_runtime::PausePoint::AfterIdleEnrollmentCleanup)
+                        .await;
+                    return reply.and(closed);
+                }
+                reply
             }
             IncomingRequests::Single(request) => {
                 match self
@@ -305,6 +348,26 @@ impl CentralObject {
                     )?;
                 }
                 Ok(())
+            }
+        }
+    }
+
+    fn close_idle_enrollment(&self, ended: &IdleEndedEnrollment, current: Option<&WebSocket>) {
+        for socket in self
+            .state
+            .get_websockets_with_tag(ended.machine_id.as_str())
+        {
+            if current.is_some_and(|current| current.as_ref() == socket.as_ref()) {
+                continue;
+            }
+            if matches!(
+                socket.deserialize_attachment::<MachineConnectionAttachment>(),
+                Ok(Some(attachment)) if attachment.enrollment_id() == &ended.enrollment_id
+            ) {
+                let _ = close_authority(
+                    &socket,
+                    central_link_protocol::MachineLinkCloseCode::Inactive,
+                );
             }
         }
     }
@@ -545,6 +608,16 @@ fn close_authority(
     socket.close(Some(cause.code()), None::<&str>)
 }
 
+fn close_idle_connect() -> Result<Response> {
+    let pair = WebSocketPair::new()?;
+    pair.server.accept()?;
+    close_authority(
+        &pair.server,
+        central_link_protocol::MachineLinkCloseCode::Inactive,
+    )?;
+    Response::from_websocket(pair.client)
+}
+
 fn close(socket: &WebSocket, reason: &str) -> Result<()> {
     socket.close(Some(1008), Some(reason))
 }
@@ -557,10 +630,13 @@ async fn renew(
     runtime: &OrgRuntime,
     attachment: &MachineConnectionAttachment,
     token: &str,
-) -> Result<central_link_protocol::TokenRenewalResult> {
+) -> Result<(
+    central_link_protocol::TokenRenewalResult,
+    Option<IdleEndedEnrollment>,
+)> {
     use central_link_protocol::{TokenRenewalRefusal, TokenRenewalResult};
     use collaboration_central_core::MachineTokenRenewalRefusal as Refusal;
-    let refused = |reason| TokenRenewalResult::Refused { reason };
+    let refused = |reason| (TokenRenewalResult::Refused { reason }, None);
     // The current connection is restored against live rows first; a socket
     // whose authority already lapsed cannot renew.
     let current = match runtime.restore_machine_connection(attachment).await {
@@ -578,16 +654,26 @@ async fn renew(
                     return Ok(refused(TokenRenewalRefusal::CentralUnavailable));
                 };
                 socket.serialize_attachment(renewed.connection.attachment())?;
-                TokenRenewalResult::Renewed {
-                    effective_expires_at,
-                    central_time: renewed.central_time,
-                }
+                (
+                    TokenRenewalResult::Renewed {
+                        effective_expires_at,
+                        central_time: renewed.central_time,
+                    },
+                    None,
+                )
             }
+            Ok(Err(Refusal::IdleEnded(ended))) => (
+                TokenRenewalResult::Refused {
+                    reason: TokenRenewalRefusal::EnrollmentNotActive,
+                },
+                Some(ended),
+            ),
             Ok(Err(refusal)) => refused(match refusal {
                 Refusal::TokenRejected => TokenRenewalRefusal::TokenRejected,
                 Refusal::EnrollmentNotActive => TokenRenewalRefusal::EnrollmentNotActive,
                 Refusal::DifferentMachine => TokenRenewalRefusal::DifferentMachine,
                 Refusal::DifferentEnrollment => TokenRenewalRefusal::DifferentEnrollment,
+                Refusal::IdleEnded(_) => TokenRenewalRefusal::EnrollmentNotActive,
             }),
             Err(_) => refused(TokenRenewalRefusal::CentralUnavailable),
         },

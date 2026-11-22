@@ -1,4 +1,5 @@
 use super::support::*;
+use fleet_machine_login::policy::IDLE_EXPIRY_SECONDS;
 
 #[expect(
     clippy::panic_in_result_fn,
@@ -97,10 +98,10 @@ async fn first_grant_uses_the_codes_exact_deadline_and_lapse_keeps_the_working_l
 
 #[expect(
     clippy::panic_in_result_fn,
-    reason = "Renewal and exact 30-day idle expiry must use the one injected clock and write automatic multi-record effects."
+    reason = "Renewal and exact 60-day idle expiry must use the one injected clock and write automatic multi-record effects."
 )]
 #[tokio::test]
-async fn renewal_extends_idle_deadline_and_thirty_days_without_grant_expires_once() -> Result<()> {
+async fn renewal_extends_idle_deadline_and_sixty_days_without_grant_expires_once() -> Result<()> {
     let f = MachineFixture::new().await?;
     let enrollment_id = enrollment(
         &f.post(
@@ -129,29 +130,34 @@ async fn renewal_extends_idle_deadline_and_thirty_days_without_grant_expires_onc
             .await?,
         (200, grant(&enrollment_id, INSTALLATION, f.now(), None))
     );
-    let renewed = f.now();
     assert_eq!(
         f.rows("SELECT enrollment_generation FROM login_machines")
             .await?,
         vec![vec![number(1)]]
     );
-    f.advance(30 * 24 * 60 * 60 * 1000 - 1000).await?;
+    // Both intervals must fit within the organization statement lifetime.
+    f.advance(u64::try_from(IDLE_EXPIRY_SECONDS * 2 / 3 * 1000)?)
+        .await?;
     assert_eq!(
         f.post(TOKEN, &token(&enrollment_id, &enrollment_id))
             .await?,
         (200, grant(&enrollment_id, INSTALLATION, f.now(), None)),
-        "a grant one second before idle expiry restarts the idle clock"
+        "a grant before idle expiry restarts the idle clock"
     );
-    let last = f.now();
-    assert!(last > renewed);
-    f.advance(30 * 24 * 60 * 60 * 1000).await?;
+    assert_eq!(
+        f.rows("SELECT unixepoch(last_grant_at) FROM login_machine_approvals")
+            .await?,
+        vec![vec![number(f.now())]]
+    );
+    f.advance(u64::try_from(IDLE_EXPIRY_SECONDS * 1000)?)
+        .await?;
     assert_eq!(
         f.post(TOKEN, &token(&enrollment_id, &enrollment_id))
             .await?,
         (200, refused("idleExpired"))
     );
     assert_eq!(
-        f.rows("SELECT state,enrollment_generation,allowed_workspaces FROM login_machines")
+        f.rows("SELECT state,enrollment_generation,(SELECT json_group_array(workspace_id) FROM (SELECT workspace_id FROM login_machine_allowances WHERE machine_id=login_machines.machine_id AND state='active' ORDER BY allowance_id)) FROM login_machines")
             .await?,
         vec![vec![text("revoked"), number(2), text("[]")]]
     );

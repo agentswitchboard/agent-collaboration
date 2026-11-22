@@ -3,7 +3,7 @@ use central_storage::StoreFailure;
 use fleet_identity_protocol::{EnrollmentId, OrganizationId, UnixSeconds};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
-use workspace_ids::MachineId;
+use workspace_ids::{MachineId, WorkspaceId};
 
 /// Hibernation provenance is untrusted until the runtime restores it against live rows.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -59,6 +59,11 @@ impl MachineConnectionAttachment {
 
 /// Restores the attachment against live login rows under the turn held by the caller.
 pub trait LiveMachineConnection: Send + Sync {
+    fn active_workspaces_held(
+        &self,
+        machine: &MachineId,
+    ) -> impl Future<Output = Result<Vec<WorkspaceId>, StoreFailure>> + Send;
+
     fn restore_held(
         &self,
         attachment: &MachineConnectionAttachment,

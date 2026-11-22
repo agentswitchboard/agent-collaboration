@@ -212,6 +212,26 @@ fn idle_expiry(
     ))
 }
 
+pub(crate) fn expire_current_if_idle(
+    facts: &EnrollmentFacts,
+    time: DecisionTime,
+    ids: &dyn IdSource,
+) -> Result<Option<Decided<()>>, StoreFailure> {
+    let enrollment = facts.enrollment.as_ref().ok_or(StoreFailure::Unavailable)?;
+    let StoredEnrollmentState::Enrolled { last_grant_at, .. } = &enrollment.state else {
+        return Err(StoreFailure::Unavailable);
+    };
+    if time.seconds().0.saturating_sub(last_grant_at.0) < IDLE_EXPIRY_SECONDS {
+        return Ok(None);
+    }
+    let decided = idle_expiry(enrollment, facts, time, &DecisionIds(ids))?;
+    Ok(Some(Decided {
+        answer: (),
+        changes: decided.changes,
+        written_at_ms: decided.written_at_ms,
+    }))
+}
+
 pub(super) fn append_allowance_records(
     changes: &mut Vec<EnrollmentChange>,
     machine: &MachineRow,

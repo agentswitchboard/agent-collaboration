@@ -60,7 +60,7 @@ pub fn statements(
                 text(before.label.as_str()),
                 encode(
                     &before.allowed_workspaces,
-                    "login_machines.allowed_workspaces"
+                    "login_machine_allowances.workspace_id"
                 )?
             ]
         ));
@@ -101,6 +101,7 @@ pub fn statements(
                 if record.created_at_millis.0 != applying_ms {
                     return Err(corrupt("signin_change_records.created_at"));
                 }
+                statements.push(apply_allowance(record, &at)?);
                 statements.push(
                     fleet_signin::organization_change::insert_machine_allowance_change(record)?,
                 );
@@ -137,10 +138,6 @@ fn put_machine(
     next: &MachineRow,
     at: &str,
 ) -> Result<GuardedStatement, StoreFailure> {
-    let allowed = encode(
-        &next.allowed_workspaces,
-        "login_machines.allowed_workspaces",
-    )?;
     match before {
         None => {
             if next.generation.get() != 0 || next.state != MachineState::Revoked {
@@ -152,7 +149,6 @@ fn put_machine(
                     text(next.machine_id.as_str()),
                     text(next.label.as_str()),
                     text(machine_state(next.state)),
-                    allowed,
                     generation(next.generation.get())?,
                     text(at),
                     text(at),
@@ -173,21 +169,57 @@ fn put_machine(
                 [
                     text(next.label.as_str()),
                     text(machine_state(next.state)),
-                    allowed,
                     generation(next.generation.get())?,
                     text(at),
                     text(before.machine_id.as_str()),
                     generation(before.generation.get())?,
                     text(machine_state(before.state)),
                     text(before.label.as_str()),
-                    encode(
-                        &before.allowed_workspaces,
-                        "login_machines.allowed_workspaces",
-                    )?,
                 ]
             ))
         }
     }
+}
+
+fn apply_allowance(
+    record: &fleet_signin::organization_change::MachineAllowanceChange,
+    at: &str,
+) -> Result<GuardedStatement, StoreFailure> {
+    use fleet_signin::organization_change::{MachineAllowanceState, OrganizationChangeOrigin};
+
+    let origin = match &record.origin {
+        OrganizationChangeOrigin::Person { .. } => "person",
+        OrganizationChangeOrigin::Automatic {} => "automatic",
+        OrganizationChangeOrigin::SignInProvisioning {} => {
+            return Err(corrupt("login_machine_allowances.change_origin"));
+        }
+    };
+    let machine = record.machine_id.as_str();
+    let workspace = record.workspace_id.as_str();
+    let request = record.request_id.as_str();
+    Ok(match record.state {
+        MachineAllowanceState::Active => checked_statement!(
+            "src/queries/activate_machine_allowance.sql",
+            [
+                text(record.id),
+                text(machine),
+                text(workspace),
+                text(request),
+                text(origin),
+                text(at)
+            ]
+        ),
+        MachineAllowanceState::Withdrawn => checked_statement!(
+            "src/queries/withdraw_machine_allowance.sql",
+            [
+                text(machine),
+                text(workspace),
+                text(request),
+                text(origin),
+                text(at)
+            ]
+        ),
+    })
 }
 
 struct EncodedState {

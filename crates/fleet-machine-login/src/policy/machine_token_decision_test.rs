@@ -236,7 +236,7 @@ fn wrong_client_unknown_org_and_inactive_states_never_mint_or_write() {
 }
 
 #[test]
-fn exact_thirty_day_idle_boundary_withdraws_allowances_with_automatic_compound_records() {
+fn exact_sixty_day_idle_boundary_withdraws_allowances_with_automatic_compound_records() {
     let last = NOW_S - IDLE_EXPIRY_SECONDS;
     let active = enrolled(40, 0, last);
     let facts = facts(active.clone(), Some(active), 1);
@@ -296,11 +296,11 @@ fn exact_thirty_day_idle_boundary_withdraws_allowances_with_automatic_compound_r
 fn each_grant_restarts_the_idle_period_using_whole_seconds() {
     let active = enrolled(40, 0, NOW_S);
     let facts = facts(active.clone(), Some(active), 1);
-    let twenty_days = 20 * 24 * 60 * 60 * 1000;
-    let plan = decide_token(&facts, NOW_MS + twenty_days);
+    let renewal_interval = IDLE_EXPIRY_SECONDS * 1000 * 2 / 3;
+    let plan = decide_token(&facts, NOW_MS + renewal_interval);
     let next = project(&facts, &plan);
     assert!(matches!(
-        decide_token(&next, NOW_MS + 2 * twenty_days).answer,
+        decide_token(&next, NOW_MS + 2 * renewal_interval).answer,
         MachineTokenDecision::Grant { .. }
     ));
 }

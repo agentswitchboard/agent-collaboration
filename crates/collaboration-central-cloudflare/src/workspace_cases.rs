@@ -45,6 +45,9 @@ enum Point {
     AfterDrainCommit,
     BeforeTimerCommit,
     BeforeReceiptTransaction,
+    AfterIdleExpiryCommit,
+    BeforeIdleEnrollmentCleanup,
+    AfterIdleEnrollmentCleanup,
     AfterTimerCommit,
     AfterEngineAttemptGate,
     AfterEngineLoad,
@@ -66,6 +69,9 @@ impl From<Point> for PausePoint {
             Point::AfterDrainCommit => Self::AfterDrainCommit,
             Point::BeforeTimerCommit => Self::BeforeTimerCommit,
             Point::BeforeReceiptTransaction => Self::BeforeReceiptTransaction,
+            Point::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
+            Point::BeforeIdleEnrollmentCleanup => Self::BeforeIdleEnrollmentCleanup,
+            Point::AfterIdleEnrollmentCleanup => Self::AfterIdleEnrollmentCleanup,
             Point::AfterTimerCommit => Self::AfterTimerCommit,
             Point::AfterEngineAttemptGate => Self::AfterEngineAttemptGate,
             Point::AfterEngineLoad => Self::AfterEngineLoad,
@@ -257,6 +263,10 @@ pub(super) async fn control(
         "/test/machine-restore-failure" => {
             let (skip, failure) = request.json().await?;
             runtime.fail_machine_restore_after(skip, failure);
+            Response::from_json(&true)
+        }
+        "/test/fail-idle-renewal-send" => {
+            runtime.fail_next_idle_renewal_send();
             Response::from_json(&true)
         }
         "/test/engine-probe-seed" => {

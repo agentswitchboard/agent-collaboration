@@ -24,7 +24,8 @@ mod machine_login_plans;
 #[cfg(feature = "test-support")]
 mod machine_login_test_control;
 pub use machine_connection_admission::{
-    MachineLinkRequestAuthority, MachineTokenRenewalRefusal, RenewedMachineConnection,
+    IdleEndedEnrollment, MachineLinkAdmission, MachineLinkRequestAuthority,
+    MachineTokenRenewalRefusal, RenewedMachineConnection,
 };
 mod workspace_caller;
 pub use workspace_caller::WorkspaceCaller;

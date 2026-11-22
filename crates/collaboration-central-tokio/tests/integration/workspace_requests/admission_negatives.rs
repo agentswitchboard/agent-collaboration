@@ -110,10 +110,10 @@ async fn live_admission_refuses_revoked_expired_wrong_credential_and_archived_di
             "UPDATE directory_workspaces SET state='active' WHERE workspace_id=?",
         ),
         (
-            "UPDATE login_machines SET allowed_workspaces='[]' WHERE machine_id=?",
+            "UPDATE login_machine_allowances SET state='withdrawn' WHERE machine_id=? AND state='active'",
             text(f.caller.caller().machine_id()),
             m::RefusalReason::WorkspaceNotAllowed,
-            "UPDATE login_machines SET allowed_workspaces=? WHERE machine_id=?",
+            collaboration_central_conformance::REPLACE_FIXTURE_ALLOWANCES_SQL,
         ),
     ];
     for (index, (sql, key, refusal, restore)) in edits.into_iter().enumerate() {
@@ -145,7 +145,7 @@ async fn live_admission_refuses_revoked_expired_wrong_credential_and_archived_di
             .result,
             m::WorkspaceResult::Refused(refusal)
         );
-        let args = if restore.contains("allowed_workspaces") {
+        let args = if restore == collaboration_central_conformance::REPLACE_FIXTURE_ALLOWANCES_SQL {
             vec![text(serde_json::to_string(&[&f.workspace]).unwrap()), key]
         } else {
             vec![key]

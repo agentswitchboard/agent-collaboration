@@ -12,6 +12,8 @@ use fleet_runtime_ports::{
     guarded_statements::text, stored_values::string, workspace_decode_error::corrupt,
 };
 use fleet_signin::organization_change::{OrganizationChangeOrigin, read_machine_supersession};
+use message_board::WorkspaceId;
+use workspace_ids::MachineId;
 
 macro_rules! checked_read {
     ($query:literal $(, $input:expr)* $(,)?) => {{
@@ -76,7 +78,7 @@ pub async fn facts(
     } else {
         None
     };
-    let machine = if let Some(machine_id) = &query.machine_id {
+    let mut machine = if let Some(machine_id) = &query.machine_id {
         let rows = host
             .read(checked_read!(
                 "src/queries/read_machine_by_id.sql",
@@ -98,6 +100,9 @@ pub async fn facts(
     } else {
         None
     };
+    if let Some(found) = &mut machine {
+        found.allowed_workspaces = read_active_allowances(host, &found.machine_id).await?;
+    }
     let active = if let Some(found) = &machine {
         let rows = host
             .read(checked_read!(
@@ -151,6 +156,54 @@ pub async fn facts(
         superseded_client,
         missing_workspaces,
     })
+}
+
+pub(crate) async fn read_active_allowances(
+    host: &impl CentralStore,
+    machine_id: &MachineId,
+) -> Result<Vec<WorkspaceId>, StoreFailure> {
+    let rows = host
+        .read(checked_read!(
+            "src/queries/read_machine_allowances.sql",
+            machine_id.as_str()
+        ))
+        .await?;
+    let mut allowed = Vec::new();
+    for row in &rows.rows {
+        let allowance_id = string(&rows, row, "allowance_id")?;
+        crate::enrollment_row_values::private_id(
+            allowance_id,
+            "login_machine_allowances.allowance_id",
+        )?;
+        let workspace: WorkspaceId = identifier(
+            string(&rows, row, "workspace_id")?,
+            "login_machine_allowances.workspace_id",
+        )?;
+        let _: fleet_signin::organization_change::ChangeRequestId =
+            string(&rows, row, "change_request_id")?
+                .to_owned()
+                .try_into()?;
+        if !matches!(string(&rows, row, "change_origin")?, "person" | "automatic") {
+            return Err(corrupt("login_machine_allowances.change_origin"));
+        }
+        let created = crate::enrollment_row_values::millis(
+            string(&rows, row, "created_at")?,
+            "login_machine_allowances.created_at",
+        )?;
+        let updated = crate::enrollment_row_values::millis(
+            string(&rows, row, "updated_at")?,
+            "login_machine_allowances.updated_at",
+        )?;
+        if updated < created {
+            return Err(corrupt("login_machine_allowances.updated_at"));
+        }
+        match string(&rows, row, "state")? {
+            "active" => allowed.push(workspace),
+            "withdrawn" => {}
+            _ => return Err(corrupt("login_machine_allowances.state")),
+        }
+    }
+    Ok(allowed)
 }
 
 async fn superseded_client(

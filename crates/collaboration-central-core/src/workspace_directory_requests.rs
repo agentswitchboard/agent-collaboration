@@ -135,8 +135,8 @@ pub(crate) async fn execute<Host: CentralStore, Stores: WorkspaceStores>(
                 .map(Into::into)
                 .collect();
             let allowed = runtime
-                .access()
-                .allowed_workspaces(caller.connection().machine_id())
+                .machine_login_service()
+                .active_workspaces(caller.connection().machine_id())
                 .await?;
             Ok(reply(
                 match workspace_rules::workspace_list_answer(

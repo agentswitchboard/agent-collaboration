@@ -16,7 +16,7 @@ use fleet_identity_protocol::{EnrollmentId, OrganizationId};
 use futures_util::{SinkExt, StreamExt};
 use reqwest_websocket::{CloseCode, Message, RequestBuilderExt, WebSocket};
 use router_clock::ManualClock;
-use runtime_primitives::{Clock, SyncTime};
+use runtime_primitives::SyncTime;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
 use std::sync::Arc;
@@ -143,16 +143,22 @@ impl Fixture {
 
     pub async fn allow_workspace(&self, workspace: &WorkspaceId) -> Result<()> {
         // This is an allowance precondition, not proof of an admin authorization journey.
-        let timestamp = chrono::DateTime::from_timestamp_millis(self.clock.now().unix_millis())
-            .ok_or("fixture UTC")?;
-        let result = self.runtime().run_batch(StatementBatch {
-            statements: vec![GuardedStatement {
-                statement: Statement {
-                    sql:"UPDATE login_machines SET allowed_workspaces=?,updated_at=? WHERE machine_id=?",
-                    args:vec![SqlValue::Text(serde_json::to_string(&vec![workspace])?),SqlValue::Text(timestamp.to_rfc3339()),SqlValue::Text(MACHINE_ID.into())],
-                }, expect:RowExpectation::Exactly(1),
-            }], alarm:AlarmUpdate::Unchanged,
-        }).await?;
+        let result = self
+            .runtime()
+            .run_batch(StatementBatch {
+                statements: vec![GuardedStatement {
+                    statement: Statement {
+                        sql: collaboration_central_conformance::REPLACE_FIXTURE_ALLOWANCES_SQL,
+                        args: vec![
+                            SqlValue::Text(serde_json::to_string(&vec![workspace])?),
+                            SqlValue::Text(MACHINE_ID.into()),
+                        ],
+                    },
+                    expect: RowExpectation::Exactly(1),
+                }],
+                alarm: AlarmUpdate::Unchanged,
+            })
+            .await?;
         if !matches!(result, BatchOutcome::Applied { .. }) {
             return Err("fixture allowance precondition failed".into());
         }
@@ -205,7 +211,7 @@ async fn post<Answer: DeserializeOwned>(
     Ok(response.json().await?)
 }
 
-async fn approve(
+pub(super) async fn approve(
     host: &WorkerdHost,
     client: &reqwest::Client,
     request_id: &str,
@@ -222,7 +228,7 @@ async fn approve(
     }
 }
 
-async fn grant(
+pub(super) async fn grant(
     host: &WorkerdHost,
     client: &reqwest::Client,
     enrollment: &EnrollmentId,

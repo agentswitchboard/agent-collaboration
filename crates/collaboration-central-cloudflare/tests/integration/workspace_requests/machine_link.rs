@@ -5,6 +5,7 @@ mod batch_restore;
 mod caller_authority;
 mod delivery;
 mod fixture;
+mod idle_expiry;
 mod probe_diagnostic;
 mod receipt;
 mod receipt_frames;

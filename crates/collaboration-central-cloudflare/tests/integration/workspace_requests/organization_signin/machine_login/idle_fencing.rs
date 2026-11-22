@@ -1,4 +1,5 @@
 use super::support::*;
+use fleet_machine_login::policy::IDLE_EXPIRY_SECONDS;
 
 #[expect(
     clippy::panic_in_result_fn,
@@ -23,7 +24,8 @@ async fn idle_expiry_fences_a_still_claimable_approval_and_fresh_approval_can_ac
         (200, grant(&first, INSTALLATION, f.now(), None))
     );
     let first_granted_at = f.now();
-    f.advance((30 * 24 * 60 * 60 - 60) * 1000).await?;
+    f.advance(u64::try_from((IDLE_EXPIRY_SECONDS - 60) * 1000)?)
+        .await?;
     let pending_body = approval(0xdb02, INSTALLATION, "Pending E2", &[WORKSPACE], f.now());
     let code_expires_at = pending_body["codeExpiresAt"].as_i64().unwrap();
     let pending_reply = f.post(DEVICE, &pending_body).await?;
@@ -34,7 +36,7 @@ async fn idle_expiry_fences_a_still_claimable_approval_and_fresh_approval_can_ac
         json!({"result":"approved","enrollmentId":pending,"label":"Pending E2","allowedWorkspaces":[WORKSPACE]})
     );
     assert_eq!(
-        f.rows("SELECT state,enrollment_generation,label,allowed_workspaces FROM login_machines")
+        f.rows("SELECT state,enrollment_generation,label,(SELECT json_group_array(workspace_id) FROM (SELECT workspace_id FROM login_machine_allowances WHERE machine_id=login_machines.machine_id AND state='active' ORDER BY allowance_id)) FROM login_machines")
             .await?,
         vec![vec![
             text("enrolled"),
@@ -63,7 +65,7 @@ async fn idle_expiry_fences_a_still_claimable_approval_and_fresh_approval_can_ac
 
     // Act: E1's exact idle boundary revokes it while E2's real code remains live.
     f.advance(60_000).await?;
-    assert_eq!(f.now(), first_granted_at + 30 * 24 * 60 * 60);
+    assert_eq!(f.now(), first_granted_at + IDLE_EXPIRY_SECONDS);
     assert!(f.now() < code_expires_at);
     f.execute("CREATE TRIGGER fail_idle_expiry BEFORE INSERT ON signin_change_records WHEN NEW.kind='machineAllowanceChanged' AND NEW.origin='automatic' BEGIN SELECT RAISE(ABORT,'fixture final idle allowance record failure'); END",vec![]).await?;
     let before_failed_expiry = snapshot(&f).await?;
@@ -81,7 +83,7 @@ async fn idle_expiry_fences_a_still_claimable_approval_and_fresh_approval_can_ac
         (200, refused("idleExpired"))
     );
     assert_eq!(
-        f.rows("SELECT state,allowed_workspaces FROM login_machines")
+        f.rows("SELECT state,(SELECT json_group_array(workspace_id) FROM (SELECT workspace_id FROM login_machine_allowances WHERE machine_id=login_machines.machine_id AND state='active' ORDER BY allowance_id)) FROM login_machines")
             .await?,
         vec![vec![text("revoked"), text("[]")]]
     );
@@ -101,7 +103,7 @@ async fn idle_expiry_fences_a_still_claimable_approval_and_fresh_approval_can_ac
         "the stale first claim changed machine, approvals, records or credentials"
     );
     assert_eq!(
-        f.rows("SELECT state,enrollment_generation,allowed_workspaces FROM login_machines")
+        f.rows("SELECT state,enrollment_generation,(SELECT json_group_array(workspace_id) FROM (SELECT workspace_id FROM login_machine_allowances WHERE machine_id=login_machines.machine_id AND state='active' ORDER BY allowance_id)) FROM login_machines")
             .await?,
         vec![vec![text("revoked"), number(2), text("[]")]]
     );
@@ -142,7 +144,7 @@ async fn idle_expiry_fences_a_still_claimable_approval_and_fresh_approval_can_ac
         (200, grant(&fresh, INSTALLATION, f.now(), None))
     );
     assert_eq!(
-        f.rows("SELECT state,enrollment_generation,allowed_workspaces FROM login_machines")
+        f.rows("SELECT state,enrollment_generation,(SELECT json_group_array(workspace_id) FROM (SELECT workspace_id FROM login_machine_allowances WHERE machine_id=login_machines.machine_id AND state='active' ORDER BY allowance_id)) FROM login_machines")
             .await?,
         vec![vec![
             text("enrolled"),

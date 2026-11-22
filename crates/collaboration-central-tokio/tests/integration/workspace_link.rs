@@ -6,6 +6,7 @@ mod batch_restore;
 mod caller_authority;
 mod delivery;
 mod fixture;
+mod idle_expiry;
 mod link_support;
 mod receipt_frames;
 mod renewal_contract;

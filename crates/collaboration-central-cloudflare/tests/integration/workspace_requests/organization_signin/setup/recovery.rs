@@ -137,7 +137,7 @@ async fn person_create_records_checked_origin_without_machine_rights() {
         "person create grants no ordinary machine allowance"
     );
     f.execute(
-        "UPDATE login_machines SET allowed_workspaces=? WHERE machine_id=?",
+        collaboration_central_conformance::REPLACE_FIXTURE_ALLOWANCES_SQL,
         vec![
             SqlValue::Text(serde_json::to_string(&vec![&operation]).unwrap()),
             SqlValue::Text(caller.caller.machine_id().to_string()),

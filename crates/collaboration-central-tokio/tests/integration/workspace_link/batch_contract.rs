@@ -78,7 +78,7 @@ async fn native_batch_keeps_order_and_continues_after_a_middle_semantic_refusal(
         .run_batch(StatementBatch {
             statements: vec![GuardedStatement {
                 statement: Statement {
-                    sql: "UPDATE login_machines SET allowed_workspaces=? WHERE machine_id=?",
+                    sql: collaboration_central_conformance::REPLACE_FIXTURE_ALLOWANCES_SQL,
                     args: vec![
                         SqlValue::Text(serde_json::to_string(&vec![
                             workspace.workspace_id.clone(),
