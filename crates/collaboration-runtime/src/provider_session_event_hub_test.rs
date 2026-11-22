@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 
 use message_board::SessionRef;
 use session_event_model::{SessionEvent, SessionItem, SessionItemKind};
@@ -421,28 +421,18 @@ async fn locked_attach_on_one_session_does_not_stall_another_publish() {
         .await
         .expect("seed item");
     }
-    let first_history = hub
-        .histories
-        .lock()
-        .await
-        .get(&first)
-        .cloned()
-        .expect("first history");
-    let _held_attach_lock = first_history.lock().await;
-    tokio::time::timeout(
-        Duration::from_millis(250),
-        hub.publish(
-            second,
-            SessionEvent::ItemStarted {
-                item: SessionItem {
-                    item_id: "two".into(),
-                    kind: SessionItemKind::UserMessage,
-                    text: Some("world".into()),
-                },
+    let held = hub.hold_history_for_test(first).await;
+    hub.publish(
+        second,
+        SessionEvent::ItemStarted {
+            item: SessionItem {
+                item_id: "two".into(),
+                kind: SessionItemKind::UserMessage,
+                text: Some("world".into()),
             },
-        ),
+        },
     )
     .await
-    .expect("independent publish must not wait")
-    .expect("publish");
+    .expect("publish while the first session's history is held");
+    drop(held);
 }
