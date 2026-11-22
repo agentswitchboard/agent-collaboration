@@ -2,4 +2,6 @@
 
 mod reply_carrier;
 
-pub use reply_carrier::{CarrierReceiver, CarrierSender, StampedMessage, reply_carrier};
+pub use reply_carrier::{
+    CarrierReceiver, CarrierReply, CarrierSender, StampedMessage, reply_carrier,
+};

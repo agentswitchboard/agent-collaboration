@@ -10,8 +10,10 @@ use std::{
     num::NonZeroUsize,
     sync::Arc,
 };
-use switchboard_harness_contracts::{EventPort as _, ReplyAdmission, ReservedReply, WriterState};
-use switchboard_harness_shared_mechanics::{CarrierReceiver, CarrierSender, reply_carrier};
+use switchboard_harness_contracts::WriterState;
+use switchboard_harness_shared_mechanics::{
+    CarrierReceiver, CarrierReply, CarrierSender, reply_carrier,
+};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
@@ -87,18 +89,25 @@ pub struct OwnerCompletionPort {
 }
 
 pub struct OwnerCompletion {
-    reply: Box<dyn ReservedReply<OwnerEvent>>,
+    reply: CarrierReply<OwnerAddress, OwnerEvent>,
 }
+
+const _: fn() = {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<OwnerCompletion>
+};
 
 impl OwnerCompletionPort {
     /// Reserve before offering external work. Completion then needs neither
     /// spare mailbox space nor an await, even if the business mailbox is full.
     pub fn reserve(&self, address: OwnerAddress) -> Result<OwnerCompletion, OwnerTaskError> {
-        match self.carrier.reserve(address, std::convert::identity) {
-            ReplyAdmission::Reserved(reply) => Ok(OwnerCompletion { reply }),
-            ReplyAdmission::Refused(WriterState::Full) => Err(OwnerTaskError::CompletionCapacity),
-            ReplyAdmission::Refused(WriterState::Stopped) => Err(OwnerTaskError::ExecutorStopped),
-        }
+        self.carrier
+            .reserve_inline(address)
+            .map(|reply| OwnerCompletion { reply })
+            .map_err(|reason| match reason {
+                WriterState::Full => OwnerTaskError::CompletionCapacity,
+                WriterState::Stopped => OwnerTaskError::ExecutorStopped,
+            })
     }
 
     /// A run's SDK reader can yield for its own completion channel and stop
@@ -110,8 +119,7 @@ impl OwnerCompletionPort {
         retired: &CancellationToken,
     ) -> Result<(), OwnerTaskError> {
         self.carrier
-            .event_port(address, retired, std::convert::identity)
-            .send(event)
+            .send_stream(address, event, retired, std::convert::identity)
             .await
             .map_err(|_| OwnerTaskError::ExecutorStopped)
     }

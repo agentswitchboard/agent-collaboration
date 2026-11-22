@@ -40,5 +40,5 @@ pub trait EventPort<Event>: Send + Sync {
         Event: 'a;
 }
 
-/// A backpressured event send uses standard futures at the provider boundary.
+/// An event producer receives this standard future from a backpressured send.
 pub type EventSendFuture<'a> = Pin<Box<dyn Future<Output = Result<(), EventRefusal>> + Send + 'a>>;
