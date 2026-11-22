@@ -86,25 +86,35 @@ async fn approval_refuses_changed_inputs_and_replays_the_retained_snapshot_after
         "owning reopen and a day beyond code expiry retain the exact three-field approval"
     );
     assert!(snapshot(&f).await? == activated);
-    let rows=f.rows("SELECT request_id,kind,origin,actor_person_id,permission_checked,target_id FROM signin_change_records WHERE kind='allowanceChanged' ORDER BY target_id").await?;
+    let rows=f.rows("SELECT request_id,kind,origin,actor_person_id,permission_checked,target_id,workspace_id,allowance_state FROM signin_change_records WHERE kind='machineAllowanceChanged' ORDER BY workspace_id").await?;
     assert_eq!(
         rows,
         vec![
             vec![
-                text(format!("{}:allowanceChanged:{WORKSPACE}", id(0xc101))),
-                text("allowanceChanged"),
+                text(format!(
+                    "{}:machineAllowanceChanged:{WORKSPACE}",
+                    id(0xc101)
+                )),
+                text("machineAllowanceChanged"),
                 text("person"),
                 text(signed::OWNER),
                 text("machine:enroll"),
-                text(WORKSPACE)
+                text(INSTALLATION),
+                text(WORKSPACE),
+                text("active")
             ],
             vec![
-                text(format!("{}:allowanceChanged:{WORKSPACE_TWO}", id(0xc101))),
-                text("allowanceChanged"),
+                text(format!(
+                    "{}:machineAllowanceChanged:{WORKSPACE_TWO}",
+                    id(0xc101)
+                )),
+                text("machineAllowanceChanged"),
                 text("person"),
                 text(signed::OWNER),
                 text("machine:enroll"),
-                text(WORKSPACE_TWO)
+                text(INSTALLATION),
+                text(WORKSPACE_TWO),
+                text("active")
             ]
         ]
     );

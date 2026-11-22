@@ -141,6 +141,8 @@ impl StampWrite {
             .to_owned();
         let audit = self.audit.insert_values()?;
         let audit_timestamp = audit.timestamp.get();
+        let workspace = audit.allowance.map(|fields| fields.workspace);
+        let allowance_state = audit.allowance.map(|fields| fields.state);
         let result = match self.mutation {
             StampMutation::Initialize(accepted) => {
                 let id = accepted.organization_id().as_str().to_owned();
@@ -213,7 +215,9 @@ impl StampWrite {
             &audit.permission,
             &audit.target,
             audit_timestamp,
-            audit_timestamp
+            audit_timestamp,
+            workspace,
+            allowance_state,
         );
         let result = sqlx::query::<T::Database>(include_str!("queries/insert_change_record.sql"))
             .bind(audit.id)
@@ -225,6 +229,8 @@ impl StampWrite {
             .bind(audit.target.to_owned())
             .bind(audit_timestamp)
             .bind(audit_timestamp)
+            .bind(workspace.map(str::to_owned))
+            .bind(allowance_state.map(str::to_owned))
             .execute(tx.executor())
             .await
             .map_err(|source| StampWriteStop::Sql { index: 1, source })?;

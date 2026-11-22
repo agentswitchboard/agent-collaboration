@@ -155,7 +155,7 @@ async fn renewal_extends_idle_deadline_and_thirty_days_without_grant_expires_onc
             .await?,
         vec![vec![text("revoked"), number(2)?, text("[]")]]
     );
-    let records=f.rows("SELECT request_id,kind,origin,actor_person_id,permission_checked,target_id FROM signin_change_records WHERE origin='automatic' ORDER BY id").await?;
+    let records=f.rows("SELECT request_id,kind,origin,actor_person_id,permission_checked,target_id,workspace_id,allowance_state FROM signin_change_records WHERE origin='automatic' ORDER BY id").await?;
     assert_eq!(
         records,
         vec![
@@ -165,23 +165,33 @@ async fn renewal_extends_idle_deadline_and_thirty_days_without_grant_expires_onc
                 text("automatic"),
                 central_storage::SqlValue::Null,
                 central_storage::SqlValue::Null,
-                text(&enrollment_id)
+                text(&enrollment_id),
+                central_storage::SqlValue::Null,
+                central_storage::SqlValue::Null
             ],
             vec![
-                text(format!("{enrollment_id}:allowanceChanged:{WORKSPACE}")),
-                text("allowanceChanged"),
+                text(format!(
+                    "{enrollment_id}:machineAllowanceChanged:{WORKSPACE}"
+                )),
+                text("machineAllowanceChanged"),
                 text("automatic"),
                 central_storage::SqlValue::Null,
                 central_storage::SqlValue::Null,
-                text(WORKSPACE)
+                text(INSTALLATION),
+                text(WORKSPACE),
+                text("withdrawn")
             ],
             vec![
-                text(format!("{enrollment_id}:allowanceChanged:{WORKSPACE_TWO}")),
-                text("allowanceChanged"),
+                text(format!(
+                    "{enrollment_id}:machineAllowanceChanged:{WORKSPACE_TWO}"
+                )),
+                text("machineAllowanceChanged"),
                 text("automatic"),
                 central_storage::SqlValue::Null,
                 central_storage::SqlValue::Null,
-                text(WORKSPACE_TWO)
+                text(INSTALLATION),
+                text(WORKSPACE_TWO),
+                text("withdrawn")
             ]
         ]
     );

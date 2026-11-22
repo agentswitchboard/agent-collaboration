@@ -24,11 +24,24 @@ pub struct Fixture {
     pub _plan_root: tempfile::TempDir,
     client: reqwest::Client,
 }
+
+#[derive(Clone, Copy)]
+enum SignInStoreStart {
+    Fresh,
+    BeforeAllowanceAudit,
+}
+
 impl Fixture {
     pub async fn new() -> Self {
         Self::new_with_issuer(fixture::ISSUER).await
     }
     pub async fn new_with_issuer(issuer: &str) -> Self {
+        Self::open_signin_store(issuer, SignInStoreStart::Fresh).await
+    }
+    pub async fn new_before_allowance_audit() -> Self {
+        Self::open_signin_store(fixture::ISSUER, SignInStoreStart::BeforeAllowanceAudit).await
+    }
+    async fn open_signin_store(issuer: &str, start: SignInStoreStart) -> Self {
         let keys = SignInKeys::start().await.unwrap();
         let root = tempfile::tempdir().unwrap();
         let plan = root.path().join("signin-plan.json");
@@ -49,6 +62,18 @@ impl Fixture {
             .await
             .unwrap();
         let org = ORG.to_owned().try_into().unwrap();
+        if let SignInStoreStart::BeforeAllowanceAudit = start {
+            let seeded = host
+                .cold_runtime(&org)
+                .control::<Result<Value, String>>(
+                    "raw-engine-due-migration",
+                    &"seedBeforeAllowanceAudit",
+                )
+                .await
+                .unwrap()
+                .unwrap();
+            assert_eq!(seeded["ledger"]["rows"].as_array().unwrap().len(), 7);
+        }
         host.central(&org).await;
         Self {
             host,

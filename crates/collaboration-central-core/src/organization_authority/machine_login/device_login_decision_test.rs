@@ -2,8 +2,8 @@ use super::super::{
     Decided, EnrollmentChange, EnrollmentGeneration, MachineRow, MachineState, StoredEnrollment,
     StoredEnrollmentState,
     policy_fixture::{
-        CountingIds, NOW_MS, NOW_S, approval, approved, empty_facts, enrolled, id, label, machine,
-        person, records, time, workspace,
+        CountingIds, NOW_MS, NOW_S, allowance_records, approval, approved, empty_facts, enrolled,
+        id, label, machine, person, time, workspace,
     },
 };
 use super::{SD8_MILLIS, decide_device_login};
@@ -12,7 +12,7 @@ use crate::identity_contract::{
 };
 use fleet_identity_protocol::UnixSeconds;
 use fleet_signin::organization_change::{
-    OrganizationChangeKind as Kind, OrganizationChangeOrigin as Origin,
+    MachineAllowanceState, OrganizationChangeOrigin as Origin,
 };
 
 #[test]
@@ -43,16 +43,14 @@ fn approval_plans_an_inactive_snapshot_and_allowance_records_after_its_machine()
             allowed_workspaces: request.allowed_workspaces.clone(),
         }
     );
-    for (record, workspace) in records(&plan)
-        .into_iter()
-        .zip(request.allowed_workspaces.as_slice())
-    {
-        assert_eq!(record.kind, Kind::AllowanceChanged);
-        assert_eq!(record.target_id, workspace.as_str());
+    for (record, workspace) in allowance_records(&plan).zip(request.allowed_workspaces.as_slice()) {
+        assert_eq!(record.machine_id.as_str(), request.machine_id.as_str());
+        assert_eq!(record.state, MachineAllowanceState::Active);
+        assert_eq!(record.workspace_id.as_str(), workspace.as_str());
         assert_eq!(
             record.request_id.as_str(),
             format!(
-                "{}:allowanceChanged:{}",
+                "{}:machineAllowanceChanged:{}",
                 request.request_id.as_str(),
                 workspace.as_str()
             )
@@ -66,7 +64,7 @@ fn approval_plans_an_inactive_snapshot_and_allowance_records_after_its_machine()
         );
         assert_eq!(record.created_at_millis.0, NOW_MS);
     }
-    assert_eq!(records(&plan).len(), 2);
+    assert_eq!(allowance_records(&plan).count(), 2);
     assert_eq!(ids.minted(), 3);
 }
 
@@ -102,14 +100,14 @@ fn duplicate_allowed_workspaces_keep_the_snapshot_but_plan_one_allowance_and_rec
             allowed_workspaces: request.allowed_workspaces.clone(),
         }
     );
-    let audit = records(&plan);
+    let audit: Vec<_> = allowance_records(&plan).collect();
     assert_eq!(audit.len(), 1);
-    assert_eq!(audit[0].kind, Kind::AllowanceChanged);
-    assert_eq!(audit[0].target_id, workspace(50).as_str());
+    assert_eq!(audit[0].state, MachineAllowanceState::Active);
+    assert_eq!(audit[0].workspace_id.as_str(), workspace(50).as_str());
     assert_eq!(
         audit[0].request_id.as_str(),
         format!(
-            "{}:allowanceChanged:{}",
+            "{}:machineAllowanceChanged:{}",
             request.request_id.as_str(),
             workspace(50).as_str()
         )
@@ -140,7 +138,7 @@ fn approving_again_preserves_the_machine_key_generation_active_state_and_existin
                 ..existing
             }
         );
-        assert!(records(&plan).is_empty());
+        assert!(allowance_records(&plan).next().is_none());
         let EnrollmentChange::InsertEnrollment(row) = &plan.changes[1] else {
             panic!("expected snapshot")
         };

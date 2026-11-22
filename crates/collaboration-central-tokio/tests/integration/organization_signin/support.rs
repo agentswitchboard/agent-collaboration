@@ -73,6 +73,9 @@ impl Fixture {
     }
     pub async fn new_with_issuer(issuer: &str) -> Result<Self> {
         let root = tempfile::Builder::new().prefix("signin-").tempdir()?;
+        Self::open_signin_store(root, issuer).await
+    }
+    pub async fn open_signin_store(root: tempfile::TempDir, issuer: &str) -> Result<Self> {
         let clock = Arc::new(GatedClock::starting_at(SyncTime::from_unix_millis(
             signed::NOW_SECONDS * 1000,
         ))?);

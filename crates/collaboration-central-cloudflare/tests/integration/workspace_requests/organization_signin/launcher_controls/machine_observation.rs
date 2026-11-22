@@ -461,8 +461,8 @@ async fn bridge_first_observation_after_real_idle_expiry_accepts_automatic_recor
         .collect();
     let mut expected_records = vec![
         json!({"kind":"machineExpired","requestId":format!("{first}:machineExpired:{first}"),"targetId":first,"createdAtMillis":idle_at*1000}),
-        json!({"kind":"allowanceChanged","requestId":format!("{first}:allowanceChanged:{WORKSPACE_ONE}"),"targetId":WORKSPACE_ONE,"createdAtMillis":idle_at*1000}),
-        json!({"kind":"allowanceChanged","requestId":format!("{first}:allowanceChanged:{WORKSPACE_TWO}"),"targetId":WORKSPACE_TWO,"createdAtMillis":idle_at*1000}),
+        json!({"kind":"machineAllowanceChanged","requestId":format!("{first}:machineAllowanceChanged:{WORKSPACE_ONE}"),"targetId":INSTALLATION,"workspaceId":WORKSPACE_ONE,"allowanceState":"withdrawn","createdAtMillis":idle_at*1000}),
+        json!({"kind":"machineAllowanceChanged","requestId":format!("{first}:machineAllowanceChanged:{WORKSPACE_TWO}"),"targetId":INSTALLATION,"workspaceId":WORKSPACE_TWO,"allowanceState":"withdrawn","createdAtMillis":idle_at*1000}),
     ];
     // Record order is not the approval createdAt ordering contract. Compare their
     // literal content after an independent request-key sort, without dumping IPC.

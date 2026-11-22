@@ -533,7 +533,7 @@ export type RevokeMachineEnrollmentRequest = {
 /**  A signed stamp time in nonnegative, exact JSON integer seconds. */
 export type StatementSeconds = UnixSeconds;
 
-export type TargetedOrganizationChangeKind = "organizationProvisioned" | "stampRenewed" | "workspaceCreated" | "machineEnrolled" | "machineRevoked" | "machineExpired" | "allowanceChanged";
+export type TargetedOrganizationChangeKind = "organizationProvisioned" | "stampRenewed" | "workspaceCreated" | "machineEnrolled" | "machineRevoked" | "machineExpired";
 
 export type TargetedOrganizationChangeRecord = {
 	id: string,

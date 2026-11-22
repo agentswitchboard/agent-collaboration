@@ -7,7 +7,7 @@ use central_storage::StoreFailure;
 use fleet_contracts::ClientId;
 use fleet_identity_protocol::{EnrollmentId, OrganizationId, UnixSeconds};
 use fleet_runtime_ports::workspace_decode_error::corrupt;
-use fleet_signin::organization_change::OrganizationChangeRecord;
+use fleet_signin::organization_change::{MachineAllowanceChange, OrganizationChangeRecord};
 use message_board::{MachineLabel, WorkspaceId};
 use workspace_ids::MachineId;
 
@@ -123,6 +123,7 @@ pub(crate) enum EnrollmentChange {
     ReplaceEnrollment(StoredEnrollment),
     PutMachine(MachineRow),
     Record(OrganizationChangeRecord),
+    RecordAllowance(MachineAllowanceChange),
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct Decided<T> {

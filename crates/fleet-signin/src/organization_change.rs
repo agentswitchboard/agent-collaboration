@@ -11,6 +11,7 @@ use fleet_runtime_ports::{
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
+use workspace_ids::{MachineId, WorkspaceId};
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename = "TargetedOrganizationChangeKind", rename_all = "camelCase")]
 #[cfg_attr(
@@ -24,7 +25,6 @@ pub enum OrganizationChangeKind {
     MachineEnrolled,
     MachineRevoked,
     MachineExpired,
-    AllowanceChanged,
 }
 
 impl OrganizationChangeKind {
@@ -36,7 +36,6 @@ impl OrganizationChangeKind {
             Self::MachineEnrolled => "machineEnrolled",
             Self::MachineRevoked => "machineRevoked",
             Self::MachineExpired => "machineExpired",
-            Self::AllowanceChanged => "allowanceChanged",
         }
     }
     pub fn parse(value: &str) -> Result<Self, StoreFailure> {
@@ -47,7 +46,6 @@ impl OrganizationChangeKind {
             "machineEnrolled" => Ok(Self::MachineEnrolled),
             "machineRevoked" => Ok(Self::MachineRevoked),
             "machineExpired" => Ok(Self::MachineExpired),
-            "allowanceChanged" => Ok(Self::AllowanceChanged),
             _ => Err(corrupt("kind", "unknown change kind")),
         }
     }
@@ -137,6 +135,53 @@ pub struct OrganizationChangeRecord {
     pub created_at_millis: UnixMillis,
 }
 
+pub const MACHINE_ALLOWANCE_CHANGE_KIND: &str = "machineAllowanceChanged";
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub enum MachineAllowanceState {
+    Active,
+    Withdrawn,
+}
+
+impl MachineAllowanceState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Active => "active",
+            Self::Withdrawn => "withdrawn",
+        }
+    }
+
+    fn from_stored(value: &str) -> Result<Self, StoreFailure> {
+        match value {
+            "active" => Ok(Self::Active),
+            "withdrawn" => Ok(Self::Withdrawn),
+            _ => Err(corrupt("allowance_state", "unknown allowance state")),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct MachineAllowanceChange {
+    pub id: Uuid,
+    pub request_id: ChangeRequestId,
+    pub origin: OrganizationChangeOrigin,
+    pub machine_id: MachineId,
+    pub workspace_id: WorkspaceId,
+    pub state: MachineAllowanceState,
+    pub created_at_millis: UnixMillis,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StoredOrganizationChange {
+    TargetedChange(OrganizationChangeRecord),
+    MachineAllowanceChanged(MachineAllowanceChange),
+}
+
 fn corrupt(field: &str, _message: impl std::fmt::Display) -> StoreFailure {
     bad_value(&format!("signin_change_records.{field}"))
 }
@@ -165,29 +210,20 @@ pub(crate) struct AuditInput<'record> {
     pub(crate) permission: Option<&'record str>,
     pub(crate) target: &'record str,
     pub(crate) timestamp: SafeInteger,
+    pub(crate) allowance: Option<AuditAllowanceFields<'record>>,
+}
+
+#[derive(Clone, Copy)]
+pub(crate) struct AuditAllowanceFields<'record> {
+    pub(crate) workspace: &'record str,
+    pub(crate) state: &'static str,
 }
 
 impl OrganizationChangeRecord {
     pub(crate) fn insert_values(&self) -> Result<AuditInput<'_>, StoreFailure> {
         let id = self.id.to_string();
         private_id(&id)?;
-        let (origin, person, permission) = match &self.origin {
-            OrganizationChangeOrigin::SignInProvisioning {} => ("signInProvisioning", None, None),
-            OrganizationChangeOrigin::Automatic {} => ("automatic", None, None),
-            OrganizationChangeOrigin::Person {
-                person_id,
-                permission_checked,
-            } => {
-                if person_id.is_empty() || permission_checked.is_empty() {
-                    return Err(bad_value("signin_change_records.origin"));
-                }
-                (
-                    "person",
-                    Some(person_id.as_str()),
-                    Some(permission_checked.as_str()),
-                )
-            }
-        };
+        let (origin, person, permission) = origin_values(&self.origin)?;
         if self.target_id.is_empty() {
             return Err(bad_value("signin_change_records.target_id"));
         }
@@ -201,13 +237,62 @@ impl OrganizationChangeRecord {
             target: &self.target_id,
             timestamp: SafeInteger::new(self.created_at_millis.0)
                 .map_err(|_| bad_value("signin_change_records.created_at"))?,
+            allowance: None,
         })
     }
 }
 
+type OriginValues<'origin> = (&'static str, Option<&'origin str>, Option<&'origin str>);
+
+fn origin_values(origin: &OrganizationChangeOrigin) -> Result<OriginValues<'_>, StoreFailure> {
+    Ok(match origin {
+        OrganizationChangeOrigin::SignInProvisioning {} => ("signInProvisioning", None, None),
+        OrganizationChangeOrigin::Automatic {} => ("automatic", None, None),
+        OrganizationChangeOrigin::Person {
+            person_id,
+            permission_checked,
+        } => {
+            if person_id.is_empty() || permission_checked.is_empty() {
+                return Err(bad_value("signin_change_records.origin"));
+            }
+            (
+                "person",
+                Some(person_id.as_str()),
+                Some(permission_checked.as_str()),
+            )
+        }
+    })
+}
+
+pub fn insert_machine_allowance_change(
+    record: &MachineAllowanceChange,
+) -> Result<GuardedStatement, StoreFailure> {
+    let id = record.id.to_string();
+    private_id(&id)?;
+    let (origin, person, permission) = origin_values(&record.origin)?;
+    Ok(insert_audit(AuditInput {
+        id,
+        request: record.request_id.as_str(),
+        kind: MACHINE_ALLOWANCE_CHANGE_KIND,
+        origin,
+        person,
+        permission,
+        target: record.machine_id.as_str(),
+        timestamp: SafeInteger::new(record.created_at_millis.0)
+            .map_err(|_| corrupt("created_at", "invalid millisecond"))?,
+        allowance: Some(AuditAllowanceFields {
+            workspace: record.workspace_id.as_str(),
+            state: record.state.as_str(),
+        }),
+    }))
+}
+
 pub fn insert(record: &OrganizationChangeRecord) -> Result<GuardedStatement, StoreFailure> {
-    let audit = record.insert_values()?;
-    Ok(GuardedStatement {
+    Ok(insert_audit(record.insert_values()?))
+}
+
+fn insert_audit(audit: AuditInput<'_>) -> GuardedStatement {
+    GuardedStatement {
         statement: Statement {
             sql: include_str!("queries/insert_change_record.sql"),
             args: vec![
@@ -220,10 +305,16 @@ pub fn insert(record: &OrganizationChangeRecord) -> Result<GuardedStatement, Sto
                 text(audit.target),
                 SqlValue::Integer(audit.timestamp),
                 SqlValue::Integer(audit.timestamp),
+                audit
+                    .allowance
+                    .map_or(SqlValue::Null, |fields| text(fields.workspace)),
+                audit
+                    .allowance
+                    .map_or(SqlValue::Null, |fields| text(fields.state)),
             ],
         },
         expect: RowExpectation::Exactly(1),
-    })
+    }
 }
 fn optional_text(
     rows: &ReadOutcome,
@@ -236,50 +327,131 @@ fn optional_text(
         _ => Err(bad_value(name)),
     }
 }
-fn decode(rows: &ReadOutcome, row: &[SqlValue]) -> Result<OrganizationChangeRecord, StoreFailure> {
-    let id = private_id(string(rows, row, "id")?)?;
-    let request_id = string(rows, row, "request_id")?.to_owned().try_into()?;
-    let kind = OrganizationChangeKind::parse(string(rows, row, "kind")?)?;
-    let person = optional_text(rows, row, "actor_person_id")?;
-    let permission = optional_text(rows, row, "permission_checked")?;
-    let origin = match (string(rows, row, "origin")?, person, permission) {
-        ("signInProvisioning", None, None) => OrganizationChangeOrigin::SignInProvisioning {},
-        ("automatic", None, None) => OrganizationChangeOrigin::Automatic {},
-        ("person", Some(person_id), Some(permission_checked))
-            if !person_id.is_empty() && !permission_checked.is_empty() =>
-        {
-            OrganizationChangeOrigin::Person {
-                person_id,
-                permission_checked,
-            }
-        }
-        _ => return Err(bad_value("signin_change_records.origin")),
+struct StoredChangeRow {
+    id: String,
+    request_id: String,
+    kind: String,
+    origin: String,
+    actor_person_id: Option<String>,
+    permission_checked: Option<String>,
+    target_id: String,
+    created_at: i64,
+    workspace_id: Option<String>,
+    allowance_state: Option<String>,
+}
+
+fn decode(rows: &ReadOutcome, row: &[SqlValue]) -> Result<StoredOrganizationChange, StoreFailure> {
+    let SqlValue::Integer(created_at) = column(rows, row, "created_at")? else {
+        return Err(corrupt("created_at", "expected a stored millisecond"));
     };
-    let target_id = string(rows, row, "target_id")?.to_owned();
-    if target_id.is_empty() {
-        return Err(bad_value("signin_change_records.target_id"));
+    StoredChangeRow {
+        id: string(rows, row, "id")?.to_owned(),
+        request_id: string(rows, row, "request_id")?.to_owned(),
+        kind: string(rows, row, "kind")?.to_owned(),
+        origin: string(rows, row, "origin")?.to_owned(),
+        actor_person_id: optional_text(rows, row, "actor_person_id")?,
+        permission_checked: optional_text(rows, row, "permission_checked")?,
+        target_id: string(rows, row, "target_id")?.to_owned(),
+        created_at: created_at.get(),
+        workspace_id: optional_text(rows, row, "workspace_id")?,
+        allowance_state: optional_text(rows, row, "allowance_state")?,
     }
-    let SqlValue::Integer(created) = column(rows, row, "created_at")? else {
-        return Err(bad_value("signin_change_records.created_at"));
-    };
-    Ok(OrganizationChangeRecord {
-        id,
-        request_id,
-        kind,
-        origin,
-        target_id,
-        created_at_millis: created
-            .get()
+    .decode()
+}
+
+impl StoredChangeRow {
+    fn decode(self) -> Result<StoredOrganizationChange, StoreFailure> {
+        let id = private_id(&self.id)?;
+        let request_id = self.request_id.try_into()?;
+        let created_at_millis = self
+            .created_at
             .try_into()
-            .map_err(|_| bad_value("signin_change_records.created_at"))?,
-    })
+            .map_err(|_| corrupt("created_at", "invalid millisecond"))?;
+        let origin = match (
+            self.origin.as_str(),
+            self.actor_person_id,
+            self.permission_checked,
+        ) {
+            ("signInProvisioning", None, None) => OrganizationChangeOrigin::SignInProvisioning {},
+            ("automatic", None, None) => OrganizationChangeOrigin::Automatic {},
+            ("person", Some(person_id), Some(permission_checked))
+                if !person_id.is_empty() && !permission_checked.is_empty() =>
+            {
+                OrganizationChangeOrigin::Person {
+                    person_id,
+                    permission_checked,
+                }
+            }
+            _ => return Err(bad_value("signin_change_records.origin")),
+        };
+        let target_id = self.target_id;
+        if target_id.is_empty() {
+            return Err(bad_value("signin_change_records.target_id"));
+        }
+        if self.kind == MACHINE_ALLOWANCE_CHANGE_KIND {
+            let machine_id = target_id
+                .try_into()
+                .map_err(|_| corrupt("target_id", "invalid machine id"))?;
+            let workspace_id = self
+                .workspace_id
+                .ok_or_else(|| corrupt("workspace_id", "missing workspace id"))?
+                .try_into()
+                .map_err(|_| corrupt("workspace_id", "invalid workspace id"))?;
+            let state = MachineAllowanceState::from_stored(
+                self.allowance_state
+                    .as_deref()
+                    .ok_or_else(|| corrupt("allowance_state", "missing allowance state"))?,
+            )?;
+            return Ok(StoredOrganizationChange::MachineAllowanceChanged(
+                MachineAllowanceChange {
+                    id,
+                    request_id,
+                    origin,
+                    machine_id,
+                    workspace_id,
+                    state,
+                    created_at_millis,
+                },
+            ));
+        }
+        let kind = OrganizationChangeKind::parse(&self.kind)?;
+        if self.workspace_id.is_some() {
+            return Err(corrupt("workspace_id", "unexpected allowance workspace"));
+        }
+        if self.allowance_state.is_some() {
+            return Err(corrupt("allowance_state", "unexpected allowance state"));
+        }
+        Ok(StoredOrganizationChange::TargetedChange(
+            OrganizationChangeRecord {
+                id,
+                request_id,
+                kind,
+                origin,
+                target_id,
+                created_at_millis,
+            },
+        ))
+    }
 }
 pub async fn read_page(
     host: &impl CentralStore,
     after: Option<Uuid>,
     limit: u16,
-) -> Result<Vec<OrganizationChangeRecord>, StoreFailure> {
-    let rows=host.read(Statement{sql:"SELECT id,request_id,kind,origin,actor_person_id,permission_checked,target_id,created_at FROM signin_change_records WHERE id>? ORDER BY id LIMIT ?",args:vec![text(after.map(|id|id.to_string()).unwrap_or_default()),integer(i64::from(limit))?]}).await?;
+) -> Result<Vec<StoredOrganizationChange>, StoreFailure> {
+    let cursor = after.map(|id| id.to_string()).unwrap_or_default();
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    let _ = sqlx::query_file_as!(
+        StoredChangeRow,
+        "src/queries/read_change_page.sql",
+        &cursor,
+        i64::from(limit)
+    );
+    let rows = host
+        .read(Statement {
+            sql: include_str!("queries/read_change_page.sql"),
+            args: vec![text(cursor), integer(i64::from(limit))?],
+        })
+        .await?;
     rows.rows.iter().map(|row| decode(&rows, row)).collect()
 }
 
@@ -289,13 +461,26 @@ pub async fn read_machine_supersession(
     host: &impl CentralStore,
     originating_request: &str,
 ) -> Result<Option<OrganizationChangeRecord>, StoreFailure> {
-    let rows = host.read(Statement {
-        sql: "SELECT id,request_id,kind,origin,actor_person_id,permission_checked,target_id,created_at FROM signin_change_records WHERE kind='machineRevoked' AND request_id>=?1||':machineRevoked:' AND request_id<?1||':machineRevoked;' AND request_id=?1||':machineRevoked:'||target_id LIMIT 2",
-        args: vec![text(originating_request)],
-    }).await?;
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    let _ = sqlx::query_file_as!(
+        StoredChangeRow,
+        "src/queries/read_machine_supersession.sql",
+        originating_request,
+    );
+    let rows = host
+        .read(Statement {
+            sql: include_str!("queries/read_machine_supersession.sql"),
+            args: vec![text(originating_request)],
+        })
+        .await?;
     match rows.rows.as_slice() {
         [] => Ok(None),
-        [row] => decode(&rows, row).map(Some),
+        [row] => match decode(&rows, row)? {
+            StoredOrganizationChange::TargetedChange(record) => Ok(Some(record)),
+            StoredOrganizationChange::MachineAllowanceChanged(_) => {
+                Err(bad_value("signin_change_records.machine_supersession"))
+            }
+        },
         _ => Err(bad_value("signin_change_records.machine_supersession")),
     }
 }

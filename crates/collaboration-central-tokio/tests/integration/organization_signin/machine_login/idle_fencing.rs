@@ -53,11 +53,11 @@ async fn idle_expiry_fences_a_still_claimable_approval_and_fresh_approval_can_ac
         vec![vec![text(&first)]]
     );
     assert_eq!(
-        f.rows("SELECT request_id,kind,origin,actor_person_id,permission_checked,target_id FROM signin_change_records WHERE kind='allowanceChanged' ORDER BY id").await?,
+        f.rows("SELECT request_id,kind,origin,actor_person_id,permission_checked,target_id,workspace_id,allowance_state FROM signin_change_records WHERE kind='machineAllowanceChanged' ORDER BY id").await?,
         vec![vec![
-            text(format!("{}:allowanceChanged:{WORKSPACE}", id(0xdb02))),
-            text("allowanceChanged"), text("person"), text(signed::OWNER),
-            text("machine:enroll"), text(WORKSPACE),
+            text(format!("{}:machineAllowanceChanged:{WORKSPACE}", id(0xdb02))),
+            text("machineAllowanceChanged"), text("person"), text(signed::OWNER),
+            text("machine:enroll"), text(INSTALLATION), text(WORKSPACE), text("active"),
         ]]
     );
 
@@ -65,7 +65,7 @@ async fn idle_expiry_fences_a_still_claimable_approval_and_fresh_approval_can_ac
     f.advance(60_000).await?;
     assert_eq!(f.now(), first_granted_at + 30 * 24 * 60 * 60);
     assert!(f.now() < code_expires_at);
-    f.execute("CREATE TRIGGER fail_idle_expiry BEFORE INSERT ON signin_change_records WHEN NEW.kind='allowanceChanged' AND NEW.origin='automatic' BEGIN SELECT RAISE(ABORT,'fixture final idle allowance record failure'); END",vec![]).await?;
+    f.execute("CREATE TRIGGER fail_idle_expiry BEFORE INSERT ON signin_change_records WHEN NEW.kind='machineAllowanceChanged' AND NEW.origin='automatic' BEGIN SELECT RAISE(ABORT,'fixture final idle allowance record failure'); END",vec![]).await?;
     let before_failed_expiry = snapshot(&f).await?;
     assert_eq!(
         f.post(TOKEN, &token(&first, &first)).await?,
@@ -115,10 +115,10 @@ async fn idle_expiry_fences_a_still_claimable_approval_and_fresh_approval_can_ac
         vec![vec![text("approved"), number(1)?, central_storage::SqlValue::Null]]
     );
     assert_eq!(
-        f.rows("SELECT request_id,kind,origin,target_id FROM signin_change_records WHERE origin='automatic' ORDER BY id").await?,
+        f.rows("SELECT request_id,kind,origin,target_id,workspace_id,allowance_state FROM signin_change_records WHERE origin='automatic' ORDER BY id").await?,
         vec![
-            vec![text(format!("{first}:machineExpired:{first}")), text("machineExpired"), text("automatic"), text(&first)],
-            vec![text(format!("{first}:allowanceChanged:{WORKSPACE}")), text("allowanceChanged"), text("automatic"), text(WORKSPACE)],
+            vec![text(format!("{first}:machineExpired:{first}")), text("machineExpired"), text("automatic"), text(&first), central_storage::SqlValue::Null, central_storage::SqlValue::Null],
+            vec![text(format!("{first}:machineAllowanceChanged:{WORKSPACE}")), text("machineAllowanceChanged"), text("automatic"), text(INSTALLATION), text(WORKSPACE), text("withdrawn")],
         ]
     );
 

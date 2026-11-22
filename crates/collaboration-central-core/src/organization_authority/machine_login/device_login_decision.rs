@@ -9,7 +9,7 @@ use crate::person_request::SECOND_FACTOR_WINDOW_SECONDS;
 use central_storage::StoreFailure;
 use fleet_identity_protocol::EnrollmentId;
 use fleet_runtime_ports::IdSource;
-use fleet_signin::organization_change::{OrganizationChangeKind, OrganizationChangeOrigin};
+use fleet_signin::organization_change::{MachineAllowanceState, OrganizationChangeOrigin};
 use std::{collections::BTreeSet, num::NonZeroU32};
 
 pub(crate) const SD8_MILLIS: i64 = 5_000;
@@ -128,13 +128,16 @@ pub(crate) fn decide_device_login(
         if recorded.contains(&workspace) {
             continue;
         }
-        changes.push(EnrollmentChange::Record(ids.record(
-            request.request_id.as_str(),
-            OrganizationChangeKind::AllowanceChanged,
-            &origin,
-            workspace.as_str().to_owned(),
-            time,
-        )?));
+        changes.push(EnrollmentChange::RecordAllowance(
+            ids.record_allowance_change(
+                request.request_id.as_str(),
+                &origin,
+                &enrollment.machine_id,
+                &workspace,
+                MachineAllowanceState::Active,
+                time,
+            )?,
+        ));
         recorded.push(workspace);
     }
     Ok(Decided::writing(

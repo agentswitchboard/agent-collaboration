@@ -268,13 +268,24 @@ fn exact_thirty_day_idle_boundary_withdraws_allowances_with_automatic_compound_r
         Some(NOW_S * 1000)
     );
     let audit = records(&plan);
-    assert_eq!(audit.len(), 3);
+    assert_eq!(audit.len(), 1);
     assert_eq!(audit[0].kind, Kind::MachineExpired);
-    for record in audit {
+    assert_eq!(audit[0].origin, Origin::Automatic {});
+    let withdrawals: Vec<_> = super::super::policy_fixture::allowance_records(&plan).collect();
+    assert_eq!(withdrawals.len(), 2);
+    for record in withdrawals {
+        assert_eq!(
+            record.state,
+            fleet_signin::organization_change::MachineAllowanceState::Withdrawn
+        );
+        assert_eq!(
+            record.machine_id,
+            facts.machine.as_ref().unwrap().machine_id
+        );
         assert_eq!(record.origin, Origin::Automatic {});
         assert_eq!(
             record.request_id.as_str(),
-            format!("{}:{}:{}", id(40), record.kind.as_str(), record.target_id)
+            format!("{}:machineAllowanceChanged:{}", id(40), record.workspace_id)
         );
     }
     assert_refused(

@@ -12,7 +12,9 @@ use central_storage::StoreFailure;
 use fleet_identity_protocol::UnixSeconds;
 use fleet_runtime_ports::IdSource;
 use fleet_signin::machine_token::MACHINE_TOKEN_LIFETIME_SECONDS;
-use fleet_signin::organization_change::{OrganizationChangeKind, OrganizationChangeOrigin};
+use fleet_signin::organization_change::{
+    MachineAllowanceState, OrganizationChangeKind, OrganizationChangeOrigin,
+};
 
 pub(crate) fn decide_machine_token(
     request: &DecideMachineToken,
@@ -237,13 +239,16 @@ pub(super) fn append_allowance_records(
         if recorded.contains(workspace) {
             continue;
         }
-        changes.push(EnrollmentChange::Record(ids.record(
-            originating,
-            OrganizationChangeKind::AllowanceChanged,
-            origin,
-            workspace.as_str().to_owned(),
-            time,
-        )?));
+        changes.push(EnrollmentChange::RecordAllowance(
+            ids.record_allowance_change(
+                originating,
+                origin,
+                &machine.machine_id,
+                workspace,
+                MachineAllowanceState::Withdrawn,
+                time,
+            )?,
+        ));
         recorded.push(workspace.clone());
     }
     Ok(())

@@ -171,7 +171,7 @@ async fn revocation_repeat_and_aba_never_reactivate_old_approvals_and_new_approv
         f.post(TOKEN, &token(&other, &other)).await?,
         (200, grant(&other, INSTALLATION_TWO, f.now(), None))
     );
-    let records=f.rows("SELECT request_id,kind,origin,actor_person_id,permission_checked,target_id FROM signin_change_records WHERE permission_checked='machine:revoke' ORDER BY id").await?;
+    let records=f.rows("SELECT request_id,kind,origin,actor_person_id,permission_checked,target_id,workspace_id,allowance_state FROM signin_change_records WHERE permission_checked='machine:revoke' ORDER BY id").await?;
     assert_eq!(
         records,
         vec![
@@ -181,23 +181,35 @@ async fn revocation_repeat_and_aba_never_reactivate_old_approvals_and_new_approv
                 text("person"),
                 text(signed::OWNER),
                 text("machine:revoke"),
-                text(&b)
+                text(&b),
+                central_storage::SqlValue::Null,
+                central_storage::SqlValue::Null
             ],
             vec![
-                text(format!("{}:allowanceChanged:{WORKSPACE}", id(0xce11))),
-                text("allowanceChanged"),
+                text(format!(
+                    "{}:machineAllowanceChanged:{WORKSPACE}",
+                    id(0xce11)
+                )),
+                text("machineAllowanceChanged"),
                 text("person"),
                 text(signed::OWNER),
                 text("machine:revoke"),
-                text(WORKSPACE)
+                text(INSTALLATION),
+                text(WORKSPACE),
+                text("withdrawn")
             ],
             vec![
-                text(format!("{}:allowanceChanged:{WORKSPACE_TWO}", id(0xce11))),
-                text("allowanceChanged"),
+                text(format!(
+                    "{}:machineAllowanceChanged:{WORKSPACE_TWO}",
+                    id(0xce11)
+                )),
+                text("machineAllowanceChanged"),
                 text("person"),
                 text(signed::OWNER),
                 text("machine:revoke"),
-                text(WORKSPACE_TWO)
+                text(INSTALLATION),
+                text(WORKSPACE_TWO),
+                text("withdrawn")
             ]
         ]
     );
@@ -235,7 +247,7 @@ async fn owner_revocation_final_record_failure_keeps_active_client_generation_an
         f.post(TOKEN, &token(&a, &a)).await?,
         (200, grant(&a, INSTALLATION, f.now(), None))
     );
-    f.execute("CREATE TRIGGER fail_owner_revoke BEFORE INSERT ON signin_change_records WHEN NEW.kind='allowanceChanged' AND NEW.permission_checked='machine:revoke' AND NEW.target_id='019f0000-0000-7000-8000-00000000bc04' BEGIN SELECT RAISE(ABORT,'fixture final owner withdrawal record failure'); END",vec![]).await?;
+    f.execute("CREATE TRIGGER fail_owner_revoke BEFORE INSERT ON signin_change_records WHEN NEW.kind='machineAllowanceChanged' AND NEW.permission_checked='machine:revoke' AND NEW.workspace_id='019f0000-0000-7000-8000-00000000bc04' BEGIN SELECT RAISE(ABORT,'fixture final owner withdrawal record failure'); END",vec![]).await?;
     let before = snapshot(&f).await?;
     let failed = f.revoke(0xcf02, INSTALLATION, &a).await?;
     assert!(
@@ -265,7 +277,7 @@ async fn owner_revocation_final_record_failure_keeps_active_client_generation_an
             .await?,
         vec![vec![text("revoked"), number(2), text("[]")]]
     );
-    assert_eq!(f.rows("SELECT kind,COUNT(*) FROM signin_change_records WHERE permission_checked='machine:revoke' GROUP BY kind ORDER BY kind").await?,vec![vec![text("allowanceChanged"),number(2)],vec![text("machineRevoked"),number(1)]]);
+    assert_eq!(f.rows("SELECT kind,COUNT(*) FROM signin_change_records WHERE permission_checked='machine:revoke' GROUP BY kind ORDER BY kind").await?,vec![vec![text("machineAllowanceChanged"),number(2)],vec![text("machineRevoked"),number(1)]]);
     let committed = snapshot(&f).await?;
     assert_eq!(
         f.post(TOKEN, &token(&a, &a)).await?,

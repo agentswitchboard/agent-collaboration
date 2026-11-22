@@ -109,6 +109,16 @@ fn check(vector: &Vector) -> Result<(), String> {
         "DecideMachineToken" => judge::<DecideMachineToken>(vector),
         "MachineTokenDecision" => judge::<MachineTokenDecision>(vector),
         "MachineTokenRefusal" => judge::<MachineTokenRefusal>(vector),
+        "OrganizationChangeRecord"
+            if matches!(vector, Vector::Accept { .. })
+                && vector.input()["kind"] == "allowanceChanged" =>
+        {
+            if serde_json::from_value::<OrganizationChangeRecord>(vector.input().clone()).is_err() {
+                Ok(())
+            } else {
+                Err("D7 retired the historical allowanceChanged variant".to_owned())
+            }
+        }
         "OrganizationChangeRecord" => judge::<OrganizationChangeRecord>(vector),
         other => Err(format!("unmapped central contract: {other}")),
     }

@@ -67,6 +67,14 @@ pub(crate) fn statements(
                 }
                 statements.push(fleet_signin::organization_change::insert(record)?);
             }
+            EnrollmentChange::RecordAllowance(record) => {
+                if record.created_at_millis.0 != applying_ms {
+                    return Err(corrupt("signin_change_records.created_at"));
+                }
+                statements.push(
+                    fleet_signin::organization_change::insert_machine_allowance_change(record)?,
+                );
+            }
         }
     }
     Ok(statements)

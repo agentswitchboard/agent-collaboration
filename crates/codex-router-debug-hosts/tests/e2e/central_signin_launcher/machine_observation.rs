@@ -391,8 +391,8 @@ async fn private_observe_first_after_idle_expiry_accepts_automatic_records_and_p
             == vec![
                 json!({"kind":"machineExpired","requestId":format!("{a}:machineExpired:{a}"),
             "targetId":a,"createdAtMillis":idle_at*1000}),
-                json!({"kind":"allowanceChanged","requestId":format!("{a}:allowanceChanged:{FIRST_WORKSPACE}"),
-            "targetId":FIRST_WORKSPACE,"createdAtMillis":idle_at*1000})
+                json!({"kind":"machineAllowanceChanged","requestId":format!("{a}:machineAllowanceChanged:{FIRST_WORKSPACE}"),
+            "targetId":INSTALLATION,"workspaceId":FIRST_WORKSPACE,"allowanceState":"withdrawn","createdAtMillis":idle_at*1000})
             ],
         "real automatic expiry records are absent or differ in observation"
     );

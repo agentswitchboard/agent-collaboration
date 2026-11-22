@@ -158,6 +158,15 @@ pub(super) fn records<T>(
         .collect()
 }
 
+pub(super) fn allowance_records<T>(
+    plan: &Decided<T>,
+) -> impl Iterator<Item = &fleet_signin::organization_change::MachineAllowanceChange> {
+    plan.changes.iter().filter_map(|change| match change {
+        EnrollmentChange::RecordAllowance(record) => Some(record),
+        _ => None,
+    })
+}
+
 /// Project a decision's facts for the next pure-policy invocation only.
 pub(super) fn project<T>(facts: &EnrollmentFacts, plan: &Decided<T>) -> EnrollmentFacts {
     let mut next = facts.clone();
@@ -191,7 +200,7 @@ pub(super) fn project<T>(facts: &EnrollmentFacts, plan: &Decided<T>) -> Enrollme
                     next.active = None;
                 }
             }
-            EnrollmentChange::Record(_) => {}
+            EnrollmentChange::Record(_) | EnrollmentChange::RecordAllowance(_) => {}
         }
     }
     next

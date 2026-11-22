@@ -65,6 +65,14 @@ pub fn explicit_negatives(name: &str, literals: &[Value]) -> Vec<Value> {
                 .flatten()
                 .find(|record| record["kind"] == "machineAllowanceChanged")
                 .unwrap();
+            let mut retired = allowance.clone();
+            let retired = retired.as_object_mut().unwrap();
+            retired.remove("machineId");
+            retired.remove("workspaceId");
+            retired.remove("state");
+            retired.insert("kind".into(), json!("allowanceChanged"));
+            retired.insert("targetId".into(), allowance["workspaceId"].clone());
+            invalid.push(json!({"result":"records","records":[retired]}));
             for field in ["machineId", "workspaceId", "state"] {
                 let mut missing = allowance.clone();
                 missing.as_object_mut().unwrap().remove(field);

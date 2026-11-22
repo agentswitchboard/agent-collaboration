@@ -1,4 +1,5 @@
 //! Actual private machine approval/token contracts over native SQLite.
+mod allowance_audit;
 mod approval;
 mod concurrency;
 mod constraints;

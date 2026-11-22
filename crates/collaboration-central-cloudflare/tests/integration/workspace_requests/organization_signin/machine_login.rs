@@ -1,4 +1,5 @@
 //! Actual private Worker binding machine approval/token contracts.
+mod allowance_audit;
 mod approval;
 mod concurrency;
 mod constraints;

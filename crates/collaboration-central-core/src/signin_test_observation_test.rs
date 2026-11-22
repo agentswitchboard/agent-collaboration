@@ -79,7 +79,7 @@ async fn stamped_store(records: usize) -> SqliteConnection {
         .await
         .unwrap();
     for index in 0..records {
-        query::<Sqlite>("INSERT INTO signin_change_records VALUES(?,?,'organizationProvisioned','signInProvisioning',NULL,NULL,?,?,?)")
+        query::<Sqlite>("INSERT INTO signin_change_records(id,request_id,kind,origin,actor_person_id,permission_checked,target_id,created_at,updated_at) VALUES(?,?,'organizationProvisioned','signInProvisioning',NULL,NULL,?,?,?)")
             .bind(fixture_id(0x1000+index)).bind(format!("request-{index}")).bind(ORGANIZATION).bind(NOW).bind(NOW).execute(&mut connection).await.unwrap();
     }
     query::<Sqlite>("INSERT INTO signin_authorization_floors VALUES(?,7,'active',?,0,?,?)")
@@ -385,7 +385,7 @@ async fn corrupt_machine_columns_refuse_instead_of_becoming_complete_observation
 async fn automatic_idle_records_observe_with_exact_origin_validation() {
     // Arrange: the same legitimate origin shape emitted by idle expiry.
     let mut connection = stamped_store(0).await;
-    query::<Sqlite>("INSERT INTO signin_change_records VALUES(?,?,'machineExpired','automatic',NULL,NULL,?,?,?)")
+    query::<Sqlite>("INSERT INTO signin_change_records(id,request_id,kind,origin,actor_person_id,permission_checked,target_id,created_at,updated_at) VALUES(?,?,'machineExpired','automatic',NULL,NULL,?,?,?)")
         .bind(fixture_id(0xf001)).bind("idle-expiry-record").bind(fixture_id(0xe013)).bind(NOW).bind(NOW)
         .execute(&mut connection).await.unwrap();
     let before = writes(&mut connection).await;

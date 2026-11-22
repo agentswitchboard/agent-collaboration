@@ -145,8 +145,8 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                 .await?;
                 let records = records
                     .into_iter()
-                    .map(OrganizationChangeRecord::TargetedChange)
-                    .collect();
+                    .map(OrganizationChangeRecord::try_from)
+                    .collect::<Result<_, _>>()?;
                 OrganizationAdminAnswer::Answered(OrganizationAdminResult::Records { records })
             }
             AdminOperation::EngineHealth(_) => {

@@ -3,7 +3,8 @@ use central_storage::StoreFailure;
 use fleet_identity_protocol::UnixSeconds;
 use fleet_runtime_ports::IdSource;
 use fleet_signin::organization_change::{
-    ChangeRequestId, OrganizationChangeKind, OrganizationChangeOrigin, OrganizationChangeRecord,
+    ChangeRequestId, MACHINE_ALLOWANCE_CHANGE_KIND, MachineAllowanceChange, MachineAllowanceState,
+    OrganizationChangeKind, OrganizationChangeOrigin, OrganizationChangeRecord,
 };
 use uuid::Uuid;
 
@@ -44,6 +45,37 @@ impl DecisionIds<'_> {
             kind,
             origin: origin.clone(),
             target_id: target,
+            created_at_millis: time
+                .now_ms
+                .try_into()
+                .map_err(|_| StoreFailure::Unavailable)?,
+        })
+    }
+
+    pub(super) fn record_allowance_change(
+        &self,
+        originating: &str,
+        origin: &OrganizationChangeOrigin,
+        machine_id: &workspace_ids::MachineId,
+        workspace_id: &message_board::WorkspaceId,
+        state: MachineAllowanceState,
+        time: DecisionTime,
+    ) -> Result<MachineAllowanceChange, StoreFailure> {
+        let request_id = ChangeRequestId::try_from(format!(
+            "{originating}:{MACHINE_ALLOWANCE_CHANGE_KIND}:{}",
+            workspace_id.as_str()
+        ))?;
+        Ok(MachineAllowanceChange {
+            id: self.next()?,
+            request_id,
+            origin: origin.clone(),
+            machine_id: machine_id.clone(),
+            workspace_id: workspace_id.as_str().parse().map_err(|_| {
+                fleet_runtime_ports::workspace_decode_error::corrupt(
+                    "signin_change_records.workspace_id",
+                )
+            })?,
+            state,
             created_at_millis: time
                 .now_ms
                 .try_into()
