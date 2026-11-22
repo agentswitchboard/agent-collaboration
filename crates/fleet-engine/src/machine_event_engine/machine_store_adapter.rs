@@ -12,7 +12,7 @@ pub struct VersionedSubjectState<State, Version> {
 pub enum SubjectLoadFailure<Version> {
     CorruptSubjectRow {
         failure_class: ItemFailureClass,
-        observed_subject_version: Version,
+        observed_subject_version: Box<Version>,
     },
     StorageAnswerLost,
     StoreReadFailed(StoreFailure),
@@ -90,7 +90,7 @@ pub fn classify_subject_decode_failure<Version>(
     match failure {
         StoreFailure::Corrupt { reason } => SubjectLoadFailure::CorruptSubjectRow {
             failure_class: classify_corrupt_subject_row(reason),
-            observed_subject_version: version,
+            observed_subject_version: Box::new(version),
         },
         failure @ (StoreFailure::Unavailable
         | StoreFailure::AnswerLost

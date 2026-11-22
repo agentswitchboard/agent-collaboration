@@ -145,7 +145,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                         .record_attempt_failure(
                             &adapter.failure_attempt_subject(&key),
                             adapter.attempt_failure_writer(),
-                            &version,
+                            version.as_ref(),
                             class,
                             SubjectMachine::retirement_threshold(),
                         )

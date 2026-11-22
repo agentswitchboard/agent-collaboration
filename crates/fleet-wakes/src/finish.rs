@@ -29,7 +29,7 @@ fn decode_lifecycle(
                 column: "automation_wakes.state".into(),
                 raw_value: None,
             },
-            observed_subject_version: version.clone(),
+            observed_subject_version: Box::new(version.clone()),
         })?;
     Ok(Some(VersionedSubjectState {
         decoded_state: state,

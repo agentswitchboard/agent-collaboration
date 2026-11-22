@@ -541,7 +541,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
             Err(super::machine_store_adapter::SubjectLoadFailure::CorruptSubjectRow {
                 observed_subject_version: version,
                 ..
-            }) => version,
+            }) => *version,
             Err(super::machine_store_adapter::SubjectLoadFailure::StorageAnswerLost) => {
                 return MachineEventOutcome::StorageAnswerLost;
             }
