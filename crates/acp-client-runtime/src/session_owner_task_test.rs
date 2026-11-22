@@ -264,7 +264,7 @@ impl SessionOwnerPorts for CreateReplySnapshotProbe {
                 caller_wakes.observe_send(move || {
                     reply
                         .send((
-                            snapshot.borrow().lifecycle.clone(),
+                            snapshot.borrow().lifecycle,
                             SessionLifecycle::Live { generation },
                         ))
                         .expect("create caller still listens");
@@ -370,33 +370,49 @@ impl SessionOwnerPorts for OutboxOrderProbe {
         caller_wakes: &mut OwnerCallerWakes,
     ) -> Result<Option<OwnerEvent>, OwnerTaskError> {
         if matches!(effect, OwnerEffect::RetireRoute(_)) {
-            self.order.lock().expect("order").push("ordinary effect");
+            self.order
+                .lock()
+                .map_err(|_| OwnerTaskError::ExecutorStopped)?
+                .push("ordinary effect");
             return Ok(Some(OwnerEvent::ConnectionLost));
         }
-        assert!(matches!(
+        if !matches!(
             effect,
             OwnerEffect::RestoreSettled { .. } | OwnerEffect::InputQueued(_)
-        ));
-        self.order.lock().expect("order").push("prepare caller");
+        ) {
+            return Err(OwnerTaskError::ExecutorStopped);
+        }
+        self.order
+            .lock()
+            .map_err(|_| OwnerTaskError::ExecutorStopped)?
+            .push("prepare caller");
         let order = self.order.clone();
         let snapshot = self.snapshot.clone();
         let acknowledgement = self.acknowledgement.clone();
         caller_wakes.observe_send(move || {
-            assert!(
-                matches!(snapshot.borrow().lifecycle, SessionLifecycle::Live { .. }),
-                "caller wake preceded publication"
-            );
-            assert!(matches!(
-                acknowledgement.lock().expect("acknowledgement").try_recv(),
-                Err(oneshot::error::TryRecvError::Empty)
-            ));
-            order.lock().expect("order").push("wake caller");
+            record_ordered_wake(&snapshot, &acknowledgement, &order);
         });
         Ok(Some(OwnerEvent::Create(CreateProgress::Failed {
             operation: Uuid::now_v7(),
             remote: RemoteEffect::None,
         })))
     }
+}
+
+fn record_ordered_wake(
+    snapshot: &watch::Receiver<SessionSnapshot>,
+    acknowledgement: &std::sync::Mutex<Acknowledgement>,
+    order: &std::sync::Mutex<Vec<&'static str>>,
+) {
+    assert!(
+        matches!(snapshot.borrow().lifecycle, SessionLifecycle::Live { .. }),
+        "caller wake preceded publication"
+    );
+    assert!(matches!(
+        acknowledgement.lock().expect("acknowledgement").try_recv(),
+        Err(oneshot::error::TryRecvError::Empty)
+    ));
+    order.lock().expect("order").push("wake caller");
 }
 
 fn assert_outbox_wake_order(
