@@ -17,7 +17,7 @@ use collaboration_protocol::{
     ProviderObservationEventTooLargeKind, SessionRef, UuidIdentity,
 };
 use router_clock::RuntimeClock;
-use serde_json::{Value, json};
+use serde_json::Value;
 use session_event_model::SessionEvent;
 use tokio::sync::broadcast;
 
