@@ -56,8 +56,8 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         workspace: &WorkspaceId,
     ) -> Result<(), StoreFailure> {
         use central_engine_model::{InstanceKey, MachineKind, RetirementThreshold};
-        use fleet_contracts::{ControlGate, EngineSubject, FailureOutcome, SubjectVersion};
-        use fleet_engine::{FleetEngine, UPSERT_CONTROL_ATTEMPT_SQL};
+        use fleet_contracts::{ControlGate, EngineSubject, FailureOutcome};
+        use fleet_engine::FleetEngine;
         let subject = EngineSubject {
             kind: MachineKind("legacy_workspace_drains"),
             key: InstanceKey("all".into()),
@@ -86,10 +86,8 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                 let outcome = outcome.in_workspace(workspace);
                 if let Some(class) = outcome.failure_class()
                     && let FailureOutcome::StoreDown(failure) = FleetEngine::new(self)
-                        .record_attempt_failure_for_workspaces(
+                        .record_control_attempt_failure_for_workspaces(
                             &subject,
-                            UPSERT_CONTROL_ATTEMPT_SQL,
-                            &SubjectVersion(vec![]),
                             class,
                             RetirementThreshold::NOTICE_UNITS,
                             outcome.affected_workspaces(),

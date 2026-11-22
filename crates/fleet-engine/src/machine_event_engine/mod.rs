@@ -1,7 +1,9 @@
 pub(crate) mod admin_failure_class;
 pub(crate) mod attempt_administration;
+mod attempt_bindings;
 pub(crate) mod attempt_control_gate;
 pub(crate) mod attempt_failure_writes;
+mod attempt_projection;
 pub(crate) mod attempt_records;
 pub(crate) mod attempt_statements;
 pub(crate) mod attempt_store;

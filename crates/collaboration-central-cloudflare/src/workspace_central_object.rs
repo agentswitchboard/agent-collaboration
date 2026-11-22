@@ -262,12 +262,21 @@ impl CentralObject {
         #[cfg(feature = "test-support")]
         let connection = {
             let observations = self.controls.workspace_page_reads.clone();
+            let retired_observations = self.controls.retired_page_reads.clone();
             connection.with_fetch_observer(move |sql, rows_read| {
                 if sql
                     == include_str!(
                         "../../fleet-workspace-directory/src/queries/read_workspace_page.sql"
                     )
                     && let Some(armed) = observations
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_mut()
+                {
+                    armed.push(rows_read);
+                }
+                if fleet_engine::is_retired_attempt_page_sql(sql)
+                    && let Some(armed) = retired_observations
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .as_mut()
