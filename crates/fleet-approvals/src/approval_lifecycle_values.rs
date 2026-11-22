@@ -7,7 +7,6 @@ use approval_request_protocol::{
 };
 use central_engine_model::{EventTag, RefusalTag, StateTag};
 
-use crate::DestinationReply;
 use fleet_identity_protocol::EnrollmentId;
 use serde::{Deserialize, Serialize};
 use workspace_ids::{
@@ -187,6 +186,66 @@ impl StateTag for ApprovalState {
             Self::StoppedBeforeRaise { .. } => true,
         }
     }
+}
+
+/// A destination payload can be released only for the request and recipient it was built for.
+#[derive(Clone, Eq, PartialEq)]
+pub struct DestinationReply<Payload> {
+    request: ApprovalRequestKey,
+    recipient: DecidedBy,
+    payload: Payload,
+}
+
+impl<Payload> DestinationReply<Payload> {
+    pub(crate) fn new(
+        request: &ApprovalRequestKey,
+        recipient: DecidedBy,
+        payload: Payload,
+    ) -> Self {
+        Self {
+            request: request.clone(),
+            recipient,
+            payload,
+        }
+    }
+
+    pub fn request(&self) -> &ApprovalRequestKey {
+        &self.request
+    }
+
+    pub fn recipient(&self) -> &DecidedBy {
+        &self.recipient
+    }
+
+    pub fn for_recipient(
+        &self,
+        request: &ApprovalRequestKey,
+        recipient: &DecidedBy,
+    ) -> Result<&Payload, DestinationReplyMismatch> {
+        if &self.request != request {
+            return Err(DestinationReplyMismatch::Request);
+        }
+        if &self.recipient != recipient {
+            return Err(DestinationReplyMismatch::Recipient);
+        }
+        Ok(&self.payload)
+    }
+}
+
+impl<Payload> fmt::Debug for DestinationReply<Payload> {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("DestinationReply")
+            .field("request", &self.request)
+            .field("recipient", &self.recipient)
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum DestinationReplyMismatch {
+    Request,
+    Recipient,
 }
 
 #[derive(Clone, Eq, PartialEq)]
