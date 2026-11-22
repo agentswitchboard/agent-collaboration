@@ -68,6 +68,31 @@ No wall-clock testing. Time comes from one injected clock, created in one place 
 - Check that driver with `cargo test -p codex-router-tailnet-verification-host`
   and `cargo clippy -p codex-router-tailnet-verification-host --all-targets -- -D warnings`.
 
+## Where This Repository Is Going
+
+TODO: remove this section after the production change-over. It is here because
+agents kept designing and building against it.
+
+- The Router, central and sign-in are being rebuilt as one new system. In it,
+  every Router enrolls with central, nothing works without central, and a
+  session is named by machine id and session id everywhere. Production stays on
+  the released version until the owner declares one change-over. That
+  change-over is not close; build the system first.
+- The change-over is a clean start. The new system starts on empty state. The
+  old Router's and the old central's stored state is moved somewhere safe at
+  that time as a backup, and new code never reads it.
+- So do not design or write any of these: a migration of old stored data; a
+  reader for an old stored form; a remembered old identity, such as an old
+  machine id or session id; a door that still accepts an old request form; a
+  test or proof that a store made by an older build upgrades. A migration has
+  only to apply to an empty store.
+- Wires and doors change once. The old form is refused with a message that says
+  what to send. No backward compatibility, no shim, no flag.
+- Do not design or build the change-over itself (the backup, the install, the
+  enrollment procedure) until the owner asks for it.
+- When stored data makes you want to preserve it or to ask what happens to it
+  across the change-over, the answer is already here: it is left behind.
+
 ## Release And Homebrew Distribution
 
 - Before merging a user-facing code change, advance the workspace package
