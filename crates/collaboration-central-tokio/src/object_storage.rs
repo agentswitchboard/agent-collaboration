@@ -41,6 +41,8 @@ struct EnginePublication {
 pub struct ObjectStorage {
     #[cfg(feature = "test-support")]
     faults: fleet_runtime::TestFaults,
+    #[cfg(feature = "test-support")]
+    retired_page_reads: std::sync::Mutex<Option<Vec<usize>>>,
     path: PathBuf,
     migrator: Arc<Migrator>,
     store: OnceCell<SqliteObjectStore>,
@@ -82,6 +84,8 @@ impl ObjectStorage {
         Self {
             #[cfg(feature = "test-support")]
             faults: Default::default(),
+            #[cfg(feature = "test-support")]
+            retired_page_reads: Default::default(),
             path,
             migrator,
             store: OnceCell::new(),
@@ -311,7 +315,29 @@ impl ObjectStorage {
         if let Some(failure) = self.faults.take_read_failure(&statement) {
             return Err(failure);
         }
-        self.opened().await?.read(statement).await
+        #[cfg(feature = "test-support")]
+        let observe = fleet_engine::is_retired_attempt_page_sql(statement.sql);
+        let outcome = self.opened().await?.read(statement).await?;
+        #[cfg(feature = "test-support")]
+        if observe
+            && let Some(armed) = self
+                .retired_page_reads
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .as_mut()
+        {
+            armed.push(outcome.rows.len());
+        }
+        Ok(outcome)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn take_retired_page_read_observations(&self, arm: bool) -> Option<Vec<usize>> {
+        let mut observations = self
+            .retired_page_reads
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        std::mem::replace(&mut *observations, arm.then(Vec::new))
     }
 
     pub(crate) async fn read_timed_due_rows(

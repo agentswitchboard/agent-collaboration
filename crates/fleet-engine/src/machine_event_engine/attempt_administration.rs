@@ -1,9 +1,11 @@
 //! Attempt-only administration and host-bound discard.
 #[cfg(test)]
-use super::attempt_records::FullAttemptProjection;
+use super::attempt_records::CheckedFullAttemptProjection;
 use super::{
     admin_failure_class::EngineFailureClass,
-    attempt_records::decode_observed_attempt_row,
+    attempt_bindings::attempt_statement,
+    attempt_projection::{AttemptCorruption, attempt_projection},
+    attempt_records::{FullAttemptProjection, encode_attempt_failure_detail},
     engine_host_binding::{EngineHost, FleetEngine},
     event_source_policy::{EventExecutionPolicy, EventSource, ReceiptStatements},
     machine_event_execution::MachineEventOutcome,
@@ -13,13 +15,11 @@ use super::{
     },
 };
 use central_engine_model::{AttemptState, EngineTime, InstanceKey, Machine};
-use central_storage::{GuardedStatement, ReadOutcome, SqlValue, Statement, StoreFailure};
-use fleet_runtime_ports::CentralStore as _;
-use fleet_runtime_ports::{
-    guarded_statements::{exact, text},
-    stored_values::column as read_result_column,
-    workspace_decode_error::corrupt,
+use central_storage::{
+    GuardedStatement, ReadOutcome, RowExpectation, SafeInteger, Statement, StoreFailure,
 };
+use fleet_runtime_ports::CentralStore as _;
+use fleet_runtime_ports::{guarded_statements::text, workspace_decode_error::corrupt};
 
 pub struct AdminMachineKindRegistry<'a, AdminMachineKind> {
     pub visible_machine_kinds: &'a [(&'static str, AdminMachineKind)],
@@ -164,45 +164,23 @@ fn decode_attempt_failure_class(tag: &str) -> Result<EngineFailureClass, StoreFa
         _ => return Err(corrupt("engine_work_attempts.last_failure")),
     })
 }
-fn read_machine_kind_tag<'rows>(
-    rows: &'rows ReadOutcome,
-    row: &'rows [SqlValue],
-) -> Result<&'rows str, StoreFailure> {
-    match read_result_column(rows, row, "machine_kind")? {
-        SqlValue::Text(kind) => Ok(kind),
-        _ => Err(corrupt("engine_work_attempts.machine_kind")),
-    }
+
+fn attempt_column_corruption(error: AttemptCorruption) -> StoreFailure {
+    corrupt(&error.column_path)
 }
 
-fn read_unsigned_attempt_count(
-    rows: &ReadOutcome,
-    row: &[SqlValue],
-    name: &str,
-) -> Result<u32, StoreFailure> {
-    match read_result_column(rows, row, name)? {
-        SqlValue::Integer(value) => u32::try_from(value.get()).map_err(|_| corrupt(name)),
-        _ => Err(corrupt(name)),
-    }
-}
-fn read_nullable_text_column(
-    rows: &ReadOutcome,
-    row: &[SqlValue],
-    name: &str,
-) -> Result<Option<String>, StoreFailure> {
-    match read_result_column(rows, row, name)? {
-        SqlValue::Null => Ok(None),
-        SqlValue::Text(value) => Ok(Some(value.clone())),
-        _ => Err(corrupt(name)),
-    }
-}
 /// The guarded delete that retry and discard both commit: only a still-retired
 /// record with this id goes, so a concurrent second change finds nothing.
 fn plan_retired_attempt_delete(attempt_id: uuid::Uuid) -> GuardedStatement {
-    let attempt_id = attempt_id.to_string();
-    const SQL: &str = include_str!("../queries/delete_retired_attempt.sql");
-    #[cfg(test)]
-    let _ = sqlx::query_file!("src/queries/delete_retired_attempt.sql", &attempt_id);
-    exact(SQL, vec![SqlValue::Text(attempt_id)])
+    GuardedStatement {
+        statement: attempt_statement!(
+            query_file,
+            [],
+            "src/queries/delete_retired_attempt.sql",
+            attempt_id = attempt_id.to_string(),
+        ),
+        expect: RowExpectation::Exactly(1),
+    }
 }
 
 /// Discard's receipt statements are the caller's admission writes and answer
@@ -220,38 +198,37 @@ impl<SubjectMachine: Machine> EventSource<SubjectMachine> for DiscardEventSource
     }
 }
 
-fn plan_retired_attempt_page(
-    after: Option<String>,
-    read_limit: i64,
-) -> Result<Statement, StoreFailure> {
-    #[cfg(test)]
-    let _ = sqlx::query_file_as!(
-        FullAttemptProjection,
-        "src/queries/read_retired_attempt_page.sql",
-        &after,
-        read_limit
-    );
-    Ok(Statement {
-        sql: include_str!("../queries/read_retired_attempt_page.sql"),
-        args: vec![
-            after.map_or(SqlValue::Null, SqlValue::Text),
-            SqlValue::Integer(read_limit.try_into().map_err(|_| corrupt("limit"))?),
-        ],
-    })
+const RETIRED_ATTEMPT_SCAN_ROWS_PER_ITEM: u16 = 4;
+
+fn plan_retired_attempt_page(after: Option<uuid::Uuid>, read_limit: SafeInteger) -> Statement {
+    match after {
+        None => attempt_statement!(
+            query_file_as,
+            [CheckedFullAttemptProjection],
+            "src/queries/read_retired_attempt_page.sql",
+            scan_limit = read_limit,
+        ),
+        Some(after) => attempt_statement!(
+            query_file_as,
+            [CheckedFullAttemptProjection],
+            "src/queries/read_retired_attempt_continuation.sql",
+            exclusive_attempt_id = after.to_string(),
+            scan_limit = read_limit,
+        ),
+    }
 }
 
-#[cfg(test)]
-#[expect(
-    dead_code,
-    reason = "SQLx checks the storage shape of the health aggregate"
-)]
-struct AttemptHealthProjection {
+attempt_projection!(AttemptHealthProjection {
     machine_kind: Option<String>,
     failing: Option<i64>,
     retired: Option<i64>,
     oldest: Option<String>,
     last_failure: Option<String>,
-}
+});
+
+#[cfg(test)]
+type CheckedAttemptHealthProjection =
+    AttemptHealthProjection<super::attempt_projection::CheckedStorage>;
 
 struct DecodedAttemptHealth {
     oldest_failure_at: Option<EngineTime>,
@@ -260,20 +237,30 @@ struct DecodedAttemptHealth {
     latest_failure_class: Option<EngineFailureClass>,
 }
 
-impl DecodedAttemptHealth {
-    fn read_visible_health(rows: &ReadOutcome, row: &[SqlValue]) -> Result<Self, StoreFailure> {
-        let oldest_failure_at = read_nullable_text_column(rows, row, "oldest")?
+impl AttemptHealthProjection {
+    fn decode_visible_health(&self) -> Result<DecodedAttemptHealth, StoreFailure> {
+        let oldest_failure_at = self
+            .oldest
+            .nullable_text()
+            .map_err(|_| corrupt("oldest"))?
             .map(|time| {
                 time.parse::<EngineTime>()
                     .map_err(|_| corrupt("engine_work_attempts.first_failed_at"))
             })
             .transpose()?;
-        Ok(Self {
+        let count = |column: &super::attempt_projection::ObservedColumn<Option<i64>>, name| {
+            let value = column.integer().map_err(|_| corrupt(name))?;
+            u32::try_from(value).map_err(|_| corrupt(name))
+        };
+        Ok(DecodedAttemptHealth {
             oldest_failure_at,
-            failing_attempt_count: read_unsigned_attempt_count(rows, row, "failing")?,
-            retired_attempt_count: read_unsigned_attempt_count(rows, row, "retired")?,
-            latest_failure_class: read_nullable_text_column(rows, row, "last_failure")?
-                .map(|tag| decode_attempt_failure_class(&tag))
+            failing_attempt_count: count(&self.failing, "failing")?,
+            retired_attempt_count: count(&self.retired, "retired")?,
+            latest_failure_class: self
+                .last_failure
+                .nullable_text()
+                .map_err(|_| corrupt("last_failure"))?
+                .map(decode_attempt_failure_class)
                 .transpose()?,
         })
     }
@@ -284,17 +271,13 @@ impl<'host, Host: EngineHost> FleetEngine<'host, Host> {
         &self,
         registry: &AdminMachineKindRegistry<'_, AdminMachineKind>,
     ) -> Result<EngineHealthFacts<AdminMachineKind>, StoreFailure> {
-        #[cfg(test)]
-        let _ = sqlx::query_file_as!(
-            AttemptHealthProjection,
-            "src/queries/read_attempt_health_by_kind.sql"
-        );
         let rows = self
             .central_store()
-            .read(Statement {
-                sql: include_str!("../queries/read_attempt_health_by_kind.sql"),
-                args: vec![],
-            })
+            .read(attempt_statement!(
+                query_file_as,
+                [CheckedAttemptHealthProjection],
+                "src/queries/read_attempt_health_by_kind.sql",
+            ))
             .await?;
         let mut kinds = registry
             .visible_machine_kinds
@@ -308,12 +291,16 @@ impl<'host, Host: EngineHost> FleetEngine<'host, Host> {
             })
             .collect::<Vec<_>>();
         for row in &rows.rows {
-            let machine_kind = read_machine_kind_tag(&rows, row)?;
+            let projection = AttemptHealthProjection::read_named(&rows, row)?;
+            let machine_kind = projection
+                .machine_kind
+                .text()
+                .map_err(attempt_column_corruption)?;
             let admin_kind = decode_registered_admin_kind(machine_kind, registry)?;
             let Some(admin_kind) = admin_kind else {
                 continue;
             };
-            let stored_health = DecodedAttemptHealth::read_visible_health(&rows, row)?;
+            let stored_health = projection.decode_visible_health()?;
             let entry = kinds
                 .iter_mut()
                 .find(|entry| entry.machine_kind == admin_kind)
@@ -337,7 +324,8 @@ impl<'host, Host: EngineHost> FleetEngine<'host, Host> {
         })
     }
 
-    /// One page ascending by attempt id, `after` exclusive, plus whether more exist.
+    /// A bounded ascending scan. Continue from the last examined ID until there
+    /// is no continuation, even when a page contains no visible retired rows.
     pub async fn read_retired_attempt_page<AdminMachineKind: Copy + Eq + Send + Sync>(
         &self,
         registry: &AdminMachineKindRegistry<'_, AdminMachineKind>,
@@ -350,67 +338,69 @@ impl<'host, Host: EngineHost> FleetEngine<'host, Host> {
         ),
         StoreFailure,
     > {
-        let lookahead = usize::from(limit) + 1;
-        let read_limit = i64::from(limit) + 1;
-        let mut scan_after = after.map(|cursor| cursor.to_string());
+        let scan_limit = usize::from(limit) * usize::from(RETIRED_ATTEMPT_SCAN_ROWS_PER_ITEM);
+        let read_limit = (i64::from(limit) * i64::from(RETIRED_ATTEMPT_SCAN_ROWS_PER_ITEM))
+            .try_into()
+            .map_err(|_| corrupt("limit"))?;
+        let rows = self
+            .central_store()
+            .read(plan_retired_attempt_page(after, read_limit))
+            .await?;
+        let mut pending_rows = rows.rows.iter().peekable();
+        let mut last_examined = None;
         let mut items = Vec::new();
-        loop {
-            let rows = self
-                .central_store()
-                .read(plan_retired_attempt_page(scan_after.take(), read_limit)?)
-                .await?;
-            let reached_end = rows.rows.len() < lookahead;
-            for row in &rows.rows {
-                let stored = decode_observed_attempt_row(&rows, row)?;
-                let record = stored
-                    .decoded_failure_record
-                    .map_err(|corruption| corrupt(&corruption.column_path))?;
-                let AttemptState::Retired { retired_at } = record.state else {
-                    return Err(corrupt("engine_work_attempts.state"));
-                };
-                // Keep the raw SQLite key for an internal continuation, including hidden rows.
-                let SqlValue::Text(raw_attempt_id) = read_result_column(&rows, row, "attempt_id")?
-                else {
-                    return Err(corrupt("engine_work_attempts.attempt_id"));
-                };
-                scan_after = Some(raw_attempt_id.clone());
-                let Some(admin_kind) = (match read_result_column(&rows, row, "machine_kind")? {
-                    SqlValue::Text(admin_kind) => {
-                        decode_registered_admin_kind(admin_kind, registry)?
-                    }
-                    _ => return Err(corrupt("engine_work_attempts.machine_kind")),
-                }) else {
-                    continue;
-                };
-                items.push(RetiredAttemptSummary {
-                    attempt_id: record.attempt_id,
-                    machine_kind: admin_kind,
-                    subject_key: match read_result_column(&rows, row, "subject_key")? {
-                        SqlValue::Text(key) => key.clone(),
-                        _ => return Err(corrupt("engine_work_attempts.subject_key")),
-                    },
-                    failure_class: decode_attempt_failure_class(record.last_failure.storage_tag())?,
-                    failure_count: record.failure_count.get(),
-                    retired_at,
-                    last_failure_detail: super::attempt_records::encode_attempt_failure_detail(
-                        &record.last_failure,
-                    ),
-                });
-                if items.len() == lookahead {
-                    break;
-                }
-            }
-            if reached_end || items.len() == lookahead {
+        while items.len() < usize::from(limit) {
+            let Some(row) = pending_rows.next() else {
                 break;
+            };
+            let projection = FullAttemptProjection::read_named(&rows, row)?;
+            let raw_id = projection
+                .attempt_id
+                .text()
+                .map_err(attempt_column_corruption)?;
+            let attempt_id = raw_id
+                .parse::<uuid::Uuid>()
+                .ok()
+                .filter(|id| id.get_version_num() == 7 && id.to_string() == raw_id)
+                .ok_or_else(|| corrupt("engine_work_attempts.attempt_id"))?;
+            last_examined = Some(attempt_id);
+            // The row cap precedes the state filter, so even a long run of
+            // active attempts can only consume one bounded index range.
+            if !projection
+                .state
+                .text()
+                .is_ok_and(|state| state == "retired")
+            {
+                continue;
             }
+            let admin_kind = projection
+                .machine_kind
+                .text()
+                .map_err(attempt_column_corruption)
+                .and_then(|kind| decode_registered_admin_kind(kind, registry));
+            let subject_key = projection.subject_key.text().map(str::to_owned);
+            let record = projection
+                .into_record_projection()
+                .decode_attempt_record()
+                .map_err(attempt_column_corruption)?;
+            let AttemptState::Retired { retired_at } = record.state else {
+                return Err(corrupt("engine_work_attempts.state"));
+            };
+            let Some(admin_kind) = admin_kind? else {
+                continue;
+            };
+            items.push(RetiredAttemptSummary {
+                attempt_id,
+                machine_kind: admin_kind,
+                subject_key: subject_key.map_err(attempt_column_corruption)?,
+                failure_class: decode_attempt_failure_class(record.last_failure.storage_tag())?,
+                failure_count: record.failure_count.get(),
+                retired_at,
+                last_failure_detail: encode_attempt_failure_detail(&record.last_failure),
+            });
         }
-        let next_attempt_cursor = if items.len() > usize::from(limit) {
-            items.truncate(usize::from(limit));
-            items.last().map(|item| item.attempt_id)
-        } else {
-            None
-        };
-        Ok((items, next_attempt_cursor))
+        let may_have_more = pending_rows.peek().is_some() || rows.rows.len() == scan_limit;
+        Ok((items, last_examined.filter(|_| may_have_more)))
     }
 
     async fn read_retired_attempt_identity<AdminMachineKind: Copy + Eq + Send + Sync>(
@@ -418,41 +408,36 @@ impl<'host, Host: EngineHost> FleetEngine<'host, Host> {
         registry: &AdminMachineKindRegistry<'_, AdminMachineKind>,
         attempt_id: uuid::Uuid,
     ) -> Result<Result<(AdminMachineKind, String, InstanceKey), AttemptRefusal>, StoreFailure> {
-        let attempt_id = attempt_id.to_string();
-        #[cfg(test)]
-        let _ = sqlx::query_file_as!(
-            FullAttemptProjection,
-            "src/queries/read_admin_attempt_by_id.sql",
-            &attempt_id
-        );
         let rows = self
             .central_store()
-            .read(Statement {
-                sql: include_str!("../queries/read_admin_attempt_by_id.sql"),
-                args: vec![SqlValue::Text(attempt_id)],
-            })
+            .read(attempt_statement!(
+                query_file_as,
+                [CheckedFullAttemptProjection],
+                "src/queries/read_admin_attempt_by_id.sql",
+                attempt_id = attempt_id.to_string(),
+            ))
             .await?;
         let Some(row) = rows.rows.first() else {
             return Ok(Err(AttemptRefusal::NotFound));
         };
-        let stored_kind_tag = match read_result_column(&rows, row, "machine_kind")? {
-            SqlValue::Text(admin_kind) => admin_kind,
-            _ => return Err(corrupt("engine_work_attempts.machine_kind")),
-        };
+        let projection = FullAttemptProjection::read_named(&rows, row)?;
+        let stored_kind_tag = projection
+            .machine_kind
+            .text()
+            .map_err(attempt_column_corruption)?;
         let Some(admin_kind) = decode_registered_admin_kind(stored_kind_tag, registry)? else {
             return Ok(Err(AttemptRefusal::NotFound));
         };
-        let subject_key = match read_result_column(&rows, row, "subject_key")? {
-            SqlValue::Text(subject_key) => subject_key.clone(),
-            _ => return Err(corrupt("engine_work_attempts.subject_key")),
-        };
-        let stored = decode_observed_attempt_row(&rows, row)?;
-        match &stored.decoded_failure_record {
-            Ok(record) if matches!(record.state, AttemptState::Retired { .. }) => Ok(Ok((
-                admin_kind,
-                stored_kind_tag.clone(),
-                InstanceKey(subject_key),
-            ))),
+        let stored_kind_tag = stored_kind_tag.to_owned();
+        let subject_key = projection
+            .subject_key
+            .text()
+            .map_err(attempt_column_corruption)?
+            .to_owned();
+        match projection.into_record_projection().decode_attempt_record() {
+            Ok(record) if matches!(record.state, AttemptState::Retired { .. }) => {
+                Ok(Ok((admin_kind, stored_kind_tag, InstanceKey(subject_key))))
+            }
             Ok(_) | Err(_) => Ok(Err(AttemptRefusal::NotRetired)),
         }
     }
