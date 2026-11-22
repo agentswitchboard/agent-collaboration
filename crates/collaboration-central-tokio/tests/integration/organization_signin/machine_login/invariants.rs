@@ -250,6 +250,10 @@ async fn assert_allowance_pairs(
     Ok(())
 }
 
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "The trace compares each public reply with the independent expected enrollment and allowance state."
+)]
 #[tokio::test]
 async fn generated_allowance_traces_survive_reopen_and_terminalization() -> Result<()> {
     use fleet_machine_login::policy::IDLE_EXPIRY_SECONDS;

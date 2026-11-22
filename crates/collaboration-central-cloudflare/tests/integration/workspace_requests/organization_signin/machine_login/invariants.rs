@@ -250,6 +250,10 @@ async fn assert_allowance_pairs(
     Ok(())
 }
 
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "The trace compares each public reply with the independent expected enrollment and allowance state."
+)]
 #[tokio::test]
 async fn generated_allowance_traces_survive_reopen_and_terminalization() -> Result<()> {
     use fleet_machine_login::policy::IDLE_EXPIRY_SECONDS;
@@ -261,7 +265,7 @@ async fn generated_allowance_traces_survive_reopen_and_terminalization() -> Resu
                 approval(0xe001, INSTALLATION, "Selected", &[selected], f.now());
             let (status, approved) = f.post(DEVICE, &selected_approval).await?;
             assert_eq!(status, 200);
-            let active = enrollment(&approved)?;
+            let active = enrollment(&approved);
             assert_allowance_pairs(&f, &[(selected, "active")], 1, 0).await?;
             assert_eq!(f.post(DEVICE, &selected_approval).await?, (200, approved));
             assert_allowance_pairs(&f, &[(selected, "active")], 1, 0).await?;
@@ -307,7 +311,7 @@ async fn generated_allowance_traces_survive_reopen_and_terminalization() -> Resu
 
             let replacement = approval(0xe003, INSTALLATION, "Replacement", &[selected], f.now());
             let (_, answer) = f.post(DEVICE, &replacement).await?;
-            let replacement = enrollment(&answer)?;
+            let replacement = enrollment(&answer);
             assert_allowance_pairs(&f, &[(selected, "active"), (omitted, "withdrawn")], 3, 2)
                 .await?;
             assert_eq!(
