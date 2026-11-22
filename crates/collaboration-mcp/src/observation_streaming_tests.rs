@@ -433,6 +433,22 @@ async fn native_codex_watch_preserves_its_result_and_notification_shape() {
     assert_eq!(result["events"], json!([event]));
     assert!(result.get("epoch").is_none());
     assert_eq!(notification, json!({"event":event,"cursor":null}));
+    let shared: Value = serde_json::from_str(include_str!(
+        "mcp_server/snapshots/main_success_schemas.json"
+    ))
+    .expect("shared tool result shapes");
+    jsonschema::validator_for(&shared["events_observe"])
+        .expect("shared observation validator")
+        .validate(&result)
+        .expect("native result still fits the published shape");
+    let native_notifications =
+        schemars::schema_for!(collaboration_protocol::ObservationEventNotification);
+    let native_notifications =
+        serde_json::to_value(native_notifications).expect("notification shape");
+    jsonschema::validator_for(&native_notifications)
+        .expect("shared notification validator")
+        .validate(&notification)
+        .expect("native notification still fits the shared shape");
     assert!(streamed.try_recv().is_err());
     peer.await.unwrap();
     client.cancel().await.unwrap();

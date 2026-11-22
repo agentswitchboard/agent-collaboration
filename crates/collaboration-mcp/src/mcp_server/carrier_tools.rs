@@ -203,7 +203,7 @@ impl CollaborationMcpServer {
         conversation_tool_result(result, Some(operation_id))
     }
 
-    #[tool(name = "events_observe", description = "Explicitly attaches to one conversation and returns bounded call-local events. Each event is also streamed as a notifications/codexRouter/observationEvent notification ({event, cursor}) while the call is open; the result still lists every event. Use afterSequence with the returned epoch to continue loaded Session history; an epoch mismatch requires resync. Concurrent sends have no ordering guarantee relative to attachment.", output_schema = rmcp::handler::server::tool::schema_for_type::<McpToolOutput<BoundedObservationResult>>())]
+    #[tool(name = "events_observe", description = "Explicitly attaches to one conversation and returns bounded call-local events. Each event is also streamed as a notifications/codexRouter/observationEvent notification ({event, cursor}) while the call is open; the result still lists every event. Provider history ends at snapshotEnd before live events. Continue with afterSequence, epoch and generation.serviceEpoch as serviceEpoch. An invalid continuation requires resync. Concurrent sends have no ordering guarantee relative to attachment.", output_schema = rmcp::handler::server::tool::schema_for_type::<McpToolOutput<BoundedObservationResult>>())]
     pub(super) async fn events_observe(
         &self,
         Parameters(request): Parameters<BoundedObservationRequest>,

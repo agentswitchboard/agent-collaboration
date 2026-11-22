@@ -17,6 +17,18 @@ pub struct PendingInteractions {
     remaining: Vec<PendingInteraction>,
 }
 
+impl schemars::JsonSchema for PendingInteractions {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "PendingInteractions".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let mut schema = <Vec<PendingInteraction> as schemars::JsonSchema>::json_schema(generator);
+        schema.insert("minItems".to_owned(), 1.into());
+        schema
+    }
+}
+
 impl PendingInteractions {
     #[must_use]
     pub fn new(interactions: Vec<PendingInteraction>) -> Option<Self> {
@@ -65,7 +77,7 @@ impl std::fmt::Display for EmptyPendingInteractions {
 
 impl std::error::Error for EmptyPendingInteractions {}
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(schemars::JsonSchema, Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum SessionState {
     Unloaded,

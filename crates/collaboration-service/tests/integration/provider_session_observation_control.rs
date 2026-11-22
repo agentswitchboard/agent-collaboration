@@ -594,10 +594,7 @@ async fn pages_follow_the_retained_projection_through_compacted_updates() {
         epoch: None,
         service_epoch: None,
     };
-    let first = client
-        .observe_provider_session(request.clone())
-        .await
-        .unwrap();
+    let (first, first_trace) = trace_page(&client, request.clone()).await;
     assert_eq!(first.events.len(), 1);
     assert_eq!(first.events[0]["sequence"], 1);
     request.epoch = first.epoch;
@@ -620,22 +617,16 @@ async fn pages_follow_the_retained_projection_through_compacted_updates() {
             .unwrap();
     }
 
-    let second = client
-        .observe_provider_session(request.clone())
-        .await
-        .unwrap();
+    let (second, second_trace) = trace_page(&client, request.clone()).await;
     request.after_sequence = Some(3);
-    let third = client
-        .observe_provider_session(request.clone())
-        .await
-        .unwrap();
+    let (third, third_trace) = trace_page(&client, request.clone()).await;
     fixture
         .hub
         .publish(fixture.board_target, item("later", "after the cut"))
         .await
         .unwrap();
     request.after_sequence = Some(5);
-    let fourth = client.observe_provider_session(request).await.unwrap();
+    let (fourth, fourth_trace) = trace_page(&client, request).await;
 
     assert_eq!(second.events.len(), 1);
     assert_eq!(second.events[0]["sequence"], 3);
@@ -649,6 +640,11 @@ async fn pages_follow_the_retained_projection_through_compacted_updates() {
     for page in [second, third, fourth] {
         assert_eq!(page.end_reason, ObservationEndReason::ResultLimitReached);
     }
+    save_trace(
+        "continued-observation.json",
+        &[first_trace, second_trace, third_trace, fourth_trace],
+        "One end-of-snapshot at the first cut. Forward sequence 6 as live and consume the later cut.",
+    );
     served.stop().await.unwrap();
 }
 
@@ -675,11 +671,7 @@ async fn a_kept_oversized_replacement_precedes_the_cut_and_advances_it() {
         epoch: Some(0),
         service_epoch: None,
     };
-    let (sink, mut notification) = tokio::sync::mpsc::unbounded_channel();
-    let page = client
-        .observe_provider_session_streaming(request.clone(), Some(sink))
-        .await
-        .unwrap();
+    let (page, page_trace) = trace_page(&client, request.clone()).await;
     assert_eq!(
         page.events,
         vec![
@@ -687,17 +679,14 @@ async fn a_kept_oversized_replacement_precedes_the_cut_and_advances_it() {
             snapshot_marker(0, 2)
         ]
     );
-    for expected in &page.events {
-        let observed = notification.try_recv().unwrap();
-        assert_eq!(&observed.event, expected);
-        assert_eq!(
-            observed.cursor,
-            Some(collaboration_protocol::ObservationCursor {
-                epoch: 0,
-                after_sequence: 2
-            })
-        );
-    }
+    assert_eq!(
+        page_trace["notifications"][0]["cursor"],
+        snapshot_marker(0, 2)["cursor"]
+    );
+    assert_eq!(
+        page_trace["notifications"][1]["cursor"],
+        snapshot_marker(0, 2)["cursor"]
+    );
     fixture
         .hub
         .publish(fixture.board_target, item("later", "continues"))
@@ -705,8 +694,42 @@ async fn a_kept_oversized_replacement_precedes_the_cut_and_advances_it() {
         .unwrap();
     request.after_sequence = Some(2);
     request.service_epoch = Some(page.generation.service_epoch);
-    let next = client.observe_provider_session(request).await.unwrap();
+    let (next, next_trace) = trace_page(&client, request).await;
     assert_eq!(next.events[0]["sequence"], 3);
     assert_eq!(next.events[1], snapshot_marker(0, 3));
+    save_trace(
+        "oversized-observation.json",
+        &[page_trace, next_trace],
+        "One gap when the oversized record arrives. The attachment emits no end-of-snapshot.",
+    );
     served.stop().await.unwrap();
+}
+
+async fn trace_page(
+    client: &CollaborationClient,
+    request: BoundedObservationRequest,
+) -> (collaboration_protocol::BoundedObservationResult, Value) {
+    let (sink, mut streamed) = tokio::sync::mpsc::unbounded_channel();
+    let result = client
+        .observe_provider_session_streaming(request.clone(), Some(sink))
+        .await
+        .unwrap();
+    let mut notifications = Vec::new();
+    while let Ok(notification) = streamed.try_recv() {
+        notifications.push(notification);
+    }
+    assert_eq!(
+        notifications.iter().map(|n| &n.event).collect::<Vec<_>>(),
+        result.events.iter().collect::<Vec<_>>(),
+    );
+    let trace = json!({"request":request,"notifications":notifications,"result":result});
+    (result, trace)
+}
+
+fn save_trace(name: &str, calls: &[Value], expected_attachment: &str) {
+    if let Some(directory) = std::env::var_os("PROVIDER_OBSERVATION_TRACE_DIRECTORY") {
+        let path = std::path::PathBuf::from(directory).join(name);
+        let trace = json!({"calls":calls,"expectedAttachment":expected_attachment});
+        std::fs::write(path, serde_json::to_vec_pretty(&trace).unwrap()).unwrap();
+    }
 }

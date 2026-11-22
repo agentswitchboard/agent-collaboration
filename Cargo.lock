@@ -1649,6 +1649,7 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "session-event-model",
  "sqlx",
  "tempfile",
  "thiserror 2.0.18",
