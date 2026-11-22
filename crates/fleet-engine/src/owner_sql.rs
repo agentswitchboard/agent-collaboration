@@ -1,7 +1,5 @@
 //! Shared statements and observed cells for Engine storage owners.
-use central_storage::StoreFailure;
-use fleet_contracts::SubjectVersion;
-use fleet_runtime_ports::workspace_decode_error::corrupt;
+use std::marker::PhantomData;
 
 pub use crate::machine_event_engine::attempt_bindings::{AttemptBind, ObservedBind};
 pub use crate::machine_event_engine::attempt_projection::{
@@ -20,13 +18,32 @@ pub use fleet_runtime_ports::stored_values::format_utc_millis;
 #[doc(hidden)]
 #[macro_export]
 macro_rules! checked_subject_projection {
-    ($visibility:vis $projection:ident { $($field:ident : $column:ty),+ $(,)? }; observed) => {
+    (
+        $visibility:vis $projection:ident {
+            $($field:ident : $column:ty => $identity:ident),+ $(,)?
+        }; $version:ident, $columns:ident
+    ) => {
         $crate::checked_subject_projection!($visibility $projection { $($field: $column,)+ });
+
+        $visibility mod $columns {
+            $(
+                #[derive(Clone)]
+                pub struct $identity;
+                impl $crate::owner_sql::GuardColumn for $identity {
+                    type Storage = $column;
+                }
+            )+
+        }
+
+        #[derive(Clone)]
+        pub struct $version {
+            $(pub(super) $field: $crate::owner_sql::ObservedGuard<$columns::$identity>,)+
+        }
 
         impl $projection {
             $visibility fn observe(
-                rows: &central_storage::ReadOutcome
-            ) -> Result<Option<(Self, fleet_contracts::SubjectVersion)>, $crate::SubjectLoadFailure> {
+                rows: &central_storage::ReadOutcome,
+            ) -> Result<Option<(Self, $version)>, $crate::SubjectLoadFailure<$version>> {
                 let row = match rows.rows.as_slice() {
                     [] => return Ok(None),
                     [row] => row,
@@ -36,7 +53,9 @@ macro_rules! checked_subject_projection {
                 };
                 let projection = Self::read_named(rows, row)
                     .map_err($crate::classify_subject_read_failure)?;
-                let version = fleet_contracts::SubjectVersion(vec![$(projection.$field.raw().clone(),)+]);
+                let version = $version {
+                    $($field: $crate::owner_sql::ObservedGuard::from_column(&projection.$field),)+
+                };
                 Ok(Some((projection, version)))
             }
         }
@@ -62,15 +81,41 @@ macro_rules! checked_subject_projection {
     };
 }
 
-pub fn observed_text_binds<const COUNT: usize>(
-    version: &SubjectVersion,
-) -> Result<[ObservedBind<String>; COUNT], StoreFailure> {
-    let cells: &[SqlValue; COUNT] = version
-        .0
-        .as_slice()
-        .try_into()
-        .map_err(|_| corrupt("engine.subject_key"))?;
-    Ok((*cells).clone().map(ObservedBind::new))
+pub trait GuardColumn {
+    type Storage: Default;
+}
+
+/// The raw cell carries its owner-defined column identity through the Engine.
+#[derive(Clone)]
+pub struct ObservedGuard<Column: GuardColumn> {
+    raw: SqlValue,
+    column: PhantomData<Column>,
+}
+
+impl<Column: GuardColumn> ObservedGuard<Column> {
+    pub fn from_column(cell: &ObservedColumn<Column::Storage>) -> Self {
+        Self {
+            raw: cell.raw().clone(),
+            column: PhantomData,
+        }
+    }
+}
+
+/// The caller names which column this SQL predicate expects.
+pub fn guard_bind<Column: GuardColumn>(cell: &ObservedGuard<Column>) -> &ObservedGuard<Column> {
+    cell
+}
+
+impl<Column: GuardColumn> AttemptBind for &ObservedGuard<Column> {
+    type SqlxValue = Column::Storage;
+
+    fn sqlx_value(&self) -> Self::SqlxValue {
+        Self::SqlxValue::default()
+    }
+
+    fn into_storage(self) -> SqlValue {
+        self.raw.clone()
+    }
 }
 
 #[doc(hidden)]

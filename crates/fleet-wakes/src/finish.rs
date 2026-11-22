@@ -1,5 +1,5 @@
 use crate::{
-    stored_rows::{StoredWake, plan_wake_read},
+    stored_rows::{StoredWake, WakeVersion, plan_wake_read},
     timed_store::{plan_wake_attempt, plan_wake_transition},
 };
 use central_engine_model::{EngineTime, ItemFailureClass, MachineKind, StateTag};
@@ -17,7 +17,8 @@ pub type WakeFinish = LifecycleFinish<WakeKind>;
 /// finishing view cannot act on, and it is never coerced.
 fn decode_lifecycle(
     rows: &ReadOutcome,
-) -> Result<Option<VersionedSubjectState<Lifecycle>>, SubjectLoadFailure> {
+) -> Result<Option<VersionedSubjectState<Lifecycle, WakeVersion>>, SubjectLoadFailure<WakeVersion>>
+{
     let Some((stored, version)) = StoredWake::observe(rows)? else {
         return Ok(None);
     };
@@ -36,7 +37,7 @@ fn decode_lifecycle(
     }))
 }
 
-pub fn wake_finish_store() -> DiscardSubjectStatements<WakeFinish> {
+pub fn wake_finish_store() -> DiscardSubjectStatements<WakeFinish, WakeVersion> {
     DiscardSubjectStatements {
         plan_discard_subject_read: plan_wake_read,
         decode_discard_subject: decode_lifecycle,

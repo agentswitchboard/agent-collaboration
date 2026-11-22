@@ -33,12 +33,12 @@ fn parse<T: std::str::FromStr>(value: &str, column: &str) -> Result<T, StoreFail
 }
 
 macro_rules! declare_schedule_projections {
-    ($($field:ident : $column:ty),+ $(,)?) => {
+    ($($field:ident : $column:ty => $identity:ident),+ $(,)?) => {
         checked_subject_projection!(ScheduleFields { $($field: $column,)+ });
         checked_subject_projection!(pub(super) StoredSchedule {
-            $($field: $column,)+
-            updated_at: String,
-        }; observed);
+            $($field: $column => $identity,)+
+            updated_at: String => UpdatedAt,
+        }; ScheduleVersion, schedule_columns);
 
         impl StoredSchedule {
             fn into_schedule_fields(self) -> ScheduleFields {
@@ -50,16 +50,16 @@ macro_rules! declare_schedule_projections {
 }
 
 declare_schedule_projections!(
-    automation_id: Option<String>,
-    target: String,
-    timing_rule: String,
-    anchor_at: String,
-    expires_at: String,
-    evaluated_through_at: Option<String>,
-    text: String,
-    next_due_at: Option<String>,
-    state: String,
-    created_at: String,
+    automation_id: Option<String> => AutomationId,
+    target: String => Target,
+    timing_rule: String => TimingRule,
+    anchor_at: String => AnchorAt,
+    expires_at: String => ExpiresAt,
+    evaluated_through_at: Option<String> => EvaluatedThroughAt,
+    text: String => Text,
+    next_due_at: Option<String> => NextDueAt,
+    state: String => State,
+    created_at: String => CreatedAt,
 );
 
 #[cfg(test)]

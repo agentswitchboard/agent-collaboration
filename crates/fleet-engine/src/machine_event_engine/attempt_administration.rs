@@ -36,32 +36,42 @@ pub struct PreparedAttemptDiscard<'preparing_host, Host: EngineHost> {
     admission_and_receipt: Vec<GuardedStatement>,
 }
 
-type DecodeDiscardSubject<State> =
-    fn(&ReadOutcome) -> Result<Option<VersionedSubjectState<State>>, SubjectLoadFailure>;
-type PlanDiscardSubjectWrite<State> =
-    fn(&VersionedSubjectState<State>, &State, EngineTime) -> Result<GuardedStatement, StoreFailure>;
+type DecodeDiscardSubject<State, Version> =
+    fn(
+        &ReadOutcome,
+    ) -> Result<Option<VersionedSubjectState<State, Version>>, SubjectLoadFailure<Version>>;
+type PlanDiscardSubjectWrite<State, Version> = fn(
+    &VersionedSubjectState<State, Version>,
+    &State,
+    EngineTime,
+) -> Result<GuardedStatement, StoreFailure>;
 
-pub struct DiscardSubjectStatements<SubjectMachine: Machine> {
+pub struct DiscardSubjectStatements<SubjectMachine: Machine, Version> {
     pub plan_discard_subject_read: fn(&InstanceKey) -> Statement,
-    pub decode_discard_subject: DecodeDiscardSubject<SubjectMachine::State>,
-    pub plan_discard_subject_write: PlanDiscardSubjectWrite<SubjectMachine::State>,
+    pub decode_discard_subject: DecodeDiscardSubject<SubjectMachine::State, Version>,
+    pub plan_discard_subject_write: PlanDiscardSubjectWrite<SubjectMachine::State, Version>,
     pub plan_discard_effect_writes:
         fn(&SubjectMachine::Effect) -> Result<Vec<GuardedStatement>, StoreFailure>,
-    pub discard_attempt_failure_writer: SubjectAttemptWriter,
+    pub discard_attempt_failure_writer: SubjectAttemptWriter<Version>,
 }
 
 /// Both finishing reads and the applying batch use the preparing host.
-struct BoundDiscardStore<'a, Host: EngineHost, SubjectMachine: Machine> {
+struct BoundDiscardStore<'a, Host: EngineHost, SubjectMachine: Machine, Version> {
     preparing_host: &'a Host,
-    discard_subject_statements: DiscardSubjectStatements<SubjectMachine>,
+    discard_subject_statements: DiscardSubjectStatements<SubjectMachine, Version>,
 }
-impl<Host: EngineHost, SubjectMachine: Machine> MachineStoreAdapter<SubjectMachine>
-    for BoundDiscardStore<'_, Host, SubjectMachine>
+impl<Host: EngineHost, SubjectMachine: Machine, Version: Send + Sync>
+    MachineStoreAdapter<SubjectMachine> for BoundDiscardStore<'_, Host, SubjectMachine, Version>
 {
+    type Version = Version;
+
     async fn load_subject_state(
         &self,
         key: &InstanceKey,
-    ) -> Result<Option<VersionedSubjectState<SubjectMachine::State>>, SubjectLoadFailure> {
+    ) -> Result<
+        Option<VersionedSubjectState<SubjectMachine::State, Version>>,
+        SubjectLoadFailure<Version>,
+    > {
         let rows = self
             .preparing_host
             .central_store()
@@ -75,7 +85,7 @@ impl<Host: EngineHost, SubjectMachine: Machine> MachineStoreAdapter<SubjectMachi
     fn plan_subject_state_write(
         &self,
         _key: &InstanceKey,
-        prior: &VersionedSubjectState<SubjectMachine::State>,
+        prior: &VersionedSubjectState<SubjectMachine::State, Version>,
         next: &SubjectMachine::State,
     ) -> Result<GuardedStatement, StoreFailure> {
         (self.discard_subject_statements.plan_discard_subject_write)(
@@ -91,7 +101,7 @@ impl<Host: EngineHost, SubjectMachine: Machine> MachineStoreAdapter<SubjectMachi
     ) -> Result<Vec<GuardedStatement>, StoreFailure> {
         (self.discard_subject_statements.plan_discard_effect_writes)(effect)
     }
-    fn attempt_failure_writer(&self) -> SubjectAttemptWriter {
+    fn attempt_failure_writer(&self) -> SubjectAttemptWriter<Version> {
         self.discard_subject_statements
             .discard_attempt_failure_writer
     }
@@ -464,7 +474,7 @@ impl<'host, Host: EngineHost> FleetEngine<'host, Host> {
     /// async fn replace_finisher<Host: EngineHost, SubjectMachine: Machine>(
     ///     engine: &FleetEngine<'_, Host>,
     ///     attempt_id: uuid::Uuid,
-    ///     mut same_kind: DiscardSubjectStatements<SubjectMachine>,
+    ///     mut same_kind: DiscardSubjectStatements<SubjectMachine, ()>,
     ///     event: SubjectMachine::Event,
     /// ) {
     ///     same_kind.plan_discard_subject_read = |_| central_storage::Statement { sql: "SELECT 1", args: vec![] };
@@ -541,9 +551,9 @@ impl<Host: EngineHost> PreparedAttemptDiscard<'_, Host> {
     }
 
     /// Runs the typed finisher selected inside the host registration callback.
-    pub async fn commit_subject_discard<SubjectMachine>(
+    pub async fn commit_subject_discard<SubjectMachine, Version: Send + Sync>(
         mut self,
-        store: DiscardSubjectStatements<SubjectMachine>,
+        store: DiscardSubjectStatements<SubjectMachine, Version>,
         event: SubjectMachine::Event,
     ) -> Result<DiscardOutcome, StoreFailure>
     where

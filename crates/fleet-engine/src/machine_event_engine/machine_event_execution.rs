@@ -284,7 +284,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
         &self,
         adapter: &SubjectStore,
         key: &InstanceKey,
-        prior: &VersionedSubjectState<SubjectMachine::State>,
+        prior: &VersionedSubjectState<SubjectMachine::State, SubjectStore::Version>,
     ) -> Option<MachineEventOutcome<SubjectMachine::State, SubjectMachine::Error>> {
         let subject = adapter.failure_attempt_subject(key);
         match super::attempt_store::read_guarded_attempt(self.central_store(), &subject).await {

@@ -1,14 +1,14 @@
 use crate::{
     automation_timer as automation,
-    stored_rows::{StoredSchedule, plan_schedule_read},
+    stored_rows::{ScheduleVersion, StoredSchedule, plan_schedule_read, schedule_columns},
 };
 use central_engine_model::{EngineTime, FailureRecord, InstanceKey, StateTag};
 use central_storage::{GuardedStatement, RowExpectation, StoreFailure};
-use fleet_contracts::{AttemptGuard, EngineSubject, SubjectVersion};
+use fleet_contracts::{AttemptGuard, EngineSubject};
 use fleet_engine::{
     EngineHost, MachineStoreAdapter, SubjectAttemptWriter, SubjectLoadFailure,
     VersionedSubjectState, checked_engine_statement, checked_subject_attempt,
-    classify_subject_decode_failure, classify_subject_read_failure, owner_sql::observed_text_binds,
+    classify_subject_decode_failure, classify_subject_read_failure, owner_sql::guard_bind,
 };
 use fleet_runtime_ports::CentralStore as _;
 use fleet_runtime_ports::stored_values::format_utc_millis;
@@ -37,10 +37,15 @@ where
     R: EngineHost,
     PlanQueued: Fn(&mail::MessageRecord) -> Result<GuardedStatement, StoreFailure> + Send + Sync,
 {
+    type Version = ScheduleVersion;
+
     async fn load_subject_state(
         &self,
         key: &InstanceKey,
-    ) -> Result<Option<VersionedSubjectState<automation::State>>, SubjectLoadFailure> {
+    ) -> Result<
+        Option<VersionedSubjectState<automation::State, Self::Version>>,
+        SubjectLoadFailure<Self::Version>,
+    > {
         let rows = self
             .runtime
             .central_store()
@@ -70,7 +75,7 @@ where
     fn plan_subject_state_write(
         &self,
         _key: &InstanceKey,
-        prior: &VersionedSubjectState<automation::State>,
+        prior: &VersionedSubjectState<automation::State, Self::Version>,
         next: &automation::State,
     ) -> Result<GuardedStatement, StoreFailure> {
         let evaluated = match next {
@@ -114,30 +119,17 @@ where
             }],
         })
     }
-    fn attempt_failure_writer(&self) -> SubjectAttemptWriter {
+    fn attempt_failure_writer(&self) -> SubjectAttemptWriter<Self::Version> {
         plan_schedule_attempt
     }
 }
 
 fn plan_schedule_transition(
-    version: &SubjectVersion,
+    version: &ScheduleVersion,
     evaluated: Option<EngineTime>,
     state: &str,
     now: EngineTime,
 ) -> Result<GuardedStatement, StoreFailure> {
-    let [
-        automation_id,
-        target,
-        timing_rule,
-        anchor_at,
-        expires_at,
-        evaluated_through_at,
-        body,
-        next_due_at,
-        prior_state,
-        owner_created_at,
-        prior_updated_at,
-    ] = observed_text_binds(version)?;
     Ok(GuardedStatement {
         statement: checked_engine_statement!(
             query_file,
@@ -146,40 +138,28 @@ fn plan_schedule_transition(
             next_evaluated = evaluated.map(format_utc_millis),
             next_state = state.to_owned(),
             updated_at = format_utc_millis(now),
-            automation_id = automation_id,
-            target = target,
-            timing_rule = timing_rule,
-            anchor_at = anchor_at,
-            expires_at = expires_at,
-            evaluated_through_at = evaluated_through_at,
-            body = body,
-            next_due_at = next_due_at,
-            prior_state = prior_state,
-            owner_created_at = owner_created_at,
-            prior_updated_at = prior_updated_at,
+            automation_id = guard_bind::<schedule_columns::AutomationId>(&version.automation_id),
+            target = guard_bind::<schedule_columns::Target>(&version.target),
+            timing_rule = guard_bind::<schedule_columns::TimingRule>(&version.timing_rule),
+            anchor_at = guard_bind::<schedule_columns::AnchorAt>(&version.anchor_at),
+            expires_at = guard_bind::<schedule_columns::ExpiresAt>(&version.expires_at),
+            evaluated_through_at =
+                guard_bind::<schedule_columns::EvaluatedThroughAt>(&version.evaluated_through_at),
+            body = guard_bind::<schedule_columns::Text>(&version.text),
+            next_due_at = guard_bind::<schedule_columns::NextDueAt>(&version.next_due_at),
+            prior_state = guard_bind::<schedule_columns::State>(&version.state),
+            owner_created_at = guard_bind::<schedule_columns::CreatedAt>(&version.created_at),
+            prior_updated_at = guard_bind::<schedule_columns::UpdatedAt>(&version.updated_at),
         ),
         expect: RowExpectation::Exactly(1),
     })
 }
 
 pub(super) fn plan_schedule_finish(
-    version: &SubjectVersion,
+    version: &ScheduleVersion,
     state: &str,
     now: EngineTime,
 ) -> Result<GuardedStatement, StoreFailure> {
-    let [
-        automation_id,
-        target,
-        timing_rule,
-        anchor_at,
-        expires_at,
-        evaluated_through_at,
-        body,
-        next_due_at,
-        prior_state,
-        owner_created_at,
-        prior_updated_at,
-    ] = observed_text_binds(version)?;
     Ok(GuardedStatement {
         statement: checked_engine_statement!(
             query_file,
@@ -187,17 +167,18 @@ pub(super) fn plan_schedule_finish(
             "src/queries/finish_schedule.sql",
             next_state = state.to_owned(),
             updated_at = format_utc_millis(now),
-            automation_id = automation_id,
-            target = target,
-            timing_rule = timing_rule,
-            anchor_at = anchor_at,
-            expires_at = expires_at,
-            evaluated_through_at = evaluated_through_at,
-            body = body,
-            next_due_at = next_due_at,
-            prior_state = prior_state,
-            owner_created_at = owner_created_at,
-            prior_updated_at = prior_updated_at,
+            automation_id = guard_bind::<schedule_columns::AutomationId>(&version.automation_id),
+            target = guard_bind::<schedule_columns::Target>(&version.target),
+            timing_rule = guard_bind::<schedule_columns::TimingRule>(&version.timing_rule),
+            anchor_at = guard_bind::<schedule_columns::AnchorAt>(&version.anchor_at),
+            expires_at = guard_bind::<schedule_columns::ExpiresAt>(&version.expires_at),
+            evaluated_through_at =
+                guard_bind::<schedule_columns::EvaluatedThroughAt>(&version.evaluated_through_at),
+            body = guard_bind::<schedule_columns::Text>(&version.text),
+            next_due_at = guard_bind::<schedule_columns::NextDueAt>(&version.next_due_at),
+            prior_state = guard_bind::<schedule_columns::State>(&version.state),
+            owner_created_at = guard_bind::<schedule_columns::CreatedAt>(&version.created_at),
+            prior_updated_at = guard_bind::<schedule_columns::UpdatedAt>(&version.updated_at),
         ),
         expect: RowExpectation::Exactly(1),
     })
@@ -207,36 +188,24 @@ pub(super) fn plan_schedule_attempt(
     subject: &EngineSubject,
     record: &FailureRecord,
     prior: Option<&AttemptGuard>,
-    version: &SubjectVersion,
+    version: &ScheduleVersion,
 ) -> Result<GuardedStatement, StoreFailure> {
-    let [
-        automation_id,
-        target,
-        timing_rule,
-        anchor_at,
-        expires_at,
-        evaluated_through_at,
-        body,
-        next_due_at,
-        prior_state,
-        owner_created_at,
-        prior_updated_at,
-    ] = observed_text_binds(version)?;
     Ok(checked_subject_attempt!(
         "src/queries/upsert_schedule_attempt.sql",
         subject,
         record,
         prior,
-        automation_id = automation_id,
-        target = target,
-        timing_rule = timing_rule,
-        anchor_at = anchor_at,
-        expires_at = expires_at,
-        evaluated_through_at = evaluated_through_at,
-        body = body,
-        next_due_at = next_due_at,
-        prior_state = prior_state,
-        owner_created_at = owner_created_at,
-        prior_updated_at = prior_updated_at,
+        automation_id = guard_bind::<schedule_columns::AutomationId>(&version.automation_id),
+        target = guard_bind::<schedule_columns::Target>(&version.target),
+        timing_rule = guard_bind::<schedule_columns::TimingRule>(&version.timing_rule),
+        anchor_at = guard_bind::<schedule_columns::AnchorAt>(&version.anchor_at),
+        expires_at = guard_bind::<schedule_columns::ExpiresAt>(&version.expires_at),
+        evaluated_through_at =
+            guard_bind::<schedule_columns::EvaluatedThroughAt>(&version.evaluated_through_at),
+        body = guard_bind::<schedule_columns::Text>(&version.text),
+        next_due_at = guard_bind::<schedule_columns::NextDueAt>(&version.next_due_at),
+        prior_state = guard_bind::<schedule_columns::State>(&version.state),
+        owner_created_at = guard_bind::<schedule_columns::CreatedAt>(&version.created_at),
+        prior_updated_at = guard_bind::<schedule_columns::UpdatedAt>(&version.updated_at),
     ))
 }

@@ -1,14 +1,14 @@
 use crate::{
-    stored_rows::{StoredWake, plan_wake_read},
+    stored_rows::{StoredWake, WakeVersion, plan_wake_read, wake_columns},
     wake_timer as wake,
 };
 use central_engine_model::{EngineTime, FailureRecord, InstanceKey, StateTag};
 use central_storage::{GuardedStatement, RowExpectation, StoreFailure};
-use fleet_contracts::{AttemptGuard, EngineSubject, SubjectVersion};
+use fleet_contracts::{AttemptGuard, EngineSubject};
 use fleet_engine::{
     EngineHost, MachineStoreAdapter, SubjectAttemptWriter, SubjectLoadFailure,
     VersionedSubjectState, checked_engine_statement, checked_subject_attempt,
-    classify_subject_decode_failure, classify_subject_read_failure, owner_sql::observed_text_binds,
+    classify_subject_decode_failure, classify_subject_read_failure, owner_sql::guard_bind,
 };
 use fleet_runtime_ports::CentralStore as _;
 use fleet_runtime_ports::stored_values::format_utc_millis;
@@ -36,10 +36,15 @@ where
     R: EngineHost,
     PlanQueued: Fn(&mail::MessageRecord) -> Result<GuardedStatement, StoreFailure> + Send + Sync,
 {
+    type Version = WakeVersion;
+
     async fn load_subject_state(
         &self,
         key: &InstanceKey,
-    ) -> Result<Option<VersionedSubjectState<wake::State>>, SubjectLoadFailure> {
+    ) -> Result<
+        Option<VersionedSubjectState<wake::State, Self::Version>>,
+        SubjectLoadFailure<Self::Version>,
+    > {
         let rows = self
             .runtime
             .central_store()
@@ -65,7 +70,7 @@ where
     fn plan_subject_state_write(
         &self,
         _key: &InstanceKey,
-        prior: &VersionedSubjectState<wake::State>,
+        prior: &VersionedSubjectState<wake::State, Self::Version>,
         next: &wake::State,
     ) -> Result<GuardedStatement, StoreFailure> {
         plan_wake_transition(
@@ -83,25 +88,16 @@ where
             wake::Effect::QueueMessage(message) => Ok(vec![(self.plan_queued)(message)?]),
         }
     }
-    fn attempt_failure_writer(&self) -> SubjectAttemptWriter {
+    fn attempt_failure_writer(&self) -> SubjectAttemptWriter<Self::Version> {
         plan_wake_attempt
     }
 }
 
 pub(super) fn plan_wake_transition(
-    version: &SubjectVersion,
+    version: &WakeVersion,
     state: &str,
     now: EngineTime,
 ) -> Result<GuardedStatement, StoreFailure> {
-    let [
-        wake_id,
-        target,
-        due_at,
-        body,
-        prior_state,
-        created_at,
-        prior_updated_at,
-    ] = observed_text_binds(version)?;
     Ok(GuardedStatement {
         statement: checked_engine_statement!(
             query_file,
@@ -109,13 +105,13 @@ pub(super) fn plan_wake_transition(
             "src/queries/advance_wake.sql",
             next_state = state.to_owned(),
             updated_at = format_utc_millis(now),
-            wake_id = wake_id,
-            target = target,
-            due_at = due_at,
-            body = body,
-            prior_state = prior_state,
-            created_at = created_at,
-            prior_updated_at = prior_updated_at,
+            wake_id = guard_bind::<wake_columns::WakeId>(&version.wake_id),
+            target = guard_bind::<wake_columns::Target>(&version.target),
+            due_at = guard_bind::<wake_columns::DueAt>(&version.due_at),
+            body = guard_bind::<wake_columns::Text>(&version.text),
+            prior_state = guard_bind::<wake_columns::State>(&version.state),
+            created_at = guard_bind::<wake_columns::CreatedAt>(&version.created_at),
+            prior_updated_at = guard_bind::<wake_columns::UpdatedAt>(&version.updated_at),
         ),
         expect: RowExpectation::Exactly(1),
     })
@@ -125,28 +121,19 @@ pub(super) fn plan_wake_attempt(
     subject: &EngineSubject,
     record: &FailureRecord,
     prior: Option<&AttemptGuard>,
-    version: &SubjectVersion,
+    version: &WakeVersion,
 ) -> Result<GuardedStatement, StoreFailure> {
-    let [
-        wake_id,
-        target,
-        due_at,
-        body,
-        prior_state,
-        created_at,
-        prior_updated_at,
-    ] = observed_text_binds(version)?;
     Ok(checked_subject_attempt!(
         "src/queries/upsert_wake_attempt.sql",
         subject,
         record,
         prior,
-        wake_id = wake_id,
-        target = target,
-        due_at = due_at,
-        body = body,
-        prior_state = prior_state,
-        owner_created_at = created_at,
-        prior_updated_at = prior_updated_at,
+        wake_id = guard_bind::<wake_columns::WakeId>(&version.wake_id),
+        target = guard_bind::<wake_columns::Target>(&version.target),
+        due_at = guard_bind::<wake_columns::DueAt>(&version.due_at),
+        body = guard_bind::<wake_columns::Text>(&version.text),
+        prior_state = guard_bind::<wake_columns::State>(&version.state),
+        owner_created_at = guard_bind::<wake_columns::CreatedAt>(&version.created_at),
+        prior_updated_at = guard_bind::<wake_columns::UpdatedAt>(&version.updated_at),
     ))
 }

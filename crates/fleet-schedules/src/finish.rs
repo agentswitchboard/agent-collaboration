@@ -1,5 +1,5 @@
 use crate::{
-    stored_rows::{StoredSchedule, plan_schedule_read},
+    stored_rows::{ScheduleVersion, StoredSchedule, plan_schedule_read},
     timed_store::{plan_schedule_attempt, plan_schedule_finish},
 };
 use central_engine_model::{EngineTime, ItemFailureClass, MachineKind, StateTag};
@@ -17,7 +17,10 @@ pub type AutomationFinish = LifecycleFinish<AutomationKind>;
 /// finishing view cannot act on, and it is never coerced.
 fn decode_lifecycle(
     rows: &ReadOutcome,
-) -> Result<Option<VersionedSubjectState<Lifecycle>>, SubjectLoadFailure> {
+) -> Result<
+    Option<VersionedSubjectState<Lifecycle, ScheduleVersion>>,
+    SubjectLoadFailure<ScheduleVersion>,
+> {
     let Some((stored, version)) = StoredSchedule::observe(rows)? else {
         return Ok(None);
     };
@@ -36,7 +39,7 @@ fn decode_lifecycle(
     }))
 }
 
-pub fn automation_finish_store() -> DiscardSubjectStatements<AutomationFinish> {
+pub fn automation_finish_store() -> DiscardSubjectStatements<AutomationFinish, ScheduleVersion> {
     DiscardSubjectStatements {
         plan_discard_subject_read: plan_schedule_read,
         decode_discard_subject: decode_lifecycle,

@@ -5,12 +5,12 @@ use crate::{
 };
 use central_engine_model::{EngineTime, FailureRecord, InstanceKey, StateTag};
 use central_storage::{GuardedStatement, RowExpectation, SqlValue, Statement, StoreFailure};
-use fleet_contracts::{AttemptGuard, EngineSubject, SubjectVersion};
+use fleet_contracts::{AttemptGuard, EngineSubject};
 use fleet_engine::{
     EngineHost, MachineStoreAdapter, SubjectAttemptWriter, SubjectLoadFailure,
     VersionedSubjectState, checked_engine_statement, checked_subject_attempt,
     checked_subject_projection, classify_subject_decode_failure, classify_subject_read_failure,
-    owner_sql::observed_text_binds,
+    owner_sql::guard_bind,
 };
 use fleet_runtime_ports::CentralStore as _;
 use fleet_runtime_ports::stored_values::format_utc_millis;
@@ -18,14 +18,14 @@ use fleet_runtime_ports::workspace_decode_error::corrupt;
 use std::convert::Infallible;
 
 checked_subject_projection!(StoredSystemExpiry {
-    message_id: Option<String>,
-    message_kind: String,
-    state: String,
-    failure_reason: Option<String>,
-    delivery_window_ends_at: Option<String>,
-    created_at: String,
-    updated_at: String,
-}; observed);
+    message_id: Option<String> => MessageId,
+    message_kind: String => MessageKind,
+    state: String => State,
+    failure_reason: Option<String> => FailureReason,
+    delivery_window_ends_at: Option<String> => DeliveryWindowEndsAt,
+    created_at: String => CreatedAt,
+    updated_at: String => UpdatedAt,
+}; SystemExpiryVersion, expiry_columns);
 
 #[cfg(test)]
 type CheckedSystemExpiry = StoredSystemExpiry<fleet_engine::owner_sql::CheckedStorage>;
@@ -83,10 +83,15 @@ impl<'a, R: EngineHost> SystemMessageExpiryStore<'a, R> {
 }
 
 impl<R: EngineHost> MachineStoreAdapter<SystemMessageExpiry> for SystemMessageExpiryStore<'_, R> {
+    type Version = SystemExpiryVersion;
+
     async fn load_subject_state(
         &self,
         key: &InstanceKey,
-    ) -> Result<Option<VersionedSubjectState<State>>, SubjectLoadFailure> {
+    ) -> Result<
+        Option<VersionedSubjectState<State, Self::Version>>,
+        SubjectLoadFailure<Self::Version>,
+    > {
         let rows = self
             .0
             .central_store()
@@ -108,7 +113,7 @@ impl<R: EngineHost> MachineStoreAdapter<SystemMessageExpiry> for SystemMessageEx
     fn plan_subject_state_write(
         &self,
         _key: &InstanceKey,
-        prior: &VersionedSubjectState<State>,
+        prior: &VersionedSubjectState<State, Self::Version>,
         next: &State,
     ) -> Result<GuardedStatement, StoreFailure> {
         plan_system_expiry_transition(
@@ -126,25 +131,16 @@ impl<R: EngineHost> MachineStoreAdapter<SystemMessageExpiry> for SystemMessageEx
         match *effect {}
     }
 
-    fn attempt_failure_writer(&self) -> SubjectAttemptWriter {
+    fn attempt_failure_writer(&self) -> SubjectAttemptWriter<Self::Version> {
         plan_system_expiry_attempt
     }
 }
 
 fn plan_system_expiry_transition(
-    version: &SubjectVersion,
+    version: &SystemExpiryVersion,
     state: &str,
     now: EngineTime,
 ) -> Result<GuardedStatement, StoreFailure> {
-    let [
-        message_id,
-        message_kind,
-        prior_state,
-        failure_reason,
-        deadline,
-        owner_created_at,
-        prior_updated_at,
-    ] = observed_text_binds(version)?;
     Ok(GuardedStatement {
         statement: checked_engine_statement!(
             query_file,
@@ -153,13 +149,15 @@ fn plan_system_expiry_transition(
             next_state = state.to_owned(),
             expiry_reason = EXPIRED_24_HOURS.to_owned(),
             updated_at = format_utc_millis(now),
-            message_id = message_id,
-            message_kind = message_kind,
-            prior_state = prior_state,
-            failure_reason = failure_reason,
-            deadline = deadline,
-            owner_created_at = owner_created_at,
-            prior_updated_at = prior_updated_at,
+            message_id = guard_bind::<expiry_columns::MessageId>(&version.message_id),
+            message_kind = guard_bind::<expiry_columns::MessageKind>(&version.message_kind),
+            prior_state = guard_bind::<expiry_columns::State>(&version.state),
+            failure_reason = guard_bind::<expiry_columns::FailureReason>(&version.failure_reason),
+            deadline = guard_bind::<expiry_columns::DeliveryWindowEndsAt>(
+                &version.delivery_window_ends_at
+            ),
+            owner_created_at = guard_bind::<expiry_columns::CreatedAt>(&version.created_at),
+            prior_updated_at = guard_bind::<expiry_columns::UpdatedAt>(&version.updated_at),
         ),
         expect: RowExpectation::Exactly(1),
     })
@@ -169,28 +167,20 @@ fn plan_system_expiry_attempt(
     subject: &EngineSubject,
     record: &FailureRecord,
     prior: Option<&AttemptGuard>,
-    version: &SubjectVersion,
+    version: &SystemExpiryVersion,
 ) -> Result<GuardedStatement, StoreFailure> {
-    let [
-        message_id,
-        message_kind,
-        prior_state,
-        failure_reason,
-        deadline,
-        owner_created_at,
-        prior_updated_at,
-    ] = observed_text_binds(version)?;
     Ok(checked_subject_attempt!(
         "src/queries/upsert_system_expiry_attempt.sql",
         subject,
         record,
         prior,
-        message_id = message_id,
-        message_kind = message_kind,
-        prior_state = prior_state,
-        failure_reason = failure_reason,
-        deadline = deadline,
-        owner_created_at = owner_created_at,
-        prior_updated_at = prior_updated_at,
+        message_id = guard_bind::<expiry_columns::MessageId>(&version.message_id),
+        message_kind = guard_bind::<expiry_columns::MessageKind>(&version.message_kind),
+        prior_state = guard_bind::<expiry_columns::State>(&version.state),
+        failure_reason = guard_bind::<expiry_columns::FailureReason>(&version.failure_reason),
+        deadline =
+            guard_bind::<expiry_columns::DeliveryWindowEndsAt>(&version.delivery_window_ends_at),
+        owner_created_at = guard_bind::<expiry_columns::CreatedAt>(&version.created_at),
+        prior_updated_at = guard_bind::<expiry_columns::UpdatedAt>(&version.updated_at),
     ))
 }

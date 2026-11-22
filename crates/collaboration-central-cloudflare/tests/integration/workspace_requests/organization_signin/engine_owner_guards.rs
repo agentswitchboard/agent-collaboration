@@ -34,6 +34,14 @@ impl OwnerCase {
         }
     }
 
+    fn read_full_row(self) -> &'static str {
+        match self {
+            Self::Wake => "SELECT * FROM automation_wakes WHERE wake_id=?1",
+            Self::Schedule => "SELECT * FROM automation_schedules WHERE automation_id=?1",
+            Self::Expiry => "SELECT * FROM mail_messages WHERE message_id=?1",
+        }
+    }
+
     fn move_version(self) -> &'static str {
         match self {
             Self::Wake => "UPDATE automation_wakes SET updated_at=?1 WHERE wake_id=?2",
@@ -207,5 +215,129 @@ async fn owner_attempts_preserve_raw_damage_and_refuse_a_stale_snapshot() {
         assert_eq!(attempt[0][3], text("corrupt_row"));
 
         engine.close().await;
+    }
+}
+
+#[tokio::test]
+async fn expiry_preserves_a_concurrent_reason_only_write() {
+    let engine = EngineOrg::new().await;
+    let due = next_mark(engine.now() + minutes(1));
+    let key = OwnerCase::Expiry.seed(&engine, due, false).await;
+    let read = OwnerCase::Expiry.read_row();
+    let mut expected = engine.rows(read, vec![text(&key)]).await;
+    assert_eq!(expected[0][0], text("queued"));
+    assert_eq!(expected[0][2], SqlValue::Null);
+
+    let runtime = engine.runtime().await;
+    let held = runtime.hold_engine("afterEngineLoad", &key).await;
+    let competing = async {
+        runtime.until_held_engine(held).await;
+        engine
+            .raw(
+                "UPDATE mail_messages SET failure_reason='competing-reason' WHERE message_id=?1",
+                vec![text(&key)],
+            )
+            .await;
+        runtime.release_engine(held).await;
+    };
+    engine.set(due);
+    tokio::join!(engine.after_event(), competing);
+
+    expected[0][2] = text("competing-reason");
+    assert_eq!(engine.rows(read, vec![text(&key)]).await, expected);
+    engine.close().await;
+}
+
+#[derive(Clone, Copy)]
+enum AttemptRace {
+    Delete,
+    Update,
+}
+
+async fn run_prior_attempt_race(owner: OwnerCase, race: AttemptRace) {
+    let engine = EngineOrg::new().await;
+    let due = next_mark(engine.now() + minutes(1));
+    let key = owner.seed(&engine, due, true).await;
+    let runtime = engine.runtime().await;
+    engine.set(due);
+    engine.after_event().await;
+    let attempt_key = || vec![text(owner.kind()), text(&key)];
+    let read_attempt = "SELECT failure_count,next_try_at,attempt_id,machine_kind,subject_key,state,last_failure,last_failure_detail,first_failed_at,last_failed_at,retired_at,created_at,updated_at FROM engine_work_attempts WHERE machine_kind=?1 AND subject_key=?2";
+    let attempts = engine.rows(read_attempt, attempt_key()).await;
+    let [first] = attempts.as_slice() else {
+        panic!(
+            "expected one recorded failure for {}: {attempts:?}",
+            owner.kind()
+        );
+    };
+    assert_eq!(first[0], integer(1));
+    assert_eq!(first[5], text("failing"));
+    let SqlValue::Text(next_try) = &first[1] else {
+        panic!("first failure has no scheduled retry: {first:?}");
+    };
+    let retry: Time = next_try.parse().unwrap();
+    let owner_read = owner.read_full_row();
+    let owner_before = engine.rows(owner_read, vec![text(&key)]).await;
+
+    let held = runtime.hold_engine("beforeEngineFailureWrite", &key).await;
+    let competing = async {
+        runtime.until_held_engine(held).await;
+        match race {
+            AttemptRace::Delete => engine.raw(
+                "DELETE FROM engine_work_attempts WHERE machine_kind=?1 AND subject_key=?2", attempt_key(),
+            ).await,
+            AttemptRace::Update => engine.raw(
+                "UPDATE engine_work_attempts SET failure_count=7 WHERE machine_kind=?1 AND subject_key=?2", attempt_key(),
+            ).await,
+        }
+        runtime.release_engine(held).await;
+    };
+    engine.set(retry);
+    tokio::join!(engine.after_event(), competing);
+
+    assert_eq!(
+        engine.rows(owner_read, vec![text(&key)]).await,
+        owner_before
+    );
+    let actual = engine.rows(read_attempt, attempt_key()).await;
+    match race {
+        AttemptRace::Delete => assert!(
+            actual.is_empty(),
+            "deleted prior {} attempt reappeared: {actual:?}",
+            owner.kind()
+        ),
+        AttemptRace::Update => {
+            let mut expected = first.clone();
+            expected[0] = integer(7);
+            assert_eq!(
+                actual,
+                vec![expected],
+                "competing {} attempt changed",
+                owner.kind()
+            );
+        }
+    }
+    engine.close().await;
+}
+
+#[tokio::test]
+async fn wake_attempt_does_not_resurrect_deleted_prior() {
+    run_prior_attempt_race(OwnerCase::Wake, AttemptRace::Delete).await;
+}
+
+#[tokio::test]
+async fn schedule_attempt_does_not_resurrect_deleted_prior() {
+    run_prior_attempt_race(OwnerCase::Schedule, AttemptRace::Delete).await;
+}
+
+#[tokio::test]
+async fn expiry_attempt_does_not_resurrect_deleted_prior() {
+    run_prior_attempt_race(OwnerCase::Expiry, AttemptRace::Delete).await;
+}
+
+#[tokio::test]
+async fn owner_attempts_preserve_the_exact_competing_prior_update() {
+    for owner in OwnerCase::ALL {
+        run_prior_attempt_race(owner, AttemptRace::Update).await;
     }
 }

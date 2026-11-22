@@ -84,10 +84,15 @@ fn decode(rows: &ReadOutcome) -> Result<State, StoreFailure> {
 }
 
 impl<R: EngineHost> MachineStoreAdapter<OwedReply> for OwedReplyStore<'_, R> {
+    type Version = fleet_contracts::SubjectVersion;
+
     async fn load_subject_state(
         &self,
         key: &InstanceKey,
-    ) -> Result<Option<VersionedSubjectState<State>>, SubjectLoadFailure> {
+    ) -> Result<
+        Option<VersionedSubjectState<State, Self::Version>>,
+        SubjectLoadFailure<Self::Version>,
+    > {
         let rows = self
             .0
             .central_store()
@@ -110,7 +115,7 @@ impl<R: EngineHost> MachineStoreAdapter<OwedReply> for OwedReplyStore<'_, R> {
     fn plan_subject_state_write(
         &self,
         _key: &InstanceKey,
-        prior: &VersionedSubjectState<State>,
+        prior: &VersionedSubjectState<State, Self::Version>,
         next: &State,
     ) -> Result<GuardedStatement, StoreFailure> {
         let (send, connection) = match next {
@@ -153,7 +158,7 @@ impl<R: EngineHost> MachineStoreAdapter<OwedReply> for OwedReplyStore<'_, R> {
             )],
         })
     }
-    fn attempt_failure_writer(&self) -> fleet_engine::SubjectAttemptWriter {
+    fn attempt_failure_writer(&self) -> fleet_engine::SubjectAttemptWriter<Self::Version> {
         |subject, record, prior, version| {
             fleet_engine::owner_sql::plan_guarded_attempt_upsert(
                 FAILURE,

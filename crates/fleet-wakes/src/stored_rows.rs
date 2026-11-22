@@ -27,14 +27,14 @@ fn parse<T: std::str::FromStr>(value: &str, column: &str) -> Result<T, StoreFail
 }
 
 checked_subject_projection!(pub(super) StoredWake {
-    wake_id: Option<String>,
-    target: String,
-    due_at: String,
-    text: String,
-    state: String,
-    created_at: String,
-    updated_at: String,
-}; observed);
+    wake_id: Option<String> => WakeId,
+    target: String => Target,
+    due_at: String => DueAt,
+    text: String => Text,
+    state: String => State,
+    created_at: String => CreatedAt,
+    updated_at: String => UpdatedAt,
+}; WakeVersion, wake_columns);
 
 #[cfg(test)]
 type CheckedWake = StoredWake<fleet_engine::owner_sql::CheckedStorage>;

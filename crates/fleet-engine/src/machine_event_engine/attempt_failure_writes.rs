@@ -10,15 +10,15 @@ use central_engine_model::{
     FailureTransition, ItemFailureClass, RetirementThreshold, after_failure,
 };
 use central_storage::{AlarmUpdate, StatementBatch, StoreFailure};
-use fleet_contracts::{EngineSubject, FailureOutcome, SubjectVersion};
+use fleet_contracts::{EngineSubject, FailureOutcome};
 use fleet_runtime_ports::CentralStore as _;
 use workspace_model::WorkspaceId;
 
-enum AttemptFailureWrite<'a> {
+enum AttemptFailureWrite<'a, Version> {
     Control,
     Subject {
-        writer: SubjectAttemptWriter,
-        version: &'a SubjectVersion,
+        writer: SubjectAttemptWriter<Version>,
+        version: &'a Version,
     },
 }
 
@@ -55,11 +55,11 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
             fleet_contracts::CentralObservation::EngineAlarmNotPublished { failure },
         );
     }
-    pub(crate) async fn record_attempt_failure(
+    pub(crate) async fn record_attempt_failure<Version>(
         &self,
         subject: &EngineSubject,
-        writer: SubjectAttemptWriter,
-        version: &SubjectVersion,
+        writer: SubjectAttemptWriter<Version>,
+        version: &Version,
         class: ItemFailureClass,
         threshold: RetirementThreshold,
     ) -> FailureOutcome {
@@ -83,7 +83,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
     ) -> FailureOutcome {
         self.read_and_record_attempt_failure(
             subject,
-            AttemptFailureWrite::Control,
+            AttemptFailureWrite::<()>::Control,
             class,
             threshold,
             workspaces,
@@ -91,10 +91,10 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
         .await
     }
 
-    async fn read_and_record_attempt_failure(
+    async fn read_and_record_attempt_failure<Version>(
         &self,
         subject: &EngineSubject,
-        write: AttemptFailureWrite<'_>,
+        write: AttemptFailureWrite<'_, Version>,
         class: ItemFailureClass,
         threshold: RetirementThreshold,
         workspaces: &[WorkspaceId],
@@ -115,11 +115,11 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
         .await
     }
 
-    pub(crate) async fn write_observed_attempt_failure(
+    pub(crate) async fn write_observed_attempt_failure<Version>(
         &self,
         subject: &EngineSubject,
-        writer: SubjectAttemptWriter,
-        version: &SubjectVersion,
+        writer: SubjectAttemptWriter<Version>,
+        version: &Version,
         class: ItemFailureClass,
         threshold: RetirementThreshold,
         prior: Option<&StoredAttempt>,
@@ -144,7 +144,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
     ) -> FailureOutcome {
         self.write_attempt_failure_and_observe(
             subject,
-            AttemptFailureWrite::Control,
+            AttemptFailureWrite::<()>::Control,
             class,
             threshold,
             Some(prior),
@@ -153,10 +153,10 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
         .await
     }
 
-    async fn write_attempt_failure_and_observe(
+    async fn write_attempt_failure_and_observe<Version>(
         &self,
         subject: &EngineSubject,
-        write: AttemptFailureWrite<'_>,
+        write: AttemptFailureWrite<'_, Version>,
         class: ItemFailureClass,
         threshold: RetirementThreshold,
         prior: Option<&StoredAttempt>,
