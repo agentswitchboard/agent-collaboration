@@ -22,7 +22,7 @@ fn raise() -> Raise {
     Raise::ProviderApproval {
         request_id: "01890f2e-7b4c-7cc0-98c4-000000000002".parse().unwrap(),
         holder: ProviderHolder {
-            session_id: "native/thread".parse().unwrap(),
+            session_id: "01890f2e-7b4c-7cc0-98c4-000000000003".parse().unwrap(),
             router_run: "01890f2e-7b4c-7cc0-98c4-000000000001".parse().unwrap(),
         },
         offer: ApprovalOffer {
@@ -305,7 +305,6 @@ fn capacity_and_other_terminal_refusals_use_the_same_one_time_writer() {
     for refusal in [
         RaiseReply::TooManyOutstanding {},
         RaiseReply::AlreadyStopped {},
-        RaiseReply::AlreadyEnded {},
         RaiseReply::ContentsDiffer {},
         RaiseReply::SessionEnded {},
     ] {
@@ -361,15 +360,9 @@ fn capacity_and_other_terminal_refusals_use_the_same_one_time_writer() {
 fn owed_stop_is_exact_after_local_write_lost_reply_and_reconnect() {
     let mut state = published();
     let frozen = raise();
-    let router_run = match &frozen {
-        Raise::ProviderApproval { holder, .. } | Raise::ProviderQuestion { holder, .. } => {
-            holder.router_run.clone()
-        }
-        Raise::UnprovenCall { holder, .. } => holder.router_run.clone(),
-    };
     let stop = StopRequest::Provider {
         request_id: frozen.request_id().clone(),
-        router_run,
+        router_run: frozen.router_run().clone(),
         contents_digest: frozen.contents_digest().unwrap(),
         cause: STOP_CAUSE,
     };

@@ -10,7 +10,7 @@ use approval_request_protocol::{
 use state_machine_core::{
     EventTag, RefusalTag, StateMachine, StateMachineResult, StateTag, Transition, TransitionError,
 };
-use workspace_ids::{ApprovalRequestId, RouterRunId};
+use workspace_ids::ApprovalRequestId;
 
 use crate::run_gate::EndingIngress;
 
@@ -18,7 +18,6 @@ use crate::run_gate::EndingIngress;
 struct FrozenRaise {
     body: Raise,
     digest: RequestContentsDigest,
-    run: RouterRunId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -96,30 +95,14 @@ pub struct WaitState<Responder, Connection> {
     authority: Authority,
 }
 
-/// Why a provider wait could not be constructed from its frozen input.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum OpenWaitRefusal {
-    NotProviderAsk,
-    InvalidContents(ApprovalDigestError),
-}
-
 impl<Responder, Connection> WaitState<Responder, Connection> {
-    pub fn bound(raise: Raise, responder: Responder) -> Result<Self, OpenWaitRefusal> {
-        let run = match &raise {
-            Raise::ProviderApproval { holder, .. } | Raise::ProviderQuestion { holder, .. } => {
-                holder.router_run.clone()
-            }
-            Raise::UnprovenCall { .. } => return Err(OpenWaitRefusal::NotProviderAsk),
-        };
-        let digest = raise
-            .contents_digest()
-            .map_err(OpenWaitRefusal::InvalidContents)?;
+    pub fn bound(raise: Raise, responder: Responder) -> Result<Self, ApprovalDigestError> {
+        let digest = raise.contents_digest()?;
         Ok(Self {
             request_id: Some(raise.request_id().clone()),
             frozen: Some(FrozenRaise {
                 body: raise,
                 digest,
-                run,
             }),
             central: CentralDuty::Unsent,
             custody: Custody::Available(responder),
@@ -380,7 +363,6 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
                 self.handle_run_refusal(connection, refusal, effects)?
             }
             refusal @ (RaiseReply::AlreadyStopped {}
-            | RaiseReply::AlreadyEnded {}
             | RaiseReply::SessionEnded {}
             | RaiseReply::ContentsDiffer {}
             | RaiseReply::TooManyOutstanding {}) => {
@@ -472,7 +454,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
         let validation = if request.contents_digest != frozen.digest {
             Err(InvalidApprovalEnding::BindingMismatch)
         } else {
-            request.check_bound_raise(&frozen.body)
+            request.ending.check_bound_raise(&frozen.body)
         };
         if let Err(reason) = validation {
             effects.push(WaitEffect::EndingConflict {
@@ -515,7 +497,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
                 let frozen = self.frozen.as_ref().ok_or(TransitionError::Stale)?;
                 let request = StopRequest::Provider {
                     request_id: frozen.body.request_id().clone(),
-                    router_run: frozen.run.clone(),
+                    router_run: frozen.body.router_run().clone(),
                     contents_digest: frozen.digest.clone(),
                     cause,
                 };

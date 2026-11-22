@@ -167,8 +167,7 @@ const APPROVAL_HOLDER: (&str, &[&str]) = (
     ],
 );
 
-const PURE_CRATES: [(&str, &[&str]); 9] = [
-    APPROVAL_HOLDER,
+const PURE_CRATES: [(&str, &[&str]); 8] = [
     ("workspace-ids", &[]),
     (
         "workspace-model",
@@ -266,6 +265,7 @@ pub(super) fn check_boundaries(
         .into_iter()
         .chain(FLEET_PURE_CRATES)
         .chain(SESSION_READ_CRATES)
+        .chain([APPROVAL_HOLDER])
     {
         let Some(source) = graph.workspace_id(name) else {
             continue;
@@ -463,11 +463,12 @@ pub(super) fn check_declared_approval_holder_edges(
         if kind == DependencyKind::Dev {
             continue;
         }
-        let workspace_edge = dependency.path.as_deref().is_some_and(|path| {
-            workspace_packages().any(|package| {
-                package.name == dependency.name && package.manifest_path.parent() == Some(path)
-            })
-        });
+        let workspace_edge = dependency.source.is_none()
+            && dependency.path.as_deref().is_some_and(|path| {
+                workspace_packages().any(|package| {
+                    package.name == dependency.name && package.manifest_path.parent() == Some(path)
+                })
+            });
         let allowed = if kind == DependencyKind::Normal && workspace_edge {
             normal_edges
         } else {
