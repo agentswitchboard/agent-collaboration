@@ -17,10 +17,10 @@ fn the_stored_message_and_its_outcome_follow_the_receipt_sequence(case: hegel::T
         .enable_all()
         .build()
         .unwrap()
-        .block_on(journey(order, reject_mark));
+        .block_on(exercise_direct_receipt_sequence(order, reject_mark));
 }
 
-async fn journey(order: u8, reject_mark: bool) {
+async fn exercise_direct_receipt_sequence(order: u8, reject_mark: bool) {
     let fixture = Fixture::new().await;
     let sent_at = chrono::DateTime::from_timestamp(FIXTURE_NOW, 0).unwrap();
     let mark = fleet_mail::message_deadline::direct_receipt_mark(sent_at, sent_at);
@@ -38,7 +38,7 @@ async fn journey(order: u8, reject_mark: bool) {
     };
     if order & 1 != 0 {
         assert_eq!(
-            receipt(&fixture, &central, &message_id, delivered.clone()).await,
+            apply_fixture_receipt(&fixture, &central, &message_id, delivered.clone()).await,
             MailReceiptSettlement::Applied
         );
     }
@@ -87,7 +87,7 @@ async fn journey(order: u8, reject_mark: bool) {
         };
     if order & 2 != 0 {
         assert_eq!(
-            receipt(&fixture, &central, &message_id, final_receipt.clone()).await,
+            apply_fixture_receipt(&fixture, &central, &message_id, final_receipt.clone()).await,
             MailReceiptSettlement::Applied
         );
         outcome = immediate_outcome;
@@ -224,7 +224,7 @@ async fn journey(order: u8, reject_mark: bool) {
             waiting: Some(WaitingReason::WaitingOnAPerson),
         };
         assert_eq!(
-            receipt(&fixture, &central, &message_id, late_delivery).await,
+            apply_fixture_receipt(&fixture, &central, &message_id, late_delivery).await,
             MailReceiptSettlement::Applied
         );
         let row = central.read(Statement {
@@ -257,7 +257,7 @@ async fn journey(order: u8, reject_mark: bool) {
         );
         assert_eq!(central.read(first_outcome_row()).await.unwrap(), before);
     }
-    let first = receipt(&fixture, &central, &message_id, final_receipt.clone()).await;
+    let first = apply_fixture_receipt(&fixture, &central, &message_id, final_receipt.clone()).await;
     let expected = if order & 2 != 0 {
         MailReceiptSettlement::Stop(ReceiptResult::Recorded)
     } else {
@@ -265,15 +265,15 @@ async fn journey(order: u8, reject_mark: bool) {
     };
     assert_eq!(first, expected);
     assert_eq!(
-        receipt(&fixture, &central, &message_id, final_receipt).await,
+        apply_fixture_receipt(&fixture, &central, &message_id, final_receipt).await,
         MailReceiptSettlement::Stop(ReceiptResult::Recorded)
     );
     assert_eq!(
-        receipt(&fixture, &central, &message_id, delivered).await,
+        apply_fixture_receipt(&fixture, &central, &message_id, delivered).await,
         MailReceiptSettlement::Stop(ReceiptResult::Recorded)
     );
     assert_eq!(
-        receipt(&fixture, &central, &message_id, contradiction).await,
+        apply_fixture_receipt(&fixture, &central, &message_id, contradiction).await,
         MailReceiptSettlement::Stop(ReceiptResult::AlreadySettled)
     );
     assert_store(&central, &message_id, terminal, outcome).await;
@@ -288,7 +288,7 @@ async fn journey(order: u8, reject_mark: bool) {
     fixture.host.close().await;
 }
 
-async fn receipt(
+async fn apply_fixture_receipt(
     fixture: &Fixture,
     central: &RemoteRuntime,
     message: &MessageId,
@@ -381,7 +381,7 @@ async fn a_rejected_direct_mark_rolls_back_and_a_superseding_receipt_prevents_th
     };
     assert!(attempts().await.is_empty());
     assert_eq!(
-        receipt(
+        apply_fixture_receipt(
             &fixture,
             &central,
             &message_id,
@@ -490,7 +490,7 @@ async fn a_seen_receipt_cannot_settle_a_notice_and_session_closed_keeps_its_reas
             .rows
     };
     let submit = async |message_id: workspace_ids::MessageId, receipt| {
-        self::receipt(&fixture, &central, &message_id, receipt).await
+        self::apply_fixture_receipt(&fixture, &central, &message_id, receipt).await
     };
     assert_eq!(
         submit(notice_id.clone(), ReceiptKind::Seen { completed_at: now }).await,

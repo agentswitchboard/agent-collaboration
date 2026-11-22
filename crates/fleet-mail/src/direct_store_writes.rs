@@ -351,7 +351,7 @@ macro_rules! lifecycle_update {
             $row.not_seen,
             ($prior).subject.id.to_string(),
             ($prior).subject.recipient.to_string(),
-            ($prior).lifecycle.tag().to_owned()
+            ($prior).lifecycle.storage_tag().to_owned()
         )
     };
 }
@@ -448,14 +448,14 @@ struct DirectStateUpdate {
 impl DirectStateUpdate {
     fn new(lifecycle: DirectLifecycle) -> Result<Self, StoreFailure> {
         let mut encoded = Self {
-            tag: lifecycle.tag(),
+            tag: lifecycle.storage_tag(),
             failure: None,
             arrived: None,
             waiting: None,
             seen: None,
             not_seen: None,
         };
-        if let Some(saved) = lifecycle.saved() {
+        if let Some(saved) = lifecycle.saved_delivery() {
             encoded.arrived = Some(saved.arrived_at.to_rfc3339());
             encoded.waiting = saved.waiting.map(enum_text).transpose()?;
         }

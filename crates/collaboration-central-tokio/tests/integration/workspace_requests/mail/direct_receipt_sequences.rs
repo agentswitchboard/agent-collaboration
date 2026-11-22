@@ -16,10 +16,10 @@ fn the_stored_message_and_its_outcome_follow_the_receipt_sequence(case: hegel::T
         .enable_all()
         .build()
         .unwrap()
-        .block_on(journey(order, reject_mark));
+        .block_on(exercise_direct_receipt_sequence(order, reject_mark));
 }
 
-async fn journey(order: u8, reject_mark: bool) {
+async fn exercise_direct_receipt_sequence(order: u8, reject_mark: bool) {
     let mut fixture = Fixture::new().await;
     let now = fixture.clock.utc_now();
     let mark = fleet_mail::message_deadline::direct_receipt_mark(now, now);

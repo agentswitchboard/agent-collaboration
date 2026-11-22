@@ -105,7 +105,7 @@ impl Oracle {
         }
     }
 
-    fn step(
+    fn apply_oracle_event(
         &mut self,
         choice: u8,
         at: Timestamp,
@@ -171,7 +171,7 @@ fn every_generated_receipt_and_mark_matches_the_independent_oracle(case: hegel::
     for _ in 0..case.draw(gs::integers::<u8>().min_value(1).max_value(40)) {
         let choice = case.draw(gs::integers::<u8>().max_value(6));
         let at = time(case.draw(gs::integers::<i64>().max_value(40).min_value(0)));
-        let expected = oracle.step(choice, at);
+        let expected = oracle.apply_oracle_event(choice, at);
         let actual =
             DirectMessage::transition(&state, event(choice, at), &mut context(20, &mut ReplayIds));
         match (expected, actual) {

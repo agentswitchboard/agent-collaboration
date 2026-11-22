@@ -72,7 +72,7 @@ impl DirectLifecycle {
         }
     }
 
-    pub(crate) fn saved(self) -> Option<SavedDelivery> {
+    pub(crate) fn saved_delivery(self) -> Option<SavedDelivery> {
         match self {
             Self::Queued => None,
             Self::Delivered(saved) => Some(saved),
@@ -80,7 +80,7 @@ impl DirectLifecycle {
         }
     }
 
-    pub(crate) fn tag(self) -> &'static str {
+    pub(crate) fn storage_tag(self) -> &'static str {
         match self {
             Self::Queued => "queued",
             Self::Delivered(_) => "delivered",
@@ -102,7 +102,7 @@ pub struct DirectReducerState {
 
 impl StateTag for DirectReducerState {
     fn state_tag(&self) -> &'static str {
-        self.lifecycle.tag()
+        self.lifecycle.storage_tag()
     }
 
     fn is_terminal(&self) -> bool {
@@ -229,13 +229,13 @@ fn apply_receipt(
     Ok((
         DirectLifecycle::Final {
             receipt: final_receipt,
-            saved: prior.saved(),
+            saved: prior.saved_delivery(),
         },
         outcome,
     ))
 }
 
-const fn edge(
+const fn direct_transition_edge(
     from: &'static str,
     event: &'static str,
     to: &'static str,
@@ -272,7 +272,7 @@ impl Machine for DirectMessage {
                 if Self::next_due(state) != Some(occurrence) {
                     return Err(TransitionError::Stale);
                 }
-                let saved = state.lifecycle.saved();
+                let saved = state.lifecycle.saved_delivery();
                 let outcome = saved.map_or(MessageOutcome::DeliveryNotConfirmed, |delivery| {
                     MessageOutcome::DeliveredSeenNotConfirmed {
                         arrived_at: delivery.arrived_at,
@@ -297,19 +297,19 @@ impl Machine for DirectMessage {
 
     fn transitions() -> &'static [Transition] {
         const EDGES: &[Transition] = &[
-            edge("queued", "delivered", "delivered", false),
-            edge("queued", "seen", "seen", true),
-            edge("queued", "notSeen", "notSeen", true),
-            edge("queued", "refused", "refused", true),
-            edge("queued", "due", "pastTheMark", false),
-            edge("delivered", "seen", "seen", true),
-            edge("delivered", "notSeen", "notSeen", true),
-            edge("delivered", "refused", "refused", true),
-            edge("delivered", "due", "pastTheMark", false),
-            edge("pastTheMark", "delivered", "pastTheMark", false),
-            edge("pastTheMark", "seen", "seen", true),
-            edge("pastTheMark", "notSeen", "notSeen", true),
-            edge("pastTheMark", "refused", "refused", true),
+            direct_transition_edge("queued", "delivered", "delivered", false),
+            direct_transition_edge("queued", "seen", "seen", true),
+            direct_transition_edge("queued", "notSeen", "notSeen", true),
+            direct_transition_edge("queued", "refused", "refused", true),
+            direct_transition_edge("queued", "due", "pastTheMark", false),
+            direct_transition_edge("delivered", "seen", "seen", true),
+            direct_transition_edge("delivered", "notSeen", "notSeen", true),
+            direct_transition_edge("delivered", "refused", "refused", true),
+            direct_transition_edge("delivered", "due", "pastTheMark", false),
+            direct_transition_edge("pastTheMark", "delivered", "pastTheMark", false),
+            direct_transition_edge("pastTheMark", "seen", "seen", true),
+            direct_transition_edge("pastTheMark", "notSeen", "notSeen", true),
+            direct_transition_edge("pastTheMark", "refused", "refused", true),
         ];
         EDGES
     }
