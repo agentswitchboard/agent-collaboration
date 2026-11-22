@@ -487,15 +487,48 @@ fn generated_histories_match_the_independent_approval_ledger(case: hegel::TestCa
     let mut expected = ApprovalLedger::default();
     let mut now = 0;
     let people_on_first_raise = case.draw(gs::booleans());
-    let start = case.draw(gs::integers::<u8>().max_value(3));
+    let raise = Command::Raise { changed: false };
+    let report = Command::Report {
+        foreign: false,
+        report: HolderReport::Applied,
+    };
+    let start = case.draw(gs::integers::<u8>().max_value(8));
     let start_commands: &[Command] = match start {
         0 => &[],
-        1 => &[Command::Raise { changed: false }],
+        1 => &[raise, raise, Command::Raise { changed: true }],
         2 => &[
-            Command::Raise { changed: false },
+            raise,
+            Command::ForwardFromParent,
             Command::ForwardFromParent,
         ],
-        _ => &[Command::HolderStops],
+        3 => &[Command::HolderStops, raise],
+        4 => &[
+            raise,
+            Command::AllowFromParent,
+            Command::DeclineFromObserver,
+            report,
+            report,
+        ],
+        5 => &[
+            raise,
+            Command::DeclineFromObserver,
+            Command::AllowFromParent,
+            report,
+            report,
+        ],
+        6 => &[
+            raise,
+            Command::AllowFromParent,
+            Command::HolderStops,
+            Command::Offer { foreign: false },
+        ],
+        7 => &[
+            raise,
+            Command::HolderStops,
+            Command::AllowFromParent,
+            Command::Offer { foreign: false },
+        ],
+        _ => &[raise],
     };
     let tick_choices = [
         0,
