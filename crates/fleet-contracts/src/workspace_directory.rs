@@ -29,6 +29,9 @@ pub struct WorkspaceView {
     pub state: message_board::WorkspaceState,
 }
 
+#[cfg(all(feature = "wire-export", not(target_arch = "wasm32")))]
+const _: fn(&WorkspaceView) -> &message_board::Description = |workspace| &workspace.description;
+
 impl From<DirectoryWorkspace> for workspace_model::Workspace {
     fn from(row: DirectoryWorkspace) -> Self {
         Self {

@@ -10,7 +10,12 @@ autotests = false
 workspace = true
 
 [features]
-wire-export = ["dep:specta","dep:specta-typescript"]
+wire-export = [
+    "dep:specta",
+    "dep:specta-typescript",
+    "fleet-contracts/wire-export",
+    "fleet-identity-protocol/wire-export",
+]
 test-support = ["fleet-runtime/test-support"]
 
 [dependencies]

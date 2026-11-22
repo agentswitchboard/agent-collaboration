@@ -154,7 +154,10 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                     permission_checked: person.operation.route().permission().to_owned(),
                 },
                 target_id: workspace_id.to_string(),
-                created_at_millis: now.timestamp_millis(),
+                created_at_millis: now
+                    .timestamp_millis()
+                    .try_into()
+                    .map_err(|_| corrupt("signin_change_records.created_at"))?,
             })?);
             OrganizationAdminResult::Applied {
                 workspace: directory.workspace_view(DirectoryWorkspace {

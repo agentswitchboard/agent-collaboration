@@ -34,6 +34,10 @@ pub trait Es256Verification: Clone + Send + Sync + 'static {
 /// Public P-256 proof key only; a private `d` or any other member is refused.
 #[derive(Clone, Debug, serde::Deserialize, serde::Serialize)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct ProofJwk {
     pub kty: String,
     pub crv: String,

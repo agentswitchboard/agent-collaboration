@@ -1,0 +1,42 @@
+{
+  "$defs": {
+    "IssuerKeyId": {
+      "minLength": 1,
+      "type": "string"
+    },
+    "OrganizationStatementDigest": {
+      "pattern": "^[0-9a-f]{64}$",
+      "type": "string"
+    },
+    "StatementSeconds": {
+      "format": "int64",
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "What renewal needs about the stored statement; the statement never crosses.",
+  "properties": {
+    "digest": {
+      "$ref": "#/$defs/OrganizationStatementDigest",
+      "description": "Lowercase hex SHA-256 of the stored statement's compact bytes."
+    },
+    "expiresAt": {
+      "$ref": "#/$defs/StatementSeconds",
+      "description": "The verified statement's `exp`, in integer seconds."
+    },
+    "signingKeyId": {
+      "$ref": "#/$defs/IssuerKeyId",
+      "description": "The verified statement's header `kid`."
+    }
+  },
+  "required": [
+    "digest",
+    "expiresAt",
+    "signingKeyId"
+  ],
+  "title": "OrganizationStatementDigestReply",
+  "type": "object"
+}

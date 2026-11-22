@@ -21,40 +21,27 @@ pub struct DecideDeviceLogin {
     pub machine_id: MachineId,
     pub label: MachineLabel,
     pub allowed_workspaces: AllowedWorkspaces,
-    #[serde(deserialize_with = "nullable_nonnegative_unix_seconds")]
-    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = Option<UnixSeconds>))]
-    #[schemars(required, schema_with = "nullable_nonnegative_unix_seconds_schema")]
-    pub approver_second_factor_at: Option<UnixSeconds>,
-    #[serde(deserialize_with = "nonnegative_unix_seconds")]
-    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = UnixSeconds))]
-    #[schemars(with = "i64", range(min = 0))]
+    #[serde(deserialize_with = "required_nullable_approval_time")]
+    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = NullableApprovalTime))]
+    #[schemars(required, schema_with = "nullable_approval_time_schema")]
+    pub approver_second_factor_at: NullableApprovalTime,
     pub code_expires_at: UnixSeconds,
 }
-fn nullable_nonnegative_unix_seconds_schema(
-    generator: &mut schemars::SchemaGenerator,
-) -> schemars::Schema {
-    let mut seconds = i64::json_schema(generator);
-    seconds.insert("minimum".into(), 0.into());
+type NullableApprovalTime = Option<UnixSeconds>;
+
+#[cfg(all(feature = "wire-export", not(target_arch = "wasm32")))]
+const _: fn(&DecideDeviceLogin) -> &NullableApprovalTime =
+    |request| &request.approver_second_factor_at;
+
+fn nullable_approval_time_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    let seconds = UnixSeconds::json_schema(generator);
     schemars::json_schema!({"anyOf": [seconds, {"type": "null"}]})
 }
 
-fn nonnegative_unix_seconds<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> Result<UnixSeconds, D::Error> {
-    let seconds = UnixSeconds::deserialize(deserializer)?;
-    if seconds.0 < 0 {
-        return Err(serde::de::Error::custom("Unix seconds must be nonnegative"));
-    }
-    Ok(seconds)
-}
-fn nullable_nonnegative_unix_seconds<'de, D: Deserializer<'de>>(
-    deserializer: D,
-) -> Result<Option<UnixSeconds>, D::Error> {
-    let seconds = Option::<UnixSeconds>::deserialize(deserializer)?;
-    if seconds.is_some_and(|seconds| seconds.0 < 0) {
-        return Err(serde::de::Error::custom("Unix seconds must be nonnegative"));
-    }
-    Ok(seconds)
+fn required_nullable_approval_time<'de, Decoder: Deserializer<'de>>(
+    decoder: Decoder,
+) -> Result<NullableApprovalTime, Decoder::Error> {
+    NullableApprovalTime::deserialize(decoder)
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(
@@ -130,13 +117,7 @@ pub enum MachineTokenDecision {
     Grant {
         machine_id: MachineId,
         enrollment_id: EnrollmentId,
-        #[serde(deserialize_with = "nonnegative_unix_seconds")]
-        #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = UnixSeconds))]
-        #[schemars(with = "i64", range(min = 0))]
         decided_at: UnixSeconds,
-        #[serde(deserialize_with = "nonnegative_unix_seconds")]
-        #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = UnixSeconds))]
-        #[schemars(with = "i64", range(min = 0))]
         grant_expires_at: UnixSeconds,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         superseded: Option<EndedMachineClient>,

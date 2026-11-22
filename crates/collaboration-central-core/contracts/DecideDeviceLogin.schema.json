@@ -49,6 +49,12 @@
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$",
       "type": "string"
     },
+    "UnixSeconds": {
+      "format": "int64",
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
+    },
     "WorkspaceId": {
       "maxLength": 36,
       "minLength": 36,
@@ -69,6 +75,7 @@
       "anyOf": [
         {
           "format": "int64",
+          "maximum": 9007199254740991,
           "minimum": 0,
           "type": "integer"
         },
@@ -78,9 +85,7 @@
       ]
     },
     "codeExpiresAt": {
-      "format": "int64",
-      "minimum": 0,
-      "type": "integer"
+      "$ref": "#/$defs/UnixSeconds"
     },
     "label": {
       "$ref": "#/$defs/MachineLabel"

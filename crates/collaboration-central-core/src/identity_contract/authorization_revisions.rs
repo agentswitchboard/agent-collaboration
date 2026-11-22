@@ -34,6 +34,12 @@ pub enum PersonFenceState {
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(try_from = "i64", into = "i64")]
 pub struct FenceRevision(i64);
+#[cfg(all(feature = "wire-export", not(target_arch = "wasm32")))]
+impl specta::Type for FenceRevision {
+    fn definition(types: &mut specta::Types) -> specta::datatype::DataType {
+        <specta_typescript::Number as specta::Type>::definition(types)
+    }
+}
 impl TryFrom<i64> for FenceRevision {
     type Error = FenceRevisionError;
     fn try_from(value: i64) -> Result<Self, Self::Error> {
@@ -125,7 +131,6 @@ pub type FencePersonId = message_board::RecordId;
 pub enum AuthorizationRevision {
     Organization {
         organization_id: OrganizationId,
-        #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = specta_typescript::Number))]
         revision: FenceRevision,
         state: OrganizationFenceState,
         permission_policy_digest: PermissionPolicyDigest,
@@ -134,7 +139,6 @@ pub enum AuthorizationRevision {
         organization_id: OrganizationId,
         person_id: FencePersonId,
         subject_id: FencePersonId,
-        #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = specta_typescript::Number))]
         revision: FenceRevision,
         state: PersonFenceState,
     },
@@ -162,6 +166,5 @@ impl AuthorizationRevision {
 )]
 pub struct AuthorizationRevisionAcknowledgement {
     /// The floor central retains after the commit; may exceed the sent revision.
-    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = specta_typescript::Number))]
     pub acknowledged_revision: FenceRevision,
 }

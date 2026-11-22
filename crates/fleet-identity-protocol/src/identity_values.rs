@@ -100,36 +100,61 @@ bounded_value!(
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 );
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-#[serde(transparent)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub struct UnixSeconds(
-    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = specta_typescript::Number))]
-    pub i64,
-);
-impl JsonSchema for UnixSeconds {
-    fn schema_name() -> Cow<'static, str> {
-        "UnixSeconds".into()
-    }
-    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
-        i64::json_schema(generator)
-    }
+const MAXIMUM_WIRE_TIMESTAMP: i64 = 9_007_199_254_740_991;
+
+macro_rules! unix_wire_timestamp {
+    ($timestamp:ident) => {
+        #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize)]
+        #[serde(transparent)]
+        #[cfg_attr(
+            all(feature = "wire-export", not(target_arch = "wasm32")),
+            derive(specta::Type)
+        )]
+        pub struct $timestamp(
+            #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = specta_typescript::Number))]
+            pub i64,
+        );
+
+        impl TryFrom<i64> for $timestamp {
+            type Error = IdentityValidationError;
+
+            fn try_from(timestamp: i64) -> Result<Self, Self::Error> {
+                if (0..=MAXIMUM_WIRE_TIMESTAMP).contains(&timestamp) {
+                    Ok(Self(timestamp))
+                } else {
+                    Err(IdentityValidationError {
+                        field: stringify!($timestamp),
+                        requirement: "must be a nonnegative exact JSON integer",
+                    })
+                }
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $timestamp {
+            fn deserialize<Decoder: serde::Deserializer<'de>>(
+                decoder: Decoder,
+            ) -> Result<Self, Decoder::Error> {
+                Self::try_from(i64::deserialize(decoder)?).map_err(serde::de::Error::custom)
+            }
+        }
+
+        impl JsonSchema for $timestamp {
+            fn schema_name() -> Cow<'static, str> {
+                stringify!($timestamp).into()
+            }
+
+            fn json_schema(generator: &mut SchemaGenerator) -> Schema {
+                let mut schema = i64::json_schema(generator);
+                schema.insert("minimum".into(), 0.into());
+                schema.insert("maximum".into(), MAXIMUM_WIRE_TIMESTAMP.into());
+                schema
+            }
+        }
+    };
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
-#[serde(transparent)]
-pub struct UnixMillis(pub i64);
-impl JsonSchema for UnixMillis {
-    fn schema_name() -> Cow<'static, str> {
-        "UnixMillis".into()
-    }
-    fn json_schema(generator: &mut SchemaGenerator) -> Schema {
-        i64::json_schema(generator)
-    }
-}
+unix_wire_timestamp!(UnixSeconds);
+unix_wire_timestamp!(UnixMillis);
 
 /// A report or attach counter that every JSON consumer can read exactly.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]

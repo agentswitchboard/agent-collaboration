@@ -412,9 +412,6 @@ jobs:
       # targets, so fetch target-specific packages even on this Linux runner.
       - name: Fetch dependencies for all targets
         run: cargo fetch --locked
-      - name: Check Central Sign-in TypeScript wire contracts
-        if: matrix.shard == 1
-        run: cargo test --locked --offline -p collaboration-central-core --features wire-export --lib signin_wire_export_test
       - name: Keep Specta out of production dependency graphs
         if: matrix.shard == 1
         shell: bash
@@ -461,6 +458,24 @@ jobs:
           cache-hit: ${{ steps.rust_tools.outputs.cache-hit }}
       - name: Wait for runner disk cleanup
         wait-all:
+      - name: Check Central Sign-in TypeScript wire contracts
+        if: matrix.shard == 1
+        shell: bash
+        run: |
+          set -eu
+          cargo check --locked --offline -p fleet-contracts --features wire-export
+          for wire_test in \
+            signin_wire_export_test::central_signin_types_match_generated_serde_wire \
+            signin_wire_export_test::canonical_signin_fixtures_typecheck_in_typescript \
+            signin_wire_export_test::invalid_signin_fixtures_fail_at_marked_specimens \
+            signin_wire_export_test::signin_wire_numbers_accept_only_safe_integers \
+            signin_wire_export_test::signin_description_codecs_preserve_wire_strings \
+            signin_wire_export_test::canonical_signin_intent_hash_matches_shared_vector \
+            signin_wire_export_test::signin_schema_parity_test::provisioning_and_revocation_wire_contracts \
+            person_request::signed_claims::tests::signed_claims_decode_only_exact_nonnegative_timestamps_and_positive_revisions; do
+            cargo nextest run --locked --offline -p collaboration-central-core --features wire-export \
+              --lib --no-tests fail -E "test(=$wire_test)"
+          done
       # Compile every test binary once and pack it as a nextest archive, so both
       # shards run the same binaries without contending for Cargo's build lock.
       # Keep each build selection and feature set identical to its run.

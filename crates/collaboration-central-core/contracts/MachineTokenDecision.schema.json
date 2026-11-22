@@ -88,6 +88,12 @@
           "type": "object"
         }
       ]
+    },
+    "UnixSeconds": {
+      "format": "int64",
+      "maximum": 9007199254740991,
+      "minimum": 0,
+      "type": "integer"
     }
   },
   "$schema": "https://json-schema.org/draft/2020-12/schema",
@@ -96,17 +102,13 @@
       "additionalProperties": false,
       "properties": {
         "decidedAt": {
-          "format": "int64",
-          "minimum": 0,
-          "type": "integer"
+          "$ref": "#/$defs/UnixSeconds"
         },
         "enrollmentId": {
           "$ref": "#/$defs/EnrollmentId"
         },
         "grantExpiresAt": {
-          "format": "int64",
-          "minimum": 0,
-          "type": "integer"
+          "$ref": "#/$defs/UnixSeconds"
         },
         "machineId": {
           "$ref": "#/$defs/MachineId"

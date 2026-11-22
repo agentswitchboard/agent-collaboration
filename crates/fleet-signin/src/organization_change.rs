@@ -2,6 +2,7 @@
 use central_storage::{
     GuardedStatement, ReadOutcome, RowExpectation, SafeInteger, SqlValue, Statement, StoreFailure,
 };
+use fleet_identity_protocol::UnixMillis;
 use fleet_runtime_ports::CentralStore;
 use fleet_runtime_ports::{
     stored_values::{column, string},
@@ -129,8 +130,7 @@ pub struct OrganizationChangeRecord {
     pub kind: OrganizationChangeKind,
     pub origin: OrganizationChangeOrigin,
     pub target_id: String,
-    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = specta_typescript::Number))]
-    pub created_at_millis: i64,
+    pub created_at_millis: UnixMillis,
 }
 
 fn corrupt(field: &str, _message: impl std::fmt::Display) -> StoreFailure {
@@ -195,7 +195,7 @@ impl OrganizationChangeRecord {
             person,
             permission,
             target: &self.target_id,
-            timestamp: SafeInteger::new(self.created_at_millis)
+            timestamp: SafeInteger::new(self.created_at_millis.0)
                 .map_err(|_| bad_value("signin_change_records.created_at"))?,
         })
     }
@@ -264,7 +264,10 @@ fn decode(rows: &ReadOutcome, row: &[SqlValue]) -> Result<OrganizationChangeReco
         kind,
         origin,
         target_id,
-        created_at_millis: created.get(),
+        created_at_millis: created
+            .get()
+            .try_into()
+            .map_err(|_| bad_value("signin_change_records.created_at"))?,
     })
 }
 pub async fn read_page(

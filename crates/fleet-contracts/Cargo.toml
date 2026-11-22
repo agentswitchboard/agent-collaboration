@@ -11,7 +11,7 @@ description = "Shared vocabulary and interfaces for FleetRuntime features"
 workspace = true
 
 [features]
-wire-export = ["dep:specta","fleet-identity-protocol/wire-export","message-board/wire-export"]
+wire-export = ["dep:specta","fleet-identity-protocol/wire-export","message-board/wire-export","workspace-ids/wire-export"]
 
 [dependencies]
 central-engine-model.workspace = true
