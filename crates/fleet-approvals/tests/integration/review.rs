@@ -92,7 +92,7 @@ fn delegate_starts_with_only_its_exact_parent_and_only_first_raise_notifies() {
         ObservedReply::PassOn(PassOnReply::NotVisible {})
     );
     assert_eq!(
-        reply(&run_event(&mut book, pass(parent), 1)),
+        reply(&run_event(&mut book, pass(parent.clone()), 1)),
         ObservedReply::PassOn(PassOnReply::Forwarded {})
     );
     assert!(matches!(
@@ -105,6 +105,33 @@ fn delegate_starts_with_only_its_exact_parent_and_only_first_raise_notifies() {
         effect,
         ApprovalCollectionEffect::Request(ApprovalEffect::OfferEnding { .. })
     )));
+    run_event(
+        &mut book,
+        ApprovalCollectionEvent::EndSession {
+            session: parent.clone(),
+        },
+        3,
+    );
+    let next_item = key(&run, 2);
+    let refused = raise_event(
+        &run,
+        provider(&next_item, &requester, "Ended parent"),
+        routing(Some(&parent)),
+    );
+    let before = book.clone();
+    assert_eq!(
+        book.apply(
+            refused,
+            &mut Context {
+                now: time(4),
+                ids: &mut UnusedIds
+            }
+        ),
+        Err(TransitionError::Domain(
+            ApprovalRefusal::InvalidInitialRoute
+        ))
+    );
+    assert_eq!(book, before);
 }
 
 #[test]

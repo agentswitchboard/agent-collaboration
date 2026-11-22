@@ -5,6 +5,8 @@ use approval_request_protocol::{
     DeliverEndingReply, PassOnReply, RegisterRunReply, RunRefusal, StopReceiptEnding,
 };
 
+use fleet_approvals::ApprovalRefusal;
+
 use super::fixtures::HOUR;
 
 pub(super) const ROWS: [RowScope; 4] = [
@@ -460,7 +462,24 @@ impl Ledger {
         PassOnReply::Forwarded {}
     }
 
-    pub fn apply(&mut self, step: Step, sampled: i64) -> Vec<OperationEffect> {
+    pub fn apply(
+        &mut self,
+        step: Step,
+        sampled: i64,
+    ) -> Result<Vec<OperationEffect>, ApprovalRefusal> {
+        if let Step::Raise { row, .. } = step {
+            let route = ROWS[row];
+            let enrollment = RUN_ENROLLMENTS[route.run];
+            let fresh = self.rows[row].first_save.is_none() && self.rows[row].marker.is_none();
+            if fresh
+                && route.delegate
+                && self.holder_refusal(route.run).is_none()
+                && !self.ended_requesters.contains(&enrollment)
+                && self.ended_parents.contains(&enrollment)
+            {
+                return Err(ApprovalRefusal::InvalidInitialRoute);
+            }
+        }
         self.floor = self.floor.max(sampled);
         let mut effects = Vec::new();
         match step {
@@ -577,7 +596,7 @@ impl Ledger {
                 }
             }
         }
-        effects
+        Ok(effects)
     }
 }
 

@@ -6,6 +6,7 @@ use approval_request_protocol::{
     ApprovalWindow, CancelReason, DecidedBy, DeliverEndingReply, DeliverEndingRequest,
     HolderStopCause, PassOnRequest, Raise, WaitingStatus,
 };
+use central_engine_model::{Context, TransitionError};
 use fleet_approvals::{
     AdmittedDecider, ApprovalActor, ApprovalCollection, ApprovalCollectionEvent,
     ApprovalEnrollment, ApprovalRequestKey, ApprovalRun, ApprovalSession, FactorStanding,
@@ -14,8 +15,8 @@ use hegel::generators as gs;
 use serde_json::{Value, json};
 
 use super::fixtures::{
-    HOUR, answer, decide_event, enrollment, key, person_id, provider, provider_stop, raise_event,
-    router_run, routing, run_event, session, setup, time,
+    HOUR, UnusedIds, answer, decide_event, enrollment, key, person_id, provider, provider_stop,
+    raise_event, router_run, routing, session, setup, time,
 };
 use super::model_ledger::{
     Actor, Delivery, Ending, Ledger, Offer, ROWS, RUN_ENROLLMENTS, Step, View,
@@ -277,14 +278,27 @@ fn generated_histories_match_the_separate_smaller_central_ledger(case: hegel::Te
     let mut compare = |step, sampled| {
         if let Some(input) = scenario.input(step, &ledger) {
             let wanted = ledger.apply(step, sampled);
-            let actual = run_event(&mut book, input, sampled);
-            assert_effects(&scenario, &ledger, step, &wanted, &actual);
+            let actual = book.apply(
+                input,
+                &mut Context {
+                    now: time(sampled),
+                    ids: &mut UnusedIds,
+                },
+            );
+            match (wanted, actual) {
+                (Ok(wanted), Ok((next, effects))) => {
+                    assert_effects(&scenario, &ledger, step, &wanted, &effects);
+                    book = next;
+                }
+                (Err(wanted), Err(TransitionError::Domain(actual))) => assert_eq!(actual, wanted),
+                (wanted, actual) => panic!("{step:?}: wanted {wanted:?}, observed {actual:?}"),
+            }
             assert_state(&scenario, &ledger, &book);
         }
     };
     // Prefixes keep correlated delivery, visibility, and batch settlement reachable in short histories.
-    let prefix = case.draw(gs::integers::<u8>().max_value(3));
-    if prefix != 0 {
+    let prefix = case.draw(gs::integers::<u8>().max_value(4));
+    if (1..=3).contains(&prefix) {
         compare(
             Step::Raise {
                 row: 0,
@@ -382,6 +396,22 @@ fn generated_histories_match_the_separate_smaller_central_ledger(case: hegel::Te
             6,
         );
         compare(Step::EndEnrollment(1), 7);
+    }
+    if prefix == 4 {
+        compare(
+            Step::EndSession {
+                enrollment: 0,
+                parent: true,
+            },
+            1,
+        );
+        compare(
+            Step::Raise {
+                row: 0,
+                changed: false,
+            },
+            2,
+        );
     }
     for _ in 0..case.draw(gs::integers::<u8>().min_value(1).max_value(32)) {
         let row = usize::from(case.draw(gs::integers::<u8>().max_value(3)));
