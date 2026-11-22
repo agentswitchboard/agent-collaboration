@@ -178,6 +178,7 @@ where
             tokio::select! {
                 biased;
                 () = self.retired.cancelled() => Err(EventRefusal::Retired),
+                () = self.carrier.sender.closed() => Err(EventRefusal::Stopped),
                 result = send => result,
             }
         })

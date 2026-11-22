@@ -284,3 +284,44 @@ fn retirement_does_not_recall_an_event_still_queued() {
         "an event accepted by ingress survives retirement while queued"
     );
 }
+
+#[derive(Default)]
+struct RecordedWake(std::sync::atomic::AtomicBool);
+
+impl std::task::Wake for RecordedWake {
+    fn wake(self: Arc<Self>) {
+        self.0.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+#[test]
+fn receiver_stop_wakes_a_send_blocked_by_a_retained_message() {
+    let (sender, mut receiver) = reply_carrier(NonZeroUsize::MIN);
+    let retired = CancellationToken::new();
+    let events = sender.event_port(17, &retired, std::convert::identity);
+    assert_eq!(poll_once(events.send(31).as_mut()), Poll::Ready(Ok(())));
+    let held = receiver
+        .receiver
+        .try_recv()
+        .expect("extract the first observation but keep its credit");
+
+    let wake = Arc::new(RecordedWake::default());
+    let waker = Waker::from(wake.clone());
+    let mut context = Context::from_waker(&waker);
+    let mut second = events.send(32);
+    assert_eq!(second.as_mut().poll(&mut context), Poll::Pending);
+    assert!(!wake.0.load(std::sync::atomic::Ordering::Relaxed));
+
+    drop(receiver);
+    let woke = wake.0.load(std::sync::atomic::Ordering::Relaxed);
+    let stopped = second.as_mut().poll(&mut context);
+    assert_eq!(
+        (woke, stopped),
+        (true, Poll::Ready(Err(EventRefusal::Stopped))),
+        "receiver closure must wake and refuse a send while a retained message still owns all credit"
+    );
+    assert_eq!(
+        held.process(|address, message| (address, message)),
+        (17, 31)
+    );
+}
