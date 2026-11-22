@@ -49,6 +49,7 @@ pub struct RaiseReceipt {
 pub enum RaiseReply {
     RaiseReceipt { receipt: RaiseReceipt },
     AlreadyStopped {},
+    AlreadyEnded {},
     ContentsDiffer {},
 }
 
