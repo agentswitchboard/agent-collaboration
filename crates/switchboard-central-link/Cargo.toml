@@ -6,7 +6,14 @@ license.workspace = true
 publish = false
 autotests = false
 
+[features]
+test-support = []
+
+
 [dependencies]
+futures-util.workspace = true
+tokio.workspace = true
+tokio-tungstenite.workspace = true
 central-link-client = { path = "../central-link-client" }
 central-link-protocol.workspace = true
 router-clock.workspace = true
@@ -19,3 +26,8 @@ router-clock = { workspace = true, features = ["test-support"] }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
+required-features = ["test-support"]

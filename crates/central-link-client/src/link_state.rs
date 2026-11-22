@@ -572,6 +572,18 @@ impl LinkClient {
         }
     }
 
+    /// Allocate a correlation for one renewal the owner is about to publish on this socket.
+    pub fn renewal_correlation(
+        &mut self,
+        attempt: &ConnectionAttempt,
+    ) -> Result<CorrelationId, ClientError> {
+        self.check_attempt(attempt)?;
+        if !matches!(self.state, ConnectionState::Welcomed { .. }) {
+            return Err(ClientError::CentralUnavailable);
+        }
+        Ok(self.next_correlation())
+    }
+
     fn next_correlation(&mut self) -> CorrelationId {
         let millis = u64::try_from(self.clock.utc_now().timestamp_millis()).unwrap_or(0);
         let nanos = u32::try_from(millis % 1000)

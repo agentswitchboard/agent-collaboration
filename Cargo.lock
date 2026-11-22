@@ -5726,9 +5726,12 @@ version = "0.1.158"
 dependencies = [
  "central-link-client",
  "central-link-protocol",
+ "futures-util",
  "hegeltest",
  "router-clock",
  "state-machine-core",
+ "tokio",
+ "tokio-tungstenite",
  "workspace-ids",
 ]
 

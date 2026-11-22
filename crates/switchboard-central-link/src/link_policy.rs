@@ -132,6 +132,30 @@ impl<Binding> LinkState<Binding> {
         }
     }
 
+    pub(super) fn dial_requirement(&self) -> Option<Option<LeaseVersion>> {
+        let LinkPhase::Waiting { lease, .. } = &self.phase else {
+            return None;
+        };
+        Some(match lease {
+            DialLease::Current => None,
+            DialLease::NewerThan(version) | DialLease::RetryUnauthorized(version) => Some(*version),
+        })
+    }
+
+    pub(super) fn renewal_deadline(&self) -> Option<ClockInstant> {
+        match self.phase {
+            LinkPhase::Welcomed { deadline, .. } => Some(deadline),
+            _ => None,
+        }
+    }
+
+    pub(super) fn ending(&self) -> Option<EnrollmentEnd> {
+        match self.phase {
+            LinkPhase::EnrollmentEnded { cause, .. } => Some(cause),
+            _ => None,
+        }
+    }
+
     fn binding(&self) -> Option<&Binding> {
         match &self.phase {
             LinkPhase::NotEnrolled => None,
