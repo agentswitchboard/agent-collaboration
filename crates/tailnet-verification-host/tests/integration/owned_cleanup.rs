@@ -5,6 +5,7 @@ use std::path::Path;
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
+use codex_router_tailnet_verification_host::bounded_command::exit_code;
 use codex_router_tailnet_verification_host::driver_error::{DriverError, DriverResult};
 use codex_router_tailnet_verification_host::owned_host::{
     CleanupInventory, capture_cleanup_inventory, with_owned_child,
@@ -67,23 +68,42 @@ fn exercise_cleanup(action: &str) -> Result<(), Box<dyn std::error::Error>> {
         }
         Ok(())
     });
-    assert!(child.try_wait()?.is_some());
+    let exit = child.try_wait()?;
+    if exit.is_none() {
+        // Reap the disposable fixture even when the cleanup oracle fails.
+        drop(child.stdin.take());
+        child.wait()?;
+    }
+    let settlement_path = evidence.path().join("host-settlement.json");
+    let settlement = std::fs::read_to_string(settlement_path);
+    assert!(
+        exit.is_some(),
+        "driver left the child unreaped ({action}); result: {result:?}; settlement: {settlement:?}"
+    );
+    let settlement = settlement?;
     match action {
         "body-error" => assert_eq!(
-            result.err().ok_or("missing body error")?.to_string(),
-            "body failed"
+            result.err().map(|error| error.to_string()).as_deref(),
+            Some("body failed"),
+            "settlement: {settlement}"
         ),
         "write-failure" => assert_eq!(
-            result.err().ok_or("missing evidence refusal")?.to_string(),
-            "cleanup evidence unavailable; owned cleanup was still attempted"
+            result.err().map(|error| error.to_string()).as_deref(),
+            Some("cleanup evidence unavailable; owned cleanup was still attempted"),
+            "settlement: {settlement}"
         ),
-        _ => result?,
+        _ => assert!(
+            result.is_ok(),
+            "result: {result:?}; settlement: {settlement}"
+        ),
     }
-    let settlement: Value = serde_json::from_slice(&std::fs::read(
-        evidence.path().join("host-settlement.json"),
-    )?)?;
+    let settlement: Value = serde_json::from_str(&settlement)?;
+    assert_eq!(settlement.get("exit"), Some(&json!(exit.map(exit_code))));
     assert_eq!(settlement.get("remaining"), Some(&json!({})));
     assert_eq!(settlement.get("errors"), Some(&json!([])));
+    if action == "exited" {
+        assert_eq!(settlement.get("signals"), Some(&json!([])));
+    }
     if action != "write-failure" {
         let snapshot: Value = serde_json::from_slice(&std::fs::read(
             evidence.path().join("host-before-fallback.json"),

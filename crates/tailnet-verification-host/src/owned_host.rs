@@ -158,7 +158,8 @@ pub fn stop_owned(
                 )?,
             });
         }
-        let ordered = known.get(&root).into_iter().chain(
+        let root_running = child.try_wait()?.is_none();
+        let ordered = known.get(&root).filter(|_| root_running).into_iter().chain(
             known
                 .iter()
                 .filter(|(pid, _)| **pid != root)
