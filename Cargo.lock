@@ -5713,7 +5713,10 @@ version = "0.1.158"
 dependencies = [
  "approval-request-protocol",
  "hegeltest",
+ "serde_json",
  "state-machine-core",
+ "tokio",
+ "turmoil",
  "workspace-ids",
 ]
 

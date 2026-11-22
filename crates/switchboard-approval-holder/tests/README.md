@@ -1,3 +1,3 @@
 # Approval holder checks
 
-The crate’s module-local tests exercise the pure carrier and run gate against correlated replies and outages.
+Module-local tests check the provider-wait and run-gate reducers with fixed and generated orders. The integration target composes those reducers for selected core model traces and transfers typed registration and Stop packets across a simulated link with Turmoil.

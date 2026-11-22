@@ -88,6 +88,7 @@ enum Authority {
 /// Central duty and responder custody for a single provider ask.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WaitState<Responder, Connection> {
+    request_id: Option<ApprovalRequestId>,
     frozen: Option<FrozenRaise>,
     central: CentralDuty<Connection>,
     custody: Custody<Responder>,
@@ -114,6 +115,7 @@ impl<Responder, Connection> WaitState<Responder, Connection> {
             .contents_digest()
             .map_err(OpenWaitRefusal::InvalidContents)?;
         Ok(Self {
+            request_id: Some(raise.request_id().clone()),
             frozen: Some(FrozenRaise {
                 body: raise,
                 digest,
@@ -128,6 +130,7 @@ impl<Responder, Connection> WaitState<Responder, Connection> {
 
     pub const fn unbound(responder: Responder) -> Self {
         Self {
+            request_id: None,
             frozen: None,
             central: CentralDuty::Refusing,
             custody: Custody::Claimed {
@@ -460,11 +463,10 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
         request: DeliverEndingRequest,
         effects: &mut Effects<Responder, Connection>,
     ) -> Result<DeliverEndingReply, WaitError> {
-        let Some(frozen) = self
-            .frozen
-            .as_ref()
-            .filter(|frozen| frozen.body.request_id() == &request.request_id)
-        else {
+        if self.request_id.as_ref() != Some(&request.request_id) {
+            return Err(TransitionError::Stale);
+        }
+        let Some(frozen) = self.frozen.as_ref() else {
             return Ok(DeliverEndingReply::NotHeld {});
         };
         let validation = if request.contents_digest != frozen.digest {

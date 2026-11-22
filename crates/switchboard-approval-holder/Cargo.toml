@@ -12,7 +12,14 @@ state-machine-core.workspace = true
 workspace-ids.workspace = true
 
 [dev-dependencies]
+serde_json.workspace = true
+tokio.workspace = true
+turmoil = "=0.7.2"
 hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
 
 [lints]
 workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
