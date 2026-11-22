@@ -34,6 +34,7 @@ async fn an_already_loaded_session_accepts_delivery_despite_a_mode_difference() 
         Arc::new(acp_provider_adapters::ClaudeAcpBehavior::new(
             acp_provider_adapters::ClaudeSkillSource::Annotated,
         )),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await
     .expect("fixture provider");
@@ -55,6 +56,7 @@ async fn an_already_loaded_session_accepts_delivery_despite_a_mode_difference() 
                 runtime,
             }],
             Arc::clone(&store),
+            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
         )
         .expect("supervisor"),
     );

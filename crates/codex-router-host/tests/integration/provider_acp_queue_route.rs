@@ -136,6 +136,7 @@ async fn idle_explicit_queue_is_accepted_and_drains_for_both_providers() {
         let runtime = ExternalProviderRuntime::initialize(
             one_prompt_fixture(&event_socket),
             std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
         )
         .await
         .expect("fixture provider");
@@ -168,6 +169,7 @@ async fn idle_explicit_queue_is_accepted_and_drains_for_both_providers() {
                     runtime,
                 }],
                 Arc::clone(&store),
+                std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
             )
             .expect("supervisor"),
         );

@@ -41,6 +41,7 @@ async fn a_settlement_that_fails_to_save_answers_its_outcome_and_durable_stage()
             vec!["reactive".to_owned(), receipt.display().to_string()],
         ),
         Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await
     .expect("fixture provider");
@@ -75,6 +76,7 @@ async fn a_settlement_that_fails_to_save_answers_its_outcome_and_durable_stage()
                 runtime,
             }],
             Arc::clone(&store),
+            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
         )
         .expect("supervisor"),
     );

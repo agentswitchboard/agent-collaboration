@@ -30,9 +30,12 @@ impl ModeFixture {
                 acp_provider_adapters::ClaudeSkillSource::Annotated,
             ))
         };
-        let runtime =
-            ExternalProviderRuntime::initialize(launch(PERMISSION_MODE_AGENT, arguments), behavior)
-                .await?;
+        let runtime = ExternalProviderRuntime::initialize(
+            launch(PERMISSION_MODE_AGENT, arguments),
+            behavior,
+            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        )
+        .await?;
         let name = if profile == "cursor" {
             "cursor"
         } else {

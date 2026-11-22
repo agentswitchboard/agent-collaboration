@@ -7,14 +7,6 @@ use tokio::io::AsyncWriteExt as _;
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 const STARTUP_BOUND: Duration = Duration::from_secs(5);
 
-async fn advance_initialization_clock(budget: Duration) {
-    // The real authentication request is observed first. Resume before OS child
-    // cleanup so idle Tokio time cannot auto-advance while waiting for real IO.
-    tokio::time::pause();
-    tokio::time::advance(budget).await;
-    tokio::time::resume();
-}
-
 fn require_request_order(root: &std::path::Path, expected: &str) -> TestResult {
     let actual = std::fs::read_to_string(root.join("requests.log"))?;
     if actual != expected {
@@ -25,11 +17,13 @@ fn require_request_order(root: &std::path::Path, expected: &str) -> TestResult {
     Ok(())
 }
 
+fn fixture_pid(root: &std::path::Path) -> Result<rustix::process::Pid, Box<dyn std::error::Error>> {
+    rustix::process::Pid::from_raw(std::fs::read_to_string(root.join("requests.log.pid"))?.parse()?)
+        .ok_or_else(|| "invalid fixture process ID".into())
+}
+
 fn require_fixture_process_settled(root: &std::path::Path) -> TestResult {
-    let process_id = rustix::process::Pid::from_raw(
-        std::fs::read_to_string(root.join("requests.log.pid"))?.parse()?,
-    )
-    .ok_or("invalid fixture process ID")?;
+    let process_id = fixture_pid(root)?;
     match rustix::process::test_kill_process(process_id) {
         Err(rustix::io::Errno::SRCH) => Ok(()),
         other => {
@@ -92,6 +86,7 @@ async fn initialization_authentication_holds_discovery_and_readiness_until_the_r
         launch_authentication_fixture(root.path(), "held"),
         STARTUP_BOUND,
         Arc::new(acp_provider_adapters::CursorAcpBehavior),
+        acp_scripted_fixture::manual_clock(),
     );
     tokio::pin!(initializing);
     let accepted = tokio::select! {
@@ -99,17 +94,9 @@ async fn initialization_authentication_holds_discovery_and_readiness_until_the_r
             if let Ok(runtime) = result { runtime.shutdown().await; }
             return Err("initialization completed before its held authentication reply".into());
         }
-        accepted = tokio::time::timeout(STARTUP_BOUND, release.accept()) => accepted,
+        accepted = release.accept() => accepted,
     };
-    let (mut signal, _) = match accepted {
-        Ok(Ok(accepted)) => accepted,
-        failure => {
-            if let Ok(runtime) = initializing.await {
-                runtime.shutdown().await;
-            }
-            return Err(format!("authentication gate was not reached: {failure:?}").into());
-        }
-    };
+    let (mut signal, _) = accepted?;
     // Poll the actual constructor, not a JoinHandle whose scheduling could hide ready_tx.
     if let Some(result) = initializing.as_mut().now_or_never() {
         if let Ok(runtime) = result {
@@ -143,6 +130,7 @@ async fn initialization_authentication_rejection_malformed_reply_and_connection_
             launch_authentication_fixture(root.path(), scenario),
             STARTUP_BOUND,
             Arc::new(acp_provider_adapters::CursorAcpBehavior),
+            acp_scripted_fixture::manual_clock(),
         )
         .await;
         if let Ok(runtime) = &initialized {
@@ -172,41 +160,40 @@ async fn initialization_authentication_deadline_cancels_and_settles_the_owned_co
 -> TestResult {
     let root = tempfile::tempdir()?;
     let release = tokio::net::UnixListener::bind(root.path().join("release.sock"))?;
-    // This virtual budget never waits out a real clock. The distinct five-second
-    // bounds below constrain only arrival and owned-process settlement.
+    use router_clock::RuntimeClock as _;
+    let clock = acp_scripted_fixture::manual_clock();
     let initialization_budget = Duration::from_secs(60);
+    let deadline = clock.monotonic_now().after(initialization_budget);
     let initializing = ExternalProviderRuntime::initialize_with_timeout(
         launch_authentication_fixture(root.path(), "timeout"),
         initialization_budget,
         Arc::new(acp_provider_adapters::CursorAcpBehavior),
+        clock.clone(),
     );
     tokio::pin!(initializing);
-    let accepted = tokio::select! {
+    let (held_connection, _) = tokio::select! {
         result = &mut initializing => {
             if let Ok(runtime) = result { runtime.shutdown().await; }
             return Err("initialization settled before authentication was observed".into());
         }
-        accepted = tokio::time::timeout(STARTUP_BOUND, release.accept()) => accepted,
-    };
-    let _held_connection = match accepted {
-        Ok(Ok((connection, _))) => connection,
-        failure => {
-            advance_initialization_clock(initialization_budget).await;
-            if let Ok(Ok(runtime)) = tokio::time::timeout(STARTUP_BOUND, initializing).await {
-                runtime.shutdown().await;
-            }
-            return Err(format!("authentication expiry gate was not reached: {failure:?}").into());
-        }
+        accepted = release.accept() => accepted?,
     };
     require_request_order(root.path(), "initialize\nauthenticate\n")?;
-    if let Some(result) = initializing.as_mut().now_or_never() {
-        if let Ok(runtime) = result {
+    if !clock.has_not_due_check_now(deadline) {
+        let process_id = fixture_pid(root.path())?;
+        rustix::process::kill_process(process_id, rustix::process::Signal::KILL)?;
+        drop(held_connection);
+        if let Ok(runtime) = initializing.await {
             runtime.shutdown().await;
         }
-        return Err("initialization settled before the clock was advanced".into());
+        require_fixture_process_settled(root.path())?;
+        return Err(
+            "the held authentication did not register the injected startup deadline".into(),
+        );
     }
-    advance_initialization_clock(initialization_budget).await;
-    let initialized = tokio::time::timeout(STARTUP_BOUND, initializing).await?;
+    clock.advance(initialization_budget)?;
+    let initialized = initializing.await;
+    drop(held_connection);
     if let Ok(runtime) = &initialized {
         runtime.shutdown().await;
     }
@@ -236,6 +223,7 @@ async fn initialization_authentication_not_requested_preserves_claude_and_standa
             launch_authentication_fixture(root.path(), "not-requested"),
             STARTUP_BOUND,
             policy,
+            acp_scripted_fixture::manual_clock(),
         )
         .await?;
         let exercised = exercise_sessions_and_setting(&runtime, root.path()).await;
@@ -259,6 +247,7 @@ async fn initialization_authentication_is_required_again_on_a_replacement_connec
             launch_authentication_fixture(root.path(), "success"),
             STARTUP_BOUND,
             Arc::new(acp_provider_adapters::CursorAcpBehavior),
+            acp_scripted_fixture::manual_clock(),
         )
         .await?;
         let exercised = exercise_sessions_and_setting(&runtime, root.path()).await;

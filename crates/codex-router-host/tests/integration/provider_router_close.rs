@@ -49,6 +49,7 @@ impl RouterCloseFixture {
         let runtime = ExternalProviderRuntime::initialize(
             provider_fixture_launch::launch("cursor-settings-agent.ts", arguments),
             Arc::new(acp_provider_adapters::StandardAcpBehavior),
+            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
         )
         .await
         .expect("fixture provider");
@@ -82,6 +83,7 @@ impl RouterCloseFixture {
                 runtime,
             }],
             store,
+            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
         )
         .expect("fixture Host");
         Self {

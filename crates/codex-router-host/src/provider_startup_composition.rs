@@ -300,8 +300,14 @@ pub(crate) async fn compose_provider_startup(
     }
     let supervisor = match store {
         Some(store) if !endpoints.is_empty() => Some(Arc::new(
-            ExternalProviderSupervisor::new_with_hub(bindings, store, hub.clone(), scratch_root)
-                .map_err(io::Error::other)?,
+            ExternalProviderSupervisor::new_with_hub(
+                bindings,
+                store,
+                hub.clone(),
+                scratch_root,
+                clock,
+            )
+            .map_err(io::Error::other)?,
         )),
         _ => None,
     };

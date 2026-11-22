@@ -43,10 +43,8 @@ async fn selected_skill_removed_while_fifo_waits_is_refused_without_a_provider_p
         })
         .await
         .expect("saved setup");
-    let hub = Arc::new(ProviderSessionEventHub::new(
-        store.clone(),
-        Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
-    ));
+    let clock = crate::external_provider_runtime::acp_scripted_fixture::manual_clock();
+    let hub = Arc::new(ProviderSessionEventHub::new(store.clone(), clock.clone()));
     let board: message_board::SessionRef =
         collaboration_protocol::ProviderIdentity::session_to_board(&target).expect("board address");
     let runtime = ExternalProviderRuntime::initialize(
@@ -66,6 +64,7 @@ async fn selected_skill_removed_while_fifo_waits_is_refused_without_a_provider_p
             persistence_target: acp_client_runtime::ProviderPersistenceTarget::Unspecified,
         },
         Arc::new(acp_provider_adapters::CursorAcpBehavior),
+        clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -77,6 +76,7 @@ async fn selected_skill_removed_while_fifo_waits_is_refused_without_a_provider_p
         store.clone(),
         Some(hub.clone()),
         None,
+        clock,
     )
     .expect("Host supervisor");
     let opened = supervisor

@@ -139,8 +139,14 @@ impl<P: InteractionPort> AgentSessionClient<P> {
         let observed_tool_calls = Arc::clone(&test_tool_calls);
         let client_clock = Arc::clone(&clock);
         let provider_behavior = Arc::clone(&behavior);
+        #[cfg(feature = "test-observation")]
+        let connection_settled = CancellationToken::new();
+        #[cfg(feature = "test-observation")]
+        let mark_connection_settled = connection_settled.clone().drop_guard();
         let task = tokio::spawn(async move {
             use futures_util::StreamExt as _;
+            #[cfg(feature = "test-observation")]
+            let _mark_connection_settled = mark_connection_settled;
             use tokio_util::codec::{FramedRead, FramedWrite, LinesCodec};
 
             let stderr_task = stderr.map(|stderr| {
@@ -439,6 +445,8 @@ impl<P: InteractionPort> AgentSessionClient<P> {
             sink_closed: client_sink_closed,
             retirement,
             task: tokio::sync::Mutex::new(Some(task)),
+            #[cfg(feature = "test-observation")]
+            connection_settled,
             shutdown_failed,
             frame_observation,
             commands: command_tx,

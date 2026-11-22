@@ -128,6 +128,7 @@ async fn prepared_route(
     let runtime = ExternalProviderRuntime::initialize(
         launch,
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await
     .expect("fixture provider");
@@ -159,6 +160,7 @@ async fn prepared_route(
                 runtime,
             }],
             Arc::clone(&store),
+            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
         )
         .expect("supervisor"),
     );

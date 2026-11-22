@@ -160,6 +160,7 @@ impl RestoreRig {
             store,
             Some(hub.clone()),
             None,
+            self.clock.clone(),
         )
         .expect("supervisor");
         (host, hub)

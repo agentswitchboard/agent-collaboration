@@ -72,6 +72,7 @@ async fn provider_prompt_observes_more_than_the_old_update_limit_and_settles() {
     let runtime = ExternalProviderRuntime::initialize(
         many_prompt_updates_fixture(4097),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -80,13 +81,10 @@ async fn provider_prompt_observes_more_than_the_old_update_limit_and_settles() {
         .await
         .expect("session created");
 
-    let outcome = tokio::time::timeout(
-        std::time::Duration::from_secs(10),
-        runtime.prompt("fixture-session".to_owned(), "many updates".to_owned()),
-    )
-    .await
-    .expect("prompt settles")
-    .expect("prompt succeeds");
+    let outcome = runtime
+        .prompt("fixture-session".to_owned(), "many updates".to_owned())
+        .await
+        .expect("prompt succeeds");
     assert_eq!(outcome.output, "x".repeat(4097) + "DONE");
     assert_eq!(outcome.stop_reason, ProviderPromptStopReason::EndTurn);
 
@@ -99,6 +97,7 @@ async fn load_replay_drains_more_than_the_old_update_limit_without_leaking_histo
     let runtime = ExternalProviderRuntime::initialize(
         replay_fixture(4097),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -122,6 +121,7 @@ async fn load_replay_accepts_the_old_exact_update_boundary_without_history_leak(
     let runtime = ExternalProviderRuntime::initialize(
         replay_fixture(4096),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -148,14 +148,15 @@ async fn output_limit_cancels_and_settles_before_late_updates_can_reach_next_pro
     let runtime = ExternalProviderRuntime::initialize(
         output_limit_and_late_update_fixture(&control_path),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
-    let (mut control, _) =
-        tokio::time::timeout(std::time::Duration::from_secs(2), control_listener.accept())
-            .await
-            .expect("fixture connects to control socket")
-            .expect("control connection accepted");
+    let (_, settled) = runtime.client.connection_fixture_signals();
+    let (mut control, _) = tokio::select! {
+        accepted = control_listener.accept() => accepted.expect("control connection accepted"),
+        () = settled.cancelled() => panic!("provider retired before opening the control socket"),
+    };
     runtime
         .create_session(PathBuf::from("/tmp"))
         .await
@@ -170,13 +171,10 @@ async fn output_limit_cancels_and_settles_before_late_updates_can_reach_next_pro
         ExternalProviderRuntimeError::PromptOutputLimitExceeded
     ));
     let mut barrier_signal = [0u8; 1];
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        tokio::io::AsyncReadExt::read_exact(&mut control, &mut barrier_signal),
-    )
-    .await
-    .expect("unknown-request response barrier completes")
-    .expect("control signal received");
+    tokio::select! {
+        read = tokio::io::AsyncReadExt::read_exact(&mut control, &mut barrier_signal) => { read.expect("control signal received"); }
+        () = settled.cancelled() => panic!("provider retired before the unknown-request response"),
+    }
     assert_eq!(barrier_signal, *b"r");
     let next = runtime
         .prompt("fixture-session".to_owned(), "next".to_owned())
@@ -193,6 +191,7 @@ async fn unknown_session_requests_are_rejected_idle_and_during_prompt() {
     let runtime = ExternalProviderRuntime::initialize(
         unknown_request_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -201,13 +200,10 @@ async fn unknown_session_requests_are_rejected_idle_and_during_prompt() {
         .await
         .expect("session created");
 
-    let outcome = tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        runtime.prompt("fixture-session".to_owned(), "answer".to_owned()),
-    )
-    .await
-    .expect("unknown requests do not park session actor")
-    .expect("prompt settles");
+    let outcome = runtime
+        .prompt("fixture-session".to_owned(), "answer".to_owned())
+        .await
+        .expect("prompt settles");
     let responses: serde_json::Value =
         serde_json::from_str(&outcome.output).expect("request responses");
     for response in responses.as_array().expect("response list") {
@@ -223,6 +219,7 @@ async fn unknown_sessionless_requests_receive_method_not_found() {
     let runtime = ExternalProviderRuntime::initialize(
         sessionless_unknown_request_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -260,6 +257,7 @@ async fn request_naming_unknown_session_receives_method_not_found() {
     let runtime = ExternalProviderRuntime::initialize(
         fixture,
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -267,19 +265,13 @@ async fn request_naming_unknown_session_receives_method_not_found() {
         .create_session(root.path().to_owned())
         .await
         .expect("session created");
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        runtime.retirement().cancelled(),
-    )
-    .await
-    .unwrap_or_else(|_| {
-        panic!(
-            "fixture did not finish unknown-session exchange: {}",
-            std::fs::read_to_string(root.path().join("fixture-diagnostics.txt"))
-                .unwrap_or_default()
-        )
-    });
-    assert!(marker.exists(), "fixture did not observe -32601 response");
+    let (_, settled) = runtime.client.connection_fixture_signals();
+    settled.cancelled().await;
+    assert!(
+        marker.exists(),
+        "fixture did not observe the exact -32601 response: {}",
+        std::fs::read_to_string(root.path().join("fixture-diagnostics.txt")).unwrap_or_default(),
+    );
     runtime.shutdown().await;
 }
 
@@ -299,16 +291,14 @@ async fn implemented_permission_request_during_load_replay_is_answered() {
     let runtime = ExternalProviderRuntime::initialize(
         fixture,
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
-    tokio::time::timeout(
-        std::time::Duration::from_secs(5),
-        runtime.load_session("fixture-session".to_owned(), PathBuf::from("/tmp")),
-    )
-    .await
-    .expect("permission request does not block load")
-    .expect("session load succeeds");
+    runtime
+        .load_session("fixture-session".to_owned(), PathBuf::from("/tmp"))
+        .await
+        .expect("session load succeeds");
     let observation = runtime.permission_observation();
     assert_eq!(observation.request_count, 1);
     assert_eq!(
@@ -338,6 +328,7 @@ async fn unknown_update_kind_does_not_discard_later_prompt_output() {
     let runtime = ExternalProviderRuntime::initialize(
         fixture,
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -370,6 +361,7 @@ async fn unknown_stop_reason_has_sanitized_terminal_projection() {
     let runtime = ExternalProviderRuntime::initialize(
         fixture,
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -407,6 +399,7 @@ async fn malformed_known_update_and_future_tool_status_do_not_end_turn() {
     let runtime = ExternalProviderRuntime::initialize(
         fixture,
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -444,6 +437,7 @@ async fn permission_request_naming_unknown_session_receives_method_not_found() {
     let runtime = ExternalProviderRuntime::initialize(
         fixture,
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -451,19 +445,13 @@ async fn permission_request_naming_unknown_session_receives_method_not_found() {
         .create_session(root.path().to_owned())
         .await
         .expect("session created");
-    tokio::time::timeout(
-        std::time::Duration::from_secs(2),
-        runtime.retirement().cancelled(),
-    )
-    .await
-    .unwrap_or_else(|_| {
-        panic!(
-            "fixture did not finish unknown-permission exchange: {}",
-            std::fs::read_to_string(root.path().join("fixture-diagnostics.txt"))
-                .unwrap_or_default()
-        )
-    });
-    assert!(marker.exists(), "fixture did not observe -32601 response");
+    let (_, settled) = runtime.client.connection_fixture_signals();
+    settled.cancelled().await;
+    assert!(
+        marker.exists(),
+        "fixture did not observe the exact -32601 response: {}",
+        std::fs::read_to_string(root.path().join("fixture-diagnostics.txt")).unwrap_or_default(),
+    );
     runtime.shutdown().await;
 }
 
@@ -473,6 +461,7 @@ async fn large_tool_update_and_result_do_not_retire_other_provider_sessions() {
     let runtime = ExternalProviderRuntime::initialize(
         large_provider_frames_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -506,6 +495,7 @@ async fn large_permission_request_frame_is_accepted_and_answered() {
     let runtime = ExternalProviderRuntime::initialize(
         large_permission_frame_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -528,6 +518,7 @@ async fn frame_limit_breach_returns_a_safe_typed_failure() {
     let runtime = ExternalProviderRuntime::initialize(
         oversized_active_frame_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -536,16 +527,13 @@ async fn frame_limit_breach_returns_a_safe_typed_failure() {
         .await
         .expect("session created");
 
-    let error = tokio::time::timeout(
-        std::time::Duration::from_secs(20),
-        runtime.prompt(
+    let error = runtime
+        .prompt(
             "fixture-session".to_owned(),
             "trigger frame breach".to_owned(),
-        ),
-    )
-    .await
-    .expect("frame breach terminates prompt")
-    .expect_err("oversized provider frame is rejected");
+        )
+        .await
+        .expect_err("oversized provider frame is rejected");
     assert!(
         matches!(error, ExternalProviderRuntimeError::FrameLimitExceeded),
         "{error:?}"

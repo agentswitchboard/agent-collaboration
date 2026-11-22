@@ -274,3 +274,9 @@ mod tests {
         );
     }
 }
+
+pub(crate) fn manual_clock() -> std::sync::Arc<router_clock::ManualClock> {
+    std::sync::Arc::new(router_clock::ManualClock::new(
+        chrono::DateTime::from_timestamp(1_700_012_345, 0).expect("fixture UTC time"),
+    ))
+}

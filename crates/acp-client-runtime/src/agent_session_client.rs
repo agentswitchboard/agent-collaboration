@@ -77,6 +77,8 @@ pub struct AgentSessionClient<P: InteractionPort> {
     sink_closed: CancellationToken,
     retirement: CancellationToken,
     task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
+    #[cfg(feature = "test-observation")]
+    connection_settled: CancellationToken,
     shutdown_failed: Arc<std::sync::atomic::AtomicBool>,
     frame_observation: Arc<ProviderFrameObservation>,
     commands: tokio::sync::mpsc::Sender<ProviderCommand>,
@@ -99,6 +101,13 @@ pub struct AgentSessionClient<P: InteractionPort> {
 }
 
 impl<P: InteractionPort> AgentSessionClient<P> {
+    /// The stop request and owned connection task exit, observed independently.
+    #[must_use]
+    #[cfg(feature = "test-observation")]
+    pub fn connection_fixture_signals(&self) -> (CancellationToken, CancellationToken) {
+        (self.shutdown.clone(), self.connection_settled.clone())
+    }
+
     #[must_use]
     pub fn owner_approval_bindings(&self) -> OwnerApprovalBindings<P> {
         OwnerApprovalBindings::new(

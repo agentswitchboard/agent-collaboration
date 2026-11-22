@@ -196,7 +196,12 @@ mod tests {
             })
             .expect("endpoint publication");
         let supervisor = Arc::new(
-            ExternalProviderSupervisor::new(Vec::new(), Arc::clone(&store)).expect("supervisor"),
+            ExternalProviderSupervisor::new(
+                Vec::new(),
+                Arc::clone(&store),
+                std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            )
+            .expect("supervisor"),
         );
         let claim = ProviderAcpRouteClaim::new(
             service_id,

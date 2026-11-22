@@ -13,6 +13,7 @@ async fn provider_process_transport_failure_remains_retryable() {
     let runtime = ExternalProviderRuntime::initialize(
         exited_provider_fixture(&exit_marker, release_address),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await
     .expect("fixture provider");
@@ -56,6 +57,7 @@ async fn provider_process_transport_failure_remains_retryable() {
                 runtime,
             }],
             Arc::clone(&store),
+            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
         )
         .expect("supervisor"),
     );
@@ -109,6 +111,7 @@ async fn live_peer_recheck_prevents_provider_load() {
     let runtime = ExternalProviderRuntime::initialize(
         refusing_load_fixture(&load_marker, -32002),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await
     .expect("fixture provider");
@@ -140,6 +143,7 @@ async fn live_peer_recheck_prevents_provider_load() {
                 runtime,
             }],
             Arc::clone(&store),
+            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
         )
         .expect("supervisor"),
     );

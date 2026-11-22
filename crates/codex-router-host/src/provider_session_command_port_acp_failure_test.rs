@@ -98,6 +98,7 @@ impl FailureRoute {
                 store.clone(),
                 Some(hub.clone()),
                 None,
+                clock.clone(),
             )
             .expect("supervisor"),
         );

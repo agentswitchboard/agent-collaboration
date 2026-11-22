@@ -8,6 +8,7 @@ async fn supervisor_shutdown_joins_runtime_and_settles_held_work() -> TestResult
     let runtime = ExternalProviderRuntime::initialize(
         cancel_fixture(&root.path().join("shutdown.log")),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await?;
     let backend = supervisor(
@@ -82,6 +83,7 @@ async fn supervisor_shutdown_drains_saturated_load_completions_and_preserves_unk
     let runtime = ExternalProviderRuntime::initialize(
         saturated_load_fixture(&admission_log, &process_id_path),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await?;
     let backend = supervisor(

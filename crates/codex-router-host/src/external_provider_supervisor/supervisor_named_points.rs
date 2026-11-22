@@ -12,8 +12,9 @@ impl ExternalProviderSupervisor {
             tokio::sync::Mutex<switchboard_session_store::ProviderOperationStore>,
         >,
         hub: std::sync::Arc<switchboard_session_events::ProviderSessionEventHub>,
+        clock: std::sync::Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, &'static str> {
-        Self::new_with_hub(bindings, store, Some(hub), None)
+        Self::new_with_hub(bindings, store, Some(hub), None, clock)
     }
 
     /// Opens a fixture session through the registered owner. The test decides

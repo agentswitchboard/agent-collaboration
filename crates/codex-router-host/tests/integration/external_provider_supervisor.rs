@@ -218,6 +218,7 @@ async fn supervisor(
             .map(|(identity, runtime)| ExternalProviderBinding { identity, runtime })
             .collect(),
         Arc::new(Mutex::new(store)),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )?)
 }
 

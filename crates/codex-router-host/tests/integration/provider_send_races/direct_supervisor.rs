@@ -27,6 +27,7 @@ impl DirectSupervisor {
                 send_race_arguments(&receipt, behaviours),
             ),
             Arc::new(acp_provider_adapters::StandardAcpBehavior),
+            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
         )
         .await
         .expect("fixture provider");
@@ -44,6 +45,7 @@ impl DirectSupervisor {
                     runtime,
                 }],
                 Arc::clone(&store),
+                std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
             )
             .expect("supervisor"),
         );

@@ -123,6 +123,7 @@ async fn owned_router_startup_provisions_once_before_router_and_claude_acp_launc
     let runtime = crate::ExternalProviderRuntime::initialize(
         claude_binding.launch,
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await
     .expect("isolated Claude ACP fixture initializes through the Host runtime");

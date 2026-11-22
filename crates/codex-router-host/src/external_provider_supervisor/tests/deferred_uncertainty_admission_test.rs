@@ -51,6 +51,7 @@ impl ControlFixture {
                 arguments,
             ),
             Arc::new(acp_provider_adapters::StandardAcpBehavior),
+            crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
         )
         .await
         .expect("fixture provider");
@@ -66,6 +67,7 @@ impl ControlFixture {
                     runtime,
                 }],
                 Arc::clone(&store),
+                crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
             )
             .expect("supervisor"),
         );

@@ -161,14 +161,16 @@ impl ExternalProviderRuntime {
     pub async fn initialize(
         launch: ExternalProviderLaunch,
         behavior: Arc<dyn acp_client_runtime::ProviderBehavior>,
+        clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, ExternalProviderRuntimeError> {
         let owner_ingress = Arc::new(SessionOwnerIngress::default());
         let interaction_port = Arc::new(HostInteractionPort(owner_ingress.clone()));
-        let client = AgentSessionClient::initialize(
+        let client = AgentSessionClient::initialize_with_clock(
             launch,
             Arc::clone(&interaction_port),
             owner_ingress.clone(),
             behavior,
+            clock,
         )
         .await?;
         Ok(Self {
@@ -191,6 +193,7 @@ impl ExternalProviderRuntime {
         server_name: impl Into<String>,
         server_url: impl Into<String>,
         behavior: Arc<dyn acp_client_runtime::ProviderBehavior>,
+        clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, ExternalProviderRuntimeError> {
         let owner_ingress = Arc::new(SessionOwnerIngress::default());
         let interaction_port = Arc::new(HostInteractionPort(owner_ingress.clone()));
@@ -202,7 +205,7 @@ impl ExternalProviderRuntime {
             Arc::clone(&interaction_port),
             owner_ingress.clone(),
             behavior,
-            Arc::new(router_clock::SystemRuntimeClock::new()),
+            clock,
         )
         .await?;
         Ok(Self {
@@ -286,6 +289,7 @@ impl ExternalProviderRuntime {
         launch: ExternalProviderLaunch,
         initialize_timeout: Duration,
         behavior: Arc<dyn acp_client_runtime::ProviderBehavior>,
+        clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, ExternalProviderRuntimeError> {
         let owner_ingress = Arc::new(SessionOwnerIngress::default());
         let interaction_port = Arc::new(HostInteractionPort(owner_ingress.clone()));
@@ -295,6 +299,7 @@ impl ExternalProviderRuntime {
             Arc::clone(&interaction_port),
             owner_ingress.clone(),
             behavior,
+            clock,
         )
         .await?;
         Ok(Self {

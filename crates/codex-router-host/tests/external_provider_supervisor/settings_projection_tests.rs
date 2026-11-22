@@ -16,6 +16,7 @@ async fn provider_create_projects_effective_partial_and_invalid_settings() -> Te
         let runtime = ExternalProviderRuntime::initialize(
             launch("supervisor-settings-create-agent.ts", vec![mode.to_owned()]),
             std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
         )
         .await?;
         let backend = supervisor(

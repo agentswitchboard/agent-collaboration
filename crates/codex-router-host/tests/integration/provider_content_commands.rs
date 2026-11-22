@@ -34,6 +34,7 @@ async fn non_creator_content_prompt_is_accepted_after_capability_validation() {
     let runtime = ExternalProviderRuntime::initialize(
         two_block_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await
     .expect("fixture provider");
@@ -65,6 +66,7 @@ async fn non_creator_content_prompt_is_accepted_after_capability_validation() {
                 runtime,
             }],
             Arc::clone(&store),
+            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
         )
         .expect("supervisor"),
     );
@@ -163,6 +165,7 @@ async fn active_control_turn_cancel_uses_operation_bound_path_and_settles_after_
     let runtime = ExternalProviderRuntime::initialize(
         cancellable_prompt_fixture(&dispatch_log),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await
     .expect("fixture provider");
@@ -194,6 +197,7 @@ async fn active_control_turn_cancel_uses_operation_bound_path_and_settles_after_
                 runtime,
             }],
             Arc::clone(&store),
+            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
         )
         .expect("supervisor"),
     );

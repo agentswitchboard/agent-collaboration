@@ -169,6 +169,7 @@ async fn supervisor_with_binding(
             runtime,
         }],
         Arc::new(Mutex::new(store)),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )?)
 }
 
@@ -218,6 +219,7 @@ async fn crash_child_records_durable_boundary() -> TestResult {
     let runtime = ExternalProviderRuntime::initialize(
         held_dispatch_fixture(&dispatch_log, expected_method),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await?;
     let backend = supervisor(&database_path, runtime).await?;
@@ -314,6 +316,7 @@ async fn reopened_supervisor(
     let runtime = ExternalProviderRuntime::initialize(
         reopened_provider_fixture(replay_log),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await?;
     supervisor_with_binding(database_path, runtime, restarted_binding()?).await

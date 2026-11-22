@@ -60,6 +60,7 @@ async fn unknown_agent_stop_reason_settles_with_typed_value() {
     let runtime = ExternalProviderRuntime::initialize(
         fixture,
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -74,6 +75,7 @@ async fn unknown_agent_stop_reason_settles_with_typed_value() {
             runtime,
         }],
         store,
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .expect("supervisor");
     backend

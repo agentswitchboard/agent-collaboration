@@ -106,6 +106,8 @@ struct SupervisorInner {
         Arc<Mutex<HashMap<SessionRef, provider_session_machines::ProviderSettingsCatalog>>>,
     started_at_ms: i64,
     #[cfg(test)]
+    owner_hub: Arc<switchboard_session_events::ProviderSessionEventHub>,
+    #[cfg(test)]
     admission_test_pause: StdMutex<Option<AdmissionTestPause>>,
     #[cfg(test)]
     admission_before_reservation_test_pause: StdMutex<Option<AdmissionTestPause>>,
@@ -364,8 +366,9 @@ impl ExternalProviderSupervisor {
     pub fn new(
         bindings: Vec<ExternalProviderBinding>,
         store: Arc<Mutex<ProviderOperationStore>>,
+        clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, &'static str> {
-        Self::new_with_hub(bindings, store, None, None)
+        Self::new_with_hub(bindings, store, None, None, clock)
     }
 
     pub(crate) fn new_with_hub(
@@ -373,14 +376,8 @@ impl ExternalProviderSupervisor {
         store: Arc<Mutex<ProviderOperationStore>>,
         hub: Option<Arc<switchboard_session_events::ProviderSessionEventHub>>,
         scratch_root: Option<PathBuf>,
+        clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, &'static str> {
-        let clock = bindings.first().map_or_else(
-            || {
-                Arc::new(router_clock::SystemRuntimeClock::new())
-                    as Arc<dyn router_clock::RuntimeClock>
-            },
-            |binding| binding.runtime.owner_clock(),
-        );
         let started_at_ms = clock.utc_now().timestamp_millis();
         let queued_operations = ProviderQueueOperationRegistry::new(clock.clone());
         let owner_hub = hub.unwrap_or_else(|| {
@@ -497,6 +494,8 @@ impl ExternalProviderSupervisor {
                 scratch_root,
                 settings_catalogs,
                 started_at_ms,
+                #[cfg(test)]
+                owner_hub,
                 #[cfg(test)]
                 admission_test_pause: StdMutex::new(None),
                 #[cfg(test)]
@@ -928,3 +927,11 @@ mod provider_delivery_submission;
 mod tests;
 #[cfg(test)]
 pub(crate) use provider_delivery_submission::ProviderPromptDispatch;
+
+#[cfg(test)]
+#[path = "external_provider_supervisor/clock_injection_test.rs"]
+mod clock_injection_tests;
+
+#[cfg(test)]
+#[path = "external_provider_supervisor/provider_operation_settlement_test.rs"]
+mod checked_settlement_tests;

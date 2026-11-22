@@ -56,6 +56,7 @@ async fn start_scripted_provider(script: AcpFixtureScript) -> ExternalProviderRu
     let runtime = ExternalProviderRuntime::initialize(
         script.launch(),
         Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("managed provider initialization");

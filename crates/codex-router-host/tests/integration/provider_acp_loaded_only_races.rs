@@ -159,6 +159,7 @@ async fn loaded_only_close_after_placement_retires_dispatch_without_loading() {
     let runtime = ExternalProviderRuntime::initialize(
         close_and_load_fixture(&close_marker, &load_marker),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await
     .expect("fixture provider");
@@ -193,6 +194,7 @@ async fn loaded_only_close_after_placement_retires_dispatch_without_loading() {
                 runtime,
             }],
             Arc::clone(&store),
+            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
         )
         .expect("supervisor"),
     );
@@ -275,6 +277,7 @@ async fn loaded_only_reports_non_retryable_unsupported_load_after_can_load_claim
     let runtime = ExternalProviderRuntime::initialize(
         no_load_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await
     .expect("fixture provider");
@@ -286,6 +289,7 @@ async fn loaded_only_reports_non_retryable_unsupported_load_after_can_load_claim
                 runtime,
             }],
             Arc::clone(&store),
+            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
         )
         .expect("supervisor"),
     );
@@ -329,6 +333,7 @@ async fn loaded_only_preserves_live_elsewhere_reason_after_can_load_claim() {
     let runtime = ExternalProviderRuntime::initialize(
         refusing_load_fixture(&load_marker),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await
     .expect("fixture provider");
@@ -340,6 +345,7 @@ async fn loaded_only_preserves_live_elsewhere_reason_after_can_load_claim() {
                 runtime,
             }],
             Arc::clone(&store),
+            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
         )
         .expect("supervisor"),
     );
@@ -412,6 +418,7 @@ async fn loaded_only_reports_non_retryable_missing_record_after_can_load_claim()
     let runtime = ExternalProviderRuntime::initialize(
         refusing_load_fixture(&load_marker),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await
     .expect("fixture provider");
@@ -423,6 +430,7 @@ async fn loaded_only_reports_non_retryable_missing_record_after_can_load_claim()
                 runtime,
             }],
             Arc::clone(&store),
+            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
         )
         .expect("supervisor"),
     );
@@ -478,6 +486,7 @@ async fn loaded_only_queue_refuses_not_loaded_session_before_enqueue() {
     let runtime = ExternalProviderRuntime::initialize(
         close_and_load_fixture(&close_marker, &load_marker),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await
     .expect("fixture provider");
@@ -489,6 +498,7 @@ async fn loaded_only_queue_refuses_not_loaded_session_before_enqueue() {
                 runtime,
             }],
             Arc::clone(&store),
+            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
         )
         .expect("supervisor"),
     );
@@ -567,6 +577,7 @@ async fn provider_and_absent_peer_presence_aggregates_to_not_running() {
     let runtime = ExternalProviderRuntime::initialize(
         no_load_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await
     .expect("fixture provider");
@@ -582,6 +593,7 @@ async fn provider_and_absent_peer_presence_aggregates_to_not_running() {
                 runtime,
             }],
             Arc::clone(&store),
+            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
         )
         .expect("supervisor"),
     );

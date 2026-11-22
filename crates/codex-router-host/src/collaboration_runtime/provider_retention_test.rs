@@ -79,8 +79,14 @@ impl Operations {
         let store = Arc::new(Mutex::new(
             ProviderOperationStore::open(&path).await.unwrap(),
         ));
-        let supervisor =
-            Arc::new(ExternalProviderSupervisor::new(Vec::new(), Arc::clone(&store)).unwrap());
+        let supervisor = Arc::new(
+            ExternalProviderSupervisor::new(
+                Vec::new(),
+                Arc::clone(&store),
+                std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            )
+            .unwrap(),
+        );
         Self {
             _directory: directory,
             path,

@@ -9,6 +9,7 @@ async fn supplied_id_is_admitted_once_and_cancelled_prompt_settles_after_detach(
     let runtime = ExternalProviderRuntime::initialize(
         cancel_fixture(&dispatch_log),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await?;
     let backend = supervisor(&root, vec![(binding(endpoint.clone(), "claude")?, runtime)]).await?;
@@ -131,6 +132,7 @@ async fn supervisor_shutdown_joins_runtime_and_settles_held_work() -> TestResult
     let runtime = ExternalProviderRuntime::initialize(
         cancel_fixture(&root.path().join("shutdown.log")),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await?;
     let backend = supervisor(
@@ -205,6 +207,7 @@ async fn supervisor_shutdown_drains_saturated_load_completions_and_preserves_unk
     let runtime = ExternalProviderRuntime::initialize(
         saturated_load_fixture(&admission_log, &process_id_path),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await?;
     let backend = supervisor(
@@ -255,11 +258,13 @@ async fn load_and_multiple_endpoint_bindings_are_supported() -> TestResult {
     let claude_runtime = ExternalProviderRuntime::initialize(
         load_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await?;
     let cursor_runtime = ExternalProviderRuntime::initialize(
         load_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await?;
     let backend = supervisor(
@@ -322,6 +327,7 @@ async fn resume_and_close_are_durable_operations_and_resume_requires_advertiseme
             ExternalProviderRuntime::initialize(
                 load_fixture(),
                 std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+                std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
             )
             .await?,
         )],
@@ -351,6 +357,7 @@ async fn resume_and_close_are_durable_operations_and_resume_requires_advertiseme
             ExternalProviderRuntime::initialize(
                 resume_close_fixture(),
                 std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+                std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
             )
             .await?,
         )],
@@ -410,6 +417,7 @@ async fn response_loss_is_unknown_and_reconciliation_never_replays() -> TestResu
     let runtime = ExternalProviderRuntime::initialize(
         launch("supervisor-integration-agent.ts", vec!["loss".to_owned()]),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await?;
     let backend = supervisor(&root, vec![(binding(endpoint.clone(), "claude")?, runtime)]).await?;
@@ -459,6 +467,7 @@ async fn authentication_required_is_no_effect_and_does_not_poison_fresh_create()
     let classification_runtime = ExternalProviderRuntime::initialize(
         authentication_then_create_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await?;
     let classification_supervisor = supervisor(
@@ -487,6 +496,7 @@ async fn authentication_required_is_no_effect_and_does_not_poison_fresh_create()
     let runtime = ExternalProviderRuntime::initialize(
         authentication_then_create_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await?;
     let backend = supervisor(
@@ -583,6 +593,7 @@ async fn prompt_authentication_required_is_no_effect_and_fresh_prompt_retains_fi
     let runtime = ExternalProviderRuntime::initialize(
         authentication_then_prompt_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await?;
     let backend = supervisor(
@@ -671,6 +682,7 @@ async fn provider_prompt_error_text_cannot_become_a_local_no_effect_rejection() 
     let runtime = ExternalProviderRuntime::initialize(
         provider_prompt_rejection_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await?;
     let backend = supervisor(

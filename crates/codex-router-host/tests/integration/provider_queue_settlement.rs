@@ -60,6 +60,7 @@ async fn a_queued_message_commits_only_after_the_previous_settlement_is_written(
             vec!["reactive".to_owned(), receipt.display().to_string()],
         ),
         Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     )
     .await
     .expect("fixture provider");
@@ -94,6 +95,7 @@ async fn a_queued_message_commits_only_after_the_previous_settlement_is_written(
                 runtime,
             }],
             Arc::clone(&store),
+            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
         )
         .expect("supervisor"),
     );

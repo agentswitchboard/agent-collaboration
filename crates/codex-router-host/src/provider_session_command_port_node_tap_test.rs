@@ -243,6 +243,7 @@ async fn command_port_rig(fixture: AgentFixture) -> CommandPortRig {
                 runtime,
             }],
             Arc::clone(&store),
+            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
         )
         .expect("supervisor"),
     );
