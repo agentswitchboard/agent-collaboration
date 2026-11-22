@@ -1,5 +1,5 @@
 //! BD1's closed workspace dependencies and BD4's transitive proxy boundary.
-use super::{DependencyKind, NonDevDependencyGraph};
+use super::{CargoMetadata, DependencyKind, NonDevDependencyGraph};
 use std::collections::{BTreeMap, BTreeSet};
 #[cfg(test)]
 use std::path::Path;
@@ -380,6 +380,50 @@ fn check_job_reachability(
     Ok(())
 }
 
+// Default feature resolution omits inactive optional dependencies. Match the
+// manifest declaration's package name and path against workspace members.
+pub(super) fn check_declared_session_owner_edges(
+    metadata: &CargoMetadata,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let workspace_packages: Vec<_> = metadata
+        .packages
+        .iter()
+        .filter(|package| metadata.workspace_members.contains(&package.id))
+        .collect();
+    for (owner, allowed) in [SESSION_STORE, SESSION_EVENTS] {
+        let package = workspace_packages
+            .iter()
+            .find(|package| package.name == owner)
+            .ok_or_else(|| format!("closed dependency policy package missing: {owner}"))?;
+        for dependency in &package.dependencies {
+            let kind = dependency.kind.unwrap_or(DependencyKind::Normal);
+            if kind == DependencyKind::Dev {
+                continue;
+            }
+            if let Some(path) = dependency.path.as_deref()
+                && workspace_packages.iter().any(|package| {
+                    package.name == dependency.name && package.manifest_path.parent() == Some(path)
+                })
+            {
+                check_closed_workspace_edge(owner, &dependency.name, kind, allowed)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn check_closed_workspace_edge(
+    source: &str,
+    destination: &str,
+    kind: DependencyKind,
+    allowed: &[&str],
+) -> Result<(), Box<dyn std::error::Error>> {
+    if !allowed.contains(&destination) {
+        return Err(format!("BD1: forbidden {kind:?} dependency {source} -> {destination}").into());
+    }
+    Ok(())
+}
+
 fn check_closed_workspace_edges(
     graph: &NonDevDependencyGraph,
     package: &str,
@@ -394,11 +438,7 @@ fn check_closed_workspace_edges(
                 .names
                 .get(destination)
                 .ok_or("dependency name absent")?;
-            if !allowed.contains(&target.as_str()) {
-                return Err(
-                    format!("BD1: forbidden {kind:?} dependency {package} -> {target}").into(),
-                );
-            }
+            check_closed_workspace_edge(package, target, *kind, allowed)?;
         }
     }
     Ok(())
