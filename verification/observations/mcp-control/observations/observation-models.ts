@@ -4,6 +4,16 @@
 // notification), collaboration-service provider_observation_operations.rs:269 (the
 // `{sequence, event}` envelope) and session-event-model session_event.rs:120-242 (events).
 import { z } from "zod";
+import {
+  bareResyncMarkerSchema,
+  eventTooLargeSchema,
+  observationCursorSchema,
+  snapshotEndSchema,
+} from "../../shared/observation-control-records.ts";
+export {
+  observationCursorSchema,
+  type ObservationCursor,
+} from "../../shared/observation-control-records.ts";
 
 export const sessionRefSchema = z.object({
   endpoint: z.object({ serviceId: z.string().min(1), endpointId: z.string().min(1) }),
@@ -80,22 +90,11 @@ export const sessionEventSchema = z.discriminatedUnion("kind", [
 ]);
 export type SessionEvent = z.infer<typeof sessionEventSchema>;
 
-// An oversized event is replaced in place by this marker (event_value_bounded,
-// provider_observation_operations.rs:267-292).
-const eventTooLargeSchema = z.strictObject({
-  kind: z.literal("eventTooLarge"),
-  sequence: z.bigint(),
-  itemId: z.string().nullable().optional(),
-});
-// A stale epoch or a lagging reader yields this unnumbered marker as the call's last event
-// (provider_observation_operations.rs:89-101,133-136); a hub reset yields a numbered
-// `resyncRequired` event instead. Either way the history must be attached again.
-const bareResyncMarkerSchema = z.strictObject({ kind: z.literal("resyncRequired") });
-
 export const observedEventSchema = z.union([
   z.strictObject({ sequence: z.bigint(), event: sessionEventSchema }),
   eventTooLargeSchema,
   bareResyncMarkerSchema,
+  snapshotEndSchema,
 ]);
 export type ObservedEvent = z.infer<typeof observedEventSchema>;
 
@@ -109,7 +108,7 @@ export const observationEndReasonSchema = z.enum([
 
 export const boundedObservationResultSchema = z.strictObject({
   target: sessionRefSchema,
-  generation: z.unknown(),
+  generation: z.looseObject({ serviceEpoch: z.string().min(1) }),
   attached: z.boolean(),
   events: z.array(observedEventSchema),
   endReason: observationEndReasonSchema,
@@ -117,12 +116,6 @@ export const boundedObservationResultSchema = z.strictObject({
   epoch: z.bigint().nullable().optional(),
 });
 export type BoundedObservationResult = z.infer<typeof boundedObservationResultSchema>;
-
-export const observationCursorSchema = z.strictObject({
-  epoch: z.bigint(),
-  afterSequence: z.bigint(),
-});
-export type ObservationCursor = z.infer<typeof observationCursorSchema>;
 
 export const OBSERVATION_NOTIFICATION_METHOD = "notifications/codexRouter/observationEvent";
 export const observationNotificationSchema = z.strictObject({

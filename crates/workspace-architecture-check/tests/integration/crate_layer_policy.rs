@@ -204,6 +204,7 @@ const LAYER_POLICY: [(&str, &[&str]); 40] = [
             "collaboration-contracts",
             "collaboration-runtime",
             "router-clock",
+            "state-machine-core",
         ],
     ),
     (

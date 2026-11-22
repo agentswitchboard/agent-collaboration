@@ -425,6 +425,7 @@ mod bounded_observation_tests {
             max_bytes,
             after_sequence: None,
             epoch: None,
+            service_epoch: None,
         }
     }
 

@@ -312,6 +312,7 @@ impl CollaborationRuntime {
                         hub as std::sync::Arc<dyn collaboration_contracts::SessionEventHub>
                     }),
                     endpoint_directory.clone(),
+                    worker_clock.clone(),
                 );
             collaboration_service::CollaborationApplication::new(
                 identity.clone(),

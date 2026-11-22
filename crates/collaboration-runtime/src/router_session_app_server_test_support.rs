@@ -449,11 +449,17 @@ impl SessionEventHub for ScriptedSessionBackend {
         self.attachment_created.notify_one();
         let receiver = self.events.subscribe();
         let snapshot = self.history.lock().expect("test lock").clone();
+        let latest_issued_sequence = snapshot
+            .iter()
+            .map(|event| event.sequence)
+            .max()
+            .unwrap_or(0);
         Box::pin(async move {
             Ok(SessionEventAttachment {
                 snapshot,
                 receiver,
                 epoch: 0,
+                latest_issued_sequence,
             })
         })
     }
