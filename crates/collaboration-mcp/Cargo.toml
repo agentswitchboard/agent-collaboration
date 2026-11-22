@@ -11,7 +11,7 @@ workspace = true
 
 [features]
 # The API served the way a Host serves it, for other crates' tests.
-test-support = ["collaboration-service/test-support"]
+test-support = ["collaboration-service/test-support", "dep:session-event-model"]
 
 [dependencies]
 collaboration-runtime = { version = "0.1.105", path = "../collaboration-runtime" }
@@ -26,6 +26,7 @@ http.workspace = true
 message-board = { path = "../message-board", version = "0.1.20" }
 rmcp.workspace = true
 router-clock.workspace = true
+session-event-model = { path = "../session-event-model", version = "0.1.39", optional = true }
 schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true

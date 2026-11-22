@@ -308,12 +308,14 @@ async fn a_reader_that_stops_reading_neither_keeps_the_call_past_its_bound_nor_h
     clock
         .not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(1)))
         .await;
+    assert_eq!(api.active_calls(), 1);
     clock
         .advance(Duration::from_secs(2))
         .expect("advance past drain");
 
     // Assert: the call ends at its bound although the reader still has not read.
-    api.await_active_calls(0, Duration::from_secs(5)).await;
+    api.join_active_calls().await;
+    assert_eq!(api.active_calls(), 0);
     // Assert: the listener's only slot is free for the next caller meanwhile.
     let next = api.call_tool("endpoints_list", json!({})).await;
     assert_ne!(next.is_error, Some(true), "{next:?}");

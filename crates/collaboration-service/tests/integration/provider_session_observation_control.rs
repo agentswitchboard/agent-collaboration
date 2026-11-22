@@ -401,7 +401,7 @@ async fn provider_observers_read_snapshot_and_live_order() {
         .observe_provider_session(BoundedObservationRequest {
             target: observed.target.clone(),
             timeout_seconds: 1,
-            max_events: 10,
+            max_events: 6,
             max_bytes: 1_048_576,
             after_sequence: None,
             epoch: None,
@@ -416,7 +416,7 @@ async fn provider_observers_read_snapshot_and_live_order() {
         .observe_provider_session(BoundedObservationRequest {
             target: observed.target.clone(),
             timeout_seconds: 1,
-            max_events: 10,
+            max_events: 1,
             max_bytes: 1_048_576,
             after_sequence: Some(5),
             epoch: observed.epoch,
