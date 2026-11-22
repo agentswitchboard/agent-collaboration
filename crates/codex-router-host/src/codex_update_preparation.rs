@@ -100,7 +100,7 @@ pub enum UpdateDeadlineError {
 pub(crate) enum UpdatePreparation {
     NoChange,
     Changed,
-    Failed(UpdateFailure),
+    Failed(Box<UpdateFailure>),
 }
 
 pub(crate) struct UpdateFailure {
@@ -224,9 +224,9 @@ fn failed(
     pending_identity: Option<ExecutableIdentityTask>,
     retained_updater: Option<ProcessGroupChild>,
 ) -> UpdatePreparation {
-    UpdatePreparation::Failed(UpdateFailure {
+    UpdatePreparation::Failed(Box::new(UpdateFailure {
         message,
         pending_identity,
         retained_updater,
-    })
+    }))
 }
