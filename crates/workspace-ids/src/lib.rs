@@ -85,6 +85,9 @@ workspace_identifiers!(
     /// One approval request raised by a Router.
     #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
     ApprovalRequestId,
+    /// The never-reused Central identity of one provider session incarnation.
+    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
+    CentralSessionId,
     /// One operation on a session, made by the caller before it sends, so a repeat can be recognised.
     SessionOperationId => SessionOperationIdError,
     PersonId,

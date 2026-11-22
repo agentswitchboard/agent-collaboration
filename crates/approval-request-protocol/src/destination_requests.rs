@@ -1,66 +1,13 @@
-use crate::approval_wire_codec::approval_wire_record;
-use crate::approval_wire_codec::approval_wire_union;
-use crate::{ApprovalPageItems, ApprovalPageSize, SessionApprovalContinuation};
-use workspace_ids::{ApprovalRequestId, RequestId};
+//! Checked parent-session operations on Central's approvals service.
+use serde::{Deserialize, Serialize};
+use workspace_ids::{ApprovalRequestId, CentralSessionId, RequestId};
 
 use crate::{
-    Answer, ApprovalDecision, DecidedBy, EndingView, InvalidAnswer, InvalidApprovalEnding,
-    OfferView, Raise, RequestView, WaitingRevision,
+    AdmittedDestination, Answer, ApprovalDecision, DeliverEndingRequest, EndingView,
+    InvalidApprovalEnding, SessionDecider,
+    approval_holder_endings::check_decision_actor,
+    approval_wire_codec::{approval_wire_record, approval_wire_union},
 };
-
-approval_wire_record! {
-[deny_unknown_fields]
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub struct ListSessionRequests {
-    pub page_size: ApprovalPageSize,
-    pub continuation: Option<SessionApprovalContinuation>,
-}
-}
-
-approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub enum ListSessionRequestsReply {
-    Listed {
-        requests: ApprovalPageItems,
-        continuation: Option<SessionApprovalContinuation>,
-    },
-    Refused {
-        refusal: Refusal,
-    },
-}
-}
-
-approval_wire_record! {
-[deny_unknown_fields]
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub struct ReadSessionRequest {
-    pub request_id: ApprovalRequestId,
-}
-}
-
-approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub enum ReadSessionRequestReply {
-    Read { request: RequestView },
-    Refused { refusal: Refusal },
-}
-}
 
 approval_wire_record! {
 [deny_unknown_fields]
@@ -83,7 +30,7 @@ approval_wire_union! {
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
 )]
-pub enum DecideReply {
+pub enum DecideReplyWire {
     SavedDecision { decision: ApprovalDecision },
     Standing { ending: EndingView },
     NotVisible {},
@@ -119,91 +66,90 @@ pub enum PassOnReply {
 }
 }
 
-approval_wire_record! {
-[deny_unknown_fields]
-#[derive(Clone, Debug, Eq, PartialEq)]
+/// A parent-session decision reply. Use the checked request builders to publish it.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
 )]
-pub struct WaitingListAtRequest {
-    pub after_revision: Option<WaitingRevision>,
-}
-}
+pub struct DecideReply(DecideReplyWire);
 
-approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub enum WaitingListAtReply {
-    Snapshot {
-        revision: WaitingRevision,
-        requests: Vec<WaitingRequestView>,
-    },
-    Unchanged {
-        revision: WaitingRevision,
-    },
-    Unavailable {},
-    Refused {
-        refusal: Refusal,
-    },
-}
-}
-
-approval_wire_record! {
-[deny_unknown_fields]
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub struct WaitingRequestView {
-    request_id: ApprovalRequestId,
-    offer: OfferView,
-}
-}
-
-impl WaitingRequestView {
-    /// Central checks live destination membership before making the watch row.
-    pub fn for_destination(
-        raise: &Raise,
-        destination: &DecidedBy,
-    ) -> Result<Self, InvalidApprovalEnding> {
-        crate::approval_request_views::check_reader(raise, destination)?;
-        Ok(Self {
-            request_id: raise.request_id().clone(),
-            offer: raise.offer_view(),
-        })
-    }
-
+impl DecideReply {
+    /// Inspect a reply after decoding it on the receiving side.
     #[must_use]
-    pub fn request_id(&self) -> &ApprovalRequestId {
-        &self.request_id
-    }
-
-    #[must_use]
-    pub fn offer(&self) -> &OfferView {
-        &self.offer
+    pub const fn wire_shape(&self) -> &DecideReplyWire {
+        &self.0
     }
 }
 
-approval_wire_union! {
+/// Saved by Central for a single admitted session's successful Decide.
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub enum Refusal {
-    NotVisible {},
-    RequesterCannotAnswer {},
-    Ended { ending: EndingView },
-    InvalidAnswer { reason: InvalidAnswer },
-    TooLate {},
-    SignInRequired {},
-    SecondFactorRequired {},
-    KeptChoiceNeedsAPerson {},
-    OperationIdReused {},
+pub struct RetainedSessionDecision {
+    pub request_id: ApprovalRequestId,
+    pub session: CentralSessionId,
+    pub operation_id: RequestId,
+    pub answer: Answer,
 }
+
+impl DecideRequest {
+    /// Project a retained success only for the session and operation that gave it.
+    pub fn saved_reply(
+        &self,
+        admitted: &AdmittedDestination<'_>,
+        retained: &RetainedSessionDecision,
+    ) -> Result<DecideReply, InvalidApprovalEnding> {
+        let session = admitted.session()?;
+        if &self.request_id != admitted.raise().request_id()
+            || self.request_id != retained.request_id
+            || self.operation_id != retained.operation_id
+            || self.value != retained.answer
+            || session != &retained.session
+        {
+            return Err(InvalidApprovalEnding::RetainedDecisionMismatch);
+        }
+        check_decision_actor(admitted.raise(), &retained.answer, admitted.actor())?;
+        Ok(DecideReply(DecideReplyWire::SavedDecision {
+            decision: ApprovalDecision {
+                answer: retained.answer.clone(),
+                by: SessionDecider::Session {
+                    session: session.clone(),
+                },
+            },
+        }))
+    }
+
+    pub fn standing_reply(
+        &self,
+        admitted: &AdmittedDestination<'_>,
+        ending: &DeliverEndingRequest,
+    ) -> Result<DecideReply, InvalidApprovalEnding> {
+        admitted.session()?;
+        if &self.request_id != admitted.raise().request_id() {
+            return Err(InvalidApprovalEnding::BindingMismatch);
+        }
+        let projection = EndingView::for_destination(admitted, ending)?;
+        Ok(DecideReply(DecideReplyWire::Standing {
+            ending: projection.for_recipient(admitted.actor())?,
+        }))
+    }
+}
+
+impl DecideReply {
+    #[must_use]
+    pub const fn not_visible() -> Self {
+        Self(DecideReplyWire::NotVisible {})
+    }
+    #[must_use]
+    pub const fn invalid() -> Self {
+        Self(DecideReplyWire::Invalid {})
+    }
+    #[must_use]
+    pub const fn too_late() -> Self {
+        Self(DecideReplyWire::TooLate {})
+    }
+    #[must_use]
+    pub const fn operation_conflict() -> Self {
+        Self(DecideReplyWire::OperationConflict {})
+    }
 }

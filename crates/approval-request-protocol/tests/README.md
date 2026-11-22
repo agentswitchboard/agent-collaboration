@@ -16,4 +16,4 @@ The TypeScript fixture checks valid narrowing and the rejected cross-kind shapes
 tsc --noEmit --strict --skipLibCheck crates/approval-request-protocol/tests/typescript/approval-wire-shapes.ts
 ```
 
-The fuller Typed calls table is checked by exhaustive Rust matches over each reply. The named-map walk checks the same committed wire roots at every nesting level. Digest vectors fix the canonical bytes of each Raise and private ending, and central-core compares those vectors with its signed-intent canonicalizer.
+The six core calls are checked by exhaustive matches over the outer replies and their nested cases. The named-map walk checks the committed wire roots and their concrete nested records for positional forms, unknown fields, and invalid tags. Digest vectors fix the canonical bytes of each Raise. Central core compares those vectors with its signed-intent canonicalizer.

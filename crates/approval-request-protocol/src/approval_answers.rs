@@ -12,7 +12,6 @@ approval_wire_union! {
 pub enum Answer {
     Approval { option_id: OfferedOptionId },
     Question { answer: QuestionAnswer },
-    Call { option_id: OfferedOptionId },
 }
 }
 

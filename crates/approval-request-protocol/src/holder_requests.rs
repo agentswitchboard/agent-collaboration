@@ -3,8 +3,8 @@ use crate::approval_wire_codec::approval_wire_union;
 use workspace_ids::{ApprovalRequestId, RouterRunId};
 
 use crate::{
-    ApprovalWindow, CallStopCause, CancelReason, DeliveryEvidence, EndingDigest, HolderStopCause,
-    ProviderStopCause, RequestContentsDigest,
+    ApprovalWindow, CancelReason, Delivery, HolderStopCause, ProviderStopCause,
+    RequestContentsDigest,
 };
 
 approval_wire_record! {
@@ -56,7 +56,6 @@ approval_wire_union! {
 pub enum RaiseReply {
     Receipt { receipt: RaiseReceipt },
     AlreadyStopped {},
-    AlreadyEnded {},
     SessionEnded {},
     ContentsDiffer {},
     TooManyOutstanding {},
@@ -77,12 +76,6 @@ pub enum StopRequest {
         contents_digest: RequestContentsDigest,
         cause: ProviderStopCause,
     },
-    UnprovenCall {
-        request_id: ApprovalRequestId,
-        router_run: RouterRunId,
-        contents_digest: RequestContentsDigest,
-        cause: CallStopCause,
-    },
 }
 }
 
@@ -100,38 +93,6 @@ pub enum StopReply {
 }
 }
 
-approval_wire_record! {
-[deny_unknown_fields]
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub struct ReportDeliveryRequest {
-    pub request_id: ApprovalRequestId,
-    pub router_run: RouterRunId,
-    pub contents_digest: RequestContentsDigest,
-    pub ending_digest: EndingDigest,
-    pub evidence: DeliveryEvidence,
-}
-}
-
-approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub enum ReportDeliveryReply {
-    DeliveryRecorded {},
-    ReportDiffers {},
-    /// Final after erasure, even for an equal earlier report. Central retains no report to compare.
-    NoHandoverOwed {},
-    NotVisible {},
-    AuthorityRefused { refusal: RunRefusal },
-}
-}
-
 approval_wire_union! {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
@@ -139,24 +100,6 @@ pub enum RunRefusal {
     RunNotRegistered {},
     RunRetired {},
     EnrollmentEnded {},
-}
-}
-
-approval_wire_record! {
-[deny_unknown_fields]
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
-pub struct AuthorityProbeRequest {
-    pub router_run: RouterRunId,
-}
-}
-
-approval_wire_union! {
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
-pub enum AuthorityProbeReply {
-    Admitted {},
-    AuthorityRefused { refusal: RunRefusal },
 }
 }
 
@@ -172,15 +115,36 @@ pub enum DeliverEndingReply {
 }
 }
 
+impl DeliverEndingReply {
+    /// Apply an exact reply from the current authenticated holder to its stored ending.
+    #[must_use]
+    pub const fn delivery_after_reply(self, current: Delivery) -> Delivery {
+        match (self, current) {
+            (Self::Received {}, Delivery::Owed {} | Delivery::ClosedWithoutReceipt {}) => {
+                Delivery::ReceivedByHolder {}
+            }
+            (Self::NotHeld {}, Delivery::Owed {}) => Delivery::ClosedWithoutReceipt {},
+            _ => current,
+        }
+    }
+}
+
+impl StopReply {
+    /// Apply the standing Stop to an admitted ending's stored delivery.
+    #[must_use]
+    pub const fn delivery_after_stop(&self, current: Delivery) -> Delivery {
+        match (self, current) {
+            (Self::Stands { .. }, Delivery::Owed {}) => Delivery::ClosedWithoutReceipt {},
+            _ => current,
+        }
+    }
+}
+
 impl StopRequest {
     #[must_use]
     pub const fn cause(&self) -> HolderStopCause {
         match self {
             Self::Provider { cause, .. } => cause.holder_cause(),
-            Self::UnprovenCall {
-                cause: CallStopCause::CallWithdrawn,
-                ..
-            } => HolderStopCause::CallWithdrawn,
         }
     }
 }

@@ -1,13 +1,11 @@
 use crate::approval_wire_codec::approval_wire_record;
 use crate::approval_wire_codec::approval_wire_union;
 use serde::{Deserialize, Serialize};
-use workspace_ids::{ApprovalRequestId, RouterRunId, SessionId};
+use workspace_ids::{ApprovalRequestId, CentralSessionId, RouterRunId};
 
-use crate::approval_values::{
-    CallOperationName, Description, Label, OfferedOptionId, Subject, Title,
-};
+use crate::approval_values::{Description, Label, OfferedOptionId, Subject, Title};
 use crate::question_fields::{InvalidOfferedOptions, QuestionFields, validate_options};
-use crate::{ApprovalDigestError, InvocationDigest, RequestContentsDigest};
+use crate::{ApprovalDigestError, RequestContentsDigest};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -18,7 +16,6 @@ use crate::{ApprovalDigestError, InvocationDigest, RequestContentsDigest};
 pub enum RequestKind {
     ProviderApproval,
     ProviderQuestion,
-    UnprovenCall,
 }
 
 approval_wire_union! {
@@ -38,16 +35,27 @@ pub enum Raise {
         holder: ProviderHolder,
         offer: QuestionOffer,
     },
-    UnprovenCall {
-        request_id: ApprovalRequestId,
-        holder: ParkedCallHolder,
-        invocation: InvocationDigest,
-        offer: CallOffer,
-    },
 }
 }
 
 impl Raise {
+    pub const fn router_run(&self) -> &RouterRunId {
+        match self {
+            Self::ProviderApproval { holder, .. } | Self::ProviderQuestion { holder, .. } => {
+                &holder.router_run
+            }
+        }
+    }
+
+    #[must_use]
+    pub const fn requesting_session(&self) -> &CentralSessionId {
+        match self {
+            Self::ProviderApproval { holder, .. } | Self::ProviderQuestion { holder, .. } => {
+                &holder.session_id
+            }
+        }
+    }
+
     pub fn contents_digest(&self) -> Result<RequestContentsDigest, ApprovalDigestError> {
         RequestContentsDigest::from_wire(self)
     }
@@ -57,7 +65,6 @@ impl Raise {
         match self {
             Self::ProviderApproval { .. } => RequestKind::ProviderApproval,
             Self::ProviderQuestion { .. } => RequestKind::ProviderQuestion,
-            Self::UnprovenCall { .. } => RequestKind::UnprovenCall,
         }
     }
 
@@ -65,8 +72,7 @@ impl Raise {
     pub const fn request_id(&self) -> &ApprovalRequestId {
         match self {
             Self::ProviderApproval { request_id, .. }
-            | Self::ProviderQuestion { request_id, .. }
-            | Self::UnprovenCall { request_id, .. } => request_id,
+            | Self::ProviderQuestion { request_id, .. } => request_id,
         }
     }
 
@@ -79,35 +85,17 @@ impl Raise {
             Self::ProviderQuestion { offer, .. } => OfferView::ProviderQuestion {
                 offer: offer.clone(),
             },
-            Self::UnprovenCall { offer, .. } => OfferView::UnprovenCall {
-                offer: offer.clone(),
-            },
         }
     }
 }
 
 approval_wire_union! {
 #[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
+#[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub enum OfferView {
     ProviderApproval { offer: ApprovalOffer },
     ProviderQuestion { offer: QuestionOffer },
-    UnprovenCall { offer: CallOffer },
 }
-}
-
-impl OfferView {
-    #[must_use]
-    pub const fn kind(&self) -> RequestKind {
-        match self {
-            Self::ProviderApproval { .. } => RequestKind::ProviderApproval,
-            Self::ProviderQuestion { .. } => RequestKind::ProviderQuestion,
-            Self::UnprovenCall { .. } => RequestKind::UnprovenCall,
-        }
-    }
 }
 
 approval_wire_record! {
@@ -118,20 +106,7 @@ approval_wire_record! {
     derive(specta::Type)
 )]
 pub struct ProviderHolder {
-    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = String))]
-    pub session_id: SessionId,
-    pub router_run: RouterRunId,
-}
-}
-
-approval_wire_record! {
-[deny_unknown_fields]
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub struct ParkedCallHolder {
+    pub session_id: CentralSessionId,
     pub router_run: RouterRunId,
 }
 }
@@ -161,20 +136,6 @@ approval_wire_record! {
 pub struct QuestionOffer {
     pub prompt: Description,
     pub fields: QuestionFields,
-}
-}
-
-approval_wire_record! {
-[deny_unknown_fields]
-#[derive(Clone, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub struct CallOffer {
-    pub operation: CallOperationName,
-    pub summary: Description,
-    pub options: OfferedOptions,
 }
 }
 
