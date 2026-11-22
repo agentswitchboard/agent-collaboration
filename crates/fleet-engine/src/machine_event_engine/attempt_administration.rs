@@ -10,7 +10,7 @@ use super::{
     event_source_policy::{EventExecutionPolicy, EventSource, ReceiptStatements},
     machine_event_execution::MachineEventOutcome,
     machine_store_adapter::{
-        MachineStoreAdapter, SubjectLoadFailure, VersionedSubjectState,
+        MachineStoreAdapter, SubjectAttemptWriter, SubjectLoadFailure, VersionedSubjectState,
         classify_subject_read_failure,
     },
 };
@@ -19,7 +19,7 @@ use central_storage::{
     GuardedStatement, ReadOutcome, RowExpectation, SafeInteger, Statement, StoreFailure,
 };
 use fleet_runtime_ports::CentralStore as _;
-use fleet_runtime_ports::{guarded_statements::text, workspace_decode_error::corrupt};
+use fleet_runtime_ports::workspace_decode_error::corrupt;
 
 pub struct AdminMachineKindRegistry<'a, AdminMachineKind> {
     pub visible_machine_kinds: &'a [(&'static str, AdminMachineKind)],
@@ -42,12 +42,12 @@ type PlanDiscardSubjectWrite<State> =
     fn(&VersionedSubjectState<State>, &State, EngineTime) -> Result<GuardedStatement, StoreFailure>;
 
 pub struct DiscardSubjectStatements<SubjectMachine: Machine> {
-    pub read_discard_subject_sql: &'static str,
+    pub plan_discard_subject_read: fn(&InstanceKey) -> Statement,
     pub decode_discard_subject: DecodeDiscardSubject<SubjectMachine::State>,
     pub plan_discard_subject_write: PlanDiscardSubjectWrite<SubjectMachine::State>,
     pub plan_discard_effect_writes:
         fn(&SubjectMachine::Effect) -> Result<Vec<GuardedStatement>, StoreFailure>,
-    pub write_discard_attempt_failure_sql: &'static str,
+    pub discard_attempt_failure_writer: SubjectAttemptWriter,
 }
 
 /// Both finishing reads and the applying batch use the preparing host.
@@ -65,10 +65,9 @@ impl<Host: EngineHost, SubjectMachine: Machine> MachineStoreAdapter<SubjectMachi
         let rows = self
             .preparing_host
             .central_store()
-            .read(Statement {
-                sql: self.discard_subject_statements.read_discard_subject_sql,
-                args: vec![text(&key.0)],
-            })
+            .read((self.discard_subject_statements.plan_discard_subject_read)(
+                key,
+            ))
             .await
             .map_err(classify_subject_read_failure)?;
         (self.discard_subject_statements.decode_discard_subject)(&rows)
@@ -92,9 +91,9 @@ impl<Host: EngineHost, SubjectMachine: Machine> MachineStoreAdapter<SubjectMachi
     ) -> Result<Vec<GuardedStatement>, StoreFailure> {
         (self.discard_subject_statements.plan_discard_effect_writes)(effect)
     }
-    fn write_attempt_failure_sql(&self) -> &'static str {
+    fn attempt_failure_writer(&self) -> SubjectAttemptWriter {
         self.discard_subject_statements
-            .write_discard_attempt_failure_sql
+            .discard_attempt_failure_writer
     }
 }
 
@@ -468,7 +467,7 @@ impl<'host, Host: EngineHost> FleetEngine<'host, Host> {
     ///     mut same_kind: DiscardSubjectStatements<SubjectMachine>,
     ///     event: SubjectMachine::Event,
     /// ) {
-    ///     same_kind.read_discard_subject_sql = "SELECT 1";
+    ///     same_kind.plan_discard_subject_read = |_| central_storage::Statement { sql: "SELECT 1", args: vec![] };
     ///     let _ = engine.discard_retired_attempt(attempt_id, vec![], same_kind, event).await;
     /// }
     /// ```

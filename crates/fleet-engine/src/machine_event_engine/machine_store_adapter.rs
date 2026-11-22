@@ -1,6 +1,6 @@
-use central_engine_model::{InstanceKey, ItemFailureClass, Machine};
+use central_engine_model::{FailureRecord, InstanceKey, ItemFailureClass, Machine};
 use central_storage::{CorruptReason, GuardedStatement, ReadOutcome, StoreFailure};
-use fleet_contracts::{EngineSubject, MailDeliveryReady, SubjectVersion};
+use fleet_contracts::{AttemptGuard, EngineSubject, MailDeliveryReady, SubjectVersion};
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use std::future::Future;
 
@@ -17,6 +17,14 @@ pub enum SubjectLoadFailure {
     StorageAnswerLost,
     StoreReadFailed(StoreFailure),
 }
+
+/// Builds the observed owner's attempt write from its original guard cells.
+pub type SubjectAttemptWriter = fn(
+    &EngineSubject,
+    &FailureRecord,
+    Option<&AttemptGuard>,
+    &SubjectVersion,
+) -> Result<GuardedStatement, StoreFailure>;
 
 /// One machine's row codec and static statements. Reducers never see SQL.
 pub trait MachineStoreAdapter<SubjectMachine: Machine>: Sync {
@@ -43,7 +51,7 @@ pub trait MachineStoreAdapter<SubjectMachine: Machine>: Sync {
     ) -> Option<MailDeliveryReady> {
         None
     }
-    fn write_attempt_failure_sql(&self) -> &'static str;
+    fn attempt_failure_writer(&self) -> SubjectAttemptWriter;
     fn failure_attempt_subject(&self, key: &InstanceKey) -> EngineSubject {
         EngineSubject {
             kind: SubjectMachine::KIND,

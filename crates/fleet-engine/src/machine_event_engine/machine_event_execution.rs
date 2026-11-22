@@ -144,7 +144,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                     return self
                         .record_attempt_failure(
                             &adapter.failure_attempt_subject(&key),
-                            adapter.write_attempt_failure_sql(),
+                            adapter.attempt_failure_writer(),
                             &version,
                             class,
                             SubjectMachine::retirement_threshold(),
@@ -198,7 +198,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                         return self
                             .record_attempt_failure(
                                 &adapter.failure_attempt_subject(&key),
-                                adapter.write_attempt_failure_sql(),
+                                adapter.attempt_failure_writer(),
                                 &prior.observed_subject_version,
                                 ItemFailureClass::Refused { refusal },
                                 SubjectMachine::retirement_threshold(),
@@ -258,7 +258,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                     return self
                         .record_attempt_failure(
                             &adapter.failure_attempt_subject(&key),
-                            adapter.write_attempt_failure_sql(),
+                            adapter.attempt_failure_writer(),
                             &prior.observed_subject_version,
                             class,
                             SubjectMachine::retirement_threshold(),
@@ -292,7 +292,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                 Err(corruption) => Some(
                     self.write_observed_attempt_failure(
                         &subject,
-                        adapter.write_attempt_failure_sql(),
+                        adapter.attempt_failure_writer(),
                         &prior.observed_subject_version,
                         corruption.to_corrupt_row_failure(),
                         SubjectMachine::retirement_threshold(),

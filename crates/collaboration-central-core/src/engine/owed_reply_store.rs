@@ -153,7 +153,15 @@ impl<R: EngineHost> MachineStoreAdapter<OwedReply> for OwedReplyStore<'_, R> {
             )],
         })
     }
-    fn write_attempt_failure_sql(&self) -> &'static str {
-        FAILURE
+    fn attempt_failure_writer(&self) -> fleet_engine::SubjectAttemptWriter {
+        |subject, record, prior, version| {
+            fleet_engine::owner_sql::plan_guarded_attempt_upsert(
+                FAILURE,
+                subject,
+                record,
+                prior,
+                version.0.clone(),
+            )
+        }
     }
 }

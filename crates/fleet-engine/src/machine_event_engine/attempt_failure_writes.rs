@@ -1,8 +1,9 @@
 use super::engine_host_binding::{EngineHost, FleetEngine};
 use super::{
     attempt_records::StoredAttempt,
-    attempt_statements::{plan_control_attempt_upsert, plan_guarded_attempt_upsert},
+    attempt_statements::plan_control_attempt_upsert,
     attempt_store::read_guarded_attempt,
+    machine_store_adapter::SubjectAttemptWriter,
     transition_batch_writes::{BatchApplyFailure, classify_batch_application},
 };
 use central_engine_model::{
@@ -16,7 +17,7 @@ use workspace_model::WorkspaceId;
 enum AttemptFailureWrite<'a> {
     Control,
     Subject {
-        sql: &'static str,
+        writer: SubjectAttemptWriter,
         version: &'a SubjectVersion,
     },
 }
@@ -57,17 +58,14 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
     pub(crate) async fn record_attempt_failure(
         &self,
         subject: &EngineSubject,
-        failure_sql: &'static str,
+        writer: SubjectAttemptWriter,
         version: &SubjectVersion,
         class: ItemFailureClass,
         threshold: RetirementThreshold,
     ) -> FailureOutcome {
         self.read_and_record_attempt_failure(
             subject,
-            AttemptFailureWrite::Subject {
-                sql: failure_sql,
-                version,
-            },
+            AttemptFailureWrite::Subject { writer, version },
             class,
             threshold,
             &[],
@@ -120,7 +118,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
     pub(crate) async fn write_observed_attempt_failure(
         &self,
         subject: &EngineSubject,
-        failure_sql: &'static str,
+        writer: SubjectAttemptWriter,
         version: &SubjectVersion,
         class: ItemFailureClass,
         threshold: RetirementThreshold,
@@ -128,10 +126,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
     ) -> FailureOutcome {
         self.write_attempt_failure_and_observe(
             subject,
-            AttemptFailureWrite::Subject {
-                sql: failure_sql,
-                version,
-            },
+            AttemptFailureWrite::Subject { writer, version },
             class,
             threshold,
             prior,
@@ -206,8 +201,8 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
         let observed = prior.map(|stored| &stored.observed_attempt_guard);
         let statement = match write {
             AttemptFailureWrite::Control => plan_control_attempt_upsert(subject, &record, observed),
-            AttemptFailureWrite::Subject { sql, version } => {
-                plan_guarded_attempt_upsert(sql, subject, &record, observed, version.0.clone())
+            AttemptFailureWrite::Subject { writer, version } => {
+                writer(subject, &record, observed, version)
             }
         };
         let statement = match statement {

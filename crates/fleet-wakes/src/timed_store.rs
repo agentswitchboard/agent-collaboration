@@ -1,19 +1,17 @@
 use crate::{
-    stored_rows::{WAKE_FAILURE, decode_wakes},
+    stored_rows::{StoredWake, plan_wake_read},
     wake_timer as wake,
 };
-use central_engine_model::{InstanceKey, StateTag};
-use central_storage::{GuardedStatement, Statement, StoreFailure};
+use central_engine_model::{EngineTime, FailureRecord, InstanceKey, StateTag};
+use central_storage::{GuardedStatement, RowExpectation, StoreFailure};
+use fleet_contracts::{AttemptGuard, EngineSubject, SubjectVersion};
 use fleet_engine::{
-    EngineHost, MachineStoreAdapter, SubjectLoadFailure, VersionedSubjectState,
-    classify_subject_decode_failure, classify_subject_read_failure, read_observed_subject_version,
+    EngineHost, MachineStoreAdapter, SubjectAttemptWriter, SubjectLoadFailure,
+    VersionedSubjectState, checked_engine_statement, checked_subject_attempt,
+    classify_subject_decode_failure, classify_subject_read_failure, owner_sql::observed_text_binds,
 };
+use fleet_runtime_ports::CentralStore as _;
 use fleet_runtime_ports::stored_values::format_utc_millis;
-use fleet_runtime_ports::{
-    CentralStore as _,
-    guarded_statements::{exact, text},
-    workspace_decode_error::corrupt,
-};
 use workspace_model::central_mail as mail;
 
 pub struct WakeStore<'a, R: EngineHost, PlanQueued> {
@@ -42,17 +40,18 @@ where
         &self,
         key: &InstanceKey,
     ) -> Result<Option<VersionedSubjectState<wake::State>>, SubjectLoadFailure> {
-        let rows = self.runtime.central_store().read(Statement {
-            sql: "SELECT wake_id,target,due_at,text,state,created_at,updated_at FROM automation_wakes WHERE wake_id=?", args: vec![text(&key.0)],
-        }).await.map_err(classify_subject_read_failure)?;
-        let Some(version) = read_observed_subject_version(&rows)? else {
+        let rows = self
+            .runtime
+            .central_store()
+            .read(plan_wake_read(key))
+            .await
+            .map_err(classify_subject_read_failure)?;
+        let Some((stored, version)) = StoredWake::observe(&rows)? else {
             return Ok(None);
         };
-        let row = decode_wakes(&rows)
-            .map_err(|failure| classify_subject_decode_failure(failure, version.clone()))?
-            .into_iter()
-            .next()
-            .ok_or_else(|| classify_subject_read_failure(corrupt("automation_wakes.wake_id")))?;
+        let row = stored
+            .decode_wake()
+            .map_err(|failure| classify_subject_decode_failure(failure, version.clone()))?;
         let state = match row.state {
             mail::WakeState::Active => wake::State::Active(row),
             mail::WakeState::Done => wake::State::Done,
@@ -69,15 +68,11 @@ where
         prior: &VersionedSubjectState<wake::State>,
         next: &wake::State,
     ) -> Result<GuardedStatement, StoreFailure> {
-        let mut args = vec![
-            text(next.state_tag()),
-            text(format_utc_millis(self.runtime.current_engine_time()?)),
-        ];
-        args.extend(prior.observed_subject_version.0.clone());
-        Ok(exact(
-            "UPDATE automation_wakes SET state=?1,updated_at=?2 WHERE wake_id IS ?3 AND target IS ?4 AND due_at IS ?5 AND text IS ?6 AND state IS ?7 AND created_at IS ?8 AND updated_at IS ?9",
-            args,
-        ))
+        plan_wake_transition(
+            &prior.observed_subject_version,
+            next.state_tag(),
+            self.runtime.current_engine_time()?,
+        )
     }
     fn plan_machine_effect_writes(
         &self,
@@ -88,7 +83,70 @@ where
             wake::Effect::QueueMessage(message) => Ok(vec![(self.plan_queued)(message)?]),
         }
     }
-    fn write_attempt_failure_sql(&self) -> &'static str {
-        WAKE_FAILURE
+    fn attempt_failure_writer(&self) -> SubjectAttemptWriter {
+        plan_wake_attempt
     }
+}
+
+pub(super) fn plan_wake_transition(
+    version: &SubjectVersion,
+    state: &str,
+    now: EngineTime,
+) -> Result<GuardedStatement, StoreFailure> {
+    let [
+        wake_id,
+        target,
+        due_at,
+        body,
+        prior_state,
+        created_at,
+        prior_updated_at,
+    ] = observed_text_binds(version)?;
+    Ok(GuardedStatement {
+        statement: checked_engine_statement!(
+            query_file,
+            [],
+            "src/queries/advance_wake.sql",
+            next_state = state.to_owned(),
+            updated_at = format_utc_millis(now),
+            wake_id = wake_id,
+            target = target,
+            due_at = due_at,
+            body = body,
+            prior_state = prior_state,
+            created_at = created_at,
+            prior_updated_at = prior_updated_at,
+        ),
+        expect: RowExpectation::Exactly(1),
+    })
+}
+
+pub(super) fn plan_wake_attempt(
+    subject: &EngineSubject,
+    record: &FailureRecord,
+    prior: Option<&AttemptGuard>,
+    version: &SubjectVersion,
+) -> Result<GuardedStatement, StoreFailure> {
+    let [
+        wake_id,
+        target,
+        due_at,
+        body,
+        prior_state,
+        created_at,
+        prior_updated_at,
+    ] = observed_text_binds(version)?;
+    Ok(checked_subject_attempt!(
+        "src/queries/upsert_wake_attempt.sql",
+        subject,
+        record,
+        prior,
+        wake_id = wake_id,
+        target = target,
+        due_at = due_at,
+        body = body,
+        prior_state = prior_state,
+        owner_created_at = created_at,
+        prior_updated_at = prior_updated_at,
+    ))
 }
