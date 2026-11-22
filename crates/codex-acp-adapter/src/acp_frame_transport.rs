@@ -15,7 +15,10 @@ pub async fn read_acp_frame<TReader: AsyncBufRead + Unpin>(
             return if frame.is_empty() {
                 Ok(None)
             } else {
-                Err(io::Error::other("truncated ACP frame"))
+                Err(io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "truncated ACP frame",
+                ))
             };
         }
         let end = buffer.iter().position(|byte| *byte == b'\n');

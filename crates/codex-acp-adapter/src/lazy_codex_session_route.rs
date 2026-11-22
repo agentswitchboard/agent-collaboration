@@ -155,7 +155,7 @@ async fn serve_lazy_codex_sessions(
                             let inner = AcpRouterChannels { input: input_receiver, output, closed: closed.clone() };
                             let sender = event_sender.clone();
                             let local_service = service_id.clone();
-                            let peer_eof = frontend_close.peer_eof.clone();
+                            let peer_disconnected = frontend_close.peer_disconnected.clone();
                             let host_tasks = inputs.holder.host_tasks();
                             #[cfg(feature = "test-support")]
                             let disposal = crate::test_support::binding_preservation::ObserveGenerationDisposal(crate::test_support::binding_preservation::current());
@@ -169,13 +169,13 @@ async fn serve_lazy_codex_sessions(
                                     }
                                 };
                                 // A detached prompt may still own an output sender after handoff.
-                                let forward_until_peer_eof = async {
+                                let forward_until_peer_disconnected = async {
                                     tokio::select! {
-                                        () = peer_eof.cancelled() => {},
+                                        () = peer_disconnected.cancelled() => {},
                                         () = forward => {},
                                     }
                                 };
-                                let (_run_result, ()) = tokio::join!(run, forward_until_peer_eof);
+                                let (_run_result, ()) = tokio::join!(run, forward_until_peer_disconnected);
                                 let _sent = sender.send(GenerationEvent::Closed { epoch }).await;
                             };
                             #[cfg(feature = "test-support")]
@@ -214,13 +214,13 @@ async fn serve_lazy_codex_sessions(
         let probe = crate::test_support::binding_preservation::current();
         #[cfg(feature = "test-support")]
         if let Some(probe) = &probe {
-            if probe.phase() == crate::test_support::binding_preservation::PreservationPhase::BeforeRegistryHandoff {
+            if probe.phase().holds_registry_handoff() {
                 probe.reached.cancelled().await;
             } else {
                 probe.generation_disposed.cancelled().await;
             }
         }
-        if !frontend_close.peer_eof.is_cancelled()
+        if !frontend_close.peer_disconnected.is_cancelled()
             || frontend_close.host_stop.is_cancelled()
             || current.retirement.is_cancelled()
         {

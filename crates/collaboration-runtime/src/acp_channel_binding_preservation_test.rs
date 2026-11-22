@@ -327,14 +327,28 @@ async fn successful_uncollected_setup_survives_eof() -> Result<(), FixtureError>
     assert_interrupted_load_preserves_binding(PreservationPhase::BeforeSetupCollection).await
 }
 
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "A failed preservation assertion must identify the forced interleaving."
-)]
 #[tokio::test(flavor = "current_thread")]
 async fn lazy_generation_eof_preserves_native_prompt_terminal_observation()
 -> Result<(), FixtureError> {
-    let probe = PreservationProbe::new(PreservationPhase::BeforeRegistryHandoff);
+    assert_native_observer_survives_close(PreservationPhase::BeforeRegistryHandoff).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn peer_write_failure_preserves_native_prompt_terminal_observation()
+-> Result<(), FixtureError> {
+    assert_native_observer_survives_close(PreservationPhase::PeerWriteFailure).await
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn truncated_peer_request_preserves_native_prompt_terminal_observation()
+-> Result<(), FixtureError> {
+    assert_native_observer_survives_close(PreservationPhase::TruncatedPeerRequest).await
+}
+
+async fn assert_native_observer_survives_close(
+    phase: PreservationPhase,
+) -> Result<(), FixtureError> {
+    let probe = PreservationProbe::new(phase);
     probe.arm();
     let (fixture, backend) = ListenerFixture::start(&probe)?;
     let mut frontend = fixture.connect().await?;
@@ -360,7 +374,18 @@ async fn lazy_generation_eof_preserves_native_prompt_terminal_observation()
     )
     .await?;
 
+    if phase == PreservationPhase::PeerWriteFailure {
+        native_wire.send(Message::text(json!({"method":"item/agentMessage/delta","params":{"threadId":SESSION,"turnId":"held-turn","itemId":"message","delta":"queued update"}}).to_string())).await?;
+        probe.update_waiting_to_write.cancelled().await;
+    }
+    if phase == PreservationPhase::TruncatedPeerRequest {
+        frontend.writer.write_all(b"{\"jsonrpc\":\"2.0\",").await?;
+    }
     drop(frontend);
+    if phase == PreservationPhase::PeerWriteFailure {
+        probe.release_update_write.cancel();
+        probe.peer_write_failed.cancelled().await;
+    }
     probe.reached.cancelled().await;
     probe.lazy_close_issued.cancelled().await;
     probe.release_handoff.cancel();

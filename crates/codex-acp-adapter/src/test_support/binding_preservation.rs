@@ -18,8 +18,19 @@ pub enum PreservationPhase {
     DuringDirectoryNormalization,
     BeforeSetupCollection,
     BeforeRegistryHandoff,
+    PeerWriteFailure,
+    TruncatedPeerRequest,
     HostStopBeforeHandoff,
     HostStopAfterPromptDetach,
+}
+
+impl PreservationPhase {
+    pub(crate) fn holds_registry_handoff(self) -> bool {
+        matches!(
+            self,
+            Self::BeforeRegistryHandoff | Self::PeerWriteFailure | Self::TruncatedPeerRequest
+        )
+    }
 }
 
 #[derive(Default)]
@@ -42,6 +53,9 @@ pub struct PreservationProbe {
     prompt_poll: Mutex<PromptPoll>,
     pub listener_draining: CancellationToken,
     pub release_outer_abort: CancellationToken,
+    pub update_waiting_to_write: CancellationToken,
+    pub release_update_write: CancellationToken,
+    pub peer_write_failed: CancellationToken,
 }
 
 impl PreservationProbe {
@@ -59,6 +73,9 @@ impl PreservationProbe {
             prompt_poll: Mutex::default(),
             listener_draining: CancellationToken::new(),
             release_outer_abort: CancellationToken::new(),
+            update_waiting_to_write: CancellationToken::new(),
+            release_update_write: CancellationToken::new(),
+            peer_write_failed: CancellationToken::new(),
         })
     }
 
@@ -131,6 +148,13 @@ pub(crate) async fn watch_prompt<T>(future: impl Future<Output = T>) -> T {
         result
     })
     .await
+}
+
+pub(crate) async fn hold_registry_handoff() {
+    if let Some(probe) = current().filter(|probe| probe.phase().holds_registry_handoff()) {
+        probe.reached.cancel();
+        probe.release_handoff.cancelled().await;
+    }
 }
 
 pub(crate) async fn hold_at(phase: PreservationPhase) {

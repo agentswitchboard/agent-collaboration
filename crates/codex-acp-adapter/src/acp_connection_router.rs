@@ -54,7 +54,7 @@ pub struct AcpConnectionContext {
 /// Close signals from the transport and its caller.
 #[derive(Clone, Default)]
 pub struct AcpFrontendClose {
-    pub(crate) peer_eof: CancellationToken,
+    pub(crate) peer_disconnected: CancellationToken,
     pub(crate) host_stop: CancellationToken,
 }
 
@@ -128,10 +128,16 @@ pub async fn serve_acp_router_connection_until<
     let (wire, mut connection) = acp_connection_channels();
     let closed = connection.closed.clone();
     let frontend_close = AcpFrontendClose {
-        peer_eof: wire.peer_eof.clone(),
+        peer_disconnected: wire.peer_disconnected.clone(),
         host_stop: stop.clone(),
     };
-    let transport = tokio::spawn(run_acp_transport(stream, wire));
+    let transport = run_acp_transport(stream, wire);
+    #[cfg(feature = "test-support")]
+    let transport = crate::test_support::binding_preservation::scope(
+        crate::test_support::binding_preservation::current(),
+        transport,
+    );
+    let transport = tokio::spawn(transport);
     let mut schema = AcpSchemaCatalog::load().map_err(io::Error::other)?;
     let mut negotiation = AcpNegotiation::default();
     let mut unused_routes = Some(routes);
@@ -325,9 +331,9 @@ pub async fn serve_acp_router_connection_until<
         while route_tasks.join_next().await.is_some() {}
     } else {
         #[cfg(feature = "test-support")]
-        if let Some(probe) = crate::test_support::binding_preservation::current().filter(|probe| {
-            probe.phase() == crate::test_support::binding_preservation::PreservationPhase::BeforeRegistryHandoff
-        }) {
+        if let Some(probe) = crate::test_support::binding_preservation::current()
+            .filter(|probe| probe.phase().holds_registry_handoff())
+        {
             probe.release_outer_abort.cancelled().await;
         }
         route_tasks.abort_all();

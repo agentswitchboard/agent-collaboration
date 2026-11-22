@@ -268,10 +268,7 @@ pub(crate) async fn route_codex_sessions(
     catalog_requests.abort_all();
     while catalog_requests.join_next().await.is_some() {}
     #[cfg(feature = "test-support")]
-    crate::test_support::binding_preservation::hold_at(
-        crate::test_support::binding_preservation::PreservationPhase::BeforeRegistryHandoff,
-    )
-    .await;
+    crate::test_support::binding_preservation::hold_registry_handoff().await;
     #[cfg(feature = "test-support")]
     crate::test_support::binding_preservation::hold_at(
         crate::test_support::binding_preservation::PreservationPhase::HostStopBeforeHandoff,
