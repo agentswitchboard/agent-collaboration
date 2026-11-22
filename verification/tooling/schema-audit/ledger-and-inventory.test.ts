@@ -5,14 +5,9 @@ import { test } from "node:test";
 
 import { DEFINITION_INVENTORY } from "./definition-inventory.ts";
 import { LEDGER_BASE_FILES } from "./ledger-base-files.ts";
-import { LEDGER_SECTIONS } from "./source-coverage-ledger.ts";
+import { LEDGER_RELOCATIONS, LEDGER_SECTIONS } from "./source-coverage-ledger.ts";
 
 const repositoryRoot = join(import.meta.dirname, "../../..");
-
-/** The ledger's base file list, committed as data (ledger-base-files.ts): no git history needed. */
-function baseFiles(): string[] {
-  return [...LEDGER_BASE_FILES];
-}
 
 const ledgerFiles = LEDGER_SECTIONS.flatMap((section) => section.files.map((entry) => entry.file));
 
@@ -21,7 +16,15 @@ test("the ledger gives every base file exactly one disposition", () => {
   for (const file of ledgerFiles) counts.set(file, (counts.get(file) ?? 0) + 1);
   const repeated = [...counts].filter(([, count]) => count > 1).map(([file]) => file);
   assert.deepEqual(repeated, []);
-  const expected = baseFiles();
+  const historicalFiles = new Set(LEDGER_BASE_FILES);
+  for (const historicalPath of LEDGER_RELOCATIONS.keys())
+    assert.ok(historicalFiles.has(historicalPath), `${historicalPath} needs its historical key`);
+  const expected = LEDGER_BASE_FILES.map((file) => LEDGER_RELOCATIONS.get(file) ?? file);
+  assert.equal(
+    new Set(expected).size,
+    expected.length,
+    "base rows project to unique current paths",
+  );
   const listed = new Set(ledgerFiles);
   assert.deepEqual(
     expected.filter((file) => !listed.has(file)),

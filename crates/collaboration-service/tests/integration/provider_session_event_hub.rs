@@ -3,16 +3,16 @@ use std::sync::Arc;
 use crate::provider_history::ResumePublicationFixture;
 use collaboration_contracts::SessionEventHub;
 use collaboration_protocol::{ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess};
-use collaboration_runtime::HubReceiveError;
-use collaboration_runtime::ProviderOperationStore;
-use collaboration_runtime::ProviderSessionEventHub;
-use collaboration_runtime::ProviderSessionRecord;
-use collaboration_runtime::receive_hub_event;
 use message_board::SessionRef;
 use session_event_model::{
     ConfigValue, ConfigValueState, PendingInteraction, SessionEvent, SessionItem, SessionItemKind,
     SessionSettings, SessionState, StopReason, TurnLostReason, TurnOutcome,
 };
+use switchboard_session_events::HubReceiveError;
+use switchboard_session_events::ProviderSessionEventHub;
+use switchboard_session_events::receive_hub_event;
+use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_store::ProviderSessionRecord;
 use tokio::sync::Mutex;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
@@ -52,7 +52,11 @@ async fn hub(capacity: usize) -> TestResult<(tempfile::TempDir, ProviderSessionE
     let store = ProviderOperationStore::open(&root.path().join("operations.sqlite")).await?;
     Ok((
         root,
-        ProviderSessionEventHub::with_capacity(Arc::new(Mutex::new(store)), capacity),
+        ProviderSessionEventHub::with_capacity(
+            Arc::new(Mutex::new(store)),
+            Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+            capacity,
+        ),
     ))
 }
 
@@ -393,7 +397,10 @@ async fn sessions_use_durable_inventory_with_live_state_overlay() -> TestResult 
             resume: Default::default(),
         })
         .await?;
-    let hub = Arc::new(ProviderSessionEventHub::new(Arc::new(Mutex::new(store))));
+    let hub = Arc::new(ProviderSessionEventHub::new(
+        Arc::new(Mutex::new(store)),
+        Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+    ));
     let cold = hub.sessions(target.endpoint.clone()).await?;
     ensure_eq!(cold.len(), 1);
     ensure_eq!(cold[0].updated_at_seconds, 3);
@@ -482,7 +489,10 @@ async fn sessions_use_durable_inventory_with_live_state_overlay() -> TestResult 
     drop(hub);
     let restarted_store =
         ProviderOperationStore::open(&root.path().join("operations.sqlite")).await?;
-    let restarted_hub = ProviderSessionEventHub::new(Arc::new(Mutex::new(restarted_store)));
+    let restarted_hub = ProviderSessionEventHub::new(
+        Arc::new(Mutex::new(restarted_store)),
+        Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+    );
     let restarted = restarted_hub
         .sessions(live[0].session.endpoint.clone())
         .await?;
@@ -520,7 +530,10 @@ async fn sessions_inventory_preserves_human_approver_after_restart() -> TestResu
         .await?;
     store.close().await?;
     let reopened = ProviderOperationStore::open(&path).await?;
-    let hub = ProviderSessionEventHub::new(Arc::new(Mutex::new(reopened)));
+    let hub = ProviderSessionEventHub::new(
+        Arc::new(Mutex::new(reopened)),
+        Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+    );
     let rows = hub.sessions(target.endpoint).await?;
     ensure_eq!(rows.len(), 1);
     ensure!(matches!(&rows[0].approver,

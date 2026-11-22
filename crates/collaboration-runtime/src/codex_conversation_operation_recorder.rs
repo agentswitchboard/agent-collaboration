@@ -1,5 +1,4 @@
 //! Codex ACP create evidence in the shared conversation operation store.
-use crate::{ProviderOperationAdmission, ProviderOperationAdmissionResult, ProviderOperationStore};
 use codex_acp_adapter::{ConversationOperationRecorder, ConversationRecordFuture};
 use collaboration_protocol::{
     CodexGeneration, CodexPermissionModeReport, ConversationBindingIdentity, EndpointRef,
@@ -10,6 +9,9 @@ use std::{
     collections::{HashMap, HashSet},
     io,
     sync::{Arc, Mutex as StdMutex},
+};
+use switchboard_session_store::{
+    ProviderOperationAdmission, ProviderOperationAdmissionResult, ProviderOperationStore,
 };
 use tokio::sync::{Mutex, Notify};
 

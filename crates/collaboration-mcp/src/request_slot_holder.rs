@@ -11,9 +11,6 @@ use collaboration_protocol::{
     EndpointDescription, ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess,
     SessionRef,
 };
-use collaboration_runtime::{
-    ProviderOperationStore, ProviderSessionEventHub, ProviderSessionRecord,
-};
 use collaboration_service::ApplicationFixture;
 use serde_json::{Value, json};
 use std::{
@@ -21,6 +18,8 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+use switchboard_session_events::ProviderSessionEventHub;
+use switchboard_session_store::{ProviderOperationStore, ProviderSessionRecord};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 
@@ -35,7 +34,7 @@ impl RequestSlotHolder {
     /// Gives `identity`, whose service is `service_id`, a provider endpoint with one recorded
     /// Session to observe. Its provider operation store lives in `directory`.
     pub async fn install(
-        identity: ApplicationFixture,
+        mut identity: ApplicationFixture,
         service_id: &str,
         directory: &Path,
     ) -> io::Result<(ApplicationFixture, Self)> {
@@ -71,7 +70,11 @@ impl RequestSlotHolder {
             })
             .await
             .map_err(io::Error::other)?;
-        let hub = Arc::new(ProviderSessionEventHub::with_capacity(store, 16));
+        let hub = Arc::new(ProviderSessionEventHub::with_capacity(
+            store,
+            identity.clock_for_fixture(),
+            16,
+        ));
         let release_attachment = CancellationToken::new();
         let identity = identity.with_provider_session_hub(Arc::new(HeldAttachment {
             hub: Arc::clone(&hub),

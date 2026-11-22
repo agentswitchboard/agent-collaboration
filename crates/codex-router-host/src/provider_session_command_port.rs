@@ -34,11 +34,11 @@ use collaboration_protocol::{
     ProviderSettingsSetRequest, ProviderWorkingDirectory, RouterAccess, SessionId, SessionRef,
     UuidIdentity,
 };
-use collaboration_runtime::ProviderOperationStore;
-use collaboration_runtime::ProviderSessionEventHub;
 use message_board::{Identity, SessionEndpointRef};
 use session_event_model::{InputId, SessionEvent};
 use std::{sync::Arc, time::Duration};
+use switchboard_session_events::ProviderSessionEventHub;
+use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
 
 const OPERATION_WAIT_SECONDS: u32 = 30;
@@ -74,7 +74,7 @@ impl HostSessionCommandPort {
     async fn stored_session(
         &self,
         target: &SessionRef,
-    ) -> Result<collaboration_runtime::ProviderSessionRecord, CommandFailure> {
+    ) -> Result<switchboard_session_store::ProviderSessionRecord, CommandFailure> {
         self.store
             .lock()
             .await
@@ -108,7 +108,7 @@ impl HostSessionCommandPort {
         operation_id: &OperationId,
         target: &SessionRef,
         hub_session: &message_board::SessionRef,
-    ) -> Result<(collaboration_runtime::ProviderSessionRecord, u64), CommandFailure> {
+    ) -> Result<(switchboard_session_store::ProviderSessionRecord, u64), CommandFailure> {
         router_clock::timeout(self.clock.as_ref(), STORE_WAIT, async {
             let saved = self.stored_session(target).await?;
             let attachment = self

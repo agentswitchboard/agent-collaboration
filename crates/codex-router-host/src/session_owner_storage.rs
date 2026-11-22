@@ -9,7 +9,6 @@ use acp_client_runtime::session_owner_task::{OwnerCompletionPort, OwnerTaskError
 use collaboration_protocol::{
     OperationId, ProviderOperationEffect, ProviderPromptStopReason, ProviderReconciliationState,
 };
-use collaboration_runtime::ProviderSessionRecord;
 use provider_session_machines::{
     ProviderSettingKind,
     session_lifecycle_machine::LoadAttempt,
@@ -24,6 +23,7 @@ use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex, MutexGuard},
 };
+use switchboard_session_store::ProviderSessionRecord;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 #[derive(Clone)]
@@ -117,7 +117,7 @@ impl SessionOwnerStorage {
     pub(crate) fn defer_queued_admission(
         &self,
         owner: provider_session_machines::session_owner::OwnerIncarnation,
-        admission: collaboration_runtime::ProviderOperationAdmission,
+        admission: switchboard_session_store::ProviderOperationAdmission,
     ) -> Result<(), SessionStoreOfferError> {
         self.lane.defer_queued_admission(owner, admission)
     }
@@ -466,7 +466,7 @@ fn store_error(error: &SessionStoreWaitError) -> EffectOutcome {
     match error {
         SessionStoreWaitError::Elapsed
         | SessionStoreWaitError::Store(
-            collaboration_runtime::ProviderOperationStoreError::Database(_),
+            switchboard_session_store::ProviderOperationStoreError::Database(_),
         ) => EffectOutcome::Unknown,
         SessionStoreWaitError::Stopped
         | SessionStoreWaitError::EarlierOutcomeUnknown { .. }

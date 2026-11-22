@@ -6,13 +6,13 @@ use collaboration_protocol::{
     ProviderRequestedPolicy, ProviderRuntimeIdentity, ProviderTransport, ProviderWorkingDirectory,
     RouterAccess, SessionId, SessionRef, UuidIdentity,
 };
-use collaboration_runtime::ProviderOperationAdmission;
-use collaboration_runtime::ProviderOperationStore;
-use collaboration_runtime::ProviderOperationStoreError;
-use collaboration_runtime::ProviderSessionRecord;
-use collaboration_runtime::ProviderSessionResumeInputs;
 use message_board::HumanId;
 use sqlx::{Connection, SqliteConnection};
+use switchboard_session_store::ProviderOperationAdmission;
+use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_store::ProviderOperationStoreError;
+use switchboard_session_store::ProviderSessionRecord;
+use switchboard_session_store::ProviderSessionResumeInputs;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 

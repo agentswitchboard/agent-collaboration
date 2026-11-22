@@ -19,7 +19,7 @@ use session_event_model::{
 use tokio::sync::{Mutex, broadcast};
 
 use super::ProviderSessionEventHub;
-use crate::ProviderOperationStore;
+use switchboard_session_store::ProviderOperationStore;
 
 /// The inventory summary's timestamp is a clock read, so only it is replaced before recording.
 const VOLATILE_UPDATED_AT_SECONDS: i64 = -1;
@@ -50,7 +50,7 @@ async fn fixture() -> HubFixture {
     let owner: collaboration_protocol::ProviderIdentity =
         serde_json::from_value(serde_json::json!({"humanId":"owner"})).expect("owner");
     store
-        .record_session(&crate::ProviderSessionRecord {
+        .record_session(&switchboard_session_store::ProviderSessionRecord {
             target: serde_json::from_value(serde_json::to_value(&session).expect("target"))
                 .expect("target"),
             working_directory: root.path().display().to_string().try_into().expect("cwd"),
@@ -65,7 +65,10 @@ async fn fixture() -> HubFixture {
         .await
         .expect("inventory");
     HubFixture {
-        hub: ProviderSessionEventHub::new(Arc::new(Mutex::new(store))),
+        hub: ProviderSessionEventHub::new(
+            Arc::new(Mutex::new(store)),
+            Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+        ),
         session,
         _root: root,
     }

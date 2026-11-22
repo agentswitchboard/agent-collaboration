@@ -25,14 +25,14 @@ use collaboration_protocol::{
     MessageDelivery, OperationId, PositiveSeconds, ProviderRequestedPolicy,
     ProviderWorkingDirectory, RouterAccess, SessionRef,
 };
-use collaboration_runtime::ProviderOperationStore;
-use collaboration_runtime::ProviderSessionRecord;
 use collaboration_runtime::SessionDeliveryRouter;
 use sqlx::Connection as _;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_store::ProviderSessionRecord;
 
 use crate::provider_acp_message_fifo_support;
 use provider_acp_message_fifo_support::{

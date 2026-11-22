@@ -281,7 +281,7 @@ async fn human_mcp_prompt_and_exact_cancel_reach_real_host_runtime() -> TestResu
     }).await?;
     let (target, generation, create_id, prompt_id, cancel_id) =
         readback.ok_or("successful scenario omitted readback identities")?;
-    let mut store = collaboration_runtime::ProviderOperationStore::open(
+    let mut store = switchboard_session_store::ProviderOperationStore::open(
         &root.path().join("provider-operations.sqlite"),
     )
     .await?;
