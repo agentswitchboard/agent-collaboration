@@ -16,8 +16,8 @@ pub use approval_answers::{
     Answer, ChoiceSelection, QuestionAnswer, QuestionAnswerValue, QuestionFieldAnswer,
 };
 pub use approval_endings::{
-    CancelReason, DecidedBy, Delivery, Ending, EndingView, HolderReport, RequestState,
-    RequestStateView, RequestView, WaitingStatus,
+    CancelReason, DecidedBy, Delivery, Ending, EndingView, HolderReport, HolderStopCause,
+    RequestState, RequestStateView, RequestView, WaitingStatus,
 };
 pub use approval_offers::{
     ApprovalOffer, CallOffer, KeptWhere, OfferView, OfferedOption, OfferedOptions, OptionDuration,
@@ -36,9 +36,9 @@ pub use destination_requests::{
     ReadSessionRequestReply, Refusal, WaitingListAtReply, WaitingListAtRequest, WaitingRequestView,
 };
 pub use holder_requests::{
-    CallStopCause, HolderRefusal, HolderStopCause, OfferEnding, ProviderStopCause, RaiseReceipt,
-    RaiseReply, RegisterRunReply, RegisterRunRequest, ReportDeliveryReply, ReportDeliveryRequest,
-    RunRefusal, StopReceiptEnding, StopReply, StopRequest,
+    CallStopCause, HolderRefusal, OfferEnding, ProviderStopCause, RaiseReceipt, RaiseReply,
+    RegisterRunReply, RegisterRunRequest, ReportDeliveryReply, ReportDeliveryRequest, RunRefusal,
+    StopReceiptEnding, StopReply, StopRequest,
 };
 pub use question_fields::{
     ChoiceOption, InvalidOfferedOptions, InvalidQuestionFields, MAX_OFFERED_OPTIONS,

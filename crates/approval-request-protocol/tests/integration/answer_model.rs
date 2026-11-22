@@ -4,15 +4,19 @@ use approval_request_protocol::{
 use hegel::{TestCase, generators as gs};
 use serde_json::{Value, json};
 
-fn decoded_offer(offer: Value) -> OfferView {
-    serde_json::from_str(&offer.to_string()).expect("decode offered question")
+fn decoded_offer(offer: Value) -> serde_json::Result<OfferView> {
+    serde_json::from_str(&offer.to_string())
 }
 
-fn decoded_answer(answer: Value) -> Answer {
-    serde_json::from_str(&answer.to_string()).expect("decode submitted answer")
+fn decoded_answer(answer: Value) -> serde_json::Result<Answer> {
+    serde_json::from_str(&answer.to_string())
 }
 
-fn question_with_choices(required: bool, minimum: u8, maximum: u8) -> OfferView {
+fn question_with_choices(
+    required: bool,
+    minimum: u8,
+    maximum: u8,
+) -> serde_json::Result<OfferView> {
     decoded_offer(json!({
         "kind": "providerQuestion",
         "offer": {
@@ -28,7 +32,7 @@ fn question_with_choices(required: bool, minimum: u8, maximum: u8) -> OfferView 
     }))
 }
 
-fn question_answer(fields: Vec<Value>) -> Answer {
+fn question_answer(fields: Vec<Value>) -> serde_json::Result<Answer> {
     decoded_answer(json!({"kind":"question","answer":{"kind":"answered","fields":fields}}))
 }
 
@@ -38,7 +42,7 @@ fn choice_answer(selected: &[&str]) -> Value {
 
 #[test]
 fn first_invalid_relationship_is_reported_for_shipped_answers() {
-    let offer = question_with_choices(true, 1, 2);
+    let offer = question_with_choices(true, 1, 2).unwrap();
     let confirmed = json!({"fieldId":"confirmed","value":true});
     for (fields, expected_refusal) in [
         (
@@ -81,17 +85,17 @@ fn first_invalid_relationship_is_reported_for_shipped_answers() {
             json!({"kind":"unofferedField","fieldId":"extra"}),
         ),
     ] {
-        let actual = check_answer(&offer, &question_answer(fields)).unwrap_err();
+        let actual = check_answer(&offer, &question_answer(fields).unwrap()).unwrap_err();
         assert_eq!(serde_json::to_value(actual).unwrap(), expected_refusal);
     }
     assert_eq!(
         check_answer(
             &offer,
-            &question_answer(vec![confirmed, choice_answer(&["ca"])])
+            &question_answer(vec![confirmed, choice_answer(&["ca"])]).unwrap()
         ),
         Ok(())
     );
-    let declined = decoded_answer(json!({"kind":"question","answer":{"kind":"declined"}}));
+    let declined = decoded_answer(json!({"kind":"question","answer":{"kind":"declined"}})).unwrap();
     assert_eq!(check_answer(&offer, &declined), Ok(()));
 }
 
@@ -140,9 +144,9 @@ fn filled_question_matches_the_independent_choice_set_and_presence_oracle(case: 
         && allowed_subsets.contains(&sorted_selection.as_slice())
         && (lowest..=highest).contains(&selection_count);
 
-    let offer = question_with_choices(confirmation_required, lowest, highest);
+    let offer = question_with_choices(confirmation_required, lowest, highest).unwrap();
     assert_eq!(
-        check_answer(&offer, &question_answer(fields)).is_ok(),
+        check_answer(&offer, &question_answer(fields).unwrap()).is_ok(),
         expected
     );
 }
@@ -158,20 +162,20 @@ fn request_kind_and_option_membership_are_both_required(case: TestCase) {
         {"id":offered[1],"label":"Decline","effect":"decline","lasts":"thisRequest","kept":"nowhere"}
     ]);
     let offer = if parked {
-        decoded_offer(json!({"kind":"unprovenCall", "offer":{
+        json!({"kind":"unprovenCall", "offer":{
             "operation":"readConfig","summary":"Read config","invocation":"a".repeat(64),"options":options
-        }}))
+        }})
     } else {
-        decoded_offer(
-            json!({"kind":"providerApproval","offer":{"title":"Allow a tool","options":options}}),
-        )
+        json!({"kind":"providerApproval","offer":{"title":"Allow a tool","options":options}})
     };
+    let offer = decoded_offer(offer).unwrap();
     let selected_id = ["allow-once", "decline", "allow-all", "ALLOW-ONCE"][selected];
     let answer = match kind {
         0 => decoded_answer(json!({"kind":"approval","optionId":selected_id})),
         1 => decoded_answer(json!({"kind":"call","optionId":selected_id})),
         _ => decoded_answer(json!({"kind":"question","answer":{"kind":"declined"}})),
-    };
+    }
+    .unwrap();
 
     // Oracle: approval and call have disjoint answer alphabets. Each alphabet has these two entries.
     let expected = match (parked, kind, selected) {

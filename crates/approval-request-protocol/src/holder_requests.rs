@@ -1,7 +1,10 @@
 use serde::{Deserialize, Serialize};
 use workspace_ids::{ApprovalRequestId, RouterRunId};
 
-use crate::{CancelReason, CentralTime, Ending, HolderReport, ParkedCallHolder, ProviderHolder};
+use crate::{
+    CancelReason, CentralTime, Ending, HolderReport, HolderStopCause, ParkedCallHolder,
+    ProviderHolder,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -42,11 +45,11 @@ pub struct RaiseReceipt {
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
 )]
+/// Outcome of a Raise after the holder run is admitted.
 pub enum RaiseReply {
     RaiseReceipt { receipt: RaiseReceipt },
     AlreadyStopped {},
     ContentsDiffer {},
-    Refused { refusal: RunRefusal },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -198,19 +201,6 @@ pub enum ProviderStopCause {
     derive(specta::Type)
 )]
 pub enum CallStopCause {
-    CallWithdrawn,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub enum HolderStopCause {
-    TurnStopped,
-    SessionClosed,
-    ProviderConnectionLost,
     CallWithdrawn,
 }
 
