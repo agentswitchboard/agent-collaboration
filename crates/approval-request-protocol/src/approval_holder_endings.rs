@@ -125,28 +125,35 @@ impl OfferEnding {
     #[must_use]
     pub fn into_ending(self) -> Ending {
         match self {
-            Self::ProviderApproval { ending, .. } => {
-                ending.into_ending(|option_id| Answer::Approval { option_id })
-            }
-            Self::ProviderQuestion { ending, .. } => {
-                ending.into_ending(|answer| Answer::Question { answer })
-            }
-            Self::UnprovenCall { ending, .. } => {
-                ending.into_ending(|option_id| Answer::Call { option_id })
-            }
+            Self::ProviderApproval { ending, .. } => ending.into_ending(
+                |option_id| Answer::Approval { option_id },
+                ProviderCancellation::into_reason,
+            ),
+            Self::ProviderQuestion { ending, .. } => ending.into_ending(
+                |answer| Answer::Question { answer },
+                ProviderCancellation::into_reason,
+            ),
+            Self::UnprovenCall { ending, .. } => ending.into_ending(
+                |option_id| Answer::Call { option_id },
+                CallCancellation::into_reason,
+            ),
         }
     }
 }
 
-impl<AcceptedAnswer, Cancellation: Into<CancelReason>> HolderEnding<AcceptedAnswer, Cancellation> {
-    fn into_ending(self, answer_for_kind: impl FnOnce(AcceptedAnswer) -> Answer) -> Ending {
+impl<AcceptedAnswer, Cancellation> HolderEnding<AcceptedAnswer, Cancellation> {
+    fn into_ending(
+        self,
+        answer_for_kind: impl FnOnce(AcceptedAnswer) -> Answer,
+        cancellation_for_kind: impl FnOnce(Cancellation) -> CancelReason,
+    ) -> Ending {
         match self {
             Self::Decided { answer, by } => Ending::Decided {
                 answer: answer_for_kind(answer),
                 by,
             },
             Self::Cancelled { reason } => Ending::Cancelled {
-                reason: reason.into(),
+                reason: cancellation_for_kind(reason),
             },
             Self::TimedOut {} => Ending::TimedOut {},
         }
@@ -207,15 +214,15 @@ impl TryFrom<CancelReason> for ProviderCancellation {
     }
 }
 
-impl From<ProviderCancellation> for CancelReason {
-    fn from(reason: ProviderCancellation) -> Self {
-        match reason {
-            ProviderCancellation::Stopped { cause } => Self::Stopped {
+impl ProviderCancellation {
+    fn into_reason(self) -> CancelReason {
+        match self {
+            ProviderCancellation::Stopped { cause } => CancelReason::Stopped {
                 cause: cause.holder_cause(),
             },
-            ProviderCancellation::RequesterGone {} => Self::RequesterGone {},
-            ProviderCancellation::SessionEnded {} => Self::SessionEnded {},
-            ProviderCancellation::EnrollmentEnded {} => Self::EnrollmentEnded {},
+            ProviderCancellation::RequesterGone {} => CancelReason::RequesterGone {},
+            ProviderCancellation::SessionEnded {} => CancelReason::SessionEnded {},
+            ProviderCancellation::EnrollmentEnded {} => CancelReason::EnrollmentEnded {},
         }
     }
 }
@@ -239,16 +246,16 @@ impl TryFrom<CancelReason> for CallCancellation {
     }
 }
 
-impl From<CallCancellation> for CancelReason {
-    fn from(reason: CallCancellation) -> Self {
-        match reason {
+impl CallCancellation {
+    fn into_reason(self) -> CancelReason {
+        match self {
             CallCancellation::Stopped {
                 cause: CallStopCause::CallWithdrawn,
-            } => Self::Stopped {
+            } => CancelReason::Stopped {
                 cause: HolderStopCause::CallWithdrawn,
             },
-            CallCancellation::RequesterGone {} => Self::RequesterGone {},
-            CallCancellation::EnrollmentEnded {} => Self::EnrollmentEnded {},
+            CallCancellation::RequesterGone {} => CancelReason::RequesterGone {},
+            CallCancellation::EnrollmentEnded {} => CancelReason::EnrollmentEnded {},
         }
     }
 }
