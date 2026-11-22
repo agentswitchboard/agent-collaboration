@@ -257,13 +257,17 @@ impl AdminRoute {
     /// Changes need a fresh second factor; reads are exempt.
     #[must_use]
     pub const fn changes_state(self) -> bool {
-        matches!(
-            self,
+        match self {
             Self::CreateWorkspace
-                | Self::EngineRetry
-                | Self::EngineDiscard
-                | Self::RevokeMachineEnrollment
-        )
+            | Self::EngineRetry
+            | Self::EngineDiscard
+            | Self::RevokeMachineEnrollment => true,
+            Self::WorkspaceLookup
+            | Self::ListWorkspaces
+            | Self::ReadChangeRecords
+            | Self::EngineHealth
+            | Self::EngineListRetired => false,
+        }
     }
 }
 

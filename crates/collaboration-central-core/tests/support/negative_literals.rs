@@ -61,6 +61,12 @@ pub fn explicit_negatives(name: &str, literals: &[Value]) -> Vec<Value> {
                 invalid.push(wrong_limit);
             }
         }
+        "ListWorkspacesResult" => {
+            let first_row = literals.iter()
+                .find_map(|reply| reply["workspaces"].as_array()?.first()).unwrap();
+            invalid.push(json!({"result":"workspaces","workspaces":vec![first_row.clone(); 101],"next":null}));
+            invalid.push(json!({"result":"workspaces","workspaces":[]}));
+        }
         "OrganizationAdminIntent" => {
             for literal in literals {
                 for version in [0, 2] {

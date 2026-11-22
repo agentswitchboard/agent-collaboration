@@ -1,5 +1,5 @@
 //! Closed answers from a verified organization admin operation.
-use crate::person_request::AdmissionRefusal;
+use crate::person_request::{AdmissionRefusal, MAXIMUM_RECORD_PAGE};
 use fleet_contracts::WorkspaceView;
 use fleet_engine::EngineFailureClass;
 use fleet_signin::organization_change::OrganizationChangeRecord;
@@ -60,12 +60,56 @@ pub enum OrganizationAdminAnswer {
 #[serde(tag = "result", rename_all = "camelCase", deny_unknown_fields)]
 pub enum ListWorkspacesResult {
     Workspaces {
-        workspaces: Vec<WorkspaceView>,
+        workspaces: WorkspacePageRows,
+        #[serde(deserialize_with = "Option::deserialize")]
         next: Option<message_board::WorkspaceId>,
     },
     Refused {
         reason: AdminRefusal,
     },
+}
+
+/// The bounded workspace collection returned by one successful page.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "Vec<WorkspaceView>", into = "Vec<WorkspaceView>")]
+pub struct WorkspacePageRows(Vec<WorkspaceView>);
+
+#[derive(Debug, thiserror::Error)]
+#[error(
+    "workspace page has {count} rows, exceeding the limit of {}",
+    MAXIMUM_RECORD_PAGE
+)]
+pub struct WorkspacePageTooLarge {
+    count: usize,
+}
+
+impl TryFrom<Vec<WorkspaceView>> for WorkspacePageRows {
+    type Error = WorkspacePageTooLarge;
+
+    fn try_from(workspaces: Vec<WorkspaceView>) -> Result<Self, Self::Error> {
+        let count = workspaces.len();
+        if count > usize::from(MAXIMUM_RECORD_PAGE) {
+            return Err(WorkspacePageTooLarge { count });
+        }
+        Ok(Self(workspaces))
+    }
+}
+
+impl From<WorkspacePageRows> for Vec<WorkspaceView> {
+    fn from(workspaces: WorkspacePageRows) -> Self {
+        workspaces.0
+    }
+}
+
+impl JsonSchema for WorkspacePageRows {
+    fn schema_name() -> std::borrow::Cow<'static, str> {
+        "WorkspacePageRows".into()
+    }
+
+    fn json_schema(generator: &mut schemars::SchemaGenerator) -> schemars::Schema {
+        let items = generator.subschema_for::<WorkspaceView>();
+        schemars::json_schema!({"type":"array","items":items,"maxItems":MAXIMUM_RECORD_PAGE})
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]

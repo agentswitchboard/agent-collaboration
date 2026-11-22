@@ -13,6 +13,9 @@ autotests = false
 [lints]
 workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
 sqlx-durable-object-core = { path = "../sqlx-durable-object-core", version = "0.2.0" }
 # Executor::describe is part of this driver; SQLx gates the trait method on offline.

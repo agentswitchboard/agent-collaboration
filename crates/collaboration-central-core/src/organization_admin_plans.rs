@@ -128,7 +128,10 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                     .read_workspace_page(request.after.as_ref(), request.limit.get())
                     .await?;
                 OrganizationAdminAnswer::WorkspaceList(ListWorkspacesResult::Workspaces {
-                    workspaces: page.workspaces,
+                    workspaces: page
+                        .workspaces
+                        .try_into()
+                        .map_err(|_| StoreFailure::Unavailable)?,
                     next: page.next,
                 })
             }

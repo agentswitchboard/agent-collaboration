@@ -197,10 +197,19 @@ async fn list_workspaces_default_page_and_late_cursor_bound_durable_object_rows_
     }).await.unwrap();
     assert!(matches!(seeded, BatchOutcome::Applied { .. }));
     let reader = fixture.owner();
+    let idle: Option<Vec<u64>> = directory
+        .control("workspace-page-read-observations", &true)
+        .await
+        .unwrap();
+    assert_eq!(idle, None);
     let (status, page) = list_page(&fixture, &reader, None, None).await;
     assert_eq!(status, 200);
     assert_eq!(page["workspaces"].as_array().unwrap().len(), 100);
     assert_eq!(page["next"], "019f0000-0000-7000-8000-000000000100");
+    let first_reads: Option<Vec<u64>> = directory
+        .control("workspace-page-read-observations", &true)
+        .await
+        .unwrap();
     let after = page["next"].as_str().unwrap();
     let (status, next_page) = list_page(&fixture, &reader, Some(after), Some(1)).await;
     assert_eq!(status, 200);
@@ -208,19 +217,26 @@ async fn list_workspaces_default_page_and_late_cursor_bound_durable_object_rows_
         next_page["workspaces"][0]["workspaceId"],
         "019f0000-0000-7000-8000-000000000101"
     );
+    assert_eq!(next_page["workspaces"].as_array().unwrap().len(), 1);
     assert_eq!(next_page["next"], "019f0000-0000-7000-8000-000000000101");
 
-    for (bookmark, read_limit) in [("", 101_u16), (after, 2)] {
-        let (returned, rows_read): (usize, usize) = directory
-            .control("raw-workspace-page-rows-read", &(bookmark, read_limit))
-            .await
-            .unwrap();
-        println!("workspace list after={bookmark:?}, fetched={returned}, rows_read={rows_read}");
-        assert_eq!(returned, usize::from(read_limit));
-        assert!(
-            rows_read <= usize::from(read_limit),
-            "range query read {rows_read} rows with a fetch limit of {read_limit}"
+    let late_reads: Option<Vec<u64>> = directory
+        .control("workspace-page-read-observations", &false)
+        .await
+        .unwrap();
+    let (Some([first_rows_read]), Some([late_rows_read])) =
+        (first_reads.as_deref(), late_reads.as_deref())
+    else {
+        panic!(
+            "expected one page statement per signed call, observed {first_reads:?} and {late_reads:?}"
         );
-    }
+    };
+    println!(
+        "signed workspace pages read {first_rows_read} rows for limit 100 and {late_rows_read} rows for limit 1"
+    );
+    assert!(
+        *first_rows_read <= 101 && *late_rows_read <= 2,
+        "signed workspace pages read {first_rows_read} and {late_rows_read} rows, above bounds 101 and 2"
+    );
     fixture.close().await;
 }
