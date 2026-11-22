@@ -302,13 +302,14 @@ async fn zero_time_offer_journey(fixture: &Fixture) -> Result<()> {
         .await?;
     central.after_event().await?;
     let facts = store.read(Statement {
-        sql: "SELECT state, (SELECT count(*) FROM mail_messages WHERE message_kind='deliveryOutcome' AND json_extract(body,'$.messageId')=m.message_id AND json_extract(body,'$.outcome.kind')='deliveryNotConfirmed') FROM mail_messages m WHERE message_id=?",
+        sql: "SELECT state, (SELECT count(*) FROM mail_messages WHERE message_kind='deliveryOutcome' AND json_extract(body,'$.messageId')=m.message_id), (SELECT json_extract(body,'$.outcome.kind') FROM mail_messages WHERE message_kind='deliveryOutcome' AND json_extract(body,'$.messageId')=m.message_id) FROM mail_messages m WHERE message_id=?",
         args: vec![SqlValue::Text(zero_message.to_string())],
     }).await?.rows;
     if facts
         != [vec![
             SqlValue::Text("pastTheMark".into()),
             SqlValue::Integer(1.try_into()?),
+            SqlValue::Text("deliveryNotConfirmed".into()),
         ]]
     {
         return Err(format!(
