@@ -1,10 +1,6 @@
 //! Translate a committed ACP owner batch at the collaboration hub boundary.
 
 use acp_client_runtime::session_owner_task::{OwnerCompletionPort, OwnerTaskError};
-use collaboration_runtime::owner_inbox::{
-    HubHistoryAvailability, HubPublication, HubPublicationBaseline, HubPublicationFact,
-    HubPublicationStamp, HubSessionInbox,
-};
 use provider_session_machines::{
     session_owner::{
         BatchId, HistoryAvailability, OwnerAddress, OwnerEvent, PublicationBatch, PublicationFact,
@@ -15,6 +11,10 @@ use provider_session_machines::{
 use router_clock::RuntimeClock;
 use session_event_model::{SessionEvent, SessionState, TurnLostReason, TurnOutcome};
 use std::sync::Arc;
+use switchboard_session_events::owner_inbox::{
+    HubHistoryAvailability, HubPublication, HubPublicationBaseline, HubPublicationFact,
+    HubPublicationStamp, HubSessionInbox,
+};
 use tokio_util::task::TaskTracker;
 
 pub struct SessionOwnerPublisher {

@@ -16,9 +16,10 @@ use collaboration_protocol::{
     ProviderBindingId, ProviderBindingIdentity, ProviderKind, ProviderRuntimeIdentity,
     ProviderTransport, SessionId, SessionRef,
 };
-use collaboration_runtime::{ProviderOperationStore, ProviderSessionEventHub};
 use session_event_model::{InputId, PromptContent, SessionEvent, StopReason, TurnOutcome};
 use std::{sync::Arc, task::Poll, time::Duration};
+use switchboard_session_events::ProviderSessionEventHub;
+use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
 
 struct NoLivePeer;
@@ -89,11 +90,14 @@ impl StoreDeadlineFixture {
         let target = target();
         let session = serde_json::from_value(serde_json::to_value(&target).expect("target JSON"))
             .expect("hub session");
-        let hub = Arc::new(ProviderSessionEventHub::new(Arc::clone(&store)));
+        let clock = Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH));
+        let hub = Arc::new(ProviderSessionEventHub::new(
+            Arc::clone(&store),
+            clock.clone(),
+        ));
         let supervisor = Arc::new(
             ExternalProviderSupervisor::new(Vec::new(), Arc::clone(&store)).expect("supervisor"),
         );
-        let clock = Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH));
         let delivery = Arc::new(ProviderAcpDeliveryRoute::new(
             target.endpoint.service_id.clone(),
             std::collections::HashSet::new(),
@@ -218,7 +222,11 @@ async fn a_queued_input_waits_past_the_start_deadline_for_its_own_turn() {
             .await
             .expect("store"),
     ));
-    let hub = Arc::new(ProviderSessionEventHub::new(Arc::clone(&store)));
+    let clock = Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH));
+    let hub = Arc::new(ProviderSessionEventHub::new(
+        Arc::clone(&store),
+        clock.clone(),
+    ));
     let target = target();
     let session: message_board::SessionRef =
         serde_json::from_value(serde_json::to_value(&target).expect("target JSON"))
@@ -235,7 +243,6 @@ async fn a_queued_input_waits_past_the_start_deadline_for_its_own_turn() {
         Arc::new(NoLivePeer),
         std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
     ));
-    let clock = Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH));
     let port = Arc::new(HostSessionCommandPort::new(
         Arc::clone(&supervisor),
         delivery,

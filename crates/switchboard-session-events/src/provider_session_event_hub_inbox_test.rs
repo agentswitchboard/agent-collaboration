@@ -1,6 +1,6 @@
 use super::*;
-use crate::ProviderOperationStore;
 use collaboration_contracts::SessionEventHub;
+use switchboard_session_store::ProviderOperationStore;
 
 async fn hub() -> (tempfile::TempDir, Arc<ProviderSessionEventHub>) {
     let root = tempfile::tempdir().expect("temporary store");
@@ -9,9 +9,10 @@ async fn hub() -> (tempfile::TempDir, Arc<ProviderSessionEventHub>) {
         .expect("open real store");
     (
         root,
-        Arc::new(ProviderSessionEventHub::new(Arc::new(
-            tokio::sync::Mutex::new(store),
-        ))),
+        Arc::new(ProviderSessionEventHub::new(
+            Arc::new(tokio::sync::Mutex::new(store)),
+            Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+        )),
     )
 }
 

@@ -59,10 +59,6 @@ use collaboration_protocol::{
     ProviderOperationStage, ProviderReconciliationState, ProviderSessionInspectRequest,
     ProviderSettingsAcceptRequest, ProviderSettingsSetRequest, SessionId, SessionRef,
 };
-use collaboration_runtime::ProviderOperationAdmission;
-use collaboration_runtime::ProviderOperationAdmissionResult;
-use collaboration_runtime::ProviderOperationRecord;
-use collaboration_runtime::ProviderOperationStore;
 use collaboration_service::conversation_operation_snapshot as snapshot_from_record;
 use std::{
     collections::HashMap,
@@ -70,6 +66,10 @@ use std::{
     sync::{Arc, Mutex as StdMutex},
     time::Duration,
 };
+use switchboard_session_store::ProviderOperationAdmission;
+use switchboard_session_store::ProviderOperationAdmissionResult;
+use switchboard_session_store::ProviderOperationRecord;
+use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
 use tokio_util::task::TaskTracker;
 
@@ -371,7 +371,7 @@ impl ExternalProviderSupervisor {
     pub(crate) fn new_with_hub(
         bindings: Vec<ExternalProviderBinding>,
         store: Arc<Mutex<ProviderOperationStore>>,
-        hub: Option<Arc<collaboration_runtime::ProviderSessionEventHub>>,
+        hub: Option<Arc<switchboard_session_events::ProviderSessionEventHub>>,
         scratch_root: Option<PathBuf>,
     ) -> Result<Self, &'static str> {
         let clock = bindings.first().map_or_else(
@@ -384,8 +384,9 @@ impl ExternalProviderSupervisor {
         let started_at_ms = clock.utc_now().timestamp_millis();
         let queued_operations = ProviderQueueOperationRegistry::new(clock.clone());
         let owner_hub = hub.unwrap_or_else(|| {
-            Arc::new(collaboration_runtime::ProviderSessionEventHub::new(
+            Arc::new(switchboard_session_events::ProviderSessionEventHub::new(
                 Arc::clone(&store),
+                clock.clone(),
             ))
         });
         let mut runtimes = HashMap::with_capacity(bindings.len());

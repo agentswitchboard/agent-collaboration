@@ -14,9 +14,9 @@ use collaboration_protocol::{
     ProviderRuntimeIdentity, ProviderTransport, ProviderWorkingDirectory, RouterAccess, SessionId,
     SessionRef, UuidIdentity,
 };
-use collaboration_runtime::ProviderOperationAdmission;
-use collaboration_runtime::ProviderOperationStore;
 use std::{path::Path, path::PathBuf, process::Command, sync::Arc, time::Duration};
+use switchboard_session_store::ProviderOperationAdmission;
+use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;

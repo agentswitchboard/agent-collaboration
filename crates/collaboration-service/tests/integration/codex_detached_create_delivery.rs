@@ -14,7 +14,7 @@ use collaboration_service::ApplicationFixture;
 
 use collaboration_runtime::NativeControlBackend;
 use collaboration_runtime::NativeGenerationGate;
-use collaboration_runtime::ProviderOperationStore;
+use switchboard_session_store::ProviderOperationStore;
 
 use collaboration_runtime::SessionDeliveryRouter;
 

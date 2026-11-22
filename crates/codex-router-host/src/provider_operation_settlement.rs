@@ -7,9 +7,9 @@ use collaboration_protocol::{
     ProviderRequestedPolicy, ProviderSettingName, ProviderSettingsMappingStatus,
     ProviderWorkingDirectory, SessionRef,
 };
-use collaboration_runtime::ProviderOperationStore;
-use collaboration_runtime::ProviderOperationStoreError;
-use collaboration_runtime::{ProviderSessionRecord, ProviderSessionResumeInputs};
+use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_store::ProviderOperationStoreError;
+use switchboard_session_store::{ProviderSessionRecord, ProviderSessionResumeInputs};
 
 pub(crate) enum ProviderOperationCompletion {
     Success {

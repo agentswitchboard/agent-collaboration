@@ -11,14 +11,14 @@ use collaboration_protocol::{
     NativeSessionSource, NativeSessionView, ProviderRequestedPolicy, ProviderSessionListParams,
     ProviderWorkingDirectory, RouterAccess, SessionId, SessionRef,
 };
-use collaboration_runtime::ProviderOperationStore;
-use collaboration_runtime::ProviderSessionRecord;
 use route_fixture::{
     create_provider_target, deliver, load_provider_target, native_delivery_fixture,
     provider_fixture, publish_peer,
 };
 use serde_json::Value;
 use std::os::unix::fs::PermissionsExt as _;
+use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_store::ProviderSessionRecord;
 use tokio::io::{AsyncBufReadExt as _, BufReader};
 
 #[tokio::test]

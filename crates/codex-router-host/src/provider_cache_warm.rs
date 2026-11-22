@@ -137,7 +137,7 @@ impl ProviderCacheWarm {
 pub(crate) fn compose_provider_cache_warm(
     configured: Option<(EndpointRef, CacheWarmSetting)>,
     supervisor: Option<&Arc<crate::ExternalProviderSupervisor>>,
-    store: Option<&Arc<tokio::sync::Mutex<collaboration_runtime::ProviderOperationStore>>>,
+    store: Option<&Arc<tokio::sync::Mutex<switchboard_session_store::ProviderOperationStore>>>,
     clock: Arc<dyn RuntimeClock>,
 ) -> Option<Arc<ProviderCacheWarm>> {
     let (endpoint, setting) = configured?;

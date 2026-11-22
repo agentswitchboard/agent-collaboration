@@ -3,6 +3,7 @@
 use std::{collections::BTreeMap, sync::Arc};
 
 use message_board::{SessionEndpointRef, SessionRef};
+use router_clock::RuntimeClock;
 use session_event_model::{
     PendingInteraction, PendingInteractions, SessionEvent, SessionSettings, SessionState,
     TurnLostReason, TurnOutcome,
@@ -15,7 +16,7 @@ use collaboration_contracts::HubFuture;
 
 use collaboration_contracts::HubSessionSummary;
 
-use crate::ProviderOperationStore;
+use switchboard_session_store::ProviderOperationStore;
 
 use collaboration_contracts::SessionEventAttachment;
 
@@ -32,6 +33,7 @@ pub mod owner_inbox;
 
 pub struct ProviderSessionEventHub {
     store: Arc<Mutex<ProviderOperationStore>>,
+    clock: Arc<dyn RuntimeClock>,
     histories: Mutex<BTreeMap<SessionRef, Arc<Mutex<SessionHistory>>>>,
     owner_inboxes: std::sync::Mutex<BTreeMap<SessionRef, owner_inbox::HubSessionInbox>>,
     subscriber_capacity: usize,
@@ -243,17 +245,19 @@ impl ProviderSessionEventHub {
         Ok(())
     }
     #[must_use]
-    pub fn new(store: Arc<Mutex<ProviderOperationStore>>) -> Self {
-        Self::with_capacity(store, 256)
+    pub fn new(store: Arc<Mutex<ProviderOperationStore>>, clock: Arc<dyn RuntimeClock>) -> Self {
+        Self::with_capacity(store, clock, 256)
     }
 
     #[must_use]
     pub fn with_capacity(
         store: Arc<Mutex<ProviderOperationStore>>,
+        clock: Arc<dyn RuntimeClock>,
         subscriber_capacity: usize,
     ) -> Self {
         Self {
             store,
+            clock,
             histories: Mutex::new(BTreeMap::new()),
             owner_inboxes: std::sync::Mutex::default(),
             subscriber_capacity: subscriber_capacity.max(1),
@@ -292,7 +296,7 @@ impl ProviderSessionEventHub {
         let mut history = history.lock().await;
         history
             .inventory_metadata
-            .observe_activity_at(chrono::Utc::now().timestamp());
+            .observe_activity_at(self.clock.utc_now().timestamp());
         let sequence = history.next_sequence;
         let next_sequence = sequence
             .checked_add(1)

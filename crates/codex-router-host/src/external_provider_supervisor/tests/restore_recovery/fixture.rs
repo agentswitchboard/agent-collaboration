@@ -10,8 +10,10 @@ use collaboration_protocol::{
     ConversationResumeRequest, DeliveryCorrelationId, EndpointAvailability, EndpointDescription,
     MessageContent, MessageDelivery, ObservationTimestamp,
 };
-use collaboration_runtime::{EndpointDirectory, ProviderSessionEventHub, ProviderSessionRecord};
+use collaboration_runtime::EndpointDirectory;
 use router_clock::ManualClock;
+use switchboard_session_events::ProviderSessionEventHub;
+use switchboard_session_store::ProviderSessionRecord;
 
 pub(super) fn admission_pause() -> (
     AdmissionTestPause,
@@ -118,7 +120,10 @@ impl RestoreRig {
         adapter: Arc<dyn acp_client_runtime::ProviderBehavior>,
     ) -> (ExternalProviderSupervisor, Arc<ProviderSessionEventHub>) {
         let store = Arc::new(Mutex::new(self.store().await));
-        let hub = Arc::new(ProviderSessionEventHub::new(store.clone()));
+        let hub = Arc::new(ProviderSessionEventHub::new(
+            store.clone(),
+            self.clock.clone(),
+        ));
         let target: message_board::SessionRef =
             serde_json::from_value(serde_json::to_value(&self.target).expect("target JSON"))
                 .expect("hub target");

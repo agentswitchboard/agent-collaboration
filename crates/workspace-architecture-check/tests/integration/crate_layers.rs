@@ -1,7 +1,7 @@
 //! Keep normal/build adjacency downward; dev dependencies are reported separately.
 //! Uses the NonDevDependencyGraph pattern from the Host's ACP graph tests.
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use serde::Deserialize;
@@ -27,6 +27,7 @@ struct CargoMetadata {
 struct CargoPackage {
     id: String,
     name: String,
+    manifest_path: PathBuf,
     #[serde(default)]
     dependencies: Vec<ManifestDependency>,
 }
@@ -35,6 +36,7 @@ struct CargoPackage {
 struct ManifestDependency {
     name: String,
     kind: Option<DependencyKind>,
+    path: Option<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -167,6 +169,7 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
     }
     let metadata: CargoMetadata = serde_json::from_slice(&output.stdout)?;
     test_support_policy::check_workspace(&metadata.packages, &metadata.workspace_members)?;
+    workspace_boundaries::check_declared_session_owner_edges(&metadata)?;
     let graph = NonDevDependencyGraph::from_metadata(metadata);
     for (source, destinations) in &graph.dev_edges {
         if !graph.workspace_members.contains(source) {
@@ -207,6 +210,9 @@ fn fixture_graph(
         ("runtime", "collaboration-runtime"),
         ("service", "collaboration-service"),
         ("host", "codex-router-host"),
+        ("mcp", "collaboration-mcp"),
+        ("session-store", "switchboard-session-store"),
+        ("session-events", "switchboard-session-events"),
         ("router-clock", "router-clock"),
         ("fleet-ports", "fleet-runtime-ports"),
         ("fleet-contracts", "fleet-contracts"),
@@ -223,6 +229,7 @@ fn fixture_graph(
     .map(|(id, name)| CargoPackage {
         id: id.to_owned(),
         name: name.to_owned(),
+        manifest_path: PathBuf::from(format!("/workspace/{id}/Cargo.toml")),
         dependencies: Vec::new(),
     })
     .collect();
@@ -243,6 +250,111 @@ fn fixture_graph(
             }],
         },
     })
+}
+
+#[test]
+fn session_owner_packages_reject_unlisted_workspace_edges() {
+    let cases = [
+        (
+            "session-store",
+            "runtime",
+            DependencyKind::Normal,
+            "BD1: forbidden Normal dependency switchboard-session-store -> collaboration-runtime",
+        ),
+        (
+            "session-store",
+            "mcp",
+            DependencyKind::Build,
+            "BD1: forbidden Build dependency switchboard-session-store -> collaboration-mcp",
+        ),
+        (
+            "session-events",
+            "host",
+            DependencyKind::Build,
+            "BD1: forbidden Build dependency switchboard-session-events -> codex-router-host",
+        ),
+        (
+            "session-events",
+            "mcp",
+            DependencyKind::Normal,
+            "BD1: forbidden Normal dependency switchboard-session-events -> collaboration-mcp",
+        ),
+    ];
+    let mut observed = Vec::new();
+    for (source, destination, kind, _) in cases {
+        let graph = fixture_graph(source, destination, vec![Some(kind)]);
+        observed.push(
+            workspace_boundaries::check_boundaries(&graph)
+                .err()
+                .map(|error| error.to_string()),
+        );
+    }
+    assert_eq!(
+        observed,
+        cases.map(|(_, _, _, message)| Some(message.to_owned()))
+    );
+}
+
+#[test]
+fn session_owner_policy_covers_inactive_optional_declarations() {
+    for (kind, expected) in [
+        (
+            None,
+            Some("BD1: forbidden Normal dependency switchboard-session-store -> router-clock"),
+        ),
+        (
+            Some("build"),
+            Some("BD1: forbidden Build dependency switchboard-session-store -> router-clock"),
+        ),
+        (Some("dev"), None),
+    ] {
+        let optional = kind != Some("dev");
+        let features = if optional {
+            serde_json::json!({"default": [], "probe": ["dep:clock-alias"]})
+        } else {
+            serde_json::json!({"default": []})
+        };
+        let resolved = if optional {
+            serde_json::json!([])
+        } else {
+            serde_json::json!([{"pkg": "clock", "dep_kinds": [{"kind": "dev"}]}])
+        };
+        let metadata: CargoMetadata = serde_json::from_value(serde_json::json!({
+            "packages": [
+                {
+                    "id": "store",
+                    "name": "switchboard-session-store",
+                    "manifest_path": "/workspace/store/Cargo.toml",
+                    "features": features,
+                    "dependencies": [{
+                        "name": "router-clock",
+                        "rename": "clock-alias",
+                        "kind": kind,
+                        "optional": optional,
+                        "path": "/workspace/clock"
+                    }]
+                },
+                {
+                    "id": "events",
+                    "name": "switchboard-session-events",
+                    "manifest_path": "/workspace/events/Cargo.toml"
+                },
+                {
+                    "id": "clock",
+                    "name": "router-clock",
+                    "manifest_path": "/workspace/clock/Cargo.toml"
+                }
+            ],
+            "workspace_members": ["store", "events", "clock"],
+            "resolve": {"nodes": [{"id": "store", "deps": resolved}]}
+        }))
+        .expect("default-feature Cargo metadata with the optional dependency inactive");
+
+        let observed = workspace_boundaries::check_declared_session_owner_edges(&metadata)
+            .err()
+            .map(|error| error.to_string());
+        assert_eq!(observed.as_deref(), expected, "declared kind {kind:?}");
+    }
 }
 
 #[test]

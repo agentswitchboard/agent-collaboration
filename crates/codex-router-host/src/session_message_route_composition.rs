@@ -5,9 +5,9 @@ use collaboration_contracts::SessionDeliveryRoute;
 use collaboration_protocol::{EndpointId, EndpointRef};
 use collaboration_runtime::EndpointDirectory;
 use collaboration_runtime::NativeControlBackend;
-use collaboration_runtime::ProviderOperationStore;
 use collaboration_runtime::SessionDeliveryRouter;
 use std::{collections::HashSet, io, path::PathBuf, sync::Arc};
+use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
 
 pub(crate) struct SessionMessageRouteComposition {

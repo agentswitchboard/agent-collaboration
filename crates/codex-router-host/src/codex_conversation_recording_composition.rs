@@ -2,9 +2,9 @@
 use codex_acp_adapter::ConversationOperationRecorder;
 use collaboration_protocol::{EndpointId, EndpointRef, NonEmptyText, UuidIdentity};
 use collaboration_runtime::CodexConversationOperationRecorder;
-use collaboration_runtime::ProviderOperationStore;
 use collaboration_runtime::UnavailableConversationOperationRecorder;
 use std::{io, path::Path, sync::Arc};
+use switchboard_session_store::ProviderOperationStore;
 
 pub(crate) fn recording_for_store(
     store: Option<&Arc<tokio::sync::Mutex<ProviderOperationStore>>>,

@@ -5,8 +5,8 @@
 use super::{BindingSessionSetup, restore_setup};
 use crate::provider_work_roots::{AskOutsideHook, ProviderWorkRoots, WorkRootsHook};
 use collaboration_protocol::ProviderWorkingDirectory;
-use collaboration_runtime::ProviderSessionResumeInputs;
 use std::path::{Path, PathBuf};
+use switchboard_session_store::ProviderSessionResumeInputs;
 
 fn folder(path: &Path) -> ProviderWorkingDirectory {
     ProviderWorkingDirectory::try_from(path.display().to_string()).expect("absolute folder")

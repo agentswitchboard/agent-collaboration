@@ -12,9 +12,7 @@ use collaboration_protocol::{
     ProviderCapabilityStatus, ProviderKind, ProviderOperationEffect, ProviderOperationKind,
     ProviderReconciliationState, ProviderRuntimeIdentity, ProviderTransport, UuidIdentity,
 };
-use collaboration_runtime::{
-    LoopSnapshot, ProviderOperationAdmission, ProviderOperationStore, WorkerObservation,
-};
+use collaboration_runtime::{LoopSnapshot, WorkerObservation};
 use router_clock::{ManualClock, RuntimeClock};
 use runtime_primitives::{Clock, SyncTime};
 use sqlx::Connection;
@@ -23,6 +21,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, Mutex as StdMutex},
 };
+use switchboard_session_store::{ProviderOperationAdmission, ProviderOperationStore};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
 use tracing_subscriber::{Layer, layer::SubscriberExt};

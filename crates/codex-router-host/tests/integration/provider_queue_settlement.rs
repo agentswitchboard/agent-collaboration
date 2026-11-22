@@ -19,8 +19,8 @@ use collaboration_protocol::{
     ProviderOperationStage, ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess,
     SessionId, SessionRef,
 };
-use collaboration_runtime::{ProviderOperationStore, ProviderSessionRecord};
 use std::sync::Arc;
+use switchboard_session_store::{ProviderOperationStore, ProviderSessionRecord};
 use tokio::sync::Mutex;
 
 fn prompt_request(
