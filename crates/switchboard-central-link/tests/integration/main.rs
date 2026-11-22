@@ -221,10 +221,11 @@ async fn renewal_extends_the_same_socket_in_elapsed_time_and_shutdown_closes() {
     let result = central_link_protocol::encode_text(&answer, FrameDirection::ToRouter).unwrap();
     socket.send(Message::Text(result.into())).await.unwrap();
     socket.send(Message::Text(r#"{"kind":"deliver","timeLeft":1,"sender":{"kind":"central"},"message":{"messageId":"01890f2e-7b4c-7cc0-98c4-000000000009","sender":{"kind":"central"},"target":{"machineId":"01890f2e-7b4c-7cc0-98c4-000000000002","sessionId":"s"},"body":{"kind":"direct","body":"hello","delivery":"auto","replyTo":null},"state":{"kind":"queued"},"source":null}}"#.into())).await.unwrap();
-    assert!(matches!(
-        fixture.inbox_events.recv().await,
-        Some(central_link_client::ClientEvent::Deliver { .. })
-    ));
+    tokio::select! {
+        event = fixture.inbox_events.recv() => assert!(matches!(event, Some(central_link_client::ClientEvent::Deliver { .. }))),
+        status = fixture.status.wait_for(|status| !matches!(status, LinkStatus::Welcomed { .. })) =>
+            assert!(status.is_err(), "renewal must keep the original socket open for Deliver"),
+    }
     // TCP ordering puts the renewal response before any later inbound text.
     socket.send(Message::Text("pong".into())).await.unwrap();
     fixture.clock.advance(Duration::from_secs(61)).unwrap();
@@ -311,18 +312,18 @@ async fn two_http_unauthorized_answers_request_one_newer_lease_then_fault() {
             assert_eq!(fixture.acquired.recv().await, Some(Some(LeaseVersion(1))));
         }
     }
-    fixture
+    let fault = fixture
         .status
-        .wait_for(|state| {
-            matches!(
-                state,
-                LinkStatus::Fault {
-                    kind: central_link_client::LinkFault::FreshCredentialRefused
-                }
-            )
-        })
+        .wait_for(|state| matches!(state, LinkStatus::Fault { .. }))
         .await
         .unwrap();
+    assert_eq!(
+        *fault,
+        LinkStatus::Fault {
+            kind: central_link_client::LinkFault::FreshCredentialRefused
+        }
+    );
+    drop(fault);
     assert!(fixture.acquired.try_recv().is_err() && fixture.ended.try_recv().is_err());
     fixture.stop().await;
 }
@@ -349,7 +350,14 @@ async fn withheld_welcome_uses_one_elapsed_window_then_redials() {
     let mut fixture = Fixture::new().await;
     let mut socket = fixture.accept().await;
     assert_eq!(fixture.acquired.recv().await, Some(None));
-    fixture.clock.not_due_check_now(tick(10)).await;
+    let actual_limit = tokio::select! {
+        () = fixture.clock.not_due_check_now(tick(10)) => 10,
+        () = fixture.clock.not_due_check_now(tick(9)) => 9,
+    };
+    assert_eq!(
+        actual_limit, 10,
+        "the dial must get its complete Welcome window"
+    );
     fixture.clock.advance(Duration::from_secs(9)).unwrap();
     assert!(socket.next().now_or_never().is_none());
     fixture.clock.advance(Duration::from_secs(1)).unwrap();
@@ -425,18 +433,18 @@ async fn busy_retries_and_bad_address_parks_with_no_final_enrollment_effect() {
             fixture.clock.advance(Duration::from_secs(1)).unwrap();
         }
     }
-    fixture
+    let fault = fixture
         .status
-        .wait_for(|state| {
-            matches!(
-                state,
-                LinkStatus::Fault {
-                    kind: LinkFault::MalformedAddress
-                }
-            )
-        })
+        .wait_for(|state| matches!(state, LinkStatus::Fault { .. }))
         .await
         .unwrap();
+    assert_eq!(
+        *fault,
+        LinkStatus::Fault {
+            kind: LinkFault::MalformedAddress
+        }
+    );
+    drop(fault);
     assert!(fixture.ended.try_recv().is_err());
     fixture.stop().await;
 }
