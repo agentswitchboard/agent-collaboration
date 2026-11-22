@@ -255,6 +255,11 @@ fn fixture_metadata(
         ("router-clock", "router-clock"),
         ("fleet-ports", "fleet-runtime-ports"),
         ("fleet-contracts", "fleet-contracts"),
+        (
+            "approval-protocol",
+            workspace_boundaries::APPROVAL_REQUEST_PROTOCOL,
+        ),
+        ("workspace-ids", "workspace-ids"),
         ("fleet-runtime", "fleet-runtime"),
         ("fleet-signin", "fleet-signin"),
         ("central-core", "collaboration-central-core"),
@@ -290,6 +295,31 @@ fn fixture_metadata(
             }],
         },
     }
+}
+
+#[test]
+fn approval_protocol_is_a_leaf_above_workspace_identity() {
+    for (source, destination) in [
+        ("fleet-contracts", "approval-protocol"),
+        ("approval-protocol", "workspace-ids"),
+    ] {
+        let approved = fixture_graph(source, destination, vec![Some(DependencyKind::Normal)]);
+        assert!(approved.check_policy().is_ok());
+        assert!(workspace_boundaries::check_boundaries(&approved).is_ok());
+    }
+    let runtime_edge = fixture_graph(
+        "approval-protocol",
+        "fleet-runtime",
+        vec![Some(DependencyKind::Normal)],
+    );
+    assert!(runtime_edge.check_policy().is_err());
+    assert_eq!(
+        workspace_boundaries::check_boundaries(&runtime_edge)
+            .err()
+            .map(|error| error.to_string())
+            .as_deref(),
+        Some("BD1: forbidden Normal dependency approval-request-protocol -> fleet-runtime")
+    );
 }
 
 #[test]

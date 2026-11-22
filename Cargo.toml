@@ -1,6 +1,7 @@
 [workspace]
 resolver = "3"
 members = [
+    "crates/approval-request-protocol",
     "crates/central-link-protocol",
     "crates/central-link-client",
     "crates/switchboard-central-link",
@@ -20,6 +21,7 @@ members = [
     "crates/fleet-engine",
     "crates/fleet-lent-transaction",
     "crates/fleet-mail",
+    "crates/fleet-approvals",
     "crates/fleet-notices",
     "crates/fleet-wakes",
     "crates/fleet-schedules",
@@ -98,6 +100,7 @@ license = "MIT OR Apache-2.0"
 publish = false
 
 [workspace.dependencies]
+approval-request-protocol = { path = "crates/approval-request-protocol", version = "0.1.158" }
 switchboard-harness-shared-mechanics = { path = "crates/switchboard-harness-shared-mechanics", version = "0.1.158" }
 switchboard-harness-contracts = { path = "crates/switchboard-harness-contracts", version = "0.1.158" }
 central-link-protocol = { path = "crates/central-link-protocol", version = "0.1.153" }
@@ -119,6 +122,7 @@ fleet-runtime = { path = "crates/fleet-runtime", version = "0.1.156" }
 fleet-engine = { path = "crates/fleet-engine", version = "0.1.156" }
 fleet-lent-transaction = { path = "crates/fleet-lent-transaction", version = "0.1.157" }
 fleet-mail = { path = "crates/fleet-mail", version = "0.1.156" }
+fleet-approvals = { path = "crates/fleet-approvals", version = "0.1.158" }
 fleet-notices = { path = "crates/fleet-notices", version = "0.1.156" }
 fleet-wakes = { path = "crates/fleet-wakes", version = "0.1.156" }
 fleet-schedules = { path = "crates/fleet-schedules", version = "0.1.156" }

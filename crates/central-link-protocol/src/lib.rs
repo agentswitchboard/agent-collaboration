@@ -1,4 +1,6 @@
 //! The closed Router–central wire vocabulary, without a runtime or storage driver.
+pub mod approval_rpc;
+mod correlation_id;
 mod link_close;
 mod link_codec;
 mod link_delivery;
@@ -17,8 +19,9 @@ pub use link_typed_calls::{
 pub use request_status::{RequestRefusal, RequestStatusAnswer, RequestStatusQuery};
 pub use typed_call_correlations::{MAX_PENDING_TYPED_CALLS, TypedCallCorrelations};
 
+pub use correlation_id::CorrelationId;
 pub use link_close::MachineLinkCloseCode;
-pub use link_codec::{DataFrame, FrameDirection, LinkFrame, decode_text, encode_text};
+pub use link_codec::{DataFrame, LinkFrame, decode_text, encode_text};
 pub use link_delivery::{
     DeliveryMessage, DirectOfferBody, DirectOfferMessage, MAX_RECEIPTS, MAX_TIME_LEFT_MS, Receipt,
     ReceiptBatch, ReceiptKind, ReceiptResult, TimeLeft,
@@ -27,9 +30,16 @@ pub use link_renewal::{
     InvalidMachineToken, MachineTokenText, TokenRenewalRefusal, TokenRenewalResult,
 };
 pub use link_request::{
-    CorrelationId, LinkRequest, LinkRequestBatch, MAX_LINK_REQUEST_BATCH_SIZE, ReplyPayload,
-    RequestPayload, RequestScope,
+    LinkRequest, LinkRequestBatch, MAX_LINK_REQUEST_BATCH_SIZE, ReplyPayload, RequestPayload,
+    RequestScope,
 };
+
+/// The receiving end of a machine-link frame.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FrameDirection {
+    ToCentral,
+    ToRouter,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum ProtocolError {

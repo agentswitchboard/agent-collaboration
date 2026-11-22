@@ -1,5 +1,8 @@
 //! Registered RPC calls carried by an authenticated machine connection.
-use crate::{CorrelationId, FrameDirection, MachineLinkCloseCode};
+use crate::{
+    CorrelationId, FrameDirection, MachineLinkCloseCode,
+    approval_rpc::{DeliverEndingRpc, RaiseApprovalRpc, RegisterRunRpc, StopApprovalRpc},
+};
 use fleet_rpc::{Envelope, Rpc};
 use serde::{
     Deserialize, Deserializer, Serialize,
@@ -30,8 +33,24 @@ pub enum TypedCallResult<Reply> {
 }
 
 mod registration {
+    use super::{CentralCall, CentralCallReply, Envelope, MacCall, MacCallReply, Rpc};
+
+    pub trait Binding<Marker: Rpc>: Sized {
+        type ReplyFrame;
+
+        fn wrap_request(envelope: Envelope<Marker::Target, Marker::Request>) -> Self;
+        fn wrap_reply(envelope: Envelope<Marker::Target, Marker::Reply>) -> Self::ReplyFrame;
+        fn take_reply(reply: Self::ReplyFrame) -> Option<Envelope<Marker::Target, Marker::Reply>>;
+    }
+
     pub trait Central {}
+    impl<Marker: Rpc> Central for Marker where
+        CentralCall: Binding<Marker, ReplyFrame = CentralCallReply>
+    {
+    }
+
     pub trait Mac {}
+    impl<Marker: Rpc> Mac for Marker where MacCall: Binding<Marker, ReplyFrame = MacCallReply> {}
 }
 
 /// A marker explicitly registered for calls from a Mac to Central.
@@ -62,7 +81,7 @@ pub trait MacLinkRpc: Rpc + registration::Mac {
 }
 
 macro_rules! register_calls {
-    ($request:ident, $reply:ident, $protocol:ident, $seal:ident; $(
+    ($request:ident, $reply:ident, $protocol:ident; $(
         $(#[$condition:meta])* $name:literal => $variant:ident($marker:path)
     ),* $(,)?) => {
         #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -92,26 +111,43 @@ macro_rules! register_calls {
             }
         }
 
+        impl<Marker: Rpc> $protocol for Marker
+        where
+            $request: registration::Binding<Marker, ReplyFrame = $reply>,
+        {
+            fn request(envelope: Envelope<Marker::Target, Marker::Request>) -> $request {
+                < $request as registration::Binding<Marker> >::wrap_request(envelope)
+            }
+
+            fn reply(envelope: Envelope<Marker::Target, Marker::Reply>) -> $reply {
+                < $request as registration::Binding<Marker> >::wrap_reply(envelope)
+            }
+
+            fn take_reply(reply: $reply) -> Option<Envelope<Marker::Target, Marker::Reply>> {
+                < $request as registration::Binding<Marker> >::take_reply(reply)
+            }
+        }
+
         $(
             $(#[$condition])*
-            impl registration::$seal for $marker {}
-            $(#[$condition])*
-            impl $protocol for $marker {
-                fn request(envelope: Envelope<Self::Target, Self::Request>) -> $request {
+            impl registration::Binding<$marker> for $request {
+                type ReplyFrame = $reply;
+
+                fn wrap_request(envelope: Envelope<<$marker as Rpc>::Target, <$marker as Rpc>::Request>) -> Self {
                     $request::$variant(envelope)
                 }
 
-                fn reply(envelope: Envelope<Self::Target, Self::Reply>) -> $reply {
+                fn wrap_reply(envelope: Envelope<<$marker as Rpc>::Target, <$marker as Rpc>::Reply>) -> $reply {
                     $reply::$variant(envelope)
                 }
 
-                #[expect(clippy::allow_attributes, reason = "the generated fallback is required when a registry has a second marker")]
+                #[expect(clippy::allow_attributes, reason = "the fallback is generated for all registry sizes")]
                 #[allow(
                     unreachable_patterns,
                     clippy::match_wildcard_for_single_variants,
-                    reason = "one marker currently ships in the test registry; other registered replies must remain distinct"
+                    reason = "the registry generates a shared projection for one or many reply variants"
                 )]
-                fn take_reply(reply: $reply) -> Option<Envelope<Self::Target, Self::Reply>> {
+                fn take_reply(reply: $reply) -> Option<Envelope<<$marker as Rpc>::Target, <$marker as Rpc>::Reply>> {
                     match reply {
                         $reply::$variant(envelope) => Some(envelope),
                         _ => None,
@@ -123,12 +159,16 @@ macro_rules! register_calls {
 }
 
 register_calls! {
-    CentralCall, CentralCallReply, CentralLinkRpc, Central;
+    CentralCall, CentralCallReply, CentralLinkRpc;
+    "registerRun" => RegisterRun(RegisterRunRpc),
+    "raise" => Raise(RaiseApprovalRpc),
+    "stop" => Stop(StopApprovalRpc),
     #[cfg(any(test, feature = "test-support"))] "centralProbe" => CentralProbe(test_calls::CentralProbe),
 }
 
 register_calls! {
-    MacCall, MacCallReply, MacLinkRpc, Mac;
+    MacCall, MacCallReply, MacLinkRpc;
+    "deliverEnding" => DeliverEnding(DeliverEndingRpc),
     #[cfg(any(test, feature = "test-support"))] "macProbe" => MacProbe(test_calls::MacProbe),
 }
 

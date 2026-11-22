@@ -16,8 +16,9 @@ use workspace_package_tree_policy::{
 #[path = "job_layer_tests.rs"]
 mod job_layer_tests;
 
-pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 3] = [
+pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 5] = [
     (FLEET_RPC, &[]),
+    (APPROVAL_REQUEST_PROTOCOL, &["workspace-ids"]),
     (
         "fleet-runtime-ports",
         &["central-engine-model", "central-storage", "workspace-ids"],
@@ -25,6 +26,7 @@ pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 3] = [
     (
         "fleet-contracts",
         &[
+            APPROVAL_REQUEST_PROTOCOL,
             "central-engine-model",
             "central-link-protocol",
             "central-storage",
@@ -36,9 +38,19 @@ pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 3] = [
             "workspace-model",
         ],
     ),
+    (
+        "fleet-approvals",
+        &[
+            "approval-request-protocol",
+            "central-engine-model",
+            "fleet-identity-protocol",
+            "workspace-ids",
+        ],
+    ),
 ];
 pub(super) const LENT_TRANSACTION: &str = "fleet-lent-transaction";
 const FLEET_RPC: &str = "fleet-rpc";
+pub(super) const APPROVAL_REQUEST_PROTOCOL: &str = "approval-request-protocol";
 const WORKSPACE_SERVICE: &str = "fleet-workspace-service";
 const CENTRAL_CORE: &str = "collaboration-central-core";
 const CENTRAL_WORKER: &str = "collaboration-central-cloudflare";
@@ -171,7 +183,13 @@ const PURE_CRATES: [(&str, &[&str]); 8] = [
     ),
     (
         "central-link-protocol",
-        &["fleet-rpc", "workspace-ids", "workspace-model"],
+        &[
+            "approval-request-protocol",
+            "fleet-identity-protocol",
+            "fleet-rpc",
+            "workspace-ids",
+            "workspace-model",
+        ],
     ),
     ("central-storage", &[]),
     ("state-machine-core", &[]),
@@ -276,6 +294,23 @@ pub(super) fn check_boundaries(
         }
         check_workspace_driver_edges(graph, source)?;
     }
+    check_job_reachability(
+        graph,
+        "central-link-protocol",
+        &[
+            "fleet-contracts",
+            "central-storage",
+            "central-engine-model",
+            "fleet-engine",
+            "fleet-runtime",
+            "fleet-runtime-ports",
+            "fleet-storage-schema",
+            "fleet-store-sqlx",
+            CENTRAL_CORE,
+            CENTRAL_WORKER,
+            "collaboration-central-tokio",
+        ],
+    )?;
     check_resolved_session_read_dev_edges(graph)?;
     check_closed_workspace_edges(
         graph,
@@ -691,6 +726,30 @@ fn fleet_package_tree_rejects_an_indirect_wasm_worker_dependency() {
                 "{package} dependency tree for wasm32-unknown-unknown: BD2: pure rules transitively reach worker"
             )
         );
+    }
+}
+
+#[test]
+fn the_machine_link_rejects_contract_storage_and_engine_dependencies_through_a_leaf() {
+    for kind in [DependencyKind::Normal, DependencyKind::Build] {
+        for forbidden in [
+            "fleet-contracts",
+            "central-storage",
+            "central-engine-model",
+            FLEET_ENGINE,
+        ] {
+            let dependencies = graph(&[
+                ("central-link-protocol", "workspace-model", kind),
+                ("workspace-model", "message-board", kind),
+                ("message-board", forbidden, kind),
+            ]);
+            let observed =
+                check_boundaries(&dependencies).expect_err("link reaches a Central owner");
+            assert_eq!(
+                observed.to_string(),
+                format!("BD1: forbidden reachable dependency central-link-protocol -> {forbidden}")
+            );
+        }
     }
 }
 

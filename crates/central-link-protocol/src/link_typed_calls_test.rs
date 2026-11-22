@@ -205,3 +205,123 @@ fn typed_reply_wrappers_reject_unknown_fields_tags_and_positional_arrays() {
         );
     }
 }
+
+#[test]
+fn registered_approval_call_and_reply_frames_keep_closed_concrete_schemas() {
+    let schema = serde_json::to_value(schemars::schema_for!(DataFrame)).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    let service = json!({"organizationId": CORRELATION});
+    let holder = json!({
+        "organizationId": CORRELATION, "machineId": MACHINE,
+        "enrollmentId":"019f0000-0000-7000-8000-000000000003",
+        "routerRun": "019f0000-0000-7000-8000-000000000004"
+    });
+    let run = &holder["routerRun"];
+    let digest = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
+    let specimens = [
+        (
+            FrameDirection::ToCentral,
+            "callCentral",
+            "registerRun",
+            &service,
+            json!({"routerRun": run}),
+            json!({"kind":"registered"}),
+        ),
+        (
+            FrameDirection::ToCentral,
+            "callCentral",
+            "raise",
+            &service,
+            json!({"kind":"providerQuestion","requestId":CORRELATION,
+                   "holder":{"sessionId":MACHINE,"routerRun":run},
+                   "offer":{"prompt":"Choose a region","fields":[{"kind":"text","fieldId":1,
+                     "label":"Region","description":null,"required":true}]}}),
+            json!({"kind":"receipt","receipt":{"requestId":CORRELATION,
+                   "window":{"raisedAt":"2030-03-17T17:46:40Z","deadline":"2030-03-17T18:46:40Z"}}}),
+        ),
+        (
+            FrameDirection::ToCentral,
+            "callCentral",
+            "stop",
+            &service,
+            json!({"kind":"provider","requestId":CORRELATION,"routerRun":run,
+                   "contentsDigest":digest,"cause":"turnStopped"}),
+            json!({"kind":"stands","ending":{"kind":"timedOut"}}),
+        ),
+        (
+            FrameDirection::ToRouter,
+            "callMac",
+            "deliverEnding",
+            &holder,
+            json!({"requestId":CORRELATION,"contentsDigest":digest,
+                   "ending":{"kind":"providerApproval","ending":{"kind":"timedOut"}}}),
+            json!({"kind":"received"}),
+        ),
+    ];
+    for (direction, frame_kind, call, target, request, reply) in specimens {
+        let (reply_direction, reply_kind) = match direction {
+            FrameDirection::ToCentral => (FrameDirection::ToRouter, "centralCallReply"),
+            FrameDirection::ToRouter => (FrameDirection::ToCentral, "macCallReply"),
+        };
+        let request_wire = json!({
+            "kind":frame_kind, "correlationId":CORRELATION,
+            "request":{"call":call,"envelope":{"target":target,"body":request}}
+        });
+        let reply_wire = json!({
+            "kind":reply_kind, "correlationId":CORRELATION,
+            "result":{"kind":"answered","reply":{"call":call,"envelope":{"target":target,"body":reply}}}
+        });
+        for (wire, frame_direction, envelope) in [
+            (request_wire, direction, "/request/envelope"),
+            (reply_wire, reply_direction, "/result/reply/envelope"),
+        ] {
+            assert_round_trip(&validator, &wire, frame_direction);
+            assert_rejects_open_envelope(&validator, &wire, frame_direction, envelope);
+        }
+    }
+
+    for call in ["decide", "passOn"] {
+        let unregistered = json!({
+            "kind":"callCentral","correlationId":CORRELATION,
+            "request":{"call":call,"envelope":{"target":service,"body":{}}}
+        });
+        assert!(!validator.is_valid(&unregistered));
+        assert!(matches!(
+            decode_text(&unregistered.to_string(), FrameDirection::ToCentral),
+            Err(ProtocolError::UnknownTypedCall { .. })
+        ));
+    }
+}
+
+fn assert_round_trip(validator: &jsonschema::Validator, wire: &Value, direction: FrameDirection) {
+    assert!(validator.is_valid(wire), "schema rejected {wire}");
+    let frame = decode_text(&wire.to_string(), direction).unwrap();
+    let encoded = encode_text(&frame, direction).unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&encoded).unwrap(), *wire);
+}
+
+fn assert_rejects_open_envelope(
+    validator: &jsonschema::Validator,
+    wire: &Value,
+    direction: FrameDirection,
+    envelope: &str,
+) {
+    for invalid_field in ["target", "body"] {
+        let mut invalid = wire.clone();
+        invalid.pointer_mut(envelope).unwrap()[invalid_field] = json!(["not a named record"]);
+        assert!(!validator.is_valid(&invalid), "schema admitted {invalid}");
+        assert!(decode_text(&invalid.to_string(), direction).is_err());
+    }
+}
+
+#[test]
+fn the_link_registers_only_the_four_machine_approval_calls() {
+    use crate::{CentralLinkRpc, MacLinkRpc};
+    fn to_central<Call: CentralLinkRpc>() {}
+    fn to_mac<Call: MacLinkRpc>() {}
+
+    to_central::<RegisterRunRpc>();
+    to_central::<RaiseApprovalRpc>();
+    to_central::<StopApprovalRpc>();
+    to_mac::<DeliverEndingRpc>();
+}

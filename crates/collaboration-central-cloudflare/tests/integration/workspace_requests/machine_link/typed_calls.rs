@@ -284,7 +284,9 @@ async fn mac_call(socket: &mut WebSocket) -> Result<(CorrelationId, u32)> {
     else {
         return Err(format!("expected typed Mac call, got {frame:?}").into());
     };
-    let MacCall::MacProbe(envelope) = *request;
+    let MacCall::MacProbe(envelope) = *request else {
+        return Err("expected the registered Mac probe call".into());
+    };
     assert_eq!(envelope.target.as_str(), MACHINE_ID);
     Ok((correlation_id, envelope.body.sequence))
 }

@@ -311,11 +311,11 @@ impl TokioWorkspaceHost {
             .parse()
             .map_err(|_| CallFailure::NeverReached)?;
         let target = request.target.clone();
-        let pending = self.push_registry.queue_call(
+        let pending = self.push_registry.queue_call::<R>(
             organization,
             machine,
             correlation,
-            R::request(request),
+            request,
             deadline,
         )?;
         finish_mac_call::<R>(&target, pending.wait(self.clock.as_ref()).await?)

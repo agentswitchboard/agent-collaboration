@@ -1,6 +1,7 @@
 //! Shared vocabulary and interfaces for FleetRuntime features.
 #![forbid(unsafe_code)]
 
+pub mod approval_rpc;
 mod central_observation;
 mod client_id;
 mod engine_attempts;
