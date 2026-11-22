@@ -10,7 +10,11 @@ use std::{
     num::NonZeroUsize,
     sync::Arc,
 };
-use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot, watch};
+use switchboard_harness_contracts::WriterState;
+use switchboard_harness_shared_mechanics::{
+    CarrierReceiver, CarrierReply, CarrierSender, reply_carrier,
+};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
@@ -79,35 +83,31 @@ impl SessionOwnerHandle {
     }
 }
 
-struct Completion {
-    event: OwnerMailboxEvent,
-    stream_credit: Option<OwnedSemaphorePermit>,
-}
-
 #[derive(Clone)]
 pub struct OwnerCompletionPort {
-    channel: mpsc::Sender<Completion>,
-    stream_credits: Arc<Semaphore>,
+    carrier: CarrierSender<OwnerAddress, OwnerEvent>,
 }
 
 pub struct OwnerCompletion {
-    address: OwnerAddress,
-    permit: mpsc::OwnedPermit<Completion>,
+    reply: CarrierReply<OwnerAddress, OwnerEvent>,
 }
+
+const _: fn() = {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<OwnerCompletion>
+};
 
 impl OwnerCompletionPort {
     /// Reserve before offering external work. Completion then needs neither
     /// spare mailbox space nor an await, even if the business mailbox is full.
     pub fn reserve(&self, address: OwnerAddress) -> Result<OwnerCompletion, OwnerTaskError> {
-        let permit = self
-            .channel
-            .clone()
-            .try_reserve_owned()
-            .map_err(|error| match error {
-                mpsc::error::TrySendError::Full(_) => OwnerTaskError::CompletionCapacity,
-                mpsc::error::TrySendError::Closed(_) => OwnerTaskError::ExecutorStopped,
-            })?;
-        Ok(OwnerCompletion { address, permit })
+        self.carrier
+            .reserve_inline(address)
+            .map(|reply| OwnerCompletion { reply })
+            .map_err(|reason| match reason {
+                WriterState::Full => OwnerTaskError::CompletionCapacity,
+                WriterState::Stopped => OwnerTaskError::ExecutorStopped,
+            })
     }
 
     /// A run's SDK reader can yield for its own completion channel and stop
@@ -118,43 +118,16 @@ impl OwnerCompletionPort {
         event: OwnerEvent,
         retired: &CancellationToken,
     ) -> Result<(), OwnerTaskError> {
-        let send = async {
-            // Keep stream updates in the same order as completed effects.
-            // Their own budget leaves capacity for new effect receipts.
-            let credit = self
-                .stream_credits
-                .clone()
-                .acquire_owned()
-                .await
-                .map_err(|_| OwnerTaskError::ExecutorStopped)?;
-            self.channel
-                .send(Completion {
-                    event: OwnerMailboxEvent {
-                        owner: address,
-                        event,
-                    },
-                    stream_credit: Some(credit),
-                })
-                .await
-                .map_err(|_| OwnerTaskError::ExecutorStopped)
-        };
-        tokio::select! {
-            biased;
-            () = retired.cancelled() => Err(OwnerTaskError::ExecutorStopped),
-            result = send => result
-        }
+        self.carrier
+            .send_stream(address, event, retired, std::convert::identity)
+            .await
+            .map_err(|_| OwnerTaskError::ExecutorStopped)
     }
 }
 
 impl OwnerCompletion {
     pub fn send(self, event: OwnerEvent) {
-        self.permit.send(Completion {
-            event: OwnerMailboxEvent {
-                owner: self.address,
-                event,
-            },
-            stream_credit: None,
-        });
+        self.reply.send(event);
     }
 }
 
@@ -238,7 +211,7 @@ pub struct SessionOwnerTask {
     machine: SessionOwnerMachine,
     commands: mpsc::Receiver<Submission>,
     completion_port: OwnerCompletionPort,
-    completions: mpsc::Receiver<Completion>,
+    completions: CarrierReceiver<OwnerAddress, OwnerEvent>,
     snapshots: watch::Sender<SessionSnapshot>,
     deadlines: BTreeMap<ClockInstant, VecDeque<ArmedDeadline>>,
     clock: Arc<dyn RuntimeClock>,
@@ -253,11 +226,8 @@ impl SessionOwnerTask {
     ) -> (Self, SessionOwnerHandle) {
         let machine = SessionOwnerMachine::new(address);
         let (commands, command_rx) = mpsc::channel(mailbox_capacity.get());
-        let (completion_tx, completions) = mpsc::channel(completion_capacity.get());
-        let completion_port = OwnerCompletionPort {
-            channel: completion_tx,
-            stream_credits: Arc::new(Semaphore::new((completion_capacity.get() / 2).max(1))),
-        };
+        let (carrier, completions) = reply_carrier(completion_capacity);
+        let completion_port = OwnerCompletionPort { carrier };
         let (snapshots, snapshot_rx) = watch::channel(machine.snapshot());
         let task = Self {
             machine,
@@ -296,9 +266,10 @@ impl SessionOwnerTask {
                         }, None, &mut ports)?;
                     }
                 }
-                Some(Completion { event, stream_credit }) = self.completions.recv() => {
-                    self.process(event, None, &mut ports)?;
-                    drop(stream_credit);
+                Some(message) = self.completions.recv() => {
+                    message.process(|owner, event| {
+                        self.process(OwnerMailboxEvent { owner, event }, None, &mut ports)
+                    })?;
                 }
                 submission = self.commands.recv(), if accepting_commands => {
                     if let Some(Submission { address, command, accepted }) = submission {
@@ -407,3 +378,7 @@ async fn wait_for_deadline(clock: &dyn RuntimeClock, at: Option<ClockInstant>) {
 #[cfg(test)]
 #[path = "session_owner_task_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "session_owner_carrier_test.rs"]
+mod carrier_tests;
