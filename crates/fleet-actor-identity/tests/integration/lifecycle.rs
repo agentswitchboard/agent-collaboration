@@ -3,10 +3,9 @@ use fleet_actor_identity::{
     LiveSessionFacts, SessionAvailability, SessionCallOutcome, SessionServiceError,
 };
 use fleet_identity_protocol::{
-    AbandonedSessionCause, BindFleetSession, BindFleetSessionReply, CreateFleetSessionReply,
-    CreateSessionKind, CreateSessionRefusal, EndFleetSession, EndFleetSessionReply,
-    EndSessionTarget, EnrollmentId, PresentedSessionSecret, RouterEndCause, SessionCreator,
-    SessionSettlement,
+    BindFleetSession, BindFleetSessionReply, CreateFleetSessionReply, CreateSessionKind,
+    CreateSessionRefusal, EndFleetSession, EndFleetSessionReply, EndSessionTarget, EnrollmentId,
+    NewAbandonmentCause, NewEndSettlement, PresentedSessionSecret, RouterEndCause, SessionCreator,
 };
 
 use super::fixtures::{Operation, Receipt, SessionStoreFixture, create, id, reservation, secret};
@@ -158,7 +157,7 @@ async fn end_by_operation_requires_the_same_reservation_and_bound_addresses_are_
         store.apply(by_id, 3).await.unwrap(),
         Receipt::End(SessionCallOutcome::Answered(
             EndFleetSessionReply::Settled {
-                settlement: SessionSettlement::Ended { .. }
+                settlement: NewEndSettlement::Ended { .. }
             }
         ))
     ));
@@ -205,8 +204,8 @@ async fn end_by_operation_requires_the_same_reservation_and_bound_addresses_are_
         store.apply(Operation::End(end.clone()), 7).await.unwrap(),
         Receipt::End(SessionCallOutcome::Answered(
             EndFleetSessionReply::Settled {
-                settlement: SessionSettlement::Abandoned {
-                    cause: AbandonedSessionCause::GivenUp {},
+                settlement: NewEndSettlement::Abandoned {
+                    cause: NewAbandonmentCause::GivenUp {},
                     ..
                 },
             }

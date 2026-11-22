@@ -31,11 +31,17 @@ impl IdSource for HeldIds {
     }
 }
 
-struct HeldSecrets(u8);
+struct HeldSecrets {
+    seed: u8,
+    available: bool,
+}
 impl SessionSecretSource for HeldSecrets {
     fn new_session_secret(&mut self) -> Result<SessionSecret, SessionServiceError> {
-        self.0 += 1;
-        Ok(secret(self.0))
+        if !self.available {
+            return Err(SessionServiceError::SecretUnavailable);
+        }
+        self.seed += 1;
+        Ok(secret(self.seed))
     }
 }
 
@@ -106,7 +112,10 @@ impl SessionStoreFixture {
             path,
             caller,
             ids: HeldIds(100),
-            secrets: HeldSecrets(0),
+            secrets: HeldSecrets {
+                seed: 0,
+                available: true,
+            },
         }
     }
 
@@ -119,6 +128,10 @@ impl SessionStoreFixture {
         )
         .await
         .unwrap()
+    }
+
+    pub fn refuse_future_secrets(&mut self) {
+        self.secrets.available = false;
     }
 
     pub fn database_path(&self) -> &Path {

@@ -5,8 +5,8 @@ use central_engine_model::{
 use chrono::SecondsFormat;
 use fleet_identity_protocol::{
     AbandonedSessionCause, BindFleetSessionReply, CreateFleetSessionReply, CreateSessionAttempt,
-    CreateSessionDigest, EndFleetSessionReply, EndedSessionCause, RouterEndCause, SessionSecret,
-    SessionSettlement, SessionTime,
+    CreateSessionDigest, EndFleetSessionReply, EndedSessionCause, NewAbandonmentCause,
+    NewEndSettlement, RouterEndCause, SessionSecret, SessionSettlement, SessionTime,
 };
 use workspace_ids::{SessionId, SessionRef};
 
@@ -317,12 +317,18 @@ fn end(
             })],
         ));
     }
-    let next = match effective {
-        SessionState::Reserved(reserved) => SessionState::Abandoned {
-            reserved,
-            cause: AbandonedSessionCause::GivenUp {},
-            at: now,
-        },
+    let (next, settlement) = match effective {
+        SessionState::Reserved(reserved) => (
+            SessionState::Abandoned {
+                reserved,
+                cause: AbandonedSessionCause::GivenUp {},
+                at: now,
+            },
+            NewEndSettlement::Abandoned {
+                cause: NewAbandonmentCause::GivenUp {},
+                time: wire_time(now)?,
+            },
+        ),
         SessionState::Active(_) if matches!(by, SessionEndIdentity::OperationDigest(_)) => {
             return unchanged(
                 state,
@@ -330,15 +336,21 @@ fn end(
             );
         }
         SessionState::Active(bound) => {
-            let cause = match cause {
+            let stored_cause = match &cause {
                 RouterEndCause::EndedForGood {} => EndedSessionCause::EndedForGood {},
                 RouterEndCause::GivenUp {} => EndedSessionCause::GivenUp {},
             };
-            SessionState::Ended {
-                bound,
-                cause,
-                at: now,
-            }
+            (
+                SessionState::Ended {
+                    bound,
+                    cause: stored_cause,
+                    at: now,
+                },
+                NewEndSettlement::Ended {
+                    cause,
+                    time: wire_time(now)?,
+                },
+            )
         }
         SessionState::Missing | SessionState::Abandoned { .. } | SessionState::Ended { .. } => {
             return Err(TransitionError::Domain(
@@ -346,9 +358,6 @@ fn end(
             ));
         }
     };
-    let settlement = settlement_of(&next)?.ok_or(TransitionError::Domain(
-        SessionMachineRefusal::ContradictoryReservation,
-    ))?;
     Ok((
         next,
         vec![SessionReceipt::End(EndFleetSessionReply::Settled {

@@ -2,7 +2,8 @@ use std::{path::Path, process::Command};
 
 use fleet_actor_identity::{LiveSessionFacts, SessionAvailability};
 use fleet_identity_protocol::{
-    BindFleetSession, EndFleetSession, EndSessionTarget, RouterEndCause,
+    BindFleetSession, CreateSessionKind, EndFleetSession, EndSessionTarget, PresentedSessionSecret,
+    RouterEndCause, SessionCreator,
 };
 use sqlx::AssertSqlSafe;
 use sqlx::{Connection, SqliteConnection};
@@ -83,9 +84,9 @@ async fn address_and_admission_use_unique_point_lookups_at_twenty_and_ten_thousa
         let mut connection = store.open().await;
         // Fill with rows of the same machine so an unindexed machine scan cannot pass.
         sqlx::query("WITH RECURSIVE fixture_seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM fixture_seq WHERE n < ?) INSERT INTO actor_identities (actor_id,actor_kind,created_at,updated_at) SELECT printf('019bc1c0-0000-7000-8000-%012x', n),'session',?,? FROM fixture_seq")
-            .bind(size - 1).bind(FIXED_TIME).bind(FIXED_TIME).execute(&mut connection).await.unwrap();
+            .bind(size - 2).bind(FIXED_TIME).bind(FIXED_TIME).execute(&mut connection).await.unwrap();
         sqlx::query("WITH RECURSIVE fixture_seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM fixture_seq WHERE n < ?) INSERT INTO actor_sessions (actor_id,machine_id,enrollment_id,harness_session_id,create_operation_id,create_contents_digest,create_attempt,agent_program,session_kind,creator_kind,secret_hash,session_state,reserved_until,bound_at,created_at,updated_at) SELECT printf('019bc1c0-0000-7000-8000-%012x', n),?,?,printf('unrelated-%d', n),printf('019cc1c0-0000-7000-8000-%012x', n),'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',1,'codex','ordinary','operator','AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA','active',?,?,?,? FROM fixture_seq")
-            .bind(size - 1).bind(store.caller.machine_id.as_str()).bind(store.caller.enrollment_id.as_str())
+            .bind(size - 2).bind(store.caller.machine_id.as_str()).bind(store.caller.enrollment_id.as_str())
             .bind("2026-11-22T10:10:00.000Z").bind(FIXED_TIME).bind(FIXED_TIME).bind(FIXED_TIME)
             .execute(&mut connection).await.unwrap();
         connection.close().await.unwrap();
@@ -102,12 +103,42 @@ async fn address_and_admission_use_unique_point_lookups_at_twenty_and_ten_thousa
                 Operation::Bind(BindFleetSession {
                     session_id: session.clone(),
                     harness_session_id: harness.parse().unwrap(),
-                    secret,
+                    secret: secret.clone(),
                 }),
                 1,
             )
             .await
             .unwrap();
+        let mut create_delegate = create(11, 1);
+        create_delegate.creator = SessionCreator::Session {
+            session_id: session.clone(),
+            presented: PresentedSessionSecret::Secret { secret },
+        };
+        create_delegate.session_kind = CreateSessionKind::Delegate {
+            parent: session.clone(),
+        };
+        let (delegate, delegate_secret) = reservation(
+            store
+                .apply(Operation::Create(create_delegate), 1)
+                .await
+                .unwrap(),
+        );
+        store
+            .apply(
+                Operation::Bind(BindFleetSession {
+                    session_id: delegate.clone(),
+                    harness_session_id: "delegate-address".parse().unwrap(),
+                    secret: delegate_secret,
+                }),
+                1,
+            )
+            .await
+            .unwrap();
+        assert!(matches!(store.facts(&delegate).await,
+            SessionAvailability::Live(LiveSessionFacts::Delegate { parent })
+            if parent.session_id == session && parent.machine_id == store.caller.machine_id
+                && parent.enrollment_id == store.caller.enrollment_id
+        ));
         assert_eq!(
             store.count("SELECT COUNT(*) FROM actor_sessions").await,
             size
@@ -187,7 +218,23 @@ async fn address_and_admission_use_unique_point_lookups_at_twenty_and_ten_thousa
                 SCOPED_ENROLLMENT,
                 &[enrollment, machine],
             );
-            [address_found, address_missing, live]
+            let delegate = sqlite_loop_visits(
+                shell,
+                store.database_path(),
+                SCOPED_SESSION,
+                &[delegate.as_str(), machine, enrollment],
+            ) + sqlite_loop_visits(
+                shell,
+                store.database_path(),
+                SCOPED_ENROLLMENT,
+                &[enrollment, machine],
+            ) + sqlite_loop_visits(
+                shell,
+                store.database_path(),
+                PARENT_SCOPE,
+                &[session.as_str()],
+            );
+            [address_found, address_missing, live, delegate]
         });
 
         store
@@ -210,7 +257,7 @@ async fn address_and_admission_use_unique_point_lookups_at_twenty_and_ten_thousa
             store.facts(&missing.parse().unwrap()).await,
             SessionAvailability::Unavailable
         );
-        if let Some((shell, [address_found, address_missing, live])) =
+        if let Some((shell, [address_found, address_missing, live, delegate])) =
             sqlite_shell.as_deref().zip(address_and_live_visits)
         {
             let ended = sqlite_loop_visits(
@@ -226,10 +273,10 @@ async fn address_and_admission_use_unique_point_lookups_at_twenty_and_ten_thousa
                 &[&missing, machine, enrollment],
             );
             eprintln!(
-                "{size} sessions: address found/missing {address_found}/{address_missing}; admission live/ended/missing {live}/{ended}/{absent}"
+                "{size} sessions: address found/missing {address_found}/{address_missing}; admission live/ended/missing {live}/{ended}/{absent}; live delegate {delegate}"
             );
             assert!(address_found <= 2 && address_missing <= 1);
-            assert!(live <= 5 && ended <= 3 && absent <= 1);
+            assert!(live <= 5 && ended <= 3 && absent <= 1 && delegate <= 5);
         }
     }
 }

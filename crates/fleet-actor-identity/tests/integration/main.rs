@@ -8,3 +8,5 @@ mod fixtures;
 mod lifecycle;
 #[cfg(test)]
 mod query_budgets;
+#[cfg(test)]
+mod storage_guards;
