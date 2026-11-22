@@ -734,9 +734,7 @@ jobs:
       - name: Reject fixture SQL from the native Central production graph
         if: matrix.partition == 1
         run: |
-          cargo_messages="$RUNNER_TEMP/central-native-artifacts.jsonl"
-          cargo build --locked -p collaboration-central-tokio --lib --no-default-features --message-format=json-render-diagnostics > "$cargo_messages"
-          node verification/tooling/check-central-native-artifacts.ts "$cargo_messages"
+          node verification/tooling/check-central-native-artifacts.ts "$RUNNER_TEMP"
       # Verification O1 on the Cloudflare host: the storage cases run inside real
       # SQLite-backed Durable Objects under the pinned Miniflare and workerd.
       - name: Install pinned native integration runner
