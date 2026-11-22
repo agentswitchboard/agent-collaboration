@@ -1,110 +1,96 @@
 use approval_request_protocol::{
-    Answer, ApprovalOffer, CallOffer, CallOperationName, Description, HolderReport,
-    InvocationDigest, KeptWhere, Label, OfferedOption, OfferedOptionId, OfferedOptions,
-    OptionDuration, OptionEffect, ParkedCallHolder, ProviderHolder, ProviderStopCause, Raise,
-    ReportDeliveryRequest, StopRequest, Title,
+    Answer, ApprovalOffer, CentralTime, DecideRequest, DeliverEndingRequest, Label, OfferedOption,
+    OfferedOptionId, OfferedOptions, OptionEffect, OptionLifetime, ProviderHolder,
+    ProviderStopCause, Raise, RegisterRunReply, RetainedOptionStorage, StopRequest, Title,
 };
-use central_engine_model::{Context, EngineTime, IdSource, Machine, TransitionResult};
-use workspace_ids::{ApprovalRequestId, PersonId, RouterRunId, SessionRef};
+use central_engine_model::{Context, IdSource, Machine};
+use fleet_identity_protocol::EnrollmentId;
+use workspace_ids::{ApprovalRequestId, MachineId, PersonId, RequestId, RouterRunId};
 
 use crate::{
-    AdmittedDecider, ApprovalDestination, ApprovalEffect, ApprovalEvent, ApprovalLifecycle,
-    ApprovalState, FactorStanding, PassOnAuthority,
+    AdmittedDecider, ApprovalApply, ApprovalCollection, ApprovalCollectionEffect,
+    ApprovalCollectionEvent, ApprovalDestination, ApprovalEffect, ApprovalEnrollment,
+    ApprovalEvent, ApprovalLifecycle, ApprovalReceipt, ApprovalRequestKey, ApprovalRouting,
+    ApprovalRun, ApprovalSession, ApprovalState, EndedApproval, FactorStanding,
+    ProviderSessionAvailability,
 };
 
-pub(super) const DEADLINE: i64 = 3_600_000;
+pub(super) const HOUR: i64 = 3_600_000;
 
 pub(super) struct UnusedIds;
-
 impl IdSource for UnusedIds {
     fn next_id(&mut self) -> uuid::Uuid {
-        panic!("approval identifiers are all inputs")
+        panic!("the lifecycle consumes supplied IDs")
     }
 }
 
-fn fixture_uuid(suffix: u8) -> String {
-    format!("019ac19f-aa00-7000-8000-0000000000{suffix:02x}")
+fn id(suffix: u16) -> String {
+    format!("019ac19f-aa00-7000-8000-00000000{suffix:04x}")
 }
 
-pub(super) fn request_id() -> ApprovalRequestId {
-    fixture_uuid(1).parse().unwrap()
+pub(super) fn time(at: i64) -> CentralTime {
+    CentralTime::from_timestamp_millis(at).unwrap()
 }
 
-pub(super) fn other_request_id() -> ApprovalRequestId {
-    fixture_uuid(10).parse().unwrap()
+pub(super) fn request_id(number: u16) -> ApprovalRequestId {
+    id(number).parse().unwrap()
+}
+pub(super) fn router_run(number: u16) -> RouterRunId {
+    id(number).parse().unwrap()
+}
+pub(super) fn operation_id(number: u16) -> RequestId {
+    id(number).parse().unwrap()
+}
+pub(super) fn person_id(number: u16) -> PersonId {
+    id(number).parse().unwrap()
 }
 
-pub(super) fn router_run() -> RouterRunId {
-    fixture_uuid(2).parse().unwrap()
-}
-
-pub(super) fn other_run() -> RouterRunId {
-    fixture_uuid(3).parse().unwrap()
-}
-
-pub(super) fn person_id() -> PersonId {
-    fixture_uuid(4).parse().unwrap()
-}
-
-pub(super) fn session(suffix: u8) -> SessionRef {
-    SessionRef {
-        machine_id: fixture_uuid(5).parse().unwrap(),
-        session_id: fixture_uuid(suffix).parse().unwrap(),
+pub(super) fn enrollment(machine: u16, number: u16) -> ApprovalEnrollment {
+    ApprovalEnrollment {
+        machine_id: MachineId::try_from(id(machine)).unwrap(),
+        enrollment_id: EnrollmentId::try_from(id(number)).unwrap(),
     }
 }
 
-pub(super) fn requester() -> SessionRef {
-    session(6)
+pub(super) fn session(enrollment: &ApprovalEnrollment, number: u16) -> ApprovalSession {
+    ApprovalSession {
+        enrollment: enrollment.clone(),
+        session_id: id(number).parse().unwrap(),
+    }
 }
 
-pub(super) fn parent() -> SessionRef {
-    session(7)
+pub(super) fn key(run: &ApprovalRun, number: u16) -> ApprovalRequestKey {
+    ApprovalRequestKey {
+        run: run.clone(),
+        request_id: request_id(number),
+    }
 }
 
-pub(super) fn observer() -> SessionRef {
-    session(8)
+pub(super) fn option(number: u8) -> OfferedOptionId {
+    OfferedOptionId::new(number).unwrap()
+}
+pub(super) fn answer(number: u8) -> Answer {
+    Answer::Approval {
+        option_id: option(number),
+    }
+}
+pub(super) fn person(number: u16, factor: FactorStanding) -> AdmittedDecider {
+    AdmittedDecider::Person {
+        person_id: person_id(number),
+        factor,
+    }
 }
 
-pub(super) fn destinations() -> Vec<ApprovalDestination> {
-    vec![
-        ApprovalDestination::Session(parent()),
-        ApprovalDestination::Session(observer()),
-    ]
-}
-
-pub(super) fn time(milliseconds: i64) -> EngineTime {
-    EngineTime::from_timestamp_millis(milliseconds).unwrap()
-}
-
-pub(super) fn step(
-    state: &ApprovalState,
-    event: ApprovalEvent,
-    at: i64,
-) -> TransitionResult<ApprovalLifecycle> {
-    ApprovalLifecycle::transition(
-        state,
-        event,
-        &mut Context {
-            now: time(at),
-            ids: &mut UnusedIds,
-        },
-    )
-}
-
-pub(super) fn apply(
-    state: &ApprovalState,
-    event: ApprovalEvent,
-    at: i64,
-) -> (ApprovalState, Vec<ApprovalEffect>) {
-    step(state, event, at).unwrap()
-}
-
-pub(super) fn approval_raise(title: &str) -> Raise {
+pub(super) fn provider(
+    key: &ApprovalRequestKey,
+    requester: &ApprovalSession,
+    title: &str,
+) -> Raise {
     Raise::ProviderApproval {
-        request_id: request_id(),
+        request_id: key.request_id.clone(),
         holder: ProviderHolder {
-            session: requester(),
-            router_run: router_run(),
+            session_id: requester.session_id.clone(),
+            router_run: key.run.router_run.clone(),
         },
         offer: ApprovalOffer {
             title: Title::new(title).unwrap(),
@@ -115,146 +101,201 @@ pub(super) fn approval_raise(title: &str) -> Raise {
     }
 }
 
-pub(super) fn call_raise() -> Raise {
-    Raise::UnprovenCall {
-        request_id: request_id(),
-        holder: ParkedCallHolder {
-            router_run: router_run(),
-        },
-        offer: CallOffer {
-            operation: CallOperationName::new("read_record").unwrap(),
-            summary: Description::new("Read a record").unwrap(),
-            invocation: InvocationDigest::try_from("a".repeat(64)).unwrap(),
-            options: options(),
-        },
-    }
-}
-
 fn options() -> OfferedOptions {
     OfferedOptions::new(vec![
+        offered(1, OptionEffect::Allow, OptionLifetime::ThisRequest {}),
+        offered(2, OptionEffect::Decline, OptionLifetime::ThisRequest {}),
+        offered(3, OptionEffect::Allow, OptionLifetime::NotVerified {}),
+        offered(4, OptionEffect::Decline, OptionLifetime::NotVerified {}),
         offered(
-            "once",
-            OptionDuration::ThisRequest,
-            KeptWhere::Nowhere,
+            5,
             OptionEffect::Allow,
-        ),
-        offered(
-            "decline",
-            OptionDuration::ThisRequest,
-            KeptWhere::Nowhere,
-            OptionEffect::Decline,
-        ),
-        offered(
-            "kept",
-            OptionDuration::KeptUntilChanged,
-            KeptWhere::AgentRulesFile,
-            OptionEffect::Allow,
-        ),
-        offered(
-            "unchecked",
-            OptionDuration::NotVerified,
-            KeptWhere::NotVerified,
-            OptionEffect::Allow,
-        ),
-        offered(
-            "unknown-allow",
-            OptionDuration::ThisRequest,
-            KeptWhere::NotVerified,
-            OptionEffect::Allow,
-        ),
-        offered(
-            "unknown-deny",
-            OptionDuration::ThisRequest,
-            KeptWhere::NotVerified,
-            OptionEffect::Decline,
-        ),
-        offered(
-            "unknown-duration-allow",
-            OptionDuration::NotVerified,
-            KeptWhere::Nowhere,
-            OptionEffect::Allow,
-        ),
-        offered(
-            "unknown-duration-deny",
-            OptionDuration::NotVerified,
-            KeptWhere::Nowhere,
-            OptionEffect::Decline,
+            OptionLifetime::KeptUntilChanged {
+                kept: RetainedOptionStorage::AgentRulesFile,
+            },
         ),
     ])
     .unwrap()
 }
 
-fn offered(
-    id: &str,
-    lasts: OptionDuration,
-    kept: KeptWhere,
-    effect: OptionEffect,
-) -> OfferedOption {
+fn offered(number: u8, effect: OptionEffect, lasts: OptionLifetime) -> OfferedOption {
     OfferedOption {
-        id: option_id(id),
-        label: Label::new(id).unwrap(),
+        id: option(number),
+        label: Label::new(format!("Option {number}")).unwrap(),
         effect,
         lasts,
-        kept,
     }
 }
 
-pub(super) fn option_id(id: &str) -> OfferedOptionId {
-    OfferedOptionId::new(id).unwrap()
-}
-
-pub(super) fn approval_answer(id: &str) -> Answer {
-    Answer::Approval {
-        option_id: option_id(id),
+pub(super) fn routing(parent: Option<&ApprovalSession>, include_people: bool) -> ApprovalRouting {
+    let mut destinations = std::collections::BTreeSet::new();
+    if let Some(parent) = parent {
+        destinations.insert(ApprovalDestination::Session(parent.clone()));
+    }
+    if include_people {
+        destinations.insert(ApprovalDestination::People);
+    }
+    ApprovalRouting {
+        destinations,
+        delegated_parent: parent.cloned(),
     }
 }
 
-pub(super) fn session_answer(session: SessionRef, id: &str) -> ApprovalEvent {
-    ApprovalEvent::Answer {
-        actor: AdmittedDecider::Session(session),
-        answer: approval_answer(id),
-    }
+pub(super) fn run_event(
+    book: &mut ApprovalCollection,
+    event: ApprovalCollectionEvent,
+    at: i64,
+) -> Vec<ApprovalCollectionEffect> {
+    let (next, effects) = book
+        .clone()
+        .apply(
+            event,
+            &mut Context {
+                now: time(at),
+                ids: &mut UnusedIds,
+            },
+        )
+        .unwrap();
+    *book = next;
+    effects
 }
 
-pub(super) fn person_answer(factor: FactorStanding, id: &str) -> ApprovalEvent {
-    ApprovalEvent::Answer {
-        actor: AdmittedDecider::Person {
-            person_id: person_id(),
-            factor,
+pub(super) fn row_event(
+    state: &ApprovalState,
+    event: ApprovalEvent,
+    sampled: i64,
+    floor: i64,
+) -> central_engine_model::TransitionResult<ApprovalLifecycle> {
+    ApprovalLifecycle::transition(
+        state,
+        ApprovalApply {
+            high_water: time(floor),
+            event,
         },
-        answer: approval_answer(id),
+        &mut Context {
+            now: time(sampled),
+            ids: &mut UnusedIds,
+        },
+    )
+}
+
+pub(super) fn register(
+    book: &mut ApprovalCollection,
+    run: &ApprovalRun,
+    at: i64,
+) -> Vec<ApprovalCollectionEffect> {
+    run_event(
+        book,
+        ApprovalCollectionEvent::RegisterRun { run: run.clone() },
+        at,
+    )
+}
+
+pub(super) fn setup() -> (
+    ApprovalCollection,
+    ApprovalRun,
+    ApprovalSession,
+    ApprovalSession,
+) {
+    let mut book = ApprovalCollection::new(time(0));
+    let enrollment = enrollment(8000, 8001);
+    run_event(
+        &mut book,
+        ApprovalCollectionEvent::ActivateEnrollment {
+            enrollment: enrollment.clone(),
+        },
+        0,
+    );
+    let run = ApprovalRun {
+        enrollment: enrollment.clone(),
+        router_run: router_run(9000),
+    };
+    assert_eq!(
+        register(&mut book, &run, 0),
+        [ApprovalCollectionEffect::Registered(
+            RegisterRunReply::Registered {}
+        )]
+    );
+    (
+        book,
+        run,
+        session(&enrollment, 8002),
+        session(&enrollment, 8003),
+    )
+}
+
+pub(super) fn raise_event(
+    run: &ApprovalRun,
+    raise: Raise,
+    routing: ApprovalRouting,
+) -> ApprovalCollectionEvent {
+    ApprovalCollectionEvent::Raise {
+        run: run.clone(),
+        raise: Box::new(raise),
+        routing,
+        provider_session: ProviderSessionAvailability::Live,
     }
 }
 
-pub(super) fn raise_event() -> ApprovalEvent {
-    ApprovalEvent::Raise {
-        raise: Box::new(approval_raise("First request")),
-        destinations: destinations(),
+pub(super) fn decide_event(
+    key: &ApprovalRequestKey,
+    actor: AdmittedDecider,
+    operation: u16,
+    value: Answer,
+) -> ApprovalCollectionEvent {
+    ApprovalCollectionEvent::Decide {
+        key: key.clone(),
+        actor,
+        request: DecideRequest {
+            request_id: key.request_id.clone(),
+            operation_id: operation_id(operation),
+            value,
+        },
     }
 }
 
-pub(super) fn waiting() -> ApprovalState {
-    apply(&ApprovalState::Unraised, raise_event(), 0).0
+pub(super) fn closed<'a>(
+    book: &'a ApprovalCollection,
+    key: &ApprovalRequestKey,
+) -> &'a EndedApproval {
+    let Some(ApprovalState::Ended { closed, .. }) = book.requests.get(key) else {
+        panic!("expected an ending for {key:?}");
+    };
+    closed
 }
 
-pub(super) fn parent_pass_on() -> ApprovalEvent {
-    ApprovalEvent::PassOn {
-        authority: PassOnAuthority::LiveParent(parent()),
+pub(super) fn reply(effects: &[ApprovalCollectionEffect]) -> &ApprovalReceipt {
+    let Some(ApprovalCollectionEffect::Request(ApprovalEffect::Reply(receipt))) = effects.last()
+    else {
+        panic!("expected a final operation reply, got {effects:?}");
+    };
+    receipt
+}
+
+pub(super) fn offered_frame(effects: &[ApprovalCollectionEffect]) -> DeliverEndingRequest {
+    effects
+        .iter()
+        .find_map(|effect| match effect {
+            ApprovalCollectionEffect::Request(ApprovalEffect::OfferEnding { request, .. }) => {
+                Some((**request).clone())
+            }
+            ApprovalCollectionEffect::Request(_) | ApprovalCollectionEffect::Registered(_) => None,
+        })
+        .expect("expected a holder offer")
+}
+
+pub(super) fn provider_stop(raise: &Raise) -> StopRequest {
+    StopRequest::Provider {
+        request_id: raise.request_id().clone(),
+        router_run: raise.router_run().clone(),
+        contents_digest: raise.contents_digest().unwrap(),
+        cause: ProviderStopCause::AskReplaced,
     }
 }
 
-pub(super) fn stop_event() -> ApprovalEvent {
-    ApprovalEvent::Stop(StopRequest::Provider {
-        request_id: request_id(),
-        router_run: router_run(),
-        cause: ProviderStopCause::TurnStopped,
-    })
-}
-
-pub(super) fn holder_report(run: RouterRunId, report: HolderReport) -> ApprovalEvent {
-    ApprovalEvent::Report(ReportDeliveryRequest {
-        request_id: request_id(),
-        router_run: run,
-        report,
-    })
+pub(super) fn view_event(key: &ApprovalRequestKey, person: u16) -> ApprovalCollectionEvent {
+    ApprovalCollectionEvent::Read {
+        key: key.clone(),
+        person_id: person_id(person),
+    }
 }

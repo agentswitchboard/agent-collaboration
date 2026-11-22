@@ -12,6 +12,7 @@ workspace = true
 [dependencies]
 approval-request-protocol.workspace = true
 central-engine-model.workspace = true
+fleet-identity-protocol = { path = "../fleet-identity-protocol", version = "0.1.156" }
 serde.workspace = true
 workspace-ids.workspace = true
 

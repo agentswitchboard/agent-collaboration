@@ -2465,6 +2465,7 @@ version = "0.1.158"
 dependencies = [
  "approval-request-protocol",
  "central-engine-model",
+ "fleet-identity-protocol",
  "hegeltest",
  "serde",
  "uuid",

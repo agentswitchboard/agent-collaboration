@@ -1,596 +1,525 @@
-//! An independent ledger of the first receipt, the destinations, the outcome, and delivery.
-//! Only fixture construction is shared with the reducer tests.
-
-#![expect(
-    clippy::panic_in_result_fn,
-    reason = "an inconsistent oracle must fail the property immediately"
-)]
+//! Reference ledger transcribed from the smaller core table before comparing the reducer.
+use std::collections::BTreeMap;
 
 use approval_request_protocol::{
-    CancelReason, DecidedBy, Delivery, Ending, EndingView, HolderReport, HolderStopCause,
-    InvalidAnswer, OfferEnding, Raise, RaiseReceipt, RaiseReply, Refusal, ReportDeliveryReply,
-    StopReceiptEnding, StopReply, WaitingStatus,
+    CancelReason, DecidedBy, DeliverEndingReply, DeliverEndingRequest, Delivery, Ending,
+    HolderStopCause, PassOnReply, PassOnRequest, PrivateEnding, RaiseReply, StopReply,
+    WaitingStatus,
 };
-use central_engine_model::{Machine, StateTag, TransitionError};
 use hegel::generators as gs;
 
 use crate::{
-    ApprovalDestination, ApprovalEffect, ApprovalLifecycle, ApprovalReceipt, ApprovalRefusal,
-    ApprovalState, EndedApproval, RetainedApproval, SessionNoticePhase,
+    AdmittedDecider, ApprovalCollection, ApprovalCollectionEffect, ApprovalCollectionEvent,
+    ApprovalDecisionReply, ApprovalEffect, ApprovalReceipt, ApprovalRequestKey, ApprovalState,
+    FactorStanding,
 };
 
 use super::fixtures::{
-    approval_answer, approval_raise, observer, option_id, parent, person_id, request_id,
-    router_run, step, time,
+    HOUR, answer, decide_event, key, person, person_id, provider, provider_stop, raise_event,
+    reply, routing, run_event, setup, time, view_event,
 };
-use super::{GONE, STOPPED};
 
-#[path = "approval_lifecycle_commands_test.rs"]
-mod commands;
-#[path = "approval_lifecycle_parked_call_model_test.rs"]
-mod parked_call;
-use commands::{COMMANDS, Command, command_name, history_prefix};
-#[path = "approval_lifecycle_erased_model_test.rs"]
-mod erased;
-use erased::{erased_effects, standing};
-
-const FIRST_TITLE: &str = "First request";
-const CHANGED_TITLE: &str = "Replacement request";
-const ONE_HOUR_MILLIS: i64 = 3_600_000;
-const SIXTY_DAYS_MILLIS: i64 = 60 * 24 * ONE_HOUR_MILLIS;
-
-type Rejected = TransitionError<ApprovalRefusal>;
-
-#[derive(Default)]
-struct ApprovalLedger {
-    first_request: Option<FirstRequest>,
-    stopped_before_raise: Option<i64>,
-    visible_to_people: bool,
-    forwarded: bool,
-    outcome: Option<(Ending, i64)>,
-    delivery: Option<Delivery>,
-    erased_ending: Option<StopReceiptEnding>,
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Decider {
+    Parent,
+    Owner,
 }
 
 #[derive(Clone, Copy, Debug)]
-struct FirstRequest {
-    changed: bool,
-    at: i64,
+enum Step {
+    Raise(bool),
+    Decide {
+        operation: u16,
+        choice: u8,
+        decider: Decider,
+    },
+    Stop(bool),
+    Forward,
+    Read,
+    Alarm(bool),
+    Deliver {
+        reply: DeliverEndingReply,
+        wrong_ending: bool,
+    },
+    CloseSession,
 }
 
-impl FirstRequest {
-    fn receipt(self) -> RaiseReceipt {
-        RaiseReceipt {
-            request_id: request_id(),
-            raised_at: time(self.at),
-            deadline: time(self.at + ONE_HOUR_MILLIS),
-        }
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ModelEnding {
+    Decided { choice: u8, decider: Decider },
+    TimedOut,
+    Stopped,
+    SessionEnded,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ModelDelivery {
+    Unpaid,
+    Received,
+    Closed,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum ResultCode {
+    NoReply,
+    Receipt,
+    AlreadyStopped,
+    ContentsDiffer,
+    SessionEnded,
+    NotVisible,
+    Invalid,
+    Decision,
+    Standing,
+    TooLate,
+    OperationConflict,
+    Forwarded,
+    Ended,
+    Readable,
+    StopReceipt,
+}
+
+#[derive(Default)]
+struct IndependentLedger {
+    floor: i64,
+    first_save: Option<(bool, i64)>,
+    stopped_before_raise: Option<bool>,
+    ending: Option<(ModelEnding, i64)>,
+    delivery: Option<ModelDelivery>,
+    forwarded: bool,
+    session_ended: bool,
+    operations: BTreeMap<u16, (Decider, u8, ResultCode)>,
+    opens: usize,
+    ends: usize,
+    offers: usize,
+}
+
+impl IndependentLedger {
+    fn late(&self) -> bool {
+        self.first_save
+            .is_some_and(|(_, raised)| self.floor >= raised + HOUR)
     }
 
-    fn contents(self) -> Raise {
-        approval_raise(if self.changed {
-            CHANGED_TITLE
+    fn waiting(&self) -> bool {
+        self.first_save.is_some() && self.ending.is_none()
+    }
+
+    fn finish(&mut self, requested: ModelEnding, delivery: ModelDelivery) {
+        assert!(self.waiting());
+        let ending = if self.late() {
+            ModelEnding::TimedOut
         } else {
-            FIRST_TITLE
-        })
-    }
-}
-
-impl ApprovalLedger {
-    fn record(
-        &mut self,
-        command: Command,
-        at: i64,
-        include_people: bool,
-    ) -> Result<Vec<ApprovalEffect>, Rejected> {
-        if let Some(ending) = self.erased_ending {
-            return erased_effects(command, ending);
-        }
-        if matches!(command, Command::Erase)
-            && let Some((ending, ended_at)) = &self.outcome
-        {
-            if at - ended_at < SIXTY_DAYS_MILLIS {
-                return Err(Rejected::Stale);
-            }
-            let effects = if self.delivery == Some(Delivery::AwaitingReport {}) {
-                vec![ApprovalEffect::SettleErasedDeliveryAsUnknown {
-                    request_id: request_id(),
-                }]
-            } else {
-                vec![]
-            };
-            *self = Self {
-                erased_ending: Some(standing(ending)),
-                ..Self::default()
-            };
-            return Ok(effects);
-        }
-        let was_raised = self.first_request.is_some();
-        let had_ending = self.outcome.is_some();
-        let mut offer_again = false;
-        let receipt = match command {
-            Command::Raise { changed } => {
-                let reply = if self.stopped_before_raise.is_some() {
-                    RaiseReply::AlreadyStopped {}
-                } else {
-                    let first = self
-                        .first_request
-                        .get_or_insert(FirstRequest { changed, at });
-                    if first.changed != changed {
-                        return Err(domain(ApprovalRefusal::ContentsDiffer));
-                    }
-                    if !was_raised {
-                        self.visible_to_people = include_people;
-                    }
-                    RaiseReply::RaiseReceipt {
-                        receipt: first.receipt(),
-                    }
-                };
-                Some(ApprovalReceipt::Raise(reply))
-            }
-            Command::HolderStops if !was_raised => {
-                self.stopped_before_raise.get_or_insert(at);
-                Some(stopped_receipt(StopReceiptEnding::Cancelled {
-                    reason: STOPPED,
-                }))
-            }
-            other => {
-                let Some(first) = self.first_request else {
-                    return Err(Rejected::NotAllowed {
-                        state: if self.stopped_before_raise.is_some() {
-                            "stoppedBeforeRaise"
-                        } else {
-                            "unraised"
-                        },
-                        event: command_name(other),
-                    });
-                };
-                let late = at - first.at >= ONE_HOUR_MILLIS;
-                match other {
-                    Command::HolderStops => Some(self.stop(at, late)?),
-                    Command::Erase => {
-                        return Err(Rejected::NotAllowed {
-                            state: if self.forwarded {
-                                "passedOn"
-                            } else {
-                                "pending"
-                            },
-                            event: "erase",
-                        });
-                    }
-                    Command::ForwardFromParent | Command::ForwardWithoutParent => {
-                        Some(self.forward(other, at, late)?)
-                    }
-                    Command::ClockTicks if !had_ending && !late => return Err(Rejected::Stale),
-                    Command::ClockTicks if !had_ending => {
-                        self.write_outcome(Ending::TimedOut {}, at, Delivery::AwaitingReport {});
-                        None
-                    }
-                    Command::ClockTicks => None,
-                    Command::RunEnds | Command::SessionEnds | Command::EnrollmentEnds => {
-                        self.authority_ended(other, at, late);
-                        None
-                    }
-                    Command::Offer { foreign } => {
-                        self.check_delivery_command("offerAgain", foreign)?;
-                        if self.delivery != Some(Delivery::AwaitingReport {}) {
-                            return Err(domain(ApprovalRefusal::NoHandoverOwed));
-                        }
-                        offer_again = true;
-                        None
-                    }
-                    Command::Report {
-                        foreign_run,
-                        foreign_request,
-                        report,
-                    } => Some(self.record_report(foreign_run, foreign_request, report)?),
-                    _ => Some(self.answer(other, at, late)?),
-                }
-            }
+            requested
         };
-
-        let mut effects = Vec::new();
-        if !was_raised && let Some(first) = self.first_request {
-            effects.extend(notices(SessionNoticePhase::Raised));
-            effects.push(ApprovalEffect::RegisterDue {
-                request_id: request_id(),
-                deadline: first.receipt().deadline,
-            });
-        }
-        if !had_ending && self.outcome.is_some() {
-            effects.extend(notices(SessionNoticePhase::Ended));
-            effects.push(ApprovalEffect::ClearDue {
-                request_id: request_id(),
-            });
-            offer_again = self.delivery == Some(Delivery::AwaitingReport {});
-        }
-        if offer_again {
-            let Some((ending, _)) = &self.outcome else {
-                panic!("an offer needs an ending");
-            };
-            effects.push(ApprovalEffect::OfferEnding(Box::new(
-                OfferEnding::Provider {
-                    request_id: request_id(),
-                    holder: approval_request_protocol::ProviderHolder {
-                        session: super::fixtures::requester(),
-                        router_run: router_run(),
-                    },
-                    ending: ending.clone(),
-                },
-            )));
-        }
-        if let Some(receipt) = receipt {
-            effects.push(ApprovalEffect::Reply(receipt));
-        }
-        Ok(effects)
-    }
-
-    fn write_outcome(&mut self, ending: Ending, at: i64, delivery: Delivery) {
-        assert!(self.outcome.is_none());
-        self.outcome = Some((ending, at));
+        self.ending = Some((ending, self.floor));
         self.delivery = Some(delivery);
+        self.ends += 1;
+        self.offers += usize::from(delivery == ModelDelivery::Unpaid);
     }
 
-    fn answer(
-        &mut self,
-        command: Command,
-        at: i64,
-        late: bool,
-    ) -> Result<ApprovalReceipt, Rejected> {
-        let (by, choice) = match command {
-            Command::AllowFromParent => (DecidedBy::Session { session: parent() }, "once"),
-            Command::DeclineFromObserver => (
-                DecidedBy::Session {
-                    session: observer(),
-                },
-                "decline",
-            ),
-            Command::UnknownOption => (DecidedBy::Session { session: parent() }, "unknown"),
-            Command::KeptFromParent => (DecidedBy::Session { session: parent() }, "kept"),
-            Command::OnceFromStalePerson if self.visible_to_people => (
-                DecidedBy::Person {
-                    person_id: person_id(),
-                },
-                "once",
-            ),
-            Command::KeptFromStalePerson | Command::KeptFromFreshPerson
-                if self.visible_to_people =>
-            {
-                (
-                    DecidedBy::Person {
-                        person_id: person_id(),
-                    },
-                    "kept",
-                )
-            }
-            Command::OnceFromStalePerson
-            | Command::KeptFromStalePerson
-            | Command::KeptFromFreshPerson
-            | Command::OutsiderAnswers => return Err(hidden()),
-            unexpected => panic!("expected a model answer, got {unexpected:?}"),
-        };
-        self.reject_if_ended(&by)?;
-        if late {
-            self.write_outcome(Ending::TimedOut {}, at, Delivery::AwaitingReport {});
-            return Ok(ApprovalReceipt::AnswerRefused(Refusal::TooLate {}));
-        }
-        match command {
-            Command::UnknownOption => {
-                return Err(destination(Refusal::InvalidAnswer {
-                    reason: InvalidAnswer::UnofferedOption {
-                        option_id: option_id("unknown"),
-                    },
-                }));
-            }
-            Command::KeptFromParent => return Err(destination(Refusal::KeptChoiceNeedsAPerson {})),
-            Command::KeptFromStalePerson => {
-                return Err(destination(Refusal::SecondFactorRequired {}));
-            }
-            _ => {}
-        }
-        let answer = approval_answer(choice);
-        self.write_outcome(
-            Ending::Decided {
-                answer: answer.clone(),
-                by: by.clone(),
-            },
-            at,
-            Delivery::AwaitingReport {},
-        );
-        Ok(ApprovalReceipt::Answer(EndingView::DecidedWithAnswer {
-            answer,
-            by,
-        }))
-    }
-
-    fn reject_if_ended(&self, destination_id: &DecidedBy) -> Result<(), Rejected> {
-        let Some((ending, _)) = &self.outcome else {
-            return Ok(());
-        };
-        let visible = match ending {
-            Ending::Decided { answer, by } if destination_id == by => {
-                EndingView::DecidedWithAnswer {
-                    answer: answer.clone(),
-                    by: by.clone(),
+    fn record(&mut self, step: Step, sample: i64) -> ResultCode {
+        self.floor = self.floor.max(sample);
+        match step {
+            Step::Raise(contents) => {
+                if let Some(marker) = self.stopped_before_raise {
+                    return if marker == contents {
+                        ResultCode::AlreadyStopped
+                    } else {
+                        ResultCode::ContentsDiffer
+                    };
                 }
+                if let Some((saved, _)) = self.first_save {
+                    return if saved == contents {
+                        ResultCode::Receipt
+                    } else {
+                        ResultCode::ContentsDiffer
+                    };
+                }
+                if self.session_ended {
+                    return ResultCode::SessionEnded;
+                }
+                self.first_save = Some((contents, self.floor));
+                self.opens += 1;
+                ResultCode::Receipt
             }
-            Ending::Decided { by, .. } => EndingView::Decided { by: by.clone() },
-            Ending::Cancelled { reason } => EndingView::Cancelled { reason: *reason },
-            Ending::TimedOut {} => EndingView::TimedOut {},
-        };
-        Err(destination(Refusal::Ended { ending: visible }))
-    }
-
-    fn forward(
-        &mut self,
-        command: Command,
-        at: i64,
-        late: bool,
-    ) -> Result<ApprovalReceipt, Rejected> {
-        if matches!(command, Command::ForwardWithoutParent) {
-            return Err(hidden());
-        }
-        self.reject_if_ended(&DecidedBy::Session { session: parent() })?;
-        if late {
-            self.write_outcome(Ending::TimedOut {}, at, Delivery::AwaitingReport {});
-            Ok(ApprovalReceipt::PassOnRefused(Refusal::TooLate {}))
-        } else {
-            self.forwarded = true;
-            self.visible_to_people = true;
-            Ok(ApprovalReceipt::PassedOn)
-        }
-    }
-
-    fn stop(&mut self, at: i64, late: bool) -> Result<ApprovalReceipt, Rejected> {
-        if self.outcome.is_none() {
-            let ending = if late {
-                Ending::TimedOut {}
-            } else {
-                Ending::Cancelled { reason: STOPPED }
-            };
-            self.write_outcome(ending, at, GONE);
-        }
-        if matches!(
-            self.delivery,
-            Some(Delivery::NoHandoverOwed {} | Delivery::ReceiptUnknown {})
-        ) {
-            return Err(Rejected::Stale);
-        }
-        if self.delivery == Some(Delivery::AwaitingReport {}) {
-            self.delivery = Some(GONE);
-        }
-        let Some((ending, _)) = &self.outcome else {
-            panic!("stop must leave an ending");
-        };
-        Ok(stopped_receipt(standing(ending)))
-    }
-
-    fn authority_ended(&mut self, command: Command, at: i64, late: bool) {
-        let reason = match command {
-            Command::RunEnds => CancelReason::RequesterGone {},
-            Command::SessionEnds => CancelReason::SessionEnded {},
-            Command::EnrollmentEnds => CancelReason::EnrollmentEnded {},
-            unexpected => panic!("expected an authority event, got {unexpected:?}"),
-        };
-        let holder_reachable = matches!(command, Command::SessionEnds);
-        if self.outcome.is_some() {
-            if !holder_reachable && self.delivery == Some(Delivery::AwaitingReport {}) {
-                self.delivery = Some(Delivery::ReceiptUnknown {});
+            Step::Stop(contents) => {
+                let known = self
+                    .stopped_before_raise
+                    .or_else(|| self.first_save.map(|(contents, _)| contents));
+                if known.is_some_and(|known| known != contents) {
+                    return ResultCode::NotVisible;
+                }
+                if known.is_none() {
+                    self.stopped_before_raise = Some(contents);
+                } else if self.waiting() {
+                    self.finish(ModelEnding::Stopped, ModelDelivery::Closed);
+                } else if self.delivery == Some(ModelDelivery::Unpaid) {
+                    self.delivery = Some(ModelDelivery::Closed);
+                }
+                ResultCode::StopReceipt
             }
-            return;
-        }
-        let ending = if late {
-            Ending::TimedOut {}
-        } else {
-            Ending::Cancelled { reason }
-        };
-        let delivery = match (holder_reachable, late) {
-            (true, _) => Delivery::AwaitingReport {},
-            (false, true) => Delivery::ReceiptUnknown {},
-            (false, false) => Delivery::NoHandoverOwed {},
-        };
-        self.write_outcome(ending, at, delivery);
-    }
-
-    fn check_delivery_command(&self, event: &'static str, foreign: bool) -> Result<(), Rejected> {
-        if self.outcome.is_none() {
-            return Err(Rejected::NotAllowed {
-                state: if self.forwarded {
-                    "passedOn"
+            Step::Decide {
+                operation,
+                choice,
+                decider,
+            } => {
+                if self.first_save.is_none() || (decider == Decider::Owner && !self.forwarded) {
+                    return ResultCode::NotVisible;
+                }
+                if let Some((prior_decider, prior_choice, reply)) = self.operations.get(&operation)
+                {
+                    return if *prior_decider == decider && *prior_choice == choice {
+                        *reply
+                    } else {
+                        ResultCode::OperationConflict
+                    };
+                }
+                let reply = if self.ending.is_some() {
+                    ResultCode::Standing
+                } else if self.late() {
+                    self.finish(ModelEnding::TimedOut, ModelDelivery::Unpaid);
+                    ResultCode::TooLate
+                } else if choice <= 2 || (choice <= 5 && decider == Decider::Owner) {
+                    self.finish(
+                        ModelEnding::Decided { choice, decider },
+                        ModelDelivery::Unpaid,
+                    );
+                    ResultCode::Decision
                 } else {
-                    "pending"
-                },
-                event,
-            });
-        }
-        if foreign {
-            return Err(Rejected::Stale);
-        }
-        Ok(())
-    }
-
-    fn record_report(
-        &mut self,
-        foreign_run: bool,
-        foreign_request: bool,
-        report: HolderReport,
-    ) -> Result<ApprovalReceipt, Rejected> {
-        self.check_delivery_command("report", foreign_run || foreign_request)?;
-        match self.delivery {
-            Some(Delivery::AwaitingReport {}) => {
-                self.delivery = Some(Delivery::Reported { report })
+                    ResultCode::Invalid
+                };
+                self.operations.insert(operation, (decider, choice, reply));
+                reply
             }
-            Some(Delivery::Reported { report: first }) if first == report => {}
-            Some(Delivery::Reported { .. }) => return Err(domain(ApprovalRefusal::ReportDiffers)),
-            _ => return Err(domain(ApprovalRefusal::NoHandoverOwed)),
+            Step::Forward => {
+                if self.first_save.is_none() {
+                    return ResultCode::NotVisible;
+                }
+                if self.waiting() && self.late() {
+                    self.finish(ModelEnding::TimedOut, ModelDelivery::Unpaid);
+                    return if self.forwarded {
+                        ResultCode::Forwarded
+                    } else {
+                        ResultCode::TooLate
+                    };
+                }
+                if self.forwarded {
+                    return ResultCode::Forwarded;
+                }
+                if self.ending.is_some() {
+                    return ResultCode::Ended;
+                }
+                self.forwarded = true;
+                ResultCode::Forwarded
+            }
+            Step::Read => {
+                if self.first_save.is_none() || !self.forwarded {
+                    return ResultCode::NotVisible;
+                }
+                if self.waiting() && self.late() {
+                    self.finish(ModelEnding::TimedOut, ModelDelivery::Unpaid);
+                }
+                ResultCode::Readable
+            }
+            Step::Alarm(other_token) => {
+                if self.waiting() && self.late() && !other_token {
+                    self.finish(ModelEnding::TimedOut, ModelDelivery::Unpaid);
+                }
+                ResultCode::NoReply
+            }
+            Step::Deliver {
+                reply,
+                wrong_ending,
+            } => {
+                if !wrong_ending {
+                    match reply {
+                        DeliverEndingReply::Received {} => {
+                            self.delivery = Some(ModelDelivery::Received)
+                        }
+                        DeliverEndingReply::NotHeld {}
+                            if self.delivery == Some(ModelDelivery::Unpaid) =>
+                        {
+                            self.delivery = Some(ModelDelivery::Closed);
+                        }
+                        DeliverEndingReply::NotHeld {}
+                        | DeliverEndingReply::StopOwed {}
+                        | DeliverEndingReply::EndingDiffers {}
+                        | DeliverEndingReply::HolderNotReady {} => {}
+                    }
+                }
+                ResultCode::NoReply
+            }
+            Step::CloseSession => {
+                self.session_ended = true;
+                if self.waiting() {
+                    self.finish(ModelEnding::SessionEnded, ModelDelivery::Unpaid);
+                }
+                ResultCode::NoReply
+            }
         }
-        Ok(ApprovalReceipt::Report(
-            ReportDeliveryReply::DeliveryRecorded {},
-        ))
     }
 
-    fn assert_projection(&self, actual: &ApprovalState) {
-        if let Some(ending) = self.erased_ending {
+    fn assert_projection(
+        &self,
+        book: &ApprovalCollection,
+        key: &ApprovalRequestKey,
+        parent: &crate::ApprovalSession,
+    ) {
+        assert_eq!(book.high_water, time(self.floor));
+        assert_eq!(book.decisions.len(), self.operations.len());
+        if let Some((ending, ended_at)) = self.ending {
+            let observed = super::fixtures::closed(book, key);
+            let expected = match ending {
+                ModelEnding::Decided { choice, decider } => Ending::Decided {
+                    answer: answer(choice),
+                    by: match decider {
+                        Decider::Owner => DecidedBy::Person {
+                            person_id: person_id(10),
+                        },
+                        Decider::Parent => DecidedBy::Session {
+                            session: parent.session_id.clone(),
+                        },
+                    },
+                },
+                ModelEnding::TimedOut => Ending::TimedOut {},
+                ModelEnding::Stopped => Ending::Cancelled {
+                    reason: CancelReason::Stopped {
+                        cause: HolderStopCause::AskReplaced,
+                    },
+                },
+                ModelEnding::SessionEnded => Ending::Cancelled {
+                    reason: CancelReason::SessionEnded {},
+                },
+            };
+            assert_eq!(observed.ending.clone().into_ending(), expected);
+            assert_eq!(observed.ended_at, time(ended_at));
             assert_eq!(
-                actual,
-                &ApprovalState::Erased {
-                    request_id: request_id(),
-                    router_run: router_run(),
-                    ending,
+                observed.delivery,
+                match self.delivery.unwrap() {
+                    ModelDelivery::Unpaid => Delivery::Owed {},
+                    ModelDelivery::Received => Delivery::ReceivedByHolder {},
+                    ModelDelivery::Closed => Delivery::ClosedWithoutReceipt {},
                 }
             );
-            assert!(actual.is_terminal());
-            assert_eq!(ApprovalLifecycle::next_due(actual), None);
-            return;
+        } else if let Some((_, raised_at)) = self.first_save {
+            let ApprovalState::Waiting { saved } = &book.requests[key] else {
+                panic!("expected a retained wait");
+            };
+            assert_eq!(saved.window.raised_at(), time(raised_at));
+            assert_eq!(saved.window.deadline(), time(raised_at + HOUR));
+            assert_eq!(
+                saved.waiting_status,
+                if self.forwarded {
+                    WaitingStatus::PassedOn
+                } else {
+                    WaitingStatus::Pending
+                }
+            );
+        } else if self.stopped_before_raise.is_some() {
+            assert!(matches!(
+                book.requests[key],
+                ApprovalState::StoppedBeforeRaise { .. }
+            ));
+        } else {
+            assert!(!book.requests.contains_key(key));
         }
-        let expected = match (
-            self.first_request,
-            self.stopped_before_raise,
-            &self.outcome,
-            self.delivery,
-        ) {
-            (None, None, None, None) => ApprovalState::Unraised,
-            (None, Some(at), None, None) => ApprovalState::StoppedBeforeRaise {
-                request_id: request_id(),
-                router_run: router_run(),
-                cause: HolderStopCause::TurnStopped,
-                stopped_at: time(at),
-            },
-            (Some(first), None, outcome, delivery) => {
-                let mut destinations = vec![
-                    ApprovalDestination::Session(parent()),
-                    ApprovalDestination::Session(observer()),
-                ];
-                if self.visible_to_people {
-                    destinations.push(ApprovalDestination::People);
-                }
-                let saved = Box::new(RetainedApproval {
-                    raise: first.contents(),
-                    receipt: first.receipt(),
-                    destinations,
-                });
-                match (outcome, delivery) {
-                    (None, None) => ApprovalState::Waiting {
-                        saved,
-                        status: if self.forwarded {
-                            WaitingStatus::PassedOn
-                        } else {
-                            WaitingStatus::Pending
-                        },
-                    },
-                    (Some((ending, at)), Some(delivery)) => ApprovalState::Ended {
-                        saved,
-                        closed: EndedApproval {
-                            delivery,
-                            ending: ending.clone(),
-                            ended_at: time(*at),
-                        },
-                    },
-                    unexpected => panic!("inconsistent outcome and delivery: {unexpected:?}"),
-                }
-            }
-            unexpected => panic!("inconsistent model phase: {unexpected:?}"),
-        };
-        assert_eq!(&expected, actual);
-        assert_eq!(
-            ApprovalLifecycle::next_due(actual),
-            self.first_request
-                .filter(|_| self.outcome.is_none())
-                .map(|first| time(first.at + ONE_HOUR_MILLIS)),
-        );
-        assert_eq!(
-            actual.is_terminal(),
-            self.stopped_before_raise.is_some()
-                || self
-                    .delivery
-                    .is_some_and(|delivery| delivery != (Delivery::AwaitingReport {})),
-        );
     }
 }
 
-fn notices(phase: SessionNoticePhase) -> [ApprovalEffect; 2] {
-    [parent(), observer()].map(|session| ApprovalEffect::StoreSessionNotice {
-        request_id: request_id(),
-        session,
-        phase,
-    })
-}
-
-fn stopped_receipt(ending: StopReceiptEnding) -> ApprovalReceipt {
-    ApprovalReceipt::Stop(StopReply::StopReceipt { ending })
-}
-
-fn destination(refusal: Refusal) -> Rejected {
-    domain(ApprovalRefusal::Destination { refusal })
-}
-
-fn hidden() -> Rejected {
-    destination(Refusal::NotVisible {})
-}
-
-fn domain(refusal: ApprovalRefusal) -> Rejected {
-    TransitionError::Domain(refusal)
+fn code(effects: &[ApprovalCollectionEffect]) -> ResultCode {
+    if !matches!(
+        effects.last(),
+        Some(ApprovalCollectionEffect::Request(ApprovalEffect::Reply(_)))
+    ) {
+        return ResultCode::NoReply;
+    }
+    match reply(effects) {
+        ApprovalReceipt::Raise(result) => match result {
+            RaiseReply::Receipt { .. } => ResultCode::Receipt,
+            RaiseReply::AlreadyStopped {} => ResultCode::AlreadyStopped,
+            RaiseReply::ContentsDiffer {} => ResultCode::ContentsDiffer,
+            RaiseReply::SessionEnded {} => ResultCode::SessionEnded,
+            RaiseReply::TooManyOutstanding {} | RaiseReply::AuthorityRefused { .. } => {
+                panic!("expected registered fixture")
+            }
+        },
+        ApprovalReceipt::Decide(result) => match result {
+            ApprovalDecisionReply::SavedDecision { .. } => ResultCode::Decision,
+            ApprovalDecisionReply::Standing { .. } => ResultCode::Standing,
+            ApprovalDecisionReply::OperationConflict {} => ResultCode::OperationConflict,
+            ApprovalDecisionReply::NotVisible {} => ResultCode::NotVisible,
+            ApprovalDecisionReply::Invalid {} => ResultCode::Invalid,
+            ApprovalDecisionReply::TooLate {} => ResultCode::TooLate,
+        },
+        ApprovalReceipt::Read(view) => {
+            if view.is_some() {
+                ResultCode::Readable
+            } else {
+                ResultCode::NotVisible
+            }
+        }
+        ApprovalReceipt::PassOn(result) => match result {
+            PassOnReply::Forwarded {} => ResultCode::Forwarded,
+            PassOnReply::NotVisible {} => ResultCode::NotVisible,
+            PassOnReply::TooLate {} => ResultCode::TooLate,
+            PassOnReply::Ended {} => ResultCode::Ended,
+        },
+        ApprovalReceipt::Stop(result) => match result {
+            StopReply::Stands { .. } => ResultCode::StopReceipt,
+            StopReply::NotVisible {} => ResultCode::NotVisible,
+            StopReply::AuthorityRefused { .. } => panic!("expected registered fixture"),
+        },
+    }
 }
 
 #[hegel::test(test_cases = 400)]
-fn generated_histories_match_the_independent_approval_ledger(case: hegel::TestCase) {
-    let mut actual = ApprovalState::Unraised;
-    let mut expected = ApprovalLedger::default();
-    let mut now = 0;
-    let people_on_first_raise = case.draw(gs::booleans());
-    let start_commands = history_prefix(case.draw(gs::integers::<u8>().max_value(14)));
-    let tick_choices = [
-        0,
-        1,
-        79,
-        ONE_HOUR_MILLIS - 1,
-        ONE_HOUR_MILLIS,
-        ONE_HOUR_MILLIS + 1,
-        SIXTY_DAYS_MILLIS - 1,
-        SIXTY_DAYS_MILLIS,
-        SIXTY_DAYS_MILLIS + 1,
-    ];
-
-    let mut holder_can_act = true;
-    let mut compare_step = |command: Command, at: i64, include_people: bool| {
-        // Registration is the applying caller's responsibility. A retired holder
-        // supplies no reducer event, even when the request was never raised.
-        if !holder_can_act && command.requires_live_holder() {
-            expected.assert_projection(&actual);
-            return;
-        }
-        if matches!(command, Command::RunEnds | Command::EnrollmentEnds) {
-            holder_can_act = false;
-        }
-        let observed = step(&actual, command.event(include_people), at);
-        match (expected.record(command, at, include_people), observed) {
-            (Ok(effects), Ok((next, actual_effects))) => {
-                assert_eq!(effects, actual_effects, "effects for {command:?} at {at}");
-                actual = next;
+fn generated_histories_match_the_separate_smaller_central_ledger(case: hegel::TestCase) {
+    let (mut book, run, requester, parent) = setup();
+    let key = key(&run, 1);
+    let first = provider(&key, &requester, "First");
+    let changed = provider(&key, &requester, "Changed");
+    let mut expected = IndependentLedger::default();
+    let mut observed_counts = [0, 0, 0];
+    let mut last_offer: Option<DeliverEndingRequest> = None;
+    let mut compare = |step, sample| {
+        let input = match step {
+            Step::Raise(contents) => raise_event(
+                &run,
+                if contents {
+                    changed.clone()
+                } else {
+                    first.clone()
+                },
+                routing(Some(&parent), false),
+            ),
+            Step::Stop(contents) => ApprovalCollectionEvent::Stop {
+                run: run.clone(),
+                request: provider_stop(if contents { &changed } else { &first }),
+            },
+            Step::Decide {
+                operation,
+                choice,
+                decider,
+            } => decide_event(
+                &key,
+                match decider {
+                    Decider::Owner => person(10, FactorStanding::Fresh),
+                    Decider::Parent => AdmittedDecider::Session(parent.clone()),
+                },
+                operation,
+                answer(choice),
+            ),
+            Step::Forward => ApprovalCollectionEvent::PassOn {
+                key: key.clone(),
+                parent: parent.clone(),
+                request: PassOnRequest {
+                    request_id: key.request_id.clone(),
+                },
+            },
+            Step::Read => view_event(&key, 10),
+            Step::Alarm(other_token) => ApprovalCollectionEvent::Alarm {
+                key: key.clone(),
+                deadline: time(
+                    expected.first_save.map_or(HOUR, |(_, at)| at + HOUR) + i64::from(other_token),
+                ),
+            },
+            Step::Deliver {
+                reply,
+                wrong_ending,
+            } => {
+                let Some(mut request) = last_offer.clone() else {
+                    return;
+                };
+                if wrong_ending {
+                    let raise = if expected.first_save.unwrap().0 {
+                        &changed
+                    } else {
+                        &first
+                    };
+                    let wrong = if request.ending.clone().into_ending() == (Ending::TimedOut {}) {
+                        Ending::Cancelled {
+                            reason: CancelReason::SessionEnded {},
+                        }
+                    } else {
+                        Ending::TimedOut {}
+                    };
+                    request.ending = PrivateEnding::from_raise(raise, wrong).unwrap();
+                }
+                ApprovalCollectionEvent::DeliveryReply {
+                    run: run.clone(),
+                    request: Box::new(request),
+                    reply,
+                }
             }
-            (Err(refusal), Err(actual_refusal)) => {
-                assert_eq!(refusal, actual_refusal, "{command:?} at {at}")
+            Step::CloseSession => ApprovalCollectionEvent::EndSession {
+                session: requester.clone(),
+            },
+        };
+        let anticipated = expected.record(step, sample);
+        let effects = run_event(&mut book, input, sample);
+        assert_eq!(code(&effects), anticipated, "{step:?} at {sample}");
+        for effect in &effects {
+            match effect {
+                ApprovalCollectionEffect::Request(ApprovalEffect::RegisterDue { .. }) => {
+                    observed_counts[0] += 1
+                }
+                ApprovalCollectionEffect::Request(ApprovalEffect::ClearDue { .. }) => {
+                    observed_counts[1] += 1
+                }
+                ApprovalCollectionEffect::Request(ApprovalEffect::OfferEnding {
+                    request, ..
+                }) => {
+                    observed_counts[2] += 1;
+                    last_offer = Some((**request).clone());
+                }
+                ApprovalCollectionEffect::Request(_) | ApprovalCollectionEffect::Registered(_) => {}
             }
-            pair => panic!("{command:?} at {at}: ledger and reducer differ: {pair:?}"),
         }
-        expected.assert_projection(&actual);
+        assert_eq!(
+            observed_counts,
+            [expected.opens, expected.ends, expected.offers]
+        );
+        expected.assert_projection(&book, &key, &parent);
     };
 
-    for command in start_commands {
-        if matches!(command, Command::Erase) {
-            now = SIXTY_DAYS_MILLIS;
-        }
-        compare_step(command, now, people_on_first_raise);
+    if case.draw(gs::booleans()) {
+        compare(Step::Raise(false), 0);
     }
-    for _ in 0..case.draw(gs::integers::<u8>().min_value(1).max_value(30)) {
-        let command = case.draw(gs::sampled_from(COMMANDS.to_vec()));
-        let command = if matches!(command, Command::Report { .. }) {
-            command.with_foreign_request(case.draw(gs::booleans()))
-        } else {
-            command
+    for _ in 0..case.draw(gs::integers::<u8>().min_value(1).max_value(36)) {
+        let step = match case.draw(gs::integers::<u8>().max_value(8)) {
+            0 | 1 => Step::Raise(case.draw(gs::booleans())),
+            2 => Step::Decide {
+                operation: case.draw(gs::integers::<u16>().min_value(101).max_value(105)),
+                choice: case.draw(gs::integers::<u8>().min_value(1).max_value(6)),
+                decider: if case.draw(gs::booleans()) {
+                    Decider::Owner
+                } else {
+                    Decider::Parent
+                },
+            },
+            3 => Step::Stop(case.draw(gs::booleans())),
+            4 => Step::Forward,
+            5 => Step::Read,
+            6 => Step::Alarm(case.draw(gs::booleans())),
+            7 => Step::Deliver {
+                reply: case.draw(gs::sampled_from(vec![
+                    DeliverEndingReply::Received {},
+                    DeliverEndingReply::NotHeld {},
+                    DeliverEndingReply::StopOwed {},
+                    DeliverEndingReply::HolderNotReady {},
+                    DeliverEndingReply::EndingDiffers {},
+                ])),
+                wrong_ending: case.draw(gs::booleans()),
+            },
+            _ => Step::CloseSession,
         };
-        let tick = case.draw(gs::sampled_from(tick_choices.to_vec()));
-        now += tick;
-        compare_step(command, now, case.draw(gs::booleans()));
+        let sampled = case.draw(gs::sampled_from(vec![
+            0,
+            1,
+            HOUR - 1,
+            HOUR,
+            HOUR + 1,
+            2 * HOUR,
+        ]));
+        compare(step, sampled);
     }
 }

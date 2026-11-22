@@ -1,65 +1,70 @@
+use approval_request_protocol::RequestContentsDigest;
 use approval_request_protocol::{
-    CancelReason, CentralTime, Delivery, Ending, HolderReport, HolderStopCause, Raise,
-    RaiseReceipt, RaiseReply, Refusal, ReportDeliveryReply, ReportDeliveryRequest,
-    StopReceiptEnding, StopReply, WaitingStatus,
+    ApprovalWindow, CancelReason, CentralTime, Delivery, Ending, Raise, RaiseReceipt, RaiseReply,
+    StopReceiptEnding, StopReply, StopRequest, WaitingStatus,
 };
 use central_engine_model::{
-    Context, EngineTime, EventTag, Machine, MachineKind, StateTag, Transition, TransitionError,
-    TransitionResult, supported_time,
+    Context, EngineTime, Machine, MachineKind, Transition, TransitionError, supported_time,
 };
-use std::collections::BTreeSet;
-use workspace_ids::{ApprovalRequestId, RouterRunId};
 
+use crate::approval_lifecycle_admission::{matches_key, stop_binding};
+use crate::approval_lifecycle_delivery::{receive, reoffer};
+use crate::approval_lifecycle_destinations::{decide, pass_on, read};
+use crate::approval_lifecycle_effects::{
+    ApprovalChange, finish, notices, reply, standing, with_delivery,
+};
 use crate::{
-    ApprovalDestination, ApprovalEffect, ApprovalEvent, ApprovalReceipt, ApprovalRefusal,
-    ApprovalState, EndedApproval, RetainedApproval, SessionNoticePhase,
+    ApprovalActor, ApprovalApply, ApprovalEffect, ApprovalEvent, ApprovalReceipt, ApprovalRefusal,
+    ApprovalRequestKey, ApprovalRouting, ApprovalState, ProviderSessionAvailability,
+    RaiseAdmission, RetainedApproval, SessionNoticePhase,
 };
 
-use crate::approval_lifecycle_admission::{
-    check_destination, check_parent, check_scope, check_stop, destination_refusal, raise_run,
-    stop_scope, validate_answer,
-};
+pub const MAX_OUTSTANDING_PER_RUN: usize = 256;
 
-use crate::approval_lifecycle_erasure::{apply_erased_marker, erase_ended, which_ending_stands};
-
-/// Reduces admitted events for one scoped request into its next state and owed writes.
+/// Reduces one request within the applying authority's guarded scope.
 pub struct ApprovalLifecycle;
-
-type LifecycleResult = TransitionResult<ApprovalLifecycle>;
-type LifecycleError = TransitionError<ApprovalRefusal>;
-
-const APPROVAL_LIFETIME_SECONDS: i64 = 60 * 60;
 
 impl Machine for ApprovalLifecycle {
     const KIND: MachineKind = MachineKind("approval_request");
     type State = ApprovalState;
-    type Event = ApprovalEvent;
+    type Event = ApprovalApply;
     type Effect = ApprovalEffect;
     type Error = ApprovalRefusal;
 
     fn transition(
         state: &ApprovalState,
-        event: ApprovalEvent,
+        apply: ApprovalApply,
         context: &mut Context<'_>,
-    ) -> LifecycleResult {
-        let now = context.now;
-        match state {
-            ApprovalState::Unraised => apply_unraised(event, now),
-            ApprovalState::StoppedBeforeRaise {
-                request_id,
-                router_run,
-                cause,
-                ..
-            } => apply_stopped_marker(state, request_id, router_run, *cause, event),
-            ApprovalState::Waiting { saved, status } => {
-                apply_waiting(state, saved, *status, event, now)
+    ) -> ApprovalChange {
+        let now = context.now.max(apply.high_water);
+        match apply.event {
+            ApprovalEvent::Raise {
+                key,
+                raise,
+                routing,
+                admission,
+            } => apply_raise(state, key, *raise, routing, admission, now),
+            ApprovalEvent::Decide {
+                key,
+                actor,
+                request,
+                prior,
+            } => decide(state, &key, &actor, request, prior.as_deref(), now),
+            ApprovalEvent::Read { key, person_id } => {
+                read(state, &key, &ApprovalActor::Person(person_id), now)
             }
-            ApprovalState::Ended { saved, closed } => apply_ended(state, saved, closed, event, now),
-            ApprovalState::Erased {
-                request_id,
-                router_run,
-                ending,
-            } => apply_erased_marker(state, request_id, router_run, *ending, event),
+            ApprovalEvent::PassOn { key, live_parent } => pass_on(state, &key, &live_parent, now),
+            ApprovalEvent::Stop { key, request } => apply_stop(state, key, &request, now),
+            ApprovalEvent::DeliveryReply {
+                key,
+                request,
+                reply,
+            } => receive(state, &key, &request, reply),
+            ApprovalEvent::Alarm { deadline } => apply_alarm(state, deadline, now),
+            ApprovalEvent::RunRetired => end_authority(state, AuthorityEnd::Run, now),
+            ApprovalEvent::EnrollmentEnded => end_authority(state, AuthorityEnd::Enrollment, now),
+            ApprovalEvent::SessionEnded => end_authority(state, AuthorityEnd::ProviderSession, now),
+            ApprovalEvent::Reoffer => reoffer(state),
         }
     }
 
@@ -69,480 +74,234 @@ impl Machine for ApprovalLifecycle {
 
     fn next_due(state: &ApprovalState) -> Option<EngineTime> {
         match state {
-            ApprovalState::Waiting { saved, .. } => Some(saved.receipt.deadline),
+            ApprovalState::Waiting { saved } => Some(saved.window.deadline()),
             ApprovalState::Unraised
             | ApprovalState::StoppedBeforeRaise { .. }
-            | ApprovalState::Ended { .. }
-            | ApprovalState::Erased { .. } => None,
+            | ApprovalState::Ended { .. } => None,
         }
     }
 }
 
-fn apply_unraised(event: ApprovalEvent, now: EngineTime) -> LifecycleResult {
-    match event {
-        ApprovalEvent::Raise {
-            raise,
-            mut destinations,
-        } => {
-            let deadline = now
-                .timestamp()
-                .checked_add(APPROVAL_LIFETIME_SECONDS)
-                .and_then(|seconds| {
-                    EngineTime::from_timestamp(seconds, now.timestamp_subsec_nanos())
-                })
-                .filter(|deadline| supported_time(*deadline))
-                .ok_or(TransitionError::Domain(ApprovalRefusal::DeadlineOutOfRange))?;
-            let receipt = RaiseReceipt {
-                request_id: raise.request_id().clone(),
-                raised_at: now,
-                deadline,
+fn apply_raise(
+    state: &ApprovalState,
+    key: ApprovalRequestKey,
+    raise: Raise,
+    routing: ApprovalRouting,
+    admission: RaiseAdmission,
+    now: CentralTime,
+) -> ApprovalChange {
+    if !matches_key(&key, raise.request_id(), raise.router_run())
+        || state.key().is_some_and(|saved| saved != &key)
+    {
+        return reply(state, ApprovalReceipt::Raise(RaiseReply::ContentsDiffer {}));
+    }
+    match state {
+        ApprovalState::Waiting { saved } | ApprovalState::Ended { saved, .. } => {
+            let result = if saved.contents_digest == raise_digest(&raise)? {
+                RaiseReply::Receipt {
+                    receipt: RaiseReceipt {
+                        request_id: saved.key.request_id.clone(),
+                        window: saved.window,
+                    },
+                }
+            } else {
+                RaiseReply::ContentsDiffer {}
             };
-            let mut seen = BTreeSet::new();
-            destinations.retain(|destination| seen.insert(destination.clone()));
-            let mut effects = session_notices(
-                &receipt.request_id,
-                &destinations,
-                SessionNoticePhase::Raised,
-            );
+            reply(state, ApprovalReceipt::Raise(result))
+        }
+        ApprovalState::StoppedBeforeRaise {
+            contents_digest, ..
+        } => {
+            let digest = raise_digest(&raise)?;
+            let result = if contents_digest == &digest {
+                RaiseReply::AlreadyStopped {}
+            } else {
+                RaiseReply::ContentsDiffer {}
+            };
+            reply(state, ApprovalReceipt::Raise(result))
+        }
+        ApprovalState::Unraised => {
+            if admission.provider_session == ProviderSessionAvailability::NotAvailable {
+                return reply(state, ApprovalReceipt::Raise(RaiseReply::SessionEnded {}));
+            }
+            if admission.outstanding >= MAX_OUTSTANDING_PER_RUN {
+                return reply(
+                    state,
+                    ApprovalReceipt::Raise(RaiseReply::TooManyOutstanding {}),
+                );
+            }
+            let window = ApprovalWindow::from_first_save(now)
+                .ok()
+                .filter(|window| supported_time(window.deadline()))
+                .ok_or(TransitionError::Domain(ApprovalRefusal::DeadlineOutOfRange))?;
+            let contents_digest = raise_digest(&raise)?;
+            let saved = RetainedApproval {
+                key,
+                raise,
+                contents_digest,
+                window,
+                routing,
+                waiting_status: WaitingStatus::Pending,
+            };
+            let mut effects = notices(&saved, SessionNoticePhase::Raised);
             effects.push(ApprovalEffect::RegisterDue {
-                request_id: receipt.request_id.clone(),
-                deadline,
+                key: saved.key.clone(),
+                deadline: window.deadline(),
             });
             effects.push(ApprovalEffect::Reply(ApprovalReceipt::Raise(
-                RaiseReply::RaiseReceipt {
-                    receipt: receipt.clone(),
+                RaiseReply::Receipt {
+                    receipt: RaiseReceipt {
+                        request_id: saved.key.request_id.clone(),
+                        window,
+                    },
                 },
             )));
-            let saved = RetainedApproval {
-                raise: *raise,
-                receipt,
-                destinations,
-            };
             Ok((
                 ApprovalState::Waiting {
                     saved: Box::new(saved),
-                    status: WaitingStatus::Pending,
                 },
                 effects,
             ))
         }
-        ApprovalEvent::Stop(stop) => {
-            let cause = stop.cause();
-            let (request_id, router_run) = stop_scope(&stop);
-            let state = ApprovalState::StoppedBeforeRaise {
-                request_id: request_id.clone(),
-                router_run: router_run.clone(),
+    }
+}
+
+fn raise_digest(raise: &Raise) -> Result<RequestContentsDigest, TransitionError<ApprovalRefusal>> {
+    raise
+        .contents_digest()
+        .map_err(|_| TransitionError::Domain(ApprovalRefusal::InvalidDigest))
+}
+
+fn apply_stop(
+    state: &ApprovalState,
+    key: ApprovalRequestKey,
+    stop: &StopRequest,
+    now: CentralTime,
+) -> ApprovalChange {
+    let (request_id, run, digest) = stop_binding(stop);
+    if !matches_key(&key, request_id, run) || state.key().is_some_and(|saved| saved != &key) {
+        return reply(state, ApprovalReceipt::Stop(StopReply::NotVisible {}));
+    }
+    let response = |ending| ApprovalReceipt::Stop(StopReply::Stands { ending });
+    let cause = stop.cause();
+    match state {
+        ApprovalState::Unraised => Ok((
+            ApprovalState::StoppedBeforeRaise {
+                key,
+                contents_digest: digest.clone(),
                 cause,
-                stopped_at: now,
-            };
-            Ok((
-                state,
-                vec![ApprovalEffect::Reply(stop_receipt(
-                    StopReceiptEnding::Cancelled {
-                        reason: CancelReason::Stopped { cause },
-                    },
-                ))],
-            ))
-        }
-        event @ (ApprovalEvent::Answer { .. }
-        | ApprovalEvent::PassOn { .. }
-        | ApprovalEvent::ClockReached
-        | ApprovalEvent::RunRetired
-        | ApprovalEvent::SessionEnded
-        | ApprovalEvent::EnrollmentEnded
-        | ApprovalEvent::OfferAgain { .. }
-        | ApprovalEvent::Report(_)
-        | ApprovalEvent::Erase) => Err(not_allowed(&ApprovalState::Unraised, &event)),
-    }
-}
-
-fn apply_stopped_marker(
-    state: &ApprovalState,
-    request_id: &ApprovalRequestId,
-    router_run: &RouterRunId,
-    cause: HolderStopCause,
-    event: ApprovalEvent,
-) -> LifecycleResult {
-    match event {
-        ApprovalEvent::Raise { raise, .. } => {
-            check_scope(
-                request_id,
-                router_run,
-                raise.request_id(),
-                raise_run(&raise),
-            )?;
-            reply_unchanged(state, ApprovalReceipt::Raise(RaiseReply::AlreadyStopped {}))
-        }
-        ApprovalEvent::Stop(stop) => {
-            let (stop_id, stop_run) = stop_scope(&stop);
-            check_scope(request_id, router_run, stop_id, stop_run)?;
-            reply_unchanged(
-                state,
-                stop_receipt(StopReceiptEnding::Cancelled {
+            },
+            vec![ApprovalEffect::Reply(response(
+                StopReceiptEnding::Cancelled {
                     reason: CancelReason::Stopped { cause },
-                }),
-            )
-        }
-        event @ (ApprovalEvent::Answer { .. }
-        | ApprovalEvent::PassOn { .. }
-        | ApprovalEvent::ClockReached
-        | ApprovalEvent::RunRetired
-        | ApprovalEvent::SessionEnded
-        | ApprovalEvent::EnrollmentEnded
-        | ApprovalEvent::OfferAgain { .. }
-        | ApprovalEvent::Report(_)
-        | ApprovalEvent::Erase) => Err(not_allowed(state, &event)),
-    }
-}
-
-fn apply_waiting(
-    state: &ApprovalState,
-    saved: &RetainedApproval,
-    status: WaitingStatus,
-    event: ApprovalEvent,
-    now: EngineTime,
-) -> LifecycleResult {
-    match event {
-        ApprovalEvent::Raise { raise, .. } => replay_raise(state, saved, &raise),
-        ApprovalEvent::Answer { actor, answer } => {
-            check_destination(saved, &actor)?;
-            if now >= saved.receipt.deadline {
-                return Ok(end_wait(
-                    saved,
-                    Ending::TimedOut {},
-                    Delivery::AwaitingReport {},
-                    now,
-                    Some(ApprovalReceipt::AnswerRefused(Refusal::TooLate {})),
-                ));
-            }
-            validate_answer(saved, &actor, &answer)?;
-            let by = actor.identity();
-            let ending = Ending::Decided {
-                answer,
-                by: by.clone(),
-            };
-            let receipt = ApprovalReceipt::Answer(ending.for_destination(&by));
-            Ok(end_wait(
-                saved,
-                ending,
-                Delivery::AwaitingReport {},
-                now,
-                Some(receipt),
-            ))
-        }
-        ApprovalEvent::PassOn { authority } => {
-            check_parent(saved, authority)?;
-            if now >= saved.receipt.deadline {
-                return Ok(end_wait(
-                    saved,
-                    Ending::TimedOut {},
-                    Delivery::AwaitingReport {},
-                    now,
-                    Some(ApprovalReceipt::PassOnRefused(Refusal::TooLate {})),
-                ));
-            }
-            if status == WaitingStatus::PassedOn {
-                return reply_unchanged(state, ApprovalReceipt::PassedOn);
-            }
-            let mut saved = Box::new(saved.clone());
-            if !saved.destinations.contains(&ApprovalDestination::People) {
-                saved.destinations.push(ApprovalDestination::People);
-            }
-            Ok((
-                ApprovalState::Waiting {
-                    saved,
-                    status: WaitingStatus::PassedOn,
                 },
-                vec![ApprovalEffect::Reply(ApprovalReceipt::PassedOn)],
-            ))
-        }
-        ApprovalEvent::Stop(stop) => {
-            check_stop(saved, &stop)?;
-            let ending = if now >= saved.receipt.deadline {
-                Ending::TimedOut {}
-            } else {
-                Ending::Cancelled {
-                    reason: CancelReason::Stopped {
-                        cause: stop.cause(),
-                    },
-                }
-            };
-            let receipt = stop_receipt(which_ending_stands(&ending));
-            Ok(end_wait(
-                saved,
-                ending,
-                gone_before_handover(),
-                now,
-                Some(receipt),
-            ))
-        }
-        ApprovalEvent::ClockReached => {
-            if now < saved.receipt.deadline {
-                return Err(TransitionError::Stale);
-            }
-            Ok(end_wait(
-                saved,
-                Ending::TimedOut {},
-                Delivery::AwaitingReport {},
-                now,
-                None,
-            ))
-        }
-        ApprovalEvent::RunRetired => Ok(end_for_authority_loss(
-            saved,
-            CancelReason::RequesterGone {},
-            now,
+            ))],
         )),
-        ApprovalEvent::EnrollmentEnded => Ok(end_for_authority_loss(
-            saved,
-            CancelReason::EnrollmentEnded {},
-            now,
-        )),
-        ApprovalEvent::SessionEnded => {
-            let ending = if now >= saved.receipt.deadline {
-                Ending::TimedOut {}
-            } else {
-                Ending::Cancelled {
-                    reason: CancelReason::SessionEnded {},
-                }
-            };
-            Ok(end_wait(
-                saved,
-                ending,
-                Delivery::AwaitingReport {},
-                now,
-                None,
-            ))
-        }
-        event @ (ApprovalEvent::OfferAgain { .. }
-        | ApprovalEvent::Report(_)
-        | ApprovalEvent::Erase) => Err(not_allowed(state, &event)),
-    }
-}
-
-fn apply_ended(
-    state: &ApprovalState,
-    saved: &RetainedApproval,
-    closed: &EndedApproval,
-    event: ApprovalEvent,
-    now: EngineTime,
-) -> LifecycleResult {
-    match event {
-        ApprovalEvent::Erase => erase_ended(saved, closed, now),
-        ApprovalEvent::Raise { raise, .. } => replay_raise(state, saved, &raise),
-        ApprovalEvent::Answer { actor, .. } => {
-            check_destination(saved, &actor)?;
-            Err(destination_refusal(Refusal::Ended {
-                ending: closed.ending.for_destination(&actor.identity()),
-            }))
-        }
-        ApprovalEvent::PassOn { authority } => {
-            let parent = check_parent(saved, authority)?;
-            Err(destination_refusal(Refusal::Ended {
-                ending: closed.ending.for_destination(
-                    &approval_request_protocol::DecidedBy::Session { session: parent },
-                ),
-            }))
-        }
-        ApprovalEvent::Stop(stop) => {
-            check_stop(saved, &stop)?;
-            if matches!(
-                closed.delivery,
-                Delivery::ReceiptUnknown {} | Delivery::NoHandoverOwed {}
-            ) {
-                return Err(TransitionError::Stale);
-            }
-            let receipt = stop_receipt(which_ending_stands(&closed.ending));
-            let delivery = if matches!(closed.delivery, Delivery::Reported { .. }) {
-                closed.delivery
-            } else {
-                gone_before_handover()
-            };
-            Ok((
-                with_delivery(saved, closed, delivery),
-                vec![ApprovalEffect::Reply(receipt)],
-            ))
-        }
-        ApprovalEvent::OfferAgain { router_run } => {
-            if &router_run != saved.holder_run() {
-                return Err(TransitionError::Stale);
-            }
-            if closed.delivery != (Delivery::AwaitingReport {}) {
-                return Err(TransitionError::Domain(ApprovalRefusal::NoHandoverOwed));
-            }
-            Ok((
-                state.clone(),
-                vec![offer_effect(saved, closed.ending.clone())],
-            ))
-        }
-        ApprovalEvent::Report(report) => apply_report(saved, closed, &report),
-        ApprovalEvent::RunRetired | ApprovalEvent::EnrollmentEnded => {
-            if closed.delivery == (Delivery::AwaitingReport {}) {
-                return Ok((
-                    with_delivery(saved, closed, Delivery::ReceiptUnknown {}),
-                    vec![],
-                ));
-            }
-            Ok((state.clone(), vec![]))
-        }
-        ApprovalEvent::SessionEnded | ApprovalEvent::ClockReached => Ok((state.clone(), vec![])),
-    }
-}
-
-fn end_for_authority_loss(
-    saved: &RetainedApproval,
-    reason: CancelReason,
-    now: EngineTime,
-) -> (ApprovalState, Vec<ApprovalEffect>) {
-    if now >= saved.receipt.deadline {
-        end_wait(
-            saved,
-            Ending::TimedOut {},
-            Delivery::ReceiptUnknown {},
-            now,
-            None,
-        )
-    } else {
-        end_wait(
-            saved,
-            Ending::Cancelled { reason },
-            Delivery::NoHandoverOwed {},
-            now,
-            None,
-        )
-    }
-}
-
-fn end_wait(
-    saved: &RetainedApproval,
-    ending: Ending,
-    delivery: Delivery,
-    at: CentralTime,
-    receipt: Option<ApprovalReceipt>,
-) -> (ApprovalState, Vec<ApprovalEffect>) {
-    let request_id = &saved.receipt.request_id;
-    let mut effects = session_notices(request_id, &saved.destinations, SessionNoticePhase::Ended);
-    effects.push(ApprovalEffect::ClearDue {
-        request_id: request_id.clone(),
-    });
-    if delivery == (Delivery::AwaitingReport {}) {
-        effects.push(offer_effect(saved, ending.clone()));
-    }
-    if let Some(receipt) = receipt {
-        effects.push(ApprovalEffect::Reply(receipt));
-    }
-    let state = ApprovalState::Ended {
-        saved: Box::new(saved.clone()),
-        closed: EndedApproval {
-            ending,
-            ended_at: at,
-            delivery,
-        },
-    };
-    (state, effects)
-}
-
-fn apply_report(
-    saved: &RetainedApproval,
-    closed: &EndedApproval,
-    report: &ReportDeliveryRequest,
-) -> LifecycleResult {
-    check_scope(
-        &saved.receipt.request_id,
-        saved.holder_run(),
-        &report.request_id,
-        &report.router_run,
-    )?;
-    let stored = match closed.delivery {
-        Delivery::AwaitingReport {} => report.report,
-        Delivery::Reported { report: prior } if prior == report.report => prior,
-        Delivery::Reported { .. } => {
-            return Err(TransitionError::Domain(ApprovalRefusal::ReportDiffers));
-        }
-        Delivery::NoHandoverOwed {} | Delivery::ReceiptUnknown {} => {
-            return Err(TransitionError::Domain(ApprovalRefusal::NoHandoverOwed));
-        }
-    };
-    Ok((
-        with_delivery(saved, closed, Delivery::Reported { report: stored }),
-        vec![ApprovalEffect::Reply(ApprovalReceipt::Report(
-            ReportDeliveryReply::DeliveryRecorded {},
-        ))],
-    ))
-}
-
-fn replay_raise(state: &ApprovalState, saved: &RetainedApproval, raise: &Raise) -> LifecycleResult {
-    check_scope(
-        &saved.receipt.request_id,
-        saved.holder_run(),
-        raise.request_id(),
-        raise_run(raise),
-    )?;
-    if &saved.raise != raise {
-        return Err(TransitionError::Domain(ApprovalRefusal::ContentsDiffer));
-    }
-    reply_unchanged(
-        state,
-        ApprovalReceipt::Raise(RaiseReply::RaiseReceipt {
-            receipt: saved.receipt.clone(),
-        }),
-    )
-}
-
-fn session_notices(
-    request_id: &ApprovalRequestId,
-    destinations: &[ApprovalDestination],
-    phase: SessionNoticePhase,
-) -> Vec<ApprovalEffect> {
-    destinations
-        .iter()
-        .filter_map(|destination| match destination {
-            ApprovalDestination::People => None,
-            ApprovalDestination::Session(session) => Some(ApprovalEffect::StoreSessionNotice {
-                request_id: request_id.clone(),
-                session: session.clone(),
-                phase,
+        ApprovalState::StoppedBeforeRaise {
+            contents_digest,
+            cause,
+            ..
+        } if contents_digest == digest => reply(
+            state,
+            response(StopReceiptEnding::Cancelled {
+                reason: CancelReason::Stopped { cause: *cause },
             }),
-        })
-        .collect()
-}
-
-fn offer_effect(saved: &RetainedApproval, ending: Ending) -> ApprovalEffect {
-    ApprovalEffect::OfferEnding(Box::new(saved.offer_ending(ending)))
-}
-
-fn with_delivery(
-    saved: &RetainedApproval,
-    closed: &EndedApproval,
-    delivery: Delivery,
-) -> ApprovalState {
-    ApprovalState::Ended {
-        saved: Box::new(saved.clone()),
-        closed: EndedApproval {
-            delivery,
-            ..closed.clone()
-        },
+        ),
+        ApprovalState::Waiting { saved } if &saved.contents_digest == digest => {
+            let ending = deadline_ending(
+                saved,
+                Ending::Cancelled {
+                    reason: CancelReason::Stopped { cause },
+                },
+                now,
+            );
+            let receipt = response(standing(&ending));
+            let (next, mut effects) =
+                finish(saved, ending, Delivery::ClosedWithoutReceipt {}, now)?;
+            effects.push(ApprovalEffect::Reply(receipt));
+            Ok((next, effects))
+        }
+        ApprovalState::Ended { saved, closed } if &saved.contents_digest == digest => {
+            let receipt = response(standing(&closed.ending.clone().into_ending()));
+            if closed.delivery == (Delivery::Owed {}) {
+                Ok((
+                    with_delivery(saved, closed, Delivery::ClosedWithoutReceipt {}),
+                    vec![ApprovalEffect::Reply(receipt)],
+                ))
+            } else {
+                reply(state, receipt)
+            }
+        }
+        ApprovalState::StoppedBeforeRaise { .. }
+        | ApprovalState::Waiting { .. }
+        | ApprovalState::Ended { .. } => {
+            reply(state, ApprovalReceipt::Stop(StopReply::NotVisible {}))
+        }
     }
 }
 
-fn gone_before_handover() -> Delivery {
-    Delivery::Reported {
-        report: HolderReport::GoneBeforeHandover,
+fn apply_alarm(state: &ApprovalState, deadline: CentralTime, now: CentralTime) -> ApprovalChange {
+    match state {
+        ApprovalState::Waiting { saved }
+            if saved.window.deadline() == deadline && now >= deadline =>
+        {
+            finish(saved, Ending::TimedOut {}, Delivery::Owed {}, now)
+        }
+        ApprovalState::Unraised
+        | ApprovalState::StoppedBeforeRaise { .. }
+        | ApprovalState::Waiting { .. }
+        | ApprovalState::Ended { .. } => Err(TransitionError::Stale),
     }
 }
 
-fn stop_receipt(ending: StopReceiptEnding) -> ApprovalReceipt {
-    ApprovalReceipt::Stop(StopReply::StopReceipt { ending })
+#[derive(Clone, Copy)]
+enum AuthorityEnd {
+    Run,
+    Enrollment,
+    ProviderSession,
 }
 
-fn reply_unchanged(state: &ApprovalState, receipt: ApprovalReceipt) -> LifecycleResult {
-    Ok((state.clone(), vec![ApprovalEffect::Reply(receipt)]))
+fn end_authority(
+    state: &ApprovalState,
+    authority: AuthorityEnd,
+    now: CentralTime,
+) -> ApprovalChange {
+    let reason = match authority {
+        AuthorityEnd::Run => CancelReason::RequesterGone {},
+        AuthorityEnd::Enrollment => CancelReason::EnrollmentEnded {},
+        AuthorityEnd::ProviderSession => CancelReason::SessionEnded {},
+    };
+    match (state, authority) {
+        (ApprovalState::Waiting { saved }, AuthorityEnd::ProviderSession) => {
+            let ending = deadline_ending(saved, Ending::Cancelled { reason }, now);
+            finish(saved, ending, Delivery::Owed {}, now)
+        }
+        (ApprovalState::Waiting { saved }, AuthorityEnd::Run | AuthorityEnd::Enrollment) => {
+            let ending = deadline_ending(saved, Ending::Cancelled { reason }, now);
+            finish(saved, ending, Delivery::ClosedWithoutReceipt {}, now)
+        }
+        (ApprovalState::Ended { saved, closed }, AuthorityEnd::Run | AuthorityEnd::Enrollment)
+            if closed.delivery == (Delivery::Owed {}) =>
+        {
+            Ok((
+                with_delivery(saved, closed, Delivery::ClosedWithoutReceipt {}),
+                Vec::new(),
+            ))
+        }
+        (
+            ApprovalState::Unraised
+            | ApprovalState::StoppedBeforeRaise { .. }
+            | ApprovalState::Ended { .. },
+            AuthorityEnd::Run | AuthorityEnd::Enrollment | AuthorityEnd::ProviderSession,
+        ) => Ok((state.clone(), Vec::new())),
+    }
 }
 
-fn not_allowed(state: &ApprovalState, event: &ApprovalEvent) -> LifecycleError {
-    TransitionError::NotAllowed {
-        state: state.state_tag(),
-        event: event.event_tag(),
+fn deadline_ending(saved: &RetainedApproval, before_deadline: Ending, now: CentralTime) -> Ending {
+    if now >= saved.window.deadline() {
+        Ending::TimedOut {}
+    } else {
+        before_deadline
     }
 }
 
