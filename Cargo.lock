@@ -5736,6 +5736,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchboard-central-link-test"
+version = "0.1.158"
+dependencies = [
+ "central-link-client",
+ "central-link-protocol",
+ "collaboration-central-conformance",
+ "collaboration-central-tokio",
+ "reqwest 0.12.28",
+ "router-clock",
+ "serde_json",
+ "switchboard-central-link",
+ "tokio",
+]
+
+[[package]]
 name = "switchboard-harness-contracts"
 version = "0.1.158"
 dependencies = [

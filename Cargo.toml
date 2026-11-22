@@ -4,6 +4,7 @@ members = [
     "crates/central-link-protocol",
     "crates/central-link-client",
     "crates/switchboard-central-link",
+    "crates/switchboard-central-link-test",
     "crates/workspace-ids",
     "crates/workspace-model",
     "crates/workspace-rules",
