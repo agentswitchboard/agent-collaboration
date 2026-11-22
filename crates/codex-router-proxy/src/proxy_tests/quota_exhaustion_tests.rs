@@ -2,6 +2,7 @@ use super::*;
 
 #[test]
 fn assembled_loopback_router_runtime_retries_http_quota_errors_until_account_can_serve() {
+    // Reject a build that serves through the tertiary account but drops either quota write.
     let temp_dir = ProxyTestTempDir::new("assembled_runtime_http_quota_retry_chain");
     let database_path = temp_dir.path().join("state.sqlite");
     let secret_path = temp_dir.path().join("secrets");
@@ -96,7 +97,11 @@ fn assembled_loopback_router_runtime_retries_http_quota_errors_until_account_can
         LocalRouterTokenRecord::new(SecretString::new("current-token"), TokenGeneration::new(1)),
     )
     .with_quota_clock(1_030, 60);
-    let runtime = match LoopbackRouterRuntime::start_for_test(config) {
+    let (quota_completion_sender, mut quota_completions) = tokio::sync::mpsc::unbounded_channel();
+    let runtime = match LoopbackRouterRuntime::start_for_test_with_quota_write_completion_sender(
+        config,
+        quota_completion_sender,
+    ) {
         Ok(runtime) => runtime,
         Err(error) => panic!("router runtime should start: {error}"),
     };
@@ -145,8 +150,12 @@ fn assembled_loopback_router_runtime_retries_http_quota_errors_until_account_can
         Err(error) => panic!("mock upstream thread panicked: {error:?}"),
     }
 
-    wait_for_durable_quota_exhaustion(&state, &[primary.account_id(), secondary.account_id()]);
-    wait_for_repository_selected_account(
+    wait_for_durable_quota_exhaustion(
+        &state,
+        &mut quota_completions,
+        &[primary.account_id(), secondary.account_id()],
+    );
+    assert_repository_selected_account(
         &state,
         tertiary.account_id(),
         "durable quota state should select the fallback while serving",
@@ -159,7 +168,7 @@ fn assembled_loopback_router_runtime_retries_http_quota_errors_until_account_can
     }
 
     let runtime_state = must_ok(SqliteStateStore::open(&database_path));
-    wait_for_repository_selected_account(
+    assert_repository_selected_account(
         &runtime_state,
         tertiary.account_id(),
         "tertiary should remain selectable after chained quota retries",

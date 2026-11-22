@@ -10,8 +10,6 @@ use codex_router_core::ids::AccountId;
 use codex_router_core::ids::ReservationId;
 use codex_router_core::provider::Provider;
 use codex_router_core::routes::RouteBand;
-use futures_util::future::BoxFuture;
-use thiserror::Error;
 use tokio::runtime::Handle;
 use tokio::sync::mpsc;
 use tokio::task::JoinHandle;
@@ -33,11 +31,14 @@ use crate::telemetry::record_db_write_queue_depth;
 use crate::telemetry::record_db_write_queue_event;
 use codex_router_state::affinity_owner::PreviousResponseAffinityOwnerRecord;
 use codex_router_state::session_account_affinity::SessionAccountAffinity;
-use codex_router_state::sqlite::AsyncSqliteStateStore;
-use codex_router_state::sqlite::StateStoreError;
 
 mod session_affinity_scheduler;
+mod write_repository;
+
 use session_affinity_scheduler::{await_db_write_task_shutdown, run_session_affinity_scheduler};
+#[cfg(test)]
+pub(crate) use write_repository::QuotaWriteCompletion;
+pub use write_repository::{DbWriteRepository, DbWriteRepositoryError, SqliteDbWriteRepository};
 
 /// Default bounded capacity for durable provider exhaustion writes.
 pub const PROVIDER_EXHAUSTION_QUEUE_CAPACITY: usize = 128;
@@ -222,169 +223,6 @@ impl DbWriteCommand {
 struct QueuedDbWriteCommand {
     command: DbWriteCommand,
     enqueued_at: Instant,
-}
-
-/// Storage boundary used by the write actor.
-pub trait DbWriteRepository: Send + Sync + 'static {
-    /// Persists a provider quota exhaustion observation from derived fields.
-    fn record_provider_quota_exhausted<'a>(
-        &'a self,
-        account_id: AccountId,
-        route_band: RouteBand,
-        classification: ProviderErrorClassification,
-        observed_unix_seconds: u64,
-    ) -> BoxFuture<'a, Result<(), DbWriteRepositoryError>>;
-
-    /// Persists an active-client mirror acquisition.
-    fn record_active_client_acquired<'a>(
-        &'a self,
-        _route_band: RouteBand,
-        _process_run_id: String,
-        _reservation_id: ReservationId,
-        _account_id: AccountId,
-        _acquired_unix_seconds: u64,
-        _active_pressure: u32,
-    ) -> BoxFuture<'a, Result<(), DbWriteRepositoryError>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    /// Persists an active-client mirror release.
-    fn record_active_client_released<'a>(
-        &'a self,
-        _route_band: RouteBand,
-        _process_run_id: String,
-        _reservation_id: ReservationId,
-        _released_unix_seconds: u64,
-    ) -> BoxFuture<'a, Result<(), DbWriteRepositoryError>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    /// Persists a previous-response affinity owner record.
-    fn record_previous_response_affinity_owner<'a>(
-        &'a self,
-        _owner: PreviousResponseAffinityOwnerRecord,
-    ) -> BoxFuture<'a, Result<(), DbWriteRepositoryError>> {
-        Box::pin(async { Ok(()) })
-    }
-
-    /// Persists a Codex session account affinity.
-    fn record_session_account_affinity<'a>(
-        &'a self,
-        _affinity: SessionAccountAffinity,
-    ) -> BoxFuture<'a, Result<(), DbWriteRepositoryError>> {
-        Box::pin(async { Ok(()) })
-    }
-}
-
-/// Durable write repository failure.
-#[derive(Debug, Error)]
-pub enum DbWriteRepositoryError {
-    /// SQLite or state repository failed.
-    #[error("state store unavailable while recording DB write actor command")]
-    State(#[from] StateStoreError),
-}
-
-/// SQLite-backed DB write repository.
-#[derive(Clone, Debug)]
-pub struct SqliteDbWriteRepository {
-    state: AsyncSqliteStateStore,
-}
-
-impl SqliteDbWriteRepository {
-    /// Creates a SQLite-backed DB write repository.
-    #[must_use]
-    pub const fn new(state: AsyncSqliteStateStore) -> Self {
-        Self { state }
-    }
-}
-
-impl DbWriteRepository for SqliteDbWriteRepository {
-    fn record_provider_quota_exhausted<'a>(
-        &'a self,
-        account_id: AccountId,
-        route_band: RouteBand,
-        classification: ProviderErrorClassification,
-        observed_unix_seconds: u64,
-    ) -> BoxFuture<'a, Result<(), DbWriteRepositoryError>> {
-        Box::pin(async move {
-            if classification == ProviderErrorClassification::AccountQuotaExhausted {
-                self.state
-                    .mark_route_band_quota_exhausted(
-                        &account_id,
-                        route_band.as_str(),
-                        observed_unix_seconds,
-                    )
-                    .await?;
-            }
-            Ok(())
-        })
-    }
-
-    fn record_active_client_acquired<'a>(
-        &'a self,
-        route_band: RouteBand,
-        process_run_id: String,
-        reservation_id: ReservationId,
-        account_id: AccountId,
-        acquired_unix_seconds: u64,
-        active_pressure: u32,
-    ) -> BoxFuture<'a, Result<(), DbWriteRepositoryError>> {
-        Box::pin(async move {
-            self.state
-                .record_active_client_acquired(
-                    route_band.as_str(),
-                    &process_run_id,
-                    &reservation_id,
-                    &account_id,
-                    acquired_unix_seconds,
-                    active_pressure,
-                )
-                .await?;
-            Ok(())
-        })
-    }
-
-    fn record_active_client_released<'a>(
-        &'a self,
-        route_band: RouteBand,
-        process_run_id: String,
-        reservation_id: ReservationId,
-        released_unix_seconds: u64,
-    ) -> BoxFuture<'a, Result<(), DbWriteRepositoryError>> {
-        Box::pin(async move {
-            self.state
-                .record_active_client_released(
-                    route_band.as_str(),
-                    &process_run_id,
-                    &reservation_id,
-                    released_unix_seconds,
-                )
-                .await?;
-            Ok(())
-        })
-    }
-
-    fn record_previous_response_affinity_owner<'a>(
-        &'a self,
-        owner: PreviousResponseAffinityOwnerRecord,
-    ) -> BoxFuture<'a, Result<(), DbWriteRepositoryError>> {
-        Box::pin(async move {
-            self.state.write_previous_response_owner(&owner).await?;
-            Ok(())
-        })
-    }
-
-    fn record_session_account_affinity<'a>(
-        &'a self,
-        affinity: SessionAccountAffinity,
-    ) -> BoxFuture<'a, Result<(), DbWriteRepositoryError>> {
-        Box::pin(async move {
-            self.state
-                .upsert_session_account_affinity(&affinity)
-                .await?;
-            Ok(())
-        })
-    }
 }
 
 /// Bounded write-side actor handle.

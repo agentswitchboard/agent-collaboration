@@ -1,7 +1,10 @@
+use futures_util::FutureExt as _;
+
 use super::*;
 
 #[test]
 fn assembled_loopback_router_runtime_retries_http_quota_error_on_fallback_account() {
+    // Reject a build that retries with the fallback but loses the primary's quota write.
     let temp_dir = ProxyTestTempDir::new("assembled_runtime_http_quota_retry");
     let database_path = temp_dir.path().join("state.sqlite");
     let secret_path = temp_dir.path().join("secrets");
@@ -89,7 +92,11 @@ fn assembled_loopback_router_runtime_retries_http_quota_error_on_fallback_accoun
         LocalRouterTokenRecord::new(SecretString::new("current-token"), TokenGeneration::new(1)),
     )
     .with_quota_clock(1_030, 60);
-    let runtime = match LoopbackRouterRuntime::start_for_test(config) {
+    let (quota_completion_sender, mut quota_completions) = tokio::sync::mpsc::unbounded_channel();
+    let runtime = match LoopbackRouterRuntime::start_for_test_with_quota_write_completion_sender(
+        config,
+        quota_completion_sender,
+    ) {
         Ok(runtime) => runtime,
         Err(error) => panic!("router runtime should start: {error}"),
     };
@@ -137,9 +144,9 @@ fn assembled_loopback_router_runtime_retries_http_quota_error_on_fallback_accoun
     // The retry excludes the primary in process before its queued SQLite
     // exhaustion write completes. Establish the durable row before asking
     // a new repository selector to make the post-retry decision.
-    wait_for_durable_quota_exhaustion(&state, &[primary.account_id()]);
+    wait_for_durable_quota_exhaustion(&state, &mut quota_completions, &[primary.account_id()]);
     let runtime_state = must_ok(SqliteStateStore::open(&database_path));
-    wait_for_repository_selected_account(
+    assert_repository_selected_account(
         &runtime_state,
         fallback.account_id(),
         "fallback should remain selectable after quota retry",
@@ -148,6 +155,7 @@ fn assembled_loopback_router_runtime_retries_http_quota_error_on_fallback_accoun
 
 #[test]
 fn assembled_loopback_router_runtime_retries_large_http_json_quota_error_on_fallback_account() {
+    // Reject a build that gates the HTTP reply on commit or reads before the write completes.
     let temp_dir = ProxyTestTempDir::new("assembled_runtime_large_http_quota_retry");
     let database_path = temp_dir.path().join("state.sqlite");
     let secret_path = temp_dir.path().join("secrets");
@@ -237,7 +245,11 @@ fn assembled_loopback_router_runtime_retries_large_http_json_quota_error_on_fall
         LocalRouterTokenRecord::new(SecretString::new("current-token"), TokenGeneration::new(1)),
     )
     .with_quota_clock(1_030, 60);
-    let runtime = match LoopbackRouterRuntime::start_for_test(config) {
+    let (quota_completion_sender, mut quota_completions) = tokio::sync::mpsc::unbounded_channel();
+    let runtime = match LoopbackRouterRuntime::start_for_test_with_quota_write_completion_sender(
+        config,
+        quota_completion_sender,
+    ) {
         Ok(runtime) => runtime,
         Err(error) => panic!("router runtime should start: {error}"),
     };
@@ -302,12 +314,22 @@ fn assembled_loopback_router_runtime_retries_large_http_json_quota_error_on_fall
             .expect("initial snapshot should remain readable");
     assert_eq!(before_commit.source(), QuotaSnapshotSource::MockEndpoint);
     assert_eq!(before_commit.remaining_headroom(), 90);
+    let exhausted_accounts = [primary.account_id()];
+    let mut quota_write = std::pin::pin!(assert_quota_exhaustion_after_write(
+        &state,
+        &mut quota_completions,
+        &exhausted_accounts,
+    ));
+    assert!(
+        quota_write.as_mut().now_or_never().is_none(),
+        "quota assertion should stay pending while SQLite holds the writer lock",
+    );
     lock_runtime.block_on(async move {
         must_ok(sqlx::query("COMMIT").execute(&mut *write_lock).await);
         drop(write_lock);
+        quota_write.await;
     });
-    wait_for_durable_quota_exhaustion(&state, &[primary.account_id()]);
-    wait_for_repository_selected_account(
+    assert_repository_selected_account(
         &state,
         fallback.account_id(),
         "durable quota state should select the fallback while serving",
@@ -320,7 +342,7 @@ fn assembled_loopback_router_runtime_retries_large_http_json_quota_error_on_fall
     }
 
     let runtime_state = must_ok(SqliteStateStore::open(&database_path));
-    wait_for_repository_selected_account(
+    assert_repository_selected_account(
         &runtime_state,
         fallback.account_id(),
         "fallback should remain selectable after large quota retry",
@@ -329,6 +351,7 @@ fn assembled_loopback_router_runtime_retries_large_http_json_quota_error_on_fall
 
 #[test]
 fn selection_diagnostics_unreplayable_http_quota_error_uses_real_handler() {
+    // Reject a build that omits the unreplayable quota diagnostic or loses the queued write.
     let temp_dir = ProxyTestTempDir::new("assembled_runtime_unreplayable_http_quota");
     let database_path = temp_dir.path().join("state.sqlite");
     let secret_path = temp_dir.path().join("secrets");
@@ -410,87 +433,98 @@ fn selection_diagnostics_unreplayable_http_quota_error_uses_real_handler() {
         LocalRouterTokenRecord::new(SecretString::new("current-token"), TokenGeneration::new(1)),
     )
     .with_quota_clock(1_030, 60);
-    let mut response = None;
-    let captured_logs = crate::test_log_capture::capture_log_output(|| {
-        let runtime = match LoopbackRouterRuntime::start_for_test(config) {
-            Ok(runtime) => runtime,
-            Err(error) => panic!("router runtime should start: {error}"),
-        };
-        let router_address = runtime.local_addr();
-        let unreplayable_body = format!(
-            r#"{{"model":"gpt-5","unreplayable_padding":"{}"}}"#,
-            "x".repeat(2 * 1024 * 1024)
-        );
-        let client_thread = thread::spawn(move || {
-            send_loopback_request(
-                router_address,
-                "POST /v1/responses?retry=true HTTP/1.1\r\n",
-                unreplayable_body.as_bytes(),
-            )
-        });
+    let captured_logs = crate::test_log_capture::capture_log_output_with_snapshot(
+        |snapshot_logs| {
+            let (quota_completion_sender, mut quota_completions) =
+                tokio::sync::mpsc::unbounded_channel();
+            let runtime =
+                match LoopbackRouterRuntime::start_for_test_with_quota_write_completion_sender(
+                    config,
+                    quota_completion_sender,
+                ) {
+                    Ok(runtime) => runtime,
+                    Err(error) => panic!("router runtime should start: {error}"),
+                };
+            let router_address = runtime.local_addr();
+            let unreplayable_body = format!(
+                r#"{{"model":"gpt-5","unreplayable_padding":"{}"}}"#,
+                "x".repeat(2 * 1024 * 1024)
+            );
+            let client_thread = thread::spawn(move || {
+                send_loopback_request(
+                    router_address,
+                    "POST /v1/responses?retry=true HTTP/1.1\r\n",
+                    unreplayable_body.as_bytes(),
+                )
+            });
 
-        let shutdown = tokio_util::sync::CancellationToken::new();
-        let server_shutdown = shutdown.clone();
-        let server_thread = thread::spawn(move || {
-            runtime.serve_protocol_connections_until_cancelled(usize::MAX, server_shutdown)
-        });
-        let observed_response = match client_thread.join() {
-            Ok(response) => response,
-            Err(error) => panic!("client thread panicked: {error:?}"),
-        };
-        let first = upstream_receiver
-            .recv()
-            .unwrap_or_else(|error| panic!("first upstream auth should record: {error}"));
-        assert_eq!(first.0, "authorization: Bearer primary-token");
-        assert!(first.1);
-        assert!(
-            upstream_receiver
-                .recv_timeout(Duration::from_millis(50))
-                .is_err()
-        );
-        match upstream_thread.join() {
-            Ok(()) => {}
-            Err(error) => panic!("mock upstream thread panicked: {error:?}"),
-        }
-        wait_for_durable_quota_exhaustion(&state, &[primary.account_id()]);
-        wait_for_repository_selected_account(
-            &state,
-            fallback.account_id(),
-            "durable quota state should select the fallback while serving",
-        );
-        shutdown.cancel();
-        match server_thread.join() {
-            Ok(Ok(handled)) => assert_eq!(handled, 1),
-            Ok(Err(error)) => panic!("router shutdown should succeed: {error}"),
-            Err(error) => panic!("router server thread panicked: {error:?}"),
-        }
-        response = Some(observed_response);
-    });
-    let response = response.unwrap_or_else(|| panic!("the real handler should return a response"));
+            let shutdown = tokio_util::sync::CancellationToken::new();
+            let server_shutdown = shutdown.clone();
+            let server_thread = thread::spawn(move || {
+                runtime.serve_protocol_connections_until_cancelled(usize::MAX, server_shutdown)
+            });
+            let observed_response = match client_thread.join() {
+                Ok(response) => response,
+                Err(error) => panic!("client thread panicked: {error:?}"),
+            };
+            let first = upstream_receiver
+                .recv()
+                .unwrap_or_else(|error| panic!("first upstream auth should record: {error}"));
+            assert_eq!(first.0, "authorization: Bearer primary-token");
+            assert!(first.1);
+            assert!(
+                upstream_receiver
+                    .recv_timeout(Duration::from_millis(50))
+                    .is_err()
+            );
+            match upstream_thread.join() {
+                Ok(()) => {}
+                Err(error) => panic!("mock upstream thread panicked: {error:?}"),
+            }
+            let response = observed_response;
+            assert!(response.starts_with("HTTP/1.1 503 Service Unavailable\r\n"));
+            let response_body = response
+                .split_once("\r\n\r\n")
+                .map(|(_headers, body)| body)
+                .unwrap_or_else(|| panic!("the HTTP response should contain its JSON body"));
+            assert_eq!(
+                response_body,
+                r#"{"type":"error","status":503,"error":{"type":"codex_router_quota_state_unavailable","code":"codex_router_quota_state_unavailable","message":"codex-router cannot safely rotate accounts because quota state is unavailable."}}"#
+            );
+            let captured_logs = snapshot_logs();
+            assert!(captured_logs.contains("codex_router.selection_rejected"));
+            assert!(captured_logs.contains("selection.stage=\"http_replay_unavailable\""));
+            assert!(captured_logs.contains("error.class=\"quota_replay_unavailable\""));
+            let rejection_line = captured_logs
+                .lines()
+                .find(|line| {
+                    line.contains("codex_router.selection_rejected")
+                        && line.contains("selection.stage=\"http_replay_unavailable\"")
+                        && line.contains("error.class=\"quota_replay_unavailable\"")
+                })
+                .expect("the real handler should emit its quota replay rejection");
+            assert!(
+                rejection_line.contains("route.band=\"responses\""),
+                "the prepared selection's route band must remain on its rejection event"
+            );
 
-    assert!(response.starts_with("HTTP/1.1 503 Service Unavailable\r\n"));
-    let response_body = response
-        .split_once("\r\n\r\n")
-        .map(|(_headers, body)| body)
-        .unwrap_or_else(|| panic!("the HTTP response should contain its JSON body"));
-    assert_eq!(
-        response_body,
-        r#"{"type":"error","status":503,"error":{"type":"codex_router_quota_state_unavailable","code":"codex_router_quota_state_unavailable","message":"codex-router cannot safely rotate accounts because quota state is unavailable."}}"#
-    );
-    assert!(captured_logs.contains("codex_router.selection_rejected"));
-    assert!(captured_logs.contains("selection.stage=\"http_replay_unavailable\""));
-    assert!(captured_logs.contains("error.class=\"quota_replay_unavailable\""));
-    let rejection_line = captured_logs
-        .lines()
-        .find(|line| {
-            line.contains("codex_router.selection_rejected")
-                && line.contains("selection.stage=\"http_replay_unavailable\"")
-                && line.contains("error.class=\"quota_replay_unavailable\"")
-        })
-        .expect("the real handler should emit its quota replay rejection");
-    assert!(
-        rejection_line.contains("route.band=\"responses\""),
-        "the prepared selection's route band must remain on its rejection event"
+            wait_for_durable_quota_exhaustion(
+                &state,
+                &mut quota_completions,
+                &[primary.account_id()],
+            );
+            assert_repository_selected_account(
+                &state,
+                fallback.account_id(),
+                "durable quota state should select the fallback while serving",
+            );
+            shutdown.cancel();
+            match server_thread.join() {
+                Ok(Ok(handled)) => assert_eq!(handled, 1),
+                Ok(Err(error)) => panic!("router shutdown should succeed: {error}"),
+                Err(error) => panic!("router server thread panicked: {error:?}"),
+            }
+        },
     );
     assert!(!captured_logs.contains("acct_primary_unreplayable_quota"));
     assert!(!captured_logs.contains("primary-unreplayable-quota"));
@@ -500,7 +534,7 @@ fn selection_diagnostics_unreplayable_http_quota_error_uses_real_handler() {
     assert!(!captured_logs.contains("fallback-token"));
 
     let runtime_state = must_ok(SqliteStateStore::open(&database_path));
-    wait_for_repository_selected_account(
+    assert_repository_selected_account(
         &runtime_state,
         fallback.account_id(),
         "fallback should remain selectable after unreplayable quota error",
