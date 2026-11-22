@@ -9,6 +9,7 @@ mod remote_start;
 mod session_activity;
 mod session_create_digest;
 mod session_lifecycle;
+mod session_reply_context;
 mod session_wire_values;
 
 pub use identity_values::*;
@@ -17,4 +18,5 @@ pub use remote_start::*;
 pub use session_activity::*;
 pub use session_create_digest::*;
 pub use session_lifecycle::*;
+pub use session_reply_context::*;
 pub use session_wire_values::*;

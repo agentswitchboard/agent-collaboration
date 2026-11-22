@@ -1,17 +1,48 @@
 //! The three session lifecycle calls on the authenticated link.
 
 use crate::{CreateSessionAttempt, CreateSessionDigest, HarnessKind, SessionSecret, SessionTime};
+use serde::{Deserialize, Deserializer, de::value::StrDeserializer};
 use workspace_ids::{CentralSessionId, SessionId, SessionOperationId, SessionRef};
 
-named_wire_record! {
-    pub struct CreateFleetSession as "CreateFleetSession"
-    [rename_all = "camelCase", deny_unknown_fields] {
-        pub operation_id: SessionOperationId,
-        pub attempt: CreateSessionAttempt,
-        pub creator: SessionCreator,
-        pub agent_program: HarnessKind,
-        pub session_kind: CreateSessionKind,
+#[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, schemars::JsonSchema)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct CreateFleetSession {
+    pub operation_id: SessionOperationId,
+    pub attempt: CreateSessionAttempt,
+    pub creator: SessionCreator,
+    pub agent_program: HarnessKind,
+    pub session_kind: CreateSessionKind,
+}
+
+impl<'de> Deserialize<'de> for CreateFleetSession {
+    fn deserialize<Decoder: Deserializer<'de>>(decoder: Decoder) -> Result<Self, Decoder::Error> {
+        #[derive(Deserialize)]
+        #[serde(
+            remote = "CreateFleetSession",
+            rename_all = "camelCase",
+            deny_unknown_fields
+        )]
+        struct CreateFields {
+            operation_id: SessionOperationId,
+            attempt: CreateSessionAttempt,
+            creator: SessionCreator,
+            #[serde(deserialize_with = "deserialize_agent_program")]
+            agent_program: HarnessKind,
+            session_kind: CreateSessionKind,
+        }
+        CreateFields::deserialize(crate::named_wire_record::NamedMap(decoder))
     }
+}
+
+fn deserialize_agent_program<'de, Decoder: Deserializer<'de>>(
+    decoder: Decoder,
+) -> Result<HarnessKind, Decoder::Error> {
+    let spelling = String::deserialize(decoder)?;
+    HarnessKind::deserialize(StrDeserializer::new(&spelling))
 }
 
 named_wire_record! {
@@ -125,10 +156,26 @@ named_wire_record! {
 named_wire_record! {
     pub enum EndFleetSessionReply as "EndFleetSessionReply"
     [tag = "result", rename_all = "camelCase", deny_unknown_fields] {
-        Settled { settlement: SessionSettlement },
+        Settled { settlement: NewEndSettlement },
         AlreadySettled { settlement: SessionSettlement },
         NoSuchStart {},
         NotYoursToEnd {},
+    }
+}
+
+named_wire_record! {
+    /// The settlement made by the End being answered.
+    pub enum NewEndSettlement as "NewEndSettlement"
+    [tag = "state", rename_all = "camelCase", deny_unknown_fields] {
+        Abandoned { cause: NewAbandonmentCause, time: SessionTime },
+        Ended { cause: RouterEndCause, time: SessionTime },
+    }
+}
+
+named_wire_record! {
+    pub enum NewAbandonmentCause as "NewAbandonmentCause"
+    [tag = "kind", rename_all = "camelCase", deny_unknown_fields] {
+        GivenUp {},
     }
 }
 

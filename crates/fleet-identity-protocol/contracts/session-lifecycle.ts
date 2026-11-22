@@ -37,7 +37,7 @@ export type EndFleetSession = {
 	cause: RouterEndCause,
 };
 
-export type EndFleetSessionReply = { result: "settled"; settlement: SessionSettlement } | { result: "alreadySettled"; settlement: SessionSettlement } | { result: "noSuchStart" } | { result: "notYoursToEnd" };
+export type EndFleetSessionReply = { result: "settled"; settlement: NewEndSettlement } | { result: "alreadySettled"; settlement: SessionSettlement } | { result: "noSuchStart" } | { result: "notYoursToEnd" };
 
 export type EndSessionTarget = { kind: "centralId"; sessionId: CentralSessionId } | { kind: "operationId"; operationId: SessionOperationId; contentsDigest: CreateSessionDigest };
 
@@ -47,6 +47,11 @@ export type HarnessKind = "codex" | "claude" | "cursor";
 
 /**  The Router install's durable identity, shared with central. */
 export type MachineId = string;
+
+export type NewAbandonmentCause = { kind: "givenUp" };
+
+/**  The settlement made by the End being answered. */
+export type NewEndSettlement = { state: "abandoned"; cause: NewAbandonmentCause; time: SessionTime } | { state: "ended"; cause: RouterEndCause; time: SessionTime };
 
 export type PresentedSessionSecret = { kind: "secret"; secret: SessionSecret } | { kind: "nothing" };
 
