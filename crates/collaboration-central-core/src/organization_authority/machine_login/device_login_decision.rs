@@ -5,11 +5,11 @@ use super::enrollment_records::{
     StoredEnrollment, StoredEnrollmentState,
 };
 use crate::identity_contract::{DecideDeviceLogin, DeviceLoginDecision, DeviceLoginRefusal};
-use crate::organization_change_rows::{OrganizationChangeKind, OrganizationChangeOrigin};
 use crate::person_request::SECOND_FACTOR_WINDOW_SECONDS;
 use central_storage::StoreFailure;
 use fleet_identity_protocol::EnrollmentId;
 use fleet_runtime_ports::IdSource;
+use fleet_signin::organization_change::{OrganizationChangeKind, OrganizationChangeOrigin};
 use std::num::NonZeroU32;
 
 pub(crate) const SD8_MILLIS: i64 = 5_000;

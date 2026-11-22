@@ -5,7 +5,7 @@ use crate::direct_store_port::{
     OwnedDirectStatus, RetainedDirectSend, RetainedDirectSendRead,
 };
 use central_storage::{CorruptReason, StoreFailure};
-use fleet_engine::CentralTransaction;
+use fleet_lent_transaction::CentralTransaction;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use sqlx_core::{
     arguments::IntoArguments, column::ColumnIndex, database::Database, decode::Decode,

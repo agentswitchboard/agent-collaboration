@@ -1,0 +1,7 @@
+error: error returned from database: (code: 1) no such column: organization_statment
+ --> tests/integration/schema_controls/bad_column.rs:2:18
+  |
+2 |     let _query = sqlx::query!("SELECT organization_statment FROM signin_organization_identity");
+  |                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  |
+  = note: this error originates in the macro `$crate::sqlx_macros::expand_query` which comes from the expansion of the macro `sqlx::query` (in Nightly builds, run with -Z macro-backtrace for more info)

@@ -11,7 +11,7 @@ workspace = true
 
 [dependencies]
 central-storage.workspace = true
-fleet-engine.workspace = true
+fleet-lent-transaction.workspace = true
 fleet-runtime.workspace = true
 fleet-runtime-ports.workspace = true
 serde.workspace = true

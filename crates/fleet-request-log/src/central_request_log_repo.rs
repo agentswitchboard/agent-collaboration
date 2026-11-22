@@ -6,7 +6,7 @@ use sqlx_core::{
 use workspace_model::{ActorIdentityId, RequestId, Timestamp};
 
 use central_storage::{GuardedStatement, RowExpectation, SqlValue, Statement, StoreFailure};
-use fleet_engine::CentralTransaction;
+use fleet_lent_transaction::CentralTransaction;
 use fleet_runtime::workspace_request_log::{RetainRequest, RetainedRequest};
 struct StoredRequestRow {
     caller: String,

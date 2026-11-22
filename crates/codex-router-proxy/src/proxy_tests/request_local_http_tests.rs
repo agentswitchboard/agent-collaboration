@@ -14,6 +14,7 @@ struct HttpRecoveryScenario {
 struct ObservedHttpRecovery {
     client_response: String,
     upstream_requests: Vec<(String, Vec<u8>)>,
+    quota_completions: tokio::sync::mpsc::UnboundedReceiver<QuotaWriteCompletion>,
 }
 
 fn run_http_recovery_scenario(
@@ -25,7 +26,14 @@ fn run_http_recovery_scenario(
     listener
         .set_nonblocking(true)
         .expect("async provider listener should be nonblocking");
-    let runtime = fixture.start(listener.local_addr().expect("provider address should read"));
+    let config = fixture.config(listener.local_addr().expect("provider address should read"));
+    let (quota_completion_sender, quota_completions) = tokio::sync::mpsc::unbounded_channel();
+    let runtime = must_ok(
+        LoopbackRouterRuntime::start_for_test_with_quota_write_completion_sender(
+            config,
+            quota_completion_sender,
+        ),
+    );
     let router_address = runtime.local_addr();
     let provider_shutdown = tokio_util::sync::CancellationToken::new();
     let provider_stop = provider_shutdown.clone();
@@ -126,6 +134,7 @@ fn run_http_recovery_scenario(
     ObservedHttpRecovery {
         client_response,
         upstream_requests,
+        quota_completions,
     }
 }
 
@@ -406,8 +415,9 @@ fn request_local_http_models_401_preserves_existing_pass_through() {
 
 #[test]
 fn request_local_http_auth_then_quota_preserves_true_quota_observation() {
+    // Reject a build that loses the quota write after an auth rejection.
     let fixture = AuthRejectionFixture::new("request_local_http_mixed_quota");
-    let observed = run_http_recovery_scenario(
+    let mut observed = run_http_recovery_scenario(
         &fixture,
         responses_scenario(
             br#"{"model":"gpt-5"}"#.to_vec(),
@@ -428,7 +438,11 @@ fn request_local_http_auth_then_quota_preserves_true_quota_observation() {
         ["Bearer primary-token", "Bearer fallback-token"]
     );
     let state = must_ok(SqliteStateStore::open(&fixture.database_path));
-    wait_for_durable_quota_exhaustion(&state, &[fixture.fallback.account_id()]);
+    assert_durable_quota_exhaustion(
+        &state,
+        &mut observed.quota_completions,
+        &[fixture.fallback.account_id()],
+    );
     assert!(
         fixture.maintenance().is_none(),
         "true quota observation must not become auth maintenance"
@@ -437,8 +451,9 @@ fn request_local_http_auth_then_quota_preserves_true_quota_observation() {
 
 #[test]
 fn request_local_http_quota_only_exhaustion_preserves_existing_signal() {
+    // Reject a build that reports pool exhaustion without persisting both quota writes.
     let fixture = AuthRejectionFixture::new("request_local_http_true_quota");
-    let observed = run_http_recovery_scenario(
+    let mut observed = run_http_recovery_scenario(
         &fixture,
         responses_scenario(
             br#"{"model":"gpt-5"}"#.to_vec(),
@@ -454,8 +469,9 @@ fn request_local_http_quota_only_exhaustion_preserves_existing_signal() {
     );
     assert_eq!(observed.upstream_requests.len(), 2);
     let state = must_ok(SqliteStateStore::open(&fixture.database_path));
-    wait_for_durable_quota_exhaustion(
+    assert_durable_quota_exhaustion(
         &state,
+        &mut observed.quota_completions,
         &[fixture.primary.account_id(), fixture.fallback.account_id()],
     );
 }

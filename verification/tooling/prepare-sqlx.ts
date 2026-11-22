@@ -74,6 +74,11 @@ export const sqlitePreparationTargets: readonly SqlitePreparationTarget[] = [
     fixtureMigration:
       "crates/fleet-storage-schema/tests/fixtures/engine_migrations/0001_engine_probe.sql",
   },
+  {
+    packageName: "fleet-signin",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-central-signin.sqlite",
+  },
 ];
 
 function appendFixtureMigration(

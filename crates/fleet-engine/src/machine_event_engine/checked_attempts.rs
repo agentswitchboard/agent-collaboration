@@ -1,11 +1,11 @@
 //! Attempt policy on a job's already-lent applying transaction.
-use crate::CentralTransaction;
 use central_engine_model::{
     AttemptState, EngineTime, FailureRecord, FailureTransition, ItemFailureClass,
     RetirementThreshold, after_failure,
 };
 use central_storage::{ConstraintKind, CorruptReason, ReadOutcome, SqlValue, StoreFailure};
 use fleet_contracts::{EngineSubject, MailDeliveryReady};
+use fleet_lent_transaction::CentralTransaction;
 use fleet_runtime_ports::{
     IdSource, stored_values::format_utc_millis, workspace_decode_error::corrupt,
 };

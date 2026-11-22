@@ -12,9 +12,10 @@ workspace = true
 [features]
 conformance = []
 # Test seams (pause points, the storage conformance schema); never in a production build.
-test-support = ["fleet-engine/test-support", "fleet-runtime/test-support", "fleet-storage-schema/test-support"]
+test-support = ["fleet-signin/test-support", "fleet-engine/test-support", "fleet-runtime/test-support", "dep:sqlx-core", "fleet-storage-schema/test-support"]
 
 [dependencies]
+fleet-signin.workspace = true
 fleet-rpc.workspace = true
 central-storage.workspace = true
 central-link-protocol.workspace = true
@@ -40,7 +41,7 @@ schemars.workspace = true
 axum = { workspace = true, features = ["json", "query"] }
 http.workspace = true
 futures-util.workspace = true
-sqlx-core = { workspace = true, features = ["migrate"] }
+sqlx-core = { workspace = true, features = ["migrate"], optional = true }
 message-board = { version = "0.1.93", path = "../message-board" }
 chrono = { version = "0.4.45", default-features = false, features = ["serde", "alloc"] }
 serde.workspace = true

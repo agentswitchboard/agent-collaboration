@@ -119,7 +119,7 @@ async fn expiry_crossed_before_sample_refuses_and_post_sample_time_remains_linea
     f.close().await;
 }
 #[tokio::test]
-async fn provisioning_first_stamp_arms_pending_wake_and_actual_alarm_fires_once() {
+async fn first_stamp_rolls_back_on_physical_alarm_failure_then_arms_and_fires_once() {
     use central_storage::SqlValue;
     let f = Fixture::new().await;
     let runtime = f.runtime().await;
@@ -139,6 +139,20 @@ async fn provisioning_first_stamp_arms_pending_wake_and_actual_alarm_fires_once(
     f.execute("INSERT INTO automation_wakes(wake_id,target,due_at,text,state,created_at,updated_at) VALUES (?,?,?,?,'active',?,?)",vec![SqlValue::Text("019f0000-0000-7000-8000-00000000d226".to_owned()),SqlValue::Text(serde_json::to_string(&target).unwrap()),SqlValue::Text(stored_due.clone()),SqlValue::Text(serde_json::to_string("pending").unwrap()),SqlValue::Text(created.clone()),SqlValue::Text(created)]).await;
     let before: Option<i64> = runtime.control("raw-alarm-time", &()).await.unwrap();
     assert_eq!(before, None);
+    let before_rows = f.counts().await;
+    assert!(
+        runtime
+            .control::<bool>("zero-next-write-alarm", &())
+            .await
+            .unwrap()
+    );
+    assert_eq!(f.provision().await, (503, serde_json::Value::Null));
+    let after: Option<i64> = runtime.control("raw-alarm-time", &()).await.unwrap();
+    assert_eq!(after, before);
+    assert_eq!(f.counts().await, before_rows);
+    let reset: Result<bool, central_storage::StoreFailure> = runtime.control("crash", &()).await;
+    assert!(reset.is_err());
+    assert_eq!(f.counts().await, before_rows);
     assert_eq!(f.provision().await.0, 200);
     let armed: Option<i64> = runtime.control("raw-alarm-time", &()).await.unwrap();
     assert_eq!(armed, Some(due.timestamp_millis()));

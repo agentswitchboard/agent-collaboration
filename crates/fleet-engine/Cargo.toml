@@ -13,6 +13,7 @@ workspace = true
 test-support = ["central-engine-model/test-support", "fleet-runtime/test-support"]
 
 [dependencies]
+fleet-lent-transaction.workspace = true
 central-engine-model.workspace = true
 central-storage.workspace = true
 fleet-contracts.workspace = true

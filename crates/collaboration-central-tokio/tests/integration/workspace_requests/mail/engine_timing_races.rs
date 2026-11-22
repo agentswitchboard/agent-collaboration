@@ -248,6 +248,7 @@ async fn a_claim_waits_for_a_publication_between_its_decision_and_its_write() {
             Arc::new(|_| {}),
         ),
         central.clone(),
+        central.clone(),
     ));
     fixture.set_utc(at(start, 4, 0, 0)).await;
     assert_eq!(

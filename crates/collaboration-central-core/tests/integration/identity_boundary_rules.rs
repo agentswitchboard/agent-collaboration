@@ -142,7 +142,7 @@ fn reviewed_scalar_claim_schema_rejects_invalid_installation() {
     .unwrap();
     let mut invalid = fixtures[0].clone();
     invalid["principal"]["installation_id"] = json!("x".repeat(36));
-    assert_refused::<collaboration_central_core::identity_contract::MachineTokenClaims>(invalid);
+    assert_refused::<fleet_contracts::MachineTokenClaims>(invalid);
 }
 
 #[test]

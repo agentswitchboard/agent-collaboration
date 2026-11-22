@@ -9,9 +9,10 @@ use central_engine_model::{FailureRecord, InstanceKey, ItemFailureClass, Machine
 use central_storage::{CorruptReason, StoreFailure};
 use fleet_contracts::EngineSubject;
 use fleet_engine::{
-    CentralTransaction, CheckedAttempt, CheckedDueFailure, checked_statement_rejection,
-    observe_checked_attempt, record_checked_attempt,
+    CheckedAttempt, CheckedDueFailure, checked_statement_rejection, observe_checked_attempt,
+    record_checked_attempt,
 };
+use fleet_lent_transaction::CentralTransaction;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use sqlx_core::{
     arguments::IntoArguments, column::ColumnIndex, database::Database, decode::Decode,

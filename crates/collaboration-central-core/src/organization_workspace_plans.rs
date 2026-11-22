@@ -2,10 +2,6 @@
 use crate::{
     AdminRefusal, OrganizationAdminResult, WorkspaceRuntime,
     organization_admin_contract::RetainedOrganizationAdminAnswer,
-    organization_change_rows::{
-        self, ChangeRequestId, OrganizationChangeKind, OrganizationChangeOrigin,
-        OrganizationChangeRecord,
-    },
     person_request::{CreateWorkspaceRequest, VerifiedPersonRequest},
 };
 use central_storage::{GuardedStatement, StoreFailure};
@@ -14,6 +10,10 @@ use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use fleet_runtime_ports::{
     stored_values::{json, string},
     workspace_decode_error::corrupt,
+};
+use fleet_signin::organization_change::{
+    self, ChangeRequestId, OrganizationChangeKind, OrganizationChangeOrigin,
+    OrganizationChangeRecord,
 };
 use fleet_workspace_directory::CentralWorkspaceDirectory;
 use workspace_model::{
@@ -143,21 +143,17 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
                 &description,
                 now,
             )?);
-            statements.push(organization_change_rows::insert(
-                &OrganizationChangeRecord {
-                    id: self.execution.ids().new_id(),
-                    request_id: ChangeRequestId::try_from(
-                        request.operation_id.as_str().to_owned(),
-                    )?,
-                    kind: OrganizationChangeKind::WorkspaceCreated,
-                    origin: OrganizationChangeOrigin::Person {
-                        person_id: person.person_id.clone(),
-                        permission_checked: person.operation.route().permission().to_owned(),
-                    },
-                    target_id: workspace_id.to_string(),
-                    created_at_millis: now.timestamp_millis(),
+            statements.push(organization_change::insert(&OrganizationChangeRecord {
+                id: self.execution.ids().new_id(),
+                request_id: ChangeRequestId::try_from(request.operation_id.as_str().to_owned())?,
+                kind: OrganizationChangeKind::WorkspaceCreated,
+                origin: OrganizationChangeOrigin::Person {
+                    person_id: person.person_id.clone(),
+                    permission_checked: person.operation.route().permission().to_owned(),
                 },
-            )?);
+                target_id: workspace_id.to_string(),
+                created_at_millis: now.timestamp_millis(),
+            })?);
             OrganizationAdminResult::Applied {
                 workspace: directory.workspace_view(DirectoryWorkspace {
                     workspace_id,

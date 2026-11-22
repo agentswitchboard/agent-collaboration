@@ -6,7 +6,12 @@ use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 
 impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores> {
     pub(crate) async fn alarm_organization_is_provisioned(&self) -> Result<bool, StoreFailure> {
-        match crate::prepare_central_alarm(self.execution.statement_host()).await? {
+        match crate::prepare_central_alarm(
+            self.execution.statement_host(),
+            self.stamp_store.as_ref(),
+        )
+        .await?
+        {
             crate::CentralOrganizationIdentity::Unprovisioned => Ok(false),
             crate::CentralOrganizationIdentity::Stamped { organization_id }
                 if &organization_id == self.execution.organization() =>

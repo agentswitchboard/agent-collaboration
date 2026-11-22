@@ -1422,10 +1422,12 @@ dependencies = [
  "fleet-contracts",
  "fleet-engine",
  "fleet-identity-protocol",
+ "fleet-lent-transaction",
  "fleet-mail",
  "fleet-rpc",
  "fleet-runtime",
  "fleet-runtime-ports",
+ "fleet-signin",
  "fleet-storage-schema",
  "fleet-workspace-service",
  "futures-channel",
@@ -1497,6 +1499,7 @@ dependencies = [
  "fleet-runtime-ports",
  "fleet-runtime-test-support",
  "fleet-schedules",
+ "fleet-signin",
  "fleet-storage-schema",
  "fleet-timer-policy",
  "fleet-wakes",
@@ -1541,10 +1544,12 @@ dependencies = [
  "fleet-contracts",
  "fleet-engine",
  "fleet-identity-protocol",
+ "fleet-lent-transaction",
  "fleet-mail",
  "fleet-rpc",
  "fleet-runtime",
  "fleet-runtime-ports",
+ "fleet-signin",
  "fleet-storage-schema",
  "fleet-store-sqlx",
  "fleet-workspace-service",
@@ -2424,6 +2429,7 @@ dependencies = [
  "message-board",
  "schemars 1.2.2",
  "serde",
+ "serde_json",
  "thiserror 2.0.18",
  "workspace-ids",
  "workspace-model",
@@ -2437,6 +2443,7 @@ dependencies = [
  "central-storage",
  "chrono",
  "fleet-contracts",
+ "fleet-lent-transaction",
  "fleet-runtime",
  "fleet-runtime-ports",
  "fleet-storage-schema",
@@ -2464,6 +2471,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "fleet-lent-transaction"
+version = "0.1.157"
+dependencies = [
+ "sqlx",
+]
+
+[[package]]
 name = "fleet-mail"
 version = "0.1.157"
 dependencies = [
@@ -2473,6 +2487,7 @@ dependencies = [
  "chrono",
  "fleet-contracts",
  "fleet-engine",
+ "fleet-lent-transaction",
  "fleet-request-log",
  "fleet-runtime-ports",
  "fleet-workspace-access",
@@ -2508,7 +2523,7 @@ name = "fleet-request-log"
 version = "0.1.157"
 dependencies = [
  "central-storage",
- "fleet-engine",
+ "fleet-lent-transaction",
  "fleet-runtime",
  "fleet-runtime-ports",
  "serde",
@@ -2588,6 +2603,37 @@ dependencies = [
  "sqlx",
  "workspace-ids",
  "workspace-model",
+]
+
+[[package]]
+name = "fleet-signin"
+version = "0.1.157"
+dependencies = [
+ "base64 0.22.1",
+ "central-engine-model",
+ "central-storage",
+ "chrono",
+ "fleet-contracts",
+ "fleet-identity-protocol",
+ "fleet-lent-transaction",
+ "fleet-runtime",
+ "fleet-runtime-ports",
+ "fleet-storage-schema",
+ "futures-util",
+ "hegeltest",
+ "ring",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "sha2 0.10.9",
+ "sqlx",
+ "state-machine-core",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "trybuild",
+ "uuid",
+ "workspace-ids",
 ]
 
 [[package]]

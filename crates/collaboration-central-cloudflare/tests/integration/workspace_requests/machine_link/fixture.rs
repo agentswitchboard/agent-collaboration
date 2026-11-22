@@ -10,8 +10,8 @@ use central_storage::{
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 use collaboration_central_core::identity_contract::{
     DecideDeviceLogin, DecideMachineToken, DeviceLoginDecision, MachineTokenDecision,
-    ProvisionOrganization, ProvisionOrganizationResult,
 };
+use fleet_contracts::{ProvisionOrganization, ProvisionOrganizationResult};
 use fleet_identity_protocol::{EnrollmentId, OrganizationId};
 use futures_util::{SinkExt, StreamExt};
 use reqwest_websocket::{CloseCode, Message, RequestBuilderExt, WebSocket};

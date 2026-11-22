@@ -1,7 +1,7 @@
 //! Resolve present sender facts on the owning executor.
 use crate::DirectReadFailure;
 use central_storage::StoreFailure;
-use fleet_engine::CentralTransaction;
+use fleet_lent_transaction::CentralTransaction;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use sqlx::{ColumnIndex, Database, Decode, Encode, IntoArguments, Type};
 use workspace_model::{

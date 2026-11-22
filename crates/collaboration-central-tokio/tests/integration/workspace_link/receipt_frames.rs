@@ -208,6 +208,47 @@ async fn replay_after_lost_answer(fixture: &Fixture) -> Result<()> {
     };
     let organization = signed::ORGANIZATION.to_owned().try_into()?;
     let central = fixture.host.central(&organization).await?;
+    let refuse = |message_id| Receipt {
+        message_id,
+        kind: ReceiptKind::Refused {
+            reason: MessageRefusal::UnknownSession,
+        },
+    };
+    let setup_correlation: CorrelationId = "019f0000-0000-7000-8000-00000000ce97".parse()?;
+    let setup_frame = DataFrame::Receipts {
+        correlation_id: setup_correlation.clone(),
+        receipts: ReceiptBatch::new(vec![refuse(second.clone())])?,
+    };
+    send(&mut socket, &LinkFrame::Data(setup_frame)).await?;
+    loop {
+        let LinkFrame::Data(reply) = receive(&mut socket).await? else {
+            return Err("unexpected control frame while settling the earlier message".into());
+        };
+        match reply {
+            DataFrame::Deliver { .. } => {}
+            DataFrame::ReceiptResults {
+                correlation_id,
+                results,
+            } if correlation_id == setup_correlation && results == [ReceiptResult::Recorded] => {
+                break;
+            }
+            other => return Err(format!("could not settle the earlier message: {other:?}").into()),
+        }
+    }
+
+    let prior_outcome = central.runtime().statement_host().read(central_storage::Statement {
+        sql: "SELECT message_id FROM mail_messages WHERE message_kind='deliveryOutcome' AND json_extract(body,'$.messageId')=?",
+        args: vec![Cell::Text(second.to_string())],
+    }).await?.rows;
+    let [outcome_row] = prior_outcome.as_slice() else {
+        return Err("expected the earlier message's single outcome".into());
+    };
+    let [Cell::Text(outcome_id)] = outcome_row.as_slice() else {
+        return Err("expected an outcome message id".into());
+    };
+    let system_message: workspace_ids::MessageId = outcome_id.parse()?;
+    let completed_at =
+        chrono::DateTime::from_timestamp(signed::NOW_SECONDS, 0).ok_or("fixture time")?;
     let mut hold = central
         .runtime()
         .pause_points()
@@ -215,18 +256,21 @@ async fn replay_after_lost_answer(fixture: &Fixture) -> Result<()> {
     let correlation: CorrelationId = "019f0000-0000-7000-8000-00000000ce99".parse()?;
     let frame = DataFrame::Receipts {
         correlation_id: correlation.clone(),
-        receipts: ReceiptBatch::new(
-            messages
-                .iter()
-                .cloned()
-                .map(|message_id| Receipt {
-                    message_id,
-                    kind: ReceiptKind::Refused {
-                        reason: MessageRefusal::UnknownSession,
-                    },
-                })
-                .collect(),
-        )?,
+        receipts: ReceiptBatch::new(vec![
+            refuse(first.clone()),
+            Receipt {
+                message_id: second.clone(),
+                kind: ReceiptKind::Seen { completed_at },
+            },
+            Receipt {
+                message_id: system_message.clone(),
+                kind: ReceiptKind::Seen { completed_at },
+            },
+            Receipt {
+                message_id: "019f0000-0000-7000-8000-00000000ce96".parse()?,
+                kind: ReceiptKind::Seen { completed_at },
+            },
+        ])?,
     };
     send(&mut socket, &LinkFrame::Data(frame.clone())).await?;
     hold.until_held().await;
@@ -254,9 +298,11 @@ async fn replay_after_lost_answer(fixture: &Fixture) -> Result<()> {
                 .read(facts(second))
                 .await?
                 .rows
-                != expected("queued", 0)?
+                != expected("refused", 1)?
         {
-            return Err("the first receipt must commit before the second receipt begins".into());
+            return Err(
+                "the first receipt must commit without changing the already settled message".into(),
+            );
         }
         Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
     }
@@ -288,7 +334,15 @@ async fn replay_after_lost_answer(fixture: &Fixture) -> Result<()> {
     let [original, repeated] = answers.as_slice() else {
         return Err("expected an answer to each complete frame".into());
     };
-    if original.as_slice() != [ReceiptResult::Recorded; 2] || repeated != original {
+    if original.as_slice()
+        != [
+            ReceiptResult::Recorded,
+            ReceiptResult::AlreadySettled,
+            ReceiptResult::NotApplicable,
+            ReceiptResult::NoSuchMessage,
+        ]
+        || repeated != original
+    {
         return Err(format!("receipt answers changed by position: {answers:?}").into());
     }
     for message in [first, second] {
@@ -302,6 +356,16 @@ async fn replay_after_lost_answer(fixture: &Fixture) -> Result<()> {
         {
             return Err("replay must settle both receipts with one outcome each".into());
         }
+    }
+    if central
+        .runtime()
+        .statement_host()
+        .read(facts(&system_message))
+        .await?
+        .rows
+        != expected("queued", 0)?
+    {
+        return Err("the inapplicable receipt changed the earlier outcome".into());
     }
     Ok(())
 }

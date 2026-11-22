@@ -15,7 +15,7 @@ use crate::{
 use central_engine_model::{Context, Machine, TransitionError};
 use central_storage::{EngineAlarmPlan, StoreFailure};
 use fleet_contracts::MailDeliveryReady;
-use fleet_engine::CentralTransaction;
+use fleet_lent_transaction::CentralTransaction;
 use fleet_request_log::{
     RetainRequest, prune_expired_organization_requests, upsert_organization_request_answer,
 };
@@ -241,7 +241,8 @@ where
         enrollment_query!(bind_receipt_projection, authority)
             .fetch_optional(tx.executor())
             .await?;
-    // Sample after the owner has lent its write transaction and re-read enrollment.
+    // A receipt can wait for the write transaction until after its attachment
+    // expires. Re-read enrollment and sample the clock inside that transaction.
     let applying_time = Timestamp::from_timestamp_millis(command.clock.now().unix_millis())
         .ok_or_else(|| corrupt("clock"))?;
     if applying_time.timestamp() >= authority.effective_expires_at().0

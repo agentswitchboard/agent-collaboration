@@ -96,6 +96,7 @@ async fn lost_read_answer_before_effect_is_unavailable_and_never_cached() {
             Arc::new(|_| {}),
         ),
         central.clone(),
+        central.clone(),
     )
     .with_sign_in_verification(
         collaboration_central_tokio::NativeSignInTrust::new(settings(&f.keys.url))

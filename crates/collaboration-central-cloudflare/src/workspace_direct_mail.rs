@@ -16,7 +16,9 @@ macro_rules! worker_read {
         fn $name(&self, command: $command) -> BoxFuture<'_, Result<$answer, DirectReadFailure>> {
             Box::pin(SendFuture::new(async move {
                 direct_store_reads::$name(
-                    &mut statement_store::WorkerTransaction::new(&*self.connection),
+                    &mut statement_store::WorkerExecutorLender::from_storage_executor(
+                        &*self.connection,
+                    ),
                     command,
                 )
                 .await
@@ -37,7 +39,9 @@ macro_rules! worker_write {
                     ),
                     async move |transaction| {
                         $owner::$name(
-                            &mut statement_store::WorkerTransaction::new(transaction),
+                            &mut statement_store::WorkerExecutorLender::from_storage_executor(
+                                transaction,
+                            ),
                             command,
                         )
                         .await
@@ -107,7 +111,7 @@ impl DirectMessageStore for CentralStatements {
             };
             match statement_store::write_checked_due(&self.connection, async move |transaction| {
                 direct_mark_apply::apply_mark(
-                    &mut statement_store::WorkerTransaction::new(transaction),
+                    &mut statement_store::WorkerExecutorLender::from_storage_executor(transaction),
                     command,
                 )
                 .await
@@ -134,7 +138,7 @@ impl DirectMessageStore for CentralStatements {
         Box::pin(SendFuture::new(async move {
             match statement_store::write_checked_due(&self.connection, async move |transaction| {
                 direct_mark_apply::charge_rejected_mark(
-                    &mut statement_store::WorkerTransaction::new(transaction),
+                    &mut statement_store::WorkerExecutorLender::from_storage_executor(transaction),
                     *rejection,
                     now,
                 )

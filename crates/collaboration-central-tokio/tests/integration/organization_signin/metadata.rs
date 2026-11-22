@@ -139,3 +139,53 @@ async fn complete_stamp_metadata_and_record_identity_survive_renewal_and_setup_r
     }
     f.close().await
 }
+
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "The persisted legacy bind values must match the signed-create audit shape."
+)]
+#[tokio::test]
+async fn legacy_signed_create_audit_binds_distinct_request_and_target() -> Result {
+    use central_storage::{AlarmUpdate, BatchOutcome, StatementBatch};
+    use fleet_signin::organization_change::{
+        OrganizationChangeKind, OrganizationChangeOrigin, OrganizationChangeRecord, insert,
+    };
+
+    let f = Fixture::new().await?;
+    let owner = f.runtime(A).await?;
+    let request = "019f0000-0000-7000-8000-00000000da11";
+    let target = "019f0000-0000-7000-8000-00000000da12";
+    let at_ms = signed::NOW_SECONDS * 1_000;
+    let audit = insert(&OrganizationChangeRecord {
+        id: "019f0000-0000-7000-8000-00000000da13".parse()?,
+        request_id: request.to_owned().try_into()?,
+        kind: OrganizationChangeKind::WorkspaceCreated,
+        origin: OrganizationChangeOrigin::Person {
+            person_id: signed::OWNER.to_owned(),
+            permission_checked: "workspace:create".into(),
+        },
+        target_id: target.into(),
+        created_at_millis: at_ms,
+    })?;
+
+    // Signed create binds one operation ID to both columns. Exercise its
+    // builder and legacy held executor with intentionally distinguishable IDs.
+    {
+        let _turn = owner.runtime().take_central_turn().await;
+        let answer = owner
+            .runtime()
+            .statement_host()
+            .run_batch(StatementBatch {
+                statements: vec![audit],
+                alarm: AlarmUpdate::Unchanged,
+            })
+            .await?;
+        assert!(matches!(answer, BatchOutcome::Applied { .. }));
+    }
+
+    assert_eq!(
+        f.rows(A, "SELECT request_id, target_id, actor_person_id, permission_checked, created_at, updated_at FROM signin_change_records WHERE kind='workspaceCreated'", vec![]).await?,
+        vec![vec![text(request), text(target), text(signed::OWNER), text("workspace:create"), number(at_ms)?, number(at_ms)?]],
+    );
+    f.close().await
+}

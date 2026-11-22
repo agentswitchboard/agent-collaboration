@@ -501,45 +501,5 @@ async fn a_batch_after_the_deadline_refuses_every_member_and_then_closes() -> Re
     fixture.close().await
 }
 
-/// `token` with its header naming a key central has never cached, so verifying
-/// it needs a key-set fetch.
-fn with_uncached_key(token: &str) -> Result<String> {
-    use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-    let rest = token.split_once('.').ok_or("token header")?.1;
-    let header =
-        URL_SAFE_NO_PAD.encode(br#"{"alg":"EdDSA","typ":"at+jwt","kid":"stamp-uncached"}"#);
-    Ok(format!("{header}.{rest}"))
-}
-
-#[expect(
-    clippy::panic_in_result_fn,
-    reason = "The renewal answer and the still-open link are observed on the real socket."
-)]
-#[tokio::test]
-async fn a_renewal_whose_key_cannot_be_fetched_is_central_unavailable() -> Result<()> {
-    // Arrange: sign-in's key set becomes unreachable.
-    let fixture = Fixture::new().await?;
-    let (_client, _attempt, mut socket) = connect_client(&fixture, &fixture.token).await?;
-    fixture.keys().fail_fetches();
-    let token = with_uncached_key(&fixture.token)?;
-
-    // Act
-    send(
-        &mut socket,
-        &renew_frame("019f0000-0000-7000-8000-00000000c351", &token)?,
-    )
-    .await?;
-    let answer = answer_to(&mut socket, "019f0000-0000-7000-8000-00000000c351").await?;
-    send(&mut socket, &LinkFrame::Ping).await?;
-    let still_open = receive(&mut socket).await?;
-
-    // Assert: transient, and the link stays up on its current connection.
-    assert_eq!(
-        answer,
-        TokenRenewalResult::Refused {
-            reason: TokenRenewalRefusal::CentralUnavailable
-        }
-    );
-    assert_eq!(still_open, LinkFrame::Pong);
-    fixture.close().await
-}
+#[path = "renewal_issuer_cases.rs"]
+mod issuer_cases;

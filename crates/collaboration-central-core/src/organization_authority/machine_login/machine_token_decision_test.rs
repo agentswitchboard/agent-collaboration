@@ -10,10 +10,10 @@ use super::decide_machine_token;
 use crate::identity_contract::{
     EnrollmentRevocationReason, MachineTokenDecision, MachineTokenRefusal,
 };
-use crate::organization_change_rows::{
+use fleet_identity_protocol::UnixSeconds;
+use fleet_signin::organization_change::{
     OrganizationChangeKind as Kind, OrganizationChangeOrigin as Origin,
 };
-use fleet_identity_protocol::UnixSeconds;
 
 #[test]
 fn ba1_first_grant_wins_in_either_order_and_never_activates_the_other_approval() {

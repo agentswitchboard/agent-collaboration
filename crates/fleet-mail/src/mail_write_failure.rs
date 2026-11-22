@@ -1,7 +1,7 @@
 //! Applying failures before the host settles a mail transaction.
 use crate::direct_store_port::{DirectReadFailure, DirectWriteFailure};
 use central_storage::StoreFailure;
-use fleet_engine::CentralTransaction;
+use fleet_lent_transaction::CentralTransaction;
 use sqlx_core::database::Database;
 
 #[derive(Debug, thiserror::Error)]

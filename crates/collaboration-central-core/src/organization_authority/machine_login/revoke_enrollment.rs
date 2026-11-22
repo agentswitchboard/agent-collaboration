@@ -6,10 +6,10 @@ use super::enrollment_records::{
 };
 use super::machine_token_decision::append_allowance_records;
 use crate::identity_contract::{EndedMachineClient, EnrollmentRevocationReason, PersonId};
-use crate::organization_change_rows::{OrganizationChangeKind, OrganizationChangeOrigin};
 use crate::person_request::AdminOperationId;
 use central_storage::StoreFailure;
 use fleet_runtime_ports::IdSource;
+use fleet_signin::organization_change::{OrganizationChangeKind, OrganizationChangeOrigin};
 
 /// None means the machine_id has no currently enrolled login.
 pub(crate) fn revoke_machine_enrollment(

@@ -1,6 +1,6 @@
 //! Admission for the destination of a direct send.
 use central_storage::StoreFailure;
-use fleet_engine::CentralTransaction;
+use fleet_lent_transaction::CentralTransaction;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use sqlx_core::{
     arguments::IntoArguments, column::ColumnIndex, database::Database, decode::Decode,
