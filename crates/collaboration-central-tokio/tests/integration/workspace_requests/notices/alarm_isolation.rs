@@ -159,7 +159,22 @@ async fn bad_due_window_does_not_suppress_wakes_or_automations() {
         execute(&fixture, "INSERT INTO mail_notification_window_items(window_item_id,window_id,workspace_id,thread_id,change_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?)", row).await;
     }
     fixture.set_utc(due + chrono::Duration::minutes(15)).await;
-    runtime.after_event().await.unwrap();
+    let mut committed = runtime
+        .runtime()
+        .pause_points()
+        .hold_central(PausePoint::AfterTimerCommit);
+    let recovering_window = tokio::spawn({
+        let runtime = runtime.clone();
+        async move { runtime.after_event().await.unwrap() }
+    });
+    committed.until_held().await;
+    let projected_after_window_commit = store.read(source()).await.unwrap();
+    committed.release();
+    recovering_window.await.unwrap();
+    assert!(
+        projected_after_window_commit.rows.is_empty(),
+        "the window's own commit releases its source; the later generic clear cannot supply this write"
+    );
     let record = runtime.runtime().statement_host().read(Statement {
         sql: "SELECT (SELECT COUNT(*) FROM engine_work_attempts WHERE machine_kind='legacy_notice_windows' AND subject_key='all'),(SELECT COUNT(*) FROM mail_messages WHERE message_kind='notice' AND recipient_actor=?)", args: vec![text(&recipient)],
     }).await.unwrap();
