@@ -6,7 +6,7 @@
         "kind": "providerApproval",
         "requestId": "01934a50-1000-7000-8000-000000000001",
         "holder": {
-          "sessionId": "01934a50-1000-7000-8000-000000000003",
+          "sessionId": "01934a50-1000-7000-8000-000000000013",
           "routerRun": "01934a50-1000-7000-8000-000000000002"
         },
         "offer": {
@@ -25,23 +25,8 @@
           ]
         }
       },
-      "canonical": "{\"holder\":{\"routerRun\":\"01934a50-1000-7000-8000-000000000002\",\"sessionId\":\"01934a50-1000-7000-8000-000000000003\"},\"kind\":\"providerApproval\",\"offer\":{\"description\":\"Review\\nquoted \\\"text\\\"\",\"options\":[{\"effect\":\"allow\",\"id\":1,\"label\":\"Allow once\",\"lasts\":{\"kind\":\"thisRequest\"}}],\"subject\":null,\"title\":\"Review café\"},\"requestId\":\"01934a50-1000-7000-8000-000000000001\"}",
-      "digest": "iwwbP-57XO7G9sRzF6HvYVEPyoibXcX-GdBJ9b2hayI"
-    },
-    "ending": {
-      "body": {
-        "kind": "providerApproval",
-        "ending": {
-          "kind": "decided",
-          "answer": 1,
-          "by": {
-            "kind": "person",
-            "personId": "01934a50-1000-7000-8000-000000000005"
-          }
-        }
-      },
-      "canonical": "{\"ending\":{\"answer\":1,\"by\":{\"kind\":\"person\",\"personId\":\"01934a50-1000-7000-8000-000000000005\"},\"kind\":\"decided\"},\"kind\":\"providerApproval\"}",
-      "digest": "g5KW2IHfcpBrLY00V_-nh91hNaW1-E91Q0Lvxvc_FCs"
+      "canonical": "{\"holder\":{\"routerRun\":\"01934a50-1000-7000-8000-000000000002\",\"sessionId\":\"01934a50-1000-7000-8000-000000000013\"},\"kind\":\"providerApproval\",\"offer\":{\"description\":\"Review\\nquoted \\\"text\\\"\",\"options\":[{\"effect\":\"allow\",\"id\":1,\"label\":\"Allow once\",\"lasts\":{\"kind\":\"thisRequest\"}}],\"subject\":null,\"title\":\"Review café\"},\"requestId\":\"01934a50-1000-7000-8000-000000000001\"}",
+      "digest": "-m866d6rWYipUBaKm2V0g6ctU1_duBNi_k44yd1CW18"
     }
   },
   {
@@ -51,7 +36,7 @@
         "kind": "providerQuestion",
         "requestId": "01934a50-1000-7000-8000-000000000001",
         "holder": {
-          "sessionId": "01934a50-1000-7000-8000-000000000003",
+          "sessionId": "01934a50-1000-7000-8000-000000000014",
           "routerRun": "01934a50-1000-7000-8000-000000000002"
         },
         "offer": {
@@ -67,37 +52,8 @@
           ]
         }
       },
-      "canonical": "{\"holder\":{\"routerRun\":\"01934a50-1000-7000-8000-000000000002\",\"sessionId\":\"01934a50-1000-7000-8000-000000000003\"},\"kind\":\"providerQuestion\",\"offer\":{\"fields\":[{\"description\":null,\"fieldId\":1,\"kind\":\"number\",\"label\":\"Metres\",\"required\":true}],\"prompt\":\"Which distance?\"},\"requestId\":\"01934a50-1000-7000-8000-000000000001\"}",
-      "digest": "9cPWGpt7ce7x2g1eK3wQsIKPGc9OqnWMmpx8VmhHVvw"
-    },
-    "ending": {
-      "body": {
-        "kind": "providerQuestion",
-        "ending": {
-          "kind": "decided",
-          "answer": {
-            "kind": "answered",
-            "fields": [
-              {
-                "fieldId": 1,
-                "value": {
-                  "kind": "number",
-                  "value": "2.50"
-                }
-              }
-            ]
-          },
-          "by": {
-            "kind": "session",
-            "session": {
-              "machineId": "01934a50-1000-7000-8000-000000000004",
-              "sessionId": "01934a50-1000-7000-8000-000000000003"
-            }
-          }
-        }
-      },
-      "canonical": "{\"ending\":{\"answer\":{\"fields\":[{\"fieldId\":1,\"value\":{\"kind\":\"number\",\"value\":\"2.50\"}}],\"kind\":\"answered\"},\"by\":{\"kind\":\"session\",\"session\":{\"machineId\":\"01934a50-1000-7000-8000-000000000004\",\"sessionId\":\"01934a50-1000-7000-8000-000000000003\"}},\"kind\":\"decided\"},\"kind\":\"providerQuestion\"}",
-      "digest": "PgMHGup85k0OokDRzKGkZUZsW9Vy5ePOekWqZpHZ3jg"
+      "canonical": "{\"holder\":{\"routerRun\":\"01934a50-1000-7000-8000-000000000002\",\"sessionId\":\"01934a50-1000-7000-8000-000000000014\"},\"kind\":\"providerQuestion\",\"offer\":{\"fields\":[{\"description\":null,\"fieldId\":1,\"kind\":\"number\",\"label\":\"Metres\",\"required\":true}],\"prompt\":\"Which distance?\"},\"requestId\":\"01934a50-1000-7000-8000-000000000001\"}",
+      "digest": "268EIFaAguF5uPRHt_OqQig0cn-fDHmCKeBpo5Fm3W4"
     }
   },
   {
@@ -127,20 +83,6 @@
       },
       "canonical": "{\"holder\":{\"routerRun\":\"01934a50-1000-7000-8000-000000000002\"},\"invocation\":\"CIr-m8fTgfbL4Kr_j_CJDxciqpxPodlvHcsyfD_si4Y\",\"kind\":\"unprovenCall\",\"offer\":{\"operation\":\"writeConfig\",\"options\":[{\"effect\":\"allow\",\"id\":1,\"label\":\"Allow once\",\"lasts\":{\"kind\":\"thisRequest\"}}],\"summary\":\"Write configuration\"},\"requestId\":\"01934a50-1000-7000-8000-000000000001\"}",
       "digest": "Zg95SAnCFxR7jkJ8utrjqwLOIFNZ7Y6vZMheYJ5nLd0"
-    },
-    "ending": {
-      "body": {
-        "kind": "unprovenCall",
-        "ending": {
-          "kind": "cancelled",
-          "reason": {
-            "kind": "stopped",
-            "cause": "callWithdrawn"
-          }
-        }
-      },
-      "canonical": "{\"ending\":{\"kind\":\"cancelled\",\"reason\":{\"cause\":\"callWithdrawn\",\"kind\":\"stopped\"}},\"kind\":\"unprovenCall\"}",
-      "digest": "idXlNrlyI8UrAsZjQNL1kE61MY43EGPnuqRnIaPE6r8"
     }
   }
 ]

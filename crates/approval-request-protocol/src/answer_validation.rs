@@ -44,9 +44,6 @@ pub fn check_answer(offer: &OfferView, answer: &Answer) -> Result<(), InvalidAns
         (OfferView::ProviderApproval { offer }, Answer::Approval { option_id }) => {
             check_offered_option(&offer.options, option_id)
         }
-        (OfferView::UnprovenCall { offer }, Answer::Call { option_id }) => {
-            check_offered_option(&offer.options, option_id)
-        }
         (OfferView::ProviderQuestion { offer }, Answer::Question { answer }) => {
             check_question_answer(&offer.fields, answer)
         }

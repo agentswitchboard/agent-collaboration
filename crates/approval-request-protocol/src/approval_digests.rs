@@ -1,4 +1,4 @@
-//! Exact JSON bytes for the immutable request and private ending.
+//! Exact JSON bytes and digests for approval Raises.
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -117,11 +117,6 @@ approval_digest!(
     RequestContentsDigest
 );
 approval_digest!(
-    /// Identity of the private ending, scoped by its request ID.
-    EndingDigest
-);
-
-approval_digest!(
     /// Identity of the exact invocation bytes held on the Mac.
     InvocationDigest
 );
@@ -134,12 +129,6 @@ impl InvocationDigest {
 }
 
 impl RequestContentsDigest {
-    pub(crate) fn from_wire(value: &impl Serialize) -> Result<Self, ApprovalDigestError> {
-        digest_wire(value).map(Self)
-    }
-}
-
-impl EndingDigest {
     pub(crate) fn from_wire(value: &impl Serialize) -> Result<Self, ApprovalDigestError> {
         digest_wire(value).map(Self)
     }

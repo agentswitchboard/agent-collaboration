@@ -1,9 +1,9 @@
 use crate::approval_wire_codec::approval_wire_record;
 use crate::approval_wire_codec::approval_wire_union;
 use serde::{Deserialize, Serialize};
-use workspace_ids::{PersonId, SessionRef};
+use workspace_ids::{CentralSessionId, PersonId};
 
-use crate::{Answer, ApprovalDigestError, DeliveryEvidence, InvalidAnswer};
+use crate::{Answer, ApprovalDigestError, InvalidAnswer};
 
 approval_wire_union! {
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -16,10 +16,7 @@ pub enum DecidedBy {
         #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = String))]
         person_id: PersonId,
     },
-    Session {
-        #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = crate::typescript_shapes::SessionRef))]
-        session: SessionRef => "crate::approval_wire_codec::decode_named_map",
-    },
+    Session { session: CentralSessionId },
 }
 }
 
@@ -47,7 +44,6 @@ pub enum HolderStopCause {
     AskReplaced,
     SessionClosed,
     ProviderConnectionLost,
-    CallWithdrawn,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -74,28 +70,15 @@ impl ProviderStopCause {
     }
 }
 
-impl TryFrom<HolderStopCause> for ProviderStopCause {
-    type Error = InvalidApprovalEnding;
-
-    fn try_from(cause: HolderStopCause) -> Result<Self, Self::Error> {
+impl From<HolderStopCause> for ProviderStopCause {
+    fn from(cause: HolderStopCause) -> Self {
         match cause {
-            HolderStopCause::TurnStopped => Ok(Self::TurnStopped),
-            HolderStopCause::AskReplaced => Ok(Self::AskReplaced),
-            HolderStopCause::SessionClosed => Ok(Self::SessionClosed),
-            HolderStopCause::ProviderConnectionLost => Ok(Self::ProviderConnectionLost),
-            HolderStopCause::CallWithdrawn => Err(InvalidApprovalEnding::Cancellation),
+            HolderStopCause::TurnStopped => Self::TurnStopped,
+            HolderStopCause::AskReplaced => Self::AskReplaced,
+            HolderStopCause::SessionClosed => Self::SessionClosed,
+            HolderStopCause::ProviderConnectionLost => Self::ProviderConnectionLost,
         }
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub enum CallStopCause {
-    CallWithdrawn,
 }
 
 approval_wire_union! {
@@ -114,18 +97,11 @@ pub enum CancelReason {
 
 approval_wire_union! {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
+#[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub enum Delivery {
-    NoHandoverOwed {},
-    AwaitingReport {},
-    Reported {
-        evidence: DeliveryEvidence,
-    },
-    /// Central retired a run with delivery still owed.
-    ReceiptUnknown {},
+    Owed {},
+    ReceivedByHolder {},
+    ClosedWithoutReceipt {},
 }
 }
 
@@ -152,13 +128,21 @@ pub enum RequestState {
 }
 }
 
+approval_wire_union! {
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
+pub enum SessionDecider {
+    Session { session: CentralSessionId },
+}
+}
+
 approval_wire_record! {
     [deny_unknown_fields]
     #[derive(Clone, Debug, Eq, PartialEq)]
     #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
     pub struct ApprovalDecision {
         pub answer: Answer,
-        pub by: DecidedBy,
+        pub by: SessionDecider,
     }
 }
 
@@ -172,6 +156,16 @@ pub enum InvalidApprovalEnding {
     BindingMismatch,
     #[error("the answer does not fit the approval offer: {0:?}")]
     Answer(InvalidAnswer),
-    #[error("the cancellation does not fit this kind of approval request")]
-    Cancellation,
+    #[error("this actor cannot give the selected approval decision")]
+    IneligibleDecider,
+    #[error("the decision requires a fresh person factor")]
+    FreshFactorRequired,
+    #[error("the destination is not a current member of this request")]
+    DestinationNotAdmitted,
+    #[error("the retained decision does not match the admitted decision operation")]
+    RetainedDecisionMismatch,
+    #[error("the ending time does not respect the request's approval window")]
+    Chronology,
+    #[error("this request kind is outside the core approval flow")]
+    UnsupportedRequestKind,
 }

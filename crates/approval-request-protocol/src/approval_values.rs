@@ -1,8 +1,6 @@
 use crate::approval_wire_codec::approval_wire_record;
 use serde::{Deserialize, Serialize};
 
-const MAX_SAFE_JSON_INTEGER: u64 = (1 << 53) - 1;
-
 pub const TITLE_MAX_CHARACTERS: usize = 200;
 pub const DESCRIPTION_MAX_CHARACTERS: usize = 2_000;
 pub const SUBJECT_MAX_CHARACTERS: usize = 500;
@@ -209,40 +207,6 @@ impl TryFrom<ApprovalWindowFields> for ApprovalWindow {
 impl From<ApprovalWindow> for ApprovalWindowFields {
     fn from(window: ApprovalWindow) -> Self {
         window.0
-    }
-}
-
-/// Exact on both sides of the JSON transport, including TypeScript.
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
-#[serde(try_from = "u64", into = "u64")]
-pub struct WaitingRevision(u64);
-
-#[cfg(all(feature = "wire-export", not(target_arch = "wasm32")))]
-impl specta::Type for WaitingRevision {
-    fn definition(types: &mut specta::Types) -> specta::datatype::DataType {
-        specta_typescript::Number::<()>::definition(types)
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("waiting revision exceeds the JavaScript safe integer maximum")]
-pub struct InvalidWaitingRevision;
-
-impl TryFrom<u64> for WaitingRevision {
-    type Error = InvalidWaitingRevision;
-
-    fn try_from(value: u64) -> Result<Self, Self::Error> {
-        if value <= MAX_SAFE_JSON_INTEGER {
-            Ok(Self(value))
-        } else {
-            Err(InvalidWaitingRevision)
-        }
-    }
-}
-
-impl From<WaitingRevision> for u64 {
-    fn from(value: WaitingRevision) -> Self {
-        value.0
     }
 }
 

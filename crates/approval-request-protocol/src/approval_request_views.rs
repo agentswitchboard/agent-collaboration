@@ -4,10 +4,10 @@ use serde::{Deserialize, Serialize};
 use workspace_ids::ApprovalRequestId;
 
 use crate::{
-    Answer, ApprovalOffer, ApprovalWindow, CallCancellation, CallOffer, CentralTime, DecidedBy,
-    Delivery, Ending, HolderEnding, InvalidApprovalEnding, OfferView, OfferedOptionId,
-    PrivateEnding, ProviderCancellation, QuestionAnswer, QuestionOffer, Raise, WaitingStatus,
-    check_answer,
+    AdmittedDestination, Answer, ApprovalOffer, ApprovalWindow, CentralTime, DecidedBy,
+    DeliverEndingRequest, Delivery, DestinationProjection, HolderEnding, InvalidApprovalEnding,
+    OfferView, OfferedOptionId, PrivateEnding, ProviderCancellation, QuestionAnswer, QuestionOffer,
+    Raise, WaitingStatus, check_answer,
 };
 
 approval_wire_union! {
@@ -64,38 +64,51 @@ approval_wire_union! {
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
 )]
-pub enum EndingView {
+pub enum EndingViewWire {
     ProviderApproval {
         ending: DestinationEnding<OfferedOptionId, ProviderCancellation>,
     },
     ProviderQuestion {
         ending: DestinationEnding<QuestionAnswer, ProviderCancellation>,
     },
-    UnprovenCall {
-        ending: DestinationEnding<OfferedOptionId, CallCancellation>,
-    },
 }
 }
 
+/// Recipient-scoped view of a stored, bound ending.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(transparent)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub struct EndingView(EndingViewWire);
+
 impl EndingView {
-    /// Central has already established that this reader is a destination.
-    pub fn for_raise(
-        raise: &Raise,
-        ending: Ending,
-        reader: &DecidedBy,
-    ) -> Result<Self, InvalidApprovalEnding> {
-        check_reader(raise, reader)?;
-        Ok(match PrivateEnding::from_raise(raise, ending)? {
-            PrivateEnding::ProviderApproval { ending, .. } => Self::ProviderApproval {
-                ending: DestinationEnding::project(ending, reader),
+    /// Project an ending to its admitted person or session. Only the giver receives the value.
+    pub fn for_destination<'request>(
+        admitted: &AdmittedDestination<'request>,
+        ending: &DeliverEndingRequest,
+    ) -> Result<DestinationProjection<'request, Self>, InvalidApprovalEnding> {
+        ending.check_bound_raise(admitted.raise())?;
+        let actor = admitted.actor();
+        let projected = match ending.ending.clone() {
+            PrivateEnding::ProviderApproval { ending } => EndingViewWire::ProviderApproval {
+                ending: DestinationEnding::project(ending, actor),
             },
-            PrivateEnding::ProviderQuestion { ending, .. } => Self::ProviderQuestion {
-                ending: DestinationEnding::project(ending, reader),
+            PrivateEnding::ProviderQuestion { ending } => EndingViewWire::ProviderQuestion {
+                ending: DestinationEnding::project(ending, actor),
             },
-            PrivateEnding::UnprovenCall { ending, .. } => Self::UnprovenCall {
-                ending: DestinationEnding::project(ending, reader),
-            },
+        };
+        Ok(DestinationProjection {
+            actor,
+            view: Self(projected),
         })
+    }
+
+    /// Inspect this shape after decoding a reply on the receiving side.
+    #[must_use]
+    pub const fn wire_shape(&self) -> &EndingViewWire {
+        &self.0
     }
 }
 
@@ -118,16 +131,29 @@ pub enum RequestStateView<AcceptedAnswer, Cancellation> {
 }
 
 impl<AcceptedAnswer, Cancellation> RequestStateView<AcceptedAnswer, Cancellation> {
-    fn check_answer_membership(
+    fn check_ended_view(
         &self,
+        window: ApprovalWindow,
         offer: &OfferView,
         answer_for_kind: impl FnOnce(&AcceptedAnswer) -> Answer,
     ) -> Result<(), InvalidApprovalEnding> {
-        if let Self::Ended {
-            ending: DestinationEnding::Giver { decision },
-            ..
+        let Self::Ended {
+            ending, ended_at, ..
         } = self
-        {
+        else {
+            return Ok(());
+        };
+        let timed_out = matches!(
+            ending,
+            DestinationEnding::Standing {
+                ending: StandingEnding::TimedOut {}
+            }
+        );
+        if *ended_at < window.raised_at() || (*ended_at >= window.deadline()) != timed_out {
+            return Err(InvalidApprovalEnding::Chronology);
+        }
+
+        if let DestinationEnding::Giver { decision } = ending {
             check_answer(offer, &answer_for_kind(&decision.answer))
                 .map_err(InvalidApprovalEnding::Answer)?;
         }
@@ -154,12 +180,6 @@ enum RequestViewFields {
         state: RequestStateView<QuestionAnswer, ProviderCancellation>,
         window: ApprovalWindow,
     },
-    UnprovenCall {
-        request_id: ApprovalRequestId,
-        offer: CallOffer,
-        state: RequestStateView<OfferedOptionId, CallCancellation>,
-        window: ApprovalWindow,
-    },
 }
 }
 
@@ -174,16 +194,14 @@ enum RequestViewFields {
 pub struct RequestView(RequestViewFields);
 
 impl RequestView {
-    /// Central checks current destination membership before invoking this projection.
-    pub fn waiting(
-        raise: &Raise,
+    pub fn waiting<'request>(
+        admitted: &AdmittedDestination<'request>,
         status: WaitingStatus,
         window: ApprovalWindow,
-        reader: &DecidedBy,
-    ) -> Result<Self, InvalidApprovalEnding> {
-        check_reader(raise, reader)?;
+    ) -> Result<DestinationProjection<'request, Self>, InvalidApprovalEnding> {
+        let raise = admitted.raise();
         let request_id = raise.request_id().clone();
-        Ok(Self(match raise {
+        let fields = match raise {
             Raise::ProviderApproval { offer, .. } => RequestViewFields::ProviderApproval {
                 request_id,
                 offer: offer.clone(),
@@ -196,76 +214,66 @@ impl RequestView {
                 state: RequestStateView::Waiting { status },
                 window,
             },
-            Raise::UnprovenCall { offer, .. } => RequestViewFields::UnprovenCall {
-                request_id,
-                offer: offer.clone(),
-                state: RequestStateView::Waiting { status },
-                window,
-            },
-        }))
+            Raise::UnprovenCall { .. } => {
+                return Err(InvalidApprovalEnding::UnsupportedRequestKind);
+            }
+        };
+        Ok(DestinationProjection {
+            actor: admitted.actor(),
+            view: Self(fields),
+        })
     }
 
-    /// Central has already checked this reader's destination standing.
-    pub fn ended(
-        raise: &Raise,
+    pub fn ended<'request>(
+        admitted: &AdmittedDestination<'request>,
         window: ApprovalWindow,
-        ending: Ending,
-        reader: &DecidedBy,
+        ending: &DeliverEndingRequest,
         ended_at: CentralTime,
         delivery: Delivery,
-    ) -> Result<Self, InvalidApprovalEnding> {
+    ) -> Result<DestinationProjection<'request, Self>, InvalidApprovalEnding> {
+        let raise = admitted.raise();
         let request_id = raise.request_id().clone();
-        Ok(Self(
-            match (raise, EndingView::for_raise(raise, ending, reader)?) {
-                (
-                    Raise::ProviderApproval { offer, .. },
-                    EndingView::ProviderApproval { ending },
-                ) => RequestViewFields::ProviderApproval {
-                    request_id,
-                    offer: offer.clone(),
-                    state: RequestStateView::Ended {
-                        ending,
-                        ended_at,
-                        delivery,
-                    },
-                    window,
+        let ending = EndingView::for_destination(admitted, ending)?.view.0;
+        let fields = match (raise, ending) {
+            (
+                Raise::ProviderApproval { offer, .. },
+                EndingViewWire::ProviderApproval { ending },
+            ) => RequestViewFields::ProviderApproval {
+                request_id,
+                offer: offer.clone(),
+                state: RequestStateView::Ended {
+                    ending,
+                    ended_at,
+                    delivery,
                 },
-                (
-                    Raise::ProviderQuestion { offer, .. },
-                    EndingView::ProviderQuestion { ending },
-                ) => RequestViewFields::ProviderQuestion {
-                    request_id,
-                    offer: offer.clone(),
-                    state: RequestStateView::Ended {
-                        ending,
-                        ended_at,
-                        delivery,
-                    },
-                    window,
-                },
-                (Raise::UnprovenCall { offer, .. }, EndingView::UnprovenCall { ending }) => {
-                    RequestViewFields::UnprovenCall {
-                        request_id,
-                        offer: offer.clone(),
-                        state: RequestStateView::Ended {
-                            ending,
-                            ended_at,
-                            delivery,
-                        },
-                        window,
-                    }
-                }
-                _ => return Err(InvalidApprovalEnding::BindingMismatch),
+                window,
             },
-        ))
+            (
+                Raise::ProviderQuestion { offer, .. },
+                EndingViewWire::ProviderQuestion { ending },
+            ) => RequestViewFields::ProviderQuestion {
+                request_id,
+                offer: offer.clone(),
+                state: RequestStateView::Ended {
+                    ending,
+                    ended_at,
+                    delivery,
+                },
+                window,
+            },
+            _ => return Err(InvalidApprovalEnding::BindingMismatch),
+        };
+        Ok(DestinationProjection {
+            actor: admitted.actor(),
+            view: Self::try_from(fields)?,
+        })
     }
 
     #[must_use]
     pub const fn request_id(&self) -> &ApprovalRequestId {
         match &self.0 {
             RequestViewFields::ProviderApproval { request_id, .. }
-            | RequestViewFields::ProviderQuestion { request_id, .. }
-            | RequestViewFields::UnprovenCall { request_id, .. } => request_id,
+            | RequestViewFields::ProviderQuestion { request_id, .. } => request_id,
         }
     }
 
@@ -273,8 +281,7 @@ impl RequestView {
     pub const fn window(&self) -> ApprovalWindow {
         match &self.0 {
             RequestViewFields::ProviderApproval { window, .. }
-            | RequestViewFields::ProviderQuestion { window, .. }
-            | RequestViewFields::UnprovenCall { window, .. } => *window,
+            | RequestViewFields::ProviderQuestion { window, .. } => *window,
         }
     }
 }
@@ -284,30 +291,32 @@ impl TryFrom<RequestViewFields> for RequestView {
 
     fn try_from(view: RequestViewFields) -> Result<Self, Self::Error> {
         match &view {
-            RequestViewFields::ProviderApproval { offer, state, .. } => state
-                .check_answer_membership(
-                    &OfferView::ProviderApproval {
-                        offer: offer.clone(),
-                    },
-                    |option_id| Answer::Approval {
-                        option_id: option_id.clone(),
-                    },
-                )?,
-            RequestViewFields::ProviderQuestion { offer, state, .. } => state
-                .check_answer_membership(
-                    &OfferView::ProviderQuestion {
-                        offer: offer.clone(),
-                    },
-                    |answer| Answer::Question {
-                        answer: answer.clone(),
-                    },
-                )?,
-            RequestViewFields::UnprovenCall { offer, state, .. } => state.check_answer_membership(
-                &OfferView::UnprovenCall {
+            RequestViewFields::ProviderApproval {
+                offer,
+                state,
+                window,
+                ..
+            } => state.check_ended_view(
+                *window,
+                &OfferView::ProviderApproval {
                     offer: offer.clone(),
                 },
-                |option_id| Answer::Call {
+                |option_id| Answer::Approval {
                     option_id: option_id.clone(),
+                },
+            )?,
+            RequestViewFields::ProviderQuestion {
+                offer,
+                state,
+                window,
+                ..
+            } => state.check_ended_view(
+                *window,
+                &OfferView::ProviderQuestion {
+                    offer: offer.clone(),
+                },
+                |answer| Answer::Question {
+                    answer: answer.clone(),
                 },
             )?,
         }
@@ -318,17 +327,5 @@ impl TryFrom<RequestViewFields> for RequestView {
 impl From<RequestView> for RequestViewFields {
     fn from(view: RequestView) -> Self {
         view.0
-    }
-}
-
-pub(crate) fn check_reader(raise: &Raise, reader: &DecidedBy) -> Result<(), InvalidApprovalEnding> {
-    match (raise, reader) {
-        (
-            Raise::ProviderApproval { holder, .. } | Raise::ProviderQuestion { holder, .. },
-            DecidedBy::Session { session },
-        ) if holder.session_id == session.session_id => {
-            Err(InvalidApprovalEnding::RequesterIsReader)
-        }
-        _ => Ok(()),
     }
 }

@@ -22,6 +22,14 @@ fn visit<Wire: DeserializeOwned>(
 ) -> Result<(), String> {
     match node {
         Value::Object(object) => {
+            let mut unknown_field = object.clone();
+            unknown_field.insert("unrecognisedNestedField".to_owned(), json!(true));
+            assert_rejects::<Wire>(
+                original,
+                path,
+                Value::Object(unknown_field),
+                "unknown field",
+            )?;
             check_tag::<Wire>(original, object, path)?;
             let mut fields: Vec<_> = object
                 .iter()

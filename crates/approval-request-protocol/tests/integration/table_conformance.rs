@@ -1,10 +1,11 @@
-//! Independent inventory of the final fuller Typed calls table.
+//! Independent inventory of the six core approvals calls.
 use std::fmt::Debug;
 
 use approval_request_protocol::{
-    AuthorityProbeReply, AuthorityProbeRequest, DecideReply, DecideRequest, DeliverEndingReply,
-    DeliverEndingRequest, PassOnReply, PassOnRequest, Raise, RaiseReply, RegisterRunReply,
-    RegisterRunRequest, ReportDeliveryReply, ReportDeliveryRequest, StopReply, StopRequest,
+    CancelReason, DecideReply, DecideReplyWire, DecideRequest, DeliverEndingReply,
+    DeliverEndingRequest, DestinationEnding, EndingViewWire, HolderStopCause, PassOnReply,
+    PassOnRequest, Raise, RaiseReply, RegisterRunReply, RegisterRunRequest, RunRefusal,
+    SessionDecider, StandingEnding, StopReceiptEnding, StopReply, StopRequest,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -12,12 +13,54 @@ use serde_json::{Value, json};
 const REQUEST: &str = "01934a50-1000-7000-8000-000000000001";
 const RUN: &str = "01934a50-1000-7000-8000-000000000002";
 const OPERATION: &str = "01934a50-1000-7000-8000-000000000003";
-const PERSON: &str = "01934a50-1000-7000-8000-000000000004";
 const SESSION: &str = "01934a50-1000-7000-8000-000000000005";
 const DIGEST: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
-fn refusal() -> Value {
-    json!({"kind":"authorityRefused","refusal":{"kind":"runRetired"}})
+const AUTHORITY_REFUSALS: [(&str, &str); 3] = [
+    ("authority/runNotRegistered", "runNotRegistered"),
+    ("authority/runRetired", "runRetired"),
+    ("authority/enrollmentEnded", "enrollmentEnded"),
+];
+
+fn authority_case(refusal: RunRefusal) -> &'static str {
+    match refusal {
+        RunRefusal::RunNotRegistered {} => "authority/runNotRegistered",
+        RunRefusal::RunRetired {} => "authority/runRetired",
+        RunRefusal::EnrollmentEnded {} => "authority/enrollmentEnded",
+    }
+}
+
+fn stop_standing_case(ending: StopReceiptEnding) -> &'static str {
+    match ending {
+        StopReceiptEnding::TimedOut {} => "timedOut",
+        StopReceiptEnding::DecidedEarlier {} => "decidedEarlier",
+        StopReceiptEnding::Cancelled { reason } => match reason {
+            CancelReason::RequesterGone {} => "requesterGone",
+            CancelReason::SessionEnded {} => "sessionEnded",
+            CancelReason::EnrollmentEnded {} => "enrollmentEnded",
+            CancelReason::Stopped { cause } => match cause {
+                HolderStopCause::TurnStopped => "turnStopped",
+                HolderStopCause::AskReplaced => "askReplaced",
+                HolderStopCause::SessionClosed => "sessionClosed",
+                HolderStopCause::ProviderConnectionLost => "providerConnectionLost",
+            },
+        },
+    }
+}
+
+fn assert_authority_reply<Wire: DeserializeOwned + Serialize + Debug>(
+    name: &str,
+    cases: &[(&str, Value)],
+    classify: impl Fn(&Wire) -> &'static str,
+) -> Result<(), String> {
+    let mut cases = cases.to_vec();
+    cases.extend(AUTHORITY_REFUSALS.map(|(case, refusal)| {
+        (
+            case,
+            json!({"kind":"authorityRefused","refusal":{"kind":refusal}}),
+        )
+    }));
+    assert_reply(name, &cases, classify)
 }
 
 fn ending() -> Value {
@@ -68,7 +111,7 @@ fn assert_reply<Wire: DeserializeOwned + Serialize + Debug>(
 }
 
 #[test]
-fn table_requests_and_reply_cases_match_the_fuller_protocol() -> Result<(), String> {
+fn table_requests_and_reply_cases_match_the_core_protocol() -> Result<(), String> {
     slice_case::<RegisterRunRequest>("RegisterRun request", json!({"routerRun":RUN}))?;
     assert_reply::<RegisterRunReply>(
         "RegisterRun",
@@ -86,19 +129,6 @@ fn table_requests_and_reply_cases_match_the_fuller_protocol() -> Result<(), Stri
         },
     )?;
 
-    slice_case::<AuthorityProbeRequest>("AuthorityProbe request", json!({"routerRun":RUN}))?;
-    assert_reply::<AuthorityProbeReply>(
-        "AuthorityProbe",
-        &[
-            ("admitted", json!({"kind":"admitted"})),
-            ("authorityRefused", refusal()),
-        ],
-        |reply| match reply {
-            AuthorityProbeReply::Admitted {} => "admitted",
-            AuthorityProbeReply::AuthorityRefused { .. } => "authorityRefused",
-        },
-    )?;
-
     slice_case::<Raise>(
         "Raise request",
         json!({
@@ -109,7 +139,7 @@ fn table_requests_and_reply_cases_match_the_fuller_protocol() -> Result<(), Stri
             ]}
         }),
     )?;
-    assert_reply::<RaiseReply>(
+    assert_authority_reply::<RaiseReply>(
         "Raise",
         &[
             (
@@ -119,20 +149,17 @@ fn table_requests_and_reply_cases_match_the_fuller_protocol() -> Result<(), Stri
                 }}}),
             ),
             ("alreadyStopped", json!({"kind":"alreadyStopped"})),
-            ("alreadyEnded", json!({"kind":"alreadyEnded"})),
             ("sessionEnded", json!({"kind":"sessionEnded"})),
             ("contentsDiffer", json!({"kind":"contentsDiffer"})),
             ("tooManyOutstanding", json!({"kind":"tooManyOutstanding"})),
-            ("authorityRefused", refusal()),
         ],
         |reply| match reply {
             RaiseReply::Receipt { .. } => "receipt",
             RaiseReply::AlreadyStopped {} => "alreadyStopped",
-            RaiseReply::AlreadyEnded {} => "alreadyEnded",
             RaiseReply::SessionEnded {} => "sessionEnded",
             RaiseReply::ContentsDiffer {} => "contentsDiffer",
             RaiseReply::TooManyOutstanding {} => "tooManyOutstanding",
-            RaiseReply::AuthorityRefused { .. } => "authorityRefused",
+            RaiseReply::AuthorityRefused { refusal } => authority_case(*refusal),
         },
     )?;
 
@@ -142,22 +169,33 @@ fn table_requests_and_reply_cases_match_the_fuller_protocol() -> Result<(), Stri
             "kind":"provider","requestId":REQUEST,"routerRun":RUN,"contentsDigest":DIGEST,"cause":"askReplaced"
         }),
     )?;
-    assert_reply::<StopReply>(
-        "Stop",
-        &[
+    let mut stop_cases = vec![
+        (
+            "timedOut",
+            json!({"kind":"stands","ending":{"kind":"timedOut"}}),
+        ),
+        (
+            "decidedEarlier",
+            json!({"kind":"stands","ending":{"kind":"decidedEarlier"}}),
+        ),
+        ("notVisible", json!({"kind":"notVisible"})),
+    ];
+    stop_cases.extend(
+        ["requesterGone", "sessionEnded", "enrollmentEnded"].map(|reason| {
             (
-                "stands",
-                json!({"kind":"stands","ending":{"kind":"timedOut"}}),
-            ),
-            ("notVisible", json!({"kind":"notVisible"})),
-            ("authorityRefused", refusal()),
-        ],
-        |reply| match reply {
-            StopReply::Stands { .. } => "stands",
-            StopReply::NotVisible {} => "notVisible",
-            StopReply::AuthorityRefused { .. } => "authorityRefused",
-        },
-    )?;
+                reason,
+                json!({"kind":"stands","ending":{"kind":"cancelled","reason":{"kind":reason}}}),
+            )
+        }),
+    );
+    stop_cases.extend(["turnStopped","askReplaced","sessionClosed","providerConnectionLost" ].map(|cause| {
+        (cause, json!({"kind":"stands","ending":{"kind":"cancelled","reason":{"kind":"stopped","cause":cause}}}))
+    }));
+    assert_authority_reply::<StopReply>("Stop", &stop_cases, |reply| match reply {
+        StopReply::Stands { ending } => stop_standing_case(*ending),
+        StopReply::NotVisible {} => "notVisible",
+        StopReply::AuthorityRefused { refusal } => authority_case(*refusal),
+    })?;
 
     slice_case::<DeliverEndingRequest>(
         "DeliverEnding request",
@@ -183,33 +221,8 @@ fn table_requests_and_reply_cases_match_the_fuller_protocol() -> Result<(), Stri
         },
     )?;
 
-    slice_case::<ReportDeliveryRequest>(
-        "ReportDelivery request",
-        json!({
-            "requestId":REQUEST,"routerRun":RUN,"contentsDigest":DIGEST,"endingDigest":DIGEST,
-            "evidence":{"kind":"native","evidence":{"kind":"possibleWrite"}}
-        }),
-    )?;
-    assert_reply::<ReportDeliveryReply>(
-        "ReportDelivery",
-        &[
-            ("deliveryRecorded", json!({"kind":"deliveryRecorded"})),
-            ("noHandoverOwed", json!({"kind":"noHandoverOwed"})),
-            ("reportDiffers", json!({"kind":"reportDiffers"})),
-            ("notVisible", json!({"kind":"notVisible"})),
-            ("authorityRefused", refusal()),
-        ],
-        |reply| match reply {
-            ReportDeliveryReply::DeliveryRecorded {} => "deliveryRecorded",
-            ReportDeliveryReply::NoHandoverOwed {} => "noHandoverOwed",
-            ReportDeliveryReply::ReportDiffers {} => "reportDiffers",
-            ReportDeliveryReply::NotVisible {} => "notVisible",
-            ReportDeliveryReply::AuthorityRefused { .. } => "authorityRefused",
-        },
-    )?;
-
     let value = json!({"kind":"approval","optionId":1});
-    let by = json!({"kind":"person","personId":PERSON});
+    let by = json!({"kind":"session","session":SESSION});
     slice_case::<DecideRequest>(
         "Decide request",
         json!({"requestId":REQUEST,"operationId":OPERATION,"value":value}),
@@ -231,13 +244,15 @@ fn table_requests_and_reply_cases_match_the_fuller_protocol() -> Result<(), Stri
             ("tooLate", json!({"kind":"tooLate"})),
             ("operationConflict", json!({"kind":"operationConflict"})),
         ],
-        |reply| match reply {
-            DecideReply::SavedDecision { .. } => "savedDecision",
-            DecideReply::Standing { .. } => "standing",
-            DecideReply::NotVisible {} => "notVisible",
-            DecideReply::Invalid {} => "invalid",
-            DecideReply::TooLate {} => "tooLate",
-            DecideReply::OperationConflict {} => "operationConflict",
+        |reply| match reply.wire_shape() {
+            DecideReplyWire::SavedDecision { decision } => match &decision.by {
+                SessionDecider::Session { .. } => "savedDecision",
+            },
+            DecideReplyWire::Standing { .. } => "standing",
+            DecideReplyWire::NotVisible {} => "notVisible",
+            DecideReplyWire::Invalid {} => "invalid",
+            DecideReplyWire::TooLate {} => "tooLate",
+            DecideReplyWire::OperationConflict {} => "operationConflict",
         },
     )?;
 
@@ -257,4 +272,66 @@ fn table_requests_and_reply_cases_match_the_fuller_protocol() -> Result<(), Stri
             PassOnReply::Ended {} => "ended",
         },
     )
+}
+
+fn destination_standing_case<Answer, Cancellation>(
+    ending: &DestinationEnding<Answer, Cancellation>,
+) -> &'static str {
+    match ending {
+        DestinationEnding::Giver { .. } => "giver",
+        DestinationEnding::Standing { ending } => match ending {
+            StandingEnding::Decided { .. } => "decided",
+            StandingEnding::Cancelled { .. } => "cancelled",
+            StandingEnding::TimedOut {} => "timedOut",
+        },
+    }
+}
+
+#[test]
+fn decide_standing_cases_cover_every_request_kind_and_disclosure() -> Result<(), String> {
+    let person = json!({"kind":"person","personId":"01934a50-1000-7000-8000-000000000004"});
+    for (request_kind, answer) in [
+        ("providerApproval", json!(1)),
+        ("providerQuestion", json!({"kind":"declined"})),
+    ] {
+        for (case, ending) in [
+            (
+                "giver",
+                json!({"kind":"giver","decision":{"answer":answer,"by":person}}),
+            ),
+            (
+                "decided",
+                json!({"kind":"standing","ending":{"kind":"decided","by":person}}),
+            ),
+            (
+                "cancelled",
+                json!({"kind":"standing","ending":{"kind":"cancelled","reason":{"kind":"requesterGone"}}}),
+            ),
+            (
+                "timedOut",
+                json!({"kind":"standing","ending":{"kind":"timedOut"}}),
+            ),
+        ] {
+            let wire = json!({"kind":"standing","ending":{"kind":request_kind,"ending":ending}});
+            let reply: DecideReply = slice_case("Decide standing", wire.clone())?;
+            let DecideReplyWire::Standing { ending } = reply.wire_shape() else {
+                return Err("Decide standing decoded as another reply".to_owned());
+            };
+            let observed = match ending.wire_shape() {
+                EndingViewWire::ProviderApproval { ending } => {
+                    ("providerApproval", destination_standing_case(ending))
+                }
+                EndingViewWire::ProviderQuestion { ending } => {
+                    ("providerQuestion", destination_standing_case(ending))
+                }
+            };
+            if observed != (request_kind, case) {
+                return Err(format!(
+                    "Decide standing decoded {request_kind}/{case} as {observed:?}"
+                ));
+            }
+            super::map_only::assert_objects_require_named_maps::<DecideReply>(&wire)?;
+        }
+    }
+    Ok(())
 }

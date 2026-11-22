@@ -153,37 +153,31 @@ fn filled_question_matches_the_independent_choice_set_and_presence_oracle(case: 
 
 #[hegel::test]
 fn request_kind_and_option_membership_are_both_required(case: TestCase) {
-    let parked = case.draw(gs::booleans());
-    let kind = case.draw(gs::integers::<usize>().min_value(0).max_value(2));
+    let chooses_approval = case.draw(gs::booleans());
     let selected = case.draw(gs::integers::<usize>().min_value(0).max_value(3));
     let offered = [1, 2];
     let options = json!([
         {"id":offered[0],"label":"Allow","effect":"allow","lasts":{"kind":"thisRequest"}},
         {"id":offered[1],"label":"Decline","effect":"decline","lasts":{"kind":"thisRequest"}}
     ]);
-    let offer = if parked {
-        json!({"kind":"unprovenCall", "offer":{
-            "operation":"readConfig","summary":"Read config","options":options
-        }})
-    } else {
-        json!({"kind":"providerApproval","offer":{"title":"Allow a tool","options":options}})
-    };
-    let offer = decoded_offer(offer).unwrap();
+    let offer = decoded_offer(
+        json!({"kind":"providerApproval","offer":{"title":"Allow a tool","options":options}}),
+    )
+    .unwrap();
     let selected_id = [1, 2, 3, 4][selected];
-    let answer = match kind {
-        0 => decoded_answer(json!({"kind":"approval","optionId":selected_id})),
-        1 => decoded_answer(json!({"kind":"call","optionId":selected_id})),
-        _ => decoded_answer(json!({"kind":"question","answer":{"kind":"declined"}})),
+    let answer = if chooses_approval {
+        decoded_answer(json!({"kind":"approval","optionId":selected_id}))
+    } else {
+        decoded_answer(json!({"kind":"question","answer":{"kind":"declined"}}))
     }
     .unwrap();
 
-    // Oracle: approval and call have disjoint answer alphabets. Each alphabet has these two entries.
-    let expected = match (parked, kind, selected) {
-        (false, 0, 0 | 1) | (true, 1, 0 | 1) => Ok(()),
-        (false, 0, _) | (true, 1, _) => Err(InvalidAnswer::UnofferedOption {
+    let expected = match (chooses_approval, selected) {
+        (true, 0 | 1) => Ok(()),
+        (true, _) => Err(InvalidAnswer::UnofferedOption {
             option_id: serde_json::from_value(json!(selected_id)).unwrap(),
         }),
-        _ => Err(InvalidAnswer::WrongKind {}),
+        (false, _) => Err(InvalidAnswer::WrongKind {}),
     };
     assert_eq!(check_answer(&offer, &answer), expected);
 }

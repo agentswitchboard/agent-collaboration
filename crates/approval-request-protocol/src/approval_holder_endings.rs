@@ -3,9 +3,8 @@ use crate::approval_wire_codec::{approval_wire_record, approval_wire_union};
 use workspace_ids::ApprovalRequestId;
 
 use crate::{
-    Answer, ApprovalDigestError, CallStopCause, CancelReason, DecidedBy, Ending, EndingDigest,
-    HolderStopCause, InvalidAnswer, InvalidApprovalEnding, OfferedOptionId, ProviderStopCause,
-    QuestionAnswer, Raise, RequestContentsDigest, check_answer,
+    Answer, CancelReason, DecidedBy, Ending, InvalidAnswer, InvalidApprovalEnding, OfferedOptionId,
+    ProviderStopCause, QuestionAnswer, Raise, RequestContentsDigest, check_answer,
 };
 
 approval_wire_union! {
@@ -41,48 +40,37 @@ pub enum ProviderCancellation {
 }
 
 approval_wire_union! {
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub enum CallCancellation {
-    Stopped { cause: CallStopCause },
-    RequesterGone {},
-    EnrollmentEnded {},
-}
-}
-
-approval_wire_union! {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub enum PrivateEnding {
     ProviderApproval { ending: HolderEnding<OfferedOptionId, ProviderCancellation> },
     ProviderQuestion { ending: HolderEnding<QuestionAnswer, ProviderCancellation> },
-    UnprovenCall { ending: HolderEnding<OfferedOptionId, CallCancellation> },
 }
 }
 
 impl PrivateEnding {
     pub fn from_raise(raise: &Raise, ending: Ending) -> Result<Self, InvalidApprovalEnding> {
-        if let Ending::Decided { answer, .. } = &ending {
-            check_answer(&raise.offer_view(), answer).map_err(InvalidApprovalEnding::Answer)?;
+        if let Ending::Decided { answer, by } = &ending {
+            check_decision_actor(raise, answer, by)?;
         }
         match raise {
             Raise::ProviderApproval { .. } => Ok(Self::ProviderApproval {
-                ending: project_ending(ending, take_approval, ProviderCancellation::try_from)?,
+                ending: project_ending(ending, take_approval, ProviderCancellation::from)?,
             }),
             Raise::ProviderQuestion { .. } => Ok(Self::ProviderQuestion {
-                ending: project_ending(ending, take_question, ProviderCancellation::try_from)?,
+                ending: project_ending(ending, take_question, ProviderCancellation::from)?,
             }),
-            Raise::UnprovenCall { .. } => Ok(Self::UnprovenCall {
-                ending: project_ending(ending, take_call, CallCancellation::try_from)?,
-            }),
+            Raise::UnprovenCall { .. } => Err(InvalidApprovalEnding::UnsupportedRequestKind),
         }
     }
 
-    pub fn ending_digest(&self) -> Result<EndingDigest, ApprovalDigestError> {
-        EndingDigest::from_wire(self)
+    pub fn check_bound_raise(&self, raise: &Raise) -> Result<(), InvalidApprovalEnding> {
+        let expected = Self::from_raise(raise, self.clone().into_ending())?;
+        if *self == expected {
+            Ok(())
+        } else {
+            Err(InvalidApprovalEnding::BindingMismatch)
+        }
     }
 
     #[must_use]
@@ -95,10 +83,6 @@ impl PrivateEnding {
             Self::ProviderQuestion { ending } => ending.into_ending(
                 |answer| Answer::Question { answer },
                 ProviderCancellation::into_reason,
-            ),
-            Self::UnprovenCall { ending } => ending.into_ending(
-                |option_id| Answer::Call { option_id },
-                CallCancellation::into_reason,
             ),
         }
     }
@@ -131,12 +115,7 @@ impl DeliverEndingRequest {
         {
             return Err(InvalidApprovalEnding::BindingMismatch);
         }
-        let expected = PrivateEnding::from_raise(raise, self.ending.clone().into_ending())?;
-        if self.ending == expected {
-            Ok(())
-        } else {
-            Err(InvalidApprovalEnding::BindingMismatch)
-        }
+        self.ending.check_bound_raise(raise)
     }
 }
 
@@ -162,7 +141,7 @@ impl<AcceptedAnswer, Cancellation> HolderEnding<AcceptedAnswer, Cancellation> {
 fn project_ending<AcceptedAnswer, Cancellation>(
     ending: Ending,
     answer_for_kind: impl FnOnce(Answer) -> Option<AcceptedAnswer>,
-    cancellation_for_kind: impl FnOnce(CancelReason) -> Result<Cancellation, InvalidApprovalEnding>,
+    cancellation_for_kind: impl FnOnce(CancelReason) -> Cancellation,
 ) -> Result<HolderEnding<AcceptedAnswer, Cancellation>, InvalidApprovalEnding> {
     match ending {
         Ending::Decided { answer, by } => {
@@ -171,45 +150,64 @@ fn project_ending<AcceptedAnswer, Cancellation>(
             Ok(HolderEnding::Decided { answer, by })
         }
         Ending::Cancelled { reason } => Ok(HolderEnding::Cancelled {
-            reason: cancellation_for_kind(reason)?,
+            reason: cancellation_for_kind(reason),
         }),
         Ending::TimedOut {} => Ok(HolderEnding::TimedOut {}),
     }
 }
 
+pub(crate) fn requires_fresh_factor(raise: &Raise, answer: &Answer) -> bool {
+    match (raise, answer) {
+        (Raise::ProviderApproval { offer, .. }, Answer::Approval { option_id }) => offer
+            .options
+            .as_slice()
+            .iter()
+            .any(|option| &option.id == option_id && option.needs_person_with_fresh_factor()),
+        _ => false,
+    }
+}
+
+pub(crate) fn check_decision_actor(
+    raise: &Raise,
+    answer: &Answer,
+    actor: &DecidedBy,
+) -> Result<(), InvalidApprovalEnding> {
+    let offer = raise
+        .offer_view()
+        .ok_or(InvalidApprovalEnding::UnsupportedRequestKind)?;
+    check_answer(&offer, answer).map_err(InvalidApprovalEnding::Answer)?;
+    if let DecidedBy::Session { session } = actor
+        && (raise.requesting_session() == Some(session) || requires_fresh_factor(raise, answer))
+    {
+        return Err(InvalidApprovalEnding::IneligibleDecider);
+    }
+    Ok(())
+}
+
 fn take_approval(answer: Answer) -> Option<OfferedOptionId> {
     match answer {
         Answer::Approval { option_id } => Some(option_id),
-        Answer::Call { .. } | Answer::Question { .. } => None,
+        Answer::Question { .. } => None,
     }
 }
 
 fn take_question(answer: Answer) -> Option<QuestionAnswer> {
     match answer {
         Answer::Question { answer } => Some(answer),
-        Answer::Approval { .. } | Answer::Call { .. } => None,
+        Answer::Approval { .. } => None,
     }
 }
 
-fn take_call(answer: Answer) -> Option<OfferedOptionId> {
-    match answer {
-        Answer::Call { option_id } => Some(option_id),
-        Answer::Approval { .. } | Answer::Question { .. } => None,
-    }
-}
-
-impl TryFrom<CancelReason> for ProviderCancellation {
-    type Error = InvalidApprovalEnding;
-
-    fn try_from(reason: CancelReason) -> Result<Self, Self::Error> {
-        Ok(match reason {
+impl From<CancelReason> for ProviderCancellation {
+    fn from(reason: CancelReason) -> Self {
+        match reason {
             CancelReason::Stopped { cause } => Self::Stopped {
-                cause: ProviderStopCause::try_from(cause)?,
+                cause: cause.into(),
             },
             CancelReason::RequesterGone {} => Self::RequesterGone {},
             CancelReason::SessionEnded {} => Self::SessionEnded {},
             CancelReason::EnrollmentEnded {} => Self::EnrollmentEnded {},
-        })
+        }
     }
 }
 
@@ -222,39 +220,6 @@ impl ProviderCancellation {
             ProviderCancellation::RequesterGone {} => CancelReason::RequesterGone {},
             ProviderCancellation::SessionEnded {} => CancelReason::SessionEnded {},
             ProviderCancellation::EnrollmentEnded {} => CancelReason::EnrollmentEnded {},
-        }
-    }
-}
-
-impl TryFrom<CancelReason> for CallCancellation {
-    type Error = InvalidApprovalEnding;
-
-    fn try_from(reason: CancelReason) -> Result<Self, Self::Error> {
-        match reason {
-            CancelReason::Stopped {
-                cause: HolderStopCause::CallWithdrawn,
-            } => Ok(Self::Stopped {
-                cause: CallStopCause::CallWithdrawn,
-            }),
-            CancelReason::RequesterGone {} => Ok(Self::RequesterGone {}),
-            CancelReason::EnrollmentEnded {} => Ok(Self::EnrollmentEnded {}),
-            CancelReason::Stopped { .. } | CancelReason::SessionEnded {} => {
-                Err(InvalidApprovalEnding::Cancellation)
-            }
-        }
-    }
-}
-
-impl CallCancellation {
-    fn into_reason(self) -> CancelReason {
-        match self {
-            CallCancellation::Stopped {
-                cause: CallStopCause::CallWithdrawn,
-            } => CancelReason::Stopped {
-                cause: HolderStopCause::CallWithdrawn,
-            },
-            CallCancellation::RequesterGone {} => CancelReason::RequesterGone {},
-            CallCancellation::EnrollmentEnded {} => CancelReason::EnrollmentEnded {},
         }
     }
 }

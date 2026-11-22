@@ -1,8 +1,8 @@
 use std::fmt::Debug;
 
 use approval_request_protocol::{
-    ApprovalOffer, Description, Ending, EndingView, Label, QuestionOffer, Raise, Subject, Title,
-    WaitingRevision,
+    AdmittedDestination, ApprovalOffer, DecideRequest, DeliverEndingRequest, Description, Ending,
+    Label, QuestionOffer, Raise, Subject, Title,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -11,17 +11,19 @@ const REQUEST_ID: &str = "01934a50-1000-7000-8000-000000000001";
 const RUN_ID: &str = "01934a50-1000-7000-8000-000000000002";
 const OPERATION_ID: &str = "01934a50-1000-7000-8000-000000000003";
 const PERSON_ID: &str = "01934a50-1000-7000-8000-000000000004";
-const MACHINE_ID: &str = "01934a50-1000-7000-8000-000000000005";
+const CENTRAL_SESSION_ID: &str = "01934a50-1000-7000-8000-000000000005";
 const RAISED_AT: &str = "2026-11-22T10:00:00Z";
 const DEADLINE: &str = "2026-11-22T11:00:00Z";
 const DIGEST: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 
-fn session_ref() -> Value {
-    json!({ "machineId": MACHINE_ID, "sessionId": "host/session" })
+const DESTINATION_SESSION_ID: &str = "01934a50-1000-7000-8000-000000000006";
+
+fn deciding_session() -> Value {
+    json!({"kind":"session","session":DESTINATION_SESSION_ID})
 }
 
 fn holder() -> Value {
-    json!({ "sessionId": "host/session", "routerRun": RUN_ID })
+    json!({ "sessionId": CENTRAL_SESSION_ID, "routerRun": RUN_ID })
 }
 
 fn offered_options() -> Value {
@@ -49,6 +51,18 @@ fn question_offer() -> Value {
         "fields": [{"kind": "singleChoice", "fieldId": 1, "label": "Region",
                     "description": null, "required": true, "options": [{"optionId": 1, "label": "Canada"}]}]
     })
+}
+
+fn question_with_all_fields() -> Value {
+    let choices = json!([{"optionId":1,"label":"Canada"}]);
+    json!({"prompt":"Complete the form","fields":[
+        {"kind":"text","fieldId":1,"label":"Name","description":null,"required":true},
+        {"kind":"number","fieldId":2,"label":"Distance","description":null,"required":true},
+        {"kind":"boolean","fieldId":3,"label":"Verified","description":null,"required":true},
+        {"kind":"singleChoice","fieldId":4,"label":"Country","description":null,"required":true,"options":choices},
+        {"kind":"multiChoice","fieldId":5,"label":"Region","description":null,"required":true,
+            "selection":{"options":choices,"min":1,"max":1}}
+    ]})
 }
 
 fn call_offer() -> Value {
@@ -81,11 +95,7 @@ fn approval_window() -> Value {
 }
 
 fn decision() -> Value {
-    json!({"answer": approval_answer(), "by": deciding_person()})
-}
-
-fn session_cursor() -> Value {
-    json!({"session": session_ref(), "afterRowId": OPERATION_ID})
+    json!({"answer": approval_answer(), "by": deciding_session()})
 }
 
 fn request_view() -> Value {
@@ -93,7 +103,7 @@ fn request_view() -> Value {
         "kind":"providerApproval", "requestId": REQUEST_ID, "offer": approval_offer(),
         "state": {
             "kind":"ended","ending":{"kind":"standing","ending":{"kind":"decided","by":deciding_person()}},
-            "endedAt": RAISED_AT, "delivery": {"kind": "reported", "evidence": native_evidence()}
+            "endedAt": RAISED_AT, "delivery": {"kind": "receivedByHolder"}
         },
         "window": approval_window()
     })
@@ -103,16 +113,8 @@ fn decide_request() -> Value {
     json!({"requestId": REQUEST_ID, "operationId": OPERATION_ID, "value": approval_answer()})
 }
 
-fn waiting_list() -> Value {
-    json!({"kind": "snapshot", "revision": 6,
-           "requests": [{"requestId": REQUEST_ID, "offer": offered_approval()}]})
-}
-
 // The expected roots come from the operations and the approval design.
 // The generator has its own registration list. These declarations drive neither its input nor its output.
-fn native_evidence() -> Value {
-    json!({"kind":"native","evidence":{"kind":"possibleWrite"}})
-}
 
 fn authority_refused() -> Value {
     json!({"kind":"authorityRefused","refusal":{"kind":"runRetired"}})
@@ -131,22 +133,19 @@ macro_rules! expected_wire_roots {
         $root!(RegisterRunRequest, json!({"routerRun":RUN_ID}));
         $root!(RegisterRunReply, json!({"kind":"registered"}), json!({"kind":"runRetired"}),
             json!({"kind":"runNotRegistered"}), json!({"kind":"enrollmentEnded"}));
-        $root!(AuthorityProbeRequest, json!({"routerRun":RUN_ID}));
-        $root!(AuthorityProbeReply, json!({"kind":"admitted"}), authority_refused());
         $root!(RunRefusal, json!({"kind":"runRetired"}), json!({"kind":"runNotRegistered"}), json!({"kind":"enrollmentEnded"}));
         $root!(Raise, approval_raise(),
             json!({"kind":"providerQuestion","requestId":REQUEST_ID,"holder":holder(),"offer":question_offer()}),
             json!({"kind":"unprovenCall","requestId":REQUEST_ID,"holder":{"routerRun":RUN_ID},"invocation":DIGEST,"offer":call_offer()}));
         $root!(RaiseReceipt, json!({"requestId":REQUEST_ID,"window":approval_window()}));
         $root!(RaiseReply, json!({"kind":"receipt","receipt":{"requestId":REQUEST_ID,"window":approval_window()}}),
-            json!({"kind":"alreadyStopped"}), json!({"kind":"alreadyEnded"}), json!({"kind":"sessionEnded"}),
+            json!({"kind":"alreadyStopped"}), json!({"kind":"sessionEnded"}),
             json!({"kind":"contentsDiffer"}), json!({"kind":"tooManyOutstanding"}), authority_refused());
         $root!(StopRequest,
             json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"cause":"turnStopped"}),
-            json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"cause":"askReplaced"}),
-            json!({"kind":"unprovenCall","requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"cause":"callWithdrawn"}));
+            json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"cause":"askReplaced"}));
         $root!(HolderStopCause, json!("turnStopped"), json!("sessionClosed"),
-            json!("providerConnectionLost"), json!("askReplaced"), json!("callWithdrawn"));
+            json!("providerConnectionLost"), json!("askReplaced"));
         $root!(StopReply,
             json!({"kind":"stands","ending":{"kind":"cancelled","reason":{"kind":"stopped","cause":"turnStopped"}}}),
             json!({"kind":"stands","ending":{"kind":"cancelled","reason":{"kind":"sessionEnded"}}}),
@@ -156,68 +155,44 @@ macro_rules! expected_wire_roots {
             json!({"kind":"notVisible"}), authority_refused());
         $root!(StopReceiptEnding, json!({"kind":"timedOut"}), json!({"kind":"decidedEarlier"}));
         $root!(PrivateEnding, private_approval_ending(),
-            json!({"kind":"providerQuestion","ending":{"kind":"decided","answer":{"kind":"declined"},"by":deciding_person()}}),
-            json!({"kind":"unprovenCall","ending":{"kind":"decided","answer":1,"by":deciding_person()}}));
+            json!({"kind":"providerQuestion","ending":{"kind":"decided","answer":{"kind":"declined"},"by":deciding_person()}}));
         $root!(DeliverEndingRequest, json!({"requestId":REQUEST_ID,"contentsDigest":DIGEST,"ending":private_approval_ending()}));
         $root!(DeliverEndingReply, json!({"kind":"received"}), json!({"kind":"stopOwed"}),
             json!({"kind":"notHeld"}), json!({"kind":"holderNotReady"}), json!({"kind":"endingDiffers"}));
-        $root!(ReportDeliveryRequest, json!({
-            "requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"endingDigest":DIGEST,"evidence":native_evidence()
-        }));
-        $root!(ReportDeliveryReply, json!({"kind":"deliveryRecorded"}), json!({"kind":"reportDiffers"}),
-            json!({"kind":"noHandoverOwed"}), json!({"kind":"notVisible"}), authority_refused());
-        $root!(DeliveryEvidence, native_evidence(),
-            json!({"kind":"acp","evidence":{"kind":"queueAccepted","flush":{"kind":"flushObserved"}}}),
-            json!({"kind":"parkedCall","evidence":{"kind":"ranWithResult","result":{"kind":"failed"}}}));
-        $root!(AcpDeliveryEvidence, json!({"kind":"queueRefused"}),
-            json!({"kind":"queueAccepted","flush":{"kind":"flushNotObserved"}}));
-        $root!(AcpFlushObservation, json!({"kind":"flushObserved"}), json!({"kind":"flushNotObserved"}));
-        $root!(NativeDeliveryEvidence, json!({"kind":"refusedBeforeSend"}), json!({"kind":"sendReturned"}), json!({"kind":"possibleWrite"}));
-        $root!(ParkedCallEvidence, json!({"kind":"ranWithResult","result":{"kind":"succeeded"}}),
-            json!({"kind":"notDispatched"}), json!({"kind":"unknownAfterDispatch"}));
-        $root!(ParkedCallResult, json!({"kind":"succeeded"}), json!({"kind":"failed"}));
         $root!(RequestContentsDigest, json!(DIGEST));
-        $root!(EndingDigest, json!(DIGEST));
         $root!(InvocationDigest, json!(DIGEST));
-        $root!(ListSessionRequests, json!({"pageSize":4,"continuation":null}), json!({"pageSize":4,"continuation":session_cursor()}));
-        $root!(ListSessionRequestsReply, json!({"kind":"listed","requests":[request_view()],"continuation":session_cursor()}));
-        $root!(ReadSessionRequest, json!({"requestId":REQUEST_ID}));
-        $root!(ReadSessionRequestReply, json!({"kind":"read","request":request_view()}),
-            json!({"kind":"refused","refusal":{"kind":"notVisible"}}));
         $root!(DecideRequest, decide_request());
         $root!(DecideReply, json!({"kind":"savedDecision","decision":decision()}),json!({"kind":"standing","ending":standing_approval_ending()}),
             json!({"kind":"notVisible"}),json!({"kind":"invalid"}),json!({"kind":"tooLate"}),json!({"kind":"operationConflict"}));
         $root!(PassOnRequest, json!({"requestId":REQUEST_ID}));
         $root!(PassOnReply, json!({"kind":"forwarded"}),json!({"kind":"notVisible"}),json!({"kind":"tooLate"}),json!({"kind":"ended"}));
-        $root!(WaitingListAtRequest, json!({"afterRevision":4}), json!({"afterRevision":null}));
-        $root!(WaitingListAtReply, waiting_list(), json!({"kind":"unchanged","revision":6}), json!({"kind":"unavailable"}));
-        $root!(OfferView, offered_approval());
-        $root!(Answer, approval_answer(), json!({"kind":"call","optionId":1}),
+        $root!(OfferView, offered_approval(),
+            json!({"kind":"providerQuestion","offer":question_offer()}));
+        $root!(Answer, approval_answer(),
             json!({"kind":"question","answer":{"kind":"declined"}}),
             json!({"kind":"question","answer":{"kind":"answered","fields":[
                 {"fieldId":1,"value":{"kind":"text","value":"ca"}}, {"fieldId":2,"value":{"kind":"boolean","value":true}},
                 {"fieldId":3,"value":{"kind":"number","value":"2.5"}}, {"fieldId":4,"value":{"kind":"selectedOptions","selectedOptionIds":[1]}}
             ]}}));
-        $root!(DecidedBy, deciding_person(), json!({"kind":"session","session":session_ref()}));
+        $root!(DecidedBy, deciding_person(), deciding_session());
         $root!(Ending, ending(), json!({"kind":"cancelled","reason":{"kind":"stopped","cause":"turnStopped"}}), json!({"kind":"timedOut"}));
         $root!(EndingView, ending_with_answer(), standing_approval_ending());
-        $root!(Delivery, json!({"kind":"noHandoverOwed"}), json!({"kind":"awaitingReport"}),
-            json!({"kind":"reported","evidence":native_evidence()}), json!({"kind":"receiptUnknown"}));
+        $root!(Delivery, json!({"kind":"owed"}), json!({"kind":"receivedByHolder"}), json!({"kind":"closedWithoutReceipt"}));
         $root!(RequestState, json!({"kind":"waiting","status":"passedOn"}), json!({"kind":"ended","ending":ending()}));
         $root!(RequestView, request_view(),
             json!({"kind":"providerQuestion","requestId":REQUEST_ID,"offer":question_offer(),"window":approval_window(),
                 "state":{"kind":"ended","ending":{"kind":"giver","decision":{"answer":{"kind":"declined"},"by":deciding_person()}},
-                         "endedAt":RAISED_AT,"delivery":{"kind":"awaitingReport"}}}),
-            json!({"kind":"unprovenCall","requestId":REQUEST_ID,"offer":call_offer(),"window":approval_window(),
-                "state":{"kind":"ended","ending":{"kind":"giver","decision":{"answer":1,"by":deciding_person()}},
-                         "endedAt":RAISED_AT,"delivery":{"kind":"awaitingReport"}}}));
+                         "endedAt":RAISED_AT,"delivery":{"kind":"owed"}}}));
         $root!(ApprovalWindow, approval_window());
         $root!(ApprovalDecision, decision());
-        $root!(SessionApprovalContinuation, session_cursor());
-        $root!(ApprovalPageSize, json!(4), json!(64));
         $root!(OptionLifetime, json!({"kind":"thisRequest"}), json!({"kind":"thisTurn","kept":"agentMemory"}),
             json!({"kind":"thisSession","kept":"nowhere"}), json!({"kind":"keptUntilChanged","kept":"agentRulesFile"}), json!({"kind":"notVerified"}));
-        $root!(Refusal, json!({"kind":"notVisible"}), json!({"kind":"invalidAnswer","reason":{"kind":"wrongKind"}}));
+        $root!(CentralSessionId, json!(CENTRAL_SESSION_ID));
+        $root!(SessionDecider, deciding_session());
+        $root!(ProviderHolder, holder());
+        $root!(ParkedCallHolder, json!({"routerRun":RUN_ID}));
+        $root!(QuestionOffer, question_with_all_fields());
+        $root!(QuestionFieldAnswer, json!({"fieldId":1,"value":{"kind":"number","value":"2.50"}}));
     }};
 }
 
@@ -271,8 +246,52 @@ fn expected_rust_roots_round_trip_through_serde() -> Result<(), String> {
 
 #[cfg(all(feature = "wire-export", not(target_arch = "wasm32")))]
 pub(crate) fn check_expected_typescript_roots(typescript: &str) {
+    // These exported dependencies are exercised inside the standalone roots and
+    // concrete generic instantiations. This inventory also detects added exports.
+    let dependencies = [
+        "ApprovalOffer",
+        "ApprovalRequestId",
+        "ApprovalWindowFields",
+        "CallOffer",
+        "CallOperationName",
+        "CancelReason",
+        "ChoiceOption",
+        "ChoiceOptions",
+        "DecideReplyWire",
+        "Description",
+        "DestinationEnding",
+        "EndingViewWire",
+        "GiverDecision",
+        "HolderEnding",
+        "Label",
+        "MultiChoiceSelection",
+        "MultiChoiceSelectionFields",
+        "OfferedOption",
+        "OfferedOptionId",
+        "OfferedOptions",
+        "OptionEffect",
+        "ProviderCancellation",
+        "ProviderStopCause",
+        "QuestionAnswer",
+        "QuestionAnswerValue",
+        "QuestionField",
+        "QuestionFieldId",
+        "QuestionFields",
+        "QuestionNumber",
+        "RequestStateView",
+        "RequestViewFields",
+        "RetainedOptionStorage",
+        "RouterRunId",
+        "StandingEnding",
+        "Subject",
+        "Title",
+        "TransientOptionStorage",
+        "WaitingStatus",
+    ];
+    let mut expected: std::collections::BTreeSet<_> = dependencies.into_iter().collect();
     macro_rules! check_export {
         ($wire_type:ident, $($specimen:expr),+ $(,)?) => {
+            expected.insert(stringify!($wire_type));
             let declaration = concat!("export type ", stringify!($wire_type), " =");
             assert!(
                 typescript.lines().any(|line| line.starts_with(declaration)),
@@ -282,6 +301,20 @@ pub(crate) fn check_expected_typescript_roots(typescript: &str) {
         };
     }
     expected_wire_roots!(check_export);
+    let observed: std::collections::BTreeSet<_> = typescript
+        .lines()
+        .filter_map(|line| line.strip_prefix("export type "))
+        .filter_map(|line| line.split(['<', ' ', '=']).next())
+        .map(|name| {
+            name.strip_suffix("_Serialize")
+                .or_else(|| name.strip_suffix("_Deserialize"))
+                .unwrap_or(name)
+        })
+        .collect();
+    assert_eq!(
+        observed, expected,
+        "exported approval wire type inventory changed"
+    );
 }
 
 #[test]
@@ -389,32 +422,32 @@ fn text_and_collection_bounds_apply_at_construction_and_decode() {
 #[test]
 fn answer_disclosure_names_the_winner_and_scopes_values_to_the_giver() {
     let raise: Raise = serde_json::from_value(approval_raise()).unwrap();
-    let ending: Ending = serde_json::from_value(ending()).unwrap();
-    let giver = serde_json::from_value(deciding_person()).unwrap();
-    let other = serde_json::from_value(
-        json!({"kind":"session","session":{"machineId":MACHINE_ID,"sessionId":"host/destination"}}),
-    )
+    let giver = serde_json::from_value(deciding_session()).unwrap();
+    let other = serde_json::from_value(json!({
+        "kind":"session","session":"01934a50-1000-7000-8000-000000000007"
+    }))
     .unwrap();
+    let mut ending_wire = ending();
+    ending_wire["by"] = deciding_session();
+    let ending =
+        DeliverEndingRequest::from_raise(&raise, serde_json::from_value(ending_wire).unwrap())
+            .unwrap();
+    let members = [giver, other];
+    let sender = AdmittedDestination::for_request(&raise, &members[0], &members).unwrap();
+    let reader = AdmittedDestination::for_request(&raise, &members[1], &members).unwrap();
+    let decide: DecideRequest = serde_json::from_value(decide_request()).unwrap();
+    let mut expected_giver = ending_with_answer();
+    expected_giver["ending"]["decision"]["by"] = deciding_session();
+    let mut expected_standing = standing_approval_ending();
+    expected_standing["ending"]["ending"]["by"] = deciding_session();
     assert_eq!(
-        serde_json::to_value(EndingView::for_raise(&raise, ending.clone(), &giver).unwrap())
-            .unwrap(),
-        ending_with_answer()
+        serde_json::to_value(decide.standing_reply(&sender, &ending).unwrap()).unwrap()["ending"],
+        expected_giver
     );
     assert_eq!(
-        serde_json::to_value(EndingView::for_raise(&raise, ending, &other).unwrap()).unwrap(),
-        standing_approval_ending()
+        serde_json::to_value(decide.standing_reply(&reader, &ending).unwrap()).unwrap()["ending"],
+        expected_standing
     );
-}
-
-#[test]
-fn waiting_revision_round_trips_exactly_within_the_safe_integer_range() {
-    assert!(serde_json::from_str::<WaitingRevision>("9007199254740991").is_ok());
-    for invalid in ["9007199254740992", "-1", "0.5", "\"6\""] {
-        assert!(
-            serde_json::from_str::<WaitingRevision>(invalid).is_err(),
-            "{invalid}"
-        );
-    }
 }
 
 #[test]
@@ -482,5 +515,82 @@ fn every_wire_root_checks_named_records_and_tagged_unions_at_each_depth() -> Res
         };
     }
     expected_wire_roots!(check_named);
+    Ok(())
+}
+
+#[test]
+fn each_concrete_ending_and_request_state_uses_the_named_reader() -> Result<(), String> {
+    use super::map_only::assert_objects_require_named_maps;
+    use approval_request_protocol::{EndingView, PrivateEnding, RequestView};
+
+    for (kind, offer, answer, reasons) in [
+        (
+            "providerApproval",
+            approval_offer(),
+            json!(1),
+            &[
+                "requesterGone",
+                "enrollmentEnded",
+                "sessionEnded",
+                "turnStopped",
+            ][..],
+        ),
+        (
+            "providerQuestion",
+            question_offer(),
+            json!({"kind":"declined"}),
+            &[
+                "requesterGone",
+                "enrollmentEnded",
+                "sessionEnded",
+                "askReplaced",
+            ][..],
+        ),
+    ] {
+        let person = deciding_person();
+        let mut endings = vec![
+            json!({"kind":"timedOut"}),
+            json!({"kind":"decided","answer":answer,"by":person}),
+        ];
+        endings.extend(reasons.iter().map(|reason| {
+            let cancellation = match *reason {
+                "turnStopped" | "askReplaced" | "callWithdrawn" => {
+                    json!({"kind":"stopped","cause":reason})
+                }
+                _ => json!({"kind":reason}),
+            };
+            json!({"kind":"cancelled","reason":cancellation})
+        }));
+        for private in endings {
+            let mut public = private.clone();
+            assert_objects_require_named_maps::<PrivateEnding>(
+                &json!({"kind":kind,"ending":private}),
+            )?;
+            let visible = if private["kind"] == "decided" {
+                public.as_object_mut().unwrap().remove("answer");
+                json!({"kind":"giver","decision":{"answer":answer,"by":person}})
+            } else {
+                json!({"kind":"standing","ending":public})
+            };
+            for projection in [visible, json!({"kind":"standing","ending":public})] {
+                assert_objects_require_named_maps::<EndingView>(
+                    &json!({"kind":kind,"ending":projection}),
+                )?;
+                let end_time = if private["kind"] == "timedOut" {
+                    DEADLINE
+                } else {
+                    RAISED_AT
+                };
+                assert_objects_require_named_maps::<RequestView>(&json!({
+                    "kind":kind,"requestId":REQUEST_ID,"offer":offer,"window":approval_window(),
+                    "state":{"kind":"ended","ending":projection,"endedAt":end_time,"delivery":{"kind":"owed"}}
+                }))?;
+            }
+        }
+        assert_objects_require_named_maps::<RequestView>(&json!({
+            "kind":kind,"requestId":REQUEST_ID,"offer":offer,"window":approval_window(),
+            "state":{"kind":"waiting","status":"pending"}
+        }))?;
+    }
     Ok(())
 }
