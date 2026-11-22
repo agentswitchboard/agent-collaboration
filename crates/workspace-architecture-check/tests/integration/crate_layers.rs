@@ -298,6 +298,9 @@ fn harness_contracts_reject_workspace_dependencies() {
                         name: deciding_code.to_owned(),
                         kind: Some(kind),
                         path: Some(PathBuf::from("/workspace/deciding-code")),
+                        source: None,
+                        features: Vec::new(),
+                        uses_default_features: true,
                     }],
                 },
                 CargoPackage {
@@ -352,6 +355,9 @@ fn harness_contracts_reject_a_registry_dev_dependency_resolved_to_a_workspace_me
         name: "provider-session-machines".to_owned(),
         kind: Some(DependencyKind::Dev),
         path: None,
+        source: Some("registry+https://github.com/rust-lang/crates.io-index".to_owned()),
+        features: Vec::new(),
+        uses_default_features: true,
     });
     workspace_boundaries::check_declared_session_owner_edges(&metadata)
         .expect("registry declaration has no path to check");
