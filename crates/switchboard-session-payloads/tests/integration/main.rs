@@ -76,6 +76,21 @@ fn assert_load_contract<T: DeserializeOwned + Serialize + Debug + PartialEq>(exp
         "operationId",
     );
 
+    assert_shape_refused::<T>(
+        &LOAD.replace(
+            r#""operationId":"#,
+            &format!(r#""operationId":"{OPERATION_ID}","operationId":"#),
+        ),
+        "duplicate field `operationId`",
+    );
+    assert_shape_refused::<T>(
+        &LOAD.replace(
+            r#""sessionId":"#,
+            r#""sessionId":"native/thread","sessionId":"#,
+        ),
+        "duplicate field `sessionId`",
+    );
+
     let longest = LOAD.replace("native/thread", &"x".repeat(4096));
     let accepted: T = serde_json::from_str(&longest).unwrap();
     assert_eq!(serde_json::to_string(&accepted).unwrap(), longest);
@@ -97,4 +112,23 @@ fn assert_shape_refused<T: DeserializeOwned + Debug>(wire: &str, field_or_error:
             || error.inner().to_string().contains(field_or_error),
         "must name {field_or_error}, got {error}"
     );
+}
+
+#[test]
+fn load_refuses_positional_objects() {
+    let positional_load = r#"[{"machineId":"01890f2e-7b4c-7cc0-98c4-000000000001","sessionId":"native/thread"},"01890f2e-7b4c-7cc0-98c4-000000000002"]"#;
+    let positional_target = r#"{"target":["01890f2e-7b4c-7cc0-98c4-000000000001","native/thread"],"operationId":"01890f2e-7b4c-7cc0-98c4-000000000002"}"#;
+    for (shape, wire) in [
+        ("outer load", positional_load),
+        ("session target", positional_target),
+    ] {
+        assert!(
+            serde_json::from_str::<LoadRequest>(wire).is_err(),
+            "LoadRequest must refuse positional {shape}"
+        );
+        assert!(
+            serde_json::from_str::<LoadQuery>(wire).is_err(),
+            "LoadQuery must refuse positional {shape}"
+        );
+    }
 }

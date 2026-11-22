@@ -65,6 +65,19 @@ fn continuation_uses_exact_position_text() {
         "extra",
         "unknown field",
     );
+    assert_wire_refused::<Continuation>(
+        &POSITION.replace(r#""historyEpoch":"0","#, ""),
+        "historyEpoch",
+        "missing field",
+    );
+    assert_wire_refused::<Continuation>(
+        &POSITION.replace(
+            r#""historyEpoch":"#,
+            r#""historyEpoch":"0","historyEpoch":"#,
+        ),
+        "historyEpoch",
+        "duplicate field",
+    );
 }
 
 #[test]
