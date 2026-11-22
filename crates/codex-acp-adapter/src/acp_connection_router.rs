@@ -265,8 +265,16 @@ pub async fn serve_acp_router_connection_until<
                                         }
                                         Ok(())
                                     };
-                                    let (route_result, forward_result) =
-                                        tokio::join!(route.run(route_channels, route_context), forward);
+                                    let forward_until_closed = async {
+                                        tokio::select! {
+                                            () = output.closed() => Ok(()),
+                                            result = forward => result,
+                                        }
+                                    };
+                                    let (route_result, forward_result) = tokio::join!(
+                                        route.run(route_channels, route_context),
+                                        forward_until_closed,
+                                    );
                                     let result = route_result.and(forward_result);
                                     let _sent = output.send(RouteOutput::Closed {
                                         endpoint: route_endpoint, result,
