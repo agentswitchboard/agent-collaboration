@@ -30,6 +30,7 @@ impl SessionEventHub for AttachFixture {
                     snapshot: vec![],
                     receiver: sender.subscribe(),
                     epoch: 0,
+                    latest_issued_sequence: 0,
                 })
             }),
         }

@@ -446,6 +446,7 @@ impl SessionEventHub for ProviderSessionEventHub {
                 snapshot: history.snapshot(),
                 receiver: history.sender.subscribe(),
                 epoch: history.replay_epoch,
+                latest_issued_sequence: history.next_sequence - 1,
             })
         })
     }

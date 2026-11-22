@@ -125,6 +125,7 @@ async fn inventory_uses_first_user_message_and_existing_session_title() {
     assert_eq!(summary.name.as_deref(), Some("Existing provider title"));
 }
 
+// Rejects a reset that omits the old subscriber's gap or carries an old frontier into a new epoch.
 #[tokio::test]
 async fn closed_and_unloaded_sessions_admit_fresh_history_replay() {
     // Arrange: both states are inactive and retain the provider identity for loading.
@@ -160,10 +161,74 @@ async fn closed_and_unloaded_sessions_admit_fresh_history_replay() {
         let after = hub.attach(session.clone()).await.expect("new attach");
         assert_eq!(after.epoch, epoch);
         assert!(after.snapshot.is_empty());
+        assert_eq!(after.latest_issued_sequence, 0);
         assert_eq!(
             hub.state(session).await.expect("state"),
             session_event_model::SessionState::Unloaded
         );
+    }
+}
+
+// Rejects an attach that captures the issued sequence on the wrong side of a concurrent publication.
+#[tokio::test]
+async fn concurrent_publication_lands_on_exactly_one_side_of_the_attachment() {
+    let root = tempfile::tempdir().expect("temp root");
+    let store = ProviderOperationStore::open(&root.path().join("operations.sqlite"))
+        .await
+        .expect("store");
+    let hub = ProviderSessionEventHub::new(Arc::new(Mutex::new(store)));
+
+    for publication_first in [true, false] {
+        let session: SessionRef = serde_json::from_value(serde_json::json!({
+            "endpoint":{"serviceId":"00000000-0000-7000-8000-000000000001","endpointId":"claude-local"},
+            "sessionId": if publication_first { "publish-first" } else { "attach-first" }
+        }))
+        .expect("session");
+        let first = hub
+            .publish(session.clone(), started_item("first"))
+            .await
+            .expect("seed history");
+        let held = hub.hold_history_for_test(session.clone()).await;
+        let mut publish = std::pin::pin!(hub.publish(session.clone(), started_item("second")));
+        let mut attach = std::pin::pin!(hub.attach(session));
+        // Both operations contend on the held history lock. Tokio's FIFO mutex gives the
+        // first polled operation the lock first after we release it.
+        if publication_first {
+            assert!(futures_util::poll!(&mut publish).is_pending());
+            assert!(futures_util::poll!(&mut attach).is_pending());
+        } else {
+            assert!(futures_util::poll!(&mut attach).is_pending());
+            assert!(futures_util::poll!(&mut publish).is_pending());
+        }
+        drop(held);
+
+        let (published, attached) = tokio::join!(publish, attach);
+        let published = published.expect("publish second item");
+        let mut attached = attached.expect("attach history");
+
+        if publication_first {
+            assert_eq!(attached.latest_issued_sequence, published.sequence);
+            assert_eq!(attached.snapshot, vec![first, published]);
+        } else {
+            assert_eq!(attached.latest_issued_sequence, first.sequence);
+            assert_eq!(attached.snapshot, vec![first]);
+            assert!(published.sequence > attached.latest_issued_sequence);
+            assert_eq!(attached.receiver.try_recv().expect("live item"), published);
+        }
+        assert!(matches!(
+            attached.receiver.try_recv(),
+            Err(tokio::sync::broadcast::error::TryRecvError::Empty)
+        ));
+    }
+}
+
+fn started_item(item_id: &str) -> SessionEvent {
+    SessionEvent::ItemStarted {
+        item: SessionItem {
+            item_id: item_id.into(),
+            kind: SessionItemKind::UserMessage,
+            text: Some(item_id.into()),
+        },
     }
 }
 
