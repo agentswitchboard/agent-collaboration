@@ -1,4 +1,5 @@
 //! Modern machine links share the native HTTP listener and retain core admission.
+use crate::machine_call_queue::{MacCallReceiver, QueuedMacCall};
 use crate::{TokioWorkspaceHost, TokioWorkspaceStores, object_storage::ObjectStorage};
 use axum::{
     Router,
@@ -11,9 +12,10 @@ use axum::{
     routing::get,
 };
 use central_link_protocol::{
-    DataFrame, FrameDirection, LinkFrame, LinkRequest, MachineLinkCloseCode, ProtocolError,
-    ReceiptResult, ReplyPayload, RequestPayload, RequestRefusal, RequestStatusAnswer, TimeLeft,
-    TokenRenewalRefusal, TokenRenewalResult, decode_text, encode_text,
+    CentralCall, CorrelationId, DataFrame, FrameDirection, LinkCallRefusal, LinkFrame, LinkRequest,
+    MachineLinkCloseCode, ProtocolError, ReceiptResult, ReplyPayload, RequestPayload,
+    RequestRefusal, RequestStatusAnswer, TimeLeft, TokenRenewalRefusal, TokenRenewalResult,
+    TypedCallResult, decode_text, encode_text,
 };
 use collaboration_central_core::{
     ApplyingRequestFailure, MachineLinkAdmission, MachineLinkRequestAuthority, RenewalTermination,
@@ -233,6 +235,13 @@ async fn serve_link(
                 }
                 continue;
             }
+            queued = registration.outbound_calls.recv() => {
+                let Some(queued) = queued else { return; };
+                if !offer_mac_call(&mut socket, &writes, &runtime, &connection, &registration.outbound_calls, queued).await {
+                    return;
+                }
+                continue;
+            }
         };
         let Some(Ok(message)) = message else {
             return;
@@ -250,6 +259,21 @@ async fn serve_link(
         };
         let frame = match decode_text(&text, FrameDirection::ToCentral) {
             Ok(frame) => frame,
+            Err(ProtocolError::UnknownTypedCall { correlation_id }) => {
+                if !reply_to_typed_call(
+                    &mut socket,
+                    &writes,
+                    &runtime,
+                    &connection,
+                    correlation_id,
+                    None,
+                )
+                .await
+                {
+                    return;
+                }
+                continue;
+            }
             Err(ProtocolError::WrongDirection) => {
                 writes.close(
                     &mut socket,
@@ -264,6 +288,31 @@ async fn serve_link(
             }
         };
         match frame {
+            LinkFrame::Data(DataFrame::CallCentral {
+                correlation_id,
+                request,
+            }) => {
+                if !reply_to_typed_call(
+                    &mut socket,
+                    &writes,
+                    &runtime,
+                    &connection,
+                    correlation_id,
+                    Some(*request),
+                )
+                .await
+                {
+                    return;
+                }
+            }
+            LinkFrame::Data(DataFrame::MacCallReply {
+                correlation_id,
+                result,
+            }) => {
+                registration
+                    .outbound_calls
+                    .answer(&correlation_id, *result, writes.clock);
+            }
             LinkFrame::Ping => {
                 if !writes.send(&mut socket, &LinkFrame::Pong).await {
                     return;
@@ -431,6 +480,80 @@ async fn serve_link(
             }
         }
     }
+}
+
+async fn reply_to_typed_call(
+    socket: &mut WebSocket,
+    writes: &LinkWrites<'_>,
+    runtime: &Runtime,
+    connection: &ValidatedMachineConnection,
+    correlation_id: CorrelationId,
+    request: Option<CentralCall>,
+) -> bool {
+    let result = match runtime
+        .dispatch_typed_central_call(&connection.attachment(), request)
+        .await
+    {
+        Ok(result) => result,
+        Err(_) => {
+            writes.close(socket, close_code::ERROR, "central unavailable");
+            return false;
+        }
+    };
+    let lapsed = match &result {
+        TypedCallResult::Refused {
+            reason: LinkCallRefusal::AuthorityLapsed { cause },
+        } => Some(*cause),
+        _ => None,
+    };
+    let reply = LinkFrame::Data(DataFrame::CentralCallReply {
+        correlation_id,
+        result: Box::new(result),
+    });
+    if let Some(cause) = lapsed {
+        writes.attempt_terminal_refusal(socket, &reply).await;
+        writes.close_authority(socket, cause);
+        return false;
+    }
+    writes.send(socket, &reply).await
+}
+
+async fn offer_mac_call(
+    socket: &mut WebSocket,
+    writes: &LinkWrites<'_>,
+    runtime: &Runtime,
+    connection: &ValidatedMachineConnection,
+    calls: &MacCallReceiver,
+    queued: QueuedMacCall,
+) -> bool {
+    let deadline = queued.deadline();
+    let attachment = connection.attachment();
+    let restored = tokio::select! {
+        biased;
+        () = writes.stop.cancelled() => { writes.close_if_authority_cancelled(socket); return false; }
+        () = writes.replaced.cancelled() => { writes.close(socket, close_code::NORMAL, "machine link ended"); return false; }
+        () = writes.clock.sleep_until(deadline) => return true,
+        restored = runtime.restore_machine_link_request(&attachment) => restored,
+    };
+    match restored {
+        Ok(MachineLinkRequestAuthority::Admitted(_)) => {}
+        Ok(MachineLinkRequestAuthority::Refused(cause)) => {
+            queued.refuse_before_dispatch();
+            writes.close_authority(socket, cause);
+            return false;
+        }
+        Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) | Err(_) => {
+            queued.refuse_before_dispatch();
+            writes.close(socket, close_code::ERROR, "central unavailable");
+            return false;
+        }
+    }
+    let Some(frame) = calls.begin_write(queued, writes.clock) else {
+        return true;
+    };
+    router_clock::timeout_at(writes.clock, deadline, writes.send(socket, &frame))
+        .await
+        .unwrap_or(false)
 }
 
 async fn send_welcome_backlog(

@@ -10,7 +10,7 @@ publish.workspace = true
 workspace = true
 
 [features]
-test-support = ["fleet-engine/test-support", "fleet-runtime/test-support", "fleet-storage-schema/test-support", "collaboration-central-core/test-support", "router-clock/test-support"]
+test-support = ["central-link-protocol/test-support", "fleet-engine/test-support", "fleet-runtime/test-support", "fleet-storage-schema/test-support", "collaboration-central-core/test-support", "router-clock/test-support"]
 
 [dependencies]
 fleet-lent-transaction.workspace = true

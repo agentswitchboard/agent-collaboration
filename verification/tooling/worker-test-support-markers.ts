@@ -10,6 +10,8 @@ export const testSupportMarkers: readonly string[] = [
   "/test/direct-receipt-fixture",
   "/test/direct-mark-guard-read-observations",
   "TEST_C2_WITNESS",
+  "centralProbe",
+  "macProbe",
   "/test/raw-signin-observe",
   "/test/raw-drop-alarm",
   "/test/raw-alarm-time",

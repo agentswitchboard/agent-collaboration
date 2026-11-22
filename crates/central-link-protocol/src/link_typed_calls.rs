@@ -51,12 +51,14 @@ mod registration {
 pub trait CentralLinkRpc: Rpc + registration::Central {
     fn request(envelope: Envelope<Self::Target, Self::Request>) -> CentralCall;
     fn reply(envelope: Envelope<Self::Target, Self::Reply>) -> CentralCallReply;
+    fn take_reply(reply: CentralCallReply) -> Option<Envelope<Self::Target, Self::Reply>>;
 }
 
 /// A marker explicitly registered for calls from Central to a Mac.
 pub trait MacLinkRpc: Rpc + registration::Mac {
     fn request(envelope: Envelope<Self::Target, Self::Request>) -> MacCall;
     fn reply(envelope: Envelope<Self::Target, Self::Reply>) -> MacCallReply;
+    fn take_reply(reply: MacCallReply) -> Option<Envelope<Self::Target, Self::Reply>>;
 }
 
 macro_rules! register_calls {
@@ -102,6 +104,19 @@ macro_rules! register_calls {
                 fn reply(envelope: Envelope<Self::Target, Self::Reply>) -> $reply {
                     $reply::$variant(envelope)
                 }
+
+                #[expect(clippy::allow_attributes, reason = "the generated fallback is required when a registry has a second marker")]
+                #[allow(
+                    unreachable_patterns,
+                    clippy::match_wildcard_for_single_variants,
+                    reason = "one marker currently ships in the test registry; other registered replies must remain distinct"
+                )]
+                fn take_reply(reply: $reply) -> Option<Envelope<Self::Target, Self::Reply>> {
+                    match reply {
+                        $reply::$variant(envelope) => Some(envelope),
+                        _ => None,
+                    }
+                }
             }
         )*
     };
@@ -119,7 +134,8 @@ register_calls! {
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_calls {
-    use super::*;
+    use fleet_rpc::Rpc;
+    use serde::{Deserialize, Serialize};
     use workspace_ids::MachineId;
 
     pub struct CentralProbe;

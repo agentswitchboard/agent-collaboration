@@ -77,6 +77,45 @@ fn reply(correlation_id: CorrelationId) -> LinkFrame {
 }
 
 #[test]
+fn typed_inbound_frames_are_forwarded_only_for_the_current_connected_attempt() {
+    use central_link_protocol::{LinkCallRefusal, MacCall, TypedCallResult};
+
+    let (mut client, _) = fixture();
+    let attempt = connect(&mut client);
+    let correlation_id: CorrelationId = "01890f2e-7b4c-7cc0-98c4-000000000012".parse().unwrap();
+    let call = decode_text(
+        r#"{"kind":"callMac","correlationId":"01890f2e-7b4c-7cc0-98c4-000000000012","request":{"call":"macProbe","envelope":{"target":"01890f2e-7b4c-7cc0-98c4-000000000002","body":{"sequence":7}}}}"#,
+        FrameDirection::ToRouter,
+    )
+    .unwrap();
+    let event = client.receive(&attempt, call.clone()).unwrap();
+    assert!(
+        matches!(event, ClientEvent::CallMac { correlation_id: id, request } if id == correlation_id && matches!(&*request, MacCall::MacProbe(envelope) if envelope.body.sequence == 7))
+    );
+
+    let reply = LinkFrame::Data(DataFrame::CentralCallReply {
+        correlation_id: correlation_id.clone(),
+        result: Box::new(TypedCallResult::Refused {
+            reason: LinkCallRefusal::WrongTarget,
+        }),
+    });
+    assert_eq!(
+        client.receive(&attempt, reply),
+        Ok(ClientEvent::CentralCallReply {
+            correlation_id,
+            result: Box::new(TypedCallResult::Refused {
+                reason: LinkCallRefusal::WrongTarget,
+            }),
+        })
+    );
+    client.closed(&attempt).unwrap();
+    assert_eq!(
+        client.receive(&attempt, call),
+        Err(ClientError::StaleConnection)
+    );
+}
+
+#[test]
 fn down_pre_welcome_and_refused_calls_fail_without_queueing() {
     let (mut client, clock) = fixture();
     assert_eq!(

@@ -23,6 +23,11 @@ pub use fleet_machine_login::link_transitions::{
 };
 mod machine_connection_admission;
 mod machine_login_plans;
+mod typed_link_dispatch;
+pub use typed_link_dispatch::{
+    CentralLinkDispatcher, TYPED_LINK_CALL_TIMEOUT, dispatch_registered_central_call,
+    finish_mac_call,
+};
 #[cfg(feature = "test-support")]
 mod machine_login_test_control;
 pub use machine_connection_admission::{

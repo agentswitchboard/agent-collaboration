@@ -15,6 +15,7 @@ pub use object_storage::StoreMigrations;
 pub use sign_in_trust::NativeSignInTrust;
 mod workspace_host;
 pub use workspace_host::{TokioWorkspaceHost, TokioWorkspaceStores};
+mod machine_call_queue;
 mod machine_push_registry;
 mod workspace_link;
 pub use workspace_link::WorkspaceLink;

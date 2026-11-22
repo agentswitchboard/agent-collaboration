@@ -4,8 +4,9 @@ use crate::{
     pending_calls::{PendingCalls, ReplyDisposition},
 };
 use central_link_protocol::{
-    CorrelationId, DataFrame, DeliveryMessage, LinkFrame, LinkRequest, ReceiptBatch, ReceiptResult,
-    ReplyPayload, RequestPayload, TimeLeft, TokenRenewalResult,
+    CentralCallReply, CorrelationId, DataFrame, DeliveryMessage, LinkFrame, LinkRequest, MacCall,
+    ReceiptBatch, ReceiptResult, ReplyPayload, RequestPayload, TimeLeft, TokenRenewalResult,
+    TypedCallResult,
 };
 use router_clock::{ClockInstant, RuntimeClock};
 use std::{sync::Arc, time::Duration};
@@ -95,6 +96,16 @@ pub enum ClientEvent {
     TokenRenewal {
         correlation_id: CorrelationId,
         result: TokenRenewalResult,
+    },
+    /// The Host owns typed-call dispatch and correlation on this connection.
+    CallMac {
+        correlation_id: CorrelationId,
+        request: Box<MacCall>,
+    },
+    /// The Host must accept a reply only while its typed call is pending.
+    CentralCallReply {
+        correlation_id: CorrelationId,
+        result: Box<TypedCallResult<CentralCallReply>>,
     },
 }
 
@@ -350,6 +361,20 @@ impl LinkClient {
                 correlation_id,
                 result,
             }),
+            LinkFrame::Data(DataFrame::CallMac {
+                correlation_id,
+                request,
+            }) => Ok(ClientEvent::CallMac {
+                correlation_id,
+                request,
+            }),
+            LinkFrame::Data(DataFrame::CentralCallReply {
+                correlation_id,
+                result,
+            }) => Ok(ClientEvent::CentralCallReply {
+                correlation_id,
+                result,
+            }),
             LinkFrame::Ping
             | LinkFrame::Data(
                 DataFrame::Welcome { .. }
@@ -358,6 +383,8 @@ impl LinkClient {
                 | DataFrame::RequestStatusReply { .. }
                 | DataFrame::Batch { .. }
                 | DataFrame::Receipts { .. }
+                | DataFrame::CallCentral { .. }
+                | DataFrame::MacCallReply { .. }
                 | DataFrame::RenewMachineToken { .. },
             ) => Err(ClientError::UnexpectedFrame),
         }

@@ -15,6 +15,7 @@ mod request_authority;
 mod revocation;
 mod revocation_backpressure;
 mod transport_contract;
+mod typed_calls;
 use central_link_client::{ClientAction, ClientEvent, LinkClient};
 use central_link_protocol::{DataFrame, LinkFrame, ReplyPayload, RequestPayload};
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};

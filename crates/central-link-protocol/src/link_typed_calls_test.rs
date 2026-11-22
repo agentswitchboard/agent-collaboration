@@ -167,3 +167,41 @@ fn refusal_is_separate_from_a_registered_service_answer() {
         );
     }
 }
+
+#[test]
+fn typed_reply_wrappers_reject_unknown_fields_tags_and_positional_arrays() {
+    let reply = json!({
+        "kind":"centralCallReply","correlationId":CORRELATION,
+        "result":{"kind":"answered","reply":{"call":"centralProbe",
+            "envelope":{"target":MACHINE,"body":{"echoed":7}}}},
+    });
+    let mut missing_kind = reply.clone();
+    missing_kind["result"]
+        .as_object_mut()
+        .unwrap()
+        .remove("kind");
+    let mut wrong_name = reply.clone();
+    wrong_name["result"]["reply"]["call"] = json!("unregistered");
+    let mut extra_result = reply.clone();
+    extra_result["result"]["extra"] = json!(1);
+    let mut positional_reply = reply.clone();
+    positional_reply["result"]["reply"] =
+        json!(["centralProbe", {"target":MACHINE,"body":{"echoed":7}}]);
+    let mut positional_envelope = reply;
+    positional_envelope["result"]["reply"]["envelope"] = json!([MACHINE, {"echoed":7}]);
+    for invalid in [
+        missing_kind,
+        wrong_name,
+        extra_result,
+        positional_reply,
+        positional_envelope,
+    ] {
+        assert!(
+            matches!(
+                decode_text(&invalid.to_string(), FrameDirection::ToRouter),
+                Err(ProtocolError::Json(_))
+            ),
+            "accepted malformed reply {invalid}"
+        );
+    }
+}
