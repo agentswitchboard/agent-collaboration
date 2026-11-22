@@ -36,8 +36,9 @@ pub use destination_requests::{
     ReadSessionRequestReply, Refusal, WaitingListAtReply, WaitingListAtRequest, WaitingRequestView,
 };
 pub use holder_requests::{
-    HolderRefusal, OfferEnding, RaiseReceipt, RaiseReply, RegisterRunReply, RegisterRunRequest,
-    ReportDeliveryReply, ReportDeliveryRequest, RunRefusal, StopReply, StopRequest,
+    CallStopCause, HolderRefusal, HolderStopCause, OfferEnding, ProviderStopCause, RaiseReceipt,
+    RaiseReply, RegisterRunReply, RegisterRunRequest, ReportDeliveryReply, ReportDeliveryRequest,
+    RunRefusal, StopReceiptEnding, StopReply, StopRequest,
 };
 pub use question_fields::{
     ChoiceOption, InvalidOfferedOptions, InvalidQuestionFields, MAX_OFFERED_OPTIONS,

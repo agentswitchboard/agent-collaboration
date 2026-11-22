@@ -105,8 +105,20 @@ macro_rules! expected_wire_roots {
             json!({"kind":"raiseReceipt","receipt":{"requestId":REQUEST_ID,"raisedAt":RAISED_AT,"deadline":DEADLINE}}),
             json!({"kind":"alreadyStopped"}), json!({"kind":"contentsDiffer"}),
             json!({"kind":"refused","refusal":"runRetired"}));
-        $root!(StopRequest, json!({"requestId":REQUEST_ID,"routerRun":RUN_ID}));
-        $root!(StopReply, json!({"kind":"stopReceipt"}));
+        $root!(StopRequest,
+            json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"cause":"turnStopped"}),
+            json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"cause":"sessionClosed"}),
+            json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"cause":"providerConnectionLost"}),
+            json!({"kind":"unprovenCall","requestId":REQUEST_ID,"routerRun":RUN_ID,"cause":"callWithdrawn"}));
+        $root!(HolderStopCause, json!("turnStopped"), json!("sessionClosed"),
+            json!("providerConnectionLost"), json!("callWithdrawn"));
+        $root!(StopReply,
+            json!({"kind":"stopReceipt","ending":{"kind":"cancelled","reason":{"kind":"stopped","cause":"turnStopped"}}}),
+            json!({"kind":"stopReceipt","ending":{"kind":"cancelled","reason":{"kind":"sessionEnded"}}}),
+            json!({"kind":"stopReceipt","ending":{"kind":"cancelled","reason":{"kind":"enrollmentEnded"}}}),
+            json!({"kind":"stopReceipt","ending":{"kind":"timedOut"}}),
+            json!({"kind":"stopReceipt","ending":{"kind":"decidedEarlier"}}));
+        $root!(StopReceiptEnding, json!({"kind":"timedOut"}), json!({"kind":"decidedEarlier"}));
         $root!(OfferEnding, json!({"kind":"provider","requestId":REQUEST_ID,"holder":holder(),"ending":ending()}),
             json!({"kind":"unprovenCall","requestId":REQUEST_ID,"holder":{"routerRun":RUN_ID},"ending":{"kind":"timedOut"}}));
         $root!(ReportDeliveryRequest,
@@ -140,7 +152,7 @@ macro_rules! expected_wire_roots {
                 {"fieldId":"number","value":2.5}, {"fieldId":"region","value":{"selectedOptionIds":["ca"]}}
             ]}}));
         $root!(DecidedBy, deciding_person(), json!({"kind":"session","session":session_ref()}));
-        $root!(Ending, ending(), json!({"kind":"cancelled","reason":"waitStopped"}), json!({"kind":"timedOut"}));
+        $root!(Ending, ending(), json!({"kind":"cancelled","reason":{"kind":"stopped","cause":"turnStopped"}}), json!({"kind":"timedOut"}));
         $root!(EndingView, ending_with_answer(), json!({"kind":"decided","by":deciding_person()}));
         $root!(HolderReport, json!("goneBeforeHandover"), json!("replyWrittenEffectNotConfirmed"),
             json!("deliveryUnknown"), json!("applied"));
@@ -208,7 +220,7 @@ fn expected_rust_roots_round_trip_through_serde() {
 pub(crate) fn check_expected_typescript_roots(typescript: &str) {
     macro_rules! check_export {
         ($wire_type:ident, $($specimen:expr),+ $(,)?) => {
-            let declaration = concat!("export type ", stringify!($wire_type), " = ");
+            let declaration = concat!("export type ", stringify!($wire_type), " =");
             assert!(
                 typescript.lines().any(|line| line.starts_with(declaration)),
                 "missing TypeScript wire root {}",
@@ -361,4 +373,39 @@ fn protocol_uses_the_checked_workspace_ids() {
             "{invalid_id}"
         );
     }
+}
+
+#[test]
+fn stop_requires_a_cause_for_the_kind_of_wait_and_the_ending_keeps_that_cause() {
+    use approval_request_protocol::{CancelReason, HolderStopCause, StopRequest};
+
+    let stopped: StopRequest = serde_json::from_value(json!({
+        "kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"cause":"providerConnectionLost"
+    }))
+    .unwrap();
+    assert_eq!(stopped.cause(), HolderStopCause::ProviderConnectionLost);
+    assert_eq!(
+        serde_json::to_value(Ending::Cancelled {
+            reason: CancelReason::Stopped {
+                cause: stopped.cause()
+            }
+        })
+        .unwrap(),
+        json!({"kind":"cancelled","reason":{"kind":"stopped","cause":"providerConnectionLost"}})
+    );
+
+    for (kind, cause) in [
+        ("provider", "callWithdrawn"),
+        ("unprovenCall", "turnStopped"),
+        ("unprovenCall", "sessionClosed"),
+        ("unprovenCall", "providerConnectionLost"),
+    ] {
+        let invalid = json!({"kind":kind,"requestId":REQUEST_ID,"routerRun":RUN_ID,"cause":cause});
+        assert!(
+            serde_json::from_str::<StopRequest>(&invalid.to_string()).is_err(),
+            "{invalid}"
+        );
+    }
+    let missing_cause = json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID});
+    assert!(serde_json::from_str::<StopRequest>(&missing_cause.to_string()).is_err());
 }
