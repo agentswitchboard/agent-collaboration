@@ -40,13 +40,10 @@ async fn empty_store() -> SqliteConnection {
         .connect()
         .await
         .unwrap();
-    for migration in [
-        include_str!("../../fleet-storage-schema/migrations/central/0001_workspace_requests.sql"),
-        include_str!("../../fleet-storage-schema/migrations/central/0002_mail_notices_timers.sql"),
-        include_str!("../../fleet-storage-schema/migrations/central/0003_signin_authority.sql"),
-    ] {
-        connection.execute(migration).await.unwrap();
-    }
+    fleet_storage_schema::workspace_migrations::central_migrator()
+        .run_direct(None, &mut connection, false)
+        .await
+        .unwrap();
     connection
 }
 async fn stored_snapshot(connection: &mut SqliteConnection) -> ReadOutcome {
