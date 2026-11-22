@@ -70,6 +70,11 @@ export const sqlitePreparationTargets: readonly SqlitePreparationTarget[] = [
       "crates/fleet-storage-schema/tests/fixtures/engine_migrations/0001_engine_probe.sql",
   },
   {
+    packageName: "fleet-workspace-directory",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-central-workspace-directory.sqlite",
+  },
+  {
     packageName: "fleet-signin",
     migrationSources: [centralMigrationSource],
     databaseFilename: "fleet-central-signin.sqlite",

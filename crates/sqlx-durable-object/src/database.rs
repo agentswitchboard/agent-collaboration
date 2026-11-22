@@ -64,7 +64,12 @@ pub struct DoConnection {
     pub(crate) storage: worker::send::SendWrapper<worker::Storage>,
     /// `storage.sql()`, kept rather than fetched for every query.
     pub(crate) sql: worker::SqlStorage,
+    #[cfg(feature = "test-support")]
+    pub(crate) fetch_observer: Option<Arc<FetchObserver>>,
 }
+
+#[cfg(feature = "test-support")]
+pub(crate) type FetchObserver = dyn Fn(&str, u64) + Send + Sync;
 
 /// The options type sqlx requires of every connection.
 ///
@@ -121,6 +126,8 @@ pub struct DoValueRef<'r>(pub(crate) &'r CoreValue);
 /// transaction.
 pub struct DoTransaction {
     pub(crate) sql: worker::SqlStorage,
+    #[cfg(feature = "test-support")]
+    pub(crate) fetch_observer: Option<Arc<FetchObserver>>,
 }
 
 /// Refuses `begin()`.
