@@ -1,4 +1,6 @@
 //! The same observed-row guard journeys run on the two persistent hosts.
+#![cfg(test)]
+
 use super::{engine_admin_support::*, support::FIXTURE_MACHINE};
 use central_storage::SqlValue;
 
