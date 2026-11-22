@@ -135,3 +135,26 @@ pub fn texts_in_column(outcome: &ReadOutcome, column: usize) -> Vec<String> {
         })
         .collect()
 }
+
+pub fn fixture_due_item(
+    kind: fleet_engine::DueKind,
+    key: impl Into<String>,
+    due: fleet_runtime_ports::EngineTime,
+    at: fleet_runtime_ports::EngineTime,
+) -> central_storage::GuardedStatement {
+    use collaboration_central_core::engine_probe::InstanceKey;
+    use fleet_engine::{DueItemKey, DueOwnerTiming, DueTableChange};
+    let timing = DueOwnerTiming::at(
+        DueItemKey {
+            kind,
+            subject: InstanceKey(key.into()),
+        },
+        due,
+    )
+    .unwrap();
+    let [statement] = fleet_engine::plan_due_table_change(&DueTableChange::PublishItem(timing), at)
+        .unwrap()
+        .try_into()
+        .expect("one fixture projection statement");
+    statement
+}

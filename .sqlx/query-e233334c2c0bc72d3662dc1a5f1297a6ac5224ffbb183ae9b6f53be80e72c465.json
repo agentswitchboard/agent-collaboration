@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM engine_due_entries\nWHERE work_kind = ?1 AND entry_role = 'source_control' AND subject_key = ?1\n    AND NOT EXISTS (\n        SELECT 1 FROM engine_work_attempts\n        WHERE machine_kind = ?2 AND subject_key = ?3\n    )\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "e233334c2c0bc72d3662dc1a5f1297a6ac5224ffbb183ae9b6f53be80e72c465"
+}

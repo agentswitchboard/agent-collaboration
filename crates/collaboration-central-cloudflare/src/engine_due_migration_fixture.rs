@@ -44,7 +44,9 @@ pub(super) async fn run(
         let mut migrations: Vec<_> = fleet_storage_schema::workspace_migrations::central_migrator()
             .iter()
             .filter(|migration| {
-                migration.description != "engine probe fixture" && (!old || migration.version <= 4)
+                migration.description != "engine probe fixture"
+                    && migration.version <= 7
+                    && (!old || migration.version <= 4)
             })
             .cloned()
             .collect();
@@ -90,13 +92,24 @@ pub(super) async fn run(
     let alarm = if views.rows.is_empty() {
         None
     } else {
-        let inputs = statement_store::engine_alarm_inputs(connection)
-            .await
-            .map_err(|failure| format!("{failure:?}"))?;
-        Some([
-            inputs.earliest_on_grid_due_unix_millis,
-            inputs.earliest_legacy_due_unix_millis,
-        ])
+        use central_storage::SqlValue;
+        let outcome = read(
+            connection,
+            include_str!("../../fleet-engine/src/queries/read_alarm_inputs.sql"),
+        )
+        .await?;
+        let [row] = outcome.rows.as_slice() else {
+            return Err("expected one historical alarm row".into());
+        };
+        let [grid, legacy] = row.as_slice() else {
+            return Err("expected two historical alarm inputs".into());
+        };
+        let due = |cell: &SqlValue| match cell {
+            SqlValue::Integer(value) => Ok(Some(value.get())),
+            SqlValue::Null => Ok(None),
+            _ => Err("invalid historical alarm input".to_owned()),
+        };
+        Some([due(grid)?, due(legacy)?])
     };
     Ok(Snapshot {
         ledger,

@@ -1,10 +1,10 @@
 use super::central_migrator;
 
 /// A non-test-support build returns `migrations/central` unchanged, so that
-/// directory must hold exactly 0001-0007; test-support appends only the probe
+/// directory must hold exactly 0001-0007 and 0009; test-support appends only the probe
 /// fixture after it, so no probe migration can ship.
 #[test]
-fn production_history_is_the_seven_approved_migrations_and_test_support_adds_only_the_probe() {
+fn production_history_matches_the_approved_catalog_and_test_support_appends_the_probe() {
     let production = sqlx::migrate!("migrations/central")
         .iter()
         .map(|migration| (migration.version, migration.description.to_string()))
@@ -14,7 +14,7 @@ fn production_history_is_the_seven_approved_migrations_and_test_support_adds_onl
             .iter()
             .map(|(version, _)| *version)
             .collect::<Vec<_>>(),
-        vec![1, 2, 3, 4, 5, 6, 7],
+        vec![1, 2, 3, 4, 5, 6, 7, 9],
         "{production:?}"
     );
     assert!(
@@ -26,6 +26,7 @@ fn production_history_is_the_seven_approved_migrations_and_test_support_adds_onl
     assert_eq!(production[5].1, "signin provisioned for engine");
 
     assert_eq!(production[6].1, "direct message receipts");
+    assert_eq!(production[7].1, "engine due entries");
 
     let built = central_migrator()
         .iter()
@@ -38,7 +39,7 @@ fn production_history_is_the_seven_approved_migrations_and_test_support_adds_onl
         production
             .iter()
             .cloned()
-            .chain([(8, "engine probe fixture".to_owned())])
+            .chain([(10, "engine probe fixture".to_owned())])
             .collect::<Vec<_>>()
     );
     #[cfg(not(feature = "test-support"))]

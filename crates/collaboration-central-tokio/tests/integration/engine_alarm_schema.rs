@@ -15,12 +15,13 @@ const WAKE: &str = "INSERT INTO automation_wakes VALUES ('01890f2e-7b4c-7cc0-98c
 const OLD_FIXTURE: &str =
     include_str!("../../../fleet-storage-schema/tests/fixtures/main_engine_probe_migration.sql");
 
-fn catalog(production: bool, include_due_views: bool) -> Migrator {
+fn catalog(production: bool, include_due_views: bool, include_due_table: bool) -> Migrator {
     let migrations: Vec<_> = fleet_storage_schema::workspace_migrations::central_migrator()
         .iter()
         .filter(|migration| {
             (!production || migration.description != "engine probe fixture")
                 && (include_due_views || migration.version <= 4)
+                && (include_due_table || migration.version <= 7)
         })
         .cloned()
         .collect();
@@ -56,7 +57,10 @@ impl StatementTrace {
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .drain(..)
-            .filter(|sql| sql.trim_start().starts_with("SELECT"))
+            .filter(|sql| {
+                let sql = sql.trim_start();
+                sql.starts_with("SELECT") || sql.starts_with("WITH ")
+            })
             .collect()
     }
 }
@@ -86,38 +90,56 @@ impl<S: tracing::Subscriber> Layer<S> for StatementTrace {
 }
 
 #[tokio::test]
-async fn one_checked_select_reads_its_own_write_and_clear_dispatches_none() {
+async fn one_indexed_alarm_select_reads_its_own_write_and_clear_dispatches_none() {
     let trace = StatementTrace::default();
     tracing::subscriber::set_global_default(tracing_subscriber::registry().with(trace.clone()))
         .unwrap();
     let root = tempfile::tempdir().unwrap();
-    let expected = include_str!("../../../fleet-engine/src/queries/read_alarm_inputs.sql").trim();
+    let indexed =
+        include_str!("../../../fleet-engine/src/queries/read_indexed_alarm_inputs.sql").trim();
+    let presence = include_str!(
+        "../../../collaboration-central-core/src/engine/queries/read_fixture_alarm_presence.sql"
+    )
+    .trim();
+    let fixtures = include_str!(
+        "../../../collaboration-central-core/src/engine/queries/read_fixture_alarm_inputs.sql"
+    )
+    .trim();
     for (filename, production) in [("production.sqlite", true), ("fixture.sqlite", false)] {
-        let storage = central(&root.path().join(filename), catalog(production, true));
+        let storage = central(&root.path().join(filename), catalog(production, true, true));
         storage
             .run_batch(batch(&[STAMP], AlarmUpdate::Unchanged))
             .await
             .unwrap();
         trace.drain_selects();
+        let mut pending = batch(&[WAKE], AlarmUpdate::Engine(EngineAlarmPlan::Recompute));
+        let due = fleet_runtime_ports::EngineTime::from_timestamp_millis(300_000).unwrap();
+        pending
+            .statements
+            .push(crate::storage_support::fixture_due_item(
+                fleet_engine::DueKind::WakeTimer,
+                "01890f2e-7b4c-7cc0-98c4-000000000022",
+                due,
+                fleet_runtime_ports::EngineTime::UNIX_EPOCH,
+            ));
         assert_eq!(
-            storage
-                .run_batch(batch(
-                    &[WAKE],
-                    AlarmUpdate::Engine(EngineAlarmPlan::Recompute)
-                ))
-                .await
-                .unwrap(),
+            storage.run_batch(pending).await.unwrap(),
             BatchOutcome::Applied {
-                rows_affected: vec![1],
+                rows_affected: vec![1, 1],
                 publication: AlarmPublication::Set {
                     unix_millis: 300_000
                 }
             },
         );
         let selects = trace.drain_selects();
+        let expected = if production {
+            vec![indexed, presence]
+        } else {
+            vec![indexed, presence, fixtures]
+        };
         assert_eq!(
             selects.iter().map(|sql| sql.trim()).collect::<Vec<_>>(),
-            [expected]
+            expected
         );
         assert_eq!(
             storage
@@ -150,7 +172,7 @@ async fn snapshot(
 async fn production_upgrade_keeps_the_old_ledger_and_old_fixture_store_refuses_it() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("upgrade.sqlite");
-    let before = central(&path, catalog(true, false));
+    let before = central(&path, catalog(true, false, false));
     before
         .run_batch(batch(&[STAMP, WAKE], AlarmUpdate::Unchanged))
         .await
@@ -159,8 +181,11 @@ async fn production_upgrade_keeps_the_old_ledger_and_old_fixture_store_refuses_i
     assert_eq!(original.len(), 4);
     before.close().await;
 
-    let upgraded = central(&path, catalog(true, true));
-    let fresh = central(&root.path().join("fresh.sqlite"), catalog(true, true));
+    let upgraded = central(&path, catalog(true, true, false));
+    let fresh = central(
+        &root.path().join("fresh.sqlite"),
+        catalog(true, true, false),
+    );
     fresh
         .run_batch(batch(&[STAMP, WAKE], AlarmUpdate::Unchanged))
         .await
@@ -169,24 +194,26 @@ async fn production_upgrade_keeps_the_old_ledger_and_old_fixture_store_refuses_i
     assert_eq!(&upgraded_ledger[..original.len()], original);
     assert_eq!(upgraded_ledger, snapshot(&fresh).await.unwrap());
     for store in [&upgraded, &fresh] {
+        let reference = store
+            .read(Statement {
+                sql: include_str!("../../../fleet-engine/src/queries/read_alarm_inputs.sql"),
+                args: vec![],
+            })
+            .await
+            .unwrap();
         assert_eq!(
-            store
-                .run_batch(batch(&[], AlarmUpdate::Engine(EngineAlarmPlan::Recompute)))
-                .await
-                .unwrap(),
-            BatchOutcome::Applied {
-                rows_affected: vec![],
-                publication: AlarmPublication::Set {
-                    unix_millis: 300_000
-                }
-            },
+            reference.rows,
+            [[
+                SqlValue::Integer(300_000.try_into().unwrap()),
+                SqlValue::Null
+            ]]
         );
         store.close().await;
     }
 
     let old_fixture_path = root.path().join("old-fixture.sqlite");
     let old_fixture = || {
-        let mut migrations: Vec<_> = catalog(true, false).iter().cloned().collect();
+        let mut migrations: Vec<_> = catalog(true, false, false).iter().cloned().collect();
         migrations.push(Migration::new(
             5,
             "engine probe fixture".into(),
@@ -203,7 +230,7 @@ async fn production_upgrade_keeps_the_old_ledger_and_old_fixture_store_refuses_i
         .unwrap();
     let saved_ledger = snapshot(&saved).await.unwrap();
     saved.close().await;
-    let incompatible = central(&old_fixture_path, catalog(true, true));
+    let incompatible = central(&old_fixture_path, catalog(true, true, false));
     assert!(
         incompatible
             .read(Statement {

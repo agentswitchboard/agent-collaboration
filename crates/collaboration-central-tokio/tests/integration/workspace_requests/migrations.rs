@@ -16,8 +16,8 @@ async fn business_migration_upgrade_failure_rolls_back_both_real_owners_and_all_
             workspace_migrations::central_migrator as fn() -> sqlx::migrate::Migrator,
             // 0001-0007 plus the probe fixture this test build appends (core always
             // has test-support here); workspace_migrations_test.rs proves a
-            // production build has exactly 0001-0007.
-            8,
+            // production build has exactly 0001-0007 and 0009.
+            9,
         ),
         (
             f.root

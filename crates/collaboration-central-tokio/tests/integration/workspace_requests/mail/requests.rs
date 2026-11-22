@@ -414,3 +414,42 @@ async fn unknown_installation_fails_the_real_message_foreign_key_without_a_row()
     );
     fixture.host.close().await;
 }
+
+#[tokio::test]
+async fn a_direct_send_cannot_store_a_receipt_mark_beyond_the_portable_clock() {
+    use central_storage::{CorruptReason, StoreFailure};
+
+    let mut fixture = Fixture::new().await;
+    let maximum = collaboration_central_core::MAX_ALARM_UNIX_MILLIS;
+    let now = m::Timestamp::from_timestamp_millis(maximum - 1).unwrap();
+    fixture.relocate_authority(now).await;
+    assert!(
+        fleet_mail::message_deadline::direct_receipt_mark(now, now).timestamp_millis() > maximum
+    );
+    let runtime = fixture
+        .host
+        .central(fixture.caller.organization_id())
+        .await
+        .unwrap();
+    let store = runtime.runtime().statement_host();
+    let counts = || Statement {
+        sql: "SELECT (SELECT COUNT(*) FROM mail_messages),(SELECT COUNT(*) FROM runtime_request_log),(SELECT COUNT(*) FROM engine_due_entries)",
+        args: vec![],
+    };
+    let before = store.read(counts()).await.unwrap();
+    let result = fixture
+        .host
+        .request_central(
+            &fixture.caller,
+            CentralMailRequest {
+                request_id: id(909006),
+                operation: send(session(&fixture.caller), "clock boundary"),
+            },
+        )
+        .await;
+    assert!(
+        matches!(result, Err(StoreFailure::Corrupt { reason: CorruptReason::BadValue { column } }) if column == "mail_messages.cancel_due_at")
+    );
+    assert_eq!(store.read(counts()).await.unwrap(), before);
+    fixture.host.close().await;
+}

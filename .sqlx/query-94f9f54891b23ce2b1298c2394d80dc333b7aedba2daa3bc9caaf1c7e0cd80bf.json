@@ -1,0 +1,28 @@
+{
+  "db_name": "SQLite",
+  "query": "WITH legacy_minima(due_at_ms) AS (\n    SELECT CASE WHEN EXISTS (\n        SELECT 1 FROM engine_due_entries\n        WHERE work_kind = 'legacy_notice_windows'\n            AND entry_role = 'source_control' AND subject_key = work_kind\n    ) THEN (\n        SELECT effective_due_ms FROM engine_due_entries\n        WHERE work_kind = 'legacy_notice_windows'\n            AND entry_role = 'source_control' AND subject_key = work_kind\n    ) ELSE (\n        SELECT CASE WHEN unixepoch(due_at) IS NULL\n             OR abs(unixepoch(due_at)*1000+CAST(substr(strftime('%f',due_at),4,3) AS INTEGER)) > 9223372036854\n             THEN 0 ELSE unixepoch(due_at)*1000+CAST(substr(strftime('%f',due_at),4,3) AS INTEGER) END\n        FROM mail_notification_windows INDEXED BY notification_windows_due\n        WHERE due_at IS NOT NULL ORDER BY due_at LIMIT 1\n    ) END\n    UNION ALL\n    SELECT CASE WHEN EXISTS (\n        SELECT 1 FROM engine_due_entries\n        WHERE work_kind = 'legacy_workspace_drains'\n            AND entry_role = 'source_control' AND subject_key = work_kind\n    ) THEN (\n        SELECT effective_due_ms FROM engine_due_entries\n        WHERE work_kind = 'legacy_workspace_drains'\n            AND entry_role = 'source_control' AND subject_key = work_kind\n    ) ELSE (\n        SELECT CASE WHEN unixepoch(drain_due_at) IS NULL\n             OR abs(unixepoch(drain_due_at)*1000+CAST(substr(strftime('%f',drain_due_at),4,3) AS INTEGER)) > 9223372036854\n             THEN 0 ELSE unixepoch(drain_due_at)*1000+CAST(substr(strftime('%f',drain_due_at),4,3) AS INTEGER) END\n        FROM mail_workspace_drains INDEXED BY workspace_drains_due\n        WHERE drain_due_at IS NOT NULL ORDER BY drain_due_at LIMIT 1\n    ) END\n),\ngrid_kinds(work_kind) AS (\n    SELECT value FROM json_each(?1)\n),\ngrid_minima(due_at_ms) AS (\n    SELECT CASE WHEN EXISTS (\n        SELECT 1 FROM engine_due_entries d\n        WHERE d.work_kind = k.work_kind\n            AND d.entry_role = 'source_control' AND d.subject_key = k.work_kind\n    ) THEN (\n        SELECT effective_due_ms FROM engine_due_entries d\n        WHERE d.work_kind = k.work_kind\n            AND d.entry_role = 'source_control' AND d.subject_key = k.work_kind\n    ) ELSE (\n        SELECT effective_due_ms FROM engine_due_entries d\n        WHERE d.work_kind = k.work_kind AND d.entry_role = 'item'\n            AND d.effective_due_ms IS NOT NULL\n        ORDER BY d.effective_due_ms, d.subject_key LIMIT 1\n    ) END\n    FROM grid_kinds k\n)\nSELECT\n    CASE WHEN EXISTS (SELECT 1 FROM signin_provisioned_for_engine)\n        THEN (SELECT MIN(due_at_ms) FROM grid_minima) END AS \"on_grid_due?: i64\",\n    CASE WHEN EXISTS (SELECT 1 FROM signin_provisioned_for_engine)\n        THEN (SELECT MIN(due_at_ms) FROM legacy_minima) END AS \"legacy_due?: i64\"\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "on_grid_due?: i64",
+        "ordinal": 0,
+        "type_info": "Null",
+        "origin": "Expression"
+      },
+      {
+        "name": "legacy_due?: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "94f9f54891b23ce2b1298c2394d80dc333b7aedba2daa3bc9caaf1c7e0cd80bf"
+}

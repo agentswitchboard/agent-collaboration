@@ -101,10 +101,26 @@ impl OwnerCase {
                 } else {
                     SqlValue::Null
                 };
-                engine.raw(
-                    "INSERT INTO mail_messages(message_id,sender,target_machine_id,target_session,message_kind,body,state,failure_reason,created_at,updated_at,delivery_window_ends_at) VALUES (?1,'{}',?2,'{}','notice','{}','queued',?3,?4,?4,?5)",
-                    vec![text(NOTICE), text(INSTALLATION), reason, stamp(due - chrono::Duration::hours(24)), stamp(due)],
-                ).await;
+                use central_storage::{
+                    AlarmUpdate, BatchOutcome, GuardedStatement, RowExpectation, Statement,
+                    StatementBatch,
+                };
+                let issued = due - chrono::Duration::hours(24);
+                let runtime = engine.runtime().await;
+                let applied = runtime.runtime().statement_host().run_batch(StatementBatch {
+                    statements: vec![
+                        GuardedStatement {
+                            statement: Statement {
+                                sql: "INSERT INTO mail_messages(message_id,sender,target_machine_id,target_session,message_kind,body,state,failure_reason,created_at,updated_at,delivery_window_ends_at) VALUES (?1,'{}',?2,'{}','notice','{}','queued',?3,?4,?4,?5)",
+                                args: vec![text(NOTICE), text(INSTALLATION), reason, stamp(issued), stamp(due)],
+                            },
+                            expect: RowExpectation::Exactly(1),
+                        },
+                        crate::storage_support::fixture_due_item(fleet_engine::DueKind::SystemMessageExpiry, NOTICE, due, issued),
+                    ],
+                    alarm: AlarmUpdate::Unchanged,
+                }).await.unwrap();
+                assert!(matches!(applied, BatchOutcome::Applied { .. }));
                 NOTICE.to_owned()
             }
         }

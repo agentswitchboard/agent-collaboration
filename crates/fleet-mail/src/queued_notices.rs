@@ -15,10 +15,14 @@ fn notice_messages() -> Statement {
     }
 }
 /// The caller holds the central turn for the notice plan and its applying batch.
-pub async fn validate_queued_notices_held(host: &impl CentralStore) -> Result<(), StoreFailure> {
+pub async fn validate_queued_notices_held(
+    host: &impl CentralStore,
+) -> Result<Vec<workspace_ids::MessageId>, StoreFailure> {
     let rows = host.read(notice_messages()).await?;
-    decode_messages(&rows)?;
-    Ok(())
+    Ok(decode_messages(&rows)?
+        .into_iter()
+        .map(|notice| notice.message_id)
+        .collect())
 }
 
 /// The caller holds the central turn for validation, planning and application.

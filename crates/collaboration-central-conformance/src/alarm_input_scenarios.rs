@@ -4,6 +4,8 @@ pub struct AlarmInputScenario {
     pub name: &'static str,
     pub writes: &'static [(&'static str, u64)],
     pub expected: [Option<i64>; 2],
+    /// These raw statements bypass the planner and can only affect legacy and fixture reads.
+    pub expected_without_projection: [Option<i64>; 2],
 }
 
 pub const ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
@@ -11,6 +13,7 @@ pub const ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
         name: "empty Central",
         writes: &[],
         expected: [None, None],
+        expected_without_projection: [None, None],
     },
     AlarmInputScenario {
         name: "wake with milliseconds",
@@ -19,6 +22,7 @@ pub const ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
             1,
         )],
         expected: [Some(300123), None],
+        expected_without_projection: [None, None],
     },
     AlarmInputScenario {
         name: "wake subject retries",
@@ -27,6 +31,7 @@ pub const ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
             1,
         )],
         expected: [Some(540000), None],
+        expected_without_projection: [None, None],
     },
     AlarmInputScenario {
         name: "retired wake and active schedule",
@@ -41,6 +46,7 @@ pub const ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
             ),
         ],
         expected: [Some(420000), None],
+        expected_without_projection: [None, None],
     },
     AlarmInputScenario {
         name: "schedule source retry overrides its subject",
@@ -49,6 +55,7 @@ pub const ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
             1,
         )],
         expected: [Some(660000), None],
+        expected_without_projection: [None, None],
     },
     AlarmInputScenario {
         name: "queued direct mail",
@@ -57,6 +64,7 @@ pub const ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
             1,
         )],
         expected: [Some(240000), None],
+        expected_without_projection: [None, None],
     },
     AlarmInputScenario {
         name: "delivered direct mail is excluded and queued system mail expires",
@@ -71,6 +79,7 @@ pub const ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
             ),
         ],
         expected: [Some(300000), None],
+        expected_without_projection: [None, None],
     },
     AlarmInputScenario {
         name: "notice window legacy minimum",
@@ -85,6 +94,7 @@ pub const ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
             ),
         ],
         expected: [Some(300000), Some(900000)],
+        expected_without_projection: [None, Some(900000)],
     },
     AlarmInputScenario {
         name: "pending workspace drain legacy minimum",
@@ -93,6 +103,7 @@ pub const ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
             1,
         )],
         expected: [Some(300000), Some(600000)],
+        expected_without_projection: [None, Some(600000)],
     },
     AlarmInputScenario {
         name: "fixture-only alarm table",
@@ -101,6 +112,7 @@ pub const ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
             1,
         )],
         expected: [Some(180000), Some(600000)],
+        expected_without_projection: [Some(180000), Some(600000)],
     },
     AlarmInputScenario {
         name: "fixture probe table",
@@ -115,16 +127,19 @@ pub const ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
             ),
         ],
         expected: [Some(120000), Some(600000)],
+        expected_without_projection: [Some(120000), Some(600000)],
     },
     AlarmInputScenario {
         name: "malformed times still return zero",
         writes: &[("UPDATE engine_probe_items SET due_at='damaged'", 1)],
         expected: [Some(0), Some(600000)],
+        expected_without_projection: [Some(0), Some(600000)],
     },
     AlarmInputScenario {
         name: "stamp guard suppresses both minima",
         writes: &[("DELETE FROM signin_organization_identity", 1)],
         expected: [None, None],
+        expected_without_projection: [None, None],
     },
 ];
 
@@ -142,6 +157,7 @@ pub const CORRUPT_ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
             ),
         ],
         expected: [None, None],
+        expected_without_projection: [None, None],
     },
     AlarmInputScenario {
         name: "null-ID retired whole-unit control masks its open window",
@@ -156,6 +172,7 @@ pub const CORRUPT_ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
             ),
         ],
         expected: [None, None],
+        expected_without_projection: [None, Some(240_000)],
     },
     AlarmInputScenario {
         name: "null-ID failing subject keeps its scheduled deadline",
@@ -167,6 +184,7 @@ pub const CORRUPT_ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
             ),
         ],
         expected: [Some(120_000), Some(240_000)],
+        expected_without_projection: [None, Some(240_000)],
     },
     AlarmInputScenario {
         name: "retired subject is excluded even with a null attempt ID",
@@ -175,6 +193,7 @@ pub const CORRUPT_ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
             1,
         )],
         expected: [None, Some(240_000)],
+        expected_without_projection: [None, Some(240_000)],
     },
     AlarmInputScenario {
         name: "corrupt nonterminal still honors a valid subject retry",
@@ -187,6 +206,7 @@ pub const CORRUPT_ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
             ),
         ],
         expected: [Some(480_000), Some(240_000)],
+        expected_without_projection: [None, Some(240_000)],
     },
     AlarmInputScenario {
         name: "reset for the original main parity cases",
@@ -196,6 +216,7 @@ pub const CORRUPT_ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
             ("DELETE FROM mail_notification_windows", 1),
         ],
         expected: [None, None],
+        expected_without_projection: [None, None],
     },
     AlarmInputScenario {
         name: "active schedule with null due date",
@@ -204,6 +225,7 @@ pub const CORRUPT_ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
             1,
         )],
         expected: [Some(0), None],
+        expected_without_projection: [None, None],
     },
     AlarmInputScenario {
         name: "active schedule with null due date honors retry",
@@ -212,6 +234,7 @@ pub const CORRUPT_ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
             1,
         )],
         expected: [Some(120_123), None],
+        expected_without_projection: [None, None],
     },
     AlarmInputScenario {
         name: "reset after null schedule cases",
@@ -220,5 +243,6 @@ pub const CORRUPT_ALARM_INPUT_SCENARIOS: &[AlarmInputScenario] = &[
             ("DELETE FROM automation_schedules", 1),
         ],
         expected: [None, None],
+        expected_without_projection: [None, None],
     },
 ];

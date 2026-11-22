@@ -3,7 +3,7 @@ use central_storage::{GuardedStatement, StoreFailure};
 use fleet_contracts::MailDeliveryReady;
 use fleet_runtime::FleetRuntime;
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
-use workspace_ids::SessionRef;
+use workspace_ids::{MessageId, SessionRef};
 use workspace_model::{
     ActorIdentityId, ThreadId, Timestamp, WorkspaceId,
     central_mail::{NoticeItem, NoticeSource},
@@ -16,7 +16,7 @@ pub(crate) struct NoticeMailbox<'runtime, Host: CentralStore, Stores: WorkspaceS
 impl<Host: CentralStore, Stores: WorkspaceStores> fleet_notices::NoticeMailbox
     for NoticeMailbox<'_, Host, Stores>
 {
-    async fn validate_queued_notices_held(&self) -> Result<(), StoreFailure> {
+    async fn validate_queued_notices_held(&self) -> Result<Vec<MessageId>, StoreFailure> {
         fleet_mail::validate_queued_notices_held(self.0.statement_host()).await
     }
 
@@ -43,7 +43,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> fleet_notices::NoticeMailbox
         items: Vec<NoticeItem>,
         source: NoticeSource,
         now: Timestamp,
-    ) -> Result<(GuardedStatement, MailDeliveryReady), StoreFailure> {
+    ) -> Result<(Vec<GuardedStatement>, MailDeliveryReady), StoreFailure> {
         fleet_mail::plan_sourced_notice(target, items, source, now, || self.0.mint())
     }
 }
