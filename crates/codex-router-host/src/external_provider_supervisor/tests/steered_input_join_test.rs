@@ -228,7 +228,7 @@ async fn busy_with_steering_uses_the_running_owner_answer_after_the_turn_ends() 
     let refused = rig.supervisor.prompt_contents(direct);
     tokio::pin!(refused);
     tokio::select! {
-        result = acknowledgement.reached => result.expect("the owner refused the command"),
+        result = acknowledgement.reached => { let _observed = result.expect("the owner refused the command"); },
         result = &mut refused => panic!("refusal was rendered early: {result:?}"),
     }
     node_test_fixture::release_fixture(&rig.receipt, ".release").expect("release foreground");
