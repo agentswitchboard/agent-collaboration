@@ -168,6 +168,18 @@ fn options() -> OfferedOptions {
             KeptWhere::NotVerified,
             OptionEffect::Decline,
         ),
+        offered(
+            "unknown-duration-allow",
+            OptionDuration::NotVerified,
+            KeptWhere::Nowhere,
+            OptionEffect::Allow,
+        ),
+        offered(
+            "unknown-duration-deny",
+            OptionDuration::NotVerified,
+            KeptWhere::Nowhere,
+            OptionEffect::Decline,
+        ),
     ])
     .unwrap()
 }

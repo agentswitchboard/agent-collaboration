@@ -2,9 +2,7 @@ use approval_request_protocol::{
     Answer, CancelReason, DecidedBy, Delivery, Ending, EndingView, HolderReport, HolderStopCause,
     InvalidAnswer, OfferEnding, Refusal, StopReceiptEnding, StopReply,
 };
-use central_engine_model::{
-    Context, EventTag, Machine, StateTag, TransitionError, check_transitions,
-};
+use central_engine_model::{Machine, StateTag, TransitionError};
 
 use crate::{
     AdmittedDecider, ApprovalDestination, ApprovalEffect, ApprovalEvent, ApprovalLifecycle,
@@ -14,18 +12,19 @@ use crate::{
 
 #[path = "approval_lifecycle_delivery_test.rs"]
 mod delivery;
+#[path = "approval_lifecycle_edges_test.rs"]
+mod edges;
 #[path = "approval_lifecycle_erasure_test.rs"]
 mod erasure;
-use erasure::SIXTY_DAYS;
 #[path = "approval_lifecycle_fixture_test.rs"]
 mod fixtures;
 #[path = "approval_lifecycle_model_test.rs"]
 mod model;
 
 use fixtures::{
-    DEADLINE, UnusedIds, apply, approval_answer, approval_raise, call_raise, destinations,
-    holder_report, observer, option_id, parent, parent_pass_on, person_answer, person_id,
-    raise_event, requester, router_run, session, session_answer, step, stop_event, time, waiting,
+    DEADLINE, apply, approval_answer, approval_raise, call_raise, destinations, observer,
+    option_id, parent, parent_pass_on, person_answer, person_id, requester, router_run, session,
+    session_answer, step, stop_event, time, waiting,
 };
 
 const STOPPED: CancelReason = CancelReason::Stopped {
@@ -368,132 +367,6 @@ fn live_parent_adds_people_once_and_keeps_destinations_and_deadline() {
 }
 
 #[test]
-fn every_state_event_pair_takes_a_declared_edge_or_refuses() {
-    let pending = waiting();
-    let (passed, _) = apply(&pending, parent_pass_on(), 1);
-    let (pending_fresh, _) = apply(&ApprovalState::Unraised, raise_event(), DEADLINE - 1);
-    let (passed_fresh, _) = apply(&pending_fresh, parent_pass_on(), DEADLINE - 1);
-    let (awaiting, _) = apply(&pending, allow_from_parent(), 1);
-    let (reported, _) = apply(
-        &awaiting,
-        holder_report(router_run(), HolderReport::Applied),
-        1,
-    );
-    let (no_handover, _) = apply(&pending, ApprovalEvent::RunRetired, 1);
-    let (unknown, _) = apply(&awaiting, ApprovalEvent::RunRetired, 1);
-    let (marker, _) = apply(&ApprovalState::Unraised, stop_event(), 1);
-
-    let old_ending_at = DEADLINE - SIXTY_DAYS;
-    let (old_pending, _) = apply(&ApprovalState::Unraised, raise_event(), old_ending_at - 1);
-    let (old_awaiting, _) = apply(&old_pending, allow_from_parent(), old_ending_at);
-    let (old_reported, _) = apply(
-        &old_awaiting,
-        holder_report(router_run(), HolderReport::Applied),
-        old_ending_at,
-    );
-    let (old_unowed, _) = apply(&old_pending, ApprovalEvent::RunRetired, old_ending_at);
-    let (old_unknown, _) = apply(&old_awaiting, ApprovalEvent::RunRetired, old_ending_at);
-    let (erased, _) = apply(&old_awaiting, ApprovalEvent::Erase, DEADLINE);
-    let scenarios = [
-        ApprovalState::Unraised,
-        marker,
-        pending_fresh,
-        passed_fresh,
-        pending,
-        passed,
-        awaiting,
-        reported,
-        no_handover,
-        unknown,
-        old_awaiting,
-        old_reported,
-        old_unowed,
-        old_unknown,
-        erased,
-    ];
-    let events = [
-        raise_event(),
-        allow_from_parent(),
-        parent_pass_on(),
-        stop_event(),
-        ApprovalEvent::ClockReached,
-        ApprovalEvent::RunRetired,
-        ApprovalEvent::SessionEnded,
-        ApprovalEvent::EnrollmentEnded,
-        ApprovalEvent::OfferAgain {
-            router_run: router_run(),
-        },
-        holder_report(router_run(), HolderReport::Applied),
-        ApprovalEvent::Erase,
-    ];
-    let mut cases = Vec::new();
-    for state in scenarios {
-        for event in &events {
-            let refusal = match (state.state_tag(), event.event_tag()) {
-                ("unraised" | "stoppedBeforeRaise", "raise" | "stop") => None,
-                ("unraised" | "stoppedBeforeRaise", _)
-                | ("pending" | "passedOn", "offerAgain" | "report" | "erase")
-                | ("erased", "clockReached" | "runRetired" | "sessionEnded" | "enrollmentEnded") => {
-                    Some(TransitionError::NotAllowed {
-                        state: state.state_tag(),
-                        event: event.event_tag(),
-                    })
-                }
-                ("pending" | "passedOn", "clockReached")
-                    if ApprovalLifecycle::next_due(&state) > Some(time(DEADLINE)) =>
-                {
-                    Some(TransitionError::Stale)
-                }
-                (
-                    "awaitingReport" | "reported" | "noHandoverOwed" | "receiptUnknown",
-                    "answer" | "passOn",
-                ) => {
-                    let ending = match &closed(&state).ending {
-                        Ending::Decided { answer, by } => EndingView::DecidedWithAnswer {
-                            answer: answer.clone(),
-                            by: by.clone(),
-                        },
-                        Ending::Cancelled { reason } => EndingView::Cancelled { reason: *reason },
-                        Ending::TimedOut {} => EndingView::TimedOut {},
-                    };
-                    Some(refused(Refusal::Ended { ending }))
-                }
-                ("noHandoverOwed" | "receiptUnknown", "stop") | ("erased", "erase") => {
-                    Some(TransitionError::Stale)
-                }
-                ("erased", "answer" | "passOn") => Some(refused(Refusal::NotVisible {})),
-                ("awaitingReport" | "reported" | "noHandoverOwed" | "receiptUnknown", "erase")
-                    if closed(&state).ended_at.timestamp_millis() > old_ending_at =>
-                {
-                    Some(TransitionError::Stale)
-                }
-                ("noHandoverOwed" | "receiptUnknown", "report")
-                | ("reported" | "noHandoverOwed" | "receiptUnknown" | "erased", "offerAgain") => {
-                    Some(TransitionError::Domain(ApprovalRefusal::NoHandoverOwed))
-                }
-                _ => None,
-            };
-            assert_eq!(
-                step(&state, event.clone(), DEADLINE).err(),
-                refusal,
-                "{state:?}, {event:?}"
-            );
-            cases.push((state.clone(), event.clone()));
-        }
-    }
-    assert_eq!(
-        check_transitions::<ApprovalLifecycle>(
-            cases,
-            &mut Context {
-                now: time(DEADLINE),
-                ids: &mut UnusedIds
-            }
-        ),
-        Ok(())
-    );
-}
-
-#[test]
 fn provider_question_requires_its_declared_fields_and_preserves_the_answer_for_the_holder() {
     use approval_request_protocol::{
         Description, Label, ProviderHolder, QuestionAnswer, QuestionAnswerValue, QuestionField,
@@ -564,9 +437,21 @@ fn provider_question_requires_its_declared_fields_and_preserves_the_answer_for_t
 
 #[test]
 fn unknown_persistence_in_allow_and_deny_choices_requires_a_fresh_person() {
+    assert_unverified_options_require_fresh_person(["unknown-allow", "unknown-deny"]);
+}
+
+#[test]
+fn unknown_duration_in_allow_and_deny_choices_requires_a_fresh_person() {
+    assert_unverified_options_require_fresh_person([
+        "unknown-duration-allow",
+        "unknown-duration-deny",
+    ]);
+}
+
+fn assert_unverified_options_require_fresh_person(choices: [&str; 2]) {
     let (visible, _) = apply(&waiting(), parent_pass_on(), 1);
 
-    for choice in ["unknown-allow", "unknown-deny"] {
+    for choice in choices {
         assert_eq!(
             step(&visible, session_answer(parent(), choice), 2),
             Err(refused(Refusal::KeptChoiceNeedsAPerson {}))
