@@ -1,3 +1,8 @@
+#![expect(
+    clippy::unwrap_used,
+    reason = "Invalid literal fixtures and unexpectedly accepted wire values must fail the test at their call site."
+)]
+
 use std::fmt::Debug;
 
 use serde::{Serialize, de::DeserializeOwned};

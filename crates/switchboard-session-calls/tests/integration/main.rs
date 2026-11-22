@@ -1,3 +1,8 @@
+#![expect(
+    clippy::unwrap_used,
+    reason = "Invalid literal fixtures and unexpectedly accepted wire values must fail the test at their call site."
+)]
+
 mod position_wire;
 mod watch_wire;
 
