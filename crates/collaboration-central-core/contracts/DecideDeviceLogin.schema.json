@@ -27,7 +27,8 @@
     "MachineLabel": {
       "allOf": [
         {
-          "pattern": "^[^\\u0000-\\u0008\\u000b-\\u001f]*$(?![\\s\\S])"
+          "pattern": "^[^\\u0000-\\u0008\\u000b-\\u001f]*$(?![\\s\\S])",
+          "type": "string"
         }
       ],
       "maxLength": 256,
@@ -50,6 +51,8 @@
     },
     "UnixSeconds": {
       "format": "int64",
+      "maximum": 9007199254740991,
+      "minimum": 0,
       "type": "integer"
     },
     "WorkspaceId": {
@@ -71,17 +74,18 @@
     "approverSecondFactorAt": {
       "anyOf": [
         {
-          "$ref": "#/$defs/UnixSeconds"
+          "format": "int64",
+          "maximum": 9007199254740991,
+          "minimum": 0,
+          "type": "integer"
         },
         {
           "type": "null"
         }
-      ],
-      "minimum": 0
+      ]
     },
     "codeExpiresAt": {
-      "$ref": "#/$defs/UnixSeconds",
-      "minimum": 0
+      "$ref": "#/$defs/UnixSeconds"
     },
     "label": {
       "$ref": "#/$defs/MachineLabel"

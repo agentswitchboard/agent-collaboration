@@ -10,6 +10,10 @@ use workspace_ids::MachineId;
     rename_all_fields = "snake_case",
     deny_unknown_fields
 )]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum MachinePrincipal {
     Machine {
         machine_id: MachineId,
@@ -19,6 +23,10 @@ pub enum MachinePrincipal {
 /// Only extension claims live here; the token checker validates the registered claims separately.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct MachineTokenClaims {
     pub principal: MachinePrincipal,
     pub organization_id: OrganizationId,

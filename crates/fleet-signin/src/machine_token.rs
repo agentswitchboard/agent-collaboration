@@ -3,14 +3,19 @@ use crate::IssuerSignatureVerifier;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use fleet_contracts::ClientId;
 use fleet_contracts::{MachinePrincipal, MachineTokenClaims};
-use fleet_identity_protocol::{EnrollmentId, OrganizationId, UnixSeconds};
+use fleet_identity_protocol::{EnrollmentId, OrganizationId, UnixMillis, UnixSeconds};
 use fleet_runtime_ports::Clock;
 use fleet_runtime_ports::{Ed25519Verification, IssuerKeySource, SignatureValidity};
-use serde::Deserialize;
 use std::sync::Arc;
 use workspace_ids::MachineId;
 
-const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
+#[path = "machine_token_wire.rs"]
+mod machine_token_wire;
+#[cfg(all(feature = "wire-export", not(target_arch = "wasm32")))]
+pub use machine_token_wire::{MachineAccessTokenClaims, MachineAccessTokenHeader};
+#[cfg(not(all(feature = "wire-export", not(target_arch = "wasm32"))))]
+use machine_token_wire::{MachineAccessTokenClaims, MachineAccessTokenHeader};
+
 pub const MACHINE_TOKEN_LIFETIME_SECONDS: i64 = 600;
 
 #[derive(Clone, Debug)]
@@ -90,12 +95,12 @@ impl<Ed: Ed25519Verification, Keys: IssuerKeySource> MachineTokenVerifier<Ed, Ke
             return Err(MachineTokenRefusal::Unavailable);
         }
         let parsed = CompactMachineToken::parse(token)?;
-        let header: Header =
+        let header: MachineAccessTokenHeader =
             serde_json::from_slice(&parsed.header).map_err(|_| MachineTokenRefusal::Rejected)?;
         if header.alg != "EdDSA" || header.typ != "at+jwt" || header.kid.is_empty() {
             return Err(MachineTokenRefusal::Rejected);
         }
-        let claims: Claims =
+        let claims: MachineAccessTokenClaims =
             serde_json::from_slice(&parsed.claims).map_err(|_| MachineTokenRefusal::Rejected)?;
         if claims.iss != self.policy.issuer {
             return Err(MachineTokenRefusal::Rejected);
@@ -122,35 +127,7 @@ impl<Ed: Ed25519Verification, Keys: IssuerKeySource> MachineTokenVerifier<Ed, Ke
     }
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-struct Header {
-    alg: String,
-    typ: String,
-    kid: String,
-}
-
-#[derive(Deserialize)]
-struct Claims {
-    iss: String,
-    aud: String,
-    iat: i64,
-    exp: i64,
-    client_id: String,
-    azp: String,
-    #[serde(flatten)]
-    machine: MachineTokenClaims,
-    #[serde(default, rename = "sid")]
-    _sid: Option<()>,
-    #[serde(default, rename = "workspace_id", deserialize_with = "reject_present")]
-    _workspace_id: (),
-}
-
-fn reject_present<'de, D: serde::Deserializer<'de>>(_: D) -> Result<(), D::Error> {
-    Err(serde::de::Error::custom("workspace_id is forbidden"))
-}
-
-impl Claims {
+impl MachineAccessTokenClaims {
     fn validate(
         self,
         policy: &MachineTokenPolicy,
@@ -166,31 +143,30 @@ impl Claims {
             organization_id,
             grant_expires_at: UnixSeconds(grant_expires_at),
         } = self.machine;
+        let UnixSeconds(issued_at) = self.iat;
+        let UnixSeconds(expires_at) = self.exp;
         if self.iss != policy.issuer
             || self.aud != policy.audience
             || self.client_id != self.azp
             || self.client_id != enrollment_id.as_str()
-            || [self.iat, self.exp, grant_expires_at]
-                .iter()
-                .any(|value| !(0..=MAX_SAFE_INTEGER).contains(value))
-            || self.exp <= self.iat
-            || self.exp - self.iat > MACHINE_TOKEN_LIFETIME_SECONDS
+            || expires_at <= issued_at
+            || expires_at - issued_at > MACHINE_TOKEN_LIFETIME_SECONDS
         {
             return Err(rejected);
         }
-        let expiry = self
-            .exp
+        let expiry = expires_at
             .checked_add(60)
-            .filter(|value| *value <= MAX_SAFE_INTEGER)
-            .ok_or(rejected)?;
+            .and_then(|seconds| UnixSeconds::try_from(seconds).ok())
+            .ok_or(rejected)?
+            .0;
         let future = now.checked_add(60).ok_or(rejected)?;
-        if self.iat > future || now >= expiry || now >= grant_expires_at {
+        if issued_at > future || now >= expiry || now >= grant_expires_at {
             return Err(rejected);
         }
         let effective_expires_at = expiry.min(grant_expires_at);
         effective_expires_at
             .checked_mul(1000)
-            .filter(|millis| *millis <= MAX_SAFE_INTEGER)
+            .and_then(|millis| UnixMillis::try_from(millis).ok())
             .ok_or(rejected)?;
         for id in [
             organization_id.as_str(),

@@ -11,6 +11,9 @@ pub use fleet_statement::{
     FleetOrganizationStatementVerifier, InvalidStampTrust, StampTimeRefusal, StoredStatementFacts,
     VerifiedFleetOrganizationStatement,
 };
+#[cfg(all(feature = "wire-export", not(target_arch = "wasm32")))]
+#[doc(hidden)]
+pub use fleet_statement_wire::{OrganizationStampClaims, OrganizationStampHeader};
 pub(crate) use statement_replacement::{
     OfferStamp, ReplayStanding, StampApplication, StampMachine, StampMutation, StampRefusal,
 };

@@ -44,7 +44,10 @@ impl DecisionIds<'_> {
             kind,
             origin: origin.clone(),
             target_id: target,
-            created_at_millis: time.now_ms,
+            created_at_millis: time
+                .now_ms
+                .try_into()
+                .map_err(|_| StoreFailure::Unavailable)?,
         })
     }
 }

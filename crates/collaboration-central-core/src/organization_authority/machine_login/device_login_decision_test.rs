@@ -64,7 +64,7 @@ fn approval_plans_an_inactive_snapshot_and_allowance_records_after_its_machine()
                 permission_checked: "machine:enroll".to_owned()
             }
         );
-        assert_eq!(record.created_at_millis, NOW_MS);
+        assert_eq!(record.created_at_millis.0, NOW_MS);
     }
     assert_eq!(records(&plan).len(), 2);
     assert_eq!(ids.minted(), 3);
