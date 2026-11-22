@@ -264,7 +264,7 @@ pub(crate) fn encode_attempt_failure_detail(failure: &ItemFailureClass) -> Optio
 /// Schema shape for the full attempt reads. The owning batch decoder preserves
 /// the original cells of a corrupt row so the Engine can guard its repair.
 #[cfg(test)]
-#[allow(
+#[expect(
     dead_code,
     reason = "SQLx checks the projected columns and their types"
 )]

@@ -241,7 +241,7 @@ fn plan_retired_attempt_page(
 }
 
 #[cfg(test)]
-#[allow(
+#[expect(
     dead_code,
     reason = "SQLx checks the storage shape of the health aggregate"
 )]
