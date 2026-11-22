@@ -6,8 +6,9 @@ use crate::{
 use central_engine_model::{EngineTime, InstanceKey, StateTag};
 use central_storage::{GuardedStatement, ReadOutcome, SqlValue, Statement, StoreFailure};
 use fleet_engine::{
-    EngineHost, LoadFailure, StoreAdapter, Versioned, decode_load_failure, guarded_attempt_sql,
-    load_store_failure, raw_version,
+    EngineHost, MachineStoreAdapter, SubjectLoadFailure, VersionedSubjectState,
+    classify_subject_decode_failure, classify_subject_read_failure, guarded_attempt_upsert_sql,
+    read_observed_subject_version,
 };
 use fleet_runtime_ports::CentralStore as _;
 use fleet_runtime_ports::stored_values::format_utc_millis;
@@ -18,7 +19,7 @@ use fleet_runtime_ports::{
 };
 use std::convert::Infallible;
 
-const EXPIRY_FAILURE: &str = guarded_attempt_sql!(
+const EXPIRY_FAILURE: &str = guarded_attempt_upsert_sql!(
     "EXISTS(SELECT 1 FROM mail_messages WHERE message_id IS ?20 AND message_kind IS ?21 AND state IS ?22 AND failure_reason IS ?23 AND delivery_window_ends_at IS ?24 AND created_at IS ?25 AND updated_at IS ?26)"
 );
 
@@ -49,39 +50,45 @@ impl<'a, R: EngineHost> SystemMessageExpiryStore<'a, R> {
     }
 }
 
-impl<R: EngineHost> StoreAdapter<SystemMessageExpiry> for SystemMessageExpiryStore<'_, R> {
-    async fn load(&self, key: &InstanceKey) -> Result<Option<Versioned<State>>, LoadFailure> {
-        let rows = self.0.host().read(Statement {
+impl<R: EngineHost> MachineStoreAdapter<SystemMessageExpiry> for SystemMessageExpiryStore<'_, R> {
+    async fn load_subject_state(
+        &self,
+        key: &InstanceKey,
+    ) -> Result<Option<VersionedSubjectState<State>>, SubjectLoadFailure> {
+        let rows = self.0.central_store().read(Statement {
             sql: "SELECT message_id,message_kind,state,failure_reason,delivery_window_ends_at,created_at,updated_at FROM mail_messages WHERE message_id=? AND state='queued' AND message_kind IN ('notice','deliveryOutcome')",
             args: vec![text(&key.0)],
-        }).await.map_err(load_store_failure)?;
-        let Some(version) = raw_version(&rows)? else {
+        }).await.map_err(classify_subject_read_failure)?;
+        let Some(version) = read_observed_subject_version(&rows)? else {
             return Ok(None);
         };
         let state = decode_queued(&rows, &version.0)
-            .map_err(|failure| decode_load_failure(failure, version.clone()))?;
-        Ok(Some(Versioned { state, version }))
+            .map_err(|failure| classify_subject_decode_failure(failure, version.clone()))?;
+        Ok(Some(VersionedSubjectState {
+            decoded_state: state,
+            observed_subject_version: version,
+        }))
     }
 
-    fn save(
+    fn plan_subject_state_write(
         &self,
         _key: &InstanceKey,
-        prior: &Versioned<State>,
+        prior: &VersionedSubjectState<State>,
         next: &State,
     ) -> Result<GuardedStatement, StoreFailure> {
         let mut args = vec![
             text(next.state_tag()),
             text(EXPIRED_24_HOURS),
-            text(format_utc_millis(self.0.now()?)),
+            text(format_utc_millis(self.0.current_engine_time()?)),
         ];
-        args.extend(prior.version.0.clone());
+        args.extend(prior.observed_subject_version.0.clone());
         Ok(exact(
             "UPDATE mail_messages SET state=?1,failure_reason=?2,updated_at=?3 WHERE message_id IS ?4 AND message_kind IS ?5 AND state IS ?6 AND failure_reason IS ?7 AND delivery_window_ends_at IS ?8 AND created_at IS ?9 AND updated_at IS ?10",
             args,
         ))
     }
 
-    fn effect_statements(
+    fn plan_machine_effect_writes(
         &self,
         _key: &InstanceKey,
         effect: &Infallible,
@@ -89,7 +96,7 @@ impl<R: EngineHost> StoreAdapter<SystemMessageExpiry> for SystemMessageExpirySto
         match *effect {}
     }
 
-    fn failure_sql(&self) -> &'static str {
+    fn write_attempt_failure_sql(&self) -> &'static str {
         EXPIRY_FAILURE
     }
 }

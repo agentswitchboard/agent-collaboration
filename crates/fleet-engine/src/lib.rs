@@ -1,27 +1,30 @@
 //! Generic execution, attempts and administration for Fleet machines.
 #![forbid(unsafe_code)]
 
-mod engine;
+mod machine_event_engine;
 
-pub use engine::admin::{
-    AttemptRefusal, DiscardOutcome, DiscardStore, EngineHealthFacts, KindHealth, KindRegistry,
-    RegisteredDiscard, RetiredItem,
+pub use machine_event_engine::admin_failure_class::EngineFailureClass;
+pub use machine_event_engine::attempt_administration::{
+    AdminMachineKindRegistry, AttemptRefusal, DiscardOutcome, DiscardSubjectStatements,
+    EngineHealthFacts, MachineKindAttemptHealth, PreparedAttemptDiscard, RetiredAttemptSummary,
 };
-pub use engine::admin_failure_class::EngineFailureClass;
-pub use engine::alarm_source::{
-    DueCutoff, DueDiscoveryError, TimedRowOutcome, TimedRows, TimedSource, WholeUnit,
-    WholeUnitOutcome, read_due_rows,
+pub use machine_event_engine::attempt_statements::{
+    UPSERT_CONTROL_ATTEMPT_SQL, plan_attempt_delete, plan_observed_attempt_delete,
 };
-pub use engine::attempt_statements::{CONTROL_WRITE, delete_attempt, delete_observed_attempt};
-pub use engine::handle::HandleOutcome;
-pub use engine::port::{Engine, EngineHost};
+pub use machine_event_engine::due_batch_execution::{
+    DueCutoff, DueDiscoveryError, TimedDueDispatch, TimedRowOutcome, TimedSourceSchedule,
+    WholeDueUnitControl, WholeUnitOutcome, read_due_rows,
+};
+pub use machine_event_engine::engine_host_binding::{EngineHost, FleetEngine};
+pub use machine_event_engine::machine_event_execution::MachineEventOutcome;
 #[cfg(feature = "test-support")]
-pub use engine::receipts::{EngineReceipt, EngineRefusal};
-#[cfg(feature = "test-support")]
-pub use engine::requests::EngineRequestOutcome;
-pub use engine::store_adapter::{
-    LoadFailure, StoreAdapter, Versioned, decode_load_failure, load_store_failure, raw_version,
+pub use machine_event_engine::machine_request_execution::EngineRequestOutcome;
+pub use machine_event_engine::machine_store_adapter::{
+    MachineStoreAdapter, SubjectLoadFailure, VersionedSubjectState,
+    classify_subject_decode_failure, classify_subject_read_failure, read_observed_subject_version,
 };
+#[cfg(feature = "test-support")]
+pub use machine_event_engine::request_receipt_store::{EngineReceipt, EngineRefusal};
 
 mod central_queries;
 pub use central_queries::{read_alarm_inputs, read_timed_due_rows};

@@ -29,7 +29,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         } else {
             EngineAlarmPlan::Clear
         };
-        fleet_engine::Engine::new(self)
+        fleet_engine::FleetEngine::new(self)
             .publish_engine_alarm(plan)
             .await
             .map(|_| ())

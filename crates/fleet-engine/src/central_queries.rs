@@ -12,27 +12,35 @@ struct StoredAlarmInputs {
     legacy_due: Option<i64>,
 }
 
-pub async fn read_alarm_inputs<T: CentralTransaction>(
-    transaction: &mut T,
+pub async fn read_alarm_inputs<CentralTransactionLender: CentralTransaction>(
+    transaction: &mut CentralTransactionLender,
 ) -> Result<EngineAlarmTimes, StoreFailure>
 where
-    <T::Database as Database>::Arguments: IntoArguments<T::Database>,
-    i64: Type<T::Database> + for<'row> Decode<'row, T::Database>,
-    for<'row> &'row str: ColumnIndex<<T::Database as Database>::Row>,
+    <CentralTransactionLender::Database as Database>::Arguments:
+        IntoArguments<CentralTransactionLender::Database>,
+    i64: Type<CentralTransactionLender::Database>
+        + for<'row> Decode<'row, CentralTransactionLender::Database>,
+    for<'row> &'row str: ColumnIndex<<CentralTransactionLender::Database as Database>::Row>,
 {
-    let row = sqlx::query_as::<T::Database, StoredAlarmInputs>(include_str!(
-        "queries/read_alarm_inputs.sql"
-    ))
+    let row = sqlx::query_as::<CentralTransactionLender::Database, StoredAlarmInputs>(
+        include_str!("queries/read_alarm_inputs.sql"),
+    )
     .fetch_one(transaction.executor())
     .await
-    .map_err(|error| query_failure(error, "engine alarm input"))?;
+    .map_err(|error| map_central_query_failure(error, "engine alarm input"))?;
     Ok(EngineAlarmTimes {
-        earliest_on_grid_due_unix_millis: validate_time(row.on_grid_due, "engine alarm input")?,
-        earliest_legacy_due_unix_millis: validate_time(row.legacy_due, "engine alarm input")?,
+        earliest_on_grid_due_unix_millis: validate_optional_alarm_millis(
+            row.on_grid_due,
+            "engine alarm input",
+        )?,
+        earliest_legacy_due_unix_millis: validate_optional_alarm_millis(
+            row.legacy_due,
+            "engine alarm input",
+        )?,
     })
 }
 
-// Both the native witness and runtime decoder expand this private row declaration.
+// The native query witness and the runtime decoder expand the same row declaration.
 #[doc(hidden)]
 #[macro_export]
 macro_rules! __declare_timed_due_row {
@@ -49,7 +57,7 @@ macro_rules! __declare_timed_due_row {
     };
 }
 
-/// Declares the only kind-to-file mapping used by runtime and the owner witnesses.
+/// Declares the only kind-to-file mapping used at runtime and by the owning query witnesses.
 macro_rules! declare_timed_due_lists {
     ($d:tt; $($(#[$feature:meta])* $kind:ident, $witness:ident, $file:literal);+ $(;)?) => {
         $(
@@ -80,7 +88,7 @@ macro_rules! declare_timed_due_lists {
                         }
                     };
                     $crate::__declare_timed_due_row!();
-                    macro_rules! witness {
+                    macro_rules! check_timed_due_query {
                         ($d sql:literal, $d horizon:expr, $d cap:expr) => {
                             sqlx::query_file_as!(StoredDueRow, $d sql, $d horizon, $d cap)
                         };
@@ -91,7 +99,7 @@ macro_rules! declare_timed_due_lists {
                         1,
                     ).unwrap();
                     use $crate::$witness;
-                    $witness!(witness, query)
+                    $witness!(check_timed_due_query, query)
                 }};
             )+
         }
@@ -121,30 +129,32 @@ declare_timed_due_lists! {
 
 __declare_timed_due_row!();
 
-/// Reads an owner's due list and validates its storage types before Engine dispatch.
-pub async fn read_timed_due_rows<T: CentralTransaction>(
-    transaction: &mut T,
+/// Reads an owner's due list and validates its storage types before FleetEngine dispatch.
+pub async fn read_timed_due_rows<CentralTransactionLender: CentralTransaction>(
+    transaction: &mut CentralTransactionLender,
     query: DueListQuery,
 ) -> Result<Vec<DueRow>, StoreFailure>
 where
-    <T::Database as Database>::Arguments: IntoArguments<T::Database>,
-    i64: Type<T::Database>
-        + for<'value> Encode<'value, T::Database>
-        + for<'row> Decode<'row, T::Database>,
-    String: Type<T::Database> + for<'row> Decode<'row, T::Database>,
-    for<'row> &'row str: ColumnIndex<<T::Database as Database>::Row>,
+    <CentralTransactionLender::Database as Database>::Arguments:
+        IntoArguments<CentralTransactionLender::Database>,
+    i64: Type<CentralTransactionLender::Database>
+        + for<'value> Encode<'value, CentralTransactionLender::Database>
+        + for<'row> Decode<'row, CentralTransactionLender::Database>,
+    String: Type<CentralTransactionLender::Database>
+        + for<'row> Decode<'row, CentralTransactionLender::Database>,
+    for<'row> &'row str: ColumnIndex<<CentralTransactionLender::Database as Database>::Row>,
 {
-    macro_rules! runtime {
+    macro_rules! build_timed_due_query {
         ($file:literal, $($arg:expr),+) => {
-            sqlx::query_as::<T::Database, StoredDueRow>(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $file)))
+            sqlx::query_as::<CentralTransactionLender::Database, StoredDueRow>(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $file)))
                 $(.bind($arg))+
         };
     }
-    let select = select_timed_due_list!(runtime, query);
-    select
+    let timed_due_query = select_timed_due_list!(build_timed_due_query, query);
+    timed_due_query
         .fetch_all(transaction.executor())
         .await
-        .map_err(due_list_failure)?
+        .map_err(map_due_list_read_failure)?
         .into_iter()
         .map(|stored| {
             let subject_key = stored.subject_key.ok_or_else(|| StoreFailure::Corrupt {
@@ -154,14 +164,17 @@ where
             })?;
             Ok(DueRow {
                 key: InstanceKey(subject_key),
-                occurrence_ms: validate_integer(stored.occurrence_ms, "occurrence_ms")?,
-                effective_due_ms: validate_integer(stored.effective_due_ms, "effective_due_ms")?,
+                occurrence_ms: validate_sql_safe_integer(stored.occurrence_ms, "occurrence_ms")?,
+                effective_due_ms: validate_sql_safe_integer(
+                    stored.effective_due_ms,
+                    "effective_due_ms",
+                )?,
             })
         })
         .collect()
 }
 
-fn due_list_failure(error: sqlx::Error) -> StoreFailure {
+fn map_due_list_read_failure(error: sqlx::Error) -> StoreFailure {
     match error {
         sqlx::Error::ColumnDecode { index, .. } => {
             let index = index.trim_matches('"');
@@ -174,16 +187,19 @@ fn due_list_failure(error: sqlx::Error) -> StoreFailure {
                 },
             }
         }
-        error => query_failure(error, "engine.due_list"),
+        error => map_central_query_failure(error, "engine.due_list"),
     }
 }
 
-fn validate_time(time: Option<i64>, column: &str) -> Result<Option<i64>, StoreFailure> {
-    time.map(|value| validate_integer(value, column))
+fn validate_optional_alarm_millis(
+    time: Option<i64>,
+    column: &str,
+) -> Result<Option<i64>, StoreFailure> {
+    time.map(|value| validate_sql_safe_integer(value, column))
         .transpose()
 }
 
-fn validate_integer(value: i64, column: &str) -> Result<i64, StoreFailure> {
+fn validate_sql_safe_integer(value: i64, column: &str) -> Result<i64, StoreFailure> {
     SafeInteger::new(value)
         .map(|value| value.get())
         .map_err(|_| StoreFailure::Corrupt {
@@ -193,7 +209,7 @@ fn validate_integer(value: i64, column: &str) -> Result<i64, StoreFailure> {
         })
 }
 
-fn query_failure(error: sqlx::Error, column: &str) -> StoreFailure {
+fn map_central_query_failure(error: sqlx::Error, column: &str) -> StoreFailure {
     match error {
         sqlx::Error::ColumnDecode { .. } | sqlx::Error::RowNotFound => StoreFailure::Corrupt {
             reason: CorruptReason::BadValue {
