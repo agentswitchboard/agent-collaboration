@@ -11,6 +11,7 @@ mod link_support;
 mod private_enrollment_invalidation;
 mod receipt_frames;
 mod renewal_contract;
+mod request_authority;
 mod revocation;
 mod revocation_backpressure;
 mod transport_contract;
@@ -175,7 +176,7 @@ async fn semantic_requests_recheck_caller_and_original_grant_expiry() -> Result<
         client.receive(&attempt, reply)?,
         ClientEvent::Reply {
             result: ReplyPayload::Workspace(workspace_model::WorkspaceReply {
-                result: WorkspaceResult::Refused(RefusalReason::MachineRevoked),
+                result: WorkspaceResult::CentralUnavailable,
                 ..
             }),
             ..

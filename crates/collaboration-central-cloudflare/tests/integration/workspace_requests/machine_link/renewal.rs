@@ -10,9 +10,7 @@ use futures_util::StreamExt;
 use reqwest_websocket::Message;
 use runtime_primitives::Clock;
 use std::time::Duration;
-use workspace_model::{
-    RefusalReason, WorkspaceId, WorkspaceOperation, WorkspaceRequest, WorkspaceResult,
-};
+use workspace_model::{WorkspaceId, WorkspaceOperation, WorkspaceRequest, WorkspaceResult};
 
 fn renew(correlation: &str, token: &str) -> Result<DataFrame> {
     Ok(DataFrame::RenewMachineToken {
@@ -464,7 +462,7 @@ async fn lapsed_batch_journey(fixture: &Fixture) -> Result<()> {
             DataFrame::Reply { result, .. } if matches!(
                 result.as_ref(),
                 central_link_protocol::ReplyPayload::Workspace(reply)
-                    if reply.result == WorkspaceResult::Refused(RefusalReason::MachineRevoked)
+                    if reply.result == WorkspaceResult::CentralUnavailable
             )
         );
         if !refused {

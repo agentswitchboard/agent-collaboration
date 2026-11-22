@@ -11,6 +11,7 @@ mod probe_diagnostic;
 mod receipt;
 mod receipt_frames;
 mod renewal;
+mod request_authority;
 mod request_status;
 mod revocation;
 mod witness_assertions;

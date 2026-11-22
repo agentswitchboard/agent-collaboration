@@ -374,14 +374,14 @@ async fn an_applying_receipt_reports_idle_ending_over_its_expired_transport() ->
     check_receipt_authority_at_apply(EnrollmentAtApply::EndedForIdle).await
 }
 
-enum EnrollmentAtApply {
+pub(super) enum EnrollmentAtApply {
     StillEnrolled,
     OwnerRevoked,
     EndedForIdle,
 }
 
 impl EnrollmentAtApply {
-    fn stored_end_reason(&self) -> Option<&'static str> {
+    pub(super) fn stored_end_reason(&self) -> Option<&'static str> {
         match self {
             Self::StillEnrolled => None,
             Self::OwnerRevoked => Some("owner"),
@@ -389,7 +389,7 @@ impl EnrollmentAtApply {
         }
     }
 
-    fn expected_close(&self) -> MachineLinkCloseCode {
+    pub(super) fn expected_close(&self) -> MachineLinkCloseCode {
         match self {
             Self::StillEnrolled => MachineLinkCloseCode::Expired,
             Self::OwnerRevoked => MachineLinkCloseCode::Revoked,
@@ -501,7 +501,7 @@ async fn receipt_expiry_journey(fixture: &Fixture, enrollment: EnrollmentAtApply
     Ok(())
 }
 
-fn stored_ending_batch(
+pub(super) fn stored_ending_batch(
     machine_id: &str,
     approval_id: &str,
     reason: &str,

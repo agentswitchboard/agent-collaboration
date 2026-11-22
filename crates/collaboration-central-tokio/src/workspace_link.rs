@@ -30,10 +30,6 @@ use router_clock::RuntimeClock;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
-use workspace_model::{
-    RefusalReason, WorkspaceReply, WorkspaceResult,
-    central_mail::{CentralMailRefusal, CentralMailResult},
-};
 
 type Runtime = WorkspaceRuntime<ObjectStorage, TokioWorkspaceStores>;
 
@@ -625,7 +621,7 @@ async fn reply_to_request(
             }
         }
         Ok(MachineLinkRequestAuthority::Refused(cause)) => (
-            refused_reply(request.payload(), RefusalReason::MachineRevoked),
+            ReplyPayload::authority_refused(request.payload(), cause),
             RequestOutcome::AuthorityLapsed(cause),
         ),
         Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) if in_batch => (
@@ -653,42 +649,25 @@ async fn reply_to_request(
     }
 }
 
-fn refused_reply(payload: &RequestPayload, reason: RefusalReason) -> ReplyPayload {
-    match payload {
-        RequestPayload::Workspace(_) => ReplyPayload::Workspace(WorkspaceReply {
-            result: WorkspaceResult::Refused(reason),
-            actors: vec![],
-        }),
-        RequestPayload::Mail(_) => ReplyPayload::Mail(CentralMailResult::Refused(
-            CentralMailRefusal::Workspace(reason),
-        )),
-    }
-}
-
 async fn dispatch_request(
     runtime: &Runtime,
     connection: &ValidatedMachineConnection,
     request: &LinkRequest,
 ) -> Result<ReplyPayload, central_storage::StoreFailure> {
-    let caller = WorkspaceCaller::from_machine_link(connection.clone(), request.caller().clone());
+    let caller =
+        match WorkspaceCaller::from_machine_link(connection.clone(), request.caller().clone()) {
+            Ok(caller) => caller,
+            Err(reason) => return Ok(ReplyPayload::workspace_refused(request.payload(), reason)),
+        };
     match request.payload() {
-        RequestPayload::Workspace(request) => {
-            let reply = match caller {
-                Ok(caller) => runtime.request(&caller, request.clone()).await?,
-                Err(reason) => WorkspaceReply {
-                    result: WorkspaceResult::Refused(reason),
-                    actors: vec![],
-                },
-            };
-            Ok(ReplyPayload::Workspace(reply))
-        }
-        RequestPayload::Mail(request) => {
-            let reply = match caller {
-                Ok(caller) => runtime.request_central(&caller, request.clone()).await?,
-                Err(reason) => CentralMailResult::Refused(CentralMailRefusal::Workspace(reason)),
-            };
-            Ok(ReplyPayload::Mail(reply))
-        }
+        RequestPayload::Workspace(request) => runtime
+            .request(&caller, request.clone())
+            .await
+            .map(ReplyPayload::Workspace),
+        RequestPayload::Mail(request) => runtime
+            .request_central(&caller, request.clone())
+            .await
+            .map(ReplyPayload::Mail),
     }
 }
 

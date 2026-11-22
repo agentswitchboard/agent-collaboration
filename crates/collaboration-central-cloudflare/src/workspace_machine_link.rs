@@ -16,8 +16,6 @@ use worker::{
     Request, Response, Result, WebSocket, WebSocketIncomingMessage, WebSocketPair,
     WebSocketRequestResponsePair,
 };
-use workspace_model::central_mail::{CentralMailRefusal, CentralMailResult};
-use workspace_model::{RefusalReason, WorkspaceReply, WorkspaceResult};
 
 enum IncomingRequests {
     Single(Box<LinkRequest>),
@@ -320,7 +318,7 @@ impl CentralObject {
                     }
                     // The request is answered before the close, as on the native host.
                     MachineRequestResult::AuthorityRefused(cause) => {
-                        let reply = refused_reply(request.payload(), RefusalReason::MachineRevoked);
+                        let reply = ReplyPayload::authority_refused(request.payload(), cause);
                         self.send_reply_and_close_if_lapsed(&socket, &request, reply, Some(cause))
                     }
                     MachineRequestResult::Unavailable => {
@@ -341,7 +339,7 @@ impl CentralObject {
                         MachineRequestResult::Reply(reply) => reply,
                         MachineRequestResult::AuthorityRefused(cause) => {
                             lapsed = lapsed.or(Some(cause));
-                            refused_reply(request.payload(), RefusalReason::MachineRevoked)
+                            ReplyPayload::authority_refused(request.payload(), cause)
                         }
                         MachineRequestResult::Unavailable => {
                             ReplyPayload::central_unavailable(request.payload())
@@ -522,10 +520,9 @@ impl CentralObject {
         {
             Ok(caller) => caller,
             Err(reason) => {
-                return Ok(MachineRequestResult::Reply(refused_reply(
-                    request.payload(),
-                    reason,
-                )));
+                return Ok(MachineRequestResult::Reply(
+                    ReplyPayload::workspace_refused(request.payload(), reason),
+                ));
             }
         };
         let reply = match request.payload() {
@@ -575,17 +572,6 @@ impl CentralObject {
             worker::console_warn!("Post-reply alarm diagnostic failed: {error}");
         }
         Ok(())
-    }
-}
-fn refused_reply(payload: &RequestPayload, reason: RefusalReason) -> ReplyPayload {
-    match payload {
-        RequestPayload::Workspace(_) => ReplyPayload::Workspace(WorkspaceReply {
-            result: WorkspaceResult::Refused(reason),
-            actors: vec![],
-        }),
-        RequestPayload::Mail(_) => ReplyPayload::Mail(CentralMailResult::Refused(
-            CentralMailRefusal::Workspace(reason),
-        )),
     }
 }
 fn send(socket: &WebSocket, frame: DataFrame) -> Result<()> {

@@ -1,8 +1,11 @@
-use crate::ProtocolError;
+use crate::{MachineLinkCloseCode, ProtocolError};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
-use workspace_model::central_mail::{CentralMailRequest, CentralMailResult};
-use workspace_model::{Caller, RequestId, WorkspaceOperation, WorkspaceReply, WorkspaceRequest};
+use workspace_model::central_mail::{CentralMailRefusal, CentralMailRequest, CentralMailResult};
+use workspace_model::{
+    Caller, RefusalReason, RequestId, WorkspaceOperation, WorkspaceReply, WorkspaceRequest,
+    WorkspaceResult,
+};
 
 /// The one ledger that can contain a request's retained decision.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -166,6 +169,30 @@ impl ReplyPayload {
                 actors: vec![],
             }),
             RequestPayload::Mail(_) => Self::Mail(CentralMailResult::CentralUnavailable),
+        }
+    }
+
+    /// Projects live authority loss into the reply that precedes the typed close.
+    #[must_use]
+    pub fn authority_refused(request: &RequestPayload, cause: MachineLinkCloseCode) -> Self {
+        match cause {
+            MachineLinkCloseCode::Expired => Self::central_unavailable(request),
+            MachineLinkCloseCode::Revoked | MachineLinkCloseCode::Inactive => {
+                Self::workspace_refused(request, RefusalReason::MachineRevoked)
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn workspace_refused(request: &RequestPayload, reason: RefusalReason) -> Self {
+        match request {
+            RequestPayload::Workspace(_) => Self::Workspace(WorkspaceReply {
+                result: WorkspaceResult::Refused(reason),
+                actors: vec![],
+            }),
+            RequestPayload::Mail(_) => Self::Mail(CentralMailResult::Refused(
+                CentralMailRefusal::Workspace(reason),
+            )),
         }
     }
 

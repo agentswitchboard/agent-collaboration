@@ -19,7 +19,7 @@ use futures_util::StreamExt;
 use reqwest_websocket::{Message, WebSocket};
 use serde_json::json;
 use std::time::Duration;
-use workspace_model::{RefusalReason, WorkspaceResult};
+use workspace_model::WorkspaceResult;
 
 #[expect(
     clippy::panic_in_result_fn,
@@ -118,10 +118,7 @@ async fn renew_machine_token_extends_the_open_connection_and_a_refusal_keeps_its
     )?;
     send(&mut socket, &expired).await?;
     let (_, reply) = workspace_reply(&mut client, &attempt, &mut socket).await?;
-    assert_eq!(
-        reply.result,
-        WorkspaceResult::Refused(RefusalReason::MachineRevoked)
-    );
+    assert_eq!(reply.result, WorkspaceResult::CentralUnavailable);
     let rows = runtime
         .runtime()
         .statement_host()
@@ -358,10 +355,7 @@ async fn every_refused_renewal_keeps_the_current_deadline() -> Result<()> {
         ]
     );
     assert!(matches!(&writes[0], WorkspaceResult::Done(_)));
-    assert_eq!(
-        writes[1],
-        WorkspaceResult::Refused(RefusalReason::MachineRevoked)
-    );
+    assert_eq!(writes[1], WorkspaceResult::CentralUnavailable);
     let rows = runtime
         .runtime()
         .statement_host()
@@ -485,7 +479,7 @@ async fn a_batch_after_the_deadline_refuses_every_member_and_then_closes() -> Re
             matches!(reply, LinkFrame::Data(DataFrame::Reply { correlation_id, result })
                 if correlation_id == member.correlation_id()
                     && matches!(result.as_ref(), ReplyPayload::Workspace(reply)
-                        if reply.result == WorkspaceResult::Refused(RefusalReason::MachineRevoked))),
+                        if reply.result == WorkspaceResult::CentralUnavailable)),
             "each member is refused under its own correlation: {reply:?}"
         );
     }
