@@ -3,8 +3,8 @@
 use fleet_identity_protocol::{
     AbandonedSessionCause, BindFleetSession, BindFleetSessionReply, CreateFleetSession,
     CreateFleetSessionReply, CreateSessionKind, CreateSessionRefusal, EndFleetSession,
-    EndFleetSessionReply, EndSessionTarget, EndedSessionCause, HarnessKind, PresentedSessionSecret,
-    RouterEndCause, SessionCreator, SessionSettlement,
+    EndFleetSessionReply, EndSessionTarget, EndedSessionCause, HarnessKind, NewAbandonmentCause,
+    NewEndSettlement, PresentedSessionSecret, RouterEndCause, SessionCreator, SessionSettlement,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -75,6 +75,33 @@ fn create_requests_cover_both_kinds_and_every_creator_and_presentation() {
         assert_eq!(request.operation_id.as_str(), OPERATION);
         assert_eq!(request.attempt.get(), 1);
     }
+}
+
+#[test]
+fn create_agent_program_accepts_only_its_three_string_spellings() {
+    let request = json!({
+        "operationId": OPERATION, "attempt": 1, "creator": {"kind":"routerOperator"},
+        "agentProgram": "codex", "sessionKind": {"kind":"ordinary"},
+    });
+    for spelling in ["codex", "claude", "cursor"] {
+        let mut positive = request.clone();
+        positive["agentProgram"] = json!(spelling);
+        assert_case::<CreateFleetSession>(positive);
+    }
+    for malformed in [
+        json!({"codex":null}),
+        json!(["codex"]),
+        json!("unknownHarness"),
+        Value::Null,
+    ] {
+        let mut negative = request.clone();
+        negative["agentProgram"] = malformed;
+        assert_rejected::<CreateFleetSession>(&negative);
+        assert!(serde_json::from_value::<CreateFleetSession>(negative).is_err());
+    }
+    let mut missing = request;
+    missing.as_object_mut().unwrap().remove("agentProgram");
+    assert_rejected::<CreateFleetSession>(&missing);
 }
 
 #[test]
@@ -238,7 +265,7 @@ fn end_requests_and_all_four_replies_are_closed() {
     ] {
         let actual = match assert_case(wire) {
             EndFleetSessionReply::Settled { settlement } => {
-                assert_eq!(settlement_case(settlement), ("ended", "givenUp"));
+                assert_eq!(new_settlement_case(settlement), ("ended", "givenUp"));
                 "settled"
             }
             EndFleetSessionReply::AlreadySettled { settlement } => {
@@ -249,6 +276,57 @@ fn end_requests_and_all_four_replies_are_closed() {
             EndFleetSessionReply::NotYoursToEnd {} => "notYoursToEnd",
         };
         assert_eq!(actual, tag);
+    }
+}
+
+#[test]
+fn fresh_end_and_already_settled_have_different_cause_sets() {
+    for (state, cause) in [
+        ("abandoned", "givenUp"),
+        ("ended", "givenUp"),
+        ("ended", "endedForGood"),
+    ] {
+        let wire = json!({"result":"settled","settlement":settlement(state, cause)});
+        let EndFleetSessionReply::Settled { settlement } = assert_case(wire) else {
+            panic!("expected a fresh End settlement")
+        };
+        assert_eq!(new_settlement_case(settlement), (state, cause));
+    }
+    for (state, cause) in [
+        ("abandoned", "revoked"),
+        ("abandoned", "machineRevoked"),
+        ("abandoned", "timeRanOut"),
+        ("ended", "revoked"),
+        ("ended", "machineRevoked"),
+    ] {
+        assert_rejected::<EndFleetSessionReply>(
+            &json!({"result":"settled","settlement":settlement(state, cause)}),
+        );
+        let wire = json!({"result":"alreadySettled","settlement":settlement(state, cause)});
+        let EndFleetSessionReply::AlreadySettled { settlement } = assert_case(wire) else {
+            panic!("expected a stored settlement")
+        };
+        assert_eq!(settlement_case(settlement), (state, cause));
+    }
+}
+
+fn new_settlement_case(settlement: NewEndSettlement) -> (&'static str, &'static str) {
+    match settlement {
+        NewEndSettlement::Abandoned {
+            cause: NewAbandonmentCause::GivenUp {},
+            time,
+        } => {
+            assert_eq!(time.as_str(), TIME);
+            ("abandoned", "givenUp")
+        }
+        NewEndSettlement::Ended { cause, time } => {
+            assert_eq!(time.as_str(), TIME);
+            let cause = match cause {
+                RouterEndCause::GivenUp {} => "givenUp",
+                RouterEndCause::EndedForGood {} => "endedForGood",
+            };
+            ("ended", cause)
+        }
     }
 }
 

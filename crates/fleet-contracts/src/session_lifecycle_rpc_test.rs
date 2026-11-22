@@ -55,14 +55,25 @@ fn check_rpc<Call: Rpc<Target = OrganizationId>>(request: Value, reply: Value) {
 fn check_envelope<Body: DeserializeOwned + Serialize>(body: Value) {
     let target = "019a3dce-2000-7000-8000-000000000003";
     let wire = json!({"target":target,"body":body});
-    let decoded: Envelope<OrganizationId, Body> = serde_json::from_value(wire.clone()).unwrap();
+    let decoded: Envelope<OrganizationId, Body> = serde_json::from_str(&wire.to_string()).unwrap();
 
     assert_eq!(serde_json::to_value(decoded).unwrap(), wire);
     for invalid in [
         json!([target, body]),
+        json!([body, target]),
         json!({"target":target,"body":body,"machineId":target}),
+        json!({"target":target,"body":body,"kind":"unknown"}),
+        json!({"target":target,"body":body,"result":"unknown"}),
+        json!({"target":target,"body":body,"state":"unknown"}),
         json!({"target":target}),
+        json!({"body":body}),
+        json!({"target":null,"body":body}),
+        json!({"target":target,"body":null}),
+        Value::Null,
     ] {
-        assert!(serde_json::from_value::<Envelope<OrganizationId, Body>>(invalid).is_err());
+        assert!(
+            serde_json::from_str::<Envelope<OrganizationId, Body>>(&invalid.to_string()).is_err(),
+            "{invalid}"
+        );
     }
 }

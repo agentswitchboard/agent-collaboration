@@ -7,6 +7,7 @@ impl Rpc for TestRpc {
     type Request = String;
     type Reply = String;
 }
+impl IndependentReplyRpc for TestRpc {}
 
 struct TestTransport {
     reply_target: u8,
