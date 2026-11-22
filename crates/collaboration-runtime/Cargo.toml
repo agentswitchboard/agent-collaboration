@@ -40,6 +40,7 @@ tracing.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]
+codex-acp-adapter = { path = "../codex-acp-adapter", version = "0.1.14", features = ["test-support"] }
 switchboard-session-events = { workspace = true, features = ["test-support"] }
 acp-provider-adapters = { path = "../acp-provider-adapters", version = "0.1.114", features = ["test-support"] }
 codex-router-test-support = { path = "../codex-router-test-support", version = "0.1.4" }

@@ -25,7 +25,7 @@ pub trait UnmaterializedBindingStore: Send + Sync {
     fn hold(&self, binding: AcpSessionBinding);
     fn checkout(&self, session_id: &str) -> HeldBindingCheckout;
     fn restore(&self, binding: AcpSessionBinding);
-    fn finish(&self, session_id: &str);
+    fn finish(&self, session_id: &str, generation: &collaboration_protocol::CodexGeneration);
     /// Host-lifetime work that must outlive its ACP frontend connection.
     fn host_tasks(&self) -> tokio_util::task::TaskTracker;
 }
@@ -107,7 +107,7 @@ impl AcpSessionRegistry {
         *slot = SessionSlot::Busy(sender);
         let output = self.output.clone();
         let retired = self.retired.clone();
-        self.prompts.spawn(async move {
+        let prompt_task = async move {
             let binding = run_prompt_task(PromptTaskInputs {
                 session: *session,
                 request_id,
@@ -118,7 +118,13 @@ impl AcpSessionRegistry {
             })
             .await;
             (id, binding)
-        });
+        };
+        #[cfg(feature = "test-support")]
+        let prompt_task = crate::test_support::binding_preservation::scope(
+            crate::test_support::binding_preservation::current(),
+            crate::test_support::binding_preservation::watch_prompt(prompt_task),
+        );
+        self.prompts.spawn(prompt_task);
         Ok(())
     }
     pub fn cancel(&self, session_id: &str) -> Result<(), SessionRegistryError> {

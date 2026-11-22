@@ -136,6 +136,7 @@ impl FailureRoute {
                 actor: Some(actor),
                 client_profile: None,
                 client_supports_elicitation_form: false,
+                frontend_close: Default::default(),
             },
         ));
         Self {
