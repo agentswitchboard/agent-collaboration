@@ -1,9 +1,9 @@
 //! Outbound calls and their answer waiters belong to one admitted socket.
 use central_link_protocol::{
     CorrelationId, DataFrame, LinkFrame, MAX_PENDING_TYPED_CALLS, MacCall, MacCallReply,
-    TypedCallCorrelations, TypedCallResult,
+    MacLinkRpc, TypedCallCorrelations, TypedCallResult,
 };
-use fleet_rpc::CallFailure;
+use fleet_rpc::{CallFailure, Envelope};
 use router_clock::{ClockInstant, RuntimeClock};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
@@ -38,8 +38,8 @@ struct ReplyWaiter {
 
 pub(crate) struct QueuedMacCall {
     correlation: CorrelationId,
-    request: Box<MacCall>,
     waiter: ReplyWaiter,
+    request: Box<MacCall>,
 }
 
 impl QueuedMacCall {
@@ -86,11 +86,11 @@ impl MacCallSender {
         self.calls.end();
     }
 
-    pub(crate) fn enqueue(
+    pub(crate) fn enqueue<R: MacLinkRpc>(
         &self,
         correlation: CorrelationId,
-        request: MacCall,
         deadline: ClockInstant,
+        request: Envelope<R::Target, R::Request>,
     ) -> Result<PendingMacCall, CallFailure> {
         // The same budget covers calls waiting to get on the wire and awaiting a reply.
         let slot = self
@@ -103,8 +103,8 @@ impl MacCallSender {
         self.queue
             .try_send(QueuedMacCall {
                 correlation: correlation.clone(),
-                request: Box::new(request),
                 waiter: ReplyWaiter { deadline, answer },
+                request: box_registered_request(request, R::request),
             })
             .map_err(|_| CallFailure::NeverReached)?;
         Ok(PendingMacCall {
@@ -115,6 +115,10 @@ impl MacCallSender {
             _slot: slot,
         })
     }
+}
+
+fn box_registered_request<Body, Wire>(body: Body, encode: impl FnOnce(Body) -> Wire) -> Box<Wire> {
+    Box::new(encode(body))
 }
 
 impl MacCallReceiver {

@@ -75,9 +75,7 @@ impl MachinePushRegistry {
             .and_then(|sockets| sockets.last())
             .filter(|socket| !socket.replaced.is_cancelled())
             .ok_or(CallFailure::NeverReached)?;
-        socket
-            .calls
-            .enqueue(correlation, R::request(request), deadline)
+        socket.calls.enqueue::<R>(correlation, deadline, request)
     }
 
     pub(crate) fn invalidate_enrollment(
