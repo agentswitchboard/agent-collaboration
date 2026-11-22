@@ -24,7 +24,7 @@ fn renew_and_its_answer_have_the_approved_wire_shape_and_directions() {
     let refused = json!({
         "kind": "machineTokenRenewal",
         "correlationId": CORRELATION,
-        "result": {"kind": "refused", "reason": "enrollmentNotActive"},
+        "result": {"kind": "refused", "reason": "connectionEnrollmentEnded"},
     })
     .to_string();
 
@@ -56,7 +56,7 @@ fn renew_and_its_answer_have_the_approved_wire_shape_and_directions() {
         refused,
         LinkFrame::Data(DataFrame::MachineTokenRenewal {
             result: TokenRenewalResult::Refused {
-                reason: TokenRenewalRefusal::EnrollmentNotActive
+                reason: TokenRenewalRefusal::ConnectionEnrollmentEnded
             },
             ..
         })
@@ -76,8 +76,12 @@ fn every_refusal_reason_has_its_camel_case_wire_name() {
     let names = [
         (TokenRenewalRefusal::TokenRejected, "tokenRejected"),
         (
-            TokenRenewalRefusal::EnrollmentNotActive,
-            "enrollmentNotActive",
+            TokenRenewalRefusal::PresentedEnrollmentNotActive,
+            "presentedEnrollmentNotActive",
+        ),
+        (
+            TokenRenewalRefusal::ConnectionEnrollmentEnded,
+            "connectionEnrollmentEnded",
         ),
         (TokenRenewalRefusal::DifferentMachine, "differentMachine"),
         (
@@ -92,7 +96,12 @@ fn every_refusal_reason_has_its_camel_case_wire_name() {
 
     for (reason, name) in names {
         assert_eq!(serde_json::to_value(reason).unwrap(), json!(name));
+        assert_eq!(
+            serde_json::from_value::<TokenRenewalRefusal>(json!(name)).unwrap(),
+            reason
+        );
     }
+    assert!(serde_json::from_value::<TokenRenewalRefusal>(json!("enrollmentNotActive")).is_err());
 }
 
 #[test]

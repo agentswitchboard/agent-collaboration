@@ -281,19 +281,23 @@ pub fn project_renewal_refusal(
         Reason::TokenRejected => (TokenRenewalRefusal::TokenRejected, None),
         Reason::DifferentMachine => (TokenRenewalRefusal::DifferentMachine, None),
         Reason::DifferentEnrollment => (TokenRenewalRefusal::DifferentEnrollment, None),
-        Reason::CandidateNotActive => (TokenRenewalRefusal::EnrollmentNotActive, None),
+        Reason::CandidateNotActive => (TokenRenewalRefusal::PresentedEnrollmentNotActive, None),
         Reason::CurrentAuthorityEnded(cause) => (
             match cause {
                 MachineLinkCloseCode::Expired => TokenRenewalRefusal::CentralUnavailable,
                 MachineLinkCloseCode::Inactive | MachineLinkCloseCode::Revoked => {
-                    TokenRenewalRefusal::EnrollmentNotActive
+                    TokenRenewalRefusal::ConnectionEnrollmentEnded
                 }
             },
             Some(RenewalTermination::CurrentAuthority(cause)),
         ),
         Reason::IdleEnded(invalidation) => (
-            TokenRenewalRefusal::EnrollmentNotActive,
+            TokenRenewalRefusal::ConnectionEnrollmentEnded,
             Some(RenewalTermination::EndEnrollment(invalidation)),
         ),
     }
 }
+
+#[cfg(test)]
+#[path = "machine_connection_admission_test.rs"]
+mod tests;

@@ -213,7 +213,7 @@ async fn settle_idle_renewal(
             let expected = LinkFrame::Data(DataFrame::MachineTokenRenewal {
                 correlation_id,
                 result: TokenRenewalResult::Refused {
-                    reason: TokenRenewalRefusal::EnrollmentNotActive,
+                    reason: TokenRenewalRefusal::ConnectionEnrollmentEnded,
                 },
             });
             let response = receive(&mut socket).await?;

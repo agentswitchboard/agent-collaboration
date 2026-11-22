@@ -184,9 +184,9 @@ async fn expect_expired_close(link: &mut super::ConnectedLink) -> Result<()> {
     Ok(())
 }
 
-fn not_active() -> TokenRenewalResult {
+fn connection_enrollment_ended() -> TokenRenewalResult {
     TokenRenewalResult::Refused {
-        reason: TokenRenewalRefusal::EnrollmentNotActive,
+        reason: TokenRenewalRefusal::ConnectionEnrollmentEnded,
     }
 }
 
@@ -378,7 +378,8 @@ async fn refusals_journey(fixture: &Fixture) -> Result<()> {
 }
 
 #[tokio::test]
-async fn a_renewal_after_the_enrollment_is_superseded_is_refused_as_not_active() -> Result<()> {
+async fn a_renewal_after_the_enrollment_is_superseded_is_refused_as_connection_enrollment_ended()
+-> Result<()> {
     let fixture = Fixture::new().await?;
     let result = superseded_journey(&fixture).await;
     fixture.close().await?;
@@ -414,7 +415,7 @@ async fn superseded_journey(fixture: &Fixture) -> Result<()> {
         renew("019f0000-0000-7000-8000-00000000c331", &token)?,
     )
     .await?;
-    if answer != not_active() {
+    if answer != connection_enrollment_ended() {
         return Err(format!("a stored ending wins over the old deadline: {answer:?}").into());
     }
     let close = link.socket.next().await;

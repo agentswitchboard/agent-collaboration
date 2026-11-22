@@ -199,7 +199,7 @@ async fn idle_renewal_commits_before_its_correlated_inactive_reply_and_close() -
             return Err("renewal emitted a frame before the commit barrier released".into());
         }
         let result = TokenRenewalResult::Refused {
-            reason: TokenRenewalRefusal::EnrollmentNotActive,
+            reason: TokenRenewalRefusal::ConnectionEnrollmentEnded,
         };
         if receive(&mut socket).await?
             != LinkFrame::Data(DataFrame::MachineTokenRenewal {
@@ -410,7 +410,7 @@ async fn renewal_allows_one_second_before_idle_expiry_and_rejects_one_second_aft
         seed_idle_grant(&fixture, signed::MACHINE_IDLE_LIMIT_SECONDS + 1).await?;
         let actual = renew_and_receive(&fixture, &mut socket).await?;
         let expected = TokenRenewalResult::Refused {
-            reason: TokenRenewalRefusal::EnrollmentNotActive,
+            reason: TokenRenewalRefusal::ConnectionEnrollmentEnded,
         };
         if actual != expected {
             return Err(
@@ -470,7 +470,7 @@ async fn late_idle_expiry_abort_preserves_login_rows_and_the_existing_link() -> 
         // Retrying on this same socket proves the failed renewal left it usable.
         let actual = renew_and_receive(&fixture, &mut socket).await?;
         let expected = TokenRenewalResult::Refused {
-            reason: TokenRenewalRefusal::EnrollmentNotActive,
+            reason: TokenRenewalRefusal::ConnectionEnrollmentEnded,
         };
         if actual != expected {
             return Err(format!("healthy idle renewal retry must end the enrollment, got {actual:?}").into());

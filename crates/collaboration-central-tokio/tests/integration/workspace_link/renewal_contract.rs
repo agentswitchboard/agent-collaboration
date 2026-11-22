@@ -192,9 +192,9 @@ fn retryable_expiry() -> TokenRenewalResult {
     }
 }
 
-fn not_active() -> TokenRenewalResult {
+fn connection_enrollment_ended() -> TokenRenewalResult {
     TokenRenewalResult::Refused {
-        reason: TokenRenewalRefusal::EnrollmentNotActive,
+        reason: TokenRenewalRefusal::ConnectionEnrollmentEnded,
     }
 }
 
@@ -379,7 +379,8 @@ async fn every_refused_renewal_keeps_the_current_deadline() -> Result<()> {
     reason = "A live revocation must refuse a renewal that carries a valid fresh token."
 )]
 #[tokio::test]
-async fn a_renewal_after_live_revocation_is_refused_as_enrollment_not_active() -> Result<()> {
+async fn a_renewal_after_live_revocation_is_refused_as_enrollment_connection_enrollment_ended()
+-> Result<()> {
     // Arrange: a valid fresh token, decided before the revocation.
     let fixture = Fixture::new().await?;
     let (_client, _attempt, mut socket, _) = connect_client(&fixture, &fixture.token).await?;
@@ -416,7 +417,7 @@ async fn a_renewal_after_live_revocation_is_refused_as_enrollment_not_active() -
 
     // Assert
     assert!(revoked.is_some());
-    assert_eq!(answer, not_active());
+    assert_eq!(answer, connection_enrollment_ended());
     let close = socket.next().await;
     assert!(
         matches!(
