@@ -474,14 +474,14 @@ pub(super) async fn write_direct_with_engine_alarm<Answer: 'static>(
     apply: impl AsyncFnOnce(
         &DoTransaction,
     ) -> Result<
-        fleet_mail::direct_store_writes::DirectApplied<Answer>,
-        fleet_mail::direct_store_writes::ApplyingFailure,
+        fleet_mail::direct_store_writes::DirectWriteOutcome<Answer>,
+        fleet_mail::direct_store_writes::DirectApplyFailure,
     > + 'static,
 ) -> Result<Answer, fleet_mail::DirectWriteFailure> {
-    use fleet_mail::direct_store_writes::ApplyingFailure;
+    use fleet_mail::direct_store_writes::DirectApplyFailure;
 
     enum MailTransactionAbort {
-        Applying(ApplyingFailure),
+        Applying(DirectApplyFailure),
         Commit,
     }
     impl From<sqlx_core::Error> for MailTransactionAbort {
@@ -498,10 +498,10 @@ pub(super) async fn write_direct_with_engine_alarm<Answer: 'static>(
                 apply_alarm(&transaction, &OwnedAlarmUpdate::Engine(plan), policy)
                     .await
                     .map_err(|stop| match stop {
-                        BatchStop::Failed(failure) => ApplyingFailure::Store(failure),
+                        BatchStop::Failed(failure) => DirectApplyFailure::Store(failure),
                         BatchStop::GuardFailed { .. }
                         | BatchStop::ConstraintViolated { .. }
-                        | BatchStop::StatementRejected { .. } => ApplyingFailure::Conflict,
+                        | BatchStop::StatementRejected { .. } => DirectApplyFailure::Conflict,
                     })
                     .map_err(MailTransactionAbort::Applying)?;
             }

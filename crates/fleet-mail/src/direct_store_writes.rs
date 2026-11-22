@@ -9,14 +9,16 @@ use crate::{
         AdmittedDirectSend, AdmittedReceipt, ApplyReceipt, DirectReadFailure, DirectSendAdmission,
         DirectSendResult, DirectWriteFailure,
     },
-    direct_store_reads::{StoredDirectState, read_state},
+    direct_store_reads::{StoredDirectState, read_stored_direct_message},
     message_deadline::{cancel_due_at, delivery_window_ends_at, system_message_deadline},
 };
 use central_engine_model::{Context, Machine, TransitionError};
 use central_storage::{EngineAlarmPlan, StoreFailure};
 use fleet_contracts::MailDeliveryReady;
 use fleet_engine::CentralTransaction;
-use fleet_request_log::{RetainRequest, prune, retain};
+use fleet_request_log::{
+    RetainRequest, prune_expired_organization_requests, upsert_organization_request_answer,
+};
 use fleet_runtime_ports::{
     IdSource, stored_values::format_utc_millis, workspace_decode_error::corrupt,
 };
@@ -34,19 +36,19 @@ use workspace_model::{
 };
 
 /// Host plumbing consumes the owner's outcome and the existing typed alarm directive.
-pub struct DirectApplied<A> {
+pub struct DirectWriteOutcome<A> {
     pub outcome: A,
     pub alarm: Option<EngineAlarmPlan>,
 }
 
-impl<A> DirectApplied<A> {
-    pub(super) fn stop(outcome: A) -> Self {
+impl<A> DirectWriteOutcome<A> {
+    pub(super) fn without_alarm_recompute(outcome: A) -> Self {
         Self {
             outcome,
             alarm: None,
         }
     }
-    fn modified(outcome: A) -> Self {
+    fn with_alarm_recompute(outcome: A) -> Self {
         Self {
             outcome,
             alarm: Some(EngineAlarmPlan::Recompute),
@@ -55,7 +57,7 @@ impl<A> DirectApplied<A> {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum ApplyingFailure {
+pub enum DirectApplyFailure {
     #[error("direct-message statement was rejected: {0}")]
     Sql(sqlx_core::Error),
     #[error(transparent)]
@@ -65,13 +67,13 @@ pub enum ApplyingFailure {
     #[error("the observed direct message cannot be decoded: {0}")]
     CorruptObserved(StoreFailure),
 }
-impl From<sqlx_core::Error> for ApplyingFailure {
+impl From<sqlx_core::Error> for DirectApplyFailure {
     fn from(error: sqlx_core::Error) -> Self {
         Self::Sql(error)
     }
 }
 
-impl From<DirectReadFailure> for ApplyingFailure {
+impl From<DirectReadFailure> for DirectApplyFailure {
     fn from(failure: DirectReadFailure) -> Self {
         Self::Store(failure.into())
     }
@@ -101,7 +103,7 @@ impl From<DirectWriteFailure> for StoreFailure {
     }
 }
 
-impl ApplyingFailure {
+impl DirectApplyFailure {
     pub fn into_write_failure(self) -> DirectWriteFailure {
         match self {
             Self::Conflict => DirectWriteFailure::Conflict,
@@ -124,7 +126,7 @@ impl ApplyingFailure {
     }
 }
 
-fn json(value: impl serde::Serialize) -> Result<String, StoreFailure> {
+fn encode_mail_json(value: impl serde::Serialize) -> Result<String, StoreFailure> {
     serde_json::to_string(&value).map_err(|_| corrupt("mail_messages.json"))
 }
 
@@ -133,10 +135,10 @@ macro_rules! insert_send {
         $emit!(
             "src/queries/insert_direct_send.sql",
             $message.message_id.to_string(),
-            json(&$message.sender)?,
+            encode_mail_json(&$message.sender)?,
             $message.target.machine_id.to_string(),
-            json(&$message.target)?,
-            json(&$message.body)?,
+            encode_mail_json(&$message.target)?,
+            encode_mail_json(&$message.body)?,
             format_utc_millis($message.created_at),
             format_utc_millis($message.updated_at),
             format_utc_millis($mark),
@@ -151,10 +153,10 @@ macro_rules! insert_outcome {
         $emit!(
             "src/queries/insert_direct_outcome.sql",
             $message.message_id.to_string(),
-            json(&$message.sender)?,
+            encode_mail_json(&$message.sender)?,
             $message.target.machine_id.to_string(),
-            json(&$message.target)?,
-            json(&$message.body)?,
+            encode_mail_json(&$message.target)?,
+            encode_mail_json(&$message.body)?,
             format_utc_millis($message.created_at),
             format_utc_millis($message.updated_at),
             format_utc_millis($cutoff)
@@ -171,20 +173,20 @@ macro_rules! select {
         query_as::<T::Database, _>(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $file)))$(.bind($arg))+
     };
 }
-fn exact_one<T: CentralTransaction>(
+fn require_one_affected_row<T: CentralTransaction>(
     result: <T::Database as Database>::QueryResult,
-) -> Result<(), ApplyingFailure> {
+) -> Result<(), DirectApplyFailure> {
     if T::rows_affected(result) == 1 {
         Ok(())
     } else {
-        Err(ApplyingFailure::Conflict)
+        Err(DirectApplyFailure::Conflict)
     }
 }
 
-pub async fn send<T: CentralTransaction>(
+pub async fn apply_direct_send<T: CentralTransaction>(
     tx: &mut T,
     command: AdmittedDirectSend,
-) -> Result<DirectApplied<DirectSendResult>, ApplyingFailure>
+) -> Result<DirectWriteOutcome<DirectSendResult>, DirectApplyFailure>
 where
     <T::Database as Database>::Arguments: IntoArguments<T::Database>,
     String: Type<T::Database> + for<'q> Encode<'q, T::Database>,
@@ -221,7 +223,7 @@ where
             )
             .execute(tx.executor())
             .await?;
-            exact_one::<T>(result)?;
+            require_one_affected_row::<T>(result)?;
             (
                 CentralMailResult::Done(CentralMailAnswer::Queued {
                     message_id: message_id.clone(),
@@ -233,22 +235,22 @@ where
             )
         }
     };
-    let result = retain(
+    let result = upsert_organization_request_answer(
         tx,
         RetainRequest {
             request_id: &command.lookup.request_id,
             caller: &command.lookup.caller,
             digest: &command.lookup.digest,
-            answer: json(reply)?,
+            answer: encode_mail_json(reply)?,
             at: command.accepted_at,
         },
     )
     .await?;
     if result != 1 {
-        return Err(ApplyingFailure::Conflict);
+        return Err(DirectApplyFailure::Conflict);
     }
-    prune(tx, command.lookup.cutoff).await?;
-    Ok(DirectApplied::modified(decision))
+    prune_expired_organization_requests(tx, command.lookup.cutoff).await?;
+    Ok(DirectWriteOutcome::with_alarm_recompute(decision))
 }
 
 #[derive(sqlx::FromRow)]
@@ -326,7 +328,7 @@ macro_rules! clear_attempt {
 pub async fn apply_receipt<T: CentralTransaction>(
     tx: &mut T,
     command: AdmittedReceipt,
-) -> Result<DirectApplied<ApplyReceipt>, ApplyingFailure>
+) -> Result<DirectWriteOutcome<ApplyReceipt>, DirectApplyFailure>
 where
     <T::Database as Database>::Arguments: IntoArguments<T::Database>,
     String: Type<T::Database> + for<'q> Encode<'q, T::Database> + for<'r> Decode<'r, T::Database>,
@@ -342,41 +344,43 @@ where
     if command.now.timestamp() >= authority.effective_expires_at().0
         || enrollment.is_none_or(|row| row.machine_id != target.as_str())
     {
-        return Ok(DirectApplied::stop(ApplyReceipt::AuthorityLapsed));
+        return Ok(DirectWriteOutcome::without_alarm_recompute(
+            ApplyReceipt::AuthorityLapsed,
+        ));
     }
     let row: Option<StoredReceiptRoute> = route_query!(select, command.message_id)
         .fetch_optional(tx.executor())
         .await?;
     let Some(row) = row else {
-        return Ok(DirectApplied::stop(ApplyReceipt::Stop(
-            ReceiptResult::NoSuchMessage,
-        )));
+        return Ok(DirectWriteOutcome::without_alarm_recompute(
+            ApplyReceipt::Stop(ReceiptResult::NoSuchMessage),
+        ));
     };
     let recipient: MachineId = row
         .target_machine_id
         .parse()
         .map_err(|_| corrupt("mail_messages.target_machine_id"))?;
     if &recipient != target {
-        return Ok(DirectApplied::stop(ApplyReceipt::Stop(
-            ReceiptResult::NoSuchMessage,
-        )));
+        return Ok(DirectWriteOutcome::without_alarm_recompute(
+            ApplyReceipt::Stop(ReceiptResult::NoSuchMessage),
+        ));
     }
     let kind: Option<StoredReceiptKind> = owned_kind_query!(select, command.message_id, target)
         .fetch_optional(tx.executor())
         .await?;
     let Some(kind) = kind else {
-        return Ok(DirectApplied::stop(ApplyReceipt::Stop(
-            ReceiptResult::NoSuchMessage,
-        )));
+        return Ok(DirectWriteOutcome::without_alarm_recompute(
+            ApplyReceipt::Stop(ReceiptResult::NoSuchMessage),
+        ));
     };
     match kind.message_kind.as_str() {
         "direct" => {
-            let Some(stored) = read_state(tx, &command.message_id).await? else {
-                return Ok(DirectApplied::stop(ApplyReceipt::Stop(
-                    ReceiptResult::NoSuchMessage,
-                )));
+            let Some(stored) = read_stored_direct_message(tx, &command.message_id).await? else {
+                return Ok(DirectWriteOutcome::without_alarm_recompute(
+                    ApplyReceipt::Stop(ReceiptResult::NoSuchMessage),
+                ));
             };
-            match transition(
+            match apply_direct_transition(
                 tx,
                 &stored,
                 Some(target),
@@ -386,18 +390,18 @@ where
             )
             .await?
             {
-                AppliedTransition::Changed(ready) => {
-                    Ok(DirectApplied::modified(ApplyReceipt::Applied { ready }))
-                }
-                AppliedTransition::Missing => Ok(DirectApplied::stop(ApplyReceipt::Stop(
-                    ReceiptResult::NoSuchMessage,
-                ))),
-                AppliedTransition::Covered => Ok(DirectApplied::stop(ApplyReceipt::Stop(
-                    ReceiptResult::Recorded,
-                ))),
-                AppliedTransition::Settled => Ok(DirectApplied::stop(ApplyReceipt::Stop(
-                    ReceiptResult::AlreadySettled,
-                ))),
+                AppliedTransition::Changed(ready) => Ok(DirectWriteOutcome::with_alarm_recompute(
+                    ApplyReceipt::Applied { ready },
+                )),
+                AppliedTransition::Missing => Ok(DirectWriteOutcome::without_alarm_recompute(
+                    ApplyReceipt::Stop(ReceiptResult::NoSuchMessage),
+                )),
+                AppliedTransition::Covered => Ok(DirectWriteOutcome::without_alarm_recompute(
+                    ApplyReceipt::Stop(ReceiptResult::Recorded),
+                )),
+                AppliedTransition::Settled => Ok(DirectWriteOutcome::without_alarm_recompute(
+                    ApplyReceipt::Stop(ReceiptResult::AlreadySettled),
+                )),
             }
         }
         kind @ ("notice" | "deliveryOutcome" | "wake" | "automation") => {
@@ -422,7 +426,7 @@ async fn apply_system_receipt<T: CentralTransaction>(
     kind: &str,
     receipt: ReceiptKind,
     now: Timestamp,
-) -> Result<DirectApplied<ApplyReceipt>, ApplyingFailure>
+) -> Result<DirectWriteOutcome<ApplyReceipt>, DirectApplyFailure>
 where
     <T::Database as Database>::Arguments: IntoArguments<T::Database>,
     String: Type<T::Database> + for<'q> Encode<'q, T::Database> + for<'r> Decode<'r, T::Database>,
@@ -434,18 +438,18 @@ where
         ReceiptKind::Delivered { .. } => ("delivered", None),
         ReceiptKind::Refused { reason } => ("failed", Some(enum_text(reason)?)),
         ReceiptKind::Seen { .. } | ReceiptKind::NotSeen { .. } => {
-            return Ok(DirectApplied::stop(ApplyReceipt::Stop(
-                ReceiptResult::NotApplicable,
-            )));
+            return Ok(DirectWriteOutcome::without_alarm_recompute(
+                ApplyReceipt::Stop(ReceiptResult::NotApplicable),
+            ));
         }
     };
     let row: Option<StoredSystemState> = system_state_query!(select, message, target, kind)
         .fetch_optional(tx.executor())
         .await?;
     let Some(row) = row else {
-        return Ok(DirectApplied::stop(ApplyReceipt::Stop(
-            ReceiptResult::NoSuchMessage,
-        )));
+        return Ok(DirectWriteOutcome::without_alarm_recompute(
+            ApplyReceipt::Stop(ReceiptResult::NoSuchMessage),
+        ));
     };
     match (row.state.as_str(), row.failure_reason.as_ref()) {
         ("queued", None) => {}
@@ -455,16 +459,20 @@ where
             } else {
                 ReceiptResult::AlreadySettled
             };
-            return Ok(DirectApplied::stop(ApplyReceipt::Stop(result)));
+            return Ok(DirectWriteOutcome::without_alarm_recompute(
+                ApplyReceipt::Stop(result),
+            ));
         }
         _ => return Err(corrupt("mail_messages.state").into()),
     }
     let written = system_update_query!(execute, message, target, kind, next, reason, now)
         .execute(tx.executor())
         .await?;
-    exact_one::<T>(written)?;
+    require_one_affected_row::<T>(written)?;
     // System writers continue to rely on the post-event completion for publication.
-    Ok(DirectApplied::stop(ApplyReceipt::Applied { ready: None }))
+    Ok(DirectWriteOutcome::without_alarm_recompute(
+        ApplyReceipt::Applied { ready: None },
+    ))
 }
 
 struct ReducerIds<'a>(&'a dyn IdSource);
@@ -499,14 +507,14 @@ macro_rules! lifecycle_update {
     };
 }
 
-pub(super) async fn transition<T: CentralTransaction>(
+pub(super) async fn apply_direct_transition<T: CentralTransaction>(
     tx: &mut T,
     stored: &StoredDirectState,
     recipient: Option<&MachineId>,
     event: DirectMessageEvent,
     now: Timestamp,
     ids: &dyn IdSource,
-) -> Result<AppliedTransition, ApplyingFailure>
+) -> Result<AppliedTransition, DirectApplyFailure>
 where
     <T::Database as Database>::Arguments: IntoArguments<T::Database>,
     String: Type<T::Database> + for<'q> Encode<'q, T::Database> + for<'r> Decode<'r, T::Database>,
@@ -514,14 +522,16 @@ where
         Type<T::Database> + for<'q> Encode<'q, T::Database> + for<'r> Decode<'r, T::Database>,
     for<'r> &'r str: ColumnIndex<<T::Database as Database>::Row>,
 {
-    let row = stored.decode().map_err(ApplyingFailure::CorruptObserved)?;
+    let row = stored
+        .decode()
+        .map_err(DirectApplyFailure::CorruptObserved)?;
     if recipient.is_some_and(|recipient| recipient != &row.recipient) {
         return Ok(AppliedTransition::Missing);
     }
-    let sender = crate::direct_store_sender::read_actor(tx, &row.sender)
+    let sender = crate::direct_store_sender::read_sender_identity(tx, &row.sender)
         .await
-        .map_err(ApplyingFailure::CorruptObserved)?
-        .ok_or_else(|| ApplyingFailure::CorruptObserved(corrupt("mail_messages.sender")))?;
+        .map_err(DirectApplyFailure::CorruptObserved)?
+        .ok_or_else(|| DirectApplyFailure::CorruptObserved(corrupt("mail_messages.sender")))?;
     let state = DirectReducerState {
         subject: DirectMessageSubject {
             id: row.id,
@@ -561,7 +571,7 @@ where
     let result = lifecycle_update!(execute, encoding, &state, now)
         .execute(tx.executor())
         .await?;
-    exact_one::<T>(result)?;
+    require_one_affected_row::<T>(result)?;
     let mut ready = None;
     for DirectMessageEffect::TellSender(message) in effects {
         let cutoff = system_message_deadline(message.created_at)
@@ -569,7 +579,7 @@ where
         let result = insert_outcome!(execute, message, cutoff)
             .execute(tx.executor())
             .await?;
-        exact_one::<T>(result)?;
+        require_one_affected_row::<T>(result)?;
         ready = Some((&message).into());
     }
     clear_attempt!(execute, state.subject.id)

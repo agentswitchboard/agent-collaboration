@@ -7,16 +7,16 @@ use fleet_runtime_ports::{stored_values::column, workspace_decode_error::corrupt
 use std::num::NonZeroU32;
 
 #[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("central attempt holds an invalid value in {column}")]
+#[error("central attempt holds an invalid value in {column_path}")]
 pub(crate) struct AttemptCorruption {
-    pub column: String,
+    pub column_path: String,
     pub raw_value: String,
 }
 
 impl AttemptCorruption {
-    pub fn failure_class(&self) -> ItemFailureClass {
+    pub fn to_corrupt_row_failure(&self) -> ItemFailureClass {
         ItemFailureClass::CorruptRow {
-            column: self.column.clone(),
+            column: self.column_path.clone(),
             raw_value: Some(self.raw_value.clone()),
         }
     }
@@ -24,8 +24,8 @@ impl AttemptCorruption {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) struct StoredAttempt {
-    pub guard: AttemptGuard,
-    pub record: Result<FailureRecord, AttemptCorruption>,
+    pub observed_attempt_guard: AttemptGuard,
+    pub decoded_failure_record: Result<FailureRecord, AttemptCorruption>,
 }
 
 fn corrupt_attempt_field(name: &str, raw: Option<&SqlValue>) -> AttemptCorruption {
@@ -35,54 +35,58 @@ fn corrupt_attempt_field(name: &str, raw: Option<&SqlValue>) -> AttemptCorruptio
         None => "<missing column>".into(),
     };
     AttemptCorruption {
-        column: format!("engine_work_attempts.{name}"),
+        column_path: format!("engine_work_attempts.{name}"),
         raw_value,
     }
 }
 
 struct AttemptRow<'a> {
-    outcome: &'a ReadOutcome,
-    values: &'a [SqlValue],
+    query_result: &'a ReadOutcome,
+    column_values: &'a [SqlValue],
 }
 impl AttemptRow<'_> {
-    fn value(&self, name: &str) -> Result<&SqlValue, AttemptCorruption> {
-        column(self.outcome, self.values, name).map_err(|_| corrupt_attempt_field(name, None))
+    fn read_column_value(&self, name: &str) -> Result<&SqlValue, AttemptCorruption> {
+        column(self.query_result, self.column_values, name)
+            .map_err(|_| corrupt_attempt_field(name, None))
     }
-    fn text(&self, name: &str) -> Result<&str, AttemptCorruption> {
-        match self.value(name)? {
+    fn read_text_column(&self, name: &str) -> Result<&str, AttemptCorruption> {
+        match self.read_column_value(name)? {
             SqlValue::Text(value) => Ok(value),
             value => Err(corrupt_attempt_field(name, Some(value))),
         }
     }
-    fn optional_text(&self, name: &str) -> Result<Option<&str>, AttemptCorruption> {
-        match self.value(name)? {
+    fn read_nullable_text_column(&self, name: &str) -> Result<Option<&str>, AttemptCorruption> {
+        match self.read_column_value(name)? {
             SqlValue::Null => Ok(None),
             SqlValue::Text(value) => Ok(Some(value)),
             value => Err(corrupt_attempt_field(name, Some(value))),
         }
     }
-    fn time(&self, name: &str) -> Result<EngineTime, AttemptCorruption> {
-        self.text(name)?
+    fn read_engine_time_column(&self, name: &str) -> Result<EngineTime, AttemptCorruption> {
+        self.read_text_column(name)?
             .parse::<EngineTime>()
             .ok()
             .filter(|time| supported_time(*time))
-            .ok_or_else(|| corrupt_attempt_field(name, self.value(name).ok()))
+            .ok_or_else(|| corrupt_attempt_field(name, self.read_column_value(name).ok()))
     }
-    fn optional_time(&self, name: &str) -> Result<Option<EngineTime>, AttemptCorruption> {
-        match self.value(name)? {
+    fn read_nullable_engine_time_column(
+        &self,
+        name: &str,
+    ) -> Result<Option<EngineTime>, AttemptCorruption> {
+        match self.read_column_value(name)? {
             SqlValue::Null => Ok(None),
-            _ => self.time(name).map(Some),
+            _ => self.read_engine_time_column(name).map(Some),
         }
     }
-    fn failure_class(&self) -> Result<ItemFailureClass, AttemptCorruption> {
-        let detail = self.optional_text("last_failure_detail")?;
+    fn decode_stored_failure_class(&self) -> Result<ItemFailureClass, AttemptCorruption> {
+        let detail = self.read_nullable_text_column("last_failure_detail")?;
         let bad_detail = || {
             corrupt_attempt_field(
                 "last_failure_detail",
-                self.value("last_failure_detail").ok(),
+                self.read_column_value("last_failure_detail").ok(),
             )
         };
-        match self.text("last_failure")? {
+        match self.read_text_column("last_failure")? {
             "corrupt_row" => {
                 let detail = detail
                     .filter(|value| !value.is_empty())
@@ -123,39 +127,47 @@ impl AttemptRow<'_> {
             "statement_rejected" | "other_store_unavailable" => Err(bad_detail()),
             _ => Err(corrupt_attempt_field(
                 "last_failure",
-                self.value("last_failure").ok(),
+                self.read_column_value("last_failure").ok(),
             )),
         }
     }
-    fn decode(&self) -> Result<FailureRecord, AttemptCorruption> {
+    fn decode_attempt_record(&self) -> Result<FailureRecord, AttemptCorruption> {
         let attempt_id = self
-            .text("attempt_id")?
+            .read_text_column("attempt_id")?
             .parse::<uuid::Uuid>()
             .ok()
             .filter(|id| id.get_version_num() == 7)
-            .ok_or_else(|| corrupt_attempt_field("attempt_id", self.value("attempt_id").ok()))?;
-        let failure_count = match self.value("failure_count")? {
+            .ok_or_else(|| {
+                corrupt_attempt_field("attempt_id", self.read_column_value("attempt_id").ok())
+            })?;
+        let failure_count = match self.read_column_value("failure_count")? {
             SqlValue::Integer(value) => u32::try_from(value.get())
                 .ok()
                 .and_then(NonZeroU32::new)
                 .ok_or_else(|| {
-                corrupt_attempt_field("failure_count", self.value("failure_count").ok())
+                corrupt_attempt_field(
+                    "failure_count",
+                    self.read_column_value("failure_count").ok(),
+                )
             })?,
             value => return Err(corrupt_attempt_field("failure_count", Some(value))),
         };
-        let next_try = self.optional_time("next_try_at")?;
-        let retired = self.optional_time("retired_at")?;
-        let state = match self.text("state")? {
+        let next_try = self.read_nullable_engine_time_column("next_try_at")?;
+        let retired = self.read_nullable_engine_time_column("retired_at")?;
+        let state = match self.read_text_column("state")? {
             "failing" => {
                 if retired.is_some() {
                     return Err(corrupt_attempt_field(
                         "retired_at",
-                        self.value("retired_at").ok(),
+                        self.read_column_value("retired_at").ok(),
                     ));
                 }
                 AttemptState::Failing {
                     next_try_at: next_try.ok_or_else(|| {
-                        corrupt_attempt_field("next_try_at", self.value("next_try_at").ok())
+                        corrupt_attempt_field(
+                            "next_try_at",
+                            self.read_column_value("next_try_at").ok(),
+                        )
                     })?,
                 }
             }
@@ -163,38 +175,48 @@ impl AttemptRow<'_> {
                 if next_try.is_some() {
                     return Err(corrupt_attempt_field(
                         "next_try_at",
-                        self.value("next_try_at").ok(),
+                        self.read_column_value("next_try_at").ok(),
                     ));
                 }
                 AttemptState::Retired {
                     retired_at: retired.ok_or_else(|| {
-                        corrupt_attempt_field("retired_at", self.value("retired_at").ok())
+                        corrupt_attempt_field(
+                            "retired_at",
+                            self.read_column_value("retired_at").ok(),
+                        )
                     })?,
                 }
             }
-            _ => return Err(corrupt_attempt_field("state", self.value("state").ok())),
+            _ => {
+                return Err(corrupt_attempt_field(
+                    "state",
+                    self.read_column_value("state").ok(),
+                ));
+            }
         };
         Ok(FailureRecord {
             attempt_id,
             failure_count,
             state,
-            last_failure: self.failure_class()?,
-            first_failed_at: self.time("first_failed_at")?,
-            last_failed_at: self.time("last_failed_at")?,
-            created_at: self.time("created_at")?,
-            updated_at: self.time("updated_at")?,
+            last_failure: self.decode_stored_failure_class()?,
+            first_failed_at: self.read_engine_time_column("first_failed_at")?,
+            last_failed_at: self.read_engine_time_column("last_failed_at")?,
+            created_at: self.read_engine_time_column("created_at")?,
+            updated_at: self.read_engine_time_column("updated_at")?,
         })
     }
 }
 
-pub(crate) fn decode_attempt(outcome: &ReadOutcome) -> Result<Option<StoredAttempt>, StoreFailure> {
-    let values = match outcome.rows.as_slice() {
+pub(crate) fn decode_attempt_with_guard(
+    query_result: &ReadOutcome,
+) -> Result<Option<StoredAttempt>, StoreFailure> {
+    let column_values = match query_result.rows.as_slice() {
         [] => return Ok(None),
         [row] => row,
         _ => return Err(corrupt("engine_work_attempts.subject")),
     };
-    let get = |name| column(outcome, values, name).cloned();
-    let guard = AttemptGuard {
+    let get = |name| column(query_result, column_values, name).cloned();
+    let observed_attempt_guard = AttemptGuard {
         attempt_id: get("attempt_id")?,
         state: get("state")?,
         failure_count: get("failure_count")?,
@@ -202,12 +224,16 @@ pub(crate) fn decode_attempt(outcome: &ReadOutcome) -> Result<Option<StoredAttem
         updated_at: get("updated_at")?,
     };
     Ok(Some(StoredAttempt {
-        guard,
-        record: AttemptRow { outcome, values }.decode(),
+        observed_attempt_guard,
+        decoded_failure_record: AttemptRow {
+            query_result,
+            column_values,
+        }
+        .decode_attempt_record(),
     }))
 }
 
-pub(crate) fn failure_detail(failure: &ItemFailureClass) -> Option<String> {
+pub(crate) fn encode_attempt_failure_detail(failure: &ItemFailureClass) -> Option<String> {
     match failure {
         ItemFailureClass::CorruptRow { column, raw_value } => Some(
             raw_value

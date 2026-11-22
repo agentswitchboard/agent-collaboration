@@ -61,7 +61,7 @@ macro_rules! plain {
     };
 }
 
-pub async fn read_retained<T: CentralTransaction>(
+pub async fn read_retained_organization_request<T: CentralTransaction>(
     tx: &mut T,
     request: &RequestId,
     cutoff: Timestamp,
@@ -94,7 +94,7 @@ where
     .transpose()
 }
 
-pub async fn retain<T: CentralTransaction>(
+pub async fn upsert_organization_request_answer<T: CentralTransaction>(
     tx: &mut T,
     entry: RetainRequest<'_>,
 ) -> Result<u64, sqlx_core::Error>
@@ -116,7 +116,7 @@ where
     .map(T::rows_affected)
 }
 
-pub async fn prune<T: CentralTransaction>(
+pub async fn prune_expired_organization_requests<T: CentralTransaction>(
     tx: &mut T,
     cutoff: Timestamp,
 ) -> Result<u64, sqlx_core::Error>

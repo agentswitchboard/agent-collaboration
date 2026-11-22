@@ -79,7 +79,7 @@ impl DirectMessageStore for CentralStatements {
     worker_read!(read_offer, DirectOfferLookup, Option<DirectOffer>);
     worker_write!(
         direct_store_writes,
-        send,
+        apply_direct_send,
         AdmittedDirectSend,
         DirectSendResult
     );

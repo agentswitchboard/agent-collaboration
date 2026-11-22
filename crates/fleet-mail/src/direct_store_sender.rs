@@ -47,7 +47,7 @@ macro_rules! execute {
     };
 }
 
-pub(crate) async fn read_actor<T: CentralTransaction>(
+pub(crate) async fn read_sender_identity<T: CentralTransaction>(
     tx: &mut T,
     actor: &ActorIdentityId,
 ) -> Result<Option<Identity>, StoreFailure>
@@ -71,7 +71,7 @@ where
     .transpose()
 }
 
-pub(crate) async fn resolve_sender<T: CentralTransaction>(
+pub(crate) async fn resolve_offer_sender<T: CentralTransaction>(
     tx: &mut T,
     message: &MessageRecord,
 ) -> Result<ResolvedSender, DirectReadFailure>
@@ -82,7 +82,7 @@ where
 {
     let identity = match &message.sender {
         MessageSender::Central => None,
-        MessageSender::Actor(actor) => read_actor(tx, actor)
+        MessageSender::Actor(actor) => read_sender_identity(tx, actor)
             .await
             .map_err(DirectReadFailure::from_store)?,
     };

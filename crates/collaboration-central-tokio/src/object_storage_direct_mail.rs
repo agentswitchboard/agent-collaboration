@@ -9,7 +9,7 @@ use fleet_mail::{
     DirectOffer, DirectOfferLookup, DirectReadFailure, DirectSendLookup, DirectSendResult,
     DirectWriteFailure, OfferPageLookup, OwnedDirectStatus, RejectedDirectMark,
     RetainedDirectSendRead, direct_mark_apply, direct_store_reads,
-    direct_store_writes::{self, ApplyingFailure, DirectApplied},
+    direct_store_writes::{self, DirectApplyFailure, DirectWriteOutcome},
 };
 use futures_util::future::BoxFuture;
 use std::ops::ControlFlow;
@@ -57,7 +57,7 @@ impl DirectMessageStore for ObjectStorage {
 
     native_write!(
         direct_store_writes,
-        send,
+        apply_direct_send,
         AdmittedDirectSend,
         DirectSendResult
     );
@@ -148,7 +148,7 @@ impl ObjectStorage {
         &self,
         apply: impl AsyncFnOnce(
             &mut sqlx::SqliteConnection,
-        ) -> Result<DirectApplied<Answer>, ApplyingFailure>,
+        ) -> Result<DirectWriteOutcome<Answer>, DirectApplyFailure>,
     ) -> Result<Answer, DirectWriteFailure> {
         let _order = self.lock_batch_order().await;
         let store = self

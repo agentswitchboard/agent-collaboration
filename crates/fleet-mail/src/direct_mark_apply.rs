@@ -2,8 +2,8 @@
 use crate::{
     direct_message::{DirectMessage, DirectMessageEvent},
     direct_store_port::{ApplyMark, DirectMark, DirectReadFailure, RejectedDirectMark},
-    direct_store_reads::read_state,
-    direct_store_writes::{AppliedTransition, ApplyingFailure, transition},
+    direct_store_reads::read_stored_direct_message,
+    direct_store_writes::{AppliedTransition, DirectApplyFailure, apply_direct_transition},
 };
 use central_engine_model::{FailureRecord, InstanceKey, ItemFailureClass, Machine};
 use central_storage::{CorruptReason, StoreFailure};
@@ -32,7 +32,7 @@ macro_rules! mark_guard {
     };
 }
 
-fn subject(mark: &DirectMark) -> EngineSubject {
+fn direct_mark_subject(mark: &DirectMark) -> EngineSubject {
     EngineSubject {
         kind: DirectMessage::KIND,
         key: InstanceKey(mark.message_id.to_string()),
@@ -116,7 +116,7 @@ where
     if !is_eligible(transaction, &command).await? {
         return Ok(ApplyMark::Stale);
     }
-    let subject = subject(&command);
+    let subject = direct_mark_subject(&command);
     let observed = observe_checked_attempt(transaction, &subject, command.now)
         .await
         .map_err(CheckedDueFailure::from_store)?;
@@ -137,7 +137,7 @@ where
             .map_err(|failure| CheckedDueFailure::from_store(failure).into());
         }
     };
-    let stored = match read_state(transaction, &command.message_id).await {
+    let stored = match read_stored_direct_message(transaction, &command.message_id).await {
         Ok(Some(stored)) => stored,
         Ok(None) => return Ok(ApplyMark::Stale),
         Err(DirectReadFailure::Unavailable) => return Err(CheckedDueFailure::Unavailable.into()),
@@ -146,7 +146,7 @@ where
                 .await;
         }
     };
-    let applied = transition(
+    let applied = apply_direct_transition(
         transaction,
         &stored,
         None,
@@ -164,16 +164,16 @@ where
         ) => {
             return Ok(ApplyMark::Stale);
         }
-        Err(ApplyingFailure::CorruptObserved(StoreFailure::Corrupt { reason })) => {
+        Err(DirectApplyFailure::CorruptObserved(StoreFailure::Corrupt { reason })) => {
             return record_corrupt_mark(transaction, &subject, previous.as_ref(), &command, reason)
                 .await;
         }
-        Err(ApplyingFailure::Conflict) => return Err(MarkRollback::Superseded),
-        Err(ApplyingFailure::Store(StoreFailure::Corrupt { reason })) => corrupt_class(reason),
-        Err(ApplyingFailure::Sql(error)) => {
+        Err(DirectApplyFailure::Conflict) => return Err(MarkRollback::Superseded),
+        Err(DirectApplyFailure::Store(StoreFailure::Corrupt { reason })) => corrupt_class(reason),
+        Err(DirectApplyFailure::Sql(error)) => {
             checked_statement_rejection(&error).ok_or(CheckedDueFailure::Unavailable)?
         }
-        Err(ApplyingFailure::Store(error) | ApplyingFailure::CorruptObserved(error)) => {
+        Err(DirectApplyFailure::Store(error) | DirectApplyFailure::CorruptObserved(error)) => {
             return Err(CheckedDueFailure::from_store(error).into());
         }
     };
@@ -232,13 +232,13 @@ where
     if !is_eligible(transaction, &command).await? {
         return Ok(None);
     }
-    let current = read_state(transaction, &command.message_id)
+    let current = read_stored_direct_message(transaction, &command.message_id)
         .await
         .map_err(|failure| CheckedDueFailure::from_store(failure.into()))?;
     if current.as_ref() != Some(&rejected.row) {
         return Ok(None);
     }
-    let subject = subject(&command);
+    let subject = direct_mark_subject(&command);
     let observed = observe_checked_attempt(transaction, &subject, command.now)
         .await
         .map_err(CheckedDueFailure::from_store)?;

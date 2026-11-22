@@ -3,8 +3,8 @@ use crate::WorkspaceRuntime;
 use central_engine_model::{DueRow, EngineTime, InstanceKey, MachineKind, RetirementThreshold};
 use fleet_contracts::{AlarmResult, EngineSubject, LegacyUnitOutcome, ObservedControl};
 use fleet_engine::{
-    DueCutoff, DueDiscoveryError, Engine, TimedRowOutcome, TimedRows, TimedSource, WholeUnit,
-    WholeUnitOutcome,
+    DueCutoff, DueDiscoveryError, FleetEngine, TimedDueDispatch, TimedRowOutcome,
+    TimedSourceSchedule, WholeDueUnitControl, WholeUnitOutcome,
 };
 use fleet_mail::{
     DirectMark, ExpireAt, SystemMessageExpiry, SystemMessageExpiryStore, insert_message,
@@ -38,9 +38,11 @@ impl DueKind {
 }
 
 pub struct CoreTimedRows;
-impl<H: CentralStore, S: WorkspaceStores> TimedRows<WorkspaceRuntime<H, S>> for CoreTimedRows {
-    type Kind = DueKind;
-    fn ordered_kinds(&self) -> &'static [DueKind] {
+impl<H: CentralStore, S: WorkspaceStores> TimedDueDispatch<WorkspaceRuntime<H, S>>
+    for CoreTimedRows
+{
+    type TimedSourceKind = DueKind;
+    fn ordered_timed_source_kinds(&self) -> &'static [DueKind] {
         &[
             DueKind::Wake,
             DueKind::Automation,
@@ -50,17 +52,17 @@ impl<H: CentralStore, S: WorkspaceStores> TimedRows<WorkspaceRuntime<H, S>> for 
             DueKind::Probe,
         ]
     }
-    fn source(&self, kind: DueKind) -> TimedSource {
-        TimedSource {
+    fn timed_source_schedule(&self, kind: DueKind) -> TimedSourceSchedule {
+        TimedSourceSchedule {
             machine_kind: kind.kind(),
-            cutoff: if matches!(kind, DueKind::SystemMessageExpiry) {
+            due_cutoff_policy: if matches!(kind, DueKind::SystemMessageExpiry) {
                 DueCutoff::BatchStart
             } else {
-                DueCutoff::LookAhead
+                DueCutoff::LookAheadHorizon
             },
         }
     }
-    async fn discover(
+    async fn discover_due_rows(
         &self,
         runtime: &WorkspaceRuntime<H, S>,
         kind: DueKind,
@@ -88,9 +90,9 @@ impl<H: CentralStore, S: WorkspaceStores> TimedRows<WorkspaceRuntime<H, S>> for 
         }
     }
 
-    async fn run_row(
+    async fn dispatch_timed_due_row(
         &self,
-        engine: &Engine<'_, WorkspaceRuntime<H, S>>,
+        engine: &FleetEngine<'_, WorkspaceRuntime<H, S>>,
         runtime: &WorkspaceRuntime<H, S>,
         kind: DueKind,
         row: DueRow,
@@ -100,7 +102,7 @@ impl<H: CentralStore, S: WorkspaceStores> TimedRows<WorkspaceRuntime<H, S>> for 
             #[cfg(feature = "test-support")]
             DueKind::Probe => {
                 engine
-                    .run_machine_unit::<crate::engine_probe::EngineProbe, _>(
+                    .run_due_machine_instance::<crate::engine_probe::EngineProbe, _>(
                         &crate::engine::probe_store::ProbeStore(runtime),
                         row,
                         "engine_probe_items.due_at",
@@ -110,7 +112,7 @@ impl<H: CentralStore, S: WorkspaceStores> TimedRows<WorkspaceRuntime<H, S>> for 
             }
             DueKind::Wake => {
                 engine
-                    .run_machine_unit::<wake_timer::WakeTimer, _>(
+                    .run_due_machine_instance::<wake_timer::WakeTimer, _>(
                         &WakeStore::new(runtime, insert_message),
                         row,
                         "automation_wakes.due_at",
@@ -120,7 +122,7 @@ impl<H: CentralStore, S: WorkspaceStores> TimedRows<WorkspaceRuntime<H, S>> for 
             }
             DueKind::Automation => {
                 engine
-                    .run_machine_unit::<automation_timer::AutomationTimer, _>(
+                    .run_due_machine_instance::<automation_timer::AutomationTimer, _>(
                         &AutomationStore::new(runtime, insert_message),
                         row,
                         "automation_schedules.next_due_at",
@@ -138,11 +140,11 @@ impl<H: CentralStore, S: WorkspaceStores> TimedRows<WorkspaceRuntime<H, S>> for 
                     EngineTime::from_timestamp_millis(row.occurrence_ms),
                     runtime.execution.now(),
                 ) else {
-                    return TimedRowOutcome::CentralDown;
+                    return TimedRowOutcome::CentralStoreFailed;
                 };
                 let store = &runtime.direct_messages;
                 engine
-                    .run_checked_due_unit(
+                    .run_checked_due_machine_instance(
                         &subject,
                         store.apply_mark(DirectMark {
                             message_id,
@@ -156,7 +158,7 @@ impl<H: CentralStore, S: WorkspaceStores> TimedRows<WorkspaceRuntime<H, S>> for 
             }
             DueKind::SystemMessageExpiry => {
                 engine
-                    .run_machine_unit::<SystemMessageExpiry, _>(
+                    .run_due_machine_instance::<SystemMessageExpiry, _>(
                         &SystemMessageExpiryStore::new(runtime),
                         row,
                         "mail_messages.delivery_window_ends_at",
@@ -175,9 +177,9 @@ impl<H: CentralStore, S: WorkspaceStores> TimedRows<WorkspaceRuntime<H, S>> for 
         }
 
         if down {
-            TimedRowOutcome::CentralDown
+            TimedRowOutcome::CentralStoreFailed
         } else {
-            TimedRowOutcome::Finished(work)
+            TimedRowOutcome::Handled(work)
         }
     }
 }
@@ -188,15 +190,15 @@ pub enum WholeKind {
     Drains,
 }
 impl WholeKind {
-    pub(crate) fn description(self) -> WholeUnit {
+    pub(crate) fn description(self) -> WholeDueUnitControl {
         match self {
             Self::Windows => fleet_notices::window_unit(),
-            Self::Drains => WholeUnit {
-                subject: EngineSubject {
+            Self::Drains => WholeDueUnitControl {
+                attempt_subject: EngineSubject {
                     kind: MachineKind("legacy_workspace_drains"),
                     key: InstanceKey("all".into()),
                 },
-                threshold: RetirementThreshold::NOTICE_UNITS,
+                retirement_threshold: RetirementThreshold::NOTICE_UNITS,
             },
         }
     }

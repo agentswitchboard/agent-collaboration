@@ -88,7 +88,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         };
         let result = self
             .direct_messages
-            .send(AdmittedDirectSend {
+            .apply_direct_send(AdmittedDirectSend {
                 lookup: lookup(),
                 send: mail::SendMessageRequest {
                     to,

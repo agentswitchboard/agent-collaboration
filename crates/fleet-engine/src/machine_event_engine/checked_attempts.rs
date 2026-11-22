@@ -11,7 +11,7 @@ use fleet_runtime_ports::{
 };
 use sqlx::{ColumnIndex, Database, Decode, Encode, IntoArguments, Type};
 
-use super::attempt_records::{decode_attempt, failure_detail};
+use super::attempt_records::{decode_attempt_with_guard, encode_attempt_failure_detail};
 
 #[derive(sqlx::FromRow)]
 struct StoredCheckedAttempt {
@@ -58,10 +58,10 @@ impl StoredCheckedAttempt {
             columns,
             rows: vec![values],
         };
-        Ok(decode_attempt(&observed)?
+        Ok(decode_attempt_with_guard(&observed)?
             .ok_or_else(|| corrupt("engine_work_attempts.subject"))?
-            .record
-            .map_err(|corruption| corruption.failure_class()))
+            .decoded_failure_record
+            .map_err(|corruption| corruption.to_corrupt_row_failure()))
     }
 }
 
@@ -85,7 +85,7 @@ macro_rules! attempt_write {
             i64::from($record.failure_count.get()),
             $next,
             $record.last_failure.storage_tag().to_owned(),
-            failure_detail(&$record.last_failure),
+            encode_attempt_failure_detail(&$record.last_failure),
             format_utc_millis($record.first_failed_at),
             format_utc_millis($record.last_failed_at),
             $retired,

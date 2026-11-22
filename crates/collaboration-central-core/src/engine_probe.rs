@@ -92,8 +92,8 @@ impl<Host: fleet_runtime_ports::CentralStore, Stores: fleet_runtime_ports::Works
             }
         };
         let actor = self.access().resolve_identity(&identity).await?;
-        fleet_engine::Engine::new(self)
-            .request_engine::<EngineProbe, _>(
+        fleet_engine::FleetEngine::new(self)
+            .run_machine_request::<EngineProbe, _>(
                 &crate::engine::probe_store::ProbeStore(self),
                 actor,
                 request.request_id,

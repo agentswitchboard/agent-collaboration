@@ -149,7 +149,7 @@ pub trait DirectMessageStore: Send + Sync {
         &self,
         lookup: DirectSendLookup,
     ) -> BoxFuture<'_, Result<RetainedDirectSendRead, DirectReadFailure>>;
-    fn send(
+    fn apply_direct_send(
         &self,
         send: AdmittedDirectSend,
     ) -> BoxFuture<'_, Result<DirectSendResult, DirectWriteFailure>>;

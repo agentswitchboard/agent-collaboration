@@ -36,7 +36,7 @@ impl DirectReadFailure {
     }
 }
 
-fn query_failure(error: sqlx_core::Error) -> DirectReadFailure {
+fn classify_direct_read_failure(error: sqlx_core::Error) -> DirectReadFailure {
     match error {
         sqlx_core::Error::ColumnDecode { index, .. } => DirectReadFailure::Corrupt {
             reason: CorruptReason::BadValue { column: index },
@@ -56,9 +56,13 @@ where
         + for<'row> Decode<'row, T::Database>,
     &'static str: ColumnIndex<<T::Database as Database>::Row>,
 {
-    let record = fleet_request_log::read_retained(tx, &lookup.request_id, lookup.cutoff)
-        .await
-        .map_err(DirectReadFailure::from_store)?;
+    let record = fleet_request_log::read_retained_organization_request(
+        tx,
+        &lookup.request_id,
+        lookup.cutoff,
+    )
+    .await
+    .map_err(DirectReadFailure::from_store)?;
     let Some(record) = record else {
         return Ok(RetainedDirectSendRead::Missing);
     };
@@ -261,7 +265,7 @@ where
     let row: Option<StoredDirectState> = status_query!(runtime_query, status.message_id, sender)
         .fetch_optional(tx.executor())
         .await
-        .map_err(query_failure)?;
+        .map_err(classify_direct_read_failure)?;
     let Some(row) = row else {
         return Ok(MessageStatus::NotFound {});
     };
@@ -284,12 +288,12 @@ where
     let row: Option<StoredOffer> = offer_query!(runtime_query, lookup)
         .fetch_optional(tx.executor())
         .await
-        .map_err(query_failure)?;
+        .map_err(classify_direct_read_failure)?;
     let Some(row) = row else {
         return Ok(None);
     };
     let offer = row.decode()?;
-    let sender = crate::direct_store_sender::resolve_sender(tx, &offer.message).await?;
+    let sender = crate::direct_store_sender::resolve_offer_sender(tx, &offer.message).await?;
     Ok(Some(DirectOffer {
         message: offer.message,
         sender,
@@ -317,11 +321,11 @@ where
     let rows: Vec<StoredOffer> = offer_page_query!(runtime_query, lookup, limit)
         .fetch_all(tx.executor())
         .await
-        .map_err(query_failure)?;
+        .map_err(classify_direct_read_failure)?;
     rows.into_iter().map(StoredOffer::decode).collect()
 }
 
-pub(crate) async fn read_state<T: CentralTransaction>(
+pub(crate) async fn read_stored_direct_message<T: CentralTransaction>(
     tx: &mut T,
     message: &MessageId,
 ) -> Result<Option<StoredDirectState>, DirectReadFailure>
@@ -336,7 +340,7 @@ where
     state_query!(runtime_query, message)
         .fetch_optional(tx.executor())
         .await
-        .map_err(query_failure)
+        .map_err(classify_direct_read_failure)
 }
 
 #[cfg(test)]
