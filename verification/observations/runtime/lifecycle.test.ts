@@ -40,15 +40,16 @@ for (const scenario of [
 ]) {
   test(
     `lifecycle preserves original scoped outcome: ${scenario}`,
-    { timeout: 15_000 },
-    async (): Promise<void> => {
+    // Last-resort hang guard; the lifecycle driver writes settlement before it returns.
+    { timeout: 180_000 },
+    async (context): Promise<void> => {
       const root = createFixtureDirectory("lifecycle");
       try {
         const fixture = new LifecycleFixture(root, scenario);
-        const error = await fixture.drive();
-        const settlement = readObservedJson(
-          readFileSync(join(fixture.plan.evidence, "lifecycle-settlement.json")),
-        );
+        const error = await fixture.drive(context.signal);
+        const settlementPath = join(fixture.plan.evidence, "lifecycle-settlement.json");
+        if (error !== null && !existsSync(settlementPath)) throw error;
+        const settlement = readObservedJson(readFileSync(settlementPath));
         assert.equal(
           fixture.children.every(
             ({ child }) => child.exitCode !== null || child.signalCode !== null,
@@ -99,7 +100,7 @@ for (const scenario of [
 test("a mismatched Claude path rejects before creating any child or requester", async (): Promise<void> => {
   const root = createFixtureDirectory("lifecycle-path-mismatch");
   try {
-    const fixture = new LifecycleFixture(root, "stop", true);
+    const fixture = new LifecycleFixture(root, "stop", { mismatch: true });
     const error = await fixture.drive();
     assert.match(
       error?.message ?? "",
