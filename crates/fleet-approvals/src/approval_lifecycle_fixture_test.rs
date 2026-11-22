@@ -30,6 +30,10 @@ pub(super) fn request_id() -> ApprovalRequestId {
     fixture_uuid(1).parse().unwrap()
 }
 
+pub(super) fn other_request_id() -> ApprovalRequestId {
+    fixture_uuid(10).parse().unwrap()
+}
+
 pub(super) fn router_run() -> RouterRunId {
     fixture_uuid(2).parse().unwrap()
 }
@@ -151,6 +155,18 @@ fn options() -> OfferedOptions {
             OptionDuration::NotVerified,
             KeptWhere::NotVerified,
             OptionEffect::Allow,
+        ),
+        offered(
+            "unknown-allow",
+            OptionDuration::ThisRequest,
+            KeptWhere::NotVerified,
+            OptionEffect::Allow,
+        ),
+        offered(
+            "unknown-deny",
+            OptionDuration::ThisRequest,
+            KeptWhere::NotVerified,
+            OptionEffect::Decline,
         ),
     ])
     .unwrap()

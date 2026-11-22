@@ -2,6 +2,7 @@
 mod approval_lifecycle;
 mod approval_lifecycle_admission;
 mod approval_lifecycle_edges;
+mod approval_lifecycle_erasure;
 mod approval_lifecycle_values;
 
 pub use approval_lifecycle::ApprovalLifecycle;

@@ -1,14 +1,16 @@
 use super::super::fixtures::{
-    approval_raise, holder_report, observer, other_run, parent, person_answer, router_run, session,
-    session_answer, stop_event,
+    approval_raise, observer, other_request_id, other_run, parent, person_answer, request_id,
+    router_run, session, session_answer, stop_event,
 };
 use super::{CHANGED_TITLE, FIRST_TITLE};
 use crate::{ApprovalDestination, ApprovalEvent, FactorStanding, PassOnAuthority};
-use approval_request_protocol::HolderReport;
+use approval_request_protocol::{HolderReport, ReportDeliveryRequest};
 
 #[derive(Clone, Copy, Debug)]
 pub(super) enum Command {
-    Raise { changed: bool },
+    Raise {
+        changed: bool,
+    },
     AllowFromParent,
     DeclineFromObserver,
     UnknownOption,
@@ -24,8 +26,15 @@ pub(super) enum Command {
     RunEnds,
     SessionEnds,
     EnrollmentEnds,
-    Offer { foreign: bool },
-    Report { foreign: bool, report: HolderReport },
+    Erase,
+    Offer {
+        foreign: bool,
+    },
+    Report {
+        foreign_run: bool,
+        foreign_request: bool,
+        report: HolderReport,
+    },
 }
 
 pub(super) const COMMANDS: &[Command] = &[
@@ -46,31 +55,59 @@ pub(super) const COMMANDS: &[Command] = &[
     Command::RunEnds,
     Command::SessionEnds,
     Command::EnrollmentEnds,
+    Command::Erase,
     Command::Offer { foreign: false },
     Command::Offer { foreign: true },
     Command::Report {
-        foreign: false,
+        foreign_run: false,
+        foreign_request: false,
         report: HolderReport::GoneBeforeHandover,
     },
     Command::Report {
-        foreign: false,
+        foreign_run: false,
+        foreign_request: false,
         report: HolderReport::ReplyWrittenEffectNotConfirmed,
     },
     Command::Report {
-        foreign: false,
+        foreign_run: false,
+        foreign_request: false,
         report: HolderReport::DeliveryUnknown,
     },
     Command::Report {
-        foreign: false,
+        foreign_run: false,
+        foreign_request: false,
         report: HolderReport::Applied,
     },
     Command::Report {
-        foreign: true,
+        foreign_run: true,
+        foreign_request: false,
         report: HolderReport::Applied,
     },
 ];
 
 impl Command {
+    pub(super) fn with_foreign_request(self, foreign_request: bool) -> Self {
+        match self {
+            Self::Report {
+                foreign_run,
+                report,
+                ..
+            } => Self::Report {
+                foreign_run,
+                foreign_request,
+                report,
+            },
+            non_report => non_report,
+        }
+    }
+
+    pub(super) const fn requires_live_holder(self) -> bool {
+        matches!(
+            self,
+            Self::Raise { .. } | Self::HolderStops | Self::Offer { .. } | Self::Report { .. }
+        )
+    }
+
     pub(super) fn event(self, include_people: bool) -> ApprovalEvent {
         match self {
             Self::Raise { changed } => {
@@ -107,12 +144,27 @@ impl Command {
             Self::RunEnds => ApprovalEvent::RunRetired,
             Self::SessionEnds => ApprovalEvent::SessionEnded,
             Self::EnrollmentEnds => ApprovalEvent::EnrollmentEnded,
+            Self::Erase => ApprovalEvent::Erase,
             Self::Offer { foreign } => ApprovalEvent::OfferAgain {
                 router_run: if foreign { other_run() } else { router_run() },
             },
-            Self::Report { foreign, report } => {
-                holder_report(if foreign { other_run() } else { router_run() }, report)
-            }
+            Self::Report {
+                foreign_run,
+                foreign_request,
+                report,
+            } => ApprovalEvent::Report(ReportDeliveryRequest {
+                request_id: if foreign_request {
+                    other_request_id()
+                } else {
+                    request_id()
+                },
+                router_run: if foreign_run {
+                    other_run()
+                } else {
+                    router_run()
+                },
+                report,
+            }),
         }
     }
 }
@@ -126,8 +178,94 @@ pub(super) fn command_name(command: Command) -> &'static str {
         Command::RunEnds => "runRetired",
         Command::SessionEnds => "sessionEnded",
         Command::EnrollmentEnds => "enrollmentEnded",
+        Command::Erase => "erase",
         Command::Offer { .. } => "offerAgain",
         Command::Report { .. } => "report",
         _ => "answer",
     }
+}
+
+pub(super) fn history_prefix(start: u8) -> Vec<Command> {
+    let raise = Command::Raise { changed: false };
+    let report = Command::Report {
+        foreign_run: false,
+        foreign_request: false,
+        report: HolderReport::Applied,
+    };
+    let prefix: &[Command] = match start {
+        0 => &[],
+        1 => &[raise, raise, Command::Raise { changed: true }],
+        2 => &[
+            raise,
+            Command::ForwardFromParent,
+            Command::ForwardFromParent,
+        ],
+        3 => &[Command::HolderStops, raise],
+        4 => &[
+            raise,
+            Command::AllowFromParent,
+            Command::DeclineFromObserver,
+            report,
+            report,
+        ],
+        5 => &[
+            raise,
+            Command::DeclineFromObserver,
+            Command::AllowFromParent,
+            report,
+            report,
+        ],
+        6 => &[
+            raise,
+            Command::AllowFromParent,
+            Command::HolderStops,
+            Command::Offer { foreign: false },
+        ],
+        7 => &[
+            raise,
+            Command::HolderStops,
+            Command::AllowFromParent,
+            Command::Offer { foreign: false },
+        ],
+        8 => &[
+            raise,
+            Command::AllowFromParent,
+            report.with_foreign_request(true),
+            report,
+        ],
+        9 => &[
+            raise,
+            Command::AllowFromParent,
+            report,
+            Command::RunEnds,
+            report,
+        ],
+        10 => &[raise, Command::AllowFromParent, Command::RunEnds, report],
+        11 => &[Command::RunEnds, raise, Command::HolderStops],
+        12 => &[
+            raise,
+            Command::AllowFromParent,
+            Command::Erase,
+            raise,
+            Command::HolderStops,
+            report,
+            Command::Offer { foreign: false },
+        ],
+        13 => &[
+            raise,
+            Command::SessionEnds,
+            Command::Erase,
+            raise,
+            Command::HolderStops,
+            report,
+        ],
+        _ => &[
+            raise,
+            Command::AllowFromParent,
+            report,
+            Command::Erase,
+            report,
+        ],
+    };
+    prefix.to_vec()
 }

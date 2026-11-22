@@ -1,17 +1,19 @@
 use approval_request_protocol::{
-    CancelReason, Delivery, Ending, EndingView, HolderReport, HolderStopCause, OfferEnding,
-    RaiseReceipt, RaiseReply, Refusal, ReportDeliveryReply, StopReceiptEnding,
+    Answer, CancelReason, DecidedBy, Delivery, Ending, EndingView, HolderReport, HolderStopCause,
+    OfferEnding, ParkedCallHolder, RaiseReceipt, RaiseReply, Refusal, ReportDeliveryReply,
+    ReportDeliveryRequest, StopReceiptEnding,
 };
 use central_engine_model::{Machine, TransitionError};
 
 use crate::{
-    ApprovalDestination, ApprovalEffect, ApprovalEvent, ApprovalLifecycle, ApprovalReceipt,
-    ApprovalRefusal, ApprovalState, SessionNoticePhase,
+    AdmittedDecider, ApprovalDestination, ApprovalEffect, ApprovalEvent, ApprovalLifecycle,
+    ApprovalReceipt, ApprovalRefusal, ApprovalState, FactorStanding, SessionNoticePhase,
 };
 
 use super::fixtures::{
-    DEADLINE, apply, approval_raise, destinations, holder_report, observer, other_run, parent,
-    raise_event, request_id, router_run, step, stop_event, time, waiting,
+    DEADLINE, apply, approval_raise, call_raise, destinations, holder_report, observer, option_id,
+    other_request_id, other_run, parent, person_answer, person_id, raise_event, request_id,
+    requester, router_run, session_answer, step, stop_event, time, waiting,
 };
 use super::{GONE, STOPPED, allow_from_parent, closed, refused, stop_reply};
 
@@ -144,7 +146,31 @@ fn report_is_scoped_repeatable_and_immutable_even_after_retirement() {
         Err(TransitionError::Stale)
     );
 
+    assert_eq!(
+        step(
+            &awaiting,
+            ApprovalEvent::OfferAgain {
+                router_run: other_run()
+            },
+            2
+        ),
+        Err(TransitionError::Stale)
+    );
+    assert_eq!(
+        step(
+            &awaiting,
+            ApprovalEvent::Report(ReportDeliveryRequest {
+                request_id: other_request_id(),
+                router_run: router_run(),
+                report: HolderReport::Applied,
+            }),
+            2
+        ),
+        Err(TransitionError::Stale)
+    );
+
     let (reported, ack) = apply(&awaiting, report.clone(), 2);
+    assert_eq!(closed(&reported).ending, closed(&awaiting).ending);
     assert_eq!(
         closed(&reported).delivery,
         Delivery::Reported {
@@ -166,11 +192,11 @@ fn report_is_scoped_repeatable_and_immutable_even_after_retirement() {
         ),
         Err(TransitionError::Domain(ApprovalRefusal::ReportDiffers))
     );
+    assert_eq!(apply(&reported, stop_event(), 4).0, reported);
     assert_eq!(
-        apply(&reported, ApprovalEvent::RunRetired, 4),
+        apply(&reported, ApprovalEvent::RunRetired, 5),
         (reported.clone(), vec![])
     );
-    assert_eq!(apply(&reported, stop_event(), 5).0, reported);
 
     let (unknown, effects) = apply(&awaiting, ApprovalEvent::RunRetired, 4);
     assert_eq!(closed(&unknown).ending, closed(&awaiting).ending);
@@ -298,5 +324,174 @@ fn session_notice_due_and_handover_effects_describe_the_guarded_write() {
     assert_eq!(
         apply(&ended, ApprovalEvent::ClockReached, DEADLINE + 1),
         (ended, vec![])
+    );
+}
+
+#[test]
+fn expired_admitted_answer_writes_the_full_timeout_even_if_its_choice_or_factor_is_invalid() {
+    use crate::EndedApproval;
+    use approval_request_protocol::ProviderHolder;
+
+    let mut destinations = destinations();
+    destinations.push(ApprovalDestination::People);
+    let (initial, _) = apply(
+        &ApprovalState::Unraised,
+        ApprovalEvent::Raise {
+            raise: Box::new(approval_raise("First request")),
+            destinations,
+        },
+        0,
+    );
+    let expected_effects = vec![
+        ApprovalEffect::StoreSessionNotice {
+            request_id: request_id(),
+            session: parent(),
+            phase: SessionNoticePhase::Ended,
+        },
+        ApprovalEffect::StoreSessionNotice {
+            request_id: request_id(),
+            session: observer(),
+            phase: SessionNoticePhase::Ended,
+        },
+        ApprovalEffect::ClearDue {
+            request_id: request_id(),
+        },
+        ApprovalEffect::OfferEnding(Box::new(OfferEnding::Provider {
+            request_id: request_id(),
+            holder: ProviderHolder {
+                session: requester(),
+                router_run: router_run(),
+            },
+            ending: Ending::TimedOut {},
+        })),
+        ApprovalEffect::Reply(ApprovalReceipt::AnswerRefused(Refusal::TooLate {})),
+    ];
+    let rejected_inputs = [
+        session_answer(parent(), "not-offered"),
+        ApprovalEvent::Answer {
+            actor: AdmittedDecider::Session(parent()),
+            answer: Answer::Call {
+                option_id: option_id("once"),
+            },
+        },
+        session_answer(parent(), "kept"),
+        person_answer(FactorStanding::AbsentOrStale, "kept"),
+    ];
+
+    for at in [DEADLINE, DEADLINE + 1] {
+        for event in &rejected_inputs {
+            let timed_out = ApprovalState::Ended {
+                saved: Box::new(super::saved(&initial).clone()),
+                closed: EndedApproval {
+                    ending: Ending::TimedOut {},
+                    delivery: Delivery::AwaitingReport {},
+                    ended_at: time(at),
+                },
+            };
+            assert_eq!(
+                step(&initial, event.clone(), at),
+                Ok((timed_out, expected_effects.clone())),
+                "whole timeout write for {event:?} at {at}"
+            );
+        }
+        assert_eq!(
+            step(
+                &initial,
+                session_answer(super::fixtures::session(9), "not-offered"),
+                at
+            ),
+            Err(refused(Refusal::NotVisible {}))
+        );
+    }
+    let (clock_ended, _) = apply(&initial, ApprovalEvent::ClockReached, DEADLINE);
+    assert_eq!(
+        step(&clock_ended, rejected_inputs[0].clone(), DEADLINE),
+        Err(refused(Refusal::Ended {
+            ending: EndingView::TimedOut {}
+        }))
+    );
+}
+
+#[test]
+fn parked_call_offers_the_saved_answer_to_its_exact_holder_and_settles_the_report() {
+    let (call, _) = apply(
+        &ApprovalState::Unraised,
+        ApprovalEvent::Raise {
+            raise: Box::new(call_raise()),
+            destinations: vec![ApprovalDestination::People],
+        },
+        0,
+    );
+    let by = DecidedBy::Person {
+        person_id: person_id(),
+    };
+    let answer = Answer::Call {
+        option_id: option_id("once"),
+    };
+    let (decided, effects) = apply(
+        &call,
+        ApprovalEvent::Answer {
+            actor: AdmittedDecider::Person {
+                person_id: person_id(),
+                factor: FactorStanding::Fresh,
+            },
+            answer: answer.clone(),
+        },
+        2,
+    );
+    let ending = Ending::Decided {
+        answer: answer.clone(),
+        by: by.clone(),
+    };
+    assert_eq!(closed(&decided).ending, ending);
+    assert_eq!(closed(&decided).delivery, Delivery::AwaitingReport {});
+    let holder_offer = ApprovalEffect::OfferEnding(Box::new(OfferEnding::UnprovenCall {
+        request_id: request_id(),
+        holder: ParkedCallHolder {
+            router_run: router_run(),
+        },
+        ending: ending.clone(),
+    }));
+    assert_eq!(
+        effects,
+        [
+            ApprovalEffect::ClearDue {
+                request_id: request_id()
+            },
+            holder_offer.clone(),
+            ApprovalEffect::Reply(ApprovalReceipt::Answer(EndingView::DecidedWithAnswer {
+                answer,
+                by
+            })),
+        ]
+    );
+    assert_eq!(
+        apply(
+            &decided,
+            ApprovalEvent::OfferAgain {
+                router_run: router_run()
+            },
+            3
+        ),
+        (decided.clone(), vec![holder_offer])
+    );
+
+    let (reported, effects) = apply(
+        &decided,
+        holder_report(router_run(), HolderReport::Applied),
+        4,
+    );
+    assert_eq!(closed(&reported).ending, ending);
+    assert_eq!(
+        closed(&reported).delivery,
+        Delivery::Reported {
+            report: HolderReport::Applied
+        }
+    );
+    assert_eq!(
+        effects,
+        [ApprovalEffect::Reply(ApprovalReceipt::Report(
+            ReportDeliveryReply::DeliveryRecorded {}
+        ))]
     );
 }

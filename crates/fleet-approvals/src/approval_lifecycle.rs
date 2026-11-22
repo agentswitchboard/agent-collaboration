@@ -1,7 +1,7 @@
 use approval_request_protocol::{
     CancelReason, CentralTime, Delivery, Ending, HolderReport, HolderStopCause, Raise,
     RaiseReceipt, RaiseReply, Refusal, ReportDeliveryReply, ReportDeliveryRequest,
-    StopReceiptEnding, StopReply, StopRequest, WaitingStatus,
+    StopReceiptEnding, StopReply, WaitingStatus,
 };
 use central_engine_model::{
     Context, EngineTime, EventTag, Machine, MachineKind, StateTag, Transition, TransitionError,
@@ -16,8 +16,11 @@ use crate::{
 };
 
 use crate::approval_lifecycle_admission::{
-    check_destination, check_parent, destination_refusal, validate_answer,
+    check_destination, check_parent, check_scope, check_stop, destination_refusal, raise_run,
+    stop_scope, validate_answer,
 };
+
+use crate::approval_lifecycle_erasure::{apply_erased_marker, erase_ended, which_ending_stands};
 
 /// Reduces admitted events for one scoped request into its next state and owed writes.
 pub struct ApprovalLifecycle;
@@ -51,7 +54,12 @@ impl Machine for ApprovalLifecycle {
             ApprovalState::Waiting { saved, status } => {
                 apply_waiting(state, saved, *status, event, now)
             }
-            ApprovalState::Ended { saved, closed } => apply_ended(state, saved, closed, event),
+            ApprovalState::Ended { saved, closed } => apply_ended(state, saved, closed, event, now),
+            ApprovalState::Erased {
+                request_id,
+                router_run,
+                ending,
+            } => apply_erased_marker(state, request_id, router_run, *ending, event),
         }
     }
 
@@ -64,7 +72,8 @@ impl Machine for ApprovalLifecycle {
             ApprovalState::Waiting { saved, .. } => Some(saved.receipt.deadline),
             ApprovalState::Unraised
             | ApprovalState::StoppedBeforeRaise { .. }
-            | ApprovalState::Ended { .. } => None,
+            | ApprovalState::Ended { .. }
+            | ApprovalState::Erased { .. } => None,
         }
     }
 }
@@ -142,7 +151,8 @@ fn apply_unraised(event: ApprovalEvent, now: EngineTime) -> LifecycleResult {
         | ApprovalEvent::SessionEnded
         | ApprovalEvent::EnrollmentEnded
         | ApprovalEvent::OfferAgain { .. }
-        | ApprovalEvent::Report(_)) => Err(not_allowed(&ApprovalState::Unraised, &event)),
+        | ApprovalEvent::Report(_)
+        | ApprovalEvent::Erase) => Err(not_allowed(&ApprovalState::Unraised, &event)),
     }
 }
 
@@ -180,7 +190,8 @@ fn apply_stopped_marker(
         | ApprovalEvent::SessionEnded
         | ApprovalEvent::EnrollmentEnded
         | ApprovalEvent::OfferAgain { .. }
-        | ApprovalEvent::Report(_)) => Err(not_allowed(state, &event)),
+        | ApprovalEvent::Report(_)
+        | ApprovalEvent::Erase) => Err(not_allowed(state, &event)),
     }
 }
 
@@ -195,7 +206,6 @@ fn apply_waiting(
         ApprovalEvent::Raise { raise, .. } => replay_raise(state, saved, &raise),
         ApprovalEvent::Answer { actor, answer } => {
             check_destination(saved, &actor)?;
-            validate_answer(saved, &actor, &answer)?;
             if now >= saved.receipt.deadline {
                 return Ok(end_wait(
                     saved,
@@ -205,6 +215,7 @@ fn apply_waiting(
                     Some(ApprovalReceipt::AnswerRefused(Refusal::TooLate {})),
                 ));
             }
+            validate_answer(saved, &actor, &answer)?;
             let by = actor.identity();
             let ending = Ending::Decided {
                 answer,
@@ -303,9 +314,9 @@ fn apply_waiting(
                 None,
             ))
         }
-        event @ (ApprovalEvent::OfferAgain { .. } | ApprovalEvent::Report(_)) => {
-            Err(not_allowed(state, &event))
-        }
+        event @ (ApprovalEvent::OfferAgain { .. }
+        | ApprovalEvent::Report(_)
+        | ApprovalEvent::Erase) => Err(not_allowed(state, &event)),
     }
 }
 
@@ -314,8 +325,10 @@ fn apply_ended(
     saved: &RetainedApproval,
     closed: &EndedApproval,
     event: ApprovalEvent,
+    now: EngineTime,
 ) -> LifecycleResult {
     match event {
+        ApprovalEvent::Erase => erase_ended(saved, closed, now),
         ApprovalEvent::Raise { raise, .. } => replay_raise(state, saved, &raise),
         ApprovalEvent::Answer { actor, .. } => {
             check_destination(saved, &actor)?;
@@ -458,60 +471,6 @@ fn apply_report(
     ))
 }
 
-fn check_scope(
-    id: &ApprovalRequestId,
-    run: &RouterRunId,
-    event_id: &ApprovalRequestId,
-    event_run: &RouterRunId,
-) -> Result<(), LifecycleError> {
-    if id == event_id && run == event_run {
-        Ok(())
-    } else {
-        Err(TransitionError::Stale)
-    }
-}
-
-fn check_stop(saved: &RetainedApproval, stop: &StopRequest) -> Result<(), LifecycleError> {
-    let (id, run) = stop_scope(stop);
-    check_scope(&saved.receipt.request_id, saved.holder_run(), id, run)?;
-    match (&saved.raise, stop) {
-        (
-            Raise::ProviderApproval { .. } | Raise::ProviderQuestion { .. },
-            StopRequest::Provider { .. },
-        )
-        | (Raise::UnprovenCall { .. }, StopRequest::UnprovenCall { .. }) => Ok(()),
-        (
-            Raise::ProviderApproval { .. } | Raise::ProviderQuestion { .. },
-            StopRequest::UnprovenCall { .. },
-        )
-        | (Raise::UnprovenCall { .. }, StopRequest::Provider { .. }) => Err(TransitionError::Stale),
-    }
-}
-
-fn stop_scope(stop: &StopRequest) -> (&ApprovalRequestId, &RouterRunId) {
-    match stop {
-        StopRequest::Provider {
-            request_id,
-            router_run,
-            ..
-        }
-        | StopRequest::UnprovenCall {
-            request_id,
-            router_run,
-            ..
-        } => (request_id, router_run),
-    }
-}
-
-fn raise_run(raise: &Raise) -> &RouterRunId {
-    match raise {
-        Raise::ProviderApproval { holder, .. } | Raise::ProviderQuestion { holder, .. } => {
-            &holder.router_run
-        }
-        Raise::UnprovenCall { holder, .. } => &holder.router_run,
-    }
-}
-
 fn replay_raise(state: &ApprovalState, saved: &RetainedApproval, raise: &Raise) -> LifecycleResult {
     check_scope(
         &saved.receipt.request_id,
@@ -569,14 +528,6 @@ fn with_delivery(
 fn gone_before_handover() -> Delivery {
     Delivery::Reported {
         report: HolderReport::GoneBeforeHandover,
-    }
-}
-
-fn which_ending_stands(ending: &Ending) -> StopReceiptEnding {
-    match ending {
-        Ending::Decided { .. } => StopReceiptEnding::DecidedEarlier {},
-        Ending::Cancelled { reason } => StopReceiptEnding::Cancelled { reason: *reason },
-        Ending::TimedOut {} => StopReceiptEnding::TimedOut {},
     }
 }
 

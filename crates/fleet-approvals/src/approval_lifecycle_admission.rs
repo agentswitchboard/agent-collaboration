@@ -1,5 +1,6 @@
-use approval_request_protocol::{Answer, OfferView, Refusal, check_answer};
+use approval_request_protocol::{Answer, OfferView, Raise, Refusal, StopRequest, check_answer};
 use central_engine_model::TransitionError;
+use workspace_ids::{ApprovalRequestId, RouterRunId};
 
 use crate::{
     AdmittedDecider, ApprovalDestination, ApprovalRefusal, FactorStanding, PassOnAuthority,
@@ -80,4 +81,61 @@ pub(super) fn check_parent(
 
 pub(super) fn destination_refusal(refusal: Refusal) -> TransitionError<ApprovalRefusal> {
     TransitionError::Domain(ApprovalRefusal::Destination { refusal })
+}
+
+pub(super) fn check_scope(
+    id: &ApprovalRequestId,
+    run: &RouterRunId,
+    event_id: &ApprovalRequestId,
+    event_run: &RouterRunId,
+) -> Result<(), TransitionError<ApprovalRefusal>> {
+    if id == event_id && run == event_run {
+        Ok(())
+    } else {
+        Err(TransitionError::Stale)
+    }
+}
+
+pub(super) fn check_stop(
+    saved: &RetainedApproval,
+    stop: &StopRequest,
+) -> Result<(), TransitionError<ApprovalRefusal>> {
+    let (id, run) = stop_scope(stop);
+    check_scope(&saved.receipt.request_id, saved.holder_run(), id, run)?;
+    match (&saved.raise, stop) {
+        (
+            Raise::ProviderApproval { .. } | Raise::ProviderQuestion { .. },
+            StopRequest::Provider { .. },
+        )
+        | (Raise::UnprovenCall { .. }, StopRequest::UnprovenCall { .. }) => Ok(()),
+        (
+            Raise::ProviderApproval { .. } | Raise::ProviderQuestion { .. },
+            StopRequest::UnprovenCall { .. },
+        )
+        | (Raise::UnprovenCall { .. }, StopRequest::Provider { .. }) => Err(TransitionError::Stale),
+    }
+}
+
+pub(super) fn stop_scope(stop: &StopRequest) -> (&ApprovalRequestId, &RouterRunId) {
+    match stop {
+        StopRequest::Provider {
+            request_id,
+            router_run,
+            ..
+        }
+        | StopRequest::UnprovenCall {
+            request_id,
+            router_run,
+            ..
+        } => (request_id, router_run),
+    }
+}
+
+pub(super) fn raise_run(raise: &Raise) -> &RouterRunId {
+    match raise {
+        Raise::ProviderApproval { holder, .. } | Raise::ProviderQuestion { holder, .. } => {
+            &holder.router_run
+        }
+        Raise::UnprovenCall { holder, .. } => &holder.router_run,
+    }
 }

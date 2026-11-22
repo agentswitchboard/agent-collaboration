@@ -1,7 +1,7 @@
 use approval_request_protocol::{
     Answer, CentralTime, DecidedBy, Delivery, Ending, EndingView, HolderStopCause, OfferEnding,
     Raise, RaiseReceipt, RaiseReply, Refusal, ReportDeliveryReply, ReportDeliveryRequest,
-    StopReply, StopRequest, WaitingStatus,
+    StopReceiptEnding, StopReply, StopRequest, WaitingStatus,
 };
 use central_engine_model::{EventTag, RefusalTag, StateTag};
 use serde::{Deserialize, Serialize};
@@ -82,6 +82,12 @@ pub enum ApprovalState {
         saved: Box<RetainedApproval>,
         closed: EndedApproval,
     },
+    /// Duplicate-suppression marker retained while the run is registered.
+    Erased {
+        request_id: ApprovalRequestId,
+        router_run: RouterRunId,
+        ending: StopReceiptEnding,
+    },
 }
 
 impl StateTag for ApprovalState {
@@ -93,6 +99,7 @@ impl StateTag for ApprovalState {
                 WaitingStatus::Pending => "pending",
                 WaitingStatus::PassedOn => "passedOn",
             },
+            Self::Erased { .. } => "erased",
             Self::Ended { closed, .. } => match closed.delivery {
                 Delivery::NoHandoverOwed {} => "noHandoverOwed",
                 Delivery::AwaitingReport {} => "awaitingReport",
@@ -105,7 +112,7 @@ impl StateTag for ApprovalState {
     fn is_terminal(&self) -> bool {
         match self {
             Self::Unraised | Self::Waiting { .. } => false,
-            Self::StoppedBeforeRaise { .. } => true,
+            Self::StoppedBeforeRaise { .. } | Self::Erased { .. } => true,
             Self::Ended { closed, .. } => match closed.delivery {
                 Delivery::AwaitingReport {} => false,
                 Delivery::NoHandoverOwed {}
@@ -184,6 +191,7 @@ pub enum ApprovalEvent {
         router_run: RouterRunId,
     },
     Report(ReportDeliveryRequest),
+    Erase,
 }
 
 impl EventTag for ApprovalEvent {
@@ -199,6 +207,7 @@ impl EventTag for ApprovalEvent {
             Self::EnrollmentEnded => "enrollmentEnded",
             Self::OfferAgain { .. } => "offerAgain",
             Self::Report(_) => "report",
+            Self::Erase => "erase",
         }
     }
 }
@@ -237,6 +246,10 @@ pub enum ApprovalEffect {
         request_id: ApprovalRequestId,
     },
     OfferEnding(Box<OfferEnding>),
+    /// Settle an unpaid report in the same write that discards the retained request.
+    SettleErasedDeliveryAsUnknown {
+        request_id: ApprovalRequestId,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

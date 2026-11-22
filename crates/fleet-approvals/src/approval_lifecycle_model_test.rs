@@ -27,11 +27,17 @@ use super::{GONE, STOPPED};
 
 #[path = "approval_lifecycle_commands_test.rs"]
 mod commands;
-use commands::{COMMANDS, Command, command_name};
+#[path = "approval_lifecycle_parked_call_model_test.rs"]
+mod parked_call;
+use commands::{COMMANDS, Command, command_name, history_prefix};
+#[path = "approval_lifecycle_erased_model_test.rs"]
+mod erased;
+use erased::{erased_effects, standing};
 
 const FIRST_TITLE: &str = "First request";
 const CHANGED_TITLE: &str = "Replacement request";
 const ONE_HOUR_MILLIS: i64 = 3_600_000;
+const SIXTY_DAYS_MILLIS: i64 = 60 * 24 * ONE_HOUR_MILLIS;
 
 type Rejected = TransitionError<ApprovalRefusal>;
 
@@ -43,6 +49,7 @@ struct ApprovalLedger {
     forwarded: bool,
     outcome: Option<(Ending, i64)>,
     delivery: Option<Delivery>,
+    erased_ending: Option<StopReceiptEnding>,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -76,6 +83,28 @@ impl ApprovalLedger {
         at: i64,
         include_people: bool,
     ) -> Result<Vec<ApprovalEffect>, Rejected> {
+        if let Some(ending) = self.erased_ending {
+            return erased_effects(command, ending);
+        }
+        if matches!(command, Command::Erase)
+            && let Some((ending, ended_at)) = &self.outcome
+        {
+            if at - ended_at < SIXTY_DAYS_MILLIS {
+                return Err(Rejected::Stale);
+            }
+            let effects = if self.delivery == Some(Delivery::AwaitingReport {}) {
+                vec![ApprovalEffect::SettleErasedDeliveryAsUnknown {
+                    request_id: request_id(),
+                }]
+            } else {
+                vec![]
+            };
+            *self = Self {
+                erased_ending: Some(standing(ending)),
+                ..Self::default()
+            };
+            return Ok(effects);
+        }
         let was_raised = self.first_request.is_some();
         let had_ending = self.outcome.is_some();
         let mut offer_again = false;
@@ -119,6 +148,16 @@ impl ApprovalLedger {
                 let late = at - first.at >= ONE_HOUR_MILLIS;
                 match other {
                     Command::HolderStops => Some(self.stop(at, late)?),
+                    Command::Erase => {
+                        return Err(Rejected::NotAllowed {
+                            state: if self.forwarded {
+                                "passedOn"
+                            } else {
+                                "pending"
+                            },
+                            event: "erase",
+                        });
+                    }
                     Command::ForwardFromParent | Command::ForwardWithoutParent => {
                         Some(self.forward(other, at, late)?)
                     }
@@ -140,9 +179,11 @@ impl ApprovalLedger {
                         offer_again = true;
                         None
                     }
-                    Command::Report { foreign, report } => {
-                        Some(self.record_report(foreign, report)?)
-                    }
+                    Command::Report {
+                        foreign_run,
+                        foreign_request,
+                        report,
+                    } => Some(self.record_report(foreign_run, foreign_request, report)?),
                     _ => Some(self.answer(other, at, late)?),
                 }
             }
@@ -229,6 +270,10 @@ impl ApprovalLedger {
             unexpected => panic!("expected a model answer, got {unexpected:?}"),
         };
         self.reject_if_ended(&by)?;
+        if late {
+            self.write_outcome(Ending::TimedOut {}, at, Delivery::AwaitingReport {});
+            return Ok(ApprovalReceipt::AnswerRefused(Refusal::TooLate {}));
+        }
         match command {
             Command::UnknownOption => {
                 return Err(destination(Refusal::InvalidAnswer {
@@ -242,10 +287,6 @@ impl ApprovalLedger {
                 return Err(destination(Refusal::SecondFactorRequired {}));
             }
             _ => {}
-        }
-        if late {
-            self.write_outcome(Ending::TimedOut {}, at, Delivery::AwaitingReport {});
-            return Ok(ApprovalReceipt::AnswerRefused(Refusal::TooLate {}));
         }
         let answer = approval_answer(choice);
         self.write_outcome(
@@ -321,11 +362,7 @@ impl ApprovalLedger {
         let Some((ending, _)) = &self.outcome else {
             panic!("stop must leave an ending");
         };
-        Ok(stopped_receipt(match ending {
-            Ending::Decided { .. } => StopReceiptEnding::DecidedEarlier {},
-            Ending::Cancelled { reason } => StopReceiptEnding::Cancelled { reason: *reason },
-            Ending::TimedOut {} => StopReceiptEnding::TimedOut {},
-        }))
+        Ok(stopped_receipt(standing(ending)))
     }
 
     fn authority_ended(&mut self, command: Command, at: i64, late: bool) {
@@ -374,10 +411,11 @@ impl ApprovalLedger {
 
     fn record_report(
         &mut self,
-        foreign: bool,
+        foreign_run: bool,
+        foreign_request: bool,
         report: HolderReport,
     ) -> Result<ApprovalReceipt, Rejected> {
-        self.check_delivery_command("report", foreign)?;
+        self.check_delivery_command("report", foreign_run || foreign_request)?;
         match self.delivery {
             Some(Delivery::AwaitingReport {}) => {
                 self.delivery = Some(Delivery::Reported { report })
@@ -392,6 +430,19 @@ impl ApprovalLedger {
     }
 
     fn assert_projection(&self, actual: &ApprovalState) {
+        if let Some(ending) = self.erased_ending {
+            assert_eq!(
+                actual,
+                &ApprovalState::Erased {
+                    request_id: request_id(),
+                    router_run: router_run(),
+                    ending,
+                }
+            );
+            assert!(actual.is_terminal());
+            assert_eq!(ApprovalLifecycle::next_due(actual), None);
+            return;
+        }
         let expected = match (
             self.first_request,
             self.stopped_before_raise,
@@ -487,49 +538,7 @@ fn generated_histories_match_the_independent_approval_ledger(case: hegel::TestCa
     let mut expected = ApprovalLedger::default();
     let mut now = 0;
     let people_on_first_raise = case.draw(gs::booleans());
-    let raise = Command::Raise { changed: false };
-    let report = Command::Report {
-        foreign: false,
-        report: HolderReport::Applied,
-    };
-    let start = case.draw(gs::integers::<u8>().max_value(8));
-    let start_commands: &[Command] = match start {
-        0 => &[],
-        1 => &[raise, raise, Command::Raise { changed: true }],
-        2 => &[
-            raise,
-            Command::ForwardFromParent,
-            Command::ForwardFromParent,
-        ],
-        3 => &[Command::HolderStops, raise],
-        4 => &[
-            raise,
-            Command::AllowFromParent,
-            Command::DeclineFromObserver,
-            report,
-            report,
-        ],
-        5 => &[
-            raise,
-            Command::DeclineFromObserver,
-            Command::AllowFromParent,
-            report,
-            report,
-        ],
-        6 => &[
-            raise,
-            Command::AllowFromParent,
-            Command::HolderStops,
-            Command::Offer { foreign: false },
-        ],
-        7 => &[
-            raise,
-            Command::HolderStops,
-            Command::AllowFromParent,
-            Command::Offer { foreign: false },
-        ],
-        _ => &[raise],
-    };
+    let start_commands = history_prefix(case.draw(gs::integers::<u8>().max_value(14)));
     let tick_choices = [
         0,
         1,
@@ -537,9 +546,22 @@ fn generated_histories_match_the_independent_approval_ledger(case: hegel::TestCa
         ONE_HOUR_MILLIS - 1,
         ONE_HOUR_MILLIS,
         ONE_HOUR_MILLIS + 1,
+        SIXTY_DAYS_MILLIS - 1,
+        SIXTY_DAYS_MILLIS,
+        SIXTY_DAYS_MILLIS + 1,
     ];
 
+    let mut holder_can_act = true;
     let mut compare_step = |command: Command, at: i64, include_people: bool| {
+        // Registration is the applying caller's responsibility. A retired holder
+        // supplies no reducer event, even when the request was never raised.
+        if !holder_can_act && command.requires_live_holder() {
+            expected.assert_projection(&actual);
+            return;
+        }
+        if matches!(command, Command::RunEnds | Command::EnrollmentEnds) {
+            holder_can_act = false;
+        }
         let observed = step(&actual, command.event(include_people), at);
         match (expected.record(command, at, include_people), observed) {
             (Ok(effects), Ok((next, actual_effects))) => {
@@ -554,11 +576,19 @@ fn generated_histories_match_the_independent_approval_ledger(case: hegel::TestCa
         expected.assert_projection(&actual);
     };
 
-    for &command in start_commands {
+    for command in start_commands {
+        if matches!(command, Command::Erase) {
+            now = SIXTY_DAYS_MILLIS;
+        }
         compare_step(command, now, people_on_first_raise);
     }
     for _ in 0..case.draw(gs::integers::<u8>().min_value(1).max_value(30)) {
         let command = case.draw(gs::sampled_from(COMMANDS.to_vec()));
+        let command = if matches!(command, Command::Report { .. }) {
+            command.with_foreign_request(case.draw(gs::booleans()))
+        } else {
+            command
+        };
         let tick = case.draw(gs::sampled_from(tick_choices.to_vec()));
         now += tick;
         compare_step(command, now, case.draw(gs::booleans()));

@@ -67,4 +67,11 @@ pub(crate) const TRANSITIONS: &[Transition] = &[
     edge("receiptUnknown", "runRetired", "receiptUnknown", true),
     edge("receiptUnknown", "sessionEnded", "receiptUnknown", true),
     edge("receiptUnknown", "enrollmentEnded", "receiptUnknown", true),
+    edge("awaitingReport", "erase", "erased", true),
+    edge("reported", "erase", "erased", true),
+    edge("noHandoverOwed", "erase", "erased", true),
+    edge("receiptUnknown", "erase", "erased", true),
+    edge("erased", "raise", "erased", true),
+    edge("erased", "stop", "erased", true),
+    edge("erased", "report", "erased", true),
 ];

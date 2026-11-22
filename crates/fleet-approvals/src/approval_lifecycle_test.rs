@@ -14,6 +14,9 @@ use crate::{
 
 #[path = "approval_lifecycle_delivery_test.rs"]
 mod delivery;
+#[path = "approval_lifecycle_erasure_test.rs"]
+mod erasure;
+use erasure::SIXTY_DAYS;
 #[path = "approval_lifecycle_fixture_test.rs"]
 mod fixtures;
 #[path = "approval_lifecycle_model_test.rs"]
@@ -126,22 +129,24 @@ fn answer_must_match_the_saved_offer() {
         },
     };
 
-    for at in [2, DEADLINE] {
-        assert_eq!(
-            step(&state, session_answer(parent(), "not-offered"), at),
-            Err(refused(Refusal::InvalidAnswer {
-                reason: InvalidAnswer::UnofferedOption {
-                    option_id: option_id("not-offered")
-                }
-            }))
-        );
-        assert_eq!(
-            step(&state, wrong_kind.clone(), at),
-            Err(refused(Refusal::InvalidAnswer {
-                reason: InvalidAnswer::WrongKind {}
-            }))
-        );
-    }
+    assert_eq!(
+        step(
+            &state,
+            session_answer(parent(), "not-offered"),
+            DEADLINE - 1
+        ),
+        Err(refused(Refusal::InvalidAnswer {
+            reason: InvalidAnswer::UnofferedOption {
+                option_id: option_id("not-offered")
+            }
+        }))
+    );
+    assert_eq!(
+        step(&state, wrong_kind, DEADLINE - 1),
+        Err(refused(Refusal::InvalidAnswer {
+            reason: InvalidAnswer::WrongKind {}
+        }))
+    );
     assert!(matches!(
         closed(&apply(&state, allow_from_parent(), 3).0).ending,
         Ending::Decided { .. }
@@ -218,10 +223,12 @@ fn only_destinations_other_than_requester_act_and_privileged_choices_need_fresh_
     )
     .0;
 
-    assert_eq!(
-        step(&state, session_answer(requester(), "once"), 2),
-        Err(refused(Refusal::RequesterCannotAnswer {}))
-    );
+    for at in [2, DEADLINE] {
+        assert_eq!(
+            step(&state, session_answer(requester(), "once"), at),
+            Err(refused(Refusal::RequesterCannotAnswer {}))
+        );
+    }
     assert_eq!(
         step(&state, session_answer(observer(), "once"), 2),
         Err(refused(Refusal::NotVisible {}))
@@ -293,25 +300,12 @@ fn only_destinations_other_than_requester_act_and_privileged_choices_need_fresh_
                     person_id: person_id(),
                     factor: FactorStanding::AbsentOrStale
                 },
-                answer: answer.clone()
+                answer
             },
             2
         ),
         Err(refused(Refusal::SecondFactorRequired {}))
     );
-    let (approved, effects) = apply(
-        &call,
-        ApprovalEvent::Answer {
-            actor: AdmittedDecider::Person {
-                person_id: person_id(),
-                factor: FactorStanding::Fresh,
-            },
-            answer,
-        },
-        2,
-    );
-    assert!(matches!(closed(&approved).ending, Ending::Decided { .. }));
-    assert!(effects.iter().any(|effect| matches!(effect, ApprovalEffect::OfferEnding(offer) if matches!(offer.as_ref(), OfferEnding::UnprovenCall { .. }))));
 }
 
 #[test]
@@ -389,6 +383,17 @@ fn every_state_event_pair_takes_a_declared_edge_or_refuses() {
     let (unknown, _) = apply(&awaiting, ApprovalEvent::RunRetired, 1);
     let (marker, _) = apply(&ApprovalState::Unraised, stop_event(), 1);
 
+    let old_ending_at = DEADLINE - SIXTY_DAYS;
+    let (old_pending, _) = apply(&ApprovalState::Unraised, raise_event(), old_ending_at - 1);
+    let (old_awaiting, _) = apply(&old_pending, allow_from_parent(), old_ending_at);
+    let (old_reported, _) = apply(
+        &old_awaiting,
+        holder_report(router_run(), HolderReport::Applied),
+        old_ending_at,
+    );
+    let (old_unowed, _) = apply(&old_pending, ApprovalEvent::RunRetired, old_ending_at);
+    let (old_unknown, _) = apply(&old_awaiting, ApprovalEvent::RunRetired, old_ending_at);
+    let (erased, _) = apply(&old_awaiting, ApprovalEvent::Erase, DEADLINE);
     let scenarios = [
         ApprovalState::Unraised,
         marker,
@@ -400,6 +405,11 @@ fn every_state_event_pair_takes_a_declared_edge_or_refuses() {
         reported,
         no_handover,
         unknown,
+        old_awaiting,
+        old_reported,
+        old_unowed,
+        old_unknown,
+        erased,
     ];
     let events = [
         raise_event(),
@@ -414,6 +424,7 @@ fn every_state_event_pair_takes_a_declared_edge_or_refuses() {
             router_run: router_run(),
         },
         holder_report(router_run(), HolderReport::Applied),
+        ApprovalEvent::Erase,
     ];
     let mut cases = Vec::new();
     for state in scenarios {
@@ -421,7 +432,8 @@ fn every_state_event_pair_takes_a_declared_edge_or_refuses() {
             let refusal = match (state.state_tag(), event.event_tag()) {
                 ("unraised" | "stoppedBeforeRaise", "raise" | "stop") => None,
                 ("unraised" | "stoppedBeforeRaise", _)
-                | ("pending" | "passedOn", "offerAgain" | "report") => {
+                | ("pending" | "passedOn", "offerAgain" | "report" | "erase")
+                | ("erased", "clockReached" | "runRetired" | "sessionEnded" | "enrollmentEnded") => {
                     Some(TransitionError::NotAllowed {
                         state: state.state_tag(),
                         event: event.event_tag(),
@@ -446,9 +458,17 @@ fn every_state_event_pair_takes_a_declared_edge_or_refuses() {
                     };
                     Some(refused(Refusal::Ended { ending }))
                 }
-                ("noHandoverOwed" | "receiptUnknown", "stop") => Some(TransitionError::Stale),
+                ("noHandoverOwed" | "receiptUnknown", "stop") | ("erased", "erase") => {
+                    Some(TransitionError::Stale)
+                }
+                ("erased", "answer" | "passOn") => Some(refused(Refusal::NotVisible {})),
+                ("awaitingReport" | "reported" | "noHandoverOwed" | "receiptUnknown", "erase")
+                    if closed(&state).ended_at.timestamp_millis() > old_ending_at =>
+                {
+                    Some(TransitionError::Stale)
+                }
                 ("noHandoverOwed" | "receiptUnknown", "report")
-                | ("reported" | "noHandoverOwed" | "receiptUnknown", "offerAgain") => {
+                | ("reported" | "noHandoverOwed" | "receiptUnknown" | "erased", "offerAgain") => {
                     Some(TransitionError::Domain(ApprovalRefusal::NoHandoverOwed))
                 }
                 _ => None,
@@ -540,4 +560,34 @@ fn provider_question_requires_its_declared_fields_and_preserves_the_answer_for_t
             ending,
         }
     ))));
+}
+
+#[test]
+fn unknown_persistence_in_allow_and_deny_choices_requires_a_fresh_person() {
+    let (visible, _) = apply(&waiting(), parent_pass_on(), 1);
+
+    for choice in ["unknown-allow", "unknown-deny"] {
+        assert_eq!(
+            step(&visible, session_answer(parent(), choice), 2),
+            Err(refused(Refusal::KeptChoiceNeedsAPerson {}))
+        );
+        assert_eq!(
+            step(
+                &visible,
+                person_answer(FactorStanding::AbsentOrStale, choice),
+                2
+            ),
+            Err(refused(Refusal::SecondFactorRequired {}))
+        );
+        let (approved, _) = apply(&visible, person_answer(FactorStanding::Fresh, choice), 2);
+        assert_eq!(
+            closed(&approved).ending,
+            Ending::Decided {
+                answer: approval_answer(choice),
+                by: DecidedBy::Person {
+                    person_id: person_id()
+                },
+            }
+        );
+    }
 }
