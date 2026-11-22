@@ -2,13 +2,13 @@ use super::*;
 use central_storage::SqlValue;
 use sqlx::{Connection, Row, SqliteConnection};
 
-fn claim() -> ReceiptClaim {
+fn fixture_receipt_claim() -> ReceiptClaim {
     ReceiptClaim {
-        request: "01890f2e-7b4c-7cc0-98c4-000000000001".parse().unwrap(),
-        caller: "01890f2e-7b4c-7cc0-98c4-000000000002".parse().unwrap(),
-        digest: "content".into(),
-        started_at: EngineTime::from_timestamp_millis(86_400_001).unwrap(),
-        cutoff: EngineTime::from_timestamp_millis(1).unwrap(),
+        request_id: "01890f2e-7b4c-7cc0-98c4-000000000001".parse().unwrap(),
+        caller_actor_id: "01890f2e-7b4c-7cc0-98c4-000000000002".parse().unwrap(),
+        request_content_digest: "content".into(),
+        request_started_at: EngineTime::from_timestamp_millis(86_400_001).unwrap(),
+        receipt_retention_cutoff: EngineTime::from_timestamp_millis(1).unwrap(),
     }
 }
 #[tokio::test]
@@ -18,9 +18,9 @@ async fn a_live_receipt_cannot_be_overwritten_and_expiry_is_one_millisecond_excl
         .run(&mut connection)
         .await
         .unwrap();
-    let claim = claim();
+    let claim = fixture_receipt_claim();
     sqlx::query("INSERT INTO runtime_request_log VALUES (?,'original caller','original digest','original answer',?,?)")
-        .bind(claim.request.as_str()).bind(format_utc_millis(claim.cutoff)).bind(format_utc_millis(claim.cutoff))
+        .bind(claim.request_id.as_str()).bind(format_utc_millis(claim.receipt_retention_cutoff)).bind(format_utc_millis(claim.receipt_retention_cutoff))
         .execute(&mut connection).await.unwrap();
     let answer = EngineReceipt::<String, String>::Applied {
         state: "new".into(),
@@ -29,7 +29,7 @@ async fn a_live_receipt_cannot_be_overwritten_and_expiry_is_one_millisecond_excl
         if expired {
             sqlx::query("UPDATE runtime_request_log SET created_at=?")
                 .bind(format_utc_millis(
-                    claim.cutoff - chrono::Duration::milliseconds(1),
+                    claim.receipt_retention_cutoff - chrono::Duration::milliseconds(1),
                 ))
                 .execute(&mut connection)
                 .await
@@ -37,7 +37,7 @@ async fn a_live_receipt_cannot_be_overwritten_and_expiry_is_one_millisecond_excl
         }
         let mut transaction = connection.begin().await.unwrap();
         let mut failed = false;
-        for statement in claim.statements(&answer).unwrap() {
+        for statement in claim.plan_receipt_claim_writes(&answer).unwrap() {
             let mut query = sqlx::query(statement.statement.sql);
             for value in statement.statement.args {
                 query = match value {
@@ -66,7 +66,10 @@ async fn a_live_receipt_cannot_be_overwritten_and_expiry_is_one_millisecond_excl
                 .await
                 .unwrap();
         if expired {
-            assert_eq!(row.get::<String, _>("caller"), claim.caller.as_str());
+            assert_eq!(
+                row.get::<String, _>("caller"),
+                claim.caller_actor_id.as_str()
+            );
             assert_eq!(
                 row.get::<String, _>("answer"),
                 serde_json::to_string(&answer).unwrap()
@@ -76,7 +79,7 @@ async fn a_live_receipt_cannot_be_overwritten_and_expiry_is_one_millisecond_excl
             assert_eq!(row.get::<String, _>("answer"), "original answer");
             assert_eq!(
                 row.get::<String, _>("created_at"),
-                format_utc_millis(claim.cutoff)
+                format_utc_millis(claim.receipt_retention_cutoff)
             );
         }
     }
@@ -84,28 +87,48 @@ async fn a_live_receipt_cannot_be_overwritten_and_expiry_is_one_millisecond_excl
 
 #[test]
 fn replay_checks_caller_and_digest_before_decoding_a_closed_typed_answer() {
-    let claim = claim();
+    let claim = fixture_receipt_claim();
     let answer = EngineReceipt::<String, String>::Applied {
         state: "fired".into(),
     };
     let mut rows = ReadOutcome {
         columns: vec!["caller".into(), "content_digest".into(), "answer".into()],
         rows: vec![vec![
-            text(&claim.caller),
-            text(&claim.digest),
+            text(&claim.caller_actor_id),
+            text(&claim.request_content_digest),
             text(serde_json::to_string(&answer).unwrap()),
         ]],
     };
-    assert_eq!(claim.replay::<String, String>(&rows).unwrap(), Some(answer));
+    assert_eq!(
+        claim
+            .decode_retained_receipt::<String, String>(&rows)
+            .unwrap(),
+        Some(answer)
+    );
     rows.rows[0][0] = text("different");
     rows.rows[0][2] = text("invalid JSON");
     assert_eq!(
-        claim.replay::<String, String>(&rows).unwrap(),
+        claim
+            .decode_retained_receipt::<String, String>(&rows)
+            .unwrap(),
         Some(EngineReceipt::RequestIdReused)
     );
-    rows.rows[0][0] = text(&claim.caller);
-    assert!(claim.replay::<String, String>(&rows).is_err());
+    rows.rows[0][0] = text(&claim.caller_actor_id);
+    assert!(
+        claim
+            .decode_retained_receipt::<String, String>(&rows)
+            .is_err()
+    );
     rows.rows[0][2] = text(r#"{"result":"outcomeUnknown"}"#);
-    assert!(claim.replay::<String, String>(&rows).is_err());
-    assert!(claim.lookup().sql.contains("created_at>=?"));
+    assert!(
+        claim
+            .decode_retained_receipt::<String, String>(&rows)
+            .is_err()
+    );
+    assert!(
+        claim
+            .build_live_receipt_lookup()
+            .sql
+            .contains("created_at>=?")
+    );
 }

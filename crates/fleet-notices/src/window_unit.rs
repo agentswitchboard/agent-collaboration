@@ -6,19 +6,19 @@ use crate::{
 use central_engine_model::{EngineTime, InstanceKey, MachineKind, RetirementThreshold};
 use central_storage::{AlarmUpdate, GuardedStatement, StatementBatch};
 use fleet_contracts::{EngineSubject, LegacyUnitOutcome, MailDeliveryReady, ObservedControl};
-use fleet_engine::WholeUnit;
+use fleet_engine::WholeDueUnitControl;
 use fleet_runtime::FleetRuntime;
 use fleet_runtime_ports::{CentralStore, WorkspaceStores, workspace_decode_error::corrupt};
 use fleet_workspace_access::WorkspaceAccess;
 use workspace_model::central_mail as mail;
 
-pub fn window_unit() -> WholeUnit {
-    WholeUnit {
-        subject: EngineSubject {
+pub fn window_unit() -> WholeDueUnitControl {
+    WholeDueUnitControl {
+        attempt_subject: EngineSubject {
             kind: MachineKind("legacy_notice_windows"),
             key: InstanceKey("all".into()),
         },
-        threshold: RetirementThreshold::NOTICE_UNITS,
+        retirement_threshold: RetirementThreshold::NOTICE_UNITS,
     }
 }
 
@@ -49,7 +49,7 @@ impl<Host: CentralStore> DueWindowPlan<'_, Host> {
 }
 
 /// Plan due windows while holding the central turn and using a mailbox over
-/// the same runtime. Pass the Engine's subject and observed control for this
+/// the same runtime. Pass the FleetEngine's subject and observed control for this
 /// exact window run.
 ///
 /// Apply a successful plan once under that same turn, or abandon it without
@@ -90,7 +90,7 @@ pub async fn plan_due_windows_held<'store, Host: CentralStore, Stores: Workspace
     match observed {
         ObservedControl::Absent => {}
         ObservedControl::Present(guard) => {
-            statements.push(fleet_engine::delete_observed_attempt(subject, guard))
+            statements.push(fleet_engine::plan_observed_attempt_delete(subject, guard))
         }
     }
     Ok(DueWindowPlan {

@@ -84,8 +84,8 @@ impl<Host: fleet_runtime_ports::CentralStore, Stores: fleet_runtime_ports::Works
             }
         };
         let actor = self.access().resolve_identity(&identity).await?;
-        fleet_engine::Engine::new(self)
-            .request_engine::<OwedReply, _>(
+        fleet_engine::FleetEngine::new(self)
+            .run_machine_request::<OwedReply, _>(
                 &crate::engine::owed_reply_store::OwedReplyStore(self),
                 actor,
                 request.request_id,

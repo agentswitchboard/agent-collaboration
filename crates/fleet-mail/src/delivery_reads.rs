@@ -14,7 +14,7 @@ use fleet_contracts::{
         WindowedDeliveryDecision,
     },
 };
-use fleet_engine::{EngineHost, delete_attempt};
+use fleet_engine::{EngineHost, plan_attempt_delete};
 use fleet_runtime_ports::stored_values::{encode_json, format_utc_millis};
 use fleet_runtime_ports::{
     CentralStore, WorkspaceStores,
@@ -75,7 +75,7 @@ pub async fn windowed_welcome_page_held(
 /// The access view must come from the same runtime as the store being read.
 pub async fn prepare_windowed_delivery_held<R, S>(
     runtime: &R,
-    access: &WorkspaceAccess<'_, R::Host, S>,
+    access: &WorkspaceAccess<'_, R::CentralStoreBackend, S>,
     recipient: &MachineId,
     message_id: &MessageId,
 ) -> Result<WindowedDeliveryDecision, StoreFailure>
@@ -83,8 +83,8 @@ where
     R: EngineHost,
     S: WorkspaceStores,
 {
-    let now = runtime.now()?;
-    let rows = runtime.host().read(Statement {
+    let now = runtime.current_engine_time()?;
+    let rows = runtime.central_store().read(Statement {
         sql: "SELECT message_id,sender,target_machine_id,target_session,message_kind,body,state,failure_reason,source_change_id,recipient_actor,source_workspace_id,source_thread_id,created_at,updated_at,delivery_window_ends_at FROM mail_messages WHERE message_id=? AND target_machine_id=? AND state='queued' AND message_kind IN ('direct','notice','deliveryOutcome') AND delivery_window_ends_at>?",
         args: vec![text(message_id), text(recipient), text(format_utc_millis(now))],
     }).await?;
@@ -103,7 +103,8 @@ where
     if expires_at <= now {
         return Err(corrupt("mail_messages.delivery_window_ends_at"));
     }
-    let Some(sender) = resolve_message_sender(runtime.host(), access, &message).await? else {
+    let Some(sender) = resolve_message_sender(runtime.central_store(), access, &message).await?
+    else {
         return fail_unresolved_sender(runtime, &message).await;
     };
     Ok(WindowedDeliveryDecision::Ready(ResolvedMailDelivery {
@@ -121,7 +122,7 @@ async fn fail_unresolved_sender<R: EngineHost>(
     let MessageSender::Actor(_) = &message.sender else {
         return Err(corrupt("mail_messages.sender"));
     };
-    let now = format_utc_millis(runtime.now()?);
+    let now = format_utc_millis(runtime.current_engine_time()?);
     let statements = vec![
         exact(
             "UPDATE mail_messages SET state='failed',failure_reason=?,updated_at=? WHERE message_id=? AND target_machine_id=? AND sender=? AND message_kind='direct' AND state='queued' AND failure_reason IS NULL AND delivery_window_ends_at>?",
@@ -134,13 +135,13 @@ async fn fail_unresolved_sender<R: EngineHost>(
                 text(now),
             ],
         ),
-        delete_attempt(&EngineSubject {
+        plan_attempt_delete(&EngineSubject {
             kind: DirectMessage::KIND,
             key: InstanceKey(message.message_id.to_string()),
         }),
     ];
     match runtime
-        .host()
+        .central_store()
         .run_batch(StatementBatch {
             statements,
             alarm: AlarmUpdate::Engine(central_storage::EngineAlarmPlan::Recompute),

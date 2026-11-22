@@ -1,8 +1,8 @@
-use super::port::{Engine, EngineHost};
+use super::engine_host_binding::{EngineHost, FleetEngine};
 use super::{
-    attempt_statements::{CONTROL_WRITE, delete_observed_attempt},
-    attempt_store::load_attempt,
-    effects::{ApplyFailure, classify_batch},
+    attempt_statements::{UPSERT_CONTROL_ATTEMPT_SQL, plan_observed_attempt_delete},
+    attempt_store::read_guarded_attempt,
+    transition_batch_writes::{BatchApplyFailure, classify_batch_application},
 };
 use central_engine_model::{AttemptState, RetirementThreshold};
 use central_storage::{AlarmUpdate, StatementBatch, StoreFailure};
@@ -11,35 +11,35 @@ use fleet_contracts::{
 };
 use fleet_runtime_ports::CentralStore as _;
 
-impl<R: EngineHost> Engine<'_, R> {
-    pub async fn control_gate(
+impl<Host: EngineHost> FleetEngine<'_, Host> {
+    pub async fn check_attempt_control_gate(
         &self,
         subject: &EngineSubject,
         threshold: RetirementThreshold,
     ) -> ControlGate {
-        let stored = match load_attempt(self.host(), subject).await {
+        let stored = match read_guarded_attempt(self.central_store(), subject).await {
             Ok(None) => return ControlGate::Run(ObservedControl::Absent),
             Ok(Some(stored)) => stored,
             Err(StoreFailure::AnswerLost) => return ControlGate::Uncertain,
             Err(failure) => return ControlGate::CentralDown(failure),
         };
-        match &stored.record {
+        match &stored.decoded_failure_record {
             Ok(record) => match record.state {
                 AttemptState::Retired { .. } => ControlGate::Skip,
-                AttemptState::Failing { next_try_at } => match self.now() {
-                    Ok(now) if next_try_at <= now => {
-                        ControlGate::Run(ObservedControl::Present(stored.guard.clone()))
-                    }
+                AttemptState::Failing { next_try_at } => match self.current_engine_time() {
+                    Ok(now) if next_try_at <= now => ControlGate::Run(ObservedControl::Present(
+                        stored.observed_attempt_guard.clone(),
+                    )),
                     Ok(_) => ControlGate::Skip,
                     Err(failure) => ControlGate::CentralDown(failure),
                 },
             },
             Err(corruption) => match self
-                .write_failure(
+                .write_observed_attempt_failure(
                     subject,
-                    CONTROL_WRITE,
+                    UPSERT_CONTROL_ATTEMPT_SQL,
                     &SubjectVersion(vec![]),
-                    corruption.failure_class(),
+                    corruption.to_corrupt_row_failure(),
                     threshold,
                     Some(&stored),
                 )
@@ -54,19 +54,19 @@ impl<R: EngineHost> Engine<'_, R> {
 
     /// Clears the record this run observed at its gate, and nothing when it
     /// observed none: a newer failure written meanwhile survives (C3).
-    pub(crate) async fn clear_control(
+    pub(crate) async fn clear_observed_attempt_control(
         &self,
         subject: &EngineSubject,
         observed: &ObservedControl,
-    ) -> Result<(), ApplyFailure> {
+    ) -> Result<(), BatchApplyFailure> {
         let guard = match observed {
             ObservedControl::Absent => return Ok(()),
             ObservedControl::Present(guard) => guard,
         };
-        classify_batch(
-            self.host()
+        classify_batch_application(
+            self.central_store()
                 .run_batch(StatementBatch {
-                    statements: vec![delete_observed_attempt(subject, guard)],
+                    statements: vec![plan_observed_attempt_delete(subject, guard)],
                     alarm: AlarmUpdate::Unchanged,
                 })
                 .await,
