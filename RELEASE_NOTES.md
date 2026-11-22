@@ -1,5 +1,10 @@
 # Release Notes
 
+## 0.1.158
+
+- Provider `events_observe` calls emit one `snapshotEnd` record when they finish sending kept history. Its cursor is the position to continue from, and live events follow it.
+- A continuation can send the optional `serviceEpoch` from the previous result along with its cursor. The Router refuses a position from another Host run with the existing bare `resyncRequired` record.
+
 ## 0.1.63
 
 - **Breaking (CLI/MCP JSON):** Codex prompt results from `agent-collaboration conversation prompt --json` and MCP `conversation_prompt` / `conversation_create_and_prompt` return the agent's final reply as `output` (`{"kind":"available","text":...}` or `{"kind":"unavailable","reason":...}`, the shape Claude and Cursor already use) instead of an `updates` array of every streamed update. Long turns no longer fail with `ACP prompt updates overflow` and lose the reply.
