@@ -604,7 +604,7 @@ async fn an_eligible_direct_mark_records_a_corrupt_typed_row_without_settling_it
     fixture.host.close().await;
 }
 
-async fn assert_store(
+pub(super) async fn assert_store(
     central: &RemoteRuntime,
     message_id: &MessageId,
     state: &str,

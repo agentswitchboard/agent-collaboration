@@ -1,0 +1,1 @@
+UPDATE mail_messages SET state=?1,failure_reason=?2,updated_at=?3 WHERE message_id IS ?4 AND message_kind IS ?5 AND state IS ?6 AND failure_reason IS ?7 AND delivery_window_ends_at IS ?8 AND created_at IS ?9 AND updated_at IS ?10

@@ -2,21 +2,17 @@
 use central_storage::{SafeInteger, SqlValue};
 use std::marker::PhantomData;
 
-pub(super) trait AttemptBind {
-    #[cfg(test)]
+pub trait AttemptBind {
     type SqlxValue;
 
-    #[cfg(test)]
     fn sqlx_value(&self) -> Self::SqlxValue;
 
     fn into_storage(self) -> SqlValue;
 }
 
 impl AttemptBind for String {
-    #[cfg(test)]
     type SqlxValue = String;
 
-    #[cfg(test)]
     fn sqlx_value(&self) -> String {
         self.clone()
     }
@@ -27,10 +23,8 @@ impl AttemptBind for String {
 }
 
 impl AttemptBind for Option<String> {
-    #[cfg(test)]
     type SqlxValue = Self;
 
-    #[cfg(test)]
     fn sqlx_value(&self) -> Self {
         self.clone()
     }
@@ -41,10 +35,8 @@ impl AttemptBind for Option<String> {
 }
 
 impl AttemptBind for SafeInteger {
-    #[cfg(test)]
     type SqlxValue = i64;
 
-    #[cfg(test)]
     fn sqlx_value(&self) -> i64 {
         self.get()
     }
@@ -56,13 +48,13 @@ impl AttemptBind for SafeInteger {
 
 /// SQLx checks the slot against the normal column type. The host must bind
 /// the actual cell verbatim, including a damaged cell's other storage class.
-pub(super) struct ObservedBind<Value> {
+pub struct ObservedBind<Value> {
     raw: SqlValue,
     expected: PhantomData<Value>,
 }
 
 impl<Value> ObservedBind<Value> {
-    pub(super) fn new(raw: SqlValue) -> Self {
+    pub fn new(raw: SqlValue) -> Self {
         Self {
             raw,
             expected: PhantomData,
@@ -71,10 +63,8 @@ impl<Value> ObservedBind<Value> {
 }
 
 impl<Value> AttemptBind for ObservedBind<Value> {
-    #[cfg(test)]
     type SqlxValue = Option<Value>;
 
-    #[cfg(test)]
     fn sqlx_value(&self) -> Option<Value> {
         None
     }
@@ -84,20 +74,22 @@ impl<Value> AttemptBind for ObservedBind<Value> {
     }
 }
 
-macro_rules! attempt_statement {
+#[doc(hidden)]
+#[macro_export]
+macro_rules! checked_engine_statement {
     ($query:ident, [$($projection:path)?], $file:literal $(, $bind:ident = $value:expr)* $(,)?) => {{
-        $(let $bind = $value;)*
+        let ($($bind,)*) = ($($value,)*);
         #[cfg(test)]
         let _ = sqlx::$query!(
             $($projection,)?
             $file
-            $(, $crate::machine_event_engine::attempt_bindings::AttemptBind::sqlx_value(&$bind))*
+            $(, $crate::owner_sql::AttemptBind::sqlx_value(&$bind))*
         );
         central_storage::Statement {
             sql: include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $file)),
-            args: vec![$($crate::machine_event_engine::attempt_bindings::AttemptBind::into_storage($bind)),*],
+            args: vec![$($crate::owner_sql::AttemptBind::into_storage($bind)),*],
         }
     }};
 }
 
-pub(super) use attempt_statement;
+pub(super) use crate::checked_engine_statement as attempt_statement;

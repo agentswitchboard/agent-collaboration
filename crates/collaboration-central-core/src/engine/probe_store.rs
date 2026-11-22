@@ -67,10 +67,15 @@ fn decode(rows: &ReadOutcome) -> Result<ProbeState, StoreFailure> {
     }
 }
 impl<R: EngineHost> MachineStoreAdapter<EngineProbe> for ProbeStore<'_, R> {
+    type Version = fleet_contracts::SubjectVersion;
+
     async fn load_subject_state(
         &self,
         key: &InstanceKey,
-    ) -> Result<Option<VersionedSubjectState<ProbeState>>, SubjectLoadFailure> {
+    ) -> Result<
+        Option<VersionedSubjectState<ProbeState, Self::Version>>,
+        SubjectLoadFailure<Self::Version>,
+    > {
         let rows=self.0.central_store().read(Statement {
             sql:"SELECT item_id,group_id,due_at,claim,state,completed_claim,created_at,updated_at FROM engine_probe_items WHERE item_id=? AND machine_kind='engine_probe'",
             args:vec![text(&key.0)],
@@ -88,7 +93,7 @@ impl<R: EngineHost> MachineStoreAdapter<EngineProbe> for ProbeStore<'_, R> {
     fn plan_subject_state_write(
         &self,
         _key: &InstanceKey,
-        prior: &VersionedSubjectState<ProbeState>,
+        prior: &VersionedSubjectState<ProbeState, Self::Version>,
         next: &ProbeState,
     ) -> Result<GuardedStatement, StoreFailure> {
         let mut args = vec![
@@ -117,7 +122,15 @@ impl<R: EngineHost> MachineStoreAdapter<EngineProbe> for ProbeStore<'_, R> {
             )],
         })
     }
-    fn write_attempt_failure_sql(&self) -> &'static str {
-        FAILURE
+    fn attempt_failure_writer(&self) -> fleet_engine::SubjectAttemptWriter<Self::Version> {
+        |subject, record, prior, version| {
+            fleet_engine::owner_sql::plan_guarded_attempt_upsert(
+                FAILURE,
+                subject,
+                record,
+                prior,
+                version.0.clone(),
+            )
+        }
     }
 }

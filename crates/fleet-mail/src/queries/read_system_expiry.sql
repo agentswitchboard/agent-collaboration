@@ -1,0 +1,1 @@
+SELECT message_id,message_kind,state,failure_reason,delivery_window_ends_at,created_at,updated_at FROM mail_messages WHERE message_id=? AND state='queued' AND message_kind IN ('notice','deliveryOutcome')

@@ -263,12 +263,21 @@ impl CentralObject {
         let connection = {
             let observations = self.controls.workspace_page_reads.clone();
             let retired_observations = self.controls.retired_page_reads.clone();
+            let mark_guard_observations = self.controls.direct_mark_guard_reads.clone();
             connection.with_fetch_observer(move |sql, rows_read| {
                 if sql
                     == include_str!(
                         "../../fleet-workspace-directory/src/queries/read_workspace_page.sql"
                     )
                     && let Some(armed) = observations
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner)
+                        .as_mut()
+                {
+                    armed.push(rows_read);
+                }
+                if sql == include_str!("../../fleet-mail/src/queries/read_due_mark_guard.sql")
+                    && let Some(armed) = mark_guard_observations
                         .lock()
                         .unwrap_or_else(std::sync::PoisonError::into_inner)
                         .as_mut()

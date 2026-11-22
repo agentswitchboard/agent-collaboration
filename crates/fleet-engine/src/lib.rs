@@ -32,11 +32,14 @@ pub use machine_event_engine::machine_event_execution::MachineEventOutcome;
 #[cfg(feature = "test-support")]
 pub use machine_event_engine::machine_request_execution::EngineRequestOutcome;
 pub use machine_event_engine::machine_store_adapter::{
-    MachineStoreAdapter, SubjectLoadFailure, VersionedSubjectState,
+    MachineStoreAdapter, SubjectAttemptWriter, SubjectLoadFailure, VersionedSubjectState,
     classify_subject_decode_failure, classify_subject_read_failure, read_observed_subject_version,
 };
 #[cfg(feature = "test-support")]
 pub use machine_event_engine::request_receipt_store::{EngineReceipt, EngineRefusal};
+
+#[doc(hidden)]
+pub mod owner_sql;
 
 mod central_queries;
 pub use central_queries::{read_alarm_inputs, read_timed_due_rows};

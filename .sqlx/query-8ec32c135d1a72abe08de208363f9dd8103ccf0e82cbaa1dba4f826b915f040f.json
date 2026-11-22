@@ -1,0 +1,98 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT message_id,message_kind,state,failure_reason,delivery_window_ends_at,created_at,updated_at FROM mail_messages WHERE message_id=? AND state='queued' AND message_kind IN ('notice','deliveryOutcome')\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "message_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "message_id"
+          }
+        }
+      },
+      {
+        "name": "message_kind",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "message_kind"
+          }
+        }
+      },
+      {
+        "name": "state",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "name": "failure_reason",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "failure_reason"
+          }
+        }
+      },
+      {
+        "name": "delivery_window_ends_at",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "delivery_window_ends_at"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "8ec32c135d1a72abe08de208363f9dd8103ccf0e82cbaa1dba4f826b915f040f"
+}

@@ -208,7 +208,7 @@ pub(super) fn decode_checked_attempt_record(
         .map_err(|corruption| corruption.to_corrupt_row_failure()))
 }
 
-pub(crate) fn encode_attempt_failure_detail(failure: &ItemFailureClass) -> Option<String> {
+pub fn encode_attempt_failure_detail(failure: &ItemFailureClass) -> Option<String> {
     match failure {
         ItemFailureClass::CorruptRow { column, raw_value } => Some(
             raw_value
