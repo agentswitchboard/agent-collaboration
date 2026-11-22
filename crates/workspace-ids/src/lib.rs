@@ -58,6 +58,8 @@ workspace_identifiers!(
     RouterRunId,
     /// One approval request raised by a Router.
     ApprovalRequestId,
+    /// One operation on a session, made by the caller before it sends, so a repeat can be recognised.
+    SessionOperationId,
     PersonId,
     AreaId,
     ProjectId,
