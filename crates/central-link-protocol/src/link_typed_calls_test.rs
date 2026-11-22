@@ -313,3 +313,15 @@ fn assert_rejects_open_envelope(
         assert!(decode_text(&invalid.to_string(), direction).is_err());
     }
 }
+
+#[test]
+fn the_link_registers_only_the_four_machine_approval_calls() {
+    use crate::{CentralLinkRpc, MacLinkRpc};
+    fn to_central<Call: CentralLinkRpc>() {}
+    fn to_mac<Call: MacLinkRpc>() {}
+
+    to_central::<RegisterRunRpc>();
+    to_central::<RaiseApprovalRpc>();
+    to_central::<StopApprovalRpc>();
+    to_mac::<DeliverEndingRpc>();
+}

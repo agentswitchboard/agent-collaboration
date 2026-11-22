@@ -86,15 +86,3 @@ fn register_run_request_and_reply_envelopes_use_named_fields() {
     );
     check_envelope::<RegisterRunReply>(json!({"kind":"registered"}));
 }
-
-#[test]
-fn the_link_registers_only_the_four_machine_approval_calls() {
-    use crate::{CentralLinkRpc, MacLinkRpc};
-    fn to_central<Call: CentralLinkRpc>() {}
-    fn to_mac<Call: MacLinkRpc>() {}
-
-    to_central::<RegisterRunRpc>();
-    to_central::<RaiseApprovalRpc>();
-    to_central::<StopApprovalRpc>();
-    to_mac::<DeliverEndingRpc>();
-}
