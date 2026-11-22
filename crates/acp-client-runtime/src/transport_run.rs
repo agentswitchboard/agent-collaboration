@@ -1,21 +1,12 @@
 //! Exact route identity shared by the ordered transport and callback routing.
 
-use provider_session_machines::{
-    SessionGeneration,
-    session_owner::{DispatchAuthorization, OwnerIncarnation},
-};
+use provider_session_machines::session_owner::DispatchAuthorization;
 
-#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
-pub struct TransportRun {
-    pub incarnation: OwnerIncarnation,
-    pub generation: SessionGeneration,
-}
+pub use switchboard_harness_contracts::TransportRun;
 
-impl TransportRun {
-    pub(crate) fn of(authorization: &DispatchAuthorization) -> Self {
-        Self {
-            incarnation: authorization.incarnation,
-            generation: authorization.run,
-        }
+pub(crate) fn authorization_run(authorization: &DispatchAuthorization) -> TransportRun {
+    TransportRun {
+        incarnation: authorization.incarnation,
+        generation: authorization.run,
     }
 }
