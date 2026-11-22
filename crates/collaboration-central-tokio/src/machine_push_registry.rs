@@ -1,9 +1,9 @@
 //! The latest welcomed socket owns local routing for an organization machine.
 use crate::machine_call_queue::{self, MacCallReceiver, MacCallSender, PendingMacCall};
-use central_link_protocol::{CorrelationId, MacCall, MachineLinkCloseCode};
+use central_link_protocol::{CorrelationId, MacLinkRpc, MachineLinkCloseCode};
 use fleet_contracts::EnrollmentInvalidation;
 use fleet_identity_protocol::{EnrollmentId, OrganizationId};
-use fleet_rpc::CallFailure;
+use fleet_rpc::{CallFailure, Envelope};
 use router_clock::ClockInstant;
 use std::{
     collections::HashMap,
@@ -61,12 +61,12 @@ impl MachinePushRegistry {
         }
     }
 
-    pub(crate) fn queue_call(
+    pub(crate) fn queue_call<R: MacLinkRpc>(
         &self,
         organization: &OrganizationId,
         machine: &MachineId,
         correlation: CorrelationId,
-        request: MacCall,
+        request: Envelope<R::Target, R::Request>,
         deadline: ClockInstant,
     ) -> Result<PendingMacCall, CallFailure> {
         let sockets = self.0.lock().unwrap_or_else(PoisonError::into_inner);
@@ -75,7 +75,9 @@ impl MachinePushRegistry {
             .and_then(|sockets| sockets.last())
             .filter(|socket| !socket.replaced.is_cancelled())
             .ok_or(CallFailure::NeverReached)?;
-        socket.calls.enqueue(correlation, request, deadline)
+        socket
+            .calls
+            .enqueue(correlation, R::request(request), deadline)
     }
 
     pub(crate) fn invalidate_enrollment(
