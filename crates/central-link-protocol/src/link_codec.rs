@@ -1,19 +1,13 @@
 use crate::{
-    CentralCall, CentralCallReply, CorrelationId, DeliveryMessage, LinkRequest, LinkRequestBatch,
-    MacCall, MacCallReply, MachineTokenText, ProtocolError, ReceiptBatch, ReceiptResult,
-    ReplyPayload, RequestStatusAnswer, RequestStatusQuery, TimeLeft, TokenRenewalResult,
-    TypedCallResult,
+    CentralCall, CentralCallReply, CorrelationId, DeliveryMessage, FrameDirection, LinkRequest,
+    LinkRequestBatch, MacCall, MacCallReply, MachineTokenText, ProtocolError, ReceiptBatch,
+    ReceiptResult, ReplyPayload, RequestStatusAnswer, RequestStatusQuery, TimeLeft,
+    TokenRenewalResult, TypedCallResult,
     link_typed_calls::{named_map, unregistered_call},
 };
 use serde::{Deserialize, Serialize};
 use workspace_ids::MachineId;
 use workspace_model::{Caller, ResolvedSender, Timestamp};
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FrameDirection {
-    ToCentral,
-    ToRouter,
-}
 
 /// Heartbeats are literal text, so Cloudflare can answer them without waking Rust.
 #[derive(Clone, Debug, Eq, PartialEq)]
