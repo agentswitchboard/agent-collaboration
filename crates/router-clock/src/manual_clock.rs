@@ -2,7 +2,7 @@
 use crate::{ClockInstant, RuntimeClock};
 use chrono::{DateTime, Utc};
 use runtime_primitives::{Clock, SyncTime};
-use std::{future::Future, pin::Pin, time::Duration};
+use std::{collections::BTreeMap, future::Future, pin::Pin, time::Duration};
 use tokio::sync::watch;
 
 #[derive(Clone, Copy)]
@@ -24,6 +24,7 @@ pub struct ClockAdvanceError;
 pub struct ManualClock {
     reading: watch::Sender<ClockReading>,
     checks: watch::Sender<Vec<SleepCheck>>,
+    dropped_waits: watch::Sender<BTreeMap<ClockInstant, usize>>,
 }
 
 impl ManualClock {
@@ -36,6 +37,7 @@ impl ManualClock {
             })
             .0,
             checks: watch::channel(Vec::new()).0,
+            dropped_waits: watch::channel(BTreeMap::new()).0,
         }
     }
 
@@ -93,6 +95,54 @@ impl ManualClock {
         })
     }
 
+    /// Marks the observed waits at a fixture's external checkpoint.
+    #[must_use]
+    pub fn wait_checkpoint(&self) -> usize {
+        self.checks.borrow().len()
+    }
+
+    #[must_use]
+    pub fn first_wait_since(
+        &self,
+        checkpoint: usize,
+        ignored: &[ClockInstant],
+    ) -> Option<ClockInstant> {
+        first_wait(&self.checks.borrow(), checkpoint, ignored)
+    }
+
+    #[must_use]
+    pub fn wait_drops(&self, deadline: ClockInstant) -> usize {
+        self.dropped_waits
+            .borrow()
+            .get(&deadline)
+            .copied()
+            .unwrap_or_default()
+    }
+
+    /// Lets a fixture inspect the client's next decision after a particular timer is dropped.
+    pub async fn wait_for_timer_drop(&self, deadline: ClockInstant, previous: usize) {
+        let mut waits = self.dropped_waits.subscribe();
+        let _ = waits
+            .wait_for(|waits| waits.get(&deadline).is_some_and(|count| *count > previous))
+            .await;
+    }
+
+    /// Observes the next newly armed deadline, including a deadline a fixture did not expect.
+    pub async fn next_wait_after(
+        &self,
+        checkpoint: usize,
+        ignored: &[ClockInstant],
+    ) -> ClockInstant {
+        let mut checks = self.checks.subscribe();
+        loop {
+            if let Some(deadline) = first_wait(&checks.borrow_and_update(), checkpoint, ignored) {
+                return deadline;
+            }
+            // The clock itself owns this sender for the duration of the wait.
+            let _ = checks.changed().await;
+        }
+    }
+
     fn record_sleep_check(&self, check: SleepCheck) {
         self.checks.send_if_modified(|checks| {
             if checks.contains(&check) {
@@ -101,6 +151,32 @@ impl ManualClock {
                 checks.push(check);
                 true
             }
+        });
+    }
+}
+
+fn first_wait(
+    checks: &[SleepCheck],
+    checkpoint: usize,
+    ignored: &[ClockInstant],
+) -> Option<ClockInstant> {
+    checks
+        .iter()
+        .skip(checkpoint)
+        .find(|check| !ignored.contains(&check.deadline))
+        .map(|check| check.deadline)
+}
+
+struct ObserveWaitDrop<'clock> {
+    clock: &'clock ManualClock,
+    deadline: ClockInstant,
+}
+
+impl Drop for ObserveWaitDrop<'_> {
+    fn drop(&mut self) {
+        self.clock.dropped_waits.send_modify(|waits| {
+            let count = waits.entry(self.deadline).or_default();
+            *count = count.saturating_add(1);
         });
     }
 }
@@ -137,7 +213,12 @@ impl RuntimeClock for ManualClock {
     }
 
     fn sleep_until(&self, deadline: ClockInstant) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        let observe_drop = ObserveWaitDrop {
+            clock: self,
+            deadline,
+        };
         Box::pin(async move {
+            let _observe_drop = observe_drop;
             let mut changes = self.reading.subscribe();
             loop {
                 let now = changes.borrow_and_update().elapsed;

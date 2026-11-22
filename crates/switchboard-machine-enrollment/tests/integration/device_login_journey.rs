@@ -23,7 +23,7 @@ async fn polling_over_http_obeys_each_wait_and_uses_the_sign_in_body() {
     )
     .await;
     let store = ScriptStore::default();
-    let enrollment = tokio::spawn({
+    let enrollment = script.spawn_attempt({
         let client = script.client.clone();
         let store = store.clone();
         async move {
@@ -72,7 +72,7 @@ async fn terminal_http_responses_never_trigger_another_poll() {
         let mut script =
             SignInScript::start(80, [Reply::failure(StatusCode::BAD_REQUEST, code)]).await;
         let store = ScriptStore::default();
-        let enrollment = tokio::spawn({
+        let enrollment = script.spawn_attempt({
             let client = script.client.clone();
             let store = store.clone();
             async move {
@@ -85,10 +85,7 @@ async fn terminal_http_responses_never_trigger_another_poll() {
         script.next_request().await.assert_start();
         script.wait_for_poll(5, 5).await;
         script.next_request().await.assert_poll();
-        let result = tokio::select! {
-            result = enrollment => Some(result.expect("enrollment task")),
-            () = script.clock.not_due_check_now(super::scripted_sign_in::at(10)) => None,
-        };
+        let result = script.finish_before_more_polling(enrollment).await;
         assert_eq!(result, Some(Err(EnrollmentFailure::Ended(expected))));
         script
             .clock
@@ -107,7 +104,7 @@ async fn device_expiry_stops_the_attempt_even_after_a_server_retry_delay() {
     )
     .await;
     let store = ScriptStore::default();
-    let enrollment = tokio::spawn({
+    let enrollment = script.spawn_attempt({
         let client = script.client.clone();
         let store = store.clone();
         async move {
@@ -122,8 +119,8 @@ async fn device_expiry_stops_the_attempt_even_after_a_server_retry_delay() {
     script.next_request().await.assert_poll();
     script.wait_for_poll(3, 8).await;
     assert_eq!(
-        enrollment.await.expect("enrollment task"),
-        Err(EnrollmentFailure::Ended(EnrollmentEnd::Expired))
+        script.finish_before_more_polling(enrollment).await,
+        Some(Err(EnrollmentFailure::Ended(EnrollmentEnd::Expired)))
     );
     assert!(store.current().is_none());
     script.assert_exhausted();

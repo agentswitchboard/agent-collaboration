@@ -1,16 +1,12 @@
 use std::time::Duration;
 
-use serde::{Deserialize, de::IgnoredAny};
+use serde::Deserialize;
 use url::Url;
 
-use crate::{CentralEndpointIds, EnrollmentId, InvalidReason, RefreshCredential, SecretValue};
-
-/// The sign-in decoder reports invalid replies without preserving untrusted diagnostics.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-pub enum DecodeAnswerError {
-    #[error("sign-in returned an invalid answer")]
-    Malformed,
-}
+use crate::{
+    CentralEndpointIds, DecodeAnswerError, EnrollmentId, InvalidReason, RefreshCredential,
+    SecretValue,
+};
 
 /// Sign-in supplies these two human-facing values when a device attempt starts.
 #[derive(Debug)]
@@ -52,6 +48,7 @@ pub enum PollAnswer {
 #[derive(Debug)]
 pub enum RefreshAnswer {
     Rotated(TokenGrant),
+    OversizedReply,
     Refused { reason: InvalidReason },
     Unavailable { retry_after: Option<Duration> },
 }
@@ -83,10 +80,11 @@ struct TokenBody {
     refresh_token: String,
     expires_in: u64,
     #[serde(rename = "expires_at")]
-    _expires_at: IgnoredAny,
+    _expires_at: crate::response_object::DiscardTimestamp,
     token_type: BearerTokenType,
     scope: OfflineScope,
     machine_client_id: EnrollmentId,
+    #[serde(deserialize_with = "crate::response_object::deserialize_object")]
     fleet_central: CentralEndpointIds,
 }
 
@@ -106,13 +104,7 @@ enum OfflineScope {
 struct RefusalBody {
     error: String,
     #[serde(default, rename = "reason")]
-    _reason: Option<IgnoredAny>,
-}
-
-fn json_body<'body, Body: Deserialize<'body>>(
-    body: &'body [u8],
-) -> Result<Body, DecodeAnswerError> {
-    serde_json::from_slice(body).map_err(|_| DecodeAnswerError::Malformed)
+    _reason: crate::response_object::DiscardText,
 }
 
 pub fn decode_device_authorization(body: &[u8]) -> Result<DeviceAuthorization, DecodeAnswerError> {
@@ -123,7 +115,7 @@ pub fn decode_device_authorization(body: &[u8]) -> Result<DeviceAuthorization, D
         verification_uri_complete,
         expires_in,
         interval,
-    } = json_body(body)?;
+    } = crate::response_object::from_json(body)?;
     let device_code = SecretValue::new(device_code).ok_or(DecodeAnswerError::Malformed)?;
     let secret = device_code.expose_secret();
     let mut complete = verification_uri_complete.clone();
@@ -167,10 +159,10 @@ fn decode_grant(body: &[u8]) -> Result<TokenGrant, DecodeAnswerError> {
         scope: OfflineScope::OfflineAccess,
         machine_client_id,
         fleet_central,
-    } = json_body(body)?;
+    } = crate::response_object::from_json(body)?;
     let access_token = SecretValue::new(access_token).ok_or(DecodeAnswerError::Malformed)?;
     let refresh_token = SecretValue::new(refresh_token).ok_or(DecodeAnswerError::Malformed)?;
-    if expires_in == 0 {
+    if !(1..=3_600).contains(&expires_in) {
         return Err(DecodeAnswerError::Malformed);
     }
     Ok(TokenGrant {
@@ -194,7 +186,7 @@ fn invalid_reason(error: &str) -> InvalidReason {
 }
 
 pub fn decode_poll(status: u16, retry_after: Option<Duration>, body: &[u8]) -> PollAnswer {
-    if (200..300).contains(&status) {
+    if status == 200 {
         return match decode_grant(body) {
             Ok(grant) => PollAnswer::Enrolled(grant),
             Err(_) => PollAnswer::Invalid {
@@ -205,15 +197,23 @@ pub fn decode_poll(status: u16, retry_after: Option<Duration>, body: &[u8]) -> P
     if status == 429 {
         return PollAnswer::Unavailable { retry_after };
     }
-    match json_body::<RefusalBody>(body) {
-        Ok(reply) => match reply.error.as_str() {
-            "authorization_pending" => PollAnswer::Pending,
-            "slow_down" => PollAnswer::SlowDown,
-            "access_denied" => PollAnswer::Denied,
-            "expired_token" => PollAnswer::Expired,
-            "temporarily_unavailable" if status == 503 => PollAnswer::Unavailable { retry_after },
-            error => PollAnswer::Invalid {
+    if !matches!(status, 400 | 503) {
+        return PollAnswer::Invalid {
+            reason: InvalidReason::UnexpectedStatus,
+        };
+    }
+    match crate::response_object::from_json::<RefusalBody>(body) {
+        Ok(reply) => match (status, reply.error.as_str()) {
+            (400, "authorization_pending") => PollAnswer::Pending,
+            (400, "slow_down") => PollAnswer::SlowDown,
+            (400, "access_denied") => PollAnswer::Denied,
+            (400, "expired_token") => PollAnswer::Expired,
+            (503, "temporarily_unavailable") => PollAnswer::Unavailable { retry_after },
+            (400, error) => PollAnswer::Invalid {
                 reason: invalid_reason(error),
+            },
+            _ => PollAnswer::Invalid {
+                reason: InvalidReason::UnexpectedStatus,
             },
         },
         Err(_) => PollAnswer::Invalid {

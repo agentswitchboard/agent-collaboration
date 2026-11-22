@@ -23,14 +23,21 @@ pub enum DeviceEnrollment {
 /// The caller's clock and the sign-in decoder supply inputs to one enrollment attempt.
 #[derive(Debug)]
 pub enum DeviceEnrollmentInput {
-    Started(DeviceAuthorization),
+    Started {
+        authorization: DeviceAuthorization,
+        dispatched_at: ClockInstant,
+    },
     ClockReached,
     Pending,
     SlowDown,
-    Unavailable { retry_after: Option<Duration> },
+    Unavailable {
+        retry_after: Option<Duration>,
+    },
     Denied,
     Expired,
-    Invalid { reason: InvalidReason },
+    Invalid {
+        reason: InvalidReason,
+    },
     Committed(EnrollmentReceipt),
 }
 
@@ -68,10 +75,16 @@ impl DeviceEnrollment {
         use DeviceEnrollmentInput as Input;
 
         match (self, input) {
-            (Self::NotEnrolled, Input::Started(authorization)) => Self::Asking {
+            (
+                Self::NotEnrolled,
+                Input::Started {
+                    authorization,
+                    dispatched_at,
+                },
+            ) => Self::Asking {
                 interval: authorization.interval,
                 next_poll: now.after(authorization.interval),
-                deadline: now.after(authorization.expires_in),
+                deadline: dispatched_at.after(authorization.expires_in),
                 authorization: Box::new(authorization),
             },
             (Self::Asking { .. }, Input::Committed(receipt)) => Self::Enrolled(receipt),

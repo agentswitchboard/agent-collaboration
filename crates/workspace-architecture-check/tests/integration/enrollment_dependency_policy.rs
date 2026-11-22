@@ -1,8 +1,10 @@
 //! The enrollment client has only its clock, identifier and approved external dependencies.
 
+use std::collections::BTreeSet;
+
 use super::{CargoMetadata, CargoPackage, DependencyKind, harness_stage_policy::CRATES_IO};
 
-const ENROLLMENT: &str = "switchboard-machine-enrollment";
+pub(super) const ENROLLMENT: &str = "switchboard-machine-enrollment";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum DependencySource {
@@ -11,7 +13,7 @@ enum DependencySource {
     Other,
 }
 
-type PolicyResult = Result<(), Box<dyn std::error::Error>>;
+pub(super) type PolicyResult = Result<(), Box<dyn std::error::Error>>;
 
 fn allows(kind: DependencyKind, name: &str, source: DependencySource) -> bool {
     use DependencyKind::{Dev, Normal};
@@ -19,7 +21,7 @@ fn allows(kind: DependencyKind, name: &str, source: DependencySource) -> bool {
 
     match (kind, source) {
         (Normal, Workspace) => matches!(name, "router-clock" | "workspace-ids"),
-        (Dev, Workspace) => name == "router-clock",
+        (Dev, Workspace) => matches!(name, "router-clock" | ENROLLMENT),
         (Normal, CratesIo) => matches!(
             name,
             "futures-util"
@@ -45,12 +47,79 @@ fn workspace_package(metadata: &CargoMetadata, package: &CargoPackage) -> bool {
     package.source.is_none() && metadata.workspace_members.contains(&package.id)
 }
 
-fn enrollment(metadata: &CargoMetadata) -> Result<&CargoPackage, Box<dyn std::error::Error>> {
+pub(super) fn enrollment(
+    metadata: &CargoMetadata,
+) -> Result<&CargoPackage, Box<dyn std::error::Error>> {
     metadata
         .packages
         .iter()
         .find(|package| package.name == ENROLLMENT && workspace_package(metadata, package))
         .ok_or_else(|| format!("BD1: missing workspace package {ENROLLMENT}").into())
+}
+
+fn feature_contract(kind: DependencyKind, name: &str) -> (bool, &'static [&'static str]) {
+    use DependencyKind::{Dev, Normal};
+    match (kind, name) {
+        (Dev, ENROLLMENT | "router-clock") => (true, &["test-support"]),
+        (Dev, "axum") => (false, &["http1", "tokio"]),
+        (Dev, "hegeltest") => (true, &["static-engine"]),
+        (Dev, "tracing-subscriber") => (true, &["env-filter", "fmt", "json"]),
+        (Normal, "futures-util") => (false, &["sink", "std"]),
+        (Normal, "reqwest") => (false, &["blocking", "rustls-tls"]),
+        (Normal, "serde") => (true, &["derive"]),
+        (Normal, "tokio") => (
+            true,
+            &[
+                "io-util",
+                "macros",
+                "net",
+                "process",
+                "rt-multi-thread",
+                "signal",
+                "sync",
+                "time",
+            ],
+        ),
+        (Normal, "url") => (true, &["serde"]),
+        (Normal, "uuid") => (true, &["v5", "v7"]),
+        _ => (true, &[]),
+    }
+}
+
+fn check_normal_consumers(metadata: &CargoMetadata, target: &CargoPackage) -> PolicyResult {
+    for consumer in metadata
+        .packages
+        .iter()
+        .filter(|package| workspace_package(metadata, package))
+    {
+        for dependency in &consumer.dependencies {
+            if dependency.name != ENROLLMENT
+                || dependency.kind == Some(DependencyKind::Dev)
+                || dependency.path.as_deref() != target.manifest_path.parent()
+            {
+                continue;
+            }
+            let local_name = dependency.rename.as_deref().unwrap_or(ENROLLMENT);
+            let forwarded = consumer.package_features.values().flatten().any(|feature| {
+                feature.split_once('/').is_some_and(|(alias, enabled)| {
+                    alias.trim_end_matches('?') == local_name && enabled == "test-support"
+                })
+            });
+            if forwarded
+                || dependency
+                    .features
+                    .iter()
+                    .any(|feature| feature == "test-support")
+            {
+                return Err(format!(
+                    "BD1: {} enables enrollment test-support on a shipping dependency",
+                    consumer.name
+                )
+                .into());
+            }
+        }
+    }
+    Ok(())
 }
 
 pub(super) fn check_declared(metadata: &CargoMetadata) -> PolicyResult {
@@ -78,8 +147,17 @@ pub(super) fn check_declared(metadata: &CargoMetadata) -> PolicyResult {
             )
             .into());
         }
+        let (defaults, features) = feature_contract(kind, &dependency.name);
+        let declared: BTreeSet<_> = dependency.features.iter().map(String::as_str).collect();
+        let approved: BTreeSet<_> = features.iter().copied().collect();
+        if dependency.uses_default_features != defaults || declared != approved {
+            return Err(format!(
+                "BD1: forbidden declared {kind:?} features {ENROLLMENT} -> {}: defaults={}, features={declared:?}",
+                dependency.name, dependency.uses_default_features,
+            ).into());
+        }
     }
-    Ok(())
+    check_normal_consumers(metadata, package)
 }
 
 pub(super) fn check_resolved(metadata: &CargoMetadata) -> PolicyResult {

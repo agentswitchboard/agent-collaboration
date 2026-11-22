@@ -8,7 +8,7 @@ use switchboard_machine_enrollment::{
 use tokio::{sync::oneshot, task::JoinHandle};
 
 use super::scripted_sign_in::{
-    ENROLLMENT_ID, INITIAL_ACCESS, INITIAL_REFRESH, RECEIVER, RELAY, ScriptStore, SignInScript, at,
+    ENROLLMENT_ID, INITIAL_ACCESS, INITIAL_REFRESH, RECEIVER, RELAY, ScriptStore, SignInScript,
     enrollment_request, machine_id, organization_id, token_reply,
 };
 
@@ -48,7 +48,7 @@ async fn start_enrollment(
     script: &mut SignInScript,
     store: &ScriptStore,
 ) -> JoinHandle<Result<EnrollmentReceipt, EnrollmentFailure>> {
-    let task = tokio::spawn({
+    let task = script.spawn_attempt({
         let store = store.clone();
         let client = script.client.clone();
         async move {
@@ -75,19 +75,12 @@ async fn final_in_flight_success_installs_after_the_old_enrollment_rotates() {
         store.replace(generation(0), &prior).await,
         Ok(ConditionalWrite::Applied)
     );
-    let mut enrollment = start_enrollment(&mut script, &store).await;
+    let enrollment = start_enrollment(&mut script, &store).await;
+    script.assert_last_poll_bound(8);
     script
         .clock
         .advance(Duration::from_secs(1))
         .expect("reach code expiry");
-    let remained_current = tokio::select! {
-        () = script.clock.not_due_check_now(at(8)) => true,
-        _ = &mut enrollment => false,
-    };
-    assert!(
-        remained_current,
-        "an already started poll has a short response window"
-    );
 
     let rotated_old = previous_binding(&script, 2, OLD_ENROLLMENT);
     assert_eq!(
@@ -142,15 +135,13 @@ async fn an_unanswered_last_poll_expires_at_its_short_bound() {
     let (mut script, _keep_reply_pending) = held_last_poll().await;
     let store = ScriptStore::default();
     let enrollment = start_enrollment(&mut script, &store).await;
+    script.assert_last_poll_bound(8);
     script
         .clock
         .advance(Duration::from_secs(3))
         .expect("pass final response deadline");
 
-    let result = tokio::select! {
-        result = enrollment => Some(result.expect("enrollment task")),
-        () = script.clock.not_due_check_now(at(9)) => None,
-    };
+    let result = script.finish_before_more_polling(enrollment).await;
     assert_eq!(
         result,
         Some(Err(EnrollmentFailure::Ended(EnrollmentEnd::Expired)))

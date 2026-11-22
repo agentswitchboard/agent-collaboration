@@ -29,6 +29,7 @@ struct StoreState {
     hold_read: AtomicBool,
     hold_remove: AtomicBool,
     hold_marker: AtomicBool,
+    hold_marker_ack: AtomicBool,
     fail_write: AtomicBool,
     fail_remove: AtomicBool,
     fail_marker: AtomicBool,
@@ -132,7 +133,9 @@ impl CredentialStore for FakeStore {
         if self.0.fail_marker.load(Ordering::SeqCst) {
             Err(CredentialStoreError::Replace)
         } else {
-            Ok(self.end(expected, why))
+            let committed = self.end(expected, why);
+            wait_while_held(&self.0.hold_marker_ack).await;
+            Ok(committed)
         }
     }
 }
@@ -283,6 +286,7 @@ impl Fixture {
             hold_read: AtomicBool::new(false),
             hold_remove: AtomicBool::new(false),
             hold_marker: AtomicBool::new(false),
+            hold_marker_ack: AtomicBool::new(false),
             fail_write: AtomicBool::new(false),
             fail_remove: AtomicBool::new(false),
             fail_marker: AtomicBool::new(false),

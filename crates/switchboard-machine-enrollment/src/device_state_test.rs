@@ -29,7 +29,13 @@ fn start(expires: u64) -> DeviceEnrollment {
         "expires_in":{expires},"interval":5}}"#
     );
     let challenge = decode_device_authorization(body.as_bytes()).expect("device fixture");
-    DeviceEnrollment::NotEnrolled.step(elapsed(0), DeviceEnrollmentInput::Started(challenge))
+    DeviceEnrollment::NotEnrolled.step(
+        elapsed(0),
+        DeviceEnrollmentInput::Started {
+            authorization: challenge,
+            dispatched_at: elapsed(0),
+        },
+    )
 }
 
 #[test]

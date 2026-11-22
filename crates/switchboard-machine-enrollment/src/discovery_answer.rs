@@ -63,8 +63,7 @@ struct DiscoveryBody {
 }
 
 pub fn decode_discovery(body: &[u8]) -> Result<DiscoveryAnswer, DecodeAnswerError> {
-    let decoded: DiscoveryBody =
-        serde_json::from_slice(body).map_err(|_| DecodeAnswerError::Malformed)?;
+    let decoded: DiscoveryBody = crate::response_object::from_json(body)?;
     Ok(DiscoveryAnswer {
         client_id: decoded.client_id,
         link_url: CentralLinkTemplate::new(decoded.link_url)?,

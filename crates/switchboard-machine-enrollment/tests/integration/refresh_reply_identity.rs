@@ -1,8 +1,8 @@
 use axum::http::StatusCode;
 use switchboard_machine_enrollment::{
     AccessRequest, BindingGeneration, ConditionalWrite, CredentialStore, EnrollmentBinding,
-    EnrollmentContext, EnrollmentEnd, InvalidReason, LeaseConfigurationFault, RefreshCredential,
-    SecretValue, StoredEnrollment,
+    EnrollmentContext, EnrollmentEnd, InvalidReason, LeaseConfigurationFault, LeaseUnavailable,
+    RefreshCredential, SecretValue, StoredEnrollment,
 };
 
 use super::scripted_sign_in::{
@@ -24,28 +24,7 @@ async fn a_success_for_another_enrollment_never_replaces_or_releases_credentials
         .to_string(),
     )])
     .await;
-    let context = EnrollmentContext {
-        organization_id: organization_id(),
-        deployment: script.client.deployment().clone(),
-        machine_id: machine_id(),
-    };
-    let binding = EnrollmentBinding {
-        generation: BindingGeneration::from_persisted(1),
-        context,
-        credential: RefreshCredential {
-            enrollment_id: ENROLLMENT_ID.parse().expect("old enrollment"),
-            central: switchboard_machine_enrollment::CentralEndpointIds {
-                receiver: RECEIVER.parse().expect("old receiver"),
-                relay: RELAY.parse().expect("old relay"),
-            },
-            refresh_token: SecretValue::new(INITIAL_REFRESH.to_owned()).expect("old secret"),
-        },
-    };
-    let store = ScriptStore::default();
-    assert_eq!(
-        store.replace(BindingGeneration::EMPTY, &binding).await,
-        Ok(ConditionalWrite::Applied)
-    );
+    let (store, binding) = enrolled_store(&script).await;
     let owner = script
         .client
         .refresh_owner(store.clone(), machine_id(), organization_id());
@@ -70,4 +49,66 @@ async fn a_success_for_another_enrollment_never_replaces_or_releases_credentials
     assert!(
         matches!(store.snapshot(), StoredEnrollment::Ended { key, why: EnrollmentEnd::Revoked, .. } if key == binding.key())
     );
+}
+
+async fn enrolled_store(script: &SignInScript) -> (ScriptStore, EnrollmentBinding) {
+    let context = EnrollmentContext {
+        organization_id: organization_id(),
+        deployment: script.client.deployment().clone(),
+        machine_id: machine_id(),
+    };
+    let binding = EnrollmentBinding {
+        generation: BindingGeneration::from_persisted(1),
+        context,
+        credential: RefreshCredential {
+            enrollment_id: ENROLLMENT_ID.parse().expect("old enrollment"),
+            central: switchboard_machine_enrollment::CentralEndpointIds {
+                receiver: RECEIVER.parse().expect("old receiver"),
+                relay: RELAY.parse().expect("old relay"),
+            },
+            refresh_token: SecretValue::new(INITIAL_REFRESH.to_owned()).expect("old secret"),
+        },
+    };
+    let store = ScriptStore::default();
+    assert_eq!(
+        store.replace(BindingGeneration::EMPTY, &binding).await,
+        Ok(ConditionalWrite::Applied)
+    );
+    (store, binding)
+}
+
+#[tokio::test]
+async fn oversized_rotation_reply_leaves_resolution_to_the_next_refresh() {
+    let mut script = SignInScript::token_responses([
+        Reply::chunked(StatusCode::OK, vec![" ".repeat(65_537)]),
+        Reply::failure(StatusCode::BAD_REQUEST, "invalid_grant"),
+    ])
+    .await;
+    let (store, binding) = enrolled_store(&script).await;
+    let owner = script
+        .client
+        .refresh_owner(store.clone(), machine_id(), organization_id());
+
+    assert_eq!(
+        owner.lease(AccessRequest::Usable).await,
+        Err(LeaseUnavailable::OversizedRefreshReply)
+    );
+    assert_eq!(store.snapshot(), StoredEnrollment::Active(binding.clone()));
+    assert_eq!(
+        owner.lease(AccessRequest::Usable).await,
+        Err(LeaseUnavailable::Ended {
+            why: EnrollmentEnd::RefreshRefused
+        })
+    );
+    assert!(
+        matches!(store.snapshot(), StoredEnrollment::Ended { key, why: EnrollmentEnd::RefreshRefused, .. } if key == binding.key())
+    );
+    for _ in 0..2 {
+        script
+            .observations
+            .try_recv()
+            .expect("each attempted refresh")
+            .assert_refresh(INITIAL_REFRESH);
+    }
+    script.assert_exhausted();
 }

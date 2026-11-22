@@ -10,6 +10,7 @@ mod enrollment_binding;
 mod enrollment_identity;
 mod enrollment_outcome;
 mod refresh_owner;
+mod response_object;
 mod sign_in_answers;
 mod sign_in_client;
 
@@ -23,17 +24,17 @@ pub use enrollment_binding::{
     InvalidDeployment, SignInDeployment, StoredEnrollment,
 };
 pub use enrollment_identity::{
-    CentralEndpointId, CentralEndpointIds, EnrollmentId, OrganizationId, RouterClientId,
+    CentralEndpointId, CentralEndpointIds, EnrollmentId, EnrollmentIdentifierError, OrganizationId,
+    RouterClientId,
 };
-pub use enrollment_outcome::{EnrollmentEnd, InvalidReason};
+pub use enrollment_outcome::{DecodeAnswerError, EnrollmentEnd, InvalidReason};
 pub use refresh_owner::{
     AccessLease, AccessRequest, LeaseConfigurationFault, LeaseUnavailable, RefreshOwner,
     RefreshSource,
 };
 pub use sign_in_answers::{
-    DecodeAnswerError, DeviceAuthorization, DeviceInstructions, PollAnswer, RefreshAnswer,
-    SignInFailure, TokenGrant, decode_device_authorization, decode_poll, decode_refresh,
-    decode_start_failure,
+    DeviceAuthorization, DeviceInstructions, PollAnswer, RefreshAnswer, SignInFailure, TokenGrant,
+    decode_device_authorization, decode_poll, decode_refresh, decode_start_failure,
 };
 
 pub use discovery_answer::{CentralLinkTemplate, DiscoveryAnswer, decode_discovery};

@@ -1,4 +1,4 @@
-use url::{Host, Url};
+use url::Url;
 use workspace_ids::MachineId;
 
 use crate::{CentralEndpointIds, EnrollmentEnd, EnrollmentId, OrganizationId, RefreshCredential};
@@ -32,26 +32,41 @@ pub struct SignInDeployment(Url);
 
 /// The deployment parser rejects an invalid origin without echoing its input.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("sign-in requires an HTTPS origin")]
-pub struct InvalidDeployment;
+pub enum InvalidDeployment {
+    #[error("sign-in requires an HTTPS origin")]
+    InvalidOrigin,
+}
 
 impl SignInDeployment {
     pub fn new(origin: Url) -> Result<Self, InvalidDeployment> {
+        if origin.scheme() != "https" {
+            return Err(InvalidDeployment::InvalidOrigin);
+        }
+        Self::validate_origin(origin)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn loopback_for_test(origin: Url) -> Result<Self, InvalidDeployment> {
         let loopback = match origin.host() {
-            Some(Host::Ipv4(ip)) => ip.is_loopback(),
-            Some(Host::Ipv6(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+            Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
             _ => false,
         };
-        // Scripted sign-in can use HTTP on a numeric loopback address.
-        if !(origin.scheme() == "https" || origin.scheme() == "http" && loopback)
-            || !origin.has_host()
+        if origin.scheme() != "http" || !loopback {
+            return Err(InvalidDeployment::InvalidOrigin);
+        }
+        Self::validate_origin(origin)
+    }
+
+    fn validate_origin(origin: Url) -> Result<Self, InvalidDeployment> {
+        if !origin.has_host()
             || !origin.username().is_empty()
             || origin.password().is_some()
             || origin.path() != "/"
             || origin.query().is_some()
             || origin.fragment().is_some()
         {
-            return Err(InvalidDeployment);
+            return Err(InvalidDeployment::InvalidOrigin);
         }
         Ok(Self(origin))
     }

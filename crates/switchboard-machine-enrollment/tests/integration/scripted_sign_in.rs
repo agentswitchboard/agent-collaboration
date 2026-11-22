@@ -7,7 +7,7 @@ use std::{
 
 use axum::{
     Router,
-    body::{Body, to_bytes},
+    body::{Body, Bytes, to_bytes},
     extract::{Request, State},
     http::{Method, StatusCode, header},
     response::Response,
@@ -15,8 +15,8 @@ use axum::{
 use router_clock::{ClockInstant, ManualClock, RuntimeClock};
 use switchboard_machine_enrollment::{
     BindingGeneration, ConditionalWrite, CredentialStore, CredentialStoreError, EnrollmentBinding,
-    EnrollmentEnd, EnrollmentRequest, OrganizationId, SignInClient, StoreDurability,
-    StoredEnrollment,
+    EnrollmentEnd, EnrollmentFailure, EnrollmentReceipt, EnrollmentRequest, OrganizationId,
+    SignInClient, StoreDurability, StoredEnrollment,
 };
 use tokio::{
     net::TcpListener,
@@ -41,7 +41,7 @@ pub const USER_CODE: &str = "SHOP-LION";
 
 pub struct Reply {
     status: StatusCode,
-    body: String,
+    body: Body,
     retry_after: Option<&'static str>,
     held: Option<oneshot::Receiver<()>>,
 }
@@ -52,6 +52,20 @@ impl Reply {
     }
 
     pub fn new(status: StatusCode, body: String) -> Self {
+        Self {
+            status,
+            body: Body::from(body),
+            retry_after: None,
+            held: None,
+        }
+    }
+
+    pub fn chunked(status: StatusCode, chunks: Vec<String>) -> Self {
+        let body = Body::from_stream(futures_util::stream::iter(
+            chunks
+                .into_iter()
+                .map(|chunk| Ok::<_, std::convert::Infallible>(Bytes::from(chunk))),
+        ));
         Self {
             status,
             body,
@@ -97,6 +111,8 @@ pub struct Observation {
     pub method: Method,
     pub target: String,
     pub at: ClockInstant,
+    wait_checkpoint: usize,
+    request_timeout_drops: usize,
     pub content_type: Option<String>,
     pub authorization: Option<String>,
     pub form: BTreeMap<String, String>,
@@ -216,6 +232,10 @@ async fn serve_request(State(state): State<Arc<ScriptState>>, request: Request) 
             method: request.method,
             target: request.uri.to_string(),
             at: observed_at,
+            wait_checkpoint: state.clock.wait_checkpoint(),
+            request_timeout_drops: state
+                .clock
+                .wait_drops(observed_at.after(Duration::from_secs(30))),
             content_type: header(header::CONTENT_TYPE),
             authorization: header(header::AUTHORIZATION),
             form: fields,
@@ -228,9 +248,7 @@ async fn serve_request(State(state): State<Arc<ScriptState>>, request: Request) 
     if let Some(wait) = reply.retry_after {
         response = response.header(header::RETRY_AFTER, wait);
     }
-    response
-        .body(Body::from(reply.body))
-        .expect("script response")
+    response.body(reply.body).expect("script response")
 }
 
 pub fn at(seconds: u64) -> ClockInstant {
@@ -352,29 +370,51 @@ pub struct SignInScript {
     pub observations: mpsc::UnboundedReceiver<Observation>,
     state: Arc<ScriptState>,
     server: JoinHandle<()>,
+    finished: Option<oneshot::Receiver<()>>,
+    response_pending: Option<usize>,
+    poll_due: Option<(ClockInstant, usize)>,
+    wait_checkpoint: usize,
+    last_wire: ClockInstant,
+    device_lifetime: Option<Duration>,
+    final_poll_bound: Option<ClockInstant>,
 }
 
 impl SignInScript {
     pub async fn start(expires_in: u64, polls: impl IntoIterator<Item = Reply>) -> Self {
-        Self::spawn_script(Some(expires_in), polls).await
+        Self::spawn_script(Some(expires_in), None, polls).await
     }
 
     pub async fn token_responses(replies: impl IntoIterator<Item = Reply>) -> Self {
-        Self::spawn_script(None, replies).await
+        Self::spawn_script(None, None, replies).await
     }
 
-    async fn spawn_script(expires_in: Option<u64>, polls: impl IntoIterator<Item = Reply>) -> Self {
+    pub async fn hold_start(
+        expires_in: u64,
+        polls: impl IntoIterator<Item = Reply>,
+    ) -> (Self, oneshot::Sender<()>) {
+        let (release, held) = oneshot::channel();
+        (
+            Self::spawn_script(Some(expires_in), Some(held), polls).await,
+            release,
+        )
+    }
+
+    async fn spawn_script(
+        expires_in: Option<u64>,
+        held_start: Option<oneshot::Receiver<()>>,
+        polls: impl IntoIterator<Item = Reply>,
+    ) -> Self {
         let listener = TcpListener::bind("127.0.0.1:0")
             .await
             .expect("loopback listener");
         let issuer = format!("http://{}", listener.local_addr().expect("bound address"));
         let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
-        let prelude = expires_in.into_iter().flat_map(|expires_in| {
+        let prelude = expires_in.map(|expires_in| {
         let discovery = Reply::new(
             StatusCode::OK,
             serde_json::json!({"client_id": ROUTER_CLIENT, "link_url": "https://central.example/v1/organizations/{organization_id}/link"}).to_string(),
         );
-        let device = Reply::new(
+        let mut device = Reply::new(
             StatusCode::OK,
             serde_json::json!({
                 "device_code": DEVICE_SECRET,
@@ -386,11 +426,12 @@ impl SignInScript {
             })
             .to_string(),
         );
+        device.held = held_start;
         [discovery, device]
         });
         let (observed, observations) = mpsc::unbounded_channel();
         let state = Arc::new(ScriptState {
-            replies: Mutex::new(prelude.chain(polls).collect()),
+            replies: Mutex::new(prelude.into_iter().flatten().chain(polls).collect()),
             observed,
             clock: Arc::clone(&clock),
         });
@@ -400,7 +441,7 @@ impl SignInScript {
         let server = tokio::spawn(async move {
             axum::serve(listener, app).await.expect("scripted sign-in");
         });
-        let client = SignInClient::new(
+        let client = SignInClient::new_loopback_for_test(
             Url::parse(&issuer).expect("sign-in origin"),
             Arc::clone(&clock) as Arc<dyn RuntimeClock + Send + Sync>,
         )
@@ -411,28 +452,131 @@ impl SignInScript {
             observations,
             state,
             server,
+            finished: None,
+            response_pending: None,
+            poll_due: None,
+            wait_checkpoint: 0,
+            last_wire: ClockInstant::ZERO,
+            device_lifetime: expires_in.map(Duration::from_secs),
+            final_poll_bound: None,
+        }
+    }
+
+    pub fn spawn_attempt(
+        &mut self,
+        attempt: impl Future<Output = Result<EnrollmentReceipt, EnrollmentFailure>> + Send + 'static,
+    ) -> JoinHandle<Result<EnrollmentReceipt, EnrollmentFailure>> {
+        let (completed, finished) = oneshot::channel();
+        self.finished = Some(finished);
+        tokio::spawn(async move {
+            let _completed = completed;
+            attempt.await
+        })
+    }
+
+    fn remember_wire_checkpoint(&mut self, observation: &Observation) {
+        self.wait_checkpoint = observation.wait_checkpoint;
+        self.last_wire = observation.at;
+        self.response_pending = Some(observation.request_timeout_drops);
+        if observation.target == "/api/auth/device/code" {
+            self.final_poll_bound = self
+                .device_lifetime
+                .map(|lifetime| observation.at.after(lifetime).after(Duration::from_secs(2)));
         }
     }
 
     pub async fn next_request(&mut self) -> Observation {
-        self.observations
-            .recv()
-            .await
-            .expect("script sees next request")
+        let observed = if let Some((due, previous)) = self.poll_due.take() {
+            tokio::select! {
+                biased;
+                request = self.observations.recv() => Some(request),
+                () = attempt_finished(&mut self.finished) => Some(None),
+                () = self.clock.wait_for_timer_drop(due, previous) => {
+                    assert!(
+                        self.clock.has_not_due_check_now(due.after(Duration::from_secs(30))),
+                        "the elapsed poll wait must dispatch an HTTP request",
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let request = match observed {
+            Some(request) => request,
+            None => tokio::select! {
+                biased;
+                request = self.observations.recv() => request,
+                () = attempt_finished(&mut self.finished) => None,
+            },
+        }
+        .expect("enrollment must dispatch the next expected request before finishing");
+        self.remember_wire_checkpoint(&request);
+        request
+    }
+
+    fn in_flight_deadlines(&self) -> [ClockInstant; 2] {
+        let request_timeout = self.last_wire.after(Duration::from_secs(30));
+        [
+            request_timeout,
+            self.final_poll_bound.unwrap_or(request_timeout),
+        ]
     }
 
     pub async fn wait_for_poll(&mut self, delay: u64, due: u64) {
-        tokio::select! {
-            biased;
-            early = self.observations.recv() => {
-                let early = early.expect("unexpected early request");
-                assert!(early.at >= at(due), "client polled before its deadline");
-            }
-            () = self.clock.not_due_check_now(at(due)) => {}
-        }
+        self.observe_poll_wait(due).await;
+        let deadline = at(due);
+        self.poll_due = Some((deadline, self.clock.wait_drops(deadline)));
         self.clock
             .advance(Duration::from_secs(delay))
             .expect("advance manual clock");
+    }
+
+    pub async fn observe_poll_wait(&mut self, due: u64) {
+        let ignored = self.in_flight_deadlines();
+        let [request_timeout, _] = ignored;
+        let deadline = tokio::select! {
+            biased;
+            wire = self.observations.recv() => {
+                let wire = wire.expect("early observation");
+                assert!(wire.at >= at(due), "client polled before its deadline");
+                None
+            }
+            () = wait_for_response_checkpoint(&self.clock, self.response_pending, request_timeout) => self.clock.first_wait_since(self.wait_checkpoint, &ignored),
+            () = attempt_finished(&mut self.finished) => None,
+        };
+        assert_eq!(
+            deadline,
+            Some(at(due)),
+            "expected poll deadline was not armed"
+        );
+        self.wait_checkpoint = self.clock.wait_checkpoint();
+        self.response_pending = None;
+    }
+
+    pub async fn finish_before_more_polling(
+        &mut self,
+        mut attempt: JoinHandle<Result<EnrollmentReceipt, EnrollmentFailure>>,
+    ) -> Option<Result<EnrollmentReceipt, EnrollmentFailure>> {
+        let ignored = self.in_flight_deadlines();
+        let [request_timeout, _] = ignored;
+        tokio::select! {
+            biased;
+            result = &mut attempt => Some(result.expect("enrollment task")),
+            _ = self.observations.recv() => None,
+            _ = self.clock.next_wait_after(self.wait_checkpoint, &ignored) => None,
+            () = wait_for_response_checkpoint(&self.clock, self.response_pending, request_timeout) => None,
+        }
+    }
+
+    pub fn assert_last_poll_bound(&mut self, due: u64) {
+        // The held request already crossed the real socket. On this current-thread
+        // runtime the client has yielded and must have armed its response bound.
+        assert!(
+            self.clock.has_not_due_check_now(at(due)),
+            "last in-flight response bound"
+        );
+        self.wait_checkpoint = self.clock.wait_checkpoint();
     }
 
     pub fn assert_exhausted(&mut self) {
@@ -453,5 +597,26 @@ impl SignInScript {
 impl Drop for SignInScript {
     fn drop(&mut self) {
         self.server.abort();
+    }
+}
+
+async fn attempt_finished(finished: &mut Option<oneshot::Receiver<()>>) {
+    match finished {
+        Some(completed) => {
+            let _ = completed.await;
+        }
+        None => std::future::pending().await,
+    }
+}
+
+async fn wait_for_response_checkpoint(
+    clock: &ManualClock,
+    previous: Option<usize>,
+    deadline: ClockInstant,
+) {
+    if let Some(previous) = previous {
+        clock.wait_for_timer_drop(deadline, previous).await;
+    } else {
+        std::future::pending().await
     }
 }

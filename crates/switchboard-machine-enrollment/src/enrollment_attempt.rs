@@ -49,11 +49,17 @@ impl SignInClient {
         }
 
         let client_id = self.discover().await?.client_id;
+        let dispatched_at = self.clock.monotonic_now();
         let authorization = self.start(client_id, request).await?;
-        let started = self.clock.monotonic_now();
+        let arrived_at = self.clock.monotonic_now();
         show_instructions(&authorization.instructions)?;
-        let mut state = DeviceEnrollment::NotEnrolled
-            .step(started, DeviceEnrollmentInput::Started(authorization));
+        let mut state = DeviceEnrollment::NotEnrolled.step(
+            arrived_at,
+            DeviceEnrollmentInput::Started {
+                authorization,
+                dispatched_at,
+            },
+        );
 
         loop {
             let now = self.clock.monotonic_now();

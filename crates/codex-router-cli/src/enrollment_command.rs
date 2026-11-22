@@ -159,7 +159,8 @@ fn invalid_answer(reason: InvalidReason) -> &'static str {
         InvalidReason::UnknownError
         | InvalidReason::MalformedAnswer
         | InvalidReason::UnexpectedStatus
-        | InvalidReason::WrongEnrollment => {
+        | InvalidReason::WrongEnrollment
+        | InvalidReason::OversizedAnswer => {
             "Sign-in sent an unrecognized answer. Check the sign-in deployment before trying again."
         }
     }

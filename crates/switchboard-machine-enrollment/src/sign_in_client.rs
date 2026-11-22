@@ -3,11 +3,15 @@ use std::{
     time::{Duration, SystemTime},
 };
 
-use reqwest::{Client, RequestBuilder, header::RETRY_AFTER};
+use reqwest::{
+    Client, RequestBuilder,
+    header::{CONTENT_LENGTH, RETRY_AFTER},
+};
 use router_clock::{ClockInstant, RuntimeClock, timeout};
 use serde::Serialize;
 use url::Url;
 use workspace_ids::MachineId;
+use zeroize::Zeroizing;
 
 use crate::{
     CredentialStore, DeviceAuthorization, DiscoveryAnswer, EnrollmentContext, OrganizationId,
@@ -18,6 +22,7 @@ use crate::{
 
 const DEVICE_CODE_PATH: &str = "/api/auth/device/code";
 const TOKEN_PATH: &str = "/api/auth/oauth2/token";
+const RESPONSE_BODY_LIMIT: usize = 64 * 1024;
 const SIGN_IN_WAIT: Duration = Duration::from_secs(30);
 
 /// Composition creates this adapter for a single configured sign-in issuer and clock.
@@ -72,7 +77,7 @@ struct RefreshForm<'request> {
 struct HttpAnswer {
     status: reqwest::StatusCode,
     retry_after: Option<Duration>,
-    body: Vec<u8>,
+    body: Zeroizing<Vec<u8>>,
 }
 
 impl SignInClient {
@@ -82,6 +87,24 @@ impl SignInClient {
     ) -> Result<Self, SignInClientError> {
         let deployment =
             SignInDeployment::new(issuer).map_err(|_| SignInClientError::InvalidIssuer)?;
+        Self::with_deployment(deployment, clock)
+    }
+
+    /// Builds the scripted transport for a numeric HTTP loopback origin.
+    #[cfg(feature = "test-support")]
+    pub fn new_loopback_for_test(
+        issuer: Url,
+        clock: Arc<dyn RuntimeClock + Send + Sync>,
+    ) -> Result<Self, SignInClientError> {
+        let deployment = SignInDeployment::loopback_for_test(issuer)
+            .map_err(|_| SignInClientError::InvalidIssuer)?;
+        Self::with_deployment(deployment, clock)
+    }
+
+    fn with_deployment(
+        deployment: SignInDeployment,
+        clock: Arc<dyn RuntimeClock + Send + Sync>,
+    ) -> Result<Self, SignInClientError> {
         let date_anchor = (clock.utc_now().into(), clock.monotonic_now());
         let http = Client::builder()
             .redirect(reqwest::redirect::Policy::none())
@@ -124,7 +147,7 @@ impl SignInClient {
         let answer = self
             .request(self.http.get(self.endpoint("/.well-known/fleet-login")))
             .await?;
-        if !answer.status.is_success() {
+        if answer.status != reqwest::StatusCode::OK {
             return Err(decode_start_failure(
                 answer.status.as_u16(),
                 answer.retry_after,
@@ -159,7 +182,7 @@ impl SignInClient {
         let answer = self
             .request(self.http.post(self.endpoint(DEVICE_CODE_PATH)).form(&form))
             .await?;
-        if !answer.status.is_success() {
+        if answer.status != reqwest::StatusCode::OK {
             return Err(decode_start_failure(
                 answer.status.as_u16(),
                 answer.retry_after,
@@ -208,14 +231,32 @@ impl SignInClient {
         // Only classifications cross this edge. reqwest errors and bodies can contain input bytes.
         let unavailable = || SignInFailure::Unavailable { retry_after: None };
         timeout(self.clock.as_ref(), SIGN_IN_WAIT, async move {
-            let answer = request.send().await.map_err(|_| unavailable())?;
+            let mut answer = request.send().await.map_err(|_| unavailable())?;
             let status = answer.status();
             let retry_after = answer
                 .headers()
                 .get(RETRY_AFTER)
                 .and_then(|value| value.to_str().ok())
                 .and_then(|value| retry_delay(value, self.date_anchor, self.clock.monotonic_now()));
-            let body = answer.bytes().await.map_err(|_| unavailable())?.to_vec();
+            let oversized = || SignInFailure::Invalid {
+                reason: crate::InvalidReason::OversizedAnswer,
+            };
+            if answer
+                .headers()
+                .get(CONTENT_LENGTH)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.parse::<u64>().ok())
+                .is_some_and(|length| length > RESPONSE_BODY_LIMIT as u64)
+            {
+                return Err(oversized());
+            }
+            let mut body = Zeroizing::new(Vec::with_capacity(RESPONSE_BODY_LIMIT));
+            while let Some(chunk) = answer.chunk().await.map_err(|_| unavailable())? {
+                if chunk.len() > RESPONSE_BODY_LIMIT - body.len() {
+                    return Err(oversized());
+                }
+                body.extend_from_slice(&chunk);
+            }
             Ok(HttpAnswer {
                 status,
                 retry_after,
@@ -243,6 +284,9 @@ impl RefreshSource for HttpRefreshSource {
             Err(SignInFailure::Unavailable { retry_after }) => {
                 RefreshAnswer::Unavailable { retry_after }
             }
+            Err(SignInFailure::Invalid {
+                reason: crate::InvalidReason::OversizedAnswer,
+            }) => RefreshAnswer::OversizedReply,
             Err(SignInFailure::Invalid { reason }) => RefreshAnswer::Refused { reason },
         }
     }

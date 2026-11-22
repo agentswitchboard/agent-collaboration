@@ -168,3 +168,93 @@ fn two_stale_access_grants_in_one_call_return_a_transient_result() {
         assert_eq!(fixture.store.token(), Some(refresh_secret(call * 2)));
     }
 }
+
+#[test]
+fn revocation_finishes_when_the_fallback_marker_stalls() {
+    let fixture = Fixture::new();
+    fixture.store.0.fail_remove.store(true, Ordering::SeqCst);
+    fixture.store.0.hold_marker.store(true, Ordering::SeqCst);
+    let key = fixture.store.snapshot().key().expect("current enrollment");
+    let mut ending = std::pin::pin!(fixture.owner.end_enrollment(&key, EnrollmentEnd::Revoked));
+    assert!(poll_once(ending.as_mut()).is_pending());
+    fixture.advance(2);
+
+    assert_eq!(
+        poll_once(ending.as_mut()),
+        Poll::Ready(Err(crate::CredentialStoreError::CleanupTimedOut))
+    );
+    let old_lease = poll_once(std::pin::pin!(fixture.owner.lease(AccessRequest::Usable)));
+    assert_eq!(
+        old_lease,
+        Poll::Ready(Err(LeaseUnavailable::Ended {
+            why: EnrollmentEnd::Revoked
+        }))
+    );
+    assert!(fixture.server.sent().is_empty());
+}
+
+#[test]
+fn late_refusal_cannot_displace_the_successors_in_memory_ending() {
+    let fixture = Fixture::new();
+    fixture.server.block.store(true, Ordering::SeqCst);
+    fixture.server.revision.store(9, Ordering::SeqCst);
+    let mut previous = std::pin::pin!(fixture.owner.lease(AccessRequest::Usable));
+    assert!(poll_once(previous.as_mut()).is_pending());
+
+    let mut successor = binding(2, 0);
+    successor.credential.enrollment_id = "019a0000-0000-7000-8000-000000000008"
+        .parse()
+        .expect("new enrollment");
+    assert_eq!(
+        fixture
+            .store
+            .write(generation(1), StoredEnrollment::Active(successor.clone())),
+        ConditionalWrite::Applied
+    );
+    fixture.store.0.fail_remove.store(true, Ordering::SeqCst);
+    fixture.store.0.fail_marker.store(true, Ordering::SeqCst);
+    assert!(matches!(
+        poll_once(std::pin::pin!(
+            fixture
+                .owner
+                .end_enrollment(&successor.key(), EnrollmentEnd::Revoked)
+        )),
+        Poll::Ready(Err(_))
+    ));
+    fixture.server.block.store(false, Ordering::SeqCst);
+
+    assert_eq!(
+        poll_once(previous.as_mut()),
+        Poll::Ready(Err(LeaseUnavailable::Ended {
+            why: EnrollmentEnd::Revoked
+        }))
+    );
+    assert_eq!(
+        fixture.store.snapshot(),
+        StoredEnrollment::Active(successor)
+    );
+    assert_eq!(fixture.server.sent(), vec![refresh_secret(0)]);
+}
+
+#[test]
+fn a_committed_marker_is_recognized_when_its_acknowledgement_stalls() {
+    let fixture = Fixture::new();
+    fixture.store.0.fail_remove.store(true, Ordering::SeqCst);
+    fixture
+        .store
+        .0
+        .hold_marker_ack
+        .store(true, Ordering::SeqCst);
+    let key = fixture.store.snapshot().key().expect("current enrollment");
+    let mut ending = std::pin::pin!(fixture.owner.end_enrollment(&key, EnrollmentEnd::Revoked));
+    assert!(poll_once(ending.as_mut()).is_pending());
+    assert!(matches!(
+        fixture.store.snapshot(),
+        StoredEnrollment::Ended { key: stored, why: EnrollmentEnd::Revoked, .. } if stored == key
+    ));
+    fixture.advance(2);
+    assert_eq!(
+        poll_once(ending.as_mut()),
+        Poll::Ready(Ok(ConditionalWrite::Applied))
+    );
+}

@@ -1,4 +1,5 @@
-use std::{process::Command, time::Duration};
+use std::time::Duration;
+use tokio::process::Command;
 
 use axum::http::StatusCode;
 use switchboard_machine_enrollment::{AccessRequest, EnrollmentEnd, LeaseUnavailable};
@@ -30,7 +31,7 @@ async fn observe_enrollment_and_refresh() {
     )
     .await;
     let store = ScriptStore::default();
-    let enrollment = tokio::spawn({
+    let enrollment = script.spawn_attempt({
         let client = script.client.clone();
         let store = store.clone();
         async move {
@@ -108,19 +109,15 @@ async fn observe_enrollment_and_refresh() {
     println!("{CHILD_DONE}");
 }
 
-#[test]
-fn enrollment_and_refresh_emit_no_secrets() {
+#[tokio::test]
+async fn enrollment_and_refresh_emit_no_secrets() {
     if std::env::var_os(CHILD_MARKER).is_some() {
         tracing_subscriber::fmt()
             .with_writer(std::io::stderr)
             .with_max_level(tracing::Level::TRACE)
             .try_init()
             .expect("observe tracing in this process");
-        tokio::runtime::Builder::new_current_thread()
-            .enable_io()
-            .build()
-            .expect("test runtime")
-            .block_on(observe_enrollment_and_refresh());
+        observe_enrollment_and_refresh().await;
         return;
     }
 
@@ -135,7 +132,9 @@ fn enrollment_and_refresh_emit_no_secrets() {
     let child = Command::new(std::env::current_exe().expect("test executable"))
         .args(["--exact", &case, "--nocapture"])
         .env(CHILD_MARKER, "1")
+        .kill_on_drop(true)
         .output()
+        .await
         .expect("captured enrollment child");
     let stdout = String::from_utf8_lossy(&child.stdout);
     let stderr = String::from_utf8_lossy(&child.stderr);

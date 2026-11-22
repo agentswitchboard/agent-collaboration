@@ -58,6 +58,8 @@ pub enum LeaseUnavailable {
     Ended { why: EnrollmentEnd },
     #[error("sign-in returned access grants that expired before delivery")]
     StaleAccessGrant,
+    #[error("sign-in's refresh response exceeded the size limit")]
+    OversizedRefreshReply,
     #[error("sign-in is temporarily unreachable")]
     SignInUnreachable { retry_after: Option<Duration> },
     #[error(transparent)]
@@ -89,7 +91,11 @@ enum RefreshCompletion {
     Committed(AccessLease),
     Unavailable(Option<ClockInstant>),
     Invalid(LeaseConfigurationFault),
-    Ended(EnrollmentEnd),
+    Ended {
+        why: EnrollmentEnd,
+        deadline: ClockInstant,
+    },
+    OversizedReply,
     Recheck,
 }
 
@@ -212,11 +218,21 @@ where
             {
                 state.flight = None;
             }
-            let binding = match (self.inputs.read_binding().await, &result) {
-                (Err(LeaseUnavailable::Store(_)), RefreshCompletion::Ended(why)) => {
-                    return Err(LeaseUnavailable::Ended { why: *why });
-                }
-                (current, _) => current?,
+            let binding = match &result {
+                RefreshCompletion::Ended { why, deadline } => match timeout_at(
+                    self.inputs.clock.as_ref(),
+                    *deadline,
+                    self.inputs.read_binding(),
+                )
+                .await
+                {
+                    Ok(Ok(binding)) => binding,
+                    Ok(Err(error)) if !matches!(error, LeaseUnavailable::Store(_)) => {
+                        return Err(error);
+                    }
+                    _ => return Err(LeaseUnavailable::Ended { why: *why }),
+                },
+                _ => self.inputs.read_binding().await?,
             };
             state.admit(&binding, request)?;
             let now = self.inputs.clock.monotonic_now();
@@ -238,6 +254,9 @@ where
                 RefreshCompletion::Invalid(fault) if binding.generation == origin => {
                     state.fault = Some((origin, fault));
                     return Err(fault.into());
+                }
+                RefreshCompletion::OversizedReply if binding.generation == origin => {
+                    return Err(LeaseUnavailable::OversizedRefreshReply);
                 }
                 RefreshCompletion::Unavailable(until) if binding.generation == origin => {
                     state.backoff = until.map(|until| (origin, until));
@@ -331,6 +350,7 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
                 self.commit_rotation(binding, next, grant, usable_until, state)
                     .await
             }
+            RefreshAnswer::OversizedReply => RefreshCompletion::OversizedReply,
             RefreshAnswer::Unavailable { retry_after } => RefreshCompletion::Unavailable(
                 retry_after.map(|delay| self.clock.monotonic_now().after(delay)),
             ),
@@ -410,12 +430,25 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
             {
                 return RefreshCompletion::Recheck;
             }
-            // Fence this identity before attempting cleanup, even if the store is unavailable.
-            state.fence(key, why);
+            match self.read_for_cleanup(deadline).await {
+                Ok(StoredEnrollment::Active(current))
+                    if current.generation == binding.generation && current.key() == key =>
+                {
+                    state.fence(key, why);
+                }
+                Ok(_) => return RefreshCompletion::Recheck,
+                Err(_) => {
+                    // Losing store access cannot withdraw a fence for a successor.
+                    if state.ending.is_none() {
+                        state.fence(key, why);
+                    }
+                    return RefreshCompletion::Ended { why, deadline };
+                }
+            }
         }
         match self.end_binding(binding.generation, why, deadline).await {
             Ok(ConditionalWrite::Superseded) => RefreshCompletion::Recheck,
-            Ok(ConditionalWrite::Applied) | Err(_) => RefreshCompletion::Ended(why),
+            Ok(ConditionalWrite::Applied) | Err(_) => RefreshCompletion::Ended { why, deadline },
         }
     }
 
@@ -452,13 +485,27 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
             return Ok(ending);
         }
 
-        timeout_at(
+        if let Ok(marked) = timeout_at(
             self.clock.as_ref(),
             deadline,
             self.store.mark_unusable(generation, why),
         )
         .await
-        .map_err(|_| CredentialStoreError::CleanupTimedOut)?
+        {
+            return marked;
+        }
+        // Cancellation can follow a committed marker whose acknowledgement was delayed.
+        // The elapsed deadline permits an immediately ready read, with no extra wait.
+        match timeout_at(self.clock.as_ref(), deadline, self.store.read()).await {
+            Ok(Ok(StoredEnrollment::Ended {
+                generation: saved,
+                why: recorded,
+                ..
+            })) if Some(saved) == generation.successor() && recorded == why => {
+                Ok(ConditionalWrite::Applied)
+            }
+            _ => Err(CredentialStoreError::CleanupTimedOut),
+        }
     }
 }
 

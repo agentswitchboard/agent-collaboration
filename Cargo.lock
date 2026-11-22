@@ -5768,6 +5768,7 @@ dependencies = [
  "router-clock",
  "serde",
  "serde_json",
+ "switchboard-machine-enrollment",
  "thiserror 2.0.18",
  "tokio",
  "tracing",
@@ -7016,6 +7017,7 @@ version = "0.1.158"
 dependencies = [
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 

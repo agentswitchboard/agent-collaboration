@@ -2,7 +2,13 @@ use std::str::FromStr;
 
 use serde::Deserialize;
 use uuid::{Uuid, Variant};
-use workspace_ids::IdValidationError;
+
+/// An enrollment identifier parser refuses noncanonical or non-v7 input without echoing it.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum EnrollmentIdentifierError {
+    #[error("{field} must be a canonical lowercase RFC UUIDv7")]
+    Invalid { field: &'static str },
+}
 
 macro_rules! enrollment_identifier {
     ($(#[$document:meta])* $name:ident) => {
@@ -12,10 +18,10 @@ macro_rules! enrollment_identifier {
         pub struct $name(Uuid);
 
         impl FromStr for $name {
-            type Err = IdValidationError;
+            type Err = EnrollmentIdentifierError;
 
             fn from_str(input: &str) -> Result<Self, Self::Err> {
-                let invalid = || IdValidationError { field: stringify!($name) };
+                let invalid = || EnrollmentIdentifierError::Invalid { field: stringify!($name) };
                 let uuid = Uuid::try_parse(input).map_err(|_| invalid())?;
                 if uuid.get_version_num() != 7
                     || uuid.get_variant() != Variant::RFC4122
@@ -28,7 +34,7 @@ macro_rules! enrollment_identifier {
         }
 
         impl TryFrom<String> for $name {
-            type Error = IdValidationError;
+            type Error = EnrollmentIdentifierError;
 
             fn try_from(input: String) -> Result<Self, Self::Error> {
                 input.parse()
