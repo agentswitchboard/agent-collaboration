@@ -1,6 +1,6 @@
 //! Closed answers from a verified organization admin operation.
 use crate::person_request::{AdmissionRefusal, MAXIMUM_RECORD_PAGE};
-use fleet_contracts::WorkspaceView;
+use fleet_contracts::{MachineEnrollmentRevocationResult, WorkspaceView};
 use fleet_engine::EngineFailureClass;
 use fleet_identity_protocol::UnixMillis;
 use fleet_signin::organization_change::{
@@ -197,32 +197,6 @@ impl JsonSchema for WorkspacePageRows {
         let items = generator.subschema_for::<WorkspaceView>();
         schemars::json_schema!({"type":"array","items":items,"maxItems":MAXIMUM_RECORD_PAGE})
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(tag = "result", rename_all = "camelCase", deny_unknown_fields)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub enum MachineEnrollmentRevocationResult {
-    Revoked {},
-    NotFound {},
-    AlreadyEnded {},
-    Refused {
-        reason: MachineEnrollmentRevocationRefusal,
-    },
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase")]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub enum MachineEnrollmentRevocationRefusal {
-    NotPermitted,
-    FactorNotRecent,
 }
 
 /// Validated retained JSON travels to HTTP without another serialization.

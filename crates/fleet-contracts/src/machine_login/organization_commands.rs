@@ -1,4 +1,5 @@
 use super::PersonId;
+use fleet_identity_protocol::{EnrollmentId, OrganizationId};
 use message_board::RecordId;
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
@@ -41,3 +42,40 @@ pub enum EnrollmentRevocationReason {
 
 /// Maximum time since second factor for a machine authorization change.
 pub const PERSON_SECOND_FACTOR_WINDOW_SECONDS: i64 = 900;
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub struct RevokeMachineEnrollmentRequest {
+    pub organization_id: OrganizationId,
+    pub enrollment_id: EnrollmentId,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(tag = "result", rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub enum MachineEnrollmentRevocationResult {
+    Revoked {},
+    NotFound {},
+    AlreadyEnded {},
+    Refused {
+        reason: MachineEnrollmentRevocationRefusal,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
+pub enum MachineEnrollmentRevocationRefusal {
+    NotPermitted,
+    FactorNotRecent,
+}

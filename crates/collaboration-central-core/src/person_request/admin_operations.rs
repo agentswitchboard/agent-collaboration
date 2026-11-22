@@ -3,6 +3,7 @@
 //! operationId, params}`, RFC 8785 JCS, SHA-256, base64url).
 use super::compact_jwt::sha256_url;
 use super::refusal::PersonRequestRefusal;
+use fleet_contracts::RevokeMachineEnrollmentRequest;
 use fleet_contracts::{
     MAXIMUM_DESCRIPTION_BYTES,
     workspace_description::{description_schema, deserialize_description},
@@ -223,17 +224,6 @@ pub struct EngineAttemptRequest {
     pub operation_id: AdminOperationId,
     #[schemars(with = "String", extend("format" = "uuid"))]
     pub attempt_id: uuid::Uuid,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-#[cfg_attr(
-    all(feature = "wire-export", not(target_arch = "wasm32")),
-    derive(specta::Type)
-)]
-pub struct RevokeMachineEnrollmentRequest {
-    pub organization_id: OrganizationId,
-    pub enrollment_id: EnrollmentId,
 }
 
 /// Revocation has only two body fields. The verified bearer supplies the

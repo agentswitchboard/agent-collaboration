@@ -1,17 +1,17 @@
 use crate::identity_contract::{AuthorizationRevision, AuthorizationRevisionAcknowledgement};
 use crate::organization_admin_contract::{
-    ListWorkspacesResult, MachineEnrollmentRevocationResult, OrganizationAdminResult,
-    OrganizationChangeRecord,
+    ListWorkspacesResult, OrganizationAdminResult, OrganizationChangeRecord,
 };
 use crate::person_request::{
     AdminOperation, AdminRoute, CreateWorkspaceRequest, ListWorkspacesRequest,
     OrganizationAdminIntent, PersonClaims, PersonTokenHeader, ProofClaims, ProofHeader,
-    ReadChangeRecordsRequest, RevokeMachineEnrollmentRequest, WorkspaceLookupRequest,
+    ReadChangeRecordsRequest, WorkspaceLookupRequest,
 };
 use fleet_contracts::{
     AllowedWorkspaces, DecideDeviceLogin, DecideMachineToken, DeviceLoginDecision,
     DeviceLoginRefusal, DeviceLoginRequestId, EndedMachineClient, EnrollPermission,
-    MachineTokenDecision, MachineTokenRefusal, PersonId, PresentedMachine,
+    MachineEnrollmentRevocationResult, MachineTokenDecision, MachineTokenRefusal, PersonId,
+    PresentedMachine, RevokeMachineEnrollmentRequest,
 };
 use fleet_contracts::{
     ClientId, MachinePrincipal, MachineTokenClaims, OrganizationStatementDigestReply,
