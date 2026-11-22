@@ -73,6 +73,9 @@ impl Fixture {
     }
     pub async fn new_with_issuer(issuer: &str) -> Result<Self> {
         let root = tempfile::Builder::new().prefix("signin-").tempdir()?;
+        Self::open_signin_store(root, issuer).await
+    }
+    pub async fn open_signin_store(root: tempfile::TempDir, issuer: &str) -> Result<Self> {
         let clock = Arc::new(GatedClock::starting_at(SyncTime::from_unix_millis(
             signed::NOW_SECONDS * 1000,
         ))?);
@@ -278,7 +281,7 @@ impl Fixture {
         Ok((wake, due))
     }
     pub async fn seed_machine(&self) -> Result {
-        self.apply(A,"INSERT INTO login_machines(machine_id,label,state,allowed_workspaces,created_at,updated_at) VALUES (?,'existing machine','enrolled','[]','2030-03-17T17:46:40Z','2030-03-17T17:46:40Z')",vec![text(INSTALLATION)]).await?;
+        self.apply(A,"INSERT INTO login_machines(machine_id,label,state,enrollment_generation,created_at,updated_at) VALUES (?,'existing machine','enrolled',1,'2030-03-17T17:46:40Z','2030-03-17T17:46:40Z')",vec![text(INSTALLATION)]).await?;
         self.apply(A,"INSERT INTO login_machine_approvals(approval_id,request_id,machine_id,label,allowed_workspaces,state,approved_by_person_id,permission_checked,base_generation,code_expires_at,machine_client_id,last_grant_at,created_at,updated_at) VALUES (?,?,?,'existing machine','[]','enrolled',?,'machine:enroll',0,'2030-03-17T17:46:40Z',?,'2030-03-17T17:46:40Z','2030-03-17T17:46:40Z','2030-03-17T17:46:40Z')",vec![text(ENROLLMENT),text("019f0000-0000-7000-8000-00000000b305"),text(INSTALLATION),text(signed::OWNER),text(ENROLLMENT)]).await
     }
 }

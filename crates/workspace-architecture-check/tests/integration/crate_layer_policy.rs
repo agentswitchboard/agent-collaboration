@@ -1,7 +1,7 @@
 //! Allowed normal/build edges between workspace packages.
 use super::workspace_boundaries;
 
-const LAYER_POLICY: [(&str, &[&str]); 42] = [
+const LAYER_POLICY: [(&str, &[&str]); 44] = [
     ("workspace-ids", &[]),
     (
         "workspace-model",
@@ -35,6 +35,7 @@ const LAYER_POLICY: [(&str, &[&str]); 42] = [
         ],
     ),
     workspace_boundaries::HARNESS_CONTRACTS,
+    workspace_boundaries::HARNESS_SHARED_MECHANICS,
     (
         "central-engine-model",
         &["central-storage", "state-machine-core"],
@@ -55,6 +56,7 @@ const LAYER_POLICY: [(&str, &[&str]); 42] = [
             "central-storage",
             "fleet-contracts",
             "fleet-identity-protocol",
+            "fleet-machine-login",
             "fleet-rpc",
             "fleet-runtime-ports",
             "fleet-runtime",
@@ -161,6 +163,20 @@ const LAYER_POLICY: [(&str, &[&str]); 42] = [
             "workspace-ids",
         ],
     ),
+    (
+        "fleet-machine-login",
+        &[
+            "central-storage",
+            "fleet-contracts",
+            "fleet-identity-protocol",
+            "fleet-lent-transaction",
+            "fleet-runtime-ports",
+            "fleet-signin",
+            "message-board",
+            "state-machine-core",
+            "workspace-ids",
+        ],
+    ),
     (workspace_boundaries::LENT_TRANSACTION, &[]),
     ("fleet-storage-schema", &[]),
     (
@@ -209,6 +225,7 @@ const LAYER_POLICY: [(&str, &[&str]); 42] = [
             "provider-session-machines",
             "router-clock",
             workspace_boundaries::HARNESS_CONTRACTS.0,
+            workspace_boundaries::HARNESS_SHARED_MECHANICS.0,
         ],
     ),
     (

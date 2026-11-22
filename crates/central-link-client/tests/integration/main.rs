@@ -17,7 +17,7 @@ fn protocol_stub_correlates_out_of_order_replies_and_preserves_durable_retry_id(
     let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
         panic!("connect")
     };
-    let welcome = r#"{"kind":"welcome","machineId":"01890f2e-7b4c-7cc0-98c4-000000000002","centralTime":"2030-01-01T00:00:00Z"}"#;
+    let welcome = r#"{"kind":"welcome","machineId":"01890f2e-7b4c-7cc0-98c4-000000000002","centralTime":"2030-01-01T00:00:00Z","effectiveExpiresAt":"2030-01-01T00:10:00Z"}"#;
     client
         .receive(
             &attempt,

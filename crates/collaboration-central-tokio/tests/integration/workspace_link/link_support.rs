@@ -5,7 +5,7 @@ use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use central_link_client::{ClientAction, ClientEvent, ConnectionAttempt, LinkClient};
 use central_link_protocol::{CorrelationId, DataFrame, LinkFrame, ReplyPayload, RequestPayload};
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
-use collaboration_central_core::identity_contract::MachineTokenDecision;
+use fleet_contracts::MachineTokenDecision;
 use reqwest_websocket::{RequestBuilderExt, WebSocket};
 use serde_json::json;
 use workspace_model::{Caller, Workspace, WorkspaceAnswer, WorkspaceReply, WorkspaceResult};
@@ -36,7 +36,12 @@ pub(super) fn correlation(frame: &LinkFrame) -> Result<CorrelationId> {
 pub(super) async fn connect_client(
     fixture: &Fixture,
     token: &str,
-) -> Result<(LinkClient, ConnectionAttempt, WebSocket)> {
+) -> Result<(
+    LinkClient,
+    ConnectionAttempt,
+    WebSocket,
+    workspace_model::Timestamp,
+)> {
     let mut client = LinkClient::new(INSTALLATION.parse()?, fixture.clock.clone());
     let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
         return Err("client did not start a connection attempt".into());
@@ -50,10 +55,14 @@ pub(super) async fn connect_client(
         .await?
         .into_websocket()
         .await?;
-    if client.receive(&attempt, receive(&mut socket).await?)? != ClientEvent::Welcomed {
+    let ClientEvent::Welcomed {
+        effective_expires_at,
+        ..
+    } = client.receive(&attempt, receive(&mut socket).await?)?
+    else {
         return Err("authenticated link did not Welcome its machine_id".into());
-    }
-    Ok((client, attempt, socket))
+    };
+    Ok((client, attempt, socket, effective_expires_at))
 }
 
 pub(super) async fn workspace_reply(

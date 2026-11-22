@@ -8,6 +8,10 @@ import { after, before, test } from "node:test";
 import { Miniflare, convertV4MiniflareOptions } from "miniflare";
 import { z } from "zod";
 import { seedHistory } from "./engine-due-views-fixture.ts";
+import {
+  checkMachineAllowanceBudget,
+  checkMachineDirectoryBudget,
+} from "./machine-workspace-page-fixture.ts";
 
 const source = new URL("../../", import.meta.url);
 const migrations = new URL("crates/fleet-storage-schema/migrations/central/", source);
@@ -52,12 +56,12 @@ const workerSource = [
   "export class DueViewObject {",
   "  constructor(ctx) { this.ctx = ctx; this.sql = ctx.storage.sql; }",
   "  async fetch(request) {",
-  "    const { sql, setup } = await request.json();",
+  "    const { sql, setup, bindings = [] } = await request.json();",
   "    if (setup) {",
   "      this.ctx.storage.transactionSync(() => this.sql.exec(sql).toArray());",
   "      return Response.json({ rows: [], rowsRead: 0, rowsWritten: 0 });",
   "    }",
-  "    const cursor = this.sql.exec(sql);",
+  "    const cursor = this.sql.exec(sql, ...bindings);",
   "    const rows = cursor.toArray();",
   "    return Response.json({ rows, rowsRead: cursor.rowsRead, rowsWritten: cursor.rowsWritten });",
   "  }",
@@ -99,18 +103,23 @@ after(async (): Promise<void> => {
   if (scratch !== undefined) rmSync(scratch, { recursive: true, force: true });
 });
 
-async function run(object: string, sql: string, setup = false): Promise<Result> {
+interface QueryOptions {
+  readonly setup?: boolean;
+  readonly bindings?: readonly (number | string | null)[];
+}
+
+async function run(object: string, sql: string, options: QueryOptions = {}): Promise<Result> {
   const response = await fetch(new URL("/" + object, origin), {
     method: "POST",
     headers: { "Content-Type": "application/json", Connection: "close" },
-    body: JSON.stringify({ sql, setup }),
+    body: JSON.stringify({ sql, ...options }),
   });
   if (!response.ok) throw new Error(object + ": " + (await response.text()));
   return resultSchema.parse(await response.json());
 }
 
 async function prepare(object: string, steps: readonly string[]): Promise<void> {
-  for (const sql of steps) await run(object, sql, true);
+  for (const sql of steps) await run(object, sql, { setup: true });
 }
 
 function pair(rows: Result["rows"], current: boolean): readonly unknown[] {
@@ -200,8 +209,26 @@ function timeStock(statement: StatementSync): number {
   return performance.now() - started;
 }
 
-function stockCounters(database: string, sql: string): Record<string, number> | null {
-  const result = spawnSync("sqlite3", ["-batch", database, ".stats stmt", sql], {
+function stockCounters(
+  database: string,
+  sql: string,
+  bindings: readonly (number | string | null)[] = [],
+): Record<string, number> | null {
+  const parameters = bindings.map((value, index): string => {
+    const encoded =
+      typeof value === "string"
+        ? "CAST(X'" + Buffer.from(value).toString("hex") + "' AS TEXT)"
+        : String(value);
+    return "('?" + String(index + 1) + "'," + encoded + ")";
+  });
+  const setup =
+    parameters.length === 0
+      ? []
+      : [
+          ".parameter init",
+          "INSERT INTO temp.sqlite_parameters (key,value) VALUES " + parameters.join(",") + ";",
+        ];
+  const result = spawnSync("sqlite3", ["-batch", database, ...setup, ".stats stmt", sql], {
     encoding: "utf8",
   });
   if (result.status !== 0) return null;
@@ -293,10 +320,10 @@ test("a populated masked job and fixed active history agree on both backends", a
       await run(
         name,
         name === "sparse-long-history" ? dueSchema.replace(/CREATE INDEX[^;]+;/g, "") : dueSchema,
-        true,
+        { setup: true },
       );
       const migrationStarted = performance.now();
-      await run(name, signinAlarmSchema, true);
+      await run(name, signinAlarmSchema, { setup: true });
       native.exec(dueSchema);
       native.exec(signinAlarmSchema);
       const stockMigrationMs = performance.now() - migrationStarted;
@@ -359,13 +386,14 @@ test("the checked SELECT in a Workerd fixture overlay requires exactly one stamp
   assert.deepEqual(pair((await run("overlay", nextAlarm)).rows, true), [null, null]);
 });
 
+const sparseDirectReceiptHistory = [
+  // Finished history uses the new terminal/marked tags. Delivered is unfinished.
+  "UPDATE mail_messages SET state='seen',seen_completed_at='1970-01-01T00:01:00.000Z' WHERE message_kind='direct' AND state='delivered'",
+  "UPDATE mail_messages SET state='pastTheMark' WHERE message_kind='direct' AND state='cancelled'",
+  "UPDATE mail_messages SET state='delivered',delivered_arrived_at='1970-01-01T00:00:01.000Z' WHERE message_kind='direct' AND state='queued'",
+];
+
 test("the final Central schema keeps delivered direct marks within 330 sparse reads", async (context) => {
-  const states = [
-    // Finished history uses the new terminal/marked tags. Delivered is unfinished.
-    "UPDATE mail_messages SET state='seen',seen_completed_at='1970-01-01T00:01:00.000Z' WHERE message_kind='direct' AND state='delivered'",
-    "UPDATE mail_messages SET state='pastTheMark' WHERE message_kind='direct' AND state='cancelled'",
-    "UPDATE mail_messages SET state='delivered',delivered_arrived_at='1970-01-01T00:00:01.000Z' WHERE message_kind='direct' AND state='queued'",
-  ];
   const finalSchema = readFileSync(new URL("0007_direct_message_receipts.sql", migrations), "utf8");
   const fixtures = seedHistory(10_000, 50, 50);
   for (const [name, ddl, limit] of [
@@ -376,7 +404,14 @@ test("the final Central schema keeps delivered direct marks within 330 sparse re
       false,
     ],
   ] as const) {
-    await prepare(name, [...oldSchema, dueSchema, signinAlarmSchema, ddl, ...fixtures, ...states]);
+    await prepare(name, [
+      ...oldSchema,
+      dueSchema,
+      signinAlarmSchema,
+      ddl,
+      ...fixtures,
+      ...sparseDirectReceiptHistory,
+    ]);
     const alarm = await run(name, nextAlarm);
 
     assert.deepEqual(pair(alarm.rows, true), [300_000, 300_000]);
@@ -384,6 +419,57 @@ test("the final Central schema keeps delivered direct marks within 330 sparse re
     assert.equal(alarm.rowsRead <= 330, limit, JSON.stringify(alarm));
     context.diagnostic(JSON.stringify({ name, rowsRead: alarm.rowsRead }));
   }
+});
+
+test("the Workerd alarm stays within 330 reads with machine allowance rows", async (context) => {
+  const receipts = readFileSync(new URL("0007_direct_message_receipts.sql", migrations), "utf8");
+  const allowances = readFileSync(new URL("0008_machine_allowance_audit.sql", migrations), "utf8");
+  const object = "machine-allowances-alarm-budget";
+  await prepare(object, [
+    ...oldSchema,
+    dueSchema,
+    signinAlarmSchema,
+    receipts,
+    allowances,
+    ...seedHistory(10_000, 50, 50, "machine-allowances"),
+    ...sparseDirectReceiptHistory,
+    "INSERT INTO login_machine_allowances SELECT workspace_id, (SELECT machine_id FROM login_machines LIMIT 1), workspace_id, 'active', 'fixture', 'automatic', created_at, updated_at FROM directory_workspaces ORDER BY workspace_id LIMIT 1000",
+  ]);
+  const stored = await run(object, "SELECT count(*) AS allowances FROM login_machine_allowances");
+  assert.deepEqual(stored.rows, [{ allowances: 1000 }]);
+  const alarm = await run(object, nextAlarm);
+  assert.deepEqual(pair(alarm.rows, true), [300_000, 300_000]);
+  assert.equal(alarm.rowsWritten, 0);
+  assert.ok(alarm.rowsRead <= 330, JSON.stringify(alarm));
+  context.diagnostic(JSON.stringify({ allowanceRows: 1000, alarmRowsRead: alarm.rowsRead }));
+});
+
+test("machine workspace pages read only permitted rows apart from numeric cursor rank", async (context): Promise<void> => {
+  const schema = readdirSync(migrations)
+    .sort()
+    .map((name): string => readFileSync(new URL(name, migrations), "utf8"));
+  await checkMachineDirectoryBudget({
+    schema,
+    scratch,
+    prepare,
+    run: (object, sql, bindings): Promise<Result> => run(object, sql, { bindings }),
+    stockCounters,
+    diagnostic: (receipt): void => context.diagnostic(receipt),
+  });
+});
+
+test("machine allowance pair, active list and guard ignore withdrawn history", async (context): Promise<void> => {
+  const schema = readdirSync(migrations)
+    .sort()
+    .map((name): string => readFileSync(new URL(name, migrations), "utf8"));
+  await checkMachineAllowanceBudget({
+    schema,
+    scratch,
+    prepare,
+    run: (object, sql, bindings): Promise<Result> => run(object, sql, { bindings }),
+    stockCounters,
+    diagnostic: (receipt): void => context.diagnostic(receipt),
+  });
 });
 
 test("system offer and expiry inputs preserve every stored shape from main", async (context) => {

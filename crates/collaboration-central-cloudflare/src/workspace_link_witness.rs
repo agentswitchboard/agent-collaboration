@@ -198,14 +198,18 @@ async fn record(env: &Env, event: Event) -> Result<()> {
 
 fn classify(sql: &str) -> Option<EnrollmentQuery> {
     // The independent observer must fail closed when these owning queries change.
-    match sql {
-        "SELECT a.approval_id,a.request_id,a.label,a.allowed_workspaces,a.state,a.end_reason,a.approved_by_person_id,a.permission_checked,a.base_generation,a.code_expires_at,a.machine_client_id,a.last_grant_at,a.ended_at,a.created_at,a.updated_at,m.machine_id FROM login_machine_approvals a LEFT JOIN login_machines m ON m.machine_id=a.machine_id WHERE a.approval_id=?" => {
+    // The canonical SQL files end in a newline.
+    match sql.trim_end() {
+        "SELECT a.approval_id,a.request_id,a.label,a.allowed_workspaces,a.state,a.end_reason,a.approved_by_person_id,a.permission_checked,a.base_generation,a.code_expires_at,a.machine_client_id,a.last_grant_at,a.ended_at,a.created_at,a.updated_at,m.machine_id FROM login_machine_approvals a LEFT JOIN login_machines m ON m.machine_id=a.machine_id WHERE a.approval_id=?"
+        | "SELECT a.approval_id,m.machine_id,a.base_generation,a.state,a.end_reason,a.machine_client_id,a.last_grant_at,a.ended_at FROM login_machine_approvals a LEFT JOIN login_machines m ON m.machine_id=a.machine_id WHERE a.approval_id=?" => {
             Some(EnrollmentQuery::ByEnrollment)
         }
-        "SELECT a.approval_id,a.request_id,a.label,a.allowed_workspaces,a.state,a.end_reason,a.approved_by_person_id,a.permission_checked,a.base_generation,a.code_expires_at,a.machine_client_id,a.last_grant_at,a.ended_at,a.created_at,a.updated_at,m.machine_id FROM login_machine_approvals a LEFT JOIN login_machines m ON m.machine_id=a.machine_id WHERE a.machine_id=? AND a.state='enrolled'" => {
+        "SELECT a.approval_id,a.request_id,a.label,a.allowed_workspaces,a.state,a.end_reason,a.approved_by_person_id,a.permission_checked,a.base_generation,a.code_expires_at,a.machine_client_id,a.last_grant_at,a.ended_at,a.created_at,a.updated_at,m.machine_id FROM login_machine_approvals a LEFT JOIN login_machines m ON m.machine_id=a.machine_id WHERE a.machine_id=? AND a.state='enrolled'"
+        | "SELECT a.approval_id,m.machine_id,a.base_generation,a.state,a.end_reason,a.machine_client_id,a.last_grant_at,a.ended_at FROM login_machine_approvals a LEFT JOIN login_machines m ON m.machine_id=a.machine_id WHERE a.machine_id=? AND a.state='enrolled'" => {
             Some(EnrollmentQuery::ActiveEnrollment)
         }
-        "SELECT machine_id,label,state,allowed_workspaces,enrollment_generation,created_at,updated_at FROM login_machines WHERE machine_id=?" => {
+        "SELECT machine_id,label,state,enrollment_generation,created_at,updated_at FROM login_machines WHERE machine_id=?"
+        | "SELECT machine_id,state,enrollment_generation FROM login_machines WHERE machine_id=?" => {
             Some(EnrollmentQuery::MachineById)
         }
         _ => None,

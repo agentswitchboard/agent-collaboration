@@ -121,6 +121,7 @@ pub(crate) enum CaseStoreCall {
 pub(crate) enum CasePausePoint {
     AfterReads,
     AfterStoreApplied,
+    BeforeWorkspaceRequestApplying,
     AfterWorkspaceExecute,
     EngineCompletionEntered,
     AfterNoticesCommitted,
@@ -128,6 +129,11 @@ pub(crate) enum CasePausePoint {
     AfterDrainCommit,
     BeforeTimerCommit,
     BeforeReceiptTransaction,
+    AfterIdleExpiryCommit,
+    AfterIdleRenewalPlatformSendError,
+    BeforePrivateEnrollmentInvalidation,
+    BeforeIdleEnrollmentCleanup,
+    AfterIdleEnrollmentCleanup,
     AfterTimerCommit,
     AfterEngineAttemptGate,
     AfterEngineLoad,
@@ -145,6 +151,7 @@ impl From<CasePausePoint> for PausePoint {
         match point {
             CasePausePoint::AfterReads => Self::AfterReads,
             CasePausePoint::AfterStoreApplied => Self::AfterStoreApplied,
+            CasePausePoint::BeforeWorkspaceRequestApplying => Self::BeforeWorkspaceRequestApplying,
             CasePausePoint::AfterWorkspaceExecute => Self::AfterWorkspaceExecute,
             CasePausePoint::EngineCompletionEntered => Self::EngineCompletionEntered,
             CasePausePoint::AfterNoticesCommitted => Self::AfterNoticesCommitted,
@@ -152,6 +159,15 @@ impl From<CasePausePoint> for PausePoint {
             CasePausePoint::AfterDrainCommit => Self::AfterDrainCommit,
             CasePausePoint::BeforeTimerCommit => Self::BeforeTimerCommit,
             CasePausePoint::BeforeReceiptTransaction => Self::BeforeReceiptTransaction,
+            CasePausePoint::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
+            CasePausePoint::AfterIdleRenewalPlatformSendError => {
+                Self::AfterIdleRenewalPlatformSendError
+            }
+            CasePausePoint::BeforePrivateEnrollmentInvalidation => {
+                Self::BeforePrivateEnrollmentInvalidation
+            }
+            CasePausePoint::BeforeIdleEnrollmentCleanup => Self::BeforeIdleEnrollmentCleanup,
+            CasePausePoint::AfterIdleEnrollmentCleanup => Self::AfterIdleEnrollmentCleanup,
             CasePausePoint::AfterTimerCommit => Self::AfterTimerCommit,
             CasePausePoint::AfterEngineAttemptGate => Self::AfterEngineAttemptGate,
             CasePausePoint::AfterEngineLoad => Self::AfterEngineLoad,
@@ -170,6 +186,7 @@ impl From<PausePoint> for CasePausePoint {
         match point {
             PausePoint::AfterReads => Self::AfterReads,
             PausePoint::AfterStoreApplied => Self::AfterStoreApplied,
+            PausePoint::BeforeWorkspaceRequestApplying => Self::BeforeWorkspaceRequestApplying,
             PausePoint::AfterWorkspaceExecute => Self::AfterWorkspaceExecute,
             PausePoint::EngineCompletionEntered => Self::EngineCompletionEntered,
             PausePoint::AfterNoticesCommitted => Self::AfterNoticesCommitted,
@@ -177,6 +194,15 @@ impl From<PausePoint> for CasePausePoint {
             PausePoint::AfterDrainCommit => Self::AfterDrainCommit,
             PausePoint::BeforeTimerCommit => Self::BeforeTimerCommit,
             PausePoint::BeforeReceiptTransaction => Self::BeforeReceiptTransaction,
+            PausePoint::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
+            PausePoint::AfterIdleRenewalPlatformSendError => {
+                Self::AfterIdleRenewalPlatformSendError
+            }
+            PausePoint::BeforePrivateEnrollmentInvalidation => {
+                Self::BeforePrivateEnrollmentInvalidation
+            }
+            PausePoint::BeforeIdleEnrollmentCleanup => Self::BeforeIdleEnrollmentCleanup,
+            PausePoint::AfterIdleEnrollmentCleanup => Self::AfterIdleEnrollmentCleanup,
             PausePoint::AfterTimerCommit => Self::AfterTimerCommit,
             PausePoint::AfterEngineAttemptGate => Self::AfterEngineAttemptGate,
             PausePoint::AfterEngineLoad => Self::AfterEngineLoad,

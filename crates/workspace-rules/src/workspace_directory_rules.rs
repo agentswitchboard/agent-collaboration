@@ -1,12 +1,14 @@
 //! The organization's workspace directory: renames, archive, and the lists a
 //! machine may read. Central owns the `workspaces` table; these decide.
-use crate::list_rules::cursor_page;
-use crate::read_rules::PositionedItem;
 use crate::statement_plans::{exact, text};
 use central_storage::GuardedStatement;
 use workspace_model::{
-    Description, ItemView, ListCursor, ListQuery, PageLimit, RefusalReason, ResourceName,
-    Timestamp, Workspace, WorkspaceAnswer, WorkspaceId, WorkspaceState,
+    Description, RefusalReason, ResourceName, Timestamp, Workspace, WorkspaceId, WorkspaceState,
+};
+#[cfg(test)]
+use {
+    crate::{list_rules::cursor_page, read_rules::PositionedItem},
+    workspace_model::{ItemView, ListCursor, ListQuery, PageLimit, WorkspaceAnswer},
 };
 
 pub enum DirectoryChange {
@@ -64,10 +66,9 @@ pub fn change_workspace(
     }
 }
 
-/// Lists the workspaces this machine is allowed. A workspace's list position
-/// is its ordinal among every organization workspace by UUIDv7 id, so a page
-/// cursor stays stable as workspaces are added, archived or renamed.
-pub fn workspace_list_answer(
+/// Reference for filtering and paging over organization-wide UUIDv7 ordinals.
+#[cfg(test)]
+fn workspace_list_answer(
     query: &ListQuery,
     cursor: ListCursor,
     limit: PageLimit,

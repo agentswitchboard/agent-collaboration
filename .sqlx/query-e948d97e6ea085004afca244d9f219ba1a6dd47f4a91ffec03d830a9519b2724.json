@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT machine_id,state,enrollment_generation FROM login_machines WHERE machine_id=?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "machine_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machines",
+            "name": "machine_id"
+          }
+        }
+      },
+      {
+        "name": "state",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "login_machines",
+            "name": "state"
+          }
+        }
+      },
+      {
+        "name": "enrollment_generation",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "login_machines",
+            "name": "enrollment_generation"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "e948d97e6ea085004afca244d9f219ba1a6dd47f4a91ffec03d830a9519b2724"
+}
