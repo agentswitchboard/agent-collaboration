@@ -401,7 +401,7 @@ async fn initialize_admission_with_clock(
     ExternalProviderRuntime::initialize_with_fixture_clock(
         fixture,
         Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        Arc::new(collaboration_runtime::ProviderSessionEventHub::new(
+        Arc::new(switchboard_session_events::ProviderSessionEventHub::new(
             store,
             clock.clone(),
         )),

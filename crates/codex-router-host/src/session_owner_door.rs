@@ -13,7 +13,6 @@ use acp_client_runtime::{
     ProviderPromptContent, owner_wire::OwnerAcpWire, session_owner_task::OwnerMailboxUnavailable,
 };
 use collaboration_protocol::SessionRef;
-use collaboration_runtime::ProviderSessionEventHub;
 use provider_session_machines::{
     session_lifecycle_machine::{LoadAttempt, RestoreVia},
     session_owner::{
@@ -27,6 +26,7 @@ use std::{
     num::NonZeroUsize,
     sync::{Arc, Mutex},
 };
+use switchboard_session_events::ProviderSessionEventHub;
 use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::oneshot;
 use tokio::sync::{Mutex as AsyncMutex, watch};

@@ -5,11 +5,11 @@ use collaboration_protocol::{
     EndpointDescription, ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess,
     SessionRef,
 };
-use collaboration_runtime::ProviderSessionEventHub;
 use collaboration_service::ApplicationFixture;
 use node_test_fixture as node_fixture;
 use serde_json::{Value, json};
 use std::{os::unix::fs::PermissionsExt, path::PathBuf, sync::Arc};
+use switchboard_session_events::ProviderSessionEventHub;
 use switchboard_session_store::ProviderOperationStore;
 use switchboard_session_store::ProviderSessionRecord;
 use tokio::sync::Mutex;

@@ -1,12 +1,12 @@
 use super::*;
 use crate::session_owner_publication::SessionOwnerPublisher;
 use collaboration_contracts::SessionEventHub;
-use collaboration_runtime::ProviderSessionEventHub;
 use provider_session_machines::session_lifecycle_machine::CloseAttempt;
 use provider_session_machines::session_owner::{PromptCompletion, PublicationStatus};
 use router_clock::ClockInstant;
 use session_event_model::{SessionEvent, SessionState, StopReason};
 use std::time::Duration;
+use switchboard_session_events::ProviderSessionEventHub;
 use tokio_util::task::TaskTracker;
 
 struct RealHubPorts {

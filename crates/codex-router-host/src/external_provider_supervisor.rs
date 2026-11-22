@@ -371,7 +371,7 @@ impl ExternalProviderSupervisor {
     pub(crate) fn new_with_hub(
         bindings: Vec<ExternalProviderBinding>,
         store: Arc<Mutex<ProviderOperationStore>>,
-        hub: Option<Arc<collaboration_runtime::ProviderSessionEventHub>>,
+        hub: Option<Arc<switchboard_session_events::ProviderSessionEventHub>>,
         scratch_root: Option<PathBuf>,
     ) -> Result<Self, &'static str> {
         let clock = bindings.first().map_or_else(
@@ -384,7 +384,7 @@ impl ExternalProviderSupervisor {
         let started_at_ms = clock.utc_now().timestamp_millis();
         let queued_operations = ProviderQueueOperationRegistry::new(clock.clone());
         let owner_hub = hub.unwrap_or_else(|| {
-            Arc::new(collaboration_runtime::ProviderSessionEventHub::new(
+            Arc::new(switchboard_session_events::ProviderSessionEventHub::new(
                 Arc::clone(&store),
                 clock.clone(),
             ))

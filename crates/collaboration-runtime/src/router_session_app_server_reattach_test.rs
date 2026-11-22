@@ -147,7 +147,7 @@ async fn lag_replays_missed_item_and_turn_completion() -> Result<(), Box<dyn std
 }
 
 struct ObservedConcreteHub {
-    inner: Arc<crate::ProviderSessionEventHub>,
+    inner: Arc<switchboard_session_events::ProviderSessionEventHub>,
     attachment_count: std::sync::atomic::AtomicUsize,
     attachment_created: tokio::sync::Notify,
 }
@@ -197,12 +197,12 @@ impl SessionEventHub for ObservedConcreteHub {
 )]
 async fn concrete_hub_epoch_resync_reattaches_same_tui_socket()
 -> Result<(), Box<dyn std::error::Error>> {
-    use crate::owner_inbox::{
+    use collaboration_protocol::{ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess};
+    use std::num::NonZeroUsize;
+    use switchboard_session_events::owner_inbox::{
         HubHistoryAvailability, HubPublication, HubPublicationBaseline, HubPublicationFact,
         HubPublicationStamp,
     };
-    use collaboration_protocol::{ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess};
-    use std::num::NonZeroUsize;
     use tokio::{
         sync::Mutex,
         time::{Duration, timeout},
@@ -236,7 +236,7 @@ async fn concrete_hub_epoch_resync_reattaches_same_tui_socket()
             resume: Default::default(),
         })
         .await?;
-    let hub = Arc::new(crate::ProviderSessionEventHub::new(
+    let hub = Arc::new(switchboard_session_events::ProviderSessionEventHub::new(
         Arc::new(Mutex::new(store)),
         Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
     ));

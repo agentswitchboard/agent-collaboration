@@ -277,7 +277,7 @@ async fn router_queue_drains_provider_prompts_in_fifo_order() {
         .expect("operation store opens");
     let store = Arc::new(Mutex::new(store));
     let clock = Arc::new(router_clock::SystemRuntimeClock::new());
-    let hub = Arc::new(collaboration_runtime::ProviderSessionEventHub::new(
+    let hub = Arc::new(switchboard_session_events::ProviderSessionEventHub::new(
         Arc::clone(&store),
         clock.clone(),
     ));

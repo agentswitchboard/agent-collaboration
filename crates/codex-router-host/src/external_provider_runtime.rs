@@ -14,8 +14,8 @@ pub(crate) use acp_client_runtime::ProviderPromptDispatchObservation;
 #[cfg(test)]
 use collaboration_protocol::SessionRef;
 use collaboration_protocol::{OperationId, ProviderPromptStopReason};
-use collaboration_runtime::ProviderSessionEventHub;
 use message_board::SessionEndpointRef;
+use switchboard_session_events::ProviderSessionEventHub;
 use tokio_util::sync::CancellationToken;
 
 #[cfg(test)]
@@ -138,7 +138,7 @@ impl ExternalProviderRuntime {
     pub fn session_owner_door(
         &self,
         store: Arc<tokio::sync::Mutex<switchboard_session_store::ProviderOperationStore>>,
-        hub: Arc<collaboration_runtime::ProviderSessionEventHub>,
+        hub: Arc<switchboard_session_events::ProviderSessionEventHub>,
     ) -> Arc<crate::session_owner_door::SessionOwnerDoor> {
         self.owner_door
             .get_or_init(|| {

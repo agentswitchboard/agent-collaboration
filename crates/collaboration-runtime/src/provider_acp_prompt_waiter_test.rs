@@ -1,12 +1,12 @@
 use super::*;
-use crate::ProviderSessionEventHub;
-use crate::owner_inbox::{
-    HubHistoryAvailability, HubPublication, HubPublicationBaseline, HubPublicationFact,
-    HubPublicationRefusal, HubPublicationStamp, HubSessionInbox,
-};
 use codex_acp_adapter::bounded_acp_output;
 use router_clock::ManualClock;
 use std::{num::NonZeroUsize, time::Duration};
+use switchboard_session_events::ProviderSessionEventHub;
+use switchboard_session_events::owner_inbox::{
+    HubHistoryAvailability, HubPublication, HubPublicationBaseline, HubPublicationFact,
+    HubPublicationRefusal, HubPublicationStamp, HubSessionInbox,
+};
 use switchboard_session_store::ProviderOperationStore;
 use uuid::Uuid;
 

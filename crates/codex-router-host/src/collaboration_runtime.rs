@@ -135,7 +135,7 @@ pub struct CollaborationRuntime {
         std::sync::Arc<tokio::sync::Mutex<switchboard_session_store::ProviderOperationStore>>,
     >,
     #[cfg(feature = "runtime-test-support")]
-    provider_test_hub: Option<std::sync::Weak<collaboration_runtime::ProviderSessionEventHub>>,
+    provider_test_hub: Option<std::sync::Weak<switchboard_session_events::ProviderSessionEventHub>>,
     external_provider_supervisor: Option<std::sync::Arc<crate::ExternalProviderSupervisor>>,
     /// Keeps Claude's prompt cache warm; stopped before the supervisor so nothing submits after.
     provider_cache_warm: Option<std::sync::Arc<crate::provider_cache_warm::ProviderCacheWarm>>,

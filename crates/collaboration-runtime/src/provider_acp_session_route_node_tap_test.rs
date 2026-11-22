@@ -28,7 +28,7 @@ use tokio::{
 };
 
 use super::ProviderAcpSessionRoute;
-use crate::ProviderSessionEventHub;
+use switchboard_session_events::ProviderSessionEventHub;
 use switchboard_session_store::ProviderOperationStore;
 
 const N9: ProtocolNode = ProtocolNode::N9ProviderAcpRoute;

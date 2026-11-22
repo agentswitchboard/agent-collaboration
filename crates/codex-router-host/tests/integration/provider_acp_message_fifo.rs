@@ -434,7 +434,7 @@ async fn permanent_queued_load_failure_is_inspectable_and_does_not_stop_fifo() {
     let runtime = ExternalProviderRuntime::initialize_with_fixture_clock(
         launch,
         Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        Arc::new(collaboration_runtime::ProviderSessionEventHub::new(
+        Arc::new(switchboard_session_events::ProviderSessionEventHub::new(
             store.clone(),
             clock.clone(),
         )),

@@ -11,7 +11,7 @@ impl ExternalProviderSupervisor {
         store: std::sync::Arc<
             tokio::sync::Mutex<switchboard_session_store::ProviderOperationStore>,
         >,
-        hub: std::sync::Arc<collaboration_runtime::ProviderSessionEventHub>,
+        hub: std::sync::Arc<switchboard_session_events::ProviderSessionEventHub>,
     ) -> Result<Self, &'static str> {
         Self::new_with_hub(bindings, store, Some(hub), None)
     }

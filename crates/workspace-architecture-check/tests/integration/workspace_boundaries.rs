@@ -54,6 +54,17 @@ const SESSION_STORE: (&str, &[&str]) = (
     "switchboard-session-store",
     &["collaboration-protocol", "sqlite-storage-maintenance"],
 );
+const SESSION_EVENTS: (&str, &[&str]) = (
+    "switchboard-session-events",
+    &[
+        "collaboration-contracts",
+        "collaboration-protocol",
+        "message-board",
+        "router-clock",
+        "session-event-model",
+        "switchboard-session-store",
+    ],
+);
 pub(super) const TIMER_CRATES: [(&str, &[&str]); 3] = [
     (
         FLEET_WAKES,
@@ -263,6 +274,7 @@ pub(super) fn check_boundaries(
     check_closed_workspace_edges(graph, NOTICES_LAYER.0, NOTICES_LAYER.1)?;
     check_closed_workspace_edges(graph, DIRECTORY_LAYER.0, DIRECTORY_LAYER.1)?;
     check_closed_workspace_edges(graph, SESSION_STORE.0, SESSION_STORE.1)?;
+    check_closed_workspace_edges(graph, SESSION_EVENTS.0, SESSION_EVENTS.1)?;
     check_job_reachability(
         graph,
         FLEET_WAKES,

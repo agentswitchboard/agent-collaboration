@@ -3,10 +3,10 @@
 use super::*;
 use crate::session_owner_calls::InputAcceptance;
 use collaboration_contracts::SessionEventHub;
-use collaboration_runtime::ProviderSessionEventHub;
 use session_event_model::{
     InputId, PromptContent, ProviderSubmission, SelectedSkill, SkillInvocationName,
 };
+use switchboard_session_events::ProviderSessionEventHub;
 use switchboard_session_store::ProviderSessionRecord;
 
 #[tokio::test]

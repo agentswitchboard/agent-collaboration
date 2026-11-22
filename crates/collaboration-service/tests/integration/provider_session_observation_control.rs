@@ -8,10 +8,10 @@ use collaboration_protocol::{
     BoundedObservationRequest, EndpointDescription, ObservationEndReason, ProviderRequestedPolicy,
     ProviderWorkingDirectory, RouterAccess, SessionRef,
 };
-use collaboration_runtime::ProviderSessionEventHub;
 use collaboration_service::ApplicationFixture;
 use serde_json::{Value, json};
 use session_event_model::{SessionEvent, SessionItem, SessionItemKind};
+use switchboard_session_events::ProviderSessionEventHub;
 use switchboard_session_store::ProviderOperationStore;
 use switchboard_session_store::ProviderSessionRecord;
 use tokio::sync::Mutex;

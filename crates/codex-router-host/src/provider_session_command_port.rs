@@ -34,10 +34,10 @@ use collaboration_protocol::{
     ProviderSettingsSetRequest, ProviderWorkingDirectory, RouterAccess, SessionId, SessionRef,
     UuidIdentity,
 };
-use collaboration_runtime::ProviderSessionEventHub;
 use message_board::{Identity, SessionEndpointRef};
 use session_event_model::{InputId, SessionEvent};
 use std::{sync::Arc, time::Duration};
+use switchboard_session_events::ProviderSessionEventHub;
 use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
 

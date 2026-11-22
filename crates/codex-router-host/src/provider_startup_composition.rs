@@ -10,9 +10,9 @@ use collaboration_protocol::{
     ProviderCapabilityName, ProviderCapabilityStatus, ProviderKind, ProviderRuntimeIdentity,
     ProviderTransport, UuidIdentity,
 };
-use collaboration_runtime::ProviderSessionEventHub;
 use collaboration_runtime::new_service_uuid;
 use std::{io, sync::Arc};
+use switchboard_session_events::ProviderSessionEventHub;
 use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;

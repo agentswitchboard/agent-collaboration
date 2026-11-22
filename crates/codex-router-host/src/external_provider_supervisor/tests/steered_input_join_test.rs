@@ -67,7 +67,7 @@ struct SteeringSession {
     _root: tempfile::TempDir,
     receipt: std::path::PathBuf,
     target: SessionRef,
-    hub: Arc<collaboration_runtime::ProviderSessionEventHub>,
+    hub: Arc<switchboard_session_events::ProviderSessionEventHub>,
     hub_target: message_board::SessionRef,
     supervisor: Arc<ExternalProviderSupervisor>,
 }
@@ -121,7 +121,7 @@ async fn steering_session_on_clock(
             .await
             .expect("store"),
     ));
-    let hub = Arc::new(collaboration_runtime::ProviderSessionEventHub::new(
+    let hub = Arc::new(switchboard_session_events::ProviderSessionEventHub::new(
         Arc::clone(&store),
         clock.clone(),
     ));

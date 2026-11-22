@@ -1,8 +1,8 @@
 //! Native inventory must page using observed activity, without changing durable records.
 use super::test_support::ScriptedSessionBackend;
 use super::*;
-use crate::ProviderSessionEventHub;
 use session_event_model::{SessionItem, SessionItemKind, SessionSettings};
+use switchboard_session_events::ProviderSessionEventHub;
 use switchboard_session_store::{ProviderOperationStore, ProviderSessionRecord};
 use tokio::sync::Mutex;
 

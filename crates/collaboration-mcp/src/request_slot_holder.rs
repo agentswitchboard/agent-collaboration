@@ -11,7 +11,6 @@ use collaboration_protocol::{
     EndpointDescription, ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess,
     SessionRef,
 };
-use collaboration_runtime::ProviderSessionEventHub;
 use collaboration_service::ApplicationFixture;
 use serde_json::{Value, json};
 use std::{
@@ -19,6 +18,7 @@ use std::{
     path::{Path, PathBuf},
     sync::Arc,
 };
+use switchboard_session_events::ProviderSessionEventHub;
 use switchboard_session_store::{ProviderOperationStore, ProviderSessionRecord};
 use tokio::sync::Mutex;
 use tokio_util::sync::CancellationToken;
