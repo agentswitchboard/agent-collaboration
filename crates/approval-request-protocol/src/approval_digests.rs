@@ -75,7 +75,7 @@ pub fn sha256_url(bytes: &[u8]) -> String {
 macro_rules! approval_digest {
     ($(#[$attribute:meta])* $digest:ident) => {
         $(#[$attribute])*
-        #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+        #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
         #[serde(try_from = "String", into = "String")]
         #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
         pub struct $digest(String);

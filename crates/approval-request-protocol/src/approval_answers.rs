@@ -16,7 +16,7 @@ pub enum Answer {
 }
 
 approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -29,7 +29,7 @@ pub enum QuestionAnswer {
 
 approval_wire_record! {
 [deny_unknown_fields]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -41,7 +41,7 @@ pub struct QuestionFieldAnswer {
 }
 
 approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub enum QuestionAnswerValue {
     SelectedOptions { selected_option_ids: Vec<OfferedOptionId> },

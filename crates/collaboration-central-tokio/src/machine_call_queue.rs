@@ -104,7 +104,7 @@ impl MacCallSender {
             .try_send(QueuedMacCall {
                 correlation: correlation.clone(),
                 waiter: ReplyWaiter { deadline, answer },
-                request: box_registered_request(request, R::request),
+                request: Box::new(R::request(request)),
             })
             .map_err(|_| CallFailure::NeverReached)?;
         Ok(PendingMacCall {
@@ -115,10 +115,6 @@ impl MacCallSender {
             _slot: slot,
         })
     }
-}
-
-fn box_registered_request<Body, Wire>(body: Body, encode: impl FnOnce(Body) -> Wire) -> Box<Wire> {
-    Box::new(encode(body))
 }
 
 impl MacCallReceiver {

@@ -117,6 +117,11 @@ impl CentralLinkDispatcher for FixtureLinkDispatcher {
                     )
                     .await
                 }
+                CentralCall::RegisterRun(_) | CentralCall::Raise(_) | CentralCall::Stop(_) => {
+                    TypedCallResult::Refused {
+                        reason: LinkCallRefusal::UnknownCall,
+                    }
+                }
             }
         })
     }

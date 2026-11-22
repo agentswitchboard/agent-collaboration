@@ -33,7 +33,18 @@ fn validate_text(
 
 macro_rules! approval_text {
     ($name:ident, $maximum:expr, $nonempty:expr) => {
-        #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+        #[derive(
+            Clone,
+            Debug,
+            Eq,
+            Hash,
+            Ord,
+            PartialEq,
+            PartialOrd,
+            Serialize,
+            Deserialize,
+            schemars::JsonSchema,
+        )]
         #[serde(try_from = "String", into = "String")]
         #[cfg_attr(
             all(feature = "wire-export", not(target_arch = "wasm32")),
@@ -87,7 +98,18 @@ pub struct InvalidApprovalOrdinal {
 
 macro_rules! approval_ordinal {
     ($name:ident, $maximum:expr) => {
-        #[derive(Clone, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
+        #[derive(
+            Clone,
+            Debug,
+            Eq,
+            Hash,
+            Ord,
+            PartialEq,
+            PartialOrd,
+            Serialize,
+            Deserialize,
+            schemars::JsonSchema,
+        )]
         #[serde(try_from = "u8", into = "u8")]
         #[cfg_attr(
             all(feature = "wire-export", not(target_arch = "wasm32")),
@@ -136,7 +158,7 @@ pub type CentralTime = chrono::DateTime<chrono::Utc>;
 
 approval_wire_record! {
     [deny_unknown_fields]
-    #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+    #[derive(Clone, Copy, Debug, Eq, PartialEq, schemars::JsonSchema)]
     #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
     struct ApprovalWindowFields {
         raised_at: CentralTime,
@@ -145,7 +167,7 @@ approval_wire_record! {
 }
 
 /// The immutable first-save time and exact one-hour deadline.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "ApprovalWindowFields", into = "ApprovalWindowFields")]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
@@ -210,7 +232,7 @@ impl From<ApprovalWindow> for ApprovalWindowFields {
 }
 
 /// An exact ASCII decimal spelling. The wire transports the string unchanged.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "String", into = "String")]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),

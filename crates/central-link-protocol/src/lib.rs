@@ -1,4 +1,5 @@
 //! The closed Router–central wire vocabulary, without a runtime or storage driver.
+pub mod approval_rpc;
 mod correlation_id;
 mod link_close;
 mod link_codec;

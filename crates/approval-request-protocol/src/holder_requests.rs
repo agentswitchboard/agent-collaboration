@@ -9,7 +9,7 @@ use crate::{
 
 approval_wire_record! {
 [deny_unknown_fields]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -20,7 +20,7 @@ pub struct RegisterRunRequest {
 }
 
 approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -35,7 +35,7 @@ pub enum RegisterRunReply {
 
 approval_wire_record! {
 [deny_unknown_fields]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -47,7 +47,7 @@ pub struct RaiseReceipt {
 }
 
 approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -64,7 +64,7 @@ pub enum RaiseReply {
 }
 
 approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -80,7 +80,7 @@ pub enum StopRequest {
 }
 
 approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -94,7 +94,7 @@ pub enum StopReply {
 }
 
 approval_wire_union! {
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub enum RunRefusal {
     RunNotRegistered {},
@@ -104,7 +104,7 @@ pub enum RunRefusal {
 }
 
 approval_wire_union! {
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub enum DeliverEndingReply {
     Received {},
@@ -178,7 +178,7 @@ impl StopRequest {
 
 approval_wire_union! {
 /// Which ending stands after a Stop. The receipt carries no handover or answer.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)

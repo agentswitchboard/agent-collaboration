@@ -1,5 +1,8 @@
 //! Registered RPC calls carried by an authenticated machine connection.
-use crate::{CorrelationId, FrameDirection, MachineLinkCloseCode};
+use crate::{
+    CorrelationId, FrameDirection, MachineLinkCloseCode,
+    approval_rpc::{DeliverEndingRpc, RaiseApprovalRpc, RegisterRunRpc, StopApprovalRpc},
+};
 use fleet_rpc::{Envelope, Rpc};
 use serde::{
     Deserialize, Deserializer, Serialize,
@@ -105,11 +108,11 @@ macro_rules! register_calls {
                     $reply::$variant(envelope)
                 }
 
-                #[expect(clippy::allow_attributes, reason = "the generated fallback is required when a registry has a second marker")]
+                #[expect(clippy::allow_attributes, reason = "the fallback is generated for all registry sizes")]
                 #[allow(
                     unreachable_patterns,
                     clippy::match_wildcard_for_single_variants,
-                    reason = "one marker currently ships in the test registry; other registered replies must remain distinct"
+                    reason = "the registry generates a shared projection for one or many reply variants"
                 )]
                 fn take_reply(reply: $reply) -> Option<Envelope<Self::Target, Self::Reply>> {
                     match reply {
@@ -124,11 +127,15 @@ macro_rules! register_calls {
 
 register_calls! {
     CentralCall, CentralCallReply, CentralLinkRpc, Central;
+    "registerRun" => RegisterRun(RegisterRunRpc),
+    "raise" => Raise(RaiseApprovalRpc),
+    "stop" => Stop(StopApprovalRpc),
     #[cfg(any(test, feature = "test-support"))] "centralProbe" => CentralProbe(test_calls::CentralProbe),
 }
 
 register_calls! {
     MacCall, MacCallReply, MacLinkRpc, Mac;
+    "deliverEnding" => DeliverEnding(DeliverEndingRpc),
     #[cfg(any(test, feature = "test-support"))] "macProbe" => MacProbe(test_calls::MacProbe),
 }
 
