@@ -1,8 +1,7 @@
-//! Typed bindings for the final approvals table. The authenticated link owns admission.
+//! Typed bindings for the core approvals calls. The authenticated link owns admission.
 use approval_request_protocol::{
-    AuthorityProbeReply, AuthorityProbeRequest, DecideReply, DecideRequest, DeliverEndingReply,
-    DeliverEndingRequest, PassOnReply, PassOnRequest, Raise, RaiseReply, RegisterRunReply,
-    RegisterRunRequest, ReportDeliveryReply, ReportDeliveryRequest, RouterRunId, StopReply,
+    DecideReply, DecideRequest, DeliverEndingReply, DeliverEndingRequest, PassOnReply,
+    PassOnRequest, Raise, RaiseReply, RegisterRunReply, RegisterRunRequest, RouterRunId, StopReply,
     StopRequest, decode_named_map,
 };
 use fleet_identity_protocol::{EnrollmentId, OrganizationId};
@@ -79,12 +78,6 @@ bind_approval_rpc!(
     RegisterRunRequest,
     RegisterRunReply
 );
-bind_approval_rpc!(
-    AuthorityProbeRpc,
-    ApprovalServiceTarget,
-    AuthorityProbeRequest,
-    AuthorityProbeReply
-);
 bind_approval_rpc!(RaiseApprovalRpc, ApprovalServiceTarget, Raise, RaiseReply);
 bind_approval_rpc!(
     StopApprovalRpc,
@@ -97,12 +90,6 @@ bind_approval_rpc!(
     ApprovalHolderTarget,
     DeliverEndingRequest,
     DeliverEndingReply
-);
-bind_approval_rpc!(
-    ReportDeliveryRpc,
-    ApprovalServiceTarget,
-    ReportDeliveryRequest,
-    ReportDeliveryReply
 );
 bind_approval_rpc!(
     DecideApprovalRpc,

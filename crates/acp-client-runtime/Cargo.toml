@@ -16,6 +16,7 @@ test-observation = []
 test-support = []
 
 [dependencies]
+switchboard-harness-contracts.workspace = true
 agent-client-protocol.workspace = true
 provider-session-machines.workspace = true
 router-clock.workspace = true

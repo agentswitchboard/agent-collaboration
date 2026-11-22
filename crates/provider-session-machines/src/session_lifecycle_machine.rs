@@ -11,20 +11,7 @@ use state_machine_core::{
     EventTag, RefusalTag, StateMachine, StateMachineResult, StateTag, Transition, TransitionError,
 };
 
-/// One load or resume attempt's identity, so a late reply from an earlier
-/// attempt is recognised (a UUIDv7 minted by the caller).
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct LoadAttempt(pub uuid::Uuid);
-
-/// One close attempt's identity.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
-pub struct CloseAttempt(pub uuid::Uuid);
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum RestoreVia {
-    Load,
-    Resume,
-}
+pub use switchboard_harness_contracts::{CloseAttempt, LoadAttempt, RestoreVia};
 
 /// Where a close started: a failed close returns there (Live), or to
 /// NotLoaded when the close had already made a pending load stale.
