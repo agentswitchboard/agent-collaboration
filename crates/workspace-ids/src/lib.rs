@@ -52,6 +52,7 @@ workspace_identifiers!(
     RequestId,
     /// The Router install's durable identity, shared with central.
     #[schemars(extend("pattern" = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"))]
+    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
     MachineId,
     PersonId,
     AreaId,

@@ -9,6 +9,9 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[features]
+wire-export = ["dep:specta","dep:specta-typescript","message-board/wire-export"]
+
 [dependencies]
 serde.workspace = true
 schemars.workspace = true
@@ -22,3 +25,7 @@ jsonschema.workspace = true
 [[test]]
 name = "integration"
 path = "tests/integration/main.rs"
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+specta = { workspace = true, features = ["derive"], optional = true }
+specta-typescript = { workspace = true, optional = true }

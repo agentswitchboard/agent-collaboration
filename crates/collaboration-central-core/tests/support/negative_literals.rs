@@ -3,6 +3,23 @@ use serde_json::{Value, json};
 pub fn explicit_negatives(name: &str, literals: &[Value]) -> Vec<Value> {
     let mut invalid = vec![Value::Null];
     match name {
+        "RevokeMachineEnrollmentRequest"
+        | "MachineEnrollmentRevocationResult"
+        | "ProvisionOrganization"
+        | "ProvisionOrganizationResult"
+        | "ReadOrganizationStatementDigest"
+        | "OrganizationStatementDigestReply" => {
+            for literal in literals {
+                for field in literal.as_object().unwrap().keys() {
+                    let mut missing = literal.clone();
+                    missing.as_object_mut().unwrap().remove(field);
+                    invalid.push(missing);
+                }
+            }
+            if name == "MachineEnrollmentRevocationResult" {
+                invalid.push(json!({"result":"refused","reason":"unrecognizedVariant"}));
+            }
+        }
         "AuthorizationRevision" | "AuthorizationRevisionAcknowledgement" => {
             for literal in literals {
                 for field in literal.as_object().unwrap().keys() {

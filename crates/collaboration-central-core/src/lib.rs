@@ -79,3 +79,7 @@ mod private_machine_revocation;
 pub use organization_admin_contract::*;
 pub use organization_signin_http::organization_signin_router;
 pub use organization_signin_port::OrganizationSignInPort;
+
+#[cfg(test)]
+#[cfg(all(feature = "wire-export", not(target_arch = "wasm32")))]
+mod signin_wire_export_test;

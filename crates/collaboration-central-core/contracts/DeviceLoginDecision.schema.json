@@ -78,7 +78,8 @@
     "MachineLabel": {
       "allOf": [
         {
-          "pattern": "^[^\\u0000-\\u0008\\u000b-\\u001f]*$(?![\\s\\S])"
+          "pattern": "^[^\\u0000-\\u0008\\u000b-\\u001f]*$(?![\\s\\S])",
+          "type": "string"
         }
       ],
       "maxLength": 256,

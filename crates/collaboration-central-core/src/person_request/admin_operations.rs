@@ -7,7 +7,7 @@ use fleet_contracts::{
     MAXIMUM_DESCRIPTION_BYTES,
     workspace_description::{description_schema, deserialize_description},
 };
-use fleet_identity_protocol::{EnrollmentId, OrganizationId};
+use fleet_identity_protocol::{EnrollmentId, OrganizationId, UnixSeconds};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -16,6 +16,10 @@ use serde_json::Value;
 /// retry. Central's request log retains its committed outcome.
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct AdminOperationId(String);
 impl TryFrom<String> for AdminOperationId {
     type Error = PersonRequestRefusal;
@@ -52,6 +56,10 @@ pub const MAXIMUM_RECORD_PAGE: u16 = 100;
 /// than rewritten, so the signed intent hashes the stored name.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct WorkspaceName(message_board::ResourceName);
 impl TryFrom<String> for WorkspaceName {
     type Error = PersonRequestRefusal;
@@ -88,6 +96,10 @@ impl JsonSchema for WorkspaceName {
 /// One page of change records: 1..=100.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "u16", into = "u16")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct RecordPageLimit(u16);
 impl TryFrom<u16> for RecordPageLimit {
     type Error = PersonRequestRefusal;
@@ -126,17 +138,29 @@ impl JsonSchema for RecordPageLimit {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct CreateWorkspaceRequest {
     pub organization_id: OrganizationId,
     pub operation_id: AdminOperationId,
     pub name: WorkspaceName,
     #[serde(deserialize_with = "deserialize_description")]
+    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = String))]
     #[schemars(schema_with = "description_schema")]
     pub description: String,
 }
 
+#[cfg(all(feature = "wire-export", not(target_arch = "wasm32")))]
+const _: fn(&CreateWorkspaceRequest) -> &String = |request| &request.description;
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct WorkspaceLookupRequest {
     pub organization_id: OrganizationId,
     pub workspace_id: message_board::WorkspaceId,
@@ -144,6 +168,10 @@ pub struct WorkspaceLookupRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct ListWorkspacesRequest {
     pub organization_id: OrganizationId,
     /// The last workspace ID of the previous page; absent or null for the first.
@@ -155,6 +183,10 @@ pub struct ListWorkspacesRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct ReadChangeRecordsRequest {
     pub organization_id: OrganizationId,
     /// The last record ID of the previous page; absent or null for the first.
@@ -194,6 +226,10 @@ pub struct EngineAttemptRequest {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct RevokeMachineEnrollmentRequest {
     pub organization_id: OrganizationId,
     pub enrollment_id: EnrollmentId,
@@ -289,6 +325,10 @@ pub enum AdminOperation {
 /// The version-one T06 object whose canonical bytes a person's proof hashes.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(transparent)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct OrganizationAdminIntent(OrganizationAdminIntentWire);
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
@@ -296,6 +336,10 @@ pub struct OrganizationAdminIntent(OrganizationAdminIntentWire);
     tag = "operation",
     rename_all_fields = "camelCase",
     deny_unknown_fields
+)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
 )]
 enum OrganizationAdminIntentWire {
     CreateWorkspace {
@@ -367,10 +411,19 @@ enum OrganizationAdminIntentWire {
 #[serde(try_from = "u8", into = "u8")]
 struct IntentVersionOne;
 
+const INTENT_VERSION: u8 = 1;
+
+#[cfg(all(feature = "wire-export", not(target_arch = "wasm32")))]
+impl specta::Type for IntentVersionOne {
+    fn definition(_: &mut specta::Types) -> specta::datatype::DataType {
+        specta_typescript::define(INTENT_VERSION.to_string()).into()
+    }
+}
+
 impl TryFrom<u8> for IntentVersionOne {
     type Error = PersonRequestRefusal;
     fn try_from(version: u8) -> Result<Self, Self::Error> {
-        if version == 1 {
+        if version == INTENT_VERSION {
             Ok(Self)
         } else {
             Err(PersonRequestRefusal::OperationBody)
@@ -379,7 +432,7 @@ impl TryFrom<u8> for IntentVersionOne {
 }
 impl From<IntentVersionOne> for u8 {
     fn from(_: IntentVersionOne) -> Self {
-        1
+        INTENT_VERSION
     }
 }
 impl JsonSchema for IntentVersionOne {
@@ -387,25 +440,41 @@ impl JsonSchema for IntentVersionOne {
         "IntentVersionOne".into()
     }
     fn json_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
-        schemars::json_schema!({"type":"integer","const":1})
+        schemars::json_schema!({"type":"integer","const":INTENT_VERSION})
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 struct CreateWorkspaceParams {
     name: WorkspaceName,
     #[serde(deserialize_with = "deserialize_description")]
+    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = String))]
     #[schemars(schema_with = "description_schema")]
     description: String,
 }
 
+#[cfg(all(feature = "wire-export", not(target_arch = "wasm32")))]
+const _: fn(&CreateWorkspaceParams) -> &String = |params| &params.description;
+
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 struct WorkspaceLookupParams {}
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 struct ListWorkspacesParams {
     after: Option<message_board::WorkspaceId>,
     limit: RecordPageLimit,
@@ -413,6 +482,10 @@ struct ListWorkspacesParams {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 struct ReadChangeRecordsParams {
     #[schemars(with = "Option<String>", extend("format" = "uuid"))]
     after: Option<uuid::Uuid>,
@@ -421,6 +494,10 @@ struct ReadChangeRecordsParams {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 struct EngineAttemptParams {
     #[schemars(with = "String", extend("format" = "uuid"))]
     attempt_id: uuid::Uuid,
@@ -428,9 +505,13 @@ struct EngineAttemptParams {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 struct MachineRevocationParams {
     actor: String,
-    second_factor_at: Option<i64>,
+    second_factor_at: Option<UnixSeconds>,
 }
 
 impl AdminOperation {
@@ -493,7 +574,10 @@ impl AdminOperation {
                     request,
                     authorization: MachineRevocationParams {
                         actor: actor.to_owned(),
-                        second_factor_at,
+                        second_factor_at: second_factor_at
+                            .map(UnixSeconds::try_from)
+                            .transpose()
+                            .map_err(|_| PersonRequestRefusal::PersonClaims)?,
                     },
                 })
             }

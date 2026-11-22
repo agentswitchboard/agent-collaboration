@@ -10,6 +10,9 @@ description = "The capabilities a host supplies to FleetRuntime: traits and the 
 [lints]
 workspace = true
 
+[features]
+wire-export = ["dep:specta"]
+
 [dependencies]
 central-storage.workspace = true
 central-engine-model.workspace = true
@@ -18,6 +21,9 @@ workspace-ids.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+specta = { workspace = true, features = ["derive"], optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 uuid = { workspace = true, features = ["js"] }
