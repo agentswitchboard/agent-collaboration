@@ -40,6 +40,7 @@
 import { field } from "../exact-json.ts";
 import { requireArgument } from "./acp-stdio.ts";
 import { AcpExchange } from "./acp-exchange.ts";
+import { FixtureControlSocket } from "./fixture-control-socket.ts";
 import { fileAppears, startReleaseBarrier } from "./release-barrier.ts";
 import { selectOption } from "./provider-settings-options.ts";
 
@@ -55,6 +56,7 @@ const known = [
   "late-cancel-confirmation",
   "refuse-prompt",
   "silent-first-restore",
+  "observe-first-held-restore",
   "disconnect-during-restore",
   "restore-session-not-found",
   "restore-other-session-not-found",
@@ -291,7 +293,14 @@ requests: for (;;) {
       if (behaviours.has("restore-fast-on")) currentFast.set(sessionId, "true");
       agent.receipt(receipt, observed);
       if (behaviours.has("disconnect-during-restore")) break requests;
-      if (behaviours.has("silent-first-restore") && observed.restores.length === 1) break;
+      if (behaviours.has("silent-first-restore") && observed.restores.length === 1) {
+        if (behaviours.has("observe-first-held-restore")) {
+          const observation = new FixtureControlSocket(`${receipt}.restore.sock`, null);
+          await observation.connected();
+          observation.close();
+        }
+        break;
+      }
       const invalidParams = behaviours.has("restore-session-not-found")
         ? `Session "${sessionId}" not found`
         : behaviours.has("restore-other-session-not-found")

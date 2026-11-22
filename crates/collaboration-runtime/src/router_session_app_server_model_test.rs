@@ -491,12 +491,30 @@ async fn native_model_list_distinguishes_missing_from_unavailable() {
         let path = root.path().join("catalog.sock");
         let listener = UnixListener::bind(&path).expect("native socket");
         let backend = ScriptedSessionBackend::new().expect("scripted session backend");
+        let catalog = Arc::new(RefusingModelCatalog(failure));
+        let (sender, mut replies) = mpsc::channel(1);
+        let response = super::send_model_list_response(
+            json!(2),
+            Some(backend.session.clone()),
+            catalog.clone(),
+            sender,
+        );
+        assert!(
+            futures_util::FutureExt::now_or_never(response).is_some(),
+            "the literal catalogue and an empty response lane must settle in one poll"
+        );
+        let response = replies
+            .try_recv()
+            .expect("model/list must send its correlated response before completing")
+            .expect("handled request");
+        assert_eq!(response.response, expected);
+
         let context = Arc::new(RouterSessionAppServerContext::new(
             backend.endpoint.clone(),
             ScriptedSessionBackend::actor().expect("actor"),
             backend.clone(),
             backend,
-            Arc::new(RefusingModelCatalog(failure)),
+            catalog,
         ));
         let server = tokio::spawn(async move {
             let (stream, _) = listener.accept().await.expect("native peer");

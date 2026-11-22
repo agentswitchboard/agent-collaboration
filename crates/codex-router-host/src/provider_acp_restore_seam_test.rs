@@ -96,7 +96,11 @@ fn auto_message(target: SessionRef, text: &str, load_policy: LoadPolicy) -> Deli
 async fn a_cold_auto_restore_timeout_finishes_the_input_without_holding_it() {
     let rig = RestoreRig::new();
     rig.seed_session().await;
-    let (host, store) = rig.open_with_store("silent-first-restore").await;
+    let wire = tokio::net::UnixListener::bind(rig.root.path().join("wire.json.restore.sock"))
+        .expect("bind held restore observation");
+    let (host, store) = rig
+        .open_with_store_and_behaviors(&["silent-first-restore", "observe-first-held-restore"])
+        .await;
     let host = Arc::new(host);
     let route = delivery_route(&rig, host.clone(), store);
     let not_loaded = route
@@ -118,16 +122,26 @@ async fn a_cold_auto_restore_timeout_finishes_the_input_without_holding_it() {
         "the loaded-only attempt reached ACP"
     );
 
-    let cold_delivery = route.deliver(
+    let mut cold_delivery = Box::pin(route.deliver(
         auto_message(rig.target.clone(), "retire this input", LoadPolicy::MayLoad),
         &UnstoredAttemptEvidenceSink,
-    );
-    tokio::pin!(cold_delivery);
+    ));
     let timeout = std::time::Duration::from_secs(30);
-    tokio::select! {
-        () = rig.clock.not_due_check_now(ClockInstant::ZERO.after(timeout)) => {},
-        receipt = &mut cold_delivery => panic!("cold load ended before its deadline: {receipt:?}"),
+    let parked = tokio::select! {
+        observed = wire.accept() => Ok(observed),
+        receipt = &mut cold_delivery => Err(receipt),
+    };
+    let deadline_armed = rig
+        .clock
+        .has_not_due_check_now(ClockInstant::ZERO.after(timeout));
+    if !matches!(parked, Ok(Ok(_))) || !deadline_armed {
+        drop(parked);
+        drop(cold_delivery);
+        route.shutdown_queue().await;
+        host.shutdown().await.expect("stop Host");
+        panic!("a held ACP restore must arm the 30-second Host deadline before settling");
     }
+    drop(parked);
     rig.clock.advance(timeout).expect("reach restore deadline");
     let actual = cold_delivery.await.expect("terminal cold delivery receipt");
     assert!(
@@ -350,7 +364,21 @@ async fn a_failed_host_activation_retires_only_its_restore_and_never_sends_the_o
             runtime.fault_restore_preparation();
             release.send(()).expect("continue activation");
         };
-        tokio::join!(restore, fault);
+        let mut restore = Box::pin(restore);
+        let mut fault = Box::pin(fault);
+        let reached_preparation = tokio::select! {
+            biased;
+            () = &mut fault => true,
+            () = &mut restore => false,
+        };
+        drop(fault);
+        if !reached_preparation {
+            drop(restore);
+            route.shutdown_queue().await;
+            host.shutdown().await.expect("stop Host");
+            panic!("{path:?} settled before reaching Host restore preparation");
+        }
+        restore.await;
 
         assert!(
             matches!(

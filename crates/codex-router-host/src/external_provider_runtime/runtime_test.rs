@@ -41,13 +41,18 @@ fn initialization_fixture(
 }
 
 #[cfg(unix)]
-fn assert_process_reaped(process_id_path: &std::path::Path) {
+fn fixture_process_id(process_id_path: &std::path::Path) -> rustix::process::Pid {
     let process_id = std::fs::read_to_string(process_id_path)
         .expect("fixture wrote process id")
         .trim()
         .parse()
         .expect("process id");
-    let process_id = rustix::process::Pid::from_raw(process_id).expect("positive process id");
+    rustix::process::Pid::from_raw(process_id).expect("positive process id")
+}
+
+#[cfg(unix)]
+fn assert_process_reaped(process_id_path: &std::path::Path) {
+    let process_id = fixture_process_id(process_id_path);
     assert!(matches!(
         rustix::process::test_kill_process(process_id),
         Err(rustix::io::Errno::SRCH)

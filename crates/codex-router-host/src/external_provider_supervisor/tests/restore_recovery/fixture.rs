@@ -115,9 +115,22 @@ impl RestoreRig {
         ExternalProviderSupervisor,
         Arc<Mutex<ProviderOperationStore>>,
     ) {
+        self.open_with_store_and_behaviors(&[behavior]).await
+    }
+
+    pub(crate) async fn open_with_store_and_behaviors(
+        &self,
+        behaviors: &[&str],
+    ) -> (
+        ExternalProviderSupervisor,
+        Arc<Mutex<ProviderOperationStore>>,
+    ) {
+        let arguments = std::iter::once("plain-prompts")
+            .chain(behaviors.iter().copied())
+            .collect::<Vec<_>>();
         let (supervisor, _, store) = self
             .open_fixture_parts(
-                &["plain-prompts", behavior],
+                &arguments,
                 Arc::new(acp_provider_adapters::StandardAcpBehavior),
             )
             .await;

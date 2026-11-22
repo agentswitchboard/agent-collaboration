@@ -311,8 +311,21 @@ async fn router_queue_drains_provider_prompts_in_fifo_order() {
     };
     let mut queued_input_ids = Vec::new();
     let mut expected_lines = Vec::new();
+    let mut dispatch_offers = Vec::new();
     for text in ["first", "second"] {
         let operation_id = OperationId::generate();
+        let offer = backend
+            .inner
+            .uncertainty
+            .slot(&target.endpoint)
+            .fixture
+            .notice_wait(
+                target.clone(),
+                crate::binding_store_fixture::BindingFixtureWait::QueuedDispatchOffered(
+                    operation_id.clone(),
+                ),
+            );
+        dispatch_offers.push((operation_id.clone(), offer));
         let input_id = session_event_model::InputId::generate();
         queued_input_ids.push(input_id.clone());
         let push_id = PushId::try_from(agent_automation::AttemptId::generate().as_str().to_owned())
@@ -357,7 +370,12 @@ async fn router_queue_drains_provider_prompts_in_fifo_order() {
         .runtime_for(&endpoint())
         .expect("provider runtime")
         .retirement();
-    for expected in expected_lines {
+    for ((operation_id, mut offer), expected) in dispatch_offers.into_iter().zip(expected_lines) {
+        if let Err(error) = offer.try_recv() {
+            drop(offer);
+            backend.shutdown().await.expect("supervisor shuts down");
+            panic!("owner must offer the queued head at the scheduler checkpoint: {error}");
+        }
         let (mut stream, _) = tokio::select! {
             accepted = listener.accept() => accepted.expect("prompt event"),
             () = retirement.cancelled() => panic!("provider retired before delivering prompt: {expected}"),
@@ -368,6 +386,10 @@ async fn router_queue_drains_provider_prompts_in_fifo_order() {
             .await
             .expect("prompt event bytes");
         assert_eq!(bytes, expected.as_bytes());
+        backend
+            .wait(wait_request(operation_id))
+            .await
+            .expect("queued head settles");
     }
     backend.cancel_waiting_owner_inputs().await;
     let hub_target: message_board::SessionRef =

@@ -345,6 +345,32 @@ async fn clean_eof_before_initialize_is_a_typed_failure() {
 }
 
 #[cfg(unix)]
+async fn assert_owned_provider_reaped(
+    process_id_path: &std::path::Path,
+    reaping: CancellationToken,
+    settled: CancellationToken,
+) {
+    let completed = tokio::select! {
+        biased;
+        () = reaping.cancelled() => true,
+        () = settled.cancelled() => false,
+    };
+    let process_id = fixture_process_id(process_id_path);
+    let reaped = matches!(
+        rustix::process::test_kill_process(process_id),
+        Err(rustix::io::Errno::SRCH)
+    );
+    if !reaped {
+        let _cleanup = rustix::process::kill_process(process_id, rustix::process::Signal::KILL);
+    }
+    settled.cancelled().await;
+    assert!(
+        completed && reaped,
+        "the owned provider must be reaped before draining stderr"
+    );
+}
+
+#[cfg(unix)]
 #[tokio::test]
 async fn stdout_eof_after_initialize_retires_live_provider() {
     let fixture_root = tempfile::tempdir().expect("fixture root");
@@ -383,8 +409,10 @@ async fn stdout_eof_after_initialize_retires_live_provider() {
         .write_all(b"c")
         .expect("command fixture to close stdout");
 
+    drop(fixture);
     let (_, settled) = runtime.client.connection_fixture_signals();
-    settled.cancelled().await;
+    let reaping = runtime.client.provider_reaping_finished_for_test();
+    assert_owned_provider_reaped(&process_id_path, reaping, settled).await;
     assert!(
         runtime.retirement().is_cancelled(),
         "stdout EOF must retire the connection"
@@ -437,17 +465,41 @@ async fn held_initialize_times_out_and_reaps_owned_process() {
         ],
     );
     let clock = Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH));
-    let initialization =
-        initialize_admission_with_clock(fixture_root.path(), fixture, clock.clone());
-    tokio::pin!(initialization);
-    // The child sends this only after reading initialize and withholding its reply.
-    tokio::select! {
+    let mut initialization = Box::pin(initialize_admission_with_clock(
+        fixture_root.path(),
+        fixture,
+        clock.clone(),
+    ));
+    // The child observes both connection fences before withholding initialize.
+    let held = tokio::select! {
         biased;
-        result = observed.accept() => { result.expect("provider is holding initialize"); }
-        result = &mut initialization => panic!("initialization ended before the held point: {result:?}"),
+        observed = observed.accept() => observed.ok(),
+        result = &mut initialization => {
+            drop(initialization);
+            if let Ok(runtime) = result {
+                runtime.shutdown().await;
+            }
+            assert_process_reaped(&process_id_path);
+            panic!("the provider never observed initialize before its dispatch fences");
+        }
+    };
+    let budget = Duration::from_secs(15);
+    let deadline_armed =
+        clock.has_not_due_check_now(router_clock::ClockInstant::ZERO.after(budget));
+    if held.is_none() || !deadline_armed {
+        drop(held);
+        let process_id = fixture_process_id(&process_id_path);
+        rustix::process::kill_process(process_id, rustix::process::Signal::KILL)
+            .expect("terminate the held fixture");
+        if let Ok(runtime) = initialization.await {
+            runtime.shutdown().await;
+        }
+        assert_process_reaped(&process_id_path);
+        panic!("held initialize must arm the 15-second Host deadline");
     }
+    drop(held);
     clock
-        .advance(Duration::from_secs(15))
+        .advance(budget)
         .expect("expire the initialization deadline");
     let error = initialization
         .await
@@ -514,13 +566,13 @@ async fn dropping_admitted_runtime_reaps_owned_process() {
     .expect("fixture initializes");
 
     let (shutdown_requested, settled) = runtime.client.connection_fixture_signals();
+    let reaping = runtime.client.provider_reaping_finished_for_test();
     drop(runtime);
     assert!(
         shutdown_requested.is_cancelled(),
         "dropping the runtime must request shutdown"
     );
-    settled.cancelled().await;
-    assert_process_reaped(&process_id_path);
+    assert_owned_provider_reaped(&process_id_path, reaping, settled).await;
 }
 
 #[cfg(unix)]

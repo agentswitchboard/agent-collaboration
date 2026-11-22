@@ -75,6 +75,8 @@ pub struct OwnerAcpWire {
     restore_updates: Arc<crate::owner_restore_updates::RestoreUpdates>,
     cursor_plans: Arc<crate::provider_cursor_plan_items::CursorPlanItems>,
     behavior: Arc<dyn crate::ProviderBehavior>,
+    #[cfg(feature = "test-observation")]
+    first_cancel_write_finished: CancellationToken,
 }
 
 pub(crate) struct PromptTerminal {
@@ -142,6 +144,8 @@ impl PromptTerminal {
 pub(crate) struct OwnerAcpOutput {
     output: mpsc::Receiver<OrderedOutput<AcpFrame>>,
     restore_updates: Arc<crate::owner_restore_updates::RestoreUpdates>,
+    #[cfg(feature = "test-observation")]
+    first_cancel_write_finished: CancellationToken,
 }
 
 impl OwnerAcpWire {
@@ -151,6 +155,8 @@ impl OwnerAcpWire {
     ) -> (Self, OwnerAcpOutput) {
         let (transport, output) = AcpTransport::new(capacity);
         let restore_updates = Arc::new(crate::owner_restore_updates::RestoreUpdates::default());
+        #[cfg(feature = "test-observation")]
+        let first_cancel_write_finished = CancellationToken::new();
         (
             Self {
                 transport,
@@ -158,12 +164,23 @@ impl OwnerAcpWire {
                 restore_updates: restore_updates.clone(),
                 cursor_plans: Arc::default(),
                 behavior,
+                #[cfg(feature = "test-observation")]
+                first_cancel_write_finished: first_cancel_write_finished.clone(),
             },
             OwnerAcpOutput {
                 output,
                 restore_updates,
+                #[cfg(feature = "test-observation")]
+                first_cancel_write_finished,
             },
         )
+    }
+
+    /// Observes when the ordered writer finishes processing its first cancel frame.
+    #[cfg(feature = "test-observation")]
+    #[must_use]
+    pub fn first_cancel_write_finished_for_test(&self) -> CancellationToken {
+        self.first_cancel_write_finished.clone()
     }
 
     pub fn open_route(&self, run: TransportRun, session: String) {
@@ -666,6 +683,8 @@ impl OwnerAcpOutput {
                     if connection.send_notification(notification).is_err() {
                         tracing::debug!("ACP cancel could not leave the ordered writer");
                     }
+                    #[cfg(feature = "test-observation")]
+                    self.first_cancel_write_finished.cancel();
                 }
                 AcpFrame::Request {
                     message,

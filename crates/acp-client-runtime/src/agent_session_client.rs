@@ -79,6 +79,8 @@ pub struct AgentSessionClient<P: InteractionPort> {
     task: tokio::sync::Mutex<Option<JoinHandle<()>>>,
     #[cfg(feature = "test-observation")]
     connection_settled: CancellationToken,
+    #[cfg(feature = "test-observation")]
+    provider_reaping_finished: CancellationToken,
     shutdown_failed: Arc<std::sync::atomic::AtomicBool>,
     frame_observation: Arc<ProviderFrameObservation>,
     commands: tokio::sync::mpsc::Sender<ProviderCommand>,
@@ -106,6 +108,13 @@ impl<P: InteractionPort> AgentSessionClient<P> {
     #[cfg(feature = "test-observation")]
     pub fn connection_fixture_signals(&self) -> (CancellationToken, CancellationToken) {
         (self.shutdown.clone(), self.connection_settled.clone())
+    }
+
+    /// Observes the process lifetime decision before the connection drains stderr.
+    #[must_use]
+    #[cfg(feature = "test-observation")]
+    pub fn provider_reaping_finished_for_test(&self) -> CancellationToken {
+        self.provider_reaping_finished.clone()
     }
 
     #[must_use]

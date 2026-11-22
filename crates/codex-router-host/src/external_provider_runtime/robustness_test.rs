@@ -165,20 +165,54 @@ async fn output_limit_cancels_and_settles_before_late_updates_can_reach_next_pro
         .await
         .expect("session created");
 
-    let error = runtime
-        .prompt("fixture-session".to_owned(), "overflow".to_owned())
+    let writer_finished = runtime
+        .client
+        .owner_wire()
+        .first_cancel_write_finished_for_test();
+    let mut overflow =
+        Box::pin(runtime.prompt("fixture-session".to_owned(), "overflow".to_owned()));
+    let cancel_processed = tokio::select! {
+        () = writer_finished.cancelled() => true,
+        _result = &mut overflow => false,
+        () = settled.cancelled() => false,
+    };
+    if !cancel_processed {
+        drop(overflow);
+        drop(control);
+        runtime.shutdown().await;
+        panic!("the ordered writer must process cancel while the output-limited prompt is held");
+    }
+    tokio::io::AsyncWriteExt::write_all(&mut control, b"w")
         .await
-        .expect_err("retained output limit cancels prompt");
+        .expect("release the cancel wire check");
+    let mut cancel_marker = [0u8; 1];
+    let cancel_observed = tokio::select! {
+        biased;
+        read = tokio::io::AsyncReadExt::read_exact(&mut control, &mut cancel_marker) => read.is_ok(),
+        () = settled.cancelled() => false,
+    };
+    if !cancel_observed || cancel_marker != *b"c" {
+        drop(overflow);
+        drop(control);
+        runtime.shutdown().await;
+        panic!("session/cancel must reach the provider before the independent replies");
+    }
+    let outcome = overflow.await;
+    let mut barrier_signal = [0u8; 1];
+    let observed = tokio::select! {
+        read = tokio::io::AsyncReadExt::read_exact(&mut control, &mut barrier_signal) => read.is_ok(),
+        () = settled.cancelled() => false,
+    };
+    if !observed || barrier_signal != *b"r" {
+        drop(control);
+        runtime.shutdown().await;
+        panic!("the provider must see the correlated barrier reply before the independent reply");
+    }
+    let error = outcome.expect_err("retained output limit cancels prompt");
     assert!(matches!(
         error,
         ExternalProviderRuntimeError::PromptOutputLimitExceeded
     ));
-    let mut barrier_signal = [0u8; 1];
-    tokio::select! {
-        read = tokio::io::AsyncReadExt::read_exact(&mut control, &mut barrier_signal) => { read.expect("control signal received"); }
-        () = settled.cancelled() => panic!("provider retired before the unknown-request response"),
-    }
-    assert_eq!(barrier_signal, *b"r");
     let next = runtime
         .prompt("fixture-session".to_owned(), "next".to_owned())
         .await
@@ -252,7 +286,9 @@ async fn request_naming_unknown_session_receives_method_not_found() {
         .expect_request("create", "session/new", serde_json::json!({}))
         .respond("create", serde_json::json!({"sessionId": "fixture-session"}))
         .send(serde_json::json!({"jsonrpc": "2.0", "id": 91, "method": "session/unknown", "params": {"sessionId": "not-loaded"}}))
+        .send(serde_json::json!({"jsonrpc": "2.0", "id": 93, "method": "fixture/fence", "params": {}}))
         .expect_message(serde_json::json!({"jsonrpc": "2.0", "id": 91, "error": {"code": -32601}}))
+        .expect_message(serde_json::json!({"jsonrpc": "2.0", "id": 93, "error": {"code": -32601}}))
         .write_marker(&marker)
         .exit()
         .record_diagnostics(root.path().join("fixture-diagnostics.txt"))
@@ -432,7 +468,9 @@ async fn permission_request_naming_unknown_session_receives_method_not_found() {
         .expect_request("create", "session/new", serde_json::json!({}))
         .respond("create", serde_json::json!({"sessionId": "fixture-session"}))
         .send(serde_json::json!({"jsonrpc": "2.0", "id": 92, "method": "session/request_permission", "params": {"sessionId": "not-loaded", "toolCall": {"toolCallId": "unknown-tool", "title": "Unknown session permission", "kind": "execute"}, "options": [{"optionId": "reject", "name": "Reject", "kind": "reject_once"}]}}))
+        .send(serde_json::json!({"jsonrpc": "2.0", "id": 93, "method": "fixture/fence", "params": {}}))
         .expect_message(serde_json::json!({"jsonrpc": "2.0", "id": 92, "error": {"code": -32601}}))
+        .expect_message(serde_json::json!({"jsonrpc": "2.0", "id": 93, "error": {"code": -32601}}))
         .write_marker(&marker)
         .exit()
         .record_diagnostics(root.path().join("fixture-diagnostics.txt"))

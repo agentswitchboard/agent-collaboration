@@ -143,6 +143,10 @@ impl<P: InteractionPort> AgentSessionClient<P> {
         let connection_settled = CancellationToken::new();
         #[cfg(feature = "test-observation")]
         let mark_connection_settled = connection_settled.clone().drop_guard();
+        #[cfg(feature = "test-observation")]
+        let provider_reaping_finished = CancellationToken::new();
+        #[cfg(feature = "test-observation")]
+        let mark_provider_reaping_finished = provider_reaping_finished.clone();
         let task = tokio::spawn(async move {
             use futures_util::StreamExt as _;
             #[cfg(feature = "test-observation")]
@@ -408,6 +412,8 @@ impl<P: InteractionPort> AgentSessionClient<P> {
             if !child_exited {
                 lifetime.end().await;
             }
+            #[cfg(feature = "test-observation")]
+            mark_provider_reaping_finished.cancel();
             if let Some(stderr_task) = stderr_task {
                 let _result = stderr_task.await;
             }
@@ -447,6 +453,8 @@ impl<P: InteractionPort> AgentSessionClient<P> {
             task: tokio::sync::Mutex::new(Some(task)),
             #[cfg(feature = "test-observation")]
             connection_settled,
+            #[cfg(feature = "test-observation")]
+            provider_reaping_finished,
             shutdown_failed,
             frame_observation,
             commands: command_tx,

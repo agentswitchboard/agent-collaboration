@@ -190,6 +190,35 @@ struct HandledAppServerRequest {
     session_attachment: Option<(SessionRef, SessionEventAttachment)>,
 }
 
+async fn send_model_list_response(
+    id: Value,
+    session: Option<SessionRef>,
+    catalog_reader: Arc<dyn crate::SessionModelCatalog>,
+    sender: mpsc::Sender<Result<HandledAppServerRequest, AppServerConnectionError>>,
+) {
+    let catalog = match session {
+        Some(session) => catalog_reader.read_models(session).await,
+        None => Ok(Vec::new()),
+    };
+    let response = match catalog {
+        Ok(catalog) => json!({"id":id,"result":render_model_list(&catalog)}),
+        Err(error) => json!({"id":id,"error":{"code":match error {
+            crate::SessionModelCatalogError::SessionNotFound => -32002,
+            crate::SessionModelCatalogError::Unavailable => -32000,
+        },"message":error.to_string()}}),
+    };
+    let _sent = sender
+        .send(Ok(HandledAppServerRequest {
+            binding_attempt: None,
+            input_id: None,
+            method: "model/list".into(),
+            response,
+            post_response_frames: Vec::new(),
+            session_attachment: None,
+        }))
+        .await;
+}
+
 pub async fn serve_router_session_app_server_connection(
     stream: UnixStream,
     context: Arc<RouterSessionAppServerContext>,
@@ -369,29 +398,12 @@ pub async fn serve_router_session_app_server_connection(
             let session = skill_bindings.model_session().cloned();
             let catalog_reader = Arc::clone(&context.model_catalog);
             let sender = response_sender.clone();
-            request_tasks.spawn(async move {
-                let catalog = match session {
-                    Some(session) => catalog_reader.read_models(session).await,
-                    None => Ok(Vec::new()),
-                };
-                let response = match catalog {
-                    Ok(catalog) => json!({"id":id,"result":render_model_list(&catalog)}),
-                    Err(error) => json!({"id":id,"error":{"code":match error {
-                        crate::SessionModelCatalogError::SessionNotFound => -32002,
-                        crate::SessionModelCatalogError::Unavailable => -32000,
-                    },"message":error.to_string()}}),
-                };
-                let _sent = sender
-                    .send(Ok(HandledAppServerRequest {
-                        binding_attempt: None,
-                        input_id: None,
-                        method: "model/list".into(),
-                        response,
-                        post_response_frames: Vec::new(),
-                        session_attachment: None,
-                    }))
-                    .await;
-            });
+            request_tasks.spawn(send_model_list_response(
+                id,
+                session,
+                catalog_reader,
+                sender,
+            ));
             continue;
         }
         if request.get("method").and_then(Value::as_str) == Some("skills/list") {
