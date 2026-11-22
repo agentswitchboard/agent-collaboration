@@ -13,13 +13,12 @@ mod schema_validation;
 
 #[test]
 fn provisioning_and_revocation_wire_contracts() {
-    contract_artifacts::assert_contract::<RevokeMachineEnrollmentRequest>(
+    contract_artifacts::assert_request_contract::<RevokeMachineEnrollmentRequest>(
         "RevokeMachineEnrollmentRequest",
         vec![json!({
             "organizationId": "019a3dce-2000-7000-8000-000000000001",
             "enrollmentId": "019a3dce-2000-7000-8000-000000000002"
         })],
-        false,
     );
     contract_artifacts::assert_contract::<MachineEnrollmentRevocationResult>(
         "MachineEnrollmentRevocationResult",
