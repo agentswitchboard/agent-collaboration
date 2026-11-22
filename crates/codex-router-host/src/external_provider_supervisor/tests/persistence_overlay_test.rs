@@ -19,7 +19,12 @@ async fn a_persistence_failed_result_outlives_later_settlements() {
             .await
             .expect("store"),
     ));
-    let supervisor = ExternalProviderSupervisor::new(Vec::new(), store).expect("supervisor");
+    let supervisor = ExternalProviderSupervisor::new(
+        Vec::new(),
+        store,
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
+    )
+    .expect("supervisor");
     let publish = |operation_id: OperationId, result, retention| {
         let live = Arc::new(LiveOperation::pending());
         live.finish_write(CustodyEnd::NoWrite);

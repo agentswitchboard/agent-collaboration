@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
-import { setTimeout } from "node:timers/promises";
+import { FixtureControlSocket } from "./fixture-control-socket.ts";
 import { z } from "zod";
 import { textField } from "../exact-json.ts";
 import { requireArgument } from "./acp-stdio.ts";
 import { AcpExchange } from "./acp-exchange.ts";
 const scenario = requireArgument(2);
 const agent = new AcpExchange();
+const release =
+  scenario === "limit" && process.argv[3] !== undefined
+    ? new FixtureControlSocket(process.argv[3], null)
+    : undefined;
+await release?.connected();
 const names: Readonly<Record<string, string>> = {
   replay: "replay-fixture",
   updates: "many-updates-fixture",
@@ -95,7 +100,8 @@ if (scenario === "frames") {
     assert.equal((await agent.read()).id, 91n);
     agent.endTurn(prompt);
   } else {
-    await setTimeout(100);
+    await release?.expect("f");
+    release?.close();
     agent.update({
       sessionUpdate: "agent_message_chunk",
       content: { type: "text", text: "x".repeat(64 * 1024 * 1024 + 1) },

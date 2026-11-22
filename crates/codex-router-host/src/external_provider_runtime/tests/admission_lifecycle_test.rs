@@ -10,6 +10,7 @@ async fn missing_executable_fails_before_runtime_admission() {
             environment: vec![],
         },
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect_err("missing executable must fail");
@@ -23,6 +24,7 @@ async fn stable_v1_initialize_admits_runtime_and_capabilities() {
     let runtime = ExternalProviderRuntime::initialize(
         initialization_fixture(1, None),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -65,6 +67,7 @@ async fn initialize_advertises_exact_supported_client_capabilities() {
         fixture,
         Duration::from_secs(2),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        acp_scripted_fixture::manual_clock(),
     )
     .await
     .unwrap_or_else(|error| {
@@ -114,6 +117,7 @@ async fn capability_report_uses_initialize_and_session_advertisements() {
     let runtime = ExternalProviderRuntime::initialize(
         fixture,
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -238,6 +242,7 @@ async fn text_prompt_reaches_agent_without_optional_prompt_capabilities() {
     let runtime = ExternalProviderRuntime::initialize(
         fixture,
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -262,6 +267,7 @@ async fn configured_router_mcp_is_injected_into_create_and_load_requests() {
         "router-collaboration",
         "http://127.0.0.1:19090/mcp",
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("create fixture initializes");
@@ -281,6 +287,7 @@ async fn configured_router_mcp_is_injected_into_create_and_load_requests() {
         "router-collaboration",
         "http://127.0.0.1:19090/mcp",
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("load fixture initializes");
@@ -300,6 +307,7 @@ async fn unsupported_protocol_version_is_rejected() {
     let error = ExternalProviderRuntime::initialize(
         initialization_fixture(0, Some(&process_id_path)),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect_err("v0 must not be admitted");
@@ -314,7 +322,7 @@ async fn unsupported_protocol_version_is_rejected() {
             actual
         } if *actual == acp_client_runtime::AcpProtocolVersion::new(0)
     ));
-    assert_process_reaped(&process_id_path).await;
+    assert_process_reaped(&process_id_path);
 }
 
 #[cfg(unix)]
@@ -328,6 +336,7 @@ async fn clean_eof_before_initialize_is_a_typed_failure() {
             environment: vec![],
         },
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect_err("EOF must fail initialization");
@@ -336,50 +345,79 @@ async fn clean_eof_before_initialize_is_a_typed_failure() {
 }
 
 #[cfg(unix)]
+async fn assert_owned_provider_reaped(
+    process_id_path: &std::path::Path,
+    reaping: CancellationToken,
+    settled: CancellationToken,
+) {
+    let completed = tokio::select! {
+        biased;
+        () = reaping.cancelled() => true,
+        () = settled.cancelled() => false,
+    };
+    let process_id = fixture_process_id(process_id_path);
+    let reaped = matches!(
+        rustix::process::test_kill_process(process_id),
+        Err(rustix::io::Errno::SRCH)
+    );
+    if !reaped {
+        let _cleanup = rustix::process::kill_process(process_id, rustix::process::Signal::KILL);
+    }
+    settled.cancelled().await;
+    assert!(
+        completed && reaped,
+        "the owned provider must be reaped before draining stderr"
+    );
+}
+
+#[cfg(unix)]
 #[tokio::test]
 async fn stdout_eof_after_initialize_retires_live_provider() {
     let fixture_root = tempfile::tempdir().expect("fixture root");
     let process_id_path = fixture_root.path().join("provider.pid");
-    let close_marker = fixture_root.path().join("close-stdout");
+    use std::io::Write as _;
+    let control_path = fixture_root.path().join("close-stdout.sock");
+    let control =
+        std::os::unix::net::UnixListener::bind(&control_path).expect("stdout control socket");
+    control
+        .set_nonblocking(true)
+        .expect("nonblocking stdout control");
     let fixture = acp_scripted_fixture::launch_fixture_agent(
         "host-failing-initialization-agent.ts",
         vec![
             "eof".to_owned(),
             process_id_path.to_string_lossy().into_owned(),
-            close_marker.to_string_lossy().into_owned(),
+            control_path.to_string_lossy().into_owned(),
         ],
     );
     let runtime = ExternalProviderRuntime::initialize(
         fixture,
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes before stdout closes");
-    std::fs::write(&close_marker, b"close").expect("signal fixture to close stdout");
-
-    tokio::time::timeout(Duration::from_secs(2), runtime.retirement().cancelled())
-        .await
-        .expect("stdout EOF must retire the connection while provider stays alive");
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            let process_id = std::fs::read_to_string(&process_id_path)
-                .expect("fixture wrote process id")
-                .trim()
-                .parse::<i32>()
-                .expect("positive process id");
-            let process_id =
-                rustix::process::Pid::from_raw(process_id).expect("positive process id");
-            if matches!(
-                rustix::process::test_kill_process(process_id),
-                Err(rustix::io::Errno::SRCH)
-            ) {
-                break;
-            }
-            tokio::task::yield_now().await;
+    let accepted = control.accept();
+    let mut fixture = match accepted {
+        Ok((fixture, _)) => fixture,
+        Err(error) => {
+            runtime.shutdown().await;
+            panic!("fixture must connect stdout control before its initialize reply: {error}");
         }
-    })
-    .await
-    .expect("retired provider process must be reaped");
+    };
+    fixture
+        .write_all(b"c")
+        .expect("command fixture to close stdout");
+
+    drop(fixture);
+    let (_, settled) = runtime.client.connection_fixture_signals();
+    let reaping = runtime.client.provider_reaping_finished_for_test();
+    assert_owned_provider_reaped(&process_id_path, reaping, settled).await;
+    assert!(
+        runtime.retirement().is_cancelled(),
+        "stdout EOF must retire the connection"
+    );
+    assert_process_reaped(&process_id_path);
 }
 
 #[cfg(unix)]
@@ -427,17 +465,41 @@ async fn held_initialize_times_out_and_reaps_owned_process() {
         ],
     );
     let clock = Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH));
-    let initialization =
-        initialize_admission_with_clock(fixture_root.path(), fixture, clock.clone());
-    tokio::pin!(initialization);
-    // The child sends this only after reading initialize and withholding its reply.
-    tokio::select! {
+    let mut initialization = Box::pin(initialize_admission_with_clock(
+        fixture_root.path(),
+        fixture,
+        clock.clone(),
+    ));
+    // The child observes both connection fences before withholding initialize.
+    let held = tokio::select! {
         biased;
-        result = observed.accept() => { result.expect("provider is holding initialize"); }
-        result = &mut initialization => panic!("initialization ended before the held point: {result:?}"),
+        observed = observed.accept() => observed.ok(),
+        result = &mut initialization => {
+            drop(initialization);
+            if let Ok(runtime) = result {
+                runtime.shutdown().await;
+            }
+            assert_process_reaped(&process_id_path);
+            panic!("the provider never observed initialize before its dispatch fences");
+        }
+    };
+    let budget = Duration::from_secs(15);
+    let deadline_armed =
+        clock.has_not_due_check_now(router_clock::ClockInstant::ZERO.after(budget));
+    if held.is_none() || !deadline_armed {
+        drop(held);
+        let process_id = fixture_process_id(&process_id_path);
+        rustix::process::kill_process(process_id, rustix::process::Signal::KILL)
+            .expect("terminate the held fixture");
+        if let Ok(runtime) = initialization.await {
+            runtime.shutdown().await;
+        }
+        assert_process_reaped(&process_id_path);
+        panic!("held initialize must arm the 15-second Host deadline");
     }
+    drop(held);
     clock
-        .advance(Duration::from_secs(15))
+        .advance(budget)
         .expect("expire the initialization deadline");
     let error = initialization
         .await
@@ -447,7 +509,7 @@ async fn held_initialize_times_out_and_reaps_owned_process() {
         error,
         ExternalProviderRuntimeError::InitializeTimeout
     ));
-    assert_process_reaped(&process_id_path).await;
+    assert_process_reaped(&process_id_path);
 }
 
 #[cfg(unix)]
@@ -487,7 +549,7 @@ async fn oversized_initialize_frame_is_rejected_and_reaps_owned_process() {
         before + 1,
         "the incoming codec rejected exactly one oversized frame"
     );
-    assert_process_reaped(&process_id_path).await;
+    assert_process_reaped(&process_id_path);
 }
 
 #[cfg(unix)]
@@ -498,29 +560,19 @@ async fn dropping_admitted_runtime_reaps_owned_process() {
     let runtime = ExternalProviderRuntime::initialize(
         initialization_fixture(1, Some(&process_id_path)),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
 
+    let (shutdown_requested, settled) = runtime.client.connection_fixture_signals();
+    let reaping = runtime.client.provider_reaping_finished_for_test();
     drop(runtime);
-    tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            if let Ok(value) = std::fs::read_to_string(&process_id_path)
-                && let Ok(raw) = value.trim().parse::<i32>()
-            {
-                let process_id = rustix::process::Pid::from_raw(raw).expect("positive process id");
-                if matches!(
-                    rustix::process::test_kill_process(process_id),
-                    Err(rustix::io::Errno::SRCH)
-                ) {
-                    break;
-                }
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("dropped runtime reaped provider");
+    assert!(
+        shutdown_requested.is_cancelled(),
+        "dropping the runtime must request shutdown"
+    );
+    assert_owned_provider_reaped(&process_id_path, reaping, settled).await;
 }
 
 #[cfg(unix)]
@@ -529,6 +581,7 @@ async fn host_owned_connection_creates_and_prompts_through_official_sdk() {
     let runtime = ExternalProviderRuntime::initialize(
         conversation_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -554,6 +607,7 @@ async fn explicit_cancel_remains_responsive_while_prompt_is_active() {
     let runtime = ExternalProviderRuntime::initialize(
         cancellation_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");
@@ -594,6 +648,7 @@ async fn managed_permission_refuses_once_without_payload_retention() {
     let runtime = ExternalProviderRuntime::initialize(
         permission_request_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");

@@ -11,6 +11,26 @@ export class AcpExchange extends AcpStdio {
     if (method !== undefined) assert.equal(request.method, method);
     return request;
   }
+  async readByFence(method: string): Promise<Record<string, unknown>> {
+    let observed: Record<string, unknown> | undefined;
+    // A reply to the first probe proves the connection is driving both lanes.
+    // The second probe arrives after the foreground had a chance to send.
+    for (const id of ["fixture-first-fence", "fixture-second-fence"]) {
+      this.send({ jsonrpc: "2.0", id, method: "fixture/fence", params: {} });
+      for (;;) {
+        const frame = await this.read();
+        if (frame.id === id) {
+          assert.equal(field(frame, "error", "code"), -32601n);
+          break;
+        }
+        assert.equal(frame.method, method);
+        assert.equal(observed, undefined, `duplicate ${method} before the fence`);
+        observed = frame;
+      }
+    }
+    assert.ok(observed, `the provider connection did not send ${method} before both fences`);
+    return observed;
+  }
   respond(request: Readonly<Record<string, unknown>>, result: unknown): void {
     this.send({ jsonrpc: "2.0", id: request.id, result });
   }

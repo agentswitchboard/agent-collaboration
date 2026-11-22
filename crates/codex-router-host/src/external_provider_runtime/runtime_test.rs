@@ -41,20 +41,18 @@ fn initialization_fixture(
 }
 
 #[cfg(unix)]
-async fn assert_process_reaped(process_id_path: &std::path::Path) {
-    let process_id = tokio::time::timeout(Duration::from_secs(2), async {
-        loop {
-            if let Ok(value) = std::fs::read_to_string(process_id_path)
-                && let Ok(process_id) = value.trim().parse::<i32>()
-            {
-                break process_id;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("fixture wrote process id");
-    let process_id = rustix::process::Pid::from_raw(process_id).expect("positive process id");
+fn fixture_process_id(process_id_path: &std::path::Path) -> rustix::process::Pid {
+    let process_id = std::fs::read_to_string(process_id_path)
+        .expect("fixture wrote process id")
+        .trim()
+        .parse()
+        .expect("process id");
+    rustix::process::Pid::from_raw(process_id).expect("positive process id")
+}
+
+#[cfg(unix)]
+fn assert_process_reaped(process_id_path: &std::path::Path) {
+    let process_id = fixture_process_id(process_id_path);
     assert!(matches!(
         rustix::process::test_kill_process(process_id),
         Err(rustix::io::Errno::SRCH)
@@ -87,6 +85,7 @@ async fn steering_injects_during_a_prompt_and_starts_a_normal_prompt_when_idle()
         ExternalProviderRuntime::initialize(
             steering_fixture(&marker),
             std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+            crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
         )
         .await
         .expect("provider runtime"),
@@ -112,23 +111,25 @@ async fn steering_injects_during_a_prompt_and_starts_a_normal_prompt_when_idle()
             )
             .await
     });
-    tokio::time::timeout(Duration::from_secs(2), dispatched)
-        .await
-        .expect("prompt dispatch notification")
-        .expect("prompt was sent before settlement");
+    assert_eq!(
+        dispatched.await.expect("prompt dispatch notification"),
+        ProviderPromptDispatchObservation::Submitted,
+    );
     // Read the notice to EOF instead of dropping the accepted stream: an early
     // close makes the fixture's `sendall` fail with EPIPE, which kills the
     // provider and surfaces as a spurious steering TransportFailure.
-    let prompt_notice = tokio::time::timeout(Duration::from_secs(2), async {
-        let (mut stream, _address) = listener.accept().await.expect("prompt notification");
-        let mut notice = Vec::new();
-        tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut notice)
-            .await
-            .expect("prompt notice payload");
-        notice
-    })
-    .await
-    .expect("prompt observed before steer");
+    let retirement = runtime.retirement();
+    let prompt_notice = tokio::select! {
+        result = async {
+            let (mut stream, _address) = listener.accept().await.expect("prompt notification");
+            let mut notice = Vec::new();
+            tokio::io::AsyncReadExt::read_to_end(&mut stream, &mut notice)
+                .await
+                .expect("prompt notice payload");
+            notice
+        } => result,
+        () = retirement.cancelled() => panic!("provider retired before delivering the prompt notice"),
+    };
     assert_eq!(prompt_notice, b"prompt");
     assert_eq!(
         runtime
@@ -353,6 +354,7 @@ async fn resource_not_found_from_session_load_is_session_not_found() {
     let runtime = ExternalProviderRuntime::initialize(
         fixture,
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .expect("fixture initializes");

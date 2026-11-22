@@ -96,7 +96,8 @@ impl StoreDeadlineFixture {
             clock.clone(),
         ));
         let supervisor = Arc::new(
-            ExternalProviderSupervisor::new(Vec::new(), Arc::clone(&store)).expect("supervisor"),
+            ExternalProviderSupervisor::new(Vec::new(), Arc::clone(&store), clock.clone())
+                .expect("supervisor"),
         );
         let delivery = Arc::new(ProviderAcpDeliveryRoute::new(
             target.endpoint.service_id.clone(),
@@ -232,7 +233,8 @@ async fn a_queued_input_waits_past_the_start_deadline_for_its_own_turn() {
         serde_json::from_value(serde_json::to_value(&target).expect("target JSON"))
             .expect("hub session");
     let supervisor = Arc::new(
-        ExternalProviderSupervisor::new(Vec::new(), Arc::clone(&store)).expect("supervisor"),
+        ExternalProviderSupervisor::new(Vec::new(), Arc::clone(&store), clock.clone())
+            .expect("supervisor"),
     );
     let delivery = Arc::new(ProviderAcpDeliveryRoute::new(
         target.endpoint.service_id.clone(),
@@ -241,7 +243,7 @@ async fn a_queued_input_waits_past_the_start_deadline_for_its_own_turn() {
         Arc::clone(&supervisor),
         Arc::clone(&store),
         Arc::new(NoLivePeer),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        clock.clone(),
     ));
     let port = Arc::new(HostSessionCommandPort::new(
         Arc::clone(&supervisor),

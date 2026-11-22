@@ -12,10 +12,7 @@ const AGENT_SCRIPT: &str = concat!(
     "/../../verification/fixtures/scripted-acp-agent.ts"
 );
 
-pub(crate) fn launch_fixture_agent(
-    program: &str,
-    arguments: Vec<String>,
-) -> ExternalProviderLaunch {
+pub fn launch_fixture_agent(program: &str, arguments: Vec<String>) -> ExternalProviderLaunch {
     let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("../../verification/fixtures")
         .join(program);
@@ -30,19 +27,19 @@ pub(crate) fn launch_fixture_agent(
 }
 
 #[derive(Default)]
-pub(crate) struct AcpFixtureScript {
+pub struct AcpFixtureScript {
     steps: Vec<Value>,
     diagnostic_path: Option<PathBuf>,
 }
 
 impl AcpFixtureScript {
-    pub(crate) fn new() -> Self {
+    pub fn new() -> Self {
         Self::default()
     }
 
     /// Read a client request, match its method and selected parameter fields,
     /// and remember its ID under `request_name` for a later response.
-    pub(crate) fn expect_request(
+    pub fn expect_request(
         mut self,
         request_name: &str,
         method: &str,
@@ -57,6 +54,7 @@ impl AcpFixtureScript {
         self
     }
 
+    #[cfg(test)]
     pub(crate) fn expect_exact_request(
         mut self,
         request_name: &str,
@@ -75,6 +73,7 @@ impl AcpFixtureScript {
 
     /// Read and check an entire client message. Use this for notifications or
     /// responses to requests sent by the fixture agent.
+    #[cfg(test)]
     pub(crate) fn expect_message(mut self, expected_message: Value) -> Self {
         self.steps.push(json!({
             "action": "expect_message",
@@ -84,6 +83,7 @@ impl AcpFixtureScript {
     }
 
     /// Read independent client messages in either arrival order.
+    #[cfg(test)]
     pub(crate) fn expect_messages_unordered(mut self, expected_messages: Vec<Value>) -> Self {
         self.steps.push(json!({
             "action": "expect_messages_unordered",
@@ -92,7 +92,7 @@ impl AcpFixtureScript {
         self
     }
 
-    pub(crate) fn respond(mut self, request_name: &str, result: Value) -> Self {
+    pub fn respond(mut self, request_name: &str, result: Value) -> Self {
         self.steps.push(json!({
             "action": "respond",
             "requestName": request_name,
@@ -101,6 +101,7 @@ impl AcpFixtureScript {
         self
     }
 
+    #[cfg(test)]
     pub(crate) fn respond_error(mut self, request_name: &str, code: i32) -> Self {
         self.steps.push(json!({
             "action": "respond_error",
@@ -111,6 +112,7 @@ impl AcpFixtureScript {
     }
 
     /// Supply synthetic error data without changing the existing default error step.
+    #[cfg(test)]
     pub(crate) fn respond_error_with_data(
         mut self,
         request_name: &str,
@@ -126,30 +128,34 @@ impl AcpFixtureScript {
         self
     }
 
+    #[cfg(test)]
     pub(crate) fn send(mut self, message: Value) -> Self {
         self.steps
             .push(json!({"action": "send", "message": message}));
         self
     }
 
+    #[cfg(test)]
     pub(crate) fn exit(mut self) -> Self {
         self.steps.push(json!({"action": "exit"}));
         self
     }
 
+    #[cfg(test)]
     pub(crate) fn record_diagnostics(mut self, path: PathBuf) -> Self {
         self.diagnostic_path = Some(path);
         self
     }
 
+    #[cfg(test)]
     pub(crate) fn write_marker(mut self, path: &std::path::Path) -> Self {
         self.steps
             .push(json!({"action": "write_marker", "path": path}));
         self
     }
 
-    pub(crate) fn launch(self) -> ExternalProviderLaunch {
-        let script = serde_json::to_string(&self.steps).expect("fixture script serializes");
+    pub fn launch(self) -> ExternalProviderLaunch {
+        let script = Value::Array(self.steps).to_string();
         ExternalProviderLaunch {
             persistence_target: acp_client_runtime::ProviderPersistenceTarget::Unspecified,
             executable: PathBuf::from("node"),
@@ -165,6 +171,13 @@ impl AcpFixtureScript {
                 .unwrap_or_default(),
         }
     }
+}
+
+#[cfg(test)]
+pub(crate) fn manual_clock() -> std::sync::Arc<router_clock::ManualClock> {
+    std::sync::Arc::new(router_clock::ManualClock::new(
+        chrono::DateTime::from_timestamp(1_700_012_345, 0).expect("fixture UTC time"),
+    ))
 }
 
 #[cfg(test)]

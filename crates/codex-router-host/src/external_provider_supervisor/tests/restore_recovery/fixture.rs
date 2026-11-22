@@ -1,16 +1,10 @@
 //! Shared Host, provider and store fixture for restore recovery tests.
 
 use super::super::*;
-use collaboration_contracts::{
-    DeliveryPrecondition, LoadPolicy,
-    layer_zero::{DeliveryRequest, PreparedPush},
-};
 use collaboration_protocol::{
-    AttemptId, ChannelDescription, ConversationLoadRequest, ConversationPromptRequest,
-    ConversationResumeRequest, DeliveryCorrelationId, EndpointAvailability, EndpointDescription,
-    MessageContent, MessageDelivery, ObservationTimestamp,
+    ConversationLoadRequest, ConversationPromptRequest, ConversationResumeRequest, MessageContent,
+    MessageDelivery,
 };
-use collaboration_runtime::EndpointDirectory;
 use router_clock::ManualClock;
 use switchboard_session_events::ProviderSessionEventHub;
 use switchboard_session_store::ProviderSessionRecord;
@@ -44,14 +38,14 @@ pub(super) async fn wait_for_queued_input(
         .expect("prompt is waiting on that owner");
 }
 
-pub(super) struct RestoreRig {
-    pub(super) root: tempfile::TempDir,
-    pub(super) target: SessionRef,
-    pub(super) clock: Arc<ManualClock>,
+pub(crate) struct RestoreRig {
+    pub(crate) root: tempfile::TempDir,
+    pub(crate) target: SessionRef,
+    pub(crate) clock: Arc<ManualClock>,
 }
 
 impl RestoreRig {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             root: tempfile::tempdir().expect("restore root"),
             target: SessionRef {
@@ -73,7 +67,7 @@ impl RestoreRig {
             .expect("store")
     }
 
-    pub(super) async fn seed_session(&self) {
+    pub(crate) async fn seed_session(&self) {
         self.store()
             .await
             .record_session(&ProviderSessionRecord {
@@ -114,21 +108,58 @@ impl RestoreRig {
             .0
     }
 
+    pub(crate) async fn open_with_store(
+        &self,
+        behavior: &str,
+    ) -> (
+        ExternalProviderSupervisor,
+        Arc<Mutex<ProviderOperationStore>>,
+    ) {
+        self.open_with_store_and_behaviors(&[behavior]).await
+    }
+
+    pub(crate) async fn open_with_store_and_behaviors(
+        &self,
+        behaviors: &[&str],
+    ) -> (
+        ExternalProviderSupervisor,
+        Arc<Mutex<ProviderOperationStore>>,
+    ) {
+        let arguments = std::iter::once("plain-prompts")
+            .chain(behaviors.iter().copied())
+            .collect::<Vec<_>>();
+        let (supervisor, _, store) = self
+            .open_fixture_parts(
+                &arguments,
+                Arc::new(acp_provider_adapters::StandardAcpBehavior),
+            )
+            .await;
+        (supervisor, store)
+    }
+
     pub(super) async fn open_host_with_fixture_arguments(
         &self,
         behaviors: &[&str],
         adapter: Arc<dyn acp_client_runtime::ProviderBehavior>,
     ) -> (ExternalProviderSupervisor, Arc<ProviderSessionEventHub>) {
+        let (supervisor, hub, _) = self.open_fixture_parts(behaviors, adapter).await;
+        (supervisor, hub)
+    }
+
+    async fn open_fixture_parts(
+        &self,
+        behaviors: &[&str],
+        adapter: Arc<dyn acp_client_runtime::ProviderBehavior>,
+    ) -> (
+        ExternalProviderSupervisor,
+        Arc<ProviderSessionEventHub>,
+        Arc<Mutex<ProviderOperationStore>>,
+    ) {
         let store = Arc::new(Mutex::new(self.store().await));
-        let hub = Arc::new(ProviderSessionEventHub::new(
-            store.clone(),
-            self.clock.clone(),
-        ));
-        let target: message_board::SessionRef =
-            serde_json::from_value(serde_json::to_value(&self.target).expect("target JSON"))
-                .expect("hub target");
-        let runtime = ExternalProviderRuntime::initialize_with_mcp_http_and_hub(
-            crate::external_provider_runtime::acp_scripted_fixture::launch_fixture_agent(
+        // Reuse the binding generation across fixture reseeding.
+        let (host, hub) = crate::provider_test_support::bind_scripted_provider(
+            binding(),
+            crate::provider_test_support::launch_fixture_agent(
                 "permission-mode-agent.ts",
                 vec![
                     self.root.path().join("wire.json").display().to_string(),
@@ -140,64 +171,13 @@ impl RestoreRig {
                 .chain(behaviors.iter().map(|behavior| (*behavior).to_owned()))
                 .collect(),
             ),
-            acp_client_runtime::ProviderModelPicker::Standard,
-            "fixture",
-            "http://127.0.0.1:1/mcp",
-            hub.clone(),
-            target.endpoint,
+            store.clone(),
             adapter,
             self.clock.clone(),
         )
         .await
-        .expect("fixture runtime");
-        // Keep the fixture's binding generation across reseeding so it
-        // exercises the same-generation persisted uncertainty rule.
-        let host = ExternalProviderSupervisor::new_with_hub(
-            vec![ExternalProviderBinding {
-                identity: binding(),
-                runtime,
-            }],
-            store,
-            Some(hub.clone()),
-            None,
-        )
-        .expect("supervisor");
-        (host, hub)
-    }
-
-    pub(super) fn delivery_route(
-        &self,
-        host: Arc<ExternalProviderSupervisor>,
-    ) -> crate::ProviderAcpDeliveryRoute {
-        let directory = EndpointDirectory::new(self.target.endpoint.service_id.clone());
-        let binding = binding();
-        directory
-            .publish(EndpointDescription {
-                endpoint: self.target.endpoint.clone(),
-                label: NonEmptyText::try_from("Cursor fixture".to_owned()).expect("label"),
-                availability: EndpointAvailability::Available {
-                    observed_at: ObservationTimestamp::try_from("2026-11-19T12:00:00Z".to_owned())
-                        .expect("timestamp"),
-                },
-                channels: vec![ChannelDescription::ExternalProvider {
-                    transport: binding.transport,
-                    binding_id: binding.binding_id,
-                    binding_generation: binding.generation.generation,
-                    runtime: binding.runtime,
-                    capabilities: binding.capabilities,
-                    auto_realization: None,
-                }],
-            })
-            .expect("endpoint");
-        crate::ProviderAcpDeliveryRoute::new(
-            self.target.endpoint.service_id.clone(),
-            std::iter::once(self.target.endpoint.clone()).collect(),
-            directory,
-            host.clone(),
-            host.inner.store.clone(),
-            Arc::new(NoLivePeer),
-            self.clock.clone(),
-        )
+        .expect("scripted binding and supervisor");
+        (host, hub, store)
     }
 
     pub(super) fn load_request(&self, operation_id: OperationId) -> ConversationLoadRequest {
@@ -212,7 +192,7 @@ impl RestoreRig {
         }
     }
 
-    pub(super) fn resume_request(&self, operation_id: OperationId) -> ConversationResumeRequest {
+    pub(crate) fn resume_request(&self, operation_id: OperationId) -> ConversationResumeRequest {
         ConversationResumeRequest {
             operation_id,
             target: self.target.clone(),
@@ -224,7 +204,7 @@ impl RestoreRig {
         }
     }
 
-    pub(super) fn wire_receipt(&self) -> serde_json::Value {
+    pub(crate) fn wire_receipt(&self) -> serde_json::Value {
         serde_json::from_slice(
             &std::fs::read(self.root.path().join("wire.json")).expect("wire receipt"),
         )
@@ -257,7 +237,7 @@ impl RestoreRig {
         }
     }
 
-    pub(super) async fn assert_loads(&self, host: &ExternalProviderSupervisor) {
+    pub(crate) async fn assert_loads(&self, host: &ExternalProviderSupervisor) {
         let id = OperationId::generate();
         host.load(self.load_request(id.clone()))
             .await
@@ -278,36 +258,9 @@ pub(super) fn policy() -> ProviderRequestedPolicy {
     }
 }
 
-pub(super) fn wait_request(operation_id: OperationId) -> ConversationOperationWaitRequest {
+pub(crate) fn wait_request(operation_id: OperationId) -> ConversationOperationWaitRequest {
     ConversationOperationWaitRequest {
         operation_id,
         timeout_seconds: PositiveSeconds::try_from(5).expect("wait budget"),
-    }
-}
-
-pub(super) fn auto_message(
-    target: SessionRef,
-    text: &str,
-    load_policy: LoadPolicy,
-) -> DeliveryRequest {
-    let push_id = PushId::try_from(AttemptId::generate().as_str().to_owned()).expect("push ID");
-    let correlation =
-        DeliveryCorrelationId::try_from(push_id.as_str().to_owned()).expect("correlation");
-    DeliveryRequest {
-        payload: PreparedPush {
-            line: MessageText::try_from(format!(
-                "✉️ sender · \"{text}\" · router://{}/push/{}",
-                String::from(target.endpoint.service_id.clone()),
-                push_id.as_str()
-            ))
-            .expect("prepared input"),
-            push_id,
-            load_policy,
-        },
-        target,
-        mode: MessageDelivery::Auto,
-        precondition: DeliveryPrecondition::Unpinned,
-        correlation,
-        attempt: AttemptId::generate(),
     }
 }

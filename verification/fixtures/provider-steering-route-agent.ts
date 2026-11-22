@@ -31,7 +31,7 @@ function requireRoutedText(request: unknown): void {
 }
 if (mode === "active") {
   const prompt = await agent.read("session/prompt");
-  const event = new FixtureControlSocket(requireArgument(3));
+  const event = new FixtureControlSocket(requireArgument(3), null);
   try {
     await event.connected();
     event.send("active");
@@ -50,7 +50,7 @@ if (mode === "active") {
 } else if (mode === "serial") {
   const first = await agent.read("session/prompt");
   requireRoutedText(first);
-  const event = new FixtureControlSocket(requireArgument(3));
+  const event = new FixtureControlSocket(requireArgument(3), null);
   try {
     await event.connected();
     event.send("first");

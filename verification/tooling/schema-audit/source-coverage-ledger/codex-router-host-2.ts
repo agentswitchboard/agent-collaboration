@@ -348,7 +348,7 @@ export const section: LedgerSection = {
     {
       file: "crates/codex-router-host/src/provider_model_catalog.rs",
       disposition: { kind: "converts", owners: ["router-vocabulary"] },
-      note: "board to protocol SessionRef by JSON round trip (30); ACP model config option choices and ModelReasoning to ProviderModelEntry/ProviderReasoningChoice (47-86), provider-default fallback (38)",
+      note: "ACP model config choices and ModelReasoning to ProviderModelEntry/ProviderReasoningChoice (16-55), provider-default fallback (7-14); the Host keeps the board-to-protocol conversion in provider_model_catalog_adapter.rs:26-29",
     },
     {
       file: "crates/codex-router-host/src/provider_operation_settlement.rs",

@@ -5,6 +5,7 @@ mod native_delivery_result;
 mod provider_conversation_backend;
 mod session_command_port;
 mod session_event_hub;
+mod session_model_catalog;
 #[cfg(any(test, feature = "test-support"))]
 pub use native_delivery_result::scripted_delivery_result;
 mod native_route_claim;
@@ -36,3 +37,8 @@ pub use session_event_hub::{
 };
 mod router_identity;
 pub use router_identity::{RouterIdentity, RouterIdentityError};
+
+pub use session_model_catalog::{
+    InvalidProviderModelEntry, ProviderModelEntry, ProviderModelReasoning, ProviderReasoningChoice,
+    SessionModelCatalog, SessionModelCatalogError,
+};

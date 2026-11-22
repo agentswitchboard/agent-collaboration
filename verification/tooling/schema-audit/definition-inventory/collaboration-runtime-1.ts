@@ -216,7 +216,7 @@ export const rows: InventoryRow[] = [
   },
   {
     file: `${R}app_server_model_catalog.rs`,
-    line: 121,
+    line: 28,
     owner: "codex",
     kind: "hand-json",
     defines: "model/list entry object: id, model, reasoning efforts, defaults",
