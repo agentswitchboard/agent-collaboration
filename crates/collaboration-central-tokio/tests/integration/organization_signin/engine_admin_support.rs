@@ -72,7 +72,7 @@ impl EngineOrg {
             .f
             .apply(
                 A,
-                "UPDATE login_machines SET allowed_workspaces=? WHERE machine_id=?",
+                collaboration_central_conformance::REPLACE_FIXTURE_ALLOWANCES_SQL,
                 vec![
                     text(serde_json::to_string(&vec![engine.workspace.clone()]).unwrap()),
                     text(INSTALLATION),

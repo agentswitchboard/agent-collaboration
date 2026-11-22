@@ -5,11 +5,39 @@ use crate::person_request::{
 use central_storage::{
     GuardedStatement, ReadOutcome, SafeInteger, SqlValue, Statement, StoreFailure,
 };
-use fleet_runtime_ports::CentralStore;
 use fleet_runtime_ports::{
+    CentralStore,
+    guarded_statements::{exact, text},
     stored_values::{column, string},
     workspace_decode_error::corrupt,
 };
+
+// SQLite describes bind arity. Count the actual CentralStore arguments in the
+// witness, while keeping host-neutral SqlValue encoding on the runtime path.
+macro_rules! checked_proof_statement {
+    (read $row:ident, $file:literal, [$($argument:expr),* $(,)?]) => {{
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        let _ = sqlx::query_file_as!(
+            $row, $file $(, checked_proof_statement!(@parameter $argument))*
+        );
+        Statement {
+            sql: include_str!(concat!("../", $file)),
+            args: vec![$($argument),*],
+        }
+    }};
+    (write $file:literal, [$($argument:expr),* $(,)?]) => {{
+        #[cfg(all(test, not(target_arch = "wasm32")))]
+        let _ = sqlx::query_file!(
+            $file $(, checked_proof_statement!(@parameter $argument))*
+        );
+        exact(include_str!(concat!("../", $file)), vec![$($argument),*])
+    }};
+    (@parameter $argument:expr) => {{
+        let _ = stringify!($argument);
+        0_i64
+    }};
+}
+pub(super) use checked_proof_statement;
 
 pub(crate) fn integer(value: i64, field: &str) -> Result<SqlValue, StoreFailure> {
     SafeInteger::new(value)
@@ -32,37 +60,78 @@ fn private_id(value: &str, field: &str) -> Result<(), StoreFailure> {
     Ok(())
 }
 
+struct OrganizationFloorRow {
+    id: String,
+    minimum_revision: i64,
+    state: String,
+    permission_policy_digest: String,
+    request_reject_through_ms: i64,
+}
+
+impl OrganizationFloorRow {
+    fn decode(self, organization: &str) -> Result<OrganizationFloor, StoreFailure> {
+        if self.id != organization {
+            return Err(corrupt("signin_authorization_floors.id"));
+        }
+        if self.permission_policy_digest.is_empty() {
+            return Err(corrupt(
+                "signin_authorization_floors.permission_policy_digest",
+            ));
+        }
+        if self.request_reject_through_ms < 0 {
+            return Err(corrupt(
+                "signin_authorization_floors.request_reject_through_ms",
+            ));
+        }
+        Ok(OrganizationFloor {
+            revision: FloorRevision::try_from(self.minimum_revision)?,
+            state: OrganizationFloorState::parse(&self.state)?,
+            policy_digest: self.permission_policy_digest,
+            reject_through_ms: self.request_reject_through_ms,
+        })
+    }
+}
+
+struct PersonFloorRow {
+    id: String,
+    organization_id: String,
+    person_id: String,
+    minimum_revision: i64,
+    state: String,
+}
+
+impl PersonFloorRow {
+    fn decode(self, organization: &str, person: &str) -> Result<PersonFloor, StoreFailure> {
+        private_id(&self.id, "signin_person_authorization_floors.id")?;
+        if self.organization_id != organization || self.person_id != person {
+            return Err(corrupt("signin_person_authorization_floors.person_id"));
+        }
+        Ok(PersonFloor {
+            subject_id: self.id,
+            revision: FloorRevision::try_from(self.minimum_revision)?,
+            state: PersonFloorState::parse(&self.state)?,
+        })
+    }
+}
+
 pub(crate) fn decode_organization_floor(
     rows: &ReadOutcome,
     organization: &str,
 ) -> Result<Option<OrganizationFloor>, StoreFailure> {
-    if rows.rows.len() > 1 {
-        return Err(corrupt("signin_authorization_floors.id"));
-    }
-    let Some(row) = rows.rows.first() else {
-        return Ok(None);
+    let row = match rows.rows.as_slice() {
+        [] => return Ok(None),
+        [row] => row,
+        _ => return Err(corrupt("signin_authorization_floors.id")),
     };
-    if string(rows, row, "id")? != organization {
-        return Err(corrupt("signin_authorization_floors.id"));
+    OrganizationFloorRow {
+        id: string(rows, row, "id")?.to_owned(),
+        minimum_revision: read_integer(rows, row, "minimum_revision")?,
+        state: string(rows, row, "state")?.to_owned(),
+        permission_policy_digest: string(rows, row, "permission_policy_digest")?.to_owned(),
+        request_reject_through_ms: read_integer(rows, row, "request_reject_through_ms")?,
     }
-    let policy_digest = string(rows, row, "permission_policy_digest")?.to_owned();
-    if policy_digest.is_empty() {
-        return Err(corrupt(
-            "signin_authorization_floors.permission_policy_digest",
-        ));
-    }
-    let reject_through_ms = read_integer(rows, row, "request_reject_through_ms")?;
-    if reject_through_ms < 0 {
-        return Err(corrupt(
-            "signin_authorization_floors.request_reject_through_ms",
-        ));
-    }
-    Ok(Some(OrganizationFloor {
-        revision: FloorRevision::try_from(read_integer(rows, row, "minimum_revision")?)?,
-        state: OrganizationFloorState::parse(string(rows, row, "state")?)?,
-        policy_digest,
-        reject_through_ms,
-    }))
+    .decode(organization)
+    .map(Some)
 }
 
 pub(crate) fn decode_person_floor(
@@ -70,34 +139,33 @@ pub(crate) fn decode_person_floor(
     organization: &str,
     person: &str,
 ) -> Result<Option<PersonFloor>, StoreFailure> {
-    if rows.rows.len() > 1 {
-        return Err(corrupt("signin_person_authorization_floors.person_id"));
-    }
-    let Some(row) = rows.rows.first() else {
-        return Ok(None);
+    let row = match rows.rows.as_slice() {
+        [] => return Ok(None),
+        [row] => row,
+        _ => return Err(corrupt("signin_person_authorization_floors.person_id")),
     };
-    let subject_id = string(rows, row, "id")?.to_owned();
-    private_id(&subject_id, "signin_person_authorization_floors.id")?;
-    if string(rows, row, "organization_id")? != organization
-        || string(rows, row, "person_id")? != person
-    {
-        return Err(corrupt("signin_person_authorization_floors.person_id"));
+    PersonFloorRow {
+        id: string(rows, row, "id")?.to_owned(),
+        organization_id: string(rows, row, "organization_id")?.to_owned(),
+        person_id: string(rows, row, "person_id")?.to_owned(),
+        minimum_revision: read_integer(rows, row, "minimum_revision")?,
+        state: string(rows, row, "state")?.to_owned(),
     }
-    Ok(Some(PersonFloor {
-        subject_id,
-        revision: FloorRevision::try_from(read_integer(rows, row, "minimum_revision")?)?,
-        state: PersonFloorState::parse(string(rows, row, "state")?)?,
-    }))
+    .decode(organization, person)
+    .map(Some)
 }
 
 pub(crate) async fn read_organization_floor(
     host: &impl CentralStore,
     organization: &str,
 ) -> Result<Option<OrganizationFloor>, StoreFailure> {
-    let rows = host.read(Statement {
-        sql: "SELECT id,minimum_revision,state,permission_policy_digest,request_reject_through_ms FROM signin_authorization_floors WHERE id=?",
-        args: vec![SqlValue::Text(organization.to_owned())],
-    }).await?;
+    let rows = host
+        .read(checked_proof_statement!(
+            read OrganizationFloorRow,
+            "src/person_proof_queries/read_organization_floor.sql",
+            [text(organization)]
+        ))
+        .await?;
     decode_organization_floor(&rows, organization)
 }
 
@@ -106,10 +174,13 @@ pub(crate) async fn read_person_floor(
     organization: &str,
     person: &str,
 ) -> Result<Option<PersonFloor>, StoreFailure> {
-    let rows = host.read(Statement {
-        sql: "SELECT id,organization_id,person_id,minimum_revision,state FROM signin_person_authorization_floors WHERE organization_id=? AND person_id=?",
-        args: vec![SqlValue::Text(organization.to_owned()), SqlValue::Text(person.to_owned())],
-    }).await?;
+    let rows = host
+        .read(checked_proof_statement!(
+            read PersonFloorRow,
+            "src/person_proof_queries/read_person_floor.sql",
+            [text(organization), text(person)]
+        ))
+        .await?;
     decode_person_floor(&rows, organization, person)
 }
 
@@ -120,6 +191,7 @@ pub(crate) fn organization_state(state: OrganizationFloorState) -> &'static str 
         OrganizationFloorState::Deleted => "deleted",
     }
 }
+
 pub(crate) fn person_state(state: PersonFloorState) -> &'static str {
     match state {
         PersonFloorState::Active => "active",
@@ -132,30 +204,31 @@ pub(crate) fn organization_guard(
     organization: &str,
     floor: &OrganizationFloor,
 ) -> Result<GuardedStatement, StoreFailure> {
-    Ok(fleet_runtime_ports::guarded_statements::exact(
-        "UPDATE signin_authorization_floors SET id=id WHERE id=? AND minimum_revision=? AND state=? AND permission_policy_digest=? AND request_reject_through_ms=?",
-        vec![
-            SqlValue::Text(organization.to_owned()),
+    Ok(checked_proof_statement!(
+        write "src/person_proof_queries/guard_organization_floor.sql",
+        [
+            text(organization),
             integer(floor.revision.get(), "minimum_revision")?,
-            SqlValue::Text(organization_state(floor.state).to_owned()),
-            SqlValue::Text(floor.policy_digest.clone()),
+            text(organization_state(floor.state)),
+            text(&floor.policy_digest),
             integer(floor.reject_through_ms, "request_reject_through_ms")?,
-        ],
+        ]
     ))
 }
+
 pub(crate) fn person_guard(
     organization: &str,
     person: &str,
     floor: &PersonFloor,
 ) -> Result<GuardedStatement, StoreFailure> {
-    Ok(fleet_runtime_ports::guarded_statements::exact(
-        "UPDATE signin_person_authorization_floors SET id=id WHERE id=? AND organization_id=? AND person_id=? AND minimum_revision=? AND state=?",
-        vec![
-            SqlValue::Text(floor.subject_id.clone()),
-            SqlValue::Text(organization.to_owned()),
-            SqlValue::Text(person.to_owned()),
+    Ok(checked_proof_statement!(
+        write "src/person_proof_queries/guard_person_floor.sql",
+        [
+            text(&floor.subject_id),
+            text(organization),
+            text(person),
             integer(floor.revision.get(), "minimum_revision")?,
-            SqlValue::Text(person_state(floor.state).to_owned()),
-        ],
+            text(person_state(floor.state)),
+        ]
     ))
 }

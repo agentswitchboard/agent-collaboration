@@ -1,0 +1,1 @@
+SELECT a.approval_id,a.request_id,a.label,a.allowed_workspaces,a.state,a.end_reason,a.approved_by_person_id,a.permission_checked,a.base_generation,a.code_expires_at,a.machine_client_id,a.last_grant_at,a.ended_at,a.created_at,a.updated_at,m.machine_id FROM login_machine_approvals a LEFT JOIN login_machines m ON m.machine_id=a.machine_id WHERE a.machine_id=? AND a.state='enrolled'

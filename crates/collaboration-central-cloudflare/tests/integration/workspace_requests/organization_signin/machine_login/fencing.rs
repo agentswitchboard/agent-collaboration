@@ -131,16 +131,16 @@ async fn a_new_approval_leaves_old_login_active_until_grant_then_supersedes_once
         replay,
         (
             200,
-            json!({"result":"approved","enrollmentId":a,"label":"A","allowedWorkspaces":[WORKSPACE]})
+            json!({"result":"refused","reason":{"kind":"requestConflict"}})
         ),
-        "N03 retains the original snapshot after the enrollment ends"
+        "changed bound fields conflict even after the enrollment ends"
     );
     assert!(
         snapshot(&f).await? == before,
         "ended approval replay changed rows"
     );
     assert_eq!(
-        f.rows("SELECT state,enrollment_generation,allowed_workspaces FROM login_machines")
+        f.rows("SELECT state,enrollment_generation,(SELECT json_group_array(workspace_id) FROM (SELECT workspace_id FROM login_machine_allowances WHERE machine_id=login_machines.machine_id AND state='active' ORDER BY allowance_id)) FROM login_machines")
             .await?,
         vec![vec![
             text("enrolled"),

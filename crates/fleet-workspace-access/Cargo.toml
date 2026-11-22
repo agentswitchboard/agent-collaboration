@@ -20,3 +20,6 @@ serde_json.workspace = true
 serde_json_canonicalizer.workspace = true
 workspace-ids.workspace = true
 workspace-model.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+sqlx = { workspace = true, features = ["sqlite", "macros"] }

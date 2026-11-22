@@ -67,7 +67,7 @@ pub fn organization_signin_router<Port: OrganizationSignInPort>(port: Arc<Port>)
 
 async fn device_login<Port: OrganizationSignInPort>(
     State(port): State<Arc<Port>>,
-    request: Result<Json<crate::identity_contract::DecideDeviceLogin>, JsonRejection>,
+    request: Result<Json<fleet_contracts::DecideDeviceLogin>, JsonRejection>,
 ) -> Response {
     let Ok(Json(request)) = request else {
         return wrong_operation();
@@ -79,7 +79,7 @@ async fn device_login<Port: OrganizationSignInPort>(
 }
 async fn machine_token<Port: OrganizationSignInPort>(
     State(port): State<Arc<Port>>,
-    request: Result<Json<crate::identity_contract::DecideMachineToken>, JsonRejection>,
+    request: Result<Json<fleet_contracts::DecideMachineToken>, JsonRejection>,
 ) -> Response {
     let Ok(Json(request)) = request else {
         return wrong_operation();

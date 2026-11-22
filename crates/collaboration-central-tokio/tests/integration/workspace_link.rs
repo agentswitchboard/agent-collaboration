@@ -6,9 +6,12 @@ mod batch_restore;
 mod caller_authority;
 mod delivery;
 mod fixture;
+mod idle_expiry;
 mod link_support;
+mod private_enrollment_invalidation;
 mod receipt_frames;
 mod renewal_contract;
+mod request_authority;
 mod revocation;
 mod revocation_backpressure;
 mod transport_contract;
@@ -48,9 +51,14 @@ async fn ordinary_client_uses_installation_and_receives_correlated_workspace_and
             machine_id: INSTALLATION.parse()?,
             central_time: chrono::DateTime::from_timestamp(signed::NOW_SECONDS, 0)
                 .ok_or("fixture UTC")?,
+            effective_expires_at: chrono::DateTime::from_timestamp(signed::NOW_SECONDS + 600, 0)
+                .ok_or("fixture expiry")?,
         })
     );
-    assert_eq!(client.receive(&attempt, welcome)?, ClientEvent::Welcomed);
+    assert!(matches!(
+        client.receive(&attempt, welcome)?,
+        ClientEvent::Welcomed { .. }
+    ));
     let runtime = fixture
         .host
         .central(&signed::ORGANIZATION.to_owned().try_into()?)
@@ -168,7 +176,7 @@ async fn semantic_requests_recheck_caller_and_original_grant_expiry() -> Result<
         client.receive(&attempt, reply)?,
         ClientEvent::Reply {
             result: ReplyPayload::Workspace(workspace_model::WorkspaceReply {
-                result: WorkspaceResult::Refused(RefusalReason::MachineRevoked),
+                result: WorkspaceResult::CentralUnavailable,
                 ..
             }),
             ..
@@ -253,6 +261,47 @@ async fn public_route_requires_upgrade_and_header_token_and_matching_organizatio
         assert_eq!(response.status().as_u16(), 401);
     }
     fixture.close().await
+}
+
+#[tokio::test]
+async fn signed_machine_bearer_with_retired_installation_id_is_refused() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let mut control = fixture.connect().await?;
+    if !matches!(
+        receive(&mut control).await?,
+        LinkFrame::Data(DataFrame::Welcome { .. })
+    ) {
+        return Err("the enrolled machine must receive Welcome with the current principal".into());
+    }
+    control
+        .close(reqwest_websocket::CloseCode::Normal, None)
+        .await?;
+
+    let signed_bearer = signed::resign_machine_token(
+        &fixture.token,
+        &[(
+            "principal",
+            json!({
+                "kind": "machine",
+                "machine_id": INSTALLATION,
+                "enrollment_id": fixture.enrollment_id,
+                "installation_id": INSTALLATION,
+            }),
+        )],
+    )?;
+    let status = fixture
+        .client()?
+        .get(fixture.url(signed::ORGANIZATION))
+        .bearer_auth(signed_bearer)
+        .upgrade()
+        .send()
+        .await?
+        .status();
+    fixture.close().await?;
+    if status != reqwest::StatusCode::UNAUTHORIZED {
+        return Err(format!("retired installation_id must return HTTP 401, got {status}").into());
+    }
+    Ok(())
 }
 
 async fn receipt_result(

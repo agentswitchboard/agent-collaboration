@@ -40,13 +40,10 @@ async fn empty_store() -> SqliteConnection {
         .connect()
         .await
         .unwrap();
-    for migration in [
-        include_str!("../../fleet-storage-schema/migrations/central/0001_workspace_requests.sql"),
-        include_str!("../../fleet-storage-schema/migrations/central/0002_mail_notices_timers.sql"),
-        include_str!("../../fleet-storage-schema/migrations/central/0003_signin_authority.sql"),
-    ] {
-        connection.execute(migration).await.unwrap();
-    }
+    fleet_storage_schema::workspace_migrations::central_migrator()
+        .run_direct(None, &mut connection, false)
+        .await
+        .unwrap();
     connection
 }
 async fn stored_snapshot(connection: &mut SqliteConnection) -> ReadOutcome {
@@ -79,7 +76,7 @@ async fn stamped_store(records: usize) -> SqliteConnection {
         .await
         .unwrap();
     for index in 0..records {
-        query::<Sqlite>("INSERT INTO signin_change_records VALUES(?,?,'organizationProvisioned','signInProvisioning',NULL,NULL,?,?,?)")
+        query::<Sqlite>("INSERT INTO signin_change_records(id,request_id,kind,origin,actor_person_id,permission_checked,target_id,created_at,updated_at) VALUES(?,?,'organizationProvisioned','signInProvisioning',NULL,NULL,?,?,?)")
             .bind(fixture_id(0x1000+index)).bind(format!("request-{index}")).bind(ORGANIZATION).bind(NOW).bind(NOW).execute(&mut connection).await.unwrap();
     }
     query::<Sqlite>("INSERT INTO signin_authorization_floors VALUES(?,7,'active',?,0,?,?)")
@@ -257,16 +254,15 @@ async fn malformed_stored_domains_and_foreign_binding_never_become_complete_obse
 
 async fn machine_store() -> SqliteConnection {
     let mut connection = stamped_store(1).await;
-    query::<Sqlite>("INSERT INTO login_machines VALUES(?,'Observed machine','enrolled',?,7,?,?)")
+    query::<Sqlite>("INSERT INTO login_machines VALUES(?,'Observed machine','enrolled',7,?,?)")
         .bind(fixture_id(0xe000))
-        .bind(serde_json::to_string(&vec![fixture_id(0x9000)]).unwrap())
         .bind(TIME)
         .bind(TIME)
         .execute(&mut connection)
         .await
         .unwrap();
     query::<Sqlite>(
-        "INSERT INTO login_machines VALUES(?,'Second observed machine','revoked','[]',0,?,?)",
+        "INSERT INTO login_machines VALUES(?,'Second observed machine','revoked',0,?,?)",
     )
     .bind(fixture_id(0xe040))
     .bind(TIME)
@@ -274,8 +270,17 @@ async fn machine_store() -> SqliteConnection {
     .execute(&mut connection)
     .await
     .unwrap();
+    query::<Sqlite>("INSERT INTO login_machine_allowances(allowance_id,machine_id,workspace_id,state,change_request_id,change_origin,created_at,updated_at) VALUES (?,?,?,'active','fixture','automatic',?,?)")
+        .bind(fixture_id(0xe001))
+        .bind(fixture_id(0xe000))
+        .bind(fixture_id(0x9000))
+        .bind(TIME)
+        .bind(TIME)
+        .execute(&mut connection)
+        .await
+        .unwrap();
     // Insert reverse identifiers and creation times so ID order is the wrong oracle.
-    for (index, created, state, reason, client, last, ended) in [
+    for (index, created, state, reason, client, last, ended, base_generation) in [
         (
             2,
             "2027-01-15T08:00:02Z",
@@ -284,6 +289,7 @@ async fn machine_store() -> SqliteConnection {
             None,
             None,
             None,
+            7_i64,
         ),
         (
             1,
@@ -293,6 +299,7 @@ async fn machine_store() -> SqliteConnection {
             Some(fixture_id(0xe011)),
             Some(TIME),
             None,
+            6,
         ),
         (
             3,
@@ -302,11 +309,12 @@ async fn machine_store() -> SqliteConnection {
             Some(fixture_id(0xe013)),
             None,
             Some(TIME),
+            4,
         ),
     ] {
-        query::<Sqlite>("INSERT INTO login_machine_approvals VALUES(?,?,?,'Approval snapshot','[]',?,?,?,?,7,?,?,?,?,?,?)")
+        query::<Sqlite>("INSERT INTO login_machine_approvals VALUES(?,?,?,'Approval snapshot','[]',?,?,?,?,?,?,?,?,?,?,?)")
             .bind(fixture_id(0xe010 + index)).bind(fixture_id(0xe020 + index)).bind(fixture_id(0xe000))
-            .bind(state).bind(reason).bind(PERSON).bind("machine:enroll")
+            .bind(state).bind(reason).bind(PERSON).bind("machine:enroll").bind(base_generation)
             .bind("2027-01-15T08:10:00+00:00").bind(client).bind(last).bind(ended).bind(created).bind(created)
             .execute(&mut connection).await.unwrap();
     }
@@ -339,11 +347,11 @@ async fn machine_snapshot_exports_checked_lifecycle_fields_in_creation_order() {
         value["machineApprovals"],
         json!([
             {"approvalId":fixture_id(0xe013),"requestId":fixture_id(0xe023),"machineId":fixture_id(0xe000),
-             "state":"ended","endReason":"idle","allowedWorkspaces":[],"baseGeneration":7,
+             "state":"ended","endReason":"idle","allowedWorkspaces":[],"baseGeneration":4,
              "codeExpiresAt":"2027-01-15T08:10:00.000Z","machineClientId":fixture_id(0xe013),
              "lastGrantAt":null,"endedAt":"2027-01-15T08:00:00.000Z","createdAt":"2027-01-15T08:00:00.000Z"},
             {"approvalId":fixture_id(0xe011),"requestId":fixture_id(0xe021),"machineId":fixture_id(0xe000),
-             "state":"enrolled","endReason":null,"allowedWorkspaces":[],"baseGeneration":7,
+             "state":"enrolled","endReason":null,"allowedWorkspaces":[],"baseGeneration":6,
              "codeExpiresAt":"2027-01-15T08:10:00.000Z","machineClientId":fixture_id(0xe011),
              "lastGrantAt":"2027-01-15T08:00:00.000Z","endedAt":null,"createdAt":"2027-01-15T08:00:01.000Z"},
             {"approvalId":fixture_id(0xe012),"requestId":fixture_id(0xe022),"machineId":fixture_id(0xe000),
@@ -385,7 +393,7 @@ async fn corrupt_machine_columns_refuse_instead_of_becoming_complete_observation
 async fn automatic_idle_records_observe_with_exact_origin_validation() {
     // Arrange: the same legitimate origin shape emitted by idle expiry.
     let mut connection = stamped_store(0).await;
-    query::<Sqlite>("INSERT INTO signin_change_records VALUES(?,?,'machineExpired','automatic',NULL,NULL,?,?,?)")
+    query::<Sqlite>("INSERT INTO signin_change_records(id,request_id,kind,origin,actor_person_id,permission_checked,target_id,created_at,updated_at) VALUES(?,?,'machineExpired','automatic',NULL,NULL,?,?,?)")
         .bind(fixture_id(0xf001)).bind("idle-expiry-record").bind(fixture_id(0xe013)).bind(NOW).bind(NOW)
         .execute(&mut connection).await.unwrap();
     let before = writes(&mut connection).await;

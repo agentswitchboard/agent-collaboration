@@ -507,6 +507,58 @@
       {
         "command": ["<root>/tmp/rust-tools/bin/sqlx", "database", "create"],
         "environment": {
+          "DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-workspace-access.sqlite"
+        }
+      },
+      {
+        "command": [
+          "<root>/tmp/rust-tools/bin/sqlx",
+          "migrate",
+          "run",
+          "--source",
+          "crates/fleet-storage-schema/migrations/central"
+        ],
+        "environment": {
+          "DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-workspace-access.sqlite"
+        }
+      },
+      {
+        "command": [
+          "cargo",
+          "clean",
+          "--package",
+          "path+file://<root>/crates/fleet-workspace-access"
+        ],
+        "environment": {
+          "SQLX_OFFLINE": "true",
+          "RUSTC_WRAPPER": "<wrapper>",
+          "SQLX_PREPARE_PACKAGE": "fleet-workspace-access",
+          "SQLX_PREPARE_MANIFEST_DIR": "<root>/crates/fleet-workspace-access",
+          "SQLX_PREPARE_DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-workspace-access.sqlite",
+          "SQLX_PREPARE_METADATA_DIR": "<root>/tmp/<schema>/fleet-workspace-access-metadata"
+        }
+      },
+      {
+        "command": [
+          "cargo",
+          "check",
+          "--locked",
+          "--package",
+          "path+file://<root>/crates/fleet-workspace-access",
+          "--all-targets"
+        ],
+        "environment": {
+          "SQLX_OFFLINE": "true",
+          "RUSTC_WRAPPER": "<wrapper>",
+          "SQLX_PREPARE_PACKAGE": "fleet-workspace-access",
+          "SQLX_PREPARE_MANIFEST_DIR": "<root>/crates/fleet-workspace-access",
+          "SQLX_PREPARE_DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-workspace-access.sqlite",
+          "SQLX_PREPARE_METADATA_DIR": "<root>/tmp/<schema>/fleet-workspace-access-metadata"
+        }
+      },
+      {
+        "command": ["<root>/tmp/rust-tools/bin/sqlx", "database", "create"],
+        "environment": {
           "DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-workspace-directory.sqlite"
         }
       },
@@ -602,22 +654,71 @@
           "SQLX_PREPARE_DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-signin.sqlite",
           "SQLX_PREPARE_METADATA_DIR": "<root>/tmp/<schema>/fleet-signin-metadata"
         }
+      },
+      {
+        "command": ["<root>/tmp/rust-tools/bin/sqlx", "database", "create"],
+        "environment": {
+          "DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-machine-login.sqlite"
+        }
+      },
+      {
+        "command": [
+          "<root>/tmp/rust-tools/bin/sqlx",
+          "migrate",
+          "run",
+          "--source",
+          "crates/fleet-storage-schema/migrations/central"
+        ],
+        "environment": {
+          "DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-machine-login.sqlite"
+        }
+      },
+      {
+        "command": ["cargo", "clean", "--package", "path+file://<root>/crates/fleet-machine-login"],
+        "environment": {
+          "SQLX_OFFLINE": "true",
+          "RUSTC_WRAPPER": "<wrapper>",
+          "SQLX_PREPARE_PACKAGE": "fleet-machine-login",
+          "SQLX_PREPARE_MANIFEST_DIR": "<root>/crates/fleet-machine-login",
+          "SQLX_PREPARE_DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-machine-login.sqlite",
+          "SQLX_PREPARE_METADATA_DIR": "<root>/tmp/<schema>/fleet-machine-login-metadata"
+        }
+      },
+      {
+        "command": [
+          "cargo",
+          "check",
+          "--locked",
+          "--package",
+          "path+file://<root>/crates/fleet-machine-login",
+          "--all-targets"
+        ],
+        "environment": {
+          "SQLX_OFFLINE": "true",
+          "RUSTC_WRAPPER": "<wrapper>",
+          "SQLX_PREPARE_PACKAGE": "fleet-machine-login",
+          "SQLX_PREPARE_MANIFEST_DIR": "<root>/crates/fleet-machine-login",
+          "SQLX_PREPARE_DATABASE_URL": "sqlite://<root>/tmp/<schema>/fleet-central-machine-login.sqlite",
+          "SQLX_PREPARE_METADATA_DIR": "<root>/tmp/<schema>/fleet-machine-login-metadata"
+        }
       }
     ],
     "metadata": {
       ".sqlx": {
         "query-codex-router-state.json": "codex-router-state",
         "query-collaboration-central-core.json": "collaboration-central-core",
-        "query-switchboard-session-store.json": "switchboard-session-store",
         "query-fleet-engine.json": "fleet-engine",
+        "query-fleet-machine-login.json": "fleet-machine-login",
         "query-fleet-mail.json": "fleet-mail",
-        "query-fleet-schedules.json": "fleet-schedules",
         "query-fleet-request-log.json": "fleet-request-log",
+        "query-fleet-schedules.json": "fleet-schedules",
         "query-fleet-signin.json": "fleet-signin",
         "query-fleet-wakes.json": "fleet-wakes",
+        "query-fleet-workspace-access.json": "fleet-workspace-access",
+        "query-fleet-workspace-directory.json": "fleet-workspace-directory",
         "query-fleet-workspace-service.json": "fleet-workspace-service",
-        "query-ui-preference-store.json": "ui-preference-store",
-        "query-fleet-workspace-directory.json": "fleet-workspace-directory"
+        "query-switchboard-session-store.json": "switchboard-session-store",
+        "query-ui-preference-store.json": "ui-preference-store"
       }
     },
     "stderr": ""
