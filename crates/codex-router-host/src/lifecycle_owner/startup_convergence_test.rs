@@ -89,22 +89,21 @@ async fn owned_router_startup_provisions_once_before_router_and_claude_acp_launc
         .find(|(name, _)| name == "ANTHROPIC_AUTH_TOKEN")
         .map(|(_, value)| value.clone());
     let claude_provider = claude_binding.provider();
-    let fake_acp_launch =
-        crate::external_provider_runtime::acp_scripted_fixture::AcpFixtureScript::new()
-            .expect_request(
-                "initialize",
-                "initialize",
-                serde_json::json!({"protocolVersion": 1}),
-            )
-            .respond(
-                "initialize",
-                serde_json::json!({
-                    "protocolVersion": 1,
-                    "agentCapabilities": {},
-                    "agentInfo": {"name": "claude-token-startup-fixture", "version": "1"}
-                }),
-            )
-            .launch();
+    let fake_acp_launch = crate::provider_test_support::AcpFixtureScript::new()
+        .expect_request(
+            "initialize",
+            "initialize",
+            serde_json::json!({"protocolVersion": 1}),
+        )
+        .respond(
+            "initialize",
+            serde_json::json!({
+                "protocolVersion": 1,
+                "agentCapabilities": {},
+                "agentInfo": {"name": "claude-token-startup-fixture", "version": "1"}
+            }),
+        )
+        .launch();
     let fixture_executable = node_test_fixture::node_executable()
         .expect("absolute Node fixture executable")
         .to_string_lossy()

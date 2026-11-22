@@ -2,10 +2,66 @@
 //! with test support: the supervisor holds an operation at the point, and
 //! the test releases it. The Host's approved test-support surface.
 
-use super::ExternalProviderSupervisor;
+use super::{
+    ExternalProviderSupervisor, HeldResult, LiveOperation, provider_operation_finish,
+    unavailable_failure,
+};
 use crate::binding_store_fixture::BindingFixtureWait;
+use crate::provider_operation_custody::CustodyEnd;
+use collaboration_protocol::OperationId;
+use std::sync::Arc;
 
 impl ExternalProviderSupervisor {
+    /// Holds `operation_id` live, as admitting it to a provider does.
+    pub fn hold_live_operation(&self, operation_id: OperationId) {
+        self.inner
+            .live_operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .operations
+            .insert(operation_id, Arc::new(LiveOperation::pending()));
+    }
+
+    /// The result lock of a held operation, which a test holds as a reader of the result
+    /// would.
+    pub fn held_result_for_test(&self, operation_id: &OperationId) -> Option<HeldResult> {
+        self.inner
+            .live_operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .operations
+            .get(operation_id)
+            .cloned()
+            .map(HeldResult)
+    }
+
+    /// Publishes a held operation's result through the path a finished operation takes,
+    /// with no store write. Returns whether the operation was held.
+    pub async fn publish_held_result(&self, operation_id: &OperationId) -> bool {
+        let live = self
+            .inner
+            .live_operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .operations
+            .get(operation_id)
+            .cloned();
+        let Some(live) = live else {
+            return false;
+        };
+        let result = Err(unavailable_failure(operation_id.clone(), None));
+        live.finish_write(CustodyEnd::NoWrite);
+        self.inner
+            .publish_result(
+                operation_id.clone(),
+                &live,
+                result,
+                provider_operation_finish::Retention::Settled,
+            )
+            .await;
+        true
+    }
+
     pub fn with_fixture_hub(
         bindings: Vec<super::ExternalProviderBinding>,
         store: std::sync::Arc<
@@ -61,6 +117,7 @@ impl ExternalProviderSupervisor {
     }
 
     /// Reads the owner after it has offered the second input's dispatch mark.
+    #[cfg(test)]
     pub async fn wait_for_dispatch_mark_fixture(
         &self,
         target: &collaboration_protocol::SessionRef,

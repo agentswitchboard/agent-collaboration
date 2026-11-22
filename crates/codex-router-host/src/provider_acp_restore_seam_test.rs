@@ -187,7 +187,7 @@ async fn a_cold_auto_load_with_failed_host_preparation_settles_without_holding_i
     let (host, store) = rig.open_with_store("restored-in-auto").await;
     let host = Arc::new(host);
     let runtime = host.runtime_for(&rig.target.endpoint).expect("runtime");
-    runtime.preparation_fixture.fault_restore();
+    runtime.fault_restore_preparation();
     let route = delivery_route(&rig, host.clone(), store);
 
     let delivery = route
@@ -198,7 +198,7 @@ async fn a_cold_auto_load_with_failed_host_preparation_settles_without_holding_i
         .await
         .expect("terminal cold input receipt");
     assert!(
-        !runtime.preparation_fixture.fault_pending(),
+        !runtime.has_restore_preparation_fault(),
         "the successful ACP reply reached Host preparation"
     );
     let observed: serde_json::Value = serde_json::from_slice(
@@ -240,7 +240,7 @@ async fn cold_prompt_and_compact_keep_the_post_reply_restore_guidance() {
         let (host, store) = rig.open_with_store("restored-in-auto").await;
         let host = Arc::new(host);
         let runtime = host.runtime_for(&rig.target.endpoint).expect("runtime");
-        runtime.preparation_fixture.fault_restore();
+        runtime.fault_restore_preparation();
         let route = delivery_route(&rig, host.clone(), store);
         let actor = rig.target.clone().into();
         let input_id = session_event_model::InputId::generate();
@@ -256,7 +256,7 @@ async fn cold_prompt_and_compact_keep_the_post_reply_restore_guidance() {
                 .await
         };
         let failure = result.expect_err("the load's Host preparation failed");
-        assert!(!runtime.preparation_fixture.fault_pending());
+        assert!(!runtime.has_restore_preparation_fault());
         assert!(
             matches!(failure, crate::ProviderPromptContentsError::RestoreFailed { ref reason }
                 if reason.contains("retry the restore")),
@@ -285,7 +285,7 @@ async fn a_failed_host_activation_retires_only_its_restore_and_never_sends_the_o
         let host = Arc::new(host);
         let runtime = host.runtime_for(&rig.target.endpoint).expect("runtime");
         let route = delivery_route(&rig, host.clone(), store);
-        let (reached, release) = runtime.preparation_fixture.pause_restore();
+        let (reached, release) = runtime.pause_restore_preparation();
         let queued_accepted = tokio::sync::Notify::new();
         let restore = async {
             match path {
@@ -347,7 +347,7 @@ async fn a_failed_host_activation_retires_only_its_restore_and_never_sends_the_o
                 ),
                 "{path:?}"
             );
-            runtime.preparation_fixture.fault_restore();
+            runtime.fault_restore_preparation();
             release.send(()).expect("continue activation");
         };
         tokio::join!(restore, fault);

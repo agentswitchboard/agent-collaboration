@@ -3,8 +3,8 @@
 mod provider_admission_policy;
 mod provider_operation_admission;
 mod provider_operation_index;
-#[cfg(test)]
-pub(crate) use provider_operation_index::HeldResult;
+#[cfg(any(test, feature = "test-support"))]
+pub use provider_operation_index::HeldResult;
 use provider_operation_index::{LiveOperation, LiveOperations, UncertaintyCells};
 mod provider_operation_failure;
 mod provider_operation_finish;
@@ -293,59 +293,6 @@ impl ExternalProviderSupervisor {
         }
     }
 
-    /// Holds `operation_id` live, as admitting it to a provider does.
-    #[cfg(test)]
-    pub(crate) fn hold_live_operation(&self, operation_id: OperationId) {
-        self.inner
-            .live_operations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .operations
-            .insert(operation_id, Arc::new(LiveOperation::pending()));
-    }
-
-    /// The result lock of a held operation, which a test holds as a reader of the result
-    /// would.
-    #[cfg(test)]
-    pub(crate) fn held_result_for_test(&self, operation_id: &OperationId) -> Option<HeldResult> {
-        self.inner
-            .live_operations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .operations
-            .get(operation_id)
-            .cloned()
-            .map(HeldResult)
-    }
-
-    /// Publishes a held operation's result through the path a finished operation takes,
-    /// with no store write. Returns whether the operation was held.
-    #[cfg(test)]
-    pub(crate) async fn publish_held_result(&self, operation_id: &OperationId) -> bool {
-        let live = self
-            .inner
-            .live_operations
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .operations
-            .get(operation_id)
-            .cloned();
-        let Some(live) = live else {
-            return false;
-        };
-        let result = Err(unavailable_failure(operation_id.clone(), None));
-        live.finish_write(CustodyEnd::NoWrite);
-        self.inner
-            .publish_result(
-                operation_id.clone(),
-                &live,
-                result,
-                provider_operation_finish::Retention::Settled,
-            )
-            .await;
-        true
-    }
-
     /// A receiver that wakes after each live operation publishes its result. Subscribe
     /// before checking an operation, so a completion in between is not missed.
     #[must_use]
@@ -363,6 +310,7 @@ impl ExternalProviderSupervisor {
             .map(|(operation_id, _)| operation_id.clone())
             .collect()
     }
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new(
         bindings: Vec<ExternalProviderBinding>,
         store: Arc<Mutex<ProviderOperationStore>>,

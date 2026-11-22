@@ -2,17 +2,14 @@
 use collaboration_contracts::{ProviderModelEntry, ProviderModelReasoning};
 use serde_json::{Value, json};
 
-fn provider_default() -> ProviderModelEntry {
-    ProviderModelEntry::try_new(
-        "provider-default".into(),
-        "Use provider settings".into(),
-        "Use provider settings".into(),
-    )
-    .expect("valid provider-default model")
-}
-
-fn render_app_server_model(entry: &ProviderModelEntry, is_default: bool) -> Value {
-    let (choices, default_value) = match entry.reasoning() {
+fn render_app_server_model(
+    id: &str,
+    display_name: &str,
+    description: &str,
+    reasoning: &ProviderModelReasoning,
+    is_default: bool,
+) -> Value {
+    let (choices, default_value) = match reasoning {
         ProviderModelReasoning::ProviderSettings => (
             vec![json!({"reasoningEffort":"provider","description":"Use provider settings"})],
             "provider",
@@ -29,9 +26,9 @@ fn render_app_server_model(entry: &ProviderModelEntry, is_default: bool) -> Valu
         ),
     };
     json!({
-        "id":entry.id(),"model":entry.id(),
+        "id":id,"model":id,
         "upgrade":null,"upgradeInfo":null,"availabilityNux":null,
-        "displayName":entry.display_name(),"description":entry.description(),
+        "displayName":display_name,"description":description,
         "hidden":false,"supportedReasoningEfforts":choices,
         "defaultReasoningEffort":default_value,"multiAgentVersion":null,
         "isDefault":is_default
@@ -40,14 +37,30 @@ fn render_app_server_model(entry: &ProviderModelEntry, is_default: bool) -> Valu
 
 pub(crate) fn render_model_list(catalog: &[ProviderModelEntry]) -> Value {
     let models = if catalog.is_empty() {
-        vec![provider_default()]
+        vec![render_app_server_model(
+            "provider-default",
+            "Use provider settings",
+            "Use provider settings",
+            &ProviderModelReasoning::ProviderSettings,
+            true,
+        )]
     } else {
-        catalog.to_vec()
+        catalog
+            .iter()
+            .enumerate()
+            .map(|(index, model)| {
+                render_app_server_model(
+                    model.id(),
+                    model.display_name(),
+                    model.description(),
+                    model.reasoning(),
+                    index == 0,
+                )
+            })
+            .collect()
     };
     json!({
-        "data":models.iter().enumerate()
-            .map(|(index, model)| render_app_server_model(model, index == 0))
-            .collect::<Vec<_>>(),
+        "data":models,
         "nextCursor":null
     })
 }

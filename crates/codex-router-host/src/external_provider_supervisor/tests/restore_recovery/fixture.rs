@@ -143,15 +143,10 @@ impl RestoreRig {
         Arc<Mutex<ProviderOperationStore>>,
     ) {
         let store = Arc::new(Mutex::new(self.store().await));
-        let hub = Arc::new(ProviderSessionEventHub::new(
-            store.clone(),
-            self.clock.clone(),
-        ));
-        let target: message_board::SessionRef =
-            serde_json::from_value(serde_json::to_value(&self.target).expect("target JSON"))
-                .expect("hub target");
-        let runtime = ExternalProviderRuntime::initialize_with_mcp_http_and_hub(
-            crate::external_provider_runtime::acp_scripted_fixture::launch_fixture_agent(
+        // Reuse the binding generation across fixture reseeding.
+        let (host, hub) = crate::provider_test_support::bind_scripted_provider(
+            binding(),
+            crate::provider_test_support::launch_fixture_agent(
                 "permission-mode-agent.ts",
                 vec![
                     self.root.path().join("wire.json").display().to_string(),
@@ -163,29 +158,12 @@ impl RestoreRig {
                 .chain(behaviors.iter().map(|behavior| (*behavior).to_owned()))
                 .collect(),
             ),
-            acp_client_runtime::ProviderModelPicker::Standard,
-            "fixture",
-            "http://127.0.0.1:1/mcp",
-            hub.clone(),
-            target.endpoint,
+            store.clone(),
             adapter,
             self.clock.clone(),
         )
         .await
-        .expect("fixture runtime");
-        // Keep the fixture's binding generation across reseeding so it
-        // exercises the same-generation persisted uncertainty rule.
-        let host = ExternalProviderSupervisor::new_with_hub(
-            vec![ExternalProviderBinding {
-                identity: binding(),
-                runtime,
-            }],
-            store.clone(),
-            Some(hub.clone()),
-            None,
-            self.clock.clone(),
-        )
-        .expect("supervisor");
+        .expect("scripted binding and supervisor");
         (host, hub, store)
     }
 

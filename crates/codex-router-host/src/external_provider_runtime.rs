@@ -94,7 +94,7 @@ pub struct ExternalProviderRuntime {
     client: AgentSessionClient<HostInteractionPort>,
     owner_ingress: Arc<SessionOwnerIngress>,
     owner_door: std::sync::OnceLock<Arc<crate::session_owner_door::SessionOwnerDoor>>,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) preparation_fixture:
         Arc<crate::session_owner_preparation_fixture::PreparationFixture>,
     #[cfg(test)]
@@ -135,6 +135,35 @@ impl ExternalProviderRuntime {
         self.client.prepare_owner_prompt(input, &capabilities)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn fault_restore_preparation(&self) {
+        self.preparation_fixture.fault_restore();
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    #[must_use]
+    pub fn has_restore_preparation_fault(&self) -> bool {
+        self.preparation_fixture.fault_pending()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pause_restore_preparation(
+        &self,
+    ) -> (
+        tokio::sync::oneshot::Receiver<()>,
+        tokio::sync::oneshot::Sender<()>,
+    ) {
+        self.preparation_fixture.pause_restore()
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn pause_delivery_ack(
+        &self,
+        lose_ack: bool,
+    ) -> crate::provider_test_support::DeliveryAckControl {
+        self.preparation_fixture.pause_delivery_ack(lose_ack)
+    }
+
     pub fn session_owner_door(
         &self,
         store: Arc<tokio::sync::Mutex<switchboard_session_store::ProviderOperationStore>>,
@@ -149,7 +178,7 @@ impl ExternalProviderRuntime {
                     store,
                     hub,
                     self.retirement(),
-                    #[cfg(test)]
+                    #[cfg(any(test, feature = "test-support"))]
                     self.preparation_fixture.clone(),
                 ));
                 self.owner_ingress.attach(&door);
@@ -158,6 +187,7 @@ impl ExternalProviderRuntime {
             .clone()
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn initialize(
         launch: ExternalProviderLaunch,
         behavior: Arc<dyn acp_client_runtime::ProviderBehavior>,
@@ -177,7 +207,7 @@ impl ExternalProviderRuntime {
             client,
             owner_ingress,
             owner_door: std::sync::OnceLock::new(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             preparation_fixture: Arc::default(),
             #[cfg(test)]
             fixture: tokio::sync::OnceCell::new(),
@@ -187,6 +217,7 @@ impl ExternalProviderRuntime {
         })
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn initialize_with_mcp_http(
         launch: ExternalProviderLaunch,
         model_picker: acp_client_runtime::ProviderModelPicker,
@@ -212,7 +243,7 @@ impl ExternalProviderRuntime {
             client,
             owner_ingress,
             owner_door: std::sync::OnceLock::new(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             preparation_fixture: Arc::default(),
             #[cfg(test)]
             fixture: tokio::sync::OnceCell::new(),
@@ -253,7 +284,7 @@ impl ExternalProviderRuntime {
             client,
             owner_ingress,
             owner_door: std::sync::OnceLock::new(),
-            #[cfg(test)]
+            #[cfg(any(test, feature = "test-support"))]
             preparation_fixture: Arc::default(),
             #[cfg(test)]
             fixture: tokio::sync::OnceCell::new(),
@@ -454,7 +485,7 @@ mod robustness_tests;
 #[path = "external_provider_runtime/runtime_test.rs"]
 mod tests;
 
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 #[path = "external_provider_runtime/acp_scripted_fixture.rs"]
 pub(crate) mod acp_scripted_fixture;
 #[cfg(test)]

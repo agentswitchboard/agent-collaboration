@@ -32,6 +32,8 @@ mod provider_acp_route_claim;
 mod provider_queue_operation_registry;
 mod provider_session_command_port;
 mod provider_session_setup;
+#[cfg(any(test, feature = "test-support"))]
+pub mod provider_test_support;
 mod provider_work_roots;
 pub mod session_close_evidence;
 pub mod session_owner_calls;
@@ -39,7 +41,7 @@ mod session_owner_delivery_evidence;
 pub mod session_owner_door;
 pub mod session_owner_execution;
 mod session_owner_ingress;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod session_owner_preparation_fixture;
 pub mod session_owner_publication;
 pub mod session_owner_registry;

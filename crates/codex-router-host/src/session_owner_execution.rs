@@ -52,7 +52,7 @@ pub struct SessionOwnerExecution {
     routes: BTreeMap<SessionGeneration, OwnerRun>,
     created: Option<OwnerOpenedSession>,
     work_roots: crate::provider_work_roots::ProviderWorkRoots,
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     preparation_fixture: Arc<crate::session_owner_preparation_fixture::PreparationFixture>,
 }
 
@@ -76,13 +76,6 @@ struct ActiveTurnApproval {
 }
 
 impl SessionOwnerExecution {
-    #[cfg_attr(
-        test,
-        expect(
-            clippy::too_many_arguments,
-            reason = "Tests inject the Host preparation seam."
-        )
-    )]
     pub(crate) fn new(
         target: SessionRef,
         wire: Arc<OwnerAcpWire>,
@@ -93,9 +86,6 @@ impl SessionOwnerExecution {
         publisher: SessionOwnerPublisher,
         calls: Arc<SessionOwnerCalls>,
         work_roots: crate::provider_work_roots::ProviderWorkRoots,
-        #[cfg(test)] preparation_fixture: Arc<
-            crate::session_owner_preparation_fixture::PreparationFixture,
-        >,
     ) -> Self {
         let tasks = storage.task_tracker();
         let cancel_drains = acp_client_runtime::OwnerCancelDrainExecutor::new(approvals.clone());
@@ -112,9 +102,18 @@ impl SessionOwnerExecution {
             opens: Arc::default(),
             routes: BTreeMap::new(),
             created: None,
-            #[cfg(test)]
-            preparation_fixture,
+            #[cfg(any(test, feature = "test-support"))]
+            preparation_fixture: Arc::default(),
         }
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn with_preparation_fixture(
+        mut self,
+        fixture: Arc<crate::session_owner_preparation_fixture::PreparationFixture>,
+    ) -> Self {
+        self.preparation_fixture = fixture;
+        self
     }
 
     fn session_id(&self) -> String {
@@ -585,7 +584,7 @@ impl SessionOwnerPorts for SessionOwnerExecution {
                         stage: PreparationStage::HostSetup,
                     },
                 };
-                #[cfg(test)]
+                #[cfg(any(test, feature = "test-support"))]
                 {
                     let failed = move || RestorePreparation::Failed {
                         run,
