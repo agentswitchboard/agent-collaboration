@@ -8,9 +8,6 @@ use collaboration_protocol::{
     EndpointDescription, OBSERVATION_EVENT_NOTIFICATION, ProviderRequestedPolicy,
     ProviderWorkingDirectory, RouterAccess, SessionRef,
 };
-use collaboration_runtime::ProviderOperationStore;
-use collaboration_runtime::ProviderSessionEventHub;
-use collaboration_runtime::ProviderSessionRecord;
 use collaboration_service::ApplicationFixture;
 use rmcp::{
     ClientHandler, RoleClient,
@@ -20,6 +17,9 @@ use rmcp::{
 use router_clock::{ClockInstant, ManualClock, RuntimeClock};
 use serde_json::{Value, json};
 use std::{path::Path, sync::Arc, time::Duration};
+use switchboard_session_events::ProviderSessionEventHub;
+use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_store::ProviderSessionRecord;
 use tokio::sync::{Mutex, mpsc};
 
 /// An MCP client that hands the test each observation event notification it receives.
@@ -58,6 +58,7 @@ fn provider_target(session_id: &str) -> SessionRef {
 async fn provider_router(
     directory: &Path,
     sessions: &[&SessionRef],
+    clock: Arc<dyn RuntimeClock>,
 ) -> (ApplicationFixture, Arc<ProviderSessionEventHub>) {
     let owner: SessionRef = serde_json::from_value(json!({
         "endpoint": {"serviceId": TEST_SERVICE_ID, "endpointId": "codex-local"},
@@ -90,8 +91,14 @@ async fn provider_router(
             .await
             .expect("session record");
     }
-    let hub = Arc::new(ProviderSessionEventHub::with_capacity(store, 16));
-    let identity = test_identity().with_provider_session_hub(hub.clone());
+    let hub = Arc::new(ProviderSessionEventHub::with_capacity(
+        store,
+        clock.clone(),
+        16,
+    ));
+    let identity = test_identity()
+        .with_provider_session_hub(hub.clone())
+        .with_clock(clock);
     let description: EndpointDescription = serde_json::from_value(json!({
         "endpoint": {"serviceId": TEST_SERVICE_ID, "endpointId": "claude-local"},
         "label": "Claude fixture",
@@ -179,9 +186,10 @@ async fn a_bounded_observation_streams_each_event_while_the_call_is_open_on_both
     let directory = private_directory();
     let over_tcp = provider_target("observed-over-tcp");
     let over_unix = provider_target("observed-over-unix");
-    let (identity, hub) = provider_router(directory.path(), &[&over_tcp, &over_unix]).await;
     let clock = Arc::new(ManualClock::new(Default::default()));
-    let config = api_config(identity.with_clock(clock.clone()).build(), directory.path());
+    let (identity, hub) =
+        provider_router(directory.path(), &[&over_tcp, &over_unix], clock.clone()).await;
+    let config = api_config(identity.build(), directory.path());
     let tcp = ServedApi::tcp(&config).await;
     let unix = ServedApi::unix(&config, &directory.path().join("api.sock"));
 
@@ -302,12 +310,12 @@ async fn a_reader_that_stops_reading_neither_keeps_the_call_past_its_bound_nor_h
     };
     let directory = private_directory();
     let target = provider_target("observed-by-a-stalled-reader");
-    let (identity, hub) = provider_router(directory.path(), &[&target]).await;
+    let clock = Arc::new(ManualClock::new(Default::default()));
+    let (identity, hub) = provider_router(directory.path(), &[&target], clock.clone()).await;
     for index in 0..130 {
         publish_text(&hub, &target, &format!("item-{index}"), &"x".repeat(7_000)).await;
     }
-    let clock = Arc::new(ManualClock::new(Default::default()));
-    let mut config = api_config(identity.with_clock(clock.clone()).build(), directory.path());
+    let mut config = api_config(identity.build(), directory.path());
     config.concurrent_requests = 1;
     let socket = directory.path().join("api.sock");
     let api = ServedApi::unix(&config, &socket);
@@ -516,10 +524,10 @@ async fn native_codex_watch_preserves_its_result_and_notification_shape() {
 async fn an_earlier_stream_is_refused_on_the_current_host() {
     let directory = private_directory();
     let target = provider_target("reset");
-    let (identity, hub) = provider_router(directory.path(), &[&target]).await;
-    publish(&hub, &target, "old-record").await;
     let clock = Arc::new(ManualClock::new(Default::default()));
-    let config = api_config(identity.with_clock(clock.clone()).build(), directory.path());
+    let (identity, hub) = provider_router(directory.path(), &[&target], clock.clone()).await;
+    publish(&hub, &target, "old-record").await;
+    let config = api_config(identity.build(), directory.path());
     let api = ServedApi::unix(&config, &directory.path().join("api.sock"));
     let (events, mut streamed) = mpsc::unbounded_channel();
     let client = api.client_with(ObservationEvents(events)).await;
@@ -595,7 +603,12 @@ async fn an_earlier_stream_is_refused_on_the_current_host() {
 async fn partial_guarded_positions_are_invalid_parameters() {
     let directory = private_directory();
     let target = provider_target("partial");
-    let (identity, hub) = provider_router(directory.path(), &[&target]).await;
+    let (identity, hub) = provider_router(
+        directory.path(),
+        &[&target],
+        Arc::new(ManualClock::new(Default::default())),
+    )
+    .await;
     publish(&hub, &target, "kept").await;
     let config = api_config(identity.build(), directory.path());
     let api = ServedApi::unix(&config, &directory.path().join("api.sock"));

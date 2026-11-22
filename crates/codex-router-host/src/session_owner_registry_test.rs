@@ -10,7 +10,6 @@ use collaboration_protocol::{
     ConversationBindingIdentity, ProviderOperationEffect, ProviderOperationKind,
     ProviderOperationStage, ProviderReconciliationState,
 };
-use collaboration_runtime::ProviderOperationAdmission;
 use provider_session_machines::{
     session_lifecycle_machine::{LoadAttempt, RestoreVia, SessionLifecycle},
     session_owner::{
@@ -23,6 +22,7 @@ use provider_session_machines::{
     session_turn_machine::TurnId,
 };
 use session_event_model::InputId;
+use switchboard_session_store::ProviderOperationAdmission;
 
 fn connection() -> ConnectionEpoch {
     ConnectionEpoch(Uuid::now_v7())

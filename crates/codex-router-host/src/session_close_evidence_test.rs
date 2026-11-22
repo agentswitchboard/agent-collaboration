@@ -1,7 +1,7 @@
 use super::*;
 use crate::session_store_lane::tests::StoreFixture;
 use collaboration_protocol::{ConversationBindingIdentity, OperationId, SessionRef};
-use collaboration_runtime::{ProviderOperationAdmission, ProviderOperationStore};
+use switchboard_session_store::{ProviderOperationAdmission, ProviderOperationStore};
 
 async fn admit(
     store: &mut ProviderOperationStore,

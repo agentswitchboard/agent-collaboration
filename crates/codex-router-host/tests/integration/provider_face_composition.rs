@@ -160,9 +160,9 @@ async fn composed_acp_connection_admits_provider_without_codex_generation() {
 
 #[tokio::test]
 async fn app_server_socket_creates_and_prompts_with_the_owner_identity() {
-    use collaboration_runtime::ProviderOperationStore;
     use futures_util::{SinkExt, StreamExt};
     use serde_json::{Value, json};
+    use switchboard_session_store::ProviderOperationStore;
     use tokio::{
         io::{AsyncBufReadExt, AsyncWriteExt, BufReader},
         net::UnixStream,

@@ -19,9 +19,9 @@ use collaboration_protocol::{
     ProviderSettingsFailureKind, ProviderSettingsSetRequest, ProviderTransport,
     ProviderWorkingDirectory, RouterAccess, SessionId, SessionRef, UuidIdentity,
 };
-use collaboration_runtime::ProviderOperationStore;
 use serde_json::{Value, json};
 use std::{path::PathBuf, sync::Arc};
+use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;

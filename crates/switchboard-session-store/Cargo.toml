@@ -1,0 +1,30 @@
+[package]
+name = "switchboard-session-store"
+autotests = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[features]
+test-support = ["sqlite-storage-maintenance/test-support"]
+
+[lints]
+workspace = true
+
+[dependencies]
+chrono.workspace = true
+collaboration-protocol = { path = "../collaboration-protocol", version = "0.1.14" }
+serde.workspace = true
+serde_json.workspace = true
+sqlite-storage-maintenance = { path = "../sqlite-storage-maintenance", version = "0.1.118" }
+sqlx = { workspace = true, features = ["macros", "migrate", "sqlite"] }
+thiserror.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"

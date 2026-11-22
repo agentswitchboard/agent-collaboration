@@ -9,7 +9,6 @@ use acp_client_runtime::{
     session_owner_task::{SessionOwnerHandle, SessionOwnerTask},
 };
 use collaboration_protocol::{OperationId, SessionRef};
-use collaboration_runtime::ProviderOperationStore;
 use provider_session_machines::session_owner::{
     ConnectionEpoch, DispatchAuthorization, OwnerAddress, OwnerIncarnation,
 };
@@ -19,6 +18,7 @@ use std::{
     num::NonZeroUsize,
     sync::{Arc, Mutex, MutexGuard},
 };
+use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex as AsyncMutex;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;

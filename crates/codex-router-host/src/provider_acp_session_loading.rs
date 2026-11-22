@@ -7,8 +7,8 @@ use crate::{
 use acp_client_runtime::{RestoreFailure, RestorePhase, acp_transport::TransportRun};
 use collaboration_contracts::LoadPolicy;
 use collaboration_protocol::{DeliveryCorrelationId, SessionRef};
-use collaboration_runtime::ProviderOperationStore;
 use std::{path::PathBuf, sync::Arc};
+use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
 
 #[derive(Clone, Debug, Eq, PartialEq)]

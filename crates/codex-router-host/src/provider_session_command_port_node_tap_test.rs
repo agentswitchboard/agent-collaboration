@@ -21,10 +21,11 @@ use collaboration_protocol::{
     ProviderCapabilityName, ProviderCapabilityStatus, ProviderKind, ProviderRuntimeIdentity,
     ProviderTransport, ProviderWorkingDirectory, RouterAccess,
 };
-use collaboration_runtime::{EndpointDirectory, ProviderSessionRecord};
+use collaboration_runtime::EndpointDirectory;
 use message_board::SessionRef as BoardSessionRef;
 use session_event_model::{PromptContent, ProviderSubmission, SettingApplicationIntent};
 use std::path::PathBuf;
+use switchboard_session_store::ProviderSessionRecord;
 
 #[path = "provider_session_command_port_acp_failure_test.rs"]
 mod acp_failures;
@@ -162,7 +163,11 @@ async fn command_port_rig(fixture: AgentFixture) -> CommandPortRig {
             .await
             .expect("store"),
     ));
-    let hub = Arc::new(ProviderSessionEventHub::new(Arc::clone(&store)));
+    let clock = Arc::new(router_clock::SystemRuntimeClock::new());
+    let hub = Arc::new(ProviderSessionEventHub::new(
+        Arc::clone(&store),
+        clock.clone(),
+    ));
     let seed_target = protocol_target("session-1");
     let binding = provider_binding(&seed_target);
     let board_endpoint: SessionEndpointRef =
@@ -203,7 +208,7 @@ async fn command_port_rig(fixture: AgentFixture) -> CommandPortRig {
         Arc::clone(&hub),
         board_endpoint,
         behavior,
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        clock,
     )
     .await
     .expect("provider runtime");

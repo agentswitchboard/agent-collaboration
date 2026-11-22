@@ -34,12 +34,12 @@ use collaboration_protocol::{
     ProviderSettingsResult, ProviderSettingsSetRequest, ProviderWorkingDirectory, RouterAccess,
     SessionId, SessionRef,
 };
-use collaboration_runtime::ProviderOperationStore;
 use serde_json::Value;
 use std::os::unix::fs::PermissionsExt as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
+use switchboard_session_store::ProviderOperationStore;
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
 

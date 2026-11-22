@@ -1,12 +1,12 @@
 use super::*;
 use crate::session_owner_publication::SessionOwnerPublisher;
 use collaboration_contracts::SessionEventHub;
-use collaboration_runtime::ProviderSessionEventHub;
 use provider_session_machines::session_lifecycle_machine::CloseAttempt;
 use provider_session_machines::session_owner::{PromptCompletion, PublicationStatus};
 use router_clock::ClockInstant;
 use session_event_model::{SessionEvent, SessionState, StopReason};
 use std::time::Duration;
+use switchboard_session_events::ProviderSessionEventHub;
 use tokio_util::task::TaskTracker;
 
 struct RealHubPorts {
@@ -65,7 +65,10 @@ async fn a_refused_closed_batch_rebases_the_real_hub_without_another_owner_comma
     let shutdown = CancellationToken::new();
     let lane_worker = tokio::spawn(lane_task.run(shutdown.clone()));
 
-    let hub = Arc::new(ProviderSessionEventHub::new(fixture.store.clone()));
+    let hub = Arc::new(ProviderSessionEventHub::new(
+        fixture.store.clone(),
+        fixture.clock.clone(),
+    ));
     let (inbox, inbox_task) = hub.owner_inbox(board_session.clone(), NonZeroUsize::MIN);
     let address = session.owner.address;
     inbox

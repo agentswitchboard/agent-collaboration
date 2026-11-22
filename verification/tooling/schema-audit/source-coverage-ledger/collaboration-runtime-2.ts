@@ -60,26 +60,6 @@ export const section: LedgerSection = {
       note: "N9 ACP route: session/new, load, resume, prompt, list, cancel, _session/steering, _session/queue/add|list|cancel (:366-671); named_session reads _meta.router.sessionRef (:139); session_result writes _meta.router and _meta.sessionProfile (:148-168); list result (:208-236); CommandFailure to JSON-RPC code (:127-137); retry request id (:341-345); 17 json!",
     },
     {
-      file: `${R}provider_operation_store.rs`,
-      disposition: { kind: "converts", owners: ["router-vocabulary"] },
-      note: "provider operation metadata store: Router vocabulary enums stored as their serde strings and records as closed JSON text (:641-661), legacy ProviderBindingIdentity binding decoded (:663-669), target SessionRef rebuilt from three columns (:603-621); storage format, not an outside edge",
-    },
-    {
-      file: `${R}provider_session_event_hub.rs`,
-      disposition: { kind: "converts", owners: ["router-vocabulary"] },
-      note: "N5 hub: board and protocol SessionRef conversions (:567-594), TurnOutcome to SessionState (:115-119); no external wire",
-    },
-    {
-      file: `${R}provider_session_inventory_metadata.rs`,
-      disposition: { kind: "reads", owners: ["router-vocabulary"] },
-      note: "parses SessionTitleMetadata from item text JSON (:36, :65-86); JSON-in-string reader",
-    },
-    {
-      file: `${R}provider_session_record.rs`,
-      disposition: { kind: "converts", owners: ["router-vocabulary"] },
-      note: "durable provider session record: requested_policy, created_by, approver stored and read as JSON text columns (:61-66, :141-146, :191-196, :241-246); endpoint ids claude-local|cursor-local (:24); storage format, not an outside edge",
-    },
-    {
       file: `${R}push_handoff_worker.rs`,
       disposition: { kind: "none" },
       note: "ordered automation operations",

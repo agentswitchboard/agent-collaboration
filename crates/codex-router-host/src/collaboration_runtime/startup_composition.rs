@@ -149,7 +149,7 @@ impl CollaborationRuntime {
         )
         .map_err(io::Error::other)?;
         let endpoint_directory = collaboration_runtime::EndpointDirectory::new(service_id.clone());
-        let provider_store = match collaboration_runtime::ProviderOperationStore::open(
+        let provider_store = match switchboard_session_store::ProviderOperationStore::open(
             &inputs.directory.join("provider-operations.sqlite"),
         )
         .await

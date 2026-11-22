@@ -7,9 +7,9 @@ use collaboration_runtime::CodexConversationOperationRecorder;
 use collaboration_service::ApplicationFixture;
 
 use crate::served_api;
-use collaboration_runtime::ProviderOperationStore;
 use serde_json::{Value, json};
 use std::sync::Arc;
+use switchboard_session_store::ProviderOperationStore;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 

@@ -19,8 +19,8 @@ use collaboration_protocol::{
     ProviderOperationEffect, ProviderOperationStage, ProviderRequestedPolicy,
     ProviderWorkingDirectory, RouterAccess, SessionId,
 };
-use collaboration_runtime::{ProviderOperationStore, ProviderSessionRecord};
 use std::sync::Arc;
+use switchboard_session_store::{ProviderOperationStore, ProviderSessionRecord};
 use tokio::sync::Mutex;
 
 const UNSAVED_APPLIED: &str =

@@ -6,10 +6,10 @@
 //! record, whichever path restores it.
 
 use crate::provider_work_roots::{ProviderWorkRoots, WorkRootsHook};
-use collaboration_runtime::ProviderSessionResumeInputs;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, PoisonError};
+use switchboard_session_store::ProviderSessionResumeInputs;
 
 /// A session's requested mode and why the agent's mode differs, for show.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

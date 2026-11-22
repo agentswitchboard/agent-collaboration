@@ -23,7 +23,7 @@ fn recorded_requests(receipt: &std::path::Path, method: &str) -> usize {
 struct HubRuntime {
     _root: tempfile::TempDir,
     receipt: PathBuf,
-    hub: Arc<collaboration_runtime::ProviderSessionEventHub>,
+    hub: Arc<switchboard_session_events::ProviderSessionEventHub>,
     hub_target: message_board::SessionRef,
     runtime: Arc<ExternalProviderRuntime>,
 }
@@ -37,11 +37,17 @@ async fn hub_runtime_with(behaviours: &[&str]) -> HubRuntime {
     let root = tempfile::tempdir().expect("fixture root");
     let receipt = root.path().join("wire.json");
     let store = Arc::new(tokio::sync::Mutex::new(
-        collaboration_runtime::ProviderOperationStore::open(&root.path().join("operations.sqlite"))
-            .await
-            .expect("store"),
+        switchboard_session_store::ProviderOperationStore::open(
+            &root.path().join("operations.sqlite"),
+        )
+        .await
+        .expect("store"),
     ));
-    let hub = Arc::new(collaboration_runtime::ProviderSessionEventHub::new(store));
+    let clock = Arc::new(router_clock::SystemRuntimeClock::new());
+    let hub = Arc::new(switchboard_session_events::ProviderSessionEventHub::new(
+        store,
+        clock.clone(),
+    ));
     let hub_target: message_board::SessionRef = serde_json::from_value(serde_json::json!({
         "endpoint": {
             "serviceId": "0ff962c5-7fa3-4c18-a5ca-1bbe8db09e89",
@@ -64,7 +70,7 @@ async fn hub_runtime_with(behaviours: &[&str]) -> HubRuntime {
         Arc::clone(&hub),
         hub_target.endpoint.clone(),
         Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        clock,
     )
     .await
     .expect("fixture provider");

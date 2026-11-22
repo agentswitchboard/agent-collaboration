@@ -8,8 +8,10 @@ use crate::binding_store_fixture::BindingFixtureWait;
 impl ExternalProviderSupervisor {
     pub fn with_fixture_hub(
         bindings: Vec<super::ExternalProviderBinding>,
-        store: std::sync::Arc<tokio::sync::Mutex<collaboration_runtime::ProviderOperationStore>>,
-        hub: std::sync::Arc<collaboration_runtime::ProviderSessionEventHub>,
+        store: std::sync::Arc<
+            tokio::sync::Mutex<switchboard_session_store::ProviderOperationStore>,
+        >,
+        hub: std::sync::Arc<switchboard_session_events::ProviderSessionEventHub>,
     ) -> Result<Self, &'static str> {
         Self::new_with_hub(bindings, store, Some(hub), None)
     }

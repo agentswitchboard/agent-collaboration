@@ -7,9 +7,9 @@ use collaboration_protocol::{
     ProviderRuntimeIdentity, ProviderTransport, ProviderWorkingDirectory, RouterAccess, SessionId,
     UuidIdentity,
 };
-use collaboration_runtime::ProviderOperationStore;
-use collaboration_runtime::ProviderSessionRecord;
 use std::sync::Arc;
+use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_store::ProviderSessionRecord;
 
 struct FixtureOwnership(LiveSessionOwnership);
 

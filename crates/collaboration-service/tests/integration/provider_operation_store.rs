@@ -8,12 +8,12 @@ use collaboration_protocol::{
     ProviderRuntimeIdentity, ProviderTransport, SessionId, SessionRef, UuidIdentity,
 };
 use collaboration_runtime::CodexConversationOperationRecorder;
-use collaboration_runtime::ProviderOperationAdmission;
-use collaboration_runtime::ProviderOperationAdmissionResult;
-use collaboration_runtime::ProviderOperationStore;
-use collaboration_runtime::ProviderOperationStoreError;
 use sqlx::{Connection, Row, SqliteConnection};
 use std::{collections::HashSet, path::PathBuf};
+use switchboard_session_store::ProviderOperationAdmission;
+use switchboard_session_store::ProviderOperationAdmissionResult;
+use switchboard_session_store::ProviderOperationStore;
+use switchboard_session_store::ProviderOperationStoreError;
 
 type TestResult<T = ()> = Result<T, Box<dyn std::error::Error>>;
 
@@ -160,7 +160,7 @@ fn admission(id: &str, admitted_at_ms: i64) -> TestResult<ProviderOperationAdmis
 
 fn admitted_record(
     result: ProviderOperationAdmissionResult,
-) -> TestResult<collaboration_runtime::ProviderOperationRecord> {
+) -> TestResult<switchboard_session_store::ProviderOperationRecord> {
     match result {
         ProviderOperationAdmissionResult::Admitted(record) => Ok(record),
         ProviderOperationAdmissionResult::Existing(_) => {
@@ -666,7 +666,7 @@ async fn legacy_binding_migration_preserves_existing_operation_and_rejects_inval
     let mut connection =
         SqliteConnection::connect(&format!("sqlite:{}", database.path.display())).await?;
     sqlx::raw_sql(include_str!(
-        "../../../collaboration-runtime/migrations/202609240001_conversation_binding_identity.sql"
+            "../../../switchboard-session-store/migrations/202609240001_conversation_binding_identity.sql"
     ))
     .execute(&mut connection)
     .await?;

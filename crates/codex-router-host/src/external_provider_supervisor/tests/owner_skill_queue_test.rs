@@ -3,10 +3,11 @@
 use super::*;
 use crate::session_owner_calls::InputAcceptance;
 use collaboration_contracts::SessionEventHub;
-use collaboration_runtime::{ProviderSessionEventHub, ProviderSessionRecord};
 use session_event_model::{
     InputId, PromptContent, ProviderSubmission, SelectedSkill, SkillInvocationName,
 };
+use switchboard_session_events::ProviderSessionEventHub;
+use switchboard_session_store::ProviderSessionRecord;
 
 #[tokio::test]
 async fn selected_skill_removed_while_fifo_waits_is_refused_without_a_provider_prompt() {
@@ -42,7 +43,10 @@ async fn selected_skill_removed_while_fifo_waits_is_refused_without_a_provider_p
         })
         .await
         .expect("saved setup");
-    let hub = Arc::new(ProviderSessionEventHub::new(store.clone()));
+    let hub = Arc::new(ProviderSessionEventHub::new(
+        store.clone(),
+        Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+    ));
     let board: message_board::SessionRef =
         collaboration_protocol::ProviderIdentity::session_to_board(&target).expect("board address");
     let runtime = ExternalProviderRuntime::initialize(

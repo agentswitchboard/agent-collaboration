@@ -11,8 +11,8 @@ use crate::{
     provider_operation_custody::CustodyEnd,
     provider_operation_settlement::ProviderOperationCompletion,
 };
-use collaboration_runtime::ProviderOperationStoreError;
 use router_clock::ClockInstant;
+use switchboard_session_store::ProviderOperationStoreError;
 
 pub(super) fn mark_receipt_is_timely(observed: ClockInstant, deadline: ClockInstant) -> bool {
     observed < deadline
