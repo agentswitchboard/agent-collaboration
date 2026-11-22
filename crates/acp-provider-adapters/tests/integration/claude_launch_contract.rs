@@ -61,7 +61,7 @@ async fn official_direct_and_pnpm_shim_use_canonical_peer_sdk_and_preserve_envir
     let fixture = installation().expect("pnpm installation fixture");
     for executable in [&fixture.entry, &fixture.shim] {
         let original = launch(executable);
-        let prepared = prepare_claude_launch(original.clone()).await;
+        let prepared = prepare_claude_launch(original.clone(), |_| std::future::pending()).await;
         let identity = prepared.qualification.expect("qualified public imports");
         assert_eq!(
             identity.library,
@@ -102,7 +102,7 @@ async fn custom_launch_version_and_unsupported_arguments_remain_original_and_una
     let mut with_args = launch(&fixture.entry);
     with_args.arguments = vec!["--cli".into()];
     for original in [launch(&custom), with_args] {
-        let prepared = prepare_claude_launch(original.clone()).await;
+        let prepared = prepare_claude_launch(original.clone(), |_| std::future::pending()).await;
         assert!(prepared.qualification.is_err());
         assert_eq!(prepared.launch, original);
         assert!(matches!(
@@ -122,30 +122,73 @@ async fn custom_launch_version_and_unsupported_arguments_remain_original_and_una
     )
     .expect("changed version");
     let original = launch(&fixture.entry);
-    let prepared = prepare_claude_launch(original.clone()).await;
+    let prepared = prepare_claude_launch(original.clone(), |_| std::future::pending()).await;
     assert!(prepared.qualification.is_err());
     assert_eq!(prepared.launch, original);
 }
 
 #[tokio::test]
 async fn stalled_qualification_does_not_block_another_provider_and_keeps_original_launch() {
+    use acp_provider_adapters::ClaudeLaunchUnavailable;
+    use std::{
+        cell::Cell,
+        future::Future as _,
+        task::{Context, Poll, Waker},
+        time::Duration,
+    };
+
     let stalled = installation().expect("stalled fixture");
     std::fs::write(
         &stalled.library,
-        "await new Promise(() => { setInterval(() => {}, 1000); }); export function runAcp() {}",
+        r"import { createServer } from 'node:net';
+           const held = createServer().listen(0, '127.0.0.1');
+           await new Promise(() => {}); export function runAcp() {}",
     )
     .expect("held import");
     let healthy = installation().expect("healthy fixture");
     let original = launch(&stalled.entry);
-    let pending = prepare_claude_launch(original.clone());
-    tokio::pin!(pending);
-    tokio::select! {
-        biased;
-        _result = &mut pending => panic!("stalled import completed before independent qualification"),
-        prepared = prepare_claude_launch(launch(&healthy.entry)) => assert!(prepared.qualification.is_ok()),
+    let requested_budget = Cell::new(None);
+    let (expire, deadline) = tokio::sync::oneshot::channel();
+    let mut pending = Box::pin(prepare_claude_launch(original.clone(), |budget| {
+        requested_budget.set(Some(budget));
+        async move {
+            deadline.await.expect("test supplies deadline");
+        }
+    }));
+
+    let first = pending
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()));
+    let budget = requested_budget.get();
+    if first.is_ready() || budget != Some(Duration::from_secs(5)) {
+        drop(pending);
+        assert!(
+            first.is_pending(),
+            "held qualification completed before its deadline"
+        );
+        assert_eq!(
+            budget,
+            Some(Duration::from_secs(5)),
+            "qualification did not arm the supplied deadline"
+        );
+        return;
     }
-    let prepared = pending.await;
-    assert!(prepared.qualification.is_err());
+    let prepared = prepare_claude_launch(launch(&healthy.entry), |_| std::future::pending()).await;
+    assert!(prepared.qualification.is_ok(), "independent qualification");
+    expire
+        .send(())
+        .expect("qualification waiting on supplied deadline");
+    let expired = pending
+        .as_mut()
+        .poll(&mut Context::from_waker(Waker::noop()));
+    drop(pending);
+    let Poll::Ready(prepared) = expired else {
+        panic!("the supplied deadline must settle held qualification");
+    };
+    assert_eq!(
+        prepared.qualification,
+        Err(ClaudeLaunchUnavailable::PublicApiUnavailable)
+    );
     assert_eq!(prepared.launch, original);
     assert!(matches!(
         prepared.skill_source,

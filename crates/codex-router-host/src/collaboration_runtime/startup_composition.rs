@@ -1,11 +1,10 @@
 //! Bind listeners, prepare service owners and start the Host runtime.
 use super::{
     BackendPublication, BoundCollaborationApi, CancellationToken, CollaborationRuntime,
-    CollaborationRuntimeInputs, EndpointAvailability, EndpointId, EndpointRef,
-    HostCollaborationInputs, JoinSet, NativeRelayListener, NonEmptyText, RemoteControlServerName,
-    RouterExecutableRelation, SchemaDigest, SocketAddr, create_private_socket_directory,
-    current_observation_timestamp, io, load_installation_peer, load_service_identity,
-    new_service_uuid, unix_seconds,
+    CollaborationRuntimeInputs, EndpointId, EndpointRef, HostCollaborationInputs, JoinSet,
+    NativeRelayListener, NonEmptyText, RemoteControlServerName, RouterExecutableRelation,
+    SchemaDigest, SocketAddr, create_private_socket_directory, io, load_installation_peer,
+    load_service_identity, new_service_uuid, unix_seconds,
 };
 
 impl CollaborationRuntime {
@@ -461,23 +460,15 @@ impl CollaborationRuntime {
         for app_server in provider_app_servers {
             tasks.spawn(app_server.run(shutdown.clone()));
         }
-        for (retirement, mut description) in provider_retirements {
-            let directory = endpoint_directory.clone();
-            provider_retirement_tasks.spawn(async move {
-                retirement.cancelled().await;
-                description.availability = EndpointAvailability::Unavailable {
-                    observed_at: current_observation_timestamp()?,
-                    reason: NonEmptyText::try_from("provider process retired".to_owned())
-                        .map_err(io::Error::other)?,
-                    fix: Some(
-                        NonEmptyText::try_from(
-                            "restart the Host to relaunch the provider".to_owned(),
-                        )
-                        .map_err(io::Error::other)?,
-                    ),
-                };
-                directory.publish(description)
-            });
+        for (retirement, description) in provider_retirements {
+            provider_retirement_tasks.spawn(
+                crate::provider_startup_composition::publish_provider_retirement(
+                    retirement,
+                    description,
+                    endpoint_directory.clone(),
+                    worker_clock.clone(),
+                ),
+            );
         }
         let maintenance = journal.as_ref().map(|journal| {
             let maintenance_store = std::sync::Arc::clone(journal);
