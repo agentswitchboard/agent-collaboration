@@ -5,21 +5,19 @@ mod owner_ports;
 mod owner_reducer;
 pub use owner_ports::*;
 
+#[cfg(test)]
+use crate::ProviderSettingKind;
 use crate::session_cell_machine::{SessionCell, SessionCellRefusal};
 use crate::session_lifecycle_machine::{CloseAttempt, LoadAttempt, RestoreVia, SessionLifecycle};
 use crate::session_setting_machine::{SettingApplication, SettingValueId};
 use crate::session_turn_machine::{SessionTurn, TurnId};
 use crate::tool_ownership::{ToolObservation, ToolOwnership};
-use crate::{ProviderSettingKind, ProviderSettingsCatalog, SessionGeneration};
+use crate::{ProviderSettingsCatalog, SessionGeneration};
 use session_event_model::{InputId, LocalCause, StopReason, TurnOutcome};
 use std::collections::BTreeMap;
 use std::sync::Arc;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct RunAttempt<Attempt> {
-    pub generation: SessionGeneration,
-    pub attempt: Attempt,
-}
+pub use switchboard_harness_contracts::RunAttempt;
 
 #[derive(Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 pub struct OwnerInput {
@@ -29,11 +27,7 @@ pub struct OwnerInput {
     pub turn: TurnId,
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct OwnerSetting {
-    pub change: RunAttempt<SettingApplication>,
-    pub kind: ProviderSettingKind,
-}
+pub use switchboard_harness_contracts::OwnerSetting;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PromptAdmission {

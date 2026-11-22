@@ -26,6 +26,8 @@ dependencies = [
  "serde_json",
  "session-event-model",
  "state-machine-core",
+ "switchboard-harness-contracts",
+ "switchboard-harness-shared-mechanics",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -4415,6 +4417,7 @@ dependencies = [
  "serde",
  "session-event-model",
  "state-machine-core",
+ "switchboard-harness-contracts",
  "uuid",
 ]
 
@@ -5716,6 +5719,36 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
+name = "switchboard-harness-contracts"
+version = "0.1.158"
+dependencies = [
+ "uuid",
+]
+
+[[package]]
+name = "switchboard-harness-shared-mechanics"
+version = "0.1.158"
+dependencies = [
+ "hegeltest",
+ "switchboard-harness-contracts",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "switchboard-session-calls"
+version = "0.1.158"
+dependencies = [
+ "hegeltest",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "thiserror 2.0.18",
+ "workspace-ids",
+]
+
+[[package]]
 name = "switchboard-session-events"
 version = "0.1.158"
 dependencies = [
@@ -5736,6 +5769,17 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "switchboard-session-payloads"
+version = "0.1.158"
+dependencies = [
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "workspace-ids",
 ]
 
 [[package]]
