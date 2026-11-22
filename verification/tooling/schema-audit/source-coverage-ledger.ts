@@ -93,6 +93,26 @@ export const LEDGER_BASE = {
   leftOutByName: ["*_test.rs", "*_tests.rs"],
 } as const;
 
+/** Current locations of historical entries whose ownership moved in DEL-01. */
+export const LEDGER_RELOCATIONS = new Map<string, string>([
+  [
+    "crates/collaboration-runtime/src/provider_operation_store.rs",
+    "crates/switchboard-session-store/src/provider_operation_store.rs",
+  ],
+  [
+    "crates/collaboration-runtime/src/provider_session_event_hub.rs",
+    "crates/switchboard-session-events/src/provider_session_event_hub.rs",
+  ],
+  [
+    "crates/collaboration-runtime/src/provider_session_inventory_metadata.rs",
+    "crates/switchboard-session-events/src/provider_session_inventory_metadata.rs",
+  ],
+  [
+    "crates/collaboration-runtime/src/provider_session_record.rs",
+    "crates/switchboard-session-store/src/provider_session_record.rs",
+  ],
+]);
+
 export const LEDGER_SECTIONS: readonly LedgerSection[] = [
   acpClientRuntime,
   acpProviderAdapters,
