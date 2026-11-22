@@ -104,11 +104,8 @@ pub async fn serve_acp_router_connection<
 
 /// Serves one ACP connection until it closes or `stop` is cancelled. When
 /// `stop` ends it, the connection closes and every route task is joined, not
-/// aborted, before this returns; every route given here must end on its closed
-/// token. What a route then does with its own tasks is the route's: a provider
-/// route joins its prompt and observer tasks, while the lazy Codex route aborts
-/// its inner generation task without awaiting it. Any other end aborts the
-/// routes, as `serve_acp_router_connection` always has.
+/// aborted, before this returns. Peer EOF uses the same cleanup path. Every
+/// supplied route must end on its closed token and owns its nested cleanup.
 pub async fn serve_acp_router_connection_until<
     TStream: AsyncRead + AsyncWrite + Unpin + Send + 'static,
 >(
@@ -299,17 +296,10 @@ pub async fn serve_acp_router_connection_until<
         }
     }.await;
     closed.cancel();
-    if stop.is_cancelled() {
-        // Stopped by the caller: every route ends on the connection's closed
-        // token and is joined here, not aborted. A provider route joins its
-        // prompt and observer tasks first; the lazy Codex route aborts its
-        // inner generation task without awaiting it. Aborting a route from
-        // outside would drop the provider route's tasks unjoined.
-        while route_tasks.join_next().await.is_some() {}
-    } else {
-        route_tasks.abort_all();
-        while route_tasks.join_next().await.is_some() {}
-    }
+    // Routes join their own work when the connection token closes. With no
+    // output consumer left, close that channel before waiting for forwarders.
+    drop(route_output_receiver);
+    while route_tasks.join_next().await.is_some() {}
     let transport_result = transport
         .await
         .map_err(|_| io::Error::other("ACP transport task failed"))?;

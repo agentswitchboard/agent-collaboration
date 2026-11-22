@@ -712,3 +712,106 @@ async fn steer_whose_expected_turn_changed_is_placed_once_after_one_re_read()
     }
     harness.stop().await
 }
+
+struct StoreOwningProviderRoute {
+    store: Arc<tokio::sync::Mutex<crate::ProviderOperationStore>>,
+    nested_entered: tokio::sync::oneshot::Sender<()>,
+    release_nested: tokio::sync::oneshot::Receiver<()>,
+    route_closing: tokio::sync::oneshot::Sender<()>,
+}
+
+impl AcpSessionRoute for StoreOwningProviderRoute {
+    fn endpoint_id(&self) -> &str {
+        "cursor-local"
+    }
+
+    fn run(self: Box<Self>, router: AcpRouterChannels, _: AcpConnectionContext) -> AcpRouteFuture {
+        Box::pin(async move {
+            let Self {
+                store,
+                nested_entered,
+                release_nested,
+                route_closing,
+            } = *self;
+            let mut nested_work = tokio::task::JoinSet::new();
+            nested_work.spawn_blocking(move || {
+                let _entered = nested_entered.send(());
+                // The retained store cannot be dropped by cancellation until the test
+                // releases this work. The connection and route still share one worker.
+                let _released = release_nested.blocking_recv();
+                drop(store);
+            });
+            router.closed.cancelled().await;
+            let _closing = route_closing.send(());
+            nested_work.shutdown().await;
+            Ok(())
+        })
+    }
+}
+
+// Rejects returning from a client EOF while the provider route's nested work owns the store.
+#[tokio::test(flavor = "current_thread")]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "The ownership oracle reports why EOF failed."
+)]
+async fn peer_eof_joins_the_provider_routes_nested_store_owner()
+-> Result<(), Box<dyn std::error::Error>> {
+    use tokio::io::{AsyncBufReadExt as _, AsyncWriteExt as _, BufReader};
+
+    let root = tempfile::tempdir()?;
+    let store = Arc::new(tokio::sync::Mutex::new(
+        crate::ProviderOperationStore::open(&root.path().join("provider-operations.sqlite"))
+            .await?,
+    ));
+    let (entered, nested_entered) = tokio::sync::oneshot::channel();
+    let (release, release_nested) = tokio::sync::oneshot::channel();
+    let mut release = Some(release);
+    let (route_closing, closing) = tokio::sync::oneshot::channel();
+    let route = Box::new(StoreOwningProviderRoute {
+        store: store.clone(),
+        nested_entered: entered,
+        release_nested,
+        route_closing,
+    });
+    let host_stop = CancellationToken::new();
+    let (peer, server) = tokio::io::duplex(4096);
+    let mut connection = tokio::spawn(codex_acp_adapter::serve_acp_router_connection_until(
+        server,
+        vec![route],
+        host_stop.clone(),
+    ));
+    let mut peer = BufReader::new(peer);
+    peer.write_all(
+        b"{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{\"protocolVersion\":1,\"clientCapabilities\":{}}}\n",
+    )
+    .await?;
+    let mut response = String::new();
+    peer.read_line(&mut response).await?;
+    let response: Value = serde_json::from_str(&response)?;
+    assert_eq!(response["id"], 1);
+    assert!(response.get("result").is_some(), "{response}");
+    nested_entered.await?;
+
+    // Act: only the peer closes. The Host's stop token is still live.
+    drop(peer);
+    let (stopped, exclusive) = tokio::select! {
+        stopped = &mut connection => (stopped, Arc::try_unwrap(store)),
+        closing = closing => {
+            if closing.is_ok() {
+                release.take().expect("held work").send(()).expect("release nested work");
+            }
+            (connection.await, Arc::try_unwrap(store))
+        }
+    };
+    let exclusive = exclusive.map_err(|remaining| Arc::strong_count(&remaining));
+    drop(release);
+    stopped??;
+
+    assert!(!host_stop.is_cancelled());
+    let store = exclusive.unwrap_or_else(|owners| {
+        panic!("ACP peer EOF returned before joining nested provider work: {owners} store owners")
+    });
+    store.into_inner().close().await?;
+    Ok(())
+}
