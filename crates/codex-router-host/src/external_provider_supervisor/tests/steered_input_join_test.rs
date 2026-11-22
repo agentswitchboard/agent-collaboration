@@ -99,7 +99,7 @@ async fn steering_session_on(
         program,
         session_id,
         arguments,
-        Arc::new(router_clock::SystemRuntimeClock::new()),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
 }
@@ -139,7 +139,7 @@ async fn steering_session_on_clock(
         Arc::clone(&hub),
         hub_target.endpoint.clone(),
         Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        clock,
+        clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -152,6 +152,7 @@ async fn steering_session_on_clock(
             Arc::clone(&store),
             Some(hub.clone()),
             None,
+            clock,
         )
         .expect("supervisor"),
     );

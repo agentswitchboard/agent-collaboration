@@ -147,7 +147,7 @@ struct LaneQueue {
     target: SessionRef,
     binding: Arc<std::sync::OnceLock<Arc<BindingUncertainty>>>,
     ready: Notify,
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     mark_accepted: Notify,
     clock: Arc<dyn RuntimeClock>,
 }
@@ -256,7 +256,7 @@ impl SessionStoreLane {
                 target: target.clone(),
                 binding,
                 ready: Notify::new(),
-                #[cfg(any(test, feature = "test-support"))]
+                #[cfg(test)]
                 mark_accepted: Notify::new(),
                 clock,
             }),
@@ -386,7 +386,7 @@ impl SessionStoreLane {
                     attempt: entry.dispatch.as_ref().map(LaneDispatchWrite::attempt),
                 },
             );
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(test)]
             self.inner.mark_accepted.notify_waiters();
             if let Some(QueuedAdmission {
                 owner: waiting_owner,
@@ -470,7 +470,7 @@ impl SessionStoreLane {
         }
     }
 
-    #[cfg(any(test, feature = "test-support"))]
+    #[cfg(test)]
     pub(crate) async fn wait_for_accepted_mark(&self, operation: &OperationId) {
         loop {
             let accepted = self.inner.mark_accepted.notified();

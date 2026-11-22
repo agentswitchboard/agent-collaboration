@@ -3,7 +3,8 @@ use crate::{
     AppServerChild, BackendSchemaEvidence, CollaborationRuntime, CollaborationRuntimeInputs,
     HostConfig, HostInstance, RemoteControlServerName,
 };
-use std::{io, path::PathBuf};
+use router_clock::RuntimeClock as _;
+use std::{io, path::PathBuf, sync::Arc};
 
 pub(super) struct CollaborationLifecycle {
     owner_human_id: Option<message_board::HumanId>,
@@ -18,6 +19,7 @@ pub(super) struct CollaborationLifecycle {
     provider_operation_retention_days: Option<std::num::NonZeroU32>,
     remote_control_server_name: Option<RemoteControlServerName>,
     router_executable_check: std::sync::Arc<dyn collaboration_mcp::RouterExecutableCheck>,
+    clock: Arc<router_clock::SystemRuntimeClock>,
     runtime: Option<CollaborationRuntime>,
     published_child: Option<u32>,
     schema_digest: Option<[u8; 32]>,
@@ -29,11 +31,12 @@ impl CollaborationLifecycle {
         child: &AppServerChild,
         remote_control_server_name: Option<RemoteControlServerName>,
         router_executable_check: std::sync::Arc<dyn collaboration_mcp::RouterExecutableCheck>,
+        clock: Arc<router_clock::SystemRuntimeClock>,
     ) -> io::Result<Option<Self>> {
         let Some(directory) = config.collaboration_directory() else {
             return Ok(None);
         };
-        let preparation_started_at = std::time::Instant::now();
+        let preparation_started_at = clock.monotonic_now();
         let router_secret_root = config.coordination_paths().router_secret_root();
         let external_provider_startups =
             crate::claude_provider_launch_environment::configure_claude_provider_launches(
@@ -42,9 +45,10 @@ impl CollaborationLifecycle {
                 router_secret_root.as_deref(),
             )
             .await?;
-        crate::record_debug_readiness_timing(
+        crate::debug_readiness_timing::record_with_clock(
             "providerEnvironmentConfigured",
             preparation_started_at,
+            clock.as_ref(),
         );
         let mut owner = Self {
             owner_human_id: config.owner_human_id().cloned(),
@@ -64,6 +68,7 @@ impl CollaborationLifecycle {
             provider_operation_retention_days: config.provider_operation_retention_days(),
             remote_control_server_name,
             router_executable_check,
+            clock,
             runtime: None,
             published_child: None,
             schema_digest: None,
@@ -75,7 +80,11 @@ impl CollaborationLifecycle {
                 Err(cleanup) => io::Error::other(format!("{error}; startup cleanup: {cleanup}")),
             });
         }
-        crate::record_debug_readiness_timing("collaborationSynchronized", preparation_started_at);
+        crate::debug_readiness_timing::record_with_clock(
+            "collaborationSynchronized",
+            preparation_started_at,
+            owner.clock.as_ref(),
+        );
         Ok(Some(owner))
     }
     pub(super) async fn synchronize(
@@ -112,7 +121,7 @@ impl CollaborationLifecycle {
             self.shutdown().await?;
         }
         if self.runtime.is_none() {
-            let inputs_started_at = std::time::Instant::now();
+            let inputs_started_at = self.clock.monotonic_now();
             use std::os::unix::fs::DirBuilderExt;
             match std::fs::DirBuilder::new()
                 .mode(0o700)
@@ -125,11 +134,10 @@ impl CollaborationLifecycle {
             instance
                 .clear_stale_endpoint_sockets(&self.directory)
                 .await?;
-            crate::record_debug_readiness_timing("collaborationInputsReady", inputs_started_at);
-            let composition_started_at = std::time::Instant::now();
-            crate::record_debug_readiness_timing(
-                "collaborationRuntimeBegin",
-                composition_started_at,
+            crate::debug_readiness_timing::record_with_clock(
+                "collaborationInputsReady",
+                inputs_started_at,
+                self.clock.as_ref(),
             );
             let mut runtime = CollaborationRuntime::start_for_host_with_router_proxy_endpoint(
                 crate::HostCollaborationInputs {
@@ -145,32 +153,15 @@ impl CollaborationLifecycle {
                     },
                     router_proxy_endpoint: self.router_proxy_endpoint,
                     remote_access: self.remote_access,
+                    provider_operation_retention_days: self.provider_operation_retention_days,
                 },
                 self.external_provider_startups.clone(),
                 std::sync::Arc::clone(&self.router_executable_check),
+                self.clock.clone(),
+                #[cfg(test)]
+                None,
             )
             .await?;
-            crate::record_debug_readiness_timing(
-                "collaborationRuntimeReady",
-                composition_started_at,
-            );
-            let retention_started_at = std::time::Instant::now();
-            if let Err(error) = runtime
-                .configure_provider_operation_retention(self.provider_operation_retention_days)
-                .await
-            {
-                let cleanup = runtime.shutdown().await;
-                return Err(match cleanup {
-                    Ok(()) => error,
-                    Err(cleanup) => {
-                        io::Error::other(format!("{error}; startup cleanup: {cleanup}"))
-                    }
-                });
-            }
-            crate::record_debug_readiness_timing(
-                "providerRetentionConfigured",
-                retention_started_at,
-            );
             if let Err(error) = runtime.start_scratch_sweep(
                 std::sync::Arc::new(crate::SystemScratchSweepClock),
                 std::sync::Arc::new(crate::LoggedScratchSweepEvents),

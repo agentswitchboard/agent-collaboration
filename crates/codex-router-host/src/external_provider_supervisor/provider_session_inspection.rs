@@ -162,10 +162,10 @@ impl ExternalProviderSupervisor {
         &self,
         target: &SessionRef,
     ) -> Result<
-        Vec<collaboration_runtime::ProviderModelEntry>,
-        collaboration_runtime::SessionModelCatalogError,
+        Vec<collaboration_contracts::ProviderModelEntry>,
+        collaboration_contracts::SessionModelCatalogError,
     > {
-        use collaboration_runtime::SessionModelCatalogError;
+        use collaboration_contracts::SessionModelCatalogError;
         if self
             .inner
             .store

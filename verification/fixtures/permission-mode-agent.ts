@@ -40,6 +40,7 @@
 import { field } from "../exact-json.ts";
 import { requireArgument } from "./acp-stdio.ts";
 import { AcpExchange } from "./acp-exchange.ts";
+import { sendSocketNotice } from "./fixture-socket-notice.ts";
 import { fileAppears, startReleaseBarrier } from "./release-barrier.ts";
 import { selectOption } from "./provider-settings-options.ts";
 
@@ -55,6 +56,7 @@ const known = [
   "late-cancel-confirmation",
   "refuse-prompt",
   "silent-first-restore",
+  "observe-first-held-restore",
   "disconnect-during-restore",
   "restore-session-not-found",
   "restore-other-session-not-found",
@@ -157,7 +159,12 @@ const refuse = (request: Record<string, unknown>, message: string): void => {
 requests: for (;;) {
   const request = await agent.readRequest();
   if (request === undefined) break;
-  if (request.id === undefined && request.method !== "session/cancel") continue;
+  if (
+    request.id === undefined &&
+    request.method !== "session/cancel" &&
+    request.method !== "fixture/orderedDispatchFence"
+  )
+    continue;
   switch (request.method) {
     case "session/new": {
       const sessionId = `fixture-session-${observed.sessions.length + 1}`;
@@ -269,6 +276,14 @@ requests: for (;;) {
         });
       }
       agent.endTurn(request);
+      break;
+    }
+    case "fixture/orderedDispatchFence": {
+      if (!behaviours.has("observe-first-held-restore"))
+        throw new Error("unexpected restore fence");
+      if (field(request, "params", "after") !== "session/load")
+        throw new Error("wrong restore fence");
+      await sendSocketNotice(`${receipt}.restore.sock`, observed.restores.length === 1 ? "l" : "m");
       break;
     }
     case "session/load":

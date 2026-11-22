@@ -2,8 +2,8 @@
 use crate::BackendPublication;
 use crate::RemoteControlServerName;
 use collaboration_protocol::{
-    CodexGeneration, EndpointAvailability, EndpointId, EndpointRef, NonEmptyText,
-    ObservationTimestamp, ProviderKind, RouterExecutableRelation, SchemaDigest, UuidIdentity,
+    CodexGeneration, EndpointId, EndpointRef, NonEmptyText, ObservationTimestamp, ProviderKind,
+    RouterExecutableRelation, SchemaDigest, UuidIdentity,
 };
 use collaboration_runtime::NativeRelayListener;
 use collaboration_runtime::load_installation_peer;
@@ -32,6 +32,7 @@ pub(crate) struct HostCollaborationInputs {
     pub collaboration_runtime: CollaborationRuntimeInputs,
     pub router_proxy_endpoint: SocketAddr,
     pub remote_access: Option<crate::RemoteAccess>,
+    pub provider_operation_retention_days: Option<std::num::NonZeroU32>,
 }
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ExternalProviderLaunchBinding {
@@ -142,6 +143,8 @@ pub struct CollaborationRuntime {
     provider_delivery_route: Option<std::sync::Arc<crate::ProviderAcpDeliveryRoute>>,
     session_delivery_router: Option<std::sync::Arc<collaboration_runtime::SessionDeliveryRouter>>,
     provider_retention: Option<tokio::task::JoinHandle<()>>,
+    #[cfg(test)]
+    provider_retention_observation: Option<collaboration_runtime::WorkerObservation>,
     /// Scratch scopes with a Codex session open in this Host.
     open_scratch_scopes: std::sync::Arc<collaboration_runtime::OpenScratchScopes>,
     scratch_sweep: Option<tokio::task::JoinHandle<()>>,
@@ -257,13 +260,6 @@ fn create_private_socket_directory(path: &std::path::Path) -> io::Result<()> {
         }
         Err(error) => Err(error),
     }
-}
-
-fn current_observation_timestamp() -> io::Result<ObservationTimestamp> {
-    ObservationTimestamp::try_from(
-        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
-    )
-    .map_err(io::Error::other)
 }
 
 #[path = "collaboration_runtime/provider_retention.rs"]

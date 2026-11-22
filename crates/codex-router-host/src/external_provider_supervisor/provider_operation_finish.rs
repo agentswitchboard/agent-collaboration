@@ -165,6 +165,9 @@ impl SupervisorInner {
                     target.as_ref(),
                     session_record.as_deref(),
                     terminal_stop_reason,
+                    self.clock.as_ref(),
+                    #[cfg(test)]
+                    None,
                 )
                 .await
                 .is_err()

@@ -79,3 +79,21 @@ fn assert_one_child_test_passed(stdout: &[u8]) {
         "the child selector must complete exactly one case: {stdout}"
     );
 }
+
+fn provider_test_clock() -> std::sync::Arc<router_clock::ManualClock> {
+    std::sync::Arc::new(router_clock::ManualClock::new(
+        chrono::DateTime::UNIX_EPOCH + chrono::TimeDelta::seconds(1_700_012_345),
+    ))
+}
+
+/// Await an actual provider marker while observing the lifetime of its producer.
+async fn provider_socket_event(
+    listener: &tokio::net::UnixListener,
+    retirement: &tokio_util::sync::CancellationToken,
+) -> std::io::Result<(tokio::net::UnixStream, tokio::net::unix::SocketAddr)> {
+    tokio::select! {
+        biased;
+        accepted = listener.accept() => accepted,
+        () = retirement.cancelled() => Err(std::io::Error::other("provider retired before its wire event")),
+    }
+}

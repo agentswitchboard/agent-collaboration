@@ -198,6 +198,7 @@ async fn scripted_acp_error_categories_reach_real_runtime_and_host_projection() 
         let runtime = ExternalProviderRuntime::initialize(
             fixture,
             std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+            crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
         )
         .await?;
         let result = async {
@@ -239,6 +240,7 @@ async fn scripted_load_not_found_keeps_session_mapping_and_safe_category() -> Te
     let runtime = ExternalProviderRuntime::initialize(
         fixture,
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await?;
     let result = async {

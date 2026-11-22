@@ -43,7 +43,7 @@ async fn hub_runtime_with(behaviours: &[&str]) -> HubRuntime {
         .await
         .expect("store"),
     ));
-    let clock = Arc::new(router_clock::SystemRuntimeClock::new());
+    let clock = crate::external_provider_runtime::acp_scripted_fixture::manual_clock();
     let hub = Arc::new(switchboard_session_events::ProviderSessionEventHub::new(
         store,
         clock.clone(),
