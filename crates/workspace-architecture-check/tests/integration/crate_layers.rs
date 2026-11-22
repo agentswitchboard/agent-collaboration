@@ -212,6 +212,8 @@ fn fixture_graph(
         ("host", "codex-router-host"),
         ("mcp", "collaboration-mcp"),
         ("session-store", "switchboard-session-store"),
+        ("harness-contracts", "switchboard-harness-contracts"),
+        ("deciding-code", "provider-session-machines"),
         ("session-events", "switchboard-session-events"),
         ("router-clock", "router-clock"),
         ("fleet-ports", "fleet-runtime-ports"),
@@ -250,6 +252,76 @@ fn fixture_graph(
             }],
         },
     })
+}
+
+#[test]
+fn harness_contracts_reject_workspace_dependencies() {
+    let contract = "switchboard-harness-contracts";
+    let deciding_code = "provider-session-machines";
+    for kind in [
+        DependencyKind::Normal,
+        DependencyKind::Build,
+        DependencyKind::Dev,
+    ] {
+        let expected = format!("BD1: forbidden {kind:?} dependency {contract} -> {deciding_code}");
+        let metadata = CargoMetadata {
+            packages: vec![
+                CargoPackage {
+                    id: "store".to_owned(),
+                    name: "switchboard-session-store".to_owned(),
+                    manifest_path: PathBuf::from("/workspace/store/Cargo.toml"),
+                    dependencies: Vec::new(),
+                },
+                CargoPackage {
+                    id: "events".to_owned(),
+                    name: "switchboard-session-events".to_owned(),
+                    manifest_path: PathBuf::from("/workspace/events/Cargo.toml"),
+                    dependencies: Vec::new(),
+                },
+                CargoPackage {
+                    id: "harness".to_owned(),
+                    name: contract.to_owned(),
+                    manifest_path: PathBuf::from("/workspace/harness/Cargo.toml"),
+                    dependencies: vec![ManifestDependency {
+                        name: deciding_code.to_owned(),
+                        kind: Some(kind),
+                        path: Some(PathBuf::from("/workspace/deciding-code")),
+                    }],
+                },
+                CargoPackage {
+                    id: "deciding-code".to_owned(),
+                    name: deciding_code.to_owned(),
+                    manifest_path: PathBuf::from("/workspace/deciding-code/Cargo.toml"),
+                    dependencies: Vec::new(),
+                },
+            ],
+            workspace_members: ["store", "events", "harness", "deciding-code"]
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+            resolve: CargoResolve { nodes: vec![] },
+        };
+        let declared = workspace_boundaries::check_declared_session_owner_edges(&metadata)
+            .err()
+            .map(|error| error.to_string());
+        assert_eq!(
+            declared.as_deref(),
+            Some(expected.as_str()),
+            "declared harness dependency"
+        );
+
+        if kind != DependencyKind::Dev {
+            let graph = fixture_graph("harness-contracts", "deciding-code", vec![Some(kind)]);
+            let resolved = workspace_boundaries::check_boundaries(&graph)
+                .err()
+                .map(|error| error.to_string());
+            assert_eq!(
+                resolved.as_deref(),
+                Some(expected.as_str()),
+                "resolved harness dependency"
+            );
+        }
+    }
 }
 
 #[test]
@@ -340,12 +412,17 @@ fn session_owner_policy_covers_inactive_optional_declarations() {
                     "manifest_path": "/workspace/events/Cargo.toml"
                 },
                 {
+                    "id": "harness",
+                    "name": "switchboard-harness-contracts",
+                    "manifest_path": "/workspace/harness/Cargo.toml"
+                },
+                {
                     "id": "clock",
                     "name": "router-clock",
                     "manifest_path": "/workspace/clock/Cargo.toml"
                 }
             ],
-            "workspace_members": ["store", "events", "clock"],
+            "workspace_members": ["store", "events", "harness", "clock"],
             "resolve": {"nodes": [{"id": "store", "deps": resolved}]}
         }))
         .expect("default-feature Cargo metadata with the optional dependency inactive");

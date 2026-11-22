@@ -50,6 +50,7 @@ const FLEET_NOTICES: &str = "fleet-notices";
 const FLEET_WAKES: &str = "fleet-wakes";
 const FLEET_SCHEDULES: &str = "fleet-schedules";
 const FLEET_TIMER_POLICY: &str = "fleet-timer-policy";
+pub(super) const HARNESS_CONTRACTS: (&str, &[&str]) = ("switchboard-harness-contracts", &[]);
 pub(super) const SESSION_STORE: (&str, &[&str]) = (
     "switchboard-session-store",
     &["collaboration-protocol", "sqlite-storage-maintenance"],
@@ -275,6 +276,7 @@ pub(super) fn check_boundaries(
     check_closed_workspace_edges(graph, DIRECTORY_LAYER.0, DIRECTORY_LAYER.1)?;
     check_closed_workspace_edges(graph, SESSION_STORE.0, SESSION_STORE.1)?;
     check_closed_workspace_edges(graph, SESSION_EVENTS.0, SESSION_EVENTS.1)?;
+    check_closed_workspace_edges(graph, HARNESS_CONTRACTS.0, HARNESS_CONTRACTS.1)?;
     check_job_reachability(
         graph,
         FLEET_WAKES,
@@ -390,14 +392,14 @@ pub(super) fn check_declared_session_owner_edges(
         .iter()
         .filter(|package| metadata.workspace_members.contains(&package.id))
         .collect();
-    for (owner, allowed) in [SESSION_STORE, SESSION_EVENTS] {
+    for (owner, allowed) in [SESSION_STORE, SESSION_EVENTS, HARNESS_CONTRACTS] {
         let package = workspace_packages
             .iter()
             .find(|package| package.name == owner)
             .ok_or_else(|| format!("closed dependency policy package missing: {owner}"))?;
         for dependency in &package.dependencies {
             let kind = dependency.kind.unwrap_or(DependencyKind::Normal);
-            if kind == DependencyKind::Dev {
+            if kind == DependencyKind::Dev && owner != HARNESS_CONTRACTS.0 {
                 continue;
             }
             if let Some(path) = dependency.path.as_deref()

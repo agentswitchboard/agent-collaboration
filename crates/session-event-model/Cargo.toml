@@ -10,6 +10,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+switchboard-harness-contracts.workspace = true
 message-board = { path = "../message-board", version = "0.1.39" }
 schemars.workspace = true
 serde.workspace = true

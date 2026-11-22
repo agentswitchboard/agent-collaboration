@@ -1,37 +1,7 @@
 //! Typed provider Session settings at the ACP client boundary.
 use provider_session_machines::{EffectiveProviderSettings, ProviderSettingKind};
 
-#[derive(Clone, Debug, Default, Eq, PartialEq)]
-pub struct RequestedProviderSettings {
-    pub mode: Option<String>,
-    pub model: Option<String>,
-    pub effort: Option<String>,
-    pub fast: FastRequest,
-}
-
-impl RequestedProviderSettings {
-    #[must_use]
-    pub fn is_empty(&self) -> bool {
-        self.mode.is_none()
-            && self.model.is_none()
-            && self.effort.is_none()
-            && self.fast == FastRequest::Leave
-    }
-}
-
-/// What a request asks of the agent's fast option, and where it came from
-/// (D1 spec R7, R10). The Router never turns fast on.
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub enum FastRequest {
-    /// Don't touch fast: `--fast auto`, and every setter that isn't about fast.
-    #[default]
-    Leave,
-    /// The create default: turn fast off when the agent offers it; a no-op
-    /// when it doesn't.
-    OffIfOffered,
-    /// An explicit fast off: with no fast option it's an invalid setting.
-    Off,
-}
+pub use switchboard_harness_contracts::{FastRequest, RequestedProviderSettings};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ProviderSettingApplication {
