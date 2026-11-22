@@ -237,7 +237,8 @@ async function assertBridgeControls(props: {
   const touch = async (id: string): Promise<unknown> => {
     const response = await fetch(`${baseUrl}/test-support/workspace/${id}/raw-signin-observe`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      // Use a fresh connection for clock observations (UW-18).
+      headers: { "content-type": "application/json", Connection: "close" },
       body: "{}",
     });
     assert.equal(response.status, 200);
