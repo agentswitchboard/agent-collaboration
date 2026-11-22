@@ -28,13 +28,14 @@ fn two_block_fixture() -> ExternalProviderLaunch {
 
 #[tokio::test]
 async fn non_creator_content_prompt_is_accepted_after_capability_validation() {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir().expect("provider root");
     let target = target();
     let binding = provider_binding(&target);
     let runtime = ExternalProviderRuntime::initialize(
         two_block_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -66,7 +67,7 @@ async fn non_creator_content_prompt_is_accepted_after_capability_validation() {
                 runtime,
             }],
             Arc::clone(&store),
-            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            fixture_clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -82,7 +83,7 @@ async fn non_creator_content_prompt_is_accepted_after_capability_validation() {
         Arc::clone(&supervisor),
         store,
         Arc::new(NoLivePeer),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     );
     let contents = || {
         vec![
@@ -142,7 +143,10 @@ async fn non_creator_content_prompt_is_accepted_after_capability_validation() {
     supervisor.shutdown().await.expect("supervisor shutdown");
 }
 
-fn cancellable_prompt_fixture(dispatch_log: &std::path::Path) -> ExternalProviderLaunch {
+fn cancellable_prompt_fixture(
+    dispatch_log: &std::path::Path,
+    signal_path: &std::path::Path,
+) -> ExternalProviderLaunch {
     let script = node_test_fixture::fixture_program("provider-content-command-agent.ts");
     ExternalProviderLaunch {
         persistence_target: acp_client_runtime::ProviderPersistenceTarget::Unspecified,
@@ -151,6 +155,7 @@ fn cancellable_prompt_fixture(dispatch_log: &std::path::Path) -> ExternalProvide
             script.to_string_lossy().into_owned(),
             "cancel".to_owned(),
             dispatch_log.to_string_lossy().into_owned(),
+            signal_path.to_string_lossy().into_owned(),
         ],
         environment: Vec::new(),
     }
@@ -158,17 +163,21 @@ fn cancellable_prompt_fixture(dispatch_log: &std::path::Path) -> ExternalProvide
 
 #[tokio::test]
 async fn active_control_turn_cancel_uses_operation_bound_path_and_settles_after_agent_stop() {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir().expect("provider root");
     let dispatch_log = root.path().join("cancel.log");
+    let signal_path = root.path().join("cancel-events.sock");
+    let dispatch_events = tokio::net::UnixListener::bind(&signal_path).expect("dispatch events");
     let target = target();
     let binding = provider_binding(&target);
     let runtime = ExternalProviderRuntime::initialize(
-        cancellable_prompt_fixture(&dispatch_log),
+        cancellable_prompt_fixture(&dispatch_log, &signal_path),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await
     .expect("fixture provider");
+    let fixture_retirement = runtime.retirement();
     let store = Arc::new(tokio::sync::Mutex::new(
         ProviderOperationStore::open(&root.path().join("operations.sqlite"))
             .await
@@ -197,7 +206,7 @@ async fn active_control_turn_cancel_uses_operation_bound_path_and_settles_after_
                 runtime,
             }],
             Arc::clone(&store),
-            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            fixture_clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -213,7 +222,7 @@ async fn active_control_turn_cancel_uses_operation_bound_path_and_settles_after_
         Arc::clone(&supervisor),
         store,
         Arc::new(NoLivePeer),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     );
     let idle_cancel = route
         .cancel_active_turn(target.clone(), target.clone().into())
@@ -240,16 +249,16 @@ async fn active_control_turn_cancel_uses_operation_bound_path_and_settles_after_
     )
     .await
     .expect("Control prompt admitted");
-    tokio::time::timeout(std::time::Duration::from_secs(2), async {
-        loop {
-            if std::fs::read_to_string(&dispatch_log).is_ok_and(|text| text.contains("prompt\n")) {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .expect("agent receives Control prompt");
+    use tokio::io::AsyncReadExt as _;
+    let (mut event, _) = crate::provider_socket_event(&dispatch_events, &fixture_retirement)
+        .await
+        .expect("agent receives Control prompt");
+    let mut dispatched = Vec::new();
+    event
+        .read_to_end(&mut dispatched)
+        .await
+        .expect("prompt marker");
+    assert_eq!(dispatched, b"prompt");
     let mut other_actor = target.clone();
     other_actor.session_id = SessionId::try_from("other-session".to_owned()).expect("actor ID");
     let cancel = route

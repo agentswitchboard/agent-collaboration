@@ -3,6 +3,7 @@ import { z } from "zod";
 import { appendFileSync, writeFileSync } from "node:fs";
 import { requireArgument } from "./acp-stdio.ts";
 import { AcpExchange } from "./acp-exchange.ts";
+import { sendSocketNotice } from "./fixture-socket-notice.ts";
 const mode = requireArgument(2);
 const log = requireArgument(3);
 const agent = new AcpExchange();
@@ -15,6 +16,8 @@ agent.respond(await agent.read(), {
 if (mode === "held") {
   const request = await agent.read(requireArgument(5));
   appendFileSync(log, `${request.method}\n`);
+  if (process.argv[6] !== undefined)
+    await sendSocketNotice(process.argv[6], String(request.method));
   await agent.drain();
 } else
   for (;;) {

@@ -12,6 +12,13 @@ use collaboration_protocol::OperationId;
 use std::sync::Arc;
 
 impl ExternalProviderSupervisor {
+    /// Joins the operation tasks after a fixture has stopped submitting work.
+    pub async fn drain_fixture_operation_tasks(&self) {
+        self.inner.operation_tasks.close();
+        self.inner.operation_tasks.wait().await;
+        self.inner.operation_tasks.reopen();
+    }
+
     /// Holds `operation_id` live, as admitting it to a provider does.
     pub fn hold_live_operation(&self, operation_id: OperationId) {
         self.inner

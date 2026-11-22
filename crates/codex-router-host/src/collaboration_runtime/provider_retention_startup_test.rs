@@ -36,12 +36,7 @@ async fn require_idle_wait(
     };
     if parked != Some(true) {
         drop(probe);
-        assert_eq!(
-            parked,
-            Some(true),
-            "spawned worker must poll a pending idle source wait"
-        );
-        unreachable!();
+        panic!("spawned worker must poll a pending idle source wait: {parked:?}");
     }
     let snapshot = observation.snapshot();
     assert_eq!(snapshot.sleeps, sleeps);
@@ -119,6 +114,7 @@ async fn started_host_retention_wakes_on_its_supervisor_and_store() {
     .await
     .expect("start real Host runtime");
     let operations = Operations {
+        clock: clock.clone(),
         _directory: directory,
         path: root.join("provider-operations.sqlite"),
         store: runtime
@@ -145,11 +141,9 @@ async fn started_host_retention_wakes_on_its_supervisor_and_store() {
     let free_after_startup = retained_row(&operations, &free).await;
     if free_after_startup.is_some() {
         drop(first_wait);
-        assert_eq!(
-            free_after_startup, None,
-            "startup retention must apply the configured 30-day setting"
+        panic!(
+            "startup retention must apply the configured 30-day setting: {free_after_startup:?}"
         );
-        unreachable!();
     }
     let first_wait = require_idle_wait(&observation, first_wait, worker, 1).await;
     assert_eq!(retained_row(&operations, &held).await, Some(kept));

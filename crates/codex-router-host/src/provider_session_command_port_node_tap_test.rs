@@ -163,7 +163,7 @@ async fn command_port_rig(fixture: AgentFixture) -> CommandPortRig {
             .await
             .expect("store"),
     ));
-    let clock = Arc::new(router_clock::SystemRuntimeClock::new());
+    let clock = crate::external_provider_runtime::acp_scripted_fixture::manual_clock();
     let hub = Arc::new(ProviderSessionEventHub::new(
         Arc::clone(&store),
         clock.clone(),
@@ -208,7 +208,7 @@ async fn command_port_rig(fixture: AgentFixture) -> CommandPortRig {
         Arc::clone(&hub),
         board_endpoint,
         behavior,
-        clock,
+        clock.clone(),
     )
     .await
     .expect("provider runtime");
@@ -243,7 +243,7 @@ async fn command_port_rig(fixture: AgentFixture) -> CommandPortRig {
                 runtime,
             }],
             Arc::clone(&store),
-            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -254,14 +254,14 @@ async fn command_port_rig(fixture: AgentFixture) -> CommandPortRig {
         Arc::clone(&supervisor),
         Arc::clone(&store),
         Arc::new(NoLivePeer),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        clock.clone(),
     ));
     let port = HostSessionCommandPort::new(
         Arc::clone(&supervisor),
         delivery,
         Arc::clone(&hub),
         store,
-        Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+        clock,
     );
     let board_target: BoardSessionRef =
         serde_json::from_value(serde_json::to_value(&target).expect("target JSON"))

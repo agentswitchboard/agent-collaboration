@@ -11,6 +11,7 @@ const TEST_ROUTER_TOKEN_OBSERVATION_ENV: &str = "CODEX_ROUTER_HOST_TEST_TOKEN_OB
 
 #[tokio::test]
 async fn owned_router_startup_provisions_once_before_router_and_claude_acp_launches() {
+    let fixture_clock = crate::external_provider_runtime::acp_scripted_fixture::manual_clock();
     let router_root = tempfile::tempdir().expect("isolated Router root");
     let secret_root = router_root.path().join("secrets");
     let router_token_observation_path = router_root.path().join("router-token-at-startup");
@@ -122,7 +123,7 @@ async fn owned_router_startup_provisions_once_before_router_and_claude_acp_launc
     let runtime = crate::ExternalProviderRuntime::initialize(
         claude_binding.launch,
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await
     .expect("isolated Claude ACP fixture initializes through the Host runtime");

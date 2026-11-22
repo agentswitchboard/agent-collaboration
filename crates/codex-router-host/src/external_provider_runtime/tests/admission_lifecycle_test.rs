@@ -349,13 +349,19 @@ async fn clean_eof_before_initialize_is_a_typed_failure() {
 async fn stdout_eof_after_initialize_retires_live_provider() {
     let fixture_root = tempfile::tempdir().expect("fixture root");
     let process_id_path = fixture_root.path().join("provider.pid");
-    let close_marker = fixture_root.path().join("close-stdout");
+    use std::io::Write as _;
+    let control_path = fixture_root.path().join("close-stdout.sock");
+    let control =
+        std::os::unix::net::UnixListener::bind(&control_path).expect("stdout control socket");
+    control
+        .set_nonblocking(true)
+        .expect("nonblocking stdout control");
     let fixture = acp_scripted_fixture::launch_fixture_agent(
         "host-failing-initialization-agent.ts",
         vec![
             "eof".to_owned(),
             process_id_path.to_string_lossy().into_owned(),
-            close_marker.to_string_lossy().into_owned(),
+            control_path.to_string_lossy().into_owned(),
         ],
     );
     let runtime = ExternalProviderRuntime::initialize(
@@ -365,7 +371,17 @@ async fn stdout_eof_after_initialize_retires_live_provider() {
     )
     .await
     .expect("fixture initializes before stdout closes");
-    std::fs::write(&close_marker, b"close").expect("signal fixture to close stdout");
+    let accepted = control.accept();
+    let mut fixture = match accepted {
+        Ok((fixture, _)) => fixture,
+        Err(error) => {
+            runtime.shutdown().await;
+            panic!("fixture must connect stdout control before its initialize reply: {error}");
+        }
+    };
+    fixture
+        .write_all(b"c")
+        .expect("command fixture to close stdout");
 
     let (_, settled) = runtime.client.connection_fixture_signals();
     settled.cancelled().await;

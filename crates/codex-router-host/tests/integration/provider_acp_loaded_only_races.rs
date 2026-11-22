@@ -151,6 +151,7 @@ impl AttemptEvidenceSink for CloseSessionAtDispatch {
 
 #[tokio::test]
 async fn loaded_only_close_after_placement_retires_dispatch_without_loading() {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir().expect("provider root");
     let close_marker = root.path().join("close-marker.txt");
     let load_marker = root.path().join("load-marker.txt");
@@ -159,7 +160,7 @@ async fn loaded_only_close_after_placement_retires_dispatch_without_loading() {
     let runtime = ExternalProviderRuntime::initialize(
         close_and_load_fixture(&close_marker, &load_marker),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -194,7 +195,7 @@ async fn loaded_only_close_after_placement_retires_dispatch_without_loading() {
                 runtime,
             }],
             Arc::clone(&store),
-            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            fixture_clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -210,7 +211,7 @@ async fn loaded_only_close_after_placement_retires_dispatch_without_loading() {
         Arc::clone(&supervisor),
         store,
         Arc::new(NoLivePeer),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     );
     assert_eq!(
         route.presence(&target).await.expect("loaded presence"),
@@ -271,13 +272,14 @@ async fn loaded_only_close_after_placement_retires_dispatch_without_loading() {
 
 #[tokio::test]
 async fn loaded_only_reports_non_retryable_unsupported_load_after_can_load_claim() {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir().expect("provider root");
     let target = target();
     let binding = provider_binding(&target);
     let runtime = ExternalProviderRuntime::initialize(
         no_load_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -289,7 +291,7 @@ async fn loaded_only_reports_non_retryable_unsupported_load_after_can_load_claim
                 runtime,
             }],
             Arc::clone(&store),
-            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            fixture_clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -300,7 +302,7 @@ async fn loaded_only_reports_non_retryable_unsupported_load_after_can_load_claim
         Arc::clone(&supervisor),
         store,
         Arc::new(NoLivePeer),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     );
     let mut request = request(target, "held batch");
     request.payload.load_policy = LoadPolicy::LoadedOnly;
@@ -326,6 +328,7 @@ async fn loaded_only_reports_non_retryable_unsupported_load_after_can_load_claim
 
 #[tokio::test]
 async fn loaded_only_preserves_live_elsewhere_reason_after_can_load_claim() {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir().expect("provider root");
     let load_marker = root.path().join("load-marker.txt");
     let target = target();
@@ -333,7 +336,7 @@ async fn loaded_only_preserves_live_elsewhere_reason_after_can_load_claim() {
     let runtime = ExternalProviderRuntime::initialize(
         refusing_load_fixture(&load_marker),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -345,7 +348,7 @@ async fn loaded_only_preserves_live_elsewhere_reason_after_can_load_claim() {
                 runtime,
             }],
             Arc::clone(&store),
-            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            fixture_clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -356,7 +359,7 @@ async fn loaded_only_preserves_live_elsewhere_reason_after_can_load_claim() {
         Arc::clone(&supervisor),
         store,
         Arc::new(LivePeer),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     );
     let mut request = request(target, "held batch");
     request.payload.load_policy = LoadPolicy::LoadedOnly;
@@ -411,6 +414,7 @@ impl LiveSessionOwnershipCheck for RemoveSessionRecordAtOwnershipCheck {
 
 #[tokio::test]
 async fn loaded_only_reports_non_retryable_missing_record_after_can_load_claim() {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir().expect("provider root");
     let load_marker = root.path().join("load-marker.txt");
     let target = target();
@@ -418,7 +422,7 @@ async fn loaded_only_reports_non_retryable_missing_record_after_can_load_claim()
     let runtime = ExternalProviderRuntime::initialize(
         refusing_load_fixture(&load_marker),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -430,7 +434,7 @@ async fn loaded_only_reports_non_retryable_missing_record_after_can_load_claim()
                 runtime,
             }],
             Arc::clone(&store),
-            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            fixture_clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -444,7 +448,7 @@ async fn loaded_only_reports_non_retryable_missing_record_after_can_load_claim()
             database_path: root.path().join("operations.sqlite"),
             target: target.clone(),
         }),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     );
     let mut request = request(target.clone(), "held batch");
     request.payload.load_policy = LoadPolicy::LoadedOnly;
@@ -478,6 +482,7 @@ async fn loaded_only_reports_non_retryable_missing_record_after_can_load_claim()
 
 #[tokio::test]
 async fn loaded_only_queue_refuses_not_loaded_session_before_enqueue() {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir().expect("provider root");
     let close_marker = root.path().join("close-marker.txt");
     let load_marker = root.path().join("load-marker.txt");
@@ -486,7 +491,7 @@ async fn loaded_only_queue_refuses_not_loaded_session_before_enqueue() {
     let runtime = ExternalProviderRuntime::initialize(
         close_and_load_fixture(&close_marker, &load_marker),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -498,7 +503,7 @@ async fn loaded_only_queue_refuses_not_loaded_session_before_enqueue() {
                 runtime,
             }],
             Arc::clone(&store),
-            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            fixture_clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -514,7 +519,7 @@ async fn loaded_only_queue_refuses_not_loaded_session_before_enqueue() {
         Arc::clone(&supervisor),
         store,
         Arc::new(NoLivePeer),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     );
     let close_id = OperationId::generate();
     supervisor
@@ -569,6 +574,7 @@ async fn loaded_only_queue_refuses_not_loaded_session_before_enqueue() {
 
 #[tokio::test]
 async fn provider_and_absent_peer_presence_aggregates_to_not_running() {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir().expect("fixture root");
     let mut target = target();
     target.endpoint.endpoint_id =
@@ -577,7 +583,7 @@ async fn provider_and_absent_peer_presence_aggregates_to_not_running() {
     let runtime = ExternalProviderRuntime::initialize(
         no_load_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -593,7 +599,7 @@ async fn provider_and_absent_peer_presence_aggregates_to_not_running() {
                 runtime,
             }],
             Arc::clone(&store),
-            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            fixture_clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -604,7 +610,7 @@ async fn provider_and_absent_peer_presence_aggregates_to_not_running() {
         Arc::clone(&supervisor),
         store,
         Arc::new(NoLivePeer),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     ));
     let peer_route = Arc::new(ClaudeCodePeerDeliveryRoute::new(
         target.endpoint.clone(),

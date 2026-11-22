@@ -30,7 +30,6 @@ use collaboration_runtime::EndpointDirectory;
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
-    time::Duration,
 };
 use switchboard_session_store::ProviderOperationStore;
 use switchboard_session_store::ProviderSessionRecord;
@@ -121,14 +120,16 @@ async fn prepared_route(
     Arc<ExternalProviderSupervisor>,
     SessionRef,
     CodexGeneration,
+    tokio_util::sync::CancellationToken,
 ) {
+    let fixture_clock = crate::provider_test_clock();
     let target = target();
     let binding = binding(&target);
     let generation = binding.generation.clone();
     let runtime = ExternalProviderRuntime::initialize(
         launch,
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -153,6 +154,7 @@ async fn prepared_route(
         })
         .await
         .expect("session record");
+    let fixture_retirement = runtime.retirement();
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
             vec![ExternalProviderBinding {
@@ -160,7 +162,7 @@ async fn prepared_route(
                 runtime,
             }],
             Arc::clone(&store),
-            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            fixture_clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -195,9 +197,9 @@ async fn prepared_route(
         Arc::clone(&supervisor),
         store,
         Arc::new(NoLivePeer),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     );
-    (route, supervisor, target, generation)
+    (route, supervisor, target, generation, fixture_retirement)
 }
 
 #[derive(Clone, Copy)]
@@ -229,7 +231,7 @@ async fn active_steering_route(
     let socket = root.join("active-events.sock");
     let wire = root.join("active-wire.jsonl");
     let listener = tokio::net::UnixListener::bind(&socket).expect("fixture events");
-    let (route, supervisor, target, generation) = prepared_route(
+    let (route, supervisor, target, generation, fixture_retirement) = prepared_route(
         root,
         provider_fixture_launch::launch(
             "provider-steering-route-agent.ts",
@@ -263,7 +265,7 @@ async fn active_steering_route(
             .expect("wait budget"),
     });
     let (mut active, _) = tokio::select! {
-        connected = listener.accept() => connected.expect("agent taking prompt"),
+        connected = crate::provider_socket_event(&listener, &fixture_retirement) => connected.expect("agent taking prompt"),
         stopped = stop => panic!("foreground ended before the fixture activation notice: {stopped:?}. Wire: {}", std::fs::read_to_string(wire).unwrap_or_default()),
     };
     let mut notice = [0; 6];
@@ -292,7 +294,7 @@ async fn no_steering_auto_queues_without_second_concurrent_prompt() {
     let root = tempfile::tempdir().expect("fixture root");
     let event_socket = root.path().join("no-steer-events.sock");
     let listener = tokio::net::UnixListener::bind(&event_socket).expect("fixture events");
-    let (route, supervisor, target, _) =
+    let (route, supervisor, target, _, fixture_retirement) =
         prepared_route(root.path(), no_steering_prompt_fixture(&event_socket)).await;
     let first_evidence = RecordedEvidence(tokio::sync::Mutex::new(Vec::new()));
     let second_evidence = RecordedEvidence(tokio::sync::Mutex::new(Vec::new()));
@@ -303,9 +305,8 @@ async fn no_steering_auto_queues_without_second_concurrent_prompt() {
         )
         .await
         .expect("first delivery");
-    let (mut first_event, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+    let (mut first_event, _) = crate::provider_socket_event(&listener, &fixture_retirement)
         .await
-        .expect("first event deadline")
         .expect("first event");
     let mut first_bytes = [0_u8; 5];
     first_event
@@ -328,9 +329,8 @@ async fn no_steering_auto_queues_without_second_concurrent_prompt() {
         .write_all(b"x")
         .await
         .expect("release first turn");
-    let (mut second_event, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+    let (mut second_event, _) = crate::provider_socket_event(&listener, &fixture_retirement)
         .await
-        .expect("queued prompt deadline")
         .expect("queued prompt event");
     let mut second_bytes = [0_u8; 6];
     second_event
@@ -350,7 +350,7 @@ async fn unadvertised_steering_is_rejected_on_any_provider_endpoint() {
     let root = tempfile::tempdir().expect("fixture root");
     let socket = root.path().join("negotiation-events.sock");
     let listener = tokio::net::UnixListener::bind(&socket).expect("fixture events");
-    let (route, supervisor, target, _) =
+    let (route, supervisor, target, _, _) =
         prepared_route(root.path(), no_steering_prompt_fixture(&socket)).await;
     route
         .deliver(
@@ -416,7 +416,7 @@ async fn running_claude_auto_and_steer_name_the_running_operation() {
     let root = tempfile::tempdir().expect("fixture root");
     let event_socket = root.path().join("prompt-event.sock");
     let listener = tokio::net::UnixListener::bind(&event_socket).expect("event listener");
-    let (route, supervisor, target, generation) =
+    let (route, supervisor, target, generation, fixture_retirement) =
         prepared_route(root.path(), steering_fixture(&event_socket)).await;
     let running_operation = OperationId::generate();
     supervisor
@@ -434,9 +434,8 @@ async fn running_claude_auto_and_steer_name_the_running_operation() {
         })
         .await
         .expect("running prompt submitted");
-    let (mut active_event, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+    let (mut active_event, _) = crate::provider_socket_event(&listener, &fixture_retirement)
         .await
-        .expect("active event deadline")
         .expect("active event");
     let mut marker = [0_u8; 6];
     active_event
@@ -468,7 +467,7 @@ async fn running_claude_auto_and_steer_name_the_running_operation() {
 #[tokio::test]
 async fn idle_claude_steer_starts_a_normal_prompt() {
     let root = tempfile::tempdir().expect("fixture root");
-    let (route, supervisor, target, _) = prepared_route(
+    let (route, supervisor, target, _, _) = prepared_route(
         root.path(),
         idle_steering_fixture(IdleSteeringScenario::SteerOnly),
     )
@@ -499,7 +498,7 @@ async fn idle_claude_steer_starts_a_normal_prompt() {
 #[tokio::test]
 async fn idle_claude_auto_starts_one_normal_prompt() {
     let root = tempfile::tempdir().expect("fixture root");
-    let (route, supervisor, target, _) = prepared_route(
+    let (route, supervisor, target, _, _) = prepared_route(
         root.path(),
         idle_steering_fixture(IdleSteeringScenario::AutoStartsPrompt),
     )

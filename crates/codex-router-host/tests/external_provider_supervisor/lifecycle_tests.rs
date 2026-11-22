@@ -3,16 +3,22 @@ use super::*;
 #[cfg(unix)]
 #[tokio::test]
 async fn supplied_id_is_admitted_once_and_cancelled_prompt_settles_after_detach() -> TestResult {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir()?;
     let dispatch_log = root.path().join("dispatch.log");
     let endpoint = endpoint("claude-local")?;
     let runtime = ExternalProviderRuntime::initialize(
         cancel_fixture(&dispatch_log),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await?;
-    let backend = supervisor(&root, vec![(binding(endpoint.clone(), "claude")?, runtime)]).await?;
+    let backend = supervisor(
+        &root,
+        vec![(binding(endpoint.clone(), "claude")?, runtime)],
+        fixture_clock.clone(),
+    )
+    .await?;
     let requester = actor(endpoint.clone(), "requester")?;
     let operation_id = OperationId::generate();
     let create_request = ConversationCreateRequest {
@@ -31,10 +37,11 @@ async fn supplied_id_is_admitted_once_and_cancelled_prompt_settles_after_detach(
     };
     let detached_create = backend.create(create_request.clone());
     drop(detached_create);
+    backend.drain_fixture_operation_tasks().await;
     await_admission(&backend, &operation_id).await?;
+    let created = operation(wait(&backend, operation_id).await)?;
     let duplicate = operation(backend.create(create_request).await)?;
     ensure_eq!(duplicate.admission, ConversationAdmissionState::Existing);
-    let created = operation(wait(&backend, operation_id).await)?;
     let target = match created.output {
         ConversationOperationWaitOutput::Available {
             settlement: ConversationOperationSettlement::Created { target, .. },
@@ -127,17 +134,19 @@ async fn supplied_id_is_admitted_once_and_cancelled_prompt_settles_after_detach(
 #[cfg(unix)]
 #[tokio::test]
 async fn supervisor_shutdown_joins_runtime_and_settles_held_work() -> TestResult {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir()?;
     let provider_endpoint = endpoint("claude-local")?;
     let runtime = ExternalProviderRuntime::initialize(
         cancel_fixture(&root.path().join("shutdown.log")),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await?;
     let backend = supervisor(
         &root,
         vec![(binding(provider_endpoint.clone(), "claude")?, runtime)],
+        fixture_clock.clone(),
     )
     .await?;
     let requester = actor(provider_endpoint.clone(), "requester")?;
@@ -200,6 +209,7 @@ async fn supervisor_shutdown_joins_runtime_and_settles_held_work() -> TestResult
 #[tokio::test]
 async fn supervisor_shutdown_drains_saturated_load_completions_and_preserves_unknown_effect()
 -> TestResult {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir()?;
     let admission_log = root.path().join("load-admissions.log");
     let process_id_path = root.path().join("provider.pid");
@@ -207,12 +217,13 @@ async fn supervisor_shutdown_drains_saturated_load_completions_and_preserves_unk
     let runtime = ExternalProviderRuntime::initialize(
         saturated_load_fixture(&admission_log, &process_id_path),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await?;
     let backend = supervisor(
         &root,
         vec![(binding(provider_endpoint.clone(), "claude")?, runtime)],
+        fixture_clock.clone(),
     )
     .await?;
     let requester = actor(provider_endpoint.clone(), "requester")?;
@@ -252,19 +263,20 @@ async fn supervisor_shutdown_drains_saturated_load_completions_and_preserves_unk
 #[cfg(unix)]
 #[tokio::test]
 async fn load_and_multiple_endpoint_bindings_are_supported() -> TestResult {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir()?;
     let claude_endpoint = endpoint("claude-local")?;
     let cursor_endpoint = endpoint("cursor-local")?;
     let claude_runtime = ExternalProviderRuntime::initialize(
         load_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await?;
     let cursor_runtime = ExternalProviderRuntime::initialize(
         load_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await?;
     let backend = supervisor(
@@ -273,6 +285,7 @@ async fn load_and_multiple_endpoint_bindings_are_supported() -> TestResult {
             (binding(claude_endpoint.clone(), "claude")?, claude_runtime),
             (binding(cursor_endpoint.clone(), "cursor")?, cursor_runtime),
         ],
+        fixture_clock.clone(),
     )
     .await?;
     ensure!(backend.binding(&claude_endpoint).is_some());
@@ -316,6 +329,7 @@ async fn load_and_multiple_endpoint_bindings_are_supported() -> TestResult {
 #[cfg(unix)]
 #[tokio::test]
 async fn resume_and_close_are_durable_operations_and_resume_requires_advertisement() -> TestResult {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir()?;
     let provider_endpoint = endpoint("cursor-local")?;
     let requester = actor(provider_endpoint.clone(), "requester")?;
@@ -327,10 +341,11 @@ async fn resume_and_close_are_durable_operations_and_resume_requires_advertiseme
             ExternalProviderRuntime::initialize(
                 load_fixture(),
                 std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-                std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+                fixture_clock.clone(),
             )
             .await?,
         )],
+        fixture_clock.clone(),
     )
     .await?;
     let unsupported_result = unsupported
@@ -357,10 +372,11 @@ async fn resume_and_close_are_durable_operations_and_resume_requires_advertiseme
             ExternalProviderRuntime::initialize(
                 resume_close_fixture(),
                 std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-                std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+                fixture_clock.clone(),
             )
             .await?,
         )],
+        fixture_clock.clone(),
     )
     .await?;
     let resume_id = OperationId::generate();
@@ -412,15 +428,21 @@ async fn resume_and_close_are_durable_operations_and_resume_requires_advertiseme
 #[cfg(unix)]
 #[tokio::test]
 async fn response_loss_is_unknown_and_reconciliation_never_replays() -> TestResult {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir()?;
     let endpoint = endpoint("claude-local")?;
     let runtime = ExternalProviderRuntime::initialize(
         launch("supervisor-integration-agent.ts", vec!["loss".to_owned()]),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await?;
-    let backend = supervisor(&root, vec![(binding(endpoint.clone(), "claude")?, runtime)]).await?;
+    let backend = supervisor(
+        &root,
+        vec![(binding(endpoint.clone(), "claude")?, runtime)],
+        fixture_clock.clone(),
+    )
+    .await?;
     let requester = actor(endpoint.clone(), "requester")?;
     let operation_id = OperationId::generate();
     operation(
@@ -461,13 +483,14 @@ async fn response_loss_is_unknown_and_reconciliation_never_replays() -> TestResu
 #[cfg(unix)]
 #[tokio::test]
 async fn authentication_required_is_no_effect_and_does_not_poison_fresh_create() -> TestResult {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir()?;
     let provider_endpoint = endpoint("cursor-local")?;
     let requester = actor(provider_endpoint.clone(), "requester")?;
     let classification_runtime = ExternalProviderRuntime::initialize(
         authentication_then_create_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await?;
     let classification_supervisor = supervisor(
@@ -476,6 +499,7 @@ async fn authentication_required_is_no_effect_and_does_not_poison_fresh_create()
             binding(provider_endpoint.clone(), "cursor")?,
             classification_runtime,
         )],
+        fixture_clock.clone(),
     )
     .await?;
     let classification = classification_supervisor
@@ -496,12 +520,13 @@ async fn authentication_required_is_no_effect_and_does_not_poison_fresh_create()
     let runtime = ExternalProviderRuntime::initialize(
         authentication_then_create_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await?;
     let backend = supervisor(
         &root,
         vec![(binding(provider_endpoint.clone(), "cursor")?, runtime)],
+        fixture_clock.clone(),
     )
     .await?;
     let first_id = OperationId::generate();
@@ -587,18 +612,20 @@ async fn authentication_required_is_no_effect_and_does_not_poison_fresh_create()
 #[tokio::test]
 async fn prompt_authentication_required_is_no_effect_and_fresh_prompt_retains_final_text()
 -> TestResult {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir()?;
     let provider_endpoint = endpoint("cursor-local")?;
     let requester = actor(provider_endpoint.clone(), "requester")?;
     let runtime = ExternalProviderRuntime::initialize(
         authentication_then_prompt_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await?;
     let backend = supervisor(
         &root,
         vec![(binding(provider_endpoint.clone(), "cursor")?, runtime)],
+        fixture_clock.clone(),
     )
     .await?;
     let create_id = OperationId::generate();
@@ -676,18 +703,20 @@ async fn prompt_authentication_required_is_no_effect_and_fresh_prompt_retains_fi
 #[cfg(unix)]
 #[tokio::test]
 async fn provider_prompt_error_text_cannot_become_a_local_no_effect_rejection() -> TestResult {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir()?;
     let provider_endpoint = endpoint("cursor-local")?;
     let requester = actor(provider_endpoint.clone(), "requester")?;
     let runtime = ExternalProviderRuntime::initialize(
         provider_prompt_rejection_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await?;
     let backend = supervisor(
         &root,
         vec![(binding(provider_endpoint.clone(), "cursor")?, runtime)],
+        fixture_clock.clone(),
     )
     .await?;
     let create_id = OperationId::generate();

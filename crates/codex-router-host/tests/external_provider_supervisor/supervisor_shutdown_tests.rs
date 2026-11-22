@@ -3,17 +3,19 @@ use super::*;
 #[cfg(unix)]
 #[tokio::test]
 async fn supervisor_shutdown_joins_runtime_and_settles_held_work() -> TestResult {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir()?;
     let provider_endpoint = endpoint("claude-local")?;
     let runtime = ExternalProviderRuntime::initialize(
         cancel_fixture(&root.path().join("shutdown.log")),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await?;
     let backend = supervisor(
         &root,
         vec![(binding(provider_endpoint.clone(), "claude")?, runtime)],
+        fixture_clock.clone(),
     )
     .await?;
     let requester = actor(provider_endpoint.clone(), "requester")?;
@@ -76,6 +78,7 @@ async fn supervisor_shutdown_joins_runtime_and_settles_held_work() -> TestResult
 #[tokio::test]
 async fn supervisor_shutdown_drains_saturated_load_completions_and_preserves_unknown_effect()
 -> TestResult {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir()?;
     let admission_log = root.path().join("load-admissions.log");
     let process_id_path = root.path().join("provider.pid");
@@ -83,12 +86,13 @@ async fn supervisor_shutdown_drains_saturated_load_completions_and_preserves_unk
     let runtime = ExternalProviderRuntime::initialize(
         saturated_load_fixture(&admission_log, &process_id_path),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await?;
     let backend = supervisor(
         &root,
         vec![(binding(provider_endpoint.clone(), "claude")?, runtime)],
+        fixture_clock.clone(),
     )
     .await?;
     let requester = actor(provider_endpoint.clone(), "requester")?;

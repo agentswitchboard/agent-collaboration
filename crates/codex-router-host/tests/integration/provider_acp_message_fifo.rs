@@ -10,7 +10,7 @@ use collaboration_protocol::{
     DeliveryOutcome, MessageContent, MessageDelivery, MessageText, ProviderOperationKind,
     ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess, SessionId,
 };
-use std::{path::PathBuf, sync::Arc, time::Duration};
+use std::{path::PathBuf, sync::Arc};
 use switchboard_session_store::ProviderOperationStore;
 use switchboard_session_store::ProviderSessionRecord;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
@@ -24,6 +24,7 @@ use provider_acp_message_fifo_support::{
 
 #[tokio::test]
 async fn typed_queue_keeps_blocks_and_input_identity_through_fifo() {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir().expect("provider root");
     let event_socket = root.path().join("prompt-events.sock");
     let listener = tokio::net::UnixListener::bind(&event_socket).expect("fixture events");
@@ -32,7 +33,7 @@ async fn typed_queue_keeps_blocks_and_input_identity_through_fifo() {
     let runtime = ExternalProviderRuntime::initialize(
         multiblock_queue_fixture(&event_socket),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -57,6 +58,7 @@ async fn typed_queue_keeps_blocks_and_input_identity_through_fifo() {
         })
         .await
         .expect("session record");
+    let fixture_retirement = runtime.retirement();
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
             vec![ExternalProviderBinding {
@@ -64,7 +66,7 @@ async fn typed_queue_keeps_blocks_and_input_identity_through_fifo() {
                 runtime,
             }],
             Arc::clone(&store),
-            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            fixture_clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -80,7 +82,7 @@ async fn typed_queue_keeps_blocks_and_input_identity_through_fifo() {
         Arc::clone(&supervisor),
         store,
         Arc::new(NoLivePeer),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     );
     let first = collaboration_contracts::ProviderConversationBackend::prompt(
         supervisor.as_ref(),
@@ -99,9 +101,8 @@ async fn typed_queue_keeps_blocks_and_input_identity_through_fifo() {
     )
     .await
     .expect("first prompt admitted");
-    let (mut first_event, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+    let (mut first_event, _) = crate::provider_socket_event(&listener, &fixture_retirement)
         .await
-        .expect("first prompt deadline")
         .expect("first prompt event");
     let mut first_bytes = [0_u8; 5];
     first_event
@@ -165,9 +166,8 @@ async fn typed_queue_keeps_blocks_and_input_identity_through_fifo() {
     )
     .await
     .expect("first prompt settles");
-    let (mut blocks_event, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+    let (mut blocks_event, _) = crate::provider_socket_event(&listener, &fixture_retirement)
         .await
-        .expect("queued blocks deadline")
         .expect("queued blocks event");
     let mut blocks = [0_u8; 9];
     blocks_event
@@ -182,6 +182,7 @@ async fn typed_queue_keeps_blocks_and_input_identity_through_fifo() {
 
 #[tokio::test]
 async fn cursor_queue_drains_after_control_prompt_settles() {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir().expect("provider root");
     let event_socket = root.path().join("prompt-events.sock");
     let listener = tokio::net::UnixListener::bind(&event_socket).expect("fixture events");
@@ -190,7 +191,7 @@ async fn cursor_queue_drains_after_control_prompt_settles() {
     let runtime = ExternalProviderRuntime::initialize(
         cursor_prompt_fixture(&event_socket),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -215,6 +216,7 @@ async fn cursor_queue_drains_after_control_prompt_settles() {
         })
         .await
         .expect("session record");
+    let fixture_retirement = runtime.retirement();
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
             vec![ExternalProviderBinding {
@@ -222,7 +224,7 @@ async fn cursor_queue_drains_after_control_prompt_settles() {
                 runtime,
             }],
             Arc::clone(&store),
-            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            fixture_clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -238,7 +240,7 @@ async fn cursor_queue_drains_after_control_prompt_settles() {
         Arc::clone(&supervisor),
         Arc::clone(&store),
         Arc::new(NoLivePeer),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     );
 
     let first_operation_id = collaboration_protocol::OperationId::generate();
@@ -266,9 +268,8 @@ async fn cursor_queue_drains_after_control_prompt_settles() {
         ProviderOperationKind::ConversationPrompt
     );
 
-    let (mut first_event, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+    let (mut first_event, _) = crate::provider_socket_event(&listener, &fixture_retirement)
         .await
-        .expect("first event deadline")
         .expect("first event");
     let mut first_bytes = [0_u8; 5];
     first_event
@@ -354,9 +355,8 @@ async fn cursor_queue_drains_after_control_prompt_settles() {
         first_settlement.output,
         collaboration_protocol::ConversationOperationWaitOutput::Available { .. }
     ));
-    let (mut second_event, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+    let (mut second_event, _) = crate::provider_socket_event(&listener, &fixture_retirement)
         .await
-        .expect("queued prompt must drain after Control prompt settles")
         .expect("second event");
     let mut second_bytes = [0_u8; 6];
     second_event
@@ -420,6 +420,7 @@ async fn cursor_queue_drains_after_control_prompt_settles() {
 
 #[tokio::test]
 async fn permanent_queued_load_failure_is_inspectable_and_does_not_stop_fifo() {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir().expect("provider root");
     let load_marker = root.path().join("load-marker.txt");
     let target = target();
@@ -470,7 +471,7 @@ async fn permanent_queued_load_failure_is_inspectable_and_does_not_stop_fifo() {
                 runtime,
             }],
             Arc::clone(&store),
-            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            fixture_clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -574,6 +575,7 @@ async fn wait_for_permanent_queue_failure(
 
 #[tokio::test]
 async fn failed_queued_prompt_advances_to_the_next_accepted_item() {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir().expect("provider root");
     let event_socket = root.path().join("prompt-events.sock");
     let listener = tokio::net::UnixListener::bind(&event_socket).expect("fixture events");
@@ -582,7 +584,7 @@ async fn failed_queued_prompt_advances_to_the_next_accepted_item() {
     let runtime = ExternalProviderRuntime::initialize(
         first_prompt_refusal_fixture(&event_socket),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -607,6 +609,7 @@ async fn failed_queued_prompt_advances_to_the_next_accepted_item() {
         })
         .await
         .expect("session record");
+    let fixture_retirement = runtime.retirement();
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
             vec![ExternalProviderBinding {
@@ -614,7 +617,7 @@ async fn failed_queued_prompt_advances_to_the_next_accepted_item() {
                 runtime,
             }],
             Arc::clone(&store),
-            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            fixture_clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -640,9 +643,8 @@ async fn failed_queued_prompt_advances_to_the_next_accepted_item() {
     )
     .await
     .expect("active prompt admission");
-    let (mut active_event, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+    let (mut active_event, _) = crate::provider_socket_event(&listener, &fixture_retirement)
         .await
-        .expect("active prompt event deadline")
         .expect("active prompt event");
     let mut active_bytes = [0_u8; 6];
     active_event
@@ -657,7 +659,7 @@ async fn failed_queued_prompt_advances_to_the_next_accepted_item() {
         Arc::clone(&supervisor),
         Arc::clone(&store),
         Arc::new(NoLivePeer),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     );
     let evidence = RecordedEvidence(tokio::sync::Mutex::new(Vec::new()));
     let mut first_request = request(target.clone(), "first queued prompt");
@@ -686,7 +688,7 @@ async fn failed_queued_prompt_advances_to_the_next_accepted_item() {
         .write_all(b"x")
         .await
         .expect("release active prompt");
-    let event_result = tokio::time::timeout(Duration::from_secs(3), listener.accept()).await;
+    let event_result = crate::provider_socket_event(&listener, &fixture_retirement).await;
     if event_result.is_err() {
         let first_state = collaboration_contracts::ProviderConversationBackend::show(
             supervisor.as_ref(),
@@ -705,12 +707,10 @@ async fn failed_queued_prompt_advances_to_the_next_accepted_item() {
         .await
         .expect("second operation diagnostic");
         panic!(
-            "second queued prompt event timed out; first={first_state:?}; second={second_state:?}"
+            "second queued prompt event missing; first={first_state:?}; second={second_state:?}"
         );
     }
-    let (mut event, _) = event_result
-        .expect("checked event deadline")
-        .expect("second queued prompt event");
+    let (mut event, _) = event_result.expect("second queued prompt event");
     let mut received = [0_u8; 6];
     event.read_exact(&mut received).await.expect("event bytes");
     assert_eq!(&received, b"second");
@@ -781,6 +781,7 @@ async fn failed_queued_prompt_advances_to_the_next_accepted_item() {
 
 #[tokio::test]
 async fn provider_retirement_marks_queued_items_not_submitted() {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir().expect("provider root");
     let event_socket = root.path().join("prompt-events.sock");
     let listener = tokio::net::UnixListener::bind(&event_socket).expect("fixture events");
@@ -789,7 +790,7 @@ async fn provider_retirement_marks_queued_items_not_submitted() {
     let runtime = ExternalProviderRuntime::initialize(
         cursor_prompt_fixture(&event_socket),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -814,6 +815,7 @@ async fn provider_retirement_marks_queued_items_not_submitted() {
         })
         .await
         .expect("session record");
+    let fixture_retirement = runtime.retirement();
     let supervisor = Arc::new(
         ExternalProviderSupervisor::new(
             vec![ExternalProviderBinding {
@@ -821,7 +823,7 @@ async fn provider_retirement_marks_queued_items_not_submitted() {
                 runtime,
             }],
             Arc::clone(&store),
-            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            fixture_clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -837,7 +839,7 @@ async fn provider_retirement_marks_queued_items_not_submitted() {
         Arc::clone(&supervisor),
         store,
         Arc::new(NoLivePeer),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     );
     let first = collaboration_contracts::ProviderConversationBackend::prompt(
         supervisor.as_ref(),
@@ -856,9 +858,8 @@ async fn provider_retirement_marks_queued_items_not_submitted() {
     )
     .await
     .expect("Control conversation/prompt admission");
-    let (_first_event, _) = tokio::time::timeout(Duration::from_secs(2), listener.accept())
+    let (_first_event, _) = crate::provider_socket_event(&listener, &fixture_retirement)
         .await
-        .expect("first event deadline")
         .expect("first event");
     let evidence = RecordedEvidence(tokio::sync::Mutex::new(Vec::new()));
     let queued_request = request(target.clone(), "drop on retirement");

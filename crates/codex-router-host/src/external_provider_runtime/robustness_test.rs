@@ -59,10 +59,13 @@ fn large_permission_frame_fixture() -> ExternalProviderLaunch {
 }
 
 #[cfg(unix)]
-fn oversized_active_frame_fixture() -> ExternalProviderLaunch {
+fn oversized_active_frame_fixture(control_path: &std::path::Path) -> ExternalProviderLaunch {
     acp_scripted_fixture::launch_fixture_agent(
         "host-output-pressure-agent.ts",
-        vec!["limit".to_owned()],
+        vec![
+            "limit".to_owned(),
+            control_path.to_string_lossy().into_owned(),
+        ],
     )
 }
 
@@ -515,8 +518,16 @@ async fn large_permission_request_frame_is_accepted_and_answered() {
 #[cfg(unix)]
 #[tokio::test]
 async fn frame_limit_breach_returns_a_safe_typed_failure() {
+    use std::io::Write as _;
+    let root = tempfile::tempdir().expect("fixture root");
+    let control_path = root.path().join("frame.sock");
+    let control =
+        std::os::unix::net::UnixListener::bind(&control_path).expect("frame control socket");
+    control
+        .set_nonblocking(true)
+        .expect("nonblocking frame control");
     let runtime = ExternalProviderRuntime::initialize(
-        oversized_active_frame_fixture(),
+        oversized_active_frame_fixture(&control_path),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
         crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
@@ -527,11 +538,36 @@ async fn frame_limit_breach_returns_a_safe_typed_failure() {
         .await
         .expect("session created");
 
-    let error = runtime
-        .prompt(
-            "fixture-session".to_owned(),
-            "trigger frame breach".to_owned(),
-        )
+    let mut fixture = match control.accept() {
+        Ok((fixture, _)) => fixture,
+        Err(error) => {
+            runtime.shutdown().await;
+            panic!("fixture must connect frame control before its initialize reply: {error}");
+        }
+    };
+    let (submitted, outbound) = tokio::sync::oneshot::channel();
+    let mut prompt = Box::pin(runtime.prompt_for_operation(
+        "fixture-session".to_owned(),
+        None,
+        "trigger frame breach".to_owned(),
+        Some(submitted),
+    ));
+    let dispatched = tokio::select! {
+        receipt = outbound => receipt.ok(),
+        _settled = &mut prompt => None,
+    };
+    if dispatched != Some(ProviderPromptDispatchObservation::Submitted) {
+        drop(prompt);
+        drop(fixture);
+        runtime.shutdown().await;
+        panic!(
+            "prompt must dispatch before the fixture writes the oversized frame: {dispatched:?}"
+        );
+    }
+    fixture
+        .write_all(b"f")
+        .expect("command fixture to emit oversized frame");
+    let error = prompt
         .await
         .expect_err("oversized provider frame is rejected");
     assert!(

@@ -165,6 +165,7 @@ mod tests {
 
     #[tokio::test]
     async fn disabled_provider_claim_preserves_catalog_reason_and_fix() {
+        let fixture_clock = crate::external_provider_runtime::acp_scripted_fixture::manual_clock();
         let root = tempfile::tempdir().expect("provider store root");
         let store = Arc::new(tokio::sync::Mutex::new(
             ProviderOperationStore::open(&root.path().join("operations.sqlite"))
@@ -196,12 +197,8 @@ mod tests {
             })
             .expect("endpoint publication");
         let supervisor = Arc::new(
-            ExternalProviderSupervisor::new(
-                Vec::new(),
-                Arc::clone(&store),
-                std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
-            )
-            .expect("supervisor"),
+            ExternalProviderSupervisor::new(Vec::new(), Arc::clone(&store), fixture_clock.clone())
+                .expect("supervisor"),
         );
         let claim = ProviderAcpRouteClaim::new(
             service_id,

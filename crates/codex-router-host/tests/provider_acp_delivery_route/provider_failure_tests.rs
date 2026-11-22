@@ -2,6 +2,7 @@ use super::*;
 
 #[tokio::test]
 async fn provider_process_transport_failure_remains_retryable() {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir().expect("provider root");
     let exit_marker = root.path().join("provider-exit.txt");
     let target = target();
@@ -13,7 +14,7 @@ async fn provider_process_transport_failure_remains_retryable() {
     let runtime = ExternalProviderRuntime::initialize(
         exited_provider_fixture(&exit_marker, release_address),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -57,7 +58,7 @@ async fn provider_process_transport_failure_remains_retryable() {
                 runtime,
             }],
             Arc::clone(&store),
-            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            fixture_clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -69,7 +70,7 @@ async fn provider_process_transport_failure_remains_retryable() {
         Arc::clone(&supervisor),
         store,
         Arc::new(NoLivePeer),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     );
 
     let receipt = route
@@ -104,6 +105,7 @@ async fn provider_process_transport_failure_remains_retryable() {
 
 #[tokio::test]
 async fn live_peer_recheck_prevents_provider_load() {
+    let fixture_clock = crate::provider_test_clock();
     let root = tempfile::tempdir().expect("provider root");
     let load_marker = root.path().join("load-method.txt");
     let target = target();
@@ -111,7 +113,7 @@ async fn live_peer_recheck_prevents_provider_load() {
     let runtime = ExternalProviderRuntime::initialize(
         refusing_load_fixture(&load_marker, -32002),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     )
     .await
     .expect("fixture provider");
@@ -143,7 +145,7 @@ async fn live_peer_recheck_prevents_provider_load() {
                 runtime,
             }],
             Arc::clone(&store),
-            std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+            fixture_clock.clone(),
         )
         .expect("supervisor"),
     );
@@ -154,7 +156,7 @@ async fn live_peer_recheck_prevents_provider_load() {
         Arc::clone(&supervisor),
         store,
         Arc::new(LivePeer),
-        std::sync::Arc::new(router_clock::SystemRuntimeClock::new()),
+        fixture_clock.clone(),
     );
     assert!(matches!(
         route.presence(&target).await.expect("provider presence"),

@@ -1,9 +1,9 @@
 import assert from "node:assert/strict";
 import { once } from "node:events";
-import { closeSync, existsSync, writeFileSync } from "node:fs";
+import { closeSync, writeFileSync } from "node:fs";
 import { createConnection } from "node:net";
 import { createInterface } from "node:readline";
-import { setTimeout } from "node:timers/promises";
+import { FixtureControlSocket } from "./fixture-control-socket.ts";
 
 const scenario = process.argv[2];
 const processIdPath = process.argv[3];
@@ -11,15 +11,18 @@ assert.ok(processIdPath);
 writeFileSync(processIdPath, String(process.pid));
 if (scenario === "eof") {
   const { AcpExchange } = await import("./acp-exchange.ts");
+  const socketPath = process.argv[4];
+  assert.ok(socketPath);
+  const release = new FixtureControlSocket(socketPath, null);
   const agent = new AcpExchange();
+  await release.connected();
   agent.respond(await agent.read(), {
     protocolVersion: 1,
     agentCapabilities: {},
     agentInfo: { name: "eof-fixture", version: "1" },
   });
-  const closeMarker = process.argv[4];
-  assert.ok(closeMarker);
-  while (!existsSync(closeMarker)) await setTimeout(10);
+  await release.expect("c");
+  release.close();
   closeSync(1);
   await agent.drain();
   agent.close();
