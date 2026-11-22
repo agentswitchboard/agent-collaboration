@@ -1,0 +1,33 @@
+[package]
+name = "approval-request-protocol"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+autotests = false
+description = "Shared approval, question and parked call wire contracts"
+
+[lints]
+workspace = true
+
+[features]
+wire-export = ["dep:specta", "dep:specta-typescript", "workspace-ids/wire-export"]
+
+[dependencies]
+chrono = { version = "=0.4.45", default-features = false, features = ["std", "serde"] }
+serde.workspace = true
+serde_json = { workspace = true, features = ["float_roundtrip"] }
+thiserror.workspace = true
+workspace-ids.workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+specta = { workspace = true, features = ["derive", "chrono"], optional = true }
+specta-typescript = { workspace = true, optional = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dev-dependencies]
+specta-serde.workspace = true
+hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"

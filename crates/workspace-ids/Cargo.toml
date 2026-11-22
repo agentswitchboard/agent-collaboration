@@ -13,7 +13,8 @@ wire-export = ["dep:specta"]
 serde.workspace = true
 schemars.workspace = true
 thiserror.workspace = true
-uuid.workspace = true
+# IDs are parsed and validated here. Minting belongs to the owning process.
+uuid = { version = "1.26.0", default-features = false }
 
 [dev-dependencies]
 serde_json.workspace = true
