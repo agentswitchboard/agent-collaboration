@@ -6,6 +6,9 @@ use std::process::Command;
 
 use serde::Deserialize;
 
+#[path = "harness_stage_policy.rs"]
+mod harness_stage_policy;
+
 #[path = "test_support_policy.rs"]
 mod test_support_policy;
 
@@ -28,6 +31,7 @@ struct CargoPackage {
     id: String,
     name: String,
     manifest_path: PathBuf,
+    source: Option<String>,
     #[serde(default)]
     dependencies: Vec<ManifestDependency>,
 }
@@ -37,6 +41,9 @@ struct ManifestDependency {
     name: String,
     kind: Option<DependencyKind>,
     path: Option<PathBuf>,
+    source: Option<String>,
+    features: Vec<String>,
+    uses_default_features: bool,
 }
 
 #[derive(Deserialize)]
@@ -152,12 +159,14 @@ struct LayerPolicyViolation {
     kind: DependencyKind,
 }
 
-#[test]
-fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error::Error>> {
-    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+fn read_metadata(
+    root: &Path,
+    feature_arguments: &[&str],
+) -> Result<CargoMetadata, Box<dyn std::error::Error>> {
     let output = Command::new("cargo")
         .args(["metadata", "--locked", "--offline", "--format-version", "1"])
-        .current_dir(&root)
+        .args(feature_arguments)
+        .current_dir(root)
         .output()?;
     if !output.status.success() {
         return Err(format!(
@@ -167,10 +176,19 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
         )
         .into());
     }
-    let metadata: CargoMetadata = serde_json::from_slice(&output.stdout)?;
+    Ok(serde_json::from_slice(&output.stdout)?)
+}
+
+#[test]
+fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error::Error>> {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let metadata = read_metadata(&root, &[])?;
     test_support_policy::check_workspace(&metadata.packages, &metadata.workspace_members)?;
     workspace_boundaries::check_declared_session_owner_edges(&metadata)?;
     workspace_boundaries::check_declared_approval_holder_edges(&metadata)?;
+    workspace_boundaries::check_declared_session_read_edges(&metadata)?;
+    harness_stage_policy::check_declared(&metadata)?;
+    harness_stage_policy::check_resolved(&metadata)?;
     let graph = NonDevDependencyGraph::from_metadata(metadata);
     for (source, destinations) in &graph.dev_edges {
         if !graph.workspace_members.contains(source) {
@@ -197,6 +215,12 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
         .check_policy()
         .inspect_err(|error| eprintln!("{error}"))?;
     workspace_boundaries::check_boundaries(&graph)?;
+    // Cargo features are additive. This resolution includes selectable optional edges.
+    let enabled_metadata = read_metadata(&root, &["--all-features"])?;
+    harness_stage_policy::check_resolved(&enabled_metadata)?;
+    workspace_boundaries::check_harness_layers(&NonDevDependencyGraph::from_metadata(
+        enabled_metadata,
+    ))?;
     workspace_boundaries::check_workspace_package_trees(&root)?;
     Ok(())
 }
@@ -222,6 +246,7 @@ fn fixture_metadata(
         ("mcp", "collaboration-mcp"),
         ("session-store", "switchboard-session-store"),
         ("harness-contracts", "switchboard-harness-contracts"),
+        ("harness-carrier", "switchboard-harness-shared-mechanics"),
         ("deciding-code", "provider-session-machines"),
         ("session-events", "switchboard-session-events"),
         ("router-clock", "router-clock"),
@@ -241,6 +266,7 @@ fn fixture_metadata(
         id: id.to_owned(),
         name: name.to_owned(),
         manifest_path: PathBuf::from(format!("/workspace/{id}/Cargo.toml")),
+        source: None,
         dependencies: Vec::new(),
     })
     .collect();
@@ -279,35 +305,55 @@ fn harness_contracts_reject_workspace_dependencies() {
                     id: "store".to_owned(),
                     name: "switchboard-session-store".to_owned(),
                     manifest_path: PathBuf::from("/workspace/store/Cargo.toml"),
+                    source: None,
                     dependencies: Vec::new(),
                 },
                 CargoPackage {
                     id: "events".to_owned(),
                     name: "switchboard-session-events".to_owned(),
                     manifest_path: PathBuf::from("/workspace/events/Cargo.toml"),
+                    source: None,
                     dependencies: Vec::new(),
                 },
                 CargoPackage {
                     id: "harness".to_owned(),
                     name: contract.to_owned(),
                     manifest_path: PathBuf::from("/workspace/harness/Cargo.toml"),
+                    source: None,
                     dependencies: vec![ManifestDependency {
                         name: deciding_code.to_owned(),
                         kind: Some(kind),
                         path: Some(PathBuf::from("/workspace/deciding-code")),
+                        source: None,
+                        features: Vec::new(),
+                        uses_default_features: true,
                     }],
                 },
                 CargoPackage {
                     id: "deciding-code".to_owned(),
                     name: deciding_code.to_owned(),
                     manifest_path: PathBuf::from("/workspace/deciding-code/Cargo.toml"),
+                    source: None,
+                    dependencies: Vec::new(),
+                },
+                CargoPackage {
+                    id: "harness-carrier".to_owned(),
+                    name: "switchboard-harness-shared-mechanics".to_owned(),
+                    manifest_path: PathBuf::from("/workspace/harness-carrier/Cargo.toml"),
+                    source: None,
                     dependencies: Vec::new(),
                 },
             ],
-            workspace_members: ["store", "events", "harness", "deciding-code"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect(),
+            workspace_members: [
+                "store",
+                "events",
+                "harness",
+                "deciding-code",
+                "harness-carrier",
+            ]
+            .into_iter()
+            .map(str::to_owned)
+            .collect(),
             resolve: CargoResolve { nodes: vec![] },
         };
         let declared = workspace_boundaries::check_declared_session_owner_edges(&metadata)
@@ -349,6 +395,9 @@ fn harness_contracts_reject_a_registry_dev_dependency_resolved_to_a_workspace_me
         name: "provider-session-machines".to_owned(),
         kind: Some(DependencyKind::Dev),
         path: None,
+        source: Some(harness_stage_policy::CRATES_IO.to_owned()),
+        features: Vec::new(),
+        uses_default_features: true,
     });
     workspace_boundaries::check_declared_session_owner_edges(&metadata)
         .expect("registry declaration has no path to check");
@@ -364,6 +413,107 @@ fn harness_contracts_reject_a_registry_dev_dependency_resolved_to_a_workspace_me
         ),
         "resolved harness dev dependency",
     );
+}
+
+#[test]
+fn harness_carrier_declared_guard_rejects_inactive_workspace_edges() {
+    for kind in [
+        DependencyKind::Normal,
+        DependencyKind::Build,
+        DependencyKind::Dev,
+    ] {
+        let mut metadata = fixture_metadata("harness-carrier", "harness-contracts", vec![]);
+        metadata.resolve.nodes.clear();
+        let package = metadata
+            .packages
+            .iter_mut()
+            .find(|package| package.id == "harness-carrier")
+            .expect("carrier fixture package");
+        package.dependencies.push(ManifestDependency {
+            name: "provider-session-machines".to_owned(),
+            kind: Some(kind),
+            path: Some(PathBuf::from("/workspace/deciding-code")),
+            source: None,
+            features: Vec::new(),
+            uses_default_features: true,
+        });
+        let observed = workspace_boundaries::check_declared_session_owner_edges(&metadata)
+            .err()
+            .map(|error| error.to_string());
+        assert_eq!(
+            observed,
+            Some(format!(
+                "BD1: forbidden {kind:?} dependency switchboard-harness-shared-mechanics -> provider-session-machines"
+            )),
+            "inactive declared carrier edge must be rejected",
+        );
+    }
+}
+
+#[test]
+fn harness_carrier_resolved_guard_rejects_workspace_edges() {
+    for kind in [
+        DependencyKind::Normal,
+        DependencyKind::Build,
+        DependencyKind::Dev,
+    ] {
+        let mut metadata = fixture_metadata("harness-carrier", "deciding-code", vec![Some(kind)]);
+        let package = metadata
+            .packages
+            .iter_mut()
+            .find(|package| package.id == "harness-carrier")
+            .expect("carrier fixture package");
+        package.dependencies.push(ManifestDependency {
+            name: "provider-session-machines".to_owned(),
+            kind: Some(kind),
+            path: None,
+            source: Some(harness_stage_policy::CRATES_IO.to_owned()),
+            features: Vec::new(),
+            uses_default_features: true,
+        });
+        workspace_boundaries::check_declared_session_owner_edges(&metadata)
+            .expect("the registry declaration has no workspace path");
+        let graph = NonDevDependencyGraph::from_metadata(metadata);
+        let observed = workspace_boundaries::check_boundaries(&graph)
+            .err()
+            .map(|error| error.to_string());
+        assert_eq!(
+            observed,
+            Some(format!(
+                "BD1: forbidden {kind:?} dependency switchboard-harness-shared-mechanics -> provider-session-machines"
+            )),
+            "resolved carrier edge must be rejected",
+        );
+    }
+}
+
+#[test]
+fn harness_carrier_rejects_transitive_workspace_edges_in_shipping_and_tests() {
+    for kind in [
+        DependencyKind::Normal,
+        DependencyKind::Build,
+        DependencyKind::Dev,
+    ] {
+        let mut graph = fixture_graph("harness-carrier", "external-package", vec![Some(kind)]);
+        graph
+            .names
+            .insert("external-package".into(), "external-package".into());
+        graph
+            .edges
+            .entry("external-package".into())
+            .or_default()
+            .insert(("deciding-code".into(), DependencyKind::Normal));
+        let observed = workspace_boundaries::check_boundaries(&graph)
+            .err()
+            .map(|error| error.to_string());
+        assert_eq!(
+            observed.as_deref(),
+            Some(
+                "BD1: forbidden reachable dependency switchboard-harness-shared-mechanics -> provider-session-machines"
+            ),
+            "carrier closure must reject the workspace destination behind an external package",
+        );
+    }
 }
 
 #[test]
@@ -445,7 +595,9 @@ fn session_owner_policy_covers_inactive_optional_declarations() {
                         "rename": "clock-alias",
                         "kind": kind,
                         "optional": optional,
-                        "path": "/workspace/clock"
+                        "path": "/workspace/clock",
+                        "features": [],
+                        "uses_default_features": true
                     }]
                 },
                 {
@@ -459,12 +611,17 @@ fn session_owner_policy_covers_inactive_optional_declarations() {
                     "manifest_path": "/workspace/harness/Cargo.toml"
                 },
                 {
+                    "id": "harness-carrier",
+                    "name": "switchboard-harness-shared-mechanics",
+                    "manifest_path": "/workspace/harness-carrier/Cargo.toml"
+                },
+                {
                     "id": "clock",
                     "name": "router-clock",
                     "manifest_path": "/workspace/clock/Cargo.toml"
                 }
             ],
-            "workspace_members": ["store", "events", "harness", "clock"],
+            "workspace_members": ["store", "events", "harness", "harness-carrier", "clock"],
             "resolve": {"nodes": [{"id": "store", "deps": resolved}]}
         }))
         .expect("default-feature Cargo metadata with the optional dependency inactive");

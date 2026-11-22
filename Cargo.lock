@@ -27,6 +27,7 @@ dependencies = [
  "session-event-model",
  "state-machine-core",
  "switchboard-harness-contracts",
+ "switchboard-harness-shared-mechanics",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -5728,6 +5729,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchboard-harness-shared-mechanics"
+version = "0.1.158"
+dependencies = [
+ "hegeltest",
+ "switchboard-harness-contracts",
+ "tokio",
+ "tokio-util",
+]
+
+[[package]]
+name = "switchboard-session-calls"
+version = "0.1.158"
+dependencies = [
+ "hegeltest",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "thiserror 2.0.18",
+ "workspace-ids",
+]
+
+[[package]]
 name = "switchboard-session-events"
 version = "0.1.158"
 dependencies = [
@@ -5748,6 +5772,17 @@ dependencies = [
  "tokio-util",
  "tracing",
  "uuid",
+]
+
+[[package]]
+name = "switchboard-session-payloads"
+version = "0.1.158"
+dependencies = [
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "serde_path_to_error",
+ "workspace-ids",
 ]
 
 [[package]]

@@ -52,6 +52,11 @@ const FLEET_WAKES: &str = "fleet-wakes";
 const FLEET_SCHEDULES: &str = "fleet-schedules";
 const FLEET_TIMER_POLICY: &str = "fleet-timer-policy";
 pub(super) const HARNESS_CONTRACTS: (&str, &[&str]) = ("switchboard-harness-contracts", &[]);
+pub(super) const HARNESS_SHARED_MECHANICS: (&str, &[&str]) = (
+    "switchboard-harness-shared-mechanics",
+    &[HARNESS_CONTRACTS.0],
+);
+const HARNESS_LAYERS: [(&str, &[&str]); 2] = [HARNESS_CONTRACTS, HARNESS_SHARED_MECHANICS];
 pub(super) const SESSION_STORE: (&str, &[&str]) = (
     "switchboard-session-store",
     &["collaboration-protocol", "sqlite-storage-maintenance"],
@@ -144,6 +149,11 @@ pub(super) const ENGINE_EDGES: &[&str] = &[
     "fleet-runtime",
     "fleet-runtime-ports",
     "workspace-model",
+];
+
+pub(super) const SESSION_READ_CRATES: [(&str, &[&str]); 2] = [
+    ("switchboard-session-payloads", &["workspace-ids"]),
+    ("switchboard-session-calls", &["workspace-ids"]),
 ];
 
 const APPROVAL_HOLDER: (&str, &[&str]) = (
@@ -250,7 +260,11 @@ pub(super) fn check_boundaries(
             }
         }
     }
-    for (name, allowed) in PURE_CRATES.into_iter().chain(FLEET_PURE_CRATES) {
+    for (name, allowed) in PURE_CRATES
+        .into_iter()
+        .chain(FLEET_PURE_CRATES)
+        .chain(SESSION_READ_CRATES)
+    {
         let Some(source) = graph.workspace_id(name) else {
             continue;
         };
@@ -271,6 +285,7 @@ pub(super) fn check_boundaries(
         }
         check_workspace_driver_edges(graph, source)?;
     }
+    check_resolved_session_read_dev_edges(graph)?;
     check_closed_workspace_edges(
         graph,
         WORKSPACE_SERVICE,
@@ -287,7 +302,7 @@ pub(super) fn check_boundaries(
     check_closed_workspace_edges(graph, DIRECTORY_LAYER.0, DIRECTORY_LAYER.1)?;
     check_closed_workspace_edges(graph, SESSION_STORE.0, SESSION_STORE.1)?;
     check_closed_workspace_edges(graph, SESSION_EVENTS.0, SESSION_EVENTS.1)?;
-    check_closed_workspace_edges(graph, HARNESS_CONTRACTS.0, HARNESS_CONTRACTS.1)?;
+    check_harness_layers(graph)?;
     check_job_reachability(
         graph,
         FLEET_WAKES,
@@ -403,14 +418,17 @@ pub(super) fn check_declared_session_owner_edges(
         .iter()
         .filter(|package| metadata.workspace_members.contains(&package.id))
         .collect();
-    for (owner, allowed) in [SESSION_STORE, SESSION_EVENTS, HARNESS_CONTRACTS] {
+    for (owner, allowed) in [SESSION_STORE, SESSION_EVENTS]
+        .into_iter()
+        .chain(HARNESS_LAYERS)
+    {
         let package = workspace_packages
             .iter()
             .find(|package| package.name == owner)
             .ok_or_else(|| format!("closed dependency policy package missing: {owner}"))?;
         for dependency in &package.dependencies {
             let kind = dependency.kind.unwrap_or(DependencyKind::Normal);
-            if kind == DependencyKind::Dev && owner != HARNESS_CONTRACTS.0 {
+            if kind == DependencyKind::Dev && !is_harness_layer(owner) {
                 continue;
             }
             if let Some(path) = dependency.path.as_deref()
@@ -458,6 +476,89 @@ pub(super) fn check_declared_approval_holder_edges(
     Ok(())
 }
 
+// Only the declaration inventory sees every inactive optional dependency.
+pub(super) fn check_declared_session_read_edges(
+    metadata: &CargoMetadata,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let workspace_packages: Vec<_> = metadata
+        .packages
+        .iter()
+        .filter(|package| metadata.workspace_members.contains(&package.id))
+        .collect();
+    for (owner, allowed_workspace) in SESSION_READ_CRATES {
+        let package = workspace_packages
+            .iter()
+            .find(|package| package.name == owner)
+            .ok_or_else(|| format!("closed dependency policy package missing: {owner}"))?;
+        for dependency in &package.dependencies {
+            let kind = dependency.kind.unwrap_or(DependencyKind::Normal);
+            let workspace_edge = dependency.path.as_deref().is_some_and(|path| {
+                workspace_packages.iter().any(|package| {
+                    package.name == dependency.name && package.manifest_path.parent() == Some(path)
+                })
+            });
+            let registry_edge = dependency
+                .source
+                .as_deref()
+                .is_some_and(|source| source.starts_with("registry+"))
+                && dependency.path.is_none();
+            let allowed: &[&str] = match (kind, workspace_edge, registry_edge) {
+                (DependencyKind::Normal, true, false) => allowed_workspace,
+                (DependencyKind::Normal, false, true) if owner == "switchboard-session-calls" => {
+                    &["serde", "schemars", "thiserror"]
+                }
+                (DependencyKind::Normal, false, true) => &["serde", "schemars"],
+                (DependencyKind::Dev, false, true) => allowed_session_read_dev_dependencies(owner),
+                _ => &[],
+            };
+            check_closed_workspace_edge(owner, &dependency.name, kind, allowed)?;
+            let allowed_features: &[&str] = match dependency.name.as_str() {
+                "serde" => &["derive"],
+                "hegeltest" => &["static-engine"],
+                _ => &[],
+            };
+            if dependency.features != allowed_features || !dependency.uses_default_features {
+                return Err(format!(
+                    "BD1: forbidden {kind:?} feature settings {owner} -> {}: features {:?}, default features: {}",
+                    dependency.name, dependency.features, dependency.uses_default_features
+                ).into());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn allowed_session_read_dev_dependencies(owner: &str) -> &'static [&'static str] {
+    if owner == "switchboard-session-calls" {
+        &["serde_json", "serde_path_to_error", "hegeltest"]
+    } else {
+        &["serde_json", "serde_path_to_error"]
+    }
+}
+
+fn check_resolved_session_read_dev_edges(
+    graph: &NonDevDependencyGraph,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (owner, _) in SESSION_READ_CRATES {
+        let Some(source) = graph.workspace_id(owner) else {
+            continue;
+        };
+        for destination in graph.dev_edges.get(source).into_iter().flatten() {
+            let target = graph
+                .names
+                .get(destination)
+                .ok_or("dependency name absent")?;
+            let allowed = if graph.workspace_members.contains(destination) {
+                &[]
+            } else {
+                allowed_session_read_dev_dependencies(owner)
+            };
+            check_closed_workspace_edge(owner, target, DependencyKind::Dev, allowed)?;
+        }
+    }
+    Ok(())
+}
+
 fn check_closed_workspace_edge(
     source: &str,
     destination: &str,
@@ -487,7 +588,7 @@ fn check_closed_workspace_edges(
     let harness_dev = graph
         .dev_edges
         .get(source)
-        .filter(|_| package == HARNESS_CONTRACTS.0)
+        .filter(|_| is_harness_layer(package))
         .into_iter()
         .flatten()
         .map(|destination| (destination, DependencyKind::Dev));
@@ -498,6 +599,54 @@ fn check_closed_workspace_edges(
                 .get(destination)
                 .ok_or("dependency name absent")?;
             check_closed_workspace_edge(package, target, kind, allowed)?;
+        }
+    }
+    Ok(())
+}
+
+fn is_harness_layer(package: &str) -> bool {
+    HARNESS_LAYERS.iter().any(|(name, _)| *name == package)
+}
+
+pub(super) fn check_harness_layers(
+    graph: &NonDevDependencyGraph,
+) -> Result<(), Box<dyn std::error::Error>> {
+    for (package, allowed) in HARNESS_LAYERS {
+        check_closed_workspace_edges(graph, package, allowed)?;
+        check_harness_reachability(graph, package, allowed)?;
+    }
+    Ok(())
+}
+
+fn check_harness_reachability(
+    graph: &NonDevDependencyGraph,
+    package: &str,
+    allowed: &[&str],
+) -> Result<(), Box<dyn std::error::Error>> {
+    let Some(source) = graph.workspace_id(package) else {
+        return Ok(());
+    };
+    // A dependency's own dev edges are not part of the root package's tests.
+    let test_dependencies = graph.dev_edges.get(source).into_iter().flatten();
+    for root in std::iter::once(source).chain(test_dependencies.map(String::as_str)) {
+        for destination in reachable(graph, root) {
+            let target = graph
+                .names
+                .get(destination)
+                .ok_or("dependency name absent")?;
+            if package == HARNESS_CONTRACTS.0 && matches!(target.as_str(), "tokio" | "tokio-util") {
+                return Err(
+                    format!("BD1: forbidden reachable runtime {package} -> {target}").into(),
+                );
+            }
+            if destination != source
+                && graph.workspace_members.contains(destination)
+                && !allowed.contains(&target.as_str())
+            {
+                return Err(
+                    format!("BD1: forbidden reachable dependency {package} -> {target}").into(),
+                );
+            }
         }
     }
     Ok(())
@@ -815,3 +964,7 @@ fn proxy_boundary_rejects_direct_and_transitive_normal_and_build_edges() {
 #[cfg(test)]
 #[path = "approval_holder_dependency_test.rs"]
 mod approval_holder_dependency_tests;
+
+#[cfg(test)]
+#[path = "session_read_dependency_test.rs"]
+mod session_read_dependency_tests;

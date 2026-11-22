@@ -1,7 +1,7 @@
 //! Allowed normal/build edges between workspace packages.
 use super::workspace_boundaries;
 
-const LAYER_POLICY: [(&str, &[&str]); 42] = [
+const LAYER_POLICY: [(&str, &[&str]); 43] = [
     ("workspace-ids", &[]),
     (
         "workspace-model",
@@ -35,6 +35,7 @@ const LAYER_POLICY: [(&str, &[&str]); 42] = [
         ],
     ),
     workspace_boundaries::HARNESS_CONTRACTS,
+    workspace_boundaries::HARNESS_SHARED_MECHANICS,
     (
         "central-engine-model",
         &["central-storage", "state-machine-core"],
@@ -209,6 +210,7 @@ const LAYER_POLICY: [(&str, &[&str]); 42] = [
             "provider-session-machines",
             "router-clock",
             workspace_boundaries::HARNESS_CONTRACTS.0,
+            workspace_boundaries::HARNESS_SHARED_MECHANICS.0,
         ],
     ),
     (
@@ -296,6 +298,7 @@ const LAYER_POLICY: [(&str, &[&str]); 42] = [
 pub(super) fn layer_policy() -> impl Iterator<Item = (&'static str, &'static [&'static str])> {
     LAYER_POLICY
         .into_iter()
+        .chain(workspace_boundaries::SESSION_READ_CRATES)
         .chain(workspace_boundaries::FLEET_PURE_CRATES)
         .chain(workspace_boundaries::TIMER_CRATES)
         .chain([
