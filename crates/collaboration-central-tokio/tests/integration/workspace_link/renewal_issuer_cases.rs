@@ -1,5 +1,5 @@
 //! Connect and renewal classification for unavailable and unknown issuer keys.
-use super::super::fixture::{Fixture, receive, send};
+use super::super::fixture::{receive, send, start_fixture};
 use super::super::link_support::{caller, connect_client, create_workspace, workspace_reply};
 use super::{answer_to, renew_frame, retryable_expiry};
 use central_link_protocol::{LinkFrame, TokenRenewalRefusal, TokenRenewalResult};
@@ -25,7 +25,7 @@ fn with_uncached_key(token: &str) -> Result<String> {
 #[tokio::test]
 async fn a_renewal_whose_key_cannot_be_fetched_is_central_unavailable() -> Result<()> {
     // Arrange: sign-in's key set becomes unreachable.
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let (_client, _attempt, mut socket, _) = connect_client(&fixture, &fixture.token).await?;
     fixture.keys().fail_fetches();
     let token = with_uncached_key(&fixture.token)?;
@@ -59,7 +59,7 @@ async fn a_renewal_whose_key_cannot_be_fetched_is_central_unavailable() -> Resul
 async fn machine_link_distinguishes_issuer_cache_outages_from_unknown_keys() -> Result<()> {
     use fleet_signin::IssuerCacheOperation;
     use reqwest_websocket::RequestBuilderExt;
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let (mut client, attempt, mut socket, _) = connect_client(&fixture, &fixture.token).await?;
     let organization = signed::ORGANIZATION;
     let owner = fixture

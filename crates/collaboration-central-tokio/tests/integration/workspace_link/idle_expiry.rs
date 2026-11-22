@@ -1,5 +1,5 @@
 use super::fixture::INSTALLATION;
-use super::fixture::{Fixture, receive, send};
+use super::fixture::{Fixture, receive, send, start_fixture};
 use central_link_protocol::{
     DataFrame, LinkFrame, MachineLinkCloseCode, TokenRenewalRefusal, TokenRenewalResult,
 };
@@ -162,7 +162,7 @@ pub(super) async fn require_inactive_close(socket: &mut WebSocket) -> Result<()>
 
 #[tokio::test]
 async fn idle_renewal_commits_before_its_correlated_inactive_reply_and_close() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = async {
         let mut socket = fixture.connect().await?;
         receive(&mut socket).await?;
@@ -219,7 +219,7 @@ async fn idle_renewal_commits_before_its_correlated_inactive_reply_and_close() -
 
 #[tokio::test]
 async fn two_idle_connects_close_without_welcome_and_expire_only_once() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = async {
         let mut existing = fixture.connect().await?;
         receive(&mut existing).await?;
@@ -313,7 +313,7 @@ pub(super) async fn connect_replacement(fixture: &Fixture) -> Result<WebSocket> 
 
 #[tokio::test]
 async fn idle_reply_send_failure_still_closes_only_the_ended_enrollment() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = async {
         let mut old = fixture.connect().await?;
         receive(&mut old).await?;
@@ -366,7 +366,7 @@ async fn idle_reply_send_failure_still_closes_only_the_ended_enrollment() -> Res
 
 #[tokio::test]
 async fn connect_allows_one_second_before_idle_expiry_and_rejects_one_second_after() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = async {
         seed_idle_grant(&fixture, signed::MACHINE_IDLE_LIMIT_SECONDS - 1).await?;
         let mut before = fixture.connect().await?;
@@ -391,7 +391,7 @@ async fn connect_allows_one_second_before_idle_expiry_and_rejects_one_second_aft
 
 #[tokio::test]
 async fn renewal_allows_one_second_before_idle_expiry_and_rejects_one_second_after() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = async {
         let mut socket = fixture.connect().await?;
         receive(&mut socket).await?;
@@ -427,7 +427,7 @@ async fn renewal_allows_one_second_before_idle_expiry_and_rejects_one_second_aft
 
 #[tokio::test]
 async fn late_idle_expiry_abort_preserves_login_rows_and_the_existing_link() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = async {
         let mut socket = fixture.connect().await?;
         receive(&mut socket).await?;

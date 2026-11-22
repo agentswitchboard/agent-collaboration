@@ -23,3 +23,6 @@ pub use workspace_link::WorkspaceLink;
 mod workspace_server;
 #[cfg(unix)]
 pub use workspace_server::{TokioWorkspaceServer, TokioWorkspaceServerError};
+
+#[cfg(all(unix, feature = "test-support"))]
+pub mod test_support;

@@ -1,5 +1,5 @@
 use super::receipt_frames::{EnrollmentAtApply, stored_ending_batch};
-use super::{Fixture, INSTALLATION, OTHER_MACHINE, receive, send, signed};
+use super::{Fixture, INSTALLATION, OTHER_MACHINE, receive, send, signed, start_fixture};
 use central_link_protocol::{
     CentralCallReply, CentralLinkRpc, CorrelationId, DataFrame, LinkCallRefusal, LinkFrame,
     MacLinkRpc, MachineLinkCloseCode, TypedCallResult,
@@ -24,7 +24,7 @@ const WRONG_TARGET_CORRELATION: &str = "019f0000-0000-7000-8000-00000000cd03";
 #[tokio::test]
 async fn central_typed_calls_reply_with_their_correlation_and_refuse_unknown_and_wrong_target()
 -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let observed = async {
         let mut socket = connect(&fixture).await?;
         let correlation: CorrelationId = CENTRAL_CORRELATION.parse()?;
@@ -80,7 +80,7 @@ async fn central_typed_calls_distinguish_grant_expiry_from_stored_endings() -> R
         EnrollmentAtApply::OwnerRevoked,
         EnrollmentAtApply::EndedForIdle,
     ] {
-        let fixture = Fixture::new().await?;
+        let fixture = start_fixture().await?;
         let observed = verify_lapsed_authority(&fixture, state).await;
         fixture.close().await?;
         observed?;
@@ -139,7 +139,7 @@ async fn verify_lapsed_authority(fixture: &Fixture, state: EnrollmentAtApply) ->
 
 #[tokio::test]
 async fn mac_typed_call_waiters_follow_correlations_on_the_open_socket() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let observed = async {
         let organization = signed::ORGANIZATION.to_owned().try_into()?;
         let machine = INSTALLATION.parse()?;
@@ -174,7 +174,7 @@ async fn mac_typed_call_waiters_follow_correlations_on_the_open_socket() -> Resu
 
 #[tokio::test]
 async fn mac_typed_call_timeout_close_and_reconnect_retire_waiters() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let observed = verify_outbound_retirement(&fixture).await;
     fixture.close().await?;
     observed
@@ -182,7 +182,7 @@ async fn mac_typed_call_timeout_close_and_reconnect_retire_waiters() -> Result<(
 
 #[tokio::test]
 async fn mac_typed_call_never_dispatches_to_an_open_socket_with_lapsed_authority() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let observed = async {
         let mut socket = connect(&fixture).await?;
         socket_barrier(&mut socket).await?;
@@ -385,7 +385,7 @@ async fn socket_barrier(socket: &mut WebSocket) -> Result<()> {
 
 #[tokio::test]
 async fn mac_typed_call_capacity_refuses_before_emitting_a_frame_and_reuses_a_slot() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let observed = verify_mac_call_capacity(&fixture).await;
     fixture.close().await?;
     observed
