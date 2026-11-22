@@ -25,10 +25,15 @@ mod explicit_app_server_restart;
 mod explicit_router_restart;
 mod external_provider_runtime;
 mod provider_acp_delivery_route;
+#[cfg(test)]
+#[path = "provider_acp_restore_seam_test.rs"]
+mod provider_acp_restore_seam_tests;
 mod provider_acp_route_claim;
 mod provider_queue_operation_registry;
 mod provider_session_command_port;
 mod provider_session_setup;
+#[cfg(any(test, feature = "test-support"))]
+pub mod provider_test_support;
 mod provider_work_roots;
 pub mod session_close_evidence;
 pub mod session_owner_calls;
@@ -36,7 +41,7 @@ mod session_owner_delivery_evidence;
 pub mod session_owner_door;
 pub mod session_owner_execution;
 mod session_owner_ingress;
-#[cfg(test)]
+#[cfg(any(test, feature = "test-support"))]
 mod session_owner_preparation_fixture;
 pub mod session_owner_publication;
 pub mod session_owner_registry;
@@ -46,6 +51,7 @@ pub use provider_queue_operation_registry::{ProviderQueueCancellationError, Prov
 pub use provider_session_command_port::HostSessionCommandPort;
 mod provider_cache_warm;
 mod provider_model_catalog;
+mod provider_model_catalog_adapter;
 pub use provider_acp_delivery_route::{
     ProviderAcpDeliveryRoute, ProviderCancelActiveTurnError, ProviderPromptContentsError,
     ProviderQueueAdmissionError, ProviderSteerContentsError,

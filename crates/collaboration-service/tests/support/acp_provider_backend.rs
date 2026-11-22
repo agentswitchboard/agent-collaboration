@@ -25,7 +25,7 @@ use session_event_model::{
 use std::sync::Mutex;
 use tokio::sync::broadcast;
 
-impl collaboration_runtime::SessionModelCatalog for ScriptedProviderBackend {
+impl collaboration_contracts::SessionModelCatalog for ScriptedProviderBackend {
     fn read_models(
         &self,
         _: SessionRef,
@@ -33,8 +33,8 @@ impl collaboration_runtime::SessionModelCatalog for ScriptedProviderBackend {
         Box<
             dyn std::future::Future<
                     Output = Result<
-                        Vec<collaboration_runtime::ProviderModelEntry>,
-                        collaboration_runtime::SessionModelCatalogError,
+                        Vec<collaboration_contracts::ProviderModelEntry>,
+                        collaboration_contracts::SessionModelCatalogError,
                     >,
                 > + Send
                 + '_,

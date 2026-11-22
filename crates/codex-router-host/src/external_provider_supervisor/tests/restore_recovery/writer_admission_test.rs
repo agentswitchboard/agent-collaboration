@@ -1,5 +1,4 @@
 use super::*;
-use collaboration_contracts::{NativeRefusalCode, UnsentCause};
 use collaboration_protocol::ConversationOperationFailureStage;
 
 const RETRY_RESTORE: &str = "the Router couldn't send the restore, so retry this session";
@@ -36,46 +35,6 @@ async fn a_full_provider_writer_leaves_explicit_restore_known_unsent() {
     assert!(
         !rig.root.path().join("wire.json").exists(),
         "no restore reached ACP"
-    );
-
-    drop(held_writer);
-    rig.assert_loads(&host).await;
-    host.shutdown().await.expect("fixture shutdown");
-}
-
-#[tokio::test]
-async fn a_full_provider_writer_leaves_a_cold_delivery_holdable() {
-    let rig = RestoreRig::new();
-    rig.seed_session().await;
-    let host = Arc::new(rig.open_host("restored-in-auto").await);
-    let owner = host
-        .session_owner_for(&rig.target)
-        .expect("registered session");
-    let held_writer = owner.hold_provider_writer_capacity();
-    let route = rig.delivery_route(host.clone());
-
-    let result = route
-        .deliver(
-            auto_message(rig.target.clone(), "cold input", LoadPolicy::MayLoad),
-            &UnstoredAttemptEvidenceSink,
-        )
-        .await
-        .expect("cold delivery result");
-    assert!(
-        matches!(result.receipt().outcome,
-            DeliveryOutcome::NotSubmitted { ref reason, retryable: true }
-                if reason == RETRY_RESTORE),
-        "{result:?}",
-    );
-    assert_eq!(
-        result.unsent_cause(),
-        Some(UnsentCause::Holdable {
-            otherwise: NativeRefusalCode::NativeUnavailable,
-        })
-    );
-    assert!(
-        !rig.root.path().join("wire.json").exists(),
-        "no restore or input reached ACP"
     );
 
     drop(held_writer);

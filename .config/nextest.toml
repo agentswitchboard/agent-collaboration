@@ -53,8 +53,8 @@ filter = "(package(=codex-router-cli) & binary(=integration) & test(/^proxy_over
 test-group = "process-runtime"
 threads-required = "num-test-threads"
 
-# The real ACP child emits FIFO receipts over a Unix socket within two seconds.
-# Give it the existing process reservation while keeping that deadline intact.
+# The real ACP child emits FIFO receipts over a Unix socket.
+# Keep the process reservation for the fixture and its owned child.
 [[profile.ci.overrides]]
 filter = "package(=codex-router-host) & test(=external_provider_supervisor::tests::router_queue_drains_provider_prompts_in_fifo_order)"
 test-group = "process-runtime"

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { appendFileSync } from "node:fs";
+import { sendSocketNotice } from "./fixture-socket-notice.ts";
 import { field } from "../exact-json.ts";
 import { requireArgument } from "./acp-stdio.ts";
 import { AcpExchange } from "./acp-exchange.ts";
@@ -20,6 +21,7 @@ if (mode === "content") {
   agent.endTurn(prompt);
 } else {
   appendFileSync(requireArgument(3), "prompt\n");
+  if (process.argv[4] !== undefined) await sendSocketNotice(process.argv[4], "prompt");
   await agent.read("session/cancel");
   appendFileSync(requireArgument(3), "cancel\n");
   agent.endTurn(prompt, "cancelled");

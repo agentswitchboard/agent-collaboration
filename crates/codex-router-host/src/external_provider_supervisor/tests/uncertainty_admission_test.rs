@@ -20,6 +20,7 @@ async fn assert_uncertainty_admission(targetless: bool, previous_generation: boo
     let runtime = ExternalProviderRuntime::initialize(
         create_fixture(),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .await
     .unwrap();
@@ -75,6 +76,7 @@ async fn assert_uncertainty_admission(targetless: bool, previous_generation: boo
             runtime,
         }],
         Arc::clone(&store),
+        crate::external_provider_runtime::acp_scripted_fixture::manual_clock(),
     )
     .unwrap();
     let requested_id = OperationId::generate();

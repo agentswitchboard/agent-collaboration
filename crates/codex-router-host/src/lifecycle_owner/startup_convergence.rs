@@ -2,22 +2,34 @@
 
 use super::{
     AppServerChild, AppServerLaunchPlan, AppServerReadiness, ChildCommandSpec, HostConfig,
-    HostError, RouterChild, RouterCondition, RouterProbeError, RouterProbeResult, probe_router,
+    HostError, RouterChild, RouterCondition, RouterProbeError, RouterProbeResult,
 };
+use crate::router_compatibility::probe_router_with_clock;
 use codex_router_secret_store::{
     file_backend::FileSecretStore,
     local_router_token::{LocalRouterTokenError, LocalRouterTokenService},
 };
-use std::path::Path;
+use router_clock::RuntimeClock;
+use std::{path::Path, time::Duration};
+
+const ROUTER_READINESS_RETRY: Duration = Duration::from_millis(20);
 
 pub(super) async fn start_router(
     config: &HostConfig,
     router_command: Option<&ChildCommandSpec>,
+    clock: &dyn RuntimeClock,
+    #[cfg(test)] first_retry: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> Result<(RouterCondition, Option<RouterChild>), HostError> {
-    let started_at = std::time::Instant::now();
-    match probe_router(config.router_endpoint(), config.deadlines().router_start()).await? {
+    let started_at = clock.monotonic_now();
+    match probe_router_with_clock(
+        config.router_endpoint(),
+        config.deadlines().router_start(),
+        clock,
+    )
+    .await?
+    {
         RouterProbeResult::Compatible => {
-            crate::record_debug_readiness_timing("routerReady", started_at);
+            crate::debug_readiness_timing::record_with_clock("routerReady", started_at, clock);
             Ok((RouterCondition::ExternalReachable, None))
         }
         RouterProbeResult::AuthenticationRequired => Err(HostError::RouterAuthenticationRequired),
@@ -33,28 +45,47 @@ pub(super) async fn start_router(
             let mut command = command.command();
             let mut child = RouterChild::spawn(&mut command)?;
             #[cfg(debug_assertions)]
-            let readiness_started = std::time::Instant::now();
+            let readiness_started = clock.monotonic_now();
             let probe_result = match await_router_readiness(
                 config.router_endpoint(),
                 config.deadlines().router_start(),
+                clock,
+                #[cfg(test)]
+                first_retry,
             )
             .await
             {
                 Ok(result) => {
                     #[cfg(debug_assertions)]
-                    record_router_startup_observation(&mut child, readiness_started, Some(result));
+                    record_router_startup_observation(
+                        &mut child,
+                        clock
+                            .monotonic_now()
+                            .saturating_duration_since(readiness_started),
+                        Some(result),
+                    );
                     result
                 }
                 Err(error) => {
                     #[cfg(debug_assertions)]
-                    record_router_startup_observation(&mut child, readiness_started, None);
+                    record_router_startup_observation(
+                        &mut child,
+                        clock
+                            .monotonic_now()
+                            .saturating_duration_since(readiness_started),
+                        None,
+                    );
                     let _shutdown_outcome = child.shutdown().await?;
                     return Err(HostError::RouterProbe(error));
                 }
             };
             match probe_result {
                 RouterProbeResult::Compatible => {
-                    crate::record_debug_readiness_timing("routerReady", started_at);
+                    crate::debug_readiness_timing::record_with_clock(
+                        "routerReady",
+                        started_at,
+                        clock,
+                    );
                     Ok((RouterCondition::OwnedReachable, Some(child)))
                 }
                 RouterProbeResult::AuthenticationRequired => {
@@ -77,11 +108,11 @@ pub(super) async fn start_router(
 #[cfg(debug_assertions)]
 fn record_router_startup_observation(
     child: &mut RouterChild,
-    started: std::time::Instant,
+    elapsed: Duration,
     readiness: Option<RouterProbeResult>,
 ) {
     use std::os::unix::process::ExitStatusExt;
-    let elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let elapsed_ms = u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX);
     let child_pid = child.process_id();
     match child.observe_startup_status() {
         Ok(Some(status)) => tracing::debug!(target: "codex_router_host::startup_diagnostics", {
@@ -124,21 +155,26 @@ fn provision_local_router_token(secret_root: &Path) -> Result<(), LocalRouterTok
 
 async fn await_router_readiness(
     endpoint: std::net::SocketAddr,
-    deadline: std::time::Duration,
+    deadline: Duration,
+    clock: &dyn RuntimeClock,
+    #[cfg(test)] mut first_retry: Option<tokio::sync::oneshot::Sender<()>>,
 ) -> Result<RouterProbeResult, RouterProbeError> {
-    let deadline_at = tokio::time::Instant::now() + deadline;
+    let deadline_at = clock.monotonic_now().after(deadline);
     loop {
-        let now = tokio::time::Instant::now();
+        let now = clock.monotonic_now();
         if now >= deadline_at {
             return Ok(RouterProbeResult::Unavailable);
         }
-        match probe_router(endpoint, deadline_at.saturating_duration_since(now)).await? {
+        match probe_router_with_clock(endpoint, deadline_at.saturating_duration_since(now), clock)
+            .await?
+        {
             RouterProbeResult::Unavailable => {
-                tokio::time::sleep_until(
-                    deadline_at
-                        .min(tokio::time::Instant::now() + std::time::Duration::from_millis(20)),
-                )
-                .await;
+                #[cfg(test)]
+                if let Some(first_retry) = first_retry.take() {
+                    let _fixture_gone = first_retry.send(());
+                }
+                let retry_at = deadline_at.min(clock.monotonic_now().after(ROUTER_READINESS_RETRY));
+                clock.sleep_until(retry_at).await;
             }
             terminal => return Ok(terminal),
         }

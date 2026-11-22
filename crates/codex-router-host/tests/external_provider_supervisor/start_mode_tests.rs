@@ -15,6 +15,7 @@ struct ModeFixture {
 
 impl ModeFixture {
     async fn start(profile: &str, behaviours: &[&str]) -> TestResult<Self> {
+        let fixture_clock = crate::provider_test_clock();
         let root = tempfile::tempdir()?;
         let receipt = root.path().join("receipt.json");
         let mut arguments = vec![
@@ -30,16 +31,24 @@ impl ModeFixture {
                 acp_provider_adapters::ClaudeSkillSource::Annotated,
             ))
         };
-        let runtime =
-            ExternalProviderRuntime::initialize(launch(PERMISSION_MODE_AGENT, arguments), behavior)
-                .await?;
+        let runtime = ExternalProviderRuntime::initialize(
+            launch(PERMISSION_MODE_AGENT, arguments),
+            behavior,
+            fixture_clock.clone(),
+        )
+        .await?;
         let name = if profile == "cursor" {
             "cursor"
         } else {
             "claude"
         };
         let endpoint = endpoint(&format!("{name}-local"))?;
-        let backend = supervisor(&root, vec![(binding(endpoint.clone(), name)?, runtime)]).await?;
+        let backend = supervisor(
+            &root,
+            vec![(binding(endpoint.clone(), name)?, runtime)],
+            fixture_clock.clone(),
+        )
+        .await?;
         Ok(Self {
             creator: actor(endpoint.clone(), "creator")?,
             _root: root,

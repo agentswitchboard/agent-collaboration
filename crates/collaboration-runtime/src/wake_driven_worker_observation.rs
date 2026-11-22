@@ -52,13 +52,20 @@ impl WorkerObservation {
 }
 
 #[cfg(any(test, feature = "test-support"))]
-pub use observed::{LoopSnapshot, SleepGate};
+pub use observed::{LoopSnapshot, SleepGate, SourceWaitProbe};
 
 #[cfg(any(test, feature = "test-support"))]
 mod observed {
     use super::WorkerObservation;
     use runtime_primitives::SyncTime;
-    use std::sync::Mutex;
+    use std::{
+        future::Future,
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicBool, Ordering},
+        },
+        task::{Context, Poll, Wake, Waker},
+    };
     use tokio::sync::{oneshot, watch};
 
     /// The loop's counters at one moment.
@@ -85,6 +92,7 @@ mod observed {
         snapshot: Mutex<LoopSnapshot>,
         sleeps: watch::Sender<u64>,
         held: Mutex<Option<HeldSleep>>,
+        next_source_wait: Mutex<Option<HeldSourceWait>>,
     }
 
     impl Default for ObservedLoop {
@@ -93,6 +101,7 @@ mod observed {
                 snapshot: Mutex::default(),
                 sleeps: watch::channel(0).0,
                 held: Mutex::default(),
+                next_source_wait: Mutex::default(),
             }
         }
     }
@@ -138,6 +147,44 @@ mod observed {
         }
     }
 
+    #[derive(Default)]
+    struct WaitWake(AtomicBool);
+
+    impl Wake for WaitWake {
+        fn wake(self: Arc<Self>) {
+            self.0.store(true, Ordering::Release);
+        }
+    }
+
+    struct HeldSourceWait {
+        wake: Arc<WaitWake>,
+        polled: oneshot::Sender<bool>,
+        release: oneshot::Receiver<()>,
+    }
+
+    /// Holds a real worker wait after its first poll with a recording waker.
+    pub struct SourceWaitProbe {
+        wake: Arc<WaitWake>,
+        polled: oneshot::Receiver<bool>,
+        release: oneshot::Sender<()>,
+    }
+
+    impl SourceWaitProbe {
+        /// Reports whether the held first poll registered a pending wait.
+        pub async fn parked(&mut self) -> Result<bool, oneshot::error::RecvError> {
+            (&mut self.polled).await
+        }
+
+        #[must_use]
+        pub fn was_woken(&self) -> bool {
+            self.wake.0.load(Ordering::Acquire)
+        }
+
+        pub fn release(self) {
+            let _test_released_probe = self.release.send(());
+        }
+    }
+
     /// Holds the loop after it decided to sleep and before it waits.
     pub struct SleepGate {
         reached: oneshot::Receiver<()>,
@@ -157,6 +204,52 @@ mod observed {
     }
 
     impl WorkerObservation {
+        /// Probes the next real wait while it is paused after polling the sources.
+        #[must_use]
+        pub fn probe_next_source_wait(&self) -> SourceWaitProbe {
+            let (polled, first_poll) = oneshot::channel();
+            let (release, released) = oneshot::channel();
+            let wake = Arc::new(WaitWake::default());
+            *self
+                .observed
+                .next_source_wait
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(HeldSourceWait {
+                wake: wake.clone(),
+                polled,
+                release: released,
+            });
+            SourceWaitProbe {
+                wake,
+                polled: first_poll,
+                release,
+            }
+        }
+
+        pub(crate) async fn poll_source_wait(
+            &self,
+            wait: impl Future<Output = bool> + Send,
+        ) -> bool {
+            let held = self
+                .observed
+                .next_source_wait
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .take();
+            let Some(held) = held else {
+                return wait.await;
+            };
+            let mut wait = std::pin::pin!(wait);
+            let waker = Waker::from(held.wake);
+            let first = wait.as_mut().poll(&mut Context::from_waker(&waker));
+            let _reader_closed = held.polled.send(first.is_pending());
+            let _test_released_probe = held.release.await;
+            match first {
+                Poll::Pending => wait.await,
+                Poll::Ready(ready) => ready,
+            }
+        }
+
         #[must_use]
         pub fn snapshot(&self) -> LoopSnapshot {
             self.observed

@@ -14,7 +14,7 @@ use collaboration_protocol::{
     ProviderRuntimeIdentity, ProviderTransport, ProviderWorkingDirectory, RouterAccess, SessionId,
     SessionRef, UuidIdentity,
 };
-use std::{path::Path, path::PathBuf, process::Command, sync::Arc, time::Duration};
+use std::{path::Path, path::PathBuf, process::Command, sync::Arc};
 use switchboard_session_store::ProviderOperationAdmission;
 use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
@@ -133,13 +133,18 @@ fn launch(arguments: Vec<String>) -> ExternalProviderLaunch {
     }
 }
 
-fn held_dispatch_fixture(dispatch_log: &Path, expected_method: &str) -> ExternalProviderLaunch {
+fn held_dispatch_fixture(
+    dispatch_log: &Path,
+    expected_method: &str,
+    signal_path: &Path,
+) -> ExternalProviderLaunch {
     let process_id_path = dispatch_log.with_extension("pid");
     launch(vec![
         "held".to_owned(),
         dispatch_log.to_string_lossy().into_owned(),
         process_id_path.to_string_lossy().into_owned(),
         expected_method.to_owned(),
+        signal_path.to_string_lossy().into_owned(),
     ])
 }
 
@@ -153,14 +158,16 @@ fn reopened_provider_fixture(dispatch_log: &Path) -> ExternalProviderLaunch {
 async fn supervisor(
     database_path: &Path,
     runtime: ExternalProviderRuntime,
+    fixture_clock: Arc<router_clock::ManualClock>,
 ) -> TestResult<ExternalProviderSupervisor> {
-    supervisor_with_binding(database_path, runtime, binding()?).await
+    supervisor_with_binding(database_path, runtime, binding()?, fixture_clock).await
 }
 
 async fn supervisor_with_binding(
     database_path: &Path,
     runtime: ExternalProviderRuntime,
     binding: ProviderBindingIdentity,
+    fixture_clock: Arc<router_clock::ManualClock>,
 ) -> TestResult<ExternalProviderSupervisor> {
     let store = ProviderOperationStore::open(database_path).await?;
     Ok(ExternalProviderSupervisor::new(
@@ -169,25 +176,14 @@ async fn supervisor_with_binding(
             runtime,
         }],
         Arc::new(Mutex::new(store)),
+        fixture_clock,
     )?)
-}
-
-async fn await_dispatch(dispatch_log: &Path) -> TestResult {
-    tokio::time::timeout(Duration::from_secs(5), async {
-        loop {
-            if dispatch_log.exists() {
-                return;
-            }
-            tokio::task::yield_now().await;
-        }
-    })
-    .await
-    .map_err(|_| "provider dispatch was not observed".into())
 }
 
 #[cfg(unix)]
 #[tokio::test]
 async fn crash_child_records_durable_boundary() -> TestResult {
+    let fixture_clock = crate::provider_test_clock();
     let Ok(mode) = std::env::var(CHILD_MODE) else {
         return Ok(());
     };
@@ -215,12 +211,16 @@ async fn crash_child_records_durable_boundary() -> TestResult {
     } else {
         "session/load"
     };
+    let signal_path = dispatch_log.with_extension("sock");
+    let dispatch_events = tokio::net::UnixListener::bind(&signal_path)?;
     let runtime = ExternalProviderRuntime::initialize(
-        held_dispatch_fixture(&dispatch_log, expected_method),
+        held_dispatch_fixture(&dispatch_log, expected_method, &signal_path),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        fixture_clock.clone(),
     )
     .await?;
-    let backend = supervisor(&database_path, runtime).await?;
+    let fixture_retirement = runtime.retirement();
+    let backend = supervisor(&database_path, runtime, fixture_clock).await?;
     let actor = requester()?;
     if mode == "create" {
         backend
@@ -254,7 +254,12 @@ async fn crash_child_records_durable_boundary() -> TestResult {
             .await
             .map_err(|error| format!("load admission failed: {error:?}"))?;
     }
-    await_dispatch(&dispatch_log).await?;
+    use tokio::io::AsyncReadExt as _;
+    let (mut notice, _) =
+        crate::provider_socket_event(&dispatch_events, &fixture_retirement).await?;
+    let mut sent = String::new();
+    notice.read_to_string(&mut sent).await?;
+    ensure_eq!(sent, expected_method);
     std::process::exit(72);
 }
 
@@ -291,19 +296,59 @@ fn run_crash_child(
 fn assert_provider_process_exited(process_id_path: &Path) -> TestResult {
     let process_id = std::fs::read_to_string(process_id_path)?.parse::<i32>()?;
     let process_id = rustix::process::Pid::from_raw(process_id).ok_or("invalid provider PID")?;
-    let deadline = std::time::Instant::now() + Duration::from_secs(2);
-    loop {
-        if matches!(
-            rustix::process::test_kill_process(process_id),
-            Err(rustix::io::Errno::SRCH)
-        ) {
-            return Ok(());
-        }
-        if std::time::Instant::now() >= deadline {
-            return Err("provider process survived the simulated Host crash".into());
-        }
-        std::thread::yield_now();
+    if matches!(
+        rustix::process::test_kill_process(process_id),
+        Err(rustix::io::Errno::SRCH)
+    ) {
+        return Ok(());
     }
+    observe_fixture_exit(process_id)
+}
+
+#[cfg(target_os = "macos")]
+fn observe_fixture_exit(process_id: rustix::process::Pid) -> TestResult {
+    use nix::sys::event::{EventFilter, EventFlag, FilterFlag, KEvent, Kqueue};
+    let queue = Kqueue::new()?;
+    let subject = usize::try_from(process_id.as_raw_nonzero().get())?;
+    let watch = KEvent::new(
+        subject,
+        EventFilter::EVFILT_PROC,
+        EventFlag::EV_ADD | EventFlag::EV_ONESHOT,
+        FilterFlag::NOTE_EXIT,
+        0,
+        0,
+    );
+    match queue.kevent(&[watch], &mut [], None) {
+        Ok(_) => {}
+        Err(nix::errno::Errno::ESRCH) => return Ok(()),
+        Err(error) => return Err(error.into()),
+    }
+    let mut events = [watch];
+    let received = queue.kevent(&[], &mut events, None)?;
+    let [event] = events;
+    ensure_eq!(received, 1);
+    ensure_eq!(event.ident(), subject);
+    ensure!(event.fflags().contains(FilterFlag::NOTE_EXIT));
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn observe_fixture_exit(process_id: rustix::process::Pid) -> TestResult {
+    use rustix::{
+        event::{PollFd, PollFlags, poll},
+        process::{PidfdFlags, pidfd_open},
+    };
+    let descriptor = match pidfd_open(process_id, PidfdFlags::empty()) {
+        Ok(descriptor) => descriptor,
+        Err(rustix::io::Errno::SRCH) => return Ok(()),
+        Err(error) => return Err(error.into()),
+    };
+    let mut descriptors = [PollFd::new(&descriptor, PollFlags::IN)];
+    let received = poll(&mut descriptors, None)?;
+    let [event] = descriptors;
+    ensure_eq!(received, 1);
+    ensure!(event.revents().contains(PollFlags::IN));
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -311,12 +356,14 @@ async fn reopened_supervisor(
     database_path: &Path,
     replay_log: &Path,
 ) -> TestResult<ExternalProviderSupervisor> {
+    let fixture_clock = crate::provider_test_clock();
     let runtime = ExternalProviderRuntime::initialize(
         reopened_provider_fixture(replay_log),
         std::sync::Arc::new(acp_provider_adapters::StandardAcpBehavior),
+        fixture_clock.clone(),
     )
     .await?;
-    supervisor_with_binding(database_path, runtime, restarted_binding()?).await
+    supervisor_with_binding(database_path, runtime, restarted_binding()?, fixture_clock).await
 }
 
 #[cfg(unix)]

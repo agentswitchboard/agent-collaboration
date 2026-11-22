@@ -66,6 +66,23 @@ impl<P: InteractionPort> AgentSessionClient<P> {
         event_sink: Arc<dyn SessionEventSink>,
         behavior: Arc<dyn crate::ProviderBehavior>,
     ) -> Result<Self, ExternalProviderRuntimeError> {
+        Self::initialize_with_clock(
+            launch,
+            interaction_port,
+            event_sink,
+            behavior,
+            Arc::new(router_clock::SystemRuntimeClock::new()),
+        )
+        .await
+    }
+
+    pub async fn initialize_with_clock(
+        launch: ExternalProviderLaunch,
+        interaction_port: Arc<P>,
+        event_sink: Arc<dyn SessionEventSink>,
+        behavior: Arc<dyn crate::ProviderBehavior>,
+        clock: Arc<dyn router_clock::RuntimeClock>,
+    ) -> Result<Self, ExternalProviderRuntimeError> {
         Self::initialize_with_timeout_and_mcp_servers(
             launch,
             crate::ProviderModelPicker::Standard,
@@ -74,7 +91,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
             interaction_port,
             event_sink,
             behavior,
-            Arc::new(router_clock::SystemRuntimeClock::new()),
+            clock,
         )
         .await
     }
@@ -113,6 +130,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
         interaction_port: Arc<P>,
         event_sink: Arc<dyn SessionEventSink>,
         behavior: Arc<dyn crate::ProviderBehavior>,
+        clock: Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, ExternalProviderRuntimeError> {
         Self::initialize_with_timeout_and_mcp_servers(
             launch,
@@ -122,7 +140,7 @@ impl<P: InteractionPort> AgentSessionClient<P> {
             interaction_port,
             event_sink,
             behavior,
-            Arc::new(router_clock::SystemRuntimeClock::new()),
+            clock,
         )
         .await
     }

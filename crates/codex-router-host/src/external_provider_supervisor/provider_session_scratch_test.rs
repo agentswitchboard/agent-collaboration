@@ -5,11 +5,12 @@ use std::os::unix::fs::PermissionsExt;
 async fn each_create_gets_its_own_private_stamped_folder() {
     let root = tempfile::tempdir().unwrap();
     let scratch_root = root.path().join("scratch");
-    let first = prepare_provider_session_scratch(Some(&scratch_root))
+    let clock = crate::external_provider_runtime::acp_scripted_fixture::manual_clock();
+    let first = prepare_provider_session_scratch(Some(&scratch_root), clock.as_ref())
         .await
         .unwrap()
         .unwrap();
-    let second = prepare_provider_session_scratch(Some(&scratch_root))
+    let second = prepare_provider_session_scratch(Some(&scratch_root), clock.as_ref())
         .await
         .unwrap()
         .unwrap();
@@ -32,7 +33,11 @@ async fn each_create_gets_its_own_private_stamped_folder() {
 
 #[tokio::test]
 async fn a_supervisor_without_a_scratch_root_grants_no_folder() {
-    assert_eq!(prepare_provider_session_scratch(None).await, Ok(None));
+    let clock = crate::external_provider_runtime::acp_scripted_fixture::manual_clock();
+    assert_eq!(
+        prepare_provider_session_scratch(None, clock.as_ref()).await,
+        Ok(None)
+    );
 }
 
 /// Oracle: R4 as corrected in r2 — a Claude or Cursor session created through
@@ -56,6 +61,8 @@ async fn supervisor_create_grants_the_agent_a_fresh_session_folder() {
     let project = base.join("project");
     std::fs::create_dir_all(&project).unwrap();
     let receipt = base.join("receipt.json");
+    let used_at = chrono::DateTime::from_timestamp(1_700_012_345, 0).unwrap();
+    let clock = std::sync::Arc::new(router_clock::ManualClock::new(used_at));
     let runtime = crate::ExternalProviderRuntime::initialize(
         crate::external_provider_runtime::acp_scripted_fixture::launch_fixture_agent(
             "permission-mode-agent.ts",
@@ -66,6 +73,7 @@ async fn supervisor_create_grants_the_agent_a_fresh_session_folder() {
             ],
         ),
         std::sync::Arc::new(acp_provider_adapters::CursorAcpBehavior),
+        clock.clone(),
     )
     .await
     .unwrap();
@@ -83,6 +91,7 @@ async fn supervisor_create_grants_the_agent_a_fresh_session_folder() {
         std::sync::Arc::new(tokio::sync::Mutex::new(store)),
         None,
         Some(scratch_root.clone()),
+        clock,
     )
     .unwrap();
     let mut folders = Vec::new();
@@ -135,6 +144,12 @@ async fn supervisor_create_grants_the_agent_a_fresh_session_folder() {
         let folder = std::path::PathBuf::from(granted[0].as_str().unwrap());
         assert_eq!(folder.parent(), Some(scratch_root.as_path()));
         assert!(folder.is_dir());
+        let stamp = folder.join(codex_native_integration::SCRATCH_LAST_USED_FILE_NAME);
+        assert_eq!(
+            std::fs::metadata(stamp).unwrap().modified().unwrap(),
+            std::time::SystemTime::from(used_at),
+            "the granted folder carries the Host clock stamp"
+        );
         assert!(
             folder
                 .file_name()

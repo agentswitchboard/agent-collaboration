@@ -2,18 +2,82 @@
 //! with test support: the supervisor holds an operation at the point, and
 //! the test releases it. The Host's approved test-support surface.
 
-use super::ExternalProviderSupervisor;
+use super::{
+    ExternalProviderSupervisor, HeldResult, LiveOperation, provider_operation_finish,
+    unavailable_failure,
+};
 use crate::binding_store_fixture::BindingFixtureWait;
+use crate::provider_operation_custody::CustodyEnd;
+use collaboration_protocol::OperationId;
+use std::sync::Arc;
 
 impl ExternalProviderSupervisor {
+    /// Joins the operation tasks after a fixture has stopped submitting work.
+    pub async fn drain_fixture_operation_tasks(&self) {
+        self.inner.operation_tasks.close();
+        self.inner.operation_tasks.wait().await;
+        self.inner.operation_tasks.reopen();
+    }
+
+    /// Holds `operation_id` live, as admitting it to a provider does.
+    pub fn hold_live_operation(&self, operation_id: OperationId) {
+        self.inner
+            .live_operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .operations
+            .insert(operation_id, Arc::new(LiveOperation::pending()));
+    }
+
+    /// The result lock of a held operation, which a test holds as a reader of the result
+    /// would.
+    pub fn held_result_for_test(&self, operation_id: &OperationId) -> Option<HeldResult> {
+        self.inner
+            .live_operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .operations
+            .get(operation_id)
+            .cloned()
+            .map(HeldResult)
+    }
+
+    /// Publishes a held operation's result through the path a finished operation takes,
+    /// with no store write. Returns whether the operation was held.
+    pub async fn publish_held_result(&self, operation_id: &OperationId) -> bool {
+        let live = self
+            .inner
+            .live_operations
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .operations
+            .get(operation_id)
+            .cloned();
+        let Some(live) = live else {
+            return false;
+        };
+        let result = Err(unavailable_failure(operation_id.clone(), None));
+        live.finish_write(CustodyEnd::NoWrite);
+        self.inner
+            .publish_result(
+                operation_id.clone(),
+                &live,
+                result,
+                provider_operation_finish::Retention::Settled,
+            )
+            .await;
+        true
+    }
+
     pub fn with_fixture_hub(
         bindings: Vec<super::ExternalProviderBinding>,
         store: std::sync::Arc<
             tokio::sync::Mutex<switchboard_session_store::ProviderOperationStore>,
         >,
         hub: std::sync::Arc<switchboard_session_events::ProviderSessionEventHub>,
+        clock: std::sync::Arc<dyn router_clock::RuntimeClock>,
     ) -> Result<Self, &'static str> {
-        Self::new_with_hub(bindings, store, Some(hub), None)
+        Self::new_with_hub(bindings, store, Some(hub), None, clock)
     }
 
     /// Opens a fixture session through the registered owner. The test decides
@@ -60,6 +124,7 @@ impl ExternalProviderSupervisor {
     }
 
     /// Reads the owner after it has offered the second input's dispatch mark.
+    #[cfg(test)]
     pub async fn wait_for_dispatch_mark_fixture(
         &self,
         target: &collaboration_protocol::SessionRef,
@@ -70,6 +135,24 @@ impl ExternalProviderSupervisor {
             .wait_for_accepted_mark_fixture(target, operation)
             .await
             .map_err(|error| crate::ExternalProviderRuntimeError::Operation(error.to_string()))
+    }
+
+    /// Observes the synchronous dispatch offer in the owner outbox.
+    pub fn observe_queued_dispatch_offer_fixture(
+        &self,
+        target: &collaboration_protocol::SessionRef,
+        operation: &collaboration_protocol::OperationId,
+    ) -> tokio::sync::oneshot::Receiver<()> {
+        self.inner
+            .uncertainty
+            .slot(&target.endpoint)
+            .fixture
+            .notice_wait(
+                target.clone(),
+                crate::binding_store_fixture::BindingFixtureWait::QueuedDispatchOffered(
+                    operation.clone(),
+                ),
+            )
     }
 
     /// Observe the exact queued offer when it parks or actually commits a mark.

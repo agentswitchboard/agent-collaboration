@@ -41,6 +41,10 @@ pub(crate) async fn persist_provider_success(
     target: Option<&SessionRef>,
     session_record: Option<&ProviderSessionRecord>,
     terminal_stop_reason: Option<ProviderPromptStopReason>,
+    clock: &dyn router_clock::RuntimeClock,
+    #[cfg(test)] observe_target: Option<
+        &(dyn Fn(&switchboard_session_store::ProviderOperationRecord) + Sync),
+    >,
 ) -> Result<(), ProviderOperationStoreError> {
     if let Some(session_record) = session_record {
         return store
@@ -48,9 +52,13 @@ pub(crate) async fn persist_provider_success(
             .await;
     }
     if let Some(target) = target {
-        store
-            .record_target(operation_id, target, chrono::Utc::now().timestamp_millis())
+        let _target_record = store
+            .record_target(operation_id, target, clock.utc_now().timestamp_millis())
             .await?;
+        #[cfg(test)]
+        if let Some(observe) = observe_target {
+            observe(&_target_record);
+        }
     }
     store
         .record_terminal(
@@ -58,7 +66,7 @@ pub(crate) async fn persist_provider_success(
             ProviderOperationEffect::Applied,
             ProviderReconciliationState::Confirmed,
             terminal_stop_reason,
-            chrono::Utc::now().timestamp_millis(),
+            clock.utc_now().timestamp_millis(),
         )
         .await?;
     Ok(())

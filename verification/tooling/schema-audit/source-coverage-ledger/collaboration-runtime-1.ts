@@ -32,7 +32,7 @@ export const section: LedgerSection = {
     {
       file: `${R}app_server_model_catalog.rs`,
       disposition: { kind: "converts", owners: ["codex"] },
-      note: "model/list entries built by hand (as_app_server_model :121-148, render_model_list :151-163); provider-default entry (:112-119) and the reserved provider reasoning value (:98, :124)",
+      note: "model/list entries built by hand (render_app_server_model :5-36, render_model_list :38-66); provider-default entry (:40-46) and the reserved provider reasoning value (:13-15)",
     },
     {
       file: `${R}app_server_token_usage.rs`,
