@@ -1,4 +1,46 @@
-use super::{AreaId, MachineId, ProjectId, SessionId, SessionRef, WorkspaceId};
+use super::{
+    ApprovalRequestId, AreaId, MachineId, ProjectId, RouterRunId, SessionId, SessionRef,
+    WorkspaceId,
+};
+use serde::de::DeserializeOwned;
+use std::str::FromStr;
+
+#[test]
+fn router_run_id_requires_canonical_uuid_v7() {
+    assert_canonical_approval_id::<RouterRunId>("RouterRunId");
+}
+
+#[test]
+fn approval_request_id_requires_canonical_uuid_v7() {
+    assert_canonical_approval_id::<ApprovalRequestId>("ApprovalRequestId");
+}
+
+fn assert_canonical_approval_id<Id: FromStr + DeserializeOwned>(identifier: &str) {
+    let canonical = "01890f2e-7b4c-7cc0-98c4-000000000001";
+    assert!(
+        canonical.parse::<Id>().is_ok(),
+        "{identifier} must accept {canonical}"
+    );
+    assert!(
+        serde_json::from_value::<Id>(serde_json::json!(canonical)).is_ok(),
+        "{identifier} must decode {canonical}"
+    );
+
+    for (reason, invalid) in [
+        ("UUIDv4", "01890f2e-7b4c-4cc0-98c4-000000000001"),
+        ("uppercase UUIDv7", "01890F2E-7B4C-7CC0-98C4-000000000001"),
+        ("short UUIDv7", "01890f2e-7b4c-7cc0-98c4-00000000001"),
+    ] {
+        assert!(
+            invalid.parse::<Id>().is_err(),
+            "{identifier} must reject {reason}: {invalid}"
+        );
+        assert!(
+            serde_json::from_value::<Id>(serde_json::json!(invalid)).is_err(),
+            "{identifier} must reject {reason} on JSON decode: {invalid}"
+        );
+    }
+}
 
 #[test]
 fn canonical_v7_is_required_on_construction_and_decode() {

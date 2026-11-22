@@ -54,6 +54,10 @@ workspace_identifiers!(
     #[schemars(extend("pattern" = "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"))]
     #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
     MachineId,
+    /// One Router process run registered with central.
+    RouterRunId,
+    /// One approval request raised by a Router.
+    ApprovalRequestId,
     PersonId,
     AreaId,
     ProjectId,
