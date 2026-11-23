@@ -14,6 +14,7 @@ use workspace_model::{
 };
 
 use crate::{
+    custody_operator::{CustodyOperatorEvent, inbox_scan},
     delivery_custody::{
         DeliveryCustodyEffect, DeliveryCustodyEvent, DeliveryCustodyMachine, DeliveryCustodyState,
     },
@@ -127,6 +128,7 @@ pub enum InboxOfferResult {
     Recorded { decision: InboxDecision },
     AlreadyDecided { decision: InboxDecision },
     LookupDeferred,
+    DamagedRowIgnored,
 }
 
 /// Admission failures reported by the recipient inbox to the custody task.
@@ -152,6 +154,7 @@ pub struct RecipientInbox {
     clock: Arc<dyn RuntimeClock>,
     uncommitted: BTreeMap<MessageId, InboxOffer>,
     receipts: ReceiptDelivery,
+    operator_events: Vec<CustodyOperatorEvent>,
 }
 
 impl RecipientInbox {
@@ -169,6 +172,7 @@ impl RecipientInbox {
             clock,
             uncommitted: BTreeMap::new(),
             receipts: ReceiptDelivery::default(),
+            operator_events: Vec::new(),
         }
     }
 
@@ -193,6 +197,11 @@ impl RecipientInbox {
         !self.uncommitted.is_empty()
     }
 
+    /// Report damaged inbox rows to the operator, separately from session reads.
+    pub fn take_operator_events(&mut self) -> Vec<CustodyOperatorEvent> {
+        std::mem::take(&mut self.operator_events)
+    }
+
     /// Retry each offered message once, using the first arrival and payload.
     pub async fn retry_uncommitted(&mut self) -> Vec<InboxCustodyError> {
         let mut failures = Vec::new();
@@ -209,7 +218,8 @@ impl RecipientInbox {
         &mut self,
         session: &SessionRef,
     ) -> Result<Vec<MessageRecord>, InboxCustodyError> {
-        let mut waiting = self.store.pending_handoffs().await?;
+        let scan = self.store.pending_handoffs().await?;
+        let mut waiting = inbox_scan(scan, &mut self.operator_events);
         waiting.retain(|message| &message.target == session);
         Ok(waiting)
     }
@@ -221,7 +231,12 @@ impl RecipientInbox {
     ) -> Result<Option<ReceiptFrame>, ReceiptDeliveryError> {
         let now_ms = self.clock.now().unix_millis();
         self.receipts
-            .prepare_frame(&mut self.store, connection, now_ms)
+            .prepare_frame(
+                &mut self.store,
+                &mut self.operator_events,
+                connection,
+                now_ms,
+            )
             .await
     }
 
@@ -236,6 +251,7 @@ impl RecipientInbox {
         self.receipts
             .settle_frame(
                 &mut self.store,
+                &mut self.operator_events,
                 submitted,
                 current_connection,
                 disposition,
@@ -263,10 +279,8 @@ impl RecipientInbox {
         offer: &InboxOffer,
     ) -> Result<InboxOfferResult, InboxCustodyError> {
         let message_id = offer.message_id();
-        if let Some(stored) = self.store.receipt_for(message_id).await? {
-            return Ok(InboxOfferResult::AlreadyDecided {
-                decision: stored.decision,
-            });
+        if let Some(previous) = self.prior_decision(message_id).await? {
+            return Ok(previous);
         }
         let decision = match self
             .directory
@@ -304,16 +318,26 @@ impl RecipientInbox {
                     decision: *decision,
                 })
             }
-            RecordDelivery::Duplicate => {
-                let stored = self
-                    .store
-                    .receipt_for(message_id)
-                    .await?
-                    .ok_or_else(|| InboxCustodyError::MissingDecision(message_id.clone()))?;
-                Ok(InboxOfferResult::AlreadyDecided {
-                    decision: stored.decision,
-                })
-            }
+            RecordDelivery::Duplicate => self
+                .prior_decision(message_id)
+                .await?
+                .ok_or_else(|| InboxCustodyError::MissingDecision(message_id.clone())),
         }
+    }
+
+    async fn prior_decision(
+        &mut self,
+        message_id: &MessageId,
+    ) -> Result<Option<InboxOfferResult>, InboxCustodyError> {
+        let scanned = self.store.receipt_for(message_id).await?;
+        let damaged = !scanned.corrupt_rows.is_empty();
+        let stored = inbox_scan(scanned, &mut self.operator_events);
+        Ok(if damaged {
+            Some(InboxOfferResult::DamagedRowIgnored)
+        } else {
+            stored.map(|row| InboxOfferResult::AlreadyDecided {
+                decision: row.decision,
+            })
+        })
     }
 }

@@ -90,6 +90,11 @@ impl OutboxFlushState {
     pub const fn last_flushed(&self) -> Option<SyncTime> {
         self.last_flushed
     }
+
+    #[must_use]
+    pub(crate) const fn armed_mark(&self) -> Option<SyncTime> {
+        self.armed_wake
+    }
 }
 
 pub fn transition(

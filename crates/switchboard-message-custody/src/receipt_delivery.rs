@@ -1,5 +1,6 @@
 //! Wire receipts for decisions the recipient inbox has committed.
 
+use crate::custody_operator::{CustodyOperatorEvent, inbox_scan};
 use central_link_client::{ConnectionAttempt, LinkLaneCommand, LinkLaneDisposition, LinkLaneReply};
 use central_link_protocol::{
     CorrelationId, FreshCorrelationId, MAX_RECEIPTS, ProtocolError, Receipt, ReceiptBatch,
@@ -69,24 +70,38 @@ impl ReceiptDelivery {
     pub async fn prepare_frame(
         &mut self,
         store: &mut InboxStore,
+        operator_events: &mut Vec<CustodyOperatorEvent>,
         connection: &ConnectionAttempt,
         now_ms: i64,
     ) -> Result<Option<ReceiptFrame>, ReceiptDeliveryError> {
-        match &self.flight {
-            ReceiptFlight::AwaitingAnswer(frame) if &frame.connection == connection => {
-                return Ok(None);
-            }
-            ReceiptFlight::WaitingForRetry(frame) if &frame.connection == connection => {
+        if matches!(&self.flight, ReceiptFlight::AwaitingAnswer(frame) if &frame.connection == connection)
+        {
+            return Ok(None);
+        }
+        let scanned = store.pending_receipts().await?;
+        let retry = match &self.flight {
+            ReceiptFlight::WaitingForRetry(frame)
+                if &frame.connection == connection
+                    && !scanned.corrupt_rows.iter().any(|corrupt| {
+                        frame
+                            .receipts
+                            .receipts()
+                            .iter()
+                            .any(|receipt| receipt.message_id.as_str() == corrupt.key)
+                    }) =>
+            {
                 let frame = frame.clone();
-                self.flight = ReceiptFlight::AwaitingAnswer(frame.clone());
-                return Ok(Some(frame));
+                Some(frame)
             }
             ReceiptFlight::Idle
             | ReceiptFlight::AwaitingAnswer(_)
-            | ReceiptFlight::WaitingForRetry(_) => {}
+            | ReceiptFlight::WaitingForRetry(_) => None,
+        };
+        let pending = inbox_scan(scanned, operator_events);
+        if let Some(frame) = retry {
+            self.flight = ReceiptFlight::AwaitingAnswer(frame.clone());
+            return Ok(Some(frame));
         }
-
-        let pending = store.pending_receipts().await?;
         if pending.is_empty() {
             self.flight = ReceiptFlight::Idle;
             return Ok(None);
@@ -109,6 +124,7 @@ impl ReceiptDelivery {
     pub async fn settle_frame(
         &mut self,
         store: &mut InboxStore,
+        operator_events: &mut Vec<CustodyOperatorEvent>,
         submitted: ReceiptFrame,
         current_connection: Option<&ConnectionAttempt>,
         disposition: LinkLaneDisposition,
@@ -142,9 +158,8 @@ impl ReceiptDelivery {
             return Ok(ReceiptFrameOutcome::RetryPending);
         }
 
-        let pending: BTreeSet<_> = store
-            .pending_receipts()
-            .await?
+        let scanned = store.pending_receipts().await?;
+        let pending: BTreeSet<_> = inbox_scan(scanned, operator_events)
             .into_iter()
             .map(|receipt| receipt.message_id)
             .collect();
