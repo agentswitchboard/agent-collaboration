@@ -10,12 +10,16 @@ autotests = false
 central-link-client.workspace = true
 central-link-protocol.workspace = true
 switchboard-central-link = { workspace = true, features = ["test-support"] }
+switchboard-machine-core-store.workspace = true
+switchboard-message-custody.workspace = true
 collaboration-central-tokio = { workspace = true, features = ["test-support"] }
 collaboration-central-conformance = { workspace = true, features = ["signin-test-support"] }
 router-clock = { workspace = true, features = ["test-support"] }
 reqwest.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+workspace-ids.workspace = true
+workspace-model.workspace = true
 
 [lints]
 workspace = true

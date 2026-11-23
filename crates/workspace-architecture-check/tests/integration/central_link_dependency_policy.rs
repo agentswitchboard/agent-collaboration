@@ -119,7 +119,10 @@ const REAL_TEST_DEV: &[Edge] = &[
     workspace("central-link-protocol", &[]),
     workspace("router-clock", &["test-support"]),
     workspace(TOKIO_CENTRAL, &["test-support"]),
+    workspace("switchboard-machine-core-store", &[]),
+    workspace("switchboard-message-custody", &[]),
     workspace("workspace-ids", &[]),
+    workspace("workspace-model", &[]),
     registry(
         "tokio",
         true,
