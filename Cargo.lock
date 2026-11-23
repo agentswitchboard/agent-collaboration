@@ -5773,6 +5773,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchboard-approval-ports"
+version = "0.1.158"
+dependencies = [
+ "approval-request-protocol",
+ "thiserror 2.0.18",
+ "workspace-ids",
+]
+
+[[package]]
 name = "switchboard-harness-contracts"
 version = "0.1.158"
 dependencies = [
@@ -7049,8 +7058,12 @@ dependencies = [
 name = "workspace-architecture-check"
 version = "0.1.158"
 dependencies = [
+ "approval-request-protocol",
  "serde",
  "serde_json",
+ "state-machine-core",
+ "switchboard-approval-holder",
+ "switchboard-approval-ports",
  "tempfile",
  "thiserror 2.0.18",
 ]
