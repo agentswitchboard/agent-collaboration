@@ -128,7 +128,7 @@ fn holder_and_destination_endings_reject_the_wrong_request_payload() {
     let other_raise: Raise = serde_json::from_value(other_raise).unwrap();
     let provider: Raise = serde_json::from_value(provider_raise()).unwrap();
     let by: DecidedBy = serde_json::from_value(json!({"kind":"person","personId":PERSON})).unwrap();
-    let approval = Answer::Approval {
+    let approval = approval_request_protocol::ProviderAnswer::Approval {
         option_id: OfferedOptionId::new(1).unwrap(),
     };
     let offered = DeliverEndingRequest::from_raise(

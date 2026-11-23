@@ -71,12 +71,16 @@
             "kind": "startSession",
             "agentProgram": "claude",
             "workingFolder": "/project",
-            "mode": "plan"
+            "mode": "plan",
+            "workFolders": [
+              "/project/docs",
+              "/project/src"
+            ]
           }
         }
       },
-      "canonical": "{\"holder\":{\"routerRun\":\"01934a50-1000-7000-8000-000000000002\"},\"invocation\":\"yq9M7sQvc4y3jqOKlZLHnnjyzRrHfEKM9n98Qxjs_wc\",\"kind\":\"unprovenCall\",\"offer\":{\"operation\":{\"agentProgram\":\"claude\",\"kind\":\"startSession\",\"mode\":\"plan\",\"workingFolder\":\"/project\"}},\"requestId\":\"01934a50-1000-7000-8000-000000000011\"}",
-      "digest": "hJcCJhFoNEOTNd9rdFt9FN-kZoxYJdYqObf_uogwLew"
+      "canonical": "{\"holder\":{\"routerRun\":\"01934a50-1000-7000-8000-000000000002\"},\"invocation\":\"yq9M7sQvc4y3jqOKlZLHnnjyzRrHfEKM9n98Qxjs_wc\",\"kind\":\"unprovenCall\",\"offer\":{\"operation\":{\"agentProgram\":\"claude\",\"kind\":\"startSession\",\"mode\":\"plan\",\"workFolders\":[\"/project/docs\",\"/project/src\"],\"workingFolder\":\"/project\"}},\"requestId\":\"01934a50-1000-7000-8000-000000000011\"}",
+      "digest": "tVw-qiGLrpun1frKzZ6-9KVrydmW4fk_jQstaAYDXg0"
     }
   },
   {

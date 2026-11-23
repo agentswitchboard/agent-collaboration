@@ -79,9 +79,12 @@ fn admitted_destination_controls_saved_and_shared_standing_projections() {
 
     let decide = decide_question().unwrap();
     let ending = admitted_giver
-        .decide(decide.value.clone(), DecisionFactor::NoFreshPersonFactor)
+        .decide(
+            decide.value.clone().into(),
+            DecisionFactor::NoFreshPersonFactor,
+        )
         .unwrap();
-    let ending = DeliverEndingRequest::from_raise(&raise, ending).unwrap();
+    let ending = DeliverEndingRequest::from_decision(&raise, ending).unwrap();
     let retained = RetainedSessionDecision {
         request_id: decide.request_id.clone(),
         session: GIVER_SESSION.parse().unwrap(),
@@ -102,8 +105,9 @@ fn admitted_destination_controls_saved_and_shared_standing_projections() {
     altered.request_id = OTHER_REQUEST.parse().unwrap();
     assert!(altered.standing_reply(&admitted_giver, &ending).is_err());
 
-    let mut mismatched_ending = ending.clone();
-    mismatched_ending.request_id = OTHER_REQUEST.parse().unwrap();
+    let mut wrong_wire = serde_json::to_value(&ending).unwrap();
+    wrong_wire["requestId"] = json!(OTHER_REQUEST);
+    let mismatched_ending = serde_json::from_value(wrong_wire).unwrap();
     assert!(
         decide
             .standing_reply(&admitted_giver, &mismatched_ending)
@@ -132,10 +136,10 @@ fn admitted_destination_controls_saved_and_shared_standing_projections() {
         assert!(wire.contains(GIVER_SESSION));
         assert!(!wire.contains("giver-only"));
     }
-    let person_winner = DeliverEndingRequest::from_raise(
+    let person_winner = DeliverEndingRequest::from_decision(
         &raise,
         admitted_owner
-            .decide(decide.value, DecisionFactor::NoFreshPersonFactor)
+            .decide(decide.value.into(), DecisionFactor::NoFreshPersonFactor)
             .unwrap(),
     )
     .unwrap();

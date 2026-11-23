@@ -98,11 +98,8 @@ impl Raise {
             Self::ProviderQuestion { offer, .. } => OfferView::ProviderQuestion {
                 offer: offer.clone(),
             },
-            Self::UnprovenCall {
-                offer, invocation, ..
-            } => OfferView::UnprovenCall {
+            Self::UnprovenCall { offer, .. } => OfferView::UnprovenCall {
                 offer: offer.clone(),
-                invocation: invocation.clone(),
             },
         }
     }
@@ -114,7 +111,7 @@ approval_wire_union! {
 pub enum OfferView {
     ProviderApproval { offer: ApprovalOffer },
     ProviderQuestion { offer: QuestionOffer },
-    UnprovenCall { offer: CallOffer, invocation: InvocationDigest },
+    UnprovenCall { offer: CallOffer },
 }
 }
 

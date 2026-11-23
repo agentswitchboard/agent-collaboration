@@ -148,7 +148,7 @@ impl ApprovalCollection {
                 if self.admit(&run, &run.router_run).is_ok() {
                     let key = ApprovalRequestKey {
                         run,
-                        request_id: request.request_id.clone(),
+                        request_id: request.request_id().clone(),
                     };
                     self.apply_if_current(
                         &key,

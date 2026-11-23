@@ -2,8 +2,8 @@ use std::fmt;
 
 use approval_request_protocol::{
     Answer, ApprovalWindow, CentralTime, DecideRequest, DecidedBy, DeliverEndingReply,
-    DeliverEndingRequest, Delivery, EndingView, HolderStopCause, PassOnReply, PrivateEnding, Raise,
-    RaiseReply, RequestContentsDigest, RequestView, StopReply, StopRequest, WaitingStatus,
+    DeliverEndingRequest, Delivery, EndingView, HolderStopCause, PassOnReply, Raise, RaiseReply,
+    RequestContentsDigest, RequestView, StopReply, StopRequest, WaitingStatus,
 };
 use central_engine_model::{EventTag, RefusalTag, StateTag};
 
@@ -115,7 +115,7 @@ impl RetainedApproval {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EndedApproval {
-    pub ending: PrivateEnding,
+    pub ending: DeliverEndingRequest,
     pub ended_at: CentralTime,
     pub delivery: Delivery,
 }
@@ -281,6 +281,24 @@ pub struct RaiseAdmission {
     pub outstanding: usize,
 }
 
+/// Shared applying input. The parent-session wire can supply only provider answers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApprovalDecideInput {
+    pub request_id: ApprovalRequestId,
+    pub operation_id: RequestId,
+    pub value: Answer,
+}
+
+impl From<DecideRequest> for ApprovalDecideInput {
+    fn from(request: DecideRequest) -> Self {
+        Self {
+            request_id: request.request_id,
+            operation_id: request.operation_id,
+            value: request.value.into(),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ApprovalEvent {
     Raise {
@@ -292,7 +310,7 @@ pub enum ApprovalEvent {
     Decide {
         key: ApprovalRequestKey,
         actor: AdmittedDecider,
-        request: DecideRequest,
+        request: ApprovalDecideInput,
         prior: Option<Box<SavedDecision>>,
     },
     Read {
