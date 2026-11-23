@@ -442,13 +442,13 @@ async fn run_custody(
                 intake_retry_at = None;
                 let _ = retry_offers.try_send(());
             },
-            () = sleep_until(clock.as_ref(), receipt_wake.as_ref().map(|(_, wake)| *wake)) => {
+            () = sleep_until(clock.as_ref(), receipt_wake.as_ref().map(|(_, wake)| *wake)), if receipts.is_none() => {
                 let Some(((connection, mark), _)) = receipt_wake else { continue };
                 let send_before = admission.borrow().as_ref()
                     .filter(|admitted| admitted.connection == connection)
                     .map(|admitted| crate::flush_clock::send_fence_for_mark(admitted.clock_anchor, mark));
                 receipt_mark = Some((connection.clone(), mark));
-                let Some(send_before) = send_before.filter(|_| receipts.is_none()) else { continue };
+                let Some(send_before) = send_before else { continue };
                 match custody.prepare_receipt_turn().await {
                     Ok(Some(frame)) => {
                         let command = frame.command(send_before);
