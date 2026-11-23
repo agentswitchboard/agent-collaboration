@@ -3,7 +3,7 @@ use crate::approval_wire_codec::approval_wire_union;
 use serde::{Deserialize, Serialize};
 use workspace_ids::{CentralSessionId, PersonId};
 
-use crate::{Answer, ApprovalDigestError, InvalidAnswer};
+use crate::{ApprovalDigestError, InvalidAnswer, ProviderAnswer, SessionCallDecision};
 
 approval_wire_union! {
 #[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
@@ -27,7 +27,13 @@ approval_wire_union! {
     derive(specta::Type)
 )]
 pub enum Ending {
-    Decided { answer: Answer, by: DecidedBy },
+    Decided { answer: ProviderAnswer, by: DecidedBy },
+    /// An observed parked decision. The holder frame authoring API requires checked admission.
+    UnprovenCallDecided {
+        decision: SessionCallDecision,
+        #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = String))]
+        person_id: PersonId,
+    },
     Cancelled { reason: CancelReason },
     TimedOut {},
 }
@@ -45,6 +51,7 @@ pub enum HolderStopCause {
     AskWithdrawn,
     SessionClosed,
     ProviderConnectionLost,
+    CallWithdrawn,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -74,15 +81,18 @@ impl ProviderStopCause {
     }
 }
 
-impl From<HolderStopCause> for ProviderStopCause {
-    fn from(cause: HolderStopCause) -> Self {
-        match cause {
+impl TryFrom<HolderStopCause> for ProviderStopCause {
+    type Error = InvalidApprovalEnding;
+
+    fn try_from(cause: HolderStopCause) -> Result<Self, Self::Error> {
+        Ok(match cause {
             HolderStopCause::TurnStopped => Self::TurnStopped,
             HolderStopCause::AskReplaced => Self::AskReplaced,
             HolderStopCause::AskWithdrawn => Self::AskWithdrawn,
             HolderStopCause::SessionClosed => Self::SessionClosed,
             HolderStopCause::ProviderConnectionLost => Self::ProviderConnectionLost,
-        }
+            HolderStopCause::CallWithdrawn => return Err(InvalidApprovalEnding::BindingMismatch),
+        })
     }
 }
 
@@ -146,7 +156,7 @@ approval_wire_record! {
     #[derive(Clone, Debug, Eq, PartialEq)]
     #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
     pub struct ApprovalDecision {
-        pub answer: Answer,
+        pub answer: ProviderAnswer,
         pub by: SessionDecider,
     }
 }

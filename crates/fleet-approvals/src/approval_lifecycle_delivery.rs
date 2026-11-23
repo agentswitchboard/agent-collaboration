@@ -14,9 +14,9 @@ pub(super) fn receive(
         return Err(TransitionError::Stale);
     };
     if &saved.key != key
-        || offered.request_id != key.request_id
-        || offered.contents_digest != saved.contents_digest
-        || offered.ending != closed.ending
+        || offered.request_id() != &key.request_id
+        || offered.contents_digest() != &saved.contents_digest
+        || offered != &closed.ending
     {
         return Err(TransitionError::Stale);
     }
