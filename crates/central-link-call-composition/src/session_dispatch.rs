@@ -1,6 +1,6 @@
 use crate::{
     OrganizationLoan, OrganizationSessionTransactions, SessionApplyFailure, SessionApplyFault,
-    SessionApplyFuture, SessionApplyResult,
+    SessionApplyFuture, SessionApplyResult, apply_failure::SessionApplySuccess,
 };
 use central_engine_model::{Context, EngineTime};
 use central_link_protocol::{
@@ -111,9 +111,7 @@ where
                     )
                     .await?;
                     if let Some(cause) = lapse {
-                        return Ok(TypedCallResult::Refused {
-                            reason: LinkCallRefusal::AuthorityLapsed { cause },
-                        });
+                        return Ok(SessionApplySuccess::AuthorityLapsed(cause));
                     }
                     let time = EngineTime::from_timestamp_millis(time.unix_millis()).ok_or(
                         SessionApplyFailure::Terminal(SessionApplyFault::ApplyingClockOutOfRange),
@@ -170,6 +168,7 @@ where
                                     )
                                 })
                                 .await
+                                .map(SessionApplySuccess::Answered)
                             })
                         },
                     )
@@ -191,6 +190,7 @@ where
                                     session_reply(service.bind(&machine, body, &mut context).await)
                                 })
                                 .await
+                                .map(SessionApplySuccess::Answered)
                             })
                         },
                     )
@@ -212,6 +212,7 @@ where
                                     session_reply(service.end(&machine, body, &mut context).await)
                                 })
                                 .await
+                                .map(SessionApplySuccess::Answered)
                             })
                         },
                     )
@@ -258,7 +259,10 @@ fn session_reply<Reply>(
 
 fn report_application(result: SessionApplyResult) -> CentralCallDispatch {
     match result {
-        Ok(result) => Ok(result),
+        Ok(SessionApplySuccess::Answered(reply)) => Ok(TypedCallResult::Answered { reply }),
+        Ok(SessionApplySuccess::AuthorityLapsed(cause)) => Ok(TypedCallResult::Refused {
+            reason: LinkCallRefusal::AuthorityLapsed { cause },
+        }),
         Err(SessionApplyFailure::Store(failure)) => Err(failure),
         Err(failure @ SessionApplyFailure::EntropyUnavailable) => {
             tracing::warn!(?failure, "session call could not get secure entropy");

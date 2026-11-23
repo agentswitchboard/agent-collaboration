@@ -1,5 +1,5 @@
 use central_engine_model::TransitionError;
-use central_link_protocol::{CentralCallReply, TypedCallResult};
+use central_link_protocol::{CentralCallReply, MachineLinkCloseCode};
 use central_storage::StoreFailure;
 use fleet_actor_identity::{SessionMachineRefusal, SessionServiceError};
 use fleet_identity_protocol::SessionReplyMismatch;
@@ -23,7 +23,13 @@ pub enum SessionApplyFault {
     InconsistentEnrollment,
 }
 
-pub type SessionApplyResult = Result<TypedCallResult<CentralCallReply>, SessionApplyFailure>;
+/// These outcomes may leave a transaction successfully. Wire faults are projected afterwards.
+pub enum SessionApplySuccess {
+    Answered(CentralCallReply),
+    AuthorityLapsed(MachineLinkCloseCode),
+}
+
+pub type SessionApplyResult = Result<SessionApplySuccess, SessionApplyFailure>;
 
 impl From<StoreFailure> for SessionApplyFailure {
     fn from(failure: StoreFailure) -> Self {
@@ -67,7 +73,7 @@ pub fn inject_reserved_reply_fault(
     use fleet_identity_protocol::CreateFleetSessionReply;
     use std::sync::atomic::Ordering;
     if matches!(&result,
-        Ok(TypedCallResult::Answered { reply: CentralCallReply::CreateFleetSession(envelope) })
+        Ok(SessionApplySuccess::Answered(CentralCallReply::CreateFleetSession(envelope)))
         if matches!(envelope.body, CreateFleetSessionReply::Reserved { .. })
     ) && armed.swap(false, Ordering::AcqRel)
     {

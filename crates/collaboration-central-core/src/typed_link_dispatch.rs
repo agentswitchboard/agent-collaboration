@@ -85,7 +85,7 @@ impl<R: CentralLinkRpc> TargetCheckedCentralCall<R> {
 pub async fn dispatch_fallible_central_call<R, Handler, Answer, Failure>(
     request: TargetCheckedCentralCall<R>,
     handler: Handler,
-) -> Result<TypedCallResult<CentralCallReply>, Failure>
+) -> Result<CentralCallReply, Failure>
 where
     R: CentralLinkRpc + IndependentReplyRpc,
     Handler: FnOnce(R::Request) -> Answer,
@@ -98,7 +98,7 @@ where
 pub async fn dispatch_fallible_correlated_central_call<R, Handler, Answer, Failure>(
     request: TargetCheckedCentralCall<R>,
     handler: Handler,
-) -> Result<TypedCallResult<CentralCallReply>, Failure>
+) -> Result<CentralCallReply, Failure>
 where
     R: CentralLinkRpc + CorrelatedRpc,
     Handler: FnOnce(R::Request) -> Answer,
@@ -118,7 +118,7 @@ async fn dispatch_fallible<R, Handler, Answer, Failure>(
     request: TargetCheckedCentralCall<R>,
     handler: Handler,
     verify_reply: impl FnOnce(R::Reply) -> Result<R::Reply, Failure>,
-) -> Result<TypedCallResult<CentralCallReply>, Failure>
+) -> Result<CentralCallReply, Failure>
 where
     R: CentralLinkRpc,
     Handler: FnOnce(R::Request) -> Answer,
@@ -126,12 +126,10 @@ where
 {
     let Envelope { target, body } = request.0;
     let reply = verify_reply(handler(body).await?)?;
-    Ok(TypedCallResult::Answered {
-        reply: R::reply(Envelope {
-            target,
-            body: reply,
-        }),
-    })
+    Ok(R::reply(Envelope {
+        target,
+        body: reply,
+    }))
 }
 
 impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores> {
