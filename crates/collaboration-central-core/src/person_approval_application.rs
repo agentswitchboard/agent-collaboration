@@ -8,27 +8,22 @@ use fleet_approvals::{
     PendingApprovalHolderEffects, PendingApprovalReply, complete_approval_commit,
 };
 use fleet_identity_protocol::OrganizationId;
-use fleet_runtime_ports::{CentralStore, Clock, IdSource, SyncTime, WorkspaceStores};
+use fleet_runtime_ports::{Clock, IdSource, SyncTime};
 use fleet_signin::{
-    ApprovalApplyingContext, ApprovalPersonVerificationInput, FleetPermission,
-    VerifiedApprovalPersonRequest,
+    ApprovalApplyingContext, FleetPermission, VerifiedApprovalPersonRequest,
     approval_person_wire::{
         ApprovalDecideReply, ApprovalListReply, ApprovalPersonOperation, ApprovalReadReply,
     },
-    person_proof::{
-        AdmissionRefusal, PersonRequestRefusal, admission_before_person, request_time_refusal,
-    },
+    person_proof::{AdmissionRefusal, admission_before_person, request_time_refusal},
 };
 use futures_util::future::BoxFuture;
 use workspace_ids::RequestId;
 
 use crate::{
-    WorkspaceRuntime,
     authorization_floor_rows::{
         decode_organization_floor, decode_person_floor, organization_floor_statement,
         person_floor_statement,
     },
-    organization_authority_cache::StampStanding,
     person_proof_repository::{proof_was_used, reserve_approval_proof, used_proof_statement},
 };
 
@@ -57,6 +52,29 @@ pub struct PersonApprovalApplication {
 }
 
 impl PersonApprovalApplication {
+    pub(super) fn new(
+        organization: &OrganizationId,
+        verified: VerifiedApprovalPersonRequest,
+        time: SyncTime,
+    ) -> Self {
+        Self {
+            verified,
+            organization: organization.clone(),
+            time,
+        }
+    }
+
+    pub(super) async fn commit(
+        self,
+        transactions: &dyn PersonApprovalTransactions,
+    ) -> Result<(ApprovalCommitProof, AppliedPersonApproval), StoreFailure> {
+        complete_approval_commit(PersonApprovalCommit {
+            transactions,
+            application: self,
+        })
+        .await
+    }
+
     pub fn organization(&self) -> &OrganizationId {
         &self.organization
     }
@@ -185,7 +203,7 @@ async fn reserve_and_finish(
     Ok(applied)
 }
 
-fn decide_operation_id(operation: &ApprovalPersonOperation) -> Option<&RequestId> {
+pub(super) fn decide_operation_id(operation: &ApprovalPersonOperation) -> Option<&RequestId> {
     match operation {
         ApprovalPersonOperation::Decide(request) => Some(&request.operation_id),
         ApprovalPersonOperation::List(_) | ApprovalPersonOperation::Read(_) => None,
@@ -236,6 +254,11 @@ enum ApplyingOutcome {
 pub struct AppliedPersonApproval(ApplyingOutcome);
 
 impl AppliedPersonApproval {
+    #[cfg(feature = "test-support")]
+    pub(super) fn is_admitted(&self) -> bool {
+        matches!(&self.0, ApplyingOutcome::Admitted { .. })
+    }
+
     fn refused(reason: AdmissionRefusal) -> Self {
         Self(ApplyingOutcome::Refused(reason))
     }
@@ -252,7 +275,10 @@ impl AppliedPersonApproval {
         })
     }
 
-    fn publish(self, commit: &ApprovalCommitProof) -> Result<PersonApprovalAnswer, StoreFailure> {
+    pub(super) fn publish(
+        self,
+        commit: &ApprovalCommitProof,
+    ) -> Result<PersonApprovalAnswer, StoreFailure> {
         let (reply, address, effects) = match self.0 {
             ApplyingOutcome::Refused(reason) => return Ok(PersonApprovalAnswer::Refused(reason)),
             ApplyingOutcome::Admitted {
@@ -296,97 +322,5 @@ impl ApprovalCommitOwner<AppliedPersonApproval> for PersonApprovalCommit<'_> {
         self.transactions
             .apply_and_commit(self.application, scope)
             .await
-    }
-}
-
-impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
-    pub(crate) async fn apply_person_approval_request(
-        &self,
-        organization: &OrganizationId,
-        input: ApprovalPersonVerificationInput<'_>,
-    ) -> Result<PersonApprovalAnswer, StoreFailure> {
-        if organization != self.execution.organization() {
-            return Ok(PersonApprovalAnswer::Unauthenticated);
-        }
-        {
-            let _turn = self.execution.take_central_turn().await;
-            self.prepare_signin_authority().await?;
-            if self.signin_authority.standing(self.execution.clock().now()) != StampStanding::Valid
-            {
-                return Err(StoreFailure::Unavailable);
-            }
-        }
-        let check = self
-            .signin_authority
-            .check()
-            .ok_or(StoreFailure::Unavailable)?;
-        if check.sign_in_service().is_none() {
-            return Err(StoreFailure::Unavailable);
-        }
-        let verified = match check.verify_person_approval(input).await {
-            Ok(verified) => verified,
-            Err(PersonRequestRefusal::VerificationUnavailable | PersonRequestRefusal::Policy) => {
-                return Err(StoreFailure::Unavailable);
-            }
-            Err(
-                PersonRequestRefusal::DpopRequired
-                | PersonRequestRefusal::MalformedJwt
-                | PersonRequestRefusal::UnsupportedHeader
-                | PersonRequestRefusal::IssuerKey
-                | PersonRequestRefusal::TokenSignature
-                | PersonRequestRefusal::ProofSignature
-                | PersonRequestRefusal::PersonClaims
-                | PersonRequestRefusal::Issuer
-                | PersonRequestRefusal::Audience
-                | PersonRequestRefusal::Profile
-                | PersonRequestRefusal::ExpiryBounds
-                | PersonRequestRefusal::Expired
-                | PersonRequestRefusal::ProofKey
-                | PersonRequestRefusal::KeyBinding
-                | PersonRequestRefusal::Method
-                | PersonRequestRefusal::Target
-                | PersonRequestRefusal::ProofTime
-                | PersonRequestRefusal::RequestTime
-                | PersonRequestRefusal::RequestId
-                | PersonRequestRefusal::TokenHash
-                | PersonRequestRefusal::OperationBody
-                | PersonRequestRefusal::Intent
-                | PersonRequestRefusal::OrganizationMismatch,
-            ) => return Ok(PersonApprovalAnswer::Unauthenticated),
-        };
-        if &verified.proof().organization_id != organization {
-            return Ok(PersonApprovalAnswer::Unauthenticated);
-        }
-
-        let _turn = self.execution.take_central_turn().await;
-        self.prepare_signin_authority().await?;
-        let time = SyncTime::from_unix_millis(self.execution.now()?.timestamp_millis());
-        if self.signin_authority.standing(time) != StampStanding::Valid {
-            return Err(StoreFailure::Unavailable);
-        }
-        #[cfg(feature = "test-support")]
-        let operation_id = decide_operation_id(verified.operation()).cloned();
-        let transactions = self
-            .person_approval_transactions
-            .as_deref()
-            .ok_or(StoreFailure::Unavailable)?;
-        let (proof, applied) = complete_approval_commit(PersonApprovalCommit {
-            transactions,
-            application: PersonApprovalApplication {
-                organization: organization.clone(),
-                verified,
-                time,
-            },
-        })
-        .await?;
-        #[cfg(feature = "test-support")]
-        if matches!(&applied.0, ApplyingOutcome::Admitted { .. })
-            && operation_id
-                .as_ref()
-                .is_some_and(|id| self.execution.take_lost_reply(id))
-        {
-            return Err(StoreFailure::AnswerLost);
-        }
-        applied.publish(&proof)
     }
 }
