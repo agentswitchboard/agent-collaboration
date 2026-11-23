@@ -1,9 +1,111 @@
+use central_link_client::ReadyLinkLane;
+
 use super::{
     CustodyRequestStatus, DataFrame, Duration, FrameKind, LinkFrame, MessageStatus, NetworkCustody,
     ReceiptFrameOutcome, ReceiptResult, assert_kept_receipt, assert_one_offer_per_socket,
     assert_replayed_member, offered_message, offers_for, queued_message, run_link_case,
     send_and_keep,
 };
+
+#[test]
+fn late_receipt_result_retries_with_a_fresh_correlation_on_the_same_socket() {
+    run_link_case(|link| async move {
+        let mut case = NetworkCustody::start(link).await;
+        let message = send_and_keep(&mut case).await;
+        let admitted = case.link.admission.clone();
+        let before_receipt = case.link.network.hold_next(FrameKind::ReceiptResult);
+        case.advance_to_next_mark().await;
+        let first = case
+            .link
+            .network
+            .seen(before_receipt, FrameKind::Receipt)
+            .await;
+        let late = case
+            .link
+            .network
+            .seen(before_receipt, FrameKind::ReceiptResult)
+            .await;
+        let LinkFrame::Data(DataFrame::Receipts {
+            correlation_id,
+            receipts,
+        }) = &first.frame
+        else {
+            panic!("expected the first receipt frame");
+        };
+        assert!(
+            matches!(&late.frame, LinkFrame::Data(DataFrame::ReceiptResults {
+            correlation_id: answered, results,
+        }) if answered == correlation_id && results == &[ReceiptResult::Recorded])
+        );
+
+        case.advance_to(first.sent_at + Duration::from_secs(31));
+        assert_eq!(
+            case.next_receipt_outcome().await,
+            ReceiptFrameOutcome::RetryPending
+        );
+        case.link.network.release_and_wait().await;
+        // A later status reply arrives on the same TCP stream, behind the
+        // old result. That old result must leave the Mac's row pending.
+        assert!(matches!(
+            case.central_status(&message).await,
+            MessageStatus::Delivered { .. }
+        ));
+        assert_eq!(
+            case.link.lane.watch_admitted().borrow().as_ref(),
+            Some(&admitted)
+        );
+        assert_eq!(
+            case.inbox.pending_receipts().await.unwrap().healthy.len(),
+            1
+        );
+
+        let before_retry = case.link.network.frames().len();
+        let retry_wake = case.wake_at_next_mark();
+        case.advance_to_next_mark().await;
+        assert_eq!(
+            case.next_receipt_outcome().await,
+            ReceiptFrameOutcome::Confirmed {
+                results: vec![ReceiptResult::Recorded]
+            },
+            "the real socket must accept the retry"
+        );
+        let retried = case
+            .link
+            .network
+            .seen(before_retry, FrameKind::Receipt)
+            .await;
+        assert_eq!(retried.connection_port, first.connection_port);
+        assert_eq!(retried.sent_at, retry_wake);
+        assert!(
+            matches!(&retried.frame, LinkFrame::Data(DataFrame::Receipts {
+            correlation_id: retry_id, receipts: retried_decisions,
+        }) if retry_id != correlation_id && retried_decisions == receipts)
+        );
+        assert!(
+            case.inbox
+                .pending_receipts()
+                .await
+                .unwrap()
+                .healthy
+                .is_empty()
+        );
+        assert_eq!(
+            case.link
+                .network
+                .frames()
+                .iter()
+                .skip(before_retry)
+                .filter(|wire| wire.kind == FrameKind::Receipt)
+                .count(),
+            1,
+        );
+        assert_eq!(
+            case.link.lane.watch_admitted().borrow().as_ref(),
+            Some(&admitted)
+        );
+        case.close().await;
+    });
+}
 
 #[test]
 fn lost_write_batch_is_resent_on_a_later_mark() {

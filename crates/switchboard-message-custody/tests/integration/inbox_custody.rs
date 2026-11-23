@@ -393,8 +393,8 @@ async fn short_stale_mismatched_and_missing_answers_keep_the_receipt_frame_pendi
             .await
             .unwrap();
     }
-    let first = inbox.prepare_receipts(&connection).await.unwrap().unwrap();
-    let (correlation, receipts) = decode_receipts(&first);
+    let mut frame = inbox.prepare_receipts(&connection).await.unwrap().unwrap();
+    let (correlation, receipts) = decode_receipts(&frame);
     let wrong_correlation = "019f0000-0000-7000-8000-000000000099".parse().unwrap();
     let result_pair = vec![ReceiptResult::Recorded, ReceiptResult::AlreadySettled];
 
@@ -406,22 +406,28 @@ async fn short_stale_mismatched_and_missing_answers_keep_the_receipt_frame_pendi
             cause: UntouchedCommand::WriterBusy,
         },
     ] {
+        let stayed_untouched = matches!(&answer, LinkLaneDisposition::NotReached { .. });
+        let (previous_correlation, _) = decode_receipts(&frame);
         let disposition = inbox
-            .settle_receipts(first.clone(), Some(&connection), answer)
+            .settle_receipts(frame, Some(&connection), answer)
             .await
             .unwrap();
         assert_eq!(disposition, ReceiptFrameOutcome::RetryPending);
+        frame = inbox.prepare_receipts(&connection).await.unwrap().unwrap();
+        let (retry_correlation, retried_receipts) = decode_receipts(&frame);
         assert_eq!(
-            inbox.prepare_receipts(&connection).await.unwrap(),
-            Some(first.clone()),
-            "same connection retries the original frame"
+            retry_correlation == previous_correlation,
+            stayed_untouched,
+            "only an untouched attempt can reuse its correlation"
         );
+        assert_eq!(retried_receipts, receipts);
     }
 
+    let (correlation, _) = decode_receipts(&frame);
     assert_eq!(
         inbox
             .settle_receipts(
-                first,
+                frame,
                 Some(&replacement),
                 answer_receipts(&clock, correlation, result_pair.clone())
             )
