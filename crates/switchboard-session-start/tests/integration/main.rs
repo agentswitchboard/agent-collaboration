@@ -5,5 +5,9 @@
 )]
 
 mod central_contract;
+mod choices;
+mod executor;
 mod fixtures;
+mod histories;
+mod model;
 mod wrong_builds;
