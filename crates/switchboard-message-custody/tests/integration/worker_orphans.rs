@@ -1,6 +1,6 @@
 use central_link_protocol::{ReplyPayload, RequestScope, RequestStatusAnswer, RequestStatusQuery};
 use router_clock::{ClockInstant, RuntimeClock};
-use std::{future::Future, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use switchboard_machine_core_store::{
     NewOutboxItem, OutboxCancellation, OutboxQueuedWrite, OutboxStorage,
 };
@@ -71,7 +71,7 @@ async fn a_lost_return_ack_excludes_that_request_while_an_unrelated_batch_is_liv
             Submission::InOutbox(_)
         ));
         let first_mark = ClockInstant::ZERO.after(Duration::from_secs(20));
-        progress(clock.not_due_check_now(first_mark), "the original claim").await;
+        clock.not_due_check_now(first_mark).await;
         clock.advance(Duration::from_secs(20)).unwrap();
         let report = flush_event(&mut events, "the ambiguous committed return").await;
         assert_eq!(report.issues.len(), 1);
@@ -91,13 +91,9 @@ async fn a_lost_return_ack_excludes_that_request_while_an_unrelated_batch_is_liv
         ));
         let held = peer.hold_next_batch();
         let next_mark = ClockInstant::ZERO.after(Duration::from_secs(80));
-        progress(
-            clock.not_due_check_now(next_mark),
-            "the unrelated write's mark",
-        )
-        .await;
+        clock.not_due_check_now(next_mark).await;
         clock.advance(Duration::from_secs(60)).unwrap();
-        progress(held.entered.notified(), "the unrelated live batch").await;
+        held.entered.notified().await;
         let sent = peer.batch_commands().pop().unwrap();
         assert!(
             matches!(sent.requests.requests(), [member] if member.payload().write_request_id() == Some(&second.request)),
@@ -105,11 +101,7 @@ async fn a_lost_return_ack_excludes_that_request_while_an_unrelated_batch_is_liv
         );
 
         let retry = ClockInstant::ZERO.after(Duration::from_secs(81));
-        progress(
-            clock.not_due_check_now(retry),
-            "the retained return's independent retry",
-        )
-        .await;
+        clock.not_due_check_now(retry).await;
         faults.fail_scoped_reads(false);
         clock.advance(Duration::from_secs(1)).unwrap();
         assert_eq!(peer.batch_commands().last(), Some(&sent));
@@ -186,13 +178,9 @@ async fn an_orphan_status_uses_its_accepted_instant_and_never_notifies_twice() {
         peer.script_status_answer(item.caller.clone(), query.clone(), central_status);
         let status_gate = peer.hold_next_status();
         let (calls, stop, mut events, running) = start_worker(campaign.custody);
-        progress(status_gate.entered.notified(), "the genuine orphan's query").await;
+        status_gate.entered.notified().await;
         let cutoff = ClockInstant::ZERO.after(Duration::from_secs(5));
-        progress(
-            clock.not_due_check_now(cutoff),
-            "the original cutoff while the status is pending",
-        )
-        .await;
+        clock.not_due_check_now(cutoff).await;
         if matches!(order, CutoffReportedFirst | EarlyStampPublishedAfterCutoff) {
             clock.advance(Duration::from_secs(5)).unwrap();
             let ending = flush_event(&mut events, "the cutoff before any answer").await;
@@ -224,11 +212,7 @@ async fn an_orphan_status_uses_its_accepted_instant_and_never_notifies_twice() {
                 let query = query.clone();
                 async move { calls.request_status(caller, query).await }
             });
-            progress(
-                local_hold.entered.notified(),
-                "the worker's held local read",
-            )
-            .await;
+            local_hold.entered.notified().await;
             clock.advance(Duration::from_secs(4)).unwrap();
             if matches!(order, HeldAfterEarlyAnswer) {
                 status_gate
@@ -263,18 +247,15 @@ async fn an_orphan_status_uses_its_accepted_instant_and_never_notifies_twice() {
                 );
             }
         }
-        progress(
-            async {
-                while calls
-                    .request_status(item.caller.clone(), query.clone())
-                    .await
-                    != expected
-                {
-                    tokio::task::yield_now().await;
-                }
-            },
-            "the exact retained status after cutoff",
-        )
+        async {
+            while calls
+                .request_status(item.caller.clone(), query.clone())
+                .await
+                != expected
+            {
+                tokio::task::yield_now().await;
+            }
+        }
         .await;
         assert!(
             events.try_recv().is_err(),
@@ -324,23 +305,6 @@ async fn seed_orphan(campaign: &FaultCampaign, item: &NewOutboxItem, created_at:
 }
 
 #[expect(
-    clippy::unwrap_used,
-    reason = "The fixture reports a missing worker observation directly."
-)]
-pub(super) async fn progress<Value>(
-    watching: impl Future<Output = Value>,
-    indication: &str,
-) -> Value {
-    let observed = tokio::select! {
-        biased;
-        current = watching => Some(current),
-        () = async { for _ in 0..50_000 { tokio::task::yield_now().await; } } => None,
-    };
-    assert!(observed.is_some(), "custody did not reach {indication}");
-    observed.unwrap()
-}
-
-#[expect(
     clippy::panic,
     reason = "The test asserts the exact next worker outcome."
 )]
@@ -348,7 +312,7 @@ pub(super) async fn flush_event(
     events: &mut mpsc::UnboundedReceiver<CustodyTaskEvent>,
     indication: &str,
 ) -> FlushReport {
-    match progress(events.recv(), indication).await {
+    match events.recv().await {
         Some(CustodyTaskEvent::Flush(report)) => report,
         seen => panic!("expected {indication}, saw {seen:?}"),
     }
@@ -367,23 +331,15 @@ async fn a_failed_startup_orphan_read_retries_offline_and_ends_at_the_original_d
     let peer = campaign.peer.clone();
     let (calls, stop, mut events, running) = start_worker(campaign.custody);
     assert!(matches!(
-        progress(events.recv(), "startup read failure").await,
+        events.recv().await,
         Some(CustodyTaskEvent::Failed(_))
     ));
     let retry_at = ClockInstant::ZERO.after(Duration::from_secs(1));
-    progress(
-        clock.not_due_check_now(retry_at),
-        "an offline recovery retry",
-    )
-    .await;
+    clock.not_due_check_now(retry_at).await;
     clock.advance(Duration::from_secs(1)).unwrap();
 
     let cutoff = ClockInstant::ZERO.after(Duration::from_secs(5));
-    progress(
-        clock.not_due_check_now(cutoff),
-        "the orphan's original deadline",
-    )
-    .await;
+    clock.not_due_check_now(cutoff).await;
     let query = scoped_query(&item);
     clock.advance(Duration::from_secs(3)).unwrap();
     assert_eq!(
@@ -427,24 +383,16 @@ async fn a_failed_untouched_return_keeps_its_first_attempt_unsent_offline() {
     let (calls, stop, mut events, running) = start_worker(campaign.custody);
 
     let mark = ClockInstant::ZERO.after(Duration::from_secs(20));
-    progress(clock.not_due_check_now(mark), "the untouched first attempt").await;
+    clock.not_due_check_now(mark).await;
     clock.advance(Duration::from_secs(20)).unwrap();
     let attempted = flush_event(&mut events, "the failed definite return").await;
     assert_eq!(attempted.issues.len(), 1);
     peer.admitted.send_replace(None);
     let retry = ClockInstant::ZERO.after(Duration::from_secs(21));
-    progress(
-        clock.not_due_check_now(retry),
-        "the offline definite-return retry",
-    )
-    .await;
+    clock.not_due_check_now(retry).await;
     clock.advance(Duration::from_secs(1)).unwrap();
     let cutoff = ClockInstant::ZERO.after(Duration::from_secs(100));
-    progress(
-        clock.not_due_check_now(cutoff),
-        "the waiting write's original cutoff",
-    )
-    .await;
+    clock.not_due_check_now(cutoff).await;
     assert!(matches!(
         calls
             .request_status(item.caller.clone(), scoped_query(&item))
@@ -531,38 +479,31 @@ async fn a_lost_local_claim_ack_is_returned_as_untouched_without_a_status_probe(
         Submission::InOutbox(_)
     ));
     let mark = ClockInstant::ZERO.after(Duration::from_secs(20));
-    progress(clock.not_due_check_now(mark), "the first local claim").await;
+    clock.not_due_check_now(mark).await;
     clock.advance(Duration::from_secs(20)).unwrap();
     assert!(matches!(
-        progress(events.recv(), "the lost local claim acknowledgment").await,
+        events.recv().await,
         Some(CustodyTaskEvent::Failed(_))
     ));
     assert!(peer.batch_commands().is_empty());
     let retry = ClockInstant::ZERO.after(Duration::from_secs(21));
-    progress(
-        clock.not_due_check_now(retry),
-        "the offline-capable claim recovery",
-    )
-    .await;
+    clock.not_due_check_now(retry).await;
     clock.advance(Duration::from_secs(1)).unwrap();
     let mut reopened = open_outbox(&database).await;
-    let pending = progress(
-        async {
-            loop {
-                if reopened
-                    .sent_without_answer()
-                    .await
-                    .unwrap()
-                    .healthy
-                    .is_empty()
-                {
-                    break reopened.pending_for(&item.caller).await.unwrap();
-                }
-                tokio::task::yield_now().await;
+    let pending = async {
+        loop {
+            if reopened
+                .sent_without_answer()
+                .await
+                .unwrap()
+                .healthy
+                .is_empty()
+            {
+                break reopened.pending_for(&item.caller).await.unwrap();
             }
-        },
-        "the untouched local claim return",
-    )
+            tokio::task::yield_now().await;
+        }
+    }
     .await;
     assert!(
         matches!(pending.as_slice(), [one] if one.request_id == item.request &&
@@ -574,11 +515,7 @@ async fn a_lost_local_claim_ack_is_returned_as_untouched_without_a_status_probe(
         "only claims found at startup ask Central for status"
     );
     let next = ClockInstant::ZERO.after(Duration::from_secs(80));
-    progress(
-        clock.not_due_check_now(next),
-        "the fresh attempt on the next minute",
-    )
-    .await;
+    clock.not_due_check_now(next).await;
     clock.advance(Duration::from_secs(59)).unwrap();
     let report = flush_event(&mut events, "one healthy fresh settlement").await;
     assert!(matches!(report.answered.as_slice(), [one] if one.request == item.request));
@@ -616,18 +553,14 @@ async fn a_known_member_settles_locally_while_the_other_member_replays() {
             ));
         }
         let mark = ClockInstant::ZERO.after(Duration::from_secs(20));
-        progress(clock.not_due_check_now(mark), "first flush mark").await;
+        clock.not_due_check_now(mark).await;
         clock.advance(Duration::from_secs(20)).unwrap();
         let first = flush_event(&mut events, "partial batch settlement").await;
         assert_eq!(first.issues.len(), 1);
         if stage == FaultStage::BeforeCall {
             assert!(first.answered.is_empty());
             let retry = ClockInstant::ZERO.after(Duration::from_secs(21));
-            progress(
-                clock.not_due_check_now(retry),
-                "independent local settlement retry",
-            )
-            .await;
+            clock.not_due_check_now(retry).await;
             clock.advance(Duration::from_secs(1)).unwrap();
             let local = flush_event(&mut events, "A's known local answer before B's replay").await;
             assert!(
@@ -646,7 +579,7 @@ async fn a_known_member_settles_locally_while_the_other_member_replays() {
             CustodyRequestStatus::Answered(ReplyPayload::Workspace(_))
         ));
         let next = ClockInstant::ZERO.after(Duration::from_secs(80));
-        progress(clock.not_due_check_now(next), "B's next minute mark").await;
+        clock.not_due_check_now(next).await;
         clock
             .advance(Duration::from_secs(if stage == FaultStage::BeforeCall {
                 59

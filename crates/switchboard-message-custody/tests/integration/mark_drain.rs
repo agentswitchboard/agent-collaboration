@@ -5,27 +5,108 @@
     reason = "A malformed fixture or missing result fails the behavior it was set up to prove."
 )]
 
-use router_clock::{ClockInstant, RuntimeClock};
-use std::time::Duration;
+use chrono::{DateTime, Utc};
+use router_clock::{ClockInstant, ManualClock, RuntimeClock};
+use runtime_primitives::{Clock, SyncTime};
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 use switchboard_machine_core_store::{OutboxCancellation, OutboxQueuedWrite, OutboxStorage};
 use switchboard_message_custody::{
     custody_link::CustodyLink,
     custody_status::CustodyRequestStatus,
     custody_submission::{Submission, SubmissionPayload},
+    custody_task::CustodyTaskEvent,
     outbox_dispatch::FlushReport,
 };
+use tokio::sync::{mpsc, watch};
 use workspace_ids::RequestId;
 
 use super::{
-    batch_limits::limits_fixture,
+    batch_limits::{limits_fixture, limits_fixture_with_clock},
     batch_replay::{ScriptedBatch, ScriptedBatchLane, ScriptedCommand, ScriptedMemberFate},
-    outbox_timing::{open_outbox, thread_post},
-    worker_orphans::{flush_event, progress, scoped_query, start_worker},
+    outbox_timing::{manual_clock, open_outbox, thread_post},
+    worker_orphans::{flush_event, scoped_query, start_worker},
 };
 
 const FIRST_MARK: Duration = Duration::from_secs(20);
 const SECOND_MARK: Duration = Duration::from_secs(80);
 const MARK_MS: i64 = 1_763_380_800_000;
+
+/// These tests observe second-mark sleepers while delegating time to their one manual clock.
+struct NextMarkClock {
+    source: Arc<ManualClock>,
+    pending_wakes: watch::Sender<usize>,
+}
+
+struct MarkWait<'clock>(&'clock watch::Sender<usize>);
+
+impl Drop for MarkWait<'_> {
+    fn drop(&mut self) {
+        self.0.send_modify(|wakes| *wakes -= 1);
+    }
+}
+
+impl Clock for NextMarkClock {
+    fn now(&self) -> SyncTime {
+        self.source.now()
+    }
+}
+
+impl RuntimeClock for NextMarkClock {
+    fn utc_now(&self) -> DateTime<Utc> {
+        self.source.utc_now()
+    }
+
+    fn monotonic_now(&self) -> ClockInstant {
+        self.source.monotonic_now()
+    }
+
+    fn sleep_until(&self, deadline: ClockInstant) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        let sleeping = self.source.sleep_until(deadline);
+        if deadline != ClockInstant::ZERO.after(SECOND_MARK) {
+            return sleeping;
+        }
+        Box::pin(async move {
+            self.pending_wakes.send_modify(|wakes| *wakes += 1);
+            let _wait = MarkWait(&self.pending_wakes);
+            sleeping.await;
+        })
+    }
+}
+
+impl NextMarkClock {
+    async fn suffix_is_deferred(&self) {
+        // The receipt wait is always armed for this minute. A second live wait
+        // proves the worker scheduled another outbox frame on that later mark.
+        let mut wakes = self.pending_wakes.subscribe();
+        assert!(wakes.wait_for(|wakes| *wakes == 2).await.is_ok());
+    }
+}
+
+async fn observed_mark_fixture() -> (
+    tempfile::TempDir,
+    CustodyLink,
+    Arc<ScriptedBatchLane>,
+    Arc<NextMarkClock>,
+) {
+    let clock = Arc::new(NextMarkClock {
+        source: manual_clock(MARK_MS - 20_000),
+        pending_wakes: watch::channel(0).0,
+    });
+    let (root, custody, lane) =
+        limits_fixture_with_clock(clock.source.clone(), clock.clone()).await;
+    (root, custody, lane, clock)
+}
+
+async fn flush_or_deferral(
+    events: &mut mpsc::UnboundedReceiver<CustodyTaskEvent>,
+    clock: &NextMarkClock,
+) -> Option<FlushReport> {
+    tokio::select! {
+        biased;
+        report = flush_event(events, "the worker's next flush") => Some(report),
+        () = clock.suffix_is_deferred() => None,
+    }
+}
 
 async fn queue_posts(custody: &mut CustodyLink, count: u16) -> Vec<RequestId> {
     let mut ids = Vec::new();
@@ -63,20 +144,24 @@ fn frame_counts(lane: &ScriptedBatchLane) -> Vec<usize> {
 
 #[tokio::test]
 async fn two_hundred_prompt_writes_drain_in_four_ordered_frames_at_one_mark() {
-    let (_root, mut custody, lane, clock) = limits_fixture().await;
+    let (_root, mut custody, lane, clock) = observed_mark_fixture().await;
     let queued = queue_posts(&mut custody, 200).await;
     let (_calls, stop, mut events, running) = start_worker(custody);
-    progress(
-        clock.not_due_check_now(ClockInstant::ZERO.after(FIRST_MARK)),
-        "the first mark wake",
-    )
-    .await;
-    clock.advance(FIRST_MARK).unwrap();
+    clock
+        .source
+        .not_due_check_now(ClockInstant::ZERO.after(FIRST_MARK))
+        .await;
+    clock.source.advance(FIRST_MARK).unwrap();
 
     let mut answered = Vec::new();
     for count in [64, 64, 64, 8] {
-        let frame =
-            answer_ids(flush_event(&mut events, "each prompt frame on the original mark").await);
+        let report = flush_or_deferral(&mut events, &clock).await;
+        assert!(
+            report.is_some(),
+            "the worker deferred the prompt suffix after {} of 200 writes",
+            answered.len()
+        );
+        let frame = answer_ids(report.unwrap());
         assert_eq!(frame.len(), count);
         answered.extend(frame);
     }
@@ -103,53 +188,27 @@ async fn the_sixty_fifth_write_is_answered_in_the_same_mark() {
 
 #[tokio::test]
 async fn the_exclusive_mark_close_leaves_the_slow_frames_suffix_for_the_next_mark() {
-    let (_root, mut custody, lane, clock) = limits_fixture().await;
+    let (_root, mut custody, lane, clock) = observed_mark_fixture().await;
     let queued = queue_posts(&mut custody, 65).await;
     let (prefix, suffix) = queued.split_at_checked(64).unwrap();
     let gate = lane.hold_next_batch();
     let (_calls, stop, mut events, running) = start_worker(custody);
-    progress(
-        clock.not_due_check_now(ClockInstant::ZERO.after(FIRST_MARK)),
-        "the first mark wake",
-    )
-    .await;
-    clock.advance(FIRST_MARK).unwrap();
+    clock
+        .source
+        .not_due_check_now(ClockInstant::ZERO.after(FIRST_MARK))
+        .await;
+    clock.source.advance(FIRST_MARK).unwrap();
 
-    progress(gate.entered.notified(), "the held first frame").await;
+    gate.entered.notified().await;
     assert_eq!(frame_counts(&lane), [64], "only one frame may be live");
-    clock.advance(Duration::from_secs(3)).unwrap();
-    let closed_at = clock.monotonic_now();
-    let waits_after_close = clock.wait_checkpoint();
+    clock.source.advance(Duration::from_secs(3)).unwrap();
     gate.release.notify_one();
     let first = answer_ids(flush_event(&mut events, "the first frame's answers").await);
     assert_eq!(first, prefix);
-    let next_wake = ClockInstant::ZERO.after(SECOND_MARK);
-    let deferred = progress(
-        async {
-            loop {
-                if lane.command_instants().len() > 1 {
-                    break false;
-                }
-                let waits = clock
-                    .wait_registrations_since(waits_after_close)
-                    .into_iter()
-                    .filter(|wait| {
-                        wait.deadline == next_wake
-                            && wait.first_polled_at == Some(closed_at)
-                            && !wait.dropped
-                    })
-                    .count();
-                // The receipt timer alone does not show that the suffix was deferred.
-                if waits == 2 {
-                    break true;
-                }
-                tokio::task::yield_now().await;
-            }
-        },
-        "the untouched suffix's next mark",
-    )
-    .await;
-    assert!(deferred, "no second frame may start at the closing edge");
+    assert!(
+        flush_or_deferral(&mut events, &clock).await.is_none(),
+        "no second frame may start at the closing edge"
+    );
     assert_eq!(
         frame_counts(&lane),
         [64],
@@ -157,6 +216,7 @@ async fn the_exclusive_mark_close_leaves_the_slow_frames_suffix_for_the_next_mar
     );
 
     clock
+        .source
         .advance(SECOND_MARK - FIRST_MARK - Duration::from_secs(3))
         .unwrap();
     let second = answer_ids(flush_event(&mut events, "the suffix on the next mark").await);
@@ -239,19 +299,15 @@ async fn a_driver_held_write_ends_once_at_cutoff_and_a_later_reply_updates_only_
         }
         let gate = lane.hold_next_batch();
         let (calls, stop, mut events, running) = start_worker(custody);
-        progress(
-            clock.not_due_check_now(ClockInstant::ZERO.after(FIRST_MARK)),
-            "the first mark wake",
-        )
-        .await;
+        clock
+            .not_due_check_now(ClockInstant::ZERO.after(FIRST_MARK))
+            .await;
         clock.advance(FIRST_MARK).unwrap();
 
-        progress(gate.entered.notified(), "the active driver ticket").await;
-        progress(
-            clock.not_due_check_now(ClockInstant::ZERO.after(FIRST_MARK + Duration::from_secs(1))),
-            "the held write's original deadline",
-        )
-        .await;
+        gate.entered.notified().await;
+        clock
+            .not_due_check_now(ClockInstant::ZERO.after(FIRST_MARK + Duration::from_secs(1)))
+            .await;
         clock.advance(Duration::from_secs(1)).unwrap();
         let ending = flush_event(
             &mut events,

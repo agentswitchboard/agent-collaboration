@@ -5,7 +5,7 @@
 
 use central_link_client::{LINK_LANE_FRAME_BYTES, LinkLaneEvent, LinkLocalFault};
 use central_link_protocol::{DataFrame, FrameDirection, LinkFrame, encode_text};
-use router_clock::{ClockInstant, ManualClock};
+use router_clock::{ClockInstant, ManualClock, RuntimeClock};
 use std::{sync::Arc, time::Duration};
 use switchboard_machine_core_store::{
     InboxStore, MachineLocalStore, OutboxAccepted, OutboxInsert, OutboxQueuedWrite,
@@ -37,30 +37,41 @@ pub(super) async fn limits_fixture() -> (
     Arc<ScriptedBatchLane>,
     Arc<ManualClock>,
 ) {
+    let clock = manual_clock(MARK_MS - 20_000);
+    let (root, custody, lane) = limits_fixture_with_clock(clock.clone(), clock.clone()).await;
+    (root, custody, lane, clock)
+}
+
+pub(super) async fn limits_fixture_with_clock(
+    clock: Arc<ManualClock>,
+    observed_clock: Arc<dyn RuntimeClock>,
+) -> (tempfile::TempDir, CustodyLink, Arc<ScriptedBatchLane>) {
     let root = tempfile::tempdir().unwrap();
     let database = root.path().join("machine_local.sqlite");
-    let clock = manual_clock(MARK_MS - 20_000);
     let machine: MachineId = "019f0000-0000-7000-8000-000000000011".parse().unwrap();
     let lane = Arc::new(ScriptedBatchLane::new(
         new_admission(machine.clone(), clock.clone()),
         clock.clone(),
         Default::default(),
     ));
-    let outbox = OutboxWork::new(Box::new(open_outbox(&database).await), clock.clone());
+    let outbox = OutboxWork::new(
+        Box::new(open_outbox(&database).await),
+        observed_clock.clone(),
+    );
     let inbox = RecipientInbox::new(
         InboxStore::new(MachineLocalStore::open(&database).await.unwrap()),
         machine,
         Arc::new(KnownRecipient),
-        clock.clone(),
+        observed_clock.clone(),
     );
     let custody = CustodyLink::new(
         lane.clone(),
-        clock.clone(),
+        observed_clock,
         Arc::new(NoFlushJitter),
         outbox,
         inbox,
     );
-    (root, custody, lane, clock)
+    (root, custody, lane)
 }
 
 async fn queue_post(
