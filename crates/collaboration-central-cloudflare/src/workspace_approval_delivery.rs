@@ -1,5 +1,6 @@
+use super::super::workspace_pending_mac_calls::PendingMacCalls;
 use super::{
-    MacCallAddress, MacLinkRpc, OrgRuntime, PendingMacCalls, SocketAttachment, is_current_socket,
+    MacCallAddress, MacLinkRpc, OrgRuntime, SocketAttachment, is_current_socket,
     matching_attachment, socket_open, socket_tag,
 };
 use crate::worker_clock::WorkspaceClock;
@@ -98,14 +99,8 @@ impl ApprovalDeliveryTransport for WorkerApprovalDelivery {
                 let address = MacCallAddress::from(&request);
                 let tag = socket_tag(&state, &socket).ok_or(CallFailure::NeverReached)?;
                 let attachment = matching_attachment(&socket, &address, &target.organization_id)?;
-                if !matches!(
-                    runtime
-                        .restore_machine_in_held_turn(&attachment.authority)
-                        .await,
-                    Ok(Ok(_))
-                ) {
-                    return Err(CallFailure::NeverReached);
-                }
+                restore_before_write(&runtime, &pending_calls, &state, &socket, &attachment)
+                    .await?;
                 let MacCall::ApprovalNotice(notice) = &request else {
                     return Err(CallFailure::NeverReached);
                 };
@@ -341,14 +336,14 @@ impl ApprovalDeliveryTransport for WorkerApprovalDelivery {
                             }
                             let current =
                                 matching_attachment(&socket, &address, &target.organization_id)?;
-                            if !matches!(
-                                runtime
-                                    .restore_machine_in_held_turn(&current.authority)
-                                    .await,
-                                Ok(Ok(_))
-                            ) {
-                                return Err(CallFailure::NeverReached);
-                            }
+                            restore_before_write(
+                                &runtime,
+                                &pending_calls,
+                                &state,
+                                &socket,
+                                &current,
+                            )
+                            .await?;
                             let MacCall::DeliverEnding(ending) = &call else {
                                 return Err(CallFailure::NeverReached);
                             };
@@ -513,4 +508,24 @@ async fn resume_worker_recovery(
         }
     };
     let _ = select(pending_calls.socket_ended(tag), pin!(recovery)).await;
+}
+
+async fn restore_before_write(
+    runtime: &OrgRuntime,
+    pending: &PendingMacCalls,
+    state: &worker::State,
+    socket: &worker::WebSocket,
+    attachment: &SocketAttachment,
+) -> Result<(), CallFailure> {
+    match runtime
+        .restore_machine_in_held_turn(&attachment.authority)
+        .await
+    {
+        Ok(Ok(_)) => Ok(()),
+        Ok(Err(cause)) => {
+            let _ = pending.close(state, socket, cause.code(), None);
+            Err(CallFailure::NeverReached)
+        }
+        Err(_) => Err(CallFailure::NeverReached),
+    }
 }

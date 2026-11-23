@@ -433,6 +433,11 @@ impl TokioWorkspaceHost {
 
     #[cfg(feature = "test-support")]
     /// Lists already opened fixture organizations without opening another store.
+    #[cfg(feature = "test-support")]
+    pub fn approval_delivery_is_tracked(&self) -> bool {
+        self.approval_deadline_tasks.tracked()
+    }
+
     pub async fn signin_live_organizations(&self) -> Vec<OrganizationId> {
         self.orgs.lock().await.keys().cloned().collect()
     }

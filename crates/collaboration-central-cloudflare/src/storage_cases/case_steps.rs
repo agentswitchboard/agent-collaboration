@@ -169,6 +169,9 @@ pub(crate) enum CasePausePoint {
     BeforeControlClear,
     BeforeDriveGuard,
     BeforeRenewalApplyingSample,
+    BeforeMachineAuthorityCloseWrite,
+    AfterMachineFrameHandled,
+    AfterMachineMailOffer,
     BeforeSignInSample,
     AfterSignInSample,
 }
@@ -232,6 +235,11 @@ impl From<CasePausePoint> for PausePoint {
             CasePausePoint::BeforeControlClear => Self::BeforeControlClear,
             CasePausePoint::BeforeDriveGuard => Self::BeforeDriveGuard,
             CasePausePoint::BeforeRenewalApplyingSample => Self::BeforeRenewalApplyingSample,
+            CasePausePoint::BeforeMachineAuthorityCloseWrite => {
+                Self::BeforeMachineAuthorityCloseWrite
+            }
+            CasePausePoint::AfterMachineFrameHandled => Self::AfterMachineFrameHandled,
+            CasePausePoint::AfterMachineMailOffer => Self::AfterMachineMailOffer,
             CasePausePoint::BeforeSignInSample => Self::BeforeSignInSample,
             CasePausePoint::AfterSignInSample => Self::AfterSignInSample,
         }
@@ -294,6 +302,9 @@ impl From<PausePoint> for CasePausePoint {
             PausePoint::BeforeControlClear => Self::BeforeControlClear,
             PausePoint::BeforeDriveGuard => Self::BeforeDriveGuard,
             PausePoint::BeforeRenewalApplyingSample => Self::BeforeRenewalApplyingSample,
+            PausePoint::BeforeMachineAuthorityCloseWrite => Self::BeforeMachineAuthorityCloseWrite,
+            PausePoint::AfterMachineFrameHandled => Self::AfterMachineFrameHandled,
+            PausePoint::AfterMachineMailOffer => Self::AfterMachineMailOffer,
             PausePoint::BeforeSignInSample => Self::BeforeSignInSample,
             PausePoint::AfterSignInSample => Self::AfterSignInSample,
         }

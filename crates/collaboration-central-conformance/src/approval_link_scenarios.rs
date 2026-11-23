@@ -342,23 +342,33 @@ pub async fn receive_fixture_decision(
     .await
 }
 
-pub(crate) async fn receive_decision(
+pub async fn receive_decision(
     fixture: &impl ApprovalLinkFixture,
     socket: &mut WebSocket,
     target: ApprovalHolderTarget,
     request: &Raise,
     expected: approval_request_protocol::Ending,
 ) -> Result<()> {
-    let observation_budget = async {
-        // Drive the real owning store while the socket is quiet, without
-        // moving the injected clock or waiting for a wall-clock deadline.
-        for _ in 0..128 {
-            read_request(fixture, request).await?;
-        }
-        Ok(())
-    };
-    let frame = approval_socket_frames::receive_frame_before(socket, observation_budget).await?;
-    let (correlation, offered) = ending_frame(frame, &target)?;
+    receive_decision_before(
+        fixture,
+        socket,
+        target,
+        request,
+        expected,
+        std::future::pending(),
+    )
+    .await
+}
+
+pub async fn receive_decision_before(
+    fixture: &impl ApprovalLinkFixture,
+    socket: &mut WebSocket,
+    target: ApprovalHolderTarget,
+    request: &Raise,
+    expected: approval_request_protocol::Ending,
+    unavailable: impl Future<Output = Result<()>>,
+) -> Result<()> {
+    let (correlation, offered) = next_ending_before(socket, &target, unavailable).await?;
     assert_eq!(offered.request_id(), request.request_id());
     assert_eq!(offered.contents_digest(), &request.contents_digest()?);
     assert_eq!(offered.into_ending(), expected);
@@ -455,7 +465,18 @@ pub async fn next_ending(
     socket: &mut WebSocket,
     expected: &ApprovalHolderTarget,
 ) -> Result<(CorrelationId, DeliverEndingRequest)> {
-    ending_frame(receive_frame(socket).await?, expected)
+    next_ending_before(socket, expected, std::future::pending()).await
+}
+
+async fn next_ending_before(
+    socket: &mut WebSocket,
+    expected: &ApprovalHolderTarget,
+    unavailable: impl Future<Output = Result<()>>,
+) -> Result<(CorrelationId, DeliverEndingRequest)> {
+    let frame =
+        approval_socket_frames::receive_frame_before(socket, "holder ending offer", unavailable)
+            .await?;
+    ending_frame(frame, expected)
 }
 
 fn ending_frame(
@@ -619,3 +640,5 @@ pub use mac_capability_scenarios::{
 mod approval_socket_frames;
 pub use approval_socket_frames::receive_frame;
 pub(crate) use approval_socket_frames::send_frame;
+
+pub(crate) use approval_socket_frames::receive_expected_text;

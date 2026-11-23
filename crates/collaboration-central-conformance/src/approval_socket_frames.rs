@@ -10,34 +10,55 @@ use reqwest_websocket::{Message, WebSocket};
 use std::{future::Future, pin::pin};
 
 pub async fn receive_frame(socket: &mut WebSocket) -> Result<LinkFrame> {
-    let Message::Text(text) = socket.next().await.ok_or("approval socket ended")?? else {
-        return Err("expected application text on approval socket".into());
+    receive_expected_text(socket, "application frame").await
+}
+
+pub(crate) async fn receive_expected_text(
+    socket: &mut WebSocket,
+    expected: &'static str,
+) -> Result<LinkFrame> {
+    let message = socket
+        .next()
+        .await
+        .ok_or(ExpectedFrameMissing(expected))??;
+    let Message::Text(text) = message else {
+        return Err(ExpectedFrameMissing(expected).into());
     };
     Ok(decode_text(&text, FrameDirection::ToRouter)?)
 }
 
 #[derive(Debug)]
-struct ApprovalFrameBudgetExhausted;
+struct ExpectedFrameMissing(&'static str);
 
-impl std::fmt::Display for ApprovalFrameBudgetExhausted {
+impl std::fmt::Display for ExpectedFrameMissing {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        formatter.write_str(
-            "expected approval socket frame before the fixture exhausted its observation budget",
+        write!(
+            formatter,
+            "expected {} before the delivery checkpoint",
+            self.0
         )
     }
 }
 
-impl std::error::Error for ApprovalFrameBudgetExhausted {}
+impl std::error::Error for ExpectedFrameMissing {}
 
+/// The fixture supplies a checkpoint that proves the expected writer made
+/// no frame available. Independent store reads cannot advance that checkpoint.
 pub(crate) async fn receive_frame_before(
     socket: &mut WebSocket,
-    budget: impl Future<Output = Result<()>>,
+    expected: &'static str,
+    unavailable: impl Future<Output = Result<()>>,
 ) -> Result<LinkFrame> {
-    match select(pin!(receive_frame(socket)), pin!(budget)).await {
+    match select(
+        pin!(receive_expected_text(socket, expected)),
+        pin!(unavailable),
+    )
+    .await
+    {
         Either::Left((frame, _)) => frame,
-        Either::Right((limit, _)) => {
-            limit?;
-            Err(ApprovalFrameBudgetExhausted.into())
+        Either::Right((checkpoint, _)) => {
+            checkpoint?;
+            Err(ExpectedFrameMissing(expected).into())
         }
     }
 }

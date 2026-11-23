@@ -1,18 +1,47 @@
 //! Real socket controls for the shared Central link boundary cases.
 
 use central_link_protocol::{
-    DataFrame, FrameDirection, HandledMacCalls, LINK_MAX_TEXT_BYTES, LinkFrame, MacCapabilities,
-    MachineLinkCloseCode, encode_text,
+    CorrelationId, DataFrame, FrameDirection, LINK_MAX_TEXT_BYTES, LinkFrame, LinkRequest,
+    MachineLinkCloseCode, RequestPayload, encode_text,
 };
 use futures_util::{SinkExt, StreamExt};
 use reqwest_websocket::{Message, WebSocket};
 
-use crate::{ConformanceResult as Result, approval_link_scenarios::receive_frame};
+use crate::{
+    ConformanceResult as Result,
+    approval_link_scenarios::{receive_expected_text, receive_frame},
+};
 
 pub async fn expect_pong(socket: &mut WebSocket) -> Result<()> {
-    socket.send(Message::Text("ping".into())).await?;
-    assert_eq!(receive_frame(socket).await?, LinkFrame::Pong);
+    send_pong_checkpoint(socket).await?;
+    // The RFC control response is produced by each transport behind the text
+    // probe. Seeing it first gives a missing application Pong a wire witness.
+    const MARKER: &[u8] = b"central-link-fixture";
+    socket.send(Message::Ping(MARKER.into())).await?;
+    read_pong_checkpoint(socket).await?;
+    assert!(
+        matches!(socket.next().await.transpose()?, Some(Message::Pong(marker)) if marker.as_ref() == MARKER)
+    );
     Ok(())
+}
+
+pub async fn send_pong_checkpoint(socket: &mut WebSocket) -> Result<()> {
+    socket.send(Message::Text("ping".into())).await?;
+    Ok(())
+}
+
+pub async fn read_pong_checkpoint(socket: &mut WebSocket) -> Result<()> {
+    assert_eq!(
+        receive_expected_text(socket, "application Pong").await?,
+        LinkFrame::Pong
+    );
+    Ok(())
+}
+
+pub async fn assert_empty_welcome(socket: &mut WebSocket) -> Result<()> {
+    send_pong_checkpoint(socket).await?;
+    assert_welcome(socket).await?;
+    read_pong_checkpoint(socket).await
 }
 
 pub async fn check_expired_heartbeat(socket: &mut WebSocket) -> Result<()> {
@@ -20,20 +49,52 @@ pub async fn check_expired_heartbeat(socket: &mut WebSocket) -> Result<()> {
     expect_close(socket, MachineLinkCloseCode::Expired.code()).await
 }
 
-pub async fn check_input_sizes(socket: &mut WebSocket, other: &mut WebSocket) -> Result<()> {
-    let announcement = LinkFrame::Data(DataFrame::MacCapabilities(MacCapabilities {
-        handled_calls: HandledMacCalls::try_from(Vec::new())?,
-    }));
-    let mut text = encode_text(&announcement, FrameDirection::ToCentral)?;
+pub fn text_at_input_limit(machine: &str) -> Result<(CorrelationId, String)> {
+    let correlation: CorrelationId = "019f0000-0000-7000-8000-00000000ccb0".parse()?;
+    let request = LinkRequest::new(
+        correlation.clone(),
+        workspace_model::Caller::Session(workspace_ids::SessionRef {
+            machine_id: machine.parse()?,
+            session_id: "frame-boundary-é".parse()?,
+        }),
+        RequestPayload::Workspace(workspace_model::WorkspaceRequest {
+            request_id: None,
+            workspace_id: None,
+            operation: workspace_model::WorkspaceOperation::Inbox {
+                after: None,
+                limit: 1u16.try_into()?,
+            },
+        }),
+    )?;
+    let frame = LinkFrame::Data(DataFrame::Request {
+        request: Box::new(request),
+    });
+    let mut text = encode_text(&frame, FrameDirection::ToCentral)?;
     let padding = LINK_MAX_TEXT_BYTES
         .checked_sub(text.len())
         .ok_or("fixture does not fit")?;
     text.extend(std::iter::repeat_n(' ', padding));
-    assert_eq!(text.len(), 1_048_576);
+    if text.len() != LINK_MAX_TEXT_BYTES || text.chars().count() == text.len() {
+        return Err("expected a multibyte frame at the exact ingress limit".into());
+    }
+    Ok((correlation, text))
+}
+
+pub async fn check_input_sizes(
+    socket: &mut WebSocket,
+    other: &mut WebSocket,
+    machine: &str,
+) -> Result<()> {
+    let (correlation, mut text) = text_at_input_limit(machine)?;
     socket.send(Message::Text(text.clone())).await?;
-    expect_pong(socket).await?;
+    assert!(
+        matches!(receive_frame(socket).await?, LinkFrame::Data(DataFrame::Reply {
+        correlation_id, ..
+    }) if correlation_id == correlation)
+    );
     text.push(' ');
     assert_eq!(text.len(), 1_048_577);
+    assert!(text.chars().count() <= LINK_MAX_TEXT_BYTES);
     // A parser can close upon the frame header before the sender has
     // finished its payload. Observe the close independently of that write.
     let (mut write, mut read) = (&mut *socket).split();
@@ -50,7 +111,7 @@ pub async fn check_input_sizes(socket: &mut WebSocket, other: &mut WebSocket) ->
     expect_pong(other).await
 }
 
-async fn expect_close(socket: &mut WebSocket, expected: u16) -> Result<()> {
+pub async fn expect_close(socket: &mut WebSocket, expected: u16) -> Result<()> {
     assert_close(socket.next().await.transpose()?, expected);
     Ok(())
 }
@@ -115,14 +176,18 @@ pub async fn queue_direct_mail(
     Ok(message_id)
 }
 
+pub fn mail_fixture_correlation(key: u32) -> Result<CorrelationId> {
+    Ok(format!("019f0000-0000-7000-8000-{key:012x}").parse()?)
+}
+
 async fn mail_call(
     socket: &mut WebSocket,
     sender: &workspace_ids::SessionRef,
     key: u32,
     operation: serde_json::Value,
 ) -> Result<workspace_model::central_mail::CentralMailResult> {
-    use central_link_protocol::{CorrelationId, LinkRequest, ReplyPayload, RequestPayload};
-    let correlation: CorrelationId = format!("019f0000-0000-7000-8000-{key:012x}").parse()?;
+    use central_link_protocol::ReplyPayload;
+    let correlation = mail_fixture_correlation(key)?;
     let request = LinkRequest::new(
         correlation.clone(),
         workspace_model::Caller::Session(sender.clone()),
@@ -153,7 +218,7 @@ async fn mail_call(
 }
 
 pub async fn assert_welcome(socket: &mut WebSocket) -> Result<()> {
-    let frame = receive_frame(socket).await?;
+    let frame = receive_expected_text(socket, "Welcome").await?;
     assert!(
         matches!(frame, LinkFrame::Data(DataFrame::Welcome { .. })),
         "first frame was {frame:?}"
@@ -162,7 +227,7 @@ pub async fn assert_welcome(socket: &mut WebSocket) -> Result<()> {
 }
 
 pub async fn offered_message(socket: &mut WebSocket) -> Result<workspace_ids::MessageId> {
-    let frame = receive_frame(socket).await?;
+    let frame = receive_expected_text(socket, "direct delivery").await?;
     let LinkFrame::Data(DataFrame::Deliver { message, .. }) = frame else {
         return Err(format!("expected direct delivery, got {frame:?}").into());
     };
@@ -174,6 +239,7 @@ pub async fn assert_replacement_backlog(
     message: workspace_ids::MessageId,
     sentinel: workspace_ids::MessageId,
 ) -> Result<()> {
+    send_pong_checkpoint(socket).await?;
     assert_welcome(socket).await?;
     let observed = std::collections::BTreeSet::from([
         offered_message(socket).await?,
@@ -183,5 +249,83 @@ pub async fn assert_replacement_backlog(
         observed,
         std::collections::BTreeSet::from([message, sentinel])
     );
-    expect_pong(socket).await
+    read_pong_checkpoint(socket).await
+}
+
+pub async fn queue_backlog(
+    source: &mut WebSocket,
+    sender: &workspace_ids::SessionRef,
+    recipient: &workspace_ids::SessionRef,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Result<std::collections::BTreeSet<workspace_ids::MessageId>> {
+    // The durable welcome page holds 250 records.
+    let mut queued = std::collections::BTreeSet::new();
+    for index in 0..257 {
+        queued.insert(queue_direct_mail(source, sender, recipient, 0x10000 + index, now).await?);
+    }
+    assert_eq!(queued.len(), 257);
+    Ok(queued)
+}
+
+pub enum ReceiptCheckpoint {
+    Arm,
+    Wait,
+}
+
+pub async fn drain_bounded_backlog(
+    socket: &mut WebSocket,
+    mut queued: std::collections::BTreeSet<workspace_ids::MessageId>,
+    now: chrono::DateTime<chrono::Utc>,
+    on_saturated: impl AsyncFnOnce() -> Result<()>,
+    mut checkpoint: impl AsyncFnMut(&CorrelationId, ReceiptCheckpoint) -> Result<()>,
+) -> Result<()> {
+    use central_link_protocol::{
+        Receipt, ReceiptBatch, ReceiptKind, ReceiptResult, SOCKET_DIRECT_MAIL_LIMIT,
+    };
+    send_pong_checkpoint(socket).await?;
+    assert_welcome(socket).await?;
+    let mut on_saturated = Some(on_saturated);
+    let mut next_correlation = 0x20000_u32;
+    while !queued.is_empty() {
+        let mut receipts = Vec::new();
+        for _ in 0..queued.len().min(SOCKET_DIRECT_MAIL_LIMIT) {
+            let message_id = offered_message(socket).await?;
+            assert!(
+                queued.remove(&message_id),
+                "duplicate or unknown mail offer {message_id}"
+            );
+            receipts.push(Receipt {
+                message_id,
+                kind: ReceiptKind::Delivered { arrived_at: now },
+            });
+        }
+        // The Pong follows the Welcome walk or the last completed refill.
+        read_pong_checkpoint(socket).await?;
+        if let Some(on_saturated) = on_saturated.take() {
+            on_saturated().await?;
+        }
+        let correlation_id: CorrelationId =
+            format!("019f0000-0000-7000-8000-{next_correlation:012x}").parse()?;
+        next_correlation += 1;
+        let count = receipts.len();
+        checkpoint(&correlation_id, ReceiptCheckpoint::Arm).await?;
+        crate::approval_link_scenarios::send_frame(
+            socket,
+            LinkFrame::Data(DataFrame::Receipts {
+                correlation_id: correlation_id.clone(),
+                receipts: ReceiptBatch::try_from(receipts)?,
+            }),
+        )
+        .await?;
+        assert_eq!(
+            receive_frame(socket).await?,
+            LinkFrame::Data(DataFrame::ReceiptResults {
+                correlation_id: correlation_id.clone(),
+                results: vec![ReceiptResult::Recorded; count],
+            })
+        );
+        checkpoint(&correlation_id, ReceiptCheckpoint::Wait).await?;
+        send_pong_checkpoint(socket).await?;
+    }
+    read_pong_checkpoint(socket).await
 }

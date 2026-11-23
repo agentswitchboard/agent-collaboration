@@ -1,9 +1,9 @@
 //! Owns pending calls and completion tasks for each physical socket.
-use super::{LinkReply, SocketAttachment, socket_open, socket_tag};
+use super::workspace_socket_attachment::{SocketAttachment, socket_open, socket_tag};
 use crate::worker_clock::WorkspaceClock;
 use central_link_protocol::{
     CorrelationId, DataFrame, FrameDirection, FreshCorrelationId, LinkFrame, MacCall,
-    MacCallAddress, TypedCallCorrelations, encode_text,
+    MacCallAddress, MacCallReply, TypedCallCorrelations, TypedCallResult, encode_text,
 };
 use fleet_rpc::CallFailure;
 use fleet_runtime_ports::{Clock, SyncTime};
@@ -14,6 +14,8 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
 };
 use worker::{State, WebSocket};
+
+type LinkReply = TypedCallResult<MacCallReply>;
 
 pub(super) struct WrittenMacCall<'a> {
     pub(super) pending: PendingAttempt<'a>,
@@ -31,7 +33,7 @@ type SocketWaiters = BTreeMap<String, TypedCallCorrelations<Waiter>>;
 type SocketCompletions = BTreeMap<String, Vec<oneshot::Sender<()>>>;
 
 #[derive(Clone, Default)]
-pub(in super::super) struct PendingMacCalls {
+pub(super) struct PendingMacCalls {
     waiters: Arc<Mutex<SocketWaiters>>,
     completions: Arc<Mutex<SocketCompletions>>,
     #[cfg(feature = "test-support")]
@@ -68,6 +70,8 @@ impl PendingMacCalls {
         if clock.now() >= deadline {
             return Err(CallFailure::NeverReached);
         }
+        central_link_protocol::check_central_egress_length(text.len())
+            .map_err(|_| CallFailure::NeverReached)?;
         socket
             .send_with_str(text)
             .map_err(|_| CallFailure::AnswerLost)?;

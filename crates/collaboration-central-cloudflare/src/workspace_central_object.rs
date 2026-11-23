@@ -234,7 +234,7 @@ pub struct CentralObject {
     runtime: Mutex<Option<Arc<OrgRuntime>>>,
     clock: WorkspaceClock,
     link_ids: Arc<ClockIds<WorkspaceClock>>,
-    pending_mac_calls: workspace_typed_link::PendingMacCalls,
+    pending_mac_calls: workspace_pending_mac_calls::PendingMacCalls,
     due_batches: Arc<fleet_runtime::DueBatchState>,
     mail_pushes: Arc<std::sync::Mutex<Vec<fleet_contracts::MailDeliveryReady>>>,
     mail_offers: workspace_machine_link_io::WorkerMailOffers,
@@ -448,7 +448,7 @@ impl DurableObject for CentralObject {
             runtime: Mutex::new(None),
             link_ids: Arc::new(ClockIds::new(clock.clone())),
             clock,
-            pending_mac_calls: workspace_typed_link::PendingMacCalls::default(),
+            pending_mac_calls: workspace_pending_mac_calls::PendingMacCalls::default(),
             due_batches: Arc::new(fleet_runtime::DueBatchState::default()),
             mail_pushes: Default::default(),
             mail_offers: Default::default(),
@@ -574,6 +574,9 @@ mod signin_launcher_controls;
 mod workspace_machine_link;
 #[path = "workspace_machine_link_io.rs"]
 mod workspace_machine_link_io;
+
+#[path = "workspace_pending_mac_calls.rs"]
+mod workspace_pending_mac_calls;
 
 #[path = "workspace_socket_attachment.rs"]
 mod workspace_socket_attachment;

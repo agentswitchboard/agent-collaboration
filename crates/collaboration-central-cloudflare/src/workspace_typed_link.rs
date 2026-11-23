@@ -1,11 +1,12 @@
 //! Typed Mac calls keep their waiter on the physical socket in the owning object.
 
-use super::workspace_machine_link::send;
+use super::workspace_machine_link_io::send;
 #[path = "workspace_approval_delivery.rs"]
 pub(super) mod approval_delivery;
-#[path = "workspace_pending_mac_calls.rs"]
-mod pending_mac_calls;
-use super::workspace_socket_attachment::SocketAttachment;
+use super::workspace_pending_mac_calls::WrittenMacCall;
+use super::workspace_socket_attachment::{
+    SocketAttachment, is_current_socket, socket_open, socket_tag,
+};
 use super::{CentralObject, OrgRuntime, OrganizationId};
 use crate::{cloudflare_transport, object_location::ObjectAddress};
 use central_link_protocol::{
@@ -20,14 +21,11 @@ use fleet_contracts::MachineConnectionAttachment;
 use fleet_rpc::{CallFailure, Envelope};
 use fleet_runtime_ports::{Clock, SyncTime};
 use futures_util::future::{Either, select};
-pub(super) use pending_mac_calls::PendingMacCalls;
-use pending_mac_calls::WrittenMacCall;
 use serde::{Deserialize, Serialize};
 use std::pin::pin;
-use worker::{Env, Method, Request, Response, State, WebSocket};
+use worker::{Env, Method, Request, Response, WebSocket};
 use workspace_ids::{MachineId, RouterRunId};
 
-pub(super) const SOCKET_TAG_PREFIX: &str = "typed-link:";
 pub(super) const MACHINE_CALL_PATH: &str = "/internal/machine-link/call";
 #[cfg(feature = "test-support")]
 pub(super) const FIXTURE_ENDING_CALL_PATH: &str = "/test/fixture-mac-ending-transport";
@@ -136,32 +134,32 @@ impl CentralObject {
         if !is_current_socket(&self.state, socket, attachment.machine_id()) {
             return Ok(());
         }
-        let Some(mut current) = SocketAttachment::read(socket)? else {
+        let Some(initial) = SocketAttachment::read(socket)? else {
             return self.close_machine_link(socket, 1008, Some("connection identity missing"));
         };
-        if current.mac_calls.announce(announcement).is_err() {
-            return self.close_machine_link(socket, 1008, Some("duplicate Mac capabilities"));
-        }
-        current.save(socket)?;
-        let recover_notices = current
-            .mac_calls
-            .handles(central_link_protocol::MacCallKind::ApprovalNotice);
-        let holder_run = current.registered_run.filter(|_| {
-            current
-                .mac_calls
-                .handles(central_link_protocol::MacCallKind::DeliverEnding)
-        });
-        if !recover_notices && holder_run.is_none() {
-            return Ok(());
-        }
         let machine = match runtime
-            .restore_machine_in_held_turn(&current.authority)
+            .restore_machine_in_held_turn(&initial.authority)
             .await
         {
             Ok(Ok(machine)) => machine,
             Ok(Err(cause)) => return self.close_machine_authority(socket, cause),
             Err(_) => return self.close_machine_link(socket, 1011, Some("central unavailable")),
         };
+        let Some(mut current) = SocketAttachment::read(socket)? else {
+            return self.close_machine_link(socket, 1008, Some("connection identity missing"));
+        };
+        if current.mac_calls.announce(announcement).is_err() {
+            return self.close_machine_link(socket, 1008, Some("duplicate Mac capabilities"));
+        }
+        let recover_notices = current
+            .mac_calls
+            .handles(central_link_protocol::MacCallKind::ApprovalNotice);
+        let holder_run = current.registered_run.clone().filter(|_| {
+            current
+                .mac_calls
+                .handles(central_link_protocol::MacCallKind::DeliverEnding)
+        });
+        current.save(socket)?;
         drop(turn);
         if let Some(run) = holder_run
             && let Some(recovery) = runtime.recover_approval_endings(machine.clone(), run)
@@ -258,6 +256,8 @@ impl CentralObject {
                     answer,
                 )
                 .map_err(|error| worker::Error::RustError(error.to_string()))?;
+                central_link_protocol::check_central_egress_length(text.len())
+                    .map_err(|failure| worker::Error::RustError(failure.to_string()))?;
                 socket.send_with_str(&text)
             }
             Ok(TypedCallResult::Refused { reason }) => self.send_central_call_result(
@@ -301,15 +301,36 @@ impl CentralObject {
         reply
     }
 
-    pub(super) fn handle_mac_call_reply(
+    pub(super) async fn admit_mac_reply(
         &self,
+        runtime: &OrgRuntime,
         socket: &WebSocket,
-        correlation: &CorrelationId,
+        correlation_id: CorrelationId,
         result: LinkReply,
-    ) {
-        self.pending_mac_calls
-            .answer(&self.state, socket, correlation, result, self.clock.now());
+    ) -> worker::Result<()> {
+        let _turn = runtime.runtime().take_central_turn_for_admission().await;
+        let Some(current) = SocketAttachment::read(socket)? else {
+            return self.close_machine_link(socket, 1008, Some("connection identity missing"));
+        };
+        match runtime
+            .restore_machine_in_held_turn(&current.authority)
+            .await
+        {
+            Ok(Ok(_)) => {
+                self.pending_mac_calls.answer(
+                    &self.state,
+                    socket,
+                    &correlation_id,
+                    result,
+                    self.clock.now(),
+                );
+                Ok(())
+            }
+            Ok(Err(cause)) => self.close_machine_authority(socket, cause),
+            Err(_) => self.close_machine_link(socket, 1011, Some("central unavailable")),
+        }
     }
+
     pub(super) async fn handle_mac_call(
         &self,
         mut request: Request,
@@ -361,14 +382,7 @@ impl CentralObject {
             .mac_calls
             .check_request(&invocation.request)
             .map_err(|_| CallFailure::NeverReached)?;
-        let prepare = self.write_mac_call(
-            organization,
-            invocation,
-            deadline,
-            socket,
-            address,
-            attachment,
-        );
+        let prepare = self.write_mac_call(organization, invocation, deadline, socket, address);
         let written = match select(pin!(self.clock.wait_until(deadline)), pin!(prepare)).await {
             Either::Left(_) => return Err(CallFailure::NeverReached),
             Either::Right((written, _)) => written?,
@@ -389,7 +403,6 @@ impl CentralObject {
         deadline: SyncTime,
         socket: WebSocket,
         address: MacCallAddress,
-        attachment: SocketAttachment,
     ) -> Result<WrittenMacCall<'_>, CallFailure> {
         let socket_tag = socket_tag(&self.state, &socket).ok_or(CallFailure::NeverReached)?;
         self.migrate()
@@ -407,24 +420,26 @@ impl CentralObject {
             .runtime(organization.clone())
             .await
             .map_err(|_| CallFailure::NeverReached)?;
-        runtime
-            .register_active_machine(&attachment.authority, || {
-                let current = matching_attachment(&socket, &address, &organization)?;
-                if current.authority != attachment.authority {
-                    return Err(CallFailure::NeverReached);
-                }
-                self.pending_mac_calls.begin_mac_call(
-                    &self.clock,
-                    &socket,
-                    socket_tag,
-                    invocation.request,
-                    address,
-                    deadline,
-                )
-            })
+        let _turn = runtime.runtime().take_central_turn_for_admission().await;
+        let attachment = matching_attachment(&socket, &address, &organization)?;
+        match runtime
+            .restore_machine_in_held_turn(&attachment.authority)
             .await
-            .map_err(|_| CallFailure::NeverReached)?
-            .map_err(|_| CallFailure::NeverReached)?
+        {
+            Ok(Ok(_)) => self.pending_mac_calls.begin_mac_call(
+                &self.clock,
+                &socket,
+                socket_tag,
+                invocation.request,
+                address,
+                deadline,
+            ),
+            Ok(Err(cause)) => {
+                let _ = self.close_machine_authority(&socket, cause);
+                Err(CallFailure::NeverReached)
+            }
+            Err(_) => Err(CallFailure::NeverReached),
+        }
     }
 }
 
@@ -473,31 +488,6 @@ fn bind_registered_run(
         current.save(socket)?;
     }
     Ok(same_run)
-}
-
-fn is_current_socket(state: &State, socket: &WebSocket, machine: &MachineId) -> bool {
-    let Some(physical_tag) = socket_tag(state, socket) else {
-        return false;
-    };
-    state
-        .get_websockets_with_tag(machine.as_str())
-        .into_iter()
-        .find(socket_open)
-        .and_then(|current| socket_tag(state, &current))
-        .is_some_and(|tag| tag == physical_tag)
-}
-
-pub(super) fn socket_tag(state: &State, socket: &WebSocket) -> Option<String> {
-    state
-        .as_raw()
-        .get_tags(socket.as_ref())
-        .ok()?
-        .into_iter()
-        .find(|tag| tag.starts_with(SOCKET_TAG_PREFIX))
-}
-
-fn socket_open(socket: &WebSocket) -> bool {
-    socket.as_ref().ready_state() == web_sys::WebSocket::OPEN
 }
 
 #[cfg(feature = "test-support")]

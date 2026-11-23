@@ -2,6 +2,9 @@
 
 pub const LINK_MAX_TEXT_BYTES: usize = 1024 * 1024;
 
+/// Usable UTF-8 text budget after the longest masked WebSocket header.
+pub const LINK_MAX_EGRESS_TEXT_BYTES: usize = LINK_MAX_TEXT_BYTES - 14;
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum LinkSizeRefusal {
     MessageTooBig,

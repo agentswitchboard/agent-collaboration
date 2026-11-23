@@ -28,6 +28,10 @@ pub struct WorkspaceRuntime<Host: CentralStore, Stores: WorkspaceStores> {
         std::sync::Mutex<Option<(usize, central_storage::StoreFailure)>>,
     #[cfg(feature = "test-support")]
     idle_renewal_send_failure: std::sync::atomic::AtomicBool,
+    #[cfg(feature = "test-support")]
+    pub(crate) mail_offer_read_failure: std::sync::atomic::AtomicBool,
+    #[cfg(feature = "test-support")]
+    mail_offer_write_failure: std::sync::atomic::AtomicBool,
 }
 impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores> {
     pub fn new(
@@ -51,6 +55,10 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             machine_restore_failure: Default::default(),
             #[cfg(feature = "test-support")]
             idle_renewal_send_failure: Default::default(),
+            #[cfg(feature = "test-support")]
+            mail_offer_read_failure: Default::default(),
+            #[cfg(feature = "test-support")]
+            mail_offer_write_failure: Default::default(),
         }
     }
 
@@ -67,6 +75,22 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
     #[cfg(feature = "test-support")]
     pub fn take_idle_renewal_send_failure(&self) -> bool {
         self.idle_renewal_send_failure
+            .swap(false, std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn fail_next_mail_offer(&self, before_write: bool) {
+        let failure = if before_write {
+            &self.mail_offer_read_failure
+        } else {
+            &self.mail_offer_write_failure
+        };
+        failure.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn take_mail_offer_write_failure(&self) -> bool {
+        self.mail_offer_write_failure
             .swap(false, std::sync::atomic::Ordering::Relaxed)
     }
 

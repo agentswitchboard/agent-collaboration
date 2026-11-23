@@ -540,3 +540,34 @@ async fn a_batch_after_the_deadline_refuses_every_member_and_then_closes() -> Re
 
 #[path = "renewal_issuer_cases.rs"]
 mod issuer_cases;
+
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "The socket assertions name the failed observation."
+)]
+#[tokio::test]
+async fn native_ping_arriving_during_renewal_follows_the_renewed_reply() -> Result<()> {
+    let fixture = start_fixture().await?;
+    let observed = async {
+        let mut socket = fixture.connect().await?;
+        receive(&mut socket).await?;
+        fixture.clock.advance(Duration::from_secs(300))?;
+        let fresh = fixture.mint_machine_token().await?;
+        let runtime = fixture.host.central(&fixture.organization_id).await?;
+        let mut hold = runtime.runtime().pause_points().hold_central(fleet_runtime::PausePoint::BeforeRenewalApplyingSample);
+        let correlation = "019f0000-0000-7000-8000-00000000d601";
+        send(&mut socket, &renew_frame(correlation, &fresh)?).await?;
+        tokio::select! {
+            () = hold.until_held() => {}
+            early = socket.next() => return Err(format!("renewal completed before the hold: {early:?}").into()),
+        }
+        send(&mut socket, &LinkFrame::Ping).await?;
+        hold.release();
+        assert!(matches!(answer_to(&mut socket, correlation).await?, TokenRenewalResult::Renewed { .. }));
+        assert_eq!(receive(&mut socket).await?, LinkFrame::Pong);
+        fixture.clock.advance(Duration::from_secs(300))?;
+        collaboration_central_conformance::machine_link_boundary::expect_pong(&mut socket).await
+    }.await;
+    fixture.close().await?;
+    observed
+}

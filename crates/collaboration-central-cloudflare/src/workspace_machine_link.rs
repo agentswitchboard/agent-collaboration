@@ -1,6 +1,7 @@
 //! Hibernating machine connections dispatch independent requests through the owning core.
-use super::workspace_socket_attachment::SocketAttachment;
-use super::workspace_typed_link::{PendingMacCalls, SOCKET_TAG_PREFIX};
+use super::workspace_machine_link_io::{renew, send};
+use super::workspace_pending_mac_calls::PendingMacCalls;
+use super::workspace_socket_attachment::{SOCKET_TAG_PREFIX, SocketAttachment};
 use super::{CentralObject, OrgRuntime, OrganizationId};
 use central_link_protocol::{
     CentralCall, CorrelationId, DataFrame, FrameDirection, LinkFrame, LinkRequest,
@@ -10,12 +11,14 @@ use central_link_protocol::{
 use collaboration_central_core::WorkspaceCaller;
 use collaboration_central_core::{
     ApplyingRequestFailure, MachineLinkAdmission, MachineLinkRequestAuthority, RenewalTermination,
-    project_renewal_refusal,
 };
 use fleet_contracts::mail_link::MailReceiptSettlement;
 use fleet_contracts::{EnrollmentInvalidation, MachineConnectionAttachment};
 use fleet_runtime_ports::{Clock, IdSource};
-use worker::{Request, Response, Result, WebSocket, WebSocketIncomingMessage, WebSocketPair};
+use worker::{
+    Request, Response, Result, WebSocket, WebSocketIncomingMessage, WebSocketPair,
+    WebSocketRequestResponsePair,
+};
 
 enum IncomingRequests {
     #[cfg(feature = "test-support")]
@@ -24,6 +27,10 @@ enum IncomingRequests {
         request: central_link_protocol::fixture_central_probe::ProbeRequestEnvelope,
     },
     Capabilities(central_link_protocol::MacCapabilities),
+    MacReply {
+        correlation_id: CorrelationId,
+        result: Box<central_link_protocol::TypedCallResult<central_link_protocol::MacCallReply>>,
+    },
     Single(Box<LinkRequest>),
     Batch(LinkRequestBatch),
     Typed {
@@ -51,24 +58,6 @@ enum MachineRequestResult {
 }
 
 impl CentralObject {
-    pub(super) fn close_machine_link(
-        &self,
-        socket: &WebSocket,
-        code: u16,
-        reason: Option<&str>,
-    ) -> Result<()> {
-        self.forget_mail_offers(socket);
-        self.pending_mac_calls
-            .close(&self.state, socket, code, reason)
-    }
-
-    pub(super) fn close_machine_authority(
-        &self,
-        socket: &WebSocket,
-        cause: central_link_protocol::MachineLinkCloseCode,
-    ) -> Result<()> {
-        self.close_machine_link(socket, cause.code(), None)
-    }
     pub(super) async fn upgrade_machine_link(
         &self,
         organization: OrganizationId,
@@ -107,6 +96,11 @@ impl CentralObject {
         };
         let pair = WebSocketPair::new()?;
         SocketAttachment::new(connection.attachment()).save(&pair.server)?;
+        if self.state.get_websocket_auto_response().is_none() {
+            let heartbeat =
+                WebSocketRequestResponsePair::new("ping", "pong").map_err(worker::Error::from)?;
+            self.state.set_websocket_auto_response(&heartbeat);
+        }
         // Queue before the safety call; only send after its attempt has completed.
         let welcome = DataFrame::Welcome {
             machine_id: connection.machine_id().clone(),
@@ -142,7 +136,7 @@ impl CentralObject {
             self.mail_offers.forget(&physical_tag);
             return Err(error);
         }
-        self.mail_offers.finish_welcome(physical_tag);
+        self.mail_offers.forget(&physical_tag);
         for socket in older {
             let _ = self.close_machine_link(&socket, 1000, Some("machine link replaced"));
         }
@@ -152,7 +146,7 @@ impl CentralObject {
             fleet_runtime::PausePoint::AfterMachineLinkWelcome,
         )
         .await;
-        self.send_welcome_mail(&runtime, &pair.server, &connection.attachment())
+        self.send_welcome_mail(&runtime, &pair.server, false)
             .await?;
         Response::from_websocket(pair.client)
     }
@@ -208,10 +202,10 @@ impl CentralObject {
             LinkFrame::Data(DataFrame::MacCallReply {
                 correlation_id,
                 result,
-            }) => {
-                self.handle_mac_call_reply(&socket, &correlation_id, *result);
-                return Ok(());
-            }
+            }) => IncomingRequests::MacReply {
+                correlation_id,
+                result,
+            },
             LinkFrame::Data(DataFrame::Request { request }) => IncomingRequests::Single(request),
             LinkFrame::Data(DataFrame::Batch { requests }) => IncomingRequests::Batch(requests),
             LinkFrame::Data(DataFrame::RenewMachineToken {
@@ -237,8 +231,8 @@ impl CentralObject {
                 correlation_id,
                 receipts,
             },
-            LinkFrame::Ping => return self.answer_heartbeat(&socket).await,
-            LinkFrame::Pong
+            LinkFrame::Ping
+            | LinkFrame::Pong
             | LinkFrame::Data(
                 DataFrame::Welcome { .. }
                 | DataFrame::Reply { .. }
@@ -269,10 +263,38 @@ impl CentralObject {
         #[cfg(feature = "test-support")]
         super::signin_launcher_controls::sample_clock(self, &organization).await?;
         let runtime = self.runtime(organization).await?;
+        #[cfg(feature = "test-support")]
+        let checkpoint = match &requests {
+            IncomingRequests::Capabilities(_) => Some("capabilities".to_owned()),
+            IncomingRequests::Single(request) => {
+                Some(String::from(request.correlation_id().clone()))
+            }
+            IncomingRequests::Receipts { correlation_id, .. } => {
+                Some(String::from(correlation_id.clone()))
+            }
+            IncomingRequests::Batch(_)
+            | IncomingRequests::Typed { .. }
+            | IncomingRequests::MacReply { .. }
+            | IncomingRequests::Renewal { .. }
+            | IncomingRequests::Status { .. }
+            | IncomingRequests::FixtureProbe { .. } => None,
+        };
         let result = self
             .dispatch_machine_event(&runtime, socket.clone(), attachment, requests)
             .await;
         self.flush_ready_mail(&runtime).await;
+        let result = match result {
+            Ok(()) => self.resume_deferred_mail(&runtime, socket).await,
+            Err(error) => Err(error),
+        };
+        #[cfg(feature = "test-support")]
+        if let Some(key) = checkpoint {
+            runtime
+                .runtime()
+                .pause_points()
+                .reached_engine(fleet_runtime::PausePoint::AfterMachineFrameHandled, &key)
+                .await;
+        }
         result
     }
 
@@ -284,6 +306,13 @@ impl CentralObject {
         requests: IncomingRequests,
     ) -> Result<()> {
         match requests {
+            IncomingRequests::MacReply {
+                correlation_id,
+                result,
+            } => {
+                self.admit_mac_reply(runtime, &socket, correlation_id, *result)
+                    .await
+            }
             IncomingRequests::Capabilities(announcement) => {
                 self.announce_mac_capabilities(runtime, &socket, &attachment, announcement)
                     .await
@@ -332,7 +361,7 @@ impl CentralObject {
             } => {
                 let mut results = Vec::with_capacity(receipts.receipts().len());
                 for receipt in receipts.receipts() {
-                    match runtime
+                    let result = match runtime
                         .apply_delivery_receipt(
                             &attachment,
                             &receipt.message_id,
@@ -340,8 +369,8 @@ impl CentralObject {
                         )
                         .await
                     {
-                        Ok(MailReceiptSettlement::Applied) => results.push(ReceiptResult::Recorded),
-                        Ok(MailReceiptSettlement::Stop(result)) => results.push(result),
+                        Ok(MailReceiptSettlement::Applied) => ReceiptResult::Recorded,
+                        Ok(MailReceiptSettlement::Stop(result)) => result,
                         Ok(MailReceiptSettlement::AuthorityLapsed(cause)) => {
                             return self.close_machine_authority(&socket, cause);
                         }
@@ -352,7 +381,10 @@ impl CentralObject {
                                 Some("central unavailable"),
                             );
                         }
-                    }
+                    };
+                    self.release_mail_receipt(runtime, &socket, &receipt.message_id, result)
+                        .await?;
+                    results.push(result);
                 }
                 send(
                     &socket,
@@ -600,12 +632,6 @@ impl CentralObject {
         Ok(())
     }
 }
-pub(super) fn send(socket: &WebSocket, frame: DataFrame) -> Result<()> {
-    let text =
-        central_link_protocol::encode_text(&LinkFrame::Data(frame), FrameDirection::ToRouter)
-            .map_err(|error| worker::Error::RustError(error.to_string()))?;
-    socket.send_with_str(text)
-}
 pub(super) fn close_enrollment_sockets(
     state: &worker::State,
     pending_mac_calls: &PendingMacCalls,
@@ -630,50 +656,4 @@ fn close_ended_connect(cause: central_link_protocol::MachineLinkCloseCode) -> Re
     pair.server.accept()?;
     pair.server.close(Some(cause.code()), None::<&str>)?;
     Response::from_websocket(pair.client)
-}
-
-/// R40/V32 renewal on the open hibernating socket. A renewed connection's
-/// attachment replaces the old one, so a restored socket carries the renewed
-/// expiry; on refusal the old attachment and its expiry stand.
-async fn renew(
-    socket: &WebSocket,
-    runtime: &OrgRuntime,
-    attachment: &MachineConnectionAttachment,
-    token: &str,
-) -> Result<(
-    central_link_protocol::TokenRenewalResult,
-    Option<RenewalTermination>,
-)> {
-    use central_link_protocol::{TokenRenewalRefusal, TokenRenewalResult};
-    let refused = |reason| (TokenRenewalResult::Refused { reason }, None);
-    Ok(
-        match runtime.renew_machine_connection(attachment, token).await {
-            Ok(Ok(renewed)) => {
-                let Some(effective_expires_at) = chrono::DateTime::from_timestamp(
-                    renewed.connection.effective_expires_at().0,
-                    0,
-                ) else {
-                    return Ok(refused(TokenRenewalRefusal::CentralUnavailable));
-                };
-                let Some(mut current) = SocketAttachment::read(socket)? else {
-                    return Ok(refused(TokenRenewalRefusal::CentralUnavailable));
-                };
-                // A registration may have completed while the authority turn was awaited.
-                current.authority = renewed.connection.attachment();
-                current.save(socket)?;
-                (
-                    TokenRenewalResult::Renewed {
-                        effective_expires_at,
-                        central_time: renewed.central_time,
-                    },
-                    None,
-                )
-            }
-            Ok(Err(refusal)) => {
-                let (reason, termination) = project_renewal_refusal(refusal);
-                (TokenRenewalResult::Refused { reason }, termination)
-            }
-            Err(_) => refused(TokenRenewalRefusal::CentralUnavailable),
-        },
-    )
 }
