@@ -181,6 +181,7 @@ impl From<CasePausePoint> for PausePoint {
             CasePausePoint::BeforeParentApprovalTransaction => {
                 Self::BeforeParentApprovalTransaction
             }
+            CasePausePoint::AfterApprovalNoticeRecovery => Self::AfterApprovalNoticeRecovery,
             CasePausePoint::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
             CasePausePoint::AfterIdleRenewalPlatformSendError => {
                 Self::AfterIdleRenewalPlatformSendError
