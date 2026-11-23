@@ -16,111 +16,45 @@ use super::{
     },
 };
 
-#[derive(Debug)]
-enum MarkHistory {
-    HiddenCheckedReply(u64),
-    IndependentCutoffFault(u32),
-    UntouchedLaneRefusal(u16),
-    ResidualReadFault(u16),
-    AdmissionAfterRebase(u16),
-    EmptyWakeBeforeClaimRecovery(i64),
-    RepeatedWelcome {
-        visited_named_mark: bool,
-        older_suffix: u16,
-    },
-    WaitingCutoffDuringHeldFrame(u32),
-    OrphanProbeCrossesWaitingCutoff(u32),
-    ClaimCompletesAtClosedMark(u64),
-    RestartWithSecondFrameHeld(u16),
-}
-
-#[hegel::test(test_cases = 6)]
+// Keep one real SQLite history per generated input. Explicit examples pin
+// every family, including the three interacting histories added by the review.
+#[hegel::test(test_cases = 24)]
+#[hegel::explicit_test_case(family = 0_u8, parameter = 0_u16)]
+#[hegel::explicit_test_case(family = 1_u8, parameter = 0_u16)]
+#[hegel::explicit_test_case(family = 2_u8, parameter = 0_u16)]
+#[hegel::explicit_test_case(family = 3_u8, parameter = 0_u16)]
+#[hegel::explicit_test_case(family = 4_u8, parameter = 0_u16)]
+#[hegel::explicit_test_case(family = 5_u8, parameter = 0_u16)]
+#[hegel::explicit_test_case(family = 6_u8, parameter = 0_u16)]
+#[hegel::explicit_test_case(family = 7_u8, parameter = 0_u16)]
+#[hegel::explicit_test_case(family = 8_u8, parameter = 0_u16)]
+#[hegel::explicit_test_case(family = 9_u8, parameter = 0_u16)]
+#[hegel::explicit_test_case(family = 10_u8, parameter = 0_u16)]
+#[hegel::explicit_test_case(family = 11_u8, parameter = 0_u16)]
 fn generated_mark_histories_preserve_cutoffs_receipts_and_request_identity(case: TestCase) {
-    let mut histories = [
-        MarkHistory::HiddenCheckedReply(
-            case.draw(generators::integers().min_value(1).max_value(900)),
-        ),
-        MarkHistory::IndependentCutoffFault(
-            case.draw(generators::integers().min_value(2).max_value(1_000)),
-        ),
-        MarkHistory::UntouchedLaneRefusal(
-            case.draw(generators::integers().min_value(1).max_value(8)),
-        ),
-        MarkHistory::ResidualReadFault(
-            case.draw(generators::integers().min_value(65).max_value(69)),
-        ),
-        MarkHistory::AdmissionAfterRebase(
-            case.draw(generators::integers().min_value(65).max_value(69)),
-        ),
-        MarkHistory::EmptyWakeBeforeClaimRecovery(
-            case.draw(generators::integers().min_value(1_100).max_value(2_999)),
-        ),
-        MarkHistory::RepeatedWelcome {
-            visited_named_mark: false,
-            older_suffix: case.draw(generators::integers().min_value(1).max_value(4)),
-        },
-        MarkHistory::RepeatedWelcome {
-            visited_named_mark: true,
-            older_suffix: case.draw(generators::integers().min_value(1).max_value(4)),
-        },
-        MarkHistory::WaitingCutoffDuringHeldFrame(
-            case.draw(generators::integers().min_value(1).max_value(1_000)),
-        ),
-        MarkHistory::OrphanProbeCrossesWaitingCutoff(
-            case.draw(generators::integers().min_value(1).max_value(1_000)),
-        ),
-        MarkHistory::ClaimCompletesAtClosedMark(
-            case.draw(generators::integers().min_value(0).max_value(20)),
-        ),
-        MarkHistory::RestartWithSecondFrameHeld(
-            case.draw(generators::integers().min_value(65).max_value(69)),
-        ),
-    ];
-    // Each example covers every transition family, in a drawn order and with
-    // drawn clock offsets and suffix lengths. Each history has its own store.
-    let start = case.draw(
-        generators::integers::<usize>()
-            .min_value(0)
-            .max_value(histories.len() - 1),
-    );
-    histories.rotate_left(start);
+    let family = case.draw(generators::integers::<u8>().min_value(0).max_value(11));
+    let parameter = case.draw(generators::integers::<u16>().min_value(0).max_value(1_899));
+    case.note(&format!("mark history {family}, parameter {parameter}"));
+    let offset = u64::from(parameter);
+    let count = 65 + parameter % 5;
     tokio::runtime::Builder::new_current_thread()
         .enable_all()
         .build()
         .unwrap()
         .block_on(async {
-            for history in histories {
-                case.note(&format!("{history:?}"));
-                match history {
-                    MarkHistory::HiddenCheckedReply(lead) => check_hidden_member_cutoff(lead).await,
-                    MarkHistory::IndependentCutoffFault(gap) => {
-                        check_active_cutoff_fault(gap).await
-                    }
-                    MarkHistory::UntouchedLaneRefusal(count) => check_untouched_intake(count).await,
-                    MarkHistory::ResidualReadFault(count) => check_waiting_read_fault(count).await,
-                    MarkHistory::AdmissionAfterRebase(count) => {
-                        check_rebased_admission(count).await
-                    }
-                    MarkHistory::EmptyWakeBeforeClaimRecovery(cutoff) => {
-                        check_empty_retry_before_claim_recovery(cutoff).await;
-                    }
-                    MarkHistory::RepeatedWelcome {
-                        visited_named_mark,
-                        older_suffix,
-                    } => {
-                        check_repeated_welcome(visited_named_mark, older_suffix).await;
-                    }
-                    MarkHistory::WaitingCutoffDuringHeldFrame(gap) => {
-                        check_worker_waiting_cutoff(gap).await
-                    }
-                    MarkHistory::OrphanProbeCrossesWaitingCutoff(gap) => {
-                        check_cutoff_during_orphan_probe(gap).await
-                    }
-                    MarkHistory::ClaimCompletesAtClosedMark(gap) => check_closed_claim(gap).await,
-                    MarkHistory::RestartWithSecondFrameHeld(count) => {
-                        check_subsequent_claim_recovery(count).await
-                    }
-                }
+            match family {
+                0 => check_hidden_member_cutoff(1 + offset % 900).await,
+                1 => check_active_cutoff_fault(2 + u32::from(parameter % 999)).await,
+                2 => check_untouched_intake(1 + parameter % 8).await,
+                3 => check_waiting_read_fault(count).await,
+                4 => check_rebased_admission(count).await,
+                5 => check_empty_retry_before_claim_recovery(1_100 + i64::from(parameter)).await,
+                6 => check_repeated_welcome(false, 1 + parameter % 4).await,
+                7 => check_repeated_welcome(true, 1 + parameter % 4).await,
+                8 => check_worker_waiting_cutoff(1 + u32::from(parameter % 1_000)).await,
+                9 => check_cutoff_during_orphan_probe(1 + u32::from(parameter % 1_000)).await,
+                10 => check_closed_claim(offset % 21).await,
+                _ => check_subsequent_claim_recovery(count).await,
             }
         });
 }
