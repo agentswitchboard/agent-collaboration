@@ -143,6 +143,8 @@ pub(crate) enum CasePausePoint {
     BeforeApprovalNoticeWrite,
     AfterApprovalNoticeAttempt,
     AfterApprovalNoticeRecovery,
+    BeforePersonApprovalTurn,
+    AfterPersonApprovalCommit,
     AfterIdleExpiryCommit,
     AfterIdleRenewalPlatformSendError,
     BeforePrivateEnrollmentInvalidation,
@@ -188,6 +190,8 @@ impl From<CasePausePoint> for PausePoint {
             CasePausePoint::BeforeParentApprovalReply => Self::BeforeParentApprovalReply,
             CasePausePoint::BeforeApprovalNoticeWrite => Self::BeforeApprovalNoticeWrite,
             CasePausePoint::AfterApprovalNoticeAttempt => Self::AfterApprovalNoticeAttempt,
+            CasePausePoint::BeforePersonApprovalTurn => Self::BeforePersonApprovalTurn,
+            CasePausePoint::AfterPersonApprovalCommit => Self::AfterPersonApprovalCommit,
             CasePausePoint::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
             CasePausePoint::AfterIdleRenewalPlatformSendError => {
                 Self::AfterIdleRenewalPlatformSendError
@@ -236,6 +240,8 @@ impl From<PausePoint> for CasePausePoint {
             PausePoint::BeforeApprovalNoticeWrite => Self::BeforeApprovalNoticeWrite,
             PausePoint::AfterApprovalNoticeAttempt => Self::AfterApprovalNoticeAttempt,
             PausePoint::AfterApprovalNoticeRecovery => Self::AfterApprovalNoticeRecovery,
+            PausePoint::BeforePersonApprovalTurn => Self::BeforePersonApprovalTurn,
+            PausePoint::AfterPersonApprovalCommit => Self::AfterPersonApprovalCommit,
             PausePoint::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
             PausePoint::AfterIdleRenewalPlatformSendError => {
                 Self::AfterIdleRenewalPlatformSendError

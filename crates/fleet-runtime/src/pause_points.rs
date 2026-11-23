@@ -40,6 +40,8 @@ pub enum PausePoint {
     BeforeApprovalNoticeWrite,
     AfterApprovalNoticeAttempt,
     AfterApprovalNoticeRecovery,
+    BeforePersonApprovalTurn,
+    AfterPersonApprovalCommit,
     AfterIdleExpiryCommit,
     AfterIdleRenewalPlatformSendError,
     BeforePrivateEnrollmentInvalidation,

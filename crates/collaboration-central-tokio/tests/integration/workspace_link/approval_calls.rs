@@ -1,3 +1,6 @@
+#[path = "approval_publication_failure.rs"]
+mod approval_publication_failure;
+
 #[path = "approval_login_settlement.rs"]
 mod approval_login_settlement;
 
@@ -9,7 +12,10 @@ use central_link_protocol::{
 };
 use central_storage::{SqlValue, Statement};
 use collaboration_central_conformance::ConformanceResult as Result;
-use collaboration_central_conformance::approval_authority_scenarios::approval_authority_refusals_leave_store_unchanged;
+use collaboration_central_conformance::{
+    approval_authority_scenarios::approval_authority_refusals_leave_store_unchanged,
+    signin_fixtures::approval_routes::check_signed_holder_delivery,
+};
 use collaboration_central_tokio::test_support::start_session_link_fixture;
 use fleet_rpc::Envelope;
 use serde_json::json;
@@ -351,6 +357,36 @@ fn fixture_decision(
 }
 
 #[tokio::test]
+async fn tokio_signed_person_decision_delivers_ending_to_holder() -> Result<()> {
+    let fixture = NativeApprovalFixture {
+        link: start_session_link_fixture(signed_clock()?).await?,
+        before_alarm: Cell::new(0),
+        delivery_answer: RefCell::default(),
+        before_write: RefCell::default(),
+    };
+    let observed = async {
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .unix_socket(fixture.link.signin_socket.clone())
+            .build()?;
+        check_signed_holder_delivery(&fixture, async |path, body, headers| {
+            let mut request = client
+                .post(format!("http://central.local{path}"))
+                .json(body);
+            for (name, value) in headers {
+                request = request.header(name, value);
+            }
+            let response = request.send().await?;
+            Ok((response.status().as_u16(), response.bytes().await?.to_vec()))
+        })
+        .await
+    }
+    .await;
+    fixture.link.close().await?;
+    observed
+}
+
+#[tokio::test]
 async fn tokio_fixture_decide_offers_only_after_commit_and_records_received() -> Result<()> {
     let fixture = NativeApprovalFixture {
         link: start_session_link_fixture(signed_clock()?).await?,
@@ -589,3 +625,5 @@ mod approval_carrier_replacement;
 
 #[path = "parent_approval_calls.rs"]
 mod parent_approval_calls;
+#[path = "person_approval_races.rs"]
+mod person_approval_races;

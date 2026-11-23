@@ -37,7 +37,7 @@ use switchboard_message_custody::{
     recipient_inbox::RecipientInbox,
     recipient_sessions::{RecipientSessionAnswer, RecipientSessionDirectory},
 };
-use tokio::sync::{Notify, oneshot, watch};
+use tokio::sync::{Mutex as AsyncMutex, Notify, mpsc, oneshot, watch};
 use workspace_ids::{MachineId, RequestId, SessionId};
 use workspace_model::{
     Caller, ChangePosition, ItemRef, WorkspaceAnswer, WorkspaceReply, WorkspaceResult,
@@ -47,7 +47,10 @@ use workspace_model::{
     },
 };
 
-use super::outbox_timing::{manual_clock, open_outbox, thread_post, welcome_anchor};
+use super::{
+    outbox_timing::{manual_clock, open_outbox, thread_post, welcome_anchor},
+    worker_turns::{ObservedWorker, WorkerClock},
+};
 
 const SHARED_MARK_MS: i64 = 1_763_380_800_000;
 
@@ -75,6 +78,7 @@ struct PeerHistory {
     attempts: Vec<Vec<RequestId>>,
     decisions: BTreeMap<RequestId, ReplyPayload>,
     commands: Vec<WriteBatchCommand>,
+    command_instants: Vec<ClockInstant>,
     recorded_writes: BTreeMap<RequestId, (Caller, RequestPayload)>,
 }
 
@@ -94,6 +98,7 @@ pub(super) enum ScriptedMemberFate {
 /// A test scripts the next lane submission or the fates of its transmitted members.
 pub(super) enum ScriptedBatch {
     Untouched,
+    UntouchedAtFence,
     Members(Vec<ScriptedMemberFate>),
 }
 
@@ -116,7 +121,8 @@ pub(super) struct ScriptedBatchLane {
     lost_first_answers: BTreeSet<RequestId>,
     history: Mutex<PeerHistory>,
     calls: Mutex<Vec<ScriptedCommand>>,
-    events: Mutex<std::collections::VecDeque<LinkLaneEvent>>,
+    queued_events: mpsc::UnboundedSender<LinkLaneEvent>,
+    events: AsyncMutex<mpsc::UnboundedReceiver<LinkLaneEvent>>,
     refused_machine: Mutex<Option<MachineId>>,
     next_batch: Mutex<Option<ScriptedBatch>>,
     status_answers: Mutex<Vec<(Caller, RequestStatusQuery, RequestStatusAnswer)>>,
@@ -132,13 +138,15 @@ impl ScriptedBatchLane {
         clock: Arc<ManualClock>,
         lost_first_answers: BTreeSet<RequestId>,
     ) -> Self {
+        let (queued_events, events) = mpsc::unbounded_channel();
         Self {
             admitted: watch::channel(Some(admitted)).0,
             clock,
             lost_first_answers,
             history: Mutex::new(PeerHistory::default()),
             calls: Mutex::new(Vec::new()),
-            events: Mutex::new(std::collections::VecDeque::new()),
+            queued_events,
+            events: AsyncMutex::new(events),
             refused_machine: Mutex::new(None),
             next_batch: Mutex::new(None),
             status_answers: Mutex::new(Vec::new()),
@@ -155,6 +163,10 @@ impl ScriptedBatchLane {
 
     pub(super) fn batch_commands(&self) -> Vec<WriteBatchCommand> {
         self.history.lock().unwrap().commands.clone()
+    }
+
+    pub(super) fn command_instants(&self) -> Vec<ClockInstant> {
+        self.history.lock().unwrap().command_instants.clone()
     }
 
     pub(super) fn decide_next_batch(&self, batch: Option<ScriptedBatch>) {
@@ -211,7 +223,7 @@ impl ScriptedBatchLane {
     }
 
     pub(super) fn push_event(&self, event: LinkLaneEvent) {
-        self.events.lock().unwrap().push_back(event);
+        self.queued_events.send(event).unwrap();
     }
 
     pub(super) fn refuse_messages_to(&self, machine: MachineId) {
@@ -232,6 +244,11 @@ impl ScriptedBatchLane {
                     cause: UntouchedCommand::WriterBusy,
                 };
             }
+            Some(ScriptedBatch::UntouchedAtFence) => {
+                return WriteBatchDisposition::NotReached {
+                    cause: UntouchedCommand::SendWindowElapsed,
+                };
+            }
             Some(ScriptedBatch::Members(members)) => Some(members),
             None => None,
         };
@@ -246,6 +263,7 @@ impl ScriptedBatchLane {
         };
         let mut history = self.history.lock().unwrap();
         history.commands.push(batch);
+        history.command_instants.push(self.clock.monotonic_now());
         let first_batch = history.attempts.is_empty();
         let mut sent_requests = Vec::new();
         let mut members = Vec::new();
@@ -410,8 +428,31 @@ impl ReadyLinkLane for ScriptedBatchLane {
     }
 
     fn next_event(&self) -> Pin<Box<dyn Future<Output = Option<LinkLaneEvent>> + Send + '_>> {
-        Box::pin(std::future::ready(self.events.lock().unwrap().pop_front()))
+        Box::pin(async { self.events.lock().await.recv().await })
     }
+}
+
+#[tokio::test]
+async fn the_idle_scripted_lane_waits_for_an_event_without_reporting_a_close() {
+    let clock = manual_clock(SHARED_MARK_MS - 20_000);
+    let machine = "019f0000-0000-7000-8000-000000000011".parse().unwrap();
+    let admitted = new_admission(machine, clock.clone());
+    let lane = ScriptedBatchLane::new(admitted.clone(), clock, BTreeSet::new());
+    let mut event = lane.next_event();
+    let prematurely_ready = tokio::select! {
+        biased;
+        actual = &mut event => Some(actual),
+        () = std::future::ready(()) => None,
+    };
+    assert!(
+        prematurely_ready.is_none(),
+        "an empty event queue is still an open driver stream"
+    );
+    lane.push_event(LinkLaneEvent::ConnectionAdmitted(admitted.clone()));
+    assert_eq!(
+        event.await,
+        Some(LinkLaneEvent::ConnectionAdmitted(admitted))
+    );
 }
 
 pub(super) fn post_created(position: usize) -> ReplyPayload {
@@ -470,6 +511,7 @@ async fn check_partial_replay(answers: &[bool]) {
     let database = root.path().join("machine_local.sqlite");
     let started_at = SHARED_MARK_MS - 20_000;
     let clock = manual_clock(started_at);
+    let observed_clock = WorkerClock::observing(clock.clone());
     let machine: MachineId = "019f0000-0000-7000-8000-000000000011".parse().unwrap();
     let items: Vec<_> = (1..=u16::try_from(answers.len()).unwrap())
         .map(thread_post)
@@ -488,7 +530,7 @@ async fn check_partial_replay(answers: &[bool]) {
     let outbox = open_outbox(&database).await;
     let mut custody = CustodyLink::new(
         lane.clone(),
-        clock.clone(),
+        observed_clock.clone(),
         Arc::new(NoFlushJitter),
         OutboxWork::new(Box::new(outbox), clock.clone()),
         RecipientInbox::new(
@@ -513,13 +555,14 @@ async fn check_partial_replay(answers: &[bool]) {
             if receipt.id == item.request && receipt.flush_at.unix_millis() == SHARED_MARK_MS));
     }
 
-    assert!(custody.flush_writes().await.unwrap().answered.is_empty());
+    let mut worker = ObservedWorker::start(custody, observed_clock.clone());
+    observed_clock.wait_after(0).await;
+    assert!(worker.take_reports().unwrap().answered.is_empty());
     assert!(
         lane.history.lock().unwrap().attempts.is_empty(),
         "no frame before the shared minute"
     );
-    clock.advance(Duration::from_secs(20)).unwrap();
-    let first = custody.flush_writes().await.unwrap();
+    let first = worker.advance(Duration::from_secs(20)).await.unwrap();
     assert!(first.issues.is_empty());
     assert_eq!(
         first.answered.len(),
@@ -544,8 +587,7 @@ async fn check_partial_replay(answers: &[bool]) {
 
     lane.admitted
         .send_replace(Some(new_admission(machine, clock.clone())));
-    clock.advance(Duration::from_secs(60)).unwrap();
-    let replay = custody.flush_writes().await.unwrap();
+    let replay = worker.advance(Duration::from_secs(60)).await.unwrap();
     assert!(replay.issues.is_empty());
     let (sent_again, decisions) = {
         let history = lane.history.lock().unwrap();
@@ -571,6 +613,7 @@ async fn check_partial_replay(answers: &[bool]) {
             })
         ) if &post_id == expected_id && &position == expected_position && &actors == expected_actors));
     }
+    worker.stop().await;
 }
 
 #[hegel::test(test_cases = 64)]

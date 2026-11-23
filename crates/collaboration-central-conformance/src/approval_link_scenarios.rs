@@ -317,16 +317,30 @@ pub async fn receive_fixture_decision(
     target: ApprovalHolderTarget,
     request: &Raise,
 ) -> Result<()> {
-    let (correlation, offered) = next_ending(socket, &target).await?;
-    assert_eq!(offered.request_id(), request.request_id());
-    assert_eq!(offered.contents_digest(), &request.contents_digest()?);
-    assert_eq!(
-        offered.into_ending(),
+    receive_decision(
+        fixture,
+        socket,
+        target,
+        request,
         approval_request_protocol::Ending::UnprovenCallDecided {
             decision: approval_request_protocol::SessionCallDecision::Allow,
             person_id: FIXTURE_DECIDER.parse()?,
         },
-    );
+    )
+    .await
+}
+
+pub(crate) async fn receive_decision(
+    fixture: &impl ApprovalLinkFixture,
+    socket: &mut WebSocket,
+    target: ApprovalHolderTarget,
+    request: &Raise,
+    expected: approval_request_protocol::Ending,
+) -> Result<()> {
+    let (correlation, offered) = next_ending(socket, &target).await?;
+    assert_eq!(offered.request_id(), request.request_id());
+    assert_eq!(offered.contents_digest(), &request.contents_digest()?);
+    assert_eq!(offered.into_ending(), expected);
     require_owed(fixture, request).await?;
     answer_ending(socket, target, correlation, DeliverEndingReply::Received {}).await?;
     observe_received(fixture, request).await
@@ -431,7 +445,11 @@ pub async fn next_ending(
         MacCall::DeliverEnding(envelope) if &envelope.target == expected => {
             Ok((correlation_id, envelope.body))
         }
-        _ => Err("ending did not target the admitted run".into()),
+        MacCall::DeliverEnding(_) => Err("ending did not target the admitted run".into()),
+        MacCall::ApprovalNotice(_) => {
+            Err("received a notice while expecting a holder ending".into())
+        }
+        MacCall::MacProbe(_) => Err("received a link probe while expecting a holder ending".into()),
     }
 }
 

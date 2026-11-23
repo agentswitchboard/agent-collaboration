@@ -30,3 +30,6 @@ mod approval_store_review_cases;
 mod approval_store_stop_markers;
 #[cfg(test)]
 mod unproven_call_lifecycle;
+
+#[cfg(test)]
+mod parent_visibility_budget;

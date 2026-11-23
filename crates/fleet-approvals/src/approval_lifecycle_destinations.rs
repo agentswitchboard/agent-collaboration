@@ -1,6 +1,6 @@
 use approval_request_protocol::{
-    AdmittedDestination, CentralTime, DecidedBy, DecisionFactor, Delivery, Ending, EndingView,
-    PassOnReply, RequestView,
+    AdmittedDestination, CentralTime, DecidedBy, Delivery, Ending, EndingView, PassOnReply,
+    RequestView,
 };
 use central_engine_model::TransitionError;
 
@@ -11,7 +11,7 @@ use crate::approval_lifecycle_effects::{
 use crate::{
     AdmittedDecider, ApprovalActor, ApprovalDecideInput, ApprovalDecisionReply, ApprovalEffect,
     ApprovalReceipt, ApprovalRefusal, ApprovalRequestKey, ApprovalRouteDestination,
-    ApprovalSession, ApprovalState, FactorStanding, RetainedApproval,
+    ApprovalSession, ApprovalState, RetainedApproval,
 };
 
 fn visible<'a>(
@@ -67,18 +67,7 @@ pub(super) fn decide(
             (next, effects, ApprovalDecisionReply::TooLate {})
         }
         ApprovalState::Waiting { .. } => {
-            let factor = if matches!(
-                decider,
-                AdmittedDecider::Person {
-                    factor: FactorStanding::Fresh,
-                    ..
-                }
-            ) {
-                DecisionFactor::FreshPersonFactor
-            } else {
-                DecisionFactor::NoFreshPersonFactor
-            };
-            if let Ok(ending) = admitted.decide(request.value.clone(), factor) {
+            if let Ok(ending) = admitted.decide(request.value.clone()) {
                 let (next, effects) = finish_decided(saved, ending, request.operation_id, now)?;
                 (
                     next,

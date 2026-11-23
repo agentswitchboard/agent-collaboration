@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT approval_destination_id, approval_row_id, organization_id, destination_kind,\n       session_machine_id, session_enrollment_id, session_id, raised_notice_at,\n       position, first_read_at, created_at, updated_at\nFROM approval_request_destinations\nWHERE approval_row_id = ?1\nORDER BY position\n",
+  "query": "SELECT approval_destination_id, approval_row_id, organization_id, request_id, destination_kind,\n       session_machine_id, session_enrollment_id, session_id, raised_notice_at,\n       position, first_read_at, created_at, updated_at\nFROM approval_request_destinations\nWHERE approval_row_id = ?1\nORDER BY position\n",
   "describe": {
     "columns": [
       {
@@ -37,8 +37,19 @@
         }
       },
       {
-        "name": "destination_kind",
+        "name": "request_id",
         "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_request_destinations",
+            "name": "request_id"
+          }
+        }
+      },
+      {
+        "name": "destination_kind",
+        "ordinal": 4,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -49,7 +60,7 @@
       },
       {
         "name": "session_machine_id",
-        "ordinal": 4,
+        "ordinal": 5,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -60,7 +71,7 @@
       },
       {
         "name": "session_enrollment_id",
-        "ordinal": 5,
+        "ordinal": 6,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -71,7 +82,7 @@
       },
       {
         "name": "session_id",
-        "ordinal": 6,
+        "ordinal": 7,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -82,7 +93,7 @@
       },
       {
         "name": "raised_notice_at",
-        "ordinal": 7,
+        "ordinal": 8,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -93,7 +104,7 @@
       },
       {
         "name": "position",
-        "ordinal": 8,
+        "ordinal": 9,
         "type_info": "Integer",
         "origin": {
           "Table": {
@@ -104,7 +115,7 @@
       },
       {
         "name": "first_read_at",
-        "ordinal": 9,
+        "ordinal": 10,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -115,7 +126,7 @@
       },
       {
         "name": "created_at",
-        "ordinal": 10,
+        "ordinal": 11,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -126,7 +137,7 @@
       },
       {
         "name": "updated_at",
-        "ordinal": 11,
+        "ordinal": 12,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -144,6 +155,7 @@
       false,
       false,
       false,
+      false,
       true,
       true,
       true,
@@ -154,5 +166,5 @@
       false
     ]
   },
-  "hash": "f9638152d43e31eb85cf9e1b41c8fca7297ba0d571eafe796e0de319489a6a66"
+  "hash": "b0dc6a6199826a7c2270a43553b3d2c15870a1e91255032fe62ffc65b4b71460"
 }

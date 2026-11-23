@@ -67,7 +67,7 @@ use collaboration_central_conformance::{
         ApprovalLinkFixture, DeadlineDelivery, ROUTER_RUN, approval_deadline_delivery,
         receive_frame, registered_stop_and_replay,
     },
-    signin_fixtures as signed,
+    signin_fixtures::{self as signed, approval_routes::check_signed_holder_delivery},
 };
 use fleet_contracts::MachineTokenDecision;
 use reqwest_websocket::{RequestBuilderExt, WebSocket};
@@ -337,6 +337,32 @@ use collaboration_central_conformance::approval_link_scenarios::{
 };
 
 #[tokio::test]
+async fn workerd_signed_person_decision_delivers_ending_to_holder() -> Result<()> {
+    let fixture = Fixture::with_production_dispatcher().await?;
+    let observed = check_signed_holder_delivery(&fixture, async |path, body, headers| {
+        let mut request = fixture
+            .client
+            .post(format!("{}{path}", fixture.host.signin_origin()))
+            .json(body);
+        for (name, value) in headers {
+            request = request.header(name, value);
+        }
+        let response = request.send().await?;
+        if response
+            .headers()
+            .get("x-collaboration-central-entry")
+            .is_none_or(|value| value != "collaboration-central-link-entry")
+        {
+            return Err("private approval did not reach the Workerd sign-in entrypoint".into());
+        }
+        Ok((response.status().as_u16(), response.bytes().await?.to_vec()))
+    })
+    .await;
+    fixture.close().await?;
+    observed
+}
+
+#[tokio::test]
 async fn workerd_fixture_decide_delivers_and_records_received() -> Result<()> {
     let fixture = Fixture::with_production_dispatcher().await?;
     let observed = async {
@@ -558,3 +584,5 @@ mod approval_carrier_replacement;
 
 #[path = "parent_approval_calls.rs"]
 mod parent_approval_calls;
+#[path = "person_approval_races.rs"]
+mod person_approval_races;

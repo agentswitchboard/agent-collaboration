@@ -7,10 +7,7 @@ use approval_request_protocol::{CentralTime, RequestView};
 use fleet_actor_identity::AuthenticatedSession;
 use fleet_identity_protocol::OrganizationId;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
-#[cfg(feature = "test-support")]
-use workspace_ids::ApprovalRequestId;
-#[cfg(feature = "test-support")]
-use workspace_ids::PersonId;
+use workspace_ids::{ApprovalRequestId, PersonId};
 
 #[cfg(feature = "test-support")]
 use super::ApprovalReadPage;
@@ -20,7 +17,9 @@ use crate::{
     ApprovalEvent, ApprovalReceipt, ApprovalReplyAddress, ApprovalSession, ApprovalSessionFacts,
     approval_decision_log::ApprovalDecisionLogKey,
     approval_lifecycle_admission::is_destination,
-    approval_store_reads::{read_parent_approval_request, read_people_approval_request},
+    approval_store_reads::{
+        ApprovalReadRecord, read_parent_approval_request, read_people_approval_request,
+    },
     approval_store_transaction::ApprovalStoreTransaction,
 };
 #[cfg(feature = "test-support")]
@@ -197,25 +196,6 @@ where
     }
 
     #[cfg(feature = "test-support")]
-    pub(super) async fn read_person_approval(
-        &mut self,
-        organization: &OrganizationId,
-        person_id: &PersonId,
-        request_id: &ApprovalRequestId,
-    ) -> Result<ApprovalTransitionOutput<Option<RequestView>>, ApprovalApplyFailure> {
-        if organization != self.transaction.organization_id() {
-            return Ok(ApprovalTransitionOutput::with_reply(None));
-        }
-        let record =
-            read_people_approval_request(self.transaction, organization, request_id).await?;
-        let Some(record) = record else {
-            return Ok(ApprovalTransitionOutput::with_reply(None));
-        };
-        let at = self.sample_applying_time()?;
-        self.read_selected_approval(&record, &ApprovalActor::Person(person_id.clone()), at)
-            .await
-    }
-
     #[cfg(feature = "test-support")]
     pub(super) async fn list_person_approvals(
         &mut self,
@@ -260,10 +240,34 @@ where
             ending_offers,
         })
     }
+}
+
+impl<Transaction, Sessions> ApprovalApplyingStore<'_, Transaction, Sessions>
+where
+    Transaction: ApprovalStoreTransaction,
+{
+    pub(super) async fn read_person_approval(
+        &mut self,
+        organization: &OrganizationId,
+        person_id: &PersonId,
+        request_id: &ApprovalRequestId,
+    ) -> Result<ApprovalTransitionOutput<Option<RequestView>>, ApprovalApplyFailure> {
+        if organization != self.transaction.organization_id() {
+            return Ok(ApprovalTransitionOutput::with_reply(None));
+        }
+        let record =
+            read_people_approval_request(self.transaction, organization, request_id).await?;
+        let Some(record) = record else {
+            return Ok(ApprovalTransitionOutput::with_reply(None));
+        };
+        let at = self.sample_applying_time()?;
+        self.read_selected_approval(&record, &ApprovalActor::Person(person_id.clone()), at)
+            .await
+    }
 
     pub(super) async fn read_selected_approval(
         &mut self,
-        record: &crate::approval_store_reads::ApprovalReadRecord,
+        record: &ApprovalReadRecord,
         actor: &ApprovalActor,
         at: CentralTime,
     ) -> Result<ApprovalTransitionOutput<Option<RequestView>>, ApprovalApplyFailure> {

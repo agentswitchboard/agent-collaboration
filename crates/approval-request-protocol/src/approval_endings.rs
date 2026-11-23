@@ -166,7 +166,17 @@ approval_wire_record! {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "reason",
+    rename_all = "camelCase",
+    deny_unknown_fields
+)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum InvalidApprovalEnding {
     #[error(transparent)]
     Digest(#[from] ApprovalDigestError),
@@ -178,8 +188,6 @@ pub enum InvalidApprovalEnding {
     Answer(InvalidAnswer),
     #[error("this actor cannot give the selected approval decision")]
     IneligibleDecider,
-    #[error("the decision requires a fresh person factor")]
-    FreshFactorRequired,
     #[error("the destination is not a current member of this request")]
     DestinationNotAdmitted,
     #[error("the retained decision does not match the admitted decision operation")]

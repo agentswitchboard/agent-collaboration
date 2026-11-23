@@ -4,7 +4,14 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, thiserror::Error, serde::Serialize, serde::Deserialize,
+)]
+#[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum ApprovalDigestError {
     #[error("approval data could not be encoded as JSON")]
     Serialization,

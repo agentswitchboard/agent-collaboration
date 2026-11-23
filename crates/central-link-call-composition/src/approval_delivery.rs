@@ -159,7 +159,7 @@ where
                     Ok(CentralCallWork {
                         result: match publication_failure {
                             None => Ok(TypedCallResult::Answered { reply }),
-                            Some(failure) => Err(failure),
+                            Some(reason) => Err(StoreFailure::AlarmUnpublishable { reason }),
                         },
                         committed_delivery: self.after_reply(offers, None),
                         completion: self

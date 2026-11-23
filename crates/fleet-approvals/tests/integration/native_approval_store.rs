@@ -317,9 +317,13 @@ impl NativeApprovalStoreFixture {
         fixture
     }
 
+    pub fn database_path(&self) -> PathBuf {
+        self.workspace.join("approvals.sqlite")
+    }
+
     async fn reopen_pool(&self) -> SqlitePool {
         let options = SqliteConnectOptions::new()
-            .filename(self.workspace.join("approvals.sqlite"))
+            .filename(self.database_path())
             .create_if_missing(true)
             .foreign_keys(true);
         SqlitePoolOptions::new()

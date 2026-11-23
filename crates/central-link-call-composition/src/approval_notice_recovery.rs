@@ -49,9 +49,9 @@ where
             ApprovalAlarmPublication::AtDueBatchEnd,
             move |loan, scope| {
                 Box::pin(async move {
-                    let time = crate::approval_applying_time::read_applying_time(loan, clock.now())
-                        .await?;
-                    let clock = ApprovalApplyingClock(time.effective());
+                    let time =
+                        fleet_approvals::ApprovalApplyingTime::read(loan, clock.now()).await?;
+                    let clock = ApprovalApplyingClock(time.now());
                     let mut ids = ApprovalApplyingIds(ids.as_ref());
                     let target = notice.target;
                     let session = ApprovalSession {
@@ -155,8 +155,8 @@ where
         if lapse.is_some() {
             return Ok(None);
         }
-        let time = crate::approval_applying_time::read_applying_time(loan, sampled).await?;
-        let clock = ApprovalApplyingClock(time.effective());
+        let time = fleet_approvals::ApprovalApplyingTime::read(loan, sampled).await?;
+        let clock = ApprovalApplyingClock(time.now());
         let mut row_ids = ApprovalApplyingIds(ids.as_ref());
         let mut store = ApprovalStore::new(
             &scope,
@@ -172,7 +172,7 @@ where
             ApprovalNoticeRecovery::NoneOwed => Ok(None),
             ApprovalNoticeRecovery::Page { next } => {
                 let effects = store.finish_effects();
-                time.publish(loan).await?;
+                time.persist(loan).await?;
                 Ok(Some((next, effects)))
             }
         }

@@ -110,7 +110,7 @@ pub(crate) enum HolderApplied {
     Answer {
         reply: HolderReply,
         offers: CommittedApprovalEffects,
-        publication_failure: Option<StoreFailure>,
+        publication_failure: Option<central_storage::AlarmPublicationFailure>,
     },
     AuthorityLapsed(MachineLinkCloseCode),
 }

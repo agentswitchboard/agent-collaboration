@@ -13,8 +13,7 @@ use fleet_approvals::{
     AdmittedDecider, ApprovalApplyFailure, ApprovalApplyingStore, ApprovalCommitOwner,
     ApprovalCommitProof, ApprovalCommitScope, ApprovalDecideInput, ApprovalDecisionReply,
     ApprovalEnrollmentScope, ApprovalHolderAdmission, ApprovalHolderCommand, ApprovalHolderReply,
-    ApprovalHolderScope, FactorStanding, PendingApprovalEffects, PendingApprovalReply,
-    complete_approval_commit,
+    ApprovalHolderScope, PendingApprovalEffects, PendingApprovalReply, complete_approval_commit,
 };
 use fleet_runtime_ports::{Clock, SyncTime};
 use serde_json::{Value, json};
@@ -268,17 +267,7 @@ async fn apply_command(
             value,
         } => {
             let decider = match actor {
-                WitnessDecider::Person {
-                    person_id,
-                    fresh_factor,
-                } => AdmittedDecider::Person {
-                    person_id,
-                    factor: if fresh_factor {
-                        FactorStanding::Fresh
-                    } else {
-                        FactorStanding::AbsentOrStale
-                    },
-                },
+                WitnessDecider::Person { person_id } => AdmittedDecider::Person { person_id },
                 WitnessDecider::Session { session } => AdmittedDecider::Session(session.into()),
             };
             let request = ApprovalDecideInput {

@@ -187,7 +187,7 @@ where
             Ok(CentralCallWork {
                 result: match publication_failure {
                     None => Ok(TypedCallResult::Answered { reply }),
-                    Some(failure) => Err(failure),
+                    Some(reason) => Err(StoreFailure::AlarmUnpublishable { reason }),
                 },
                 committed_delivery: delivery.after_reply(offers, None),
                 completion: None,
@@ -245,8 +245,8 @@ where
                 },
             },
         };
-        let time = crate::approval_applying_time::read_applying_time(loan, sampled).await?;
-        let clock = ApprovalApplyingClock(time.effective());
+        let time = fleet_approvals::ApprovalApplyingTime::read(loan, sampled).await?;
+        let clock = ApprovalApplyingClock(time.now());
         let mut row_ids = ApprovalApplyingIds(ids.as_ref());
         let mut store = ApprovalStore::new(
             &scope,
@@ -285,7 +285,7 @@ where
         };
         let effects = store.finish_effects();
         if publish_time {
-            time.publish(loan).await?;
+            time.persist(loan).await?;
         }
         Ok(ParentPendingApply::Answer {
             address,

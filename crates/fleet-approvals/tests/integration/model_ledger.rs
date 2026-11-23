@@ -70,7 +70,6 @@ pub(super) enum Step {
         operation: u16,
         choice: u8,
         actor: Actor,
-        fresh_factor: bool,
     },
     Stop {
         row: usize,
@@ -212,7 +211,6 @@ struct DecisionAttempt {
     operation: u16,
     choice: u8,
     actor: Actor,
-    fresh_factor: bool,
 }
 
 #[path = "model_ledger_authority.rs"]
@@ -344,15 +342,14 @@ impl Ledger {
             actor,
             operation,
             choice,
-            fresh_factor,
         } = attempt;
         if !self.visible(row, actor) {
             return Decision::NotVisible;
         }
         let answer_fits = if ROWS[row].parked {
-            choice <= 2 && actor.person() && fresh_factor
+            choice <= 2 && actor.person()
         } else {
-            choice <= 2 || (choice <= 5 && actor.person() && fresh_factor)
+            choice <= 2 || (choice <= 5 && actor.person())
         };
         if let Some((Ending::TimedOut, ..)) = self.rows[row].ending {
             Decision::TooLate
@@ -421,14 +418,12 @@ impl Ledger {
                 operation,
                 choice,
                 actor,
-                fresh_factor,
             } => {
                 let attempt = DecisionAttempt {
                     row,
                     operation,
                     choice,
                     actor,
-                    fresh_factor,
                 };
                 let result = self.decide(attempt, sampled, &mut effects);
                 effects.push(OperationEffect::Decide(row, actor, result));

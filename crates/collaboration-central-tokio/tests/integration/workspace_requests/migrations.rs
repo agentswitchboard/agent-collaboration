@@ -14,8 +14,8 @@ async fn business_migration_upgrade_failure_rolls_back_both_real_owners_and_all_
                 .join("central")
                 .join(format!("{}.sqlite", f.caller.organization_id().as_str())),
             workspace_migrations::central_migrator as fn() -> sqlx::migrate::Migrator,
-            // Thirteen production migrations plus the test-only Engine probe fixture.
-            14,
+            // Fourteen production migrations plus the test-only Engine probe fixture.
+            15,
         ),
         (
             f.root

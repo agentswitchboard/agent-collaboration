@@ -103,7 +103,7 @@ fn a_verified_short_duration_cannot_be_backed_by_a_file() {
                 effect,
                 lasts: lifetime,
             };
-            assert!(retained.needs_person_with_fresh_factor());
+            assert!(!retained.admits_session_answer());
             assert!(
                 serde_json::from_str::<OfferedOption>(&serde_json::to_string(&retained).unwrap())
                     .is_ok()
@@ -117,7 +117,7 @@ fn a_verified_short_duration_cannot_be_backed_by_a_file() {
                 kept: TransientOptionStorage::AgentMemory,
             },
         };
-        assert!(!temporary.needs_person_with_fresh_factor());
+        assert!(temporary.admits_session_answer());
     }
 }
 

@@ -1,7 +1,7 @@
 use approval_request_protocol::{
-    AdmittedDestination, ApprovalWindow, DecideRequest, DecidedBy, DecisionFactor,
-    DeliverEndingReply, DeliverEndingRequest, Delivery, Ending, EndingView, InvalidApprovalEnding,
-    PrivateEnding, Raise, RequestView, RetainedSessionDecision, StopReply, WaitingStatus,
+    AdmittedDestination, ApprovalWindow, DecideRequest, DecidedBy, DeliverEndingReply,
+    DeliverEndingRequest, Delivery, Ending, EndingView, InvalidApprovalEnding, PrivateEnding,
+    Raise, RequestView, RetainedSessionDecision, StopReply, WaitingStatus,
 };
 use serde_json::{Value, json};
 
@@ -78,12 +78,7 @@ fn admitted_destination_controls_saved_and_shared_standing_projections() {
     ));
 
     let decide = decide_question().unwrap();
-    let ending = admitted_giver
-        .decide(
-            decide.value.clone().into(),
-            DecisionFactor::NoFreshPersonFactor,
-        )
-        .unwrap();
+    let ending = admitted_giver.decide(decide.value.clone().into()).unwrap();
     let ending = DeliverEndingRequest::from_decision(&raise, ending).unwrap();
     let retained = RetainedSessionDecision {
         request_id: decide.request_id.clone(),
@@ -138,9 +133,7 @@ fn admitted_destination_controls_saved_and_shared_standing_projections() {
     }
     let person_winner = DeliverEndingRequest::from_decision(
         &raise,
-        admitted_owner
-            .decide(decide.value.into(), DecisionFactor::NoFreshPersonFactor)
-            .unwrap(),
+        admitted_owner.decide(decide.value.into()).unwrap(),
     )
     .unwrap();
     let owner_projection = EndingView::for_destination(&admitted_owner, &person_winner).unwrap();
@@ -168,7 +161,7 @@ fn admitted_destination_controls_saved_and_shared_standing_projections() {
 }
 
 #[test]
-fn handover_checks_exact_session_and_fresh_factor_preconditions() {
+fn handover_checks_exact_session_and_person_eligibility() {
     for bad_incarnation in ["host/session", "01934a50-1000-4000-8000-000000000006"] {
         let mut bad_raise = provider_question();
         bad_raise["holder"]["sessionId"] = json!(bad_incarnation);
@@ -209,15 +202,7 @@ fn handover_checks_exact_session_and_fresh_factor_preconditions() {
         .unwrap();
     let answer: approval_request_protocol::Answer =
         serde_json::from_value(json!({"kind":"approval","optionId":1})).unwrap();
-    assert!(matches!(
-        owner.decide(answer.clone(), DecisionFactor::NoFreshPersonFactor),
-        Err(InvalidApprovalEnding::FreshFactorRequired)
-    ));
-    assert!(
-        owner
-            .decide(answer, DecisionFactor::FreshPersonFactor)
-            .is_ok()
-    );
+    assert!(owner.decide(answer).is_ok());
     let forged_parked_ending = json!({"kind":"unprovenCall","ending":{"kind":"decided","decision":"allow","by":{"kind":"session","session":REQUESTER_SESSION}}});
     assert!(serde_json::from_value::<PrivateEnding>(forged_parked_ending).is_err());
 }

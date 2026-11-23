@@ -4,6 +4,12 @@ use crate::ConformanceResult;
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use ring::signature::{Ed25519KeyPair, KeyPair};
 use serde_json::{Value, json};
+mod approval_case_registration;
+mod approval_harness;
+mod approval_preflight;
+pub use approval_preflight::check_approval_preflight;
+pub mod approval_routes;
+mod approval_rows;
 mod issuer_replies;
 use issuer_replies::IssuerReplies;
 pub use issuer_replies::{HeldIssuerFetch, IssuerReply};
@@ -12,6 +18,8 @@ pub use machine_tokens::{
     MACHINE_AUDIENCE, enroll_another_machine, machine_token, resign_machine_token,
 };
 mod one_id_vectors;
+#[cfg(feature = "session-link-test-support")]
+pub mod person_approval_races;
 mod person_requests;
 pub use one_id_vectors::check_machine_identity_vectors;
 mod revocation_journey;

@@ -11,6 +11,6 @@ ON approval_request_destinations (approval_row_id, session_id)
 WHERE destination_kind = 'parent_session';
 CREATE INDEX approval_destinations_session_reads
 ON approval_request_destinations (
-    organization_id, session_machine_id, session_enrollment_id, session_id, approval_row_id
+    organization_id, session_machine_id, session_enrollment_id, session_id, request_id, approval_row_id
 )
 WHERE destination_kind = 'parent_session';

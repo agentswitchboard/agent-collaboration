@@ -8,6 +8,7 @@ use fleet_engine::owner_sql::CheckedStorage;
 use fleet_engine::{checked_engine_statement, checked_subject_projection};
 use fleet_identity_protocol::OrganizationId;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
+use fleet_signin::approval_person_wire::ApprovalListFilter;
 use workspace_ids::{ApprovalRequestId, RouterRunId};
 
 use crate::{
@@ -61,6 +62,7 @@ checked_subject_projection!(StoredDestinationRow {
     approval_destination_id: String,
     approval_row_id: String,
     organization_id: String,
+    request_id: String,
     destination_kind: String,
     session_machine_id: Option<String>,
     session_enrollment_id: Option<String>,
@@ -358,6 +360,29 @@ pub(crate) async fn read_person_approval_page(
         limit = portable_integer(i64::from(limit.get()) + 1, "approval_requests.page_limit")?,
     );
     read_request_records(transaction, statement, with_next).await
+}
+
+pub(crate) async fn read_approval_request_page_for_person(
+    transaction: &mut impl ApprovalStoreTransaction,
+    organization: &OrganizationId,
+    cursor: Option<&ApprovalRequestId>,
+    filter: ApprovalListFilter,
+    limit: u16,
+) -> Result<Vec<ApprovalReadRecord>, StoreFailure> {
+    let scan_limit = usize::from(limit) + 1;
+    let statement = checked_engine_statement!(
+        query_file_as,
+        [CheckedApprovalRow],
+        "src/queries/read_person_approval_request_page.sql",
+        organization_id = organization.as_str().to_owned(),
+        cursor = cursor.map_or("", ApprovalRequestId::as_str).to_owned(),
+        include_ended = portable_integer(
+            i64::from(matches!(filter, ApprovalListFilter::All)),
+            "approval_requests.include_ended"
+        )?,
+        limit = portable_integer(i64::from(limit) + 1, "approval_requests.page_limit")?,
+    );
+    read_request_records(transaction, statement, scan_limit).await
 }
 
 async fn read_request_record(

@@ -3,12 +3,11 @@ use central_engine_model::{Context, MAX_ALARM_UNIX_MILLIS, TransitionError};
 use fleet_approvals::{
     AdmittedDecider, ApprovalCollectionEffect, ApprovalCollectionEvent, ApprovalDecisionReply,
     ApprovalEffect, ApprovalReceipt, ApprovalRefusal, ApprovalRouting, DestinationReplyMismatch,
-    FactorStanding,
 };
 
 use super::fixtures::{
-    HOUR, ObservedReply, UnusedIds, answer, decide_event, enrollment, key, person, person_id,
-    provider, raise_event, raw_reply, reply, routing, run_event, session, setup, time, view_event,
+    HOUR, ObservedReply, UnusedIds, answer, decide_event, key, person, person_id, provider,
+    raise_event, raw_reply, reply, routing, run_event, session, setup, time, view_event,
 };
 
 #[test]
@@ -65,7 +64,7 @@ fn delegate_starts_with_only_its_exact_parent_and_only_first_raise_notifies() {
     assert_eq!(notices(&run_event(&mut book, raise, 1)), 0);
 
     let other = session(&run.enrollment, 8788);
-    let owner = person(10, FactorStanding::Fresh);
+    let owner = person(10);
     for (actor, operation) in [
         (owner.clone(), 100),
         (AdmittedDecider::Session(other.clone()), 101),
@@ -149,12 +148,12 @@ fn machine_decision_and_read_replies_keep_the_request_and_recipient_binding() {
         ),
         0,
     );
-    let original = decide_event(&item, person(10, FactorStanding::Fresh), 100, answer(2));
+    let original = decide_event(&item, person(10), 100, answer(2));
     let won = run_event(&mut book, original.clone(), 1);
     let previously_decided = run_event(&mut book, original, 2);
     let standing = run_event(
         &mut book,
-        decide_event(&item, person(10, FactorStanding::Fresh), 101, answer(1)),
+        decide_event(&item, person(10), 101, answer(1)),
         3,
     );
     for effects in [&won, &previously_decided, &standing] {

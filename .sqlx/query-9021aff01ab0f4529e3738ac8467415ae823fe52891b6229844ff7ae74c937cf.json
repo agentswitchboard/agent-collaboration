@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT requests.*\nFROM approval_requests AS requests\nWHERE requests.organization_id = ?1 AND requests.request_id = ?2\n  AND EXISTS (\n      SELECT 1 FROM approval_request_destinations AS destination\n      WHERE destination.approval_row_id = requests.approval_row_id\n        AND destination.organization_id = requests.organization_id\n        AND destination.destination_kind = 'people'\n  )\n",
+  "query": "SELECT requests.*\nFROM approval_request_destinations AS destination INDEXED BY approval_destinations_session_reads\nCROSS JOIN approval_requests AS requests\nWHERE destination.organization_id = ?1\n  AND destination.request_id = ?2\n  AND destination.destination_kind = 'parent_session'\n  AND destination.session_machine_id = ?3\n  AND destination.session_enrollment_id = ?4\n  AND destination.session_id = ?5\n  AND requests.approval_row_id = destination.approval_row_id\n  AND requests.organization_id = destination.organization_id\n",
   "describe": {
     "columns": [
       {
@@ -258,7 +258,7 @@
       }
     ],
     "parameters": {
-      "Right": 2
+      "Right": 5
     },
     "nullable": [
       false,
@@ -286,5 +286,5 @@
       false
     ]
   },
-  "hash": "1dad590861539b6f44630dbfd549e50532606e738436504f058faf9051431259"
+  "hash": "9021aff01ab0f4529e3738ac8467415ae823fe52891b6229844ff7ae74c937cf"
 }

@@ -17,6 +17,7 @@ central-storage.workspace = true
 fleet-lent-transaction.workspace = true
 fleet-machine-login.workspace = true
 fleet-runtime-ports.workspace = true
+fleet-signin.workspace = true
 sqlx-core.workspace = true
 sqlx = { version = "=0.9.0", default-features = false, features = ["derive"] }
 

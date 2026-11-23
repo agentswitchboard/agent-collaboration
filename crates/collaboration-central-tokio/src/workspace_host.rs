@@ -27,8 +27,8 @@ use central_storage::{
     BatchOutcome, ReadOutcome, Statement, StatementBatch, StoreCall, StoreFailure, StoreReply,
 };
 use collaboration_central_core::{
-    MacCallResult, OrganizationAdminAnswer, OrganizationSignInPort, SignInTrustSettings,
-    TYPED_LINK_CALL_TIMEOUT, WorkspaceRuntime, finish_mac_call,
+    MacCallResult, OrganizationAdminAnswer, OrganizationSignInPort, PersonApprovalAnswer,
+    SignInTrustSettings, TYPED_LINK_CALL_TIMEOUT, WorkspaceRuntime, finish_mac_call,
     identity_contract::{AuthorizationRevision, AuthorizationRevisionAcknowledgement},
     person_request::PersonRequestInput,
 };
@@ -37,6 +37,7 @@ use fleet_identity_protocol::OrganizationId;
 use fleet_runtime::{ClockIds, FleetRuntime};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use fleet_runtime_ports::{Clock, IdSource, SyncTime};
+use fleet_signin::ApprovalPersonVerificationInput;
 use router_clock::RuntimeClock;
 use std::{
     collections::BTreeMap,
@@ -273,17 +274,17 @@ impl TokioWorkspaceHost {
             self.push_registry.clone(),
             self.clock.clone(),
         ));
-        let dispatcher: Arc<dyn collaboration_central_core::CentralLinkDispatcher> =
-            Arc::new(OrganizationLinkDispatcher::new(
-                NativeSessionTransactions {
-                    storage: storage.clone(),
-                },
-                NativeSessionTransactions { storage },
-                ending_transport.clone(),
-                clock.clone(),
-                ids,
-                fill_session_secret,
-            ));
+        let dispatcher = Arc::new(OrganizationLinkDispatcher::new(
+            NativeSessionTransactions {
+                storage: storage.clone(),
+            },
+            NativeSessionTransactions { storage },
+            ending_transport.clone(),
+            clock.clone(),
+            ids,
+            fill_session_secret,
+        ));
+        let central = central.with_person_approval_transactions(dispatcher.clone());
         #[cfg(not(feature = "test-support"))]
         let central = central.with_link_call_dispatcher(dispatcher);
         #[cfg(feature = "test-support")]
@@ -510,6 +511,17 @@ impl OrganizationSignInPort for TokioWorkspaceHost {
             .admin(organization, input)
             .await
     }
+    async fn person_approval(
+        &self,
+        organization: OrganizationId,
+        input: ApprovalPersonVerificationInput<'_>,
+    ) -> Result<PersonApprovalAnswer, StoreFailure> {
+        self.central(&organization)
+            .await?
+            .person_approval(organization, input)
+            .await
+    }
+
     async fn device_login(
         &self,
         request: &fleet_contracts::DecideDeviceLogin,

@@ -9,9 +9,9 @@ use axum::{
     Json, Router,
     body::Bytes,
     extract::{State, rejection::JsonRejection},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{any, post},
 };
 use fleet_contracts::AuthorizationRevisionFailure;
 use fleet_contracts::{
@@ -19,6 +19,7 @@ use fleet_contracts::{
     ReadOrganizationStatementDigest,
 };
 use fleet_identity_protocol::OrganizationId;
+use fleet_signin::approval_person_wire::ApprovalPersonRoute;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -59,6 +60,25 @@ pub fn organization_signin_router<Port: OrganizationSignInPort>(port: Arc<Port>)
             route.path(),
             post(move |headers: HeaderMap, body: Bytes| {
                 forward_admin(port.clone(), route, headers, body)
+            }),
+        );
+    }
+    for route in ApprovalPersonRoute::ALL {
+        let port = port.clone();
+        router = router.route(
+            route.path(),
+            any(move |method: Method, headers: HeaderMap, body: Bytes| {
+                let port = port.clone();
+                async move {
+                    crate::person_approval_http::forward(
+                        port.as_ref(),
+                        route,
+                        method,
+                        headers,
+                        body,
+                    )
+                    .await
+                }
             }),
         );
     }

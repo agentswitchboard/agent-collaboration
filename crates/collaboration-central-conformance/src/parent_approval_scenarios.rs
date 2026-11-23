@@ -51,13 +51,13 @@ pub use rollback::{enrollment_and_approval_rollback, session_end_and_approval_ro
 const CORRELATION: &str = "019f0000-0000-7000-8000-000000007101";
 const ABSENT_REQUEST: &str = "019f0000-0000-7000-8000-000000007102";
 
-pub(super) struct SessionProof {
-    pub(super) session_id: CentralSessionId,
-    pub(super) secret: SessionSecret,
+pub(crate) struct SessionProof {
+    pub(crate) session_id: CentralSessionId,
+    pub(crate) secret: SessionSecret,
 }
 
 impl SessionProof {
-    fn request<Input>(&self, input: Input) -> ApprovalSessionCall<SessionSecret, Input> {
+    pub(crate) fn request<Input>(&self, input: Input) -> ApprovalSessionCall<SessionSecret, Input> {
         ApprovalSessionCall {
             session_id: self.session_id.clone(),
             secret: self.secret.clone(),
@@ -213,7 +213,7 @@ impl ParentSetup {
     }
 }
 
-async fn call<R: CentralLinkRpc<Target = ApprovalServiceTarget>>(
+pub(crate) async fn call<R: CentralLinkRpc<Target = ApprovalServiceTarget>>(
     socket: &mut WebSocket,
     organization: &OrganizationId,
     body: R::Request,
@@ -255,7 +255,7 @@ async fn call<R: CentralLinkRpc<Target = ApprovalServiceTarget>>(
     }
 }
 
-fn answered<T>(reply: TypedCallResult<T>) -> Result<T> {
+pub(crate) fn answered<T>(reply: TypedCallResult<T>) -> Result<T> {
     match reply {
         TypedCallResult::Answered { reply } => Ok(reply),
         TypedCallResult::Refused { reason } => {
@@ -305,11 +305,11 @@ pub(crate) async fn acknowledge_notice(
     .await
 }
 
-fn typed_id(suffix: u16) -> Result<RequestId> {
+pub(crate) fn typed_id(suffix: u16) -> Result<RequestId> {
     Ok(format!("019f0000-0000-7000-8000-00000000{suffix:04x}").parse()?)
 }
 
-fn option(ordinal: u8) -> Result<Answer> {
+pub(crate) fn option(ordinal: u8) -> Result<Answer> {
     Ok(Answer::Approval {
         option_id: approval_request_protocol::OfferedOptionId::new(ordinal)?,
     })

@@ -326,6 +326,7 @@ fn decode_route(
         if people
             || row.approval_row_id.stored_text()? != row_id.as_str()
             || row.organization_id.stored_text()? != scope.organization_id.as_str()
+            || row.request_id.stored_text()? != raise.request_id().as_str()
             || (position == 0 && created_at != window.raised_at())
             || created_at < prior_created_at
             || created_at >= window.deadline()

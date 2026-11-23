@@ -9,6 +9,7 @@ use central_link_call_composition::{
 use central_storage::{AlarmPublication, BatchOutcome, ReadOutcome, Statement, StoreFailure};
 use fleet_identity_protocol::OrganizationId;
 use fleet_lent_transaction::CentralTransaction;
+use fleet_runtime_ports::{Clock, SyncTime};
 use fleet_store_sqlx::{execute_lent_statement, read_lent_statement};
 use std::{
     ops::ControlFlow,
@@ -18,6 +19,7 @@ use std::{
 pub(crate) struct NativeApprovalLoan<'connection> {
     transaction: NativeTransaction<'connection>,
     wrote: &'connection AtomicBool,
+    clock: Option<&'connection dyn Clock>,
 }
 
 impl CentralTransaction for NativeApprovalLoan<'_> {
@@ -33,6 +35,10 @@ impl CentralTransaction for NativeApprovalLoan<'_> {
 }
 
 impl ApprovalStatementLoan for NativeApprovalLoan<'_> {
+    fn sample_time(&self) -> Result<SyncTime, StoreFailure> {
+        self.clock.map(Clock::now).ok_or(StoreFailure::Unavailable)
+    }
+
     async fn read_lent(&mut self, statement: Statement) -> Result<ReadOutcome, StoreFailure> {
         read_lent_statement(self.transaction.0, statement).await
     }
@@ -81,6 +87,11 @@ impl OrganizationApprovalTransactions for NativeSessionTransactions {
                     NativeApprovalLoan {
                         transaction: NativeTransaction(connection),
                         wrote: &wrote,
+                        clock: self
+                            .storage
+                            .engine_publication
+                            .as_ref()
+                            .map(|publication| publication.clock.as_ref()),
                     },
                     &organization,
                 )
@@ -122,7 +133,7 @@ impl OrganizationApprovalTransactions for NativeSessionTransactions {
                         ApprovalTransactionFailure::fixture_rejected_write(),
                     ));
                 }
-                let inputs = if wrote && matches!(alarm, ApprovalAlarmPublication::WithCommit) {
+                let inputs = if wrote && alarm.publishes_with_commit() {
                     Some(ObjectStorage::read_engine_inputs(connection).await?)
                 } else {
                     None
@@ -147,7 +158,13 @@ impl OrganizationApprovalTransactions for NativeSessionTransactions {
                 }),
             );
             if let AlarmPublication::Failed { reason } = publication {
-                Some(StoreFailure::AlarmUnpublishable { reason })
+                #[cfg(feature = "test-support")]
+                self.storage
+                    .publication_failures
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(reason);
+                Some(reason)
             } else {
                 None
             }

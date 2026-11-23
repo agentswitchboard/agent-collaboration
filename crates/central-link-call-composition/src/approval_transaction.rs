@@ -1,5 +1,5 @@
 use crate::{OrganizationLoan, OrganizationLoanFailure};
-use central_storage::{ReadOutcome, Statement, StoreFailure};
+use central_storage::{AlarmPublicationFailure, ReadOutcome, Statement, StoreFailure};
 use fleet_approvals::{
     ApprovalActor, ApprovalApplyFailure, ApprovalCommitOwner, ApprovalCommitProof,
     ApprovalCommitScope, ApprovalEnrollmentScope, ApprovalEnrollmentStanding,
@@ -8,7 +8,8 @@ use fleet_approvals::{
 use fleet_identity_protocol::OrganizationId;
 use fleet_lent_transaction::{CentralTransaction, OrganizationTransaction};
 use fleet_machine_login::{SessionEnrollmentStatus, read_session_enrollment};
-use fleet_runtime_ports::workspace_decode_error::corrupt;
+use fleet_runtime_ports::{SyncTime, workspace_decode_error::corrupt};
+use fleet_signin::ApprovalPersonTransaction;
 use sqlx_core::{
     arguments::IntoArguments, column::ColumnIndex, database::Database, decode::Decode,
     encode::Encode, types::Type,
@@ -16,10 +17,19 @@ use sqlx_core::{
 use std::{convert::Infallible, future::Future, pin::Pin};
 use workspace_ids::ActorIdentityId;
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub enum ApprovalAlarmPublication {
     WithCommit,
     AtDueBatchEnd,
+}
+
+impl ApprovalAlarmPublication {
+    pub const fn publishes_with_commit(&self) -> bool {
+        match self {
+            Self::WithCommit => true,
+            Self::AtDueBatchEnd => false,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -46,6 +56,8 @@ pub type ApprovalTransactionFuture<'loan, Output> =
 
 /// Only the backend knows how to bind a statement to its physical transaction.
 pub trait ApprovalStatementLoan: CentralTransaction + Send {
+    fn sample_time(&self) -> Result<SyncTime, StoreFailure>;
+
     fn read_lent(
         &mut self,
         statement: Statement,
@@ -60,7 +72,7 @@ pub trait ApprovalStatementLoan: CentralTransaction + Send {
 /// A committed apply can still fail to publish the native platform alarm.
 pub struct CommittedApprovalApply<Output> {
     pub output: Output,
-    pub publication_failure: Option<StoreFailure>,
+    pub publication_failure: Option<AlarmPublicationFailure>,
 }
 
 /// The socket and the engine share the same stamped approving loan on each host.
@@ -102,7 +114,7 @@ where
             commit_approval_with_publication(transactions, organization, alarm, apply).await?;
         match committed.publication_failure {
             None => Ok((proof, committed.output)),
-            Some(failure) => Err(failure.into()),
+            Some(reason) => Err(StoreFailure::AlarmUnpublishable { reason }.into()),
         }
     })
 }
@@ -227,5 +239,18 @@ impl PersonApprovalAnswersNotAdmitted {
 impl ApprovalTransactionFailure {
     pub fn fixture_rejected_write() -> Self {
         Self::RolledBack(ApprovalApplyFailure::GuardChanged)
+    }
+}
+
+impl<Loan: ApprovalStatementLoan> ApprovalPersonTransaction for OrganizationLoan<Loan> {
+    fn sample_person_authorization_time(&self) -> Result<SyncTime, StoreFailure> {
+        self.transaction().sample_time()
+    }
+
+    async fn read_person_authorization(
+        &mut self,
+        statement: Statement,
+    ) -> Result<ReadOutcome, StoreFailure> {
+        self.transaction_mut().read_lent(statement).await
     }
 }

@@ -6,6 +6,7 @@ use fleet_engine::{
     plan_due_table_change,
 };
 use fleet_runtime_ports::{stored_values::format_utc_millis, workspace_decode_error::corrupt};
+use workspace_ids::ApprovalRequestId;
 
 use crate::{
     ApprovalRequestKey, ApprovalSession, ApprovalState, EndedApproval, RetainedApproval,
@@ -87,6 +88,7 @@ pub(crate) fn plan_approval_state_change(
                     &destination_id,
                     row_id,
                     scope,
+                    &saved.key.request_id,
                     saved.destinations.current_session(),
                     portable_integer(0, "approval_request_destinations.position")?,
                     saved.window.raised_at(),
@@ -102,6 +104,7 @@ pub(crate) fn plan_approval_state_change(
                     &destination_id,
                     row_id,
                     scope,
+                    &saved.key.request_id,
                     next.destinations.current_session(),
                     portable_integer(
                         i64::try_from(next.destinations.previous().len())
@@ -229,6 +232,7 @@ fn plan_destination(
     destination_id: &ApprovalDestinationRowId,
     row_id: &ApprovalRequestRowId,
     scope: &ApprovalHolderScope,
+    request_id: &ApprovalRequestId,
     parent: Option<&ApprovalSession>,
     position: SafeInteger,
     at: CentralTime,
@@ -246,6 +250,7 @@ fn plan_destination(
         destination_id = destination_id.as_str().to_owned(),
         row_id = row_id.as_str().to_owned(),
         organization_id = scope.organization_id.as_str().to_owned(),
+        request_id = request_id.as_str().to_owned(),
         destination_kind = destination_kind.to_owned(),
         machine_id = parent.map(|session| session.enrollment.machine_id.as_str().to_owned()),
         enrollment_id = parent.map(|session| session.enrollment.enrollment_id.as_str().to_owned()),
