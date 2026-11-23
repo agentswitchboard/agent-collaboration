@@ -3,7 +3,7 @@ use std::{
     io,
     net::SocketAddr,
     pin::Pin,
-    sync::Arc,
+    sync::{Arc, Mutex},
     task::{Context, Poll},
     time::Duration,
 };
@@ -104,6 +104,7 @@ struct SimulatedLink {
     dial_results: mpsc::UnboundedReceiver<bool>,
     lease_token: watch::Sender<String>,
     writer_gate: WriterGate,
+    read_probe: ReadProbe,
     _settings: watch::Sender<DriverSettings<u8>>,
     shutdown: watch::Sender<bool>,
     driver: JoinHandle<()>,
@@ -131,6 +132,7 @@ impl SimulatedLink {
         let driver_clock = Arc::new(ObservedClock::new(clock.clone()));
         let (lease_token, token) = watch::channel(central.token.clone());
         let writer_gate = WriterGate::new();
+        let read_probe = ReadProbe::default();
         let driver = tokio::spawn(
             LinkDriver {
                 machine_id: MACHINE_LINK_FIXTURE_MACHINE.parse().unwrap(),
@@ -147,10 +149,12 @@ impl SimulatedLink {
             }
             .run_with_test_transport({
                 let writer_gate = writer_gate.clone();
+                let read_probe = read_probe.clone();
                 move || {
                     let breaker = breaker.clone();
                     let dial_finished = dial_finished.clone();
                     let writer_gate = writer_gate.clone();
+                    let read_probe = read_probe.clone();
                     async move {
                         let connected = TcpStream::connect((CENTRAL, LINK_PORT)).await;
                         dial_finished.send(connected.is_ok()).unwrap();
@@ -158,7 +162,12 @@ impl SimulatedLink {
                         let (cut, reset) = oneshot::channel();
                         breaker.send(cut).unwrap();
                         Ok(tokio::io::join(
-                            ResettableRead { reader, reset },
+                            ResettableRead {
+                                reader,
+                                reset,
+                                read_probe,
+                                read_to_report: None,
+                            },
                             HeldWriter {
                                 raw: writer,
                                 gate: writer_gate,
@@ -194,6 +203,7 @@ impl SimulatedLink {
             dial_results,
             lease_token,
             writer_gate,
+            read_probe,
             _settings: current_settings,
             shutdown,
             driver,
@@ -330,9 +340,25 @@ impl LeaseSource<u8> for SimulatedLeases {
     fn end(&self, _binding: &u8, _cause: EnrollmentEnd) {}
 }
 
+type ReadBytesSender = oneshot::Sender<Vec<u8>>;
+type DriverReadReport = (ReadBytesSender, Vec<u8>);
+
+#[derive(Clone, Default)]
+struct ReadProbe(Arc<Mutex<Option<ReadBytesSender>>>);
+
+impl ReadProbe {
+    fn observe_next_read_turn(&self) -> oneshot::Receiver<Vec<u8>> {
+        let (report, observed) = oneshot::channel();
+        assert!(self.0.lock().unwrap().replace(report).is_none());
+        observed
+    }
+}
+
 struct ResettableRead<Reader> {
     reader: Reader,
     reset: oneshot::Receiver<()>,
+    read_probe: ReadProbe,
+    read_to_report: Option<DriverReadReport>,
 }
 
 impl<Reader: AsyncRead + Unpin> AsyncRead for ResettableRead<Reader> {
@@ -344,7 +370,25 @@ impl<Reader: AsyncRead + Unpin> AsyncRead for ResettableRead<Reader> {
         if Pin::new(&mut self.reset).poll(context).is_ready() {
             return Poll::Ready(Err(io::ErrorKind::ConnectionReset.into()));
         }
-        Pin::new(&mut self.reader).poll_read(context, buffer)
+        // Report the previous bytes when the driver re-enters the read
+        // stream, rather than while it is still decoding the reply.
+        if let Some((report, bytes)) = self.read_to_report.take() {
+            let _ = report.send(bytes);
+        }
+        let before = buffer.filled().len();
+        let read = Pin::new(&mut self.reader).poll_read(context, buffer);
+        if let Poll::Ready(Ok(())) = read
+            && let Some(bytes) = buffer
+                .filled()
+                .get(before..)
+                .filter(|bytes| !bytes.is_empty())
+        {
+            let report = self.read_probe.0.lock().unwrap().take();
+            if let Some(report) = report {
+                self.read_to_report = Some((report, bytes.to_vec()));
+            }
+        }
+        read
     }
 }
 

@@ -5,6 +5,9 @@
 
 use std::{collections::VecDeque, sync::Arc, time::Duration};
 
+#[path = "cutoff_cases.rs"]
+mod cutoff_cases;
+
 #[path = "loss_cases.rs"]
 mod loss_cases;
 
