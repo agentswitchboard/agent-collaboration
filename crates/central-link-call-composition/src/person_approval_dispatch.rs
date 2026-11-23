@@ -5,9 +5,7 @@ use collaboration_central_core::{
     AppliedPersonApproval, LinkCallCompletion, PersonApprovalApplication,
     PersonApprovalTransactions,
 };
-use fleet_approvals::{
-    ApprovalApplyFailure, ApprovalCommitScope, CommittedApprovalEffects, CommittedApprovalOffer,
-};
+use fleet_approvals::{ApprovalApplyFailure, ApprovalCommitScope, CommittedApprovalEffects};
 use fleet_lent_transaction::CentralTransaction;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use futures_util::future::BoxFuture;
@@ -71,19 +69,13 @@ where
 
     fn delivery_after_commit(
         &self,
-        offers: Vec<CommittedApprovalOffer>,
+        offers: CommittedApprovalEffects,
     ) -> Option<LinkCallCompletion> {
         ApprovalDelivery {
             application: self.approvals.clone(),
             transport: self.ending_transport.clone(),
         }
-        .after_reply(
-            CommittedApprovalEffects {
-                endings: offers,
-                notices: Vec::new(),
-            },
-            None,
-        )
+        .after_reply(offers, None)
     }
 }
 

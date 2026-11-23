@@ -19,7 +19,11 @@ pub use apply_failure::{
     OrganizationLoanFailure, SessionApplyFailure, SessionApplyFault, SessionApplyResult,
     SessionApplySuccess, SessionWiringFault,
 };
-pub use approval_delivery::{ApplyEndingAnswer, ApprovalDeliveryTransport, SelectedApprovalSocket};
+#[cfg(feature = "test-support")]
+pub use approval_delivery::FixtureMacDeliveryEvent;
+pub use approval_delivery::{
+    ApplyEndingAnswer, ApprovalDeliveryTransport, ApprovalMacCall, SelectedApprovalSocket,
+};
 pub use approval_transaction::{
     ApprovalAlarmPublication, ApprovalStatementLoan, ApprovalTransactionFailure,
     ApprovalTransactionFuture, CommittedApprovalApply, OrganizationApprovalTransactions,

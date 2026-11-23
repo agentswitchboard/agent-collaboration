@@ -54,8 +54,9 @@ impl PendingMacCalls {
         SocketAttachment::read(socket)
             .map_err(|_| CallFailure::NeverReached)?
             .ok_or(CallFailure::NeverReached)?
-            .mac_capabilities
-            .admit_outbound(&request)?;
+            .mac_calls
+            .check_request(&request)
+            .map_err(|_| CallFailure::NeverReached)?;
         let correlation = FreshCorrelationId::mint_at(clock.now().unix_millis());
         let frame = LinkFrame::Data(DataFrame::CallMac {
             correlation_id: correlation.wire_id().clone(),

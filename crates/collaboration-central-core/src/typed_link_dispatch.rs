@@ -223,6 +223,19 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             .recover_approval_endings(connection, run)
     }
 
+    /// Recheck staged ending debt in the physical writer's organization turn.
+    pub async fn approval_ending_is_owed_in_held_turn(
+        &self,
+        holder: &central_link_protocol::approval_rpc::ApprovalHolderTarget,
+        request: &workspace_ids::ApprovalRequestId,
+    ) -> Result<bool, StoreFailure> {
+        self.link_call_dispatcher
+            .as_ref()
+            .ok_or(StoreFailure::Unavailable)?
+            .approval_ending_is_owed(holder, request)
+            .await
+    }
+
     /// Called while the physical writer retains the organization turn.
     pub async fn approval_notice_deadline_in_held_turn(
         &self,
@@ -369,6 +382,13 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                     && matches!(envelope.body, RegisterRunReply::Registered {})
             )
         });
+        #[cfg(feature = "test-support")]
+        if registered_run.is_some() && completion.is_some() {
+            self.execution
+                .pause_points()
+                .reached_central(fleet_runtime::PausePoint::MacEndingRegistrationRecoveryScheduled)
+                .await;
+        }
         Ok(DispatchedCentralCall {
             result,
             registered_run,

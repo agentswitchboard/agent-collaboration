@@ -139,16 +139,16 @@ impl CentralObject {
         let Some(mut current) = SocketAttachment::read(socket)? else {
             return self.close_machine_link(socket, 1008, Some("connection identity missing"));
         };
-        if current.mac_capabilities.announce(announcement).is_err() {
+        if current.mac_calls.announce(announcement).is_err() {
             return self.close_machine_link(socket, 1008, Some("duplicate Mac capabilities"));
         }
         current.save(socket)?;
         let recover_notices = current
-            .mac_capabilities
+            .mac_calls
             .handles(central_link_protocol::MacCallKind::ApprovalNotice);
         let holder_run = current.registered_run.filter(|_| {
             current
-                .mac_capabilities
+                .mac_calls
                 .handles(central_link_protocol::MacCallKind::DeliverEnding)
         });
         if !recover_notices && holder_run.is_none() {
@@ -200,7 +200,7 @@ impl CentralObject {
             };
             let recover_after_registration = current.registered_run.is_none()
                 && current
-                    .mac_capabilities
+                    .mac_calls
                     .handles(central_link_protocol::MacCallKind::DeliverEnding);
             (
                 TypedCallCarrier::Approval {
@@ -346,7 +346,29 @@ impl CentralObject {
         invocation: MacCallInvocation,
         deadline: SyncTime,
     ) -> Result<LinkReply, CallFailure> {
-        let prepare = self.write_mac_call(organization, invocation, deadline);
+        let address = MacCallAddress::from(invocation.request.as_ref());
+        if !address_agrees(&address, &organization, &invocation.machine_id) {
+            return Err(CallFailure::NeverReached);
+        }
+        let socket = self
+            .state
+            .get_websockets_with_tag(address.machine_id().as_str())
+            .into_iter()
+            .find(socket_open)
+            .ok_or(CallFailure::NeverReached)?;
+        let attachment = matching_attachment(&socket, &address, &organization)?;
+        attachment
+            .mac_calls
+            .check_request(&invocation.request)
+            .map_err(|_| CallFailure::NeverReached)?;
+        let prepare = self.write_mac_call(
+            organization,
+            invocation,
+            deadline,
+            socket,
+            address,
+            attachment,
+        );
         let written = match select(pin!(self.clock.wait_until(deadline)), pin!(prepare)).await {
             Either::Left(_) => return Err(CallFailure::NeverReached),
             Either::Right((written, _)) => written?,
@@ -365,18 +387,10 @@ impl CentralObject {
         organization: OrganizationId,
         invocation: MacCallInvocation,
         deadline: SyncTime,
+        socket: WebSocket,
+        address: MacCallAddress,
+        attachment: SocketAttachment,
     ) -> Result<WrittenMacCall<'_>, CallFailure> {
-        let address = MacCallAddress::from(invocation.request.as_ref());
-        if !address_agrees(&address, &organization, &invocation.machine_id) {
-            return Err(CallFailure::NeverReached);
-        }
-        let socket = self
-            .state
-            .get_websockets_with_tag(address.machine_id().as_str())
-            .into_iter()
-            .find(socket_open)
-            .ok_or(CallFailure::NeverReached)?;
-        let attachment = matching_attachment(&socket, &address, &organization)?;
         let socket_tag = socket_tag(&self.state, &socket).ok_or(CallFailure::NeverReached)?;
         self.migrate()
             .await

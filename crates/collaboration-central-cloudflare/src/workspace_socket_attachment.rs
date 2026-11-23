@@ -1,6 +1,6 @@
 //! Authority and service registration kept with the physical hibernating socket.
 
-use central_link_protocol::SocketMacCallCapabilities;
+use central_link_protocol::SocketMacCallState;
 use fleet_contracts::MachineConnectionAttachment;
 use serde::{Deserialize, Serialize};
 use worker::{Result, WebSocket};
@@ -11,10 +11,10 @@ use workspace_ids::RouterRunId;
 pub(super) struct SocketAttachment {
     pub(super) authority: MachineConnectionAttachment,
     pub(super) registered_run: Option<RouterRunId>,
-    /// This physical socket owns the set across hibernation. It has no SQL or
-    /// per-machine record, and a later connection starts with no capabilities.
+    /// The announcement and bounded delivery ledger belong to this physical
+    /// socket across hibernation. A reconnect inherits neither.
     #[serde(default)]
-    pub(super) mac_capabilities: SocketMacCallCapabilities,
+    pub(super) mac_calls: SocketMacCallState,
 }
 
 impl SocketAttachment {
@@ -22,7 +22,7 @@ impl SocketAttachment {
         Self {
             authority,
             registered_run: None,
-            mac_capabilities: SocketMacCallCapabilities::default(),
+            mac_calls: SocketMacCallState::default(),
         }
     }
 

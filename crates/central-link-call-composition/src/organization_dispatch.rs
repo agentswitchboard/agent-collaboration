@@ -215,6 +215,15 @@ where
         )
     }
 
+    fn approval_ending_is_owed<'call>(
+        &'call self,
+        holder: &'call central_link_protocol::approval_rpc::ApprovalHolderTarget,
+        request: &'call workspace_ids::ApprovalRequestId,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, StoreFailure>> + Send + 'call>> {
+        let delivery = self.approval_delivery();
+        Box::pin(async move { delivery.ending_is_owed(holder, request).await })
+    }
+
     fn approval_notice_deadline<'call>(
         &'call self,
         notice: &'call central_link_protocol::approval_rpc::ApprovalNoticeEnvelope,

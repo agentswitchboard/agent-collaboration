@@ -101,6 +101,12 @@ pub trait CentralLinkDispatcher: Send + Sync {
 
     fn recover_approval_notices(&self, machine: ValidatedMachineConnection) -> LinkCallCompletion;
 
+    fn approval_ending_is_owed<'call>(
+        &'call self,
+        holder: &'call central_link_protocol::approval_rpc::ApprovalHolderTarget,
+        request: &'call workspace_ids::ApprovalRequestId,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, StoreFailure>> + Send + 'call>>;
+
     fn approval_notice_deadline<'call>(
         &'call self,
         notice: &'call central_link_protocol::approval_rpc::ApprovalNoticeEnvelope,

@@ -96,6 +96,7 @@ pub struct ApprovalApplyingStore<'loan, Transaction, Sessions> {
     row_ids: &'loan mut dyn IdSource,
     holder_offers: Vec<CommittedApprovalOffer>,
     notice_offers: Vec<CommittedApprovalNotice>,
+    settled_mac_calls: Vec<crate::SettledApprovalMacCall>,
 }
 
 impl<'loan, Transaction, Sessions> ApprovalApplyingStore<'loan, Transaction, Sessions>
@@ -117,6 +118,7 @@ where
             row_ids,
             holder_offers: Vec::new(),
             notice_offers: Vec::new(),
+            settled_mac_calls: Vec::new(),
         }
     }
 
@@ -124,6 +126,7 @@ where
         self.commit.pending_effects(CommittedApprovalEffects {
             endings: self.holder_offers,
             notices: self.notice_offers,
+            settled_mac_calls: self.settled_mac_calls,
         })
     }
 
@@ -224,7 +227,45 @@ where
                 self.execute_guarded_write(write).await?;
             }
         }
+        self.record_settled_mac_calls(scope, prior, &next);
         Ok(output)
+    }
+
+    fn record_settled_mac_calls(
+        &mut self,
+        scope: &ApprovalHolderScope,
+        prior: &ApprovalState,
+        next: &ApprovalState,
+    ) {
+        let ApprovalState::Ended { saved, closed } = next else {
+            return;
+        };
+        match prior {
+            ApprovalState::Waiting { .. } => {
+                self.settled_mac_calls
+                    .extend(saved.destinations.sessions().cloned().map(|destination| {
+                        crate::SettledApprovalMacCall::Notice {
+                            organization: scope.organization_id.clone(),
+                            destination,
+                            request_id: saved.key.request_id.clone(),
+                        }
+                    }));
+            }
+            ApprovalState::Ended {
+                closed: previous, ..
+            } if previous.delivery == (approval_request_protocol::Delivery::Owed {})
+                && closed.delivery != (approval_request_protocol::Delivery::Owed {}) =>
+            {
+                self.settled_mac_calls
+                    .push(crate::SettledApprovalMacCall::Ending {
+                        holder: scope.clone(),
+                        request_id: saved.key.request_id.clone(),
+                    });
+            }
+            ApprovalState::Unraised
+            | ApprovalState::StoppedBeforeRaise { .. }
+            | ApprovalState::Ended { .. } => {}
+        }
     }
 
     async fn execute_guarded_write(

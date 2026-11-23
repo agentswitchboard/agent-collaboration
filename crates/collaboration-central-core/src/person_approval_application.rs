@@ -4,7 +4,7 @@ use central_engine_model::IdSource as EngineIdSource;
 use central_storage::{AlarmPublicationFailure, StoreFailure};
 use fleet_approvals::{
     ApprovalApplyFailure, ApprovalCommitOwner, ApprovalCommitProof, ApprovalCommitScope,
-    ApprovalPersonStoreTransaction, ApprovalReplyAddress, CommittedApprovalOffer,
+    ApprovalPersonStoreTransaction, ApprovalReplyAddress, CommittedApprovalEffects,
     PendingApprovalEffects, PersonApprovalStoreReply, apply_person_command,
     complete_approval_commit,
 };
@@ -39,7 +39,7 @@ pub trait PersonApprovalTransactions: Send + Sync + 'static {
 
     fn delivery_after_commit(
         &self,
-        offers: Vec<CommittedApprovalOffer>,
+        offers: CommittedApprovalEffects,
     ) -> Option<crate::LinkCallCompletion>;
 }
 
@@ -179,10 +179,13 @@ impl AppliedPersonApproval {
     pub(super) fn publish(
         self,
         commit: &ApprovalCommitProof,
-    ) -> Result<(PersonApprovalAnswer, Vec<CommittedApprovalOffer>), StoreFailure> {
+    ) -> Result<(PersonApprovalAnswer, CommittedApprovalEffects), StoreFailure> {
         let (reply, address, effects) = match self.outcome {
             ApplyingOutcome::Refused(reason) => {
-                return Ok((PersonApprovalAnswer::Refused(reason), Vec::new()));
+                return Ok((
+                    PersonApprovalAnswer::Refused(reason),
+                    CommittedApprovalEffects::default(),
+                ));
             }
             ApplyingOutcome::Admitted {
                 reply,
@@ -205,7 +208,7 @@ impl AppliedPersonApproval {
                 .map(PersonApprovalAnswer::Decide),
         }
         .map_err(|_| StoreFailure::Unavailable)?;
-        Ok((answer, offers.endings))
+        Ok((answer, offers))
     }
 }
 

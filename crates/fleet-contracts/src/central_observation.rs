@@ -3,6 +3,9 @@
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CentralObservation {
+    MacCallLedgerSaturated {
+        capacity: usize,
+    },
     EngineAlarmNotPublished {
         failure: central_storage::StoreFailure,
     },

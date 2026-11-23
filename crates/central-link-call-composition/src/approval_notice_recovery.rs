@@ -36,6 +36,62 @@ where
     i64: Type<Db> + for<'query> Encode<'query, Db> + for<'row> Decode<'row, Db>,
     for<'row> &'row str: ColumnIndex<Db::Row>,
 {
+    pub(crate) async fn ending_is_owed(
+        &self,
+        holder: &central_link_protocol::approval_rpc::ApprovalHolderTarget,
+        request: &workspace_ids::ApprovalRequestId,
+    ) -> Result<bool, StoreFailure> {
+        let scope = fleet_approvals::ApprovalHolderScope {
+            organization_id: holder.organization_id.clone(),
+            run: fleet_approvals::ApprovalRun {
+                enrollment: ApprovalEnrollment {
+                    machine_id: holder.machine_id.clone(),
+                    enrollment_id: holder.enrollment_id.clone(),
+                },
+                router_run: holder.router_run.clone(),
+            },
+        };
+        let request = request.clone();
+        let clock = self.application.clock.clone();
+        let ids = self.application.ids.clone();
+        let (_, owed) = commit_approval(
+            self.application.transactions.clone(),
+            scope.organization_id.clone(),
+            ApprovalAlarmPublication::AtDueBatchEnd,
+            move |loan, commit| {
+                Box::pin(async move {
+                    let clock = ApprovalApplyingClock(clock.now());
+                    let mut ids = ApprovalApplyingIds(ids.as_ref());
+                    Ok(ApprovalStore::new(
+                        &commit,
+                        loan,
+                        &ActorApprovalSessionFacts,
+                        &clock,
+                        &mut ids,
+                    )
+                    .holder_ending_is_owed(&scope, &request)
+                    .await?)
+                })
+            },
+        )
+        .await
+        .map_err(|failure| match failure {
+            crate::ApprovalTransactionFailure::Store(failure)
+            | crate::ApprovalTransactionFailure::Loan(crate::OrganizationLoanFailure::Store(
+                failure,
+            ))
+            | crate::ApprovalTransactionFailure::RolledBack(
+                fleet_approvals::ApprovalApplyFailure::Store(failure),
+            ) => failure,
+            crate::ApprovalTransactionFailure::Loan(crate::OrganizationLoanFailure::Wiring(_))
+            | crate::ApprovalTransactionFailure::RolledBack(
+                fleet_approvals::ApprovalApplyFailure::Lifecycle(_)
+                | fleet_approvals::ApprovalApplyFailure::GuardChanged,
+            ) => StoreFailure::Unavailable,
+        })?;
+        Ok(owed)
+    }
+
     pub(crate) async fn notice_deadline(
         &self,
         notice: &ApprovalNoticeEnvelope,

@@ -41,6 +41,13 @@ pub enum PausePoint {
     BeforeApprovalNoticeWrite,
     AfterApprovalNoticeAttempt,
     AfterApprovalNoticeRecovery,
+    BeforeMacEndingOffer,
+    AfterMacEndingOffer,
+    BeforeMacNoticeOffer,
+    AfterMacNoticeOffer,
+    MacEndingRecoveryStarted,
+    MacEndingRecoveryFinished,
+    MacEndingRegistrationRecoveryScheduled,
     BeforePersonApprovalTurn,
     AfterPersonApprovalCommit,
     AfterIdleExpiryCommit,
@@ -78,6 +85,7 @@ pub struct PausePoints {
     armed: Arc<Mutex<BTreeMap<PauseKey, ArmedPause>>>,
     held: Arc<Mutex<BTreeMap<WorkspaceId, Vec<PausePoint>>>>,
     central: Arc<Mutex<BTreeMap<PausePoint, ArmedPause>>>,
+    central_counts: Arc<Mutex<BTreeMap<PausePoint, watch::Sender<u64>>>>,
     /// Several holds may be armed on one key; arrivals take them in arming order,
     /// so two callers on one instance or request can each be held.
     engine: Arc<Mutex<BTreeMap<EngineKey, VecDeque<ArmedPause>>>>,
@@ -130,7 +138,43 @@ impl PausePoints {
         HeldPause { arrived, release }
     }
 
+    pub fn central_count(&self, point: PausePoint) -> u64 {
+        self.central_counts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .get(&point)
+            .map_or(0, |count| *count.borrow())
+    }
+
+    pub async fn until_central_count(&self, point: PausePoint, minimum: u64) {
+        let mut count = self
+            .central_counts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .entry(point)
+            .or_insert_with(|| watch::channel(0).0)
+            .subscribe();
+        let _ = count.wait_for(|count| *count >= minimum).await;
+    }
+
     pub async fn reached_central(&self, point: PausePoint) {
+        if matches!(
+            point,
+            PausePoint::BeforeMacEndingOffer
+                | PausePoint::AfterMacEndingOffer
+                | PausePoint::BeforeMacNoticeOffer
+                | PausePoint::AfterMacNoticeOffer
+                | PausePoint::MacEndingRecoveryStarted
+                | PausePoint::MacEndingRecoveryFinished
+                | PausePoint::MacEndingRegistrationRecoveryScheduled
+        ) {
+            self.central_counts
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .entry(point)
+                .or_insert_with(|| watch::channel(0).0)
+                .send_modify(|count| *count += 1);
+        }
         let armed = self
             .central
             .lock()

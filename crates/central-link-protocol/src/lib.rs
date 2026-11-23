@@ -45,7 +45,10 @@ pub use mac_call_address::MacCallAddress;
 pub use mac_call_capabilities::{
     DuplicateMacCallKind, HandledMacCalls, MacCallKind, MacCapabilities,
 };
-pub use socket_mac_call_capabilities::{DuplicateMacCapabilities, SocketMacCallCapabilities};
+pub use socket_mac_call_capabilities::{
+    DuplicateMacCapabilities, MAX_SOCKET_MAC_CALL_ITEMS, MacCallDeliveryKey, MacCallSkip,
+    SocketMacCallState,
+};
 
 /// The receiving end of a machine-link frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

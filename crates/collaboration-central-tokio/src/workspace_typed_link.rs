@@ -176,6 +176,11 @@ pub(super) async fn offer_mac_call(
                 if let Err(cause) = runtime.restore_machine_in_held_turn(&attachment).await? {
                     return Ok::<_, central_storage::StoreFailure>(Err(cause));
                 }
+                if let Some((holder, request)) = queued.committed_ending()
+                    && !runtime.approval_ending_is_owed_in_held_turn(holder, request).await?
+                {
+                    return Ok(Ok(None));
+                }
                 if let Some(notice) = queued.approval_notice() {
                     match runtime.approval_notice_deadline_in_held_turn(notice).await {
                         Ok(Some(deadline)) if writes.clock.now().unix_millis() < deadline.timestamp_millis() => {}
