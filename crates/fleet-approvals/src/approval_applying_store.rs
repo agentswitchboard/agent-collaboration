@@ -5,8 +5,8 @@ use fleet_runtime_ports::{Clock, workspace_decode_error::corrupt};
 
 use crate::{
     ApprovalCommitScope, ApprovalEffect, ApprovalEvent, ApprovalLifecycle, ApprovalReceipt,
-    ApprovalRefusal, ApprovalReplyAddress, ApprovalRouting, ApprovalState, CommittedApprovalOffer,
-    PendingApprovalHolderEffects, PendingApprovalReply,
+    ApprovalRefusal, ApprovalReplyAddress, ApprovalState, CommittedApprovalEffects,
+    CommittedApprovalNotice, CommittedApprovalOffer, PendingApprovalEffects, PendingApprovalReply,
     approval_store_scope::{ApprovalHolderScope, ApprovalRequestRowId},
     approval_store_transaction::ApprovalStoreTransaction,
     approval_store_writes::{
@@ -21,6 +21,17 @@ mod destination_commands;
 mod fixture_destinations;
 #[path = "approval_store_holder_commands.rs"]
 mod holder_commands;
+#[path = "approval_store_parent_decisions.rs"]
+mod parent_decisions;
+#[path = "approval_store_parent_forward.rs"]
+mod parent_forward;
+pub use parent_decisions::SessionDecisionApply;
+#[path = "approval_store_notice_recovery.rs"]
+mod notice_recovery;
+#[path = "approval_store_parent_reads.rs"]
+mod parent_reads;
+pub use notice_recovery::{ApprovalNoticeCursor, ApprovalNoticeRecovery};
+pub use parent_reads::SessionReadApply;
 #[path = "approval_store_person_commands.rs"]
 mod person_commands;
 #[path = "approval_store_person_decide.rs"]
@@ -84,6 +95,7 @@ pub struct ApprovalApplyingStore<'loan, Transaction, Sessions> {
     clock: &'loan dyn Clock,
     row_ids: &'loan mut dyn IdSource,
     holder_offers: Vec<CommittedApprovalOffer>,
+    notice_offers: Vec<CommittedApprovalNotice>,
 }
 
 impl<'loan, Transaction, Sessions> ApprovalApplyingStore<'loan, Transaction, Sessions>
@@ -104,11 +116,15 @@ where
             clock,
             row_ids,
             holder_offers: Vec::new(),
+            notice_offers: Vec::new(),
         }
     }
 
-    pub fn finish_holder_effects(self) -> PendingApprovalHolderEffects {
-        self.commit.pending_holder_effects(self.holder_offers)
+    pub fn finish_effects(self) -> PendingApprovalEffects {
+        self.commit.pending_effects(CommittedApprovalEffects {
+            endings: self.holder_offers,
+            notices: self.notice_offers,
+        })
     }
 
     fn stage_reply<Reply>(
@@ -174,13 +190,15 @@ where
                         .retained()
                         .ok_or_else(|| corrupt("approval_requests.notice"))?;
                     if retained.key != key
-                        || retained.routing
-                            != (ApprovalRouting::Delegate {
-                                admitted_parent: session,
-                            })
+                        || retained.destinations.current_session() != Some(&session)
                     {
                         return Err(corrupt("approval_requests.notice").into());
                     }
+                    self.notice_offers.push(CommittedApprovalNotice::new(
+                        scope.organization_id.clone(),
+                        session,
+                        key.request_id,
+                    ));
                 }
                 ApprovalEffect::RegisterDue { key, deadline } => {
                     let row_id = row_id.ok_or_else(|| corrupt("approval_requests.due_key"))?;

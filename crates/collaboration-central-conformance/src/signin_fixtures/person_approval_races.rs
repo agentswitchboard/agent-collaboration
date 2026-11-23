@@ -405,3 +405,7 @@ async fn read_winner(fixture: &impl ApprovalLinkFixture, request: &Raise) -> Res
 fn text(value: &str) -> SqlValue {
     SqlValue::Text(value.to_owned())
 }
+
+#[path = "person_session_approval_race.rs"]
+mod person_session;
+pub use person_session::check_person_session_race;

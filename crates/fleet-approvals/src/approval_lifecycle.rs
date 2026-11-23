@@ -1,7 +1,7 @@
 use approval_request_protocol::RequestContentsDigest;
 use approval_request_protocol::{
     ApprovalWindow, CancelReason, CentralTime, Delivery, Ending, Raise, RaiseReceipt, RaiseReply,
-    StopReceiptEnding, StopReply, StopRequest, WaitingStatus,
+    StopReceiptEnding, StopReply, StopRequest,
 };
 use central_engine_model::{
     Context, EngineTime, Machine, MachineKind, Transition, TransitionError, supported_time,
@@ -16,9 +16,9 @@ use crate::approval_lifecycle_effects::{
     ApprovalChange, finish, finish_stopped, parent_notice, reply, standing, with_delivery,
 };
 use crate::{
-    ApprovalActor, ApprovalEffect, ApprovalEvent, ApprovalReceipt, ApprovalRefusal,
-    ApprovalRequestKey, ApprovalRouting, ApprovalState, ProviderSessionAvailability,
-    RaiseAdmission, RetainedApproval, StopMarkerCause,
+    ApprovalEffect, ApprovalEvent, ApprovalReceipt, ApprovalRefusal, ApprovalRequestKey,
+    ApprovalRouting, ApprovalState, ProviderSessionAvailability, RaiseAdmission, RetainedApproval,
+    StopMarkerCause,
 };
 
 pub const MAX_OUTSTANDING_PER_RUN: usize = 256;
@@ -51,10 +51,12 @@ impl Machine for ApprovalLifecycle {
                 actor,
                 request,
             } => decide(state, &key, &actor, request, now),
-            ApprovalEvent::Read { key, person_id } => {
-                read(state, &key, &ApprovalActor::Person(person_id), now)
-            }
-            ApprovalEvent::PassOn { key, live_parent } => pass_on(state, &key, &live_parent, now),
+            ApprovalEvent::Read { key, actor } => read(state, &key, &actor, now),
+            ApprovalEvent::PassOn {
+                key,
+                live_parent,
+                to,
+            } => pass_on(state, &key, &live_parent, &to, now),
             ApprovalEvent::Stop { key, request } => apply_stop(state, key, &request, now),
             ApprovalEvent::DeliveryReply {
                 key,
@@ -179,11 +181,10 @@ fn apply_raise(
                 raise,
                 contents_digest,
                 window,
-                routing,
-                waiting_status: WaitingStatus::Pending,
+                destinations: crate::ApprovalDestinations::initial(routing),
             };
-            if let ApprovalRouting::Delegate { admitted_parent } = &saved.routing
-                && saved.raise.requesting_session() == Some(&admitted_parent.session_id)
+            if let Some(parent) = saved.destinations.current_session()
+                && saved.raise.requesting_session() == Some(&parent.session_id)
             {
                 return Err(TransitionError::Domain(
                     ApprovalRefusal::InvalidInitialRoute,

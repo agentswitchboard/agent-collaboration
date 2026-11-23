@@ -12,16 +12,18 @@ pub struct AppliedApprovalDeadline {
 
 pub type LinkCallCompletion = Pin<Box<dyn Future<Output = ()> + Send + 'static>>;
 
-/// Post-commit work starts only after the host has sent the reply and bound any run.
+/// Shortcut to the post-commit carrier work and the separate run-registration continuation.
 pub struct CentralCallWork {
-    pub result: TypedCallResult<CentralCallReply>,
+    pub result: CentralCallDispatch,
+    pub committed_delivery: Option<LinkCallCompletion>,
     pub completion: Option<LinkCallCompletion>,
 }
 
 impl From<TypedCallResult<CentralCallReply>> for CentralCallWork {
     fn from(result: TypedCallResult<CentralCallReply>) -> Self {
         Self {
-            result,
+            result: Ok(result),
+            committed_delivery: None,
             completion: None,
         }
     }
@@ -61,7 +63,11 @@ pub fn is_approval_holder_call(request: Option<&CentralCall>) -> bool {
         Some(
             CentralCall::CreateFleetSession(_)
             | CentralCall::BindFleetSession(_)
-            | CentralCall::EndFleetSession(_),
+            | CentralCall::EndFleetSession(_)
+            | CentralCall::ListApprovalsForSession(_)
+            | CentralCall::ReadApprovalForSession(_)
+            | CentralCall::DecideApprovalAsSession(_)
+            | CentralCall::PassOnApproval(_),
         )
         | None => false,
     }
@@ -85,6 +91,19 @@ pub trait CentralLinkDispatcher: Send + Sync {
         invalidation: fleet_contracts::EnrollmentInvalidation,
         statements: Vec<central_storage::GuardedStatement>,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreFailure>> + Send + '_>>;
+
+    fn recover_approval_notices(&self, machine: ValidatedMachineConnection) -> LinkCallCompletion;
+
+    fn approval_notice_deadline<'call>(
+        &'call self,
+        notice: &'call central_link_protocol::approval_rpc::ApprovalNoticeEnvelope,
+    ) -> Pin<
+        Box<
+            dyn Future<Output = Result<Option<central_engine_model::EngineTime>, StoreFailure>>
+                + Send
+                + 'call,
+        >,
+    >;
 
     fn apply_approval_deadline(
         &self,

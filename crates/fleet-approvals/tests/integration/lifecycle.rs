@@ -42,6 +42,7 @@ fn a_forwarded_request_preserves_session_answer_limits_and_permits_person_answer
             ApprovalReceipt::Decide(DecideReply::NotVisible {})
         );
         let forward = ApprovalCollectionEvent::PassOn {
+            to: fleet_approvals::ApprovalRouteDestination::People,
             key: item.clone(),
             parent: parent.clone(),
             request: PassOnRequest {
@@ -92,6 +93,7 @@ fn forwarding_checks_the_exact_live_assigned_parent_and_replays_success() {
                    body: &fleet_approvals::ApprovalRequestKey,
                    actor| {
         ApprovalCollectionEvent::PassOn {
+            to: fleet_approvals::ApprovalRouteDestination::People,
             key: target.clone(),
             parent: actor,
             request: PassOnRequest {
@@ -119,7 +121,7 @@ fn forwarding_checks_the_exact_live_assigned_parent_and_replays_success() {
     assert_eq!(retained.waiting_status(), WaitingStatus::PassedOn);
     assert_eq!(retained.window, before);
     assert_eq!(
-        retained.routing,
+        retained.initial_routing(),
         fleet_approvals::ApprovalRouting::Delegate {
             admitted_parent: parent.clone()
         }

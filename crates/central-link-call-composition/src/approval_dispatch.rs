@@ -1,28 +1,23 @@
 use crate::{
     ApprovalAlarmPublication, ApprovalTransactionFailure, ApprovalTransactionFuture,
     OrganizationApprovalTransactions, OrganizationLoanFailure,
-    approval_transaction::commit_approval,
+    approval_transaction::commit_approval_with_publication,
 };
 use approval_request_protocol::{
     DeliverEndingReply, DeliverEndingRequest, Raise, RaiseReply, RegisterRunReply, RouterRunId,
     RunRefusal, StopReply, StopRequest,
 };
-use central_link_protocol::{
-    CentralCallReply, CentralLinkRpc, LinkCallRefusal, MachineLinkCloseCode, TypedCallResult,
-    approval_rpc::ApprovalServiceTarget,
-};
+use central_link_protocol::{LinkCallRefusal, MachineLinkCloseCode, TypedCallResult};
 use central_storage::StoreFailure;
 use collaboration_central_core::{
-    CentralCallWork, TargetCheckedCentralCall, TypedCallCarrier, ValidatedMachineConnection,
-    recheck_lent_link_authority,
+    CentralCallWork, ValidatedMachineConnection, recheck_lent_link_authority,
 };
 use fleet_approvals::{
     ActorApprovalSessionFacts, ApprovalApplyFailure, ApprovalApplyingStore, ApprovalCommitScope,
     ApprovalHolderAdmission, ApprovalRefusal, ApprovalReleaseFailure, ApprovalReplyAddress,
-    CommittedApprovalOffer, PendingApprovalHolderEffects, PendingApprovalReply,
+    CommittedApprovalEffects, PendingApprovalEffects, PendingApprovalReply,
 };
 use fleet_lent_transaction::CentralTransaction;
-use fleet_rpc::Envelope;
 use fleet_runtime_ports::{Clock, IdSource, SyncTime, workspace_decode_error::corrupt};
 use sqlx_core::{
     arguments::IntoArguments, column::ColumnIndex, database::Database, decode::Decode,
@@ -106,7 +101,7 @@ enum PendingHolderApply {
     Applied {
         reply: Box<PendingHolderReply>,
         address: ApprovalReplyAddress,
-        effects: PendingApprovalHolderEffects,
+        effects: PendingApprovalEffects,
     },
     AuthorityLapsed(MachineLinkCloseCode),
 }
@@ -114,7 +109,8 @@ enum PendingHolderApply {
 pub(crate) enum HolderApplied {
     Answer {
         reply: HolderReply,
-        offers: Vec<CommittedApprovalOffer>,
+        offers: CommittedApprovalEffects,
+        publication_failure: Option<central_storage::AlarmPublicationFailure>,
     },
     AuthorityLapsed(MachineLinkCloseCode),
 }
@@ -137,83 +133,6 @@ where
     i64: Type<Db> + for<'query> Encode<'query, Db> + for<'row> Decode<'row, Db>,
     for<'row> &'row str: ColumnIndex<Db::Row>,
 {
-    pub fn dispatch<'call, R: CentralLinkRpc<Target = ApprovalServiceTarget> + 'static>(
-        &'call self,
-        machine: &'call ValidatedMachineConnection,
-        request: Envelope<R::Target, R::Request>,
-        (claimed_run, carrier): (RouterRunId, &'call TypedCallCarrier),
-        transport: Arc<dyn crate::ApprovalEndingTransport>,
-        command: impl FnOnce(R::Request) -> HolderCommand + Send + 'static,
-        wrap: impl FnOnce(ApprovalServiceTarget, HolderReply) -> Option<CentralCallReply>
-        + Send
-        + 'static,
-    ) -> Pin<Box<dyn Future<Output = Result<CentralCallWork, StoreFailure>> + Send + 'call>> {
-        Box::pin(async move {
-            let target = ApprovalServiceTarget {
-                organization_id: machine.organization_id().clone(),
-            };
-            let body = match TargetCheckedCentralCall::<R>::check(&target, request) {
-                Ok(checked) => checked.into_body(),
-                Err(reason) => return Ok(refused(reason)),
-            };
-            let command = command(body);
-            let TypedCallCarrier::Approval { registered_run } = carrier else {
-                return Err(corrupt("typed_approval_call.physical_carrier"));
-            };
-            let run = match (&command, registered_run) {
-                (HolderCommand::Register, None) => claimed_run,
-                (_, Some(bound)) if *bound == claimed_run => bound.clone(),
-                (HolderCommand::Register | HolderCommand::Raise(_) | HolderCommand::Stop(_), _) => {
-                    let reply = match command {
-                        HolderCommand::Register => {
-                            HolderReply::Register(RegisterRunReply::RunNotRegistered {})
-                        }
-                        HolderCommand::Raise(_) => {
-                            HolderReply::Raise(RaiseReply::AuthorityRefused {
-                                refusal: RunRefusal::RunNotRegistered {},
-                            })
-                        }
-                        HolderCommand::Stop(_) => HolderReply::Stop(StopReply::AuthorityRefused {
-                            refusal: RunRefusal::RunNotRegistered {},
-                        }),
-                        HolderCommand::Recover | HolderCommand::DeliveryAnswer { .. } => {
-                            return Err(corrupt("typed_approval_call.direction"));
-                        }
-                    };
-                    return Ok(TypedCallResult::Answered {
-                        reply: wrap(target, reply).ok_or(StoreFailure::Unavailable)?,
-                    }
-                    .into());
-                }
-                (HolderCommand::Recover | HolderCommand::DeliveryAnswer { .. }, _) => {
-                    return Err(corrupt("typed_approval_call.direction"));
-                }
-            };
-            let applied = self
-                .apply_holder(machine.clone(), run.clone(), command)
-                .await;
-            match applied {
-                Ok(HolderApplied::Answer { reply, offers }) => {
-                    let reply = wrap(target, reply).ok_or(StoreFailure::AnswerLost)?;
-                    let registration =
-                        crate::approval_delivery::recover_after_registration(&reply, machine, run);
-                    let delivery = crate::approval_delivery::ApprovalDelivery {
-                        application: self.clone(),
-                        transport,
-                    };
-                    Ok(CentralCallWork {
-                        result: TypedCallResult::Answered { reply },
-                        completion: delivery.after_reply(offers, registration),
-                    })
-                }
-                Ok(HolderApplied::AuthorityLapsed(cause)) => {
-                    Ok(refused(LinkCallRefusal::AuthorityLapsed { cause }))
-                }
-                Err(failure) => report_approval_failure(failure),
-            }
-        })
-    }
-
     pub fn apply_holder<'call>(
         &'call self,
         machine: ValidatedMachineConnection,
@@ -225,7 +144,7 @@ where
             let organization = machine.organization_id().clone();
             let clock = self.clock.clone();
             let ids = self.ids.clone();
-            let (proof, applied) = commit_approval(
+            let (proof, committed) = commit_approval_with_publication(
                 self.transactions.clone(),
                 organization,
                 ApprovalAlarmPublication::WithCommit,
@@ -235,7 +154,7 @@ where
             )
             .await
             .map_err(ApprovalDispatchFailure::Transaction)?;
-            match applied {
+            match committed.output {
                 PendingHolderApply::AuthorityLapsed(cause) => {
                     Ok(HolderApplied::AuthorityLapsed(cause))
                 }
@@ -250,6 +169,7 @@ where
                     offers: effects
                         .release(&proof)
                         .map_err(ApprovalDispatchFailure::Release)?,
+                    publication_failure: committed.publication_failure,
                 }),
             }
         })
@@ -313,7 +233,7 @@ where
                 PendingHolderReply::Recover(store.recover_owed_approval_endings(&holder).await?)
             }
         };
-        let effects = store.finish_holder_effects();
+        let effects = store.finish_effects();
         Ok(PendingHolderApply::Applied {
             reply: Box::new(reply),
             address,
@@ -338,7 +258,7 @@ impl central_engine_model::IdSource for ApprovalApplyingIds<'_> {
     }
 }
 
-fn refused(reason: LinkCallRefusal) -> CentralCallWork {
+pub(crate) fn refused(reason: LinkCallRefusal) -> CentralCallWork {
     TypedCallResult::Refused { reason }.into()
 }
 

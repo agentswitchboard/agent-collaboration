@@ -17,6 +17,7 @@ async fn tokio_releases_committed_person_ending_when_alarm_publication_fails()
         before_alarm: Cell::new(0),
         delivery_answer: RefCell::default(),
         before_write: RefCell::default(),
+        notice_recovery: RefCell::default(),
     };
     let observed = async {
         let runtime = fixture

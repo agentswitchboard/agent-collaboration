@@ -12,7 +12,7 @@ use central_storage::{CorruptReason, StoreFailure};
 use collaboration_central_core::AppliedApprovalDeadline;
 use fleet_approvals::{
     ActorApprovalSessionFacts, ApprovalApplyFailure, ApprovalCommitScope, ApprovalRefusal,
-    ApprovalReplyAddress, PendingApprovalHolderEffects, PendingApprovalReply,
+    ApprovalReplyAddress, PendingApprovalEffects, PendingApprovalReply,
 };
 use fleet_contracts::EngineSubject;
 use fleet_engine::{
@@ -31,7 +31,7 @@ use std::{future::Future, pin::Pin, sync::Arc};
 enum PendingDeadline {
     Applied {
         reply: PendingApprovalReply<()>,
-        effects: PendingApprovalHolderEffects,
+        effects: PendingApprovalEffects,
     },
     Stale,
     Failed(FailureRecord),
@@ -124,7 +124,9 @@ where
                                 }
                                 DeadlineFailure::Bounded(_) => CheckedDueFailure::Unavailable,
                             })?;
-                        recorded.map_or(CheckedDueUnit::Stale, CheckedDueUnit::Failed)
+                        recorded
+                            .output
+                            .map_or(CheckedDueUnit::Stale, CheckedDueUnit::Failed)
                     }
                 },
             };
@@ -198,7 +200,7 @@ where
             .await?;
         Ok(PendingDeadline::Applied {
             reply,
-            effects: store.finish_holder_effects(),
+            effects: store.finish_effects(),
         })
     })
 }

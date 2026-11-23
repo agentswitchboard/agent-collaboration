@@ -70,7 +70,7 @@ pub async fn call_machine<R: MacLinkRpc>(
 ) -> MacCallResult<R> {
     let target = request.target.clone();
     let call = R::request(request);
-    if matches!(call, MacCall::DeliverEnding(_)) {
+    if matches!(call, MacCall::DeliverEnding(_) | MacCall::ApprovalNotice(_)) {
         return Err(CallFailure::NeverReached);
     }
     let answer = invoke_mac_call(env, organization, machine_id, call, MACHINE_CALL_PATH).await?;
@@ -271,7 +271,8 @@ impl CentralObject {
         let fixture_ending = false;
         #[cfg(feature = "test-support")]
         let fixture_ending = request.path() == FIXTURE_ENDING_CALL_PATH;
-        let result = if is_raw_ending && !fixture_ending {
+        let is_raw_notice = matches!(&*invocation.request, MacCall::ApprovalNotice(_));
+        let result = if is_raw_notice || is_raw_ending && !fixture_ending {
             Err(CallFailure::NeverReached)
         } else {
             self.send_mac_call(organization, invocation, deadline).await

@@ -22,13 +22,14 @@ mod approval_stored_tags;
 pub use actor_approval_session_facts::ActorApprovalSessionFacts;
 pub use approval_applying_store::{
     ApprovalApplyFailure, ApprovalApplyingStore, ApprovalHolderCommand, ApprovalHolderReply,
-    ApprovalReadPage, PersonApprovalStoreOutput, PersonApprovalStoreReply, apply_person_command,
+    ApprovalNoticeCursor, ApprovalNoticeRecovery, ApprovalReadPage, PersonApprovalStoreOutput,
+    PersonApprovalStoreReply, SessionDecisionApply, SessionReadApply, apply_person_command,
 };
 pub use approval_collection_values::*;
 pub use approval_commit::{
     ApprovalCommitOwner, ApprovalCommitProof, ApprovalCommitScope, ApprovalReleaseFailure,
-    ApprovalReplyAddress, CommittedApprovalOffer, PendingApprovalHolderEffects,
-    PendingApprovalReply, complete_approval_commit,
+    ApprovalReplyAddress, CommittedApprovalEffects, CommittedApprovalNotice,
+    CommittedApprovalOffer, PendingApprovalEffects, PendingApprovalReply, complete_approval_commit,
 };
 pub use approval_lifecycle::{ApprovalLifecycle, MAX_OUTSTANDING_PER_RUN};
 pub use approval_lifecycle_values::*;

@@ -5,7 +5,9 @@ use collaboration_central_core::{
     AppliedPersonApproval, LinkCallCompletion, PersonApprovalApplication,
     PersonApprovalTransactions,
 };
-use fleet_approvals::{ApprovalApplyFailure, ApprovalCommitScope, CommittedApprovalOffer};
+use fleet_approvals::{
+    ApprovalApplyFailure, ApprovalCommitScope, CommittedApprovalEffects, CommittedApprovalOffer,
+};
 use fleet_lent_transaction::CentralTransaction;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use futures_util::future::BoxFuture;
@@ -44,13 +46,12 @@ where
         let organization = application.organization().clone();
 
         Box::pin(async move {
-            let publication = std::sync::Arc::new(std::sync::OnceLock::new());
             let applied = self
                 .approvals
                 .transactions
                 .apply_approval(
                     organization,
-                    ApprovalAlarmPublication::WithPersonCommit(publication.clone()),
+                    ApprovalAlarmPublication::WithCommit,
                     move |loan| {
                         Box::pin(async move {
                             application
@@ -62,7 +63,9 @@ where
                 )
                 .await
                 .map_err(person_approval_transaction_failure)?;
-            Ok(applied.with_publication_failure(publication.get().copied()))
+            Ok(applied
+                .output
+                .with_publication_failure(applied.publication_failure))
         })
     }
 
@@ -74,7 +77,13 @@ where
             application: self.approvals.clone(),
             transport: self.ending_transport.clone(),
         }
-        .after_reply(offers, None)
+        .after_reply(
+            CommittedApprovalEffects {
+                endings: offers,
+                notices: Vec::new(),
+            },
+            None,
+        )
     }
 }
 

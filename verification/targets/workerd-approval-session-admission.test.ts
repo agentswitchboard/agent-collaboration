@@ -111,7 +111,7 @@ test("Workerd authenticates the exact live parent before applying a session's ap
     const pass = {
       kind: "passOn",
       sessionId: parent.sessionId,
-      request: { requestId: request.requestId },
+      request: { requestId: request.requestId, operationId: uuid(6400) },
     };
     const missing = await callApproval(central, { ...pass, presented: { kind: "nothing" } });
     assert.deepEqual(missing.reply.result, { kind: "notAdmitted" });
@@ -126,7 +126,13 @@ test("Workerd authenticates the exact live parent before applying a session's ap
       ...pass,
       presented: { kind: "secret", secret: parent.secret },
     });
-    assert.deepEqual(forwarded.reply.result, { kind: "forwarded" });
+    assert.deepEqual(forwarded.reply.result, { kind: "passedOn", to: { kind: "people" } });
+    const replay = await callApproval(central, {
+      ...pass,
+      presented: { kind: "secret", secret: parent.secret },
+    });
+    assert.deepEqual(replay.reply.result, forwarded.reply.result);
+    assert.equal(replay.writes, 0);
 
     const decide = {
       kind: "decide",
@@ -150,8 +156,10 @@ test("Workerd authenticates the exact live parent before applying a session's ap
     });
     assert.deepEqual(accepted.reply.result, {
       kind: "savedDecision",
-      answer: { kind: "approval", optionId: 2 },
-      by: { kind: "session", session: parent.sessionId },
+      decision: {
+        answer: { kind: "approval", optionId: 2 },
+        by: { kind: "session", session: parent.sessionId },
+      },
     });
     assert.deepEqual(
       accepted.reply.offers.map((offer) => offer.requestId),

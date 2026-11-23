@@ -12,6 +12,7 @@ async fn tokio_displaced_approval_carrier_cannot_apply() -> Result<()> {
         before_alarm: Cell::new(0),
         delivery_answer: RefCell::default(),
         before_write: RefCell::default(),
+        notice_recovery: RefCell::default(),
     };
     let runtime = fixture
         .link

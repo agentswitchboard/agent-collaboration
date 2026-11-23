@@ -313,7 +313,7 @@ impl TokioWorkspaceHost {
         let deadline_tasks = self.approval_deadline_tasks.clone();
         let central = Arc::new(
             central
-                .with_approval_deadline_completion(Arc::new(move |work| {
+                .with_approval_delivery_completion(Arc::new(move |work| {
                     deadline_tasks.schedule(work)
                 }))
                 .with_mail_delivery_observer(Arc::new(move |delivery| {
@@ -349,7 +349,11 @@ impl TokioWorkspaceHost {
     ) -> MacCallResult<R> {
         let target = request.target.clone();
         let call = R::request(request);
-        if matches!(call, central_link_protocol::MacCall::DeliverEnding(_)) {
+        if matches!(
+            call,
+            central_link_protocol::MacCall::DeliverEnding(_)
+                | central_link_protocol::MacCall::ApprovalNotice(_)
+        ) {
             return Err(CallFailure::NeverReached);
         }
         self.call_raw_machine::<R>(organization, machine, &target, call)

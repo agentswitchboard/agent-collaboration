@@ -98,12 +98,6 @@ pub fn central_business_uniqueness() -> Vec<Vec<central_storage::SqlValue>> {
         ),
         (
             "approval_request_destinations",
-            "approval_destinations_one_parent",
-            "approval_row_id",
-            true,
-        ),
-        (
-            "approval_request_destinations",
             "approval_destinations_one_people",
             "approval_row_id",
             true,
@@ -112,6 +106,18 @@ pub fn central_business_uniqueness() -> Vec<Vec<central_storage::SqlValue>> {
             "approval_request_destinations",
             "approval_destinations_people_lookup",
             "organization_id,request_id",
+            true,
+        ),
+        (
+            "approval_request_destinations",
+            "approval_destinations_position",
+            "approval_row_id,position",
+            false,
+        ),
+        (
+            "approval_request_destinations",
+            "approval_destinations_session",
+            "approval_row_id,session_id",
             true,
         ),
         (

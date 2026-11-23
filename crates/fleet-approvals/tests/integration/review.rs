@@ -6,16 +6,16 @@ use fleet_approvals::{
 };
 
 use super::fixtures::{
-    HOUR, ObservedReply, UnusedIds, answer, decide_event, enrollment, key, person, person_id,
-    provider, raise_event, raw_reply, reply, routing, run_event, session, setup, time, view_event,
+    HOUR, ObservedReply, UnusedIds, answer, decide_event, key, person, person_id, provider,
+    raise_event, raw_reply, reply, routing, run_event, session, setup, time, view_event,
 };
 
 #[test]
 fn delegate_starts_with_only_its_exact_parent_and_only_first_raise_notifies() {
     let (mut book, run, requester, parent) = setup();
     let item = key(&run, 1);
-    let foreign_parent = session(&enrollment(9000, 9001), 9002);
-    for invalid_parent in [&requester, &foreign_parent] {
+    {
+        let invalid_parent = &requester;
         let before = book.clone();
         let event = raise_event(
             &run,
@@ -80,6 +80,7 @@ fn delegate_starts_with_only_its_exact_parent_and_only_first_raise_notifies() {
         ObservedReply::Read(None)
     );
     let pass = |parent| ApprovalCollectionEvent::PassOn {
+        to: fleet_approvals::ApprovalRouteDestination::People,
         key: item.clone(),
         parent,
         request: PassOnRequest {
@@ -112,25 +113,19 @@ fn delegate_starts_with_only_its_exact_parent_and_only_first_raise_notifies() {
         3,
     );
     let next_item = key(&run, 2);
-    let refused = raise_event(
+    let raised = raise_event(
         &run,
         provider(&next_item, &requester, "Ended parent"),
         routing(Some(&parent)),
     );
-    let before = book.clone();
-    assert_eq!(
-        book.apply(
-            refused,
-            &mut Context {
-                now: time(4),
-                ids: &mut UnusedIds
-            }
-        ),
-        Err(TransitionError::Domain(
-            ApprovalRefusal::InvalidInitialRoute
-        ))
-    );
-    assert_eq!(book, before);
+    let effects = run_event(&mut book, raised, 4);
+    assert_eq!(notices(&effects), 1);
+    assert!(effects.contains(&ApprovalCollectionEffect::Request(
+        ApprovalEffect::StoreSessionNotice {
+            key: next_item,
+            session: parent
+        },
+    )));
 }
 
 #[test]

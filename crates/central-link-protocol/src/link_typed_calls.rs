@@ -1,7 +1,11 @@
 //! Registered RPC calls carried by an authenticated machine connection.
 use crate::{
     CorrelationId, FrameDirection, MachineLinkCloseCode,
-    approval_rpc::{DeliverEndingRpc, RaiseApprovalRpc, RegisterRunRpc, StopApprovalRpc},
+    approval_rpc::{
+        ApprovalNoticeRpc, DecideApprovalAsSessionRpc, DeliverEndingRpc,
+        ListApprovalsForSessionRpc, PassOnApprovalForSessionRpc, RaiseApprovalRpc,
+        ReadApprovalForSessionRpc, RegisterRunRpc, StopApprovalRpc,
+    },
     session_lifecycle_rpc::{BindFleetSessionRpc, CreateFleetSessionRpc, EndFleetSessionRpc},
 };
 use fleet_rpc::{Envelope, Rpc};
@@ -20,6 +24,8 @@ pub enum LinkCallRefusal {
     AuthorityLapsed {
         cause: MachineLinkCloseCode,
     },
+    /// The calling session's proof was refused. The machine link remains open.
+    SessionProofNotAccepted,
     /// Central rolled back or declined to apply the call. The link remains open.
     CentralFault,
 }
@@ -30,7 +36,10 @@ impl LinkCallRefusal {
     pub const fn authority_close(self) -> Option<MachineLinkCloseCode> {
         match self {
             Self::AuthorityLapsed { cause } => Some(cause),
-            Self::UnknownCall | Self::WrongTarget | Self::CentralFault => None,
+            Self::UnknownCall
+            | Self::WrongTarget
+            | Self::SessionProofNotAccepted
+            | Self::CentralFault => None,
         }
     }
 }
@@ -43,11 +52,13 @@ impl<'de> Deserialize<'de> for LinkCallRefusal {
             UnknownCall {},
             WrongTarget {},
             AuthorityLapsed { cause: MachineLinkCloseCode },
+            SessionProofNotAccepted {},
             CentralFault {},
         }
         Ok(match named_map(input)? {
             NamedRefusal::UnknownCall {} => Self::UnknownCall,
             NamedRefusal::WrongTarget {} => Self::WrongTarget,
+            NamedRefusal::SessionProofNotAccepted {} => Self::SessionProofNotAccepted,
             NamedRefusal::CentralFault {} => Self::CentralFault,
             NamedRefusal::AuthorityLapsed { cause } => Self::AuthorityLapsed { cause },
         })
@@ -247,6 +258,10 @@ register_calls! {
     "registerRun" => RegisterRun(RegisterRunRpc),
     "raise" => Raise(RaiseApprovalRpc),
     "stop" => Stop(StopApprovalRpc),
+    "listApprovalsForSession" => ListApprovalsForSession(ListApprovalsForSessionRpc),
+    "readApprovalForSession" => ReadApprovalForSession(ReadApprovalForSessionRpc),
+    "decideApprovalAsSession" => DecideApprovalAsSession(DecideApprovalAsSessionRpc),
+    "passOnApproval" => PassOnApproval(PassOnApprovalForSessionRpc),
     "createFleetSession" => CreateFleetSession(CreateFleetSessionRpc),
     "bindFleetSession" => BindFleetSession(BindFleetSessionRpc),
     "endFleetSession" => EndFleetSession(EndFleetSessionRpc),
@@ -255,6 +270,7 @@ register_calls! {
 register_calls! {
     MacCall, "MacCall", MacCallReader, MacCallReply, "MacCallReply", MacCallReplyReader, MacLinkRpc;
     "deliverEnding" => DeliverEnding(DeliverEndingRpc),
+    "approvalNotice" => ApprovalNotice(ApprovalNoticeRpc),
     #[cfg(any(test, feature = "test-support"))] "macProbe" => MacProbe(test_calls::MacProbe),
 }
 

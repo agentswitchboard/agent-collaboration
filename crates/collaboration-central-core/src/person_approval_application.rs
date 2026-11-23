@@ -5,7 +5,7 @@ use central_storage::{AlarmPublicationFailure, StoreFailure};
 use fleet_approvals::{
     ApprovalApplyFailure, ApprovalCommitOwner, ApprovalCommitProof, ApprovalCommitScope,
     ApprovalPersonStoreTransaction, ApprovalReplyAddress, CommittedApprovalOffer,
-    PendingApprovalHolderEffects, PersonApprovalStoreReply, apply_person_command,
+    PendingApprovalEffects, PersonApprovalStoreReply, apply_person_command,
     complete_approval_commit,
 };
 use fleet_identity_protocol::OrganizationId;
@@ -128,7 +128,7 @@ enum ApplyingOutcome {
     Admitted {
         reply: Box<PersonApprovalStoreReply>,
         address: ApprovalReplyAddress,
-        effects: PendingApprovalHolderEffects,
+        effects: PendingApprovalEffects,
     },
 }
 
@@ -154,7 +154,7 @@ impl AppliedPersonApproval {
     fn admitted(
         reply: PersonApprovalStoreReply,
         address: ApprovalReplyAddress,
-        effects: PendingApprovalHolderEffects,
+        effects: PendingApprovalEffects,
     ) -> Self {
         Self {
             outcome: ApplyingOutcome::Admitted {
@@ -205,7 +205,7 @@ impl AppliedPersonApproval {
                 .map(PersonApprovalAnswer::Decide),
         }
         .map_err(|_| StoreFailure::Unavailable)?;
-        Ok((answer, offers))
+        Ok((answer, offers.endings))
     }
 }
 
