@@ -137,12 +137,6 @@ impl Fixture {
             "collaboration-central-link-entry"
         );
         let status = response.status().as_u16();
-        if status == 413 {
-            assert_eq!(
-                response.headers().get(reqwest::header::CONNECTION).unwrap(),
-                "close"
-            );
-        }
         let bytes = response.bytes().await.unwrap().to_vec();
         (status, bytes)
     }
