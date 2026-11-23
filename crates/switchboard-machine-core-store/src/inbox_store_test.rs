@@ -1,8 +1,13 @@
-use super::{InboxDecision, InboxRefusalReason, InboxStore, InboxStoreError, RecordDelivery};
+use super::{
+    InboxDecision, InboxOfferExpiry, InboxRefusalReason, InboxStore, InboxStoreError,
+    RecordDelivery,
+};
 use crate::{MachineLocalStore, RowCorruptionReason};
 
 #[path = "inbox_corruption_test.rs"]
 mod corruption;
+#[path = "inbox_expiry_validation_test.rs"]
+mod expiry_validation;
 #[path = "inbox_retention_test.rs"]
 mod retention;
 #[path = "inbox_timestamp_test.rs"]
@@ -19,8 +24,11 @@ fn clock_millis(clock: &ManualClock) -> i64 {
     clock.utc_now().timestamp_millis()
 }
 
-fn fixture_expiry(arrival_ms: i64) -> Option<Timestamp> {
-    Timestamp::from_timestamp_millis(arrival_ms.saturating_add(900_000))
+fn fixture_expiry(arrival_ms: i64) -> InboxOfferExpiry {
+    InboxOfferExpiry::DirectWithExpiry(
+        Timestamp::from_timestamp_millis(arrival_ms.saturating_add(900_000))
+            .unwrap_or(Timestamp::UNIX_EPOCH),
+    )
 }
 
 fn message(index: u8) -> MessageRecord {
@@ -381,7 +389,7 @@ async fn inbox_rejects_unknown_state_and_a_payload_with_the_wrong_message_id() {
     ));
 
     sqlx::query("UPDATE inbox_messages SET delivery_state_json = ?, message_json = ?")
-        .bind(r#"{"decision":{"kind":"accepted"},"receipt":{"kind":"pending"},"handoff":{"kind":"pending"}}"#)
+        .bind(r#"{"decision":{"kind":"accepted"},"receipt":{"kind":"pending"},"handoff":{"kind":"pending"},"family":"direct"}"#)
         .bind(serde_json::to_string(&message(1)).unwrap())
         .execute(&mut database.connection)
         .await

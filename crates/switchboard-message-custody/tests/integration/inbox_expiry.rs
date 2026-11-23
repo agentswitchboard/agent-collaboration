@@ -17,7 +17,7 @@ use std::{
     time::Duration,
 };
 use switchboard_machine_core_store::{
-    InboxDecision, InboxStore, MachineLocalStore, RecordDelivery,
+    InboxDecision, InboxOfferExpiry, InboxStore, MachineLocalStore, RecordDelivery,
 };
 use switchboard_message_custody::{
     recipient_inbox::{InboxOfferResult, RecipientInbox},
@@ -38,6 +38,15 @@ use super::{
 const ARRIVAL_MS: i64 = 1_763_380_800_123;
 const DIRECT_MESSAGE_ID: &str = "019f0000-0000-7000-8000-000000000c41";
 const TIME_LEFT_MS: u32 = 123_456;
+
+#[test]
+fn the_store_and_wire_agree_on_the_longest_delivery_window() {
+    assert_eq!(
+        switchboard_machine_core_store::MAX_INBOX_DELIVERY_WINDOW_MS,
+        central_link_protocol::MAX_TIME_LEFT_MS,
+        "the store and wire must agree on the longest possible delivery window"
+    );
+}
 
 #[derive(Default)]
 struct DeferredOnce(AtomicBool);
@@ -167,7 +176,9 @@ async fn a_repeated_direct_offer_does_not_move_its_first_expiry() {
                 &first_message,
                 InboxDecision::Accepted,
                 ARRIVAL_MS + 29_000,
-                Timestamp::from_timestamp_millis(ARRIVAL_MS + 29_000 + 54_321),
+                InboxOfferExpiry::DirectWithExpiry(
+                    Timestamp::from_timestamp_millis(ARRIVAL_MS + 29_000 + 54_321).unwrap()
+                ),
             )
             .await
             .unwrap(),

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT CAST(message_id AS BLOB) AS \"message_id!: Vec<u8>\", created_at, updated_at,\n                    CAST(expires_at AS INTEGER) AS \"expires_at?: i64\",\n                    CAST(message_json AS BLOB) AS \"message_json?: Vec<u8>\",\n                    CAST(delivery_state_json AS BLOB) AS \"delivery_state_json!: Vec<u8>\",\n                    (typeof(message_id) = 'text') AS \"key_is_text!: bool\",\n                    CASE WHEN typeof(created_at) <> 'integer' THEN 1\n                         WHEN typeof(updated_at) <> 'integer' THEN 2\n                         WHEN typeof(expires_at) NOT IN ('integer', 'null') THEN 3\n                         ELSE 0 END AS \"integer_fault!: i64\"\n             FROM inbox_messages WHERE message_json IS NOT NULL ORDER BY created_at, message_id",
+  "query": "SELECT CAST(message_id AS BLOB) AS \"message_id!: Vec<u8>\", created_at, updated_at,\n                    CAST(expires_at AS INTEGER) AS \"expires_at?: i64\",\n                    CAST(message_json AS BLOB) AS \"message_json?: Vec<u8>\",\n                    (message_json IS NOT NULL) AS \"has_message!: bool\",\n                    CAST(delivery_state_json AS BLOB) AS \"delivery_state_json!: Vec<u8>\",\n                    (typeof(message_id) = 'text') AS \"key_is_text!: bool\",\n                    CASE WHEN typeof(created_at) <> 'integer' THEN 1\n                         WHEN typeof(updated_at) <> 'integer' THEN 2\n                         WHEN typeof(expires_at) NOT IN ('integer', 'null') THEN 3\n                         ELSE 0 END AS \"integer_fault!: i64\"\n             FROM inbox_messages WHERE CASE WHEN json_valid(delivery_state_json)\n                        THEN json_extract(delivery_state_json, '$.receipt.kind') IS NOT 'confirmed'\n                        ELSE 1 END\n             ORDER BY created_at, message_id",
   "describe": {
     "columns": [
       {
@@ -44,20 +44,26 @@
         "origin": "Expression"
       },
       {
-        "name": "delivery_state_json!: Vec<u8>",
+        "name": "has_message!: bool",
         "ordinal": 5,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "delivery_state_json!: Vec<u8>",
+        "ordinal": 6,
         "type_info": "Blob",
         "origin": "Expression"
       },
       {
         "name": "key_is_text!: bool",
-        "ordinal": 6,
+        "ordinal": 7,
         "type_info": "Integer",
         "origin": "Expression"
       },
       {
         "name": "integer_fault!: i64",
-        "ordinal": 7,
+        "ordinal": 8,
         "type_info": "Integer",
         "origin": "Expression"
       }
@@ -73,8 +79,9 @@
       true,
       false,
       false,
+      false,
       false
     ]
   },
-  "hash": "d44737e23875b79bf252f2bec32e094dd03425f11a006363d5f3111288ed1c95"
+  "hash": "2ae8b0a4d633436afd6db33198e031dec1b13f690b41e0a8867c9527f54b311d"
 }

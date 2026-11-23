@@ -2,8 +2,8 @@ use central_link_protocol::{RequestScope, RequestStatusQuery};
 use router_clock::ClockInstant;
 use std::{future::Future, path::Path, process::Command, sync::Arc, time::Duration};
 use switchboard_machine_core_store::{
-    InboxDecision, InboxRefusalReason, InboxStore, MachineLocalStore, OutboxAccepted,
-    OutboxStorage, OutboxWriteOutcome,
+    InboxDecision, InboxOfferExpiry, InboxRefusalReason, InboxStore, MachineLocalStore,
+    OutboxAccepted, OutboxStorage, OutboxWriteOutcome,
 };
 use switchboard_message_custody::{
     custody_operator::CustodyOperatorEvent,
@@ -89,7 +89,7 @@ async fn offline_inbox_retention_prunes_only_healthy_confirmed_rows() {
                     reason: InboxRefusalReason::UnknownSession,
                 },
                 arrived_ms,
-                None,
+                InboxOfferExpiry::SystemWithoutExpiry,
             )
             .await
             .unwrap();
@@ -99,7 +99,12 @@ async fn offline_inbox_retention_prunes_only_healthy_confirmed_rows() {
             .unwrap();
     }
     store
-        .record_delivery(&kept, InboxDecision::Accepted, arrived_ms, None)
+        .record_delivery(
+            &kept,
+            InboxDecision::Accepted,
+            arrived_ms,
+            InboxOfferExpiry::SystemWithoutExpiry,
+        )
         .await
         .unwrap();
     mutate_fixture_row(

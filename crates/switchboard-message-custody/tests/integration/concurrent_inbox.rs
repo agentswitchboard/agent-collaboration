@@ -16,8 +16,8 @@ use std::{
     time::Duration,
 };
 use switchboard_machine_core_store::{
-    InboxDecision, InboxRefusalReason, InboxStore, MachineLocalStore, OutboxCancellation,
-    OutboxStorage,
+    InboxDecision, InboxOfferExpiry, InboxRefusalReason, InboxStore, MachineLocalStore,
+    OutboxCancellation, OutboxStorage,
 };
 use switchboard_message_custody::{
     custody_link::{CustodyLink, CustodyLinkObservation},
@@ -215,7 +215,12 @@ async fn an_offline_intake_retry_does_not_delay_receipts_on_a_backwards_welcome(
         Timestamp::from_timestamp_millis(LOCAL_MARK_MS - 20_000).unwrap(),
     );
     inbox_store
-        .record_delivery(&owed, InboxDecision::Accepted, LOCAL_MARK_MS - 20_000, None)
+        .record_delivery(
+            &owed,
+            InboxDecision::Accepted,
+            LOCAL_MARK_MS - 20_000,
+            InboxOfferExpiry::SystemWithoutExpiry,
+        )
         .await
         .unwrap();
     lane.push_event(LinkLaneEvent::Deliver {
@@ -315,7 +320,7 @@ async fn a_held_directory_does_not_block_status_deadlines_or_shutdown() {
                 reason: InboxRefusalReason::UnknownSession,
             },
             start_ms,
-            None,
+            InboxOfferExpiry::SystemWithoutExpiry,
         )
         .await
         .unwrap();

@@ -4,7 +4,8 @@ use central_link_protocol::{DeliveryMessage, DirectOfferBody, DirectOfferMessage
 use router_clock::RuntimeClock;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use switchboard_machine_core_store::{
-    InboxDecision, InboxRefusalReason, InboxStore, InboxStoreError, RecordDelivery,
+    InboxDecision, InboxOfferExpiry, InboxRefusalReason, InboxStore, InboxStoreError,
+    RecordDelivery,
 };
 use tokio::sync::Mutex;
 use workspace_ids::{MachineId, MessageId, SessionRef};
@@ -406,17 +407,18 @@ impl RecipientInbox {
         };
         let (message, time_left) = offer.record_to_keep();
         let arrival_ms = offer.arrived_at().timestamp_millis();
-        let expires_at = time_left
-            .map(|duration| {
+        let expiry = match time_left {
+            Some(duration) => InboxOfferExpiry::DirectWithExpiry(
                 arrival_ms
                     .checked_add(i64::from(u32::from(duration)))
                     .and_then(Timestamp::from_timestamp_millis)
-                    .ok_or(InboxCustodyError::ExpiryOutOfRange)
-            })
-            .transpose()?;
+                    .ok_or(InboxCustodyError::ExpiryOutOfRange)?,
+            ),
+            None => InboxOfferExpiry::SystemWithoutExpiry,
+        };
         match self
             .store
-            .record_delivery(&message, decision, arrival_ms, expires_at)
+            .record_delivery(&message, decision, arrival_ms, expiry)
             .await?
         {
             // The store commits the first decision and its pending receipt together.

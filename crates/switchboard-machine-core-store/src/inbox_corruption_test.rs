@@ -2,10 +2,9 @@ use super::{InboxStore, MachineLocalStore, message};
 use crate::{RowCorruption, RowCorruptionReason, StoreScan};
 use workspace_model::central_mail::MessageRecord;
 
-const COMPLETE: &str = r#"{"decision":{"kind":"accepted"},"receipt":{"kind":"confirmed"},"handoff":{"kind":"completed"}}"#;
-const PENDING: &str =
-    r#"{"decision":{"kind":"accepted"},"receipt":{"kind":"pending"},"handoff":{"kind":"pending"}}"#;
-const BROKEN: &str = r#"{"decision":{"kind":"accepted"},"receipt":{"kind":"pending"},"handoff":{"kind":"notRequired"}}"#;
+const COMPLETE: &str = r#"{"decision":{"kind":"accepted"},"receipt":{"kind":"confirmed"},"handoff":{"kind":"completed"},"family":"direct"}"#;
+const PENDING: &str = r#"{"decision":{"kind":"accepted"},"receipt":{"kind":"pending"},"handoff":{"kind":"pending"},"family":"direct"}"#;
+const BROKEN: &str = r#"{"decision":{"kind":"accepted"},"receipt":{"kind":"pending"},"handoff":{"kind":"notRequired"},"family":"direct"}"#;
 const RETENTION: i64 = 60 * 24 * 60 * 60 * 1_000;
 
 async fn plant_messages(
@@ -27,8 +26,8 @@ async fn plant_messages(
         };
         sqlx::query(
             "INSERT INTO inbox_messages
-             (message_id, message_json, delivery_state_json, created_at, updated_at)
-             VALUES (?, ?, ?, 0, 0)",
+             (message_id, message_json, delivery_state_json, created_at, updated_at, expires_at)
+             VALUES (?, ?, ?, 0, 0, 60000)",
         )
         .bind(event.message_id.as_str())
         .bind(payload)
@@ -142,8 +141,8 @@ async fn invalid_utf8_inbox_decision_does_not_hide_healthy_receipts_or_handoffs(
         let event = message(index);
         sqlx::query(
             "INSERT INTO inbox_messages
-             (message_id, message_json, delivery_state_json, created_at, updated_at)
-             VALUES (?, ?, ?, 0, 0)",
+             (message_id, message_json, delivery_state_json, created_at, updated_at, expires_at)
+             VALUES (?, ?, ?, 0, 0, 60000)",
         )
         .bind(event.message_id.as_str())
         .bind(serde_json::to_string(&event).unwrap())
@@ -178,8 +177,8 @@ async fn non_integer_receipt_time_does_not_turn_into_a_healthy_delivery() {
     let event = message(0);
     sqlx::query(
         "INSERT INTO inbox_messages
-         (message_id, message_json, delivery_state_json, created_at, updated_at)
-         VALUES (?, ?, ?, 'invalid', 0)",
+         (message_id, message_json, delivery_state_json, created_at, updated_at, expires_at)
+         VALUES (?, ?, ?, 'invalid', 0, 60000)",
     )
     .bind(event.message_id.as_str())
     .bind(serde_json::to_string(&event).unwrap())
