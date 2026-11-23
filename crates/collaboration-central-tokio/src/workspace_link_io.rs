@@ -3,7 +3,7 @@
 use super::{LinkState, LinkWrites, Runtime};
 use axum::extract::{
     WebSocketUpgrade,
-    ws::{Message, Utf8Bytes, WebSocket, close_code},
+    ws::{CloseFrame, Message, Utf8Bytes, WebSocket, close_code},
 };
 use central_link_protocol::{
     DataFrame, LINK_MAX_TEXT_BYTES, LinkFrame, LinkSizeRefusal, SocketDirectMailOffers, TimeLeft,
@@ -26,7 +26,7 @@ pub(super) enum IncomingText {
     Ended,
 }
 
-pub(super) fn receive_text(
+pub(super) async fn receive_text(
     socket: &mut WebSocket,
     writes: &LinkWrites<'_>,
     incoming: Option<Result<Message, axum::Error>>,
@@ -44,11 +44,40 @@ pub(super) fn receive_text(
                 Some(Error::Capacity(CapacityError::MessageTooLong { .. }))
             ) {
                 let refusal = LinkSizeRefusal::MessageTooBig;
-                writes.close(socket, refusal.code(), refusal.reason());
+                close_oversized_input(socket, writes, refusal).await;
             }
             IncomingText::Ended
         }
         Some(Ok(Message::Close(_))) | None => IncomingText::Ended,
+    }
+}
+
+async fn close_oversized_input(
+    socket: &mut WebSocket,
+    writes: &LinkWrites<'_>,
+    refusal: LinkSizeRefusal,
+) {
+    // The frame parser stops at the oversized header. Keep the transport
+    // alive long enough for the peer to read the close while it is writing.
+    let deadline = writes
+        .clock
+        .monotonic_now()
+        .after(std::time::Duration::from_millis(250));
+    let frame = Message::Close(Some(CloseFrame {
+        code: refusal.code(),
+        reason: refusal.reason().into(),
+    }));
+    let send = writes.send_until_stopped(async { socket.send(frame).await.is_ok() });
+    if !matches!(
+        router_clock::timeout_at(writes.clock, deadline, send).await,
+        Ok(true)
+    ) {
+        return;
+    }
+    tokio::select! {
+        () = writes.stop.cancelled() => {}
+        () = writes.replaced.cancelled() => {}
+        () = writes.clock.sleep_until(deadline) => {}
     }
 }
 

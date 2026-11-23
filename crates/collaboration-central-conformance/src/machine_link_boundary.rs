@@ -34,18 +34,32 @@ pub async fn check_input_sizes(socket: &mut WebSocket, other: &mut WebSocket) ->
     expect_pong(socket).await?;
     text.push(' ');
     assert_eq!(text.len(), 1_048_577);
-    socket.send(Message::Text(text)).await?;
-    expect_close(socket, 1009).await?;
+    // A parser can close upon the frame header before the sender has
+    // finished its payload. Observe the close independently of that write.
+    let (mut write, mut read) = (&mut *socket).split();
+    let frame = match futures_util::future::select(
+        std::pin::pin!(read.next()),
+        std::pin::pin!(write.send(Message::Text(text))),
+    )
+    .await
+    {
+        futures_util::future::Either::Left((frame, _)) => frame,
+        futures_util::future::Either::Right((_, pending_close)) => pending_close.await,
+    };
+    assert_close(frame.transpose()?, 1009);
     expect_pong(other).await
 }
 
 async fn expect_close(socket: &mut WebSocket, expected: u16) -> Result<()> {
-    let frame = socket.next().await.transpose()?;
+    assert_close(socket.next().await.transpose()?, expected);
+    Ok(())
+}
+
+fn assert_close(frame: Option<Message>, expected: u16) {
     assert!(
         matches!(frame, Some(Message::Close { code, .. }) if u16::from(code) == expected),
         "expected close {expected}, got {frame:?}"
     );
-    Ok(())
 }
 
 #[derive(Clone, Copy, Debug)]

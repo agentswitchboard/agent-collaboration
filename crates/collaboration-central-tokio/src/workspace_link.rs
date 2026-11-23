@@ -266,7 +266,7 @@ async fn serve_link(
                 continue;
             }
         };
-        let text = match receive_text(&mut socket, &writes, message) {
+        let text = match receive_text(&mut socket, &writes, message).await {
             link_io::IncomingText::Text(text) => text,
             link_io::IncomingText::Control => continue,
             link_io::IncomingText::Ended => return,

@@ -357,6 +357,8 @@ async fn every_refused_renewal_keeps_the_current_deadline() -> Result<()> {
 
     // The first advertised deadline still decides: a write just before it lands.
     assert_eq!(initial_expiry.timestamp(), signed::NOW_SECONDS + 600);
+    send(&mut socket, &LinkFrame::Ping).await?;
+    assert_eq!(receive(&mut socket).await?, LinkFrame::Pong);
     let mut writes = Vec::new();
     for (advance, request_id, name) in [
         (
@@ -367,8 +369,6 @@ async fn every_refused_renewal_keeps_the_current_deadline() -> Result<()> {
         (1, "019f0000-0000-7000-8000-00000000d312", "At the deadline"),
     ] {
         fixture.clock.advance(Duration::from_secs(advance))?;
-        send(&mut socket, &LinkFrame::Ping).await?;
-        assert_eq!(receive(&mut socket).await?, LinkFrame::Pong);
         let request = client.begin_request(caller()?, create_workspace(request_id, name)?)?;
         send(&mut socket, &request).await?;
         let (reply_id, reply) = workspace_reply(&mut client, &attempt, &mut socket).await?;
