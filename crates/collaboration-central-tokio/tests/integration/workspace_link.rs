@@ -14,6 +14,7 @@ mod renewal_contract;
 mod request_authority;
 mod revocation;
 mod revocation_backpressure;
+mod session_calls;
 mod transport_contract;
 mod typed_call_holder;
 mod typed_call_write_state;

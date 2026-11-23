@@ -2,6 +2,7 @@
 use crate::{
     CorrelationId, FrameDirection, MachineLinkCloseCode,
     approval_rpc::{DeliverEndingRpc, RaiseApprovalRpc, RegisterRunRpc, StopApprovalRpc},
+    session_lifecycle_rpc::{BindFleetSessionRpc, CreateFleetSessionRpc, EndFleetSessionRpc},
 };
 use fleet_rpc::{Envelope, Rpc};
 use serde::{
@@ -228,6 +229,9 @@ register_calls! {
     "registerRun" => RegisterRun(RegisterRunRpc),
     "raise" => Raise(RaiseApprovalRpc),
     "stop" => Stop(StopApprovalRpc),
+    "createFleetSession" => CreateFleetSession(CreateFleetSessionRpc),
+    "bindFleetSession" => BindFleetSession(BindFleetSessionRpc),
+    "endFleetSession" => EndFleetSession(EndFleetSessionRpc),
     #[cfg(any(test, feature = "test-support"))] "centralProbe" => CentralProbe(test_calls::CentralProbe),
 }
 

@@ -1,6 +1,7 @@
 //! Test-only application and observation of the session service on Durable Object SQLite.
 
 use central_engine_model::{Context, IdSource};
+use central_link_call_composition::OrganizationLoan;
 use chrono::{DateTime, SecondsFormat};
 use fleet_actor_identity::{
     ActorApprovalSessionFacts, LiveSessionFacts, OrganizationTransaction, SessionAvailability,
@@ -13,7 +14,6 @@ use fleet_identity_protocol::{
     BindFleetSession, CreateFleetSession, EndFleetSession, EnrollmentId, OrganizationId,
     SessionSecret, UnixSeconds,
 };
-use fleet_lent_transaction::CentralTransaction;
 use fleet_machine_login::link_authority::{ValidatedMachineConnection, restore_fixture_link};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -163,10 +163,10 @@ async fn apply_command(
     };
     let now =
         DateTime::from_timestamp_millis(input.now_ms).ok_or(SessionCaseError::InvalidFixture)?;
-    let mut lender = OrganizationLender {
-        lender: WorkerExecutorLender::from_storage_executor(transaction),
+    let mut lender = OrganizationLoan::new(
         organization,
-    };
+        WorkerExecutorLender::from_storage_executor(transaction),
+    );
     let mut ids = HeldSessionId(uuid::Uuid::nil());
     let mut context = Context { now, ids: &mut ids };
     match input.command {
@@ -310,30 +310,8 @@ async fn apply_command(
     }
 }
 
-struct OrganizationLender<'a> {
-    lender: WorkerExecutorLender<'a, DoTransaction>,
-    organization: &'a OrganizationId,
-}
-
-impl CentralTransaction for OrganizationLender<'_> {
-    type Database = <WorkerExecutorLender<'static, DoTransaction> as CentralTransaction>::Database;
-
-    fn executor(&mut self) -> impl sqlx_core::executor::Executor<'_, Database = Self::Database> {
-        self.lender.executor()
-    }
-
-    fn rows_affected(
-        result: <Self::Database as sqlx_core::database::Database>::QueryResult,
-    ) -> u64 {
-        WorkerExecutorLender::<DoTransaction>::rows_affected(result)
-    }
-}
-
-impl OrganizationTransaction for OrganizationLender<'_> {
-    fn organization_id(&self) -> &OrganizationId {
-        self.organization
-    }
-}
+type OrganizationLender<'loan> =
+    OrganizationLoan<'loan, WorkerExecutorLender<'loan, DoTransaction>>;
 
 async fn admit_fixture(
     lender: &mut OrganizationLender<'_>,

@@ -112,6 +112,7 @@ wire_string!(SessionCallDecision { Allow => "allow", Decline => "decline" });
 
 wire_string!(CallStopCause {
     CallWithdrawn => "callWithdrawn",
-    /// The holder has already given the requester a final local refusal.
+    /// The holder has selected a final local refusal for the requester; whether it
+    /// reached the provider is a separate observation.
     HolderRefusedLocally => "holderRefusedLocally",
 });

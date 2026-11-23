@@ -25,8 +25,9 @@ mod machine_connection_admission;
 mod machine_login_plans;
 mod typed_link_dispatch;
 pub use typed_link_dispatch::{
-    CentralLinkDispatcher, DispatchedCentralCall, MacCallResult, TYPED_LINK_CALL_TIMEOUT,
-    dispatch_registered_central_call, finish_mac_call,
+    CentralCallDispatch, CentralLinkDispatcher, DispatchedCentralCall, MacCallResult,
+    TYPED_LINK_CALL_TIMEOUT, dispatch_fallible_central_call,
+    dispatch_fallible_correlated_central_call, dispatch_registered_central_call, finish_mac_call,
 };
 #[cfg(feature = "test-support")]
 mod machine_login_test_control;

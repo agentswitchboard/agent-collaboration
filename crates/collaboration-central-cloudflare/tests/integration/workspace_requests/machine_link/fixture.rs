@@ -49,6 +49,14 @@ pub(super) struct Fixture {
 
 impl Fixture {
     pub async fn new() -> Result<Self> {
+        Self::open(true).await
+    }
+
+    pub async fn with_production_dispatcher() -> Result<Self> {
+        Self::open(false).await
+    }
+
+    async fn open(fixture_link_calls: bool) -> Result<Self> {
         let keys = signed::SignInKeys::start().await?;
         let root = tempfile::Builder::new()
             .prefix("c2-machine-link-")
@@ -61,7 +69,8 @@ impl Fixture {
             "CENTRAL_MACHINE_AUDIENCE":signed::MACHINE_AUDIENCE,
             "CENTRAL_SIGN_IN_JWKS_URL":"https://signin.test/.well-known/jwks.json",
             "CENTRAL_ADMIN_AUDIENCE":signed::ADMIN_AUDIENCE,"CENTRAL_PUBLIC_ORIGIN":signed::PUBLIC_ORIGIN,
-            "CENTRAL_SIGN_IN_SERVICE_ID":"019f0000-0000-7000-8000-00000000cf04"
+            "CENTRAL_SIGN_IN_SERVICE_ID":"019f0000-0000-7000-8000-00000000cf04",
+            "TEST_SUPPORT_LINK_CALLS":if fixture_link_calls { "legacy" } else { "production" }
         },"jwksFixtureUrl":keys.url}))?,
         )?;
         let clock = Arc::new(ManualClock::starting_at(SyncTime::from_unix_millis(

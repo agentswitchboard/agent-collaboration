@@ -6,7 +6,7 @@ use central_link_protocol::{
 };
 use central_storage::StoreFailure;
 use fleet_contracts::MachineConnectionAttachment;
-use fleet_rpc::{CallFailure, Envelope, IndependentReplyRpc};
+use fleet_rpc::{CallFailure, CorrelatedRpc, Envelope, IndependentReplyRpc};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 use workspace_ids::RouterRunId;
@@ -18,13 +18,15 @@ pub type MacCallResult<R> = Result<
     CallFailure,
 >;
 
+pub type CentralCallDispatch = Result<TypedCallResult<CentralCallReply>, StoreFailure>;
+
 /// Dispatches a registered call using the machine identity verified on this connection.
 pub trait CentralLinkDispatcher: Send + Sync {
     fn dispatch<'call>(
         &'call self,
         machine: &'call ValidatedMachineConnection,
         request: CentralCall,
-    ) -> Pin<Box<dyn Future<Output = TypedCallResult<CentralCallReply>> + Send + 'call>>;
+    ) -> Pin<Box<dyn Future<Output = CentralCallDispatch> + Send + 'call>>;
 }
 
 /// A correlated answer and any run binding authorized for the originating socket.
@@ -63,10 +65,83 @@ where
     }
 }
 
+/// Apply a fallible route whose answer depends only on the typed request target.
+pub async fn dispatch_fallible_central_call<R, Handler, Answer>(
+    expected_target: &R::Target,
+    request: Envelope<R::Target, R::Request>,
+    handler: Handler,
+) -> CentralCallDispatch
+where
+    R: CentralLinkRpc + IndependentReplyRpc,
+    Handler: FnOnce(R::Request) -> Answer,
+    Answer: Future<Output = Result<Result<R::Reply, LinkCallRefusal>, StoreFailure>>,
+{
+    dispatch_fallible::<R, _, _, _>(expected_target, request, handler, |_| Ok).await
+}
+
+/// Validate a correlated service answer while the caller still owns the transaction.
+pub async fn dispatch_fallible_correlated_central_call<R, Handler, Answer>(
+    expected_target: &R::Target,
+    request: Envelope<R::Target, R::Request>,
+    handler: Handler,
+) -> CentralCallDispatch
+where
+    R: CentralLinkRpc + CorrelatedRpc,
+    Handler: FnOnce(R::Request) -> Answer,
+    Answer: Future<Output = Result<Result<R::Reply, LinkCallRefusal>, StoreFailure>>,
+{
+    dispatch_fallible::<R, _, _, _>(expected_target, request, handler, |body| {
+        let context = R::reply_context(body);
+        move |reply| {
+            R::check_reply(context, reply)
+                .map(R::into_wire)
+                .map_err(|_| StoreFailure::Unavailable)
+        }
+    })
+    .await
+}
+
+async fn dispatch_fallible<R, Handler, Answer, Validate>(
+    expected_target: &R::Target,
+    request: Envelope<R::Target, R::Request>,
+    handler: Handler,
+    prepare_verifier: impl FnOnce(&R::Request) -> Validate,
+) -> CentralCallDispatch
+where
+    R: CentralLinkRpc,
+    Handler: FnOnce(R::Request) -> Answer,
+    Answer: Future<Output = Result<Result<R::Reply, LinkCallRefusal>, StoreFailure>>,
+    Validate: FnOnce(R::Reply) -> Result<R::Reply, StoreFailure>,
+{
+    if &request.target != expected_target {
+        return Ok(TypedCallResult::Refused {
+            reason: LinkCallRefusal::WrongTarget,
+        });
+    }
+    let verify_reply = prepare_verifier(&request.body);
+    Ok(match handler(request.body).await? {
+        Ok(reply) => TypedCallResult::Answered {
+            reply: R::reply(Envelope {
+                target: request.target,
+                body: verify_reply(reply)?,
+            }),
+        },
+        Err(reason) => TypedCallResult::Refused { reason },
+    })
+}
+
 impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores> {
     pub fn with_link_call_dispatcher(mut self, dispatcher: Arc<dyn CentralLinkDispatcher>) -> Self {
         self.link_call_dispatcher = Some(dispatcher);
         self
+    }
+
+    #[cfg(feature = "test-support")]
+    pub fn with_fixture_link_call_dispatcher(
+        self,
+        dispatcher: Arc<dyn CentralLinkDispatcher>,
+    ) -> Self {
+        self.with_link_call_dispatcher(Arc::new(FixtureLinkDispatcher { dispatcher }))
     }
 
     /// A missing request is a well-formed but unregistered frame header from the decoder.
@@ -98,7 +173,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             }
             _ => None,
         };
-        let result = dispatcher.dispatch(&machine, request).await;
+        let result = dispatcher.dispatch(&machine, request).await?;
         let registered_run = requested_run.filter(|_| {
             matches!(
                 &result,
@@ -130,7 +205,9 @@ pub fn finish_mac_call<R: MacLinkRpc>(
 }
 
 #[cfg(feature = "test-support")]
-pub(crate) struct FixtureLinkDispatcher;
+struct FixtureLinkDispatcher {
+    dispatcher: Arc<dyn CentralLinkDispatcher>,
+}
 
 #[cfg(feature = "test-support")]
 impl CentralLinkDispatcher for FixtureLinkDispatcher {
@@ -138,13 +215,13 @@ impl CentralLinkDispatcher for FixtureLinkDispatcher {
         &'call self,
         machine: &'call ValidatedMachineConnection,
         request: CentralCall,
-    ) -> Pin<Box<dyn Future<Output = TypedCallResult<CentralCallReply>> + Send + 'call>> {
+    ) -> Pin<Box<dyn Future<Output = CentralCallDispatch> + Send + 'call>> {
         use central_link_protocol::{
             approval_rpc::{ApprovalServiceTarget, RegisterRunRpc},
             test_calls::{CentralProbe, ProbeReply},
         };
         Box::pin(async move {
-            match request {
+            Ok(match request {
                 CentralCall::CentralProbe(envelope) => {
                     dispatch_registered_central_call::<CentralProbe, _, _>(
                         machine.machine_id(),
@@ -168,10 +245,12 @@ impl CentralLinkDispatcher for FixtureLinkDispatcher {
                     )
                     .await
                 }
-                CentralCall::Raise(_) | CentralCall::Stop(_) => TypedCallResult::Refused {
-                    reason: LinkCallRefusal::UnknownCall,
-                },
-            }
+                other @ (CentralCall::CreateFleetSession(_)
+                | CentralCall::BindFleetSession(_)
+                | CentralCall::EndFleetSession(_)
+                | CentralCall::Raise(_)
+                | CentralCall::Stop(_)) => return self.dispatcher.dispatch(machine, other).await,
+            })
         })
     }
 }

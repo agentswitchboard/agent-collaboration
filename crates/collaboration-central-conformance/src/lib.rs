@@ -2,6 +2,8 @@
 #![forbid(unsafe_code)]
 pub mod alarm_input_scenarios;
 mod machine_allowance_fixture;
+#[cfg(feature = "session-link-test-support")]
+pub mod session_link_scenarios;
 pub use machine_allowance_fixture::REPLACE_FIXTURE_ALLOWANCES_SQL;
 #[cfg(all(feature = "signin-test-support", not(target_arch = "wasm32")))]
 pub mod signin_fixtures;

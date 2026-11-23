@@ -64,7 +64,8 @@ pub struct ObjectStorage {
 
 #[path = "object_storage_direct_mail.rs"]
 mod direct_mail;
-struct NativeTransaction<'a>(&'a mut sqlx::SqliteConnection);
+pub(crate) mod session_transaction_owner;
+pub(crate) struct NativeTransaction<'a>(&'a mut sqlx::SqliteConnection);
 
 impl fleet_lent_transaction::CentralTransaction for NativeTransaction<'_> {
     type Database = sqlx::Sqlite;

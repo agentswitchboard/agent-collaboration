@@ -17,7 +17,7 @@ macro_rules! worker_read {
             Box::pin(SendFuture::new(async move {
                 direct_store_reads::$name(
                     &mut statement_store::WorkerExecutorLender::from_storage_executor(
-                        &*self.connection,
+                        &**self.connection,
                     ),
                     command,
                 )

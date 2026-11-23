@@ -16,6 +16,10 @@ use fleet_rpc::{CallFailure, Envelope, Transport, dispatch};
 use fleet_workspace_service::WorkspaceService;
 #[path = "workspace_alarm_owner.rs"]
 mod workspace_alarm_owner;
+use crate::object_storage::session_transaction_owner::{
+    NativeSessionTransactions, fill_session_secret,
+};
+use central_link_call_composition::SessionLinkDispatcher;
 use central_link_protocol::{FreshCorrelationId, MacCallAddress, MacLinkRpc};
 use central_storage::{
     BatchOutcome, ReadOutcome, Statement, StatementBatch, StoreCall, StoreFailure, StoreReply,
@@ -153,6 +157,8 @@ pub struct TokioWorkspaceHost {
         Mutex<BTreeMap<OrganizationId, Arc<WorkspaceRuntime<ObjectStorage, TokioWorkspaceStores>>>>,
     alarms: Mutex<Vec<WorkspaceAlarmOwner>>,
     pub(crate) push_registry: MachinePushRegistry,
+    #[cfg(feature = "test-support")]
+    fixture_link_calls: bool,
 }
 impl TokioWorkspaceHost {
     pub async fn open(root: &Path, clock: Arc<dyn RuntimeClock>) -> Result<Self, StoreFailure> {
@@ -188,6 +194,8 @@ impl TokioWorkspaceHost {
             orgs: Default::default(),
             alarms: Default::default(),
             push_registry: MachinePushRegistry::default(),
+            #[cfg(feature = "test-support")]
+            fixture_link_calls: false,
         };
         let mut entries = tokio::fs::read_dir(root.join("central"))
             .await
@@ -214,6 +222,12 @@ impl TokioWorkspaceHost {
         }
         Ok(host)
     }
+    #[cfg(feature = "test-support")]
+    pub(crate) fn with_fixture_link_calls(mut self) -> Self {
+        self.fixture_link_calls = true;
+        self
+    }
+
     pub async fn central(
         &self,
         organization: &OrganizationId,
@@ -244,13 +258,31 @@ impl TokioWorkspaceHost {
                 storage.clone(),
                 self.stores.clone(),
                 clock.clone(),
-                ids,
+                ids.clone(),
                 due_batches,
                 Arc::new(crate::native_logging::observe),
             ),
             storage.clone(),
-            storage,
+            storage.clone(),
         );
+        let dispatcher: Arc<dyn collaboration_central_core::CentralLinkDispatcher> =
+            Arc::new(SessionLinkDispatcher::new(
+                NativeSessionTransactions {
+                    organization: organization.clone(),
+                    storage,
+                },
+                clock.clone(),
+                ids,
+                fill_session_secret,
+            ));
+        #[cfg(not(feature = "test-support"))]
+        let central = central.with_link_call_dispatcher(dispatcher);
+        #[cfg(feature = "test-support")]
+        let central = if self.fixture_link_calls {
+            central.with_fixture_link_call_dispatcher(dispatcher)
+        } else {
+            central.with_link_call_dispatcher(dispatcher)
+        };
         let central = match &self.sign_in {
             Some(trust) => match trust.for_organization(organization.clone(), clock) {
                 Ok(check) => central.with_sign_in_verification(check),

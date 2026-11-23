@@ -1,10 +1,12 @@
 //! Org-scoped central: shared core over a statement-only DO adapter, no Fleet engine.
+use crate::workspace_session_transactions::{WorkerSessionTransactions, fill_session_secret};
 use crate::{
     object_location::ObjectAddress,
     sign_in_trust::CloudflareSignInTrust,
     statement_store::{self, AlarmPolicy},
     worker_clock::WorkspaceClock,
 };
+use central_link_call_composition::SessionLinkDispatcher;
 use central_storage::{
     BatchOutcome, ReadOutcome, Statement, StatementBatch, StoreCall, StoreFailure, StoreReply,
 };
@@ -32,7 +34,7 @@ struct CentralStatements {
     witness_env: SendWrapper<Env>,
     #[cfg(feature = "test-support")]
     witnesses: workspace_link_witness::PendingWitnesses,
-    connection: SendWrapper<DoConnection>,
+    connection: Arc<SendWrapper<DoConnection>>,
     state: Arc<SendWrapper<State>>,
     clock: WorkspaceClock,
     decide_alarm: central_storage::EngineAlarmDecider,
@@ -305,7 +307,7 @@ impl CentralObject {
             witness_env: SendWrapper::new(self.env.clone()),
             #[cfg(feature = "test-support")]
             witnesses: self.witnesses.clone(),
-            connection: SendWrapper::new(connection),
+            connection: Arc::new(SendWrapper::new(connection)),
             state: self.state.clone(),
             clock: self.clock.clone(),
             decide_alarm: fleet_runtime::engine_alarm_decider(self.due_batches.clone()),
@@ -352,8 +354,30 @@ impl CentralObject {
                 Arc::new(crate::signin_observation::observe_signin),
             ),
             host.clone(),
-            host,
+            host.clone(),
         );
+        let dispatcher: Arc<dyn collaboration_central_core::CentralLinkDispatcher> =
+            Arc::new(SessionLinkDispatcher::new(
+                WorkerSessionTransactions {
+                    organization: organization.clone(),
+                    connection: host.connection.clone(),
+                },
+                clock.clone(),
+                self.link_ids.clone(),
+                fill_session_secret,
+            ));
+        #[cfg(not(feature = "test-support"))]
+        let central = central.with_link_call_dispatcher(dispatcher);
+        #[cfg(feature = "test-support")]
+        let central = if self
+            .env
+            .var("TEST_SUPPORT_LINK_CALLS")
+            .is_ok_and(|mode| mode.to_string() == "legacy")
+        {
+            central.with_fixture_link_call_dispatcher(dispatcher)
+        } else {
+            central.with_link_call_dispatcher(dispatcher)
+        };
         let central = match crate::organization_signin_link::trust_settings(&self.env) {
             Ok(Some(settings)) => {
                 match CloudflareSignInTrust::new(settings).for_organization(organization, clock) {

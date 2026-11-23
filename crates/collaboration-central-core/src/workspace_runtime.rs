@@ -34,9 +34,6 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             direct_messages,
             execution,
             stamp_store,
-            #[cfg(feature = "test-support")]
-            link_call_dispatcher: Some(Arc::new(crate::typed_link_dispatch::FixtureLinkDispatcher)),
-            #[cfg(not(feature = "test-support"))]
             link_call_dispatcher: None,
             signin_authority: Default::default(),
             mail_delivery_ready: Arc::new(|_| {}),

@@ -14,6 +14,7 @@ mod renewal;
 mod request_authority;
 mod request_status;
 mod revocation;
+mod session_calls;
 mod typed_calls;
 mod witness_assertions;
 

@@ -207,7 +207,7 @@ fn typed_reply_wrappers_reject_unknown_fields_tags_and_positional_arrays() {
 }
 
 #[test]
-fn registered_approval_call_and_reply_frames_keep_closed_concrete_schemas() {
+fn registered_service_call_and_reply_frames_keep_closed_concrete_schemas() {
     let schema = serde_json::to_value(schemars::schema_for!(DataFrame)).unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
     let service = json!({"organizationId": CORRELATION});
@@ -217,6 +217,7 @@ fn registered_approval_call_and_reply_frames_keep_closed_concrete_schemas() {
         "routerRun": "019f0000-0000-7000-8000-000000000004"
     });
     let run = &holder["routerRun"];
+    let session_service = json!(CORRELATION);
     let digest = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     let specimens = [
         (
@@ -247,6 +248,31 @@ fn registered_approval_call_and_reply_frames_keep_closed_concrete_schemas() {
             json!({"kind":"provider","requestId":CORRELATION,"routerRun":run,
                    "contentsDigest":digest,"cause":"turnStopped"}),
             json!({"kind":"stands","ending":{"kind":"timedOut"}}),
+        ),
+        (
+            FrameDirection::ToCentral,
+            "callCentral",
+            "createFleetSession",
+            &session_service,
+            json!({"operationId":CORRELATION,"attempt":1,"creator":{"kind":"routerOperator"},
+                   "agentProgram":"codex","sessionKind":{"kind":"ordinary"}}),
+            json!({"result":"superseded"}),
+        ),
+        (
+            FrameDirection::ToCentral,
+            "callCentral",
+            "bindFleetSession",
+            &session_service,
+            json!({"sessionId":MACHINE,"harnessSessionId":"harness-session","secret":digest}),
+            json!({"result":"noSuchStart"}),
+        ),
+        (
+            FrameDirection::ToCentral,
+            "callCentral",
+            "endFleetSession",
+            &session_service,
+            json!({"target":{"kind":"centralId","sessionId":MACHINE},"cause":{"kind":"givenUp"}}),
+            json!({"result":"noSuchStart"}),
         ),
         (
             FrameDirection::ToRouter,
@@ -315,11 +341,17 @@ fn assert_rejects_open_envelope(
 }
 
 #[test]
-fn the_link_registers_only_the_four_machine_approval_calls() {
-    use crate::{CentralLinkRpc, MacLinkRpc};
+fn the_link_registers_session_and_approval_calls_in_their_respective_directions() {
+    use crate::{
+        CentralLinkRpc, MacLinkRpc,
+        session_lifecycle_rpc::{BindFleetSessionRpc, CreateFleetSessionRpc, EndFleetSessionRpc},
+    };
     fn to_central<Call: CentralLinkRpc>() {}
     fn to_mac<Call: MacLinkRpc>() {}
 
+    to_central::<CreateFleetSessionRpc>();
+    to_central::<BindFleetSessionRpc>();
+    to_central::<EndFleetSessionRpc>();
     to_central::<RegisterRunRpc>();
     to_central::<RaiseApprovalRpc>();
     to_central::<StopApprovalRpc>();
