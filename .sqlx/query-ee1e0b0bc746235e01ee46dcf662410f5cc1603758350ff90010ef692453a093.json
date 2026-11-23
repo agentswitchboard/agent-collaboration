@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO engine_due_entries (\n    due_entry_id, work_kind, entry_role, subject_key, occurrence_ms, base_due_ms,\n    effective_due_ms, created_at, updated_at\n)\nSELECT ?1, ?2, 'item', ?3, ?4, ?5,\n    CASE\n        WHEN attempt.retired THEN NULL\n        WHEN attempt.uses_subject_attempt THEN attempt.due_at_ms\n        ELSE ?5\n    END, ?6, ?6\nFROM (SELECT 1)\nLEFT JOIN engine_due_attempt_controls attempt\n    ON attempt.machine_kind = ?2 AND attempt.subject_key = ?3\nWHERE ?7 = 0 OR changes() = 1\nON CONFLICT (work_kind, entry_role, subject_key) DO UPDATE SET\n    occurrence_ms = excluded.occurrence_ms,\n    base_due_ms = excluded.base_due_ms,\n    effective_due_ms = excluded.effective_due_ms,\n    updated_at = excluded.updated_at\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 7
+    },
+    "nullable": []
+  },
+  "hash": "ee1e0b0bc746235e01ee46dcf662410f5cc1603758350ff90010ef692453a093"
+}

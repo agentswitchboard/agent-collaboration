@@ -155,6 +155,13 @@ async fn exercise_direct_receipt_sequence(order: u8, reject_mark: bool) {
                 text("statement_rejected")
             ]]
         );
+        let due = central.runtime().statement_host().read(Statement {
+        sql: "SELECT effective_due_ms FROM engine_due_entries WHERE work_kind='direct_message' AND entry_role='item' AND subject_key=?",
+        args: vec![text(&message_id)],
+    }).await.unwrap();
+        let expected = mark + chrono::Duration::minutes(5);
+        assert_eq!(due.rows, [[integer(expected.timestamp_millis())]]);
+
         raw(&central, "DROP TRIGGER reject_direct_outcome", vec![]).await;
         let at = mark + chrono::Duration::minutes(5);
         fixture.set_utc(at).await;

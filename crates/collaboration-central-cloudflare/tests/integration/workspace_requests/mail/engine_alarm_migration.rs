@@ -23,12 +23,12 @@ async fn production_upgrade_reopens_and_an_old_fixture_ledger_is_preserved() {
     let old_ledger = before["ledger"]["rows"].as_array().unwrap();
     assert_eq!(old_ledger.len(), 4);
     let completed = upgrade
-        .control::<Result<Value, String>>(endpoint, &"upgrade")
+        .control::<Result<Value, String>>(endpoint, &"upgradeDueViews")
         .await
         .unwrap()
         .unwrap();
     let fresh_snapshot = fresh
-        .control::<Result<Value, String>>(endpoint, &"seedCurrent")
+        .control::<Result<Value, String>>(endpoint, &"seedDueViews")
         .await
         .unwrap()
         .unwrap();
@@ -53,7 +53,7 @@ async fn production_upgrade_reopens_and_an_old_fixture_ledger_is_preserved() {
         .unwrap()
         .unwrap();
     let failure = old_fixture
-        .control::<Result<Value, String>>(endpoint, &"upgrade")
+        .control::<Result<Value, String>>(endpoint, &"upgradeDueViews")
         .await
         .unwrap()
         .unwrap_err();
@@ -69,5 +69,30 @@ async fn production_upgrade_reopens_and_an_old_fixture_ledger_is_preserved() {
             .unwrap(),
         saved,
     );
+    fixture.host.close().await;
+}
+
+#[tokio::test]
+async fn fresh_production_catalog_contains_machine_allowances_and_an_empty_due_table() {
+    let fixture = Fixture::new().await;
+    let org = serde_json::from_value::<OrganizationId>(serde_json::json!(id::<
+        workspace_ids::WorkspaceId,
+    >(704)))
+    .unwrap();
+    let current = fixture.host.cold_runtime(&org);
+    let catalog = current
+        .control::<Result<Value, String>>("raw-engine-due-migration", &"seedCurrent")
+        .await
+        .unwrap()
+        .unwrap();
+    let ledger = catalog["ledger"]["rows"].as_array().unwrap();
+    assert_eq!(ledger.len(), 9);
+    let tables = current.read(central_storage::Statement {
+        sql: "SELECT COUNT(*) AS allowances, (SELECT COUNT(*) FROM engine_due_entries) AS due_entries FROM login_machine_allowances",
+        args: vec![],
+    }).await.unwrap();
+    let zero = central_storage::SqlValue::Integer(0.try_into().unwrap());
+    assert_eq!(tables.rows, [[zero.clone(), zero]]);
+    assert_eq!(catalog["alarm"], serde_json::json!([null, null]));
     fixture.host.close().await;
 }

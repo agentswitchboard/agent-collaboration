@@ -270,14 +270,27 @@ impl Fixture {
         let now = self.clock.utc_now();
         let due = chrono::DateTime::from_timestamp((now.timestamp().div_euclid(300) + 1) * 300, 0)
             .ok_or("wake grid out of range")?;
-        let wake = "019f0000-0000-7000-8000-00000000b306"
+        let wake: workspace_ids::WakeId = "019f0000-0000-7000-8000-00000000b306"
             .to_owned()
             .try_into()?;
         let target = workspace_ids::SessionRef {
             machine_id: INSTALLATION.to_owned().try_into()?,
             session_id: session.to_owned().try_into()?,
         };
-        self.apply(A,"INSERT INTO automation_wakes(wake_id,target,due_at,text,state,created_at,updated_at) VALUES (?,?,?,?,'active',?,?)",vec![text(&wake),text(serde_json::to_string(&target)?),text(due.to_rfc3339_opts(chrono::SecondsFormat::Millis,true)),text(serde_json::to_string("pending before first stamp")?),text(now.to_rfc3339_opts(chrono::SecondsFormat::Millis,true)),text(now.to_rfc3339_opts(chrono::SecondsFormat::Millis,true))]).await?;
+        let outcome = self.runtime(A).await?.runtime().statement_host().run_batch(StatementBatch {
+            statements: vec![
+                GuardedStatement {
+                    statement: Statement {
+                        sql: "INSERT INTO automation_wakes(wake_id,target,due_at,text,state,created_at,updated_at) VALUES (?,?,?,?,'active',?,?)",
+                        args: vec![text(&wake),text(serde_json::to_string(&target)?),text(due.to_rfc3339_opts(chrono::SecondsFormat::Millis,true)),text(serde_json::to_string("pending before first stamp")?),text(now.to_rfc3339_opts(chrono::SecondsFormat::Millis,true)),text(now.to_rfc3339_opts(chrono::SecondsFormat::Millis,true))],
+                    },
+                    expect: RowExpectation::Exactly(1),
+                },
+                crate::storage_support::fixture_due_item(fleet_engine::DueKind::WakeTimer, wake.to_string(), due, now),
+            ],
+            alarm: AlarmUpdate::Unchanged,
+        }).await?;
+        assert!(matches!(outcome, BatchOutcome::Applied { .. }));
         Ok((wake, due))
     }
     pub async fn seed_machine(&self) -> Result {

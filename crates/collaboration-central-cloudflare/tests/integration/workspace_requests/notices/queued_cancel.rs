@@ -58,6 +58,17 @@ async fn leave_cancels_the_fired_collated_message_but_not_direct_mail() {
         matches!(serde_json::from_str::<MessageBody>(body).unwrap(), MessageBody::Notice { items } if items.len() == 1)
     );
     assert_eq!(before.rows[0][3], text("queued"));
+    let projected_mail = || Statement {
+        sql: "SELECT work_kind, subject_key FROM engine_due_entries WHERE subject_key IN (?, ?) ORDER BY work_kind",
+        args: vec![text(&notice_id), text(&direct_id)],
+    };
+    assert_eq!(
+        runtime.read(projected_mail()).await.unwrap().rows,
+        [
+            [text("direct_message"), text(&direct_id)],
+            [text("system_message_expiry"), text(&notice_id)]
+        ],
+    );
     let observer = fresh_auth(&f.host, &observer);
     let left = call(
         &f.host,
@@ -92,5 +103,9 @@ async fn leave_cancels_the_fired_collated_message_but_not_direct_mail() {
         .await
         .unwrap();
     assert_eq!(direct.rows, vec![vec![text("queued")]]);
+    assert_eq!(
+        runtime.read(projected_mail()).await.unwrap().rows,
+        [[text("direct_message"), text(&direct_id)]],
+    );
     f.host.close().await;
 }

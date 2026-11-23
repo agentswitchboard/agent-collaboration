@@ -30,6 +30,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
     ) -> Result<(), StoreFailure> {
         let due = now
             .checked_add_signed(chrono::Duration::seconds(5))
+            .filter(|due| central_engine_model::supported_time(*due))
             .ok_or_else(|| corrupt("drain_due_at"))?;
         applied(self.execution.statement_host().run_batch(StatementBatch{statements:vec![exact("INSERT INTO mail_workspace_drains(workspace_id,drained_through_position,drain_due_at,created_at,updated_at) VALUES (?,0,?,?,?) ON CONFLICT(workspace_id) DO UPDATE SET drain_due_at=COALESCE(mail_workspace_drains.drain_due_at,excluded.drain_due_at),updated_at=excluded.updated_at",vec![text(workspace),text(format_utc_millis(due)),text(format_utc_millis(now)),text(format_utc_millis(now))])],alarm:alarm_update()}).await?)
     }

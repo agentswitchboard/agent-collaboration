@@ -552,3 +552,52 @@ async fn discarding_a_retired_subject_whose_lifecycle_state_will_not_decode_repo
 
 #[path = "engine_retired_paging.rs"]
 mod retired_paging;
+
+#[tokio::test]
+async fn admin_retry_of_a_retired_wake_exposes_a_damaged_stored_base() {
+    use fleet_runtime_ports::DueListKind;
+
+    let engine = EngineOrg::new().await;
+    let (wakes, occurrence, original_target) = retired_wakes(&engine, 1).await;
+    let wake = &wakes[0];
+    let attempt = engine.attempt_id("wake_timer", wake).await;
+    let original_ms = occurrence.timestamp_millis();
+    engine
+        .raw(
+            "UPDATE automation_wakes SET target=? WHERE wake_id=?",
+            vec![original_target, text(wake)],
+        )
+        .await;
+    engine.raw("UPDATE engine_due_entries SET base_due_ms=? WHERE work_kind='wake_timer' AND subject_key=?", vec![integer(original_ms + 1), text(wake)]).await;
+    assert_eq!(
+        engine.rows("SELECT base_due_ms,effective_due_ms FROM engine_due_entries WHERE work_kind='wake_timer' AND subject_key=?", vec![text(wake)]).await,
+        [[integer(original_ms + 1), central_storage::SqlValue::Null]],
+    );
+
+    assert_eq!(
+        engine.retry(&attempt).await,
+        json!({"result":"engineRetried"})
+    );
+    assert!(engine.record("wake_timer", wake).await.is_empty());
+    let runtime = engine.runtime().await;
+    let store = runtime.runtime().statement_host();
+    let lookup = include_str!("../../../../fleet-wakes/src/queries/read_due_wakes.sql");
+    let reference = engine
+        .rows(
+            lookup,
+            vec![integer(engine.now().timestamp_millis()), integer(250)],
+        )
+        .await;
+    assert_eq!(
+        reference,
+        [[text(wake), integer(original_ms), integer(original_ms)]]
+    );
+    let projected = fleet_engine::read_due_rows(store, DueListKind::Wakes, engine.now(), 250)
+        .await
+        .unwrap_or_else(|_| panic!("indexed wake query failed"));
+    assert_eq!(projected.len(), 1);
+    assert_eq!(projected[0].key.0, *wake);
+    assert_eq!(projected[0].occurrence_ms, original_ms);
+    assert_eq!(projected[0].effective_due_ms, original_ms + 1);
+    engine.close().await;
+}

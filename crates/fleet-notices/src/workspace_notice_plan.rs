@@ -1,6 +1,6 @@
 //! Fold workspace changes into window updates and queued-notice edits.
 use crate::{
-    NoticeMailbox,
+    NoticeCancellation, NoticeMailbox,
     notice_actor::route_notice_actor,
     notice_recipients::targeted_recipients,
     recipient_cadence::notice_due,
@@ -33,7 +33,7 @@ pub async fn plan_workspace_notices_held<Host: CentralStore, Stores: WorkspaceSt
     rows: &WorkspaceRows,
     now: Timestamp,
 ) -> Result<WorkspaceNoticePlan, StoreFailure> {
-    mailbox.validate_queued_notices_held().await?;
+    let mut cancellations = Vec::new();
     let host = execution.statement_host();
     let access = WorkspaceAccess::new(execution);
     let mut windows = notification_windows(host).await?;
@@ -54,13 +54,12 @@ pub async fn plan_workspace_notices_held<Host: CentralStore, Stores: WorkspaceSt
                 _ => None,
             };
             if member.is_some() || matches!(event, m::ChangeEvent::Resolved) {
+                cancellations.push(NoticeCancellation {
+                    thread: thread.clone(),
+                    recipient: member.cloned(),
+                });
                 plan.statements
                     .push(delete_window_items_for_thread(workspace, thread, member));
-                plan.statements.extend(
-                    mailbox
-                        .plan_cancel_queued_notices_held(workspace, thread, member, now)
-                        .await?,
-                );
                 continue;
             }
         }
@@ -118,6 +117,11 @@ pub async fn plan_workspace_notices_held<Host: CentralStore, Stores: WorkspaceSt
             plan.window_items_added += 1;
         }
     }
+    plan.statements.extend(
+        mailbox
+            .plan_cancel_queued_notices_held(workspace, &cancellations, now)
+            .await?,
+    );
     plan.statements.push(delete_empty_windows());
     Ok(plan)
 }

@@ -141,11 +141,40 @@ async fn bad_due_window_does_not_suppress_wakes_or_automations() {
             ]]
         );
     }
+    let source = || Statement {
+        sql: "SELECT effective_due_ms FROM engine_due_entries WHERE work_kind='legacy_notice_windows' AND entry_role='source_control'",
+        args: vec![],
+    };
+    let store = runtime.runtime().statement_host();
+    assert_eq!(
+        store.read(source()).await.unwrap().rows,
+        [[SqlValue::Integer(
+            (due + chrono::Duration::minutes(15))
+                .timestamp_millis()
+                .try_into()
+                .unwrap()
+        )]],
+    );
     for row in items.rows {
         execute(&fixture, "INSERT INTO mail_notification_window_items(window_item_id,window_id,workspace_id,thread_id,change_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?)", row).await;
     }
     fixture.set_utc(due + chrono::Duration::minutes(15)).await;
-    runtime.after_event().await.unwrap();
+    let mut committed = runtime
+        .runtime()
+        .pause_points()
+        .hold_central(PausePoint::AfterTimerCommit);
+    let recovering_window = tokio::spawn({
+        let runtime = runtime.clone();
+        async move { runtime.after_event().await.unwrap() }
+    });
+    committed.until_held().await;
+    let projected_after_window_commit = store.read(source()).await.unwrap();
+    committed.release();
+    recovering_window.await.unwrap();
+    assert!(
+        projected_after_window_commit.rows.is_empty(),
+        "the window's own commit releases its source; the later generic clear cannot supply this write"
+    );
     let record = runtime.runtime().statement_host().read(Statement {
         sql: "SELECT (SELECT COUNT(*) FROM engine_work_attempts WHERE machine_kind='legacy_notice_windows' AND subject_key='all'),(SELECT COUNT(*) FROM mail_messages WHERE message_kind='notice' AND recipient_actor=?)", args: vec![text(&recipient)],
     }).await.unwrap();
@@ -156,6 +185,7 @@ async fn bad_due_window_does_not_suppress_wakes_or_automations() {
             SqlValue::Integer(1.try_into().unwrap())
         ]]
     );
+    assert!(store.read(source()).await.unwrap().rows.is_empty());
     fixture.host.close().await;
 }
 
