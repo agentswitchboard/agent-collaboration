@@ -61,8 +61,9 @@ mod pinned_native_tests;
 pub struct AcpSessionBinding {
     pub(crate) session_id: String,
     pub(crate) generation: CodexGeneration,
-    // Assigned at creation by the route admitted to this native generation.
-    pub(crate) admission_retirement: Option<tokio_util::sync::CancellationToken>,
+    // Assigned by the route admitted to this native generation.
+    admission_retirement: Option<tokio_util::sync::CancellationToken>,
+    presence_lease: Option<crate::session_presence::SessionPresenceLease>,
     pub(crate) materialized: bool,
     working_directory: PathBuf,
     configuration: Option<McpConfiguration>,
@@ -433,6 +434,7 @@ impl AcpSessionBinding {
             session_id,
             generation: inputs.generation,
             admission_retirement: None,
+            presence_lease: None,
             materialized: false,
             working_directory: expected_cwd,
             configuration: Some(configuration),
@@ -449,6 +451,16 @@ impl AcpSessionBinding {
     #[must_use]
     pub fn session_id(&self) -> &str {
         &self.session_id
+    }
+
+    pub(crate) fn admit(
+        &mut self,
+        session_id: collaboration_protocol::SessionId,
+        retirement: tokio_util::sync::CancellationToken,
+        presence: Option<&crate::CodexSessionPresence>,
+    ) {
+        self.presence_lease = presence.map(|index| index.claim(session_id, retirement.clone()));
+        self.admission_retirement = Some(retirement);
     }
     #[must_use]
     pub fn is_unmaterialized(&self) -> bool {
@@ -563,6 +575,7 @@ impl AcpSessionBinding {
             session_id,
             generation: inputs.generation.clone(),
             admission_retirement: None,
+            presence_lease: None,
             materialized: true,
             working_directory,
             configuration: None,

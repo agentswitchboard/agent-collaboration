@@ -1232,6 +1232,8 @@ dependencies = [
  "agent-automation",
  "agent-client-protocol",
  "axum",
+ "central-link-client",
+ "central-link-protocol",
  "chrono",
  "claude-code-peer-messaging",
  "codex-acp-adapter",
@@ -1269,6 +1271,8 @@ dependencies = [
  "sha2 0.10.9",
  "sqlx",
  "state-machine-core",
+ "switchboard-machine-core-store",
+ "switchboard-message-custody",
  "switchboard-session-events",
  "switchboard-session-store",
  "tempfile",
@@ -1279,6 +1283,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "workspace-model",
 ]
 
 [[package]]
