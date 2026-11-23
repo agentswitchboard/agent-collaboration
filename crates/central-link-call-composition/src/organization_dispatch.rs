@@ -18,12 +18,10 @@ use central_storage::StoreFailure;
 use collaboration_central_core::{
     CentralCallDispatch, CentralCallWork, CentralLinkDispatcher, TargetCheckedCentralCall,
     TypedCallCarrier, ValidatedMachineConnection, dispatch_fallible_central_call,
-    dispatch_fallible_correlated_central_call, recheck_lent_link_authority,
+    recheck_lent_link_authority,
 };
-use fleet_actor_identity::{
-    SessionCallOutcome, SessionSecretSource, SessionService, SessionServiceError,
-};
-use fleet_identity_protocol::{OrganizationId, SessionSecret};
+use fleet_actor_identity::{SessionCallOutcome, SessionService, SessionServiceError};
+use fleet_identity_protocol::OrganizationId;
 use fleet_lent_transaction::CentralTransaction;
 use fleet_rpc::Envelope;
 use fleet_runtime_ports::{Clock, IdSource};
@@ -32,7 +30,6 @@ use sqlx_core::{
     encode::Encode, types::Type,
 };
 use std::{future::Future, pin::Pin, sync::Arc};
-use zeroize::Zeroizing;
 
 /// The host could not fill a session secret from secure entropy.
 #[derive(Clone, Copy, Debug)]
@@ -47,7 +44,6 @@ type FillSessionSecret = fn(&mut [u8; 32]) -> Result<(), SessionEntropyUnavailab
 struct ApplyingInputs {
     clock: Arc<dyn Clock>,
     ids: Arc<dyn IdSource>,
-    fill_secret: FillSessionSecret,
 }
 
 /// The shared dispatch table installed by Central's organization hosts.
@@ -67,7 +63,7 @@ impl<Transactions: OrganizationSessionTransactions, Approvals>
         ending_transport: Arc<dyn crate::ApprovalDeliveryTransport>,
         clock: Arc<dyn Clock>,
         ids: Arc<dyn IdSource>,
-        fill_secret: FillSessionSecret,
+        _fill_secret: FillSessionSecret,
     ) -> Self {
         Self {
             transactions,
@@ -77,11 +73,7 @@ impl<Transactions: OrganizationSessionTransactions, Approvals>
                 clock: clock.clone(),
                 ids: ids.clone(),
             },
-            inputs: ApplyingInputs {
-                clock,
-                ids,
-                fill_secret,
-            },
+            inputs: ApplyingInputs { clock, ids },
         }
     }
 
@@ -288,37 +280,18 @@ where
     ) -> Pin<Box<dyn Future<Output = Result<CentralCallWork, StoreFailure>> + Send + 'call>> {
         Box::pin(async move {
             match request {
-                CentralCall::CreateFleetSession(request) => self
-                    .apply::<CreateFleetSessionRpc>(
-                        machine,
+                CentralCall::CreateFleetSession(request) => {
+                    // Keep Create closed while this checkpoint has the types
+                    // but no authoritative project admission.
+                    let reason = match TargetCheckedCentralCall::<CreateFleetSessionRpc>::check(
+                        machine.organization_id(),
                         request,
-                        |request, loan, machine, inputs, time| {
-                            Box::pin(async move {
-                                dispatch_fallible_correlated_central_call(request, |body| async {
-                                    let mut ids = ApplyingIds(inputs.ids.as_ref());
-                                    let mut context = Context {
-                                        now: time,
-                                        ids: &mut ids,
-                                    };
-                                    let mut service = SessionService::in_transaction(loan);
-                                    session_reply(
-                                        service
-                                            .create(
-                                                &machine,
-                                                body,
-                                                &mut context,
-                                                &mut ApplyingSecrets(inputs.fill_secret),
-                                            )
-                                            .await,
-                                    )
-                                })
-                                .await
-                                .map(SessionApplySuccess::Answered)
-                            })
-                        },
-                    )
-                    .await
-                    .map(CentralCallWork::from),
+                    ) {
+                        Ok(_) => LinkCallRefusal::UnknownCall,
+                        Err(reason) => reason,
+                    };
+                    Ok(TypedCallResult::Refused { reason }.into())
+                }
                 CentralCall::BindFleetSession(request) => self
                     .apply::<BindFleetSessionRpc>(
                         machine,
@@ -444,16 +417,6 @@ struct ApplyingIds<'input>(&'input dyn IdSource);
 impl central_engine_model::IdSource for ApplyingIds<'_> {
     fn next_id(&mut self) -> uuid::Uuid {
         self.0.new_id()
-    }
-}
-
-struct ApplyingSecrets(FillSessionSecret);
-
-impl SessionSecretSource for ApplyingSecrets {
-    fn new_session_secret(&mut self) -> Result<SessionSecret, SessionServiceError> {
-        let mut bytes = Zeroizing::new([0; 32]);
-        (self.0)(&mut bytes).map_err(|_| SessionServiceError::SecretUnavailable)?;
-        Ok(SessionSecret::from_bytes(&bytes))
     }
 }
 

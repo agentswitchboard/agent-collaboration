@@ -213,6 +213,14 @@ fn create() -> Result<CreateFleetSession> {
         creator: SessionCreator::RouterOperator {},
         agent_program: fleet_identity_protocol::HarnessKind::Codex,
         session_kind: CreateSessionKind::Ordinary {},
+        project: fleet_identity_protocol::StartProject::Named {
+            project_ref: fleet_identity_protocol::ProjectRef {
+                workspace: "019a3dce-2000-7000-8000-000000000004".parse()?,
+                project: "019a3dce-2000-7000-8000-000000000005"
+                    .to_owned()
+                    .try_into()?,
+            },
+        },
     })
 }
 

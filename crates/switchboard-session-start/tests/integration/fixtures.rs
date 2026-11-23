@@ -11,7 +11,7 @@ use switchboard_session_start::{
     StartOutput, StartRefusal, StartRevision, StartScope, StartSnapshot, StoredFacts,
     StoredSnapshot, WaiterSlot,
 };
-use workspace_ids::{CentralSessionId, MachineId, SessionId, SessionRef};
+use workspace_ids::{CentralSessionId, MachineId, SessionId, SessionRef, WorkspaceId};
 
 pub(super) fn id(value: u64) -> String {
     format!("019c0000-0000-7000-8000-{value:012x}")
@@ -40,6 +40,10 @@ pub(super) fn address() -> SessionRef {
     }
 }
 
+pub(super) fn workspace_id() -> WorkspaceId {
+    id(5).parse().unwrap()
+}
+
 pub(super) fn candidate() -> StartCandidate {
     StartCandidate {
         scope: StartScope {
@@ -50,6 +54,12 @@ pub(super) fn candidate() -> StartCandidate {
         asker: CandidateAsker::Operator,
         agent_program: HarnessKind::Claude,
         kind: CreateSessionKind::Ordinary {},
+        project: fleet_identity_protocol::StartProject::Named {
+            project_ref: fleet_identity_protocol::ProjectRef {
+                workspace: workspace_id(),
+                project: id(6).try_into().unwrap(),
+            },
+        },
         local_digest: LocalStartDigest::new([17; 32]),
         launch: LaunchSpecRef::new(4),
     }

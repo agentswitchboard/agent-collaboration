@@ -103,6 +103,13 @@ impl AcceptedStart {
             CreateAnswer::Refused {
                 reason: CreateSessionRefusal::CreatorNotAllowed {},
             } => self.fail(FailureReason::CreatorNotAllowed, outputs),
+            CreateAnswer::Refused {
+                reason:
+                    reason @ (CreateSessionRefusal::ProjectRequired {}
+                    | CreateSessionRefusal::ProjectNotInWorkspace {}
+                    | CreateSessionRefusal::MachineNotAllowed {}
+                    | CreateSessionRefusal::HelperOutsideWorkspace {}),
+            } => self.fail(FailureReason::ProjectRefused { reason }, outputs),
             CreateAnswer::Conflict => self.fail(FailureReason::Conflict, outputs),
             CreateAnswer::Active {
                 session_id,

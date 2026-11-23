@@ -199,7 +199,7 @@ fn the_checked_end_reply_exposes_the_target_specific_outcome() {
 fn create(creator: &Value, kind: &Value) -> Value {
     json!({
         "operationId":OPERATION, "attempt":1, "creator":creator, "agentProgram":"codex",
-        "sessionKind":kind,
+        "sessionKind":kind, "project":{"kind":"named","projectRef":{"workspace":"019a3dce-2000-7000-8000-000000000004","project":"019a3dce-2000-7000-8000-000000000005"}},
     })
 }
 

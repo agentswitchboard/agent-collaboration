@@ -6,6 +6,7 @@ use workspace_ids::CentralSessionId;
 
 use crate::{
     CreateFleetSession, CreateSessionDigest, CreateSessionKind, HarnessKind, SessionCreator,
+    StartProject,
 };
 
 #[derive(Serialize)]
@@ -16,6 +17,7 @@ struct CreateDigestContents<'a> {
     kind: &'static str,
     agent_program: &'a HarnessKind,
     parent_actor_id: Option<&'a CentralSessionId>,
+    project: &'a StartProject,
 }
 
 impl CreateFleetSession {
@@ -35,6 +37,7 @@ impl CreateFleetSession {
             kind,
             agent_program: &self.agent_program,
             parent_actor_id,
+            project: &self.project,
         })
         .map_err(|_| CanonicalCreateContentsError)
     }

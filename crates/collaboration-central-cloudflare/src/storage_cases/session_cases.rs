@@ -4,8 +4,8 @@ use central_engine_model::{Context, IdSource};
 use central_link_call_composition::{OrganizationLoan, OrganizationLoanFailure};
 use chrono::{DateTime, SecondsFormat};
 use fleet_actor_identity::{
-    LiveSessionFacts, SessionAvailability, SessionCallOutcome, SessionLookupScope,
-    SessionSecretSource, SessionService, SessionServiceError,
+    LiveSessionFacts, SessionAvailability, SessionCallOutcome, SessionCreateApplication,
+    SessionLookupScope, SessionSecretSource, SessionService, SessionServiceError,
 };
 use fleet_approvals::{
     ActorApprovalSessionFacts, ApprovalEnrollment, ApprovalRouting, ApprovalSession,
@@ -225,7 +225,20 @@ async fn apply_command(
                     &mut HeldSessionSecret(secret_seed),
                 )
                 .await?;
-            Ok(call_reply(reply))
+            Ok(match reply {
+                SessionCallOutcome::Answered(SessionCreateApplication::Reserved {
+                    session_id,
+                    secret,
+                    reserved_until,
+                }) => json!({
+                    "result": "reserved", "sessionId": session_id, "secret": secret,
+                    "reservedUntil": reserved_until,
+                }),
+                SessionCallOutcome::Answered(SessionCreateApplication::ExistingOrRefused(
+                    reply,
+                )) => json!(reply),
+                SessionCallOutcome::Revoked => json!({ "result": "revoked" }),
+            })
         }
         SessionCommand::Bind { request } => {
             let Some(admitted) = admit_fixture(&mut lender, &caller, now).await? else {

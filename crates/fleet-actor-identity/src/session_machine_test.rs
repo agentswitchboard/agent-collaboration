@@ -7,8 +7,8 @@ use fleet_identity_protocol::{
 
 use crate::{
     AddressAvailability, NewSessionAdmission, RecordedSessionCreator, SessionApply,
-    SessionCreatorAdmission, SessionEndIdentity, SessionEvent, SessionLifecycle, SessionReceipt,
-    SessionReservation, SessionState,
+    SessionCreateApplication, SessionCreatorAdmission, SessionEndIdentity, SessionEvent,
+    SessionLifecycle, SessionReceipt, SessionReservation, SessionState,
 };
 
 struct NoIds;
@@ -28,6 +28,15 @@ fn operation() -> CreateFleetSession {
         creator: SessionCreator::RouterOperator {},
         agent_program: HarnessKind::Codex,
         session_kind: CreateSessionKind::Ordinary {},
+        project: fleet_identity_protocol::StartProject::Named {
+            project_ref: fleet_identity_protocol::ProjectRef {
+                workspace: "019a3dce-2000-7000-8000-000000000004".parse().unwrap(),
+                project: "019a3dce-2000-7000-8000-000000000005"
+                    .to_owned()
+                    .try_into()
+                    .unwrap(),
+            },
+        },
     }
 }
 
@@ -98,7 +107,7 @@ fn reservation_attempts_rotate_only_the_current_secret() {
     let digest = operation().contents_digest().unwrap();
     let (reserved, _) = step(&SessionState::Missing, candidate(&digest, 1, 20), 0, None);
     let (rotated, receipt) = step(&reserved, candidate(&digest, 2, 21), 1, None);
-    let SessionReceipt::Create(CreateFleetSessionReply::Reserved { reserved_until, .. }) = receipt
+    let SessionReceipt::Create(SessionCreateApplication::Reserved { reserved_until, .. }) = receipt
     else {
         panic!("expected rotated credentials");
     };
@@ -107,7 +116,9 @@ fn reservation_attempts_rotate_only_the_current_secret() {
         step(&rotated, candidate(&digest, 1, 22), 2, None),
         (
             rotated.clone(),
-            SessionReceipt::Create(CreateFleetSessionReply::Superseded {})
+            SessionReceipt::Create(SessionCreateApplication::ExistingOrRefused(
+                CreateFleetSessionReply::Superseded {}
+            ))
         )
     );
     assert_eq!(

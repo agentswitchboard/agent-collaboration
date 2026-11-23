@@ -18,9 +18,10 @@ export type CreateFleetSession = {
 	creator: SessionCreator,
 	agentProgram: HarnessKind,
 	sessionKind: CreateSessionKind,
+	project: StartProject,
 };
 
-export type CreateFleetSessionReply = { result: "reserved"; sessionId: CentralSessionId; secret: SessionSecret; reservedUntil: SessionTime } | { result: "superseded" } | { result: "active"; sessionId: CentralSessionId; address: SessionRef } | { result: "settled"; settlement: SessionSettlement } | { result: "refused"; reason: CreateSessionRefusal } | { result: "conflict" } | { result: "noSecret" } | { result: "noSuchSession" } | { result: "sessionEnded" } | { result: "wrongSecret" };
+export type CreateFleetSessionReply = { result: "reserved"; sessionId: CentralSessionId; secret: SessionSecret; reservedUntil: SessionTime; workspace: WorkspaceId } | { result: "superseded" } | { result: "active"; sessionId: CentralSessionId; address: SessionRef } | { result: "settled"; settlement: SessionSettlement } | { result: "refused"; reason: CreateSessionRefusal } | { result: "conflict" } | { result: "noSecret" } | { result: "noSuchSession" } | { result: "sessionEnded" } | { result: "wrongSecret" };
 
 /**  The request attempt is also the generation of a secret returned for that attempt. */
 export type CreateSessionAttempt = number;
@@ -30,7 +31,7 @@ export type CreateSessionDigest = string;
 
 export type CreateSessionKind = { kind: "ordinary" } | { kind: "delegate"; parent: CentralSessionId };
 
-export type CreateSessionRefusal = { kind: "creatorNotAllowed" } | { kind: "parentNotValid" };
+export type CreateSessionRefusal = { kind: "creatorNotAllowed" } | { kind: "parentNotValid" } | { kind: "projectRequired" } | { kind: "projectNotInWorkspace" } | { kind: "machineNotAllowed" } | { kind: "helperOutsideWorkspace" };
 
 export type EndFleetSession = {
 	target: EndSessionTarget,
@@ -54,6 +55,13 @@ export type NewAbandonmentCause = { kind: "givenUp" };
 export type NewEndSettlement = { state: "abandoned"; cause: NewAbandonmentCause; time: SessionTime } | { state: "ended"; cause: RouterEndCause; time: SessionTime };
 
 export type PresentedSessionSecret = { kind: "secret"; secret: SessionSecret } | { kind: "nothing" };
+
+export type ProjectId = string;
+
+export type ProjectRef = {
+	workspace: WorkspaceId,
+	project: ProjectId,
+};
 
 export type RouterEndCause = { kind: "endedForGood" } | { kind: "givenUp" };
 
@@ -86,3 +94,7 @@ export type SessionSettlement = { state: "abandoned"; cause: AbandonedSessionCau
 
 /**  A central timestamp in the same fixed-width UTC millisecond form used for stored times. */
 export type SessionTime = string;
+
+export type StartProject = { kind: "named"; projectRef: ProjectRef } | { kind: "sameAsParent" };
+
+export type WorkspaceId = string;

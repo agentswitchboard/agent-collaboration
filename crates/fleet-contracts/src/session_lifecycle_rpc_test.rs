@@ -34,6 +34,7 @@ fn every_session_request_and_reply_uses_a_named_organization_envelope() {
             "creator": {"kind":"routerOperator"},
             "agentProgram": "codex",
             "sessionKind": {"kind":"ordinary"},
+            "project":{"kind":"named","projectRef":{"workspace":"019a3dce-2000-7000-8000-000000000004","project":"019a3dce-2000-7000-8000-000000000005"}},
         }),
         json!({"result": "superseded"}),
     );

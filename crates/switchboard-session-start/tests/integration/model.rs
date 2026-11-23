@@ -293,6 +293,7 @@ impl Model {
             },
             agent_program: envelope.agent_program().clone(),
             session_kind: CreateSessionKind::Ordinary {},
+            project: envelope.project().clone(),
         })
     }
 

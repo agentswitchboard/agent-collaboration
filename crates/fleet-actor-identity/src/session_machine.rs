@@ -12,8 +12,8 @@ use workspace_ids::{SessionId, SessionRef};
 
 use crate::{
     AddressAvailability, BoundSession, NewSessionAdmission, ReservedSession, SessionApply,
-    SessionCreatorAdmission, SessionEndIdentity, SessionEvent, SessionMachineRefusal,
-    SessionReceipt, SessionSecretHash, SessionState,
+    SessionCreateApplication, SessionCreatorAdmission, SessionEndIdentity, SessionEvent,
+    SessionMachineRefusal, SessionReceipt, SessionSecretHash, SessionState,
 };
 
 pub struct SessionLifecycle;
@@ -109,7 +109,10 @@ fn create(
         SessionCreatorAdmission::WrongSecret => Some(CreateFleetSessionReply::WrongSecret {}),
     };
     if let Some(reply) = refusal {
-        return unchanged(state, SessionReceipt::Create(reply));
+        return unchanged(
+            state,
+            SessionReceipt::Create(SessionCreateApplication::ExistingOrRefused(reply)),
+        );
     }
     if state
         .reservation()
@@ -117,7 +120,9 @@ fn create(
     {
         return unchanged(
             state,
-            SessionReceipt::Create(CreateFleetSessionReply::Conflict {}),
+            SessionReceipt::Create(SessionCreateApplication::ExistingOrRefused(
+                CreateFleetSessionReply::Conflict {},
+            )),
         );
     }
     match state.read_at(now, enrollment_ended_at) {
@@ -148,7 +153,9 @@ fn create(
             }
             NewSessionAdmission::Refused(reason) => unchanged(
                 state,
-                SessionReceipt::Create(CreateFleetSessionReply::Refused { reason }),
+                SessionReceipt::Create(SessionCreateApplication::ExistingOrRefused(
+                    CreateFleetSessionReply::Refused { reason },
+                )),
             ),
         },
         SessionState::Reserved(mut reserved) if reserved.allows_rotation(digest, attempt) => {
@@ -162,14 +169,18 @@ fn create(
         }
         SessionState::Reserved(_) => unchanged(
             state,
-            SessionReceipt::Create(CreateFleetSessionReply::Superseded {}),
+            SessionReceipt::Create(SessionCreateApplication::ExistingOrRefused(
+                CreateFleetSessionReply::Superseded {},
+            )),
         ),
         SessionState::Active(bound) => unchanged(
             state,
-            SessionReceipt::Create(CreateFleetSessionReply::Active {
-                session_id: bound.reserved.reservation.session_id.clone(),
-                address: address_of(&bound),
-            }),
+            SessionReceipt::Create(SessionCreateApplication::ExistingOrRefused(
+                CreateFleetSessionReply::Active {
+                    session_id: bound.reserved.reservation.session_id.clone(),
+                    address: address_of(&bound),
+                },
+            )),
         ),
         SessionState::Abandoned { ref cause, at, .. } => {
             let settlement = SessionSettlement::Abandoned {
@@ -179,9 +190,11 @@ fn create(
             let next = state.read_at(now, enrollment_ended_at);
             Ok((
                 next,
-                vec![SessionReceipt::Create(CreateFleetSessionReply::Settled {
-                    settlement,
-                })],
+                vec![SessionReceipt::Create(
+                    SessionCreateApplication::ExistingOrRefused(CreateFleetSessionReply::Settled {
+                        settlement,
+                    }),
+                )],
             ))
         }
         SessionState::Ended { ref cause, at, .. } => {
@@ -192,16 +205,18 @@ fn create(
             let next = state.read_at(now, enrollment_ended_at);
             Ok((
                 next,
-                vec![SessionReceipt::Create(CreateFleetSessionReply::Settled {
-                    settlement,
-                })],
+                vec![SessionReceipt::Create(
+                    SessionCreateApplication::ExistingOrRefused(CreateFleetSessionReply::Settled {
+                        settlement,
+                    }),
+                )],
             ))
         }
     }
 }
 
 fn issue(reserved: ReservedSession, secret: SessionSecret) -> SessionChange {
-    let reply = CreateFleetSessionReply::Reserved {
+    let reply = SessionCreateApplication::Reserved {
         session_id: reserved.reservation.session_id.clone(),
         secret,
         reserved_until: wire_time(reserved.reservation.reserved_until)?,

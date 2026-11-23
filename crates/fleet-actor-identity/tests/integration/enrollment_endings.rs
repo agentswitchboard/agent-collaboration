@@ -1,4 +1,5 @@
 use central_storage::StoreFailure;
+use fleet_actor_identity::SessionCreateApplication;
 use fleet_actor_identity::{SessionAvailability, SessionCallOutcome, SessionServiceError};
 use fleet_identity_protocol::{
     AbandonedSessionCause, BindFleetSession, BindFleetSessionReply, CreateFleetSessionReply,
@@ -73,9 +74,11 @@ async fn all_terminal_enrollment_endings_settle_bound_sessions_at_the_stored_tim
             Receipt::Bind(SessionCallOutcome::Revoked)
         );
         store.caller.enrollment_id = current;
-        let Receipt::Create(SessionCallOutcome::Answered(CreateFleetSessionReply::Settled {
-            settlement: SessionSettlement::Ended { cause, time },
-        })) = store
+        let Receipt::Create(SessionCallOutcome::Answered(
+            SessionCreateApplication::ExistingOrRefused(CreateFleetSessionReply::Settled {
+                settlement: SessionSettlement::Ended { cause, time },
+            }),
+        )) = store
             .apply(Operation::Create(create(5, 2)), 2_001)
             .await
             .unwrap()

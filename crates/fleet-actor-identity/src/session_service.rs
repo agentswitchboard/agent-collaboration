@@ -20,8 +20,9 @@ use workspace_ids::{CentralSessionId, MachineId};
 use crate::session_repository::SessionRepository;
 use crate::{
     AddressAvailability, AuthenticatedSession, BoundSession, NewSessionAdmission,
-    RecordedSessionCreator, ScopedSession, SessionApply, SessionCreatorAdmission, SessionEvent,
-    SessionLifecycle, SessionMachineRefusal, SessionReceipt, SessionReservation, SessionState,
+    RecordedSessionCreator, ScopedSession, SessionApply, SessionCreateApplication,
+    SessionCreatorAdmission, SessionEvent, SessionLifecycle, SessionMachineRefusal, SessionReceipt,
+    SessionReservation, SessionState,
 };
 
 const RESERVATION_DURATION_MILLIS: i64 = 600_000;
@@ -109,7 +110,7 @@ where
         request: CreateFleetSession,
         context: &mut Context<'_>,
         secrets: &mut impl SessionSecretSource,
-    ) -> Result<SessionCallOutcome<CreateFleetSessionReply>, SessionServiceError> {
+    ) -> Result<SessionCallOutcome<SessionCreateApplication>, SessionServiceError> {
         if self.repository.tx.organization_id() != connection.organization_id() {
             return Ok(SessionCallOutcome::Revoked);
         }
@@ -127,22 +128,30 @@ where
             Creator::Admitted(creator) => creator,
             Creator::NoSecret => {
                 return Ok(SessionCallOutcome::Answered(
-                    CreateFleetSessionReply::NoSecret {},
+                    SessionCreateApplication::ExistingOrRefused(
+                        CreateFleetSessionReply::NoSecret {},
+                    ),
                 ));
             }
             Creator::NoSuchSession => {
                 return Ok(SessionCallOutcome::Answered(
-                    CreateFleetSessionReply::NoSuchSession {},
+                    SessionCreateApplication::ExistingOrRefused(
+                        CreateFleetSessionReply::NoSuchSession {},
+                    ),
                 ));
             }
             Creator::SessionEnded => {
                 return Ok(SessionCallOutcome::Answered(
-                    CreateFleetSessionReply::SessionEnded {},
+                    SessionCreateApplication::ExistingOrRefused(
+                        CreateFleetSessionReply::SessionEnded {},
+                    ),
                 ));
             }
             Creator::WrongSecret => {
                 return Ok(SessionCallOutcome::Answered(
-                    CreateFleetSessionReply::WrongSecret {},
+                    SessionCreateApplication::ExistingOrRefused(
+                        CreateFleetSessionReply::WrongSecret {},
+                    ),
                 ));
             }
         };

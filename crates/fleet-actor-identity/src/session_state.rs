@@ -3,7 +3,7 @@ use central_engine_model::{EngineTime, EventTag, RefusalTag, StateTag};
 use fleet_identity_protocol::{
     AbandonedSessionCause, BindFleetSessionReply, CreateFleetSessionReply, CreateSessionAttempt,
     CreateSessionDigest, CreateSessionKind, CreateSessionRefusal, EndFleetSessionReply,
-    EndedSessionCause, EnrollmentId, HarnessKind, RouterEndCause, SessionSecret,
+    EndedSessionCause, EnrollmentId, HarnessKind, RouterEndCause, SessionSecret, SessionTime,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -228,9 +228,21 @@ impl EventTag for SessionApply {
     }
 }
 
+/// An internal reservation carries no publicly established workspace until
+/// project admission is available at the session create boundary.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SessionCreateApplication {
+    Reserved {
+        session_id: CentralSessionId,
+        secret: SessionSecret,
+        reserved_until: SessionTime,
+    },
+    ExistingOrRefused(CreateFleetSessionReply),
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum SessionReceipt {
-    Create(CreateFleetSessionReply),
+    Create(SessionCreateApplication),
     Bind(BindFleetSessionReply),
     End(EndFleetSessionReply),
 }

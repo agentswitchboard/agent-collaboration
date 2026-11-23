@@ -4,21 +4,9 @@ use crate::contract_artifacts;
 use fleet_identity_protocol::{
     HarnessKind, ListWorkspaceMachines, RemoteLaunch, RemoteLaunchAccess, RemoteLaunchPolicy,
     RemoteStartAdmission, RemoteStartAnswer, RemoteStartOutcome, RemoteStartRefusal,
-    RemoteStartResult, RemoteStartStatus, ReportRemoteStart, RequestRemoteStart,
-    StartRequestedSession, TargetStartRefusal, WorkspaceMachine,
+    RemoteStartResult, RemoteStartStatus, ReportRemoteStart, TargetStartRefusal, WorkspaceMachine,
 };
 use serde_json::json;
-
-#[test]
-fn request_remote_start_wire_contract() {
-    contract_artifacts::assert_contract::<RequestRemoteStart>(
-        "RequestRemoteStart",
-        vec![
-            json!({"requestId":"019a3dce-2000-7000-8000-000000000001","requester":{"endpoint":{"serviceId":"00000000-0000-4000-8000-000000000001","endpointId":"codex-local"},"sessionId":"native/provider:conversation"},"organizationId":"019a3dce-2000-7000-8000-000000000001","workspaceId":"019a3dce-2000-7000-8000-000000000001","target":"019a3dce-2000-7000-8000-000000000002","projectId":"019a3dce-2000-7000-8000-000000000001","launch":{"harness":"codex","workingDirectory":"/work/item-two","requestedPolicy":{"access":"workspace-write"}},"timeoutSeconds":60}),
-        ],
-        false,
-    );
-}
 
 #[test]
 fn remote_launch_wire_contract() {
@@ -86,17 +74,6 @@ fn remote_start_refusal_wire_contract() {
             json!({"kind":"machineNotConnected"}),
             json!({"kind":"requestIdReused"}),
             json!({"kind":"unavailable"}),
-        ],
-        false,
-    );
-}
-
-#[test]
-fn start_requested_session_wire_contract() {
-    contract_artifacts::assert_contract::<StartRequestedSession>(
-        "StartRequestedSession",
-        vec![
-            json!({"requestId":"019a3dce-2000-7000-8000-000000000001","requester":{"endpoint":{"serviceId":"00000000-0000-4000-8000-000000000001","endpointId":"codex-local"},"sessionId":"native/provider:conversation"},"workspaceId":"019a3dce-2000-7000-8000-000000000001","projectId":"019a3dce-2000-7000-8000-000000000001","launch":{"harness":"codex","workingDirectory":"/work/item-two","requestedPolicy":{"access":"workspace-write"}},"deadline":1793448060_i64}),
         ],
         false,
     );

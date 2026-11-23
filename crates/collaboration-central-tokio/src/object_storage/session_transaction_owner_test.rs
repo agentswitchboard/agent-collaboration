@@ -4,7 +4,10 @@ use central_link_call_composition::{
     OrganizationLinkDispatcher, OrganizationSessionTransactions, SessionApplyFailure,
     SessionWiringFault,
 };
-use central_link_protocol::{CentralLinkRpc, session_lifecycle_rpc::CreateFleetSessionRpc};
+use central_link_protocol::{
+    CentralLinkRpc, LinkCallRefusal, TypedCallResult,
+    session_lifecycle_rpc::{BindFleetSessionRpc, CreateFleetSessionRpc},
+};
 use central_storage::{CorruptReason, StoreFailure};
 use collaboration_central_conformance::{
     ConformanceResult as Result,
@@ -13,7 +16,8 @@ use collaboration_central_conformance::{
 };
 use collaboration_central_core::{CentralLinkDispatcher, recheck_lent_link_authority};
 use fleet_identity_protocol::{
-    CreateFleetSession, CreateSessionKind, HarnessKind, OrganizationId, SessionCreator,
+    BindFleetSession, CreateFleetSession, CreateSessionKind, HarnessKind, OrganizationId,
+    SessionCreator, SessionSecret,
 };
 use fleet_runtime::ClockIds;
 use fleet_runtime_ports::{Clock, SyncTime};
@@ -132,20 +136,53 @@ async fn reject_foreign_executor(fixture: &MachineLinkFixture) -> Result<()> {
         Arc::new(ClockIds::new(clock)),
         fill_session_secret,
     );
-    let call = CreateFleetSessionRpc::request(fleet_rpc::Envelope {
-        target: admitted_organization,
+    let create = CreateFleetSessionRpc::request(fleet_rpc::Envelope {
+        target: admitted_organization.clone(),
         body: CreateFleetSession {
             operation_id: "019f0000-0000-7000-8000-0000000053b1".parse()?,
             attempt: 1_u64.try_into()?,
             creator: SessionCreator::RouterOperator {},
             agent_program: HarnessKind::Codex,
             session_kind: CreateSessionKind::Ordinary {},
+            project: fleet_identity_protocol::StartProject::Named {
+                project_ref: fleet_identity_protocol::ProjectRef {
+                    workspace: "019a3dce-2000-7000-8000-000000000004".parse()?,
+                    project: "019a3dce-2000-7000-8000-000000000005"
+                        .to_owned()
+                        .try_into()?,
+                },
+            },
+        },
+    });
+    let create_result = dispatcher
+        .dispatch(
+            &machine,
+            create,
+            collaboration_central_core::TypedCallCarrier::Session,
+        )
+        .await?;
+    assert!(matches!(
+        create_result.result?,
+        TypedCallResult::Refused {
+            reason: LinkCallRefusal::UnknownCall
+        }
+    ));
+    assert!(create_result.committed_delivery.is_none());
+    assert!(create_result.completion.is_none());
+
+    // Bind still borrows through the same checked transaction owner.
+    let bind = BindFleetSessionRpc::request(fleet_rpc::Envelope {
+        target: admitted_organization,
+        body: BindFleetSession {
+            session_id: "019f0000-0000-7000-8000-0000000053b2".parse()?,
+            harness_session_id: "foreign-loan-probe".parse()?,
+            secret: SessionSecret::from_bytes(&[1; 32]),
         },
     });
     let result = dispatcher
         .dispatch(
             &machine,
-            call,
+            bind,
             collaboration_central_core::TypedCallCarrier::Session,
         )
         .await;

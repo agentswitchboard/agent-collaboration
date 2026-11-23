@@ -5,6 +5,7 @@ use fleet_identity_protocol::{
     CreateFleetSessionReply, CreateSessionKind, CreateSessionRefusal, EndFleetSession,
     EndFleetSessionReply, EndSessionTarget, EndedSessionCause, HarnessKind, NewAbandonmentCause,
     NewEndSettlement, PresentedSessionSecret, RouterEndCause, SessionCreator, SessionSettlement,
+    StartProject,
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
@@ -12,35 +13,40 @@ use serde_json::{Value, json};
 const SESSION: &str = "019a3dce-2000-7000-8000-000000000001";
 const OPERATION: &str = "019a3dce-2000-7000-8000-000000000002";
 const MACHINE: &str = "019a3dce-2000-7000-8000-000000000003";
+const WORKSPACE: &str = "019a3dce-2000-7000-8000-000000000004";
+const PROJECT: &str = "019a3dce-2000-7000-8000-000000000005";
 const SECRET: &str = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
 const TIME: &str = "2026-11-22T20:01:02.003Z";
-const DIGEST: &str = "SZwBM9eK4U9QL0d9-wgv_SVQcRUyZXc3HzhJojc6a7c";
+const DIGEST: &str = "cY2WJ4B6gcECZd0T7vYLjgGZJR5nl_po0FG62Oj5U_w";
 
 #[test]
 fn create_requests_cover_both_kinds_and_every_creator_and_presentation() {
-    for (agent_program, creator, session_kind, expected) in [
+    for (agent_program, creator, session_kind, project, expected) in [
         (
             "codex",
             json!({"kind":"routerOperator"}),
             json!({"kind":"ordinary"}),
+            named_project(),
             ("codex", "routerOperator", "ordinary"),
         ),
         (
             "claude",
             json!({"kind":"session","sessionId":SESSION,"presented":{"kind":"secret","secret":SECRET}}),
             json!({"kind":"delegate","parent":SESSION}),
+            json!({"kind":"sameAsParent"}),
             ("claude", "session/secret", "delegate"),
         ),
         (
             "cursor",
             json!({"kind":"session","sessionId":SESSION,"presented":{"kind":"nothing"}}),
             json!({"kind":"ordinary"}),
+            named_project(),
             ("cursor", "session/nothing", "ordinary"),
         ),
     ] {
         let wire = json!({
             "operationId": OPERATION, "attempt": 1, "creator": creator,
-            "agentProgram": agent_program, "sessionKind": session_kind,
+            "agentProgram": agent_program, "sessionKind": session_kind, "project": project,
         });
         let request: CreateFleetSession = assert_case(wire);
         let program = match request.agent_program {
@@ -72,6 +78,14 @@ fn create_requests_cover_both_kinds_and_every_creator_and_presentation() {
             }
         };
         assert_eq!((program, creator, kind), expected);
+        match request.project {
+            StartProject::Named { project_ref } => {
+                assert_ne!(kind, "delegate");
+                assert_eq!(project_ref.project.as_str(), PROJECT);
+                assert_eq!(project_ref.workspace.as_str(), WORKSPACE);
+            }
+            StartProject::SameAsParent {} => assert_eq!(kind, "delegate"),
+        }
         assert_eq!(request.operation_id.as_str(), OPERATION);
         assert_eq!(request.attempt.get(), 1);
     }
@@ -81,7 +95,7 @@ fn create_requests_cover_both_kinds_and_every_creator_and_presentation() {
 fn create_agent_program_accepts_only_its_three_string_spellings() {
     let request = json!({
         "operationId": OPERATION, "attempt": 1, "creator": {"kind":"routerOperator"},
-        "agentProgram": "codex", "sessionKind": {"kind":"ordinary"},
+        "agentProgram": "codex", "sessionKind": {"kind":"ordinary"}, "project": named_project(),
     });
     for spelling in ["codex", "claude", "cursor"] {
         let mut positive = request.clone();
@@ -108,7 +122,7 @@ fn create_agent_program_accepts_only_its_three_string_spellings() {
 fn create_replies_have_every_reservation_admission_and_final_case() {
     for (wire, tag) in [
         (
-            json!({"result":"reserved","sessionId":SESSION,"secret":SECRET,"reservedUntil":TIME}),
+            json!({"result":"reserved","sessionId":SESSION,"secret":SECRET,"reservedUntil":TIME,"workspace":WORKSPACE}),
             "reserved",
         ),
         (json!({"result":"superseded"}), "superseded"),
@@ -128,6 +142,22 @@ fn create_replies_have_every_reservation_admission_and_final_case() {
             json!({"result":"refused","reason":{"kind":"parentNotValid"}}),
             "refused/parentNotValid",
         ),
+        (
+            json!({"result":"refused","reason":{"kind":"projectRequired"}}),
+            "refused/projectRequired",
+        ),
+        (
+            json!({"result":"refused","reason":{"kind":"projectNotInWorkspace"}}),
+            "refused/projectNotInWorkspace",
+        ),
+        (
+            json!({"result":"refused","reason":{"kind":"machineNotAllowed"}}),
+            "refused/machineNotAllowed",
+        ),
+        (
+            json!({"result":"refused","reason":{"kind":"helperOutsideWorkspace"}}),
+            "refused/helperOutsideWorkspace",
+        ),
         (json!({"result":"conflict"}), "conflict"),
         (json!({"result":"noSecret"}), "noSecret"),
         (json!({"result":"noSuchSession"}), "noSuchSession"),
@@ -139,10 +169,12 @@ fn create_replies_have_every_reservation_admission_and_final_case() {
                 session_id,
                 secret,
                 reserved_until,
+                workspace,
             } => {
                 assert_eq!(session_id.as_str(), SESSION);
                 assert_eq!(secret.expose_secret(), SECRET);
                 assert_eq!(reserved_until.as_str(), TIME);
+                assert_eq!(workspace.as_str(), WORKSPACE);
                 "reserved"
             }
             CreateFleetSessionReply::Superseded {} => "superseded",
@@ -162,6 +194,10 @@ fn create_replies_have_every_reservation_admission_and_final_case() {
             CreateFleetSessionReply::Refused { reason } => match reason {
                 CreateSessionRefusal::CreatorNotAllowed {} => "refused/creatorNotAllowed",
                 CreateSessionRefusal::ParentNotValid {} => "refused/parentNotValid",
+                CreateSessionRefusal::ProjectRequired {} => "refused/projectRequired",
+                CreateSessionRefusal::ProjectNotInWorkspace {} => "refused/projectNotInWorkspace",
+                CreateSessionRefusal::MachineNotAllowed {} => "refused/machineNotAllowed",
+                CreateSessionRefusal::HelperOutsideWorkspace {} => "refused/helperOutsideWorkspace",
             },
             CreateFleetSessionReply::Conflict {} => "conflict",
             CreateFleetSessionReply::NoSecret {} => "noSecret",
@@ -383,6 +419,10 @@ fn settlement_case(settlement: SessionSettlement) -> (&'static str, &'static str
     }
 }
 
+fn named_project() -> Value {
+    json!({"kind":"named","projectRef":{"workspace":WORKSPACE,"project":PROJECT}})
+}
+
 fn address() -> Value {
     json!({"machineId": MACHINE, "sessionId":"harness/thread"})
 }
@@ -473,12 +513,12 @@ fn permute(values: &mut [Value], index: usize, visit: &mut impl FnMut(&[Value]))
 fn create_canonical_contents_and_sha256_url_match_fixed_vectors() {
     let operator: CreateFleetSession = serde_json::from_value(json!({
         "operationId": OPERATION, "attempt": 1, "creator": {"kind":"routerOperator"},
-        "agentProgram":"codex", "sessionKind":{"kind":"ordinary"},
+        "agentProgram":"codex", "sessionKind":{"kind":"ordinary"}, "project":named_project(),
     }))
     .unwrap();
     assert_eq!(
         operator.canonical_contents().unwrap(),
-        br#"{"agentProgram":"codex","creatorActorId":null,"creatorKind":"routerOperator","kind":"ordinary","parentActorId":null}"#,
+        br#"{"agentProgram":"codex","creatorActorId":null,"creatorKind":"routerOperator","kind":"ordinary","parentActorId":null,"project":{"kind":"named","projectRef":{"project":"019a3dce-2000-7000-8000-000000000005","workspace":"019a3dce-2000-7000-8000-000000000004"}}}"#,
     );
     assert_eq!(operator.contents_digest().unwrap().as_str(), DIGEST);
 
@@ -486,16 +526,34 @@ fn create_canonical_contents_and_sha256_url_match_fixed_vectors() {
         "operationId": OPERATION, "attempt": 1,
         "creator": {"kind":"session","sessionId":SESSION,"presented":{"kind":"secret","secret":SECRET}},
         "agentProgram":"claude", "sessionKind":{"kind":"delegate","parent":SESSION},
+        "project":{"kind":"sameAsParent"},
     });
     let original: CreateFleetSession = serde_json::from_value(delegate.clone()).unwrap();
     assert_eq!(
         original.canonical_contents().unwrap(),
-        br#"{"agentProgram":"claude","creatorActorId":"019a3dce-2000-7000-8000-000000000001","creatorKind":"session","kind":"delegate","parentActorId":"019a3dce-2000-7000-8000-000000000001"}"#,
+        br#"{"agentProgram":"claude","creatorActorId":"019a3dce-2000-7000-8000-000000000001","creatorKind":"session","kind":"delegate","parentActorId":"019a3dce-2000-7000-8000-000000000001","project":{"kind":"sameAsParent"}}"#,
     );
     assert_eq!(
         original.contents_digest().unwrap().as_str(),
-        "WkCh-wOhVKr75qE4biFMyL8hcPP9-_Pja7paizIC-N8"
+        "ut9zWSMkRdKCfTjN8zFtGLYCd0_Aych5rOGfzk1UGSw"
     );
+
+    let mut named_delegate = delegate.clone();
+    named_delegate["project"] = named_project();
+    let named: CreateFleetSession = serde_json::from_value(named_delegate.clone()).unwrap();
+    assert_ne!(
+        named.contents_digest().unwrap(),
+        original.contents_digest().unwrap()
+    );
+    for (field, different_id) in [("workspace", MACHINE), ("project", SESSION)] {
+        let mut changed = named_delegate.clone();
+        changed["project"]["projectRef"][field] = json!(different_id);
+        let changed: CreateFleetSession = serde_json::from_value(changed).unwrap();
+        assert_ne!(
+            named.contents_digest().unwrap(),
+            changed.contents_digest().unwrap()
+        );
+    }
 
     let mut repeat = delegate;
     repeat["attempt"] = json!(2);
@@ -506,4 +564,25 @@ fn create_canonical_contents_and_sha256_url_match_fixed_vectors() {
         retried.contents_digest().unwrap(),
         original.contents_digest().unwrap()
     );
+}
+
+#[test]
+fn create_rejects_a_request_without_a_project() {
+    assert_rejected::<CreateFleetSession>(&json!({
+        "operationId": OPERATION,
+        "attempt": 1,
+        "creator": {"kind":"routerOperator"},
+        "agentProgram": "codex",
+        "sessionKind": {"kind":"ordinary"},
+    }));
+}
+
+#[test]
+fn create_reserved_rejects_a_reply_without_a_workspace() {
+    assert_rejected::<CreateFleetSessionReply>(&json!({
+        "result":"reserved",
+        "sessionId":SESSION,
+        "secret":SECRET,
+        "reservedUntil":TIME,
+    }));
 }

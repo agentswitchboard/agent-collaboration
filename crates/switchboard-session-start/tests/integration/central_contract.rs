@@ -68,6 +68,7 @@ impl CentralFixture {
         };
         self.reservation = Some((digest, request.attempt, next.clone()));
         CreateFleetSessionReply::Reserved {
+            workspace: fixtures::workspace_id(),
             session_id: fixtures::central_id(),
             secret: next,
             reserved_until: fixtures::time(),
@@ -293,6 +294,7 @@ fn central_rotates_the_attempt_secret_and_replays_the_same_active_bind() {
         session_id,
         secret,
         reserved_until,
+        workspace,
     } = first_reply
     else {
         panic!("reservation expected")
@@ -319,12 +321,14 @@ fn central_rotates_the_attempt_secret_and_replays_the_same_active_bind() {
         session_id: later_id,
         reserved_until: later_until,
         secret: later_secret,
+        workspace: later_workspace,
     } = &rotated
     else {
         panic!("rotated issue expected")
     };
     assert_eq!(*later_id, session_id);
     assert_eq!(*later_until, reserved_until);
+    assert_eq!(*later_workspace, workspace);
     assert_ne!(*later_secret, secret);
     assert_eq!(
         central.create(&first),

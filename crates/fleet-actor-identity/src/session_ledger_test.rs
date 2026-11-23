@@ -135,14 +135,20 @@ impl Ledger {
                     .reservation()
                     .is_some_and(|saved| saved.content != content)
                 {
-                    return SessionReceipt::Create(Reply::Conflict {});
+                    return SessionReceipt::Create(SessionCreateApplication::ExistingOrRefused(
+                        Reply::Conflict {},
+                    ));
                 }
                 let reply = match effective {
-                    Self::Active(_, address, _) => Reply::Active {
-                        session_id: session_identity(),
-                        address: address.reference(),
-                    },
-                    Self::Reserved(saved) if attempt <= saved.attempt => Reply::Superseded {},
+                    Self::Active(_, address, _) => {
+                        SessionCreateApplication::ExistingOrRefused(Reply::Active {
+                            session_id: session_identity(),
+                            address: address.reference(),
+                        })
+                    }
+                    Self::Reserved(saved) if attempt <= saved.attempt => {
+                        SessionCreateApplication::ExistingOrRefused(Reply::Superseded {})
+                    }
                     Self::Missing | Self::Reserved(_) => {
                         let deadline = self.reservation().map_or(now + 8, |saved| saved.deadline);
                         *self = Self::Reserved(Reservation {
@@ -150,7 +156,7 @@ impl Ledger {
                             deadline,
                             content,
                         });
-                        Reply::Reserved {
+                        SessionCreateApplication::Reserved {
                             session_id: session_identity(),
                             secret: SessionSecret::from_bytes(&[attempt; 32]),
                             reserved_until: timestamp(deadline),
@@ -159,17 +165,19 @@ impl Ledger {
                     Self::Abandoned(..) | Self::Ended(..) => {
                         let settlement = effective.settlement().unwrap();
                         *self = effective;
-                        Reply::Settled { settlement }
+                        SessionCreateApplication::ExistingOrRefused(Reply::Settled { settlement })
                     }
                 };
                 SessionReceipt::Create(reply)
             }
-            Action::RefusedCreator => SessionReceipt::Create(CreateFleetSessionReply::NoSecret {}),
-            Action::DeniedParent if matches!(self, Self::Missing) => {
-                SessionReceipt::Create(CreateFleetSessionReply::Refused {
+            Action::RefusedCreator => SessionReceipt::Create(
+                SessionCreateApplication::ExistingOrRefused(CreateFleetSessionReply::NoSecret {}),
+            ),
+            Action::DeniedParent if matches!(self, Self::Missing) => SessionReceipt::Create(
+                SessionCreateApplication::ExistingOrRefused(CreateFleetSessionReply::Refused {
                     reason: CreateSessionRefusal::ParentNotValid {},
-                })
-            }
+                }),
+            ),
             Action::DeniedParent => self.apply(
                 Action::Create {
                     attempt: 1,

@@ -418,6 +418,7 @@ fn checked_contradiction_keeps_observed_reservation_and_no_credential() {
     let (result, pending) = checked_create(
         request,
         CreateFleetSessionReply::Reserved {
+            workspace: fixtures::workspace_id(),
             session_id: fixtures::central_id(),
             reserved_until: fixtures::time(),
             secret: fixtures::secret(89),

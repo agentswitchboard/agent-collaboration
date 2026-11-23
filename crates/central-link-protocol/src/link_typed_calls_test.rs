@@ -231,7 +231,7 @@ fn registered_service_call_and_reply_frames_keep_closed_concrete_schemas() {
             "createFleetSession",
             &session_service,
             json!({"operationId":CORRELATION,"attempt":1,"creator":{"kind":"routerOperator"},
-                   "agentProgram":"codex","sessionKind":{"kind":"ordinary"}}),
+                   "agentProgram":"codex","sessionKind":{"kind":"ordinary"}, "project":{"kind":"named","projectRef":{"workspace":"019a3dce-2000-7000-8000-000000000004","project":"019a3dce-2000-7000-8000-000000000005"}}}),
             json!({"result":"superseded"}),
         ),
         (

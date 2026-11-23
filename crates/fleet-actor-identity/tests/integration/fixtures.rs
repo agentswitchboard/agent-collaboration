@@ -6,14 +6,14 @@ use std::{
 
 use central_engine_model::{Context, EngineTime, IdSource};
 use fleet_actor_identity::{
-    AuthenticatedSession, SessionAvailability, SessionCallOutcome, SessionLookupScope,
-    SessionSecretSource, SessionService, SessionServiceError,
+    AuthenticatedSession, SessionAvailability, SessionCallOutcome, SessionCreateApplication,
+    SessionLookupScope, SessionSecretSource, SessionService, SessionServiceError,
 };
 use fleet_contracts::{ClientId, MachineConnectionAttachment};
 use fleet_identity_protocol::{
-    BindFleetSession, BindFleetSessionReply, CreateFleetSession, CreateFleetSessionReply,
-    CreateSessionKind, EndFleetSession, EndFleetSessionReply, EnrollmentId, HarnessKind,
-    OrganizationId, PresentedSessionSecret, SessionCreator, SessionSecret, UnixSeconds,
+    BindFleetSession, BindFleetSessionReply, CreateFleetSession, CreateSessionKind,
+    EndFleetSession, EndFleetSessionReply, EnrollmentId, HarnessKind, OrganizationId,
+    PresentedSessionSecret, SessionCreator, SessionSecret, UnixSeconds,
 };
 use fleet_lent_transaction::{CentralTransaction, OrganizationTransaction};
 use fleet_machine_login::link_authority::{ValidatedMachineConnection, restore_fixture_link};
@@ -89,7 +89,7 @@ pub enum Operation {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Receipt {
-    Create(SessionCallOutcome<CreateFleetSessionReply>),
+    Create(SessionCallOutcome<SessionCreateApplication>),
     Bind(SessionCallOutcome<BindFleetSessionReply>),
     End(SessionCallOutcome<EndFleetSessionReply>),
 }
@@ -386,11 +386,20 @@ pub fn create(operation: u16, attempt: u64) -> CreateFleetSession {
         creator: SessionCreator::RouterOperator {},
         agent_program: HarnessKind::Codex,
         session_kind: CreateSessionKind::Ordinary {},
+        project: fleet_identity_protocol::StartProject::Named {
+            project_ref: fleet_identity_protocol::ProjectRef {
+                workspace: "019a3dce-2000-7000-8000-000000000004".parse().unwrap(),
+                project: "019a3dce-2000-7000-8000-000000000005"
+                    .to_owned()
+                    .try_into()
+                    .unwrap(),
+            },
+        },
     }
 }
 
 pub fn reservation(receipt: Receipt) -> (workspace_ids::CentralSessionId, SessionSecret) {
-    let Receipt::Create(SessionCallOutcome::Answered(CreateFleetSessionReply::Reserved {
+    let Receipt::Create(SessionCallOutcome::Answered(SessionCreateApplication::Reserved {
         session_id,
         secret,
         ..

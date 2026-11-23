@@ -73,6 +73,7 @@ macro_rules! workspace_identifiers {
 }
 
 workspace_identifiers!(
+    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
     WorkspaceId,
     RequestId,
     /// The Router install's durable identity, shared with central.

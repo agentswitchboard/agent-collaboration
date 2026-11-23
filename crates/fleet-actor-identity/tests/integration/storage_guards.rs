@@ -1,5 +1,6 @@
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use central_storage::StoreFailure;
+use fleet_actor_identity::SessionCreateApplication;
 use fleet_actor_identity::{SessionCallOutcome, SessionServiceError};
 use fleet_identity_protocol::{
     BindFleetSession, BindFleetSessionReply, CreateFleetSessionReply, CreateSessionKind,
@@ -37,7 +38,7 @@ async fn replies_without_a_new_secret_survive_entropy_failure() {
             .await
             .unwrap(),
         Receipt::Create(SessionCallOutcome::Answered(
-            CreateFleetSessionReply::Superseded {}
+            SessionCreateApplication::ExistingOrRefused(CreateFleetSessionReply::Superseded {})
         )),
     );
     assert!(matches!(
@@ -62,9 +63,9 @@ async fn replies_without_a_new_secret_survive_entropy_failure() {
     ));
     assert!(matches!(
         store.apply(Operation::Create(create(5, 2)), 4).await.unwrap(),
-        Receipt::Create(SessionCallOutcome::Answered(CreateFleetSessionReply::Active {
+        Receipt::Create(SessionCallOutcome::Answered(SessionCreateApplication::ExistingOrRefused(CreateFleetSessionReply::Active {
             session_id: active, ..
-        })) if active == session_id,
+        }))) if active == session_id,
     ));
 }
 
