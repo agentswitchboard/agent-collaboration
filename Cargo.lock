@@ -1259,6 +1259,7 @@ dependencies = [
  "sha2 0.10.9",
  "sqlx",
  "state-machine-core",
+ "switchboard-message-custody",
  "switchboard-session-events",
  "switchboard-session-store",
  "tempfile",
@@ -1269,6 +1270,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "workspace-ids",
 ]
 
 [[package]]
