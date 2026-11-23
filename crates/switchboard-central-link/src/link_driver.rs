@@ -13,18 +13,17 @@ use central_link_protocol::{
     DataFrame, FrameDirection, LinkFrame, MachineLinkCloseCode, TokenRenewalResult, decode_text,
     encode_text,
 };
-use futures_util::{FutureExt, Sink, SinkExt, StreamExt};
+use futures_util::{FutureExt, Sink, SinkExt, Stream, StreamExt, future::select};
 use router_clock::{ClockInstant, RuntimeClock};
 use state_machine_core::StateMachine;
 use tokio::sync::{mpsc, watch};
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{Error as WebSocketError, Message};
 use workspace_ids::MachineId;
 
 use crate::{
     AddressError, DialAddress,
-    lease_source::{LeaseFailure, LeaseFuture, LeaseSource},
+    lease_source::{LeaseFailure, LeaseFuture, LeaseSource, LinkLease},
     link_policy::{DialFailure, LinkEffect, LinkInput, LinkPolicy, LinkState, LinkStatus},
-    socket_upgrade::Socket,
 };
 
 const WRITE_LIMIT: Duration = Duration::from_secs(5);
@@ -102,6 +101,12 @@ enum OpenExit<Binding> {
         binding: Binding,
         cause: central_link_client::EnrollmentEnd,
     },
+}
+
+enum SocketInput<Binding> {
+    Timer,
+    Frame(Option<Result<Message, WebSocketError>>),
+    Lease(Result<LinkLease<Binding>, LeaseFailure>),
 }
 
 impl<Binding, Source> LinkDriver<Binding, Source>
@@ -369,7 +374,7 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
 
     async fn open_socket(
         &mut self,
-        socket: &mut Socket,
+        socket: &mut (impl Stream<Item = Result<Message, WebSocketError>> + Sink<Message> + Unpin),
         attempt: &ConnectionAttempt,
         binding: &Binding,
         started: ClockInstant,
@@ -377,6 +382,7 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
     ) -> Result<(), Interrupted> {
         let mut acquiring: Option<LeaseFuture<'_, Binding>> = None;
         let mut renewal_sent_at = None;
+        let mut poll_lease_first = false;
         loop {
             let now = self.clock.monotonic_now();
             let effects = self.apply(LinkInput::Tick { now }).unwrap_or_default();
@@ -423,30 +429,27 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
                 .into_iter()
                 .chain(self.state.next_deadline())
                 .min();
-            enum Input<Binding> {
-                Timer,
-                Frame(Option<Result<Message, tokio_tungstenite::tungstenite::Error>>),
-                Lease(Result<crate::lease_source::LinkLease<Binding>, LeaseFailure>),
-            }
             let input = control
                 .during(async {
                     tokio::select! {
                         biased;
-                        () = sleep_if_due(self.clock, deadline) => Input::Timer,
-                        frame = socket.next() => Input::Frame(frame),
-                        lease = acquire_if_pending(&mut acquiring) => Input::Lease(lease),
+                        () = sleep_if_due(self.clock, deadline) => SocketInput::Timer,
+                        input = next_socket_input(socket, &mut acquiring, poll_lease_first) => input,
                     }
                 })
                 .await?;
+            // After each read, give an in-flight lease a poll before another ready frame.
+            // A Close already read below ends the attempt before either lane can run again.
+            poll_lease_first = matches!(&input, SocketInput::Frame(_));
             match input {
-                Input::Timer => {}
-                Input::Frame(Some(Ok(Message::Close(frame)))) => {
+                SocketInput::Timer => {}
+                SocketInput::Frame(Some(Ok(Message::Close(frame)))) => {
                     let code = frame
                         .and_then(|frame| MachineLinkCloseCode::from_code(u16::from(frame.code)));
                     self.close(attempt, code);
                     return Ok(());
                 }
-                Input::Frame(Some(Ok(Message::Text(text)))) => {
+                SocketInput::Frame(Some(Ok(Message::Text(text)))) => {
                     let Ok(event) = decode_text(text.as_str(), FrameDirection::ToRouter)
                         .map_err(|_| ())
                         .and_then(|frame| self.client.receive(attempt, frame).map_err(|_| ()))
@@ -459,12 +462,12 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
                         return Ok(());
                     }
                 }
-                Input::Frame(Some(Ok(Message::Ping(_) | Message::Pong(_)))) => {}
-                Input::Frame(Some(Ok(_)) | Some(Err(_)) | None) => {
+                SocketInput::Frame(Some(Ok(Message::Ping(_) | Message::Pong(_)))) => {}
+                SocketInput::Frame(Some(Ok(_)) | Some(Err(_)) | None) => {
                     self.close(attempt, None);
                     return Ok(());
                 }
-                Input::Lease(result) => {
+                SocketInput::Lease(result) => {
                     acquiring = None;
                     match result {
                         Ok(lease) => {
@@ -620,6 +623,20 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
                 }
             })
             .await
+    }
+}
+
+async fn next_socket_input<Binding>(
+    socket: &mut (impl Stream<Item = Result<Message, WebSocketError>> + Unpin),
+    acquisition: &mut Option<LeaseFuture<'_, Binding>>,
+    poll_lease_first: bool,
+) -> SocketInput<Binding> {
+    let reading = std::pin::pin!(socket.next().map(SocketInput::Frame));
+    let leasing = std::pin::pin!(acquire_if_pending(acquisition).map(SocketInput::Lease));
+    if poll_lease_first {
+        select(leasing, reading).await.factor_first().0
+    } else {
+        select(reading, leasing).await.factor_first().0
     }
 }
 

@@ -21,6 +21,9 @@ use crate::{
     link_policy::{LeaseVersion, LinkState, LinkStatus},
 };
 
+#[path = "renewal_lane_test.rs"]
+mod renewal_lane;
+
 struct NoLeaseSource;
 
 impl LeaseSource<u8> for NoLeaseSource {
@@ -52,7 +55,10 @@ impl HeartbeatFixture {
         }
     }
 
-    fn welcomed_driver(&self) -> (BindingDriver<'_, u8, NoLeaseSource>, ConnectionAttempt) {
+    fn welcomed_driver<'fixture, Source>(
+        &'fixture self,
+        lease_source: &'fixture Source,
+    ) -> (BindingDriver<'fixture, u8, Source>, ConnectionAttempt) {
         let mut client = LinkClient::new(self.machine.clone(), self.clock.clone());
         let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
             panic!("first connection should be due");
@@ -70,7 +76,7 @@ impl HeartbeatFixture {
             .unwrap();
         (
             BindingDriver {
-                lease_source: &NoLeaseSource,
+                lease_source,
                 clock: self.clock.as_ref(),
                 status: &self.status,
                 inbox: &self.inbox,
@@ -99,7 +105,7 @@ fn elapsed_tick(seconds: u64) -> ClockInstant {
 #[tokio::test]
 async fn both_heartbeat_windows_start_at_their_completed_writes() {
     let fixture = HeartbeatFixture::new();
-    let (mut driver, attempt) = fixture.welcomed_driver();
+    let (mut driver, attempt) = fixture.welcomed_driver(&NoLeaseSource);
     let (_settings_sender, mut settings) = watch::channel(test_settings());
     let (_shutdown_sender, mut shutdown) = watch::channel(false);
     let mut control = Control {
@@ -149,7 +155,7 @@ async fn both_heartbeat_windows_start_at_their_completed_writes() {
 #[tokio::test]
 async fn refused_heartbeat_write_retries_without_a_probe_window() {
     let fixture = HeartbeatFixture::new();
-    let (mut driver, attempt) = fixture.welcomed_driver();
+    let (mut driver, attempt) = fixture.welcomed_driver(&NoLeaseSource);
     let (_settings_sender, mut settings) = watch::channel(test_settings());
     let (_shutdown_sender, mut shutdown) = watch::channel(false);
     let mut control = Control {
@@ -177,7 +183,7 @@ async fn refused_heartbeat_write_retries_without_a_probe_window() {
 #[tokio::test]
 async fn shutdown_with_a_pending_heartbeat_leaves_no_probe_window() {
     let fixture = HeartbeatFixture::new();
-    let (mut driver, attempt) = fixture.welcomed_driver();
+    let (mut driver, attempt) = fixture.welcomed_driver(&NoLeaseSource);
     let (_settings_sender, mut settings) = watch::channel(test_settings());
     let (shutdown_sender, mut shutdown) = watch::channel(false);
     let mut control = Control {
