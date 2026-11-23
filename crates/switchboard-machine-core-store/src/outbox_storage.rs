@@ -49,14 +49,14 @@ pub trait OutboxStorage: Send {
     fn earliest_waiting(&mut self) -> OutboxFuture<'_, StoreScan<Option<i64>>>;
     /// The earliest expiry among waiting writes, even when the link is down.
     fn earliest_deadline(&mut self) -> OutboxFuture<'_, StoreScan<Option<i64>>>;
-    /// Up to `limit` writes due by `mark` and before their deadline, oldest
-    /// first by (created_at, request_id), moved to sent in one transaction
-    /// that first ends every overdue waiting write (outbox_deadline).
+    /// Claims up to `limit` due writes with deadlines strictly after
+    /// `required_deadline_after_ms`, and ends waiting writes due for expiry at `now_ms`.
     fn claim_next_batch(
         &mut self,
-        mark: i64,
+        mark_ms: i64,
         limit: u16,
-        now: i64,
+        now_ms: i64,
+        required_deadline_after_ms: i64,
     ) -> OutboxFuture<'_, StoreScan<ClaimedBatch>>;
     /// Ends every waiting write past its deadline.
     fn end_overdue(&mut self, now: i64) -> OutboxFuture<'_, StoreScan<Vec<EndedWrite>>>;
@@ -178,13 +178,14 @@ impl OutboxStorage for MachineLocalOutbox {
     }
     fn claim_next_batch(
         &mut self,
-        mark: i64,
+        mark_ms: i64,
         limit: u16,
-        now: i64,
+        now_ms: i64,
+        required_deadline_after_ms: i64,
     ) -> OutboxFuture<'_, StoreScan<ClaimedBatch>> {
         Box::pin(async move {
             MacOutbox::new(&mut self.store)
-                .claim_next_batch(mark, limit, now)
+                .claim_next_batch(mark_ms, limit, now_ms, required_deadline_after_ms)
                 .await
         })
     }
