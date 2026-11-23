@@ -364,7 +364,7 @@ fn dial_retries_busy_and_lost_connections_but_holds_a_bad_address(case: hegel::T
 }
 
 #[test]
-fn expired_close_refreshes_while_an_authoritative_renewal_end_is_final() {
+fn expired_close_refreshes_and_renewal_refusal_keeps_the_confirmed_deadline() {
     let (attempt, second) = attempt_pair();
     let mut state = waiting();
     dial(&mut state, &attempt, lease(4), 0);
@@ -425,17 +425,25 @@ fn expired_close_refreshes_while_an_authoritative_renewal_end_is_final() {
         apply(
             &mut state,
             Input::RenewalRefused {
-                attempt: second,
+                attempt: second.clone(),
                 correlation_id,
                 reason: TokenRenewalRefusal::ConnectionEnrollmentEnded,
             }
         ),
-        [Effect::EndEnrollment {
-            binding: 1,
-            cause: EnrollmentEnd::ConnectionEnrollmentEnded
-        }]
+        []
     );
-    assert!(apply(&mut state, Input::Tick { now: at(200) }).is_empty());
+    assert_eq!(state.next_deadline(), Some(at(120)));
+    assert!(apply(&mut state, Input::Tick { now: at(119) }).is_empty());
+    assert_eq!(
+        apply(&mut state, Input::Tick { now: at(120) }),
+        [
+            Effect::BackOff { attempt: second },
+            Effect::NeedLease {
+                binding: 1,
+                newer_than: Some(LeaseVersion(6))
+            }
+        ]
+    );
 }
 
 #[test]

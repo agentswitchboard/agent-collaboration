@@ -33,9 +33,11 @@ use tokio_tungstenite::{
 use workspace_ids::MachineId;
 
 mod credential_diagnostics;
+mod renewal_endings;
 
 const TOKEN: &str = "fictional-fixture-access-token.0.signature";
 const REFRESHED: &str = "fictional-fixture-access-token.1.signature";
+const DELIVER_FRAME: &str = r#"{"kind":"deliver","timeLeft":1,"sender":{"kind":"central"},"message":{"messageId":"01890f2e-7b4c-7cc0-98c4-000000000009","sender":{"kind":"central"},"target":{"machineId":"01890f2e-7b4c-7cc0-98c4-000000000002","sessionId":"s"},"body":{"kind":"direct","body":"hello","delivery":"auto","replyTo":null},"state":{"kind":"queued"},"source":null}}"#;
 
 fn machine() -> MachineId {
     "01890f2e-7b4c-7cc0-98c4-000000000002".parse().unwrap()
@@ -227,7 +229,10 @@ async fn renewal_extends_the_same_socket_without_disclosing_credentials() {
     });
     let result = central_link_protocol::encode_text(&answer, FrameDirection::ToRouter).unwrap();
     socket.send(Message::Text(result.into())).await.unwrap();
-    socket.send(Message::Text(r#"{"kind":"deliver","timeLeft":1,"sender":{"kind":"central"},"message":{"messageId":"01890f2e-7b4c-7cc0-98c4-000000000009","sender":{"kind":"central"},"target":{"machineId":"01890f2e-7b4c-7cc0-98c4-000000000002","sessionId":"s"},"body":{"kind":"direct","body":"hello","delivery":"auto","replyTo":null},"state":{"kind":"queued"},"source":null}}"#.into())).await.unwrap();
+    socket
+        .send(Message::Text(DELIVER_FRAME.into()))
+        .await
+        .unwrap();
     tokio::select! {
         event = fixture.inbox_events.recv() => assert!(matches!(event, Some(central_link_client::ClientEvent::Deliver { .. }))),
         status = fixture.status.wait_for(|status| !matches!(status, LinkStatus::Welcomed { .. })) =>

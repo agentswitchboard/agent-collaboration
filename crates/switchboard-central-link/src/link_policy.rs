@@ -585,15 +585,18 @@ impl<Binding: Clone + Eq> StateMachine for LinkPolicy<Binding> {
                 reason,
             } => {
                 next.check_renewal(&attempt, &correlation_id)?;
-                if reason == TokenRenewalRefusal::ConnectionEnrollmentEnded {
-                    let binding = state.binding().ok_or(TransitionError::Stale)?.clone();
-                    next.end(
-                        binding,
-                        EnrollmentEnd::ConnectionEnrollmentEnded,
-                        &mut effects,
-                    );
-                } else if let LinkPhase::Welcomed { renewal, .. } = &mut next.phase {
-                    *renewal = Renewal::Refused;
+                let LinkPhase::Welcomed { renewal, .. } = &mut next.phase else {
+                    return Err(TransitionError::Stale);
+                };
+                match reason {
+                    TokenRenewalRefusal::TokenRejected
+                    | TokenRenewalRefusal::PresentedEnrollmentNotActive
+                    | TokenRenewalRefusal::ConnectionEnrollmentEnded
+                    | TokenRenewalRefusal::DifferentMachine
+                    | TokenRenewalRefusal::DifferentEnrollment
+                    | TokenRenewalRefusal::CentralUnavailable => {
+                        *renewal = Renewal::Refused;
+                    }
                 }
             }
             LinkInput::RenewalUnavailable { attempt } => {
@@ -713,7 +716,6 @@ const LINK_TRANSITIONS: &[Transition] = &[
     transition("welcomed", "renewal_accepted", "welcomed"),
     transition("welcomed", "renewal_accepted", "waiting"),
     transition("welcomed", "renewal_refused", "welcomed"),
-    transition("welcomed", "renewal_refused", "enrollment_ended"),
     transition("welcomed", "renewal_unavailable", "welcomed"),
     transition("dialing", "socket_closed", "waiting"),
     transition("dialing", "socket_closed", "enrollment_ended"),
