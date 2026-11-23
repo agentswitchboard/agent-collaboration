@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT actor_id FROM actor_sessions WHERE machine_id=? AND harness_session_id=?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "actor_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_sessions",
+            "name": "actor_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "889cf75c910ff8e705a3272d27457384e81ef910e1aac533e5998b7c72631213"
+}
