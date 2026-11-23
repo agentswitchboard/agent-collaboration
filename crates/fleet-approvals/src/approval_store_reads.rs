@@ -174,7 +174,6 @@ pub(crate) async fn read_holder_request(
 }
 
 #[cfg(feature = "test-support")]
-
 pub(crate) async fn read_people_approval_request(
     transaction: &mut impl ApprovalStoreTransaction,
     organization: &OrganizationId,
@@ -191,7 +190,6 @@ pub(crate) async fn read_people_approval_request(
 }
 
 #[cfg(feature = "test-support")]
-
 pub(crate) async fn read_parent_approval_request(
     transaction: &mut impl ApprovalStoreTransaction,
     organization: &OrganizationId,
@@ -305,7 +303,6 @@ pub(crate) async fn read_waiting_approval_session_rows(
 }
 
 #[cfg(feature = "test-support")]
-
 pub(crate) async fn read_person_approval_page(
     transaction: &mut impl ApprovalStoreTransaction,
     organization: &OrganizationId,

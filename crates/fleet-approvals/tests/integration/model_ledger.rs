@@ -504,10 +504,14 @@ impl Ledger {
                     self.rows[row].ending = Some((ending, at, delivery));
                 }
             }
-            authority @ (Step::Register(_)
-            | Step::EndSession { .. }
-            | Step::EndEnrollment(_)
-            | Step::ReplaceEnrollment) => self.apply_authority(authority, sampled, &mut effects),
+            Step::Register(run) => self.register_run(run, sampled, &mut effects),
+            Step::EndSession { enrollment, parent } => {
+                self.end_session(enrollment, parent, sampled, &mut effects)
+            }
+            Step::EndEnrollment(enrollment) => {
+                self.end_enrollment(enrollment, sampled, &mut effects)
+            }
+            Step::ReplaceEnrollment => self.replace_enrollment(sampled, &mut effects),
         }
         Ok(effects)
     }

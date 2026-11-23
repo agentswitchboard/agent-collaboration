@@ -102,6 +102,7 @@ test("Workerd suppresses corruption of a hidden target for Read, Decide and Pass
     const personDecide = personDecision(request.requestId, uuid(5703), 1);
     const foreignSessionDecide = {
       ...personDecide,
+      kind: "decide",
       actor: { kind: "session", session: unrelatedSession },
     };
     const foreignPassOn = {

@@ -4,7 +4,6 @@ import { z } from "zod";
 import {
   ApprovalWorkerdHost,
   assertRollbackAtEachWrite,
-  committedResult,
   holder,
   hourMs,
   initializeApprovals,

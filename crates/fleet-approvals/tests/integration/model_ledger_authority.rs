@@ -56,7 +56,7 @@ impl Ledger {
         }
     }
 
-    fn end_enrollment(
+    pub(super) fn end_enrollment(
         &mut self,
         enrollment: usize,
         sampled: i64,
@@ -76,80 +76,72 @@ impl Ledger {
         );
     }
 
-    pub(super) fn apply_authority(
+    pub(super) fn register_run(
         &mut self,
-        step: Step,
+        run: usize,
         sampled: i64,
         effects: &mut Vec<OperationEffect>,
     ) {
-        match step {
-            Step::Register(run) => {
-                let response = if let Some(refusal) = self.enrollment_refusal(RUN_ENROLLMENTS[run])
-                {
-                    match refusal {
-                        RunRefusal::EnrollmentEnded {} => RegisterRunReply::EnrollmentEnded {},
-                        RunRefusal::RunNotRegistered {} => RegisterRunReply::RunNotRegistered {},
-                        RunRefusal::RunRetired {} => RegisterRunReply::RunRetired {},
-                    }
-                } else if self.retired.contains(&run) {
-                    RegisterRunReply::RunRetired {}
-                } else {
-                    if let Some(previous) = self
-                        .registered
-                        .replace(run)
-                        .filter(|previous| *previous != run)
+        let response = if let Some(refusal) = self.enrollment_refusal(RUN_ENROLLMENTS[run]) {
+            match refusal {
+                RunRefusal::EnrollmentEnded {} => RegisterRunReply::EnrollmentEnded {},
+                RunRefusal::RunNotRegistered {} => RegisterRunReply::RunNotRegistered {},
+                RunRefusal::RunRetired {} => RegisterRunReply::RunRetired {},
+            }
+        } else if self.retired.contains(&run) {
+            RegisterRunReply::RunRetired {}
+        } else {
+            if let Some(previous) = self
+                .registered
+                .replace(run)
+                .filter(|previous| *previous != run)
+            {
+                self.retired.insert(previous);
+                self.close_deliveries(
+                    |candidate| candidate == previous,
+                    Ending::RequesterGone,
+                    sampled,
+                    effects,
+                );
+            }
+            RegisterRunReply::Registered {}
+        };
+        effects.push(OperationEffect::Registered(response));
+    }
+
+    pub(super) fn end_session(
+        &mut self,
+        enrollment: usize,
+        parent: bool,
+        sampled: i64,
+        effects: &mut Vec<OperationEffect>,
+    ) {
+        if self.active_enrollment == Some(enrollment) {
+            if parent {
+                self.ended_parents.insert(enrollment);
+            } else if self.ended_requesters.insert(enrollment) {
+                for (row, scope) in ROWS.iter().enumerate() {
+                    if !scope.parked
+                        && RUN_ENROLLMENTS[scope.run] == enrollment
+                        && self.rows[row].waiting()
                     {
-                        self.retired.insert(previous);
-                        self.close_deliveries(
-                            |candidate| candidate == previous,
-                            Ending::RequesterGone,
+                        self.finish(
+                            row,
+                            Ending::SessionEnded,
+                            Delivery::Unpaid,
                             sampled,
                             effects,
                         );
                     }
-                    RegisterRunReply::Registered {}
-                };
-                effects.push(OperationEffect::Registered(response));
-            }
-            Step::EndSession { enrollment, parent } => {
-                if self.active_enrollment == Some(enrollment) {
-                    if parent {
-                        self.ended_parents.insert(enrollment);
-                    } else if self.ended_requesters.insert(enrollment) {
-                        for (row, scope) in ROWS.iter().enumerate() {
-                            if !scope.parked
-                                && RUN_ENROLLMENTS[scope.run] == enrollment
-                                && self.rows[row].waiting()
-                            {
-                                self.finish(
-                                    row,
-                                    Ending::SessionEnded,
-                                    Delivery::Unpaid,
-                                    sampled,
-                                    effects,
-                                );
-                            }
-                        }
-                    }
                 }
             }
-            Step::EndEnrollment(enrollment) => self.end_enrollment(enrollment, sampled, effects),
-            Step::ReplaceEnrollment => {
-                if !self.closed_enrollments.contains(&1) {
-                    self.end_enrollment(0, sampled, effects);
-                    self.active_enrollment = Some(1);
-                }
-            }
+        }
+    }
 
-            Step::Raise { .. }
-            | Step::Decide { .. }
-            | Step::Stop { .. }
-            | Step::Forward { .. }
-            | Step::Read { .. }
-            | Step::Alarm { .. }
-            | Step::Deliver { .. } => {
-                unreachable!("the row reducer handles these steps");
-            }
+    pub(super) fn replace_enrollment(&mut self, sampled: i64, effects: &mut Vec<OperationEffect>) {
+        if !self.closed_enrollments.contains(&1) {
+            self.end_enrollment(0, sampled, effects);
+            self.active_enrollment = Some(1);
         }
     }
 }
