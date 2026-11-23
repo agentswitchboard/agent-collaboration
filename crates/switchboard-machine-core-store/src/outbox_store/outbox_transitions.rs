@@ -3,11 +3,11 @@ use super::{
     ANSWERED_RETENTION_MILLIS, MacOutbox, OutboxStoreError, StoredOutboxWrite,
     outbox_rows::{
         DecodedRow, OutboxRow, StoredPayload, corrupt_row, decode_row, expect_one, outbox_content,
-        payload_content_digest, read_row, waiting_rows,
+        payload_content_digest, read_row, waiting_page, waiting_rows,
     },
 };
 use crate::{
-    EndedWrite, OutboxWriteOutcome, outbox_deadline::DepartureAtDeadline,
+    EndedWrite, OutboxWriteOutcome, StoreScan, outbox_deadline::DepartureAtDeadline,
     outbox_item_state::OutboxItemState, outbox_receipt_profile::AnsweredWrite,
     outbox_settlement::SettledWrite,
 };
@@ -20,7 +20,7 @@ impl MacOutbox<'_> {
     pub async fn delete_ended_before_retention(
         &mut self,
         now_ms: i64,
-    ) -> Result<u64, OutboxStoreError> {
+    ) -> Result<StoreScan<u64>, OutboxStoreError> {
         let cutoff = now_ms.saturating_sub(ANSWERED_RETENTION_MILLIS);
         let answered = OutboxItemState::Answered.as_str();
         let refused = OutboxItemState::Refused.as_str();
@@ -40,9 +40,12 @@ impl MacOutbox<'_> {
         )
         .fetch_all(&mut *transaction)
         .await?;
+        let StoreScan {
+            healthy,
+            corrupt_rows,
+        } = rows.iter().map(decode_row).collect();
         let mut removed = 0;
-        for candidate in &rows {
-            let row = decode_row(candidate)?;
+        for row in healthy {
             removed += sqlx::query!(
                 "DELETE FROM outbox_items WHERE request_id = ?",
                 row.request.as_str()
@@ -52,7 +55,10 @@ impl MacOutbox<'_> {
             .rows_affected();
         }
         transaction.commit().await?;
-        Ok(removed)
+        Ok(StoreScan {
+            healthy: removed,
+            corrupt_rows,
+        })
     }
 
     /// Moves outbox writes to sent and returns what goes in the batch frame.
@@ -91,21 +97,33 @@ impl MacOutbox<'_> {
         mark_ms: i64,
         limit: u16,
         now_ms: i64,
-    ) -> Result<ClaimedBatch, OutboxStoreError> {
+    ) -> Result<StoreScan<ClaimedBatch>, OutboxStoreError> {
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
-        let waiting = waiting_rows(&mut transaction).await?;
+        let mut cursor = None;
+        let mut corrupt_rows = Vec::new();
         let mut ended = Vec::new();
         let mut writes = Vec::new();
-        for row in waiting {
-            if row.deadline_ms <= now_ms {
-                let departure = waiting_departure(row.state);
-                ended.push(end_row(&mut transaction, row, departure, now_ms).await?);
-            } else if row.flush_at_ms <= mark_ms && writes.len() < usize::from(limit) {
-                writes.push(claim_row(&mut transaction, row, now_ms).await?);
+        loop {
+            let (page, next) = waiting_page(&mut transaction, cursor.as_ref()).await?;
+            corrupt_rows.extend(page.corrupt_rows);
+            for row in page.healthy {
+                if row.deadline_ms <= now_ms {
+                    let departure = waiting_departure(row.state);
+                    ended.push(end_row(&mut transaction, row, departure, now_ms).await?);
+                } else if row.flush_at_ms <= mark_ms && writes.len() < usize::from(limit) {
+                    writes.push(claim_row(&mut transaction, row, now_ms).await?);
+                }
             }
+            if next.is_none() {
+                break;
+            }
+            cursor = next;
         }
         transaction.commit().await?;
-        Ok(ClaimedBatch { writes, ended })
+        Ok(StoreScan {
+            healthy: ClaimedBatch { writes, ended },
+            corrupt_rows,
+        })
     }
 
     /// Keeps central's answer for one sent write and, in the same transaction,
@@ -192,11 +210,21 @@ impl MacOutbox<'_> {
         &mut self,
         requests: &[RequestId],
         now_ms: i64,
-    ) -> Result<Vec<EndedWrite>, OutboxStoreError> {
+    ) -> Result<StoreScan<Vec<EndedWrite>>, OutboxStoreError> {
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
         let mut ended = Vec::new();
+        let mut corrupt_rows = Vec::new();
         for request in requests {
-            let row = read_in_flight(&mut transaction, request).await?;
+            let raw = read_row(&mut transaction, request)
+                .await?
+                .ok_or_else(|| unexpected(request, "sent"))?;
+            let row = match decode_row(&raw) {
+                Ok(row) => require_in_flight(row, request)?,
+                Err(corruption) => {
+                    corrupt_rows.push(corruption);
+                    continue;
+                }
+            };
             if row.deadline_ms <= now_ms {
                 ended.push(
                     end_row(
@@ -218,24 +246,33 @@ impl MacOutbox<'_> {
             }
         }
         transaction.commit().await?;
-        Ok(ended)
+        Ok(StoreScan {
+            healthy: ended,
+            corrupt_rows,
+        })
     }
 
     /// Ends every waiting write past its deadline, for the flush tick: a
     /// Router that cannot send still tells its agents.
-    pub async fn end_overdue(&mut self, now_ms: i64) -> Result<Vec<EndedWrite>, OutboxStoreError> {
+    pub async fn end_overdue(
+        &mut self,
+        now_ms: i64,
+    ) -> Result<StoreScan<Vec<EndedWrite>>, OutboxStoreError> {
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
         let mut ended = Vec::new();
-        for row in waiting_rows(&mut transaction)
-            .await?
-            .into_iter()
-            .filter(|row| row.deadline_ms <= now_ms)
-        {
+        let StoreScan {
+            healthy,
+            corrupt_rows,
+        } = waiting_rows(&mut transaction).await?;
+        for row in healthy.into_iter().filter(|row| row.deadline_ms <= now_ms) {
             let departure = waiting_departure(row.state);
             ended.push(end_row(&mut transaction, row, departure, now_ms).await?);
         }
         transaction.commit().await?;
-        Ok(ended)
+        Ok(StoreScan {
+            healthy: ended,
+            corrupt_rows,
+        })
     }
 }
 
@@ -266,13 +303,18 @@ async fn read_in_flight(
     connection: &mut sqlx::SqliteConnection,
     request: &RequestId,
 ) -> Result<DecodedRow, OutboxStoreError> {
-    let row = read_row(connection, request)
+    let raw = read_row(connection, request)
         .await?
-        .as_ref()
-        .map(decode_row)
-        .transpose()?;
-    row.filter(|row| matches!(row.state, OutboxItemState::Sent | OutboxItemState::Resent))
-        .ok_or_else(|| unexpected(request, "sent"))
+        .ok_or_else(|| unexpected(request, "sent"))?;
+    require_in_flight(decode_row(&raw)?, request)
+}
+
+fn require_in_flight(row: DecodedRow, request: &RequestId) -> Result<DecodedRow, OutboxStoreError> {
+    if matches!(row.state, OutboxItemState::Sent | OutboxItemState::Resent) {
+        Ok(row)
+    } else {
+        Err(unexpected(request, "sent"))
+    }
 }
 
 async fn update_state(

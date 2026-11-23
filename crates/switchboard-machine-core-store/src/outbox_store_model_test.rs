@@ -1,4 +1,4 @@
-use super::{MARK, RETENTION_MS, accepted, accepted_reply, caller, item, open, uuid_v7};
+use super::{MARK, RETENTION_MS, accepted, accepted_answer, caller, item, open, uuid_v7};
 use crate::{
     LocalOutboxRefusal, MacOutbox, MachineLocalStore, OutboxCancellation, OutboxInsert,
     OutboxRefusal, OutboxRequestStatus, OutboxWriteOutcome, PendingWriteState,
@@ -36,7 +36,7 @@ impl ModelWrite {
                 flush_at_ms: self.flush_at,
             },
             ModelState::Sent => OutboxRequestStatus::Sent,
-            ModelState::Accepted => OutboxRequestStatus::Answered(accepted_reply()),
+            ModelState::Accepted => OutboxRequestStatus::Answered(accepted_answer()),
             ModelState::Refused => OutboxRequestStatus::Refused(OutboxRefusal::Local(
                 LocalOutboxRefusal::RequestIdConflict,
             )),
@@ -149,7 +149,8 @@ impl OutboxStoreModel {
                 let ended = self
                     .runtime
                     .block_on(outbox.return_unanswered(std::slice::from_ref(&id), now))
-                    .unwrap();
+                    .unwrap()
+                    .expect_clean();
                 if self.model[&id].expires_at <= now {
                     assert_eq!(
                         ended
@@ -201,6 +202,7 @@ impl OutboxStoreModel {
             .runtime
             .block_on(MacOutbox::new(&mut self.store).end_overdue(now))
             .unwrap()
+            .expect_clean()
             .into_iter()
             .map(|write| (write.request_id, write.reason))
             .collect();
@@ -234,7 +236,8 @@ impl OutboxStoreModel {
         let deleted = self
             .runtime
             .block_on(MacOutbox::new(&mut self.store).delete_ended_before_retention(self.now))
-            .unwrap();
+            .unwrap()
+            .expect_clean();
         let cutoff = self.now - RETENTION_MS;
         let before = self.model.len();
         self.model.retain(|_, write| {
@@ -266,7 +269,8 @@ impl OutboxStoreModel {
         assert_eq!(
             self.runtime
                 .block_on(MacOutbox::new(&mut self.store).waiting())
-                .unwrap(),
+                .unwrap()
+                .expect_clean(),
             expected_waiting
         );
         let expected_pending: Vec<(RequestId, PendingWriteState)> = self
@@ -282,7 +286,7 @@ impl OutboxStoreModel {
                             body: post_text(id),
                         }
                     }
-                    ModelState::Accepted => PendingWriteState::Answered(accepted_reply()),
+                    ModelState::Accepted => PendingWriteState::Answered(accepted_answer()),
                     ModelState::Refused => return None,
                     ModelState::Ended(reason) => PendingWriteState::Cancelled { reason },
                 };

@@ -1,5 +1,7 @@
 //! Validated permanent outcomes for claimed writes.
-use crate::{LocalOutboxRefusal, OutboxQueuedWrite, OutboxRefusal, OutboxWriteTarget};
+use crate::{
+    LocalOutboxRefusal, OutboxAccepted, OutboxQueuedWrite, OutboxRefusal, OutboxWriteTarget,
+};
 use central_link_protocol::{ReplyPayload, RequestRefusal};
 use workspace_model::{
     ItemRef, RefusalReason, WorkspaceAnswer, WorkspaceResult,
@@ -12,7 +14,7 @@ pub struct OutboxWriteOutcome(SettledWrite);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SettledWrite {
-    Answered(ReplyPayload),
+    Answered(OutboxAccepted),
     Refused(OutboxRefusal),
 }
 
@@ -43,8 +45,9 @@ impl OutboxWriteOutcome {
         };
         match refusal {
             Some(reason) => Self::from_refusal(write, OutboxRefusal::Central(reason)),
-            None if is_permanent_answer(&target, &reply) => Ok(Self(SettledWrite::Answered(reply))),
-            None => Err(InvalidOutboxOutcome),
+            None => accepted_reply(&target, reply)
+                .map(|answer| Self(SettledWrite::Answered(answer)))
+                .ok_or(InvalidOutboxOutcome),
         }
     }
 
@@ -71,23 +74,38 @@ impl OutboxWriteOutcome {
     }
 }
 
-pub(crate) fn is_permanent_answer(target: &OutboxWriteTarget, reply: &ReplyPayload) -> bool {
-    match (target, reply) {
-        (OutboxWriteTarget::Thread { .. }, ReplyPayload::Workspace(reply)) => matches!(
-            reply.result,
+fn accepted_reply(target: &OutboxWriteTarget, reply: ReplyPayload) -> Option<OutboxAccepted> {
+    let answer = match reply {
+        ReplyPayload::Workspace(reply) => match reply.result {
             WorkspaceResult::Done(WorkspaceAnswer::Created {
-                item: ItemRef::Post(_),
-                ..
-            })
-        ),
-        (OutboxWriteTarget::Session { .. }, ReplyPayload::Mail(reply)) => {
-            matches!(
-                reply,
-                CentralMailResult::Done(CentralMailAnswer::Queued { .. })
-            )
+                item: ItemRef::Post(post_id),
+                position,
+            }) => OutboxAccepted::ThreadPost {
+                post_id,
+                position,
+                actors: reply.actors,
+            },
+            _ => return None,
+        },
+        ReplyPayload::Mail(CentralMailResult::Done(CentralMailAnswer::Queued { message_id })) => {
+            OutboxAccepted::SendMessage { message_id }
         }
-        _ => false,
-    }
+        ReplyPayload::Mail(_) => return None,
+    };
+    is_permanent_answer(target, &answer).then_some(answer)
+}
+
+pub(crate) fn is_permanent_answer(target: &OutboxWriteTarget, answer: &OutboxAccepted) -> bool {
+    matches!(
+        (target, answer),
+        (
+            OutboxWriteTarget::Thread { .. },
+            OutboxAccepted::ThreadPost { .. }
+        ) | (
+            OutboxWriteTarget::Session { .. },
+            OutboxAccepted::SendMessage { .. }
+        )
+    )
 }
 
 pub(crate) fn is_permanent_refusal(target: &OutboxWriteTarget, refusal: &OutboxRefusal) -> bool {

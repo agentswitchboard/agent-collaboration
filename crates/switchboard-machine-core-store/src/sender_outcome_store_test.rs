@@ -1,12 +1,9 @@
 use super::{MARK, caller, open, uuid_v7};
 use crate::{
-    MacOutbox, NewOutboxItem, OutboxQueuedWrite, OutboxRequestStatus, OutboxStoreError,
-    StoredSenderOutcome,
+    MacOutbox, NewOutboxItem, OutboxAccepted, OutboxQueuedWrite, OutboxRequestStatus,
+    OutboxStoreError, StoredSenderOutcome,
 };
-use central_link_protocol::ReplyPayload;
-use workspace_model::central_mail::{
-    CentralMailAnswer, CentralMailResult, MessageOutcome, MessageRefusal, WaitingReason,
-};
+use workspace_model::central_mail::{MessageOutcome, MessageRefusal, WaitingReason};
 
 fn direct_write(seed: u16) -> NewOutboxItem {
     NewOutboxItem {
@@ -89,11 +86,9 @@ async fn first_final_outcome_survives_contradictory_and_replayed_notices() {
             .request_status(&write.caller, &write.request)
             .await
             .unwrap(),
-        OutboxRequestStatus::Answered(ReplyPayload::Mail(CentralMailResult::Done(
-            CentralMailAnswer::Queued {
-                message_id: pending.message_id.clone()
-            }
-        ))),
+        OutboxRequestStatus::Answered(OutboxAccepted::SendMessage {
+            message_id: pending.message_id.clone()
+        }),
     );
     assert!(
         outbox
@@ -171,13 +166,18 @@ async fn late_outcome_recovers_only_the_expired_request_that_may_have_left() {
     for write in [&claimed, &never_sent] {
         outbox.insert(write, START).await.unwrap();
     }
-    let batch = outbox.claim_next_batch(MARK, 1, MARK).await.unwrap();
+    let batch = outbox
+        .claim_next_batch(MARK, 1, MARK)
+        .await
+        .unwrap()
+        .expect_clean();
     assert_eq!(batch.writes[0].request, claimed.request);
     outbox
         .return_unanswered(std::slice::from_ref(&claimed.request), DEADLINE)
         .await
-        .unwrap();
-    outbox.end_overdue(DEADLINE).await.unwrap();
+        .unwrap()
+        .expect_clean();
+    outbox.end_overdue(DEADLINE).await.unwrap().expect_clean();
     database.close().await.unwrap();
 
     let mut reopened = open(&root).await;
@@ -242,11 +242,9 @@ async fn late_outcome_recovers_only_the_expired_request_that_may_have_left() {
             .request_status(&claimed.caller, &claimed.request)
             .await
             .unwrap(),
-        OutboxRequestStatus::Answered(ReplyPayload::Mail(CentralMailResult::Done(
-            CentralMailAnswer::Queued {
-                message_id: notice.message_id.clone()
-            }
-        )))
+        OutboxRequestStatus::Answered(OutboxAccepted::SendMessage {
+            message_id: notice.message_id.clone()
+        })
     );
 
     let false_notice = StoredSenderOutcome {

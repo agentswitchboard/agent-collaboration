@@ -1,5 +1,5 @@
 //! Durable delivery custody in machine_local.sqlite.
-use crate::MachineLocalStore;
+use crate::{MachineLocalStore, RowCorruption, RowCorruptionReason, StoreScan};
 use serde::{Deserialize, Serialize};
 use sqlite_storage_maintenance::TransactionStart;
 use sqlx::SqliteConnection;
@@ -24,6 +24,15 @@ pub enum InboxStoreError {
         message_id: MessageId,
         expected: &'static str,
     },
+}
+
+impl From<RowCorruption> for InboxStoreError {
+    fn from(row: RowCorruption) -> Self {
+        Self::Corrupt {
+            message_id: row.key,
+            field: row.field,
+        }
+    }
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -107,33 +116,40 @@ struct InboxRow {
 }
 
 impl InboxRow {
-    fn decode(self) -> Result<StoredDelivery, InboxStoreError> {
-        let corrupt = |field| InboxStoreError::Corrupt {
-            message_id: self.message_id.clone(),
-            field,
+    fn decode(self) -> Result<StoredDelivery, RowCorruption> {
+        use RowCorruptionReason::{
+            InconsistentState, InvalidIdentifier, InvalidJson, KeyMismatch, TimestampOutOfRange,
         };
-        let message_id: MessageId = self.message_id.parse().map_err(|_| corrupt("message_id"))?;
+        let corrupt = |field, reason| RowCorruption {
+            key: self.message_id.clone(),
+            field,
+            reason,
+        };
+        let message_id: MessageId = self
+            .message_id
+            .parse()
+            .map_err(|_| corrupt("message_id", InvalidIdentifier))?;
         for (value, field) in [
             (self.created_at, "created_at"),
             (self.updated_at, "updated_at"),
         ] {
             workspace_model::Timestamp::from_timestamp_millis(value)
-                .ok_or_else(|| corrupt(field))?;
+                .ok_or_else(|| corrupt(field, TimestampOutOfRange))?;
         }
         let state: InboxRowState = serde_json::from_str(&self.delivery_state_json)
-            .map_err(|_| corrupt("delivery_state_json"))?;
+            .map_err(|_| corrupt("delivery_state_json", InvalidJson))?;
         let message: Option<MessageRecord> = self
             .message_json
             .as_deref()
             .map(serde_json::from_str)
             .transpose()
-            .map_err(|_| corrupt("message_json"))?;
+            .map_err(|_| corrupt("message_json", InvalidJson))?;
         if let Some(message) = &message {
             if message.message_id != message_id {
-                return Err(corrupt("message_json.message_id"));
+                return Err(corrupt("message_json.message_id", KeyMismatch));
             }
             if state.decision != InboxDecision::Accepted {
-                return Err(corrupt("message_json"));
+                return Err(corrupt("message_json", InconsistentState));
             }
         }
         if state.ended_at_ms.is_some()
@@ -142,7 +158,10 @@ impl InboxRow {
                 .ended_at_ms
                 .is_some_and(|ended| ended != self.updated_at)
         {
-            return Err(corrupt("delivery_state_json.ended_at_ms"));
+            return Err(corrupt(
+                "delivery_state_json.ended_at_ms",
+                InconsistentState,
+            ));
         }
         Ok(StoredDelivery {
             message_id,
@@ -163,13 +182,22 @@ impl InboxStore {
     }
 
     /// A repeat can use the original decision without looking up the recipient again.
+    /// An empty lookup with a diagnostic identifies a damaged existing row.
     pub async fn receipt_for(
         &mut self,
         message_id: &MessageId,
-    ) -> Result<Option<InboxReceipt>, InboxStoreError> {
-        Ok(read_delivery(&mut self.store.connection, message_id)
-            .await?
-            .map(StoredDelivery::into_receipt))
+    ) -> Result<StoreScan<Option<InboxReceipt>>, InboxStoreError> {
+        let row = read_delivery_row(&mut self.store.connection, message_id).await?;
+        match row.map(InboxRow::decode).transpose() {
+            Ok(delivery) => Ok(StoreScan {
+                healthy: delivery.map(StoredDelivery::into_receipt),
+                corrupt_rows: Vec::new(),
+            }),
+            Err(corruption) => Ok(StoreScan {
+                healthy: None,
+                corrupt_rows: vec![corruption],
+            }),
+        }
     }
 
     /// Commits the first decision and any retained payload in one transaction.
@@ -248,7 +276,9 @@ impl InboxStore {
         Ok(())
     }
 
-    pub async fn pending_handoffs(&mut self) -> Result<Vec<MessageRecord>, InboxStoreError> {
+    pub async fn pending_handoffs(
+        &mut self,
+    ) -> Result<StoreScan<Vec<MessageRecord>>, InboxStoreError> {
         let rows = sqlx::query_as!(
             InboxRow,
             "SELECT message_id, created_at, updated_at, message_json, delivery_state_json FROM inbox_messages
@@ -259,14 +289,18 @@ impl InboxStore {
         Ok(rows
             .into_iter()
             .map(InboxRow::decode)
-            .collect::<Result<Vec<_>, _>>()?
-            .into_iter()
-            .filter_map(|delivery| delivery.message)
-            .collect())
+            .collect::<StoreScan<Vec<_>>>()
+            .map_healthy(|rows| {
+                rows.into_iter()
+                    .filter_map(|delivery| delivery.message)
+                    .collect()
+            }))
     }
 
     /// Decisions still awaiting confirmation, in first-receipt order.
-    pub async fn pending_receipts(&mut self) -> Result<Vec<InboxReceipt>, InboxStoreError> {
+    pub async fn pending_receipts(
+        &mut self,
+    ) -> Result<StoreScan<Vec<InboxReceipt>>, InboxStoreError> {
         let rows = sqlx::query_as!(
             InboxRow,
             "SELECT message_id, created_at, updated_at, message_json, delivery_state_json FROM inbox_messages
@@ -277,75 +311,94 @@ impl InboxStore {
         )
         .fetch_all(&mut self.store.connection)
         .await?;
-        rows.into_iter()
+        Ok(rows
+            .into_iter()
             .map(|row| row.decode().map(StoredDelivery::into_receipt))
-            .collect()
+            .collect())
     }
 
     /// First time an ended row is eligible for pruning, in Unix milliseconds.
-    pub async fn next_prune_at_ms(&mut self) -> Result<Option<i64>, InboxStoreError> {
+    pub async fn next_prune_at_ms(&mut self) -> Result<StoreScan<Option<i64>>, InboxStoreError> {
         let mut transaction = self.store.transaction(TransactionStart::Deferred).await?;
-        let oldest = retention_candidates(&mut transaction)
-            .await?
-            .into_iter()
-            .filter_map(|delivery| delivery.state.ended_at_ms)
-            .min();
+        let scan = retention_candidates(&mut transaction).await?;
         transaction.commit().await?;
-        Ok(oldest.and_then(|ended| ended.checked_add(RETENTION_MILLIS + 1)))
+        Ok(scan.map_healthy(|rows| {
+            rows.into_iter()
+                .filter_map(|delivery| delivery.state.ended_at_ms)
+                .min()
+                .and_then(|ended| ended.checked_add(RETENTION_MILLIS + 1))
+        }))
     }
 
-    pub async fn prune_ended(&mut self, now_ms: i64) -> Result<(), InboxStoreError> {
+    pub async fn prune_ended(&mut self, now_ms: i64) -> Result<StoreScan<u64>, InboxStoreError> {
         let cutoff = now_ms.saturating_sub(RETENTION_MILLIS);
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
-        for delivery in retention_candidates(&mut transaction).await? {
+        let StoreScan {
+            healthy,
+            corrupt_rows,
+        } = retention_candidates(&mut transaction).await?;
+        let mut removed = 0;
+        for delivery in healthy {
             if delivery
                 .state
                 .ended_at_ms
                 .is_some_and(|ended| ended < cutoff)
             {
-                sqlx::query!(
+                removed += sqlx::query!(
                     "DELETE FROM inbox_messages WHERE message_id = ?",
                     delivery.message_id.as_str()
                 )
                 .execute(&mut *transaction)
-                .await?;
+                .await?
+                .rows_affected();
             }
         }
         transaction.commit().await?;
-        Ok(())
+        Ok(StoreScan {
+            healthy: removed,
+            corrupt_rows,
+        })
     }
 }
 
 async fn retention_candidates(
     connection: &mut SqliteConnection,
-) -> Result<Vec<StoredDelivery>, InboxStoreError> {
+) -> Result<StoreScan<Vec<StoredDelivery>>, InboxStoreError> {
     // Include malformed JSON and incomplete completion markers so the row
     // decoder can report corruption before any custody is removed.
-    sqlx::query_as!(
+    Ok(sqlx::query_as!(
         InboxRow,
         "SELECT message_id, created_at, updated_at, message_json, delivery_state_json FROM inbox_messages
          WHERE CASE WHEN json_valid(delivery_state_json)
                THEN json_type(delivery_state_json, '$.ended_at_ms') IS NOT 'null'
                     OR (message_json IS NULL AND json_extract(delivery_state_json, '$.receipt.kind') = 'confirmed')
                ELSE 1 END",
-    ).fetch_all(connection).await?.into_iter().map(InboxRow::decode).collect()
+    ).fetch_all(connection).await?.into_iter().map(InboxRow::decode).collect())
 }
 
 async fn read_delivery(
     connection: &mut SqliteConnection,
     message_id: &MessageId,
 ) -> Result<Option<StoredDelivery>, InboxStoreError> {
+    Ok(read_delivery_row(connection, message_id)
+        .await?
+        .map(InboxRow::decode)
+        .transpose()?)
+}
+
+async fn read_delivery_row(
+    connection: &mut SqliteConnection,
+    message_id: &MessageId,
+) -> Result<Option<InboxRow>, InboxStoreError> {
     let key = message_id.as_str();
-    sqlx::query_as!(
+    Ok(sqlx::query_as!(
         InboxRow,
         "SELECT message_id, created_at, updated_at, message_json, delivery_state_json FROM inbox_messages
          WHERE message_id = ?",
         key,
     )
     .fetch_optional(connection)
-    .await?
-    .map(InboxRow::decode)
-    .transpose()
+    .await?)
 }
 
 async fn update_delivery(
