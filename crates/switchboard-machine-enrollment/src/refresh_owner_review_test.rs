@@ -258,3 +258,102 @@ fn a_committed_marker_is_recognized_when_its_acknowledgement_stalls() {
         Poll::Ready(Ok(ConditionalWrite::Applied))
     );
 }
+
+#[test]
+fn revocation_fences_the_cached_lease_even_when_the_ending_read_fails() {
+    let fixture = Fixture::new();
+    expect_lease(
+        poll_once(std::pin::pin!(fixture.owner.lease(AccessRequest::Usable))),
+        2,
+        1,
+    );
+    let key = fixture.store.snapshot().key().expect("enrolled identity");
+    fixture.store.0.fail_read.store(true, Ordering::SeqCst);
+    assert_eq!(
+        poll_once(std::pin::pin!(
+            fixture.owner.end_enrollment(&key, EnrollmentEnd::Revoked)
+        )),
+        Poll::Ready(Err(crate::CredentialStoreError::Read))
+    );
+    fixture.store.0.fail_read.store(false, Ordering::SeqCst);
+    assert_eq!(
+        poll_once(std::pin::pin!(fixture.owner.lease(AccessRequest::Usable))),
+        Poll::Ready(Err(LeaseUnavailable::Ended {
+            why: EnrollmentEnd::Revoked
+        }))
+    );
+    assert_eq!(fixture.server.sent(), vec![refresh_secret(0)]);
+}
+
+#[test]
+fn a_refresh_released_after_failed_revocation_does_not_write() {
+    let fixture = Fixture::new();
+    fixture.server.block.store(true, Ordering::SeqCst);
+    let old = fixture.store.snapshot();
+    let key = old.key().expect("enrolled identity");
+    let mut refresh = std::pin::pin!(fixture.owner.lease(AccessRequest::Usable));
+    assert!(poll_once(refresh.as_mut()).is_pending());
+    fixture.store.0.fail_remove.store(true, Ordering::SeqCst);
+    fixture.store.0.fail_marker.store(true, Ordering::SeqCst);
+    assert!(matches!(
+        poll_once(std::pin::pin!(
+            fixture.owner.end_enrollment(&key, EnrollmentEnd::Revoked)
+        )),
+        Poll::Ready(Err(_))
+    ));
+    fixture.server.block.store(false, Ordering::SeqCst);
+    assert_eq!(
+        poll_once(refresh.as_mut()),
+        Poll::Ready(Err(LeaseUnavailable::Ended {
+            why: EnrollmentEnd::Revoked
+        }))
+    );
+    assert_eq!(
+        fixture.store.snapshot(),
+        old,
+        "the late rotation must not change the durable binding"
+    );
+    assert_eq!(fixture.server.sent(), vec![refresh_secret(0)]);
+}
+
+#[test]
+fn rotation_cleanup_finishes_while_another_caller_waits_for_a_store_read() {
+    let fixture = Fixture::new();
+    fixture.store.0.fail_write.store(true, Ordering::SeqCst);
+    let mut rotating = std::pin::pin!(fixture.owner.lease(AccessRequest::Usable));
+    assert!(poll_once(rotating.as_mut()).is_pending());
+    fixture.store.0.hold_read.store(true, Ordering::SeqCst);
+    let mut reader = std::pin::pin!(fixture.owner.lease(AccessRequest::Usable));
+    assert!(poll_once(reader.as_mut()).is_pending());
+    fixture.advance(5);
+    assert!(poll_once(rotating.as_mut()).is_pending());
+    fixture.advance(2);
+    assert_eq!(
+        poll_once(rotating.as_mut()),
+        Poll::Ready(Err(LeaseUnavailable::Ended {
+            why: EnrollmentEnd::LocalCredentialLost
+        }))
+    );
+    assert!(poll_once(reader.as_mut()).is_pending());
+    assert_eq!(fixture.server.sent(), vec![refresh_secret(0)]);
+}
+
+#[test]
+fn explicit_ending_reaches_its_bound_while_a_lease_read_is_held() {
+    let fixture = Fixture::new();
+    let old = fixture.store.snapshot();
+    let key = old.key().expect("enrolled identity");
+    fixture.store.0.hold_read.store(true, Ordering::SeqCst);
+    let mut lease = std::pin::pin!(fixture.owner.lease(AccessRequest::Usable));
+    assert!(poll_once(lease.as_mut()).is_pending());
+    let mut ending = std::pin::pin!(fixture.owner.end_enrollment(&key, EnrollmentEnd::Revoked));
+    assert!(poll_once(ending.as_mut()).is_pending());
+    fixture.advance(2);
+    assert_eq!(
+        poll_once(ending.as_mut()),
+        Poll::Ready(Err(crate::CredentialStoreError::CleanupTimedOut))
+    );
+    assert!(poll_once(lease.as_mut()).is_pending());
+    assert_eq!(fixture.store.snapshot(), old);
+    assert!(fixture.server.sent().is_empty());
+}

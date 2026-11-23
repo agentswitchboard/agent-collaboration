@@ -104,21 +104,19 @@ struct RefreshState {
     flight: Option<RefreshFlight>,
     lease: Option<AccessLease>,
     backoff: Option<(BindingGeneration, ClockInstant)>,
-    ending: Option<(EnrollmentKey, EnrollmentEnd)>,
+    endings: Vec<(EnrollmentKey, EnrollmentEnd)>,
+    newest_observed: BindingGeneration,
     fault: Option<(BindingGeneration, LeaseConfigurationFault)>,
 }
 
 impl RefreshState {
     fn admit(
-        &mut self,
+        &self,
         binding: &EnrollmentBinding,
         request: AccessRequest,
     ) -> Result<(), LeaseUnavailable> {
-        if let Some((key, why)) = &self.ending {
-            if *key == binding.key() {
-                return Err(LeaseUnavailable::Ended { why: *why });
-            }
-            self.ending = None;
+        if let Some(why) = self.ending(&binding.key()) {
+            return Err(LeaseUnavailable::Ended { why });
         }
         if let AccessRequest::NewerThan(rejected) = request
             && rejected > binding.generation
@@ -128,9 +126,25 @@ impl RefreshState {
         Ok(())
     }
 
+    fn ending(&self, key: &EnrollmentKey) -> Option<EnrollmentEnd> {
+        self.endings
+            .iter()
+            .find(|(ended, _)| ended == key)
+            .map(|(_, why)| *why)
+    }
+
     fn fence(&mut self, key: EnrollmentKey, why: EnrollmentEnd) {
-        self.lease = None;
-        self.ending = Some((key, why));
+        if self.ending(&key).is_none() {
+            self.endings.push((key, why));
+        }
+    }
+
+    fn observe(&mut self, generation: BindingGeneration) -> bool {
+        if generation < self.newest_observed {
+            return false;
+        }
+        self.newest_observed = generation;
+        true
     }
 }
 
@@ -173,8 +187,11 @@ where
         let mut followed_stale_access = false;
         loop {
             let flight = {
-                let mut state = self.state.lock().await;
                 let binding = self.inputs.read_binding().await?;
+                let mut state = self.state.lock().await;
+                if !state.observe(binding.generation) {
+                    continue;
+                }
                 state.admit(&binding, request)?;
                 let now = self.inputs.clock.monotonic_now();
                 let generation = binding.generation;
@@ -210,7 +227,27 @@ where
             };
 
             let (origin, result) = flight.clone().await;
-            let mut state = self.state.lock().await;
+            let (snapshot, state) = if let RefreshCompletion::Ended { why, deadline } = result {
+                let snapshot = timeout_at(
+                    self.inputs.clock.as_ref(),
+                    deadline,
+                    self.inputs.read_binding(),
+                )
+                .await;
+                let state = timeout_at(self.inputs.clock.as_ref(), deadline, self.state.lock())
+                    .await
+                    .map_err(|_| LeaseUnavailable::Ended { why })?;
+                let snapshot = match snapshot {
+                    Ok(Ok(binding)) => Ok(binding),
+                    Ok(Err(error)) if !matches!(error, LeaseUnavailable::Store(_)) => Err(error),
+                    _ => Err(LeaseUnavailable::Ended { why }),
+                };
+                (snapshot, state)
+            } else {
+                let snapshot = self.inputs.read_binding().await;
+                (snapshot, self.state.lock().await)
+            };
+            let mut state = state;
             if state
                 .flight
                 .as_ref()
@@ -218,22 +255,10 @@ where
             {
                 state.flight = None;
             }
-            let binding = match &result {
-                RefreshCompletion::Ended { why, deadline } => match timeout_at(
-                    self.inputs.clock.as_ref(),
-                    *deadline,
-                    self.inputs.read_binding(),
-                )
-                .await
-                {
-                    Ok(Ok(binding)) => binding,
-                    Ok(Err(error)) if !matches!(error, LeaseUnavailable::Store(_)) => {
-                        return Err(error);
-                    }
-                    _ => return Err(LeaseUnavailable::Ended { why: *why }),
-                },
-                _ => self.inputs.read_binding().await?,
-            };
+            let binding = snapshot?;
+            if !state.observe(binding.generation) {
+                continue;
+            }
             state.admit(&binding, request)?;
             let now = self.inputs.clock.monotonic_now();
             match result {
@@ -277,23 +302,30 @@ where
             .clock
             .monotonic_now()
             .after(ENDING_CLEANUP_LIMIT);
+        {
+            let mut state = timeout_at(self.inputs.clock.as_ref(), deadline, self.state.lock())
+                .await
+                .map_err(|_| CredentialStoreError::CleanupTimedOut)?;
+            state.fence(key.clone(), why);
+        }
         loop {
-            let generation = {
-                let mut state = self.state.lock().await;
-                let snapshot = self.inputs.read_for_cleanup(deadline).await?;
-                match snapshot {
-                    StoredEnrollment::Active(binding) if &binding.key() == key => {
-                        state.fence(key.clone(), why);
-                        binding.generation
-                    }
-                    StoredEnrollment::Ended {
-                        key: ended,
-                        why: recorded,
-                        ..
-                    } if &ended == key && recorded == why => return Ok(ConditionalWrite::Applied),
-                    _ => return Ok(ConditionalWrite::Superseded),
-                }
+            let generation = match self.inputs.read_for_cleanup(deadline).await? {
+                StoredEnrollment::Active(binding) if &binding.key() == key => binding.generation,
+                StoredEnrollment::Ended {
+                    key: ended,
+                    why: recorded,
+                    ..
+                } if &ended == key && recorded == why => return Ok(ConditionalWrite::Applied),
+                _ => return Ok(ConditionalWrite::Superseded),
             };
+            {
+                let mut state = timeout_at(self.inputs.clock.as_ref(), deadline, self.state.lock())
+                    .await
+                    .map_err(|_| CredentialStoreError::CleanupTimedOut)?;
+                if !state.observe(generation) {
+                    continue;
+                }
+            }
             match self.inputs.end_binding(generation, why, deadline).await? {
                 ConditionalWrite::Applied => return Ok(ConditionalWrite::Applied),
                 // A same-identity rotation may have advanced the version. Re-check within
@@ -374,6 +406,7 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
         usable_until: ClockInstant,
         state: Weak<Mutex<RefreshState>>,
     ) -> RefreshCompletion {
+        let key = previous.key();
         let mut replacement = previous.clone();
         replacement.generation = generation;
         replacement.credential = grant.credential;
@@ -385,6 +418,20 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
                     .finish_binding(previous, EnrollmentEnd::LocalCredentialLost, state)
                     .await;
             }
+            // Admit a write under the same state lock that records an ending.
+            // Once admitted, the conditional store version fences the in-flight operation.
+            if let Some(owner) = state.upgrade() {
+                let Ok(mut owner) = timeout_at(self.clock.as_ref(), deadline, owner.lock()).await
+                else {
+                    continue;
+                };
+                if owner.ending(&key).is_some() || !owner.observe(previous.generation) {
+                    return RefreshCompletion::Recheck;
+                }
+            }
+            if self.clock.monotonic_now() >= deadline {
+                continue;
+            }
             // Retain the same pair across write failures. The old token is spent.
             let change = timeout_at(
                 self.clock.as_ref(),
@@ -394,6 +441,9 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
             .await;
             match change {
                 Ok(Ok(ConditionalWrite::Applied)) => {
+                    if let Some(owner) = state.upgrade() {
+                        owner.lock().await.observe(generation);
+                    }
                     return RefreshCompletion::Committed(AccessLease {
                         token: grant.access_token,
                         usable_until,
@@ -420,31 +470,29 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
         state: Weak<Mutex<RefreshState>>,
     ) -> RefreshCompletion {
         let deadline = self.clock.monotonic_now().after(ENDING_CLEANUP_LIMIT);
-        if let Some(state) = state.upgrade() {
-            let mut state = state.lock().await;
-            let key = binding.key();
-            if state
-                .ending
-                .as_ref()
-                .is_some_and(|(ending, _)| *ending == key)
+        let key = binding.key();
+        let snapshot = self.read_for_cleanup(deadline).await;
+        let (generation, must_write) = match snapshot {
+            Ok(StoredEnrollment::Active(current))
+                if current.generation == binding.generation && current.key() == key =>
             {
+                (current.generation, true)
+            }
+            Ok(_) => return RefreshCompletion::Recheck,
+            Err(_) => (binding.generation, false),
+        };
+        if let Some(state) = state.upgrade() {
+            let Ok(mut state) = timeout_at(self.clock.as_ref(), deadline, state.lock()).await
+            else {
+                return RefreshCompletion::Ended { why, deadline };
+            };
+            if !state.observe(generation) || state.ending(&key).is_some() {
                 return RefreshCompletion::Recheck;
             }
-            match self.read_for_cleanup(deadline).await {
-                Ok(StoredEnrollment::Active(current))
-                    if current.generation == binding.generation && current.key() == key =>
-                {
-                    state.fence(key, why);
-                }
-                Ok(_) => return RefreshCompletion::Recheck,
-                Err(_) => {
-                    // Losing store access cannot withdraw a fence for a successor.
-                    if state.ending.is_none() {
-                        state.fence(key, why);
-                    }
-                    return RefreshCompletion::Ended { why, deadline };
-                }
-            }
+            state.fence(key, why);
+        }
+        if !must_write {
+            return RefreshCompletion::Ended { why, deadline };
         }
         match self.end_binding(binding.generation, why, deadline).await {
             Ok(ConditionalWrite::Superseded) => RefreshCompletion::Recheck,
@@ -470,6 +518,9 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
         why: EnrollmentEnd,
         deadline: ClockInstant,
     ) -> Result<ConditionalWrite, CredentialStoreError> {
+        if self.clock.monotonic_now() >= deadline {
+            return Err(CredentialStoreError::CleanupTimedOut);
+        }
         let removal_deadline = self
             .clock
             .monotonic_now()
@@ -485,12 +536,13 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
             return Ok(ending);
         }
 
-        if let Ok(marked) = timeout_at(
-            self.clock.as_ref(),
-            deadline,
-            self.store.mark_unusable(generation, why),
-        )
-        .await
+        if self.clock.monotonic_now() < deadline
+            && let Ok(marked) = timeout_at(
+                self.clock.as_ref(),
+                deadline,
+                self.store.mark_unusable(generation, why),
+            )
+            .await
         {
             return marked;
         }

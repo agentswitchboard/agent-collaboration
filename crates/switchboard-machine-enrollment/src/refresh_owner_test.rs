@@ -27,6 +27,7 @@ struct StoreState {
     saved: Mutex<StoredEnrollment>,
     hold_write: AtomicBool,
     hold_read: AtomicBool,
+    fail_read: AtomicBool,
     hold_remove: AtomicBool,
     hold_marker: AtomicBool,
     hold_marker_ack: AtomicBool,
@@ -89,6 +90,9 @@ impl CredentialStore for FakeStore {
 
     async fn read(&self) -> Result<StoredEnrollment, CredentialStoreError> {
         wait_while_held(&self.0.hold_read).await;
+        if self.0.fail_read.load(Ordering::SeqCst) {
+            return Err(CredentialStoreError::Read);
+        }
         Ok(self.snapshot())
     }
 
@@ -284,6 +288,7 @@ impl Fixture {
             saved: Mutex::new(StoredEnrollment::Active(binding(1, 0))),
             hold_write: AtomicBool::new(false),
             hold_read: AtomicBool::new(false),
+            fail_read: AtomicBool::new(false),
             hold_remove: AtomicBool::new(false),
             hold_marker: AtomicBool::new(false),
             hold_marker_ack: AtomicBool::new(false),
