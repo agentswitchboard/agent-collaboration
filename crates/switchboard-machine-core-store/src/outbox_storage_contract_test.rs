@@ -141,7 +141,7 @@ pub(crate) async fn lifecycle_and_views(store: &mut dyn OutboxStorage) {
     );
     assert_eq!(outgoing.len(), 1);
     assert_eq!(outgoing[0].outcome, OutgoingOutcome::Answered(answer()));
-    assert_eq!(outgoing[0].answered_at_ms, MARK + 1_000);
+    assert_eq!(outgoing[0].answered_at_ms, Some(MARK + 1_000));
     let views = format!("{pending:?}{outgoing:?}");
     assert!(
         !views.contains("first text"),

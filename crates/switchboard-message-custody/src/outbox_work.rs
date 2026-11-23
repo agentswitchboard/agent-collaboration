@@ -1,6 +1,6 @@
 //! Durable work selected by the minute scheduler and the separate expiry wake.
 
-use central_link_client::{LINK_LANE_SETTLEMENT_LIMIT, WelcomeClockAnchor};
+use central_link_client::WelcomeClockAnchor;
 use central_link_protocol::MAX_LINK_REQUEST_BATCH_SIZE;
 use router_clock::{ClockInstant, RuntimeClock};
 use runtime_primitives::SyncTime;
@@ -33,8 +33,6 @@ pub enum OutboxWorkError {
     Store(#[from] OutboxStoreError),
     #[error("link batch limit does not fit the outbox store")]
     InvalidBatchLimit,
-    #[error("the claim's required settlement deadline is outside the local clock range")]
-    InvalidSettlementHorizon,
 }
 
 /// The custody task owns this store adapter and gives it the shared injected clock.
@@ -43,6 +41,74 @@ pub struct OutboxWork {
     clock: Arc<dyn RuntimeClock>,
     local_epoch: LocalOutboxEpoch,
     operator_events: Vec<CustodyOperatorEvent>,
+}
+
+/// Custody tracks waiting cutoff reads and failed writes separately from the live frame's cutoffs.
+#[derive(Default)]
+pub(crate) struct WaitingCutoffSchedule {
+    next_deadline: Option<ClockInstant>,
+    read_retry_at: Option<ClockInstant>,
+    failed_cutoff: Option<FailedWaitingCutoff>,
+}
+
+struct FailedWaitingCutoff {
+    attempted_through: ClockInstant,
+    retry_at: ClockInstant,
+}
+
+impl WaitingCutoffSchedule {
+    pub(crate) async fn refresh(&mut self, work: &mut OutboxWork) -> Option<OutboxWorkError> {
+        if self
+            .read_retry_at
+            .is_some_and(|retry| work.before_elapsed_fence(retry))
+        {
+            return None;
+        }
+        match work.earliest_deadline().await {
+            Ok(deadline) => {
+                self.next_deadline = deadline;
+                self.read_retry_at = None;
+                None
+            }
+            Err(error) => {
+                self.read_retry_at = Some(work.next_cutoff_retry());
+                Some(error)
+            }
+        }
+    }
+
+    pub(crate) fn next_wake(&self) -> Option<ClockInstant> {
+        let due = self.next_deadline.filter(|deadline| {
+            self.failed_cutoff
+                .as_ref()
+                .is_none_or(|failed| *deadline > failed.attempted_through)
+        });
+        due.into_iter()
+            .chain(self.read_retry_at)
+            .chain(self.failed_cutoff.as_ref().map(|failed| failed.retry_at))
+            .min()
+    }
+
+    pub(crate) async fn end_due(
+        &mut self,
+        work: &mut OutboxWork,
+    ) -> Result<Vec<EndedWrite>, OutboxWorkError> {
+        let now = work.elapsed_now();
+        if self.failed_cutoff.as_ref().is_some_and(|failed| {
+            now < failed.retry_at
+                && self
+                    .next_deadline
+                    .is_none_or(|deadline| deadline <= failed.attempted_through || now < deadline)
+        }) {
+            return Ok(Vec::new());
+        }
+        let result = work.end_due_writes().await;
+        self.failed_cutoff = result.as_ref().err().map(|_| FailedWaitingCutoff {
+            attempted_through: now,
+            retry_at: work.next_cutoff_retry(),
+        });
+        result
+    }
 }
 
 // The local durable timestamps and the server's minute grid are separate
@@ -104,12 +170,17 @@ impl OutboxWork {
     }
 
     pub(crate) fn before_elapsed_fence(&self, fence: ClockInstant) -> bool {
-        self.clock.monotonic_now() < fence
+        self.elapsed_now() < fence
     }
 
-    pub(crate) fn has_settlement_time(&self, deadline_ms: i64) -> bool {
-        self.clock.monotonic_now().after(LINK_LANE_SETTLEMENT_LIMIT)
-            < self.local_wake_at(deadline_ms)
+    pub(crate) fn elapsed_now(&self) -> ClockInstant {
+        self.clock.monotonic_now()
+    }
+
+    pub(crate) fn next_cutoff_retry(&self) -> ClockInstant {
+        // A waiting scan exposes only its earliest cutoff. A failed sweep can
+        // still run on the next representable store deadline for later rows.
+        self.local_wake_at(self.local_now_ms().saturating_add(1))
     }
 
     /// Read the first waiting receipt mark for the scheduler, including unanswered replays.
@@ -130,15 +201,6 @@ impl OutboxWork {
         let scanned = self.store.earliest_deadline().await?;
         let deadline = outbox_scan(scanned, &mut self.operator_events);
         Ok(deadline.map(|deadline_ms| self.local_wake_at(deadline_ms)))
-    }
-
-    pub(crate) fn write_send_fence(&self, original_send: Timestamp) -> ClockInstant {
-        let deadline = self.write_deadline(original_send);
-        ClockInstant::ZERO.after(
-            deadline
-                .saturating_duration_since(ClockInstant::ZERO)
-                .saturating_sub(LINK_LANE_SETTLEMENT_LIMIT),
-        )
     }
 
     pub(crate) fn write_deadline(&self, original_send: Timestamp) -> ClockInstant {
@@ -180,12 +242,21 @@ impl OutboxWork {
         &mut self,
         request: &RequestId,
     ) -> Result<Vec<EndedWrite>, OutboxStoreError> {
+        self.end_selected_claims(&BTreeSet::from([request.clone()]))
+            .await
+    }
+
+    pub(crate) async fn end_selected_claims(
+        &mut self,
+        requests: &BTreeSet<RequestId>,
+    ) -> Result<Vec<EndedWrite>, OutboxStoreError> {
         let scan = self.store.sent_without_answer().await?;
-        let mut excluded = outbox_scan(scan, &mut self.operator_events)
-            .into_iter()
-            .map(|claim| claim.key.request_id)
-            .collect::<BTreeSet<_>>();
-        if !excluded.remove(request) {
+        let (excluded, selected): (BTreeSet<_>, BTreeSet<_>) =
+            outbox_scan(scan, &mut self.operator_events)
+                .into_iter()
+                .map(|claim| claim.key.request_id)
+                .partition(|id| !requests.contains(id));
+        if selected.is_empty() {
             return Ok(Vec::new());
         }
         let now_ms = self.local_now_ms();
@@ -225,18 +296,13 @@ impl OutboxWork {
         let limit = u16::try_from(MAX_LINK_REQUEST_BATCH_SIZE)
             .map_err(|_| OutboxWorkError::InvalidBatchLimit)?;
         let now_ms = self.local_now_ms();
-        let settlement_budget_ms = i64::try_from(LINK_LANE_SETTLEMENT_LIMIT.as_millis())
-            .map_err(|_| OutboxWorkError::InvalidSettlementHorizon)?;
-        let required_deadline_after_ms = now_ms
-            .checked_add(settlement_budget_ms)
-            .ok_or(OutboxWorkError::InvalidSettlementHorizon)?;
         let scanned = self
             .store
             .claim_next_batch(
                 eligible_through.unix_millis(),
                 limit,
                 now_ms,
-                required_deadline_after_ms,
+                now_ms,
                 excluded_request_ids,
             )
             .await?;

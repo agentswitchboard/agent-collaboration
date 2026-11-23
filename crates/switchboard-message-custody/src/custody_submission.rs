@@ -83,6 +83,35 @@ pub(crate) enum PreparedSubmission {
     Immediate(ImmediateRequestCommand),
 }
 
+/// The outbox insert distinguishes new and uncertain admissions from replays of stored writes.
+pub(crate) enum QueuedWriteSubmission {
+    Stored(OutboxReceipt),
+    PossiblyStored {
+        request: RequestId,
+        scope: RequestScope,
+    },
+    ExistingOrRefused(Submission),
+}
+
+impl QueuedWriteSubmission {
+    pub(crate) fn into_reply(self) -> (Submission, Option<RequestId>) {
+        match self {
+            Self::Stored(receipt) => {
+                let request = receipt.id.clone();
+                (Submission::InOutbox(receipt), Some(request))
+            }
+            Self::PossiblyStored { request, scope } => (
+                Submission::Uncertain {
+                    request: request.clone(),
+                    scope,
+                },
+                Some(request),
+            ),
+            Self::ExistingOrRefused(reply) => (reply, None),
+        }
+    }
+}
+
 pub(crate) fn choose_submission_route(
     payload: SubmissionPayload,
 ) -> Result<SubmissionRoute, SubmitRefusal> {
@@ -127,20 +156,25 @@ pub(crate) async fn submit_to_outbox(
     request: RequestId,
     payload: OutboxQueuedWrite,
     flush_at: SyncTime,
-) -> Submission {
+) -> QueuedWriteSubmission {
+    use QueuedWriteSubmission::{ExistingOrRefused, PossiblyStored, Stored};
     let scope = wire_scope(payload.request_scope());
     let now_ms = work.local_now_ms();
     let Some(sent_at) = Timestamp::from_timestamp_millis(now_ms) else {
-        return Submission::Refused(SubmitRefusal::InvalidSendTime);
+        return ExistingOrRefused(Submission::Refused(SubmitRefusal::InvalidSendTime));
     };
     let wire = match request_for_write(&caller, &payload, sent_at, now_ms) {
         Ok(wire) => wire,
-        Err(error) => return Submission::Refused(SubmitRefusal::InvalidRequest(error)),
+        Err(error) => {
+            return ExistingOrRefused(Submission::Refused(SubmitRefusal::InvalidRequest(error)));
+        }
     };
     match fits_one_member(&wire) {
         Ok(true) => {}
-        Ok(false) => return Submission::Refused(SubmitRefusal::TooLargeToSend),
-        Err(error) => return Submission::Refused(SubmitRefusal::UnmeasurableWrite(error)),
+        Ok(false) => return ExistingOrRefused(Submission::Refused(SubmitRefusal::TooLargeToSend)),
+        Err(error) => {
+            return ExistingOrRefused(Submission::Refused(SubmitRefusal::UnmeasurableWrite(error)));
+        }
     }
     let item = NewOutboxItem {
         request: request.clone(),
@@ -149,33 +183,34 @@ pub(crate) async fn submit_to_outbox(
         flush_at_ms: flush_at.unix_millis(),
     };
     match work.outbox_storage().insert(&item, now_ms).await {
-        Ok(OutboxInsert::Stored) => Submission::InOutbox(OutboxReceipt {
+        Ok(OutboxInsert::Stored) => Stored(OutboxReceipt {
             id: request,
             flush_at,
         }),
         Ok(OutboxInsert::AlreadyStored(OutboxRequestStatus::InOutbox { flush_at_ms })) => {
-            Submission::InOutbox(OutboxReceipt {
+            ExistingOrRefused(Submission::InOutbox(OutboxReceipt {
                 id: request,
                 flush_at: SyncTime::from_unix_millis(flush_at_ms),
-            })
+            }))
         }
         Ok(OutboxInsert::AlreadyStored(OutboxRequestStatus::Answered(accepted))) => {
-            Submission::Answered(accepted_reply(accepted))
+            ExistingOrRefused(Submission::Answered(accepted_reply(accepted)))
         }
         Ok(OutboxInsert::Refused(_))
         | Ok(OutboxInsert::AlreadyStored(OutboxRequestStatus::Refused(OutboxRefusal::Local(_)))) => {
-            Submission::Refused(SubmitRefusal::RequestIdConflict)
+            ExistingOrRefused(Submission::Refused(SubmitRefusal::RequestIdConflict))
         }
         Err(OutboxStoreError::InsertNotStarted(_)) => {
-            Submission::Refused(SubmitRefusal::OutboxUnavailable)
+            ExistingOrRefused(Submission::Refused(SubmitRefusal::OutboxUnavailable))
         }
+        Err(OutboxStoreError::Database(_)) => PossiblyStored { request, scope },
         Ok(OutboxInsert::AlreadyStored(
             OutboxRequestStatus::NotFound
             | OutboxRequestStatus::Sent
             | OutboxRequestStatus::Refused(_)
             | OutboxRequestStatus::Ended { .. },
         ))
-        | Err(_) => Submission::Uncertain { request, scope },
+        | Err(_) => ExistingOrRefused(Submission::Uncertain { request, scope }),
     }
 }
 
