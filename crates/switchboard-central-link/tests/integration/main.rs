@@ -3,7 +3,7 @@
     reason = "Scripted peer and lease fixtures fail at the exact unexpected observation."
 )]
 
-use std::{sync::Arc, time::Duration};
+use std::{future::poll_fn, sync::Arc, time::Duration};
 
 use central_link_client::EnrollmentEnd;
 use central_link_protocol::{
@@ -34,6 +34,7 @@ use workspace_ids::MachineId;
 
 mod credential_diagnostics;
 mod renewal_endings;
+mod settings_replay;
 
 const TOKEN: &str = "fictional-fixture-access-token.0.signature";
 const REFRESHED: &str = "fictional-fixture-access-token.1.signature";
@@ -91,6 +92,7 @@ struct Fixture {
     acquired: mpsc::UnboundedReceiver<Option<LeaseVersion>>,
     ended: mpsc::UnboundedReceiver<(u8, EnrollmentEnd)>,
     inbox_events: mpsc::Receiver<central_link_client::ClientEvent>,
+    driver_polls: watch::Receiver<u64>,
     task: JoinHandle<()>,
 }
 
@@ -111,7 +113,7 @@ impl Fixture {
         let (acquired_tx, acquired) = mpsc::unbounded_channel();
         let (ended_tx, ended) = mpsc::unbounded_channel();
         let (inbox, inbox_rx) = mpsc::channel(4);
-        let task = tokio::spawn(
+        let mut driver = Box::pin(
             LinkDriver {
                 machine_id: machine(),
                 clock: clock.clone(),
@@ -126,6 +128,12 @@ impl Fixture {
             }
             .run(),
         );
+        let (poll_count, driver_polls) = watch::channel(0);
+        let task = tokio::spawn(poll_fn(move |cx| {
+            let result = driver.as_mut().poll(cx);
+            poll_count.send_modify(|count| *count += 1);
+            result
+        }));
         Self {
             clock,
             listener,
@@ -135,6 +143,7 @@ impl Fixture {
             acquired,
             ended,
             inbox_events: inbox_rx,
+            driver_polls,
             task,
         }
     }

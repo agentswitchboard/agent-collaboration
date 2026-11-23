@@ -223,6 +223,9 @@ pub enum LinkInput<Binding> {
         binding: Binding,
     },
     AddressCorrected,
+    AddressChanged {
+        attempt: ConnectionAttempt,
+    },
 }
 
 /// Instructions for the driver to apply after publishing its next state.
@@ -290,6 +293,7 @@ impl<Binding> EventTag for LinkInput<Binding> {
             Self::LeaseEnded { .. } => "lease_ended",
             Self::LeaseFault { .. } => "lease_fault",
             Self::AddressCorrected => "address_corrected",
+            Self::AddressChanged { .. } => "address_changed",
         }
     }
 }
@@ -683,6 +687,23 @@ impl<Binding: Clone + Eq> StateMachine for LinkPolicy<Binding> {
                 };
                 next.wait_for_lease(binding.clone(), DialLease::Current, &mut effects);
             }
+            LinkInput::AddressChanged { attempt } => {
+                let (binding, freshness) = match &state.phase {
+                    LinkPhase::Dialing {
+                        attempt: current,
+                        lease,
+                        refresh,
+                    } if current == &attempt => (lease.binding.clone(), refresh.clone()),
+                    LinkPhase::Welcomed {
+                        attempt: current,
+                        lease,
+                        ..
+                    } if current == &attempt => (lease.binding.clone(), DialLease::Current),
+                    _ => return Err(TransitionError::Stale),
+                };
+                effects.push(LinkEffect::BackOff { attempt });
+                next.wait_for_lease(binding, freshness, &mut effects);
+            }
         }
         Ok((next, effects))
     }
@@ -730,6 +751,8 @@ const LINK_TRANSITIONS: &[Transition] = &[
     transition("welcomed", "lease_fault", "fault"),
     transition("fault", "lease_fault", "fault"),
     transition("fault", "address_corrected", "waiting"),
+    transition("dialing", "address_changed", "waiting"),
+    transition("welcomed", "address_changed", "waiting"),
 ];
 
 const fn transition(from: &'static str, event: &'static str, to: &'static str) -> Transition {

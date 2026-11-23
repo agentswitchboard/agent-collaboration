@@ -57,15 +57,19 @@ enum Interrupted {
 struct Control<'a, Binding> {
     settings: &'a mut watch::Receiver<DriverSettings<Binding>>,
     shutdown: &'a mut watch::Receiver<bool>,
+    observed: DriverSettings<Binding>,
 }
 
-impl<Binding> Control<'_, Binding> {
+impl<Binding: Clone + Eq> Control<'_, Binding> {
     async fn wait(&mut self) -> Interrupted {
         tokio::select! {
             biased;
             _ = self.shutdown.wait_for(|stop| *stop) => Interrupted::Stopped,
-            update = self.settings.changed() => match update {
-                Ok(()) => Interrupted::SettingsChanged,
+            update = self.settings.wait_for(|settings| *settings != self.observed) => match update {
+                Ok(settings) => {
+                    self.observed = settings.clone();
+                    Interrupted::SettingsChanged
+                }
                 Err(_) => Interrupted::Stopped,
             },
         }
@@ -89,6 +93,7 @@ struct BindingDriver<'source, Binding, Source> {
     machine_id: MachineId,
     state: LinkState<Binding>,
     client: LinkClient,
+    lease_retry_at: Option<ClockInstant>,
 }
 
 enum OpenExit<Binding> {
@@ -115,6 +120,7 @@ where
             let mut control = Control {
                 settings: &mut self.settings,
                 shutdown: &mut self.shutdown,
+                observed: settings.clone(),
             };
             let Some(binding) = settings.binding else {
                 if terminal_binding.is_none() {
@@ -141,6 +147,7 @@ where
                 machine_id: self.machine_id.clone(),
                 state: LinkState::new(self.machine_id.clone()),
                 client: LinkClient::new(self.machine_id.clone(), self.clock.clone()),
+                lease_retry_at: None,
             };
             match driver.run_binding(binding.clone(), &mut control).await {
                 (Interrupted::Stopped, _) => return,
@@ -182,21 +189,35 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
         control: &mut Control<'_, Binding>,
     ) -> (Interrupted, bool) {
         let _ = self.apply(LinkInput::BindingAvailable(binding.clone()));
-        if self.address.is_err() {
-            self.status.send_replace(LinkStatus::Fault {
-                kind: central_link_client::LinkFault::MalformedAddress,
-            });
-            return (control.wait().await, false);
-        }
-        match self.run_attempts(&binding, control).await {
-            Ok(OpenExit::Final { binding, cause }) => {
-                // Retire exact credential authority even if its storage version advanced.
-                // The lease owner commits the mark independently of the socket.
-                self.lease_source.end(&binding, cause);
-                (control.wait().await, true)
+        loop {
+            let interruption = if self.address.is_err() {
+                self.status.send_replace(LinkStatus::Fault {
+                    kind: central_link_client::LinkFault::MalformedAddress,
+                });
+                control.wait().await
+            } else {
+                match self.run_attempts(&binding, control).await {
+                    Ok(OpenExit::Final { binding, cause }) => {
+                        self.lease_source.end(&binding, cause);
+                        return (control.wait().await, true);
+                    }
+                    Ok(OpenExit::Resume) => control.wait().await,
+                    Err(reason) => reason,
+                }
+            };
+            if matches!(interruption, Interrupted::Stopped)
+                || control.observed.binding.as_ref() != Some(&binding)
+            {
+                return (interruption, false);
             }
-            Ok(OpenExit::Resume) => (control.wait().await, false),
-            Err(reason) => (reason, false),
+            let next_address = control.observed.address.clone();
+            if next_address != self.address
+                && next_address.is_ok()
+                && self.apply(LinkInput::AddressCorrected).is_some()
+            {
+                self.client.reenrolled();
+            }
+            self.address = next_address;
         }
     }
 
@@ -229,6 +250,10 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
             if let Some(deadline) = self.client.next_deadline() {
                 control.during(self.clock.sleep_until(deadline)).await?;
             }
+            if let Some(deadline) = self.lease_retry_at {
+                control.during(self.clock.sleep_until(deadline)).await?;
+                self.lease_retry_at = None;
+            }
             let result = control
                 .during(self.lease_source.acquire(binding, newer_than))
                 .await?;
@@ -241,15 +266,15 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
                     lease
                 }
                 Ok(_) => {
-                    control
-                        .during(self.clock.sleep_for(MIN_LEASE_RETRY))
-                        .await?;
+                    self.lease_retry_at = Some(self.clock.monotonic_now().after(MIN_LEASE_RETRY));
                     continue;
                 }
                 Err(LeaseFailure::Unavailable { retry_after }) => {
-                    control
-                        .during(self.clock.sleep_for(retry_after.max(MIN_LEASE_RETRY)))
-                        .await?;
+                    self.lease_retry_at = Some(
+                        self.clock
+                            .monotonic_now()
+                            .after(retry_after.max(MIN_LEASE_RETRY)),
+                    );
                     continue;
                 }
                 Err(LeaseFailure::EnrollmentEnded) => {
@@ -295,7 +320,11 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
                         result = Box::pin(address.dial(&lease.token)) => result,
                     }
                 })
-                .await?;
+                .await;
+            let result = match result {
+                Ok(result) => result,
+                Err(reason) => return self.interrupted_attempt(&attempt, reason),
+            };
             match result {
                 Ok(mut socket) => {
                     let done = self
@@ -304,7 +333,9 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
                     // Close is best-effort during cancellation. Dropping the stream
                     // terminates custody even when a blocked peer cannot take a frame.
                     let _ = socket.send(Message::Close(None)).now_or_never();
-                    done?;
+                    if let Err(reason) = done {
+                        return self.interrupted_attempt(&attempt, reason);
+                    }
                 }
                 Err(reason) => {
                     let _ = self.apply(LinkInput::DialFailed {
@@ -320,6 +351,20 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
                 }
             }
         }
+    }
+
+    fn interrupted_attempt(
+        &mut self,
+        attempt: &ConnectionAttempt,
+        reason: Interrupted,
+    ) -> Result<OpenExit<Binding>, Interrupted> {
+        if matches!(reason, Interrupted::SettingsChanged) {
+            let _ = self.client.closed(attempt);
+            let _ = self.apply(LinkInput::AddressChanged {
+                attempt: attempt.clone(),
+            });
+        }
+        Err(reason)
     }
 
     async fn open_socket(
