@@ -138,11 +138,11 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         self
     }
 
-    pub fn with_approval_deadline_completion(
+    pub fn with_approval_delivery_completion(
         mut self,
         schedule: Arc<dyn Fn(LinkCallCompletion) + Send + Sync>,
     ) -> Self {
-        self.approval_deadline_completion = Some(schedule);
+        self.approval_delivery_completion = Some(schedule);
         self
     }
 
@@ -211,6 +211,18 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             }
         };
         Ok(result)
+    }
+
+    /// Called while the physical writer retains the organization turn.
+    pub async fn approval_notice_deadline_in_held_turn(
+        &self,
+        notice: &central_link_protocol::approval_rpc::ApprovalNoticeEnvelope,
+    ) -> Result<Option<central_engine_model::EngineTime>, StoreFailure> {
+        self.link_call_dispatcher
+            .as_ref()
+            .ok_or(StoreFailure::Unavailable)?
+            .approval_notice_deadline(notice)
+            .await
     }
 
     pub fn recover_approval_notices(
@@ -299,8 +311,45 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                 .reached_central(fleet_runtime::PausePoint::BeforeParentApprovalTransaction)
                 .await;
         }
-        let CentralCallWork { result, completion } =
-            dispatcher.dispatch(&machine, request, carrier).await?;
+        #[cfg(feature = "test-support")]
+        let is_parent_approval = matches!(
+            &request,
+            CentralCall::ListApprovalsForSession(_)
+                | CentralCall::ReadApprovalForSession(_)
+                | CentralCall::DecideApprovalAsSession(_)
+                | CentralCall::PassOnApproval(_)
+        );
+        let apply_turn = if matches!(
+            &request,
+            CentralCall::EndFleetSession(_)
+                | CentralCall::ListApprovalsForSession(_)
+                | CentralCall::ReadApprovalForSession(_)
+                | CentralCall::DecideApprovalAsSession(_)
+                | CentralCall::PassOnApproval(_)
+        ) {
+            Some(self.execution.take_central_turn_for_admission().await)
+        } else {
+            None
+        };
+        let CentralCallWork {
+            result,
+            committed_delivery,
+            completion,
+        } = dispatcher.dispatch(&machine, request, carrier).await?;
+        drop(apply_turn);
+        if let Some(delivery) = committed_delivery
+            && let Some(schedule) = &self.approval_delivery_completion
+        {
+            schedule(delivery);
+        }
+        #[cfg(feature = "test-support")]
+        if is_parent_approval {
+            self.execution
+                .pause_points()
+                .reached_central(fleet_runtime::PausePoint::BeforeParentApprovalReply)
+                .await;
+        }
+        let result = result?;
         let registered_run = requested_run.filter(|_| {
             matches!(
                 &result,

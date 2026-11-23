@@ -5,7 +5,7 @@ use super::{
 use crate::worker_clock::WorkspaceClock;
 use central_link_call_composition::{ApprovalDeliveryTransport, SelectedApprovalSocket};
 use central_link_protocol::{
-    TypedCallResult,
+    MacCall, TypedCallResult,
     approval_rpc::{
         ApprovalHolderTarget, ApprovalNoticeRpc, ApprovalNoticeTarget, DeliverEndingRpc,
     },
@@ -70,6 +70,12 @@ impl ApprovalDeliveryTransport for WorkerApprovalDelivery {
             };
             let deadline = clock.now().after(TYPED_LINK_CALL_TIMEOUT);
             let write = async {
+                #[cfg(feature = "test-support")]
+                runtime
+                    .runtime()
+                    .pause_points()
+                    .reached_central(fleet_runtime::PausePoint::BeforeApprovalNoticeWrite)
+                    .await;
                 let _turn = runtime.runtime().take_central_turn_for_admission().await;
                 let socket = state
                     .get_websockets_with_tag(target.machine_id.as_str())
@@ -91,6 +97,23 @@ impl ApprovalDeliveryTransport for WorkerApprovalDelivery {
                 ) {
                     return Err(CallFailure::NeverReached);
                 }
+                let MacCall::ApprovalNotice(notice) = &request else {
+                    return Err(CallFailure::NeverReached);
+                };
+                match runtime.approval_notice_deadline_in_held_turn(notice).await {
+                    Ok(Some(approval_deadline))
+                        if clock.now().unix_millis() < approval_deadline.timestamp_millis() => {}
+                    Ok(_) => return Err(CallFailure::NeverReached),
+                    Err(failure) => {
+                        worker::console_warn!(
+                            "could not validate queued approval notice: {failure:?}"
+                        );
+                        return Err(CallFailure::NeverReached);
+                    }
+                }
+                if !is_current_socket(&state, &socket, &target.machine_id) {
+                    return Err(CallFailure::NeverReached);
+                }
                 pending_calls.begin_mac_call(
                     &clock,
                     &socket,
@@ -102,8 +125,15 @@ impl ApprovalDeliveryTransport for WorkerApprovalDelivery {
             };
             let attempt = match select(pin!(clock.wait_until(deadline)), pin!(write)).await {
                 Either::Left(_) => return Err(CallFailure::NeverReached),
-                Either::Right((attempt, _)) => attempt?,
+                Either::Right((attempt, _)) => attempt,
             };
+            #[cfg(feature = "test-support")]
+            runtime
+                .runtime()
+                .pause_points()
+                .reached_central(fleet_runtime::PausePoint::AfterApprovalNoticeAttempt)
+                .await;
+            let attempt = attempt?;
             let answer = match select(attempt.answer, pin!(clock.wait_until(deadline))).await {
                 Either::Left((answer, _)) => answer.map_err(|_| CallFailure::AnswerLost)?,
                 Either::Right(_) => return Err(CallFailure::AnswerLost),

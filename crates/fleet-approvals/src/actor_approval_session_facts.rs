@@ -9,7 +9,7 @@ use sqlx_core::{
 };
 
 use fleet_actor_identity::{
-    ApprovalChainFailure, ScopedSession, SessionLookupScope, SessionService,
+    ApprovalChainFailure, ApprovalChainSession, ScopedSession, SessionLookupScope, SessionService,
 };
 
 /// Reads approval facts in the caller’s organization transaction.
@@ -58,17 +58,25 @@ where
             .approval_chain_fact(&session.session_id)
             .await
             .map_err(approval_chain_failure)?;
-        if approval_session(origin.scope) != *session {
+        let (scope, parent) = match origin {
+            ApprovalChainSession::Live { scope, parent }
+            | ApprovalChainSession::Ended { scope, parent } => (scope, parent),
+        };
+        if approval_session(scope) != *session {
             return Err(corrupt("actor_sessions.approval_chain_scope"));
         }
-        let Some(parent) = origin.parent else {
+        let Some(parent) = parent else {
             return Ok(None);
         };
         let recorded = service
             .approval_chain_fact(&parent)
             .await
             .map_err(approval_chain_failure)?;
-        Ok(Some(approval_session(recorded.scope)))
+        match recorded {
+            ApprovalChainSession::Live { scope, .. } => Ok(Some(approval_session(scope))),
+            // An ended parent retains this hop until the original deadline.
+            ApprovalChainSession::Ended { scope, .. } => Ok(Some(approval_session(scope))),
+        }
     }
 
     async fn session_is_live(

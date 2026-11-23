@@ -3,14 +3,6 @@
 ALTER TABLE approval_request_destinations ADD COLUMN position INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE approval_request_destinations ADD COLUMN first_read_at TEXT;
 
-UPDATE approval_request_destinations AS people
-SET position = 1
-WHERE people.destination_kind = 'people' AND EXISTS (
-    SELECT 1 FROM approval_request_destinations AS parent
-    WHERE parent.approval_row_id = people.approval_row_id
-      AND parent.destination_kind = 'parent_session'
-);
-
 DROP INDEX approval_destinations_one_parent;
 CREATE UNIQUE INDEX approval_destinations_position
 ON approval_request_destinations (approval_row_id, position);

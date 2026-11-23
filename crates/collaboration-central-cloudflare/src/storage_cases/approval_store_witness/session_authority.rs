@@ -3,7 +3,7 @@ use central_engine_model::EngineTime;
 use fleet_actor_identity::{AuthenticatedSession, SessionService};
 use fleet_approvals::{
     ActorApprovalSessionFacts, ApprovalApplyingStore, ApprovalCommitScope, ApprovalHolderAdmission,
-    ApprovalHolderCommand,
+    ApprovalHolderCommand, SessionDecisionApply,
 };
 use fleet_contracts::{ClientId, MachineConnectionAttachment};
 use fleet_identity_protocol::{PresentedSessionSecret, UnixSeconds};
@@ -15,8 +15,7 @@ use workspace_ids::CentralSessionId;
 use super::fixture_commands::{SessionApprovalWitness, WitnessHolder};
 use super::fixture_transaction::WorkerApprovalTransaction;
 use super::{
-    PendingWitnessApply, WitnessClock, WitnessFailure, WitnessIds, applied_json, decision_json,
-    holder_json,
+    PendingWitnessApply, WitnessClock, WitnessFailure, WitnessIds, applied_json, holder_json,
 };
 
 pub(super) async fn apply_authenticated(
@@ -71,21 +70,25 @@ pub(super) async fn apply_authenticated(
                 .await?,
             holder_json,
         ),
-        SessionApprovalWitness::Decide { request, .. } => applied_json(
-            store
-                .decide_session_approval(
-                    admission.as_ref().ok_or(WitnessFailure::Storage)?,
-                    request,
-                )
-                .await?,
-            decision_json,
-        ),
+        SessionApprovalWitness::Decide { request, .. } => {
+            match store
+                .decide_as_session(admission.as_ref().ok_or(WitnessFailure::Storage)?, request)
+                .await?
+            {
+                SessionDecisionApply::PersonRequired => {
+                    return Ok((
+                        Box::new(|_, _| {
+                            Ok(json!({ "result": { "kind": "personRequired" }, "offers": [] }))
+                        }),
+                        None,
+                    ));
+                }
+                SessionDecisionApply::Reply(reply) => applied_json(reply, |reply| json!(reply)),
+            }
+        }
         SessionApprovalWitness::PassOn { request, .. } => applied_json(
             store
-                .pass_on_session_approval(
-                    admission.as_ref().ok_or(WitnessFailure::Storage)?,
-                    request,
-                )
+                .pass_on_as_session(admission.as_ref().ok_or(WitnessFailure::Storage)?, request)
                 .await?,
             |reply| json!(reply),
         ),

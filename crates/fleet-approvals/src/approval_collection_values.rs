@@ -63,6 +63,7 @@ pub enum ApprovalCollectionEvent {
         key: ApprovalRequestKey,
         parent: ApprovalSession,
         request: PassOnRequest,
+        to: crate::ApprovalRouteDestination,
     },
     EndSession {
         session: ApprovalSession,

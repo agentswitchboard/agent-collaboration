@@ -4,7 +4,8 @@ use crate::{
 };
 use central_link_call_composition::{
     ApprovalAlarmPublication, ApprovalStatementLoan, ApprovalTransactionFailure,
-    ApprovalTransactionFuture, OrganizationApprovalTransactions, OrganizationLoan,
+    ApprovalTransactionFuture, CommittedApprovalApply, OrganizationApprovalTransactions,
+    OrganizationLoan,
 };
 use central_storage::{EngineAlarmDecider, ReadOutcome, Statement, StoreFailure};
 use fleet_identity_protocol::OrganizationId;
@@ -68,7 +69,7 @@ impl OrganizationApprovalTransactions for WorkerApprovalTransactions {
         ) -> ApprovalTransactionFuture<'loan, Output>
         + Send
         + 'static,
-    ) -> Result<Output, ApprovalTransactionFailure> {
+    ) -> Result<CommittedApprovalApply<Output>, ApprovalTransactionFailure> {
         let policy = AlarmPolicy::Engine(
             self.state.storage(),
             self.clock.clone(),
@@ -107,6 +108,10 @@ impl OrganizationApprovalTransactions for WorkerApprovalTransactions {
                 Ok(result)
             })
             .await
+            .map(|output| CommittedApprovalApply {
+                output,
+                publication_failure: None,
+            })
             .map_err(|failure| match failure {
                 WorkerApprovalAbort::Applying(failure) => failure,
                 WorkerApprovalAbort::Commit => StoreFailure::AnswerLost.into(),

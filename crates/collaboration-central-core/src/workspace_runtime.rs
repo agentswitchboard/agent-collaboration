@@ -16,7 +16,7 @@ pub struct WorkspaceRuntime<Host: CentralStore, Stores: WorkspaceStores> {
     pub(crate) mail_delivery_ready: Arc<dyn Fn(MailDeliveryReady) + Send + Sync>,
     pub(crate) enrollment_invalidated:
         Arc<dyn Fn(fleet_contracts::EnrollmentInvalidation) + Send + Sync>,
-    pub(crate) approval_deadline_completion:
+    pub(crate) approval_delivery_completion:
         Option<Arc<dyn Fn(crate::LinkCallCompletion) + Send + Sync>>,
     pub(crate) link_call_dispatcher: Option<Arc<dyn crate::CentralLinkDispatcher>>,
     #[cfg(feature = "test-support")]
@@ -38,7 +38,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             direct_messages,
             execution,
             stamp_store,
-            approval_deadline_completion: None,
+            approval_delivery_completion: None,
             link_call_dispatcher: None,
             #[cfg(feature = "test-support")]
             fixture_link_calls: false,

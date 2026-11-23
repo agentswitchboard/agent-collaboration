@@ -1,12 +1,14 @@
 //! Re-offer unread approvals after the destination machine reconnects.
 use std::sync::Arc;
 
+use central_link_protocol::approval_rpc::ApprovalNoticeEnvelope;
+use central_storage::StoreFailure;
 use collaboration_central_core::{
     LinkCallCompletion, ValidatedMachineConnection, recheck_lent_link_authority,
 };
 use fleet_approvals::{
-    ActorApprovalSessionFacts, ApprovalCommitScope, ApprovalNoticeCursor, ApprovalNoticeRecovery,
-    ApprovalStoreTransaction, PendingApprovalEffects,
+    ActorApprovalSessionFacts, ApprovalCommitScope, ApprovalEnrollment, ApprovalNoticeCursor,
+    ApprovalNoticeRecovery, ApprovalSession, ApprovalStoreTransaction, PendingApprovalEffects,
 };
 use fleet_lent_transaction::CentralTransaction;
 use fleet_runtime_ports::{Clock, IdSource};
@@ -34,6 +36,59 @@ where
     i64: Type<Db> + for<'query> Encode<'query, Db> + for<'row> Decode<'row, Db>,
     for<'row> &'row str: ColumnIndex<Db::Row>,
 {
+    pub(crate) async fn notice_deadline(
+        &self,
+        notice: &ApprovalNoticeEnvelope,
+    ) -> Result<Option<central_engine_model::EngineTime>, StoreFailure> {
+        let clock = self.application.clock.clone();
+        let ids = self.application.ids.clone();
+        let notice = notice.clone();
+        let (_, deadline) = commit_approval(
+            self.application.transactions.clone(),
+            notice.target.organization_id.clone(),
+            ApprovalAlarmPublication::AtDueBatchEnd,
+            move |loan, scope| {
+                Box::pin(async move {
+                    let time = crate::approval_applying_time::read_applying_time(loan, clock.now())
+                        .await?;
+                    let clock = ApprovalApplyingClock(time.effective());
+                    let mut ids = ApprovalApplyingIds(ids.as_ref());
+                    let target = notice.target;
+                    let session = ApprovalSession {
+                        enrollment: ApprovalEnrollment {
+                            machine_id: target.machine_id,
+                            enrollment_id: target.enrollment_id,
+                        },
+                        session_id: target.session_id,
+                    };
+                    ApprovalStore::new(&scope, loan, &ActorApprovalSessionFacts, &clock, &mut ids)
+                        .owed_notice_deadline(
+                            &target.organization_id,
+                            &session,
+                            &notice.body.request_id,
+                        )
+                        .await
+                })
+            },
+        )
+        .await
+        .map_err(|failure| match failure {
+            crate::ApprovalTransactionFailure::Store(failure)
+            | crate::ApprovalTransactionFailure::Loan(crate::OrganizationLoanFailure::Store(
+                failure,
+            ))
+            | crate::ApprovalTransactionFailure::RolledBack(
+                fleet_approvals::ApprovalApplyFailure::Store(failure),
+            ) => failure,
+            crate::ApprovalTransactionFailure::Loan(crate::OrganizationLoanFailure::Wiring(_))
+            | crate::ApprovalTransactionFailure::RolledBack(
+                fleet_approvals::ApprovalApplyFailure::Lifecycle(_)
+                | fleet_approvals::ApprovalApplyFailure::GuardChanged,
+            ) => StoreFailure::Unavailable,
+        })?;
+        Ok(deadline)
+    }
+
     pub(crate) fn on_welcome(self, machine: ValidatedMachineConnection) -> LinkCallCompletion {
         Box::pin(async move {
             let mut cursor = None;

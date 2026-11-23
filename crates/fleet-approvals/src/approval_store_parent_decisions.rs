@@ -13,7 +13,6 @@ use super::{
 use crate::{
     AdmittedDecider, ApprovalActor, ApprovalDecideInput, ApprovalDecisionReply,
     ApprovalSessionFacts, ApprovalState, PendingApprovalReply,
-    approval_decision_log::ApprovalDecisionLogKey,
     approval_store_reads::read_parent_approval_request,
     approval_store_transaction::ApprovalStoreTransaction,
 };
@@ -62,21 +61,7 @@ where
             && at < saved.window.deadline()
             && requires_person(&saved.raise.offer_view(), &input.value)
         {
-            let caller = self
-                .transaction
-                .approval_decision_caller(organization, &actor)
-                .await?;
-            let log = ApprovalDecisionLogKey::new(organization, caller, &input, at)?;
-            let retained = self
-                .transaction
-                .read_approval_statement(log.lookup_statement())
-                .await?;
-            if log
-                .replay(&retained, &input, &actor.identity(), &record.state)?
-                .is_none()
-            {
-                return Ok(SessionDecisionApply::PersonRequired);
-            }
+            return Ok(SessionDecisionApply::PersonRequired);
         }
         let applied = self
             .decide_approval(

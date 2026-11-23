@@ -149,12 +149,21 @@ where
                 .apply_holder(machine.clone(), run.clone(), command)
                 .await;
             match applied {
-                Ok(HolderApplied::Answer { reply, offers }) => {
+                Ok(HolderApplied::Answer {
+                    reply,
+                    offers,
+                    publication_failure,
+                }) => {
                     let reply = wrap(target, reply).ok_or(StoreFailure::AnswerLost)?;
                     let registration = recover_after_registration(&reply, machine, run);
                     Ok(CentralCallWork {
-                        result: TypedCallResult::Answered { reply },
-                        completion: self.after_reply(offers, registration),
+                        result: match publication_failure {
+                            None => Ok(TypedCallResult::Answered { reply }),
+                            Some(failure) => Err(failure),
+                        },
+                        committed_delivery: self.after_reply(offers, None),
+                        completion: self
+                            .after_reply(CommittedApprovalEffects::default(), registration),
                     })
                 }
                 Ok(HolderApplied::AuthorityLapsed(cause)) => {
@@ -185,10 +194,11 @@ where
                     Ok(HolderApplied::Answer {
                         reply: HolderReply::Recover(Ok(())),
                         offers,
+                        ..
                     }) => delivery.offer_all(offers).await,
                     Ok(HolderApplied::Answer {
                         reply: HolderReply::Recover(Err(refusal)),
-                        offers: _,
+                        ..
                     }) => tracing::debug!(
                         ?refusal,
                         "registered holder no longer has approval authority"

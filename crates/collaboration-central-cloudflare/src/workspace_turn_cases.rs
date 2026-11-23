@@ -23,6 +23,9 @@ pub(super) async fn control(
                     | Point::BeforeApprovalEndingWrite
                     | Point::BeforeApprovalCarrierTurn
                     | Point::BeforeParentApprovalTransaction
+                    | Point::BeforeParentApprovalReply
+                    | Point::BeforeApprovalNoticeWrite
+                    | Point::AfterApprovalNoticeAttempt
                     | Point::AfterApprovalNoticeRecovery
                     | Point::AfterIdleExpiryCommit
                     | Point::AfterIdleRenewalPlatformSendError

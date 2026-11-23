@@ -1,7 +1,7 @@
 use crate::{
     ApprovalAlarmPublication, ApprovalTransactionFailure, ApprovalTransactionFuture,
     OrganizationApprovalTransactions, OrganizationLoanFailure,
-    approval_transaction::commit_approval,
+    approval_transaction::commit_approval_with_publication,
 };
 use approval_request_protocol::{
     DeliverEndingReply, DeliverEndingRequest, Raise, RaiseReply, RegisterRunReply, RouterRunId,
@@ -110,6 +110,7 @@ pub(crate) enum HolderApplied {
     Answer {
         reply: HolderReply,
         offers: CommittedApprovalEffects,
+        publication_failure: Option<StoreFailure>,
     },
     AuthorityLapsed(MachineLinkCloseCode),
 }
@@ -143,7 +144,7 @@ where
             let organization = machine.organization_id().clone();
             let clock = self.clock.clone();
             let ids = self.ids.clone();
-            let (proof, applied) = commit_approval(
+            let (proof, committed) = commit_approval_with_publication(
                 self.transactions.clone(),
                 organization,
                 ApprovalAlarmPublication::WithCommit,
@@ -153,7 +154,7 @@ where
             )
             .await
             .map_err(ApprovalDispatchFailure::Transaction)?;
-            match applied {
+            match committed.output {
                 PendingHolderApply::AuthorityLapsed(cause) => {
                     Ok(HolderApplied::AuthorityLapsed(cause))
                 }
@@ -168,6 +169,7 @@ where
                     offers: effects
                         .release(&proof)
                         .map_err(ApprovalDispatchFailure::Release)?,
+                    publication_failure: committed.publication_failure,
                 }),
             }
         })

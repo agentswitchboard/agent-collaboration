@@ -57,6 +57,12 @@ pub trait ApprovalStatementLoan: CentralTransaction + Send {
     ) -> impl Future<Output = Result<u64, StoreFailure>> + Send;
 }
 
+/// A committed apply can still fail to publish the native platform alarm.
+pub struct CommittedApprovalApply<Output> {
+    pub output: Output,
+    pub publication_failure: Option<StoreFailure>,
+}
+
 /// The socket and the engine share the same stamped approving loan on each host.
 pub trait OrganizationApprovalTransactions: Send + Sync + 'static {
     type Transaction<'connection>: ApprovalStoreTransaction;
@@ -70,7 +76,7 @@ pub trait OrganizationApprovalTransactions: Send + Sync + 'static {
         ) -> ApprovalTransactionFuture<'loan, Output>
         + Send
         + 'static,
-    ) -> impl Future<Output = Result<Output, ApprovalTransactionFailure>> + Send;
+    ) -> impl Future<Output = Result<CommittedApprovalApply<Output>, ApprovalTransactionFailure>> + Send;
 }
 
 type ApprovalCommitFuture<T> =
@@ -91,13 +97,40 @@ where
     Owner: OrganizationApprovalTransactions,
     Output: Send + 'static,
 {
-    let owner = ApprovalCommit(move |scope| -> ApprovalCommitFuture<Output> {
-        Box::pin(async move {
-            transactions
-                .apply_approval(organization, alarm, move |loan| apply(loan, scope))
-                .await
-        })
-    });
+    Box::pin(async move {
+        let (proof, committed) =
+            commit_approval_with_publication(transactions, organization, alarm, apply).await?;
+        match committed.publication_failure {
+            None => Ok((proof, committed.output)),
+            Some(failure) => Err(failure.into()),
+        }
+    })
+}
+
+pub(crate) fn commit_approval_with_publication<Owner, Output>(
+    transactions: std::sync::Arc<Owner>,
+    organization: OrganizationId,
+    alarm: ApprovalAlarmPublication,
+    apply: impl for<'loan, 'connection> FnOnce(
+        &'loan mut Owner::Transaction<'connection>,
+        ApprovalCommitScope,
+    ) -> ApprovalTransactionFuture<'loan, Output>
+    + Send
+    + 'static,
+) -> ApprovalCommitFuture<(ApprovalCommitProof, CommittedApprovalApply<Output>)>
+where
+    Owner: OrganizationApprovalTransactions,
+    Output: Send + 'static,
+{
+    let owner = ApprovalCommit(
+        move |scope| -> ApprovalCommitFuture<CommittedApprovalApply<Output>> {
+            Box::pin(async move {
+                transactions
+                    .apply_approval(organization, alarm, move |loan| apply(loan, scope))
+                    .await
+            })
+        },
+    );
     Box::pin(fleet_approvals::complete_approval_commit(owner))
 }
 

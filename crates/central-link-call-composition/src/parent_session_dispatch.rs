@@ -21,7 +21,7 @@ use fleet_actor_identity::SessionService;
 use fleet_approvals::{
     ActorApprovalSessionFacts, ApprovalCommitProof, ApprovalCommitScope, ApprovalEnrollment,
     ApprovalReplyAddress, ApprovalSession, ApprovalStoreTransaction, PendingApprovalEffects,
-    PendingApprovalReply, SessionDecisionApply,
+    PendingApprovalReply, SessionDecisionApply, SessionReadApply,
 };
 use fleet_identity_protocol::{PresentedSessionSecret, SessionSecret};
 use fleet_lent_transaction::CentralTransaction;
@@ -40,7 +40,7 @@ use crate::{
         ApprovalApplyingClock, ApprovalApplyingIds, ApprovalDispatchFailure, ApprovalStore,
         report_approval_failure,
     },
-    approval_transaction::commit_approval,
+    approval_transaction::commit_approval_with_publication,
 };
 
 pub(crate) enum ParentApprovalOperation {
@@ -140,7 +140,7 @@ where
     let clock = delivery.application.clock.clone();
     let ids = delivery.application.ids.clone();
     let target = call.target.clone();
-    match commit_approval(
+    match commit_approval_with_publication(
         delivery.application.transactions.clone(),
         organization.clone(),
         ApprovalAlarmPublication::WithCommit,
@@ -148,10 +148,20 @@ where
     )
     .await
     {
-        Ok((_, ParentPendingApply::Refused(reason))) => {
-            Ok(TypedCallResult::Refused { reason }.into())
-        }
-        Ok((_, ParentPendingApply::PersonRequired)) => Ok(TypedCallResult::Answered {
+        Ok((
+            _,
+            crate::CommittedApprovalApply {
+                output: ParentPendingApply::Refused(reason),
+                ..
+            },
+        )) => Ok(TypedCallResult::Refused { reason }.into()),
+        Ok((
+            _,
+            crate::CommittedApprovalApply {
+                output: ParentPendingApply::PersonRequired,
+                ..
+            },
+        )) => Ok(TypedCallResult::Answered {
             reply: DecideApprovalAsSessionRpc::reply(Envelope {
                 target,
                 body: DecideApprovalAsSessionReply::PersonRequired {},
@@ -160,10 +170,14 @@ where
         .into()),
         Ok((
             proof,
-            ParentPendingApply::Answer {
-                address,
-                reply,
-                effects,
+            crate::CommittedApprovalApply {
+                output:
+                    ParentPendingApply::Answer {
+                        address,
+                        reply,
+                        effects,
+                    },
+                publication_failure,
             },
         )) => {
             let reply = reply.release(&proof, &address, target)?;
@@ -171,8 +185,12 @@ where
                 .release(&proof)
                 .map_err(|_| StoreFailure::AnswerLost)?;
             Ok(CentralCallWork {
-                result: TypedCallResult::Answered { reply },
-                completion: delivery.after_reply(offers, None),
+                result: match publication_failure {
+                    None => Ok(TypedCallResult::Answered { reply }),
+                    Some(failure) => Err(failure),
+                },
+                committed_delivery: delivery.after_reply(offers, None),
+                completion: None,
             })
         }
         Err(failure) => report_approval_failure(ApprovalDispatchFailure::Transaction(failure)),
@@ -237,15 +255,22 @@ where
             &clock,
             &mut row_ids,
         );
+        let mut publish_time = true;
         let reply = match call.operation {
             ParentApprovalOperation::List(input) => ParentPendingReply::List(
                 store
                     .list_for_session(&admitted, input.cursor.as_ref())
                     .await?,
             ),
-            ParentApprovalOperation::Read(input) => ParentPendingReply::Read(
-                store.read_for_session(&admitted, &input.request_id).await?,
-            ),
+            ParentApprovalOperation::Read(input) => {
+                match store.read_for_session(&admitted, &input.request_id).await? {
+                    SessionReadApply::Applied(reply) => ParentPendingReply::Read(reply),
+                    SessionReadApply::Unchanged(reply) => {
+                        publish_time = false;
+                        ParentPendingReply::Read(reply)
+                    }
+                }
+            }
             ParentApprovalOperation::Decide(input) => {
                 match store.decide_as_session(&admitted, input).await? {
                     SessionDecisionApply::Reply(reply) => ParentPendingReply::Decide(reply),
@@ -259,7 +284,9 @@ where
             }
         };
         let effects = store.finish_effects();
-        time.publish(loan).await?;
+        if publish_time {
+            time.publish(loan).await?;
+        }
         Ok(ParentPendingApply::Answer {
             address,
             reply: Box::new(reply),

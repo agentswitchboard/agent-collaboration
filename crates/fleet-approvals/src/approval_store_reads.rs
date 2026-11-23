@@ -12,7 +12,10 @@ use workspace_ids::{ApprovalRequestId, RouterRunId};
 
 use crate::{
     ApprovalSession, ApprovalState, MAX_OUTSTANDING_PER_RUN,
-    approval_store_scope::{ApprovalEnrollmentScope, ApprovalHolderScope, ApprovalRequestRowId},
+    approval_store_scope::{
+        ApprovalDestinationRowId, ApprovalEnrollmentScope, ApprovalHolderScope,
+        ApprovalRequestRowId,
+    },
     approval_store_transaction::ApprovalStoreTransaction,
 };
 
@@ -95,6 +98,13 @@ pub(crate) struct ApprovalReadRecord {
     pub row_id: ApprovalRequestRowId,
     pub scope: ApprovalHolderScope,
     pub state: ApprovalState,
+    pub session_destinations: Vec<ApprovalSessionDestination>,
+}
+
+pub(crate) struct ApprovalSessionDestination {
+    pub row_id: ApprovalDestinationRowId,
+    pub session: ApprovalSession,
+    pub first_read_at: Option<EngineTime>,
 }
 
 pub(crate) enum ScopedHolderRequest {

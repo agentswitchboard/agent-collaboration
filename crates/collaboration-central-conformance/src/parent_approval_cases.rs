@@ -1,6 +1,9 @@
 #[path = "parent_approval_races.rs"]
 mod races;
 pub use races::pass_crosses_deadline;
+pub use races::{
+    CompetingApprovalFixture, DecisionCommitOrder, DecisionCompetitor, decide_against,
+};
 
 use super::{
     ABSENT_REQUEST, Answer, ApprovalLinkFixture, ApprovalNoticeReply, Chain,

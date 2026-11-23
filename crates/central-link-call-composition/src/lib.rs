@@ -22,7 +22,7 @@ pub use apply_failure::{
 pub use approval_delivery::{ApplyEndingAnswer, ApprovalDeliveryTransport, SelectedApprovalSocket};
 pub use approval_transaction::{
     ApprovalAlarmPublication, ApprovalStatementLoan, ApprovalTransactionFailure,
-    ApprovalTransactionFuture, OrganizationApprovalTransactions,
+    ApprovalTransactionFuture, CommittedApprovalApply, OrganizationApprovalTransactions,
 };
 pub use organization_dispatch::{OrganizationLinkDispatcher, SessionEntropyUnavailable};
 pub use organization_loan::{

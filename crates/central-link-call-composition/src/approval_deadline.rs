@@ -124,7 +124,9 @@ where
                                 }
                                 DeadlineFailure::Bounded(_) => CheckedDueFailure::Unavailable,
                             })?;
-                        recorded.map_or(CheckedDueUnit::Stale, CheckedDueUnit::Failed)
+                        recorded
+                            .output
+                            .map_or(CheckedDueUnit::Stale, CheckedDueUnit::Failed)
                     }
                 },
             };

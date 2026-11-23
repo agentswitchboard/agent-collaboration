@@ -201,6 +201,15 @@ where
         )
     }
 
+    fn approval_notice_deadline<'call>(
+        &'call self,
+        notice: &'call central_link_protocol::approval_rpc::ApprovalNoticeEnvelope,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<EngineTime>, StoreFailure>> + Send + 'call>>
+    {
+        let delivery = self.approval_delivery();
+        Box::pin(async move { delivery.notice_deadline(notice).await })
+    }
+
     fn recover_approval_notices(
         &self,
         machine: ValidatedMachineConnection,

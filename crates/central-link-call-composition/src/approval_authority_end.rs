@@ -90,7 +90,8 @@ where
                     .release(&proof)
                     .map_err(|_| StoreFailure::AnswerLost)?;
                 Ok(CentralCallWork {
-                    result: TypedCallResult::Answered { reply },
+                    result: Ok(TypedCallResult::Answered { reply }),
+                    committed_delivery: None,
                     completion: self.after_reply(offers, None),
                 })
             }

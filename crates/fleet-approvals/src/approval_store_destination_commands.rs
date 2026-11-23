@@ -1,12 +1,13 @@
 #[cfg(feature = "test-support")]
 use std::num::NonZeroU16;
 
-use approval_request_protocol::{
-    CentralTime, DecideRequest, PassOnReply, PassOnRequest, RequestView,
-};
+#[cfg(feature = "test-support")]
+use approval_request_protocol::PassOnReply;
+use approval_request_protocol::{CentralTime, RequestView};
 use fleet_actor_identity::AuthenticatedSession;
 use fleet_identity_protocol::OrganizationId;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
+#[cfg(feature = "test-support")]
 use workspace_ids::ApprovalRequestId;
 #[cfg(feature = "test-support")]
 use workspace_ids::PersonId;
@@ -17,7 +18,6 @@ use super::{ApprovalApplyFailure, ApprovalApplyingStore, ApprovalTransitionOutpu
 use crate::{
     AdmittedDecider, ApprovalActor, ApprovalDecideInput, ApprovalDecisionReply, ApprovalEnrollment,
     ApprovalEvent, ApprovalReceipt, ApprovalReplyAddress, ApprovalSession, ApprovalSessionFacts,
-    PendingApprovalReply,
     approval_decision_log::ApprovalDecisionLogKey,
     approval_lifecycle_admission::is_destination,
     approval_store_reads::{read_parent_approval_request, read_people_approval_request},
@@ -33,34 +33,6 @@ where
     Transaction: ApprovalStoreTransaction,
     Sessions: ApprovalSessionFacts<Transaction>,
 {
-    pub async fn decide_session_approval(
-        &mut self,
-        admission: &AuthenticatedSession,
-        request: DecideRequest,
-    ) -> Result<PendingApprovalReply<ApprovalDecisionReply>, ApprovalApplyFailure> {
-        let (organization, session, address) = approval_session_address(admission);
-        let applied = self
-            .decide_approval(
-                organization,
-                AdmittedDecider::Session(session),
-                request.into(),
-            )
-            .await?;
-        Ok(self.stage_reply(address, applied))
-    }
-
-    pub async fn pass_on_session_approval(
-        &mut self,
-        admission: &AuthenticatedSession,
-        request: PassOnRequest,
-    ) -> Result<PendingApprovalReply<PassOnReply>, ApprovalApplyFailure> {
-        let (organization, session, address) = approval_session_address(admission);
-        let applied = self
-            .pass_on_approval(organization, session, &request.request_id)
-            .await?;
-        Ok(self.stage_reply(address, applied))
-    }
-
     pub(super) async fn decide_approval(
         &mut self,
         organization: &OrganizationId,
@@ -163,6 +135,8 @@ where
         Ok(applied.replace_reply(reply))
     }
 
+    // The model witness supplies its known parent facts and uses the lifecycle projection.
+    #[cfg(feature = "test-support")]
     pub(super) async fn pass_on_approval(
         &mut self,
         organization: &OrganizationId,
@@ -192,8 +166,15 @@ where
         let identity = ApprovalActor::Session(parent.clone()).identity();
         let event = ApprovalEvent::PassOn {
             key: key.clone(),
-            live_parent: parent,
-            to: crate::ApprovalRouteDestination::People,
+            live_parent: parent.clone(),
+            to: self
+                .sessions
+                .next_approval_parent(self.transaction, &parent)
+                .await?
+                .map_or(
+                    crate::ApprovalRouteDestination::People,
+                    crate::ApprovalRouteDestination::Session,
+                ),
         };
         let at = self.sample_applying_time()?;
         let applied = self

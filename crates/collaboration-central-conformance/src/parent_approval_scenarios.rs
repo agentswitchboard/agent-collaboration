@@ -31,6 +31,19 @@ use crate::{
 #[path = "parent_approval_cases.rs"]
 mod cases;
 pub use cases::{Case, observe_case, pass_crosses_deadline};
+pub use cases::{
+    CompetingApprovalFixture, DecisionCommitOrder, DecisionCompetitor, decide_against,
+};
+#[path = "parent_approval_delivery_cases.rs"]
+mod delivery_cases;
+#[path = "parent_approval_proof_cases.rs"]
+mod proof_cases;
+pub use delivery_cases::{
+    ParentApprovalPause, PauseControl, SettlesRecoveredNotice,
+    pass_notice_reaches_a_separate_destination, pass_notice_survives_origin_loss,
+    queued_notice_stops_at_deadline, read_survives_lost_reply, stale_recovery_page,
+};
+pub use proof_cases::{ParentApprovalProof, observe_parent_proof};
 #[path = "parent_approval_rollback.rs"]
 mod rollback;
 pub use rollback::{enrollment_and_approval_rollback, session_end_and_approval_rollback};

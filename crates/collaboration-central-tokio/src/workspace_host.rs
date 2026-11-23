@@ -308,7 +308,7 @@ impl TokioWorkspaceHost {
         let deadline_tasks = self.approval_deadline_tasks.clone();
         let central = Arc::new(
             central
-                .with_approval_deadline_completion(Arc::new(move |work| {
+                .with_approval_delivery_completion(Arc::new(move |work| {
                     deadline_tasks.schedule(work)
                 }))
                 .with_mail_delivery_observer(Arc::new(move |delivery| {

@@ -1,6 +1,6 @@
 use approval_request_protocol::{
-    Answer, DecideRequest, DeliverEndingReply, DeliverEndingRequest, PassOnRequest, Raise,
-    StopRequest,
+    Answer, DecideApprovalAsSessionRequest, DeliverEndingReply, DeliverEndingRequest,
+    PassOnApprovalRequest, Raise, StopRequest,
 };
 use fleet_approvals::{ApprovalEnrollment, ApprovalHolderScope, ApprovalRun, ApprovalSession};
 use fleet_identity_protocol::{EnrollmentId, OrganizationId, PresentedSessionSecret};
@@ -198,11 +198,11 @@ pub(super) enum SessionApprovalWitness {
     Decide {
         session_id: CentralSessionId,
         presented: PresentedSessionSecret,
-        request: DecideRequest,
+        request: DecideApprovalAsSessionRequest,
     },
     PassOn {
         session_id: CentralSessionId,
         presented: PresentedSessionSecret,
-        request: PassOnRequest,
+        request: PassOnApprovalRequest,
     },
 }

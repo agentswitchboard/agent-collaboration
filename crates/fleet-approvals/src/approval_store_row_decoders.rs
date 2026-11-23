@@ -1,8 +1,8 @@
 use std::str::FromStr;
 
 use approval_request_protocol::{
-    ApprovalWindow, DecidedBy, DeliverEndingRequest, Ending, InvocationDigest, OfferView,
-    ParkedCallHolder, ProviderHolder, Raise, RequestContentsDigest, WaitingStatus,
+    ApprovalWindow, CentralTime, DecidedBy, DeliverEndingRequest, Ending, InvocationDigest,
+    OfferView, ParkedCallHolder, ProviderHolder, Raise, RequestContentsDigest, WaitingStatus,
 };
 use central_engine_model::supported_time;
 use central_storage::{ReadOutcome, SqlValue, StoreFailure};
@@ -21,7 +21,8 @@ use crate::{
 };
 
 use super::{
-    ApprovalReadRecord, ApprovalRunRecord, StoredApprovalRow, StoredDestinationRow, StoredRunRow,
+    ApprovalReadRecord, ApprovalRunRecord, ApprovalSessionDestination, StoredApprovalRow,
+    StoredDestinationRow, StoredRunRow,
 };
 
 pub(super) fn decode_run_row(stored: StoredRunRow) -> Result<ApprovalRunRecord, StoreFailure> {
@@ -111,7 +112,7 @@ pub(super) fn decode_request_row(
         return Err(corrupt("approval_requests.chronology"));
     }
 
-    let state = match stored.record_state.stored_text()? {
+    let (state, session_destinations) = match stored.record_state.stored_text()? {
         "stopped_before_raise" => {
             require_null(
                 &[
@@ -133,38 +134,52 @@ pub(super) fn decode_request_row(
                 stored.stop_family.stored_text()?,
                 stored.stop_cause.stored_text()?,
             )?;
-            ApprovalState::StoppedBeforeRaise {
-                key,
-                contents_digest,
-                cause,
-            }
+            (
+                ApprovalState::StoppedBeforeRaise {
+                    key,
+                    contents_digest,
+                    cause,
+                },
+                Vec::new(),
+            )
         }
-        "waiting" | "ended" => {
+        state @ ("waiting" | "ended") => {
             require_null(
                 &[stored.stop_family.raw(), stored.stop_cause.raw()],
                 "approval_requests.stop_marker",
             )?;
-            let saved = Box::new(decode_retained_approval(
+            let ended_at = if state == "waiting" {
+                require_unended(&stored)?;
+                None
+            } else {
+                Some(parse_stored_time(
+                    stored.ended_at.stored_text()?,
+                    "approval_requests.ended_at",
+                )?)
+            };
+            let (saved, members) = decode_retained_approval(
                 &stored,
                 key,
                 contents_digest,
-                &row_id,
-                &scope,
+                (&row_id, &scope),
                 destinations,
-            )?);
+                ended_at,
+            )?;
+            let saved = Box::new(saved);
             if created_at != saved.window.raised_at() {
                 return Err(corrupt("approval_requests.first_saved_at"));
             }
-            if stored.record_state.stored_text()? == "waiting" {
-                require_unended(&stored)?;
-                ApprovalState::Waiting { saved }
-            } else {
-                let closed = decode_ending(&stored, &saved)?;
-                if updated_at < closed.ended_at {
-                    return Err(corrupt("approval_requests.ending_chronology"));
+            let state = match ended_at {
+                None => ApprovalState::Waiting { saved },
+                Some(ended_at) => {
+                    let closed = decode_ending(&stored, &saved, ended_at)?;
+                    if updated_at < ended_at {
+                        return Err(corrupt("approval_requests.ending_chronology"));
+                    }
+                    ApprovalState::Ended { saved, closed }
                 }
-                ApprovalState::Ended { saved, closed }
-            }
+            };
+            (state, members)
         }
         _ => return Err(corrupt("approval_requests.record_state")),
     };
@@ -172,6 +187,7 @@ pub(super) fn decode_request_row(
         row_id,
         scope,
         state,
+        session_destinations,
     })
 }
 
@@ -191,10 +207,10 @@ fn decode_retained_approval(
     stored: &StoredApprovalRow,
     key: ApprovalRequestKey,
     contents_digest: RequestContentsDigest,
-    row_id: &ApprovalRequestRowId,
-    scope: &ApprovalHolderScope,
+    (row_id, scope): (&ApprovalRequestRowId, &ApprovalHolderScope),
     destinations: &ReadOutcome,
-) -> Result<RetainedApproval, StoreFailure> {
+    ended_at: Option<CentralTime>,
+) -> Result<(RetainedApproval, Vec<ApprovalSessionDestination>), StoreFailure> {
     let offer: OfferView = json(
         stored.offer_json.stored_text()?,
         "approval_requests.offer_json",
@@ -250,14 +266,25 @@ fn decode_retained_approval(
         return Err(corrupt("approval_requests.deadline_ms"));
     }
     let waiting_status = parse_waiting_status(stored.waiting_status.stored_text()?)?;
-    let destinations = decode_route(destinations, row_id, scope, &raise, waiting_status, window)?;
-    Ok(RetainedApproval {
-        key,
-        raise,
-        contents_digest,
-        window,
+    let (route, session_destinations) = decode_route(
         destinations,
-    })
+        row_id,
+        scope,
+        &raise,
+        waiting_status,
+        window,
+        ended_at,
+    )?;
+    Ok((
+        RetainedApproval {
+            key,
+            raise,
+            contents_digest,
+            window,
+            destinations: route,
+        },
+        session_destinations,
+    ))
 }
 
 fn decode_provider_holder(
@@ -284,24 +311,30 @@ fn decode_route(
     raise: &Raise,
     waiting_status: WaitingStatus,
     window: ApprovalWindow,
-) -> Result<ApprovalDestinations, StoreFailure> {
+    ended_at: Option<CentralTime>,
+) -> Result<(ApprovalDestinations, Vec<ApprovalSessionDestination>), StoreFailure> {
     let mut people = false;
-    let mut sessions = Vec::new();
+    let mut members = Vec::new();
+    let mut prior_created_at = window.raised_at();
     let mut session_ids = std::collections::BTreeSet::new();
     for (position, cells) in destinations.rows.iter().enumerate() {
         let row = StoredDestinationRow::read_named(destinations, cells)?;
-        ApprovalDestinationRowId::parse(row.approval_destination_id.stored_text()?)?;
+        let destination_id =
+            ApprovalDestinationRowId::parse(row.approval_destination_id.stored_text()?)?;
         let created_at = parse_stored_time(row.created_at.stored_text()?, "created_at")?;
         let updated_at = parse_stored_time(row.updated_at.stored_text()?, "updated_at")?;
         if people
             || row.approval_row_id.stored_text()? != row_id.as_str()
             || row.organization_id.stored_text()? != scope.organization_id.as_str()
             || (position == 0 && created_at != window.raised_at())
-            || created_at < window.raised_at()
+            || created_at < prior_created_at
+            || created_at >= window.deadline()
+            || ended_at.is_some_and(|ending| created_at > ending)
             || updated_at < created_at
         {
             return Err(corrupt("approval_request_destinations.scope"));
         }
+        prior_created_at = created_at;
         let SqlValue::Integer(stored_position) = row.position.raw() else {
             return Err(corrupt("approval_request_destinations.position"));
         };
@@ -331,7 +364,12 @@ fn decode_route(
                     .map(|time| parse_stored_time(time, "first_read_at"))
                     .transpose()?;
                 if raised_at != created_at
-                    || first_read_at.is_some_and(|read| read < raised_at || read > updated_at)
+                    || first_read_at.is_some_and(|read| {
+                        read < raised_at
+                            || read > updated_at
+                            || read >= window.deadline()
+                            || ended_at.is_some_and(|ending| read > ending)
+                    })
                 {
                     return Err(corrupt("approval_request_destinations.notice_time"));
                 }
@@ -343,7 +381,7 @@ fn decode_route(
                 {
                     return Err(corrupt("approval_request_destinations.membership"));
                 }
-                sessions.push(ApprovalSession {
+                let session = ApprovalSession {
                     enrollment: ApprovalEnrollment {
                         machine_id: parse_identifier(
                             row.session_machine_id.stored_text()?,
@@ -355,11 +393,20 @@ fn decode_route(
                         .map_err(|_| corrupt("session_enrollment_id"))?,
                     },
                     session_id,
+                };
+                members.push(ApprovalSessionDestination {
+                    row_id: destination_id,
+                    session,
+                    first_read_at,
                 });
             }
             _ => return Err(corrupt("approval_request_destinations.destination_kind")),
         }
     }
+    let mut sessions: Vec<_> = members
+        .iter()
+        .map(|member| member.session.clone())
+        .collect();
     let route = if people {
         ApprovalDestinations::People { previous: sessions }
     } else {
@@ -374,12 +421,13 @@ fn decode_route(
     if route.waiting_status() != waiting_status {
         return Err(corrupt("approval_request_destinations.membership"));
     }
-    Ok(route)
+    Ok((route, members))
 }
 
 fn decode_ending(
     stored: &StoredApprovalRow,
     saved: &RetainedApproval,
+    ended_at: CentralTime,
 ) -> Result<EndedApproval, StoreFailure> {
     let ending: DeliverEndingRequest = json(
         stored.ending_json.stored_text()?,
@@ -388,7 +436,6 @@ fn decode_ending(
     ending
         .check_bound_raise(&saved.raise)
         .map_err(|_| corrupt("approval_requests.ending_binding"))?;
-    let ended_at = parse_stored_time(stored.ended_at.stored_text()?, "approval_requests.ended_at")?;
     let delivery = parse_delivery_state(stored.delivery_state.stored_text()?)?;
     let ended = ending.clone().into_ending();
     let decided_operation_id = stored

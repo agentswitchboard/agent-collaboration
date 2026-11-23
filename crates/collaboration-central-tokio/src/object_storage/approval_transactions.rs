@@ -3,7 +3,8 @@ use super::{
 };
 use central_link_call_composition::{
     ApprovalAlarmPublication, ApprovalStatementLoan, ApprovalTransactionFailure,
-    ApprovalTransactionFuture, OrganizationApprovalTransactions, OrganizationLoan,
+    ApprovalTransactionFuture, CommittedApprovalApply, OrganizationApprovalTransactions,
+    OrganizationLoan,
 };
 use central_storage::{AlarmPublication, BatchOutcome, ReadOutcome, Statement, StoreFailure};
 use fleet_identity_protocol::OrganizationId;
@@ -68,7 +69,7 @@ impl OrganizationApprovalTransactions for NativeSessionTransactions {
         ) -> ApprovalTransactionFuture<'loan, Output>
         + Send
         + 'static,
-    ) -> Result<Output, ApprovalTransactionFailure> {
+    ) -> Result<CommittedApprovalApply<Output>, ApprovalTransactionFailure> {
         let _order = self.storage.lock_batch_order().await;
         let result = self
             .storage
@@ -133,7 +134,7 @@ impl OrganizationApprovalTransactions for NativeSessionTransactions {
             ControlFlow::Continue(applied) => applied,
             ControlFlow::Break(failure) => return Err(failure),
         };
-        if let Some(inputs) = inputs {
+        let publication_failure = inputs.and_then(|inputs| {
             let publication = self.storage.publish_engine_alarm(
                 inputs.earliest_on_grid_due_unix_millis,
                 inputs.earliest_legacy_due_unix_millis,
@@ -146,9 +147,14 @@ impl OrganizationApprovalTransactions for NativeSessionTransactions {
                 }),
             );
             if let AlarmPublication::Failed { reason } = publication {
-                return Err(StoreFailure::AlarmUnpublishable { reason }.into());
+                Some(StoreFailure::AlarmUnpublishable { reason })
+            } else {
+                None
             }
-        }
-        Ok(output)
+        });
+        Ok(CommittedApprovalApply {
+            output,
+            publication_failure,
+        })
     }
 }

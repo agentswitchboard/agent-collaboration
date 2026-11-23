@@ -410,19 +410,6 @@ impl Ledger {
         step: Step,
         sampled: i64,
     ) -> Result<Vec<OperationEffect>, ApprovalRefusal> {
-        if let Step::Raise { row, .. } = step {
-            let route = ROWS[row];
-            let enrollment = RUN_ENROLLMENTS[route.run];
-            let fresh = self.rows[row].first_save.is_none() && self.rows[row].marker.is_none();
-            if fresh
-                && route.delegate
-                && self.holder_refusal(route.run).is_none()
-                && !self.ended_requesters.contains(&enrollment)
-                && self.ended_parents.contains(&enrollment)
-            {
-                return Err(ApprovalRefusal::InvalidInitialRoute);
-            }
-        }
         let mut effects = Vec::new();
         match step {
             Step::Raise { row, changed } => {

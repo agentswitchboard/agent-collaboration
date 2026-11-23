@@ -19,6 +19,11 @@ use super::{
 
 const SESSION_APPROVAL_PAGE_SIZE: usize = 100;
 
+pub enum SessionReadApply {
+    Unchanged(PendingApprovalReply<ReadApprovalForSessionReply>),
+    Applied(PendingApprovalReply<ReadApprovalForSessionReply>),
+}
+
 impl<Transaction, Sessions> ApprovalApplyingStore<'_, Transaction, Sessions>
 where
     Transaction: ApprovalStoreTransaction,
@@ -28,22 +33,26 @@ where
         &mut self,
         admitted: &AuthenticatedSession,
         request_id: &ApprovalRequestId,
-    ) -> Result<PendingApprovalReply<ReadApprovalForSessionReply>, ApprovalApplyFailure> {
+    ) -> Result<SessionReadApply, ApprovalApplyFailure> {
         let (organization, session, address) = approval_session_address(admitted);
         let record =
             read_parent_approval_request(self.transaction, organization, request_id, &session)
                 .await?;
         let Some(record) = record else {
-            return Ok(self.stage_reply(
+            return Ok(SessionReadApply::Unchanged(self.stage_reply(
                 address,
                 ApprovalTransitionOutput::with_reply(ReadApprovalForSessionReply::NotVisible {}),
-            ));
+            )));
         };
         let at = self.sample_applying_time()?;
         let actor = ApprovalActor::Session(session.clone());
         let applied = self.read_selected_approval(&record, &actor, at).await?;
+        let mut changed = matches!(&record.state, ApprovalState::Waiting { saved } if at >= saved.window.deadline());
         let reply = if let Some(view) = &applied.reply {
             if matches!(&record.state, ApprovalState::Waiting { saved } if at < saved.window.deadline())
+                && record.session_destinations.iter().any(|destination| {
+                    destination.session == session && destination.first_read_at.is_none()
+                })
             {
                 let read = checked_engine_statement!(
                     query_file,
@@ -56,9 +65,10 @@ where
                     enrollment = session.enrollment.enrollment_id.as_str().to_owned(),
                     session = session.session_id.as_str().to_owned(),
                 );
-                if self.transaction.execute_approval_statement(read).await? > 1 {
+                if self.transaction.execute_approval_statement(read).await? != 1 {
                     return Err(ApprovalApplyFailure::GuardChanged);
                 }
+                changed = true;
             }
             ReadApprovalForSessionReply::Request {
                 view: Box::new(view.clone()),
@@ -66,7 +76,12 @@ where
         } else {
             ReadApprovalForSessionReply::NotVisible {}
         };
-        Ok(self.stage_reply(address, applied.replace_reply(reply)))
+        let pending = self.stage_reply(address, applied.replace_reply(reply));
+        Ok(if changed {
+            SessionReadApply::Applied(pending)
+        } else {
+            SessionReadApply::Unchanged(pending)
+        })
     }
 
     pub async fn list_for_session(

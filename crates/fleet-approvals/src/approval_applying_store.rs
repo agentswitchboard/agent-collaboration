@@ -32,6 +32,7 @@ mod notice_recovery;
 #[path = "approval_store_parent_reads.rs"]
 mod parent_reads;
 pub use notice_recovery::{ApprovalNoticeCursor, ApprovalNoticeRecovery};
+pub use parent_reads::SessionReadApply;
 #[path = "approval_store_run_commands.rs"]
 mod run_commands;
 

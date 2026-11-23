@@ -3,12 +3,18 @@ use central_storage::StoreFailure;
 use fleet_identity_protocol::CreateSessionKind;
 use workspace_ids::CentralSessionId;
 
-use crate::{ScopedSession, SessionState};
+use crate::{BoundSession, ScopedSession, SessionState};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ApprovalChainSession {
-    pub scope: ScopedSession,
-    pub parent: Option<CentralSessionId>,
+pub enum ApprovalChainSession {
+    Live {
+        scope: ScopedSession,
+        parent: Option<CentralSessionId>,
+    },
+    Ended {
+        scope: ScopedSession,
+        parent: Option<CentralSessionId>,
+    },
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -23,25 +29,33 @@ pub enum ApprovalChainFailure {
 
 impl ApprovalChainSession {
     pub(crate) fn from_state(state: SessionState) -> Result<Self, ApprovalChainFailure> {
-        let bound = match state {
-            SessionState::Active(bound) | SessionState::Ended { bound, .. } => bound,
-            SessionState::Missing => return Err(ApprovalChainFailure::Missing),
-            SessionState::Reserved(_) | SessionState::Abandoned { .. } => {
-                return Err(ApprovalChainFailure::Unbound);
+        match state {
+            SessionState::Active(bound) => {
+                let (scope, parent) = recorded_chain_member(bound);
+                Ok(Self::Live { scope, parent })
             }
-        };
-        let reservation = bound.reserved.reservation;
-        let parent = match reservation.kind {
-            CreateSessionKind::Ordinary {} => None,
-            CreateSessionKind::Delegate { parent } => Some(parent),
-        };
-        Ok(Self {
-            scope: ScopedSession {
-                machine_id: reservation.machine_id,
-                enrollment_id: reservation.enrollment_id,
-                session_id: reservation.session_id,
-            },
-            parent,
-        })
+            SessionState::Ended { bound, .. } => {
+                let (scope, parent) = recorded_chain_member(bound);
+                Ok(Self::Ended { scope, parent })
+            }
+            SessionState::Missing => Err(ApprovalChainFailure::Missing),
+            SessionState::Reserved(_) | SessionState::Abandoned { .. } => {
+                Err(ApprovalChainFailure::Unbound)
+            }
+        }
     }
+}
+
+fn recorded_chain_member(bound: BoundSession) -> (ScopedSession, Option<CentralSessionId>) {
+    let reservation = bound.reserved.reservation;
+    let parent = match reservation.kind {
+        CreateSessionKind::Ordinary {} => None,
+        CreateSessionKind::Delegate { parent } => Some(parent),
+    };
+    let scope = ScopedSession {
+        machine_id: reservation.machine_id,
+        enrollment_id: reservation.enrollment_id,
+        session_id: reservation.session_id,
+    };
+    (scope, parent)
 }

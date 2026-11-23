@@ -63,6 +63,8 @@ impl<'de> Deserialize<'de> for ApprovalHolderTarget {
     }
 }
 
+pub type ApprovalNoticeEnvelope = fleet_rpc::Envelope<ApprovalNoticeTarget, ApprovalNotice>;
+
 /// The exact physical enrollment and destination session for a pending request notice.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]

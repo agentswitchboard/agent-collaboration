@@ -413,7 +413,7 @@ impl CentralObject {
         let deadline_state = self.state.clone();
         let central = Arc::new(
             central
-                .with_approval_deadline_completion(Arc::new(move |work| {
+                .with_approval_delivery_completion(Arc::new(move |work| {
                     deadline_state.wait_until(work)
                 }))
                 .with_mail_delivery_observer(Arc::new(move |message| {

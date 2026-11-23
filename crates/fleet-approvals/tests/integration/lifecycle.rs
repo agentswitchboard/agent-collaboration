@@ -42,6 +42,7 @@ fn applying_factor_and_offer_are_checked_before_the_deadline() {
             ApprovalReceipt::Decide(DecideReply::NotVisible {})
         );
         let forward = ApprovalCollectionEvent::PassOn {
+            to: fleet_approvals::ApprovalRouteDestination::People,
             key: item.clone(),
             parent: parent.clone(),
             request: PassOnRequest {
@@ -98,6 +99,7 @@ fn forwarding_checks_the_exact_live_assigned_parent_and_replays_success() {
                    body: &fleet_approvals::ApprovalRequestKey,
                    actor| {
         ApprovalCollectionEvent::PassOn {
+            to: fleet_approvals::ApprovalRouteDestination::People,
             key: target.clone(),
             parent: actor,
             request: PassOnRequest {
