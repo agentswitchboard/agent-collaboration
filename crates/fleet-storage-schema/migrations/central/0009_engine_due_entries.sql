@@ -8,9 +8,10 @@ CREATE TABLE engine_due_entries (
     base_due_ms INTEGER,
     effective_due_ms INTEGER,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE (work_kind, entry_role, subject_key)
+    updated_at TEXT NOT NULL
 );
+CREATE UNIQUE INDEX engine_due_entries_kind_role_subject
+ON engine_due_entries (work_kind, entry_role, subject_key);
 CREATE INDEX engine_due_entries_seek
 ON engine_due_entries(work_kind, entry_role, effective_due_ms, subject_key)
 WHERE effective_due_ms IS NOT NULL;

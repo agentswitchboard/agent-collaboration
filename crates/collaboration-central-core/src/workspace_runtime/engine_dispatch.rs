@@ -11,7 +11,6 @@ use fleet_mail::{
 };
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use fleet_schedules::{self as automation_timer, AutomationStore};
-use fleet_wakes::{self as wake_timer, WakeStore};
 
 #[derive(Clone, Copy)]
 pub enum DueKind {
@@ -130,16 +129,7 @@ impl<H: CentralStore, S: WorkspaceStores> TimedDueDispatch<WorkspaceRuntime<H, S
                     )
                     .await
             }
-            DueKind::Wake => {
-                engine
-                    .run_due_machine_instance::<wake_timer::WakeTimer, _>(
-                        &WakeStore::new(runtime, insert_message),
-                        row,
-                        "automation_wakes.due_at",
-                        |occurrence| wake_timer::Event::Due { occurrence },
-                    )
-                    .await
-            }
+            DueKind::Wake => runtime.dispatch_due_wake(engine, row).await,
             DueKind::Automation => {
                 engine
                     .run_due_machine_instance::<automation_timer::AutomationTimer, _>(

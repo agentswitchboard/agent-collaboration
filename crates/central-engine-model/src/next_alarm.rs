@@ -46,10 +46,7 @@ pub fn next_five_minute_mark(now: EngineTime) -> Result<EngineTime, AlarmDecisio
 
 /// Combine pending times after an event; an idle object has no alarm.
 pub fn next_alarm(inputs: &AlarmInputs, policy: &DueBatchPolicy) -> AlarmDecision {
-    if inputs.earliest_on_grid_due.is_none()
-        && inputs.earliest_legacy_due.is_none()
-        && !inputs.leftovers_beyond_cap
-    {
+    if inputs.earliest_on_grid_due.is_none() && inputs.earliest_legacy_due.is_none() {
         return AlarmDecision::Clear;
     }
     if !supported_time(inputs.now)

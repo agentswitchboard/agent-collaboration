@@ -1,3 +1,4 @@
+use crate::timing::FreshWakeCommand;
 use central_storage::{GuardedStatement, ReadOutcome, Statement, StoreFailure};
 use fleet_engine::{DueItemKey, DueKind, DueOwnerTiming, DueTableChange, plan_due_table_change};
 use fleet_runtime_ports::stored_values::string;
@@ -7,31 +8,30 @@ use fleet_runtime_ports::{
     workspace_decode_error::corrupt,
 };
 use mail::{CentralMailAnswer as Answer, CentralMailRefusal as Refusal};
-use workspace_ids::{SessionRef, WakeId};
-use workspace_model::{PostText, Timestamp, central_mail as mail};
+use workspace_ids::WakeId;
+use workspace_model::{Timestamp, central_mail as mail};
 /// Storage failures are outer errors and retained refusals are inner results.
-/// The caller owns admission and commit.
+/// The caller owns commit.
 type WakePlan = Result<
     Result<(Vec<GuardedStatement>, mail::CentralMailAnswer), mail::CentralMailRefusal>,
     StoreFailure,
 >;
 
 pub fn plan_set_wake(
-    target: &SessionRef,
-    due_at: Timestamp,
-    body: &PostText,
-    now: Timestamp,
+    command: FreshWakeCommand<'_>,
     mint: impl FnOnce() -> Result<WakeId, StoreFailure>,
 ) -> WakePlan {
-    let at = || text(format_utc_millis(now));
+    let due_at = command.due_at();
+    let admitted_at = command.admitted_at();
+    let at = || text(format_utc_millis(admitted_at));
     let id: WakeId = mint()?;
     let mut statements = vec![exact(
         "INSERT INTO automation_wakes(wake_id,target,due_at,text,state,created_at,updated_at) VALUES (?,?,?,?,'active',?,?)",
         vec![
             text(&id),
-            encode_json(target, "mail JSON")?,
+            encode_json(command.target(), "mail JSON")?,
             text(format_utc_millis(due_at)),
-            text(body.as_str()),
+            text(command.body().as_str()),
             at(),
             at(),
         ],
@@ -44,7 +44,7 @@ pub fn plan_set_wake(
             },
             due_at,
         )?),
-        now,
+        admitted_at,
     )?);
     Ok(Ok((
         statements,

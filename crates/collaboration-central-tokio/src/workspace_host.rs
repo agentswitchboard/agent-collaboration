@@ -320,7 +320,7 @@ impl TokioWorkspaceHost {
                 })),
         );
         ending_transport.install_runtime(&central);
-        central.recompute_alarm().await?;
+        Box::pin(central.recover_cold_alarm()).await?;
         self.alarms.lock().await.push(WorkspaceAlarmOwner::start(
             central.clone(),
             self.clock.clone(),

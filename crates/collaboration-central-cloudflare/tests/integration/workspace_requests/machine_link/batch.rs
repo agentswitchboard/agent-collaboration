@@ -21,6 +21,7 @@ use workspace_model::{
     WorkspaceResult,
 };
 
+const PAST_WAKE_REQUEST: &str = "019f0000-0000-7000-8000-00000000cf41";
 const AREA_A: &str = "Batch area A";
 const AREA_B: &str = "Batch area B";
 
@@ -345,6 +346,17 @@ async fn batch_journey(fixture: &Fixture, held_callback: usize) -> Result<BatchH
     {
         return Err("semantically refused batch member wrote a wake row".into());
     }
+    let past_wake_writes = fixture
+        .runtime()
+        .read(Statement {
+            sql: "SELECT (SELECT COUNT(*) FROM engine_due_entries WHERE work_kind='wake_timer'),
+                           (SELECT COUNT(*) FROM runtime_request_log WHERE request_id=?)",
+            args: vec![SqlValue::Text(PAST_WAKE_REQUEST.into())],
+        })
+        .await?;
+    if past_wake_writes.rows != vec![vec![SqlValue::Integer(0.try_into()?); 2]] {
+        return Err("semantically refused wake wrote a due entry or retained request".into());
+    }
     let welcome = link.welcome.clone();
     link.close().await?;
     Ok(BatchHibernationReceipt {
@@ -385,7 +397,7 @@ fn writes(workspace: &WorkspaceId) -> Result<Vec<RequestPayload>> {
     Ok(vec![
         area("019f0000-0000-7000-8000-00000000cf40", AREA_A)?,
         RequestPayload::Mail(CentralMailRequest {
-            request_id: "019f0000-0000-7000-8000-00000000cf41".parse()?,
+            request_id: PAST_WAKE_REQUEST.parse()?,
             operation: CentralMailOperation::SetWake {
                 target,
                 due_at: "2030-03-17T17:45:00Z".parse()?,

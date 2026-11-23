@@ -450,6 +450,24 @@ impl NativeApprovalStoreFixture {
         result
     }
 
+    pub async fn read_alarm_times(&self) -> central_storage::EngineAlarmTimes {
+        self.alter_fixture(include_str!("../fixtures/approval_alarm_provisioned.sql"))
+            .await;
+        let pool = self.reopen_pool().await;
+        let mut transaction = NativeApprovalTransaction {
+            organization_id: fixture_organization(),
+            transaction: pool.begin().await.unwrap(),
+            fail_after_write: None,
+            evidence: ApprovalTransactionEvidence::default(),
+        };
+        let times = fleet_engine::read_alarm_inputs(&mut transaction)
+            .await
+            .unwrap();
+        transaction.transaction.rollback().await.unwrap();
+        pool.close().await;
+        times
+    }
+
     pub async fn compare_due_table(
         &self,
         now: EngineTime,

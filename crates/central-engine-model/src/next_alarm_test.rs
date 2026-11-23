@@ -41,14 +41,14 @@ fn leftovers_continue_at_thirty_seconds_before_a_later_pending_mark() {
 }
 
 #[test]
-fn leftovers_keep_the_continuation_even_without_a_selected_pending_deadline() {
+fn leftovers_do_not_arm_an_idle_object() {
     assert_eq!(
         decide(AlarmInputs {
             last_batch_start: Some(time(300_000)),
             leftovers_beyond_cap: true,
             ..inputs()
         }),
-        AlarmDecision::SetAt(time(330_000))
+        AlarmDecision::Clear
     );
 }
 
