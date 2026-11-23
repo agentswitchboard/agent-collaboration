@@ -243,8 +243,10 @@ pub enum OrganizationAdminResult {
     },
     EngineRetired {
         items: Vec<EngineRetiredItem>,
-        #[schemars(with = "Option<String>", extend("format" = "uuid"))]
-        next: Option<uuid::Uuid>,
+        #[serde(deserialize_with = "Option::deserialize")]
+        #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = NullableEngineRetiredCursor))]
+        #[schemars(required, schema_with = "nullable_engine_retired_cursor_schema")]
+        next: NullableEngineRetiredCursor,
     },
     EngineRetried {},
     EngineDiscarded {},
@@ -252,6 +254,27 @@ pub enum OrganizationAdminResult {
         reason: AdminRefusal,
     },
 }
+
+type NullableEngineRetiredCursor = Option<uuid::Uuid>;
+
+fn nullable_engine_retired_cursor_schema(_: &mut schemars::SchemaGenerator) -> schemars::Schema {
+    schemars::json_schema!({"type":["string","null"],"format":"uuid"})
+}
+
+// Specta needs the cursor type override in both phases. Keep the field visible
+// to the compiler so a mismatch between the two types cannot drift.
+#[cfg(all(feature = "wire-export", not(target_arch = "wasm32")))]
+const _: fn(&OrganizationAdminResult) -> Option<&NullableEngineRetiredCursor> =
+    |result| match result {
+        OrganizationAdminResult::EngineRetired { next, .. } => Some(next),
+        OrganizationAdminResult::Applied { .. }
+        | OrganizationAdminResult::Found { .. }
+        | OrganizationAdminResult::Records { .. }
+        | OrganizationAdminResult::EngineHealth { .. }
+        | OrganizationAdminResult::EngineRetried {}
+        | OrganizationAdminResult::EngineDiscarded {}
+        | OrganizationAdminResult::Refused { .. } => None,
+    };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
@@ -296,3 +319,7 @@ impl From<AdmissionRefusal> for AdminRefusal {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "organization_admin_contract_test.rs"]
+mod tests;
