@@ -6,10 +6,9 @@
 
 use crate::store_wire::{OwnedAlarmUpdate, OwnedBatch, OwnedStatement};
 use central_storage::{
-    AlarmPublication, AlarmPublicationFailure, BatchOutcome, ConstraintKind, CorruptReason,
-    EngineAlarmDecider, EngineAlarmTimes, ReadOutcome, SafeInteger, SqlValue, StoreFailure,
+    AlarmPublication, BatchOutcome, ConstraintKind, CorruptReason, EngineAlarmDecider,
+    EngineAlarmTimes, ReadOutcome, SafeInteger, SqlValue, StoreFailure,
 };
-use fleet_runtime_ports::Clock;
 use sqlx_core::column::Column;
 use sqlx_core::error::ErrorKind;
 use sqlx_core::migrate::Migrator;
@@ -19,6 +18,12 @@ use sqlx_core::sql_str::AssertSqlSafe;
 use sqlx_durable_object::{Do, DoArguments, DoConnection, DoRow, DoTransaction};
 use sqlx_durable_object_core::{AsValue, Value};
 use std::sync::Arc;
+
+#[path = "statement_store_alarm.rs"]
+mod alarm_publication;
+#[cfg(test)]
+use alarm_publication::alarm_time;
+use alarm_publication::apply_alarm;
 
 /// Whether a batch's `AlarmUpdate` reaches the object's alarm.
 pub(crate) enum AlarmPolicy {
@@ -132,35 +137,6 @@ pub(crate) fn read_outcome(rows: &[DoRow]) -> Result<ReadOutcome, StoreFailure> 
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(ReadOutcome { columns, rows })
-}
-
-/// The alarm `SetFromQuery` asks for: one INTEGER Unix-millisecond value, or NULL.
-fn alarm_time(outcome: &ReadOutcome) -> Result<Option<i64>, StoreFailure> {
-    let column = outcome.columns.first().cloned().unwrap_or_default();
-    let bad_value = || StoreFailure::Corrupt {
-        reason: CorruptReason::BadValue {
-            column: column.clone(),
-        },
-    };
-    match outcome.rows.as_slice() {
-        [row] => match row.as_slice() {
-            [SqlValue::Integer(at)] => Ok(Some(at.get())),
-            [SqlValue::Null] => Ok(None),
-            _ => Err(bad_value()),
-        },
-        _ => Err(bad_value()),
-    }
-}
-
-fn alarm_out_of_range(rows: &[DoRow]) -> StoreFailure {
-    let column = rows
-        .first()
-        .and_then(|row| row.columns().first())
-        .map(|column| column.name().to_owned())
-        .unwrap_or_default();
-    StoreFailure::Corrupt {
-        reason: CorruptReason::BadValue { column },
-    }
 }
 
 #[cfg(feature = "test-support")]
@@ -348,83 +324,6 @@ async fn run_in_transaction(
     }
     let publication = apply_alarm(transaction, &batch.alarm, policy).await?;
     Ok((rows_affected, publication))
-}
-
-async fn apply_alarm(
-    transaction: &DoTransaction,
-    alarm: &OwnedAlarmUpdate,
-    policy: AlarmPolicy,
-) -> Result<AlarmPublication, BatchStop> {
-    let (storage, clock) = match policy {
-        #[cfg(feature = "test-support")]
-        AlarmPolicy::Apply(storage) => (Some(storage), None),
-        AlarmPolicy::Engine(storage, clock, decide) => (Some(storage), Some((clock, decide))),
-        AlarmPolicy::Ignore => (None, None),
-    };
-    let mut publication = AlarmPublication::Unchanged;
-    if let Some(storage) = storage {
-        let at = match alarm {
-            OwnedAlarmUpdate::Unchanged => return Ok(publication),
-            OwnedAlarmUpdate::SetFromQuery(statement) => {
-                let rows = bound(statement).fetch_all(transaction).await?;
-                let at = alarm_time(&read_outcome(&rows).map_err(BatchStop::Failed)?)
-                    .map_err(BatchStop::Failed)?;
-                if at.is_some_and(|at| chrono::DateTime::from_timestamp_millis(at).is_none()) {
-                    return Err(BatchStop::Failed(alarm_out_of_range(&rows)));
-                }
-                at
-            }
-            OwnedAlarmUpdate::Engine(plan) => {
-                let (clock, decide) =
-                    clock.ok_or(BatchStop::Failed(StoreFailure::AlarmUnpublishable {
-                        reason: AlarmPublicationFailure::ClockUnavailable,
-                    }))?;
-                let mut alarm_executor_lender =
-                    WorkerExecutorLender::from_storage_executor(transaction);
-                let alarm_inputs = match plan {
-                    central_storage::EngineAlarmPlan::Clear => EngineAlarmTimes {
-                        earliest_on_grid_due_unix_millis: None,
-                        earliest_legacy_due_unix_millis: None,
-                    },
-                    central_storage::EngineAlarmPlan::Recompute => {
-                        fleet_engine::read_alarm_inputs(&mut alarm_executor_lender)
-                            .await
-                            .map_err(BatchStop::Failed)?
-                    }
-                };
-                #[cfg(feature = "test-support")]
-                worker::console_log!(
-                    "Central alarm input SELECTs: {}",
-                    alarm_executor_lender
-                        .read_dispatches
-                        .load(std::sync::atomic::Ordering::Relaxed)
-                );
-                decide(alarm_inputs, clock.now().unix_millis(), &mut |_| {}).map_err(|reason| {
-                    BatchStop::Failed(StoreFailure::AlarmUnpublishable { reason })
-                })?
-            }
-        };
-        // A storage write in the same transaction: it commits with the batch or not at all.
-        let written = match at {
-            Some(at) => match chrono::DateTime::from_timestamp_millis(at) {
-                Some(at) => storage.set_alarm(at).await,
-                None => {
-                    return Err(BatchStop::Failed(StoreFailure::AlarmUnpublishable {
-                        reason: AlarmPublicationFailure::EarliestDueOutOfRange,
-                    }));
-                }
-            },
-            None => storage.delete_alarm().await,
-        };
-        written.map_err(|error| {
-            worker::console_warn!("statement store alarm write failed: {error}");
-            BatchStop::Failed(StoreFailure::Unavailable)
-        })?;
-        publication = at.map_or(AlarmPublication::Cleared, |unix_millis| {
-            AlarmPublication::Set { unix_millis }
-        });
-    }
-    Ok(publication)
 }
 
 /// Runs `batch` atomically on `connection`'s storage.

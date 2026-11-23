@@ -14,5 +14,5 @@ pub use finish::{WakeFinish, wake_finish_store};
 pub use request_plan::{cancel_wake_read, plan_cancel_wake, plan_set_wake};
 pub use stored_rows::WakeRow;
 pub use timed_store::WakeStore;
-pub use timing::set_wake_refusal;
+pub use timing::FreshWakeCommand;
 pub use wake_timer::{Effect, Event, State, WakeTimer};

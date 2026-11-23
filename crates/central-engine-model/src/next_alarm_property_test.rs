@@ -40,8 +40,7 @@ fn alarm_properties_cover_supplied_times_and_every_pending_combination(case: Tes
     let decision = next_alarm(&inputs, &policy);
 
     assert_eq!(decision, next_alarm(&inputs, &policy));
-    let pending =
-        grid.is_some() || inputs.earliest_legacy_due.is_some() || inputs.leftovers_beyond_cap;
+    let pending = grid.is_some() || inputs.earliest_legacy_due.is_some();
     assert_eq!(decision == AlarmDecision::Clear, !pending);
     match decision {
         AlarmDecision::Clear => {}
