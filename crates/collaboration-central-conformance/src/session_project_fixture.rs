@@ -12,6 +12,7 @@ pub const FIRST_PROJECT: &str = "019a3dce-2000-7000-8000-000000000005";
 pub const SECOND_WORKSPACE: &str = "019a3dce-2000-7000-8000-000000000006";
 pub const SECOND_PROJECT: &str = "019a3dce-2000-7000-8000-000000000007";
 const FIRST_ALLOWANCE: &str = "019a3dce-2000-7000-8000-000000000008";
+const COMPETING_ALLOWANCE: &str = "019a3dce-2000-7000-8000-00000000000c";
 const SECOND_ALLOWANCE: &str = "019a3dce-2000-7000-8000-000000000009";
 pub const SIBLING_PROJECT: &str = "019a3dce-2000-7000-8000-00000000000b";
 const PROJECT_AREA: &str = "019a3dce-2000-7000-8000-00000000000a";
@@ -33,10 +34,7 @@ pub fn session_project_allowances(machine: &str) -> StatementBatch {
             "INSERT INTO directory_workspaces (workspace_id,name,state,created_at,updated_at) VALUES (?,?,'active','2026-11-22T10:00:00.000Z','2026-11-22T10:00:00.000Z')",
             &[workspace, workspace],
         ));
-        statements.push(write(
-            "INSERT INTO login_machine_allowances (allowance_id,machine_id,workspace_id,state,change_request_id,change_origin,created_at,updated_at) VALUES (?,?,?,'active',?,'automatic',0,0)",
-            &[allowance, machine, workspace, allowance],
-        ));
+        statements.push(allow_machine_session_start(machine, workspace, allowance));
     }
     batch(statements)
 }
@@ -59,6 +57,25 @@ fn insert_project(project: &str) -> GuardedStatement {
     write(
         "INSERT INTO workspace_projects (project_id,area_id,title,description,status,created_at,updated_at) VALUES (?,?,'Session fixture project','Session starts','open','2026-11-22T10:00:00.000Z','2026-11-22T10:00:00.000Z')",
         &[project, PROJECT_AREA],
+    )
+}
+
+pub fn allow_competing_session_machine(machine: &str) -> StatementBatch {
+    batch(vec![allow_machine_session_start(
+        machine,
+        FIRST_WORKSPACE,
+        COMPETING_ALLOWANCE,
+    )])
+}
+
+fn allow_machine_session_start(
+    machine: &str,
+    workspace: &str,
+    allowance: &str,
+) -> GuardedStatement {
+    write(
+        "INSERT INTO login_machine_allowances (allowance_id,machine_id,workspace_id,state,change_request_id,change_origin,created_at,updated_at) VALUES (?,?,?,'active',?,'automatic','2026-11-22T10:00:00.000Z','2026-11-22T10:00:00.000Z')",
+        &[allowance, machine, workspace, allowance],
     )
 }
 

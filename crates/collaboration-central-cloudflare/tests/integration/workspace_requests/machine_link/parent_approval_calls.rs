@@ -277,6 +277,11 @@ impl CompetingApprovalFixture for Fixture {
             self.now_seconds(),
         )
         .await?;
+        let batch = collaboration_central_conformance::session_project_fixture::allow_competing_session_machine(MACHINE);
+        assert!(matches!(
+            self.runtime().run_batch(batch).await?,
+            central_storage::BatchOutcome::Applied { .. }
+        ));
         let mut socket = self
             .client
             .get(self.link_url(self.organization.as_str()))

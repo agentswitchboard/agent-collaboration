@@ -56,6 +56,13 @@ async function createBoundSession(
                 sessionId: parent.sessionId,
                 presented: { kind: "secret", secret: parent.secret },
               },
+        project: {
+          kind: "named",
+          projectRef: {
+            workspace: "019a3dce-2000-7000-8000-000000000004",
+            project: "019a3dce-2000-7000-8000-000000000005",
+          },
+        },
         sessionKind:
           parent === undefined
             ? { kind: "ordinary" }
