@@ -74,7 +74,13 @@ pub(super) enum ExpectedReply {
 pub(super) struct RequestMember {
     correlation_id: CorrelationId,
     expectation: ReplyExpectation,
-    result: Option<Arc<ReplyPayload>>,
+    answer: Option<AcceptedMemberReply>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct AcceptedMemberReply {
+    result: Arc<ReplyPayload>,
+    accepted_at: ClockInstant,
 }
 
 impl RequestMember {
@@ -82,23 +88,24 @@ impl RequestMember {
         Self {
             correlation_id: request.correlation_id().clone(),
             expectation: ReplyExpectation::from_request(request.payload()),
-            result: None,
+            answer: None,
         }
     }
 
     fn accepts(&self, correlation_id: &CorrelationId, result: &ReplyPayload) -> bool {
-        self.result.is_none()
+        self.answer.is_none()
             && &self.correlation_id == correlation_id
             && self.expectation.accepts(result)
     }
 
     fn disposition(&self) -> WriteBatchMemberDisposition {
-        match &self.result {
-            Some(result) => WriteBatchMemberDisposition::Answered {
+        match &self.answer {
+            Some(answer) => WriteBatchMemberDisposition::Answered {
                 reply: CorrelatedRequestReply {
                     correlation_id: self.correlation_id.clone(),
-                    result: Box::new(result.as_ref().clone()),
+                    result: Box::new(answer.result.as_ref().clone()),
                 },
+                accepted_at: answer.accepted_at,
             },
             None => WriteBatchMemberDisposition::AnswerLost {
                 correlation_id: self.correlation_id.clone(),
@@ -127,7 +134,10 @@ pub(super) enum SocketReply {
 pub(super) enum LaneResult {
     Untouched(UntouchedCommand),
     Batch(CheckedBatchResults),
-    SingleAnswered(LaneAnswer),
+    SingleAnswered {
+        answer: LaneAnswer,
+        accepted_at: ClockInstant,
+    },
     SingleLost,
 }
 
@@ -192,6 +202,7 @@ impl ExpectedReply {
     fn observe_reply(
         &mut self,
         reply: SocketReply,
+        sample_acceptance: impl FnOnce() -> ClockInstant,
     ) -> Result<Option<LaneResult>, TransitionError<LaneRefusal>> {
         let answer = match (self, reply) {
             (
@@ -207,10 +218,14 @@ impl ExpectedReply {
                 else {
                     return Err(TransitionError::Stale);
                 };
-                member.result = Some(Arc::from(result));
+                let accepted_at = sample_acceptance();
+                member.answer = Some(AcceptedMemberReply {
+                    result: Arc::from(result),
+                    accepted_at,
+                });
                 return Ok(members
                     .iter()
-                    .all(|member| member.result.is_some())
+                    .all(|member| member.answer.is_some())
                     .then(|| Self::batch_result(requests, members)));
             }
             (
@@ -252,7 +267,10 @@ impl ExpectedReply {
             }
             _ => return Err(TransitionError::Stale),
         };
-        Ok(Some(LaneResult::SingleAnswered(answer)))
+        Ok(Some(LaneResult::SingleAnswered {
+            answer,
+            accepted_at: sample_acceptance(),
+        }))
     }
 }
 
@@ -341,13 +359,12 @@ impl EventTag for LaneInput {
 
 pub(super) struct AdmittedLanePolicy;
 
-impl StateMachine for AdmittedLanePolicy {
-    type State = LaneState;
-    type Event = LaneInput;
-    type Effect = LaneEffect;
-    type Error = LaneRefusal;
-
-    fn transition(state: &LaneState, event: LaneInput) -> StateMachineResult<Self> {
+impl AdmittedLanePolicy {
+    pub(super) fn transition_with_reply_clock(
+        state: &LaneState,
+        event: LaneInput,
+        sample_acceptance: impl FnOnce(ClockInstant) -> ClockInstant,
+    ) -> StateMachineResult<Self> {
         let mut effects = Vec::new();
         let mut next = state.clone();
         match event {
@@ -418,7 +435,7 @@ impl StateMachine for AdmittedLanePolicy {
                 if admitted.connection != connection || now >= *deadline {
                     return Err(TransitionError::Stale);
                 }
-                if let Some(result) = pending.observe_reply(reply)? {
+                if let Some(result) = pending.observe_reply(reply, || sample_acceptance(now))? {
                     effects.push(LaneEffect::Settle(result));
                     next = LaneState::AdmittedIdle(admitted.clone());
                 }
@@ -456,6 +473,17 @@ impl StateMachine for AdmittedLanePolicy {
             LaneInput::Admit(_) => return Err(wrong_phase()),
         }
         Ok((next, effects))
+    }
+}
+
+impl StateMachine for AdmittedLanePolicy {
+    type State = LaneState;
+    type Event = LaneInput;
+    type Effect = LaneEffect;
+    type Error = LaneRefusal;
+
+    fn transition(state: &LaneState, event: LaneInput) -> StateMachineResult<Self> {
+        Self::transition_with_reply_clock(state, event, |observed_at| observed_at)
     }
 
     fn transitions() -> &'static [Transition] {

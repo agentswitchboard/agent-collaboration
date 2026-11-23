@@ -221,7 +221,8 @@ async fn real_machine_admission_allows_immediate_request_and_status_without_regi
             reply: CorrelatedRequestReply {
                 correlation_id,
                 result: Box::new(expected.clone()),
-            }
+            },
+            accepted_at: ClockInstant::ZERO,
         },
         "Central must successfully apply the submitted cadence"
     );
@@ -244,7 +245,8 @@ async fn real_machine_admission_allows_immediate_request_and_status_without_regi
             reply: CorrelatedStatusReply {
                 correlation_id: status_correlation,
                 result: Box::new(RequestStatusAnswer::Answered(expected)),
-            }
+            },
+            accepted_at: ClockInstant::ZERO,
         },
         "status must read the exact stored cadence outcome for the same caller, scope and request ID"
     );

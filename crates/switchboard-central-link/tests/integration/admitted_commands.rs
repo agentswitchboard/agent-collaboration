@@ -13,7 +13,7 @@ use central_link_protocol::{
     RequestScope, RequestStatusAnswer, RequestStatusQuery, decode_text, encode_text,
 };
 use futures_util::{FutureExt, SinkExt, StreamExt};
-use router_clock::ManualClock;
+use router_clock::{ClockInstant, ManualClock};
 use switchboard_central_link::{link_lane::LinkLaneHandle, link_policy::LinkStatus};
 use tokio::net::TcpStream;
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
@@ -165,6 +165,7 @@ async fn partial_batch_keeps_answered_members_and_never_reuses_a_prior_connectio
         decode_text(&outbound, FrameDirection::ToCentral).unwrap(),
         LinkFrame::Data(DataFrame::Batch { requests })
     );
+    fixture.clock.advance(Duration::from_secs(4)).unwrap();
     send_answer(
         &mut socket,
         DataFrame::Reply {
@@ -173,6 +174,8 @@ async fn partial_batch_keeps_answered_members_and_never_reuses_a_prior_connectio
         },
     )
     .await;
+    delivery_barrier(&fixture, &mut socket, &admitted).await;
+    fixture.clock.advance(Duration::from_secs(2)).unwrap();
     for bad_id in [correlation(9), correlation(1)] {
         send_answer(
             &mut socket,
@@ -200,7 +203,8 @@ async fn partial_batch_keeps_answered_members_and_never_reuses_a_prior_connectio
                         reply: CorrelatedRequestReply {
                             correlation_id: correlation(1),
                             result: Box::new(first_answer)
-                        }
+                        },
+                        accepted_at: tick(4),
                     },
                     WriteBatchMemberDisposition::AnswerLost {
                         correlation_id: correlation(2)
@@ -216,7 +220,7 @@ async fn partial_batch_keeps_answered_members_and_never_reuses_a_prior_connectio
             connection: admitted.connection.clone()
         })
     );
-    fixture.clock.not_due_check_now(tick(1)).await;
+    fixture.clock.not_due_check_now(tick(7)).await;
     fixture.clock.advance(Duration::from_secs(1)).unwrap();
     let mut replacement = fixture.accept().await;
     let reopened = admit(&mut fixture, &mut replacement, &lane).await;
@@ -276,6 +280,7 @@ async fn receipts_and_status_settle_only_on_the_expected_correlation_and_length(
         receipt_result.as_mut().now_or_never().is_none(),
         "bad length or correlation must never settle receipts"
     );
+    fixture.clock.advance(Duration::from_secs(2)).unwrap();
     send_answer(
         &mut socket,
         DataFrame::ReceiptResults {
@@ -284,14 +289,19 @@ async fn receipts_and_status_settle_only_on_the_expected_correlation_and_length(
         },
     )
     .await;
+    // The ordered delivery confirms the answer was handled while the waiter was unpolled.
+    delivery_barrier(&fixture, &mut socket, &admitted).await;
+    fixture.clock.advance(Duration::from_secs(10)).unwrap();
     assert_eq!(
         receipt_result.await,
         LinkLaneDisposition::Answered {
             reply: CorrelatedReceiptResults {
                 correlation_id: correlation(3),
                 results: vec![ReceiptResult::Recorded]
-            }
-        }
+            },
+            accepted_at: tick(2),
+        },
+        "receipt acceptance stays at tick 2 when the waiter first sees it at tick 12"
     );
 
     let request = mail_write(4);
@@ -329,6 +339,7 @@ async fn receipts_and_status_settle_only_on_the_expected_correlation_and_length(
         status.as_mut().now_or_never().is_none(),
         "late correlation must never settle request status"
     );
+    fixture.clock.advance(Duration::from_secs(1)).unwrap();
     send_answer(
         &mut socket,
         DataFrame::RequestStatusReply {
@@ -337,14 +348,18 @@ async fn receipts_and_status_settle_only_on_the_expected_correlation_and_length(
         },
     )
     .await;
+    delivery_barrier(&fixture, &mut socket, &admitted).await;
+    fixture.clock.advance(Duration::from_secs(5)).unwrap();
     assert_eq!(
         status.await,
         LinkLaneDisposition::Answered {
             reply: CorrelatedStatusReply {
                 correlation_id: correlation(4),
                 result: Box::new(RequestStatusAnswer::NotFound)
-            }
-        }
+            },
+            accepted_at: tick(13),
+        },
+        "status acceptance stays at tick 13 when the waiter first sees it at tick 18"
     );
     fixture.stop().await;
 }
@@ -371,6 +386,8 @@ async fn immediate_request_answers_on_admission_and_reports_loss_after_write() {
         );
         if request_number == 5 {
             let result = Box::new(ReplyPayload::central_unavailable(request.payload()));
+            let elapsed = Duration::from_millis(1750);
+            fixture.clock.advance(elapsed).unwrap();
             send_answer(
                 &mut socket,
                 DataFrame::Reply {
@@ -385,8 +402,10 @@ async fn immediate_request_answers_on_admission_and_reports_loss_after_write() {
                     reply: CorrelatedRequestReply {
                         correlation_id: correlation(5),
                         result
-                    }
-                }
+                    },
+                    accepted_at: ClockInstant::ZERO.after(elapsed),
+                },
+                "an immediate reply accepted at an exact injected instant reports that instant"
             );
         } else {
             socket.send(Message::Close(None)).await.unwrap();
@@ -614,6 +633,8 @@ async fn batch_checks_same_family_success_and_preserves_distinguishable_answers_
         )
         .await;
     }
+    delivery_barrier(&fixture, &mut socket, &admitted).await;
+    fixture.clock.advance(Duration::from_secs(3)).unwrap();
     send_answer(
         &mut socket,
         DataFrame::Reply {
@@ -628,6 +649,7 @@ async fn batch_checks_same_family_success_and_preserves_distinguishable_answers_
         "a same-family wrong success or a wrong echoed cadence settles nothing"
     );
 
+    fixture.clock.advance(Duration::from_secs(5)).unwrap();
     send_answer(
         &mut socket,
         DataFrame::Reply {
@@ -636,17 +658,25 @@ async fn batch_checks_same_family_success_and_preserves_distinguishable_answers_
         },
     )
     .await;
-    let members = [(17, NoticeCadence::M25), (18, NoticeCadence::M55)].map(|(number, cadence)| {
-        WriteBatchMemberDisposition::Answered {
+    delivery_barrier(&fixture, &mut socket, &admitted).await;
+    fixture.clock.advance(Duration::from_secs(4)).unwrap();
+    let members = [
+        (17, NoticeCadence::M25, tick(8)),
+        (18, NoticeCadence::M55, tick(3)),
+    ]
+    .map(
+        |(number, cadence, accepted_at)| WriteBatchMemberDisposition::Answered {
             reply: CorrelatedRequestReply {
                 correlation_id: correlation(number),
                 result: Box::new(cadence_answer(cadence)),
             },
-        }
-    });
+            accepted_at,
+        },
+    );
     assert_eq!(
         batch.await,
-        WriteBatchDisposition::MemberResults(CheckedBatchResults::new(&requests, members).unwrap())
+        WriteBatchDisposition::MemberResults(CheckedBatchResults::new(&requests, members).unwrap()),
+        "out-of-order replies keep their own acceptance time in request order"
     );
     fixture.stop().await;
 }
@@ -726,10 +756,11 @@ async fn exact_byte_budget_is_accepted_and_oversize_batch_is_untouched_on_the_sa
                 correlation_id: request.correlation_id().clone(),
                 result: Box::new(ReplyPayload::central_unavailable(request.payload())),
             },
+            accepted_at: tick(0),
         })
         .collect::<Vec<_>>();
     for member in &expected {
-        if let WriteBatchMemberDisposition::Answered { reply } = member {
+        if let WriteBatchMemberDisposition::Answered { reply, .. } = member {
             send_answer(
                 &mut socket,
                 DataFrame::Reply {
@@ -900,7 +931,8 @@ async fn workspace_misses_settle_only_for_the_requested_workspace_and_allowed_it
                     result: expected,
                     actors: Vec::new()
                 })),
-            }
+            },
+            accepted_at: tick(0),
         }
     );
     fixture.stop().await;

@@ -741,7 +741,7 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
             .renewal_deadline()
             .is_some_and(|deadline| now < deadline)
         {
-            admitted_lane.reply(attempt, reply, now);
+            admitted_lane.reply(attempt, reply, now, self.clock.as_ref());
         }
         true
     }

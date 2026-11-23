@@ -70,7 +70,7 @@ enum ExpectedStage {
 struct LaneOracle {
     active: Option<usize>,
     stage: ExpectedStage,
-    observed: [bool; 2],
+    observed: [Option<u64>; 2],
     elapsed: u64,
 }
 
@@ -78,7 +78,7 @@ struct LaneOracle {
 enum OracleSettlement {
     NoSettlement,
     NotReached,
-    BatchMembers([bool; 2]),
+    BatchMembers([Option<u64>; 2]),
 }
 
 impl LaneOracle {
@@ -92,7 +92,7 @@ impl LaneOracle {
                 if self.active == Some(socket) && self.stage == ExpectedStage::Idle =>
             {
                 self.stage = ExpectedStage::Queued;
-                self.observed = [false; 2];
+                self.observed = [None; 2];
             }
             GeneratedStep::BeginWrite if self.stage == ExpectedStage::Queued => {
                 self.stage = ExpectedStage::Writing
@@ -108,8 +108,8 @@ impl LaneOracle {
                     .checked_sub(1)
                     .and_then(|index| self.observed.get_mut(usize::from(index)))
                 {
-                    *seen = true;
-                    if self.observed == [true; 2] {
+                    seen.get_or_insert(self.elapsed);
+                    if self.observed.iter().all(Option::is_some) {
                         self.stage = ExpectedStage::Idle;
                         return OracleSettlement::BatchMembers(self.observed);
                     }
@@ -179,11 +179,18 @@ fn generated_admitted_orders_preserve_exact_custody_and_partial_answers(case: he
         GeneratedStep::Offer(0),
         GeneratedStep::BeginWrite,
         GeneratedStep::FlushWrite,
+        GeneratedStep::Reply(0, 1),
+        GeneratedStep::Tick(1),
+        GeneratedStep::Reply(0, 1),
+        GeneratedStep::Reply(0, 2),
+        GeneratedStep::Offer(0),
+        GeneratedStep::BeginWrite,
+        GeneratedStep::FlushWrite,
     ];
     let mut oracle = LaneOracle {
         active: None,
         stage: ExpectedStage::Idle,
-        observed: [false; 2],
+        observed: [None; 2],
         elapsed: 0,
     };
     let mut state = LaneState::WaitingForAdmission;
@@ -238,12 +245,13 @@ fn generated_admitted_orders_preserve_exact_custody_and_partial_answers(case: he
                     CheckedBatchResults::new(
                         &requests,
                         [1, 2].into_iter().zip(answered).map(|(member, answered)| {
-                            if answered {
+                            if let Some(accepted_at) = answered {
                                 WriteBatchMemberDisposition::Answered {
                                     reply: CorrelatedRequestReply {
                                         correlation_id: correlation(member),
                                         result: Box::new(sample_reply.clone()),
                                     },
+                                    accepted_at: tick(accepted_at),
                                 }
                             } else {
                                 WriteBatchMemberDisposition::AnswerLost {
