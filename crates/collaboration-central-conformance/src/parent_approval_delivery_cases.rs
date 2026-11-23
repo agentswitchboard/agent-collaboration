@@ -77,7 +77,7 @@ pub async fn read_survives_lost_reply<F: Future<Output = Result<()>>>(
     let mut setup = ParentSetup::open(fixture, Chain::Direct).await?;
     let id = setup.approval.request_id().clone();
     assert!(
-        matches!(read_state(fixture, &id).await?.as_slice(), [row] if row[0] == SqlValue::Null)
+        matches!(read_state(fixture, &id).await?.as_slice(), [row] if matches!(row.first(), Some(SqlValue::Null)))
     );
 
     control(ParentApprovalPause::BeforeReply, PauseControl::Arm).await?;
@@ -91,7 +91,9 @@ pub async fn read_survives_lost_reply<F: Future<Output = Result<()>>>(
     .await?;
     control(ParentApprovalPause::BeforeReply, PauseControl::Wait).await?;
     let committed = read_state(fixture, &id).await?;
-    assert!(matches!(committed.as_slice(), [row] if matches!(row[0], SqlValue::Text(_))));
+    assert!(
+        matches!(committed.as_slice(), [row] if matches!(row.first(), Some(SqlValue::Text(_))))
+    );
     fixture.arm_notice_recovery().await?;
     let mut replacement = fixture.connect().await?;
     drop(setup.socket);
@@ -118,7 +120,13 @@ pub async fn read_survives_lost_reply<F: Future<Output = Result<()>>>(
         [&id]
     );
     assert_eq!(next, None);
-    assert_eq!(read_state(fixture, &id).await?[0][0], committed[0][0]);
+    assert_eq!(
+        read_state(fixture, &id)
+            .await?
+            .first()
+            .and_then(|row| row.first()),
+        committed.first().and_then(|row| row.first())
+    );
     Ok(())
 }
 
@@ -382,7 +390,7 @@ pub async fn hidden_approval_matches_an_absent_one_on_wire(
     fixture: &impl ApprovalLinkFixture,
 ) -> Result<()> {
     use approval_request_protocol::{
-        DecideApprovalAsSessionRequest, ReadApprovalForSessionRequest,
+        DecideApprovalAsSessionReply, DecideApprovalAsSessionRequest, ReadApprovalForSessionRequest,
     };
     use central_link_protocol::{
         CentralCallReply, FrameDirection, approval_rpc::DecideApprovalAsSessionRpc, decode_text,
@@ -479,10 +487,12 @@ pub async fn hidden_approval_matches_an_absent_one_on_wire(
             };
             responses.push(text);
         }
-        assert_eq!(responses.len(), 2);
-        assert_eq!(responses[0], responses[1]);
+        let [hidden_reply, absent_reply] = responses.as_slice() else {
+            return Err("expected both replies".into());
+        };
+        assert_eq!(hidden_reply, absent_reply);
         let LinkFrame::Data(DataFrame::CentralCallReply { result, .. }) =
-            decode_text(&responses[0], FrameDirection::ToRouter)?
+            decode_text(hidden_reply, FrameDirection::ToRouter)?
         else {
             return Err("expected a typed Central call reply".into());
         };

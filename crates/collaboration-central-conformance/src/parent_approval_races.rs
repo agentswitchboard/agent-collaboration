@@ -331,7 +331,9 @@ pub async fn decide_against<F: std::future::Future<Output = Result<()>>>(
             DecisionCompetitor::SessionEnd => Ending::Cancelled {
                 reason: approval_request_protocol::CancelReason::SessionEnded {},
             },
-            DecisionCompetitor::PassOn => unreachable!("pass-on retains the parent as a decider"),
+            DecisionCompetitor::PassOn => {
+                return Err("pass-on retains the parent as a decider".into());
+            }
         }
     };
     if session_first {

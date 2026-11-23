@@ -363,6 +363,7 @@ async fn tokio_signed_person_decision_delivers_ending_to_holder() -> Result<()> 
         before_alarm: Cell::new(0),
         delivery_answer: RefCell::default(),
         before_write: RefCell::default(),
+        notice_recovery: RefCell::default(),
     };
     let observed = async {
         let client = reqwest::Client::builder()

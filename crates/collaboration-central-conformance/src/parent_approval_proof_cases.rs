@@ -140,7 +140,7 @@ async fn restricted_answers(fixture: &impl ApprovalLinkFixture) -> Result<()> {
             return Err("expected provider approval".into());
         };
         let mut options = offer.options.as_slice().to_vec();
-        options[0].lasts = lasts;
+        options.first_mut().ok_or("approval lacks an option")?.lasts = lasts;
         offer.options = approval_request_protocol::OfferedOptions::new(options)?;
         let id = request.request_id().clone();
         require_receipt(raise(&mut setup.socket, &setup.target.organization_id, request).await?)?;
@@ -253,7 +253,7 @@ async fn list_continuation(fixture: &impl ApprovalLinkFixture) -> Result<()> {
             .iter()
             .map(|item| &item.request_id)
             .collect::<Vec<_>>(),
-        ids[..100].iter().collect::<Vec<_>>()
+        ids.iter().take(100).collect::<Vec<_>>()
     );
     assert_eq!(next.as_ref(), ids.get(99));
     let ListApprovalsForSessionReply::Page { items, next } = answered(
@@ -271,7 +271,7 @@ async fn list_continuation(fixture: &impl ApprovalLinkFixture) -> Result<()> {
             .iter()
             .map(|item| &item.request_id)
             .collect::<Vec<_>>(),
-        ids[100..].iter().collect::<Vec<_>>()
+        ids.iter().skip(100).collect::<Vec<_>>()
     );
     assert_eq!(next, None);
     Ok(())
@@ -314,13 +314,25 @@ async fn session_hop(fixture: &impl ApprovalLinkFixture, ended: bool) -> Result<
     )
     .await?;
     let current_rows = route_rows(fixture, &id).await?;
-    assert_eq!(current_rows.len(), 2);
-    assert_eq!(current_rows[0], previous_rows[0]);
-    assert_eq!(current_rows[1][0], text(parent.session_id.as_str()));
-    assert_eq!(current_rows[0][2..], current_rows[1][2..]);
+    let [first, next] = current_rows.as_slice() else {
+        return Err("expected two durable destinations".into());
+    };
+    let [only] = previous_rows.as_slice() else {
+        return Err("expected the original destination".into());
+    };
+    assert_eq!(first, only);
+    let [_, _, original_created, original_deadline] = first.as_slice() else {
+        return Err("invalid original route row".into());
+    };
+    let [session, position, created, deadline] = next.as_slice() else {
+        return Err("invalid next route row".into());
+    };
+    assert_eq!(session, &text(parent.session_id.as_str()));
+    assert_eq!(created, original_created);
+    assert_eq!(deadline, original_deadline);
     assert_eq!(
-        current_rows[1][1],
-        SqlValue::Integer(central_storage::SafeInteger::new(1)?)
+        position,
+        &SqlValue::Integer(central_storage::SafeInteger::new(1)?)
     );
     assert_eq!(setup.pass(id.clone(), first_operation).await?, expected);
     assert_eq!(
