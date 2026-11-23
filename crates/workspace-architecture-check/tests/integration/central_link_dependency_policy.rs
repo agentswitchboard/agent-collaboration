@@ -114,11 +114,18 @@ const DRIVER_DEV: &[Edge] = &[
     registry("tracing-subscriber", true, &["env-filter", "fmt", "json"]),
 ];
 const REAL_TEST_DEV: &[Edge] = &[
+    registry("axum", false, &["http1", "tokio"]),
+    registry(
+        "tokio-tungstenite",
+        false,
+        &["connect", "rustls-tls-webpki-roots"],
+    ),
     workspace(DRIVER, &["test-support"]),
     workspace(CLIENT, &[]),
     workspace("central-link-protocol", &[]),
     workspace("router-clock", &["test-support"]),
     workspace(TOKIO_CENTRAL, &["test-support"]),
+    workspace("fleet-runtime", &["test-support"]),
     workspace("switchboard-machine-core-store", &[]),
     workspace("switchboard-message-custody", &[]),
     workspace("workspace-ids", &[]),
@@ -139,6 +146,7 @@ const REAL_TEST_DEV: &[Edge] = &[
     ),
     registry("reqwest", false, &["blocking", "rustls-tls"]),
     registry("serde_json", true, &[]),
+    registry("turmoil", true, &[]),
     workspace(
         "collaboration-central-conformance",
         &["signin-test-support"],
