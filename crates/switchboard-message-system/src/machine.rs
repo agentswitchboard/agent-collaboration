@@ -6,8 +6,8 @@ use state_machine_core::{
 
 use crate::{
     ActiveEnrollment, Effect, EnrollmentDuringDrain, EnrollmentId, EnrollmentPair, Event, Fault,
-    Front, FrontRefusal, Generation, Metadata, QuiesceReason, Quiescing, ReadId, StopBudgets,
-    StopReport, StopResult, StopTarget, teardown::Step, transition_table::TRANSITIONS,
+    Front, FrontRefusal, Generation, LeaseStopResult, Metadata, QuiesceReason, Quiescing, ReadId,
+    StopBudgets, StopReport, StopResult, StopTarget, teardown::Step, transition_table::TRANSITIONS,
 };
 
 const METADATA_POLL: Duration = Duration::from_secs(15);
@@ -73,16 +73,15 @@ impl State {
         }
     }
 
-    const fn owned_generation(&self) -> Option<Generation> {
+    fn owes_store_join(&self) -> bool {
         match self {
-            Self::Opening { generation, .. } | Self::Running { generation, .. } => {
-                Some(*generation)
-            }
-            Self::Quiescing(cleanup) => cleanup.generation(),
+            Self::Closed => false,
+            Self::ClosedWithOutstanding { pieces } => pieces.contains(&StopTarget::EnrollmentStore),
             Self::Observing { .. }
-            | Self::Faulted { .. }
-            | Self::ClosedWithOutstanding { .. }
-            | Self::Closed => None,
+            | Self::Opening { .. }
+            | Self::Running { .. }
+            | Self::Quiescing(_)
+            | Self::Faulted { .. } => true,
         }
     }
 }
@@ -133,6 +132,7 @@ pub struct Supervisor {
     last_generation: Option<Generation>,
     latest_read: ReadId,
     unsettled_retirements: BTreeSet<EnrollmentId>,
+    store_exit_reported: bool,
 }
 
 type Refused = TransitionError<SupervisorError>;
@@ -159,6 +159,7 @@ impl Supervisor {
                 last_generation: None,
                 latest_read: read,
                 unsettled_retirements: BTreeSet::new(),
+                store_exit_reported: false,
             },
             effects,
         )
@@ -168,6 +169,7 @@ impl Supervisor {
         &self.state
     }
 
+    /// High-water mark of issued reads. Its authority ends when observation stops.
     pub const fn latest_read(&self) -> ReadId {
         self.latest_read
     }
@@ -233,24 +235,16 @@ impl Supervisor {
                     .map_err(Refused::Domain)?;
             }
             Event::EnrollmentMayHaveChanged => return Err(not_allowed),
-            Event::MetadataObserved { read, .. } if read < self.latest_read => {
+            Event::MetadataObserved { read, .. } if read > self.latest_read => {
+                return Err(not_allowed);
+            }
+            Event::MetadataObserved { read, .. }
+                if read != self.latest_read || !self.state.observing_metadata() =>
+            {
                 return Err(Refused::Stale);
             }
-            Event::MetadataObserved { read, metadata }
-                if read == self.latest_read && self.state.observing_metadata() =>
-            {
+            Event::MetadataObserved { metadata, .. } => {
                 self.observe(metadata, effects).map_err(Refused::Domain)?;
-            }
-            Event::MetadataObserved { .. } => return Err(not_allowed),
-            Event::BuildFinished { generation }
-            | Event::BuildFailed { generation }
-            | Event::PieceExited { generation, .. }
-                if self.last_generation.is_some_and(|latest| {
-                    generation < latest
-                        || (generation == latest && self.state.owned_generation().is_none())
-                }) =>
-            {
-                return Err(Refused::Stale);
             }
             Event::BuildFinished { generation } => {
                 if let State::Opening {
@@ -264,7 +258,7 @@ impl Supervisor {
                         pair: pair.clone(),
                     };
                 } else {
-                    return Err(not_allowed);
+                    return Err(self.inapplicable_generation(generation, not_allowed));
                 }
             }
             Event::BuildFailed { generation } => {
@@ -273,7 +267,7 @@ impl Supervisor {
                     self.begin_quiescing(Some(generation), QuiesceReason::BuildFailed, effects);
                     effects.push(Effect::ReportFault(Fault::BuildFailed { generation }));
                 } else {
-                    return Err(not_allowed);
+                    return Err(self.inapplicable_generation(generation, not_allowed));
                 }
             }
             Event::PieceExited { generation, piece } => {
@@ -287,18 +281,34 @@ impl Supervisor {
                         piece,
                     }));
                 } else {
-                    return Err(not_allowed);
+                    return Err(self.inapplicable_generation(generation, not_allowed));
                 }
             }
-            Event::EnrollmentStoreExited if self.is_closing() => return Err(Refused::Stale),
             Event::EnrollmentStoreExited => {
+                if self.store_exit_reported || !self.state.owes_store_join() {
+                    return Err(Refused::Stale);
+                }
+                self.store_exit_reported = true;
                 effects.push(Effect::ReportFault(Fault::EnrollmentStoreExited));
-                self.close(effects);
+                if !self.is_closing() {
+                    self.close(effects);
+                }
             }
             Event::StopFinished(report) => self.stop_finished(report, effects)?,
             Event::Close => self.close(effects),
         }
         Ok(())
+    }
+
+    fn inapplicable_generation(&self, generation: Generation, not_allowed: Refused) -> Refused {
+        if self
+            .last_generation
+            .is_some_and(|latest| generation <= latest)
+        {
+            Refused::Stale
+        } else {
+            not_allowed
+        }
     }
 
     fn observe(
@@ -446,7 +456,9 @@ impl Supervisor {
             return Err(Refused::Stale);
         }
         if let StopReport::LeaseAdapter {
-            unsettled_retirements,
+            result: LeaseStopResult::Joined {
+                unsettled_retirements,
+            },
             ..
         } = report
         {

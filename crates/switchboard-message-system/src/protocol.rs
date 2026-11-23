@@ -136,9 +136,17 @@ pub enum StopResult {
     TimedOut,
 }
 
-/// The executor reads the owner's shared retirement fence when reporting the
-/// lease join. Its pending entries are authoritative even if the worker
-/// returned no result. A timeout can report the entries pending at the bound.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LeaseStopResult {
+    TimedOut,
+    /// The executor samples the owner's shared retirement fence at the join.
+    /// Its pending entries are authoritative even if the worker returned no
+    /// result.
+    Joined {
+        unsettled_retirements: Vec<EnrollmentId>,
+    },
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StopReport {
     Driver {
@@ -155,8 +163,7 @@ pub enum StopReport {
     },
     LeaseAdapter {
         generation: Generation,
-        result: StopResult,
-        unsettled_retirements: Vec<EnrollmentId>,
+        result: LeaseStopResult,
     },
     /// TimedOut means the enrollment-store operation remains live.
     EnrollmentStore(StopResult),
@@ -179,8 +186,15 @@ impl StopReport {
             Self::Driver { result, .. }
             | Self::Custody { result, .. }
             | Self::Settings { result, .. }
-            | Self::LeaseAdapter { result, .. }
             | Self::EnrollmentStore(result) => result,
+            Self::LeaseAdapter {
+                result: LeaseStopResult::TimedOut,
+                ..
+            } => StopResult::TimedOut,
+            Self::LeaseAdapter {
+                result: LeaseStopResult::Joined { .. },
+                ..
+            } => StopResult::Joined,
         }
     }
 }
@@ -228,6 +242,8 @@ pub enum Front {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Event {
+    /// The executor consumes a queued notification once observation has
+    /// stopped. Its `NotAllowed` result is inapplicability, not a fault.
     EnrollmentMayHaveChanged,
     MetadataObserved {
         read: ReadId,

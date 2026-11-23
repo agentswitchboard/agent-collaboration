@@ -3,6 +3,7 @@
     reason = "test fixtures and transitions must succeed"
 )]
 
+mod authority_transitions;
 mod histories;
 mod history_model;
 mod transitions;
@@ -11,8 +12,8 @@ use std::{num::NonZeroU64, time::Duration};
 
 use state_machine_core::StateMachine;
 use switchboard_message_system::{
-    ActiveEnrollment, Effect, EnrollmentId, EnrollmentPair, Event, Generation, Metadata, ReadId,
-    StopBudgets, StopReport, StopResult, StopTarget, Supervisor, UnitPiece,
+    ActiveEnrollment, Effect, EnrollmentId, EnrollmentPair, Event, Generation, LeaseStopResult,
+    Metadata, ReadId, StopBudgets, StopReport, StopResult, StopTarget, Supervisor, UnitPiece,
 };
 
 const FIRST: Generation = Generation(NonZeroU64::MIN);
@@ -68,8 +69,12 @@ fn report(target: StopTarget, result: StopResult) -> StopReport {
             UnitPiece::Settings => StopReport::Settings { generation, result },
             UnitPiece::LeaseAdapter => StopReport::LeaseAdapter {
                 generation,
-                result,
-                unsettled_retirements: vec![],
+                result: match result {
+                    StopResult::Joined => LeaseStopResult::Joined {
+                        unsettled_retirements: vec![],
+                    },
+                    StopResult::TimedOut => LeaseStopResult::TimedOut,
+                },
             },
         },
     }

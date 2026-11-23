@@ -63,6 +63,12 @@ pub(crate) const TRANSITIONS: &[Transition] = &[
         "ClosedWithOutstanding",
         terminal
     ),
+    row!(
+        "ClosedWithOutstanding",
+        "EnrollmentStoreExited",
+        "ClosedWithOutstanding",
+        terminal
+    ),
     row!("ClosedWithOutstanding", "StopFinished", "Closed", terminal),
     row!(
         "ClosedWithOutstanding",

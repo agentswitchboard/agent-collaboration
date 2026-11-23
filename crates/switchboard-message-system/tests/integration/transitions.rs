@@ -2,15 +2,15 @@ use std::time::Duration;
 
 use state_machine_core::{StateMachine, TransitionError, check_state_machine_transitions};
 use switchboard_message_system::{
-    Effect, Event, Fault, Front, FrontRefusal, Metadata, ObservationPhase, ReadId, State,
-    StopReport, StopResult, StopTarget, Supervisor, UnitPiece,
+    Effect, Event, Fault, Front, FrontRefusal, LeaseStopResult, Metadata, ObservationPhase, ReadId,
+    State, StopReport, StopResult, StopTarget, Supervisor, UnitPiece,
 };
 
 use super::{
     BUDGETS, FIRST, PIECES, active, enrollment, observe, pair, report, send, stop, target,
 };
 
-fn current_read(supervisor: &Supervisor, metadata: Metadata) -> Event {
+pub(super) fn current_read(supervisor: &Supervisor, metadata: Metadata) -> Event {
     Event::MetadataObserved {
         read: supervisor.latest_read(),
         metadata,
@@ -26,14 +26,14 @@ fn observing(supervisor: &Supervisor, why: FrontRefusal) {
     );
 }
 
-fn scheduled(supervisor: &Supervisor, effects: &[Effect], delay: u64) {
+pub(super) fn scheduled(supervisor: &Supervisor, effects: &[Effect], delay: u64) {
     assert!(effects.contains(&Effect::ScheduleMetadataRead {
         read: supervisor.latest_read(),
         after: Duration::from_secs(delay)
     }));
 }
 
-fn start() -> Supervisor {
+pub(super) fn start() -> Supervisor {
     let (mut supervisor, _) = Supervisor::new(BUDGETS);
     let effects = observe(&mut supervisor, active(1, 1, 1));
     assert_eq!(
@@ -50,7 +50,7 @@ fn start() -> Supervisor {
     supervisor
 }
 
-fn running() -> Supervisor {
+pub(super) fn running() -> Supervisor {
     let mut supervisor = start();
     assert_eq!(
         send(&mut supervisor, Event::BuildFinished { generation: FIRST }),
@@ -138,10 +138,7 @@ fn empty_and_ended_withdraw_immediately_during_opening_and_running() {
             }));
             assert_eq!(
                 Supervisor::transition(&supervisor, Event::BuildFinished { generation: FIRST }),
-                Err(TransitionError::NotAllowed {
-                    state: "Quiescing",
-                    event: "BuildFinished"
-                })
+                Err(TransitionError::Stale)
             );
             let after_drain = stop_unit(&mut supervisor);
             observing(&supervisor, why);
@@ -196,10 +193,7 @@ fn foreign_organization_or_deployment_stops_and_faults_even_after_unit_turnover(
         assert!(finished.is_empty());
         assert_eq!(
             Supervisor::transition(&supervisor, current_read(&supervisor, active(1, 1, 3))),
-            Err(TransitionError::NotAllowed {
-                state: "Faulted",
-                event: "MetadataObserved"
-            })
+            Err(TransitionError::Stale)
         );
         assert_eq!(
             send(&mut supervisor, Event::Close),
@@ -321,8 +315,9 @@ fn normal_drain_waits_for_timed_out_owner_and_fences_unsettled_enrollments() {
         &mut supervisor,
         Event::StopFinished(StopReport::LeaseAdapter {
             generation: FIRST,
-            result: StopResult::Joined,
-            unsettled_retirements: vec![enrollment(1)],
+            result: LeaseStopResult::Joined {
+                unsettled_retirements: vec![enrollment(1)],
+            },
         }),
     );
     assert!(effects.is_empty());
@@ -357,10 +352,7 @@ fn close_joins_overtaken_opening_in_order_then_closes_store_and_releases_inputs(
     let mut effects = closing.into_iter().skip(1).collect::<Vec<_>>();
     assert_eq!(
         Supervisor::transition(&supervisor, Event::BuildFinished { generation: FIRST }),
-        Err(TransitionError::NotAllowed {
-            state: "Quiescing",
-            event: "BuildFinished"
-        })
+        Err(TransitionError::Stale)
     );
     assert!(send(&mut supervisor, Event::Close).is_empty());
     for (piece, budget) in [
@@ -401,10 +393,7 @@ fn close_joins_overtaken_opening_in_order_then_closes_store_and_releases_inputs(
     );
     assert_eq!(
         Supervisor::transition(&supervisor, current_read(&supervisor, active(1, 1, 1))),
-        Err(TransitionError::NotAllowed {
-            state: "Closed",
-            event: "MetadataObserved"
-        })
+        Err(TransitionError::Stale)
     );
 }
 
@@ -447,10 +436,7 @@ fn final_timeouts_name_all_live_owners_and_late_joins_settle_without_effects() {
     );
     assert_eq!(
         Supervisor::transition(&supervisor, current_read(&supervisor, active(1, 1, 1))),
-        Err(TransitionError::NotAllowed {
-            state: "ClosedWithOutstanding",
-            event: "MetadataObserved"
-        })
+        Err(TransitionError::Stale)
     );
     assert!(stop(&mut supervisor, driver, StopResult::Joined).is_empty());
     assert_eq!(
@@ -527,7 +513,7 @@ fn store_exit_reports_its_fault_and_closes_the_lifetime_in_order() {
         ]
         .concat()
     );
-    assert_eq!(supervisor, closing);
+    assert_eq!(supervisor.state(), closing.state());
     assert_eq!(
         Supervisor::transition(&supervisor, Event::EnrollmentStoreExited),
         Err(TransitionError::Stale)

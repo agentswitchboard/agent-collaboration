@@ -3,8 +3,8 @@ use std::{collections::BTreeSet, num::NonZeroU64};
 use hegel::generators as gs;
 use state_machine_core::{StateMachine, StateTag};
 use switchboard_message_system::{
-    Effect, Event, Front, Generation, Metadata, ReadId, State, StopReport, StopResult, StopTarget,
-    Supervisor, UnitPiece,
+    Effect, Event, Front, Generation, LeaseStopResult, Metadata, ReadId, State, StopReport,
+    StopResult, StopTarget, Supervisor, UnitPiece,
 };
 
 use super::{BUDGETS, FIRST, PIECES, active, enrollment, history_model::Model, report, target};
@@ -175,8 +175,12 @@ impl History {
                     piece: UnitPiece::LeaseAdapter,
                 } => StopReport::LeaseAdapter {
                     generation,
-                    result,
-                    unsettled_retirements: vec![enrollment(1)],
+                    result: match result {
+                        StopResult::Joined => LeaseStopResult::Joined {
+                            unsettled_retirements: vec![enrollment(1)],
+                        },
+                        StopResult::TimedOut => LeaseStopResult::TimedOut,
+                    },
                 },
                 StopTarget::Unit { .. } | StopTarget::EnrollmentStore => report(selected, result),
             }),

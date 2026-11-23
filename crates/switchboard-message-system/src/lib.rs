@@ -12,7 +12,7 @@ mod transition_table;
 pub use machine::{ObservationPhase, State, Supervisor, SupervisorError};
 pub use protocol::{
     ActiveEnrollment, Effect, EnrollmentId, EnrollmentPair, Event, Fault, Front, FrontRefusal,
-    Generation, Metadata, OrganizationId, PairError, ReadId, StopBudgets, StopReport, StopResult,
-    StopTarget, UnitPiece,
+    Generation, LeaseStopResult, Metadata, OrganizationId, PairError, ReadId, StopBudgets,
+    StopReport, StopResult, StopTarget, UnitPiece,
 };
 pub use teardown::{EnrollmentDuringDrain, QuiesceReason, Quiescing};

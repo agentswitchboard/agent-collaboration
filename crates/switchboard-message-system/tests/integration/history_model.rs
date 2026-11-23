@@ -6,8 +6,9 @@ use std::{
 
 use state_machine_core::{EventTag, TransitionError};
 use switchboard_message_system::{
-    Effect, EnrollmentId, EnrollmentPair, Event, Fault, Front, FrontRefusal, Generation, Metadata,
-    ReadId, StopReport, StopResult, StopTarget, SupervisorError, UnitPiece,
+    Effect, EnrollmentId, EnrollmentPair, Event, Fault, Front, FrontRefusal, Generation,
+    LeaseStopResult, Metadata, ReadId, StopReport, StopResult, StopTarget, SupervisorError,
+    UnitPiece,
 };
 
 use super::{BUDGETS, PIECES, target};
@@ -38,10 +39,11 @@ pub(super) struct Model {
     pub last_generation: Option<Generation>,
     pinned: Option<EnrollmentPair>,
     ending: Option<Finish>,
-    draining_generation: Option<Generation>,
     queue: VecDeque<StopTarget>,
     pub overdue: BTreeSet<StopTarget>,
     excluded: BTreeSet<EnrollmentId>,
+    store_joined: bool,
+    store_exit_seen: bool,
 }
 
 impl Model {
@@ -53,10 +55,11 @@ impl Model {
             last_generation: None,
             pinned: None,
             ending: None,
-            draining_generation: None,
             queue: VecDeque::new(),
             overdue: BTreeSet::new(),
             excluded: BTreeSet::new(),
+            store_joined: false,
+            store_exit_seen: false,
         }
     }
 
@@ -89,8 +92,9 @@ impl Model {
     fn unit_generation(&self) -> Option<Generation> {
         match self.phase {
             Phase::Building | Phase::Serving => self.last_generation,
-            Phase::Draining => self.draining_generation,
-            Phase::Polling | Phase::Cooldown | Phase::Faulted | Phase::Closed => None,
+            Phase::Polling | Phase::Cooldown | Phase::Draining | Phase::Faulted | Phase::Closed => {
+                None
+            }
         }
     }
 
@@ -137,7 +141,6 @@ impl Model {
     ) {
         self.phase = Phase::Draining;
         self.ending = Some(outcome);
-        self.draining_generation = generation;
         if let Some(generation) = generation {
             self.queue
                 .extend(PIECES.map(|piece| target(generation, piece)));
@@ -242,7 +245,9 @@ impl Model {
         let stopped = report.target();
         let timed_out = report.result() == StopResult::TimedOut;
         if self.phase == Phase::Closed {
-            return !timed_out && self.overdue.remove(&stopped);
+            let accepted = !timed_out && self.overdue.remove(&stopped);
+            self.store_joined |= accepted && stopped == StopTarget::EnrollmentStore;
+            return accepted;
         }
         if self.phase != Phase::Draining {
             return false;
@@ -258,12 +263,15 @@ impl Model {
             return false;
         }
         if let StopReport::LeaseAdapter {
-            unsettled_retirements,
+            result: LeaseStopResult::Joined {
+                unsettled_retirements,
+            },
             ..
         } = report
         {
             self.excluded.extend(unsettled_retirements);
         }
+        self.store_joined |= !timed_out && stopped == StopTarget::EnrollmentStore;
         if self.queue.is_empty() {
             if self.ending == Some(Finish::Close) {
                 self.phase = Phase::Closed;
@@ -299,22 +307,14 @@ impl Model {
             Event::EnrollmentMayHaveChanged if self.reads_metadata() => {
                 self.read_after(0, &mut effects)
             }
-            Event::MetadataObserved { read, .. } if read < self.read => {
-                return Err(TransitionError::Stale);
-            }
-            Event::MetadataObserved { read, metadata }
-                if read == self.read && self.reads_metadata() =>
-            {
-                self.observe(metadata, &mut effects)
-            }
-            Event::BuildFinished { generation }
-            | Event::BuildFailed { generation }
-            | Event::PieceExited { generation, .. }
-                if self.last_generation.is_some_and(|last| {
-                    generation < last || (generation == last && self.unit_generation().is_none())
-                }) =>
-            {
-                return Err(TransitionError::Stale);
+            Event::MetadataObserved { read, metadata } => {
+                if read == self.read && self.reads_metadata() {
+                    self.observe(metadata, &mut effects);
+                } else if read <= self.read {
+                    return Err(TransitionError::Stale);
+                } else {
+                    return Err(not_allowed);
+                }
             }
             Event::BuildFinished { generation }
                 if self.phase == Phase::Building && self.last_generation == Some(generation) =>
@@ -342,9 +342,10 @@ impl Model {
             }
             Event::Close => self.close(&mut effects),
             Event::EnrollmentStoreExited => {
-                if self.ending == Some(Finish::Close) || self.phase == Phase::Closed {
+                if self.store_joined || self.store_exit_seen {
                     return Err(TransitionError::Stale);
                 }
+                self.store_exit_seen = true;
                 effects.push(Effect::ReportFault(Fault::EnrollmentStoreExited));
                 self.close(&mut effects);
             }
@@ -353,13 +354,18 @@ impl Model {
                     return Err(TransitionError::Stale);
                 }
             }
-            Event::EnrollmentMayHaveChanged
-            | Event::MetadataObserved { .. }
-            | Event::BuildFinished { .. }
-            | Event::BuildFailed { .. }
-            | Event::PieceExited { .. } => {
+            Event::BuildFinished { generation }
+            | Event::BuildFailed { generation }
+            | Event::PieceExited { generation, .. } => {
+                if self
+                    .last_generation
+                    .is_some_and(|issued| issued >= generation)
+                {
+                    return Err(TransitionError::Stale);
+                }
                 return Err(not_allowed);
             }
+            Event::EnrollmentMayHaveChanged => return Err(not_allowed),
         }
         if old_front != self.front {
             effects.insert(usize::from(store_exited), Effect::PublishFront(self.front));
