@@ -36,7 +36,7 @@ fn start(reply: ProviderReply) -> RequestEvent {
 fn claimed(mac: &mut Mac) -> ProviderReply {
     mac.publish();
     let ending = DeliverEndingRequest::from_raise(&raise(), Ending::TimedOut {}).unwrap();
-    let reply = ProviderReply::CentralEnding(ending.ending.clone());
+    let reply = ProviderReply::CentralEnding(ending.ending().clone());
     assert_eq!(
         mac.offer(1, ending),
         [ending_reply(1, DeliverEndingReply::Received {})]

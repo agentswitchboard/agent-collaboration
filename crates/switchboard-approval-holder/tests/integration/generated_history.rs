@@ -240,7 +240,7 @@ impl HistoryFacts {
                 DeliverEndingReply::Received {}
             } else {
                 effects.push(Observation::Wait(RequestEffect::EndingConflict {
-                    request_id: request.request_id.clone(),
+                    request_id: request.request_id().clone(),
                     reason: InvalidApprovalEnding::BindingMismatch,
                 }));
                 DeliverEndingReply::EndingDiffers {}
@@ -254,7 +254,7 @@ impl HistoryFacts {
         } else {
             self.recorded_ending = Some(request.clone());
             self.central_done = true;
-            self.claim(ProviderReply::CentralEnding(request.ending.clone()));
+            self.claim(ProviderReply::CentralEnding(request.ending().clone()));
             DeliverEndingReply::Received {}
         };
         effects.push(Observation::Wait(RequestEffect::EndingReply {
@@ -708,11 +708,9 @@ fn generated_gate_and_wait_histories_match_the_independent_facts(case: hegel::Te
                 "history step {step}: {event:?}"
             );
         } else {
-            let reply = model
-                .selected
-                .clone()
-                .filter(|_| exact)
-                .unwrap_or_else(|| ProviderReply::CentralEnding(ending(alternate).ending));
+            let reply = model.selected.clone().filter(|_| exact).unwrap_or_else(|| {
+                ProviderReply::CentralEnding(ending(alternate).ending().clone())
+            });
             let responder = if alternate { RESPONDER } else { 2 };
             let input = match event {
                 7 => WaitInput::Publish(CallAttempt::new(serial)),
