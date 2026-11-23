@@ -53,6 +53,7 @@ pub(crate) async fn take_event(
         None => CustodyLinkObservation::DriverClosed,
         Some(LinkLaneEvent::Deliver {
             connection,
+            arrived_at,
             offer,
             sender: _,
         }) => {
@@ -60,7 +61,7 @@ pub(crate) async fn take_event(
             // The current watch is for new commands and can already name its replacement.
             let sender_notice = matches!(offer.message(),
                 DeliveryMessage::System(record) if matches!(record.body, MessageBody::DeliveryOutcome { .. }));
-            let first_offer = inbox.lock().await.start_offer(offer)?;
+            let first_offer = inbox.lock().await.start_offer(offer, arrived_at)?;
             let kept = RecipientInbox::keep_shared_offer(inbox, first_offer).await?;
             let accepted = matches!(
                 kept,
