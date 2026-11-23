@@ -1,7 +1,10 @@
 use std::{
     collections::{BTreeMap, VecDeque},
     future::{Future, ready},
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+    },
     time::Duration,
 };
 
@@ -285,6 +288,9 @@ pub fn organization_id() -> OrganizationId {
 pub struct ScriptStore {
     saved: Arc<Mutex<StoredEnrollment>>,
     submitted: Arc<Mutex<Vec<EnrollmentBinding>>>,
+    lose_next_replace_ack: Arc<AtomicBool>,
+    fail_read_after_replace: Arc<AtomicBool>,
+    reconciliation_reads: Arc<AtomicUsize>,
     durability: StoreDurability,
 }
 
@@ -299,8 +305,16 @@ impl ScriptStore {
         Self {
             saved: Arc::new(Mutex::new(StoredEnrollment::Empty)),
             submitted: Arc::new(Mutex::new(Vec::new())),
+            lose_next_replace_ack: Arc::new(AtomicBool::new(false)),
+            fail_read_after_replace: Arc::new(AtomicBool::new(false)),
+            reconciliation_reads: Arc::new(AtomicUsize::new(0)),
             durability,
         }
+    }
+
+    pub fn with_saved(mut self, saved: StoredEnrollment) -> Self {
+        self.saved = Arc::new(Mutex::new(saved));
+        self
     }
 
     pub fn snapshot(&self) -> StoredEnrollment {
@@ -312,6 +326,16 @@ impl ScriptStore {
             StoredEnrollment::Active(binding) => Some(binding),
             _ => None,
         }
+    }
+
+    pub fn lose_next_replace_ack(&self, fail_read: bool) {
+        self.fail_read_after_replace
+            .store(fail_read, Ordering::SeqCst);
+        self.lose_next_replace_ack.store(true, Ordering::SeqCst);
+    }
+
+    pub fn reconciliation_reads(&self) -> usize {
+        self.reconciliation_reads.load(Ordering::SeqCst)
     }
 
     pub fn submissions(&self) -> Vec<EnrollmentBinding> {
@@ -342,6 +366,12 @@ impl CredentialStore for ScriptStore {
     }
 
     fn read(&self) -> impl Future<Output = Result<StoredEnrollment, CredentialStoreError>> + Send {
+        if self.fail_read_after_replace.load(Ordering::SeqCst)
+            && !self.lose_next_replace_ack.load(Ordering::SeqCst)
+        {
+            self.reconciliation_reads.fetch_add(1, Ordering::SeqCst);
+            return ready(Err(CredentialStoreError::Read));
+        }
         ready(Ok(self.snapshot()))
     }
 
@@ -354,9 +384,11 @@ impl CredentialStore for ScriptStore {
             .lock()
             .expect("fake store submissions")
             .push(binding.clone());
-        ready(Ok(
-            self.write(expected, StoredEnrollment::Active(binding.clone()))
-        ))
+        let written = self.write(expected, StoredEnrollment::Active(binding.clone()));
+        if self.lose_next_replace_ack.swap(false, Ordering::SeqCst) {
+            return ready(Err(CredentialStoreError::OutcomeNotKnown));
+        }
+        ready(Ok(written))
     }
 
     fn remove(

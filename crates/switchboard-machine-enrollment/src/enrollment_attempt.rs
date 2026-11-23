@@ -47,6 +47,9 @@ impl SignInClient {
         if matches!(&before, StoredEnrollment::Active(binding) if binding.context != context) {
             return Err(EnrollmentFailure::ReplacementConflict);
         }
+        if before.generation().binding_successor().is_none() {
+            return Err(EnrollmentFailure::GenerationExhausted);
+        }
 
         let client_id = self.discover().await?.client_id;
         let dispatched_at = self.clock.monotonic_now();
@@ -146,30 +149,42 @@ async fn install_approved_binding(
     let mut expected = before.generation();
     let mut binding = EnrollmentBinding {
         generation: expected
-            .successor()
+            .binding_successor()
             .ok_or(EnrollmentFailure::GenerationExhausted)?,
         context: context.clone(),
         credential,
     };
 
     loop {
-        match store.replace(expected, &binding).await? {
-            ConditionalWrite::Applied => {
-                return Ok(EnrollmentReceipt {
-                    generation: binding.generation,
-                    enrollment_id: binding.credential.enrollment_id,
-                });
-            }
-            ConditionalWrite::Superseded => {
-                let current = store.read().await?;
-                if current.key() != old_identity || current.generation() <= expected {
-                    return Err(EnrollmentFailure::ReplacementConflict);
+        let current = match store.replace(expected, &binding).await {
+            Ok(ConditionalWrite::Applied) => break,
+            Ok(ConditionalWrite::Superseded) => store.read().await?,
+            Err(CredentialStoreError::OutcomeNotKnown) => {
+                let current = store
+                    .read()
+                    .await
+                    .map_err(|_| CredentialStoreError::OutcomeNotKnown)?;
+                if matches!(&current, StoredEnrollment::Active(stored) if binding.matches_replacement(stored))
+                {
+                    break;
                 }
-                expected = current.generation();
-                binding.generation = expected
-                    .successor()
-                    .ok_or(EnrollmentFailure::GenerationExhausted)?;
+                if current.generation() == expected {
+                    continue;
+                }
+                current
             }
+            Err(error) => return Err(error.into()),
+        };
+        if current.key() != old_identity || current.generation() <= expected {
+            return Err(EnrollmentFailure::ReplacementConflict);
         }
+        expected = current.generation();
+        binding.generation = expected
+            .binding_successor()
+            .ok_or(EnrollmentFailure::GenerationExhausted)?;
     }
+    Ok(EnrollmentReceipt {
+        generation: binding.generation,
+        enrollment_id: binding.credential.enrollment_id,
+    })
 }

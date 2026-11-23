@@ -134,6 +134,10 @@ pub enum SecretStoreError {
     #[error("pooled credential store unavailable: {0}")]
     StoreUnavailable(#[from] StoreUnavailable),
 
+    /// Enrollment-row associated data could not be built from the supplied fields.
+    #[error("invalid enrollment row context")]
+    InvalidEnrollmentRowContext,
+
     /// Encrypted credential envelope was malformed or used an unsupported format.
     #[error("invalid encrypted credential envelope")]
     InvalidCredentialEnvelope,

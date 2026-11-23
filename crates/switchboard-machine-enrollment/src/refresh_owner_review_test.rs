@@ -128,7 +128,7 @@ fn failing_an_old_ending_does_not_fence_its_successor() {
 }
 
 #[test]
-fn local_credential_loss_completes_when_both_cleanup_operations_stall() {
+fn local_credential_loss_remains_fenced_when_ending_cannot_be_reconciled() {
     let fixture = Fixture::new();
     fixture.store.0.fail_write.store(true, Ordering::SeqCst);
     fixture.store.0.hold_remove.store(true, Ordering::SeqCst);
@@ -137,13 +137,16 @@ fn local_credential_loss_completes_when_both_cleanup_operations_stall() {
     assert!(poll_once(refresh.as_mut()).is_pending());
     fixture.advance(5);
     assert!(poll_once(refresh.as_mut()).is_pending());
+    fixture.store.0.hold_read.store(true, Ordering::SeqCst);
     fixture.advance(1);
     assert!(poll_once(refresh.as_mut()).is_pending());
+    assert_eq!(fixture.store.0.marker_calls.load(Ordering::SeqCst), 0);
     fixture.advance(1);
     let lost = Poll::Ready(Err(LeaseUnavailable::Ended {
         why: EnrollmentEnd::LocalCredentialLost,
     }));
     assert_eq!(poll_once(refresh.as_mut()), lost);
+    fixture.store.0.hold_read.store(false, Ordering::SeqCst);
     assert_eq!(
         poll_once(std::pin::pin!(fixture.owner.lease(AccessRequest::Usable))),
         lost
@@ -407,5 +410,69 @@ fn a_superseded_stale_follow_up_cannot_start_a_third_rotation() {
         poll_once(std::pin::pin!(fixture.owner.lease(AccessRequest::Usable))),
         5,
         3,
+    );
+}
+
+#[test]
+fn refresh_refusal_has_a_fence_when_the_cleanup_read_expires_under_lock_contention() {
+    let fixture = Fixture::new();
+    let original = binding(1, 0);
+    fixture.server.block.store(true, Ordering::SeqCst);
+    let mut refresh = std::pin::pin!(fixture.owner.lease(AccessRequest::Usable));
+    assert!(poll_once(refresh.as_mut()).is_pending());
+
+    fixture.server.revision.store(1, Ordering::SeqCst);
+    fixture.server.block.store(false, Ordering::SeqCst);
+    fixture.store.0.hold_read.store(true, Ordering::SeqCst);
+    assert!(poll_once(refresh.as_mut()).is_pending());
+    assert_eq!(fixture.store.0.read_calls.load(Ordering::SeqCst), 2);
+    let held_state = fixture
+        .owner
+        .state
+        .try_lock()
+        .expect("hold owner state through expiry");
+    fixture.advance(2);
+    let before_release = poll_once(refresh.as_mut());
+
+    let why = LeaseUnavailable::Ended {
+        why: EnrollmentEnd::RefreshRefused,
+    };
+    assert_eq!(held_state.admit(&original, AccessRequest::Usable), Err(why));
+    drop(held_state);
+    fixture.store.0.hold_read.store(false, Ordering::SeqCst);
+    let result = if before_release.is_pending() {
+        poll_once(refresh.as_mut())
+    } else {
+        before_release
+    };
+    assert_eq!(result, Poll::Ready(Err(why)));
+    assert_eq!(
+        poll_once(std::pin::pin!(fixture.owner.lease(AccessRequest::Usable))),
+        Poll::Ready(Err(why))
+    );
+    assert_eq!(fixture.store.snapshot(), StoredEnrollment::Active(original));
+    assert_eq!(fixture.server.sent(), vec![refresh_secret(0)]);
+}
+
+#[test]
+fn a_stale_refresh_refusal_does_not_fence_a_newer_generation_of_the_same_key() {
+    let fixture = Fixture::new();
+    fixture.server.block.store(true, Ordering::SeqCst);
+    let mut refresh = std::pin::pin!(fixture.owner.lease(AccessRequest::Usable));
+    assert!(poll_once(refresh.as_mut()).is_pending());
+    let successor = binding(2, 1);
+    assert_eq!(
+        fixture
+            .store
+            .write(generation(1), StoredEnrollment::Active(successor)),
+        ConditionalWrite::Applied
+    );
+    fixture.server.revision.store(1, Ordering::SeqCst);
+    fixture.server.block.store(false, Ordering::SeqCst);
+
+    expect_lease(poll_once(refresh.as_mut()), 3, 2);
+    assert_eq!(
+        fixture.server.sent(),
+        vec![refresh_secret(0), refresh_secret(1)]
     );
 }

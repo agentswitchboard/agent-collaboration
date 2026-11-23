@@ -103,6 +103,23 @@ pub struct SignaledTransaction<'connection, TDatabase: Database> {
     commits: &'connection CommitSignal,
 }
 
+/// Distinguishes a definite pre-commit failure from an error issuing COMMIT.
+#[derive(Debug, thiserror::Error)]
+pub enum CommitStageError {
+    #[error("the transaction failed before COMMIT was issued")]
+    BeforeCommit(#[source] sqlx::Error),
+    #[error("COMMIT was issued but its result is uncertain")]
+    CommitIssued(#[source] sqlx::Error),
+}
+
+impl CommitStageError {
+    fn into_source(self) -> sqlx::Error {
+        match self {
+            Self::BeforeCommit(source) | Self::CommitIssued(source) => source,
+        }
+    }
+}
+
 impl<'connection, TDatabase: Database> SignaledTransaction<'connection, TDatabase> {
     /// Takes a transaction the store just opened with [`TransactionStart::statement`];
     /// its commit settles through `commits`. The store opens it on its concrete
@@ -126,15 +143,34 @@ impl<'connection, TDatabase: Database> SignaledTransaction<'connection, TDatabas
         self.commit_if(|| true).await.map(|_| ())
     }
 
+    /// Commits and exposes whether a failure preceded the COMMIT statement.
+    pub async fn commit_with_stage(self) -> Result<(), CommitStageError> {
+        self.commit_if_with_stage(|| true).await.map(|_| ())
+    }
+
     /// Checks the caller's admission guard immediately before invoking COMMIT.
-    pub async fn commit_if(mut self, eligible: impl FnOnce() -> bool) -> Result<bool, sqlx::Error> {
-        let changed_rows =
-            (self.count_changes)(&mut self.transaction).await? != self.changes_at_begin;
+    pub async fn commit_if(self, eligible: impl FnOnce() -> bool) -> Result<bool, sqlx::Error> {
+        self.commit_if_with_stage(eligible)
+            .await
+            .map_err(CommitStageError::into_source)
+    }
+
+    async fn commit_if_with_stage(
+        mut self,
+        eligible: impl FnOnce() -> bool,
+    ) -> Result<bool, CommitStageError> {
+        let changed_rows = (self.count_changes)(&mut self.transaction)
+            .await
+            .map_err(CommitStageError::BeforeCommit)?
+            != self.changes_at_begin;
         let pending = self.commits.begin_commit(changed_rows);
         pending.checkpoint(CommitPoint::BeforeCommitInvoked).await;
         if !eligible() {
             pending.settle(false);
-            self.transaction.rollback().await?;
+            self.transaction
+                .rollback()
+                .await
+                .map_err(CommitStageError::BeforeCommit)?;
             return Ok(false);
         }
         let committed = self.transaction.commit().await;
@@ -142,7 +178,9 @@ impl<'connection, TDatabase: Database> SignaledTransaction<'connection, TDatabas
             pending.checkpoint(CommitPoint::AfterCommitReturned).await;
         }
         pending.settle(committed.is_ok());
-        committed.map(|()| true)
+        committed
+            .map(|()| true)
+            .map_err(CommitStageError::CommitIssued)
     }
 
     /// A known rollback; it never signals.
@@ -282,3 +320,7 @@ pub use test_support::CommitPause;
 #[cfg(test)]
 #[path = "commit_signal_test.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "commit_stage_test.rs"]
+mod commit_stage_tests;
