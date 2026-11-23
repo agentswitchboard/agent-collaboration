@@ -3,10 +3,10 @@ use fleet_identity_protocol::{
     NewEndSettlement, RouterEndCause,
 };
 use switchboard_session_start::{
-    BindContradiction, BindNotTaken, CloseResult, CreateAnswer, CreateContradiction,
-    DirectiveResult, EndContradiction, LaunchNotTaken, LaunchResult, LinkNotTaken, LinkResult,
-    OpeningNotCommitted, OpeningOutcome, PutSecretNotTaken, PutSecretResult, SaveResult,
-    SetUpNotTaken, SetUpResult, StartDirective, StartRevision,
+    BindContradiction, BindNotTaken, CentralRefusalNow, CloseResult, CreateAnswer,
+    CreateContradiction, DirectiveResult, EndContradiction, LaunchNotTaken, LaunchResult,
+    LinkNotTaken, LinkResult, OpeningNotCommitted, OpeningOutcome, PutSecretNotTaken,
+    PutSecretResult, SaveResult, SetUpNotTaken, SetUpResult, StartDirective, StartRevision,
 };
 
 use super::fixtures::{abandoned, address, central_id, harness_id, reserved, time};
@@ -49,6 +49,7 @@ pub(super) fn results(directive: &StartDirective, revision: StartRevision) -> Ve
             LinkResult::ProvenNotWritten,
             LinkResult::Contradicted(CreateContradiction::default()),
             LinkResult::EnrollmentEnded,
+            LinkResult::RefusedBeforeApply(CentralRefusalNow::AuthorityLapsed),
         ]
         .into_iter()
         .map(DirectiveResult::SendCreate)
@@ -105,6 +106,7 @@ pub(super) fn results(directive: &StartDirective, revision: StartRevision) -> Ve
             LinkResult::ProvenNotWritten,
             LinkResult::Contradicted(BindContradiction::default()),
             LinkResult::EnrollmentEnded,
+            LinkResult::RefusedBeforeApply(CentralRefusalNow::AuthorityLapsed),
         ]
         .into_iter()
         .map(DirectiveResult::SendBind)
@@ -146,6 +148,7 @@ pub(super) fn results(directive: &StartDirective, revision: StartRevision) -> Ve
             LinkResult::ProvenNotWritten,
             LinkResult::Contradicted(EndContradiction::default()),
             LinkResult::EnrollmentEnded,
+            LinkResult::RefusedBeforeApply(CentralRefusalNow::AuthorityLapsed),
         ]
         .into_iter()
         .map(DirectiveResult::SendEnd)

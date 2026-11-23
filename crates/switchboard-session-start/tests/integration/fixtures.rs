@@ -7,8 +7,8 @@ use switchboard_session_start::{
     CandidateAsker, CentralStanding, ConversationFact, CreateAnswer, Directed, DirectiveId,
     DirectiveResult, EnvelopeRefusal, LaunchResult, LaunchSpecRef, LinkResult, LocalStartDigest,
     PutSecretResult, SaveResult, SetUpResult, SnapshotPhase, StartCandidate, StartDirective,
-    StartEffect, StartEnvelope, StartFacts, StartInput, StartInstanceId, StartMachine,
-    StartNotification, StartRefusal, StartRevision, StartScope, StartSnapshot, StoredFacts,
+    StartEnvelope, StartFacts, StartInput, StartInstanceId, StartMachine, StartNotification,
+    StartOutput, StartRefusal, StartRevision, StartScope, StartSnapshot, StoredFacts,
     StoredSnapshot, WaiterSlot,
 };
 use workspace_ids::{CentralSessionId, MachineId, SessionId, SessionRef};
@@ -145,9 +145,20 @@ pub(super) fn held_facts() -> StartFacts {
         harness_session_id: Some(harness_id()),
         conversation: ConversationFact::Held,
         bind_exposure: Exposure::Witnessed,
+        active_proof: Some(switchboard_session_start::CheckedActive { address: address() }),
         ..Default::default()
     })
     .unwrap()
+}
+
+pub(super) fn only_output(effects: Vec<StartOutput>) -> StartOutput {
+    let mut effects = effects.into_iter();
+    let aggregate = effects.next().unwrap();
+    assert!(
+        effects.next().is_none(),
+        "one aggregate per accepted transition"
+    );
+    aggregate
 }
 
 pub(super) struct Journey {
@@ -176,18 +187,15 @@ impl Journey {
     pub(super) fn send(&mut self, input: StartInput) {
         let (next, effects) = StartMachine::transition(&self.machine, input).unwrap();
         self.machine = next;
-        for effect in effects {
-            match effect {
-                StartEffect::Directive(directed) => {
-                    self.effects.push(directive_tag(&directed.directive));
-                    assert!(
-                        self.pending.replace(directed).is_none(),
-                        "two directives outstanding"
-                    );
-                }
-                StartEffect::Notification(notification) => self.notices.push(notification),
-            }
+        let output = only_output(effects);
+        if let Some(directed) = output.directive {
+            self.effects.push(directive_tag(&directed.directive));
+            assert!(
+                self.pending.replace(directed).is_none(),
+                "two directives outstanding"
+            );
         }
+        self.notices.extend(output.notifications);
         assert_eq!(
             self.machine.outstanding_id().as_ref(),
             self.pending.as_ref().map(|pending| &pending.id)

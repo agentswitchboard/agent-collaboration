@@ -6,13 +6,13 @@ use fleet_identity_protocol::{
 };
 use state_machine_core::TransitionError;
 use switchboard_session_start::{
-    CentralStanding, CleanupOutcome, ConversationFact, Directed, DirectiveId, EndLeg, EndNotDue,
-    EndNotSent, EnvelopeRefusal, Exposure, FaultContext, FinishedOutcome, IntendedOutcome,
-    LaunchFact, OpenedSession, OpeningCommit, PointerFact, Recording, SecretFact, SnapshotFacts,
-    SnapshotKind, SnapshotPhase, StartAnswer, StartAsker, StartDirective, StartEffect,
-    StartEnvelope, StartFacts, StartInput, StartInstanceId, StartNotification, StartRefusal,
-    StartRevision, StartSnapshot, StartStateKind as State, StopReason, StoredFacts, StoredSnapshot,
-    WaiterSlot,
+    CentralStanding, CleanupOutcome, ConversationFact, DestroyPendingSecret, Directed, DirectiveId,
+    EndLeg, EndNotDue, EndNotSent, EnvelopeRefusal, Exposure, FaultContext, FinishedOutcome,
+    IntendedOutcome, LaunchFact, OpenedSession, OpeningCommit, PointerFact, Recording, SecretFact,
+    SnapshotFacts, SnapshotKind, SnapshotPhase, StartAnswer, StartAsker, StartDirective,
+    StartEnvelope, StartFacts, StartInput, StartInstanceId, StartNotification, StartOutput,
+    StartRefusal, StartRevision, StartSnapshot, StartStateKind as State, StopReason, StoredFacts,
+    StoredSnapshot, WaiterSlot,
 };
 
 #[path = "model_rows.rs"]
@@ -54,6 +54,7 @@ impl Model {
                 harness_session_id: None,
                 conversation: ConversationFact::None,
                 bind_exposure: Exposure::None,
+                active_proof: None,
                 settlement: None,
                 end: EndLeg::NotDue(EndNotDue::NothingToEnd),
             },
@@ -93,8 +94,8 @@ impl Model {
     pub(super) fn feed(
         &mut self,
         input: StartInput,
-    ) -> Result<Vec<StartEffect>, TransitionError<StartRefusal>> {
-        let mut effects = Vec::new();
+    ) -> Result<Vec<StartOutput>, TransitionError<StartRefusal>> {
+        let mut effects = StartOutput::default();
         match input {
             StartInput::Ask {
                 slot,
@@ -115,7 +116,7 @@ impl Model {
                 *self = proposed;
             }
         }
-        Ok(effects)
+        Ok(vec![effects])
     }
 
     fn ask(
@@ -123,7 +124,7 @@ impl Model {
         slot: WaiterSlot,
         candidate: Result<StartEnvelope, EnvelopeRefusal>,
         central: CentralStanding,
-        effects: &mut Vec<StartEffect>,
+        effects: &mut StartOutput,
     ) {
         let answer = match (candidate, self.envelope.as_ref(), self.state, central) {
             (Err(EnvelopeRefusal::NoProvableAsker), _, _, _) => StartAnswer::RefusedNoIdentity,
@@ -183,10 +184,10 @@ impl Model {
             }
             _ => self.terminal.as_ref().unwrap().clone(),
         };
-        effects.push(tell(slot, answer));
+        effects.notifications.push(tell(slot, answer));
     }
 
-    fn apply(&mut self, row: Row, effects: &mut Vec<StartEffect>) {
+    fn apply(&mut self, row: Row, effects: &mut StartOutput) {
         match row {
             Row::Issue(state, directive) => self.issue(state, directive, effects),
             Row::Save(state, snapshot) => self.write(state, snapshot, effects),
@@ -211,9 +212,23 @@ impl Model {
                 );
                 self.tell_waiters(&answer, effects);
             }
+            Row::CentralRefused(state, reason) => {
+                self.state = state;
+                self.tell_waiters(
+                    &StartAnswer::RefusedByCentralNow {
+                        reason,
+                        facts: self.checked_facts(),
+                    },
+                    effects,
+                );
+            }
+            Row::DestroyPending(issue, next) => {
+                effects.pending_secret = Some(DestroyPendingSecret(issue));
+                self.apply(*next, effects);
+            }
             Row::Finish(destination) => self.finish(destination, effects),
             Row::Notify(notification, next) => {
-                effects.push(StartEffect::Notification(notification));
+                effects.notifications.push(notification);
                 self.apply(*next, effects);
             }
         }
@@ -241,7 +256,7 @@ impl Model {
         Box::new(StartFacts::from_stored(self.facts.clone()).unwrap())
     }
 
-    fn issue(&mut self, state: State, directive: StartDirective, effects: &mut Vec<StartEffect>) {
+    fn issue(&mut self, state: State, directive: StartDirective, effects: &mut StartOutput) {
         self.state = state;
         self.sequence += 1;
         let id = DirectiveId {
@@ -249,10 +264,10 @@ impl Model {
             sequence: self.sequence,
         };
         self.pending = Some(id.clone());
-        effects.push(StartEffect::Directive(Directed { id, directive }));
+        effects.directive = Some(Directed { id, directive });
     }
 
-    fn write(&mut self, state: State, snapshot: StartSnapshot, effects: &mut Vec<StartEffect>) {
+    fn write(&mut self, state: State, snapshot: StartSnapshot, effects: &mut StartOutput) {
         self.save = Some(snapshot.clone());
         self.issue(
             state,
@@ -342,7 +357,7 @@ impl Model {
         }
     }
 
-    fn wind_down(&mut self, destination: Destination, effects: &mut Vec<StartEffect>) {
+    fn wind_down(&mut self, destination: Destination, effects: &mut StartOutput) {
         use switchboard_session_start::ConversationFact;
         if self.facts.conversation == ConversationFact::Held {
             self.close_then = Some(destination);
@@ -369,7 +384,7 @@ impl Model {
         &mut self,
         why: Recording,
         while_saving: SnapshotKind,
-        effects: &mut Vec<StartEffect>,
+        effects: &mut StartOutput,
     ) {
         use switchboard_session_start::{ConversationFact, FailureReason, PointerFact};
         self.recording = why;
@@ -394,9 +409,7 @@ impl Model {
         } else {
             self.save.as_ref().and_then(|snapshot| {
                 if let Some((_, issue)) = snapshot.reserved() {
-                    effects.push(StartEffect::Notification(
-                        StartNotification::DiscardPendingSecret(issue.clone()),
-                    ));
+                    effects.pending_secret = Some(DestroyPendingSecret(issue.clone()));
                 }
                 match snapshot.phase() {
                     SnapshotPhase::Failed(reason) => Some(IntendedOutcome::Failed(reason.clone())),
@@ -426,7 +439,7 @@ impl Model {
         }
     }
 
-    fn finish(&mut self, destination: Destination, effects: &mut Vec<StartEffect>) {
+    fn finish(&mut self, destination: Destination, effects: &mut StartOutput) {
         let (state, outcome) = match destination {
             Destination::Opened => {
                 let session = self.opening.as_ref().unwrap();
@@ -462,8 +475,8 @@ impl Model {
         self.terminal = Some(answer);
     }
 
-    fn tell_waiters(&mut self, answer: &StartAnswer, effects: &mut Vec<StartEffect>) {
-        effects.extend(
+    fn tell_waiters(&mut self, answer: &StartAnswer, effects: &mut StartOutput) {
+        effects.notifications.extend(
             self.waiters
                 .drain(..)
                 .map(|slot| tell(slot, answer.clone())),
@@ -471,8 +484,8 @@ impl Model {
     }
 }
 
-fn tell(slot: WaiterSlot, answer: StartAnswer) -> StartEffect {
-    StartEffect::Notification(StartNotification::Tell { slot, answer })
+fn tell(slot: WaiterSlot, answer: StartAnswer) -> StartNotification {
+    StartNotification::Tell { slot, answer }
 }
 
 fn compared_fields(

@@ -3,15 +3,15 @@ use fleet_identity_protocol::{
     EndedSessionCause, NewEndSettlement, SessionSettlement,
 };
 use switchboard_session_start::{
-    BindContradiction, BindDispute, BindNotTaken, CleanupCall, CleanupOutcome, CloseResult,
-    ConversationFact, CreateAnswer, CreateContradiction, CreateReplyKind, DirectiveResult,
-    EndContradiction, EndLeg, EndNotDue, EndNotSent, EndReplyKind, Exposure, FailureReason,
-    HoldLostDuring, IntendedOutcome, LaunchFact, LaunchNotTaken, LaunchResult, LinkNotTaken,
-    LinkResult, NotSentNowReason, OpeningNotCommitted, OpeningOutcome, PointerFact,
-    PutSecretNotTaken, PutSecretResult, Recording, Reservation, SaveResult, SecretFact,
-    SecretIssue, SetUpNotTaken, SetUpResult, SnapshotKind, SnapshotPhase, StartAsker,
-    StartDirective, StartFault, StartNotification, StartSnapshot, StartStateKind as State,
-    StopReason, UnknownReason,
+    BindContradiction, BindDispute, BindNotTaken, CentralRefusalNow, CheckedActive, CleanupCall,
+    CleanupOutcome, CloseResult, ConversationFact, CreateAnswer, CreateContradiction,
+    CreateReplyKind, DirectiveResult, EndContradiction, EndLeg, EndNotApplied, EndNotDue,
+    EndNotSent, EndReplyKind, Exposure, FailureReason, HoldLostDuring, IntendedOutcome, LaunchFact,
+    LaunchNotTaken, LaunchResult, LinkNotTaken, LinkResult, NotSentNowReason, OpeningNotCommitted,
+    OpeningOutcome, PointerFact, PutSecretNotTaken, PutSecretResult, Recording, Reservation,
+    SaveResult, SecretFact, SecretIssue, SetUpNotTaken, SetUpResult, SnapshotKind, SnapshotPhase,
+    StartAsker, StartDirective, StartFault, StartNotification, StartSnapshot,
+    StartStateKind as State, StopReason, UnknownReason,
 };
 
 use super::super::fixtures::attempt;
@@ -34,6 +34,8 @@ pub(super) enum Row {
     WindDown(Destination),
     SaveFailed(Recording, SnapshotKind),
     Idle(State, Option<NotSentNowReason>),
+    CentralRefused(State, CentralRefusalNow),
+    DestroyPending(SecretIssue, Box<Row>),
     Finish(Destination),
     Notify(StartNotification, Box<Row>),
 }
@@ -224,8 +226,8 @@ fn create_row(model: &mut Model, result: LinkResult<CreateAnswer, CreateContradi
                     reserved_until,
                     attempt: attempt(model.attempt),
                 });
-                Row::Notify(
-                    StartNotification::DiscardPendingSecret(issue),
+                Row::DestroyPending(
+                    issue,
                     Box::new(create_fault(model, Some(CreateReplyKind::Reserved))),
                 )
             }
@@ -288,6 +290,7 @@ fn create_row(model: &mut Model, result: LinkResult<CreateAnswer, CreateContradi
         LinkResult::ProvenNotWritten => fail(FailureReason::CentralFault {
             call: CleanupCall::Create,
         }),
+        LinkResult::RefusedBeforeApply(reason) => Row::CentralRefused(State::CreateUnknown, reason),
         LinkResult::Answered(bad) => create_fault(model, Some(reply_kind(&bad))),
         LinkResult::Contradicted(evidence) => {
             if model.facts.reservation.is_none() {
@@ -414,6 +417,9 @@ fn bind_row(
     match result {
         LinkResult::Answered(Reply::Active { address }) => {
             model.facts.bind_exposure = Exposure::Witnessed;
+            model.facts.active_proof = Some(CheckedActive {
+                address: address.clone(),
+            });
             Row::Issue(State::Opening, model.open(address))
         }
         LinkResult::AnswerLost => {
@@ -432,7 +438,9 @@ fn bind_row(
         ),
         LinkResult::NotTaken(BindNotTaken::HoldLost) => {
             model.facts.conversation = ConversationFact::NotKnown;
-            let end = if model.facts.bind_exposure == Exposure::None {
+            let end = if model.facts.bind_exposure == Exposure::None
+                || (model.facts.active_proof.is_some() && model.facts.settlement.is_none())
+            {
                 EndLeg::Due
             } else {
                 EndLeg::NotDue(EndNotDue::BindMayHaveReached)
@@ -444,6 +452,7 @@ fn bind_row(
                 end,
             )
         }
+        LinkResult::RefusedBeforeApply(reason) => Row::CentralRefused(State::BindUnknown, reason),
         LinkResult::Contradicted(_) => {
             add_exposure(&mut model.facts.bind_exposure);
             fault(
@@ -516,7 +525,10 @@ fn end_row(model: &mut Model, result: LinkResult<EndFleetSessionReply, EndContra
             EndLeg::NotSent(EndNotSent::LinkNotReady)
         }
         LinkResult::AnswerLost => EndLeg::NotKnown,
-        LinkResult::ProvenNotWritten => EndLeg::NotApplied,
+        LinkResult::ProvenNotWritten => EndLeg::NotApplied(EndNotApplied::ProvenNotWritten),
+        LinkResult::RefusedBeforeApply(CentralRefusalNow::AuthorityLapsed) => {
+            EndLeg::NotApplied(EndNotApplied::AuthorityLapsed)
+        }
         LinkResult::NotTaken(LinkNotTaken::EnrollmentEnded) => {
             model.facts.end = EndLeg::NotSent(EndNotSent::EnrollmentEnded);
             return fence();

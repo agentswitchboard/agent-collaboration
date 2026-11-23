@@ -360,11 +360,34 @@ fn nonterminal_snapshots_restore_as_interrupted_and_are_retained() {
         SnapshotPhase::CleaningUp(switchboard_session_start::CleanupOutcome::Settled),
     ]
     .into_iter()
-    .map(|phase| snapshot(phase, StoredFacts::default()))
+    .map(|phase| {
+        let facts = match &phase {
+            SnapshotPhase::LaunchIntended => {
+                let mut facts = super::fixtures::held_facts().as_stored().clone();
+                facts.launch = switchboard_session_start::LaunchFact::Intended;
+                facts.harness_session_id = None;
+                facts.conversation = ConversationFact::None;
+                facts
+            }
+            SnapshotPhase::Held | SnapshotPhase::BindIntended | SnapshotPhase::BindUnknown => {
+                super::fixtures::held_facts().as_stored().clone()
+            }
+            SnapshotPhase::CleaningUp(_) => StoredFacts {
+                settlement: Some(abandoned()),
+                ..Default::default()
+            },
+            _ => StoredFacts::default(),
+        };
+        snapshot(phase, facts)
+    })
     .collect::<Vec<_>>();
     snapshots.push(Journey::saving_reservation().snapshot().clone());
     for snapshot in snapshots {
-        assert!(snapshot.must_be_retained());
+        assert!(
+            snapshot
+                .to_stored()
+                .must_be_retained(snapshot.start().envelope.scope())
+        );
         let mut journey = Journey::on(restore(
             instance(91),
             StartRevision::new(8),
@@ -426,7 +449,8 @@ fn settled_with_unknown_close_must_be_retained() {
             settlement: Some(abandoned()),
             ..Default::default()
         };
-        assert!(snapshot(SnapshotPhase::Settled, facts).must_be_retained());
+        let stored = snapshot(SnapshotPhase::Settled, facts).to_stored();
+        assert!(stored.must_be_retained(stored.envelope.scope()));
     }
 }
 

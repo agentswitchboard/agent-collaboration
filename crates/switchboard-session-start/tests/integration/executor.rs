@@ -9,9 +9,8 @@ use switchboard_session_start::{
     LinkNotTaken, LinkResult, OpeningCommit, OpeningNotCommitted, OpeningOutcome, PointerFact,
     PutSecretNotTaken, PutSecretResult, SaveResult, SecretFact, SecretIssue, SecretPutRefusal,
     SecretReadError, SessionSecretStore, SetUpNotTaken, SetUpResult, SnapshotKind, SnapshotPhase,
-    StartAnswer, StartDirective, StartEffect, StartInput, StartMachine, StartNotification,
-    StartRecord, StartRecordError, StartRevision, StartSaveRefusal, StartScope, StartSnapshot,
-    StoredFacts,
+    StartAnswer, StartDirective, StartInput, StartMachine, StartNotification, StartRecord,
+    StartRecordError, StartRevision, StartSaveRefusal, StartScope, StartSnapshot, StoredFacts,
 };
 
 use super::{choices, fixtures, model::Model};
@@ -146,6 +145,8 @@ pub(super) struct Executor {
     original_hold: OriginalHold,
     close_attempts: usize,
     pending_secret: Option<(SecretIssue, SessionSecret)>,
+    taken_secret: Option<SessionSecret>,
+    drop_notifications: bool,
     history: Vec<HistoryEntry>,
     record: MemoryRecord,
     secrets: MemorySecrets,
@@ -168,6 +169,8 @@ impl Executor {
             original_hold: OriginalHold::Unknown,
             close_attempts: 0,
             pending_secret: None,
+            taken_secret: None,
+            drop_notifications: false,
             history: Vec::new(),
             record: MemoryRecord::default(),
             secrets: MemorySecrets::default(),
@@ -198,6 +201,18 @@ impl Executor {
     }
 
     pub(super) fn feed(&mut self, input: StartInput) {
+        self.feed_with_staged(input, None);
+    }
+
+    pub(super) fn drop_notifications(&mut self) {
+        self.drop_notifications = true;
+    }
+
+    fn feed_with_staged(
+        &mut self,
+        input: StartInput,
+        staged: Option<(SecretIssue, SessionSecret)>,
+    ) -> bool {
         let expected = self.model.feed(input.clone());
         let actual = StartMachine::transition(&self.machine, input.clone());
         let (next, effects) = match (expected, actual) {
@@ -217,7 +232,7 @@ impl Executor {
                     "state {:?}, input {input:?}",
                     self.machine.kind()
                 );
-                return;
+                return false;
             }
             (expected, actual) => panic!(
                 "state {:?}, input {input:?}: expected {expected:?}, got {actual:?}",
@@ -243,51 +258,52 @@ impl Executor {
         );
         assert_eq!(next.outstanding_id(), self.model.pending);
         self.assert_facts_preserved(&next);
-        for effect in effects {
-            match effect {
-                StartEffect::Directive(directed) => {
-                    assert!(!self.machine.kind().is_terminal());
-                    assert!(!next.kind().is_terminal());
-                    let kind = fixtures::directive_tag(&directed.directive);
-                    if self.stopped_by_save {
-                        assert_eq!(kind, "CloseConversation");
-                        assert!(
-                            !self
-                                .history
-                                .iter()
-                                .any(|entry| entry.kind == "CloseConversation")
-                        );
+        let output = fixtures::only_output(effects);
+        if let Some(staged) = staged {
+            assert!(self.pending_secret.replace(staged).is_none());
+        }
+        if let Some(destroy) = output.pending_secret {
+            self.pending_secret.take_if(|(held, _)| held == &destroy.0);
+        }
+        if !self.drop_notifications {
+            for notification in output.notifications {
+                if matches!(
+                    notification,
+                    StartNotification::Tell {
+                        answer: StartAnswer::Started { .. },
+                        ..
                     }
-                    assert!(self.history.iter().all(|entry| entry.id != directed.id));
-                    self.history.push(HistoryEntry {
-                        id: directed.id.clone(),
-                        kind,
-                        taken: false,
-                        completed: false,
-                        delivered: false,
-                    });
-                    assert!(self.pending.replace(directed).is_none());
-                }
-                StartEffect::Notification(StartNotification::Tell {
-                    answer: StartAnswer::Started { .. },
-                    ..
-                }) => {
+                ) {
                     assert_eq!(self.openings, 1);
                     assert_eq!(self.durable_kind(), Some(SnapshotKind::Opened));
                 }
-                StartEffect::Notification(StartNotification::DiscardPendingSecret(issue)) => {
-                    if self
-                        .pending_secret
-                        .as_ref()
-                        .is_some_and(|(held, _)| held == &issue)
-                    {
-                        self.pending_secret = None;
-                    }
-                }
-                StartEffect::Notification(_) => {}
             }
         }
+        if let Some(directed) = output.directive {
+            assert!(!self.machine.kind().is_terminal());
+            assert!(!next.kind().is_terminal());
+            let kind = fixtures::directive_tag(&directed.directive);
+            if self.stopped_by_save {
+                assert_eq!(kind, "CloseConversation");
+                assert!(
+                    !self
+                        .history
+                        .iter()
+                        .any(|entry| entry.kind == "CloseConversation")
+                );
+            }
+            assert!(self.history.iter().all(|entry| entry.id != directed.id));
+            self.history.push(HistoryEntry {
+                id: directed.id.clone(),
+                kind,
+                taken: false,
+                completed: false,
+                delivered: false,
+            });
+            assert!(self.pending.replace(directed).is_none());
+        }
         self.machine = next;
+        true
     }
 
     fn assert_facts_preserved(&self, next: &StartMachine) {
@@ -296,6 +312,9 @@ impl Executor {
             assert!(before.bind_exposure <= after.bind_exposure);
             if before.reservation.is_some() {
                 assert_eq!(before.reservation, after.reservation);
+            }
+            if before.active_proof.is_some() {
+                assert_eq!(before.active_proof, after.active_proof);
             }
             if before.settlement.is_some() {
                 assert_eq!(before.settlement, after.settlement);

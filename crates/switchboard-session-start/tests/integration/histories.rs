@@ -4,8 +4,8 @@ use hegel::generators as gs;
 use state_machine_core::{EventTag, StateMachine, StateTag, Transition};
 use switchboard_session_start::{
     CandidateAsker, CentralStanding, ConversationFact, Directed, EndLeg, EnvelopeRefusal,
-    LaunchSpecRef, LocalStartDigest, Recording, SnapshotKind, StartDirective, StartEffect,
-    StartEnvelope, StartInput, StartMachine, StartRevision, StartStateKind,
+    LaunchSpecRef, LocalStartDigest, Recording, SnapshotKind, StartDirective, StartEnvelope,
+    StartInput, StartMachine, StartRevision, StartStateKind,
 };
 
 use super::{
@@ -309,11 +309,5 @@ fn witness(
     if !reached.contains(&observed) {
         reached.push(observed);
     }
-    let mut outgoing = effects.into_iter().filter_map(|effect| match effect {
-        StartEffect::Directive(directed) => Some(directed),
-        StartEffect::Notification(_) => None,
-    });
-    let pending = outgoing.next();
-    assert!(outgoing.next().is_none());
-    (next, pending)
+    (next, fixtures::only_output(effects).directive)
 }

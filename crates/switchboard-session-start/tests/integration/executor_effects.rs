@@ -1,8 +1,8 @@
 use fleet_identity_protocol::BindFleetSessionReply;
 use switchboard_session_start::{
-    CloseResult, CreateAnswer, DirectiveResult, LaunchResult, LinkResult, OpeningNotCommitted,
-    OpeningOutcome, PutSecretNotTaken, PutSecretResult, SaveResult, SecretPutRefusal, SetUpResult,
-    SnapshotKind, StartDirective, StartInput, StartRevision,
+    BindNotTaken, CloseResult, CreateAnswer, DirectiveResult, LaunchResult, LinkResult,
+    OpeningNotCommitted, OpeningOutcome, PutSecretNotTaken, PutSecretResult, SaveResult,
+    SecretPutRefusal, SetUpResult, SnapshotKind, StartDirective, StartInput, StartRevision,
 };
 
 use super::{Executor, OriginalHold, Timing, choices, fenced_result, fixtures, not_taken};
@@ -53,6 +53,10 @@ impl Executor {
         );
         let result = if self.record.fence.get() && !local {
             fenced_result(&directed.directive)
+        } else if matches!(directed.directive, StartDirective::SendBind { .. })
+            && self.original_hold != OriginalHold::Held
+        {
+            DirectiveResult::SendBind(LinkResult::NotTaken(BindNotTaken::HoldLost))
         } else {
             selected
         };
@@ -67,13 +71,23 @@ impl Executor {
         if taken && matches!(directed.directive, StartDirective::SetUp) {
             self.maybe_running_setup = true;
         }
+        if let StartDirective::PutSecret { issue } = &directed.directive {
+            let source = self.pending_secret.take_if(|(held, _)| held == issue);
+            self.taken_secret = if taken {
+                source.map(|(_, secret)| secret)
+            } else {
+                None
+            };
+        }
         self.taken_result = Some((result, self.connection));
     }
 
     pub(in super::super) fn complete(&mut self, persist_unknown: bool) {
         let (selected, connection) = self.taken_result.take().unwrap();
         let directed = self.pending.as_ref().unwrap();
-        let mut result = self.complete_effect(&directed.directive, selected, persist_unknown);
+        let secret = self.taken_secret.take();
+        let mut result =
+            self.complete_effect(&directed.directive, selected, persist_unknown, secret);
         match &result {
             DirectiveResult::Launch(
                 LaunchResult::Started { .. } | LaunchResult::FailedDuplicateId,
@@ -87,15 +101,6 @@ impl Executor {
                 result = DirectiveResult::CloseConversation(self.close_original(*close));
             }
             _ => {}
-        }
-        if let Some(StartDirective::PutSecret { issue }) =
-            self.pending.as_ref().map(|item| &item.directive)
-            && self
-                .pending_secret
-                .as_ref()
-                .is_some_and(|(held, _)| held == issue)
-        {
-            self.pending_secret = None;
         }
         let entry = self.history.last_mut().unwrap();
         assert!(!entry.completed);
@@ -145,6 +150,7 @@ impl Executor {
         directive: &StartDirective,
         selected: DirectiveResult,
         persist_unknown: bool,
+        taken_secret: Option<fleet_identity_protocol::SessionSecret>,
     ) -> DirectiveResult {
         use switchboard_session_start::{SessionSecretStore, StartRecord};
 
@@ -164,7 +170,7 @@ impl Executor {
                 result
             }
             (StartDirective::PutSecret { issue }, DirectiveResult::PutSecret(result)) => {
-                self.complete_put(issue, result, persist_unknown)
+                self.complete_put(issue, result, persist_unknown, taken_secret)
             }
             (StartDirective::CommitOpening { .. }, DirectiveResult::CommitOpening(result))
                 if result != OpeningOutcome::NotCommitted(OpeningNotCommitted::EnrollmentEnded)
@@ -199,29 +205,26 @@ impl Executor {
         issue: &switchboard_session_start::SecretIssue,
         result: PutSecretResult,
         persist_unknown: bool,
+        pending: Option<fleet_identity_protocol::SessionSecret>,
     ) -> DirectiveResult {
         use switchboard_session_start::SessionSecretStore;
-        let pending = self
-            .pending_secret
-            .as_ref()
-            .filter(|(held, _)| held == issue);
         let result = match (result, pending) {
             (refusal @ PutSecretResult::NotTaken(_), _) => refusal,
             (_, None) => PutSecretResult::NotTaken(PutSecretNotTaken::PendingSecretMissing),
-            (PutSecretResult::HeldWithDifferentValue, Some((_, pending))) => {
+            (PutSecretResult::HeldWithDifferentValue, Some(pending)) => {
                 self.secrets.put(issue, fixtures::secret(37)).unwrap();
                 assert_eq!(
-                    self.secrets.put(issue, pending.clone()),
+                    self.secrets.put(issue, pending),
                     Err(SecretPutRefusal::IssueAlreadyHeld)
                 );
                 PutSecretResult::HeldWithDifferentValue
             }
-            (PutSecretResult::Stored, Some((_, pending))) => {
-                self.secrets.put(issue, pending.clone()).unwrap();
+            (PutSecretResult::Stored, Some(pending)) => {
+                self.secrets.put(issue, pending).unwrap();
                 PutSecretResult::Stored
             }
-            (PutSecretResult::OutcomeNotKnown, Some((_, pending))) if persist_unknown => {
-                self.secrets.put(issue, pending.clone()).unwrap();
+            (PutSecretResult::OutcomeNotKnown, Some(pending)) if persist_unknown => {
+                self.secrets.put(issue, pending).unwrap();
                 PutSecretResult::OutcomeNotKnown
             }
             (other, Some(_)) => other,
@@ -249,10 +252,7 @@ impl Executor {
             }
             _ => {}
         }
-        self.feed(StartInput::DirectiveResult {
-            id: directed.id,
-            result,
-        });
+        self.feed_link_result(directed.id, result, 17);
     }
 
     fn at_delivery(&mut self, result: DirectiveResult, connection: u64) -> DirectiveResult {
@@ -268,21 +268,6 @@ impl Executor {
             })) if !current => {
                 return DirectiveResult::SendBind(LinkResult::AnswerLost);
             }
-            DirectiveResult::SendCreate(LinkResult::Answered(CreateAnswer::Reserved {
-                session_id,
-                ..
-            })) => {
-                let issue = switchboard_session_start::SecretIssue {
-                    enrollment: self.machine.envelope().unwrap().scope().enrollment.clone(),
-                    session_id: session_id.clone(),
-                    attempt: self.machine.attempt().unwrap(),
-                };
-                assert!(
-                    self.pending_secret
-                        .replace((issue, fixtures::secret(17)))
-                        .is_none()
-                );
-            }
             DirectiveResult::SendBind(LinkResult::Answered(BindFleetSessionReply::Active {
                 ..
             })) => {
@@ -291,6 +276,30 @@ impl Executor {
             _ => {}
         }
         result
+    }
+
+    pub(in super::super) fn feed_link_result(
+        &mut self,
+        id: switchboard_session_start::DirectiveId,
+        result: DirectiveResult,
+        secret_seed: u8,
+    ) -> bool {
+        let staged =
+            if let DirectiveResult::SendCreate(LinkResult::Answered(CreateAnswer::Reserved {
+                session_id,
+                ..
+            })) = &result
+            {
+                let issue = switchboard_session_start::SecretIssue {
+                    enrollment: self.machine.envelope().unwrap().scope().enrollment.clone(),
+                    session_id: session_id.clone(),
+                    attempt: self.machine.attempt().unwrap(),
+                };
+                Some((issue, fixtures::secret(secret_seed)))
+            } else {
+                None
+            };
+        self.feed_with_staged(StartInput::DirectiveResult { id, result }, staged)
     }
 
     pub(in super::super) fn complete_step(

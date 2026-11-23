@@ -16,7 +16,7 @@ use super::{
     fixtures::{self, Journey},
 };
 
-fn drive_to_exact(executor: &mut Executor, target: StartStateKind) {
+pub(super) fn drive_to_exact(executor: &mut Executor, target: StartStateKind) {
     if executor.machine.kind() == StartStateKind::NotStarted {
         executor.feed(fixtures::ask(
             1,
@@ -507,5 +507,8 @@ fn end_proved_not_written_was_transmitted_and_is_not_applied() {
     journey.result(DirectiveResult::SendEnd(LinkResult::ProvenNotWritten));
     journey.result(DirectiveResult::CloseConversation(CloseResult::Closed));
     journey.saved();
-    assert_eq!(journey.machine.facts().unwrap().end, EndLeg::NotApplied);
+    assert_eq!(
+        journey.machine.facts().unwrap().end,
+        EndLeg::NotApplied(switchboard_session_start::EndNotApplied::ProvenNotWritten)
+    );
 }
