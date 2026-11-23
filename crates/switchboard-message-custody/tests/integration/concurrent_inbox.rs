@@ -5,7 +5,7 @@ use central_link_client::{
     WriteBatchDisposition,
 };
 use central_link_protocol::{ReceiptResult, RequestScope, RequestStatusQuery};
-use router_clock::ClockInstant;
+use router_clock::{ClockInstant, RuntimeClock};
 use std::{
     future::Future,
     pin::Pin,
@@ -219,6 +219,7 @@ async fn an_offline_intake_retry_does_not_delay_receipts_on_a_backwards_welcome(
         .await
         .unwrap();
     lane.push_event(LinkLaneEvent::Deliver {
+        arrived_at: clock.utc_now(),
         connection: admission.connection,
         offer: direct_offer("019f0000-0000-7000-8000-000000000b32", "retry this locally"),
         sender: ResolvedSender::Central {},
@@ -336,6 +337,7 @@ async fn a_held_directory_does_not_block_status_deadlines_or_shutdown() {
         inbox,
     );
     let offer = LinkLaneEvent::Deliver {
+        arrived_at: clock.utc_now(),
         connection: admission.connection,
         offer: direct_offer("019f0000-0000-7000-8000-000000000b23", "directory is held"),
         sender: ResolvedSender::Central {},
@@ -410,6 +412,7 @@ async fn an_unanswered_lookup_defers_at_its_injected_deadline() {
         inbox,
     );
     lane.push_event(LinkLaneEvent::Deliver {
+        arrived_at: clock.utc_now(),
         connection: admission.connection.clone(),
         offer: direct_offer("019f0000-0000-7000-8000-000000000b25", "unanswered lookup"),
         sender: ResolvedSender::Central {},
@@ -472,7 +475,13 @@ async fn a_full_offer_queue_is_saved_while_the_senders_status_reply_is_outstandi
         Arc::new(RecordLookup(lookup)),
         clock.clone(),
     );
-    let custody = CustodyLink::new(lane.clone(), clock, Arc::new(NoFlushJitter), outbox, inbox);
+    let custody = CustodyLink::new(
+        lane.clone(),
+        clock.clone(),
+        Arc::new(NoFlushJitter),
+        outbox,
+        inbox,
+    );
     let (stop, stopped) = watch::channel(false);
     let (events, _observations) = mpsc::unbounded_channel();
     let (calls, task) = custody_task(custody, stopped, Arc::new(RecordEvents(events)));
@@ -501,6 +510,7 @@ async fn a_full_offer_queue_is_saved_while_the_senders_status_reply_is_outstandi
     for id in ids {
         offers
             .try_send(LinkLaneEvent::Deliver {
+                arrived_at: clock.utc_now(),
                 connection: admission.connection.clone(),
                 offer: direct_offer(id, "held during status"),
                 sender: ResolvedSender::Central {},

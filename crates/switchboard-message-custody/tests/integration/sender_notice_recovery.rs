@@ -1,6 +1,6 @@
 use central_link_client::{LinkLaneEvent, ValidatedDeliveryOffer};
 use central_link_protocol::{DeliveryMessage, ReplyPayload, RequestScope, RequestStatusQuery};
-use router_clock::{ClockInstant, ManualClock};
+use router_clock::{ClockInstant, ManualClock, RuntimeClock};
 use std::{
     future::{Future, ready},
     pin::Pin,
@@ -164,6 +164,7 @@ impl NoticeFixture {
             ),
         ) {
             self.lane.push_event(LinkLaneEvent::Deliver {
+                arrived_at: self.clock.utc_now(),
                 connection: admitted.connection,
                 offer,
                 sender: ResolvedSender::Central {},

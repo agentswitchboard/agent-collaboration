@@ -5,7 +5,7 @@
 
 use central_link_client::ValidatedDeliveryOffer;
 use central_link_protocol::{DeliveryMessage, TimeLeft};
-use router_clock::ManualClock;
+use router_clock::{ManualClock, RuntimeClock};
 use std::{
     future::{Future, ready},
     path::Path,
@@ -92,7 +92,10 @@ async fn first_direct_save_uses_the_original_arrival_plus_centrals_time_left() {
 
     assert_eq!(
         inbox
-            .receive_offer(offer_with_time_left("delay the first save", TIME_LEFT_MS))
+            .receive_offer(
+                offer_with_time_left("delay the first save", TIME_LEFT_MS),
+                clock.utc_now()
+            )
             .await
             .unwrap(),
         InboxOfferResult::LookupDeferred
@@ -132,13 +135,19 @@ async fn a_repeated_direct_offer_does_not_move_its_first_expiry() {
     let message_id: MessageId = DIRECT_MESSAGE_ID.parse().unwrap();
 
     inbox
-        .receive_offer(offer_with_time_left("first offer", TIME_LEFT_MS))
+        .receive_offer(
+            offer_with_time_left("first offer", TIME_LEFT_MS),
+            clock.utc_now(),
+        )
         .await
         .unwrap();
     clock.advance(Duration::from_secs(29)).unwrap();
     assert_eq!(
         inbox
-            .receive_offer(offer_with_time_left("repeat offer", 54_321))
+            .receive_offer(
+                offer_with_time_left("repeat offer", 54_321),
+                clock.utc_now()
+            )
             .await
             .unwrap(),
         InboxOfferResult::AlreadyDecided {
@@ -178,7 +187,7 @@ async fn system_notices_and_outcomes_are_saved_with_null_expiry() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("machine_local.sqlite");
     let clock = manual_clock(ARRIVAL_MS);
-    let mut inbox = open_recipient(&path, clock, Arc::new(KnownRecipient)).await;
+    let mut inbox = open_recipient(&path, clock.clone(), Arc::new(KnownRecipient)).await;
     let mut reader = open_store(&path).await;
     for (key, body) in [
         (
@@ -206,7 +215,7 @@ async fn system_notices_and_outcomes_are_saved_with_null_expiry() {
         let offer =
             ValidatedDeliveryOffer::new(Box::new(DeliveryMessage::System(notice)), None).unwrap();
         assert_eq!(
-            inbox.receive_offer(offer).await.unwrap(),
+            inbox.receive_offer(offer, clock.utc_now()).await.unwrap(),
             InboxOfferResult::Recorded {
                 decision: InboxDecision::Accepted
             }
@@ -223,9 +232,12 @@ async fn the_first_direct_expiry_survives_reopening_the_store() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("machine_local.sqlite");
     let clock = manual_clock(ARRIVAL_MS);
-    let mut inbox = open_recipient(&path, clock, Arc::new(KnownRecipient)).await;
+    let mut inbox = open_recipient(&path, clock.clone(), Arc::new(KnownRecipient)).await;
     inbox
-        .receive_offer(offer_with_time_left("persist the cutoff", TIME_LEFT_MS))
+        .receive_offer(
+            offer_with_time_left("persist the cutoff", TIME_LEFT_MS),
+            clock.utc_now(),
+        )
         .await
         .unwrap();
     drop(inbox);

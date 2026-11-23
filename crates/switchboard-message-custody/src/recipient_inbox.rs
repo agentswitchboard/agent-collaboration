@@ -196,17 +196,19 @@ impl RecipientInbox {
     pub async fn receive_offer(
         &mut self,
         incoming: central_link_client::ValidatedDeliveryOffer,
+        arrived_at: Timestamp,
     ) -> Result<InboxOfferResult, InboxCustodyError> {
-        let offer = self.start_offer(incoming)?;
+        let offer = self.start_offer(incoming, arrived_at)?;
         self.keep_or_retain(offer).await
     }
 
     pub(crate) fn start_offer(
         &mut self,
         incoming: central_link_client::ValidatedDeliveryOffer,
+        arrived_at: Timestamp,
     ) -> Result<InboxOffer, InboxCustodyError> {
         let (message, time_left) = incoming.into_parts();
-        let offer = InboxOffer::from_delivery(*message, time_left, self.clock.utc_now())?;
+        let offer = InboxOffer::from_delivery(*message, time_left, arrived_at)?;
         let target = offer.target_session();
         if target.machine_id != self.machine_id {
             return Err(InboxCustodyError::WrongMachine(target.machine_id.clone()));
