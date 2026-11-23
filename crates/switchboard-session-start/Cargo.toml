@@ -1,0 +1,24 @@
+[package]
+name = "switchboard-session-start"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+autotests = false
+
+[lints]
+workspace = true
+
+[dependencies]
+fleet-identity-protocol = { path = "../fleet-identity-protocol", version = "0.1.158" }
+state-machine-core.workspace = true
+thiserror.workspace = true
+workspace-ids.workspace = true
+
+[dev-dependencies]
+hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
+serde_json.workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
