@@ -5782,6 +5782,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchboard-machine-core-store"
+version = "0.1.158"
+dependencies = [
+ "sqlite-storage-maintenance",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+ "workspace-ids",
+]
+
+[[package]]
 name = "switchboard-session-calls"
 version = "0.1.158"
 dependencies = [

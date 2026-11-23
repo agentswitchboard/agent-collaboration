@@ -1,0 +1,21 @@
+[package]
+name = "switchboard-machine-core-store"
+autotests = false
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[lints]
+workspace = true
+
+[dependencies]
+sqlite-storage-maintenance = { path = "../sqlite-storage-maintenance", version = "0.1.118" }
+sqlx = { workspace = true, features = ["macros", "migrate", "sqlite"] }
+thiserror.workspace = true
+tokio.workspace = true
+uuid.workspace = true
+workspace-ids.workspace = true
+
+[dev-dependencies]
+tempfile = "3.27.0"
