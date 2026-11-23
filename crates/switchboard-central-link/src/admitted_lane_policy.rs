@@ -4,7 +4,8 @@ use std::sync::Arc;
 
 use central_link_client::{
     AdmittedConnection, CheckedBatchResults, ConnectionAttempt, CorrelatedReceiptResults,
-    CorrelatedRequestReply, CorrelatedStatusReply, UntouchedCommand, WriteBatchMemberDisposition,
+    CorrelatedRequestReply, CorrelatedStatusReply, ReplyExpectation, UntouchedCommand,
+    WriteBatchMemberDisposition,
 };
 use central_link_protocol::{
     CorrelationId, LinkRequest, LinkRequestBatch, ReceiptResult, ReplyPayload, RequestStatusAnswer,
@@ -13,8 +14,6 @@ use router_clock::ClockInstant;
 use state_machine_core::{
     EventTag, RefusalTag, StateMachine, StateMachineResult, StateTag, Transition, TransitionError,
 };
-
-use crate::reply_matcher::ReplyExpectation;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum LaneState {

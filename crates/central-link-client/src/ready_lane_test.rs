@@ -106,3 +106,121 @@ fn request_size_plus_batch_scaffolding_matches_the_production_encoder() {
     .unwrap();
     assert_eq!(counted, actual.len());
 }
+
+#[test]
+fn checked_batch_results_require_the_requested_reply_operation_and_values() {
+    use workspace_model::central_mail::{CentralMailAnswer, CentralMailResult};
+
+    let requests = LinkRequestBatch::new(vec![request(1)]).unwrap();
+    let answered = |answer| WriteBatchMemberDisposition::Answered {
+        reply: CorrelatedRequestReply {
+            correlation_id: requests.requests()[0].correlation_id().clone(),
+            result: Box::new(ReplyPayload::Mail(CentralMailResult::Done(answer))),
+        },
+    };
+    let wrong_cadence = answered(CentralMailAnswer::NoticeCadenceSet {
+        cadence: NoticeCadence::M55,
+    });
+    assert_eq!(
+        CheckedBatchResults::new(&requests, [wrong_cadence]),
+        Err(BatchResultsError::IncompatibleReply { index: 0 })
+    );
+    let wrong_operation = answered(CentralMailAnswer::WakeSet {
+        wake_id: "01890f2e-7b4c-7cc0-98c4-000000000011".parse().unwrap(),
+        due_at: "2030-01-01T00:00:00Z".parse().unwrap(),
+    });
+    assert_eq!(
+        CheckedBatchResults::new(&requests, [wrong_operation]),
+        Err(BatchResultsError::IncompatibleReply { index: 0 })
+    );
+    let expected = answered(CentralMailAnswer::NoticeCadenceSet {
+        cadence: NoticeCadence::M25,
+    });
+    let checked = CheckedBatchResults::new(&requests, [expected.clone()]).unwrap();
+    assert_eq!(checked.members()[0].disposition, expected);
+}
+
+#[test]
+fn registration_evidence_requires_the_pending_attempt_correlation_target_and_run() {
+    use std::sync::Arc;
+
+    use router_clock::ManualClock;
+    use serde_json::json;
+
+    use crate::{ClientAction, LinkClient};
+
+    let machine = "01890f2e-7b4c-7cc0-98c4-000000000002"
+        .parse::<workspace_ids::MachineId>()
+        .unwrap();
+    let central_time = "2030-01-01T00:00:00Z".parse().unwrap();
+    let clock = Arc::new(ManualClock::new(central_time));
+    let take_attempt = || {
+        let mut client = LinkClient::new(machine.clone(), clock.clone());
+        let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
+            panic!("expected a dial attempt");
+        };
+        attempt
+    };
+    let admitted = AdmittedConnection {
+        connection: take_attempt(),
+        clock_anchor: WelcomeClockAnchor {
+            central_time,
+            observed_at: ClockInstant::ZERO,
+        },
+    };
+    let foreign_attempt = take_attempt();
+    assert_ne!(admitted.connection, foreign_attempt);
+    let correlation = "01890f2e-7b4c-7cc0-98c4-000000000012";
+    let foreign_correlation = "01890f2e-7b4c-7cc0-98c4-000000000013";
+    let organization = "01890f2e-7b4c-7cc0-98c4-000000000010";
+    let foreign_organization = "01890f2e-7b4c-7cc0-98c4-000000000011";
+    let run = "01890f2e-7b4c-7cc0-98c4-000000000014";
+    let request = decode_text(&json!({
+        "kind":"callCentral", "correlationId":correlation,
+        "request":{"call":"registerRun","envelope":{"target":{"organizationId":organization},"body":{"routerRun":run}}}
+    }).to_string(), FrameDirection::ToCentral).unwrap();
+    let reply = |correlation, organization| {
+        decode_text(&json!({
+        "kind":"centralCallReply", "correlationId":correlation,
+        "result":{"kind":"answered","reply":{"call":"registerRun","envelope":{"target":{"organizationId":organization},"body":{"kind":"registered"}}}}
+    }).to_string(), FrameDirection::ToRouter).unwrap()
+    };
+
+    let mut pending = PendingRunRegistration::from_sent_frame(admitted.clone(), &request).unwrap();
+    let matching_reply = reply(correlation, organization);
+    assert!(
+        pending
+            .observe_reply(&foreign_attempt, &matching_reply)
+            .is_none()
+    );
+    assert!(
+        pending
+            .observe_reply(
+                &admitted.connection,
+                &reply(foreign_correlation, organization)
+            )
+            .is_none()
+    );
+    assert!(
+        pending
+            .observe_reply(
+                &admitted.connection,
+                &reply(correlation, foreign_organization)
+            )
+            .is_none()
+    );
+    let evidence = pending
+        .observe_reply(&admitted.connection, &matching_reply)
+        .unwrap();
+    let registered = RegisteredConnection::from_registration(evidence);
+    assert_eq!(registered.admitted(), &admitted);
+    assert_eq!(
+        registered.router_run(),
+        &run.parse::<RouterRunId>().unwrap()
+    );
+    assert!(
+        pending
+            .observe_reply(&admitted.connection, &matching_reply)
+            .is_none()
+    );
+}

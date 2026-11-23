@@ -73,6 +73,7 @@ collaboration-central-tokio = { path = "../collaboration-central-tokio", version
 fs2.workspace = true
 jsonc-parser = { workspace = true, features = ["serde"] }
 router-clock.workspace = true
+switchboard-machine-enrollment = { path = "../switchboard-machine-enrollment", version = "0.1.158" }
 
 [dev-dependencies]
 nix = { workspace = true, features = ["process", "signal"] }

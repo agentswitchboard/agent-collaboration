@@ -239,12 +239,15 @@ register_calls! {
 
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_calls {
-    use fleet_rpc::Rpc;
+    use fleet_rpc::{IndependentReplyRpc, Rpc};
     use serde::{Deserialize, Deserializer, Serialize};
     use workspace_ids::MachineId;
 
     pub struct CentralProbe;
     pub struct MacProbe;
+
+    impl IndependentReplyRpc for CentralProbe {}
+    impl IndependentReplyRpc for MacProbe {}
 
     #[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
     #[serde(deny_unknown_fields)]

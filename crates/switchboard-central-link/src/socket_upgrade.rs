@@ -19,6 +19,7 @@ use hyper::{
 };
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::rt::TokioIo;
+use router_clock::RuntimeClock;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_tungstenite::{
     WebSocketStream,
@@ -37,7 +38,10 @@ use tokio_tungstenite::{
 };
 use tower_service::Service;
 
-use crate::link_policy::DialFailure;
+use crate::{
+    link_policy::DialFailure,
+    wire_write_fence::{FencedConnector, WireWriteFence},
+};
 
 pub(super) type Socket = WebSocketStream<TokioIo<Upgraded>>;
 
@@ -94,7 +98,11 @@ impl DialAddress {
         Ok(Self(uri))
     }
 
-    pub(super) async fn dial(&self, token: &MachineTokenText) -> Result<Socket, DialFailure> {
+    pub(super) async fn dial(
+        &self,
+        token: &MachineTokenText,
+        clock: Arc<dyn RuntimeClock>,
+    ) -> Result<(Socket, Arc<WireWriteFence>), DialFailure> {
         if token.expose().len() > MAX_CREDENTIAL_BYTES {
             return Err(DialFailure::Unauthorized);
         }
@@ -128,7 +136,10 @@ impl DialAddress {
         let connector = connector.https_or_http();
         #[cfg(not(feature = "test-support"))]
         let connector = connector.https_only();
-        let mut connector = connector.enable_http1().build();
+        let fence = Arc::new(WireWriteFence::new(clock));
+        let mut connector = connector
+            .enable_http1()
+            .wrap_connector(FencedConnector::new(fence.clone()));
         poll_fn(|context| connector.poll_ready(context))
             .await
             .map_err(|_| DialFailure::Transport)?;
@@ -136,7 +147,8 @@ impl DialAddress {
             .call(address)
             .await
             .map_err(|_| DialFailure::Transport)?;
-        upgrade_over_stream(TokioIo::new(stream), request, &websocket_key).await
+        let socket = upgrade_over_stream(TokioIo::new(stream), request, &websocket_key).await?;
+        Ok((socket, fence))
     }
 }
 

@@ -1130,6 +1130,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
+ "switchboard-machine-enrollment",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -2530,14 +2531,21 @@ dependencies = [
 name = "fleet-identity-protocol"
 version = "0.1.158"
 dependencies = [
+ "base64 0.22.1",
  "chrono",
  "jsonschema",
  "message-board",
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "serde_json_canonicalizer",
+ "sha2 0.10.9",
  "specta",
+ "specta-serde",
  "specta-typescript",
+ "thiserror 2.0.18",
+ "workspace-ids",
+ "zeroize",
 ]
 
 [[package]]
@@ -5772,6 +5780,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchboard-approval-ports"
+version = "0.1.158"
+dependencies = [
+ "approval-request-protocol",
+ "thiserror 2.0.18",
+ "workspace-ids",
+]
+
+[[package]]
 name = "switchboard-central-link"
 version = "0.1.158"
 dependencies = [
@@ -5847,6 +5864,30 @@ dependencies = [
  "uuid",
  "workspace-ids",
  "workspace-model",
+]
+
+[[package]]
+name = "switchboard-machine-enrollment"
+version = "0.1.158"
+dependencies = [
+ "axum",
+ "chrono",
+ "futures-util",
+ "hegeltest",
+ "httpdate",
+ "reqwest 0.12.28",
+ "router-clock",
+ "serde",
+ "serde_json",
+ "switchboard-machine-enrollment",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "workspace-ids",
+ "zeroize",
 ]
 
 [[package]]
@@ -6613,6 +6654,7 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]
@@ -7103,8 +7145,13 @@ dependencies = [
 name = "workspace-architecture-check"
 version = "0.1.158"
 dependencies = [
+ "approval-request-protocol",
  "serde",
  "serde_json",
+ "state-machine-core",
+ "switchboard-approval-holder",
+ "switchboard-approval-ports",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 

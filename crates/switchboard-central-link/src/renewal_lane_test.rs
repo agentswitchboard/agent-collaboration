@@ -166,7 +166,10 @@ async fn a_continuously_ready_socket_renews_before_expiry_and_reads_the_final_cl
                 &mut socket,
                 &attempt,
                 &1,
-                elapsed_tick(0),
+                super::super::SocketAttemptTiming {
+                    started: elapsed_tick(0),
+                    writes: &crate::wire_write_fence::WireWriteFence::new(fixture.clock.clone())
+                },
                 &mut control,
                 &mut crate::link_lane::link_lane_channel().1
             )

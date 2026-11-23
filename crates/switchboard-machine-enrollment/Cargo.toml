@@ -1,0 +1,40 @@
+[package]
+name = "switchboard-machine-enrollment"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+autotests = false
+
+[features]
+test-support = []
+
+[dependencies]
+futures-util.workspace = true
+httpdate = "1.0.3"
+reqwest.workspace = true
+router-clock.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url = { workspace = true, features = ["serde"] }
+uuid.workspace = true
+workspace-ids.workspace = true
+zeroize.workspace = true
+
+[dev-dependencies]
+axum = { workspace = true, features = ["http1", "tokio"] }
+chrono.workspace = true
+hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
+router-clock = { workspace = true, features = ["test-support"] }
+switchboard-machine-enrollment = { path = ".", features = ["test-support"] }
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[lints]
+workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"

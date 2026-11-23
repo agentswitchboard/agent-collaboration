@@ -128,7 +128,7 @@ fn holder_and_destination_endings_reject_the_wrong_request_payload() {
     let other_raise: Raise = serde_json::from_value(other_raise).unwrap();
     let provider: Raise = serde_json::from_value(provider_raise()).unwrap();
     let by: DecidedBy = serde_json::from_value(json!({"kind":"person","personId":PERSON})).unwrap();
-    let approval = Answer::Approval {
+    let approval = approval_request_protocol::ProviderAnswer::Approval {
         option_id: OfferedOptionId::new(1).unwrap(),
     };
     let offered = DeliverEndingRequest::from_raise(
@@ -367,6 +367,6 @@ fn the_requester_cannot_construct_its_own_read_projection() {
     let membership = [requester.clone(), different.clone()];
     assert!(AdmittedDestination::for_request(&raise, &requester, &membership).is_err());
     let admitted = AdmittedDestination::for_request(&raise, &different, &membership).unwrap();
-    let view = RequestView::waiting(&admitted, WaitingStatus::Pending, window);
+    let view = RequestView::waiting(&admitted, WaitingStatus::Pending, window).unwrap();
     assert_eq!(view.view().request_id(), raise.request_id());
 }

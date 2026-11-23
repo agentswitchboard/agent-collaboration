@@ -57,7 +57,10 @@ async fn oversized_bearer_fails_before_the_http_upgrade() {
             .unwrap();
     });
     let token = MachineTokenText::try_from("a".repeat(MAX_CREDENTIAL_BYTES + 1)).unwrap();
-    let outcome = dial.dial(&token).await;
+    let clock = std::sync::Arc::new(router_clock::ManualClock::new(
+        "2030-01-01T00:00:00Z".parse().unwrap(),
+    ));
+    let outcome = dial.dial(&token, clock).await;
     peer.abort();
     let _ = peer.await;
     assert!(
