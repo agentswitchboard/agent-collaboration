@@ -3,8 +3,8 @@ use switchboard_link_lease::{EnrollmentLeaseSource, UnfinishedLeaseWork};
 use switchboard_machine_core_store::{MACHINE_LOCAL_DATABASE, load_or_create_machine_id};
 use switchboard_machine_enrollment::{
     BindingGeneration, ConditionalWrite, CredentialStore, EnrollmentBinding, EnrollmentContext,
-    EnrollmentEnd as StoredEnding, EnrollmentMetadata, RefreshAnswer, RefreshCredential,
-    RefreshOwner, RefreshSource, SecretValue, SignInDeployment, TokenGrant,
+    EnrollmentEnd as StoredEnding, EnrollmentKey, EnrollmentMetadata, RefreshAnswer,
+    RefreshCredential, RefreshOwner, RefreshSource, SecretValue, SignInDeployment, TokenGrant,
 };
 use switchboard_machine_enrollment_store::{
     MachineEnrollmentStore,
@@ -39,6 +39,32 @@ impl RefreshSource for SignedRefresh {
             expires_in: Duration::from_secs(600),
         })
     }
+}
+
+struct ObservedLeases {
+    source: Arc<EnrollmentLeaseSource>,
+    acquisitions: mpsc::UnboundedSender<EnrollmentKey>,
+}
+
+impl LeaseSource<EnrollmentKey> for ObservedLeases {
+    fn acquire<'a>(
+        &'a self,
+        key: &'a EnrollmentKey,
+        newer_than: Option<LeaseVersion>,
+    ) -> LeaseFuture<'a, EnrollmentKey> {
+        self.acquisitions.send(key.clone()).unwrap();
+        self.source.acquire(key, newer_than)
+    }
+
+    fn end(&self, key: &EnrollmentKey, cause: EnrollmentEnd) {
+        self.source.end(key, cause);
+    }
+}
+
+async fn wait_for_driver_poll(barrier: &mpsc::UnboundedSender<tokio::sync::oneshot::Sender<()>>) {
+    let (ack, observed) = tokio::sync::oneshot::channel();
+    barrier.send(ack).unwrap();
+    observed.await.unwrap();
 }
 
 #[tokio::test]
@@ -152,21 +178,40 @@ async fn real_central_revocation_ends_the_sqlite_enrollment_and_never_redials_it
         .parse::<std::net::SocketAddr>()
         .unwrap();
     let (dials, mut dialed) = mpsc::unbounded_channel();
-    let driver = tokio::spawn(
-        LinkDriver {
-            machine_id,
-            clock,
-            lease_source: lease.clone(),
-            settings: settings_rx,
-            shutdown,
-            status: status_tx,
-            lane,
-        }
-        .run_with_test_transport(move || {
+    let (acquisitions, mut acquired) = mpsc::unbounded_channel();
+    let (barrier, mut barrier_requests) =
+        mpsc::unbounded_channel::<tokio::sync::oneshot::Sender<()>>();
+    let link = LinkDriver {
+        machine_id,
+        clock: clock.clone(),
+        lease_source: Arc::new(ObservedLeases {
+            source: lease.clone(),
+            acquisitions,
+        }),
+        settings: settings_rx,
+        shutdown,
+        status: status_tx,
+        lane,
+    };
+    let driver = tokio::spawn(async move {
+        let run = link.run_with_test_transport(move || {
             let _ = dials.send(());
             tokio::net::TcpStream::connect(address)
-        }),
-    );
+        });
+        tokio::pin!(run);
+        loop {
+            tokio::select! {
+                biased;
+                () = &mut run => break,
+                request = barrier_requests.recv() => {
+                    let Some(ack) = request else { break };
+                    // The driver's real future was polled before this acknowledgement.
+                    let _ = ack.send(());
+                }
+            }
+        }
+    });
+    assert_eq!(acquired.recv().await, Some(key.clone()));
     assert_eq!(dialed.recv().await, Some(()));
     let seen = status
         .wait_for(|status| {
@@ -207,25 +252,29 @@ async fn real_central_revocation_ends_the_sqlite_enrollment_and_never_redials_it
         .await
         .unwrap();
     changes.changed().await.unwrap();
-    assert_eq!(lease.close().await.unwrap(), UnfinishedLeaseWork::default());
     assert_eq!(
         store.read_metadata().await.unwrap(),
         EnrollmentMetadata::Ended {
-            key,
+            key: key.clone(),
             why: StoredEnding::Revoked,
             generation: BindingGeneration::from_persisted(3).unwrap(),
         }
     );
-    settings.send_replace(DriverSettings {
-        binding: None,
-        address: Err(switchboard_central_link::AddressError::InvalidLocation),
-    });
-    stop.send_replace(true);
-    driver.await.unwrap();
+    wait_for_driver_poll(&barrier).await;
+    clock.advance(Duration::from_secs(30)).unwrap();
+    wait_for_driver_poll(&barrier).await;
+    assert_eq!(settings.borrow().binding.as_ref(), Some(&key));
+    assert!(
+        acquired.try_recv().is_err(),
+        "the driver tried to acquire another lease for the retired binding"
+    );
     assert!(
         dialed.try_recv().is_err(),
         "the retired binding was dialed again"
     );
+    stop.send_replace(true);
+    driver.await.unwrap();
+    assert_eq!(lease.close().await.unwrap(), UnfinishedLeaseWork::default());
     store.close().await.unwrap();
     drop(central_owner);
     central.close().await.unwrap();
