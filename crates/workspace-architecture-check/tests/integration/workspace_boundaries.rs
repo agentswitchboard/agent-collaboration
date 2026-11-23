@@ -45,6 +45,7 @@ pub(super) const APPROVALS_LAYER: (&str, &[&str]) = (
         APPROVAL_REQUEST_PROTOCOL,
         "central-engine-model",
         "central-storage",
+        "fleet-actor-identity",
         FLEET_ENGINE,
         "fleet-identity-protocol",
         "fleet-machine-login",

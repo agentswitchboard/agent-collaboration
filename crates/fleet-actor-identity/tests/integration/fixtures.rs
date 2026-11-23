@@ -6,17 +6,16 @@ use std::{
 
 use central_engine_model::{Context, EngineTime, IdSource};
 use fleet_actor_identity::{
-    ActorApprovalSessionFacts, OrganizationTransaction, SessionAvailability, SessionCallOutcome,
-    SessionLookupScope, SessionSecretSource, SessionService, SessionServiceError,
+    AuthenticatedSession, SessionAvailability, SessionCallOutcome, SessionLookupScope,
+    SessionSecretSource, SessionService, SessionServiceError,
 };
-use fleet_approvals::{ApprovalEnrollment, ApprovalRouting, ApprovalSession, ApprovalSessionFacts};
 use fleet_contracts::{ClientId, MachineConnectionAttachment};
 use fleet_identity_protocol::{
     BindFleetSession, BindFleetSessionReply, CreateFleetSession, CreateFleetSessionReply,
     CreateSessionKind, EndFleetSession, EndFleetSessionReply, EnrollmentId, HarnessKind,
-    OrganizationId, SessionCreator, SessionSecret, UnixSeconds,
+    OrganizationId, PresentedSessionSecret, SessionCreator, SessionSecret, UnixSeconds,
 };
-use fleet_lent_transaction::CentralTransaction;
+use fleet_lent_transaction::{CentralTransaction, OrganizationTransaction};
 use fleet_machine_login::link_authority::{ValidatedMachineConnection, restore_fixture_link};
 use fleet_store_sqlx::SqliteObjectStore;
 use sqlx::{Connection, Sqlite, SqliteConnection, sqlite::SqliteConnectOptions};
@@ -308,19 +307,10 @@ impl SessionStoreFixture {
         }
     }
 
-    pub async fn approval_facts(
+    pub async fn checked_facts(
         &self,
         session_id: &workspace_ids::CentralSessionId,
-        requested_organization: &OrganizationId,
-    ) -> Result<(bool, Option<ApprovalRouting>), central_storage::StoreFailure> {
-        let reader = ActorApprovalSessionFacts;
-        let subject = ApprovalSession {
-            enrollment: ApprovalEnrollment {
-                machine_id: self.caller.machine_id.clone(),
-                enrollment_id: self.caller.enrollment_id.clone(),
-            },
-            session_id: session_id.clone(),
-        };
+    ) -> Result<(bool, SessionAvailability), central_storage::StoreFailure> {
         let store = self.open_tokio_store().await;
         let result = store
             .run_transaction(async |connection| {
@@ -329,22 +319,44 @@ impl SessionStoreFixture {
                     organization: &self.organization,
                     reads: self.reads.clone(),
                 };
-                let live = reader
-                    .session_is_live(&mut lent, requested_organization, &subject)
-                    .await?;
-                let route = reader
-                    .session_initial_route(&mut lent, requested_organization, &subject)
-                    .await?;
+                let mut service = SessionService::in_transaction(&mut lent);
+                let live = service.session_is_live(&self.caller, session_id).await?;
+                let facts = service.session_facts(&self.caller, session_id).await?;
                 Ok(ControlFlow::<std::convert::Infallible, _>::Continue((
-                    live, route,
+                    live, facts,
                 )))
             })
             .await;
         store.close().await;
-        match result? {
-            ControlFlow::Continue(facts) => Ok(facts),
-            ControlFlow::Break(never) => match never {},
-        }
+        let ControlFlow::Continue(facts) = result?;
+        Ok(facts)
+    }
+
+    pub async fn authenticate(
+        &self,
+        connection: &ValidatedMachineConnection,
+        session_id: &workspace_ids::CentralSessionId,
+        presented: &PresentedSessionSecret,
+    ) -> Option<AuthenticatedSession> {
+        let store = self.open_tokio_store().await;
+        let result = store
+            .run_transaction(async |executor| {
+                let mut lent = SqliteTransaction {
+                    connection: executor,
+                    organization: &self.organization,
+                    reads: self.reads.clone(),
+                };
+                let admitted = SessionService::in_transaction(&mut lent)
+                    .authenticate_live_session(connection, session_id, presented)
+                    .await?;
+                Ok(ControlFlow::<std::convert::Infallible, _>::Continue(
+                    admitted,
+                ))
+            })
+            .await;
+        store.close().await;
+        let ControlFlow::Continue(admitted) = result.unwrap();
+        admitted
     }
 
     async fn open_tokio_store(&self) -> SqliteObjectStore {

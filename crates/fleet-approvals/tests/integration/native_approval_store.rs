@@ -205,7 +205,6 @@ impl ApprovalSessionFacts<NativeApprovalTransaction> for StoredSessionFacts {
     async fn session_initial_route(
         &self,
         transaction: &mut NativeApprovalTransaction,
-        organization: &OrganizationId,
         requester: &ApprovalSession,
     ) -> Result<Option<ApprovalRouting>, StoreFailure> {
         transaction
@@ -216,7 +215,7 @@ impl ApprovalSessionFacts<NativeApprovalTransaction> for StoredSessionFacts {
             "SELECT parent_machine, parent_enrollment, parent_session FROM fixture_sessions
              WHERE organization_id=?1 AND machine_id=?2 AND enrollment_id=?3 AND session_id=?4",
         )
-        .bind(organization.as_str())
+        .bind(transaction.organization_id().as_str().to_owned())
         .bind(requester.enrollment.machine_id.as_str())
         .bind(requester.enrollment.enrollment_id.as_str())
         .bind(requester.session_id.as_str())
@@ -253,7 +252,6 @@ impl ApprovalSessionFacts<NativeApprovalTransaction> for StoredSessionFacts {
     async fn session_is_live(
         &self,
         transaction: &mut NativeApprovalTransaction,
-        organization: &OrganizationId,
         session: &ApprovalSession,
     ) -> Result<bool, StoreFailure> {
         transaction
@@ -264,7 +262,7 @@ impl ApprovalSessionFacts<NativeApprovalTransaction> for StoredSessionFacts {
             "SELECT EXISTS(SELECT 1 FROM fixture_sessions
              WHERE organization_id=?1 AND machine_id=?2 AND enrollment_id=?3 AND session_id=?4 AND live=1)",
         )
-        .bind(organization.as_str())
+        .bind(transaction.organization_id().as_str().to_owned())
         .bind(session.enrollment.machine_id.as_str())
         .bind(session.enrollment.enrollment_id.as_str())
         .bind(session.session_id.as_str())

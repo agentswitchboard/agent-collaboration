@@ -25,6 +25,8 @@ use worker::{Response, State};
 mod fixture_commands;
 #[path = "approval_store_witness/fixture_transaction.rs"]
 mod fixture_transaction;
+#[path = "approval_store_witness/session_authority.rs"]
+mod session_authority;
 
 use fixture_commands::{
     ApprovalWitnessCommand, ApprovalWitnessInput, StoredCorruption, WitnessDecider,
@@ -179,6 +181,16 @@ async fn apply_command(
     commit: &ApprovalCommitScope,
 ) -> Result<PendingWitnessApply, WitnessFailure> {
     let command = match input.command {
+        ApprovalWitnessCommand::Authenticated { holder, operation } => {
+            return session_authority::apply_authenticated(
+                transaction,
+                commit,
+                input.at_ms,
+                holder,
+                operation,
+            )
+            .await;
+        }
         fixture @ (ApprovalWitnessCommand::StoreEnrollment { .. }
         | ApprovalWitnessCommand::StoreSession { .. }
         | ApprovalWitnessCommand::Inspect

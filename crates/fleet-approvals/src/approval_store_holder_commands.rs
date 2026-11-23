@@ -222,21 +222,20 @@ where
                 ProviderSessionAvailability::SessionFree,
             ),
             Some(session_id) => {
-                let organization = &scope.organization_id;
                 let requester = ApprovalSession {
                     enrollment: scope.run.enrollment.clone(),
                     session_id: session_id.clone(),
                 };
                 let route = self
                     .sessions
-                    .session_initial_route(self.transaction, organization, &requester)
+                    .session_initial_route(self.transaction, &requester)
                     .await?;
                 let Some(route) = route else {
                     return Ok(unavailable_requester());
                 };
                 if !self
                     .sessions
-                    .session_is_live(self.transaction, organization, &requester)
+                    .session_is_live(self.transaction, &requester)
                     .await?
                 {
                     return Ok(unavailable_requester());
@@ -245,7 +244,7 @@ where
                     && (admitted_parent.session_id == requester.session_id
                         || !self
                             .sessions
-                            .session_is_live(self.transaction, organization, admitted_parent)
+                            .session_is_live(self.transaction, admitted_parent)
                             .await?)
                 {
                     return Err(ApprovalApplyFailure::Lifecycle(

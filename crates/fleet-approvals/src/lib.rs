@@ -1,9 +1,9 @@
 //! Central approvals lifecycle and its applying store.
+mod actor_approval_session_facts;
 mod approval_applying_store;
 mod approval_collection;
 mod approval_collection_values;
 mod approval_commit;
-#[cfg(feature = "test-support")]
 mod approval_decision_log;
 mod approval_lifecycle;
 mod approval_lifecycle_admission;
@@ -19,6 +19,7 @@ mod approval_store_transaction;
 mod approval_store_writes;
 mod approval_stored_tags;
 
+pub use actor_approval_session_facts::ActorApprovalSessionFacts;
 pub use approval_applying_store::{
     ApprovalApplyFailure, ApprovalApplyingStore, ApprovalHolderCommand, ApprovalHolderReply,
     ApprovalReadPage,

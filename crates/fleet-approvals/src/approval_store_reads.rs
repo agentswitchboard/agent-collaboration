@@ -173,7 +173,6 @@ pub(crate) async fn read_holder_request(
     Ok(ScopedHolderRequest::Retained(Box::new(record)))
 }
 
-#[cfg(feature = "test-support")]
 pub(crate) async fn read_people_approval_request(
     transaction: &mut impl ApprovalStoreTransaction,
     organization: &OrganizationId,
@@ -189,7 +188,6 @@ pub(crate) async fn read_people_approval_request(
     read_request_record(transaction, statement).await
 }
 
-#[cfg(feature = "test-support")]
 pub(crate) async fn read_parent_approval_request(
     transaction: &mut impl ApprovalStoreTransaction,
     organization: &OrganizationId,

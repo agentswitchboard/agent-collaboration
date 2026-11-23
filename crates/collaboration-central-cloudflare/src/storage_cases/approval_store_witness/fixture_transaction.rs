@@ -124,14 +124,13 @@ impl ApprovalSessionFacts<WorkerApprovalTransaction> for FixtureSessionFacts {
     async fn session_initial_route(
         &self,
         transaction: &mut WorkerApprovalTransaction,
-        organization: &OrganizationId,
         requester: &ApprovalSession,
     ) -> Result<Option<ApprovalRouting>, StoreFailure> {
         let row = sqlx::query_as::<Do, StoredSessionRoute>(
             "SELECT parent_machine, parent_enrollment, parent_session FROM fixture_sessions
              WHERE organization_id=?1 AND machine_id=?2 AND enrollment_id=?3 AND session_id=?4",
         )
-        .bind(organization.as_str())
+        .bind(transaction.organization_id().as_str())
         .bind(requester.enrollment.machine_id.as_str())
         .bind(requester.enrollment.enrollment_id.as_str())
         .bind(requester.session_id.as_str())
@@ -168,14 +167,13 @@ impl ApprovalSessionFacts<WorkerApprovalTransaction> for FixtureSessionFacts {
     async fn session_is_live(
         &self,
         transaction: &mut WorkerApprovalTransaction,
-        organization: &OrganizationId,
         session: &ApprovalSession,
     ) -> Result<bool, StoreFailure> {
         sqlx::query_scalar::<Do, i64>(
             "SELECT EXISTS(SELECT 1 FROM fixture_sessions
              WHERE organization_id=?1 AND machine_id=?2 AND enrollment_id=?3 AND session_id=?4 AND live=1)",
         )
-        .bind(organization.as_str())
+        .bind(transaction.organization_id().as_str())
         .bind(session.enrollment.machine_id.as_str())
         .bind(session.enrollment.enrollment_id.as_str())
         .bind(session.session_id.as_str())

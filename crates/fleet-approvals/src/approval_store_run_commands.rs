@@ -156,7 +156,7 @@ where
         }
         if self
             .sessions
-            .session_is_live(self.transaction, organization, session)
+            .session_is_live(self.transaction, session)
             .await?
         {
             return Ok(ApprovalTransitionOutput::with_reply(()));

@@ -15,7 +15,6 @@ use crate::{
 };
 
 #[path = "approval_store_destination_commands.rs"]
-#[cfg(feature = "test-support")]
 mod destination_commands;
 #[path = "approval_store_fixture_destinations.rs"]
 #[cfg(feature = "test-support")]

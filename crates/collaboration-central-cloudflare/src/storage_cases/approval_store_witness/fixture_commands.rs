@@ -1,8 +1,9 @@
 use approval_request_protocol::{
-    Answer, DeliverEndingReply, DeliverEndingRequest, Raise, StopRequest,
+    Answer, DecideRequest, DeliverEndingReply, DeliverEndingRequest, PassOnRequest, Raise,
+    StopRequest,
 };
 use fleet_approvals::{ApprovalEnrollment, ApprovalHolderScope, ApprovalRun, ApprovalSession};
-use fleet_identity_protocol::{EnrollmentId, OrganizationId};
+use fleet_identity_protocol::{EnrollmentId, OrganizationId, PresentedSessionSecret};
 use serde::Deserialize;
 use workspace_ids::{
     ApprovalRequestId, CentralSessionId, MachineId, PersonId, RequestId, RouterRunId,
@@ -93,6 +94,10 @@ pub(super) enum StoredCorruption {
     rename_all_fields = "camelCase"
 )]
 pub(super) enum ApprovalWitnessCommand {
+    Authenticated {
+        holder: WitnessHolder,
+        operation: SessionApprovalWitness,
+    },
     Recover {
         holder: WitnessHolder,
     },
@@ -173,5 +178,29 @@ pub(super) enum ApprovalWitnessCommand {
     },
     EndEnrollment {
         holder: WitnessHolder,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(
+    deny_unknown_fields,
+    rename_all = "camelCase",
+    tag = "kind",
+    rename_all_fields = "camelCase"
+)]
+pub(super) enum SessionApprovalWitness {
+    RegisterRun,
+    Raise {
+        request: Box<Raise>,
+    },
+    Decide {
+        session_id: CentralSessionId,
+        presented: PresentedSessionSecret,
+        request: DecideRequest,
+    },
+    PassOn {
+        session_id: CentralSessionId,
+        presented: PresentedSessionSecret,
+        request: PassOnRequest,
     },
 }

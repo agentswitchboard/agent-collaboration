@@ -1,24 +1,32 @@
+#[cfg(feature = "test-support")]
 use std::num::NonZeroU16;
 
-use approval_request_protocol::{CentralTime, PassOnReply, RequestView};
+#[cfg(feature = "test-support")]
+use approval_request_protocol::{CentralTime, RequestView};
+use approval_request_protocol::{DecideRequest, PassOnReply, PassOnRequest};
+use fleet_actor_identity::AuthenticatedSession;
 use fleet_identity_protocol::OrganizationId;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
-use workspace_ids::{ApprovalRequestId, PersonId};
+use workspace_ids::ApprovalRequestId;
+#[cfg(feature = "test-support")]
+use workspace_ids::PersonId;
 
-use super::{
-    ApprovalApplyFailure, ApprovalApplyingStore, ApprovalReadPage, ApprovalTransitionOutput,
-};
+#[cfg(feature = "test-support")]
+use super::ApprovalReadPage;
+use super::{ApprovalApplyFailure, ApprovalApplyingStore, ApprovalTransitionOutput};
 use crate::{
-    AdmittedDecider, ApprovalActor, ApprovalDecideInput, ApprovalDecisionReply, ApprovalEvent,
-    ApprovalReceipt, ApprovalSession, ApprovalSessionFacts,
+    AdmittedDecider, ApprovalActor, ApprovalDecideInput, ApprovalDecisionReply, ApprovalEnrollment,
+    ApprovalEvent, ApprovalReceipt, ApprovalReplyAddress, ApprovalSession, ApprovalSessionFacts,
+    PendingApprovalReply,
     approval_decision_log::ApprovalDecisionLogKey,
     approval_lifecycle_admission::is_destination,
-    approval_store_reads::{
-        ApprovalReadRecord, read_parent_approval_request, read_people_approval_request,
-        read_person_approval_page,
-    },
-    approval_store_scope::ApprovalRequestRowId,
+    approval_store_reads::{read_parent_approval_request, read_people_approval_request},
     approval_store_transaction::ApprovalStoreTransaction,
+};
+#[cfg(feature = "test-support")]
+use crate::{
+    approval_store_reads::{ApprovalReadRecord, read_person_approval_page},
+    approval_store_scope::ApprovalRequestRowId,
 };
 
 impl<Transaction, Sessions> ApprovalApplyingStore<'_, Transaction, Sessions>
@@ -26,6 +34,34 @@ where
     Transaction: ApprovalStoreTransaction,
     Sessions: ApprovalSessionFacts<Transaction>,
 {
+    pub async fn decide_session_approval(
+        &mut self,
+        admission: &AuthenticatedSession,
+        request: DecideRequest,
+    ) -> Result<PendingApprovalReply<ApprovalDecisionReply>, ApprovalApplyFailure> {
+        let (organization, session, address) = approval_session_address(admission);
+        let applied = self
+            .decide_approval(
+                organization,
+                AdmittedDecider::Session(session),
+                request.into(),
+            )
+            .await?;
+        Ok(self.stage_reply(address, applied))
+    }
+
+    pub async fn pass_on_session_approval(
+        &mut self,
+        admission: &AuthenticatedSession,
+        request: PassOnRequest,
+    ) -> Result<PendingApprovalReply<PassOnReply>, ApprovalApplyFailure> {
+        let (organization, session, address) = approval_session_address(admission);
+        let applied = self
+            .pass_on_approval(organization, session, &request.request_id)
+            .await?;
+        Ok(self.stage_reply(address, applied))
+    }
+
     pub(super) async fn decide_approval(
         &mut self,
         organization: &OrganizationId,
@@ -40,7 +76,7 @@ where
         if let ApprovalActor::Session(session) = &actor
             && !self
                 .sessions
-                .session_is_live(self.transaction, organization, session)
+                .session_is_live(self.transaction, session)
                 .await?
         {
             return Ok(refused());
@@ -140,7 +176,7 @@ where
         }
         if !self
             .sessions
-            .session_is_live(self.transaction, organization, &parent)
+            .session_is_live(self.transaction, &parent)
             .await?
         {
             return Ok(refused());
@@ -179,6 +215,7 @@ where
         Ok(applied.replace_reply(reply))
     }
 
+    #[cfg(feature = "test-support")]
     pub(super) async fn read_person_approval(
         &mut self,
         organization: &OrganizationId,
@@ -197,6 +234,7 @@ where
         self.read_selected_approval(&record, person_id, at).await
     }
 
+    #[cfg(feature = "test-support")]
     pub(super) async fn list_person_approvals(
         &mut self,
         organization: &OrganizationId,
@@ -239,6 +277,7 @@ where
         })
     }
 
+    #[cfg(feature = "test-support")]
     async fn read_selected_approval(
         &mut self,
         record: &ApprovalReadRecord,
@@ -271,4 +310,23 @@ where
             .clone();
         Ok(applied.replace_reply(reply))
     }
+}
+
+fn approval_session_address(
+    admission: &AuthenticatedSession,
+) -> (&OrganizationId, ApprovalSession, ApprovalReplyAddress) {
+    let organization = admission.organization_id();
+    let scoped = admission.scoped_session();
+    let session = ApprovalSession {
+        enrollment: ApprovalEnrollment {
+            machine_id: scoped.machine_id.clone(),
+            enrollment_id: scoped.enrollment_id.clone(),
+        },
+        session_id: scoped.session_id.clone(),
+    };
+    let address = ApprovalReplyAddress::Session {
+        organization: organization.clone(),
+        session: session.clone(),
+    };
+    (organization, session, address)
 }

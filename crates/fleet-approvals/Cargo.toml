@@ -16,6 +16,7 @@ test-support = []
 approval-request-protocol.workspace = true
 central-engine-model.workspace = true
 central-storage.workspace = true
+fleet-actor-identity.workspace = true
 fleet-engine.workspace = true
 fleet-lent-transaction.workspace = true
 fleet-machine-login.workspace = true
@@ -24,6 +25,7 @@ fleet-identity-protocol = { path = "../fleet-identity-protocol", version = "0.1.
 fleet-runtime-ports.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sqlx-core.workspace = true
 workspace-ids.workspace = true
 
 [dev-dependencies]
