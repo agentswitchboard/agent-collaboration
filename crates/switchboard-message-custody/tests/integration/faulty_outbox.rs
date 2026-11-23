@@ -46,14 +46,15 @@ pub(super) enum FaultStage {
 struct FaultJournal {
     planned: Vec<(FaultSite, FaultStage)>,
     fired: Vec<(FaultSite, FaultStage)>,
-    committed_insert: Option<Arc<CommittedInsertGate>>,
+    committed_insert: Option<Arc<StoreCommitGate>>,
+    committed_claim: Option<Arc<StoreCommitGate>>,
     scoped_read_gate: Option<Arc<ScopedReadGate>>,
     scoped_reads_unavailable: bool,
 }
 
-/// A test holds the worker between SQLite's insert commit and its submit reply.
+/// A test holds the worker after a SQLite commit and before the store returns.
 #[derive(Default)]
-pub(super) struct CommittedInsertGate {
+pub(super) struct StoreCommitGate {
     pub(super) committed: Notify,
     pub(super) release: Notify,
 }
@@ -82,9 +83,15 @@ impl StoreFaultPlan {
         self.0.lock().unwrap().planned.is_empty()
     }
 
-    pub(super) fn hold_next_insert_commit(&self) -> Arc<CommittedInsertGate> {
-        let gate = Arc::new(CommittedInsertGate::default());
+    pub(super) fn hold_next_insert_commit(&self) -> Arc<StoreCommitGate> {
+        let gate = Arc::new(StoreCommitGate::default());
         self.0.lock().unwrap().committed_insert = Some(gate.clone());
+        gate
+    }
+
+    pub(super) fn hold_next_claim_commit(&self) -> Arc<StoreCommitGate> {
+        let gate = Arc::new(StoreCommitGate::default());
+        self.0.lock().unwrap().committed_claim = Some(gate.clone());
         gate
     }
 
@@ -237,7 +244,8 @@ impl OutboxStorage for FaultyOutbox {
         required_deadline_after_ms: i64,
         excluded_request_ids: &'call BTreeSet<RequestId>,
     ) -> OutboxFuture<'call, StoreScan<ClaimedBatch>> {
-        self.plan.wrap(
+        let gate = self.plan.0.lock().unwrap().committed_claim.take();
+        let claiming = self.plan.wrap(
             FaultSite::ClaimBatch,
             self.inner.claim_next_batch(
                 mark_ms,
@@ -246,7 +254,15 @@ impl OutboxStorage for FaultyOutbox {
                 required_deadline_after_ms,
                 excluded_request_ids,
             ),
-        )
+        );
+        Box::pin(async move {
+            let claim = claiming.await?;
+            if let Some(gate) = gate {
+                gate.committed.notify_one();
+                gate.release.notified().await;
+            }
+            Ok(claim)
+        })
     }
 
     fn end_overdue(&mut self, now: i64) -> OutboxFuture<'_, StoreScan<Vec<EndedWrite>>> {

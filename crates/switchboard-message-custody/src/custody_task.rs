@@ -273,8 +273,6 @@ async fn run_custody(
     let mut receipt_mark = None;
     let mut intake_retry_at = None;
     let mut tool_requests = JoinSet::new();
-    let mut retry_store_at = None;
-    let mut retry_cutoff_at = None;
     let mut admission = lane.watch_admitted();
     let mut admission_open = true;
     let mut orphan_reply: Option<OutstandingOrphan> = None;
@@ -286,33 +284,17 @@ async fn run_custody(
     let mut retention_at = next_retention(&mut custody, &*sink).await;
 
     loop {
-        let now = clock.monotonic_now();
-        let (write_wake, deadline_wake) = if retry_store_at.is_some_and(|retry| now < retry) {
-            (retry_store_at, None)
-        } else {
-            retry_store_at = None;
-            match (
-                custody.refresh_flush_wake().await,
-                custody.next_write_deadline().await,
-            ) {
-                (Ok(write), Ok(deadline)) => (write, deadline),
-                (Err(error), _) | (_, Err(error)) => {
-                    sink.record_event(CustodyTaskEvent::Failed(error));
-                    retry_store_at = Some(custody.local_retry_mark());
-                    (retry_store_at, None)
-                }
+        let write_wake = match custody.refresh_flush_wake().await {
+            Ok(write) => write,
+            Err(error) => {
+                sink.record_event(CustodyTaskEvent::Failed(error));
+                custody.outbox_retry_wake()
             }
         };
-        let deadline_wake = if retry_cutoff_at.is_some_and(|retry| now < retry) {
-            retry_cutoff_at
-        } else {
-            retry_cutoff_at = None;
-            // A store read failure cannot hide the deadline of the frame the task already holds.
-            deadline_wake
-                .into_iter()
-                .chain(custody.active_write_deadline())
-                .min()
-        };
+        let (deadline_wake, cutoff_fault) = custody.project_write_cutoff_wake().await;
+        if let Some(error) = cutoff_fault {
+            sink.record_event(CustodyTaskEvent::Failed(error.into()));
+        }
         let receipt_wake = custody.next_receipt_minute(receipt_mark.as_ref());
         if intake_retry_at.is_none() {
             intake_retry_at = custody.next_intake_retry().await;
@@ -366,7 +348,6 @@ async fn run_custody(
                 }
                 ReadyWriteTurn::Deadline => {
                     let ended = custody.end_due_writes().await;
-                    if ended.is_err() { retry_cutoff_at = Some(custody.local_retry_mark()); }
                     report_flush(&*sink, ended);
                 }
             },
@@ -463,7 +444,6 @@ async fn run_custody(
                         }
                     }
                     Err(error) => {
-                        retry_store_at = Some(custody.local_retry_mark());
                         let recover = clock.monotonic_now().after(LOCAL_RECOVERY_RETRY);
                         orphan_scan_at = Some(orphan_scan_at.map_or(recover, |prior| prior.min(recover)));
                         sink.record_event(CustodyTaskEvent::Failed(error));

@@ -6,7 +6,7 @@
 use central_link_client::{LINK_LANE_FRAME_BYTES, LinkLaneEvent, LinkLocalFault};
 use central_link_protocol::{DataFrame, FrameDirection, LinkFrame, encode_text};
 use router_clock::{ClockInstant, ManualClock, RuntimeClock};
-use std::{sync::Arc, time::Duration};
+use std::{path::Path, sync::Arc, time::Duration};
 use switchboard_machine_core_store::{
     InboxStore, MachineLocalStore, OutboxAccepted, OutboxInsert, OutboxQueuedWrite,
     OutboxRequestStatus, OutboxStorage, OutboxWriteOutcome,
@@ -54,24 +54,24 @@ pub(super) async fn limits_fixture_with_clock(
         clock.clone(),
         Default::default(),
     ));
-    let outbox = OutboxWork::new(
-        Box::new(open_outbox(&database).await),
-        observed_clock.clone(),
-    );
+    let custody = custody_with_store(&database, lane.clone(), observed_clock, machine).await;
+    (root, custody, lane)
+}
+
+pub(super) async fn custody_with_store(
+    database: &Path,
+    lane: Arc<ScriptedBatchLane>,
+    clock: Arc<dyn RuntimeClock>,
+    machine: MachineId,
+) -> CustodyLink {
+    let outbox = OutboxWork::new(Box::new(open_outbox(database).await), clock.clone());
     let inbox = RecipientInbox::new(
-        InboxStore::new(MachineLocalStore::open(&database).await.unwrap()),
+        InboxStore::new(MachineLocalStore::open(database).await.unwrap()),
         machine,
         Arc::new(KnownRecipient),
-        observed_clock.clone(),
+        clock.clone(),
     );
-    let custody = CustodyLink::new(
-        lane.clone(),
-        observed_clock,
-        Arc::new(NoFlushJitter),
-        outbox,
-        inbox,
-    );
-    (root, custody, lane)
+    CustodyLink::new(lane, clock, Arc::new(NoFlushJitter), outbox, inbox)
 }
 
 async fn queue_post(

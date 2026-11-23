@@ -65,9 +65,16 @@ pub(super) struct FaultCampaign {
 
 impl FaultCampaign {
     pub(super) async fn start() -> Self {
+        let clock = manual_clock(START_MS);
+        Self::start_with_clock(clock.clone(), clock).await
+    }
+
+    pub(super) async fn start_with_clock(
+        clock: Arc<ManualClock>,
+        observed_clock: Arc<dyn RuntimeClock>,
+    ) -> Self {
         let root = tempfile::tempdir().unwrap();
         let path = root.path().join("machine_local.sqlite");
-        let clock = manual_clock(START_MS);
         let machine: MachineId = "019f0000-0000-7000-8000-000000000011".parse().unwrap();
         let peer = Arc::new(ScriptedBatchLane::new(
             new_admission(machine.clone(), clock.clone()),
@@ -81,17 +88,17 @@ impl FaultCampaign {
                 inner: Box::new(inner),
                 plan: faults.clone(),
             }),
-            clock.clone(),
+            observed_clock.clone(),
         );
         let inbox = RecipientInbox::new(
             InboxStore::new(MachineLocalStore::open(&path).await.unwrap()),
             machine.clone(),
             Arc::new(KnownRecipient),
-            clock.clone(),
+            observed_clock.clone(),
         );
         let custody = CustodyLink::new(
             peer.clone(),
-            clock.clone(),
+            observed_clock,
             Arc::new(NoFlushJitter),
             work,
             inbox,
@@ -199,6 +206,11 @@ impl FaultCampaign {
         if site == FaultSite::Insert {
             self.submit(Some(stage)).await;
         } else {
+            // Start the injected fault at a new attempt, after any bounded retry
+            // left by a previous generated step.
+            if matches!(site, FaultSite::EarliestWaiting | FaultSite::EndOverdue) {
+                self.clock.advance(Duration::from_millis(10)).unwrap();
+            }
             if site == FaultSite::ReturnUnanswered {
                 // Target settlement's return rather than recovery of an older claim.
                 self.custody.recover_outbox().await.unwrap();

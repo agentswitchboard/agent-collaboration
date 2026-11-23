@@ -8,7 +8,7 @@ use central_link_client::{
 use central_link_protocol::{CorrelationId, FreshCorrelationId, LinkRequestBatch, ReplyPayload};
 use router_clock::ClockInstant;
 use runtime_primitives::SyncTime;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use switchboard_machine_core_store::{StoredOutboxWrite, UnansweredOutboxClaim};
 use workspace_ids::RequestId;
 
@@ -53,13 +53,92 @@ struct ClaimedWriteBatch {
     ticket: PreparedWriteBatch,
     writes: Vec<StoredOutboxWrite>,
     ended_at_cutoff: BTreeSet<RequestId>,
+    cutoff_retries: BTreeMap<RequestId, ClockInstant>,
 }
 
-struct FrameWindow {
+impl ClaimedWriteBatch {
+    async fn end_selected_due(
+        &mut self,
+        work: &mut OutboxWork,
+        due: &BTreeSet<RequestId>,
+        report: &mut FlushReport,
+    ) -> Result<(), OutboxWorkError> {
+        if due.is_empty() {
+            return Ok(());
+        }
+        let ended = match work.end_selected_claims(due).await {
+            Ok(ended) => ended,
+            Err(error) => {
+                let retry = work.next_cutoff_retry();
+                self.cutoff_retries
+                    .extend(due.iter().cloned().map(|request| (request, retry)));
+                return Err(error.into());
+            }
+        };
+        self.ended_at_cutoff
+            .extend(ended.iter().map(|write| write.request_id.clone()));
+        report.ended.extend(ended);
+        let mut fault = None;
+        for write in &self.writes {
+            if !due.contains(&write.request) {
+                continue;
+            }
+            if !self.ended_at_cutoff.contains(&write.request) {
+                match LocalSettlements::recover_cutoff(work, write).await {
+                    Ok(ending) => {
+                        report.ended.extend(ending);
+                        self.ended_at_cutoff.insert(write.request.clone());
+                    }
+                    Err(error) => {
+                        self.cutoff_retries
+                            .insert(write.request.clone(), work.next_cutoff_retry());
+                        keep_cutoff_fault(&mut fault, error.into(), report);
+                        continue;
+                    }
+                }
+            }
+            self.cutoff_retries.remove(&write.request);
+        }
+        fault.map_or(Ok(()), Err)
+    }
+}
+
+fn keep_cutoff_fault(
+    first: &mut Option<OutboxWorkError>,
+    fault: OutboxWorkError,
+    report: &mut FlushReport,
+) {
+    if first.is_some() {
+        report.issues.push(BatchDispatchError::Work(fault));
+    } else {
+        *first = Some(fault);
+    }
+}
+
+/// The custody scheduler supplies a fixed frame window and the fresh receipts it must defer.
+pub(crate) struct FrameWindow {
     anchor: WelcomeClockAnchor,
     mark: SyncTime,
     eligible_through: SyncTime,
     closes_at: ClockInstant,
+    deferred_requests: BTreeSet<RequestId>,
+}
+
+impl FrameWindow {
+    pub(crate) fn new(
+        anchor: WelcomeClockAnchor,
+        mark: SyncTime,
+        eligible_through: SyncTime,
+        deferred_requests: BTreeSet<RequestId>,
+    ) -> Self {
+        Self {
+            anchor,
+            mark,
+            eligible_through,
+            closes_at: send_fence_for_mark(anchor, mark),
+            deferred_requests,
+        }
+    }
 }
 
 /// One custody task creates a dispatcher that serializes claims and settles only its current claim.
@@ -67,8 +146,8 @@ struct FrameWindow {
 pub struct OutboxDispatcher {
     in_flight: Option<ClaimedWriteBatch>,
     settling: LocalSettlements,
-    attempted_mark: Option<SyncTime>,
-    attempted_requests: BTreeSet<RequestId>,
+    selection_mark: Option<SyncTime>,
+    possibly_sent_on_mark: BTreeSet<RequestId>,
 }
 
 impl OutboxDispatcher {
@@ -91,7 +170,13 @@ impl OutboxDispatcher {
             .writes
             .iter()
             .filter(|write| !batch.ended_at_cutoff.contains(&write.request))
-            .map(|write| work.write_deadline(write.sent_at))
+            .map(|write| {
+                batch
+                    .cutoff_retries
+                    .get(&write.request)
+                    .copied()
+                    .unwrap_or_else(|| work.write_deadline(write.sent_at))
+            })
             .min()
     }
 
@@ -103,32 +188,33 @@ impl OutboxDispatcher {
         let Some(batch) = self.in_flight.as_mut() else {
             return Ok(());
         };
-        let due: BTreeSet<_> = batch
+        let fresh: BTreeSet<_> = batch
             .writes
             .iter()
             .filter(|write| {
                 !batch.ended_at_cutoff.contains(&write.request)
+                    && !batch.cutoff_retries.contains_key(&write.request)
                     && !work.before_elapsed_fence(work.write_deadline(write.sent_at))
             })
             .map(|write| write.request.clone())
             .collect();
-        if due.is_empty() {
-            return Ok(());
-        }
-        let ended = work.end_selected_claims(&due).await?;
-        batch
-            .ended_at_cutoff
-            .extend(ended.iter().map(|write| write.request_id.clone()));
-        report.ended.extend(ended);
-        for write in &batch.writes {
-            if due.contains(&write.request) && !batch.ended_at_cutoff.contains(&write.request) {
-                if let Some(ending) = LocalSettlements::recover_cutoff(work, write).await? {
-                    report.ended.push(ending);
-                }
-                batch.ended_at_cutoff.insert(write.request.clone());
+        let retries: Vec<_> = batch
+            .cutoff_retries
+            .iter()
+            .filter(|(_, retry)| !work.before_elapsed_fence(**retry))
+            .map(|(request, _)| request.clone())
+            .collect();
+        let mut fault = batch.end_selected_due(work, &fresh, report).await.err();
+        // A previously failed cutoff cannot stop a fresh cutoff or another retry.
+        for request in retries {
+            if let Err(error) = batch
+                .end_selected_due(work, &BTreeSet::from([request]), report)
+                .await
+            {
+                keep_cutoff_fault(&mut fault, error, report);
             }
         }
-        Ok(())
+        fault.map_or(Ok(()), Err)
     }
 
     pub(crate) async fn retry_local_settlements(&mut self, work: &mut OutboxWork) -> FlushReport {
@@ -173,7 +259,12 @@ impl OutboxDispatcher {
     ) -> Result<PreparedFlush, BatchDispatchError> {
         let mut report = FlushReport::default();
         match self
-            .prepare_due_through(work, connection, anchor, mark, mark, &mut report)
+            .prepare_due_through(
+                work,
+                connection,
+                FrameWindow::new(anchor, mark, mark, BTreeSet::new()),
+                &mut report,
+            )
             .await
         {
             Ok(batch) => Ok(PreparedFlush { batch, report }),
@@ -189,28 +280,21 @@ impl OutboxDispatcher {
         &mut self,
         work: &mut OutboxWork,
         connection: ConnectionAttempt,
-        anchor: WelcomeClockAnchor,
-        mark: SyncTime,
-        eligible_through: SyncTime,
+        window: FrameWindow,
         report: &mut FlushReport,
     ) -> Result<Option<PreparedWriteBatch>, BatchDispatchError> {
         if self.in_flight.is_some() {
             return Ok(None);
         }
         self.settling.retry(work, report).await;
-        if self.attempted_mark != Some(mark) {
-            self.attempted_mark = Some(mark);
-            self.attempted_requests.clear();
+        if self.selection_mark != Some(window.mark) {
+            self.selection_mark = Some(window.mark);
+            self.possibly_sent_on_mark.clear();
         }
         // Retrying a returned member in the same mark would starve later writes.
         let mut excluded = self.protected_request_ids();
-        excluded.extend(self.attempted_requests.iter().cloned());
-        let window = FrameWindow {
-            anchor,
-            mark,
-            eligible_through,
-            closes_at: send_fence_for_mark(anchor, mark),
-        };
+        excluded.extend(self.possibly_sent_on_mark.iter().cloned());
+        excluded.extend(window.deferred_requests.iter().cloned());
         loop {
             match self
                 .claim_frame(work, &connection, &window, &excluded, report)
@@ -290,12 +374,11 @@ impl OutboxDispatcher {
                     },
                     token: fresh_correlation(now_ms),
                 };
-                self.attempted_requests
-                    .extend(selected.iter().map(|write| write.request.clone()));
                 self.in_flight = Some(ClaimedWriteBatch {
                     ticket: ticket.clone(),
                     writes: selected,
                     ended_at_cutoff: BTreeSet::new(),
+                    cutoff_retries: BTreeMap::new(),
                 });
                 ClaimFrame::Prepared(ticket)
             }
@@ -391,6 +474,8 @@ impl OutboxDispatcher {
                 collect_due_writes(work, &mut report).await;
             }
             WriteBatchDisposition::MemberResults(results) => {
+                self.possibly_sent_on_mark
+                    .extend(active.writes.iter().map(|write| write.request.clone()));
                 let requests = submitted.command.requests.requests();
                 let members = results.members();
                 if requests.len() != members.len()

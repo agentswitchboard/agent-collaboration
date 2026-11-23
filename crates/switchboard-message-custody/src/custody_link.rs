@@ -1,9 +1,8 @@
 //! Custody's user of the admitted message lane. The driver owns the socket.
 
 use central_link_client::{
-    AdmittedConnection, CorrelatedReceiptResults, CorrelatedStatusReply, ImmediateRequestCommand,
-    LinkLaneDisposition, ReadyLinkLane, RequestStatusCommand, UntouchedCommand, WelcomeClockAnchor,
-    WriteBatchDisposition,
+    AdmittedConnection, CorrelatedReceiptResults, ImmediateRequestCommand, LinkLaneDisposition,
+    ReadyLinkLane, RequestStatusCommand, WelcomeClockAnchor,
 };
 use central_link_protocol::{FreshCorrelationId, RequestStatusQuery};
 use router_clock::{ClockInstant, RuntimeClock};
@@ -30,19 +29,19 @@ use crate::{
         submit_to_outbox,
     },
     flush_clock::{FlushJitter, shared_time_at, wake_for_mark},
-    flush_marks::mark_in_window,
     offer_taker::{SharedRecipientInbox, TakenEvent, admitted_for, take_event},
-    orphan_recovery::{OrphanProbe, OrphanTurn, prepare_orphan_turn, settle_orphan_probe},
-    outbox_dispatch::{
-        AppliedSenderNotice, BatchDispatchError, FlushReport, OutboxDispatcher, PreparedWriteBatch,
-    },
+    outbox_dispatch::{AppliedSenderNotice, BatchDispatchError, FlushReport, OutboxDispatcher},
     outbox_flush::{
-        FlushEffect, FlushEvent, FlushTransitionError, OutboxFlushState, advance_schedule,
+        FlushEffect, FlushEvent, FlushTransitionError, OutboxFlushState, RebasedMarks,
+        advance_schedule,
     },
-    outbox_work::{OutboxWork, OutboxWorkError},
+    outbox_work::{OutboxWork, OutboxWorkError, WaitingCutoffSchedule},
     receipt_delivery::{ReceiptDeliveryError, ReceiptFrame, ReceiptFrameOutcome},
     recipient_inbox::{InboxCustodyError, RecipientInbox},
 };
+
+#[path = "custody_outbox.rs"]
+mod custody_outbox;
 
 const IMMEDIATE_COMMAND_WINDOW: Duration = Duration::from_secs(30);
 
@@ -101,9 +100,11 @@ pub struct CustodyLink {
     outbox: OutboxWork,
     pub(crate) inbox: SharedRecipientInbox,
     dispatcher: OutboxDispatcher,
+    waiting_cutoffs: WaitingCutoffSchedule,
     schedule: OutboxFlushState,
+    write_retry_at: Option<ClockInstant>,
     last_clock_anchor: Option<WelcomeClockAnchor>,
-    rebased_due_through: Option<SyncTime>,
+    rebased_marks: Option<RebasedMarks>,
     drain_connection: Option<central_link_client::ConnectionAttempt>,
     startup_orphan_claims: Option<BTreeSet<RequestId>>,
 }
@@ -124,9 +125,11 @@ impl CustodyLink {
             outbox,
             inbox: Arc::new(tokio::sync::Mutex::new(inbox)),
             dispatcher: OutboxDispatcher::default(),
+            waiting_cutoffs: WaitingCutoffSchedule::default(),
             schedule: OutboxFlushState::default(),
+            write_retry_at: None,
             last_clock_anchor: None,
-            rebased_due_through: None,
+            rebased_marks: None,
             drain_connection: None,
             startup_orphan_claims: None,
         }
@@ -166,8 +169,13 @@ impl CustodyLink {
                     None => self.prior_shared_time(observed_at),
                 };
                 let mark = self.schedule.receipt_mark(now);
-                let submitted =
-                    submit_to_outbox(&mut self.outbox, caller, request, payload, mark).await;
+                let (submitted, new_request) =
+                    submit_to_outbox(&mut self.outbox, caller, request, payload, mark)
+                        .await
+                        .into_reply();
+                if let (Some(rebased), Some(request)) = (&mut self.rebased_marks, new_request) {
+                    rebased.remember_admission(request, mark);
+                }
                 if let Submission::InOutbox(receipt) = &submitted {
                     // Stored always accepts an event; the next wake also reads the durable row.
                     let _ = self.apply_flush_event(FlushEvent::Stored {
@@ -432,360 +440,6 @@ impl CustodyLink {
                 _ => Err(error),
             },
         }
-    }
-
-    /// A wait for the shared minute selected by the scheduler. `None` means the lane is unavailable or idle.
-    pub async fn refresh_flush_wake(&mut self) -> Result<Option<ClockInstant>, CustodyLinkError> {
-        let Some(admitted) = self.admitted_connection() else {
-            self.observe_unavailable()?;
-            return Ok(None);
-        };
-        self.fence_mark_drain(&admitted);
-        let observed_at = self.clock.monotonic_now();
-        let now = self.observe_shared_clock(admitted.clock_anchor, observed_at);
-        let earliest_due = self.earliest_eligible_mark(now).await?;
-        self.apply_flush_event(FlushEvent::LinkConnected { now, earliest_due })?;
-        Ok(self.schedule.armed_mark().map(|mark| {
-            wake_for_mark(admitted.clock_anchor, mark, self.jitter.jitter_millis(mark))
-        }))
-    }
-
-    /// The independent deadline for waiting writes and the members still held by the driver.
-    pub async fn next_write_deadline(&mut self) -> Result<Option<ClockInstant>, CustodyLinkError> {
-        let waiting = self.outbox.earliest_deadline().await?;
-        Ok(waiting
-            .into_iter()
-            .chain(self.active_write_deadline())
-            .min())
-    }
-
-    pub(crate) fn active_write_deadline(&self) -> Option<ClockInstant> {
-        self.dispatcher.active_deadline(&self.outbox)
-    }
-
-    /// Wait on the injected clock for one scheduled flush, if there is work on an admitted link.
-    pub async fn flush_next(&mut self) -> Result<Option<FlushReport>, CustodyLinkError> {
-        let Some(wake) = self.refresh_flush_wake().await? else {
-            return Ok(None);
-        };
-        self.clock.sleep_until(wake).await;
-        Ok(Some(self.flush_writes().await?))
-    }
-
-    /// Drive an orphan recovery pass without the command worker, using the same scoped status path.
-    pub async fn recover_outbox(&mut self) -> Result<FlushReport, CustodyLinkError> {
-        let mut report = FlushReport::default();
-        let result = self.recover_orphans_into(&mut report).await;
-        finish_flush(report, result)
-    }
-
-    async fn recover_orphans_into(
-        &mut self,
-        report: &mut FlushReport,
-    ) -> Result<(), CustodyLinkError> {
-        let mut checked = BTreeSet::new();
-        loop {
-            let turn = self.prepare_recovery_turn(true, &checked).await?;
-            report.append(turn.report);
-            let Some(probe) = turn.probe else {
-                return Ok(());
-            };
-            checked.insert(probe.claim.key.request_id.clone());
-            let result = self.lane.request_status(probe.command.clone()).await;
-            report.append(self.settle_recovery_probe(probe, result, false).await);
-        }
-    }
-
-    pub(crate) async fn prepare_recovery_turn(
-        &mut self,
-        can_probe: bool,
-        deferred: &BTreeSet<RequestId>,
-    ) -> Result<OrphanTurn, OutboxWorkError> {
-        let ready = can_probe.then(|| self.admitted_connection()).flatten();
-        prepare_orphan_turn(
-            &mut self.outbox,
-            &mut self.dispatcher,
-            &mut self.startup_orphan_claims,
-            ready,
-            self.clock.monotonic_now(),
-            deferred,
-        )
-        .await
-    }
-
-    pub(crate) fn has_startup_claim_inventory(&self) -> bool {
-        self.startup_orphan_claims.is_some()
-    }
-
-    pub(crate) async fn settle_recovery_probe(
-        &mut self,
-        probe: OrphanProbe,
-        result: LinkLaneDisposition<CorrelatedStatusReply>,
-        cutoff_reported: bool,
-    ) -> FlushReport {
-        settle_orphan_probe(
-            &mut self.outbox,
-            &mut self.dispatcher,
-            probe,
-            result,
-            cutoff_reported,
-        )
-        .await
-    }
-
-    pub(crate) fn owes_local_settlement(&self) -> bool {
-        self.dispatcher.owes_local_settlement()
-    }
-
-    pub(crate) async fn retry_local_settlement(&mut self) -> FlushReport {
-        self.dispatcher
-            .retry_local_settlements(&mut self.outbox)
-            .await
-    }
-
-    /// Run the local deadline wake and return the exact typed endings for the caller to report.
-    pub async fn end_due_writes(&mut self) -> Result<FlushReport, CustodyLinkError> {
-        let mut report = FlushReport::default();
-        let result = self.end_due_writes_into(&mut report).await;
-        finish_flush(report, result)
-    }
-
-    async fn end_due_writes_into(
-        &mut self,
-        report: &mut FlushReport,
-    ) -> Result<(), CustodyLinkError> {
-        self.dispatcher
-            .end_active_due(&mut self.outbox, report)
-            .await?;
-        report.ended.extend(self.outbox.end_due_writes().await?);
-        Ok(())
-    }
-
-    /// Drain the current minute while it remains open, settling one batch at a time.
-    pub async fn flush_writes(&mut self) -> Result<FlushReport, CustodyLinkError> {
-        let mut report = FlushReport::default();
-        let result = self.flush_writes_into(&mut report).await;
-        finish_flush(report, result)
-    }
-
-    async fn flush_writes_into(
-        &mut self,
-        report: &mut FlushReport,
-    ) -> Result<(), CustodyLinkError> {
-        if self.owes_local_settlement() {
-            report.append(self.retry_local_settlement().await);
-        }
-        self.recover_orphans_into(report).await?;
-        let lane = self.lane.clone();
-        let clock = self.clock.clone();
-        while let Some(batch) = self.prepare_write_turn(report).await? {
-            let current_mark = self.schedule.draining_mark();
-            let mut answering = lane.submit_write_batch(batch.command());
-            let mut retry_cutoff_at = None;
-            let mut cutoff_result = Ok(());
-            let disposition = loop {
-                let deadline = retry_cutoff_at.or_else(|| self.active_write_deadline());
-                tokio::select! {
-                    biased;
-                    outcome = &mut answering => break outcome,
-                    () = async {
-                        if let Some(deadline) = deadline {
-                            clock.sleep_until(deadline).await;
-                        } else {
-                            std::future::pending::<()>().await;
-                        }
-                    } => {
-                        cutoff_result = self.end_due_writes_into(report).await;
-                        retry_cutoff_at = cutoff_result.is_err().then(|| self.local_retry_mark());
-                    }
-                }
-            };
-            self.settle_write_turn(batch, disposition, report).await?;
-            cutoff_result?;
-            if !self.admitted_connection().is_some_and(|admitted| {
-                current_mark == self.schedule.draining_mark()
-                    && current_mark
-                        == mark_in_window(shared_time_at(
-                            admitted.clock_anchor,
-                            clock.monotonic_now(),
-                        ))
-            }) {
-                break;
-            }
-        }
-        Ok(())
-    }
-
-    pub(crate) async fn prepare_write_turn(
-        &mut self,
-        report: &mut FlushReport,
-    ) -> Result<Option<PreparedWriteBatch>, CustodyLinkError> {
-        let Some(admitted) = self.admitted_connection() else {
-            self.observe_unavailable()?;
-            return Ok(None);
-        };
-        self.fence_mark_drain(&admitted);
-        let now = self.observe_shared_clock(admitted.clock_anchor, self.clock.monotonic_now());
-        let earliest_due = self.earliest_eligible_mark(now).await?;
-        self.apply_flush_event(FlushEvent::LinkConnected { now, earliest_due })?;
-        let Some(mark) = self.apply_flush_event(FlushEvent::Tick { now, earliest_due })? else {
-            return Ok(None);
-        };
-        self.drain_connection = Some(admitted.connection.clone());
-
-        let eligible_through = self.rebased_due_through.map_or(mark, |old| old.max(mark));
-        let prepared = self
-            .dispatcher
-            .prepare_due_through(
-                &mut self.outbox,
-                admitted.connection.clone(),
-                admitted.clock_anchor,
-                mark,
-                eligible_through,
-                report,
-            )
-            .await;
-        let prepared = match prepared {
-            Ok(prepared) => prepared,
-            Err(error) => {
-                self.apply_flush_event(FlushEvent::BatchEnded {
-                    earliest_due,
-                    continue_mark: false,
-                })?;
-                return Err(error.into());
-            }
-        };
-        let Some(batch) = prepared else {
-            self.release_flush_slot(report, false).await?;
-            return Ok(None);
-        };
-        let cause = if self.admitted_connection().as_ref() != Some(&admitted) {
-            Some(UntouchedCommand::ConnectionUnavailable)
-        } else if !self
-            .outbox
-            .before_elapsed_fence(batch.command().send_before)
-        {
-            Some(UntouchedCommand::SendWindowElapsed)
-        } else {
-            None
-        };
-        if let Some(cause) = cause {
-            if let Some(settled) = self
-                .dispatcher
-                .return_unsubmitted(&mut self.outbox, batch, cause)
-                .await
-            {
-                report.append(settled);
-                self.release_flush_slot(report, cause == UntouchedCommand::SendWindowElapsed)
-                    .await?;
-            }
-            return Ok(None);
-        }
-        Ok(Some(batch))
-    }
-
-    pub(crate) async fn settle_write_turn(
-        &mut self,
-        batch: PreparedWriteBatch,
-        disposition: WriteBatchDisposition,
-        report: &mut FlushReport,
-    ) -> Result<(), CustodyLinkError> {
-        let connection = batch.connection().clone();
-        let Some(settled) = self
-            .dispatcher
-            .settle_batch(&mut self.outbox, batch, disposition)
-            .await
-        else {
-            return Ok(());
-        };
-        report.append(settled);
-        let continue_mark = self
-            .admitted_connection()
-            .is_some_and(|current| current.connection == connection);
-        self.release_flush_slot(report, continue_mark).await?;
-        Ok(())
-    }
-
-    fn fence_mark_drain(&mut self, admitted: &AdmittedConnection) {
-        if self
-            .drain_connection
-            .as_ref()
-            .is_some_and(|connection| connection != &admitted.connection)
-        {
-            self.schedule.stop_draining_mark();
-            self.drain_connection = None;
-        }
-    }
-
-    fn observe_unavailable(&mut self) -> Result<(), FlushTransitionError> {
-        if !self.schedule.batch_in_flight() {
-            self.apply_flush_event(FlushEvent::LinkLost)?;
-        }
-        Ok(())
-    }
-
-    fn prior_shared_time(&self, observed_at: ClockInstant) -> SyncTime {
-        self.last_clock_anchor.map_or_else(
-            || SyncTime::from_unix_millis(self.outbox.local_time_at(observed_at)),
-            |anchor| shared_time_at(anchor, observed_at),
-        )
-    }
-
-    /// When Welcome moves backwards, old receipt marks through the previous
-    /// grid's first eligible mark are due on the next unused open window of
-    /// the new grid. Keep their original durable receipts and deadlines.
-    /// Already-used windows remain consumed for this worker, even if used on
-    /// an earlier connection. If none can be used in time, normal expiry applies.
-    fn observe_shared_clock(
-        &mut self,
-        anchor: WelcomeClockAnchor,
-        observed_at: ClockInstant,
-    ) -> SyncTime {
-        let actual = shared_time_at(anchor, observed_at);
-        if self.last_clock_anchor != Some(anchor) {
-            let previous = self.prior_shared_time(observed_at);
-            if actual < previous {
-                let old_eligible = self.schedule.receipt_mark(previous);
-                self.rebased_due_through = Some(
-                    self.rebased_due_through
-                        .map_or(old_eligible, |older| older.max(old_eligible)),
-                );
-            }
-            self.last_clock_anchor = Some(anchor);
-        }
-        actual
-    }
-
-    async fn earliest_eligible_mark(
-        &mut self,
-        now: SyncTime,
-    ) -> Result<Option<SyncTime>, OutboxWorkError> {
-        let due = self.outbox.earliest_waiting_mark().await?;
-        Ok(due.map(|mark| {
-            if self.rebased_due_through.is_some_and(|old| mark <= old) {
-                return mark.min(self.schedule.receipt_mark(now));
-            }
-            mark
-        }))
-    }
-
-    async fn release_flush_slot(
-        &mut self,
-        report: &mut FlushReport,
-        continue_mark: bool,
-    ) -> Result<(), FlushTransitionError> {
-        let earliest_due = self.outbox.earliest_waiting_mark().await;
-        self.apply_flush_event(FlushEvent::BatchEnded {
-            earliest_due: earliest_due.as_ref().ok().copied().flatten(),
-            continue_mark: continue_mark && earliest_due.as_ref().is_ok_and(Option::is_some),
-        })?;
-        if let Err(error) = earliest_due {
-            report.issues.push(BatchDispatchError::Work(error));
-        }
-        if let Err(error) = self.outbox.prune_ended_writes().await {
-            report.issues.push(BatchDispatchError::Work(error));
-        }
-        Ok(())
     }
 
     /// Submit a frame of durable inbox receipts for the current connection.

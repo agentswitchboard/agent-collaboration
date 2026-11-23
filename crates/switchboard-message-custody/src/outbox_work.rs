@@ -43,6 +43,74 @@ pub struct OutboxWork {
     operator_events: Vec<CustodyOperatorEvent>,
 }
 
+/// Custody tracks waiting cutoff reads and failed writes separately from the live frame's cutoffs.
+#[derive(Default)]
+pub(crate) struct WaitingCutoffSchedule {
+    next_deadline: Option<ClockInstant>,
+    read_retry_at: Option<ClockInstant>,
+    failed_cutoff: Option<FailedWaitingCutoff>,
+}
+
+struct FailedWaitingCutoff {
+    attempted_through: ClockInstant,
+    retry_at: ClockInstant,
+}
+
+impl WaitingCutoffSchedule {
+    pub(crate) async fn refresh(&mut self, work: &mut OutboxWork) -> Option<OutboxWorkError> {
+        if self
+            .read_retry_at
+            .is_some_and(|retry| work.before_elapsed_fence(retry))
+        {
+            return None;
+        }
+        match work.earliest_deadline().await {
+            Ok(deadline) => {
+                self.next_deadline = deadline;
+                self.read_retry_at = None;
+                None
+            }
+            Err(error) => {
+                self.read_retry_at = Some(work.next_cutoff_retry());
+                Some(error)
+            }
+        }
+    }
+
+    pub(crate) fn next_wake(&self) -> Option<ClockInstant> {
+        let due = self.next_deadline.filter(|deadline| {
+            self.failed_cutoff
+                .as_ref()
+                .is_none_or(|failed| *deadline > failed.attempted_through)
+        });
+        due.into_iter()
+            .chain(self.read_retry_at)
+            .chain(self.failed_cutoff.as_ref().map(|failed| failed.retry_at))
+            .min()
+    }
+
+    pub(crate) async fn end_due(
+        &mut self,
+        work: &mut OutboxWork,
+    ) -> Result<Vec<EndedWrite>, OutboxWorkError> {
+        let now = work.elapsed_now();
+        if self.failed_cutoff.as_ref().is_some_and(|failed| {
+            now < failed.retry_at
+                && self
+                    .next_deadline
+                    .is_none_or(|deadline| deadline <= failed.attempted_through || now < deadline)
+        }) {
+            return Ok(Vec::new());
+        }
+        let result = work.end_due_writes().await;
+        self.failed_cutoff = result.as_ref().err().map(|_| FailedWaitingCutoff {
+            attempted_through: now,
+            retry_at: work.next_cutoff_retry(),
+        });
+        result
+    }
+}
+
 // The local durable timestamps and the server's minute grid are separate
 // projections of the same elapsed clock. The local projection survives a
 // wall-clock jump within this process and samples UTC again on reopen.
@@ -102,7 +170,17 @@ impl OutboxWork {
     }
 
     pub(crate) fn before_elapsed_fence(&self, fence: ClockInstant) -> bool {
-        self.clock.monotonic_now() < fence
+        self.elapsed_now() < fence
+    }
+
+    pub(crate) fn elapsed_now(&self) -> ClockInstant {
+        self.clock.monotonic_now()
+    }
+
+    pub(crate) fn next_cutoff_retry(&self) -> ClockInstant {
+        // A waiting scan exposes only its earliest cutoff. A failed sweep can
+        // still run on the next representable store deadline for later rows.
+        self.local_wake_at(self.local_now_ms().saturating_add(1))
     }
 
     /// Read the first waiting receipt mark for the scheduler, including unanswered replays.

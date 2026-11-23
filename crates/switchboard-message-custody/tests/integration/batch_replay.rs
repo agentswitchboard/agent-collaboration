@@ -110,6 +110,15 @@ pub(super) struct ScriptedStatusGate {
 pub(super) struct ScriptedBatchGate {
     pub(super) entered: Notify,
     pub(super) release: Notify,
+    poll_requested: Notify,
+    poll_observed: Notify,
+}
+
+impl ScriptedBatchGate {
+    pub(super) async fn observe_pending_poll(&self) {
+        self.poll_requested.notify_one();
+        self.poll_observed.notified().await;
+    }
 }
 
 pub(super) struct ScriptedBatchLane {
@@ -311,7 +320,12 @@ impl ReadyLinkLane for ScriptedBatchLane {
         Box::pin(async move {
             if let Some(gate) = gate {
                 gate.entered.notify_one();
-                gate.release.notified().await;
+                loop {
+                    tokio::select! {
+                        () = gate.release.notified() => break,
+                        () = gate.poll_requested.notified() => gate.poll_observed.notify_one(),
+                    }
+                }
             }
             disposition
         })

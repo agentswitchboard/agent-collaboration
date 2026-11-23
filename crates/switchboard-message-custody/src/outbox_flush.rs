@@ -8,7 +8,34 @@
 //! retries from the store. A settled frame can continue the same open mark.
 use crate::flush_marks::{earliest_open_mark, mark_in_window, next_mark_after};
 use runtime_primitives::SyncTime;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+use workspace_ids::RequestId;
+
+/// Custody remembers which new receipts must be honored during a backward Welcome rebase.
+pub(crate) struct RebasedMarks {
+    pub(crate) due_through: SyncTime,
+    fresh_receipts: BTreeMap<RequestId, SyncTime>,
+}
+
+impl RebasedMarks {
+    pub(crate) fn new(due_through: SyncTime) -> Self {
+        Self {
+            due_through,
+            fresh_receipts: BTreeMap::new(),
+        }
+    }
+
+    pub(crate) fn remember_admission(&mut self, request: RequestId, mark: SyncTime) {
+        if mark <= self.due_through {
+            self.fresh_receipts.entry(request).or_insert(mark);
+        }
+    }
+
+    pub(crate) fn defer_fresh_receipts(&mut self, mark: SyncTime) -> BTreeSet<RequestId> {
+        self.fresh_receipts.retain(|_, receipt| *receipt > mark);
+        self.fresh_receipts.keys().cloned().collect()
+    }
+}
 
 /// Minute-flush state advanced by custody from link and store observations.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]

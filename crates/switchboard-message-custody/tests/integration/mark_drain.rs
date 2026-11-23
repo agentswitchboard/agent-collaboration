@@ -2,6 +2,7 @@
 
 #![expect(
     clippy::panic,
+    clippy::unwrap_used,
     reason = "A malformed fixture or missing result fails the behavior it was set up to prove."
 )]
 
@@ -19,10 +20,15 @@ use switchboard_message_custody::{
 };
 use tokio::sync::{mpsc, watch};
 use workspace_ids::RequestId;
+use workspace_model::{Caller, Timestamp};
 
 use super::{
     batch_limits::{limits_fixture, limits_fixture_with_clock},
-    batch_replay::{ScriptedBatch, ScriptedBatchLane, ScriptedCommand, ScriptedMemberFate},
+    batch_replay::{
+        ScriptedBatch, ScriptedBatchLane, ScriptedCommand, ScriptedMemberFate, new_admission,
+    },
+    faulted_overlay::FaultCampaign,
+    faulty_outbox::{FaultSite, FaultStage},
     outbox_timing::{manual_clock, open_outbox, thread_post},
     worker_orphans::{flush_event, scoped_query, start_worker},
 };
@@ -74,6 +80,13 @@ impl RuntimeClock for NextMarkClock {
 }
 
 impl NextMarkClock {
+    fn observing_next_mark() -> Arc<Self> {
+        Arc::new(Self {
+            source: manual_clock(MARK_MS - 20_000),
+            pending_wakes: watch::channel(0).0,
+        })
+    }
+
     async fn suffix_is_deferred(&self) {
         // The receipt wait is always armed for this minute. A second live wait
         // proves the worker scheduled another outbox frame on that later mark.
@@ -88,10 +101,7 @@ async fn observed_mark_fixture() -> (
     Arc<ScriptedBatchLane>,
     Arc<NextMarkClock>,
 ) {
-    let clock = Arc::new(NextMarkClock {
-        source: manual_clock(MARK_MS - 20_000),
-        pending_wakes: watch::channel(0).0,
-    });
+    let clock = NextMarkClock::observing_next_mark();
     let (root, custody, lane) =
         limits_fixture_with_clock(clock.source.clone(), clock.clone()).await;
     (root, custody, lane, clock)
@@ -108,7 +118,7 @@ async fn flush_or_deferral(
     }
 }
 
-async fn queue_posts(custody: &mut CustodyLink, count: u16) -> Vec<RequestId> {
+pub(super) async fn queue_posts(custody: &mut CustodyLink, count: u16) -> Vec<RequestId> {
     let mut ids = Vec::new();
     for seed in 1..=count {
         let post = thread_post(seed);
@@ -254,6 +264,220 @@ async fn a_lost_member_waits_for_the_next_mark_while_later_frames_drain() {
 }
 
 #[tokio::test]
+async fn a_transient_untouched_intake_refusal_leaves_the_write_eligible_on_its_mark() {
+    check_untouched_intake(1).await;
+}
+
+pub(super) async fn check_untouched_intake(count: u16) {
+    let (_root, mut custody, peer, clock) = observed_mark_fixture().await;
+    let queued = queue_posts(&mut custody, count).await;
+    peer.decide_next_batch(Some(ScriptedBatch::Untouched));
+    let (_calls, stop, mut events, running) = start_worker(custody);
+    clock
+        .source
+        .not_due_check_now(ClockInstant::ZERO.after(FIRST_MARK))
+        .await;
+    clock.source.advance(FIRST_MARK).unwrap();
+    let retry_delay = Duration::from_millis(10);
+    let retry = ClockInstant::ZERO.after(FIRST_MARK + retry_delay);
+    tokio::select! {
+        () = clock.source.not_due_check_now(retry) => {}
+        () = clock.suffix_is_deferred() => panic!("an untouched write was deferred to a later mark"),
+    }
+    assert!(peer.batch_commands().is_empty());
+    clock.source.advance(retry_delay).unwrap();
+    let retried = flush_or_deferral(&mut events, &clock).await;
+    assert!(
+        retried.is_some(),
+        "the proven-untouched write must remain eligible in the mark"
+    );
+    assert_eq!(answer_ids(retried.unwrap()), queued);
+    assert_eq!(peer.command_instants(), [retry]);
+    stop.send_replace(true);
+    running.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_transient_waiting_read_fault_keeps_the_old_suffix_owed_inside_the_mark() {
+    check_waiting_read_fault(65).await;
+}
+
+pub(super) async fn check_waiting_read_fault(count: u16) {
+    let clock = NextMarkClock::observing_next_mark();
+    let mut campaign = FaultCampaign::start_with_clock(clock.source.clone(), clock.clone()).await;
+    let queued = queue_posts(&mut campaign.custody, count).await;
+    let (prefix, suffix) = queued.split_at_checked(64).unwrap();
+    let gate = campaign.peer.hold_next_batch();
+    let (_calls, stop, mut events, running) = start_worker(campaign.custody);
+    clock
+        .source
+        .not_due_check_now(ClockInstant::ZERO.after(FIRST_MARK))
+        .await;
+    clock.source.advance(FIRST_MARK).unwrap();
+    gate.entered.notified().await;
+    clock
+        .source
+        .not_due_check_now(ClockInstant::ZERO.after(SECOND_MARK))
+        .await;
+    campaign
+        .faults
+        .arm(FaultSite::EarliestWaiting, FaultStage::BeforeCall);
+    gate.release.notify_one();
+    let report = flush_event(&mut events, "the first frame and its failed residual read").await;
+    assert_eq!(report.issues.len(), 1);
+    assert_eq!(
+        report
+            .answered
+            .into_iter()
+            .map(|answer| answer.request)
+            .collect::<Vec<_>>(),
+        prefix
+    );
+
+    let retry_delay = Duration::from_millis(10);
+    let retry = ClockInstant::ZERO.after(FIRST_MARK + retry_delay);
+    tokio::select! {
+        () = clock.source.not_due_check_now(retry) => {}
+        () = clock.suffix_is_deferred() => panic!("the read fault consumed the rest of the open mark"),
+    }
+    clock.source.advance(retry_delay).unwrap();
+    let continued = flush_or_deferral(&mut events, &clock).await;
+    assert!(
+        continued.is_some(),
+        "an unknown read must leave the original mark owed"
+    );
+    assert_eq!(answer_ids(continued.unwrap()), suffix);
+    assert_eq!(
+        campaign.peer.command_instants(),
+        [ClockInstant::ZERO.after(FIRST_MARK), retry]
+    );
+    stop.send_replace(true);
+    running.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_claim_returning_after_the_mark_close_never_reaches_the_lane() {
+    check_closed_claim(0).await;
+}
+
+pub(super) async fn check_closed_claim(after_close_ms: u64) {
+    let clock = NextMarkClock::observing_next_mark();
+    let mut campaign = FaultCampaign::start_with_clock(clock.source.clone(), clock.clone()).await;
+    let queued = queue_posts(&mut campaign.custody, 1).await;
+    let stored_claim = campaign.faults.hold_next_claim_commit();
+    let mut store = open_outbox(&campaign.root.path().join("machine_local.sqlite")).await;
+    let (calls, stop, mut events, running) = start_worker(campaign.custody);
+    clock
+        .source
+        .not_due_check_now(ClockInstant::ZERO.after(FIRST_MARK))
+        .await;
+    clock.source.advance(FIRST_MARK).unwrap();
+    stored_claim.committed.notified().await;
+    let item = thread_post(1);
+    assert_eq!(
+        store
+            .request_status(&item.caller, &item.request)
+            .await
+            .unwrap(),
+        switchboard_machine_core_store::OutboxRequestStatus::Sent,
+    );
+    assert!(campaign.peer.batch_commands().is_empty());
+    let elapsed_since_mark = Duration::from_secs(3) + Duration::from_millis(after_close_ms);
+    clock.source.advance(elapsed_since_mark).unwrap();
+    stored_claim.release.notify_one();
+    assert!(
+        flush_or_deferral(&mut events, &clock).await.is_none(),
+        "custody must return a claim completed at the closed fence before submitting it"
+    );
+    assert!(campaign.peer.batch_commands().is_empty());
+    assert!(matches!(
+        calls
+            .request_status(item.caller.clone(), scoped_query(&item))
+            .await,
+        CustodyRequestStatus::InOutbox { .. }
+    ));
+
+    clock
+        .source
+        .advance(SECOND_MARK - FIRST_MARK - elapsed_since_mark)
+        .unwrap();
+    let report = flush_event(&mut events, "the returned claim on its next mark").await;
+    assert_eq!(answer_ids(report), queued);
+    assert_eq!(
+        campaign.peer.command_instants(),
+        [ClockInstant::ZERO.after(SECOND_MARK)]
+    );
+    stop.send_replace(true);
+    running.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_write_admitted_during_a_rebased_drain_waits_for_its_own_receipt_mark() {
+    check_rebased_admission(65).await;
+}
+
+pub(super) async fn check_rebased_admission(old_count: u16) {
+    let (_root, mut custody, lane, clock) = observed_mark_fixture().await;
+    let queued_before_welcome = queue_posts(&mut custody, old_count).await;
+    let (prefix, old_suffix) = queued_before_welcome.split_at_checked(64).unwrap();
+    let fresh = thread_post(old_count + 1);
+    let Caller::Session(owner) = &fresh.caller else {
+        panic!("fixture requires a session caller");
+    };
+    let mut backwards = new_admission(owner.machine_id.clone(), clock.source.clone());
+    backwards.clock_anchor.central_time =
+        Timestamp::from_timestamp_millis(MARK_MS - 140_000).unwrap();
+    lane.admitted.send_replace(Some(backwards));
+    let gate = lane.hold_next_batch();
+    let (calls, stop, mut events, running) = start_worker(custody);
+    clock
+        .source
+        .not_due_check_now(ClockInstant::ZERO.after(FIRST_MARK))
+        .await;
+    clock.source.advance(FIRST_MARK).unwrap();
+    gate.entered.notified().await;
+
+    let OutboxQueuedWrite::Workspace(post) = fresh.payload else {
+        panic!("fixture requires a thread post");
+    };
+    let submission = calls
+        .submit(fresh.caller, SubmissionPayload::Workspace(post))
+        .await;
+    assert!(matches!(submission, Submission::InOutbox(receipt)
+        if receipt.id == fresh.request && receipt.flush_at == SyncTime::from_unix_millis(MARK_MS - 60_000)));
+
+    gate.release.notify_one();
+    assert_eq!(
+        answer_ids(flush_event(&mut events, "the first rebased frame").await),
+        prefix
+    );
+    let continued = flush_or_deferral(&mut events, &clock).await;
+    assert!(
+        continued.is_some(),
+        "the old suffix is still owed on the open rebased mark"
+    );
+    assert_eq!(
+        answer_ids(continued.unwrap()),
+        old_suffix,
+        "a new receipt cannot be pulled earlier by the previous Welcome's frontier"
+    );
+    assert_eq!(frame_counts(&lane), [64, old_suffix.len()]);
+
+    clock
+        .source
+        .not_due_check_now(ClockInstant::ZERO.after(SECOND_MARK))
+        .await;
+    clock.source.advance(SECOND_MARK - FIRST_MARK).unwrap();
+    assert_eq!(
+        answer_ids(flush_event(&mut events, "the new receipt's own mark").await),
+        [fresh.request]
+    );
+    assert_eq!(frame_counts(&lane), [64, old_suffix.len(), 1]);
+    stop.send_replace(true);
+    running.await.unwrap();
+}
+
+#[tokio::test]
 async fn a_near_cutoff_orphan_rejoins_the_waiting_writes_before_three_frames_drain() {
     let (root, mut custody, lane, clock) = limits_fixture().await;
     let orphan = thread_post(130);
@@ -331,6 +555,12 @@ async fn a_driver_held_write_ends_once_at_cutoff_and_a_later_reply_updates_only_
         );
 
         gate.release.notify_one();
+        if untouched {
+            let retry_delay = Duration::from_millis(10);
+            let retry = clock.monotonic_now().after(retry_delay);
+            clock.not_due_check_now(retry).await;
+            clock.advance(retry_delay).unwrap();
+        }
         assert_eq!(
             answer_ids(flush_event(&mut events, "only the later frame's typed answer").await),
             suffix
