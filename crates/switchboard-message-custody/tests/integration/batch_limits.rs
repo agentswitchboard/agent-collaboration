@@ -10,21 +10,24 @@ use central_link_protocol::{DataFrame, FrameDirection, LinkFrame, encode_text};
 use router_clock::{ClockInstant, ManualClock};
 use std::{sync::Arc, time::Duration};
 use switchboard_machine_core_store::{
-    InboxStore, MachineLocalStore, OutboxInsert, OutboxQueuedWrite, OutboxStorage,
-    PendingWriteState,
+    InboxStore, MachineLocalStore, OutboxAccepted, OutboxInsert, OutboxQueuedWrite,
+    OutboxRequestStatus, OutboxStorage, OutboxWriteOutcome, PendingWriteState,
 };
 use switchboard_message_custody::{
     custody_link::{CustodyLink, CustodyLinkObservation},
     custody_operator::CustodyOperatorEvent,
     custody_submission::{Submission, SubmissionPayload, SubmitRefusal},
+    custody_task::{CustodyTaskEvent, custody_task},
     outbox_work::OutboxWork,
     recipient_inbox::RecipientInbox,
 };
+use tokio::sync::{mpsc, watch};
 use workspace_ids::MachineId;
-use workspace_model::{Addressee, PostText, WorkspaceOperation, WorkspaceRequest};
+use workspace_model::{Addressee, ChangePosition, PostText, WorkspaceOperation, WorkspaceRequest};
 
 use super::{
     batch_replay::{KnownRecipient, NoFlushJitter, ScriptedBatchLane, new_admission},
+    custody_task::ObserveTask,
     outbox_timing::{manual_clock, open_outbox, thread_post},
 };
 
@@ -258,4 +261,83 @@ async fn an_offer_consumer_fault_is_visible_on_the_operator_path_only() {
     );
     assert!(custody.refresh_flush_wake().await.unwrap().is_none());
     assert!(lane.take_calls().is_empty());
+}
+
+#[tokio::test]
+async fn a_flush_end_prunes_only_terminal_writes_outside_sixty_days() {
+    let (root, custody, _, clock) = limits_fixture().await;
+    let mut store = open_outbox(&root.path().join("machine_local.sqlite")).await;
+    let retention_boundary = MARK_MS - 60 * 24 * 60 * 60 * 1_000;
+    let mut old = thread_post(100);
+    old.flush_at_ms = retention_boundary - 1;
+    let mut recent = thread_post(101);
+    recent.flush_at_ms = retention_boundary + 1;
+    for write in [&old, &recent] {
+        let ended_at = write.flush_at_ms;
+        assert_eq!(
+            store.insert(write, ended_at).await.unwrap(),
+            OutboxInsert::Stored
+        );
+        let batch = store
+            .claim_next_batch(ended_at, 1, ended_at, ended_at)
+            .await
+            .unwrap();
+        assert!(
+            matches!(batch.healthy.writes.as_slice(), [claimed] if claimed.request == write.request)
+        );
+        let decision = OutboxWriteOutcome::from_accepted(
+            &write.payload,
+            OutboxAccepted::ThreadPost {
+                post_id: "019f0000-0000-7000-8000-000000000081".parse().unwrap(),
+                position: ChangePosition::try_from(1_u64).unwrap(),
+                actors: Vec::new(),
+            },
+        )
+        .unwrap();
+        store
+            .record_outcome(&write.request, &decision, ended_at)
+            .await
+            .unwrap();
+    }
+    let (stop, stopped) = watch::channel(false);
+    let (sender, mut events) = mpsc::unbounded_channel();
+    let (calls, task) = custody_task(custody, stopped, Arc::new(ObserveTask(sender)));
+    let running = tokio::spawn(task);
+    let fresh = thread_post(1);
+    let OutboxQueuedWrite::Workspace(request) = fresh.payload else {
+        panic!("thread post fixture required");
+    };
+    assert!(matches!(
+        calls
+            .submit(fresh.caller, SubmissionPayload::Workspace(request))
+            .await,
+        Submission::InOutbox(_)
+    ));
+    clock
+        .not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(20)))
+        .await;
+    clock.advance(Duration::from_secs(20)).unwrap();
+    loop {
+        if matches!(events.recv().await.unwrap(), CustodyTaskEvent::Flush(report)
+            if matches!(report.answered.as_slice(), [answer] if answer.request == fresh.request))
+        {
+            break;
+        }
+    }
+    stop.send_replace(true);
+    running.await.unwrap();
+    assert_eq!(
+        store
+            .request_status(&old.caller, &old.request)
+            .await
+            .unwrap(),
+        OutboxRequestStatus::NotFound
+    );
+    assert!(matches!(
+        store
+            .request_status(&recent.caller, &recent.request)
+            .await
+            .unwrap(),
+        OutboxRequestStatus::Answered(_)
+    ));
 }

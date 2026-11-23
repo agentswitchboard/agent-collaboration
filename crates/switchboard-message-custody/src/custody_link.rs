@@ -469,6 +469,9 @@ impl CustodyLink {
         if let Err(error) = earliest_due {
             report.issues.push(BatchDispatchError::Work(error));
         }
+        if let Err(error) = self.outbox.prune_ended_writes().await {
+            report.issues.push(BatchDispatchError::Work(error));
+        }
         Ok(())
     }
 

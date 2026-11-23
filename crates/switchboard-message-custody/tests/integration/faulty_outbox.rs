@@ -1,0 +1,243 @@
+//! The PR 307 one-shot store faults, applied through the current outbox port.
+
+#![expect(
+    clippy::unwrap_used,
+    reason = "A poisoned test fault journal invalidates the proof."
+)]
+
+use std::{
+    io,
+    sync::{Arc, Mutex},
+};
+use switchboard_machine_core_store::{
+    ClaimedBatch, EndedWrite, NewOutboxItem, OutboxFuture, OutboxInsert, OutboxRequestKey,
+    OutboxRequestStatus, OutboxStorage, OutboxStoreError, OutboxWriteOutcome, OutgoingWrite,
+    PendingWrite, StoreScan, StoredSenderOutcome,
+};
+use workspace_ids::RequestId;
+use workspace_model::Caller;
+
+/// The campaign chooses which outbox store call to fail.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum FaultSite {
+    Insert,
+    ScopedStatus,
+    EarliestWaiting,
+    SentWithoutAnswer,
+    EndOverdue,
+    RetentionPrune,
+    ClaimBatch,
+    RecordOutcome,
+    ReturnNotTransmitted,
+    ReturnUnanswered,
+}
+
+/// The campaign chooses when the store call loses its answer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum FaultStage {
+    BeforeCall,
+    AfterSuccess,
+}
+
+#[derive(Default)]
+struct FaultJournal {
+    planned: Vec<(FaultSite, FaultStage)>,
+    fired: Vec<(FaultSite, FaultStage)>,
+}
+
+/// The campaign uses a plan to arm and observe faults at the store boundary.
+#[derive(Clone, Default)]
+pub(super) struct StoreFaultPlan(Arc<Mutex<FaultJournal>>);
+
+impl StoreFaultPlan {
+    pub(super) fn arm(&self, site: FaultSite, stage: FaultStage) {
+        self.0.lock().unwrap().planned.push((site, stage));
+    }
+
+    pub(super) fn fired(&self) -> Vec<(FaultSite, FaultStage)> {
+        self.0.lock().unwrap().fired.clone()
+    }
+
+    pub(super) fn is_drained(&self) -> bool {
+        self.0.lock().unwrap().planned.is_empty()
+    }
+
+    fn wrap<'call, ResultType: Send + 'call>(
+        &self,
+        site: FaultSite,
+        operation: OutboxFuture<'call, ResultType>,
+    ) -> OutboxFuture<'call, ResultType> {
+        let plan = self.clone();
+        Box::pin(async move {
+            let stage = {
+                let mut journal = plan.0.lock().unwrap();
+                journal
+                    .planned
+                    .iter()
+                    .position(|(armed, _)| *armed == site)
+                    .map(|index| journal.planned.remove(index).1)
+            };
+            match stage {
+                None => operation.await,
+                Some(stage) => {
+                    // Record after-call faults only after observing success of
+                    // the delegated transaction or read.
+                    if stage == FaultStage::AfterSuccess {
+                        operation.await?;
+                    }
+                    plan.0.lock().unwrap().fired.push((site, stage));
+                    let source = io::Error::other(format!("scripted {site:?} {stage:?}")).into();
+                    if site == FaultSite::Insert && stage == FaultStage::BeforeCall {
+                        Err(OutboxStoreError::InsertNotStarted(source))
+                    } else {
+                        Err(OutboxStoreError::Database(source))
+                    }
+                }
+            }
+        })
+    }
+}
+
+/// The fixture wraps a real store and injects the faults the campaign arms.
+pub(super) struct FaultyOutbox {
+    pub(super) inner: Box<dyn OutboxStorage>,
+    pub(super) plan: StoreFaultPlan,
+}
+
+impl OutboxStorage for FaultyOutbox {
+    fn insert<'call>(
+        &'call mut self,
+        item: &'call NewOutboxItem,
+        now: i64,
+    ) -> OutboxFuture<'call, OutboxInsert> {
+        self.plan
+            .wrap(FaultSite::Insert, self.inner.insert(item, now))
+    }
+
+    fn request_status<'call>(
+        &'call mut self,
+        caller: &'call Caller,
+        request: &'call RequestId,
+    ) -> OutboxFuture<'call, OutboxRequestStatus> {
+        self.inner.request_status(caller, request)
+    }
+
+    fn scoped_request_status<'call>(
+        &'call mut self,
+        caller: &'call Caller,
+        key: &'call OutboxRequestKey,
+    ) -> OutboxFuture<'call, OutboxRequestStatus> {
+        self.plan.wrap(
+            FaultSite::ScopedStatus,
+            self.inner.scoped_request_status(caller, key),
+        )
+    }
+
+    fn pending_for<'call>(
+        &'call mut self,
+        caller: &'call Caller,
+    ) -> OutboxFuture<'call, Vec<PendingWrite>> {
+        self.inner.pending_for(caller)
+    }
+
+    fn outgoing_for<'call>(
+        &'call mut self,
+        caller: &'call Caller,
+        limit: u16,
+    ) -> OutboxFuture<'call, Vec<OutgoingWrite>> {
+        self.inner.outgoing_for(caller, limit)
+    }
+
+    fn delete_ended_before_retention(&mut self, now: i64) -> OutboxFuture<'_, StoreScan<u64>> {
+        self.plan.wrap(
+            FaultSite::RetentionPrune,
+            self.inner.delete_ended_before_retention(now),
+        )
+    }
+
+    fn earliest_waiting(&mut self) -> OutboxFuture<'_, StoreScan<Option<i64>>> {
+        self.plan
+            .wrap(FaultSite::EarliestWaiting, self.inner.earliest_waiting())
+    }
+
+    fn earliest_deadline(&mut self) -> OutboxFuture<'_, StoreScan<Option<i64>>> {
+        self.inner.earliest_deadline()
+    }
+
+    fn claim_next_batch(
+        &mut self,
+        mark_ms: i64,
+        limit: u16,
+        now_ms: i64,
+        required_deadline_after_ms: i64,
+    ) -> OutboxFuture<'_, StoreScan<ClaimedBatch>> {
+        self.plan.wrap(
+            FaultSite::ClaimBatch,
+            self.inner
+                .claim_next_batch(mark_ms, limit, now_ms, required_deadline_after_ms),
+        )
+    }
+
+    fn end_overdue(&mut self, now: i64) -> OutboxFuture<'_, StoreScan<Vec<EndedWrite>>> {
+        self.plan
+            .wrap(FaultSite::EndOverdue, self.inner.end_overdue(now))
+    }
+
+    fn record_sender_delivery<'call>(
+        &'call mut self,
+        caller: &'call Caller,
+        notice: &'call StoredSenderOutcome,
+        now: i64,
+    ) -> OutboxFuture<'call, bool> {
+        self.inner.record_sender_delivery(caller, notice, now)
+    }
+
+    fn sender_outcome<'call>(
+        &'call mut self,
+        caller: &'call Caller,
+        request: &'call RequestId,
+    ) -> OutboxFuture<'call, Option<StoredSenderOutcome>> {
+        self.inner.sender_outcome(caller, request)
+    }
+
+    fn sent_without_answer(&mut self) -> OutboxFuture<'_, StoreScan<Vec<RequestId>>> {
+        self.plan.wrap(
+            FaultSite::SentWithoutAnswer,
+            self.inner.sent_without_answer(),
+        )
+    }
+
+    fn record_outcome<'call>(
+        &'call mut self,
+        request: &'call RequestId,
+        outcome: &'call OutboxWriteOutcome,
+        now: i64,
+    ) -> OutboxFuture<'call, ()> {
+        self.plan.wrap(
+            FaultSite::RecordOutcome,
+            self.inner.record_outcome(request, outcome, now),
+        )
+    }
+
+    fn return_not_transmitted<'call>(
+        &'call mut self,
+        request: &'call RequestId,
+        now: i64,
+    ) -> OutboxFuture<'call, ()> {
+        self.plan.wrap(
+            FaultSite::ReturnNotTransmitted,
+            self.inner.return_not_transmitted(request, now),
+        )
+    }
+
+    fn return_unanswered<'call>(
+        &'call mut self,
+        requests: &'call [RequestId],
+        now: i64,
+    ) -> OutboxFuture<'call, StoreScan<Vec<EndedWrite>>> {
+        self.plan.wrap(
+            FaultSite::ReturnUnanswered,
+            self.inner.return_unanswered(requests, now),
+        )
+    }
+}

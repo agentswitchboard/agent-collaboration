@@ -40,7 +40,7 @@ use switchboard_message_custody::{
 use tokio::sync::watch;
 use workspace_ids::{MachineId, RequestId, SessionId};
 use workspace_model::{
-    ChangePosition, ItemRef, WorkspaceAnswer, WorkspaceReply, WorkspaceResult,
+    Caller, ChangePosition, ItemRef, WorkspaceAnswer, WorkspaceReply, WorkspaceResult,
     central_mail::{
         CentralMailAnswer, CentralMailOperation, CentralMailRefusal, CentralMailResult,
         MessageStatus,
@@ -75,11 +75,26 @@ struct PeerHistory {
     attempts: Vec<Vec<RequestId>>,
     decisions: BTreeMap<RequestId, ReplyPayload>,
     commands: Vec<WriteBatchCommand>,
+    recorded_writes: BTreeMap<RequestId, (Caller, RequestPayload)>,
 }
 
 pub(super) enum ScriptedCommand {
     RequestStatus(RequestStatusCommand),
     ImmediateRequest(ImmediateRequestCommand),
+}
+
+/// A test selects the peer's fate for one member of a transmitted batch.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum ScriptedMemberFate {
+    Answered,
+    RecordedAnswerLost,
+    LostBeforeCentral,
+}
+
+/// A test scripts the next lane submission or the fates of its transmitted members.
+pub(super) enum ScriptedBatch {
+    Untouched,
+    Members(Vec<ScriptedMemberFate>),
 }
 
 pub(super) struct ScriptedBatchLane {
@@ -89,6 +104,7 @@ pub(super) struct ScriptedBatchLane {
     calls: Mutex<Vec<ScriptedCommand>>,
     events: Mutex<std::collections::VecDeque<LinkLaneEvent>>,
     refused_machine: Mutex<Option<MachineId>>,
+    next_batch: Mutex<Option<ScriptedBatch>>,
 }
 
 impl ScriptedBatchLane {
@@ -103,6 +119,7 @@ impl ScriptedBatchLane {
             calls: Mutex::new(Vec::new()),
             events: Mutex::new(std::collections::VecDeque::new()),
             refused_machine: Mutex::new(None),
+            next_batch: Mutex::new(None),
         }
     }
 
@@ -112,6 +129,14 @@ impl ScriptedBatchLane {
 
     pub(super) fn batch_commands(&self) -> Vec<WriteBatchCommand> {
         self.history.lock().unwrap().commands.clone()
+    }
+
+    pub(super) fn decide_next_batch(&self, batch: Option<ScriptedBatch>) {
+        *self.next_batch.lock().unwrap() = batch;
+    }
+
+    pub(super) fn decisions(&self) -> BTreeMap<RequestId, ReplyPayload> {
+        self.history.lock().unwrap().decisions.clone()
     }
 
     pub(super) fn push_event(&self, event: LinkLaneEvent) {
@@ -129,6 +154,16 @@ impl ScriptedBatchLane {
             };
         };
         assert_eq!(batch.connection, admitted.connection);
+        let script = self.next_batch.lock().unwrap().take();
+        let scripted_members = match script {
+            Some(ScriptedBatch::Untouched) => {
+                return WriteBatchDisposition::NotReached {
+                    cause: UntouchedCommand::WriterBusy,
+                };
+            }
+            Some(ScriptedBatch::Members(members)) => Some(members),
+            None => None,
+        };
         let wire = LinkFrame::Data(DataFrame::Batch {
             requests: batch.requests.clone(),
         });
@@ -143,16 +178,40 @@ impl ScriptedBatchLane {
         let first_batch = history.attempts.is_empty();
         let mut sent_requests = Vec::new();
         let mut members = Vec::new();
-        for request in requests.requests() {
+        for (index, request) in requests.requests().iter().enumerate() {
             let id = request.payload().write_request_id().unwrap();
             sent_requests.push(id.clone());
+            let fate = scripted_members
+                .as_ref()
+                .and_then(|members| members.get(index))
+                .copied()
+                .unwrap_or_else(|| {
+                    if first_batch && self.lost_first_answers.contains(id) {
+                        ScriptedMemberFate::RecordedAnswerLost
+                    } else {
+                        ScriptedMemberFate::Answered
+                    }
+                });
+            let correlation_id = request.correlation_id().clone();
+            let observed_write = (request.caller().clone(), request.payload().clone());
+            let original_write = history
+                .recorded_writes
+                .entry(id.clone())
+                .or_insert_with(|| observed_write.clone());
+            assert_eq!(
+                original_write, &observed_write,
+                "a replay must preserve caller, target and payload"
+            );
+            if fate == ScriptedMemberFate::LostBeforeCentral {
+                members.push(WriteBatchMemberDisposition::AnswerLost { correlation_id });
+                continue;
+            }
             let position = history.decisions.len() + 1;
             let refused_machine = self.refused_machine.lock().unwrap().clone();
             let answer = history.decisions.entry(id.clone()).or_insert_with(|| {
                 peer_answer(request.payload(), position, refused_machine.as_ref())
             });
-            let correlation_id = request.correlation_id().clone();
-            let disposition = if first_batch && self.lost_first_answers.contains(id) {
+            let disposition = if fate == ScriptedMemberFate::RecordedAnswerLost {
                 WriteBatchMemberDisposition::AnswerLost { correlation_id }
             } else {
                 WriteBatchMemberDisposition::Answered {
@@ -241,7 +300,7 @@ impl ReadyLinkLane for ScriptedBatchLane {
     }
 }
 
-fn post_created(position: usize) -> ReplyPayload {
+pub(super) fn post_created(position: usize) -> ReplyPayload {
     let post_id = format!("019f0000-0000-7000-8000-{position:012x}")
         .parse()
         .unwrap();

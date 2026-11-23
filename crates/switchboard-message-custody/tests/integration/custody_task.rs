@@ -79,7 +79,8 @@ impl ReadyLinkLane for HoldBatchLane {
     }
 }
 
-struct ObserveTask(mpsc::UnboundedSender<CustodyTaskEvent>);
+/// A test worker records custody events for assertions on its flush report.
+pub(super) struct ObserveTask(pub(super) mpsc::UnboundedSender<CustodyTaskEvent>);
 
 impl CustodyEventSink for ObserveTask {
     fn record_event(&self, event: CustodyTaskEvent) {
