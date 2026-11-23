@@ -1,5 +1,5 @@
 //! Shared requests and replies for Central's calls to an owning workspace.
-use fleet_rpc::{CallError, CallFailure, Rpc, RpcClient, Transport};
+use fleet_rpc::{CallError, CallFailure, IndependentReplyRpc, Rpc, RpcClient, Transport};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 use workspace_model::{
@@ -15,6 +15,7 @@ impl Rpc for WorkspaceServiceProtocol {
     type Request = WorkspaceRequest;
     type Reply = WorkspaceResponse;
 }
+impl IndependentReplyRpc for WorkspaceServiceProtocol {}
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
