@@ -66,6 +66,80 @@ pub const WORKSPACE_TABLES: &[&str] = &[
     "workspace_work_log_tags",
 ];
 
+/// Inspect named and inline uniqueness using the database's catalog.
+pub const BUSINESS_UNIQUENESS: &str = r#"
+SELECT tables.name, indexes.name, indexes.origin, CAST(indexes.partial AS TEXT),
+       (SELECT group_concat(name) FROM
+           (SELECT name FROM pragma_index_info(indexes.name) ORDER BY seqno))
+FROM sqlite_schema tables, pragma_index_list(tables.name) indexes
+WHERE tables.type = 'table'
+  AND tables.name IN (
+      'actor_persons', 'actor_sessions', 'approval_request_destinations',
+      'engine_due_entries', 'login_machine_allowances'
+  )
+  AND indexes."unique" = 1 AND indexes.origin <> 'pk'
+ORDER BY tables.name, indexes.name"#;
+
+pub fn central_business_uniqueness() -> Vec<Vec<central_storage::SqlValue>> {
+    use central_storage::SqlValue;
+    [
+        ("actor_persons", "actor_persons_person", "person_id", false),
+        (
+            "actor_sessions",
+            "actor_sessions_machine_harness",
+            "machine_id,harness_session_id",
+            false,
+        ),
+        (
+            "actor_sessions",
+            "actor_sessions_machine_operation",
+            "machine_id,create_operation_id",
+            false,
+        ),
+        (
+            "approval_request_destinations",
+            "approval_destinations_one_parent",
+            "approval_row_id",
+            true,
+        ),
+        (
+            "approval_request_destinations",
+            "approval_destinations_one_people",
+            "approval_row_id",
+            true,
+        ),
+        (
+            "approval_request_destinations",
+            "approval_destinations_people_lookup",
+            "organization_id,request_id",
+            true,
+        ),
+        (
+            "engine_due_entries",
+            "engine_due_entries_kind_role_subject",
+            "work_kind,entry_role,subject_key",
+            false,
+        ),
+        (
+            "login_machine_allowances",
+            "login_machine_allowances_machine_workspace",
+            "machine_id,workspace_id",
+            false,
+        ),
+    ]
+    .into_iter()
+    .map(|(table, index, columns, is_partial)| {
+        vec![
+            SqlValue::Text(table.to_owned()),
+            SqlValue::Text(index.to_owned()),
+            SqlValue::Text("c".to_owned()),
+            SqlValue::Text(u8::from(is_partial).to_string()),
+            SqlValue::Text(columns.to_owned()),
+        ]
+    })
+    .collect()
+}
+
 pub const MAIL_MESSAGE_COLUMN_NAMES: &str =
     "SELECT name FROM pragma_table_info('mail_messages') ORDER BY cid";
 

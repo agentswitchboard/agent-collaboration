@@ -5,7 +5,7 @@ use workspace_model::central_mail::{
 };
 
 #[tokio::test]
-async fn a_pending_due_at_now_recomputes_to_the_next_mark() {
+async fn a_pending_schedule_due_at_now_recomputes_to_the_next_mark() {
     let mut fixture = Fixture::new().await;
     let due = chrono::DateTime::from_timestamp_millis(fixture.clock.0.load(Ordering::SeqCst))
         .unwrap()
@@ -16,10 +16,11 @@ async fn a_pending_due_at_now_recomputes_to_the_next_mark() {
             &fixture.caller,
             CentralMailRequest {
                 request_id: id(8500),
-                operation: CentralMailOperation::SetWake {
+                operation: CentralMailOperation::SetAutomation {
                     target: session(&fixture.caller),
-                    due_at: due,
-                    text: "pending wake".to_owned().try_into().unwrap(),
+                    timing: serde_json::from_value(serde_json::json!({ "kind": "at", "at": due }))
+                        .unwrap(),
+                    text: "pending schedule".to_owned().try_into().unwrap(),
                 },
             },
         )
@@ -27,7 +28,7 @@ async fn a_pending_due_at_now_recomputes_to_the_next_mark() {
         .unwrap();
     assert!(matches!(
         result,
-        CentralMailResult::Done(CentralMailAnswer::WakeSet { .. })
+        CentralMailResult::Done(CentralMailAnswer::AutomationSet { .. })
     ));
     fixture
         .clock
@@ -39,7 +40,7 @@ async fn a_pending_due_at_now_recomputes_to_the_next_mark() {
     let rows = runtime
         .statement_host()
         .read(Statement {
-            sql: "SELECT COUNT(*) FROM mail_messages WHERE message_kind='wake'",
+            sql: "SELECT COUNT(*) FROM mail_messages WHERE message_kind='automation'",
             args: vec![],
         })
         .await

@@ -195,6 +195,29 @@ where
     for<'r> &'r str:
         sqlx_core::column::ColumnIndex<<T::Database as sqlx_core::database::Database>::Row>,
 {
+    recheck_lent_link_authority_after_read(tx, attachment, clock, |_| {}).await
+}
+
+pub(crate) async fn recheck_lent_link_authority_after_read<
+    T: fleet_lent_transaction::CentralTransaction,
+>(
+    tx: &mut T,
+    attachment: &MachineConnectionAttachment,
+    clock: &dyn fleet_runtime_ports::Clock,
+    after_read: impl FnOnce(&mut T),
+) -> Result<(fleet_runtime_ports::SyncTime, Option<MachineLinkCloseCode>), StoreFailure>
+where
+    <T::Database as sqlx_core::database::Database>::Arguments:
+        sqlx_core::arguments::IntoArguments<T::Database>,
+    String: sqlx_core::types::Type<T::Database>
+        + for<'q> sqlx_core::encode::Encode<'q, T::Database>
+        + for<'r> sqlx_core::decode::Decode<'r, T::Database>,
+    Option<String>:
+        sqlx_core::types::Type<T::Database> + for<'r> sqlx_core::decode::Decode<'r, T::Database>,
+    i64: sqlx_core::types::Type<T::Database> + for<'r> sqlx_core::decode::Decode<'r, T::Database>,
+    for<'r> &'r str:
+        sqlx_core::column::ColumnIndex<<T::Database as sqlx_core::database::Database>::Row>,
+{
     validate_shape(attachment)?;
     let authority = crate::enrollment_reads::read_lent_authority(
         tx,
@@ -202,6 +225,7 @@ where
         attachment.enrollment_id(),
     )
     .await?;
+    after_read(tx);
     let applying_time = clock.now();
     let cause = classify_link(
         attachment,

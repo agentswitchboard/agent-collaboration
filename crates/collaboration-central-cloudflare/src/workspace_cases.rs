@@ -48,6 +48,7 @@ enum Point {
     BeforeDrainCommit,
     AfterDrainCommit,
     BeforeTimerCommit,
+    BeforeWakeRequestCommit,
     BeforeReceiptTransaction,
     BeforeSessionTransaction,
     BeforeApprovalCommit,
@@ -85,6 +86,7 @@ impl From<Point> for PausePoint {
             Point::BeforeDrainCommit => Self::BeforeDrainCommit,
             Point::AfterDrainCommit => Self::AfterDrainCommit,
             Point::BeforeTimerCommit => Self::BeforeTimerCommit,
+            Point::BeforeWakeRequestCommit => Self::BeforeWakeRequestCommit,
             Point::BeforeReceiptTransaction => Self::BeforeReceiptTransaction,
             Point::BeforeSessionTransaction => Self::BeforeSessionTransaction,
             Point::BeforeApprovalCommit => Self::BeforeApprovalCommit,
@@ -247,6 +249,12 @@ pub(super) async fn control(
     }
     if matches!(path.as_str(), "/test/request" | "/test/mail") {
         return fixture_admission::dispatch(object, organization, request).await;
+    }
+    if path == "/test/receipt-clock-after-enrollment-read" {
+        object
+            .clock
+            .move_after_receipt_enrollment_read(request.json::<i64>().await?);
+        return Response::from_json(&true);
     }
     // Holding time before initialization also pins the first minted identity.
     if path == "/test/clock" {

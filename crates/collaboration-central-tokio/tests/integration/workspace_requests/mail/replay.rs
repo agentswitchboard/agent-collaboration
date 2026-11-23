@@ -180,3 +180,77 @@ async fn same_host_replay_rearms_after_interrupted_alarm_publication() {
     );
     fixture.host.close().await;
 }
+
+#[tokio::test]
+async fn retained_wake_replays_after_due_but_fresh_creation_refuses() {
+    use router_clock::RuntimeClock;
+
+    let fixture = Fixture::new().await;
+    let due = fixture.clock.utc_now() + chrono::Duration::minutes(5);
+    let request = CentralMailRequest {
+        request_id: id(1711),
+        operation: Operation::SetWake {
+            target: session(&fixture.caller),
+            due_at: due,
+            text: "retained wake".to_owned().try_into().unwrap(),
+        },
+    };
+    let accepted = fixture
+        .host
+        .request_central(&fixture.caller, request.clone())
+        .await
+        .unwrap();
+    let Result::Done(Answer::WakeSet { wake_id, due_at }) = &accepted else {
+        panic!("future wake did not return WakeSet: {accepted:?}");
+    };
+    assert_eq!(*due_at, due);
+
+    fixture.advance(std::time::Duration::from_secs(301)).await;
+    assert_eq!(
+        fixture
+            .host
+            .request_central(&fixture.caller, request.clone())
+            .await
+            .unwrap(),
+        accepted
+    );
+    let fresh = CentralMailRequest {
+        request_id: id(1712),
+        operation: request.operation,
+    };
+    assert_eq!(
+        fixture
+            .host
+            .request_central(&fixture.caller, fresh.clone())
+            .await
+            .unwrap(),
+        Result::Refused(Refusal::TimingViolation {
+            field: "dueAt".to_owned(),
+            requirement: workspace_model::central_mail::TimingRequirement::FutureTime,
+        })
+    );
+
+    let runtime = fixture
+        .host
+        .central(fixture.caller.organization_id())
+        .await
+        .unwrap();
+    let store = runtime.runtime().statement_host();
+    let wakes = store
+        .read(Statement {
+            sql: "SELECT wake_id FROM automation_wakes",
+            args: vec![],
+        })
+        .await
+        .unwrap();
+    assert_eq!(wakes.rows, vec![vec![text(wake_id)]]);
+    let retained = store
+        .read(Statement {
+            sql: "SELECT request_id FROM runtime_request_log WHERE request_id IN (?,?)",
+            args: vec![text(&request.request_id), text(&fresh.request_id)],
+        })
+        .await
+        .unwrap();
+    assert_eq!(retained.rows, vec![vec![text(&request.request_id)]]);
+    fixture.host.close().await;
+}

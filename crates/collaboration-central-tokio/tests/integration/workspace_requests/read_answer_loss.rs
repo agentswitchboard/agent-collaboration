@@ -2,7 +2,7 @@ use super::*;
 use central_link_protocol::{ReplyPayload, RequestScope, RequestStatusAnswer, RequestStatusQuery};
 use central_storage::{StoreCall, StoreFailure, StoreReply};
 use collaboration_central_core::WorkspaceRuntime;
-use collaboration_central_tokio::{ObjectStorage, TokioWorkspaceStores};
+use collaboration_central_tokio::{NativeDirectMessageStore, ObjectStorage, TokioWorkspaceStores};
 use fleet_contracts::{
     ReadWorkspaceRequestStatus, WorkspaceRequest, WorkspaceResponse, WorkspaceServiceClient,
     WorkspaceServiceProtocol, WorkspaceServiceRpc, WorkspaceStatusFailure,
@@ -56,7 +56,8 @@ async fn lost_read_answer_before_effect_is_unavailable_and_never_cached() {
     f.area(890).await;
     f.host.close().await;
     let due_batches = Arc::new(fleet_runtime::DueBatchState::default());
-    let clock = ArcClock(f.shared_for_runtime());
+    let clock_handle = ArcClock(f.shared_for_runtime());
+    let clock: Arc<dyn Clock> = Arc::new(clock_handle.clone());
     let central = Arc::new(
         ObjectStorage::new(
             f.root
@@ -66,7 +67,7 @@ async fn lost_read_answer_before_effect_is_unavailable_and_never_cached() {
             Arc::new(fleet_storage_schema::workspace_migrations::central_migrator()),
         )
         .with_engine_publication(
-            Arc::new(clock.clone()),
+            clock.clone(),
             fleet_runtime::engine_alarm_decider(due_batches.clone()),
         ),
     );
@@ -90,18 +91,21 @@ async fn lost_read_answer_before_effect_is_unavailable_and_never_cached() {
                 ),
                 lose: lose.clone(),
             },
-            Arc::new(clock.clone()),
-            Arc::new(ClockIds::new(clock.clone())),
+            clock.clone(),
+            Arc::new(ClockIds::new(clock_handle)),
             due_batches,
             Arc::new(|_| {}),
         ),
         central.clone(),
-        central.clone(),
+        Arc::new(NativeDirectMessageStore::new(
+            central.clone(),
+            clock.clone(),
+        )),
     )
     .with_sign_in_verification(
         collaboration_central_tokio::NativeSignInTrust::new(settings(&f.keys.url))
             .unwrap()
-            .for_organization(f.caller.organization_id().clone(), Arc::new(clock))
+            .for_organization(f.caller.organization_id().clone(), clock)
             .unwrap(),
     );
     let request = m::WorkspaceRequest {
