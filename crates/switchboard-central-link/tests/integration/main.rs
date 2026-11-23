@@ -3,7 +3,11 @@
     reason = "Scripted peer and lease fixtures fail at the exact unexpected observation."
 )]
 
-use std::{future::poll_fn, sync::Arc, time::Duration};
+use std::{
+    future::poll_fn,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
 
 use central_link_client::EnrollmentEnd;
 use central_link_protocol::{
@@ -13,13 +17,13 @@ use futures_util::{FutureExt, SinkExt, StreamExt};
 use router_clock::{ClockInstant, ManualClock};
 use switchboard_central_link::{
     DialAddress,
-    lease_source::{LeaseFuture, LeaseSource, LinkLease},
+    lease_source::{LeaseFailure, LeaseFuture, LeaseSource, LinkLease},
     link_driver::{DriverSettings, LinkDriver},
     link_policy::{LeaseVersion, LeaseWindow, LinkStatus},
 };
 use tokio::{
     net::{TcpListener, TcpStream},
-    sync::{mpsc, watch},
+    sync::{mpsc, oneshot, watch},
     task::JoinHandle,
 };
 use tokio_tungstenite::{
@@ -33,6 +37,7 @@ use tokio_tungstenite::{
 use workspace_ids::MachineId;
 
 mod credential_diagnostics;
+mod lease_boundaries;
 mod renewal_endings;
 mod settings_replay;
 mod transport_limits;
@@ -52,7 +57,10 @@ fn tick(seconds: u64) -> ClockInstant {
 struct FakeSource {
     acquired: mpsc::UnboundedSender<Option<LeaseVersion>>,
     ended: mpsc::UnboundedSender<(u8, EnrollmentEnd)>,
+    initial_gate: Mutex<Option<InitialLeaseGate>>,
 }
+
+type InitialLeaseGate = oneshot::Receiver<Result<(), LeaseFailure>>;
 
 impl LeaseSource<u8> for FakeSource {
     fn acquire<'a>(
@@ -61,7 +69,11 @@ impl LeaseSource<u8> for FakeSource {
         newer_than: Option<LeaseVersion>,
     ) -> LeaseFuture<'a, u8> {
         let _ = self.acquired.send(newer_than);
+        let initial_gate = self.initial_gate.lock().unwrap().take();
         Box::pin(async move {
+            if let Some(gate) = initial_gate {
+                gate.await.unwrap()?;
+            }
             Ok(LinkLease {
                 window: LeaseWindow {
                     binding: *binding,
@@ -99,6 +111,10 @@ struct Fixture {
 
 impl Fixture {
     async fn new() -> Self {
+        Self::with_initial_lease(None).await
+    }
+
+    async fn with_initial_lease(initial_gate: Option<InitialLeaseGate>) -> Self {
         let clock = Arc::new(ManualClock::new("2030-01-01T00:00:00Z".parse().unwrap()));
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let dial = DialAddress::test_loopback(&format!(
@@ -121,6 +137,7 @@ impl Fixture {
                 lease_source: Arc::new(FakeSource {
                     acquired: acquired_tx,
                     ended: ended_tx,
+                    initial_gate: Mutex::new(initial_gate),
                 }),
                 settings: settings_rx,
                 shutdown: shutdown_rx,

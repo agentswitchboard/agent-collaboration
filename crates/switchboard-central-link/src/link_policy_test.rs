@@ -17,6 +17,9 @@ type Input = LinkInput<u8>;
 type Effect = LinkEffect<u8>;
 type Policy = LinkPolicy<u8>;
 
+#[path = "generated_link_orders_test.rs"]
+mod generated_link_orders;
+
 fn machine() -> MachineId {
     "01890f2e-7b4c-7cc0-98c4-000000000002".parse().unwrap()
 }
