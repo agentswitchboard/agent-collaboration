@@ -46,16 +46,35 @@ pub(super) enum FaultStage {
 struct FaultJournal {
     planned: Vec<(FaultSite, FaultStage)>,
     fired: Vec<(FaultSite, FaultStage)>,
-    committed_insert: Option<Arc<CommittedInsertGate>>,
+    committed_insert: Option<Arc<StoreCommitGate>>,
+    committed_claim: Option<Arc<StoreCommitGate>>,
+    committed_claim_return: Option<Arc<StoreCommitGate>>,
     scoped_read_gate: Option<Arc<ScopedReadGate>>,
     scoped_reads_unavailable: bool,
 }
 
-/// A test holds the worker between SQLite's insert commit and its submit reply.
+/// A test holds the worker after a SQLite commit and before the store returns.
 #[derive(Default)]
-pub(super) struct CommittedInsertGate {
+pub(super) struct StoreCommitGate {
     pub(super) committed: Notify,
     pub(super) release: Notify,
+}
+
+impl StoreCommitGate {
+    fn hold_after<'call, ResultType: Send + 'call>(
+        gate: Option<Arc<Self>>,
+        operation: OutboxFuture<'call, ResultType>,
+    ) -> OutboxFuture<'call, ResultType> {
+        let Some(gate) = gate else {
+            return operation;
+        };
+        Box::pin(async move {
+            let committed = operation.await?;
+            gate.committed.notify_one();
+            gate.release.notified().await;
+            Ok(committed)
+        })
+    }
 }
 
 /// A test stops custody inside one local status lookup until it publishes the competing event.
@@ -82,9 +101,21 @@ impl StoreFaultPlan {
         self.0.lock().unwrap().planned.is_empty()
     }
 
-    pub(super) fn hold_next_insert_commit(&self) -> Arc<CommittedInsertGate> {
-        let gate = Arc::new(CommittedInsertGate::default());
+    pub(super) fn hold_next_insert_commit(&self) -> Arc<StoreCommitGate> {
+        let gate = Arc::new(StoreCommitGate::default());
         self.0.lock().unwrap().committed_insert = Some(gate.clone());
+        gate
+    }
+
+    pub(super) fn hold_next_claim_commit(&self) -> Arc<StoreCommitGate> {
+        let gate = Arc::new(StoreCommitGate::default());
+        self.0.lock().unwrap().committed_claim = Some(gate.clone());
+        gate
+    }
+
+    pub(super) fn hold_next_claim_return_commit(&self) -> Arc<StoreCommitGate> {
+        let gate = Arc::new(StoreCommitGate::default());
+        self.0.lock().unwrap().committed_claim_return = Some(gate.clone());
         gate
     }
 
@@ -150,14 +181,7 @@ impl OutboxStorage for FaultyOutbox {
         let insert = self
             .plan
             .wrap(FaultSite::Insert, self.inner.insert(item, now));
-        Box::pin(async move {
-            let result = insert.await?;
-            if let Some(gate) = gate {
-                gate.committed.notify_one();
-                gate.release.notified().await;
-            }
-            Ok(result)
-        })
+        StoreCommitGate::hold_after(gate, insert)
     }
 
     fn request_status<'call>(
@@ -237,7 +261,8 @@ impl OutboxStorage for FaultyOutbox {
         required_deadline_after_ms: i64,
         excluded_request_ids: &'call BTreeSet<RequestId>,
     ) -> OutboxFuture<'call, StoreScan<ClaimedBatch>> {
-        self.plan.wrap(
+        let gate = self.plan.0.lock().unwrap().committed_claim.take();
+        let claiming = self.plan.wrap(
             FaultSite::ClaimBatch,
             self.inner.claim_next_batch(
                 mark_ms,
@@ -246,7 +271,8 @@ impl OutboxStorage for FaultyOutbox {
                 required_deadline_after_ms,
                 excluded_request_ids,
             ),
-        )
+        );
+        StoreCommitGate::hold_after(gate, claiming)
     }
 
     fn end_overdue(&mut self, now: i64) -> OutboxFuture<'_, StoreScan<Vec<EndedWrite>>> {
@@ -314,10 +340,12 @@ impl OutboxStorage for FaultyOutbox {
         request: &'call RequestId,
         now: i64,
     ) -> OutboxFuture<'call, ()> {
-        self.plan.wrap(
+        let gate = self.plan.0.lock().unwrap().committed_claim_return.take();
+        let returning = self.plan.wrap(
             FaultSite::ReturnNotTransmitted,
             self.inner.return_not_transmitted(request, now),
-        )
+        );
+        StoreCommitGate::hold_after(gate, returning)
     }
 
     fn return_unanswered<'call>(
@@ -325,9 +353,11 @@ impl OutboxStorage for FaultyOutbox {
         requests: &'call [RequestId],
         now: i64,
     ) -> OutboxFuture<'call, StoreScan<Vec<EndedWrite>>> {
-        self.plan.wrap(
+        let gate = self.plan.0.lock().unwrap().committed_claim_return.take();
+        let returning = self.plan.wrap(
             FaultSite::ReturnUnanswered,
             self.inner.return_unanswered(requests, now),
-        )
+        );
+        StoreCommitGate::hold_after(gate, returning)
     }
 }
