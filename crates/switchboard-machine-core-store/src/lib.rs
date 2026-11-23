@@ -16,7 +16,8 @@ mod sender_outcome;
 mod store_scan;
 
 pub use inbox_store::{
-    InboxDecision, InboxReceipt, InboxRefusalReason, InboxStore, InboxStoreError, RecordDelivery,
+    InboxDecision, InboxOfferExpiry, InboxReceipt, InboxRefusalReason, InboxStore, InboxStoreError,
+    MAX_INBOX_DELIVERY_WINDOW_MS, RecordDelivery,
 };
 pub use machine_identity_store::{MachineIdentityError, load_or_create_machine_id};
 pub use machine_local_store::{MACHINE_LOCAL_DATABASE, MachineLocalStore, MachineLocalStoreError};
