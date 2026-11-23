@@ -254,4 +254,3 @@ fn provider_question_uses_its_declared_fields_and_offers_the_exact_answer() {
         }
     );
 }
-
