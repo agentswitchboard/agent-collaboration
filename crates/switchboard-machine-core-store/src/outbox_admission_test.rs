@@ -1,6 +1,7 @@
 use super::{MARK, central_refusal, item, open};
 use crate::{MacOutbox, OutboxRefusal, OutboxRequestStatus, OutboxStoreError, OutboxWriteOutcome};
 use crate::{OutboxAccepted, OutboxCentralRefusal, OutboxRequestKey, OutboxScope};
+use std::collections::BTreeSet;
 
 #[tokio::test]
 async fn insert_failure_distinguishes_before_begin_and_after_begin() {
@@ -134,7 +135,7 @@ async fn incompatible_results_and_authority_loss_leave_the_claim_recoverable() {
     let mut outbox = MacOutbox::new(&mut database);
     outbox.insert(&write, MARK - 1000).await.unwrap();
     let claim = outbox
-        .claim_next_batch(MARK, 1, MARK, MARK)
+        .claim_next_batch(MARK, 1, MARK, MARK, &BTreeSet::new())
         .await
         .unwrap()
         .expect_clean()
@@ -192,7 +193,7 @@ async fn incompatible_results_and_authority_loss_leave_the_claim_recoverable() {
             .is_empty()
     );
     let replay = outbox
-        .claim_next_batch(MARK, 1, MARK + 1, MARK + 1)
+        .claim_next_batch(MARK, 1, MARK + 1, MARK + 1, &BTreeSet::new())
         .await
         .unwrap()
         .expect_clean()
@@ -218,7 +219,7 @@ async fn accepted_post_uses_the_store_result_in_all_three_read_views() {
     let mut outbox = MacOutbox::new(&mut database);
     outbox.insert(&write, MARK).await.unwrap();
     let claimed = outbox
-        .claim_next_batch(MARK, 1, MARK, MARK)
+        .claim_next_batch(MARK, 1, MARK, MARK, &BTreeSet::new())
         .await
         .unwrap()
         .expect_clean();
@@ -265,7 +266,7 @@ async fn mail_refusal_retains_the_original_json_bytes_and_round_trips() {
     let mut outbox = MacOutbox::new(&mut database);
     outbox.insert(&write, MARK).await.unwrap();
     let claimed = outbox
-        .claim_next_batch(MARK, 1, MARK, MARK)
+        .claim_next_batch(MARK, 1, MARK, MARK, &BTreeSet::new())
         .await
         .unwrap()
         .expect_clean();

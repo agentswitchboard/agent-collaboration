@@ -3,6 +3,7 @@ use crate::{
     MacOutbox, MachineLocalStore, NewOutboxItem, OutboxRequestKey, OutboxRequestStatus,
     OutboxStoreError, RowCorruption, RowCorruptionReason, StoredSenderOutcome,
 };
+use std::collections::BTreeSet;
 use workspace_model::{Timestamp, central_mail::MessageOutcome};
 
 const CREATED: i64 = MARK - 1_000;
@@ -123,7 +124,10 @@ async fn claim_fills_its_limit_with_healthy_rows_and_reports_every_damaged_candi
     let damaged = damaged_rows(&mut database).await;
     let mut outbox = MacOutbox::new(&mut database);
 
-    let first = outbox.claim_next_batch(MARK, 2, MARK, MARK).await.unwrap();
+    let first = outbox
+        .claim_next_batch(MARK, 2, MARK, MARK, &BTreeSet::new())
+        .await
+        .unwrap();
     assert!(first.healthy.ended.is_empty());
     assert_eq!(
         first
@@ -135,7 +139,10 @@ async fn claim_fills_its_limit_with_healthy_rows_and_reports_every_damaged_candi
         [&writes[1].request, &writes[3].request]
     );
     assert_corrupt_deadlines(first.corrupt_rows, &writes);
-    let next = outbox.claim_next_batch(MARK, 2, MARK, MARK).await.unwrap();
+    let next = outbox
+        .claim_next_batch(MARK, 2, MARK, MARK, &BTreeSet::new())
+        .await
+        .unwrap();
     assert_eq!(
         next.healthy
             .writes
@@ -481,7 +488,7 @@ async fn claim_advances_past_an_entire_damaged_scan_page() {
     .await;
 
     let scan = MacOutbox::new(&mut database)
-        .claim_next_batch(MARK, 1, MARK, MARK)
+        .claim_next_batch(MARK, 1, MARK, MARK, &BTreeSet::new())
         .await
         .unwrap();
     assert_eq!(scan.healthy.writes.len(), 1);
@@ -516,7 +523,7 @@ async fn invalid_utf8_outbox_payload_is_a_row_fault_and_healthy_claims_progress(
     .unwrap();
 
     let batch = MacOutbox::new(&mut database)
-        .claim_next_batch(MARK, 1, MARK, MARK)
+        .claim_next_batch(MARK, 1, MARK, MARK, &BTreeSet::new())
         .await
         .unwrap();
     assert_eq!(batch.healthy.writes[0].request, good.request);
@@ -560,7 +567,7 @@ async fn non_integer_creation_stamp_does_not_turn_into_a_valid_expiry() {
         .bind(bad.request.as_str()).execute(&mut database.connection).await.unwrap();
 
     let batch = MacOutbox::new(&mut database)
-        .claim_next_batch(MARK, 1, MARK, MARK)
+        .claim_next_batch(MARK, 1, MARK, MARK, &BTreeSet::new())
         .await
         .unwrap();
     assert_eq!(batch.healthy.writes[0].request, good.request);
@@ -603,7 +610,7 @@ async fn claim_threshold_still_reports_a_damaged_row_before_selecting_healthy_wo
     outbox.insert(&eligible, CREATED + 1).await.unwrap();
 
     let scan = outbox
-        .claim_next_batch(MARK, 1, MARK, DEADLINE)
+        .claim_next_batch(MARK, 1, MARK, DEADLINE, &BTreeSet::new())
         .await
         .unwrap();
 
@@ -634,4 +641,52 @@ async fn claim_threshold_still_reports_a_damaged_row_before_selecting_healthy_wo
             .await
             .unwrap();
     assert_eq!(retained, ("inOutbox".to_owned(), stored_deadline));
+}
+
+#[tokio::test]
+async fn ordered_claim_reports_corruption_even_for_an_excluded_id() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut database = open(&directory).await;
+    let clock =
+        router_clock::ManualClock::new(chrono::DateTime::from_timestamp_millis(MARK).unwrap());
+    let now = router_clock::RuntimeClock::utc_now(&clock).timestamp_millis();
+    let damaged = item(456, "damaged and excluded", now);
+    let excluded = item(457, "healthy and excluded", now);
+    let eligible = item(458, "healthy and eligible", now);
+    plant_row(
+        &mut database,
+        &damaged,
+        "inOutbox",
+        "invalid".into(),
+        None,
+        DEADLINE,
+    )
+    .await;
+    for write in [&excluded, &eligible] {
+        MacOutbox::new(&mut database)
+            .insert(write, now)
+            .await
+            .unwrap();
+    }
+    let before = rows(&mut database).await;
+    database.close().await.unwrap();
+    let mut database = open(&directory).await;
+    let excluded_ids = BTreeSet::from([damaged.request.clone(), excluded.request.clone()]);
+
+    let scan = MacOutbox::new(&mut database)
+        .claim_next_batch(now, 1, now, now, &excluded_ids)
+        .await
+        .unwrap();
+    assert!(scan.healthy.ended.is_empty());
+    assert_eq!(scan.healthy.writes.len(), 1);
+    assert_eq!(scan.healthy.writes[0].request, eligible.request);
+    assert_eq!(
+        scan.corrupt_rows,
+        [RowCorruption {
+            key: damaged.request.to_string(),
+            field: "payload_json",
+            reason: RowCorruptionReason::InvalidJson,
+        }]
+    );
+    assert_eq!(rows(&mut database).await[..2], before[..2]);
 }
