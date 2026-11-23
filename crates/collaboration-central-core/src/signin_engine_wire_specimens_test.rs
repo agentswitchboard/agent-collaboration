@@ -96,6 +96,31 @@ fn engine_admin_replies_match_fixed_wire_bytes() {
     let vectors = reply_vectors();
     assert_eq!(vectors.len(), 25);
     for vector in vectors {
+        if vector.name.starts_with("health_") {
+            let reply: Value = serde_json::from_str(&vector.bytes).unwrap();
+            let kinds = reply["kinds"].as_array().unwrap();
+            assert_eq!(
+                kinds
+                    .iter()
+                    .map(|entry| entry["kind"].as_str().unwrap())
+                    .collect::<Vec<_>>(),
+                [
+                    "wake_timer",
+                    "automation_timer",
+                    "direct_message",
+                    "system_message_expiry",
+                    "legacy_notice_windows",
+                    "legacy_workspace_drains",
+                    "engine_source",
+                ]
+            );
+            match vector.name.as_str() {
+                "health_seconds" => assert_eq!(reply["alarm"], "2026-11-23T08:10:03Z"),
+                "health_millis" => assert_eq!(reply["alarm"], "2026-11-23T08:10:03.456Z"),
+                "health_micros" | "health_nanos" => assert!(reply["alarm"].is_null()),
+                other => panic!("unrecognized health specimen: {other}"),
+            }
+        }
         let result: OrganizationAdminResult = serde_json::from_str(&vector.bytes).unwrap();
         assert_eq!(
             serde_json::to_string(&result).unwrap(),

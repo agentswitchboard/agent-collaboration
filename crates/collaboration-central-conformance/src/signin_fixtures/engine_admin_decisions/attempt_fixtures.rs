@@ -1,8 +1,8 @@
 //! Stored facts for engine admin HTTP cases and their independent write oracles.
 
-use super::{ENGINE_ATTEMPT, EngineAdminCase, EngineAdminHarness};
+use super::{ENGINE_ATTEMPT, EngineAdminCase, EngineAdminHarness, NOW_SECONDS};
 use crate::ConformanceResult;
-use central_storage::SqlValue;
+use central_storage::{SafeInteger, SqlValue};
 use serde_json::{Value, json};
 
 pub(super) const LAST_HIDDEN_ATTEMPT: &str = "019f0000-0000-7000-8000-000000000104";
@@ -10,24 +10,29 @@ const FIRST_FAILURE: &str = "2027-01-15T08:00:00.123456789Z";
 const RETIREMENT: &str = "2027-01-15T08:05:00.654321Z";
 
 #[derive(Clone, Copy)]
-enum AttemptStanding {
+pub(super) enum AttemptStanding {
     Failing,
     Retired,
 }
 
-pub(super) struct AttemptFixture {
-    wake: Option<String>,
+struct WakeFixture {
+    wake_id: String,
+    due_millis: SafeInteger,
 }
 
-#[derive(Debug)]
+pub(super) struct AttemptFixture {
+    wake: Option<WakeFixture>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
 pub(super) struct AdminFacts {
     pub(super) proofs: Vec<Vec<SqlValue>>,
     pub(super) receipts: Vec<Vec<SqlValue>>,
     pub(super) actors: Vec<Vec<SqlValue>>,
-    attempts: Vec<Vec<SqlValue>>,
-    wakes: Vec<Vec<SqlValue>>,
-    due: Vec<Vec<SqlValue>>,
-    alarm_millis: Option<i64>,
+    pub(super) attempts: Vec<Vec<SqlValue>>,
+    pub(super) wakes: Vec<Vec<SqlValue>>,
+    pub(super) due: Vec<Vec<SqlValue>>,
+    pub(super) alarm_millis: Option<i64>,
 }
 
 pub(super) async fn read_admin_facts(
@@ -50,7 +55,7 @@ pub(super) async fn read_admin_facts(
             .read_admin_rows("SELECT wake_id,state FROM automation_wakes ORDER BY wake_id", vec![])
             .await?,
         due: host
-            .read_admin_rows("SELECT * FROM engine_due_entries ORDER BY work_kind,subject_key", vec![])
+            .read_admin_rows("SELECT work_kind,subject_key,base_due_ms,effective_due_ms FROM engine_due_entries ORDER BY work_kind,subject_key", vec![])
             .await?,
         alarm_millis: host.published_alarm_millis().await,
     })
@@ -63,7 +68,7 @@ pub(super) async fn seed_attempt(
     use AttemptStanding::{Failing, Retired};
     use EngineAdminCase as Case;
     let wake = match case {
-        Case::HealthSnapshot | Case::RetiredPage | Case::Retried | Case::Stale => {
+        Case::HealthSnapshot | Case::RetiredPage | Case::Stale => {
             insert_attempt(host, ENGINE_ATTEMPT, "wake_timer", ENGINE_ATTEMPT, Retired).await?;
             None
         }
@@ -95,9 +100,19 @@ pub(super) async fn seed_attempt(
             .await?;
             None
         }
-        Case::Discarded | Case::SubjectUnreadable => {
-            let wake_id = host.create_wake_for_discard().await?;
+        Case::Retried | Case::Discarded | Case::SubjectUnreadable => {
+            let wake_due_seconds = (NOW_SECONDS.div_euclid(300) + 1) * 300 + 3600;
+            let due_at = chrono::DateTime::from_timestamp(wake_due_seconds, 0)
+                .ok_or("engine admin fixture wake time")?;
+            let wake_id = host.create_fixture_wake(due_at).await?;
             insert_attempt(host, ENGINE_ATTEMPT, "wake_timer", &wake_id, Retired).await?;
+            if matches!(case, Case::Retried) {
+                host.apply_admin_fixture(
+                    "UPDATE engine_due_entries SET effective_due_ms=NULL WHERE work_kind='wake_timer' AND subject_key=?1",
+                    vec![SqlValue::Text(wake_id.clone())],
+                ).await?;
+                host.clear_fixture_alarm().await?;
+            }
             if matches!(case, Case::SubjectUnreadable) {
                 host.apply_admin_fixture(
                     "UPDATE automation_wakes SET state='unreadable' WHERE wake_id=?1",
@@ -105,7 +120,10 @@ pub(super) async fn seed_attempt(
                 )
                 .await?;
             }
-            Some(wake_id)
+            Some(WakeFixture {
+                wake_id,
+                due_millis: due_at.timestamp_millis().try_into()?,
+            })
         }
         Case::RetiredEnd
         | Case::NotPermitted
@@ -128,7 +146,7 @@ pub(super) async fn seed_attempt(
     Ok(AttemptFixture { wake })
 }
 
-async fn insert_attempt(
+pub(super) async fn insert_attempt(
     host: &impl EngineAdminHarness,
     attempt_id: &str,
     kind: &str,
@@ -188,22 +206,57 @@ pub(super) fn check_domain_writes(
     before: &AdminFacts,
     after: &AdminFacts,
 ) {
+    check_writes(case, subject, before, after, true);
+}
+
+pub(super) fn check_committed_repair(
+    case: EngineAdminCase,
+    subject: &AttemptFixture,
+    before: &AdminFacts,
+    after: &AdminFacts,
+) {
+    check_writes(case, subject, before, after, false);
+}
+
+fn check_writes(
+    case: EngineAdminCase,
+    subject: &AttemptFixture,
+    before: &AdminFacts,
+    after: &AdminFacts,
+    check_alarm: bool,
+) {
     use EngineAdminCase as Case;
     match case {
         Case::Retried => {
             assert_eq!(before.attempts.len(), 1);
             assert!(after.attempts.is_empty());
             assert_eq!(after.wakes, before.wakes);
+            assert_eq!(
+                before.alarm_millis, None,
+                "retired wake contributes no deadline"
+            );
+            assert_eq!(
+                before.due,
+                expected_due_projection(subject, false).as_slice()
+            );
+            assert_eq!(after.due, expected_due_projection(subject, true).as_slice());
+            // The only contributor is a future mark beyond the R5 batch floor.
+            assert_eq!(
+                after.alarm_millis,
+                subject.wake.as_ref().map(|wake| wake.due_millis.get())
+            );
         }
         Case::Discarded => {
             assert_eq!(before.attempts.len(), 1);
             assert!(after.attempts.is_empty());
             assert!(subject.wake.is_some(), "discard needs a stored wake");
             let wake_state = |state: &str| {
-                subject
-                    .wake
-                    .as_ref()
-                    .map(|wake| vec![SqlValue::Text(wake.clone()), SqlValue::Text(state.into())])
+                subject.wake.as_ref().map(|wake| {
+                    vec![
+                        SqlValue::Text(wake.wake_id.clone()),
+                        SqlValue::Text(state.into()),
+                    ]
+                })
             };
             assert_eq!(before.wakes, wake_state("active").as_slice());
             assert_eq!(after.wakes, wake_state("disabled").as_slice());
@@ -212,6 +265,17 @@ pub(super) fn check_domain_writes(
                 "the wake starts with scheduled work"
             );
             assert!(after.due.is_empty(), "discard retires the wake's due entry");
+            assert_eq!(
+                before.due,
+                expected_due_projection(subject, true).as_slice()
+            );
+            assert_eq!(
+                before.alarm_millis,
+                subject.wake.as_ref().map(|wake| wake.due_millis.get())
+            );
+            if check_alarm {
+                assert_eq!(after.alarm_millis, None, "no wake remains to arm");
+            }
         }
         Case::HealthSnapshot
         | Case::RetiredPage
@@ -243,4 +307,22 @@ pub(super) fn check_domain_writes(
             assert_eq!(after.alarm_millis, before.alarm_millis, "{case:?} alarm");
         }
     }
+}
+
+fn expected_due_projection(subject: &AttemptFixture, is_eligible: bool) -> Option<Vec<SqlValue>> {
+    assert!(subject.wake.is_some(), "repair requires a seeded wake");
+    subject.wake.as_ref().map(|wake| {
+        let due = SqlValue::Integer(wake.due_millis);
+        let effective_due = if is_eligible {
+            due.clone()
+        } else {
+            SqlValue::Null
+        };
+        vec![
+            SqlValue::Text("wake_timer".into()),
+            SqlValue::Text(wake.wake_id.clone()),
+            due,
+            effective_due,
+        ]
+    })
 }

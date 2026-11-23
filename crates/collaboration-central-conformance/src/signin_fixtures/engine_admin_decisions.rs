@@ -7,6 +7,7 @@ use serde_json::{Value, json};
 use std::future::Future;
 
 mod attempt_fixtures;
+pub mod boundary_decisions;
 mod decision_registry;
 
 use attempt_fixtures::{check_domain_writes, read_admin_facts, seed_attempt};
@@ -76,10 +77,17 @@ pub enum EngineAdminCase {
     Unavailable,
 }
 
+#[derive(Clone, Copy)]
+pub enum AdminBatchLoss {
+    BeforeApply,
+    AfterCommit,
+}
+
 pub enum ApplyingControl {
     Immediate,
     AdvanceAfterVerification,
     MoveFloorAfterSampling,
+    MoveAttemptAfterSampling { attempt_id: &'static str },
 }
 
 pub struct EngineAdminRequest {
@@ -105,7 +113,17 @@ pub trait EngineAdminHarness {
         statement: &'static str,
         args: Vec<SqlValue>,
     ) -> impl Future<Output = ConformanceResult<()>>;
-    fn create_wake_for_discard(&self) -> impl Future<Output = ConformanceResult<String>>;
+    fn create_fixture_wake(
+        &self,
+        due_at: chrono::DateTime<chrono::Utc>,
+    ) -> impl Future<Output = ConformanceResult<String>>;
+    fn arm_admin_batch_loss(
+        &self,
+        proof_id: &str,
+        loss: AdminBatchLoss,
+    ) -> impl Future<Output = ConformanceResult<()>>;
+    fn assert_oversized_reply(&self, bytes: &[u8]);
+    fn clear_fixture_alarm(&self) -> impl Future<Output = ConformanceResult<()>>;
     fn published_alarm_millis(&self) -> impl Future<Output = Option<i64>>;
 }
 
@@ -121,11 +139,22 @@ impl EngineAdminRequest {
         proof_id: &str,
         attempt_id: &str,
     ) -> ConformanceResult<Self> {
+        Self::signed_page(route, case, person, proof_id, attempt_id, None)
+    }
+
+    fn signed_page(
+        route: EngineAdminRoute,
+        case: EngineAdminCase,
+        person: &Person,
+        proof_id: &str,
+        attempt_id: &str,
+        after: Option<&str>,
+    ) -> ConformanceResult<Self> {
         use EngineAdminCase as Case;
         let path = route.path();
         let (params, operation_id) = match route {
             EngineAdminRoute::Health => (json!({}), None),
-            EngineAdminRoute::Retired => (json!({"after":null,"limit":1}), None),
+            EngineAdminRoute::Retired => (json!({"after":after,"limit":1}), None),
             EngineAdminRoute::Retry | EngineAdminRoute::Discard => {
                 (json!({"attemptId":attempt_id}), Some(ENGINE_OPERATION))
             }

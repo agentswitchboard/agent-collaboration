@@ -1,7 +1,7 @@
 [
   {
     "name": "health_seconds",
-    "bytes": "{\"result\":\"engineHealth\",\"kinds\":[{\"kind\":\"wake_timer\",\"failing\":0,\"retired\":1,\"oldestFirstFailedAt\":\"2026-11-23T08:00:01Z\",\"lastFailure\":\"statement_rejected\"}],\"alarm\":null,\"alarmMissing\":false}"
+    "bytes": "{\"result\":\"engineHealth\",\"kinds\":[{\"kind\":\"wake_timer\",\"failing\":0,\"retired\":1,\"oldestFirstFailedAt\":\"2026-11-23T08:00:01Z\",\"lastFailure\":\"statement_rejected\"},{\"kind\":\"automation_timer\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null},{\"kind\":\"direct_message\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null},{\"kind\":\"system_message_expiry\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null},{\"kind\":\"legacy_notice_windows\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null},{\"kind\":\"legacy_workspace_drains\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null},{\"kind\":\"engine_source\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null}],\"alarm\":\"2026-11-23T08:10:03Z\",\"alarmMissing\":false}"
   },
   {
     "name": "retired_seconds",
@@ -9,7 +9,7 @@
   },
   {
     "name": "health_millis",
-    "bytes": "{\"result\":\"engineHealth\",\"kinds\":[{\"kind\":\"wake_timer\",\"failing\":0,\"retired\":1,\"oldestFirstFailedAt\":\"2026-11-23T08:00:01.123Z\",\"lastFailure\":\"statement_rejected\"}],\"alarm\":\"2026-11-23T08:10:03.456Z\",\"alarmMissing\":false}"
+    "bytes": "{\"result\":\"engineHealth\",\"kinds\":[{\"kind\":\"wake_timer\",\"failing\":0,\"retired\":1,\"oldestFirstFailedAt\":\"2026-11-23T08:00:01.123Z\",\"lastFailure\":\"statement_rejected\"},{\"kind\":\"automation_timer\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null},{\"kind\":\"direct_message\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null},{\"kind\":\"system_message_expiry\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null},{\"kind\":\"legacy_notice_windows\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null},{\"kind\":\"legacy_workspace_drains\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null},{\"kind\":\"engine_source\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null}],\"alarm\":\"2026-11-23T08:10:03.456Z\",\"alarmMissing\":false}"
   },
   {
     "name": "retired_millis",
@@ -17,7 +17,7 @@
   },
   {
     "name": "health_micros",
-    "bytes": "{\"result\":\"engineHealth\",\"kinds\":[{\"kind\":\"wake_timer\",\"failing\":0,\"retired\":1,\"oldestFirstFailedAt\":\"2026-11-23T08:00:01.123456Z\",\"lastFailure\":\"statement_rejected\"}],\"alarm\":null,\"alarmMissing\":false}"
+    "bytes": "{\"result\":\"engineHealth\",\"kinds\":[{\"kind\":\"wake_timer\",\"failing\":0,\"retired\":1,\"oldestFirstFailedAt\":\"2026-11-23T08:00:01.123456Z\",\"lastFailure\":\"statement_rejected\"},{\"kind\":\"automation_timer\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null},{\"kind\":\"direct_message\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null},{\"kind\":\"system_message_expiry\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null},{\"kind\":\"legacy_notice_windows\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null},{\"kind\":\"legacy_workspace_drains\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null},{\"kind\":\"engine_source\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null}],\"alarm\":null,\"alarmMissing\":false}"
   },
   {
     "name": "retired_micros",
@@ -25,7 +25,7 @@
   },
   {
     "name": "health_nanos",
-    "bytes": "{\"result\":\"engineHealth\",\"kinds\":[{\"kind\":\"wake_timer\",\"failing\":0,\"retired\":1,\"oldestFirstFailedAt\":\"2026-11-23T08:00:01.123456789Z\",\"lastFailure\":\"statement_rejected\"}],\"alarm\":null,\"alarmMissing\":false}"
+    "bytes": "{\"result\":\"engineHealth\",\"kinds\":[{\"kind\":\"wake_timer\",\"failing\":0,\"retired\":1,\"oldestFirstFailedAt\":\"2026-11-23T08:00:01.123456789Z\",\"lastFailure\":\"statement_rejected\"},{\"kind\":\"automation_timer\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null},{\"kind\":\"direct_message\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null},{\"kind\":\"system_message_expiry\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null},{\"kind\":\"legacy_notice_windows\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null},{\"kind\":\"legacy_workspace_drains\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null},{\"kind\":\"engine_source\",\"failing\":0,\"retired\":0,\"oldestFirstFailedAt\":null,\"lastFailure\":null}],\"alarm\":null,\"alarmMissing\":false}"
   },
   {
     "name": "retired_nanos",

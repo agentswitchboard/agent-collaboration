@@ -375,12 +375,10 @@ impl<'host, Host: EngineHost> FleetEngine<'host, Host> {
             last_examined = Some(attempt_id);
             // The row cap precedes the state filter, so even a long run of
             // active attempts can only consume one bounded index range.
-            if !projection
-                .state
-                .text()
-                .is_ok_and(|state| state == "retired")
-            {
-                continue;
+            match projection.state.text().map_err(attempt_column_corruption)? {
+                "failing" => continue,
+                "retired" => {}
+                _ => return Err(attempt_column_corruption(projection.state.corrupt())),
             }
             let admin_kind = projection
                 .machine_kind
