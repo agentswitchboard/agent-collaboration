@@ -6,6 +6,8 @@ members = [
     "crates/central-link-protocol",
     "crates/central-link-call-composition",
     "crates/central-link-client",
+    "crates/switchboard-central-link",
+    "crates/switchboard-central-link-test",
     "crates/workspace-ids",
     "crates/workspace-model",
     "crates/workspace-rules",
@@ -111,6 +113,10 @@ switchboard-harness-shared-mechanics = { path = "crates/switchboard-harness-shar
 switchboard-harness-contracts = { path = "crates/switchboard-harness-contracts", version = "0.1.158" }
 central-link-protocol = { path = "crates/central-link-protocol", version = "0.1.153" }
 central-link-call-composition = { path = "crates/central-link-call-composition", version = "0.1.158" }
+central-link-client = { path = "crates/central-link-client", version = "0.1.158" }
+switchboard-central-link = { path = "crates/switchboard-central-link", version = "0.1.158" }
+collaboration-central-tokio = { path = "crates/collaboration-central-tokio", version = "0.1.158" }
+collaboration-central-conformance = { path = "crates/collaboration-central-conformance", version = "0.1.158" }
 workspace-ids = { path = "crates/workspace-ids", version = "0.1.149" }
 workspace-model = { path = "crates/workspace-model", version = "0.1.149" }
 central-storage = { path = "crates/central-storage", version = "0.1.149" }

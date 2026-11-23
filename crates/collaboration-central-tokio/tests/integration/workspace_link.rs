@@ -45,6 +45,7 @@ async fn ordinary_client_uses_installation_and_receives_correlated_workspace_and
     let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
         return Err("client did not connect".into());
     };
+    client.dial_started(&attempt)?;
     let mut socket = fixture.connect().await?;
 
     // Act / Assert: Welcome and storage must use the same Router machine id.
@@ -63,6 +64,7 @@ async fn ordinary_client_uses_installation_and_receives_correlated_workspace_and
         client.receive(&attempt, welcome)?,
         ClientEvent::Welcomed { .. }
     ));
+    client.ready(&attempt)?;
     let runtime = fixture
         .host
         .central(&signed::ORGANIZATION.to_owned().try_into()?)
@@ -137,8 +139,10 @@ async fn semantic_requests_recheck_caller_and_original_grant_expiry() -> Result<
     let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
         return Err("client did not connect".into());
     };
+    client.dial_started(&attempt)?;
     let mut socket = fixture.connect().await?;
     client.receive(&attempt, receive(&mut socket).await?)?;
+    client.ready(&attempt)?;
     let payload = |request_id| -> Result<RequestPayload> {
         Ok(RequestPayload::Workspace(serde_json::from_value(json!({
             "requestId":request_id,"workspaceId":null,"operation":{"kind":"createWorkspace","name":"Must not create"},

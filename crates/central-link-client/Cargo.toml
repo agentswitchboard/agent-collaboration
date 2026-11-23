@@ -11,12 +11,13 @@ central-link-protocol.workspace = true
 workspace-ids.workspace = true
 workspace-model.workspace = true
 router-clock.workspace = true
+serde_json.workspace = true
 thiserror.workspace = true
+tokio = { version = "1.53.3", default-features = false, features = ["sync"] }
 uuid.workspace = true
 
 [dev-dependencies]
 router-clock = { workspace = true, features = ["test-support"] }
-serde_json.workspace = true
 
 [lints]
 workspace = true
