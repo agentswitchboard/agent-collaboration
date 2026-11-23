@@ -7,6 +7,7 @@ mod faulted_overlay;
 mod faulted_recovery;
 mod faulty_outbox;
 mod inbox_custody;
+mod local_store_maintenance;
 mod outbox_timing;
 mod same_mac;
 mod sender_notice_recovery;

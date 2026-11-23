@@ -584,6 +584,22 @@ impl CustodyLink {
             .await?)
     }
 
+    pub(crate) async fn next_inbox_retention(
+        &mut self,
+    ) -> Result<Option<ClockInstant>, InboxCustodyError> {
+        let deadline = self.inbox.lock().await.next_retention_deadline().await?;
+        let now_ms = self.clock.now().unix_millis();
+        let observed_at = self.clock.monotonic_now();
+        Ok(deadline.map(|deadline| {
+            let delay = deadline.saturating_sub(now_ms);
+            observed_at.after(Duration::from_millis(u64::try_from(delay).unwrap_or(0)))
+        }))
+    }
+
+    pub(crate) async fn prune_inbox(&mut self) -> Result<(), InboxCustodyError> {
+        self.inbox.lock().await.prune_completed().await
+    }
+
     pub(crate) async fn next_inbox_minute(
         &mut self,
         last_mark: Option<SyncTime>,

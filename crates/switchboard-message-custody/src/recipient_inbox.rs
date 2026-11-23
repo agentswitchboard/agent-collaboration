@@ -292,6 +292,20 @@ impl RecipientInbox {
         Ok(())
     }
 
+    pub(crate) async fn next_retention_deadline(
+        &mut self,
+    ) -> Result<Option<i64>, InboxCustodyError> {
+        let scan = self.store.next_prune_at_ms().await?;
+        Ok(inbox_scan(scan, &mut self.operator_events))
+    }
+
+    pub(crate) async fn prune_completed(&mut self) -> Result<(), InboxCustodyError> {
+        let now_ms = self.clock.now().unix_millis();
+        let scan = self.store.prune_ended(now_ms).await?;
+        inbox_scan(scan, &mut self.operator_events);
+        Ok(())
+    }
+
     /// Prepare durable decisions for the connection the driver declares ready.
     pub async fn prepare_receipts(
         &mut self,

@@ -220,6 +220,7 @@ async fn run_custody(
     let mut retry_store_at = None;
     report_flush(&*sink, custody.recover_outbox().await);
     let mut retry_notices_at = project_sender_notices(&mut custody, &*sink).await;
+    let mut retention_at = next_retention(&mut custody, &*sink).await;
 
     loop {
         let now = clock.monotonic_now();
@@ -259,6 +260,7 @@ async fn run_custody(
                         }
                         if sender_notice_saved {
                             retry_notices_at = project_sender_notices(&mut custody, &*sink).await;
+                            retention_at = next_retention(&mut custody, &*sink).await;
                         }
                     }
                     Some(Err(error)) => sink.record_event(CustodyTaskEvent::Failed(error.into())),
@@ -275,6 +277,7 @@ async fn run_custody(
                     Ok(outcome) => sink.record_event(CustodyTaskEvent::Receipt(outcome)),
                     Err(error) => sink.record_event(CustodyTaskEvent::Failed(error)),
                 }
+                retention_at = next_retention(&mut custody, &*sink).await;
             },
             () = sleep_until(clock.as_ref(), deadline_wake) => {
                 let ended = custody.end_due_writes().await;
@@ -283,6 +286,16 @@ async fn run_custody(
             },
             () = sleep_until(clock.as_ref(), retry_notices_at) => {
                 retry_notices_at = project_sender_notices(&mut custody, &*sink).await;
+                retention_at = next_retention(&mut custody, &*sink).await;
+            },
+            () = sleep_until(clock.as_ref(), retention_at) => {
+                retention_at = match custody.prune_inbox().await {
+                    Ok(()) => next_retention(&mut custody, &*sink).await,
+                    Err(error) => {
+                        sink.record_event(CustodyTaskEvent::Failed(error.into()));
+                        Some(custody.local_retry_mark())
+                    }
+                };
             },
             () = sleep_until(clock.as_ref(), write_wake), if writes.is_none() => {
                 match custody.prepare_write_turn().await {
@@ -417,6 +430,19 @@ async fn project_sender_notices(
         sink.record_event(CustodyTaskEvent::Failed(error));
     }
     retry
+}
+
+async fn next_retention(
+    custody: &mut CustodyLink,
+    sink: &dyn CustodyEventSink,
+) -> Option<ClockInstant> {
+    match custody.next_inbox_retention().await {
+        Ok(wake) => wake,
+        Err(error) => {
+            sink.record_event(CustodyTaskEvent::Failed(error.into()));
+            Some(custody.local_retry_mark())
+        }
+    }
 }
 
 async fn poll_job<T>(job: &mut Option<InFlight<T>>) -> T {
