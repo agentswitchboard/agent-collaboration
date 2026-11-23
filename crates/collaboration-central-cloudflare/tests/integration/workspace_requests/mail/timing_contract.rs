@@ -324,7 +324,7 @@ pub(super) async fn exercise_timing_contract(f: &mut Fixture) {
     let earliest_cancel = r
         .statement_host()
         .read(super::super::Statement {
-            sql: "SELECT MIN(cancel_due_at) FROM mail_messages WHERE state='queued'",
+            sql: "SELECT MIN(cancel_due_at) FROM mail_messages WHERE message_kind='direct' AND state IN ('queued','delivered') AND deadline_settled_at IS NULL",
             args: vec![],
         })
         .await

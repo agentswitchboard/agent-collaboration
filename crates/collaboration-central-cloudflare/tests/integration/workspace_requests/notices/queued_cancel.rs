@@ -11,6 +11,8 @@ async fn leave_cancels_the_fired_collated_message_but_not_direct_mail() {
     let thread = f.thread(7401, area).await;
     let (observer, recipient) = joined_observer(&f, &thread).await;
     created(f.call(7402, post(&thread, vec![])).await);
+    // Put the direct cutoff after this notice's 15-minute mark.
+    f.clock.0.fetch_add(1_000, Ordering::SeqCst);
     let direct = f
         .host
         .request_central(
@@ -35,7 +37,7 @@ async fn leave_cancels_the_fired_collated_message_but_not_direct_mail() {
         panic!("direct send refused: {direct:?}")
     };
     let runtime = f.host.central(&f.caller.organization_id).await;
-    f.clock.0.fetch_add(900_000, Ordering::SeqCst);
+    f.clock.0.fetch_add(899_000, Ordering::SeqCst);
     // The observer's join also opened a window for the thread creator.
     assert_eq!(runtime.after_event().await.unwrap().windows_fired, 2);
     let query = || Statement {

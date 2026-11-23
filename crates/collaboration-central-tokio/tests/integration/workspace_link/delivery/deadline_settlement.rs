@@ -161,13 +161,14 @@ async fn settlement_journey(fixture: &Fixture) -> Result<()> {
     .await?;
     send(&mut reopened, &LinkFrame::Ping).await?;
     assert_eq!(receive(&mut reopened).await?, LinkFrame::Pong);
+    let settled_at = text(deadline.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
     assert_eq!(
-        store.read(read_evidence(delivered)).await?.rows[0][0],
-        text("seen")
+        store.read(read_evidence(delivered)).await?.rows,
+        [[text("seen"), settled_at.clone()]]
     );
     assert_eq!(
-        store.read(read_evidence(unreceived)).await?.rows[0][0],
-        text("refused")
+        store.read(read_evidence(unreceived)).await?.rows,
+        [[text("refused"), settled_at]]
     );
     fixture
         .clock
