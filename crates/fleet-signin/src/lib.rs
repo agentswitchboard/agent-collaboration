@@ -1,6 +1,9 @@
 //! The organization's stamp and configured issuer trust.
 #![forbid(unsafe_code)]
 
+mod fleet_permission;
+pub use fleet_permission::FleetPermission;
+
 mod issuer_key_cache;
 mod issuer_key_resolution;
 mod issuer_signature_verifier;

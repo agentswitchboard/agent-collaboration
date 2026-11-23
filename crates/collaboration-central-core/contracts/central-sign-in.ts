@@ -182,6 +182,8 @@ export type EnrollPermission = "machine:enroll";
 
 export type EnrollmentId = RecordId;
 
+export type FleetPermission = "workspace:create" | "workspaceAdmin:allowMachine" | "workspaceAdmin:withdrawMachine" | "workspaceAdmin:removeSession" | "machine:enroll" | "machine:revoke" | "machine:setTokenLifetime" | "organization:view" | "organization:readAudit" | "approval:decide" | "organization:repairWork";
+
 /**  The provider's opaque, nonempty signing key identifier. */
 export type IssuerKeyId = string;
 
@@ -310,7 +312,7 @@ export type OrganizationAdminIntent_Serialize = OrganizationAdminIntentWire_Seri
 export type OrganizationAdminResult = OrganizationAdminResult_Serialize | OrganizationAdminResult_Deserialize;
 
 /**  The closed body of a 200 on an admin route. */
-export type OrganizationAdminResult_Deserialize = { result: "applied"; workspace: WorkspaceView_Deserialize } | { result: "found"; workspace?: WorkspaceView_Deserialize | null } | { result: "records"; records: OrganizationChangeRecord[] } | { result: "engineHealth"; kinds: EngineKindHealth_Deserialize[]; alarm?: string | null; alarmMissing: boolean } | { result: "engineRetired"; items: EngineRetiredItem_Deserialize[]; next?: string | null } | { result: "engineRetried" } | { result: "engineDiscarded" } | { result: "refused"; reason: AdminRefusal };
+export type OrganizationAdminResult_Deserialize = { result: "applied"; workspace: WorkspaceView_Deserialize } | { result: "found"; workspace?: WorkspaceView_Deserialize | null } | { result: "records"; records: OrganizationChangeRecord[] } | { result: "engineHealth"; kinds: EngineKindHealth_Deserialize[]; alarm?: string | null; alarmMissing: boolean } | { result: "engineRetired"; items: EngineRetiredItem_Deserialize[]; next: string | null } | { result: "engineRetried" } | { result: "engineDiscarded" } | { result: "refused"; reason: AdminRefusal };
 
 /**  The closed body of a 200 on an admin route. */
 export type OrganizationAdminResult_Serialize = { result: "applied"; workspace: WorkspaceView_Serialize } | { result: "found"; workspace: WorkspaceView_Serialize | null } | { result: "records"; records: OrganizationChangeRecord[] } | { result: "engineHealth"; kinds: EngineKindHealth_Serialize[]; alarm: string | null; alarmMissing: boolean } | { result: "engineRetired"; items: EngineRetiredItem_Serialize[]; next: string | null } | { result: "engineRetried" } | { result: "engineDiscarded" } | { result: "refused"; reason: AdminRefusal };
