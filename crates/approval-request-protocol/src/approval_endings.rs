@@ -3,7 +3,9 @@ use crate::approval_wire_codec::approval_wire_union;
 use serde::{Deserialize, Serialize};
 use workspace_ids::{CentralSessionId, PersonId};
 
-use crate::{ApprovalDigestError, InvalidAnswer, ProviderAnswer, SessionCallDecision};
+use crate::{
+    ApprovalDigestError, CallStopCause, InvalidAnswer, ProviderAnswer, SessionCallDecision,
+};
 
 approval_wire_union! {
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -53,6 +55,17 @@ pub enum HolderStopCause {
     ProviderConnectionLost,
     CallWithdrawn,
     HolderRefusedLocally,
+}
+
+impl HolderStopCause {
+    /// Returns the cause recorded in a holder ending for a parked call.
+    #[must_use]
+    pub const fn from_call(cause: CallStopCause) -> Self {
+        match cause {
+            CallStopCause::CallWithdrawn => Self::CallWithdrawn,
+            CallStopCause::HolderRefusedLocally => Self::HolderRefusedLocally,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]

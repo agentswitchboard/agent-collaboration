@@ -11,8 +11,8 @@
 use serde::{Deserialize, Serialize};
 use workspace_ids::{CentralSessionId, RouterRunId};
 
+use crate::SessionCallWorkFolder;
 use crate::approval_wire_codec::{approval_wire_record, approval_wire_union};
-use crate::{HolderStopCause, SessionCallWorkFolder};
 
 macro_rules! wire_string {
     ($name:ident { $($(#[$attribute:meta])* $variant:ident => $value:literal),+ $(,)? }) => {
@@ -115,14 +115,3 @@ wire_string!(CallStopCause {
     /// The holder has already given the requester a final local refusal.
     HolderRefusedLocally => "holderRefusedLocally",
 });
-
-impl CallStopCause {
-    /// Returns the cause recorded in a holder ending.
-    #[must_use]
-    pub const fn holder_cause(self) -> HolderStopCause {
-        match self {
-            Self::CallWithdrawn => HolderStopCause::CallWithdrawn,
-            Self::HolderRefusedLocally => HolderStopCause::HolderRefusedLocally,
-        }
-    }
-}

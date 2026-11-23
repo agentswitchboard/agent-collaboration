@@ -379,7 +379,7 @@ impl ParkedCallEnding {
             ParkedCallEnding::Cancelled { reason } => Ending::Cancelled {
                 reason: match reason {
                     CallCancellation::Stopped { cause } => CancelReason::Stopped {
-                        cause: cause.holder_cause(),
+                        cause: HolderStopCause::from_call(cause),
                     },
                     CallCancellation::RequesterGone {} => CancelReason::RequesterGone {},
                     CallCancellation::EnrollmentEnded {} => CancelReason::EnrollmentEnded {},
