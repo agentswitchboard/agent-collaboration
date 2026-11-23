@@ -110,7 +110,7 @@ impl MacOutbox<'_> {
         Ok(pending)
     }
 
-    /// The caller's recently answered writes, newest answer first.
+    /// The caller's recorded results, newest known answer first, followed by results with no answer time.
     pub async fn outgoing_for(
         &mut self,
         caller: &Caller,
@@ -119,13 +119,18 @@ impl MacOutbox<'_> {
         let caller_json = serde_json::to_string(caller)?;
         let answered = OutboxItemState::Answered.as_str();
         let refused = OutboxItemState::Refused.as_str();
+        let unconfirmed = OutboxItemState::Unconfirmed.as_str();
         let limit = i64::from(limit);
         let rows = select_outbox_rows!(
-            r#"WHERE caller_json = ? AND item_state IN (?, ?)
-               ORDER BY updated_at DESC, request_id DESC LIMIT ?"#,
+            r#"WHERE caller_json = ?
+               AND (item_state IN (?, ?) OR (item_state = ? AND outcome_json IS NOT NULL))
+               ORDER BY CASE WHEN item_state = ? THEN NULL ELSE updated_at END DESC,
+                        request_id DESC LIMIT ?"#,
             caller_json,
             answered,
             refused,
+            unconfirmed,
+            unconfirmed,
             limit
         )
         .fetch_all(&mut self.store.connection)
@@ -134,7 +139,8 @@ impl MacOutbox<'_> {
         for row in rows {
             let stored = decode_owned_row(&row, caller)?;
             let request_id = stored.request;
-            let answered_at_ms = stored.updated_at_ms;
+            let answered_at_ms =
+                (stored.state != OutboxItemState::Unconfirmed).then_some(stored.updated_at_ms);
             let StoredPayload::Answered(answered) = stored.payload else {
                 return Err(corrupt_row(request_id.as_str(), "payload_json"));
             };
