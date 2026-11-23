@@ -303,31 +303,23 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         else {
             return Ok(DispatchedCentralCall::refused(LinkCallRefusal::UnknownCall));
         };
-        let project_lookup = match &request {
-            CentralCall::CreateFleetSession(envelope)
-                if &envelope.target == machine.organization_id() =>
-            {
-                match &envelope.body.project {
-                    StartProject::Named { project_ref }
-                        if machine_can_start_in_workspace(
-                            self.execution.statement_host(),
-                            machine.machine_id(),
-                            &project_ref.workspace,
-                        )
-                        .await? =>
-                    {
-                        SessionProjectLookup::Named {
-                            workspace: project_ref.workspace.clone(),
-                            project: project_ref.project.clone(),
-                            result: self.execution.read_session_start_project(project_ref).await,
-                        }
-                    }
-                    StartProject::Named { .. } | StartProject::SameAsParent {} => {
-                        SessionProjectLookup::NotRead
-                    }
-                }
+        let project_lookup = if let CentralCall::CreateFleetSession(envelope) = &request
+            && &envelope.target == machine.organization_id()
+            && let StartProject::Named { project_ref } = &envelope.body.project
+            && machine_can_start_in_workspace(
+                self.execution.statement_host(),
+                machine.machine_id(),
+                &project_ref.workspace,
+            )
+            .await?
+        {
+            SessionProjectLookup::Named {
+                workspace: project_ref.workspace.clone(),
+                project: project_ref.project.clone(),
+                result: self.execution.read_session_start_project(project_ref).await,
             }
-            _ => SessionProjectLookup::NotRead,
+        } else {
+            SessionProjectLookup::NotRead
         };
         let requested_run = match &request {
             CentralCall::RegisterRun(envelope)
