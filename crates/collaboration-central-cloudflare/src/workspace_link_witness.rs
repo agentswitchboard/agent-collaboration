@@ -72,8 +72,8 @@ pub(super) fn capture_alarm_inputs(
     }
     let inputs = Arc::new(Mutex::new(None));
     let applying = inputs.clone();
-    let observed: EngineAlarmDecider = Arc::new(move |times, now, write| {
-        let decision = decider(times, now, write)?;
+    let observed: EngineAlarmDecider = Arc::new(move |times, now, read_retained, write| {
+        let decision = decider(times, now, read_retained, write)?;
         *applying.lock().unwrap_or_else(PoisonError::into_inner) = Some(times);
         Ok(decision)
     });

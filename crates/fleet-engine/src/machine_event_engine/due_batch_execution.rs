@@ -54,6 +54,7 @@ pub trait TimedDueDispatch<Host: EngineHost>: Send + Sync {
         host: &Host,
         kind: Self::TimedSourceKind,
         row: DueRow,
+        previous_batch_start: Option<EngineTime>,
     ) -> impl Future<Output = TimedRowOutcome> + Send;
 }
 pub struct WholeDueUnitControl {
@@ -142,16 +143,15 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
         &self,
         trigger: fleet_runtime::DueBatchTrigger,
     ) -> Result<EventCompletion, AlarmNotPublished> {
-        let now = self
-            .current_engine_time()
-            .map_err(|failure| AlarmNotPublished { failure })?;
         let due_batch = self
             .due_batch_state()
-            .begin_batch(now, DueBatchPolicy::DEFAULT.spacing, trigger)
+            .begin_batch(
+                || self.current_engine_time(),
+                DueBatchPolicy::DEFAULT.spacing,
+                trigger,
+            )
             .await
-            .map_err(|reason| AlarmNotPublished {
-                failure: StoreFailure::AlarmUnpublishable { reason },
-            })?;
+            .map_err(|failure| AlarmNotPublished { failure })?;
         let provisioned = self
             .0
             .organization_is_provisioned()
@@ -166,7 +166,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
         }
         let mut due_work_result = AlarmResult::default();
         if let Some(claim) = due_batch {
-            due_work_result = self.run_due_batch(now, claim).await;
+            due_work_result = self.run_due_batch(claim).await;
         }
         let publication = self
             .publish_engine_alarm(EngineAlarmPlan::Recompute)
@@ -209,11 +209,9 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
         }
     }
 
-    async fn run_due_batch(
-        &self,
-        now: EngineTime,
-        claim: fleet_runtime::DueBatchClaim<'_>,
-    ) -> AlarmResult {
+    async fn run_due_batch(&self, claim: fleet_runtime::DueBatchClaim<'_>) -> AlarmResult {
+        let now = claim.started_at();
+        let previous_batch_start = claim.previous_start();
         let policy = DueBatchPolicy::DEFAULT;
         let Some(horizon) = now
             .checked_add_signed(policy.look_ahead)
@@ -319,8 +317,9 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                         #[cfg(feature = "test-support")]
                         self.due_batch_state()
                             .record_unit_start(unit.build_due_unit_start_receipt(now));
-                        let (due_work_result, central_store_failed) =
-                            self.dispatch_due_batch_unit(unit, now).await;
+                        let (due_work_result, central_store_failed) = self
+                            .dispatch_due_batch_unit(unit, now, previous_batch_start)
+                            .await;
                         if central_store_failed {
                             stop_after_store_failure.store(true, Ordering::Release);
                         }
@@ -342,13 +341,14 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
             Host::WholeUnitKind,
         >,
         now: EngineTime,
+        previous_batch_start: Option<EngineTime>,
     ) -> (AlarmResult, bool) {
         match unit {
             DueBatchUnit::TimedMachineRow(kind, _, row) => {
                 match self
                     .0
                     .timed_due_dispatch()
-                    .dispatch_timed_due_row(self, self.0, kind, row)
+                    .dispatch_timed_due_row(self, self.0, kind, row, previous_batch_start)
                     .await
                 {
                     TimedRowOutcome::Handled(work) => (work, false),
@@ -490,7 +490,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
         adapter: &SubjectStore,
         row: DueRow,
         due_column: &'static str,
-        due_event: fn(EngineTime) -> SubjectMachine::Event,
+        due_event: impl FnOnce(EngineTime) -> SubjectMachine::Event + Send,
     ) -> (bool, bool)
     where
         SubjectMachine: central_engine_model::Machine,

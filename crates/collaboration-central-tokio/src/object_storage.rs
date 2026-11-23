@@ -192,8 +192,10 @@ impl ObjectStorage {
         if let Some(result) = commit_fault.as_ref().and_then(|fault| fault.before()) {
             return result;
         }
-        if matches!(&batch.alarm, central_storage::AlarmUpdate::Engine(_))
-            && self.engine_publication.is_none()
+        if matches!(
+            &batch.alarm,
+            central_storage::AlarmUpdate::Engine(central_storage::EngineAlarmPlan::Recompute)
+        ) && self.engine_publication.is_none()
         {
             return Err(StoreFailure::AlarmUnpublishable {
                 reason: AlarmPublicationFailure::ClockUnavailable,
@@ -287,6 +289,7 @@ impl ObjectStorage {
                     earliest_legacy_due_unix_millis: legacy,
                 },
                 publication.clock.now().unix_millis(),
+                &|| (*self.alarm.borrow()).map(SyncTime::unix_millis),
                 &mut write,
             )
         };

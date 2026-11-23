@@ -56,6 +56,7 @@ async fn due_comparison_identifies_missing_wrong_stale_and_out_of_band_rows() {
     let due = EngineTime::from_timestamp_millis(300_000).unwrap();
 
     let alarm = AlarmInputs {
+        retained_mark: None,
         now: epoch,
         last_batch_start: None,
         leftovers_beyond_cap: false,
@@ -204,6 +205,7 @@ async fn differences(connection: &mut SqliteConnection) -> Vec<DueTableDifferenc
         horizon,
         1,
         AlarmInputs {
+            retained_mark: None,
             now: EngineTime::UNIX_EPOCH,
             last_batch_start: None,
             leftovers_beyond_cap: false,

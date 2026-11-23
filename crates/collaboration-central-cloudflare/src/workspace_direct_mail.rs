@@ -58,8 +58,8 @@ impl CentralStatements {
         #[cfg(feature = "test-support")]
         {
             let zero_next = self.zero_next_write_alarm.clone();
-            std::sync::Arc::new(move |times, now, publish| {
-                let value = decider(times, now, publish)?;
+            std::sync::Arc::new(move |times, now, read_retained, publish| {
+                let value = decider(times, now, read_retained, publish)?;
                 if zero_next.swap(false, std::sync::atomic::Ordering::SeqCst) {
                     Ok(Some(0))
                 } else {

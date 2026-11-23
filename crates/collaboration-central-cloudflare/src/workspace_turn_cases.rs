@@ -16,6 +16,7 @@ pub(super) async fn control(
             if !matches!(
                 point,
                 Point::BeforeTimerCommit
+                    | Point::BeforeWakeRequestCommit
                     | Point::BeforeReceiptTransaction
                     | Point::BeforeSessionTransaction
                     | Point::AfterIdleExpiryCommit

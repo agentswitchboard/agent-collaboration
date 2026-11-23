@@ -1,4 +1,5 @@
 //! Central mail and timer behavior through the native runtime and SQLite owner.
+mod automation_live_cap;
 mod automation_occurrences;
 mod automations;
 mod corruption;
@@ -9,6 +10,7 @@ mod direct_receipt_sequences;
 mod due_table_history;
 
 mod message_status;
+mod overdue_wakes;
 mod requests;
 mod stored_row_use;
 mod wakes;
@@ -32,7 +34,9 @@ mod replay_failures;
 mod engine_alarm;
 mod engine_alarm_input_parity;
 mod engine_alarm_readback;
+mod engine_alarm_retention;
 mod engine_attempts;
+mod engine_claim_clock;
 mod engine_drive_gate;
 mod engine_event_support;
 mod engine_failure_overlap;

@@ -35,12 +35,13 @@ impl StateTag for State {
 #[derive(Clone)]
 pub enum Event {
     Due { occurrence: EngineTime },
+    DeferredDue { occurrence: EngineTime },
     Disable,
 }
 impl EventTag for Event {
     fn event_tag(&self) -> &'static str {
         match self {
-            Self::Due { .. } => "due",
+            Self::Due { .. } | Self::DeferredDue { .. } => "due",
             Self::Disable => "disable",
         }
     }
@@ -71,11 +72,18 @@ impl Machine for AutomationTimer {
         context: &mut Context<'_>,
     ) -> Result<(State, Vec<Effect>), TransitionError<TimerRefusal>> {
         match (state, event) {
-            (State::Active(row), Event::Due { occurrence }) => {
+            (
+                State::Active(row),
+                due_event @ (Event::Due { occurrence } | Event::DeferredDue { occurrence }),
+            ) => {
                 if row.due != Some(occurrence) {
                     return Err(TransitionError::Stale);
                 }
-                let through = occurrence.max(context.now);
+                let through = if matches!(due_event, Event::DeferredDue { .. }) {
+                    occurrence
+                } else {
+                    occurrence.max(context.now)
+                };
                 let due = row
                     .timing
                     .next_due(row.anchor, Some(through))
@@ -123,9 +131,10 @@ impl Machine for AutomationTimer {
                 },
                 vec![Effect::ClearSchedule],
             )),
-            (State::Done { .. } | State::Disabled { .. }, Event::Due { .. }) => {
-                Err(TransitionError::Stale)
-            }
+            (
+                State::Done { .. } | State::Disabled { .. },
+                Event::Due { .. } | Event::DeferredDue { .. },
+            ) => Err(TransitionError::Stale),
             (State::Done { .. } | State::Disabled { .. }, Event::Disable) => {
                 Err(TransitionError::Domain(TimerRefusal::AlreadyFinished))
             }

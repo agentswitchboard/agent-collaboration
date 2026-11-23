@@ -27,6 +27,7 @@ pub enum PausePoint {
     BeforeDrainCommit,
     AfterDrainCommit,
     BeforeTimerCommit,
+    BeforeWakeRequestCommit,
     BeforeReceiptTransaction,
     BeforeSessionTransaction,
     AfterIdleExpiryCommit,

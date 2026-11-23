@@ -1,5 +1,5 @@
 use central_engine_model::{EngineTime, next_five_minute_mark, supported_time};
-use central_storage::AlarmPublicationFailure;
+use central_storage::{AlarmPublicationFailure, StoreFailure};
 use std::sync::{
     Mutex, MutexGuard, PoisonError,
     atomic::{AtomicI64, Ordering},
@@ -18,7 +18,7 @@ pub enum DueBatchTrigger {
 }
 
 enum ClaimOutcome {
-    Started,
+    Started { previous_start: Option<EngineTime> },
     WaitForEarlierClaim,
     Deferred,
 }
@@ -27,19 +27,32 @@ enum ClaimOutcome {
 /// Only capped batches keep this protection while applying their selected rows.
 pub struct DueBatchClaim<'state> {
     state: &'state DueBatchState,
-    start: i64,
+    started_at: EngineTime,
+    previous_start: Option<EngineTime>,
 }
 
 impl DueBatchClaim<'_> {
+    pub fn started_at(&self) -> EngineTime {
+        self.started_at
+    }
+
+    pub fn previous_start(&self) -> Option<EngineTime> {
+        self.previous_start
+    }
+
     pub fn record_selection(&self, has_leftovers: bool) {
-        self.state
-            .update_claim(self.start, Some(has_leftovers), has_leftovers);
+        self.state.update_claim(
+            self.started_at.timestamp_millis(),
+            Some(has_leftovers),
+            has_leftovers,
+        );
     }
 }
 
 impl Drop for DueBatchClaim<'_> {
     fn drop(&mut self) {
-        self.state.update_claim(self.start, None, false);
+        self.state
+            .update_claim(self.started_at.timestamp_millis(), None, false);
     }
 }
 
@@ -120,22 +133,68 @@ impl DueBatchState {
 
     pub async fn begin_batch(
         &self,
-        now: EngineTime,
+        sample_clock: impl Fn() -> Result<EngineTime, StoreFailure>,
         spacing: chrono::Duration,
         trigger: DueBatchTrigger,
-    ) -> Result<Option<DueBatchClaim<'_>>, AlarmPublicationFailure> {
-        let start = now.timestamp_millis();
+    ) -> Result<Option<DueBatchClaim<'_>>, StoreFailure> {
         loop {
             let mut released = std::pin::pin!(self.claim_released.notified());
             if matches!(trigger, DueBatchTrigger::Alarm) {
                 // Subscribe before checking the claim so its release cannot be missed.
                 released.as_mut().enable();
             }
-            match self.claim(now, spacing, trigger, true)? {
-                ClaimOutcome::Started => return Ok(Some(DueBatchClaim { state: self, start })),
+            let (started_at, outcome) = {
+                let _publication = self.claim_lock();
+                let sampled = sample_clock()?;
+                let outcome = self
+                    .claim_at(sampled, spacing, trigger, true)
+                    .map_err(|reason| StoreFailure::AlarmUnpublishable { reason })?;
+                (sampled, outcome)
+            };
+            match outcome {
+                ClaimOutcome::Started { previous_start } => {
+                    return Ok(Some(DueBatchClaim {
+                        state: self,
+                        started_at,
+                        previous_start,
+                    }));
+                }
                 ClaimOutcome::WaitForEarlierClaim => released.await,
                 ClaimOutcome::Deferred => return Ok(None),
             }
+        }
+    }
+
+    /// An accepted wake can mature while its request is applying. Give any
+    /// earlier discovery a chance to establish its cap before admitting the wake.
+    pub async fn admit_overdue_wake(
+        &self,
+        due_at: EngineTime,
+        sample_clock: impl Fn() -> Result<EngineTime, StoreFailure>,
+    ) -> Result<bool, StoreFailure> {
+        loop {
+            let mut released = std::pin::pin!(self.claim_released.notified());
+            released.as_mut().enable();
+            {
+                let _publication = self.claim_lock();
+                let now = sample_clock()?;
+                let prior = self.encoded.load(Ordering::Acquire);
+                let current = snapshot(prior);
+                if now < due_at
+                    || current.leftovers_pending
+                        && current
+                            .last_start_unix_millis
+                            .and_then(EngineTime::from_timestamp_millis)
+                            .and_then(|start| next_five_minute_mark(start).ok())
+                            .is_none_or(|mark| now < mark)
+                {
+                    return Ok(false);
+                }
+                if prior & PROTECTED == 0 {
+                    return Ok(true);
+                }
+            }
+            released.await;
         }
     }
 
@@ -147,13 +206,14 @@ impl DueBatchState {
     ) -> Result<bool, AlarmPublicationFailure> {
         let now = EngineTime::from_timestamp_millis(now_unix_millis)
             .ok_or(AlarmPublicationFailure::NowOutOfRange)?;
+        let _publication = self.claim_lock();
         Ok(matches!(
-            self.claim(now, spacing, DueBatchTrigger::Request, false)?,
-            ClaimOutcome::Started
+            self.claim_at(now, spacing, DueBatchTrigger::Request, false)?,
+            ClaimOutcome::Started { .. }
         ))
     }
 
-    fn claim(
+    fn claim_at(
         &self,
         now: EngineTime,
         spacing: chrono::Duration,
@@ -163,12 +223,16 @@ impl DueBatchState {
         if !supported_time(now) {
             return Err(AlarmPublicationFailure::NowOutOfRange);
         }
-        let _publication = self.claim_lock();
         let prior = self.encoded.load(Ordering::Acquire);
         let current = snapshot(prior);
-        if let Some(start) = current.last_start_unix_millis {
-            let start = EngineTime::from_timestamp_millis(start)
-                .ok_or(AlarmPublicationFailure::NowOutOfRange)?;
+        let previous_start = current
+            .last_start_unix_millis
+            .map(|start| {
+                EngineTime::from_timestamp_millis(start)
+                    .ok_or(AlarmPublicationFailure::NowOutOfRange)
+            })
+            .transpose()?;
+        if let Some(start) = previous_start {
             let reached_next_mark = next_five_minute_mark(start).is_ok_and(|mark| now >= mark);
             if prior & PROTECTED != 0 {
                 return Ok(
@@ -197,7 +261,7 @@ impl DueBatchState {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(now_unix_millis);
-        Ok(ClaimOutcome::Started)
+        Ok(ClaimOutcome::Started { previous_start })
     }
 
     #[cfg(any(test, feature = "test-support"))]

@@ -38,6 +38,7 @@ async fn native_approval_touch_applies_its_deadline_before_the_projected_alarm()
     assert_eq!(alarm_times.earliest_on_grid_due_unix_millis, Some(deadline));
     assert_eq!(
         next_alarm(&AlarmInputs {
+            retained_mark: None,
             now: time(1),
             last_batch_start: None,
             leftovers_beyond_cap: false,

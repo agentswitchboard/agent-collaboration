@@ -1,10 +1,13 @@
-use crate::{EngineTime, aligned_at_or_after, aligned_strictly_after, supported_time};
+use crate::{
+    EngineTime, aligned_at_or_after, aligned_strictly_after, on_five_minute_grid, supported_time,
+};
 
 const FIVE_MINUTE_SECONDS: u32 = 300;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AlarmInputs {
     pub now: EngineTime,
+    pub retained_mark: Option<EngineTime>,
     pub last_batch_start: Option<EngineTime>,
     pub leftovers_beyond_cap: bool,
     pub earliest_on_grid_due: Option<EngineTime>,
@@ -40,9 +43,9 @@ pub fn next_alarm(inputs: &AlarmInputs) -> AlarmDecision {
         .into_iter()
         .chain(inputs.earliest_legacy_due)
         .min();
-    if earliest_due.is_none() && !inputs.leftovers_beyond_cap {
+    let Some(earliest_due) = earliest_due else {
         return AlarmDecision::Clear;
-    }
+    };
     if !supported_time(inputs.now)
         || [inputs.earliest_on_grid_due, inputs.earliest_legacy_due]
             .into_iter()
@@ -51,20 +54,25 @@ pub fn next_alarm(inputs: &AlarmInputs) -> AlarmDecision {
     {
         return AlarmDecision::Unpublishable;
     }
+    if let Some(mark) = inputs.retained_mark
+        && supported_time(mark)
+        && on_five_minute_grid(mark)
+        && earliest_due <= mark
+        && mark <= inputs.now
+        && inputs.last_batch_start.is_none_or(|start| start < mark)
+    {
+        return AlarmDecision::SetAt(mark);
+    }
     let alarm = if inputs.leftovers_beyond_cap {
         inputs.last_batch_start.and_then(|start| {
             supported_time(start)
                 .then_some(start.max(inputs.now))
                 .and_then(|after| next_five_minute_mark(after).ok())
         })
+    } else if earliest_due > inputs.now {
+        aligned_at_or_after(earliest_due, FIVE_MINUTE_SECONDS)
     } else {
-        earliest_due.and_then(|due| {
-            if due > inputs.now {
-                aligned_at_or_after(due, FIVE_MINUTE_SECONDS)
-            } else {
-                next_five_minute_mark(inputs.now).ok()
-            }
-        })
+        next_five_minute_mark(inputs.now).ok()
     };
     alarm.map_or(AlarmDecision::Unpublishable, AlarmDecision::SetAt)
 }

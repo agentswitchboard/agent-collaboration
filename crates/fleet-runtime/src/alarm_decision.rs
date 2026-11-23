@@ -4,7 +4,7 @@ use central_storage::{AlarmPublicationFailure, EngineAlarmDecider};
 use std::sync::Arc;
 
 pub fn engine_alarm_decider(state: Arc<DueBatchState>) -> EngineAlarmDecider {
-    Arc::new(move |times, now_unix_millis, write| {
+    Arc::new(move |times, now_unix_millis, read_retained, write| {
         state.with_publication(|current| {
             let now = EngineTime::from_timestamp_millis(now_unix_millis)
                 .ok_or(AlarmPublicationFailure::NowOutOfRange)?;
@@ -17,6 +17,7 @@ pub fn engine_alarm_decider(state: Arc<DueBatchState>) -> EngineAlarmDecider {
             };
             let inputs = AlarmInputs {
                 now,
+                retained_mark: read_retained().and_then(EngineTime::from_timestamp_millis),
                 last_batch_start: time(current.last_start_unix_millis)?,
                 leftovers_beyond_cap: current.leftovers_pending,
                 earliest_on_grid_due: time(times.earliest_on_grid_due_unix_millis)?,

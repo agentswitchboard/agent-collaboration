@@ -138,10 +138,7 @@ impl SqliteObjectStore {
                 let alarm = match batch.alarm {
                     AlarmUpdate::Unchanged => AlarmChange::Unchanged,
                     AlarmUpdate::SetFromQuery(query) => alarm_from_query(connection, query).await?,
-                    AlarmUpdate::Engine(EngineAlarmPlan::Clear) => AlarmChange::Engine {
-                        earliest_on_grid_due: None,
-                        earliest_legacy_due: None,
-                    },
+                    AlarmUpdate::Engine(EngineAlarmPlan::Clear) => AlarmChange::Clear,
                     AlarmUpdate::Engine(EngineAlarmPlan::Recompute) => {
                         let times = read_engine(connection).await?;
                         AlarmChange::Engine {

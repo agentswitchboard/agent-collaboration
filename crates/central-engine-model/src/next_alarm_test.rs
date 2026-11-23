@@ -6,6 +6,7 @@ fn time(milliseconds: i64) -> EngineTime {
 }
 fn inputs() -> AlarmInputs {
     AlarmInputs {
+        retained_mark: None,
         now: time(300_000),
         last_batch_start: None,
         leftovers_beyond_cap: false,
@@ -42,14 +43,40 @@ fn leftovers_continue_at_the_next_mark_before_a_later_pending_mark() {
 }
 
 #[test]
-fn leftovers_keep_the_continuation_even_without_a_selected_pending_deadline() {
+fn leftovers_do_not_arm_an_idle_object() {
     assert_eq!(
         decide(AlarmInputs {
             last_batch_start: Some(time(300_000)),
             leftovers_beyond_cap: true,
             ..inputs()
         }),
+        AlarmDecision::Clear
+    );
+}
+
+#[test]
+fn due_unclaimed_retained_mark_survives_recomputation() {
+    let pending = AlarmInputs {
+        now: time(300_001),
+        retained_mark: Some(time(300_000)),
+        last_batch_start: Some(time(298_000)),
+        earliest_legacy_due: Some(time(300_000)),
+        ..inputs()
+    };
+    assert_eq!(decide(pending), AlarmDecision::SetAt(time(300_000)));
+    assert_eq!(
+        decide(AlarmInputs {
+            last_batch_start: Some(time(300_000)),
+            ..pending
+        }),
         AlarmDecision::SetAt(time(600_000))
+    );
+    assert_eq!(
+        decide(AlarmInputs {
+            earliest_legacy_due: None,
+            ..pending
+        }),
+        AlarmDecision::Clear
     );
 }
 
@@ -109,6 +136,7 @@ fn the_earlier_due_kind_selects_its_first_available_mark() {
 fn delayed_continuation_moves_to_the_next_future_mark() {
     assert_eq!(
         decide(AlarmInputs {
+            retained_mark: None,
             now: time(360_000),
             last_batch_start: Some(time(300_000)),
             leftovers_beyond_cap: true,
@@ -147,6 +175,7 @@ fn next_mark_handles_negative_times_and_refuses_upper_edge() {
     );
     assert_eq!(
         decide(AlarmInputs {
+            retained_mark: None,
             now: time(last_mark),
             earliest_on_grid_due: Some(time(last_mark)),
             ..inputs()
@@ -178,6 +207,7 @@ fn unsupported_inputs_and_a_continuation_without_start_are_explicit_errors() {
 fn nearby_request_start_does_not_postpone_an_aligned_due_time() {
     assert_eq!(
         decide(AlarmInputs {
+            retained_mark: None,
             now: time(299_999),
             last_batch_start: Some(time(299_998)),
             earliest_legacy_due: Some(time(300_000)),
@@ -192,6 +222,7 @@ fn a_future_time_after_the_final_portable_mark_cannot_be_published() {
     let last_mark = MAX_ALARM_UNIX_MILLIS.div_euclid(300_000) * 300_000;
     assert_eq!(
         decide(AlarmInputs {
+            retained_mark: None,
             now: time(last_mark - 1),
             earliest_legacy_due: Some(time(last_mark + 1)),
             ..inputs()

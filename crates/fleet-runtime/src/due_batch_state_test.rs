@@ -82,7 +82,10 @@ fn a_prepared_publisher_uses_the_latest_capped_batch_mark() {
             .unwrap()
     );
     assert!(state.finish(31_000, true));
-    assert_eq!(decide(times, 32_000, &mut |_| {}), Ok(Some(300_000)));
+    assert_eq!(
+        decide(times, 32_000, &|| None, &mut |_| {}),
+        Ok(Some(300_000))
+    );
 }
 
 #[cfg(feature = "test-support")]
@@ -104,7 +107,7 @@ async fn a_claim_waits_between_the_decision_and_real_watch_publication() {
         let release = release.clone();
         std::thread::spawn(move || {
             let mut ready = Some(ready_send);
-            decide(times, 32_000, &mut |time| {
+            decide(times, 32_000, &|| None, &mut |time| {
                 ready.take().unwrap().send(time).unwrap();
                 release.wait();
                 alarm.send_replace(time);
@@ -123,7 +126,7 @@ async fn a_claim_waits_between_the_decision_and_real_watch_publication() {
                     .unwrap()
             );
             assert!(state.finish(31_000, true));
-            decide(times, 32_000, &mut |time| {
+            decide(times, 32_000, &|| None, &mut |time| {
                 alarm.send_replace(time);
             })
             .unwrap();
@@ -156,8 +159,8 @@ async fn overflow_is_protected_during_selection_and_until_the_next_mark() {
     let state = DueBatchState::default();
     let spacing = chrono::Duration::seconds(30);
     let time = |at| central_engine_model::EngineTime::from_timestamp_millis(at).unwrap();
-    let request = |at| state.begin_batch(time(at), spacing, DueBatchTrigger::Request);
-    let alarm = |at| state.begin_batch(time(at), spacing, DueBatchTrigger::Alarm);
+    let request = |at| state.begin_batch(move || Ok(time(at)), spacing, DueBatchTrigger::Request);
+    let alarm = |at| state.begin_batch(move || Ok(time(at)), spacing, DueBatchTrigger::Alarm);
     let first = alarm(300_000).await.unwrap().unwrap();
     assert!(request(331_000).await.unwrap().is_none());
     first.record_selection(true);
@@ -186,8 +189,8 @@ async fn a_due_alarm_waits_for_the_prior_requests_selection_at_the_mark() {
     let state = DueBatchState::default();
     let spacing = chrono::Duration::seconds(30);
     let time = |at| central_engine_model::EngineTime::from_timestamp_millis(at).unwrap();
-    let request = |at| state.begin_batch(time(at), spacing, DueBatchTrigger::Request);
-    let alarm = |at| state.begin_batch(time(at), spacing, DueBatchTrigger::Alarm);
+    let request = |at| state.begin_batch(move || Ok(time(at)), spacing, DueBatchTrigger::Request);
+    let alarm = |at| state.begin_batch(move || Ok(time(at)), spacing, DueBatchTrigger::Alarm);
     let ordinary = request(298_000).await.unwrap().unwrap();
     let mut marked = std::pin::pin!(alarm(300_000));
     tokio::select! {

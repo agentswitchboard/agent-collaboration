@@ -302,7 +302,7 @@ impl TokioWorkspaceHost {
                     revocation_registry.invalidate_enrollment(&revocation_org, &invalidation);
                 })),
         );
-        central.recompute_alarm().await?;
+        central.recover_cold_alarm().await?;
         self.alarms.lock().await.push(WorkspaceAlarmOwner::start(
             central.clone(),
             self.clock.clone(),

@@ -2,31 +2,31 @@
 use crate::WorkspaceRuntime;
 use central_storage::{GuardedStatement, StoreFailure};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores, workspace_decode_error::corrupt};
+use fleet_wakes::FreshWakeCommand;
 use workspace_model::{Timestamp, central_mail as mail};
 
+type TimerPlan = Result<
+    Result<(Vec<GuardedStatement>, mail::CentralMailAnswer), mail::CentralMailRefusal>,
+    StoreFailure,
+>;
+
 impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores> {
+    pub(crate) async fn plan_fresh_wake(&self, command: FreshWakeCommand<'_>) -> TimerPlan {
+        if !self.known_session(command.target()).await? {
+            return Ok(Err(mail::CentralMailRefusal::UnknownSession {
+                target: command.target().clone(),
+            }));
+        }
+        fleet_wakes::plan_set_wake(command, || self.execution.mint())
+    }
+
     pub(crate) async fn plan_timer_request(
         &self,
         operation: &mail::CentralMailOperation,
         now: Timestamp,
-    ) -> Result<
-        Result<(Vec<GuardedStatement>, mail::CentralMailAnswer), mail::CentralMailRefusal>,
-        StoreFailure,
-    > {
+    ) -> TimerPlan {
         use mail::{CentralMailOperation as Op, CentralMailRefusal as Refusal};
         match operation {
-            Op::SetWake {
-                target,
-                due_at,
-                text,
-            } => {
-                if !self.known_session(target).await? {
-                    return Ok(Err(Refusal::UnknownSession {
-                        target: target.clone(),
-                    }));
-                }
-                fleet_wakes::plan_set_wake(target, *due_at, text, now, || self.execution.mint())
-            }
             Op::CancelWake { wake_id } => {
                 let rows = self
                     .execution
@@ -57,7 +57,9 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                     .await?;
                 fleet_schedules::plan_disable_automation(automation_id, now, &rows)
             }
-            Op::SendMessage { .. } | Op::SetNoticeCadence { .. } => Err(corrupt("timer operation")),
+            Op::SetWake { .. } | Op::SendMessage { .. } | Op::SetNoticeCadence { .. } => {
+                Err(corrupt("timer operation"))
+            }
         }
     }
 }

@@ -465,6 +465,7 @@ impl NativeApprovalStoreFixture {
             evidence: ApprovalTransactionEvidence::default(),
         };
         let inputs = AlarmInputs {
+            retained_mark: None,
             now,
             last_batch_start: None,
             leftovers_beyond_cap: false,

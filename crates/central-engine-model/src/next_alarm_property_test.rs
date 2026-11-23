@@ -30,6 +30,7 @@ fn alarm_properties_cover_supplied_times_and_every_pending_combination(case: Tes
         optional_time()
     };
     let inputs = AlarmInputs {
+        retained_mark: None,
         now: draw_time(),
         last_batch_start,
         leftovers_beyond_cap,
@@ -43,7 +44,9 @@ fn alarm_properties_cover_supplied_times_and_every_pending_combination(case: Tes
         .into_iter()
         .flatten()
         .min();
-    let expected = if let Some(start) = last_batch_start.filter(|_| leftovers_beyond_cap) {
+    let expected = if let (Some(start), Some(_)) =
+        (last_batch_start.filter(|_| leftovers_beyond_cap), exact_due)
+    {
         Some(next_mark(now.max(start.timestamp_millis())))
     } else {
         exact_due.map(|due| {

@@ -40,6 +40,70 @@ async fn last_receipt(runtime: &Runtime) -> AlarmReceipt {
 }
 
 #[tokio::test]
+async fn a_failed_alarm_drive_rearms_the_next_mark_and_recovers_pending_work() {
+    let fixture = Fixture::new().await;
+    let runtime = runtime(&fixture).await;
+    let start = now(&fixture);
+    let first_mark = at(start, 5, 0, 0);
+    let retry_mark = at(start, 10, 0, 0);
+    let later_mark = at(start, 20, 0, 0);
+    let first_wake = set_wake(&fixture, 29990, first_mark).await;
+    let later_wake = set_wake(&fixture, 29991, later_mark).await;
+    assert_eq!(alarm_ms(&runtime).await, ms(first_mark));
+    assert!(
+        runtime
+            .control::<bool>("fail-alarm-batch", &StoreFailure::Unavailable)
+            .await
+            .unwrap()
+    );
+
+    set_now(&fixture, first_mark);
+    assert_eq!(
+        runtime.dispatch_due_alarm().await,
+        Err(StoreFailure::Unavailable),
+        "the callback drive's closing publication failed"
+    );
+    assert_eq!(
+        alarm_ms(&runtime).await,
+        ms(retry_mark),
+        "the failed drive separately retained the next grid mark"
+    );
+    let receipt = last_receipt(&runtime).await;
+    assert_eq!(receipt.alarm_after, ms(retry_mark));
+    assert!(matches!(
+        receipt.result,
+        AlarmReceiptResult::Error {
+            failure: Some(StoreFailure::Unavailable),
+            ..
+        }
+    ));
+
+    set_now(&fixture, retry_mark);
+    let retry = runtime.dispatch_due_alarm().await.unwrap().unwrap();
+    assert_eq!(retry.wakes_fired, 0);
+    assert_eq!(alarm_ms(&runtime).await, ms(later_mark));
+    assert_eq!(wake_state(&runtime, &first_wake).await, text("done"));
+    assert_eq!(wake_state(&runtime, &later_wake).await, text("active"));
+
+    set_now(&fixture, later_mark);
+    let recovered = runtime.dispatch_due_alarm().await.unwrap().unwrap();
+    assert_eq!(recovered.wakes_fired, 1);
+    assert_eq!(wake_state(&runtime, &later_wake).await, text("done"));
+    assert_eq!(alarm_ms(&runtime).await, None);
+    assert_eq!(
+        count(
+            &runtime,
+            "SELECT COUNT(*) FROM mail_messages WHERE message_kind='wake'",
+            vec![],
+        )
+        .await,
+        2,
+        "the committed first wake and the pending wake each fired once"
+    );
+    fixture.host.close().await;
+}
+
+#[tokio::test]
 async fn an_unpublishable_request_batch_rolls_back_inside_its_transaction() {
     let mut fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
@@ -130,15 +194,20 @@ async fn with_no_later_mark_the_cold_handler_fails_and_fires_nothing() {
     );
     let receipt = last_receipt(&cold).await;
     assert!(receipt.initialized_cold);
-    assert!(matches!(
-        receipt.result,
-        AlarmReceiptResult::Error {
-            failure: Some(StoreFailure::AlarmUnpublishable {
-                reason: AlarmPublicationFailure::NoLaterGridMark
+    let AlarmReceiptResult::Error {
+        message,
+        failure:
+            Some(StoreFailure::AlarmUnpublishable {
+                reason: AlarmPublicationFailure::NoLaterGridMark,
             }),
-            ..
-        }
-    ));
+    } = receipt.result
+    else {
+        panic!("the receipt must retain the original drive failure");
+    };
+    assert!(
+        message.contains("Alarm re-arm failed: no later five-minute mark"),
+        "the receipt also reports the separate re-arm failure: {message}"
+    );
     assert!(callbacks(&cold).await > before, "the real handler ran");
     // Reads go through a fresh runtime, whose startup publication fails the
     // same way; only the restored time lets the store be read back.

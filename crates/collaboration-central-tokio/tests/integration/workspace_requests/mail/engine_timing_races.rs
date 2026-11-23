@@ -208,8 +208,8 @@ async fn a_claim_waits_for_a_publication_between_its_decision_and_its_write() {
     let decide = fleet_runtime::engine_alarm_decider(due_batches.clone());
     let gated: central_storage::EngineAlarmDecider = Arc::new({
         let gate = gate.clone();
-        move |times, now, write| {
-            decide(times, now, &mut |time| {
+        move |times, now, read_retained, write| {
+            decide(times, now, read_retained, &mut |time| {
                 let armed = gate.lock().unwrap_or_else(PoisonError::into_inner).take();
                 if let Some(armed) = armed {
                     armed.decided.send(time).unwrap();

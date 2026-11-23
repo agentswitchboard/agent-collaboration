@@ -1,0 +1,103 @@
+use super::super::{
+    Statement,
+    support::{Fixture, id, session, text},
+};
+use super::engine_event_support::{at, count, ms, stamp};
+use super::engine_probe_support::{alarm_ms, now, runtime, set_now};
+use central_storage::SqlValue;
+use workspace_model::central_mail::{
+    CentralMailAnswer, CentralMailOperation, CentralMailRequest, CentralMailResult,
+};
+
+#[tokio::test]
+async fn live_capped_schedule_queues_each_occurrence_once() {
+    let fixture = Fixture::new().await;
+    let runtime = runtime(&fixture).await;
+    let start = now(&fixture);
+    set_now(&fixture, at(start, 0, 1, 0));
+    let first_mark = at(start, 5, 0, 0);
+    let second_mark = at(start, 10, 0, 0);
+    let third_mark = at(start, 15, 0, 0);
+
+    let mut automation_ids = Vec::new();
+    for index in 0..251 {
+        let result = fixture
+            .host
+            .request_central(
+                &fixture.caller,
+                CentralMailRequest {
+                    request_id: id(49000 + index),
+                    operation: CentralMailOperation::SetAutomation {
+                        target: session(&fixture.caller),
+                        timing: serde_json::from_str(r#"{"kind":"interval","seconds":300}"#)
+                            .unwrap(),
+                        text: "five-minute recurrence".to_owned().try_into().unwrap(),
+                    },
+                },
+            )
+            .await
+            .unwrap();
+        let CentralMailResult::Done(CentralMailAnswer::AutomationSet {
+            automation_id,
+            next_due_at,
+            ..
+        }) = result
+        else {
+            panic!("schedule creation failed: {result:?}");
+        };
+        assert_eq!(next_due_at, Some(first_mark));
+        automation_ids.push(automation_id.to_string());
+    }
+    let tail = automation_ids.iter().max().unwrap();
+
+    for (mark, total, through, next_due, tail_messages) in [
+        (first_mark, 250, SqlValue::Null, first_mark, vec![]),
+        (
+            second_mark,
+            500,
+            stamp(first_mark),
+            second_mark,
+            vec![vec![stamp(second_mark)]],
+        ),
+        (
+            third_mark,
+            750,
+            stamp(second_mark),
+            third_mark,
+            vec![vec![stamp(second_mark)], vec![stamp(third_mark)]],
+        ),
+    ] {
+        assert_eq!(alarm_ms(&runtime).await, ms(mark));
+        set_now(&fixture, mark);
+        assert!(runtime.dispatch_due_alarm().await.unwrap().is_some());
+        assert_eq!(
+            count(
+                &runtime,
+                "SELECT COUNT(*) FROM mail_messages WHERE message_kind = 'automation'",
+                vec![],
+            )
+            .await,
+            total,
+            "each claim applies exactly one capped batch"
+        );
+        let schedule = runtime
+            .statement_host()
+            .read(Statement {
+                sql: "SELECT evaluated_through_at, next_due_at FROM automation_schedules WHERE automation_id = ?",
+                args: vec![text(tail)],
+            })
+            .await
+            .unwrap();
+        assert_eq!(schedule.rows, vec![vec![through, stamp(next_due)]]);
+        let messages = runtime
+            .statement_host()
+            .read(Statement {
+                sql: "SELECT created_at FROM mail_messages WHERE message_kind = 'automation' AND state = 'queued' AND json_extract(body, '$.automationId') = ? ORDER BY created_at",
+                args: vec![text(tail)],
+            })
+            .await
+            .unwrap();
+        assert_eq!(messages.rows, tail_messages);
+    }
+    fixture.host.close().await;
+}

@@ -225,6 +225,11 @@ impl Transport<WorkspaceServiceProtocol> for WorkspaceTransport {
 }
 
 type OrgRuntime = WorkspaceRuntime<CentralStatements, WorkspaceTransport>;
+
+enum ColdAlarmStart {
+    DriveFollows,
+    RecoverOverdueWakes,
+}
 #[durable_object]
 pub struct CentralObject {
     state: Arc<SendWrapper<State>>,
@@ -318,13 +323,14 @@ impl CentralObject {
         .map_err(|_| StoreFailure::Unavailable)
     }
     async fn runtime(&self, organization: OrganizationId) -> Result<Arc<OrgRuntime>> {
-        self.runtime_checked(organization)
+        self.runtime_checked(organization, ColdAlarmStart::RecoverOverdueWakes)
             .await
             .map_err(|error| worker::Error::RustError(error.to_string()))
     }
     async fn runtime_checked(
         &self,
         organization: OrganizationId,
+        startup: ColdAlarmStart,
     ) -> std::result::Result<Arc<OrgRuntime>, StoreFailure> {
         let mut initialized = self.runtime.lock().await;
         if let Some(runtime) = initialized.as_ref() {
@@ -406,7 +412,10 @@ impl CentralObject {
                     );
                 })),
         );
-        central.recompute_alarm().await?;
+        match startup {
+            ColdAlarmStart::DriveFollows => central.recompute_alarm().await?,
+            ColdAlarmStart::RecoverOverdueWakes => central.recover_cold_alarm().await?,
+        }
         *initialized = Some(central.clone());
         Ok(central)
     }
@@ -473,7 +482,10 @@ impl DurableObject for CentralObject {
             return workspace_cases::control(self, organization, request).await;
         }
         if crate::organization_signin_link::is_signin_path(&request.path()) {
-            let runtime = match self.runtime_checked(organization).await {
+            let runtime = match self
+                .runtime_checked(organization, ColdAlarmStart::RecoverOverdueWakes)
+                .await
+            {
                 Ok(runtime) => runtime,
                 Err(_) => return Response::empty().map(|response| response.with_status(503)),
             };
@@ -563,8 +575,8 @@ impl CentralStatements {
         {
             // The store calls this after the guarded SQL. Workerd rejects epoch zero at setAlarm.
             let zero_alarm: central_storage::EngineAlarmDecider =
-                Arc::new(move |times, now, write| {
-                    decide_alarm(times, now, write)?;
+                Arc::new(move |times, now, read_retained, write| {
+                    decide_alarm(times, now, read_retained, write)?;
                     Ok(Some(0))
                 });
             zero_alarm
@@ -583,5 +595,3 @@ mod direct_mail;
 
 #[path = "workspace_alarm_owner.rs"]
 mod workspace_alarm_owner;
-#[cfg(feature = "test-support")]
-use workspace_alarm_owner::AlarmFailure;
