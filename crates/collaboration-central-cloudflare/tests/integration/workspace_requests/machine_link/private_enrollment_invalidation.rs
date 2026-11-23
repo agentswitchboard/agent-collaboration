@@ -214,7 +214,7 @@ fn require_idle_refusal(decision: MachineTokenDecision) -> Result<()> {
     Ok(())
 }
 
-async fn set_last_grant_at_idle_boundary(fixture: &Fixture) -> Result<()> {
+pub(super) async fn set_last_grant_at_idle_boundary(fixture: &Fixture) -> Result<()> {
     let store = fixture.runtime();
     let idle_at = chrono::DateTime::from_timestamp(
         signed::NOW_SECONDS - signed::MACHINE_IDLE_LIMIT_SECONDS,
@@ -264,7 +264,7 @@ async fn require_ending(fixture: &Fixture, reason: &str, audit_kind: &str) -> Re
     Ok(())
 }
 
-async fn approve_replacement(fixture: &Fixture) -> Result<EnrollmentId> {
+pub(super) async fn approve_replacement(fixture: &Fixture) -> Result<EnrollmentId> {
     approve(
         &fixture.host,
         &fixture.client,
@@ -274,7 +274,7 @@ async fn approve_replacement(fixture: &Fixture) -> Result<EnrollmentId> {
     .await
 }
 
-async fn request_token(
+pub(super) async fn request_token(
     fixture: &Fixture,
     enrollment: &EnrollmentId,
 ) -> Result<MachineTokenDecision> {

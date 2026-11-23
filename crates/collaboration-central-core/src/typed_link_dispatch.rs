@@ -1,5 +1,10 @@
 //! Authenticate typed link calls before delegating them to their registered owner.
-use crate::{MachineLinkRequestAuthority, ValidatedMachineConnection, WorkspaceRuntime};
+#[cfg(feature = "test-support")]
+use crate::FixtureApprovalDecision;
+use crate::{
+    CentralCallWork, CentralLinkDispatcher, LinkCallCompletion, MachineLinkRequestAuthority,
+    TypedCallCarrier, WorkspaceRuntime,
+};
 use central_link_protocol::{
     CentralCall, CentralCallReply, CentralLinkRpc, LinkCallRefusal, MacCallReply, MacLinkRpc,
     TypedCallResult, approval_rpc::RegisterRunReply,
@@ -8,7 +13,7 @@ use central_storage::StoreFailure;
 use fleet_contracts::MachineConnectionAttachment;
 use fleet_rpc::{CallFailure, CorrelatedRpc, Envelope, IndependentReplyRpc};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
-use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{future::Future, sync::Arc, time::Duration};
 use workspace_ids::RouterRunId;
 
 pub const TYPED_LINK_CALL_TIMEOUT: Duration = Duration::from_secs(5);
@@ -18,21 +23,11 @@ pub type MacCallResult<R> = Result<
     CallFailure,
 >;
 
-pub type CentralCallDispatch = Result<TypedCallResult<CentralCallReply>, StoreFailure>;
-
-/// Dispatches a registered call using the machine identity verified on this connection.
-pub trait CentralLinkDispatcher: Send + Sync {
-    fn dispatch<'call>(
-        &'call self,
-        machine: &'call ValidatedMachineConnection,
-        request: CentralCall,
-    ) -> Pin<Box<dyn Future<Output = CentralCallDispatch> + Send + 'call>>;
-}
-
 /// A correlated answer and any run binding authorized for the originating socket.
 pub struct DispatchedCentralCall {
     pub result: TypedCallResult<CentralCallReply>,
     pub registered_run: Option<RouterRunId>,
+    pub completion: Option<LinkCallCompletion>,
 }
 
 impl DispatchedCentralCall {
@@ -40,6 +35,7 @@ impl DispatchedCentralCall {
         Self {
             result: TypedCallResult::Refused { reason },
             registered_run: None,
+            completion: None,
         }
     }
 }
@@ -69,6 +65,10 @@ where
 pub struct TargetCheckedCentralCall<R: CentralLinkRpc>(Envelope<R::Target, R::Request>);
 
 impl<R: CentralLinkRpc> TargetCheckedCentralCall<R> {
+    pub fn into_body(self) -> R::Request {
+        self.0.body
+    }
+
     pub fn check(
         expected_target: &R::Target,
         request: Envelope<R::Target, R::Request>,
@@ -138,13 +138,33 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         self
     }
 
+    pub fn with_approval_deadline_completion(
+        mut self,
+        schedule: Arc<dyn Fn(LinkCallCompletion) + Send + Sync>,
+    ) -> Self {
+        self.approval_deadline_completion = Some(schedule);
+        self
+    }
+
     #[cfg(feature = "test-support")]
     pub fn with_fixture_link_call_dispatcher(
         mut self,
         dispatcher: Arc<dyn CentralLinkDispatcher>,
     ) -> Self {
         self.fixture_link_calls = true;
-        self.with_link_call_dispatcher(Arc::new(FixtureLinkDispatcher { dispatcher }))
+        self.with_link_call_dispatcher(dispatcher)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub async fn fixture_decide_approval(
+        &self,
+        decision: FixtureApprovalDecision,
+    ) -> Result<Option<LinkCallCompletion>, StoreFailure> {
+        self.link_call_dispatcher
+            .as_ref()
+            .ok_or(StoreFailure::Unavailable)?
+            .fixture_decide_approval(self.execution.organization().clone(), decision)
+            .await
     }
 
     #[cfg(feature = "test-support")]
@@ -198,8 +218,18 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         &self,
         attachment: &MachineConnectionAttachment,
         request: Option<CentralCall>,
+        carrier: TypedCallCarrier,
     ) -> Result<DispatchedCentralCall, StoreFailure> {
-        let machine = match self.restore_machine_link_request(attachment).await? {
+        let authority = match &carrier {
+            TypedCallCarrier::Session => self.restore_machine_link_request(attachment).await?,
+            TypedCallCarrier::Approval { .. } => {
+                match self.restore_live_authority_held(attachment).await? {
+                    Ok(machine) => MachineLinkRequestAuthority::Admitted(machine),
+                    Err(refusal) => MachineLinkRequestAuthority::Refused(refusal.close),
+                }
+            }
+        };
+        let machine = match authority {
             MachineLinkRequestAuthority::Admitted(machine) => machine,
             MachineLinkRequestAuthority::Refused(cause) => {
                 return Ok(DispatchedCentralCall::refused(
@@ -234,7 +264,8 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                 .reached_central(fleet_runtime::PausePoint::BeforeSessionTransaction)
                 .await;
         }
-        let result = dispatcher.dispatch(&machine, request).await?;
+        let CentralCallWork { result, completion } =
+            dispatcher.dispatch(&machine, request, carrier).await?;
         let registered_run = requested_run.filter(|_| {
             matches!(
                 &result,
@@ -247,6 +278,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         Ok(DispatchedCentralCall {
             result,
             registered_run,
+            completion,
         })
     }
 }
@@ -262,41 +294,5 @@ pub fn finish_mac_call<R: MacLinkRpc>(
             .map(|reply| TypedCallResult::Answered { reply })
             .ok_or(CallFailure::AnswerLost),
         TypedCallResult::Refused { reason } => Ok(TypedCallResult::Refused { reason }),
-    }
-}
-
-#[cfg(feature = "test-support")]
-struct FixtureLinkDispatcher {
-    dispatcher: Arc<dyn CentralLinkDispatcher>,
-}
-
-#[cfg(feature = "test-support")]
-impl CentralLinkDispatcher for FixtureLinkDispatcher {
-    fn dispatch<'call>(
-        &'call self,
-        machine: &'call ValidatedMachineConnection,
-        request: CentralCall,
-    ) -> Pin<Box<dyn Future<Output = CentralCallDispatch> + Send + 'call>> {
-        use central_link_protocol::approval_rpc::{ApprovalServiceTarget, RegisterRunRpc};
-        Box::pin(async move {
-            Ok(match request {
-                CentralCall::RegisterRun(envelope) => {
-                    let target = ApprovalServiceTarget {
-                        organization_id: machine.organization_id().clone(),
-                    };
-                    dispatch_registered_central_call::<RegisterRunRpc, _, _>(
-                        &target,
-                        envelope,
-                        |_| async { RegisterRunReply::Registered {} },
-                    )
-                    .await
-                }
-                other @ (CentralCall::CreateFleetSession(_)
-                | CentralCall::BindFleetSession(_)
-                | CentralCall::EndFleetSession(_)
-                | CentralCall::Raise(_)
-                | CentralCall::Stop(_)) => return self.dispatcher.dispatch(machine, other).await,
-            })
-        })
     }
 }

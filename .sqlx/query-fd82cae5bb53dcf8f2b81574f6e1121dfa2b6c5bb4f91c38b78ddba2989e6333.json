@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO approval_applying_time(organization_id,observed_ms,created_at,updated_at)\nVALUES (?1,?2,?3,?3)\nON CONFLICT(organization_id) DO UPDATE\nSET observed_ms=excluded.observed_ms, updated_at=excluded.updated_at\nWHERE approval_applying_time.observed_ms < excluded.observed_ms\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "fd82cae5bb53dcf8f2b81574f6e1121dfa2b6c5bb4f91c38b78ddba2989e6333"
+}

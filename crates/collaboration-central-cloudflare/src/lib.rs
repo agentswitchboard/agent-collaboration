@@ -22,6 +22,7 @@ mod statement_store;
 mod storage_cases;
 mod store_wire;
 mod worker_clock;
+mod workspace_approval_transactions;
 mod workspace_central_object;
 mod workspace_link_entry;
 #[cfg(feature = "test-support")]

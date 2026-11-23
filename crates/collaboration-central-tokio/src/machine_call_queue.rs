@@ -100,6 +100,11 @@ impl QueuedMacCall {
         self.write.prevented.clone()
     }
 
+    #[cfg(feature = "test-support")]
+    pub(crate) fn is_approval_ending(&self) -> bool {
+        matches!(&*self.request, MacCall::DeliverEnding(_))
+    }
+
     pub(crate) fn frame(&self) -> LinkFrame {
         LinkFrame::Data(DataFrame::CallMac {
             correlation_id: self.correlation.wire_id().clone(),
@@ -108,6 +113,7 @@ impl QueuedMacCall {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct MacCallSender {
     queue: mpsc::Sender<QueuedMacCall>,
     calls: Arc<ConnectionCalls>,
@@ -138,6 +144,10 @@ pub(crate) fn channel(ended: CancellationToken) -> (MacCallSender, MacCallReceiv
 }
 
 impl MacCallSender {
+    pub(crate) fn same_socket(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.calls, &other.calls)
+    }
+
     pub(crate) fn end(&self) {
         self.calls.end();
     }
@@ -203,9 +213,18 @@ impl MacCallReceiver {
         self.queue.recv().await
     }
 
+    pub(crate) fn registered_run(&self) -> Option<RouterRunId> {
+        self.calls.state().bound_run.clone()
+    }
+
     pub(crate) fn bind_run(&self, run: RouterRunId) {
         let mut state = self.calls.state();
-        if !self.calls.ended.is_cancelled() {
+        if !self.calls.ended.is_cancelled()
+            && state
+                .bound_run
+                .as_ref()
+                .is_none_or(|current| current == &run)
+        {
             state.bound_run = Some(run);
         }
     }
