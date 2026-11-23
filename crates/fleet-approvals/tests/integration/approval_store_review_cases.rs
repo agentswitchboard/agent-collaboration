@@ -62,7 +62,7 @@ async fn native_approval_touch_applies_its_deadline_before_the_projected_alarm()
             store
                 .fixture_decide_approval(
                     &holder.organization_id,
-                    person(11, FactorStanding::Fresh),
+                    person(11),
                     decide_input(request.request_id(), 5_430, 1),
                 )
                 .await

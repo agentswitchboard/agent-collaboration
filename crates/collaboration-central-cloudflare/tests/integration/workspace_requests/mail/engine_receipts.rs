@@ -258,7 +258,7 @@ async fn the_failure_table_has_the_p2_columns_and_indexes_no_check_and_uuid7_key
 }
 
 #[tokio::test]
-async fn central_business_uniqueness_has_named_non_partial_indexes_in_column_order() {
+async fn central_business_uniqueness_has_named_indexes_in_column_order() {
     use collaboration_central_conformance::workspace_schema_fixture as schema;
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
