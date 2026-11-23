@@ -55,6 +55,8 @@ impl AccessRequest {
 pub enum LeaseUnavailable {
     #[error("this Mac is not enrolled")]
     NotEnrolled,
+    #[error("the requested enrollment is no longer current")]
+    DifferentEnrollment,
     #[error("enrollment ended, enroll this Mac again")]
     Ended { why: EnrollmentEnd },
     #[error("sign-in returned access grants that expired before delivery")]
@@ -211,11 +213,24 @@ where
         }
     }
 
+    /// Requests a lease for one exact enrollment key.
+    pub async fn lease_for(&self, key: &EnrollmentKey, request: AccessRequest) -> LeaseResult {
+        self.lease_with_key(Some(key), request).await
+    }
+
     pub async fn lease(&self, request: AccessRequest) -> LeaseResult {
+        self.lease_with_key(None, request).await
+    }
+
+    async fn lease_with_key(
+        &self,
+        key: Option<&EnrollmentKey>,
+        request: AccessRequest,
+    ) -> LeaseResult {
         let mut retry = StaleGrantRetry::Initial;
         loop {
             let flight = {
-                let binding = self.inputs.read_binding().await?;
+                let binding = self.inputs.read_binding(key).await?;
                 let mut state = self.state.lock().await;
                 if !state.observe(binding.generation) {
                     continue;
@@ -265,7 +280,7 @@ where
                 let snapshot = timeout_at(
                     self.inputs.clock.as_ref(),
                     deadline,
-                    self.inputs.read_binding(),
+                    self.inputs.read_binding(key),
                 )
                 .await;
                 let state = self.state.lock().await;
@@ -279,7 +294,7 @@ where
                 let snapshot = if matches!(result, RefreshCompletion::OutcomeNotKnown) {
                     Err(CredentialStoreError::OutcomeNotKnown.into())
                 } else {
-                    self.inputs.read_binding().await
+                    self.inputs.read_binding(key).await
                 };
                 (snapshot, self.state.lock().await)
             };
@@ -398,8 +413,17 @@ fn unavailable_until(until: Option<ClockInstant>, now: ClockInstant) -> LeaseUna
 }
 
 impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source> {
-    async fn read_binding(&self) -> Result<EnrollmentBinding, LeaseUnavailable> {
-        match self.store.read().await? {
+    async fn read_binding(
+        &self,
+        requested: Option<&EnrollmentKey>,
+    ) -> Result<EnrollmentBinding, LeaseUnavailable> {
+        let stored = self.store.read().await?;
+        if let Some(requested) = requested
+            && stored.key().is_some_and(|current| &current != requested)
+        {
+            return Err(LeaseUnavailable::DifferentEnrollment);
+        }
+        match stored {
             StoredEnrollment::Empty => Err(LeaseUnavailable::NotEnrolled),
             StoredEnrollment::Ended { why, .. } => Err(LeaseUnavailable::Ended { why }),
             StoredEnrollment::Active(binding) if binding.context == self.context => Ok(binding),
