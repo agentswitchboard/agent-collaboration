@@ -3,17 +3,19 @@
 use central_engine_model::{Context, IdSource};
 use chrono::{DateTime, SecondsFormat};
 use fleet_actor_identity::{
-    ActorApprovalSessionFacts, LiveSessionFacts, OrganizationTransaction, SessionAvailability,
-    SessionCallOutcome, SessionLookupScope, SessionSecretSource, SessionService,
-    SessionServiceError,
+    LiveSessionFacts, SessionAvailability, SessionCallOutcome, SessionLookupScope,
+    SessionSecretSource, SessionService, SessionServiceError,
 };
-use fleet_approvals::{ApprovalEnrollment, ApprovalRouting, ApprovalSession, ApprovalSessionFacts};
+use fleet_approvals::{
+    ActorApprovalSessionFacts, ApprovalEnrollment, ApprovalRouting, ApprovalSession,
+    ApprovalSessionFacts,
+};
 use fleet_contracts::{ClientId, MachineConnectionAttachment};
 use fleet_identity_protocol::{
     BindFleetSession, CreateFleetSession, EndFleetSession, EnrollmentId, OrganizationId,
     SessionSecret, UnixSeconds,
 };
-use fleet_lent_transaction::CentralTransaction;
+use fleet_lent_transaction::{CentralTransaction, OrganizationTransaction};
 use fleet_machine_login::link_authority::{ValidatedMachineConnection, restore_fixture_link};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -241,6 +243,9 @@ async fn apply_command(
             session_id,
             requested_organization,
         } => {
+            if lender.organization_id() != &requested_organization {
+                return Ok(approval_facts_reply(false, None));
+            }
             let facts = ActorApprovalSessionFacts;
             let subject = ApprovalSession {
                 enrollment: ApprovalEnrollment {
@@ -250,11 +255,11 @@ async fn apply_command(
                 session_id,
             };
             let live = facts
-                .session_is_live(&mut lender, &requested_organization, &subject)
+                .session_is_live(&mut lender, &subject)
                 .await
                 .map_err(SessionServiceError::from)?;
             let route = facts
-                .session_initial_route(&mut lender, &requested_organization, &subject)
+                .session_initial_route(&mut lender, &subject)
                 .await
                 .map_err(SessionServiceError::from)?;
             Ok(approval_facts_reply(live, route))

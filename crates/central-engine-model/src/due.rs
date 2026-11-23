@@ -32,6 +32,7 @@ pub enum DueListKind {
     Schedules,
     DirectMessages,
     SystemExpiries,
+    ApprovalExpiries,
     #[cfg(feature = "test-support")]
     Probes,
 }
@@ -43,6 +44,7 @@ impl DueListKind {
             Self::Schedules => "automation_timer",
             Self::DirectMessages => "direct_message",
             Self::SystemExpiries => "system_message_expiry",
+            Self::ApprovalExpiries => "approval_request",
             #[cfg(feature = "test-support")]
             Self::Probes => "engine_probe",
         }

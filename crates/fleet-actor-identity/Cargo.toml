@@ -14,7 +14,6 @@ workspace = true
 central-engine-model.workspace = true
 base64.workspace = true
 central-storage.workspace = true
-fleet-approvals.workspace = true
 fleet-lent-transaction.workspace = true
 fleet-machine-login.workspace = true
 fleet-runtime-ports.workspace = true

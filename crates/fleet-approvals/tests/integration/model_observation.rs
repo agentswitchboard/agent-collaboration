@@ -38,9 +38,6 @@ fn assert_decision(
         Decision::NotVisible => assert_eq!(actual, &ApprovalDecisionReply::NotVisible {}),
         Decision::Invalid => assert_eq!(actual, &ApprovalDecisionReply::Invalid {}),
         Decision::TooLate => assert_eq!(actual, &ApprovalDecisionReply::TooLate {}),
-        Decision::OperationConflict => {
-            assert_eq!(actual, &ApprovalDecisionReply::OperationConflict {})
-        }
     }
 }
 
@@ -90,25 +87,6 @@ pub(super) fn assert_effects(
             ) => {
                 assert_eq!(holder, &scenario.runs[ROWS[*row].run]);
                 assert_eq!(request.as_ref(), &scenario.frame(*row, *offer));
-            }
-            (
-                OperationEffect::Save {
-                    row,
-                    actor,
-                    operation,
-                    result,
-                },
-                Request(ApprovalEffect::SaveDecision(saved)),
-            ) => {
-                let key = scenario.key(*row);
-                assert_eq!(saved.key, key);
-                assert_eq!(saved.actor, scenario.actor(*row, *actor));
-                assert_eq!(saved.operation_id, operation_id(*operation));
-                let payload = saved
-                    .reply
-                    .for_recipient(&key, &scenario.identity(*row, *actor))
-                    .unwrap();
-                assert_decision(scenario, *row, *actor, *result, payload);
             }
             (
                 OperationEffect::Raise(row, result),
@@ -184,8 +162,6 @@ pub(super) fn assert_effects(
 }
 
 pub(super) fn assert_state(scenario: &Scenario, ledger: &Ledger, book: &ApprovalCollection) {
-    assert_eq!(book.high_water, time(ledger.floor));
-    assert_eq!(book.decisions.len(), ledger.decisions());
     for (row, expected) in ledger.rows.iter().enumerate() {
         let key = scenario.key(row);
         match book.requests.get(&key) {
@@ -225,6 +201,10 @@ pub(super) fn assert_state(scenario: &Scenario, ledger: &Ledger, book: &Approval
                 );
                 assert_eq!(closed.delivery, wire_delivery(delivery));
                 assert_eq!(closed.ended_at, time(ended_at));
+                assert_eq!(
+                    closed.decided_operation_id,
+                    expected.accepted_operation.map(operation_id)
+                );
             }
             Some(ApprovalState::Unraised) => panic!("unraised is not a retained row"),
         }

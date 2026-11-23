@@ -3,6 +3,7 @@ use approval_request_protocol::{
     StopReceiptEnding, StopRequest,
 };
 use central_engine_model::TransitionError;
+use workspace_ids::RequestId;
 
 use crate::{
     ApprovalEffect, ApprovalReceipt, ApprovalRefusal, ApprovalRouting, ApprovalState,
@@ -34,17 +35,18 @@ pub(super) fn finish(
 ) -> ApprovalChange {
     let ending = DeliverEndingRequest::from_raise(&saved.raise, ending)
         .map_err(|_| TransitionError::Domain(ApprovalRefusal::InvalidRetainedEnding))?;
-    finish_with_frame(saved, ending, delivery, now)
+    finish_with_frame(saved, ending, delivery, None, now)
 }
 
 pub(super) fn finish_decided(
     saved: &RetainedApproval,
     decision: AcceptedApprovalDecision,
+    operation_id: RequestId,
     now: CentralTime,
 ) -> ApprovalChange {
     let ending = DeliverEndingRequest::from_decision(&saved.raise, decision)
         .map_err(|_| TransitionError::Domain(ApprovalRefusal::InvalidRetainedEnding))?;
-    finish_with_frame(saved, ending, Delivery::Owed {}, now)
+    finish_with_frame(saved, ending, Delivery::Owed {}, Some(operation_id), now)
 }
 
 pub(super) fn finish_stopped(
@@ -54,19 +56,22 @@ pub(super) fn finish_stopped(
 ) -> ApprovalChange {
     let ending = DeliverEndingRequest::from_stop(&saved.raise, stop)
         .map_err(|_| TransitionError::Domain(ApprovalRefusal::InvalidRetainedEnding))?;
-    finish_with_frame(saved, ending, Delivery::ClosedWithoutReceipt {}, now)
+    finish_with_frame(saved, ending, Delivery::ClosedWithoutReceipt {}, None, now)
 }
 
 fn finish_with_frame(
     saved: &RetainedApproval,
     ending: DeliverEndingRequest,
     delivery: Delivery,
+    decided_operation_id: Option<RequestId>,
     now: CentralTime,
 ) -> ApprovalChange {
     let closed = EndedApproval {
         ending,
-        ended_at: now,
+        // A rollback before first save cannot put the ending before its own request.
+        ended_at: now.max(saved.window.raised_at()),
         delivery,
+        decided_operation_id,
     };
     let mut effects = vec![ApprovalEffect::ClearDue {
         key: saved.key.clone(),

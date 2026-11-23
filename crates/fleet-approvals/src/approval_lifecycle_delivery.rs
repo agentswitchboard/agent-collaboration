@@ -1,7 +1,9 @@
-use approval_request_protocol::{DeliverEndingReply, DeliverEndingRequest, Delivery};
+use approval_request_protocol::{
+    CentralTime, DeliverEndingReply, DeliverEndingRequest, Delivery, Ending,
+};
 use central_engine_model::TransitionError;
 
-use crate::approval_lifecycle_effects::{ApprovalChange, offer_ending, with_delivery};
+use crate::approval_lifecycle_effects::{ApprovalChange, finish, offer_ending, with_delivery};
 use crate::{ApprovalRequestKey, ApprovalState};
 
 pub(super) fn receive(
@@ -29,10 +31,13 @@ pub(super) fn receive(
     }
 }
 
-pub(super) fn reoffer(state: &ApprovalState) -> ApprovalChange {
+pub(super) fn reoffer(state: &ApprovalState, now: CentralTime) -> ApprovalChange {
     match state {
         ApprovalState::Ended { saved, closed } if closed.delivery == (Delivery::Owed {}) => {
             Ok((state.clone(), vec![offer_ending(saved, closed)]))
+        }
+        ApprovalState::Waiting { saved } if now >= saved.window.deadline() => {
+            finish(saved, Ending::TimedOut {}, Delivery::Owed {}, now)
         }
         ApprovalState::Unraised
         | ApprovalState::StoppedBeforeRaise { .. }

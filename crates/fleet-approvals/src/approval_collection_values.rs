@@ -5,36 +5,20 @@ use approval_request_protocol::{
     StopRequest,
 };
 use fleet_identity_protocol::EnrollmentId;
-use workspace_ids::{MachineId, PersonId, RequestId, RouterRunId};
+use workspace_ids::{MachineId, PersonId, RouterRunId};
 
 use crate::{
     AdmittedDecider, ApprovalDecideInput, ApprovalEffect, ApprovalEnrollment, ApprovalRequestKey,
     ApprovalRouting, ApprovalRun, ApprovalSession, ApprovalState, ProviderSessionAvailability,
-    SavedDecision,
 };
 
 /// One organization's facts for a guarded apply, including every affected row.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct ApprovalCollection {
-    pub high_water: CentralTime,
     pub active_enrollments: BTreeMap<MachineId, ActiveApprovalEnrollment>,
     pub ended_enrollments: BTreeSet<ApprovalEnrollment>,
     pub ended_sessions: BTreeSet<ApprovalSession>,
     pub requests: BTreeMap<ApprovalRequestKey, ApprovalState>,
-    pub decisions: BTreeMap<RequestId, SavedDecision>,
-}
-
-impl ApprovalCollection {
-    pub fn new(high_water: CentralTime) -> Self {
-        Self {
-            high_water,
-            active_enrollments: BTreeMap::new(),
-            ended_enrollments: BTreeSet::new(),
-            ended_sessions: BTreeSet::new(),
-            requests: BTreeMap::new(),
-            decisions: BTreeMap::new(),
-        }
-    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

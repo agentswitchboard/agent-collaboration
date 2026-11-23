@@ -1,0 +1,54 @@
+{
+  "db_name": "SQLite",
+  "query": "WITH owner_rows(kind, subject_key, owner_time, uses_occurrence) AS (\n    SELECT 'wake_timer', wake_id, due_at, state = 'active'\n    FROM wake_due_candidates\n    UNION ALL\n    SELECT 'automation_timer', automation_id, next_due_at, state = 'active'\n    FROM schedule_due_candidates\n    UNION ALL\n    SELECT 'direct_message', message_id, cancel_due_at, 1\n    FROM mail_messages\n    WHERE message_kind = 'direct' AND state IN ('queued', 'delivered') AND cancel_due_at IS NOT NULL\n    UNION ALL\n    SELECT 'system_message_expiry', message_id, delivery_window_ends_at, 1\n    FROM mail_messages\n    WHERE message_kind IN ('notice', 'deliveryOutcome') AND state = 'queued'\n        AND delivery_window_ends_at IS NOT NULL\n),\nowner_millis AS (\n    SELECT kind, subject_key, uses_occurrence,\n        unixepoch(owner_time)*1000+CAST(substr(strftime('%f',owner_time),4,3) AS INTEGER) AS raw_ms\n    FROM owner_rows\n    UNION ALL\n    SELECT 'approval_request', approval_row_id, 1, deadline_ms\n    FROM approval_requests\n    WHERE record_state = 'waiting'\n),\noccurrences AS (\n    SELECT kind, subject_key, uses_occurrence,\n        CASE WHEN raw_ms BETWEEN -9223372036854 AND 9223372036854 THEN raw_ms ELSE 0 END AS occurrence_ms\n    FROM owner_millis\n),\nowner_timing AS (\n    SELECT kind, subject_key, occurrence_ms,\n        CASE WHEN uses_occurrence THEN occurrence_ms ELSE 0 END AS base_due_ms\n    FROM occurrences\n)\nSELECT\n    owner.kind AS \"kind!: String\",\n    owner.subject_key AS \"key?: String\",\n    owner.occurrence_ms AS \"occurrence_ms!: i64\",\n    owner.base_due_ms AS \"base_due_ms!: i64\",\n    CASE WHEN attempt.retired THEN NULL\n         WHEN attempt.uses_subject_attempt THEN attempt.due_at_ms\n         ELSE owner.base_due_ms END AS \"effective_due_ms?: i64\"\nFROM owner_timing owner\nLEFT JOIN engine_due_attempt_controls attempt\n    ON attempt.machine_kind = owner.kind AND attempt.subject_key = owner.subject_key\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "kind!: String",
+        "ordinal": 0,
+        "type_info": "Null",
+        "origin": "Expression"
+      },
+      {
+        "name": "key?: String",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "approval_row_id"
+          }
+        }
+      },
+      {
+        "name": "occurrence_ms!: i64",
+        "ordinal": 2,
+        "type_info": "Null",
+        "origin": "Expression"
+      },
+      {
+        "name": "base_due_ms!: i64",
+        "ordinal": 3,
+        "type_info": "Null",
+        "origin": "Expression"
+      },
+      {
+        "name": "effective_due_ms?: i64",
+        "ordinal": 4,
+        "type_info": "Null",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      null,
+      false,
+      null,
+      null,
+      null
+    ]
+  },
+  "hash": "7ddeaa2e75c237a189e9f20b2b2d156ad4fc6ad5b9f87c98e96e272773155ac8"
+}
