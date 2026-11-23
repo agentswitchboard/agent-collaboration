@@ -5765,10 +5765,17 @@ dependencies = [
  "central-link-protocol",
  "futures-util",
  "hegeltest",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "log",
  "router-clock",
  "state-machine-core",
  "tokio",
  "tokio-tungstenite",
+ "tracing",
+ "tracing-subscriber",
  "workspace-ids",
 ]
 

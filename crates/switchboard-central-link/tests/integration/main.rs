@@ -32,6 +32,8 @@ use tokio_tungstenite::{
 };
 use workspace_ids::MachineId;
 
+mod credential_diagnostics;
+
 const TOKEN: &str = "fictional-fixture-access-token.0.signature";
 const REFRESHED: &str = "fictional-fixture-access-token.1.signature";
 
@@ -164,7 +166,8 @@ async fn text(socket: &mut WebSocketStream<TcpStream>) -> String {
 }
 
 #[tokio::test]
-async fn renewal_extends_the_same_socket_in_elapsed_time_and_shutdown_closes() {
+async fn renewal_extends_the_same_socket_without_disclosing_credentials() {
+    let diagnostics = credential_diagnostics::capture_trace();
     let mut fixture = Fixture::new().await;
     assert_eq!(fixture.acquired.recv().await, Some(None));
     let (stream, _) = fixture.listener.accept().await.unwrap();
@@ -250,6 +253,7 @@ async fn renewal_extends_the_same_socket_in_elapsed_time_and_shutdown_closes() {
         socket.next().await,
         None | Some(Ok(Message::Close(_))) | Some(Err(_))
     ));
+    diagnostics.assert_credentials_absent();
 }
 
 #[tokio::test]

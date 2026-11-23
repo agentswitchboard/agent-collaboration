@@ -60,6 +60,26 @@ const DRIVER_NORMAL: &[Edge] = &[
     workspace("state-machine-core", &[]),
     workspace("workspace-ids", &[]),
     registry("futures-util", false, &["sink", "std"]),
+    registry("http-body-util", true, &[]),
+    registry("hyper", true, &["http1", "http2", "client", "server"]),
+    registry(
+        "hyper-rustls",
+        false,
+        &["http1", "http2", "tls12", "webpki-roots", "ring"],
+    ),
+    registry(
+        "hyper-util",
+        true,
+        &[
+            "client",
+            "client-legacy",
+            "server",
+            "http1",
+            "http2",
+            "tokio",
+        ],
+    ),
+    registry("log", true, &["max_level_debug"]),
     registry(
         "tokio",
         true,
@@ -83,6 +103,8 @@ const DRIVER_NORMAL: &[Edge] = &[
 const DRIVER_DEV: &[Edge] = &[
     workspace("router-clock", &["test-support"]),
     registry("hegeltest", true, &["static-engine"]),
+    registry("tracing", true, &[]),
+    registry("tracing-subscriber", true, &["env-filter", "fmt", "json"]),
 ];
 const REAL_TEST_DEV: &[Edge] = &[
     workspace(DRIVER, &["test-support"]),
