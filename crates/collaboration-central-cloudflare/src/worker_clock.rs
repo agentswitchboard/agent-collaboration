@@ -22,6 +22,7 @@ pub(crate) struct WorkspaceClock {
 #[derive(Default)]
 struct HeldClock {
     time: Option<SyncTime>,
+    after_receipt_enrollment_read: Option<i64>,
     changes: Vec<futures_channel::oneshot::Sender<()>>,
 }
 
@@ -39,6 +40,19 @@ impl WorkspaceClock {
         held.time = Some(SyncTime::from_unix_millis(milliseconds));
         for changed in std::mem::take(&mut held.changes) {
             let _ = changed.send(());
+        }
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn move_after_receipt_enrollment_read(&self, milliseconds: i64) {
+        self.held().after_receipt_enrollment_read = Some(milliseconds);
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn observe_receipt_enrollment_read(&self) {
+        let milliseconds = self.held().after_receipt_enrollment_read.take();
+        if let Some(milliseconds) = milliseconds {
+            self.hold(milliseconds);
         }
     }
 

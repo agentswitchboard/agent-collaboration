@@ -5,20 +5,23 @@ use super::{
 };
 use fleet_engine::{CheckedDueFailure, FailureRecord};
 use fleet_mail::{
-    AdmittedDirectSend, AdmittedReceipt, AppliedDirectStatus, ApplyMark, ApplyReceipt, DirectMark,
+    AdmittedDirectSend, AppliedDirectStatus, ApplyMark, ApplyReceipt, DirectMark,
     DirectMessageStore, DirectOffer, DirectOfferLookup, DirectReadFailure, DirectSendLookup,
     DirectSendResult, DirectWriteFailure, OfferPageLookup, OwnedDirectStatus, RejectedDirectMark,
-    RetainedDirectSendRead, direct_mark_apply, direct_status_apply, direct_store_reads,
+    RestoredMailReceipt, RetainedDirectSendRead, direct_mark_apply, direct_status_apply,
+    direct_store_reads,
     direct_store_writes::{self, DirectApplyFailure, DirectWriteOutcome},
 };
+use fleet_runtime_ports::{Clock, IdSource};
 use futures_util::future::BoxFuture;
-use std::ops::ControlFlow;
+use std::{ops::ControlFlow, sync::Arc};
 
 macro_rules! native_read {
     ($name:ident, $command:ty, $answer:ty) => {
         fn $name(&self, command: $command) -> BoxFuture<'_, Result<$answer, DirectReadFailure>> {
             Box::pin(async move {
                 let mut connection = self
+                    .storage
                     .workspace_pool()
                     .await
                     .map_err(DirectReadFailure::from_store)?
@@ -35,16 +38,30 @@ macro_rules! native_write {
     ($owner:ident, $name:ident, $command:ty, $answer:ty) => {
         fn $name(&self, command: $command) -> BoxFuture<'_, Result<$answer, DirectWriteFailure>> {
             Box::pin(async move {
-                self.write_direct_with_engine_alarm(async move |connection| {
-                    $owner::$name(&mut NativeTransaction(connection), command).await
-                })
-                .await
+                self.storage
+                    .write_direct_with_engine_alarm(async move |connection| {
+                        $owner::$name(&mut NativeTransaction(connection), command).await
+                    })
+                    .await
             })
         }
     };
 }
 
-impl DirectMessageStore for ObjectStorage {
+/// The native direct-message port owns the applying clock for receipts.
+pub struct NativeDirectMessageStore {
+    storage: Arc<ObjectStorage>,
+    clock: Arc<dyn Clock>,
+}
+
+impl NativeDirectMessageStore {
+    #[must_use]
+    pub fn new(storage: Arc<ObjectStorage>, clock: Arc<dyn Clock>) -> Self {
+        Self { storage, clock }
+    }
+}
+
+impl DirectMessageStore for NativeDirectMessageStore {
     native_read!(read_retained_send, DirectSendLookup, RetainedDirectSendRead);
     native_read!(
         read_offer_page,
@@ -61,24 +78,28 @@ impl DirectMessageStore for ObjectStorage {
     );
     fn apply_receipt(
         &self,
-        receipt: AdmittedReceipt,
+        receipt: RestoredMailReceipt,
+        ids: Arc<dyn IdSource>,
     ) -> BoxFuture<'_, Result<ApplyReceipt, DirectWriteFailure>> {
         Box::pin(async move {
-            self.write_direct_with_engine_alarm(async move |connection| {
-                let engine =
-                    self.engine_publication
-                        .as_ref()
-                        .ok_or(StoreFailure::AlarmUnpublishable {
-                            reason: AlarmPublicationFailure::ClockUnavailable,
-                        })?;
-                direct_store_writes::apply_receipt(
-                    &mut NativeTransaction(connection),
-                    receipt,
-                    engine.clock.as_ref(),
-                )
+            self.storage
+                .write_direct_with_engine_alarm(async move |connection| {
+                    #[cfg(feature = "test-support")]
+                    let mut transaction = super::receipt_witness::NativeReceiptTransaction::new(
+                        connection,
+                        &self.storage.receipt_enrollment_read,
+                    );
+                    #[cfg(not(feature = "test-support"))]
+                    let mut transaction = NativeTransaction(connection);
+                    direct_store_writes::apply_receipt(
+                        &mut transaction,
+                        receipt,
+                        self.clock.as_ref(),
+                        ids.as_ref(),
+                    )
+                    .await
+                })
                 .await
-            })
-            .await
         })
     }
     native_write!(
@@ -94,6 +115,7 @@ impl DirectMessageStore for ObjectStorage {
         Box::pin(async move {
             #[cfg(feature = "test-support")]
             let lose_answer_after_commit = match self
+                .storage
                 .faults
                 .take_direct_mark_answer_loss(&command.message_id)
             {
@@ -104,6 +126,7 @@ impl DirectMessageStore for ObjectStorage {
                 None => false,
             };
             match self
+                .storage
                 .write_checked_due(async move |connection| {
                     direct_mark_apply::apply_mark(&mut NativeTransaction(connection), command).await
                 })
@@ -128,6 +151,7 @@ impl DirectMessageStore for ObjectStorage {
     ) -> BoxFuture<'_, Result<Option<FailureRecord>, CheckedDueFailure>> {
         Box::pin(async move {
             match self
+                .storage
                 .write_checked_due(async move |connection| {
                     direct_mark_apply::charge_rejected_mark(
                         &mut NativeTransaction(connection),

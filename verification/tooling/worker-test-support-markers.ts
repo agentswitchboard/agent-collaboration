@@ -11,6 +11,7 @@ export const testSupportMarkers: readonly string[] = [
   "/test/engine-due-schedules",
   "/test/engine-due-system-expiries",
   "/test/direct-receipt-fixture",
+  "/test/receipt-clock-after-enrollment-read",
   "/test/direct-mark-guard-read-observations",
   "TEST_C2_WITNESS",
   "centralProbe",

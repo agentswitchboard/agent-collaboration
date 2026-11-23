@@ -248,6 +248,12 @@ pub(super) async fn control(
     if matches!(path.as_str(), "/test/request" | "/test/mail") {
         return fixture_admission::dispatch(object, organization, request).await;
     }
+    if path == "/test/receipt-clock-after-enrollment-read" {
+        object
+            .clock
+            .move_after_receipt_enrollment_read(request.json::<i64>().await?);
+        return Response::from_json(&true);
+    }
     // Holding time before initialization also pins the first minted identity.
     if path == "/test/clock" {
         object.clock.hold(request.json::<i64>().await?);

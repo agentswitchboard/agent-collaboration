@@ -9,6 +9,7 @@ pub mod link_authority;
 pub mod link_transitions;
 mod machine_login_service;
 pub mod policy;
+pub mod receipt_authority;
 
 pub use machine_login_service::{
     MachineLoginPlan, MachineLoginService, PreparedEnrollmentRevocation,

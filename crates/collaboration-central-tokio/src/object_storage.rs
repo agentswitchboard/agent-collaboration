@@ -42,6 +42,8 @@ pub struct ObjectStorage {
     #[cfg(feature = "test-support")]
     faults: fleet_runtime::TestFaults,
     #[cfg(feature = "test-support")]
+    receipt_enrollment_read: receipt_witness::ReceiptEnrollmentReadWitness,
+    #[cfg(feature = "test-support")]
     retired_page_reads: std::sync::Mutex<Option<Vec<usize>>>,
     path: PathBuf,
     migrator: Arc<Migrator>,
@@ -70,7 +72,10 @@ pub struct ObjectStorage {
 
 mod approval_transactions;
 #[path = "object_storage_direct_mail.rs"]
-mod direct_mail;
+pub(crate) mod direct_mail;
+#[cfg(feature = "test-support")]
+#[path = "object_storage_receipt_witness.rs"]
+mod receipt_witness;
 pub(crate) mod session_transaction_owner;
 pub(crate) struct NativeTransaction<'a>(&'a mut sqlx::SqliteConnection);
 
@@ -92,6 +97,8 @@ impl ObjectStorage {
         Self {
             #[cfg(feature = "test-support")]
             faults: Default::default(),
+            #[cfg(feature = "test-support")]
+            receipt_enrollment_read: Default::default(),
             #[cfg(feature = "test-support")]
             retired_page_reads: Default::default(),
             path,

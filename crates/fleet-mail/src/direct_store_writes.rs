@@ -7,7 +7,9 @@ use crate::{
     },
     direct_message_rows::enum_text,
     direct_recipient_admission::admit_enrolled_direct_recipient,
-    direct_store_port::{AdmittedDirectSend, AdmittedReceipt, ApplyReceipt, DirectSendResult},
+    direct_store_port::{
+        AdmittedDirectSend, AdmittedReceipt, ApplyReceipt, DirectSendResult, RestoredMailReceipt,
+    },
     direct_store_reads::{StoredDirectState, read_stored_direct_message},
     mail_write_failure::require_one_affected_row,
     message_deadline::{
@@ -226,11 +228,12 @@ macro_rules! clear_attempt {
     };
 }
 
-/// Apply the admitted command with the owning host’s clock.
+/// Admit and apply a restored receipt with the owning host’s clock.
 pub async fn apply_receipt<T: CentralTransaction>(
     tx: &mut T,
-    command: AdmittedReceipt,
+    receipt: RestoredMailReceipt,
     clock: &dyn Clock,
+    ids: &dyn IdSource,
 ) -> Result<DirectWriteOutcome<ApplyReceipt>, DirectApplyFailure>
 where
     <T::Database as Database>::Arguments: IntoArguments<T::Database>,
@@ -241,23 +244,18 @@ where
     i64: Type<T::Database> + for<'r> Decode<'r, T::Database>,
     for<'r> &'r str: ColumnIndex<<T::Database as Database>::Row>,
 {
-    let authority = command.authority;
-    let target = authority.machine_id();
-    // Sample after the authority reads, while the applying transaction is held.
-    let (applying_time, lapse) = fleet_machine_login::link_authority::recheck_lent_link_authority(
-        tx,
-        authority.attachment_ref(),
-        clock,
-    )
-    .await?;
-    if let Some(cause) = lapse {
-        return Ok(DirectWriteOutcome::without_alarm_recompute(
-            ApplyReceipt::AuthorityLapsed(cause),
-        ));
-    }
+    let command: AdmittedReceipt<'_, T> = match receipt.admit(tx, clock).await? {
+        Ok(command) => command,
+        Err(cause) => {
+            return Ok(DirectWriteOutcome::without_alarm_recompute(
+                ApplyReceipt::AuthorityLapsed(cause),
+            ));
+        }
+    };
+    let (tx, target, message_id, receipt, applying_time) = command.into_application();
     let applying_time = Timestamp::from_timestamp_millis(applying_time.unix_millis())
         .ok_or_else(|| corrupt("clock"))?;
-    let row: Option<StoredReceiptRoute> = route_query!(bind_receipt_projection, command.message_id)
+    let row: Option<StoredReceiptRoute> = route_query!(bind_receipt_projection, message_id)
         .fetch_optional(tx.executor())
         .await?;
     let Some(row) = row else {
@@ -269,13 +267,13 @@ where
         .target_machine_id
         .parse()
         .map_err(|_| corrupt("mail_messages.target_machine_id"))?;
-    if &recipient != target {
+    if recipient != target {
         return Ok(DirectWriteOutcome::without_alarm_recompute(
             ApplyReceipt::Stop(ReceiptResult::NoSuchMessage),
         ));
     }
     let kind: Option<StoredReceiptKind> =
-        owned_kind_query!(bind_receipt_projection, command.message_id, target)
+        owned_kind_query!(bind_receipt_projection, message_id, target)
             .fetch_optional(tx.executor())
             .await?;
     let Some(kind) = kind else {
@@ -285,7 +283,7 @@ where
     };
     match kind.message_kind.as_str() {
         "direct" => {
-            let Some(stored) = read_stored_direct_message(tx, &command.message_id).await? else {
+            let Some(stored) = read_stored_direct_message(tx, &message_id).await? else {
                 return Ok(DirectWriteOutcome::without_alarm_recompute(
                     ApplyReceipt::Stop(ReceiptResult::NoSuchMessage),
                 ));
@@ -293,10 +291,10 @@ where
             match apply_direct_transition(
                 tx,
                 &stored,
-                Some(target),
-                DirectMessageEvent::Receipt(command.receipt),
+                Some(&target),
+                DirectMessageEvent::Receipt(receipt),
                 applying_time,
-                command.ids.as_ref(),
+                ids,
             )
             .await?
             {
@@ -316,16 +314,9 @@ where
         }
         stored_kind => {
             let kind = SystemReceiptKind::decode_storage_tag(stored_kind)?;
-            settle_system_receipt(
-                tx,
-                &command.message_id,
-                target,
-                kind,
-                command.receipt,
-                applying_time,
-            )
-            .await
-            .map(DirectWriteOutcome::without_alarm_recompute)
+            settle_system_receipt(tx, &message_id, &target, kind, receipt, applying_time)
+                .await
+                .map(DirectWriteOutcome::without_alarm_recompute)
         }
     }
 }

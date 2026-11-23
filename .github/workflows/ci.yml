@@ -497,9 +497,12 @@ jobs:
       - name: Check Direct Message TypeScript wire contracts
         if: matrix.shard == 1
         run: cargo nextest run --locked --offline -p central-link-protocol --features wire-export --lib --no-tests fail -E "test(=link_delivery::message_settlement_typescript_test::message_settlement_typescript_matches_the_serde_wire)"
-      - name: Check the session command authority type
+      - name: Check session, receipt and approval command authority types
         if: matrix.shard == 1
-        run: cargo test --locked -p fleet-actor-identity --doc
+        run: |
+          cargo test --locked -p fleet-actor-identity --doc
+          cargo test --locked -p fleet-mail --doc AdmittedReceipt
+          cargo test --locked -p fleet-signin --doc
       # Compile every test binary once and pack it as a nextest archive, so both
       # shards run the same binaries without contending for Cargo's build lock.
       # Keep each build selection and feature set identical to its run.

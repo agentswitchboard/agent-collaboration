@@ -4,7 +4,7 @@ use central_engine_model::{FailureRecord, ItemFailureClass};
 use central_storage::{AlarmPublicationFailure, CorruptReason};
 use fleet_contracts::MailDeliveryReady;
 use fleet_engine::{CheckedDueFailure, CheckedDueUnit};
-use fleet_machine_login::link_authority::ValidatedMachineConnection;
+use fleet_machine_login::receipt_authority::RestoredReceipt;
 use fleet_runtime_ports::{Clock, IdSource};
 use futures_util::future::BoxFuture;
 use std::sync::Arc;
@@ -63,43 +63,77 @@ pub enum DirectSendResult {
     },
 }
 
-/// A single receipt bound to connection authority from Machine Login.
-///
-/// The store still rechecks that authority in the applying transaction.
+pub type RestoredMailReceipt = RestoredReceipt<ReceiptKind>;
+
+/// A single receipt admitted on the transaction that read its enrollment.
 ///
 /// ```compile_fail,E0451
-/// use fleet_mail::AdmittedReceipt;
-/// use fleet_machine_login::link_authority::ValidatedMachineConnection;
-/// use fleet_runtime_ports::IdSource;
-/// use std::sync::Arc;
-/// use workspace_ids::MessageId;
-/// use workspace_model::central_mail::ReceiptKind;
+/// use fleet_mail::{AdmittedReceipt, RestoredMailReceipt};
+/// use fleet_runtime_ports::SyncTime;
 ///
-/// fn assemble(
-///     authority: ValidatedMachineConnection,
-///     message_id: MessageId,
-///     receipt: ReceiptKind,
-///     ids: Arc<dyn IdSource>,
-/// ) -> AdmittedReceipt {
-///     AdmittedReceipt { authority, message_id, receipt, ids }
+/// fn admit_without_recheck<T>(transaction: &mut T, restored: RestoredMailReceipt, applying_time: SyncTime) -> AdmittedReceipt<'_, T> {
+///     AdmittedReceipt { transaction, restored, applying_time }
 /// }
 /// ```
 ///
-/// ```compile_fail,E0308
-/// use fleet_contracts::MachineConnectionAttachment;
-/// use fleet_mail::AdmittedReceipt;
-/// use fleet_runtime_ports::IdSource;
-/// use std::sync::Arc;
+/// ```compile_fail
+/// use fleet_mail::RestoredMailReceipt;
+/// use fleet_machine_login::link_authority::ValidatedMachineConnection;
 /// use workspace_ids::MessageId;
 /// use workspace_model::central_mail::ReceiptKind;
 ///
-/// fn unadmitted(
-///     attachment: MachineConnectionAttachment,
+/// fn mint_from_connection(
+///     connection: ValidatedMachineConnection,
 ///     message_id: MessageId,
 ///     receipt: ReceiptKind,
-///     ids: Arc<dyn IdSource>,
 /// ) {
-///     let _ = AdmittedReceipt::new(attachment, message_id, receipt, ids);
+///     let _ = RestoredMailReceipt::new(connection.clone(), message_id, receipt);
+/// }
+/// ```
+///
+/// ```compile_fail,E0451
+/// use fleet_mail::RestoredMailReceipt;
+/// use fleet_machine_login::link_authority::ValidatedMachineConnection;
+/// use workspace_ids::MessageId;
+/// use workspace_model::central_mail::ReceiptKind;
+///
+/// fn forge(connection: ValidatedMachineConnection, message_id: MessageId, receipt: ReceiptKind) {
+///     let _: RestoredMailReceipt = RestoredMailReceipt { connection, message_id, receipt };
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use fleet_mail::RestoredMailReceipt;
+/// fn duplicate(receipt: RestoredMailReceipt) {
+///     let _ = receipt.clone();
+/// }
+/// ```
+///
+/// ```compile_fail,E0616
+/// use fleet_mail::RestoredMailReceipt;
+/// use workspace_model::central_mail::ReceiptKind;
+///
+/// fn swap_payload(mut receipt: RestoredMailReceipt, other: ReceiptKind) {
+///     receipt.receipt = other;
+/// }
+/// ```
+///
+/// ```compile_fail,E0382
+/// use fleet_mail::AdmittedReceipt;
+///
+/// fn apply_twice<T>(command: AdmittedReceipt<'_, T>) {
+///     let _ = command.into_application();
+///     let _ = command.into_application();
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use fleet_mail::AdmittedReceipt;
+/// use workspace_model::central_mail::ReceiptKind;
+///
+/// fn escape<'loan, T: 'static>(command: AdmittedReceipt<'loan, T>)
+///     -> AdmittedReceipt<'static, T> {
+///     command
 /// }
 /// ```
 ///
@@ -113,36 +147,21 @@ pub enum DirectSendResult {
 /// ```
 ///
 /// ```compile_fail,E0277
-/// let _: fleet_mail::AdmittedReceipt = serde_json::from_str("{}").unwrap();
+/// let _: fleet_mail::RestoredMailReceipt = serde_json::from_str("{}").unwrap();
+/// ```
+///
+/// ```compile_fail,E0277
+/// use fleet_mail::AdmittedReceipt;
+/// use workspace_model::central_mail::ReceiptKind;
+/// let _: AdmittedReceipt<'static, ()> = serde_json::from_str("{}").unwrap();
 /// ```
 ///
 /// ```compile_fail,E0277
 /// use fleet_machine_login::link_authority::ValidatedMachineConnection;
 /// let _: ValidatedMachineConnection = serde_json::from_str("{}").unwrap();
 /// ```
-pub struct AdmittedReceipt {
-    pub(super) authority: ValidatedMachineConnection,
-    pub(super) message_id: MessageId,
-    pub(super) receipt: ReceiptKind,
-    pub(super) ids: Arc<dyn IdSource>,
-}
-
-impl AdmittedReceipt {
-    #[must_use]
-    pub fn new(
-        authority: ValidatedMachineConnection,
-        message_id: MessageId,
-        receipt: ReceiptKind,
-        ids: Arc<dyn IdSource>,
-    ) -> Self {
-        Self {
-            authority,
-            message_id,
-            receipt,
-            ids,
-        }
-    }
-}
+pub type AdmittedReceipt<'loan, Transaction> =
+    fleet_machine_login::receipt_authority::AdmittedReceipt<'loan, Transaction, ReceiptKind>;
 
 pub enum ApplyReceipt {
     Applied { ready: Option<MailDeliveryReady> },
@@ -236,7 +255,8 @@ pub trait DirectMessageStore: Send + Sync {
     ) -> BoxFuture<'_, Result<DirectSendResult, DirectWriteFailure>>;
     fn apply_receipt(
         &self,
-        receipt: AdmittedReceipt,
+        receipt: RestoredMailReceipt,
+        ids: Arc<dyn IdSource>,
     ) -> BoxFuture<'_, Result<ApplyReceipt, DirectWriteFailure>>;
     fn apply_mark(&self, mark: DirectMark) -> BoxFuture<'_, Result<ApplyMark, CheckedDueFailure>>;
     fn charge_rejected_mark(
