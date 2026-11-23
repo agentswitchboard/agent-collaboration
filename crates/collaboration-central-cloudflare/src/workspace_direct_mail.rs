@@ -90,12 +90,13 @@ impl DirectMessageStore for CentralStatements {
         &self,
         receipt: AdmittedReceipt,
     ) -> BoxFuture<'_, Result<ApplyReceipt, DirectWriteFailure>> {
+        let clock = self.clock.clone();
         Box::pin(SendFuture::new(async move {
             statement_store::write_direct_with_engine_alarm(
                 &self.connection,
                 AlarmPolicy::Engine(
                     self.state.storage(),
-                    self.clock.clone(),
+                    clock.clone(),
                     self.direct_write_decider(),
                 ),
                 async move |transaction| {
@@ -104,7 +105,7 @@ impl DirectMessageStore for CentralStatements {
                             transaction,
                         ),
                         receipt,
-                        &self.clock,
+                        &clock,
                     )
                     .await
                 },
