@@ -155,12 +155,12 @@ async function dueLists(
   }
   return lists;
 }
-test("a populated masked job and fixed active history agree on both backends", async (context): Promise<void> => {
+function populatedDueHistory(): { readonly name: string; readonly seed: readonly string[] }[] {
   const mask =
     "INSERT INTO engine_work_attempts VALUES ('01890f2e-7b4c-7cc0-98c4-000000002200','legacy_notice_windows','all','failing',1,'1970-01-01T00:12:00.000Z','statement_rejected',NULL,'1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z',NULL,'1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z')";
   const timerMask =
     "INSERT INTO engine_work_attempts VALUES ('01890f2e-7b4c-7cc0-98c4-000000002201','engine_source','wake_timer','failing',1,'1970-01-01T00:03:00.000Z','statement_rejected',NULL,'1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z',NULL,'1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z')";
-  const cases = [
+  return [
     { name: "sparse-short-history", seed: seedHistory(100, 50, 50) },
     { name: "sparse-long-history", seed: seedHistory(10_000, 50, 50) },
     { name: "all-finished", seed: seedHistory(10_000, 0, 0) },
@@ -175,9 +175,12 @@ test("a populated masked job and fixed active history agree on both backends", a
       ],
     },
   ];
+}
+
+test("a populated masked job and fixed active history agree on both backends", async (context): Promise<void> => {
   const historyReads: number[] = [];
   const selections: unknown[][] = [];
-  for (const { name, seed } of cases) {
+  for (const { name, seed } of populatedDueHistory()) {
     await prepareDueViewStore(name, [...oldSchema, ...seed]);
     const old = await runDueViewQuery(name, oldAlarm);
     const database = join(scratchDirectory, name + ".sqlite");
