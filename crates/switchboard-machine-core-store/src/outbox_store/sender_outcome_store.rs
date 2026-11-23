@@ -63,8 +63,23 @@ impl MacOutbox<'_> {
             None => {}
         }
         profile.delivery_outcome = Some(notice.clone());
-        let item_state = OutboxItemState::Answered.as_str();
         let payload_json = serde_json::to_string(&profile)?;
+        if row.state == OutboxItemState::Unconfirmed
+            && matches!(row.status, OutboxRequestStatus::Answered(_))
+        {
+            // The prior late acceptance already explains the result. Keep its
+            // cutoff and the tagged outcome when retaining the delivery notice.
+            sqlx::query!(
+                "UPDATE outbox_items SET payload_json = ? WHERE request_id = ?",
+                payload_json,
+                notice.request_id.as_str(),
+            )
+            .execute(&mut *transaction)
+            .await?;
+            transaction.commit().await?;
+            return Ok(true);
+        }
+        let item_state = OutboxItemState::Answered.as_str();
         let outcome_json = serde_json::to_string(&accepted)?;
         sqlx::query!(
         "UPDATE outbox_items SET item_state = ?, payload_json = ?, outcome_json = ?, updated_at = ?

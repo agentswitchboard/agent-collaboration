@@ -12,6 +12,8 @@ mod admission;
 mod claim_guards;
 #[path = "outbox_corruption_test.rs"]
 mod corruption;
+#[path = "outbox_late_status_test.rs"]
+mod late_status;
 #[path = "outbox_store_model_test.rs"]
 mod model;
 #[path = "outbox_orphan_reconcile_test.rs"]

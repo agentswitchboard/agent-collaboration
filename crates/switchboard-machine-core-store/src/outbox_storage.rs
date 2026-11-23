@@ -53,13 +53,15 @@ pub trait OutboxStorage: Send {
     fn earliest_deadline(&mut self) -> OutboxFuture<'_, StoreScan<Option<i64>>>;
     /// Claims up to `limit` due writes with deadlines strictly after
     /// `required_deadline_after_ms`, and ends waiting writes due for expiry at `now_ms`.
-    fn claim_next_batch(
-        &mut self,
+    /// Excluded requests are neither claimed nor expired by this call.
+    fn claim_next_batch<'call>(
+        &'call mut self,
         mark_ms: i64,
         limit: u16,
         now_ms: i64,
         required_deadline_after_ms: i64,
-    ) -> OutboxFuture<'_, StoreScan<ClaimedBatch>>;
+        excluded_request_ids: &'call BTreeSet<RequestId>,
+    ) -> OutboxFuture<'call, StoreScan<ClaimedBatch>>;
     /// Ends every waiting write past its deadline.
     fn end_overdue(&mut self, now: i64) -> OutboxFuture<'_, StoreScan<Vec<EndedWrite>>>;
     /// Ends overdue claims except those with a live batch ticket.
@@ -94,6 +96,12 @@ pub trait OutboxStorage: Send {
         request: &'call RequestId,
         outcome: &'call OutboxWriteOutcome,
         now: i64,
+    ) -> OutboxFuture<'call, ()>;
+    /// Records a permanent result after an unconfirmed cutoff.
+    fn record_late_outcome<'call>(
+        &'call mut self,
+        request: &'call RequestId,
+        outcome: &'call OutboxWriteOutcome,
     ) -> OutboxFuture<'call, ()>;
     fn return_not_transmitted<'call>(
         &'call mut self,
@@ -185,16 +193,23 @@ impl OutboxStorage for MachineLocalOutbox {
     fn earliest_deadline(&mut self) -> OutboxFuture<'_, StoreScan<Option<i64>>> {
         Box::pin(async move { MacOutbox::new(&mut self.store).earliest_deadline().await })
     }
-    fn claim_next_batch(
-        &mut self,
+    fn claim_next_batch<'call>(
+        &'call mut self,
         mark_ms: i64,
         limit: u16,
         now_ms: i64,
         required_deadline_after_ms: i64,
-    ) -> OutboxFuture<'_, StoreScan<ClaimedBatch>> {
+        excluded_request_ids: &'call BTreeSet<RequestId>,
+    ) -> OutboxFuture<'call, StoreScan<ClaimedBatch>> {
         Box::pin(async move {
             MacOutbox::new(&mut self.store)
-                .claim_next_batch(mark_ms, limit, now_ms, required_deadline_after_ms)
+                .claim_next_batch(
+                    mark_ms,
+                    limit,
+                    now_ms,
+                    required_deadline_after_ms,
+                    excluded_request_ids,
+                )
                 .await
         })
     }
@@ -270,6 +285,17 @@ impl OutboxStorage for MachineLocalOutbox {
         Box::pin(async move {
             MacOutbox::new(&mut self.store)
                 .return_not_transmitted(request, now)
+                .await
+        })
+    }
+    fn record_late_outcome<'call>(
+        &'call mut self,
+        request: &'call RequestId,
+        outcome: &'call OutboxWriteOutcome,
+    ) -> OutboxFuture<'call, ()> {
+        Box::pin(async move {
+            MacOutbox::new(&mut self.store)
+                .record_late_outcome(request, outcome)
                 .await
         })
     }

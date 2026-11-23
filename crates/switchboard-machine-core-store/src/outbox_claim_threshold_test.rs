@@ -1,6 +1,7 @@
 use super::{FIFTEEN_MINUTES_MS, MARK, ids, item, message, open};
 use crate::{OutboxCancellation, OutboxRequestStatus, OutboxStorage, OutboxStoreError};
 use router_clock::{ManualClock, RuntimeClock};
+use std::collections::BTreeSet;
 use std::time::Duration;
 
 #[tokio::test]
@@ -26,7 +27,7 @@ async fn claim_threshold_skips_short_deadlines_without_consuming_the_limit() {
     }
 
     let batch = store
-        .claim_next_batch(MARK, 2, MARK, threshold)
+        .claim_next_batch(MARK, 2, MARK, threshold, &BTreeSet::new())
         .await
         .unwrap()
         .expect_clean();
@@ -68,7 +69,7 @@ async fn claim_threshold_leaves_both_departure_states_for_expiry_at_the_real_dea
     }
     let now_ms = clock.utc_now().timestamp_millis();
     let first = store
-        .claim_next_batch(MARK, 1, now_ms, now_ms)
+        .claim_next_batch(MARK, 1, now_ms, now_ms, &BTreeSet::new())
         .await
         .unwrap()
         .expect_clean();
@@ -85,7 +86,7 @@ async fn claim_threshold_leaves_both_departure_states_for_expiry_at_the_real_dea
     );
 
     let blocked = store
-        .claim_next_batch(MARK, 2, now_ms, deadline)
+        .claim_next_batch(MARK, 2, now_ms, deadline, &BTreeSet::new())
         .await
         .unwrap()
         .expect_clean();
@@ -143,7 +144,7 @@ async fn claim_threshold_equal_to_now_keeps_normal_claim_and_expiry_boundaries()
     }
 
     let batch = store
-        .claim_next_batch(MARK, 3, MARK, MARK)
+        .claim_next_batch(MARK, 3, MARK, MARK, &BTreeSet::new())
         .await
         .unwrap()
         .expect_clean();
@@ -187,13 +188,15 @@ async fn invalid_claim_threshold_returns_typed_error_before_any_expiry_or_claim(
     store.insert(&due, MARK).await.unwrap();
 
     assert!(matches!(
-        store.claim_next_batch(MARK, 2, MARK, MARK - 1).await,
+        store.claim_next_batch(MARK, 2, MARK, MARK - 1, &BTreeSet::new()).await,
         Err(OutboxStoreError::ClaimDeadlineThresholdBeforeNow {
             required_deadline_after_ms, now_ms: MARK,
         }) if required_deadline_after_ms == MARK - 1
     ));
     assert!(matches!(
-        store.claim_next_batch(MARK, 2, MARK, i64::MAX).await,
+        store
+            .claim_next_batch(MARK, 2, MARK, i64::MAX, &BTreeSet::new())
+            .await,
         Err(OutboxStoreError::InvalidTimestamp {
             field: "required_deadline_after_ms"
         })

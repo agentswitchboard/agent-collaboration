@@ -1,8 +1,9 @@
 //! Validated permanent outcomes for claimed writes.
 use crate::{
     LocalOutboxRefusal, OutboxAccepted, OutboxCentralRefusal, OutboxQueuedWrite, OutboxRefusal,
-    OutboxScope, OutboxWriteTarget,
+    OutboxRequestStatus, OutboxScope, OutboxWriteTarget,
 };
+use serde::{Deserialize, Serialize};
 use workspace_ids::RequestId;
 use workspace_model::{ItemRef, RefusalReason, central_mail::CentralMailRefusal};
 
@@ -11,13 +12,29 @@ use workspace_model::{ItemRef, RefusalReason, central_mail::CentralMailRefusal};
 pub struct OutboxWriteOutcome {
     request_id: RequestId,
     target: OutboxWriteTarget,
+    content_digest: String,
     settlement: SettledWrite,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "value",
+    rename_all = "camelCase",
+    deny_unknown_fields
+)]
 pub(crate) enum SettledWrite {
     Answered(OutboxAccepted),
     Refused(OutboxRefusal),
+}
+
+impl SettledWrite {
+    pub(crate) fn into_request_status(self) -> OutboxRequestStatus {
+        match self {
+            Self::Answered(accepted) => OutboxRequestStatus::Answered(accepted),
+            Self::Refused(refusal) => OutboxRequestStatus::Refused(refusal),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -80,6 +97,7 @@ impl OutboxWriteOutcome {
         Ok(Self {
             request_id,
             target,
+            content_digest: write.content_digest().map_err(|_| InvalidOutboxOutcome)?,
             settlement,
         })
     }
@@ -93,6 +111,18 @@ impl OutboxWriteOutcome {
         (self.request_id == *request_id && self.target == *target)
             .then_some(&self.settlement)
             .ok_or(InvalidOutboxOutcome)
+    }
+
+    pub(crate) fn for_ended(
+        &self,
+        request_id: &RequestId,
+        target: &OutboxWriteTarget,
+        content_digest: &str,
+    ) -> Result<&SettledWrite, InvalidOutboxOutcome> {
+        if self.content_digest != content_digest {
+            return Err(InvalidOutboxOutcome);
+        }
+        self.for_claim(request_id, target)
     }
 }
 
