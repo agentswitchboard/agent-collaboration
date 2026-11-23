@@ -1,16 +1,16 @@
 use approval_request_protocol::{
-    Answer, ApprovalOffer, CentralTime, DecideRequest, DeliverEndingReply, DeliverEndingRequest,
-    Delivery, Label, OfferedOption, OfferedOptionId, OfferedOptions, OptionEffect, OptionLifetime,
-    ProviderHolder, ProviderStopCause, Raise, RaiseReply, StopReply, StopRequest, Title,
+    Answer, ApprovalOffer, CentralTime, DeliverEndingReply, DeliverEndingRequest, Delivery, Label,
+    OfferedOption, OfferedOptionId, OfferedOptions, OptionEffect, OptionLifetime, ProviderHolder,
+    ProviderStopCause, Raise, RaiseReply, StopReply, StopRequest, Title,
 };
 use central_engine_model::{Context, IdSource, Machine, TransitionError, check_transitions};
 use fleet_identity_protocol::EnrollmentId;
 
 use crate::{
-    AdmittedDecider, ApprovalApply, ApprovalEffect, ApprovalEnrollment, ApprovalEvent,
-    ApprovalLifecycle, ApprovalReceipt, ApprovalRefusal, ApprovalRequestKey, ApprovalRouting,
-    ApprovalRun, ApprovalSession, ApprovalState, FactorStanding, MAX_OUTSTANDING_PER_RUN,
-    ProviderSessionAvailability, RaiseAdmission,
+    AdmittedDecider, ApprovalApply, ApprovalDecideInput, ApprovalEffect, ApprovalEnrollment,
+    ApprovalEvent, ApprovalLifecycle, ApprovalReceipt, ApprovalRefusal, ApprovalRequestKey,
+    ApprovalRouting, ApprovalRun, ApprovalSession, ApprovalState, FactorStanding,
+    MAX_OUTSTANDING_PER_RUN, ProviderSessionAvailability, RaiseAdmission,
 };
 
 const HOUR: i64 = 3_600_000;
@@ -60,8 +60,8 @@ fn stale(state: &ApprovalState, event: &ApprovalEvent, at: CentralTime) -> bool 
         ),
         ApprovalEvent::DeliveryReply { key, request, .. } => !matches!(
             state, ApprovalState::Ended { saved, closed, .. }
-            if &saved.key == key && request.request_id == key.request_id
-                && request.contents_digest == saved.contents_digest && request.ending == closed.ending
+            if &saved.key == key && request.request_id() == &key.request_id
+                && request.contents_digest() == &saved.contents_digest && request.as_ref() == &closed.ending
         ),
         ApprovalEvent::Raise { .. }
         | ApprovalEvent::Stop { .. }
@@ -168,7 +168,7 @@ fn row_matrix_witnesses_every_declared_edge_and_asserts_typed_refusals() {
     let decide = |actor| ApprovalEvent::Decide {
         key: key.clone(),
         actor,
-        request: DecideRequest {
+        request: ApprovalDecideInput {
             request_id: key.request_id.clone(),
             operation_id: id(9).parse().unwrap(),
             value: answer.clone(),
@@ -186,7 +186,7 @@ fn row_matrix_witnesses_every_declared_edge_and_asserts_typed_refusals() {
             person_id: person_id.clone(),
             factor: FactorStanding::Fresh,
         },
-        request: DecideRequest {
+        request: ApprovalDecideInput {
             request_id: id(88).parse().unwrap(),
             operation_id: id(9).parse().unwrap(),
             value: answer,

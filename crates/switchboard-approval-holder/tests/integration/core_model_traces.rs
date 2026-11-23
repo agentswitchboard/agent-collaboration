@@ -39,7 +39,7 @@ fn same_ending_after_lost_received_and_reconnect_has_no_finished_claim_to_replay
         [ending_reply(1, DeliverEndingReply::Received {})]
     );
 
-    let reply = ProviderReply::CentralEnding(request.ending.clone());
+    let reply = ProviderReply::CentralEnding(request.ending().clone());
     mac.wait_event(RequestEvent::TakeFinalPermit {
         responder: RESPONDER,
         reply: reply.clone(),
@@ -86,7 +86,7 @@ fn enrollment_close_fences_a_claim_that_has_its_permit_but_has_not_started() {
         offer(&mut mac, 1, request.clone()),
         [ending_reply(1, DeliverEndingReply::Received {})]
     );
-    let reply = ProviderReply::CentralEnding(request.ending.clone());
+    let reply = ProviderReply::CentralEnding(request.ending().clone());
     mac.wait_event(RequestEvent::TakeFinalPermit {
         responder: RESPONDER,
         reply: reply.clone(),
@@ -166,7 +166,7 @@ fn same_answer_from_a_different_decider_is_not_an_exact_replay() {
         DeliverEndingRequest::from_raise(
             &raise(),
             Ending::Decided {
-                answer: approval_request_protocol::Answer::Approval {
+                answer: approval_request_protocol::ProviderAnswer::Approval {
                     option_id: approval_request_protocol::OfferedOptionId::new(1).unwrap(),
                 },
                 by: approval_request_protocol::DecidedBy::Person { person_id: decider },
@@ -192,7 +192,10 @@ fn same_answer_from_a_different_decider_is_not_an_exact_replay() {
     ));
     assert_eq!(
         mac.wait.claimed_reply(),
-        Some((&RESPONDER, &ProviderReply::CentralEnding(first.ending)))
+        Some((
+            &RESPONDER,
+            &ProviderReply::CentralEnding(first.ending().clone())
+        ))
     );
 }
 
@@ -208,7 +211,7 @@ fn withdrawn_exact_responder_cannot_start_even_after_received() {
         offer(&mut mac, 1, request.clone()),
         [ending_reply(1, DeliverEndingReply::Received {})]
     );
-    let reply = ProviderReply::CentralEnding(request.ending.clone());
+    let reply = ProviderReply::CentralEnding(request.ending().clone());
     mac.wait_event(RequestEvent::TakeFinalPermit {
         responder: RESPONDER,
         reply: reply.clone(),
@@ -339,7 +342,7 @@ fn unsent_stop_claims_a_local_reply_without_a_central_call() {
 #[test]
 fn an_exact_provider_question_uses_the_same_one_shot_writer() {
     use approval_request_protocol::{
-        Answer, DecidedBy, PrivateEnding, ProviderHolder, QuestionAnswer, Raise,
+        DecidedBy, PrivateEnding, ProviderAnswer, ProviderHolder, QuestionAnswer, Raise,
     };
     use switchboard_approval_holder::waiting_request::WaitState;
     let mut mac = Mac::new();
@@ -372,7 +375,7 @@ fn an_exact_provider_question_uses_the_same_one_shot_writer() {
     let request = DeliverEndingRequest::from_raise(
         &question,
         Ending::Decided {
-            answer: Answer::Question {
+            answer: ProviderAnswer::Question {
                 answer: QuestionAnswer::Declined {},
             },
             by: DecidedBy::Person {
@@ -382,14 +385,14 @@ fn an_exact_provider_question_uses_the_same_one_shot_writer() {
     )
     .unwrap();
     assert!(matches!(
-        &request.ending,
+        request.ending(),
         PrivateEnding::ProviderQuestion { .. }
     ));
     assert_eq!(
         offer(&mut mac, 1, request.clone()),
         [ending_reply(1, DeliverEndingReply::Received {})]
     );
-    let reply = ProviderReply::CentralEnding(request.ending);
+    let reply = ProviderReply::CentralEnding(request.ending().clone());
     mac.wait_event(RequestEvent::TakeFinalPermit {
         responder: RESPONDER,
         reply: reply.clone(),

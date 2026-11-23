@@ -361,20 +361,20 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
         request: DeliverEndingRequest,
         effects: &mut Effects<Responder, Connection, Enrollment>,
     ) -> Result<DeliverEndingReply, WaitError> {
-        if self.request_id.as_ref() != Some(&request.request_id) {
+        if self.request_id.as_ref() != Some(request.request_id()) {
             return Err(TransitionError::Stale);
         }
         let Some(frozen) = self.frozen.as_ref() else {
             return Ok(DeliverEndingReply::NotHeld {});
         };
-        let validation = if request.contents_digest != frozen.digest {
+        let validation = if request.contents_digest() != &frozen.digest {
             Err(InvalidApprovalEnding::BindingMismatch)
         } else {
-            request.ending.check_bound_raise(&frozen.body)
+            request.ending().check_bound_raise(&frozen.body)
         };
         if let Err(reason) = validation {
             effects.push(WaitEffect::EndingConflict {
-                request_id: request.request_id,
+                request_id: request.request_id().clone(),
                 reason,
             });
             return Ok(DeliverEndingReply::EndingDiffers {});
@@ -384,7 +384,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
                 return Ok(DeliverEndingReply::Received {});
             }
             effects.push(WaitEffect::EndingConflict {
-                request_id: request.request_id,
+                request_id: request.request_id().clone(),
                 reason: InvalidApprovalEnding::BindingMismatch,
             });
             return Ok(DeliverEndingReply::EndingDiffers {});
@@ -392,7 +392,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
         Ok(match self.central {
             CentralDuty::Unsent | CentralDuty::Refusing => DeliverEndingReply::HolderNotReady {},
             CentralDuty::Raising(_) | CentralDuty::WaitingForEnding => {
-                self.claim_available(ProviderReply::CentralEnding(request.ending.clone()))?;
+                self.claim_available(ProviderReply::CentralEnding(request.ending().clone()))?;
                 self.preserve_raising_call();
                 self.central = CentralDuty::Done;
                 self.claim = Some(request);
