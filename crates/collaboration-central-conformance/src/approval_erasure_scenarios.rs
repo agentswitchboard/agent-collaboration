@@ -132,12 +132,8 @@ pub async fn cutoff_and_correlated_marker(fixture: &impl ApprovalLinkFixture) ->
         register_run(&mut socket, organization, &replacement).await?,
         RegisterRunReply::Registered {},
     );
-    // The new holder cannot receive the old run's marker on its own correlated Raise.
-    let foreign = raise(&mut socket, organization, held_start(&replacement, 10)?).await?;
-    assert!(
-        !matches!(foreign, RaiseReply::AlreadyEnded { .. }),
-        "{foreign:?}"
-    );
+    // The retired marker must have the same effect as an absent record for a new run.
+    require_receipt(raise(&mut socket, organization, held_start(&replacement, 10)?).await?)?;
     socket.close(CloseCode::Normal, None).await?;
     Ok(())
 }
