@@ -294,7 +294,7 @@ fn replyable_stops_exhaust_the_holder_claims() {
             }
         ),
         Err(TransitionError::Domain(
-            WaitRefusal::HolderRefusedLocallyRequiresWriterCompletion
+            WaitRefusal::HolderRefusedLocallyRequiresRefusalSelection
         ))
     );
 }

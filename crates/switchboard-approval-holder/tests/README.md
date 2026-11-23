@@ -15,9 +15,9 @@ The capacity cases exercise typed withdrawal before and after the final permit.
 The exposure cases distinguish a frame withdrawn before the writer started from
 an answer lost after possible admission. The generated history checks both traces
 for each request family.
-The capacity-retry histories cover a delayed older Raise, the newer capacity
-refusal, withdrawal with an exact Stop, and a completed local negative that
-retains exposure until Central settles it.
+The capacity-retry histories cover an older possibly admitted Raise, selection
+of a final local negative, and exact Stop reconciliation across writer loss
+and reconnect. They also exercise loss or withdrawal before selection.
 The confirmation cases exercise retired inputs against the current gate, queued
 candidate rejection and exact retry, and the four ways a capacity-released wait
 can dispose of its last call.

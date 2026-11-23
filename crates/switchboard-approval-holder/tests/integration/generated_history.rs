@@ -63,7 +63,6 @@ struct HistoryFacts {
     recorded_ending: Option<DeliverEndingRequest>,
     central_done: bool,
     refusing_locally: bool,
-    capacity_refused: bool,
     selected: Option<ProviderReply>,
     permitted: bool,
     writer_started: bool,
@@ -80,13 +79,7 @@ impl HistoryFacts {
     }
 
     fn closed(&self) -> bool {
-        (self.central_done || self.refusing_locally && !self.capacity_refusal_exposure())
-            && self.handle_released
-            && !self.writer_started
-    }
-
-    fn capacity_refusal_exposure(&self) -> bool {
-        self.capacity_refused && self.could_be_admitted && !self.central_done
+        (self.central_done || self.refusing_locally) && self.handle_released && !self.writer_started
     }
 
     fn claim(&mut self, reply: ProviderReply) {
@@ -284,9 +277,6 @@ impl HistoryFacts {
             DeliverEndingReply::StopOwed {}
         } else if self.owed.is_some() {
             DeliverEndingReply::StopOwed {}
-        } else if self.capacity_refusal_exposure() {
-            self.central_done = true;
-            DeliverEndingReply::NotHeld {}
         } else if self.central_done {
             DeliverEndingReply::NotHeld {}
         } else if !self.published || self.refusing_locally {
@@ -313,7 +303,7 @@ impl HistoryFacts {
             if self.owed.is_none()
                 && self.withdrawal_waiting_for_link.is_none()
                 && !self.central_done
-                && (!self.refusing_locally || self.capacity_refusal_exposure())
+                && !self.refusing_locally
             {
                 self.record_stop(cause);
             }
@@ -340,7 +330,7 @@ impl HistoryFacts {
             self.record_stop(cause);
         }
         self.claim(ProviderReply::LocalNegative(LocalNegative::Stopped(
-            provider_cause(cause).unwrap(),
+            provider_cause(cause)?,
         )));
         Some(())
     }
@@ -348,18 +338,21 @@ impl HistoryFacts {
     fn record_stop(&mut self, cause: HolderStopCause) {
         if self.saved || self.could_be_admitted {
             self.refusing_locally = false;
-            self.capacity_refused = false;
             let request = self.request();
             let request_id = request.request_id().clone();
             let router_run = request.router_run().clone();
             let contents_digest = request.contents_digest().unwrap();
             self.owed = Some(if self.call_wait {
-                assert_eq!(cause, CALL_WITHDRAWN);
+                assert!(cause == CALL_WITHDRAWN || cause == HolderStopCause::HolderRefusedLocally);
                 StopRequest::UnprovenCall {
                     request_id,
                     router_run,
                     contents_digest,
-                    cause: CallStopCause::CallWithdrawn,
+                    cause: if cause == CALL_WITHDRAWN {
+                        CallStopCause::CallWithdrawn
+                    } else {
+                        CallStopCause::HolderRefusedLocally
+                    },
                 }
             } else {
                 StopRequest::Provider {
@@ -408,8 +401,7 @@ impl HistoryFacts {
                         if self.withdrawal_waiting_for_link.is_some() {
                             self.settle_withdrawal();
                         } else {
-                            self.refusing_locally = true;
-                            self.capacity_refused = true;
+                            self.record_stop(HolderStopCause::HolderRefusedLocally);
                             self.claim(ProviderReply::LocalNegative(LocalNegative::RaiseRefused(
                                 RaiseRefusal::TooManyOutstanding,
                             )));
@@ -501,7 +493,7 @@ impl HistoryFacts {
                     if self.owed.is_none()
                         && self.withdrawal_waiting_for_link.is_none()
                         && !self.central_done
-                        && (!self.refusing_locally || self.capacity_refusal_exposure())
+                        && !self.refusing_locally
                     {
                         self.record_stop(HolderStopCause::AskWithdrawn);
                     }
@@ -564,10 +556,6 @@ fn assert_observations(actual: &Product, model: &HistoryFacts) {
     let ready = model.dial.as_ref().filter(|_| model.ready);
     assert_eq!(actual.gate.ready_link(), ready);
     assert_eq!(actual.wait.holds_place(), !model.closed());
-    assert_eq!(
-        actual.wait.holds_capacity_refusal_exposure(),
-        model.capacity_refusal_exposure()
-    );
     assert_eq!(
         actual.wait.may_be_forgotten(),
         model.closed() && model.raise.is_none() && model.stop.is_none()

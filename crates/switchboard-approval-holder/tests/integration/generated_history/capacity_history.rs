@@ -70,42 +70,12 @@ pub(super) fn check(call_wait: bool, withdrew: bool) {
         .is_some()
     );
     if withdrew {
-        let cause = if call_wait {
-            HolderStopCause::CallWithdrawn
-        } else {
-            HolderStopCause::AskWithdrawn
-        };
         let input = if call_wait {
-            WaitInput::LocalStop(cause)
+            WaitInput::LocalStop(HolderStopCause::CallWithdrawn)
         } else {
             WaitInput::ProviderWithdrew(RESPONDER)
         };
         assert!(compare_step(&mut actual, &mut facts, input).is_some());
-        let publication = compare_step(
-            &mut actual,
-            &mut facts,
-            WaitInput::Publish(CallAttempt::new(4)),
-        );
-        assert!(
-            matches!(publication.as_deref(), Some([Observation::Wait(RequestEffect::Stop { request, .. })]) if request.cause() == cause)
-        );
-        let ending = StopReceiptEnding::Cancelled {
-            reason: CancelReason::Stopped { cause },
-        };
-        assert_eq!(
-            compare_step(
-                &mut actual,
-                &mut facts,
-                WaitInput::Stop {
-                    key: call(2, 4),
-                    reply: StopReply::Stands { ending }
-                }
-            ),
-            Some(vec![Observation::Wait(RequestEffect::StopReconciled(
-                ending
-            ))])
-        );
-        assert!(actual.wait.may_be_forgotten());
     } else {
         for input in [
             WaitInput::Start {
@@ -116,15 +86,31 @@ pub(super) fn check(call_wait: bool, withdrew: bool) {
         ] {
             assert!(compare_step(&mut actual, &mut facts, input).is_some());
         }
-        assert!(
-            compare_step(
-                &mut actual,
-                &mut facts,
-                WaitInput::Publish(CallAttempt::new(4))
-            )
-            .is_none()
-        );
-        assert!(actual.wait.holds_place());
-        assert!(actual.wait.holds_capacity_refusal_exposure());
     }
+    let cause = HolderStopCause::HolderRefusedLocally;
+    let publication = compare_step(
+        &mut actual,
+        &mut facts,
+        WaitInput::Publish(CallAttempt::new(4)),
+    );
+    assert!(
+        matches!(publication.as_deref(), Some([Observation::Wait(RequestEffect::Stop { request, .. })]) if request.cause() == cause)
+    );
+    let ending = StopReceiptEnding::Cancelled {
+        reason: CancelReason::Stopped { cause },
+    };
+    assert_eq!(
+        compare_step(
+            &mut actual,
+            &mut facts,
+            WaitInput::Stop {
+                key: call(2, 4),
+                reply: StopReply::Stands { ending }
+            }
+        ),
+        Some(vec![Observation::Wait(RequestEffect::StopReconciled(
+            ending
+        ))])
+    );
+    assert!(actual.wait.may_be_forgotten());
 }

@@ -15,4 +15,6 @@ mod scope;
 mod model_ledger;
 
 #[cfg(test)]
+mod holder_refusal_cleanup;
+#[cfg(test)]
 mod unproven_call_lifecycle;

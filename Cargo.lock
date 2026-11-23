@@ -2509,6 +2509,8 @@ dependencies = [
  "hegeltest",
  "serde",
  "serde_json",
+ "state-machine-core",
+ "switchboard-approval-holder",
  "uuid",
  "workspace-ids",
 ]

@@ -119,7 +119,6 @@ pub fn may_enqueue<Responder, Connection: Eq, Enrollment: Eq>(
 const GATE_WAIT_TRANSITIONS: &[Transition] = &[
     step("live", "publish", "live", false),
     step("live", "deliver_ending", "live", false),
-    step("live", "deliver_ending", "closed", true),
     step("fenced_write", "deliver_ending", "fenced_write", false),
     step("closed", "deliver_ending", "closed", true),
 ];

@@ -1,9 +1,11 @@
 use super::{
-    Call, CallKey, CapacityRefusalExposure, CentralDuty, Effects, FamilyStopCause, LinkAttempt,
-    LocalNegative, MatchedRunRefusal, ProviderReply, RaiseRefusal, RunAuthority, WaitEffect,
+    Call, CallKey, CentralDuty, Effects, FamilyStopCause, LinkAttempt, LocalNegative,
+    MatchedRunRefusal, ProviderReply, RaiseRefusal, RequestFamily, RunAuthority, WaitEffect,
     WaitError, WaitRefusal, WaitState,
 };
-use approval_request_protocol::{RaiseReply, RunRefusal, StopReply, StopRequest};
+use approval_request_protocol::{
+    CallStopCause, ProviderStopCause, RaiseReply, RunRefusal, StopReply, StopRequest,
+};
 use state_machine_core::TransitionError;
 
 impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connection> {
@@ -25,8 +27,10 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
             CentralDuty::Stopping {
                 request,
                 call: pending @ Call::Due,
-            } => {
+                published_attempts,
+            } if !published_attempts.contains(&call) => {
                 *pending = Call::InFlight(call.clone());
+                published_attempts.push(call.clone());
                 Ok(WaitEffect::Stop {
                     call,
                     authority,
@@ -36,11 +40,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
             CentralDuty::Raising(Call::InFlight(_))
             | CentralDuty::WaitingForEnding
             | CentralDuty::AwaitingRaiseDisposition { .. }
-            | CentralDuty::CapacityRefusalExposure(_)
-            | CentralDuty::Stopping {
-                call: Call::InFlight(_),
-                ..
-            }
+            | CentralDuty::Stopping { .. }
             | CentralDuty::Refusing
             | CentralDuty::Done => Err(TransitionError::Stale),
         }
@@ -52,13 +52,11 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
                 self.central = CentralDuty::Refusing;
                 return Ok(());
             }
-            CentralDuty::Raising(Call::Due) if self.earlier_unresolved_raises.is_empty() => {
+            CentralDuty::Raising(Call::Due) if !self.earlier_raise_may_be_admitted => {
                 self.central = CentralDuty::Refusing;
                 return Ok(());
             }
-            CentralDuty::Raising(_)
-            | CentralDuty::WaitingForEnding
-            | CentralDuty::CapacityRefusalExposure(_) => {}
+            CentralDuty::Raising(_) | CentralDuty::WaitingForEnding => {}
             CentralDuty::AwaitingRaiseDisposition { .. }
             | CentralDuty::Stopping { .. }
             | CentralDuty::Refusing
@@ -66,7 +64,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
         }
         let request = self.stop_request(cause)?;
         if let CentralDuty::Raising(Call::InFlight(raise)) = &self.central
-            && self.earlier_unresolved_raises.is_empty()
+            && !self.earlier_raise_may_be_admitted
         {
             self.central = CentralDuty::AwaitingRaiseDisposition {
                 raise: raise.clone(),
@@ -101,10 +99,11 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
     }
 
     fn owe_stop(&mut self, request: StopRequest) {
-        self.earlier_unresolved_raises.clear();
+        self.earlier_raise_may_be_admitted = false;
         self.central = CentralDuty::Stopping {
             request,
             call: Call::Due,
+            published_attempts: Vec::new(),
         };
     }
 
@@ -128,9 +127,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
     ) -> Result<(), WaitError> {
         match &self.central {
             CentralDuty::Raising(Call::InFlight(raise)) if raise == key => {
-                if may_have_reached && !self.earlier_unresolved_raises.contains(key) {
-                    self.earlier_unresolved_raises.push(key.clone());
-                }
+                self.earlier_raise_may_be_admitted |= may_have_reached;
                 self.central = CentralDuty::Raising(Call::Due);
                 Ok(())
             }
@@ -142,13 +139,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
                 }
                 Ok(())
             }
-            _ => {
-                if !may_have_reached && self.resolve_refused_raise_attempt(key) {
-                    Ok(())
-                } else {
-                    self.retry_stop_or_drain_raise(|call| call == key)
-                }
-            }
+            _ => self.retry_stop_or_drain_raise(|call| call == key),
         }
     }
 
@@ -193,9 +184,6 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
             }
             return Ok(());
         }
-        if self.receive_refused_raise_exposure(&key, &reply)? {
-            return Ok(());
-        }
         let pending_stop = match &self.central {
             CentralDuty::Raising(Call::InFlight(current)) if current == &key => None,
             CentralDuty::AwaitingRaiseDisposition { raise, stop } if raise == &key => Some(stop),
@@ -207,7 +195,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
                 if let Some(stop) = pending_stop {
                     self.owe_stop(stop.clone());
                 } else {
-                    self.earlier_unresolved_raises.clear();
+                    self.earlier_raise_may_be_admitted = false;
                     self.central = CentralDuty::WaitingForEnding;
                 }
                 return Ok(());
@@ -226,20 +214,32 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
             RaiseReply::ContentsDiffer {} => RaiseRefusal::ContentsDiffer,
             RaiseReply::TooManyOutstanding {} => RaiseRefusal::TooManyOutstanding,
         };
-        if pending_stop.is_none() {
-            self.claim_available(ProviderReply::LocalNegative(LocalNegative::RaiseRefused(
-                refusal,
-            )))?;
+        if pending_stop.is_some() {
+            self.central = CentralDuty::Refusing;
+            return Ok(());
         }
-        self.central = if refusal == RaiseRefusal::TooManyOutstanding
-            && !self.earlier_unresolved_raises.is_empty()
-        {
-            CentralDuty::CapacityRefusalExposure(CapacityRefusalExposure::UnresolvedAttempts(
-                std::mem::take(&mut self.earlier_unresolved_raises),
-            ))
+        self.select_raise_refusal(refusal)
+    }
+
+    /// The final local negative owes cleanup for older exposure as soon as it is
+    /// selected, regardless of whether the requester receives it.
+    fn select_raise_refusal(&mut self, refusal: RaiseRefusal) -> Result<(), WaitError> {
+        self.claim_available(ProviderReply::LocalNegative(LocalNegative::RaiseRefused(
+            refusal,
+        )))?;
+        if refusal == RaiseRefusal::TooManyOutstanding && self.earlier_raise_may_be_admitted {
+            let cause = match self.family {
+                RequestFamily::ProviderAsk => {
+                    FamilyStopCause::Provider(ProviderStopCause::HolderRefusedLocally)
+                }
+                RequestFamily::HeldCall => {
+                    FamilyStopCause::Call(CallStopCause::HolderRefusedLocally)
+                }
+            };
+            self.owe_stop(self.stop_request(cause)?);
         } else {
-            CentralDuty::Refusing
-        };
+            self.central = CentralDuty::Refusing;
+        }
         Ok(())
     }
 
@@ -254,55 +254,6 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
                 WaitRefusal::ReceiptForDifferentRequest,
             ))
         }
-    }
-
-    fn receive_refused_raise_exposure(
-        &mut self,
-        key: &CallKey<Connection>,
-        reply: &RaiseReply,
-    ) -> Result<bool, WaitError> {
-        let CentralDuty::CapacityRefusalExposure(CapacityRefusalExposure::UnresolvedAttempts(
-            attempts,
-        )) = &self.central
-        else {
-            return Ok(false);
-        };
-        if !attempts.contains(key) {
-            return Ok(false);
-        }
-        match reply {
-            RaiseReply::Receipt { receipt } => {
-                self.check_raise_receipt(receipt)?;
-                self.central = CentralDuty::CapacityRefusalExposure(
-                    CapacityRefusalExposure::ConfirmedAdmission,
-                );
-            }
-            RaiseReply::AlreadyStopped {} => self.central = CentralDuty::Refusing,
-            RaiseReply::SessionEnded {}
-            | RaiseReply::ContentsDiffer {}
-            | RaiseReply::TooManyOutstanding {}
-            | RaiseReply::AuthorityRefused { .. } => {
-                self.resolve_refused_raise_attempt(key);
-            }
-        }
-        Ok(true)
-    }
-
-    fn resolve_refused_raise_attempt(&mut self, key: &CallKey<Connection>) -> bool {
-        let CentralDuty::CapacityRefusalExposure(CapacityRefusalExposure::UnresolvedAttempts(
-            attempts,
-        )) = &mut self.central
-        else {
-            return false;
-        };
-        let Some(index) = attempts.iter().position(|attempt| attempt == key) else {
-            return false;
-        };
-        attempts.remove(index);
-        if attempts.is_empty() {
-            self.central = CentralDuty::Refusing;
-        }
-        true
     }
 
     pub(super) fn receive_stop<Enrollment>(
@@ -324,6 +275,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
                     ..
                 },
             call: Call::InFlight(current),
+            ..
         } = &self.central
         else {
             return Err(TransitionError::Stale);
