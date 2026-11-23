@@ -16,3 +16,14 @@ switchboard-machine-core-store = { path = "../switchboard-machine-core-store", v
 switchboard-machine-enrollment = { path = "../switchboard-machine-enrollment", version = "0.1.158" }
 thiserror.workspace = true
 tokio.workspace = true
+
+[dev-dependencies]
+axum = { workspace = true, features = ["http1", "tokio", "json"] }
+codex-router-secret-store = { path = "../codex-router-secret-store", version = "0.1.158", features = ["keychain-test-guard"] }
+router-clock = { workspace = true, features = ["test-support"] }
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
+serde_json.workspace = true
+sqlx = { workspace = true, features = ["sqlite"] }
+switchboard-machine-enrollment = { path = "../switchboard-machine-enrollment", version = "0.1.158", features = ["test-support"] }
+tempfile = "3.27.0"
+tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring", "tls12"] }

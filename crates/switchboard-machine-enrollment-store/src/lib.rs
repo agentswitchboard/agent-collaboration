@@ -125,3 +125,7 @@ enum EnrollmentMutation {
     Replace(EnrollmentBinding),
     End(EnrollmentEnd),
 }
+
+#[cfg(test)]
+#[path = "enrollment_store_test.rs"]
+mod tests;

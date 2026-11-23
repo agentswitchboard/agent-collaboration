@@ -25,6 +25,8 @@ pub(crate) struct EnrollmentWorker {
     secret_root: PathBuf,
     machine_id: MachineId,
     clock: Arc<dyn RuntimeClock + Send + Sync>,
+    #[cfg(test)]
+    test_dependencies: Option<TestDependencies>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -60,7 +62,18 @@ impl EnrollmentWorker {
             secret_root,
             machine_id,
             clock,
+            #[cfg(test)]
+            test_dependencies: None,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn inject_test_dependencies(
+        &mut self,
+        keychain: Arc<dyn codex_router_secret_store::keychain_data_key::KeychainAccess>,
+        faults: Arc<TestWriteFaults>,
+    ) {
+        self.test_dependencies = Some(TestDependencies { keychain, faults });
     }
 
     pub(crate) async fn run(mut self, mut requests: mpsc::UnboundedReceiver<EnrollmentRequest>) {
@@ -148,7 +161,7 @@ impl EnrollmentWorker {
         let expected_sql = i64::try_from(expected.get()).map_err(|_| definite_error)?;
         let timestamp = self.clock.now().unix_millis();
         let machine_id = &self.machine_id;
-        let outcome = self
+        let write = self
             .store
             .write_enrollment_row(machine_id, expected_sql, timestamp, |row| {
                 let snapshot = match EnrollmentSnapshot::from_row(row, machine_id) {
@@ -162,8 +175,15 @@ impl EnrollmentWorker {
                     MutationDecision::Replace(None) => EnrollmentRowChange::Abort(()),
                     MutationDecision::End(why) => end_row(snapshot, why),
                 }
-            })
-            .await;
+            });
+        #[cfg(not(test))]
+        let outcome = write.await;
+        #[cfg(test)]
+        let outcome = if let Some(test) = &self.test_dependencies {
+            test.faults.apply(write).await
+        } else {
+            write.await
+        };
         self.finish_mutation(expected, outcome, definite_error)
             .await
     }
@@ -179,6 +199,12 @@ impl EnrollmentWorker {
             Ok(EnrollmentRowWrite::Superseded) => Ok(ConditionalWrite::Superseded),
             Ok(EnrollmentRowWrite::Aborted(())) => Err(definite_error),
             Err(EnrollmentRowStoreError::Commit(_)) => {
+                #[cfg(test)]
+                if let Some(test) = &self.test_dependencies {
+                    test.faults
+                        .probes
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
                 let observed = self
                     .store
                     .probe_enrollment_commit(&self.machine_id)
@@ -237,7 +263,20 @@ impl EnrollmentWorker {
         sealed_bytes_present: bool,
     ) -> Result<EnrollmentRowSealer, SecretStoreError> {
         let root = self.secret_root.clone();
+        #[cfg(test)]
+        let keychain = self
+            .test_dependencies
+            .as_ref()
+            .map(|test| Arc::clone(&test.keychain));
         tokio::task::spawn_blocking(move || {
+            #[cfg(test)]
+            if let Some(keychain) = keychain {
+                return EnrollmentRowSealer::acquire_with_keychain(
+                    &root,
+                    sealed_bytes_present,
+                    keychain.as_ref(),
+                );
+            }
             EnrollmentRowSealer::acquire(&root, sealed_bytes_present)
         })
         .await
@@ -270,3 +309,10 @@ fn end_row(snapshot: EnrollmentSnapshot, why: EnrollmentEnd) -> EnrollmentRowCha
         why: stored_end(why),
     })
 }
+
+#[cfg(test)]
+#[path = "enrollment_worker_test_faults.rs"]
+mod test_faults;
+
+#[cfg(test)]
+pub(crate) use test_faults::{TestDependencies, TestWriteFault, TestWriteFaults};
