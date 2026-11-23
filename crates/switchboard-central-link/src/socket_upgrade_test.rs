@@ -6,6 +6,9 @@ use tokio_tungstenite::{
 
 use super::{MAX_OUTBOUND_TEXT_BYTES, socket_config};
 
+#[path = "http_upgrade_budget_test.rs"]
+mod http_upgrade_budget;
+
 #[tokio::test]
 async fn masked_write_buffer_accepts_its_exact_limit_and_refuses_one_more_byte() {
     for difference in [0, 1] {

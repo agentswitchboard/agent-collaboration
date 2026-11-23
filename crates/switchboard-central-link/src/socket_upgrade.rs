@@ -1,13 +1,23 @@
 //! The authenticated upgrade to the configured Central address.
 
-use central_link_protocol::MachineTokenText;
-use http_body_util::Empty;
-use hyper::{Request, StatusCode, Uri, body::Bytes, upgrade::Upgraded};
-use hyper_rustls::HttpsConnectorBuilder;
-use hyper_util::{
-    client::legacy::Client,
-    rt::{TokioExecutor, TokioIo},
+use std::{
+    future::poll_fn,
+    io::{self, IoSlice},
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    task::{Context, Poll, ready},
 };
+
+use central_link_protocol::MachineTokenText;
+use futures_util::future::try_join;
+use http_body_util::Empty;
+use hyper::{Request, StatusCode, Uri, body::Bytes, client::conn::http1, upgrade::Upgraded};
+use hyper_rustls::HttpsConnectorBuilder;
+use hyper_util::rt::TokioIo;
+use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
 use tokio_tungstenite::{
     WebSocketStream,
     tungstenite::{
@@ -15,7 +25,7 @@ use tokio_tungstenite::{
         http::{
             HeaderMap, HeaderValue,
             header::{
-                AUTHORIZATION, CONNECTION, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_EXTENSIONS,
+                AUTHORIZATION, CONNECTION, HOST, SEC_WEBSOCKET_ACCEPT, SEC_WEBSOCKET_EXTENSIONS,
                 SEC_WEBSOCKET_KEY, SEC_WEBSOCKET_PROTOCOL, SEC_WEBSOCKET_VERSION, UPGRADE,
             },
             uri::Scheme,
@@ -23,6 +33,7 @@ use tokio_tungstenite::{
         protocol::{Role, WebSocketConfig},
     },
 };
+use tower_service::Service;
 
 use crate::link_policy::DialFailure;
 
@@ -30,6 +41,7 @@ pub(super) type Socket = WebSocketStream<TokioIo<Upgraded>>;
 
 const UPGRADE_RESPONSE_MAX_HEADERS: usize = 124;
 const UPGRADE_RESPONSE_MAX_BYTES: usize = 64 * 1024;
+const UPGRADE_RESPONSE_MAX_READS: usize = 512;
 const SOCKET_BYTE_LIMIT: usize = 1024 * 1024;
 // The longest client frame header uses a two-byte prefix, eight-byte length and four-byte mask.
 pub(super) const MAX_OUTBOUND_TEXT_BYTES: usize = SOCKET_BYTE_LIMIT - 14;
@@ -96,7 +108,12 @@ impl DialAddress {
         let auth = format!("Bearer {}", token.expose());
         let mut value = HeaderValue::from_str(&auth).map_err(|_| DialFailure::Unauthorized)?;
         value.set_sensitive(true);
-        let request = Request::get(address)
+        let request_target = address
+            .path_and_query()
+            .ok_or(DialFailure::InvalidAddress)?;
+        let authority = address.authority().ok_or(DialFailure::InvalidAddress)?;
+        let request = Request::get(request_target.as_str())
+            .header(HOST, authority.as_str())
             .header(AUTHORIZATION, value)
             .header(CONNECTION, "Upgrade")
             .header(UPGRADE, "websocket")
@@ -109,35 +126,136 @@ impl DialAddress {
         let connector = connector.https_or_http();
         #[cfg(not(feature = "test-support"))]
         let connector = connector.https_only();
-        let client = Client::builder(TokioExecutor::new())
-            .pool_max_idle_per_host(0)
-            .http1_max_headers(UPGRADE_RESPONSE_MAX_HEADERS)
-            .http1_max_buf_size(UPGRADE_RESPONSE_MAX_BYTES)
-            .build(connector.enable_http1().build());
+        let mut connector = connector.enable_http1().build();
+        poll_fn(|context| connector.poll_ready(context))
+            .await
+            .map_err(|_| DialFailure::Transport)?;
+        let stream = connector
+            .call(address)
+            .await
+            .map_err(|_| DialFailure::Transport)?;
+        upgrade_over_stream(TokioIo::new(stream), request, &websocket_key).await
+    }
+}
 
-        let mut response = client
-            .request(request)
+async fn upgrade_over_stream(
+    stream: impl AsyncRead + AsyncWrite + Unpin + Send + 'static,
+    request: Request<Empty<Bytes>>,
+    websocket_key: &str,
+) -> Result<Socket, DialFailure> {
+    let counting_upgrade = Arc::new(AtomicBool::new(true));
+    let budgeted = UpgradeReadStream {
+        stream,
+        counting_upgrade: counting_upgrade.clone(),
+        bytes_read: 0,
+        completed_reads: 0,
+    };
+    let (mut sender, connection) = http1::Builder::new()
+        .max_headers(UPGRADE_RESPONSE_MAX_HEADERS)
+        .max_buf_size(UPGRADE_RESPONSE_MAX_BYTES)
+        .handshake(TokioIo::new(budgeted))
+        .await
+        .map_err(|_| DialFailure::Transport)?;
+    let exchange = async {
+        let mut response = sender
+            .send_request(request)
             .await
             .map_err(|_| DialFailure::Transport)?;
         match response.status() {
             StatusCode::SWITCHING_PROTOCOLS => {
-                check_upgrade_headers(response.headers(), &websocket_key)?
+                check_upgrade_headers(response.headers(), websocket_key)?
             }
             StatusCode::UNAUTHORIZED => return Err(DialFailure::Unauthorized),
             StatusCode::SERVICE_UNAVAILABLE => return Err(DialFailure::Busy),
             StatusCode::BAD_REQUEST => return Err(DialFailure::InvalidAddress),
             _ => return Err(DialFailure::Transport),
-        };
-        // Keep Hyper's upgraded wrapper so bytes read alongside the 101 reach the socket.
-        let upgraded = hyper::upgrade::on(&mut response)
+        }
+        hyper::upgrade::on(&mut response)
             .await
-            .map_err(|_| DialFailure::Transport)?;
-        Ok(WebSocketStream::from_raw_socket(
-            TokioIo::new(upgraded),
-            Role::Client,
-            Some(socket_config()),
-        )
-        .await)
+            .map_err(|_| DialFailure::Transport)
+    };
+    let connection = async {
+        connection
+            .with_upgrades()
+            .await
+            .map_err(|_| DialFailure::Transport)
+    };
+    let (upgraded, ()) = try_join(exchange, connection).await?;
+    counting_upgrade.store(false, Ordering::Relaxed);
+    // Hyper replays any bytes read alongside the 101 before reading the stream again.
+    Ok(WebSocketStream::from_raw_socket(
+        TokioIo::new(upgraded),
+        Role::Client,
+        Some(socket_config()),
+    )
+    .await)
+}
+
+struct UpgradeReadStream<Stream> {
+    stream: Stream,
+    counting_upgrade: Arc<AtomicBool>,
+    bytes_read: usize,
+    completed_reads: usize,
+}
+
+impl<Stream: AsyncRead + Unpin> AsyncRead for UpgradeReadStream<Stream> {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        if !self.counting_upgrade.load(Ordering::Relaxed) {
+            return Pin::new(&mut self.stream).poll_read(context, buffer);
+        }
+        if buffer.remaining() == 0 {
+            return Poll::Ready(Ok(()));
+        }
+        let remaining_budget = UPGRADE_RESPONSE_MAX_BYTES - self.bytes_read;
+        if remaining_budget == 0 || self.completed_reads == UPGRADE_RESPONSE_MAX_READS {
+            return Poll::Ready(Err(io::Error::other("HTTP upgrade read budget exhausted")));
+        }
+        // Keep any bytes beyond the budget in the stream. If a valid 101 ends at
+        // the limit, the next read belongs to WebSocket and uses the original stream.
+        let allowed_bytes = remaining_budget.min(buffer.remaining());
+        let mut bounded = ReadBuf::new(buffer.initialize_unfilled_to(allowed_bytes));
+        ready!(Pin::new(&mut self.stream).poll_read(context, &mut bounded))?;
+        let read_size = bounded.filled().len();
+        buffer.advance(read_size);
+        if read_size > 0 {
+            self.bytes_read += read_size;
+            self.completed_reads += 1;
+        }
+        Poll::Ready(Ok(()))
+    }
+}
+
+impl<Stream: AsyncWrite + Unpin> AsyncWrite for UpgradeReadStream<Stream> {
+    fn poll_write(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffer: &[u8],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write(context, buffer)
+    }
+
+    fn poll_flush(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_flush(context)
+    }
+
+    fn poll_shutdown(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<io::Result<()>> {
+        Pin::new(&mut self.stream).poll_shutdown(context)
+    }
+
+    fn is_write_vectored(&self) -> bool {
+        self.stream.is_write_vectored()
+    }
+
+    fn poll_write_vectored(
+        mut self: Pin<&mut Self>,
+        context: &mut Context<'_>,
+        buffers: &[IoSlice<'_>],
+    ) -> Poll<io::Result<usize>> {
+        Pin::new(&mut self.stream).poll_write_vectored(context, buffers)
     }
 }
 

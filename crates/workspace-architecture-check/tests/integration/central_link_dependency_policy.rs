@@ -83,6 +83,7 @@ const DRIVER_NORMAL: &[Edge] = &[
         ],
     ),
     registry("log", true, &["max_level_info"]),
+    registry("tower-service", true, &[]),
     registry(
         "tokio",
         true,

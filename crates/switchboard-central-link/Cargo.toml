@@ -19,6 +19,7 @@ hyper-util.workspace = true
 log = { workspace = true, features = ["max_level_info"] }
 tokio.workspace = true
 tokio-tungstenite.workspace = true
+tower-service = "0.3.3"
 central-link-client = { path = "../central-link-client" }
 central-link-protocol.workspace = true
 router-clock.workspace = true
