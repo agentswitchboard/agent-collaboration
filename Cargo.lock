@@ -5799,6 +5799,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchboard-machine-core-store"
+version = "0.1.158"
+dependencies = [
+ "chrono",
+ "hegeltest",
+ "router-clock",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "sqlite-storage-maintenance",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+ "workspace-ids",
+ "workspace-model",
+]
+
+[[package]]
 name = "switchboard-machine-enrollment"
 version = "0.1.158"
 dependencies = [
