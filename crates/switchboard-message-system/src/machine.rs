@@ -1,22 +1,28 @@
 use std::{collections::BTreeSet, num::NonZeroU64, time::Duration};
 
 use state_machine_core::{
-    RefusalTag, StateMachine, StateMachineResult, StateTag, Transition, TransitionError,
+    EventTag, RefusalTag, StateMachine, StateMachineResult, StateTag, Transition, TransitionError,
 };
 
 use crate::{
-    ActiveEnrollment, Effect, EnrollmentId, EnrollmentPair, Event, Fault, Front, FrontRefusal,
-    Generation, Metadata, QuiesceReason, Quiescing, ReadId, StopBudgets, StopReport, StopResult,
-    StopTarget, UnitPiece, teardown::Step, transition_table::TRANSITIONS,
+    ActiveEnrollment, Effect, EnrollmentDuringDrain, EnrollmentId, EnrollmentPair, Event, Fault,
+    Front, FrontRefusal, Generation, Metadata, QuiesceReason, Quiescing, ReadId, StopBudgets,
+    StopReport, StopResult, StopTarget, teardown::Step, transition_table::TRANSITIONS,
 };
 
 const METADATA_POLL: Duration = Duration::from_secs(15);
 const RETRY: Duration = Duration::from_secs(5);
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ObservationPhase {
+    Polling(FrontRefusal),
+    RestartCooldown { read: ReadId },
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum State {
     Observing {
-        reason: FrontRefusal,
+        phase: ObservationPhase,
     },
     Opening {
         generation: Generation,
@@ -41,7 +47,12 @@ impl State {
     pub const fn front(&self) -> Front {
         match self {
             Self::Running { generation, .. } => Front::Forwarding(*generation),
-            Self::Observing { reason } => Front::Refusing(*reason),
+            Self::Observing {
+                phase: ObservationPhase::Polling(reason),
+            } => Front::Refusing(*reason),
+            Self::Observing {
+                phase: ObservationPhase::RestartCooldown { .. },
+            } => Front::Refusing(FrontRefusal::Restarting),
             Self::Quiescing(cleanup) => Front::Refusing(cleanup.reason.refusal()),
             Self::Opening { .. } => Front::Refusing(FrontRefusal::Starting),
             Self::Faulted { .. } => Front::Refusing(FrontRefusal::EnrollmentMismatch),
@@ -59,6 +70,19 @@ impl State {
                 QuiesceReason::Closing | QuiesceReason::DifferentPair { .. }
             ),
             Self::Faulted { .. } | Self::ClosedWithOutstanding { .. } | Self::Closed => false,
+        }
+    }
+
+    const fn owned_generation(&self) -> Option<Generation> {
+        match self {
+            Self::Opening { generation, .. } | Self::Running { generation, .. } => {
+                Some(*generation)
+            }
+            Self::Quiescing(cleanup) => cleanup.generation(),
+            Self::Observing { .. }
+            | Self::Faulted { .. }
+            | Self::ClosedWithOutstanding { .. }
+            | Self::Closed => None,
         }
     }
 }
@@ -111,12 +135,14 @@ pub struct Supervisor {
     unsettled_retirements: BTreeSet<EnrollmentId>,
 }
 
+type Refused = TransitionError<SupervisorError>;
+
 impl Supervisor {
     /// Creates the supervisor and returns its initial front and read effects.
     pub fn new(budgets: StopBudgets) -> (Self, Vec<Effect>) {
         let read = ReadId(NonZeroU64::MIN);
         let state = State::Observing {
-            reason: FrontRefusal::NotEnrolled,
+            phase: ObservationPhase::Polling(FrontRefusal::AwaitingFirstRead),
         };
         let effects = vec![
             Effect::PublishFront(state.front()),
@@ -150,7 +176,7 @@ impl Supervisor {
         &mut self,
         after: Duration,
         effects: &mut Vec<Effect>,
-    ) -> Result<(), SupervisorError> {
+    ) -> Result<ReadId, SupervisorError> {
         let read = ReadId(
             self.latest_read
                 .0
@@ -159,7 +185,7 @@ impl Supervisor {
         );
         self.latest_read = read;
         effects.push(Effect::ScheduleMetadataRead { read, after });
-        Ok(())
+        Ok(read)
     }
 
     fn start(
@@ -181,22 +207,51 @@ impl Supervisor {
             generation,
             pair: pair.clone(),
         };
-        effects.push(Effect::StartUnit { generation, pair });
+        effects.push(Effect::StartUnit {
+            generation,
+            pair,
+            retired_enrollments: self.unsettled_retirements.clone(),
+        });
         Ok(())
     }
 
-    fn reduce(&mut self, event: Event, effects: &mut Vec<Effect>) -> Result<(), SupervisorError> {
+    fn reduce(&mut self, event: Event, effects: &mut Vec<Effect>) -> Result<(), Refused> {
+        let not_allowed = Refused::NotAllowed {
+            state: self.state.state_tag(),
+            event: event.event_tag(),
+        };
         match event {
+            Event::EnrollmentMayHaveChanged
+                if matches!(
+                    self.state,
+                    State::Observing {
+                        phase: ObservationPhase::RestartCooldown { .. }
+                    }
+                ) => {}
             Event::EnrollmentMayHaveChanged if self.state.observing_metadata() => {
-                self.schedule(Duration::ZERO, effects)?;
+                self.schedule(Duration::ZERO, effects)
+                    .map_err(Refused::Domain)?;
             }
-            Event::EnrollmentMayHaveChanged => {}
+            Event::EnrollmentMayHaveChanged => return Err(not_allowed),
+            Event::MetadataObserved { read, .. } if read < self.latest_read => {
+                return Err(Refused::Stale);
+            }
             Event::MetadataObserved { read, metadata }
                 if read == self.latest_read && self.state.observing_metadata() =>
             {
-                self.observe(metadata, effects)?;
+                self.observe(metadata, effects).map_err(Refused::Domain)?;
             }
-            Event::MetadataObserved { .. } => {}
+            Event::MetadataObserved { .. } => return Err(not_allowed),
+            Event::BuildFinished { generation }
+            | Event::BuildFailed { generation }
+            | Event::PieceExited { generation, .. }
+                if self.last_generation.is_some_and(|latest| {
+                    generation < latest
+                        || (generation == latest && self.state.owned_generation().is_none())
+                }) =>
+            {
+                return Err(Refused::Stale);
+            }
             Event::BuildFinished { generation } => {
                 if let State::Opening {
                     generation: current,
@@ -208,6 +263,8 @@ impl Supervisor {
                         generation,
                         pair: pair.clone(),
                     };
+                } else {
+                    return Err(not_allowed);
                 }
             }
             Event::BuildFailed { generation } => {
@@ -215,10 +272,28 @@ impl Supervisor {
                 {
                     self.begin_quiescing(Some(generation), QuiesceReason::BuildFailed, effects);
                     effects.push(Effect::ReportFault(Fault::BuildFailed { generation }));
+                } else {
+                    return Err(not_allowed);
                 }
             }
             Event::PieceExited { generation, piece } => {
-                self.piece_exited(generation, piece, effects)
+                if matches!(self.state,
+                    State::Opening { generation: current, .. } | State::Running { generation: current, .. }
+                    if current == generation
+                ) {
+                    self.begin_quiescing(Some(generation), QuiesceReason::PieceExited, effects);
+                    effects.push(Effect::ReportFault(Fault::PieceExited {
+                        generation,
+                        piece,
+                    }));
+                } else {
+                    return Err(not_allowed);
+                }
+            }
+            Event::EnrollmentStoreExited if self.is_closing() => return Err(Refused::Stale),
+            Event::EnrollmentStoreExited => {
+                effects.push(Effect::ReportFault(Fault::EnrollmentStoreExited));
+                self.close(effects);
             }
             Event::StopFinished(report) => self.stop_finished(report, effects)?,
             Event::Close => self.close(effects),
@@ -233,13 +308,13 @@ impl Supervisor {
     ) -> Result<(), SupervisorError> {
         match metadata {
             Metadata::ReadFailed => {
-                if let State::Observing { reason } = &mut self.state {
-                    *reason = FrontRefusal::MetadataUnreadable;
+                if let State::Observing { phase } = &mut self.state {
+                    *phase = ObservationPhase::Polling(FrontRefusal::MetadataUnreadable);
                 }
-                return self.schedule(RETRY, effects);
+                return self.schedule(RETRY, effects).map(|_| ());
             }
-            Metadata::Empty => self.enrollment_lost(QuiesceReason::NotEnrolled, effects),
-            Metadata::Ended => self.enrollment_lost(QuiesceReason::EnrollmentEnded, effects),
+            Metadata::Empty => self.enrollment_lost(EnrollmentDuringDrain::Empty, effects),
+            Metadata::Ended => self.enrollment_lost(EnrollmentDuringDrain::Ended, effects),
             Metadata::Active(ActiveEnrollment { pair, enrollment }) => {
                 if let Some(pinned) = self.pinned.as_ref()
                     && *pinned != pair
@@ -249,26 +324,36 @@ impl Supervisor {
                 }
                 self.pinned.get_or_insert_with(|| pair.clone());
                 if self.unsettled_retirements.contains(&enrollment) {
-                    self.enrollment_lost(QuiesceReason::EnrollmentEnded, effects);
+                    self.enrollment_lost(EnrollmentDuringDrain::Ended, effects);
                 } else if matches!(self.state, State::Observing { .. }) {
                     self.start(pair, effects)?;
+                } else if let State::Quiescing(cleanup) = &mut self.state
+                    && let QuiesceReason::EnrollmentLost(latest) = &mut cleanup.reason
+                {
+                    *latest = EnrollmentDuringDrain::Active;
                 }
             }
         }
-        self.schedule(METADATA_POLL, effects)
+        self.schedule(METADATA_POLL, effects).map(|_| ())
     }
 
-    fn enrollment_lost(&mut self, why: QuiesceReason, effects: &mut Vec<Effect>) {
+    fn enrollment_lost(&mut self, observed: EnrollmentDuringDrain, effects: &mut Vec<Effect>) {
         match &mut self.state {
-            State::Observing { reason } => *reason = why.refusal(),
+            State::Observing { phase } => *phase = ObservationPhase::Polling(observed.refusal()),
             State::Opening { generation, .. } | State::Running { generation, .. } => {
                 let generation = *generation;
-                self.begin_quiescing(Some(generation), why, effects);
+                self.begin_quiescing(
+                    Some(generation),
+                    QuiesceReason::EnrollmentLost(observed),
+                    effects,
+                );
             }
-            State::Quiescing(_)
-            | State::Faulted { .. }
-            | State::ClosedWithOutstanding { .. }
-            | State::Closed => {}
+            State::Quiescing(cleanup) => {
+                if let QuiesceReason::EnrollmentLost(latest) = &mut cleanup.reason {
+                    *latest = observed;
+                }
+            }
+            State::Faulted { .. } | State::ClosedWithOutstanding { .. } | State::Closed => {}
         }
     }
 
@@ -299,22 +384,11 @@ impl Supervisor {
         }
     }
 
-    fn piece_exited(
-        &mut self,
-        generation: Generation,
-        piece: UnitPiece,
-        effects: &mut Vec<Effect>,
-    ) {
-        if matches!(self.state,
-            State::Opening { generation: current, .. } | State::Running { generation: current, .. }
-                if current == generation)
-        {
-            self.begin_quiescing(Some(generation), QuiesceReason::PieceExited, effects);
-            effects.push(Effect::ReportFault(Fault::PieceExited {
-                generation,
-                piece,
-            }));
-        }
+    fn is_closing(&self) -> bool {
+        matches!(
+            self.state,
+            State::Closed | State::ClosedWithOutstanding { .. }
+        ) || matches!(&self.state, State::Quiescing(cleanup) if cleanup.reason == QuiesceReason::Closing)
     }
 
     fn begin_quiescing(
@@ -352,21 +426,24 @@ impl Supervisor {
         &mut self,
         report: StopReport,
         effects: &mut Vec<Effect>,
-    ) -> Result<(), SupervisorError> {
+    ) -> Result<(), Refused> {
         let target = report.target();
         let result = report.result();
         if let State::ClosedWithOutstanding { pieces } = &mut self.state {
-            if result == StopResult::Joined && pieces.remove(&target) && pieces.is_empty() {
+            if result != StopResult::Joined || !pieces.remove(&target) {
+                return Err(Refused::Stale);
+            }
+            if pieces.is_empty() {
                 self.state = State::Closed;
             }
             return Ok(());
         }
         let State::Quiescing(cleanup) = &mut self.state else {
-            return Ok(());
+            return Err(Refused::Stale);
         };
         let step = cleanup.accept(target, result);
         if step == Step::Ignored {
-            return Ok(());
+            return Err(Refused::Stale);
         }
         if let StopReport::LeaseAdapter {
             unsettled_retirements,
@@ -400,23 +477,20 @@ impl Supervisor {
                         observed: observed.clone(),
                     };
                 }
-                QuiesceReason::NotEnrolled
-                | QuiesceReason::EnrollmentEnded
-                | QuiesceReason::BuildFailed
-                | QuiesceReason::PieceExited
-                | QuiesceReason::Closing => {
-                    let reason = cleanup.reason.refusal();
-                    let after = if matches!(
-                        cleanup.reason,
-                        QuiesceReason::BuildFailed | QuiesceReason::PieceExited
-                    ) {
-                        RETRY
-                    } else {
-                        Duration::ZERO
+                QuiesceReason::EnrollmentLost(latest) => {
+                    self.state = State::Observing {
+                        phase: ObservationPhase::Polling(latest.refusal()),
                     };
-                    self.state = State::Observing { reason };
-                    self.schedule(after, effects)?;
+                    self.schedule(Duration::ZERO, effects)
+                        .map_err(Refused::Domain)?;
                 }
+                QuiesceReason::BuildFailed | QuiesceReason::PieceExited => {
+                    let read = self.schedule(RETRY, effects).map_err(Refused::Domain)?;
+                    self.state = State::Observing {
+                        phase: ObservationPhase::RestartCooldown { read },
+                    };
+                }
+                QuiesceReason::Closing => {}
             }
         }
         Ok(())
@@ -439,10 +513,13 @@ impl StateMachine for Supervisor {
     fn transition(state: &Self, event: Event) -> StateMachineResult<Self> {
         let mut next = state.clone();
         let mut effects = Vec::new();
-        next.reduce(event, &mut effects)
-            .map_err(TransitionError::Domain)?;
+        let store_exited = event == Event::EnrollmentStoreExited;
+        next.reduce(event, &mut effects)?;
         if next.state.front() != state.state.front() {
-            effects.insert(0, Effect::PublishFront(next.state.front()));
+            effects.insert(
+                usize::from(store_exited),
+                Effect::PublishFront(next.state.front()),
+            );
         }
         Ok((next, effects))
     }

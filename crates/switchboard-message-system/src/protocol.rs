@@ -1,4 +1,4 @@
-use std::{num::NonZeroU64, time::Duration};
+use std::{collections::BTreeSet, num::NonZeroU64, time::Duration};
 
 use state_machine_core::EventTag;
 use url::Url;
@@ -136,6 +136,9 @@ pub enum StopResult {
     TimedOut,
 }
 
+/// The executor reads the owner's shared retirement fence when reporting the
+/// lease join. Its pending entries are authoritative even if the worker
+/// returned no result. A timeout can report the entries pending at the bound.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StopReport {
     Driver {
@@ -207,6 +210,7 @@ impl StopBudgets {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum FrontRefusal {
+    AwaitingFirstRead,
     NotEnrolled,
     EnrollmentEnded,
     MetadataUnreadable,
@@ -239,6 +243,7 @@ pub enum Event {
         generation: Generation,
         piece: UnitPiece,
     },
+    EnrollmentStoreExited,
     StopFinished(StopReport),
     Close,
 }
@@ -251,6 +256,7 @@ impl EventTag for Event {
             Self::BuildFinished { .. } => "BuildFinished",
             Self::BuildFailed { .. } => "BuildFailed",
             Self::PieceExited { .. } => "PieceExited",
+            Self::EnrollmentStoreExited => "EnrollmentStoreExited",
             Self::StopFinished(_) => "StopFinished",
             Self::Close => "Close",
         }
@@ -270,6 +276,7 @@ pub enum Fault {
         generation: Generation,
         piece: UnitPiece,
     },
+    EnrollmentStoreExited,
     StopTimedOut {
         target: StopTarget,
     },
@@ -280,6 +287,9 @@ pub enum Effect {
     StartUnit {
         generation: Generation,
         pair: EnrollmentPair,
+        /// The new settings source and lease owner must refuse these IDs
+        /// before they admit an enrollment for this unit.
+        retired_enrollments: BTreeSet<EnrollmentId>,
     },
     /// Custody's step joins the offer taker. Restart can lose deferred
     /// offers awaiting Central replay, checked answers/nondeparture not yet

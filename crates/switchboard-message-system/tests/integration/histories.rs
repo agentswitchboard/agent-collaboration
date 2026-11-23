@@ -1,193 +1,139 @@
 use std::{collections::BTreeSet, num::NonZeroU64};
 
 use hegel::generators as gs;
-use state_machine_core::{EventTag, StateMachine, StateTag};
+use state_machine_core::{StateMachine, StateTag};
 use switchboard_message_system::{
-    Effect, Event, Front, FrontRefusal, Generation, Metadata, QuiesceReason, ReadId, State,
-    StopReport, StopResult, StopTarget, Supervisor, UnitPiece,
+    Effect, Event, Front, Generation, Metadata, ReadId, State, StopReport, StopResult, StopTarget,
+    Supervisor, UnitPiece,
 };
 
-use super::{BUDGETS, FIRST, PIECES, active, enrollment, report, send, target};
-
-fn expected_front(state: &State) -> Front {
-    let refusal = match state {
-        State::Observing { reason } => *reason,
-        State::Opening { .. } => FrontRefusal::Starting,
-        State::Running { generation, .. } => return Front::Forwarding(*generation),
-        State::Quiescing(cleanup) => match cleanup.reason() {
-            QuiesceReason::NotEnrolled => FrontRefusal::NotEnrolled,
-            QuiesceReason::EnrollmentEnded => FrontRefusal::EnrollmentEnded,
-            QuiesceReason::BuildFailed | QuiesceReason::PieceExited => FrontRefusal::Restarting,
-            QuiesceReason::DifferentPair { .. } => FrontRefusal::EnrollmentMismatch,
-            QuiesceReason::Closing => FrontRefusal::ShuttingDown,
-        },
-        State::Faulted { .. } => FrontRefusal::EnrollmentMismatch,
-        State::Closed | State::ClosedWithOutstanding { .. } => FrontRefusal::ShuttingDown,
-    };
-    Front::Refusing(refusal)
-}
+use super::{BUDGETS, FIRST, PIECES, active, enrollment, history_model::Model, report, target};
 
 struct History {
     supervisor: Supervisor,
-    front: Front,
-    latest_read: ReadId,
+    model: Model,
     close_requested: bool,
-    current_join: Option<StopTarget>,
     live: BTreeSet<StopTarget>,
-    reported_timeouts: BTreeSet<StopTarget>,
     last_unit_join_read: Option<ReadId>,
-    last_started: Option<Generation>,
+    last_join: Option<StopReport>,
 }
 
 impl History {
     fn new() -> Self {
         let (supervisor, initial) = Supervisor::new(BUDGETS);
-        let mut history = Self {
+        let model = Model::new();
+        assert_eq!(initial, model.initial());
+        Self {
             supervisor,
-            front: Front::Refusing(FrontRefusal::NotEnrolled),
-            latest_read: ReadId(NonZeroU64::MIN),
+            model,
             close_requested: false,
-            current_join: None,
             live: [StopTarget::EnrollmentStore].into(),
-            reported_timeouts: BTreeSet::new(),
             last_unit_join_read: None,
-            last_started: None,
-        };
-        for effect in initial {
-            history.record(effect, None);
+            last_join: None,
         }
-        history
     }
 
     fn apply(&mut self, event: Event) {
-        if event == Event::Close {
-            self.close_requested = true;
-        }
-        if let Event::StopFinished(report) = &event {
-            let target = report.target();
-            let is_current = self.current_join == Some(target);
-            if is_current {
-                self.current_join = None;
-                if report.result() == StopResult::TimedOut {
-                    self.reported_timeouts.insert(target);
-                }
+        let prior_join = self.model.joining();
+        let prior_read = self.model.read;
+        let before = self.supervisor.clone();
+        let expected = self.model.apply(event.clone());
+        match (
+            expected,
+            Supervisor::transition(&self.supervisor, event.clone()),
+        ) {
+            (Err(expected), actual) => {
+                assert_eq!(actual, Err(expected), "{event:?}");
+                assert_eq!(self.supervisor, before);
             }
-            if report.result() == StopResult::Joined
-                && (is_current || self.reported_timeouts.remove(&target))
-            {
-                assert!(self.live.remove(&target));
-                if matches!(target, StopTarget::Unit { .. }) {
-                    self.last_unit_join_read = Some(self.latest_read);
+            (Ok(expected), actual) => {
+                let (next, effects) = actual.unwrap();
+                assert_eq!(effects, expected, "{event:?} from {}", before.state_tag());
+                self.close_requested |=
+                    matches!(event, Event::Close | Event::EnrollmentStoreExited);
+                if let Event::StopFinished(report) = &event {
+                    let stopped = report.target();
+                    if report.result() == StopResult::Joined {
+                        assert!(self.live.remove(&stopped));
+                        if matches!(stopped, StopTarget::Unit { .. }) {
+                            self.last_unit_join_read = Some(prior_read);
+                        }
+                    } else {
+                        assert_eq!(prior_join, Some(stopped));
+                        assert!(self.live.contains(&stopped));
+                    }
+                    self.last_join = Some(report.clone());
                 }
+                for effect in &effects {
+                    if let Effect::StartUnit {
+                        generation, pair, ..
+                    } = effect
+                    {
+                        assert!(!self.close_requested);
+                        assert_eq!(self.live, [StopTarget::EnrollmentStore].into());
+                        assert!(matches!(&event, Event::MetadataObserved {
+                            read, metadata: Metadata::Active(active),
+                        } if *read == prior_read && &active.pair == pair
+                            && self.last_unit_join_read.is_none_or(|floor| *read > floor)));
+                        for piece in PIECES {
+                            assert!(self.live.insert(target(*generation, piece)));
+                        }
+                    }
+                }
+                self.supervisor = next;
             }
         }
 
-        let before = self.supervisor.state_tag();
-        let previous_front = self.front;
-        let effects = send(&mut self.supervisor, event.clone());
-        let expected = expected_front(self.supervisor.state());
-        let publications = effects.iter().filter_map(|effect| match effect {
-            Effect::PublishFront(front) => Some(*front),
-            _ => None,
-        });
-        assert!(publications.eq((previous_front != expected).then_some(expected)));
-        for effect in effects.iter().cloned() {
-            self.record(effect, Some(&event));
-        }
-        let after = self.supervisor.state_tag();
-        if before != after || !effects.is_empty() {
+        assert_eq!(self.supervisor.state_tag(), self.model.tag());
+        assert_eq!(self.supervisor.latest_read(), self.model.read);
+        assert_eq!(self.supervisor.state().front(), self.model.front);
+        if let Front::Forwarding(generation) = self.model.front {
             assert!(
-                Supervisor::transitions()
-                    .iter()
-                    .any(|row| row.from == before
-                        && row.event == event.event_tag()
-                        && row.to == after
-                        && row.terminal == self.supervisor.is_terminal())
-            );
-        }
-        assert_eq!(self.front, expected);
-        assert_eq!(self.supervisor.state().front(), expected);
-        if let Front::Forwarding(generation) = self.front {
-            assert!(
-                matches!(self.supervisor.state(), State::Running { generation: active, .. } if *active == generation)
+                matches!(self.supervisor.state(), State::Running { generation: current, .. }
+                if *current == generation)
             );
         }
         match self.supervisor.state() {
             State::Opening { generation, .. } | State::Running { generation, .. } => {
-                let owned: BTreeSet<_> = self
-                    .live
-                    .iter()
-                    .filter_map(|target| match target {
-                        StopTarget::Unit { generation, .. } => Some(*generation),
-                        StopTarget::EnrollmentStore => None,
-                    })
-                    .collect();
-                assert_eq!(owned, [*generation].into());
+                assert_eq!(
+                    self.live,
+                    PIECES
+                        .map(|piece| target(*generation, piece))
+                        .into_iter()
+                        .chain([StopTarget::EnrollmentStore])
+                        .collect()
+                );
             }
             State::Closed => assert!(self.live.is_empty()),
             State::ClosedWithOutstanding { pieces } => {
                 assert_eq!(*pieces, self.live);
-                assert_eq!(self.reported_timeouts, self.live);
+                assert_eq!(*pieces, self.model.overdue);
             }
             State::Observing { .. } | State::Quiescing(_) | State::Faulted { .. } => {}
         }
     }
 
-    fn record(&mut self, effect: Effect, event: Option<&Event>) {
-        match effect {
-            Effect::StartUnit { generation, pair } => {
-                assert!(!self.close_requested);
-                assert!(self.last_started.is_none_or(|prior| generation > prior));
-                assert!(
-                    self.live
-                        .iter()
-                        .all(|target| *target == StopTarget::EnrollmentStore)
-                );
-                assert!(matches!(event, Some(Event::MetadataObserved {
-                    read, metadata: Metadata::Active(active),
-                }) if *read == self.latest_read && active.pair == pair
-                    && self.last_unit_join_read.is_none_or(|floor| *read > floor)));
-                self.last_started = Some(generation);
-                for piece in PIECES {
-                    assert!(self.live.insert(target(generation, piece)));
-                }
-            }
-            Effect::StopAndJoin { target, .. } => {
-                assert!(self.live.contains(&target));
-                assert!(self.current_join.replace(target).is_none());
-            }
-            Effect::ScheduleMetadataRead { read, .. } => {
-                if event.is_some() {
-                    assert!(read > self.latest_read && !self.close_requested);
-                }
-                self.latest_read = read;
-            }
-            Effect::PublishFront(front) => self.front = front,
-            Effect::ReleaseInputs => assert!(self.close_requested),
-            Effect::ReportFault(_) => {}
-        }
-    }
-
     fn generated_event(&self, case: &hegel::TestCase) -> Event {
-        let natural = case.draw(gs::booleans());
-        let num = case.draw(gs::integers::<u8>().min_value(1).max_value(7));
-        let generated = NonZeroU64::new(u64::from(num)).unwrap();
-        let generation = if natural {
-            self.last_started.unwrap_or(FIRST)
+        let current = case.draw(gs::booleans());
+        let number = case.draw(gs::integers::<u8>().min_value(1).max_value(7));
+        let arbitrary = NonZeroU64::new(u64::from(number)).unwrap();
+        let generation = if current {
+            self.model.last_generation.unwrap_or(FIRST)
         } else {
-            Generation(generated)
+            Generation(arbitrary)
         };
-        let read = if natural {
-            self.latest_read
+        let read = if current {
+            self.model.read
         } else {
-            ReadId(generated)
+            ReadId(arbitrary)
         };
         let piece = case.draw(gs::sampled_from(PIECES.to_vec()));
-        let selected = if natural {
-            self.current_join
-                .or_else(|| self.reported_timeouts.iter().next().copied())
+        let selected = if current {
+            self.model
+                .joining()
+                .or_else(|| self.model.overdue.iter().next().copied())
                 .unwrap_or_else(|| target(generation, piece))
-        } else if num == 1 {
+        } else if number == 1 {
             StopTarget::EnrollmentStore
         } else {
             target(generation, piece)
@@ -197,7 +143,7 @@ impl History {
         } else {
             StopResult::TimedOut
         };
-        match case.draw(gs::integers::<u8>().max_value(19)) {
+        match case.draw(gs::integers::<u8>().max_value(23)) {
             0 => Event::EnrollmentMayHaveChanged,
             1 => Event::MetadataObserved {
                 read,
@@ -223,27 +169,67 @@ impl History {
             8 => Event::BuildFailed { generation },
             9 => Event::PieceExited { generation, piece },
             10 => Event::Close,
-            11..=14 => {
-                let completion = match selected {
-                    StopTarget::Unit {
-                        generation,
-                        piece: UnitPiece::LeaseAdapter,
-                    } => StopReport::LeaseAdapter {
-                        generation,
-                        result,
-                        unsettled_retirements: vec![enrollment(1)],
-                    },
-                    StopTarget::Unit { .. } | StopTarget::EnrollmentStore => {
-                        report(selected, result)
-                    }
-                };
-                Event::StopFinished(completion)
-            }
+            11..=14 => Event::StopFinished(match selected {
+                StopTarget::Unit {
+                    generation,
+                    piece: UnitPiece::LeaseAdapter,
+                } => StopReport::LeaseAdapter {
+                    generation,
+                    result,
+                    unsettled_retirements: vec![enrollment(1)],
+                },
+                StopTarget::Unit { .. } | StopTarget::EnrollmentStore => report(selected, result),
+            }),
+            15 => Event::EnrollmentStoreExited,
+            16 => self.last_join.clone().map_or(
+                Event::StopFinished(report(selected, result)),
+                Event::StopFinished,
+            ),
             _ => Event::MetadataObserved {
                 read,
-                metadata: active(1, 1, num),
+                metadata: active(1, 1, number),
             },
         }
+    }
+
+    fn finish(&mut self, case: &hegel::TestCase) {
+        self.apply(Event::Close);
+        // The model queue comes only from the five possible stop slots.
+        for _ in 0..=PIECES.len() {
+            let Some(joining) = self.model.joining() else {
+                break;
+            };
+            if let Some(previous) = self.last_join.clone() {
+                self.apply(Event::StopFinished(previous));
+            }
+            let wrong_generation = Generation(FIRST.0.checked_add(999).unwrap());
+            self.apply(Event::StopFinished(report(
+                target(wrong_generation, UnitPiece::Driver),
+                StopResult::Joined,
+            )));
+            let outcome = if case.draw(gs::booleans()) {
+                StopResult::Joined
+            } else {
+                StopResult::TimedOut
+            };
+            self.apply(Event::StopFinished(report(joining, outcome)));
+        }
+        assert!(self.model.joining().is_none());
+        assert!(matches!(
+            self.supervisor.state(),
+            State::Closed | State::ClosedWithOutstanding { .. }
+        ));
+        let overdue = self.model.overdue.clone();
+        for piece in overdue {
+            let completion = report(piece, StopResult::Joined);
+            self.apply(Event::StopFinished(completion.clone()));
+            self.apply(Event::StopFinished(completion));
+        }
+        assert_eq!(self.supervisor.state(), &State::Closed);
+        self.apply(Event::MetadataObserved {
+            read: self.model.read,
+            metadata: active(1, 1, 1),
+        });
     }
 }
 
@@ -253,21 +239,5 @@ fn generated_histories_preserve_admission_scan_order_and_join_ownership(case: he
     for _ in 0..case.draw(gs::integers::<u8>().min_value(8).max_value(64)) {
         history.apply(history.generated_event(&case));
     }
-    history.apply(Event::Close);
-    while let Some(joining) = history.current_join {
-        let outcome = if case.draw(gs::booleans()) {
-            StopResult::Joined
-        } else {
-            StopResult::TimedOut
-        };
-        history.apply(Event::StopFinished(report(joining, outcome)));
-    }
-    assert!(matches!(
-        history.supervisor.state(),
-        State::Closed | State::ClosedWithOutstanding { .. }
-    ));
-    history.apply(Event::MetadataObserved {
-        read: history.latest_read,
-        metadata: active(1, 1, 1),
-    });
+    history.finish(&case);
 }

@@ -4,8 +4,7 @@ use crate::{EnrollmentPair, FrontRefusal, Generation, StopResult, StopTarget, Un
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum QuiesceReason {
-    NotEnrolled,
-    EnrollmentEnded,
+    EnrollmentLost(EnrollmentDuringDrain),
     BuildFailed,
     PieceExited,
     DifferentPair {
@@ -15,11 +14,27 @@ pub enum QuiesceReason {
     Closing,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EnrollmentDuringDrain {
+    Empty,
+    Ended,
+    Active,
+}
+
+impl EnrollmentDuringDrain {
+    pub(crate) const fn refusal(self) -> FrontRefusal {
+        match self {
+            Self::Empty => FrontRefusal::NotEnrolled,
+            Self::Ended => FrontRefusal::EnrollmentEnded,
+            Self::Active => FrontRefusal::Restarting,
+        }
+    }
+}
+
 impl QuiesceReason {
     pub(crate) const fn refusal(&self) -> FrontRefusal {
         match self {
-            Self::NotEnrolled => FrontRefusal::NotEnrolled,
-            Self::EnrollmentEnded => FrontRefusal::EnrollmentEnded,
+            Self::EnrollmentLost(latest) => latest.refusal(),
             Self::BuildFailed | Self::PieceExited => FrontRefusal::Restarting,
             Self::DifferentPair { .. } => FrontRefusal::EnrollmentMismatch,
             Self::Closing => FrontRefusal::ShuttingDown,

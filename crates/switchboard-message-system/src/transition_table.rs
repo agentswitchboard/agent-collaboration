@@ -19,13 +19,14 @@ macro_rules! row {
     };
 }
 
-/// Applicable transitions. Unmatched tokens, joins and generations are idle.
+/// All successful transitions, including coalesced changes and repeated close.
 pub(crate) const TRANSITIONS: &[Transition] = &[
     row!("Observing", "EnrollmentMayHaveChanged", "Observing"),
     row!("Observing", "MetadataObserved", "Observing"),
     row!("Observing", "MetadataObserved", "Opening"),
     row!("Observing", "MetadataObserved", "Faulted", terminal),
     row!("Observing", "Close", "Quiescing"),
+    row!("Observing", "EnrollmentStoreExited", "Quiescing"),
     row!("Opening", "EnrollmentMayHaveChanged", "Opening"),
     row!("Opening", "MetadataObserved", "Opening"),
     row!("Opening", "MetadataObserved", "Quiescing"),
@@ -33,11 +34,13 @@ pub(crate) const TRANSITIONS: &[Transition] = &[
     row!("Opening", "BuildFailed", "Quiescing"),
     row!("Opening", "PieceExited", "Quiescing"),
     row!("Opening", "Close", "Quiescing"),
+    row!("Opening", "EnrollmentStoreExited", "Quiescing"),
     row!("Running", "EnrollmentMayHaveChanged", "Running"),
     row!("Running", "MetadataObserved", "Running"),
     row!("Running", "MetadataObserved", "Quiescing"),
     row!("Running", "PieceExited", "Quiescing"),
     row!("Running", "Close", "Quiescing"),
+    row!("Running", "EnrollmentStoreExited", "Quiescing"),
     row!("Quiescing", "EnrollmentMayHaveChanged", "Quiescing"),
     row!("Quiescing", "MetadataObserved", "Quiescing"),
     row!("Quiescing", "StopFinished", "Quiescing"),
@@ -51,7 +54,9 @@ pub(crate) const TRANSITIONS: &[Transition] = &[
         terminal
     ),
     row!("Quiescing", "Close", "Quiescing"),
+    row!("Quiescing", "EnrollmentStoreExited", "Quiescing"),
     row!("Faulted", "Close", "Quiescing"),
+    row!("Faulted", "EnrollmentStoreExited", "Quiescing"),
     row!(
         "ClosedWithOutstanding",
         "StopFinished",
@@ -59,4 +64,11 @@ pub(crate) const TRANSITIONS: &[Transition] = &[
         terminal
     ),
     row!("ClosedWithOutstanding", "StopFinished", "Closed", terminal),
+    row!(
+        "ClosedWithOutstanding",
+        "Close",
+        "ClosedWithOutstanding",
+        terminal
+    ),
+    row!("Closed", "Close", "Closed", terminal),
 ];

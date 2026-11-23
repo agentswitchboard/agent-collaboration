@@ -4,6 +4,7 @@
 )]
 
 mod histories;
+mod history_model;
 mod transitions;
 
 use std::{num::NonZeroU64, time::Duration};
