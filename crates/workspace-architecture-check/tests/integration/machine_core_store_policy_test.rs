@@ -211,7 +211,11 @@ fn isolated_trees_reject_indirect_upper_layers_and_production_test_packages() {
         "collaboration-central-tokio",
     ] {
         let tree = format!("{allowable}\n{name} v1\t\t");
-        for view in [BuildView::Production, BuildView::Tests] {
+        for view in [
+            BuildView::Production,
+            BuildView::AllStoreFeatures,
+            BuildView::Tests,
+        ] {
             let rejection = check_tree(&tree, view).unwrap_err().to_string();
             assert!(
                 rejection.contains(&format!(
@@ -233,6 +237,11 @@ fn isolated_trees_reject_indirect_upper_layers_and_production_test_packages() {
 
 #[test]
 fn isolated_trees_reject_transitively_enabled_features_by_build_view() {
+    let store_test_feature = format!("{CORE_STORE} v1\ttest-support\t");
+    assert!(check_tree(&store_test_feature, BuildView::Production).is_err());
+    assert!(check_tree(&store_test_feature, BuildView::AllStoreFeatures).is_ok());
+    assert!(check_tree(&store_test_feature, BuildView::Tests).is_ok());
+
     let tree = format!("{CORE_STORE} v1\t\t\nrouter-clock v1\ttest-support\t (*)");
     assert!(check_tree(&tree, BuildView::Tests).is_ok());
     let error = check_tree(&tree, BuildView::Production)
@@ -240,12 +249,17 @@ fn isolated_trees_reject_transitively_enabled_features_by_build_view() {
         .to_string();
     assert!(error.contains("router-clock/test-support"), "{error}");
     for (package, feature) in [
+        (CORE_STORE, "unexpected"),
         ("workspace-ids", "wire-export"),
         ("sqlite-storage-maintenance", "test-support"),
         ("sqlx", "postgres"),
     ] {
         let tree = format!("{CORE_STORE} v1\t\t\n{package} v1\t{feature}\t");
-        for view in [BuildView::Production, BuildView::Tests] {
+        for view in [
+            BuildView::Production,
+            BuildView::AllStoreFeatures,
+            BuildView::Tests,
+        ] {
             let error = check_tree(&tree, view).unwrap_err().to_string();
             assert!(error.contains(&format!("{package}/{feature}")), "{error}");
         }
