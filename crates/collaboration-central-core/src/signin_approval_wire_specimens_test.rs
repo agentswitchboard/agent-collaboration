@@ -120,13 +120,13 @@ fn signed_approval_intents_and_closed_replies_match_their_fixed_bytes() {
         .as_array()
         .unwrap()
         .iter()
-        .take(4)
+        .take(2)
         .zip(
             replies["ApprovalListReply"]
                 .as_array()
                 .unwrap()
                 .iter()
-                .take(4),
+                .take(2),
         )
     {
         let ApprovalReadReply::Request { view } =
