@@ -110,39 +110,46 @@ impl<Store: CredentialStore, Discovery: DiscoverySource> LinkSettingsSource<Stor
     async fn publish_settings(mut self) {
         let mut discovery_state: Option<DiscoveryState> = None;
         let mut in_flight = None;
+        let mut discovery_answer = None;
         let mut read_at = self.clock.monotonic_now();
         let mut read_due = true;
         let mut signal_open = true;
         loop {
             if read_due {
-                self.changes.borrow_and_update();
+                let read_revision = *self.changes.borrow_and_update();
                 match self.store.read_metadata().await {
                     Ok(metadata) => {
                         read_at = self.clock.monotonic_now().after(METADATA_POLL);
-                        let target = target_for(&self.context, &metadata);
-                        if !matches!((&discovery_state, &target), (Some(state), MetadataTarget::Current(target)) if &state.target == target)
-                        {
+                        if self.observe_target(
+                            target_for(&self.context, &metadata),
+                            &mut discovery_state,
+                        ) {
                             in_flight = None;
-                            discovery_state = match target {
-                                MetadataTarget::Unbound => {
-                                    self.publish(no_settings());
-                                    None
-                                }
-                                MetadataTarget::Foreign(key) => {
-                                    self.publish(unresolved(key));
-                                    None
-                                }
-                                MetadataTarget::Current(target) => Some(DiscoveryState {
-                                    target,
-                                    last_good: None,
-                                    refresh_at: Some(self.clock.monotonic_now()),
-                                }),
-                            };
+                            discovery_answer = None;
+                        }
+                        // Hold the revision through publication so a local change cannot
+                        // land between confirming the snapshot and publishing its address.
+                        let revision = self.changes.borrow();
+                        if *revision != read_revision {
+                            continue;
+                        }
+                        if let Some(state) = &mut discovery_state
+                            && let Some(answer) = discovery_answer.take()
+                        {
+                            let (address, retry) =
+                                project_discovery(&state.target, answer, &mut state.last_good);
+                            state.refresh_at =
+                                retry.map(|delay| self.clock.monotonic_now().after(delay));
+                            self.publish(DriverSettings {
+                                binding: Some(state.target.key.clone()),
+                                address,
+                            });
                         }
                     }
                     Err(_) => {
                         read_at = self.clock.monotonic_now().after(METADATA_RETRY);
                         in_flight = None;
+                        discovery_answer = None;
                         if let Some(state) = &mut discovery_state {
                             state.refresh_at = Some(read_at);
                         }
@@ -172,22 +179,42 @@ impl<Store: CredentialStore, Discovery: DiscoverySource> LinkSettingsSource<Stor
                     }
                 } => {
                     in_flight = None;
-                    let Some(state) = &mut discovery_state else { continue };
-                    match self.store.read_metadata().await {
-                        Ok(metadata) if matches!(target_for(&self.context, &metadata), MetadataTarget::Current(target) if target == state.target) => {
-                            let (address, retry) = project_discovery(&state.target, answer, &mut state.last_good);
-                            state.refresh_at = retry.map(|delay| self.clock.monotonic_now().after(delay));
-                            self.publish(DriverSettings { binding: Some(state.target.key.clone()), address });
-                        }
-                        Ok(_) => read_due = true,
-                        Err(_) => {
-                            read_at = self.clock.monotonic_now().after(METADATA_RETRY);
-                            state.refresh_at = Some(read_at);
-                        }
-                    }
+                    discovery_answer = Some(answer);
+                    read_due = true;
                 }
             }
         }
+    }
+
+    fn observe_target(
+        &self,
+        target: MetadataTarget,
+        discovery: &mut Option<DiscoveryState>,
+    ) -> bool {
+        if matches!((&*discovery, &target),
+            (Some(state), MetadataTarget::Current(target)) if &state.target == target)
+        {
+            return false;
+        }
+        *discovery = match target {
+            MetadataTarget::Unbound => {
+                self.publish(no_settings());
+                None
+            }
+            MetadataTarget::Foreign(key) => {
+                self.publish(unresolved(key));
+                None
+            }
+            MetadataTarget::Current(target) => {
+                self.publish(unresolved(target.key.clone()));
+                Some(DiscoveryState {
+                    target,
+                    last_good: None,
+                    refresh_at: Some(self.clock.monotonic_now()),
+                })
+            }
+        };
+        true
     }
 
     fn publish(&self, next: DriverSettings<EnrollmentKey>) {

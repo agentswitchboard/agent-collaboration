@@ -53,7 +53,7 @@ async fn an_external_replacement_supersedes_a_held_discovery_before_it_answers()
     assert!(obsolete.is_closed());
     current.send(Ok(discovery("current"))).unwrap();
     let published = settings
-        .wait_for(|value| value.binding.as_ref() == Some(&key))
+        .wait_for(|value| value.binding.as_ref() == Some(&key) && value.address.is_ok())
         .await
         .unwrap()
         .clone();
@@ -219,5 +219,131 @@ async fn a_metadata_error_starts_unbound_then_preserves_last_publication_after_s
 
     stop.send_replace(true);
     task.await.unwrap();
+    fixture.source.close().await.unwrap();
+}
+
+struct SettingsFixture {
+    changes: watch::Sender<u64>,
+    published: watch::Receiver<DriverSettings<EnrollmentKey>>,
+    requests: mpsc::UnboundedReceiver<oneshot::Sender<Result<DiscoveryAnswer, SignInFailure>>>,
+    stop: watch::Sender<bool>,
+    task: tokio::task::JoinHandle<()>,
+}
+
+impl SettingsFixture {
+    fn start(fixture: &Fixture) -> Self {
+        let (discovery, requests) = mpsc::unbounded_channel();
+        let (changes, revisions) = watch::channel(0);
+        let (stop, shutdown) = watch::channel(false);
+        let (source, published) = LinkSettingsSource::with_discovery(
+            fixture.store.clone(),
+            Script(discovery),
+            fixture.binding.context.clone(),
+            fixture.clock.clone(),
+            revisions,
+        );
+        Self {
+            changes,
+            published,
+            requests,
+            stop,
+            task: tokio::spawn(source.run(shutdown)),
+        }
+    }
+
+    async fn close(self) {
+        self.stop.send_replace(true);
+        self.task.await.unwrap();
+    }
+}
+
+fn install_replacement(fixture: &Fixture) -> EnrollmentKey {
+    let mut replacement = fixture.binding.clone();
+    replacement.generation = replacement.generation.successor().unwrap();
+    replacement.credential.enrollment_id = "019a0000-0000-7000-8000-000000000008".parse().unwrap();
+    let key = replacement.key();
+    fixture
+        .store
+        .row
+        .send_replace(StoredEnrollment::Active(replacement));
+    key
+}
+
+#[tokio::test]
+async fn observing_replacement_unpublishes_the_old_address_while_discovery_is_held() {
+    let fixture = Fixture::new();
+    let mut settings = SettingsFixture::start(&fixture);
+    settings
+        .requests
+        .recv()
+        .await
+        .unwrap()
+        .send(Ok(discovery("original")))
+        .unwrap();
+    let original = settings
+        .published
+        .wait_for(|value| value.address.is_ok())
+        .await
+        .unwrap()
+        .clone();
+    assert_eq!(original.binding, Some(fixture.binding.key()));
+
+    let replacement = install_replacement(&fixture);
+    settings.changes.send_replace(1);
+    let held_discovery = settings.requests.recv().await.unwrap();
+
+    assert_eq!(*settings.published.borrow(), unresolved(replacement));
+    settings.close().await;
+    assert!(held_discovery.is_closed());
+    fixture.source.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_local_change_during_the_final_read_blocks_the_obsolete_address() {
+    let fixture = Fixture::new();
+    let mut settings = SettingsFixture::start(&fixture);
+    let old_discovery = settings.requests.recv().await.unwrap();
+    let (reading_final_snapshot, return_final_snapshot) = fixture.store.metadata_read.hold_next();
+    old_discovery.send(Ok(discovery("obsolete"))).unwrap();
+    reading_final_snapshot.await.unwrap();
+
+    let replacement = install_replacement(&fixture);
+    settings.changes.send_replace(1);
+    let (reading_next_snapshot, return_next_snapshot) = fixture.store.metadata_read.hold_next();
+    assert!(return_final_snapshot.send(Box::new(|| {})).is_ok());
+    reading_next_snapshot.await.unwrap();
+
+    assert_eq!(
+        settings.published.borrow().address,
+        Err(AddressError::InvalidLocation)
+    );
+    assert!(return_next_snapshot.send(Box::new(|| {})).is_ok());
+    let held_discovery = settings.requests.recv().await.unwrap();
+    assert_eq!(*settings.published.borrow(), unresolved(replacement));
+    settings.close().await;
+    assert!(held_discovery.is_closed());
+    fixture.source.close().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_replacement_seen_on_final_read_is_used_without_a_second_read() {
+    let fixture = Fixture::new();
+    let mut settings = SettingsFixture::start(&fixture);
+    let old_discovery = settings.requests.recv().await.unwrap();
+    let replacement = install_replacement(&fixture);
+    let (reading_replacement, return_replacement) = fixture.store.metadata_read.hold_next();
+    old_discovery.send(Ok(discovery("obsolete"))).unwrap();
+    reading_replacement.await.unwrap();
+
+    fixture.store.fail_metadata.send_replace(true);
+    assert!(return_replacement.send(Box::new(|| {})).is_ok());
+    let held_discovery = tokio::select! {
+        request = settings.requests.recv() => request,
+        () = fixture.clock.not_due_check_now(ClockInstant::ZERO.after(METADATA_RETRY)) => None,
+    };
+
+    assert_eq!(*settings.published.borrow(), unresolved(replacement));
+    settings.close().await;
+    assert!(held_discovery.unwrap().is_closed());
     fixture.source.close().await.unwrap();
 }

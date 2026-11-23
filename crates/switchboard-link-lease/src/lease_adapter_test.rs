@@ -16,11 +16,11 @@ pub(crate) struct RowStore {
     pub(crate) fail_end: watch::Sender<bool>,
     pub(crate) fail_metadata: watch::Sender<bool>,
     credential_read: OperationCheckpoint,
-    metadata_read: OperationCheckpoint,
+    pub(crate) metadata_read: OperationCheckpoint,
     credential_replace: OperationCheckpoint,
 }
 
-type ResumeOperation = Box<dyn FnOnce() + Send>;
+pub(crate) type ResumeOperation = Box<dyn FnOnce() + Send>;
 
 struct HeldOperation {
     entered: oneshot::Sender<()>,
@@ -28,10 +28,10 @@ struct HeldOperation {
 }
 
 #[derive(Clone, Default)]
-struct OperationCheckpoint(Arc<Mutex<Option<HeldOperation>>>);
+pub(crate) struct OperationCheckpoint(Arc<Mutex<Option<HeldOperation>>>);
 
 impl OperationCheckpoint {
-    fn hold_next(&self) -> (oneshot::Receiver<()>, oneshot::Sender<ResumeOperation>) {
+    pub(crate) fn hold_next(&self) -> (oneshot::Receiver<()>, oneshot::Sender<ResumeOperation>) {
         let (entered, observed) = oneshot::channel();
         let (release, resume) = oneshot::channel();
         let previous = self
