@@ -82,6 +82,12 @@ async fn verify_bound_holder(fixture: &Fixture) -> Result<()> {
         frame = receive(&mut first) => return Err(format!("raw ending reached the registered holder: {:?}", frame?).into()),
     }
     socket_barrier(&mut first).await?;
+    collaboration_central_conformance::approval_link_scenarios::announce_mac_calls(
+        &mut first,
+        vec![central_link_protocol::MacCallKind::DeliverEnding],
+    )
+    .await?;
+    socket_barrier(&mut first).await?;
     expect_delivery(fixture, &mut first, holder.clone()).await?;
 
     let mut replacement = connect(fixture).await?;
@@ -93,6 +99,12 @@ async fn verify_bound_holder(fixture: &Fixture) -> Result<()> {
         true,
     )
     .await?;
+    collaboration_central_conformance::approval_link_scenarios::announce_mac_calls(
+        &mut replacement,
+        vec![central_link_protocol::MacCallKind::DeliverEnding],
+    )
+    .await?;
+    socket_barrier(&mut replacement).await?;
     expect_delivery(fixture, &mut replacement, holder).await
 }
 

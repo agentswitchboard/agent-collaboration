@@ -16,9 +16,8 @@ use collaboration_central_conformance::signin_fixtures as signed;
 use fleet_contracts::MachineTokenDecision;
 use fleet_identity_protocol::OrganizationId;
 use fleet_rpc::{Envelope, Rpc};
-use futures_util::StreamExt;
 use reqwest::{Response, StatusCode};
-use reqwest_websocket::{Message, RequestBuilderExt, WebSocket};
+use reqwest_websocket::{RequestBuilderExt, WebSocket};
 use serde_json::json;
 use workspace_ids::RouterRunId;
 
@@ -237,6 +236,15 @@ async fn exercise_run_binding(fixture: &Fixture) -> Result<()> {
     .await?;
     collaboration_central_conformance::approval_link_scenarios::heartbeat(&mut owner.socket)
         .await?;
+    collaboration_central_conformance::approval_link_scenarios::announce_mac_calls(
+        &mut owner.socket,
+        vec![central_link_protocol::MacCallKind::DeliverEnding],
+    )
+    .await?;
+    assert!(matches!(
+        central_probe(&mut owner.socket, &MACHINE_ID.parse()?, 212).await?,
+        TypedCallResult::Answered { .. }
+    ));
     require_ending(fixture, &mut owner.socket, &target).await?;
 
     renewal::advance(fixture, 300).await?;
@@ -264,12 +272,11 @@ async fn exercise_run_binding(fixture: &Fixture) -> Result<()> {
     fixture.host.c2_evict(&fixture.organization).await?;
     renewal::advance(fixture, 301).await?;
     require_ending(fixture, &mut owner.socket, &target).await?;
+    collaboration_central_conformance::approval_link_scenarios::require_duplicate_capabilities_close(
+        &mut owner.socket, 1008,
+    ).await?;
 
     let mut replacement = open_socket(fixture, &renewed_token).await?;
-    assert!(matches!(
-        owner.socket.next().await,
-        Some(Ok(Message::Close { .. }))
-    ));
     require_no_ending(fixture, &mut replacement, &target, 207).await?;
     let replacement_target = ApprovalHolderTarget {
         router_run: OTHER_RUN.parse()?,
@@ -286,6 +293,17 @@ async fn exercise_run_binding(fixture: &Fixture) -> Result<()> {
         TypedCallResult::Answered {
             reply: CentralCallReply::RegisterRun(_)
         }
+    ));
+    // A registered replacement cannot inherit the old socket's announcement.
+    require_no_ending(fixture, &mut replacement, &replacement_target, 213).await?;
+    collaboration_central_conformance::approval_link_scenarios::announce_mac_calls(
+        &mut replacement,
+        vec![central_link_protocol::MacCallKind::DeliverEnding],
+    )
+    .await?;
+    assert!(matches!(
+        central_probe(&mut replacement, &MACHINE_ID.parse()?, 214).await?,
+        TypedCallResult::Answered { .. }
     ));
     require_ending(fixture, &mut replacement, &replacement_target).await
 }

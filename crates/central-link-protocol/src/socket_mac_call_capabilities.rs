@@ -36,8 +36,10 @@ impl SocketMacCallCapabilities {
     pub fn admit_outbound(&self, request: &MacCall) -> Result<(), CallFailure> {
         let call_kind = match request {
             MacCall::DeliverEnding(_) => MacCallKind::DeliverEnding,
-            #[cfg(any(test, feature = "test-support"))]
+            #[cfg(feature = "test-support")]
             MacCall::MacProbe(_) => return Ok(()),
+            #[cfg(all(test, not(feature = "test-support")))]
+            MacCall::MacProbe(_) => return Err(CallFailure::NeverReached),
         };
         if self.handles(call_kind) {
             Ok(())
