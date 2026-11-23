@@ -1,6 +1,6 @@
 use approval_request_protocol::{
     HolderStopCause, ProviderHolder, ProviderStopCause, QuestionField, QuestionFieldId,
-    QuestionFields, QuestionOffer, Raise, RegisterRunReply, StopRequest,
+    QuestionFields, QuestionOffer, Raise, RegisterRunReply, StopReceiptEnding, StopRequest,
 };
 use state_machine_core::{StateMachine, TransitionError};
 use std::num::NonZeroU64;
@@ -21,13 +21,28 @@ use switchboard_approval_ports::{
 macro_rules! raise_refusal_pairs {
     ($($case:ident),+ $(,)?) => {{
         fn ports_case(reason: RaiseRefusal) -> TerminalRaiseRefusal {
-            match reason { $(RaiseRefusal::$case => TerminalRaiseRefusal::$case),+ }
+            match reason {
+                $(RaiseRefusal::$case => TerminalRaiseRefusal::$case),+,
+                RaiseRefusal::AlreadyEnded(ending) => TerminalRaiseRefusal::AlreadyEnded(ending),
+            }
         }
         fn holder_case(reason: TerminalRaiseRefusal) -> RaiseRefusal {
-            match reason { $(TerminalRaiseRefusal::$case => RaiseRefusal::$case),+ }
+            match reason {
+                $(TerminalRaiseRefusal::$case => RaiseRefusal::$case),+,
+                TerminalRaiseRefusal::AlreadyEnded(ending) => RaiseRefusal::AlreadyEnded(ending),
+            }
         }
         $(assert_eq!(ports_case(RaiseRefusal::$case), TerminalRaiseRefusal::$case);
           assert_eq!(holder_case(TerminalRaiseRefusal::$case), RaiseRefusal::$case);)+
+        let ended = StopReceiptEnding::TimedOut {};
+        assert_eq!(
+            ports_case(RaiseRefusal::AlreadyEnded(ended)),
+            TerminalRaiseRefusal::AlreadyEnded(ended)
+        );
+        assert_eq!(
+            holder_case(TerminalRaiseRefusal::AlreadyEnded(ended)),
+            RaiseRefusal::AlreadyEnded(ended)
+        );
     }};
 }
 

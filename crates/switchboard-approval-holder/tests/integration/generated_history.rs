@@ -395,6 +395,16 @@ impl HistoryFacts {
                         self.saved = true;
                         self.settle_withdrawal();
                     }
+                    RaiseReply::AlreadyEnded { marker }
+                        if self.owed.is_none() && !self.central_done =>
+                    {
+                        self.refusing_locally = true;
+                        if self.withdrawal_waiting_for_link.take().is_none() {
+                            self.claim(ProviderReply::LocalNegative(LocalNegative::RaiseRefused(
+                                RaiseRefusal::AlreadyEnded(marker.ending),
+                            )));
+                        }
+                    }
                     RaiseReply::TooManyOutstanding {}
                         if self.owed.is_none() && !self.central_done =>
                     {
@@ -409,6 +419,7 @@ impl HistoryFacts {
                     }
                     RaiseReply::Receipt { .. }
                     | RaiseReply::AlreadyStopped {}
+                    | RaiseReply::AlreadyEnded { .. }
                     | RaiseReply::SessionEnded {}
                     | RaiseReply::ContentsDiffer {}
                     | RaiseReply::TooManyOutstanding {} => {}
