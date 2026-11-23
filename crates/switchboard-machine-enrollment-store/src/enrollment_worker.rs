@@ -275,6 +275,16 @@ impl EnrollmentWorker {
             }
             Err(_) => return None,
         };
+        if let EnrollmentSnapshot::Active {
+            key,
+            deployment,
+            generation,
+            sealed,
+        } = current
+        {
+            let predecessor = seal_context(&key, &deployment, generation).ok()?;
+            sealer.open(&predecessor, &sealed).ok()?;
+        }
         let context = seal_context(
             &binding.key(),
             &binding.context.deployment,

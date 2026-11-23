@@ -561,3 +561,42 @@ async fn unsealed_witness_cannot_rekey_a_concurrently_published_enrollment() {
         Ok(StoredEnrollment::Active(_))
     ));
 }
+
+#[tokio::test]
+async fn replace_preserves_active_ciphertext_that_fails_authentication() {
+    let fixture = Fixture::open().await;
+    let installed = fixture.install().await;
+    assert_eq!(
+        fixture.store.read().await,
+        Ok(StoredEnrollment::Active(installed))
+    );
+    let mut connection = fixture.connection().await;
+    let mut damaged = row_columns(&mut connection).await.2.unwrap();
+    *damaged.last_mut().unwrap() ^= 1;
+    sqlx::query("UPDATE machine_identity SET enrollment_sealed = ?")
+        .bind(damaged)
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    let unreadable = row_columns(&mut connection).await;
+    assert!(matches!(
+        fixture.detail().await,
+        Err(ReadFailure::SealedBytesUnreadable)
+    ));
+
+    let replacement = fixture.binding(2, ALTERNATE_ENROLLMENT, "fictional-replacement-refresh");
+    assert_eq!(
+        fixture.store.replace(generation(1), &replacement).await,
+        Err(CredentialStoreError::Replace)
+    );
+    assert_eq!(row_columns(&mut connection).await, unreadable);
+
+    assert_eq!(
+        fixture
+            .store
+            .remove(generation(1), EnrollmentEnd::Revoked)
+            .await,
+        Ok(ConditionalWrite::Applied)
+    );
+    assert!(row_columns(&mut connection).await.2.is_none());
+}
