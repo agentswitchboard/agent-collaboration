@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT approval.approval_row_id\nFROM engine_due_entries AS due\nJOIN approval_requests AS approval ON approval.approval_row_id = due.subject_key\nWHERE approval.organization_id = ?1 AND due.subject_key = ?2\n  AND due.work_kind = 'approval_request' AND due.entry_role = 'item'\n  AND due.occurrence_ms = ?3\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "approval_row_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "approval_row_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "751ef010d198aedbfe9255a38e4cd6a5e1b8091c504431eadd3ad94875845d87"
+}

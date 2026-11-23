@@ -255,6 +255,17 @@
             "name": "updated_at"
           }
         }
+      },
+      {
+        "name": "erase_after_ms",
+        "ordinal": 23,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "erase_after_ms"
+          }
+        }
       }
     ],
     "parameters": {
@@ -283,7 +294,8 @@
       true,
       true,
       false,
-      false
+      false,
+      true
     ]
   },
   "hash": "5843deac8e5da5f380298b1f6d379687f3322511d8f8f15304f3fdd74682e0f4"

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE approval_router_runs\nSET enrollment_cleanup_ms = ?1\nWHERE router_run_id = ?2 AND organization_id = ?3 AND retired_at IS NOT NULL\n    AND enrollment_cleanup_ms IS NULL\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "7d8a0973372ef26f9236eebabd8eb708d613738313df67650994ad03b37a4b32"
+}

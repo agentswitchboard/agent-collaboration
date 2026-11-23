@@ -28,6 +28,7 @@ serde.workspace = true
 serde_json.workspace = true
 sqlx-core.workspace = true
 workspace-ids.workspace = true
+workspace-model.workspace = true
 
 [dev-dependencies]
 fleet-approvals = { path = ".", features = ["test-support"] }

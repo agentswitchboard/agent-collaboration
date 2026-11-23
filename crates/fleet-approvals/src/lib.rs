@@ -12,6 +12,7 @@ mod approval_lifecycle_destinations;
 mod approval_lifecycle_edges;
 mod approval_lifecycle_effects;
 mod approval_lifecycle_values;
+mod approval_retention;
 mod approval_session_facts;
 mod approval_store_reads;
 mod approval_store_scope;

@@ -437,6 +437,55 @@ fn a_writer_result_describes_only_the_local_submission() {
 }
 
 #[test]
+fn erased_raise_with_a_pending_stop_preserves_the_selected_local_reply() {
+    let mut state = published();
+    let frozen = raise();
+    assert!(
+        apply(
+            &mut state,
+            Event::LocalStop {
+                cause: HolderStopCause::TurnStopped
+            },
+        )
+        .is_empty()
+    );
+    assert!(matches!(
+        state.central,
+        super::CentralDuty::AwaitingRaiseDisposition { .. }
+    ));
+
+    let effects = apply(
+        &mut state,
+        Event::AttemptSettled {
+            call: call(1, 1),
+            disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Raise(
+                RaiseReply::AlreadyEnded {
+                    marker: ErasedApprovalMarker {
+                        request_id: frozen.request_id().clone(),
+                        router_run: frozen.router_run().clone(),
+                        ending: StopReceiptEnding::TimedOut {},
+                    },
+                },
+            )),
+        },
+    );
+
+    assert!(effects.is_empty());
+    assert!(matches!(state.central, super::CentralDuty::Refusing));
+    assert_eq!(
+        state.claimed_reply(),
+        Some((
+            &RESPONDER,
+            &ProviderReply::LocalNegative(LocalNegative::Stopped(STOP_CAUSE))
+        ))
+    );
+    assert_eq!(
+        transition(&state, publish(1, 2)),
+        Err(TransitionError::Stale)
+    );
+}
+
+#[test]
 fn erasure_marker_must_match_the_in_flight_raise_and_run() {
     let state = published();
     let frozen = raise();

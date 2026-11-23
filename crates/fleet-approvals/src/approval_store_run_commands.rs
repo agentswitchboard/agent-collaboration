@@ -128,11 +128,16 @@ where
         {
             return Ok(ApprovalTransitionOutput::with_reply(()));
         }
-        let prior = read_last_approval_run(self.transaction, enrollment).await?;
-        if let Some(prior) = prior.filter(|prior| prior.retired_at.is_none()) {
+        if let Some(last) = read_last_approval_run(self.transaction, enrollment).await? {
             let at = self.sample_applying_time()?;
-            self.retire_current_run(&prior.scope, ApprovalEvent::EnrollmentEnded, at)
-                .await?;
+            if last.retired_at.is_none() {
+                self.retire_current_run(&last.scope, ApprovalEvent::EnrollmentEnded, at)
+                    .await?;
+            }
+            if last.enrollment_cleanup_at.is_none() {
+                self.publish_ended_enrollment_cleanup(&last.scope, at)
+                    .await?;
+            }
         }
         Ok(ApprovalTransitionOutput::with_reply(()))
     }
@@ -181,46 +186,6 @@ where
             reply: (),
             ending_offers: offers,
         })
-    }
-
-    /// Fence a per-item failure charge without decoding the corrupt approval payload.
-    pub async fn approval_deadline_still_waiting(
-        transaction: &mut Transaction,
-        subject: &InstanceKey,
-        deadline: CentralTime,
-        now: CentralTime,
-    ) -> Result<bool, StoreFailure> {
-        if now < deadline {
-            return Ok(false);
-        }
-        let row_id = ApprovalRequestRowId::parse(&subject.0)?;
-        let query = fleet_engine::checked_engine_statement!(
-            query_file,
-            [],
-            "src/queries/read_waiting_approval_occurrence.sql",
-            organization = transaction.organization_id().as_str().to_owned(),
-            row_id = row_id.as_str().to_owned(),
-            deadline = central_storage::SafeInteger::try_from(deadline.timestamp_millis())
-                .map_err(|_| corrupt("approval_requests.deadline_ms"))?,
-        );
-        let selected = transaction.read_approval_statement(query).await?;
-        Ok(!selected.rows.is_empty())
-    }
-
-    /// Recheck the exact due occurrence on the already-lent applying transaction.
-    pub async fn approval_deadline_is_due(
-        transaction: &mut Transaction,
-        subject: &InstanceKey,
-        deadline: CentralTime,
-        now: CentralTime,
-    ) -> Result<bool, StoreFailure> {
-        if deadline > now {
-            return Ok(false);
-        }
-        let row_id = ApprovalRequestRowId::parse(&subject.0)?;
-        let row = read_approval_due_subject(transaction, &row_id).await?;
-        Ok(matches!(row.map(|row| row.state),
-            Some(crate::ApprovalState::Waiting { saved }) if saved.window.deadline() == deadline))
     }
 
     pub async fn apply_approval_deadline(
@@ -297,8 +262,10 @@ where
         event: ApprovalEvent,
         at: CentralTime,
     ) -> Result<(), ApprovalApplyFailure> {
-        let outstanding = read_outstanding_approval_rows(self.transaction, scope).await?;
+        let outstanding = read_outstanding_approval_rows(self.transaction, scope, at).await?;
         self.execute_guarded_write(plan_retire_approval_run(scope, at))
+            .await?;
+        self.publish_retired_marker_cleanup(&scope.run.router_run, at)
             .await?;
         for record in outstanding {
             let applied = self

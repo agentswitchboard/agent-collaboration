@@ -28,6 +28,7 @@ checked_subject_projection!(StoredRunRow {
     registration_order: i64,
     registered_at: String,
     retired_at: Option<String>,
+    enrollment_cleanup_ms: Option<i64>,
     created_at: String,
     updated_at: String,
 });
@@ -51,6 +52,7 @@ checked_subject_projection!(StoredApprovalRow {
     stop_family: Option<String>,
     stop_cause: Option<String>,
     ended_at: Option<String>,
+    erase_after_ms: Option<i64>,
     ending_json: Option<String>,
     decided_operation_id: Option<String>,
     delivery_state: Option<String>,
@@ -94,6 +96,7 @@ pub(crate) struct ApprovalRunRecord {
     pub scope: ApprovalHolderScope,
     pub registration_order: i64,
     pub retired_at: Option<EngineTime>,
+    pub enrollment_cleanup_at: Option<EngineTime>,
 }
 
 pub(crate) struct ApprovalReadRecord {
@@ -266,6 +269,7 @@ pub(crate) async fn read_approval_due_subject(
 pub(crate) async fn count_outstanding_approvals(
     transaction: &mut impl ApprovalStoreTransaction,
     scope: &ApprovalHolderScope,
+    at: EngineTime,
 ) -> Result<usize, StoreFailure> {
     let statement = checked_engine_statement!(
         query_file_as,
@@ -275,6 +279,7 @@ pub(crate) async fn count_outstanding_approvals(
         machine_id = scope.run.enrollment.machine_id.as_str().to_owned(),
         enrollment_id = scope.run.enrollment.enrollment_id.as_str().to_owned(),
         router_run_id = scope.run.router_run.as_str().to_owned(),
+        at = portable_integer(at.timestamp_millis(), "approval_requests.erase_after_ms")?,
         limit = outstanding_limit()?,
     );
     let outcome = transaction.read_approval_statement(statement).await?;
@@ -292,6 +297,7 @@ pub(crate) async fn count_outstanding_approvals(
 pub(crate) async fn read_outstanding_approval_rows(
     transaction: &mut impl ApprovalStoreTransaction,
     scope: &ApprovalHolderScope,
+    at: EngineTime,
 ) -> Result<Vec<ApprovalReadRecord>, StoreFailure> {
     let statement = checked_engine_statement!(
         query_file_as,
@@ -301,6 +307,7 @@ pub(crate) async fn read_outstanding_approval_rows(
         machine_id = scope.run.enrollment.machine_id.as_str().to_owned(),
         enrollment_id = scope.run.enrollment.enrollment_id.as_str().to_owned(),
         router_run_id = scope.run.router_run.as_str().to_owned(),
+        at = portable_integer(at.timestamp_millis(), "approval_requests.erase_after_ms")?,
         limit = outstanding_limit()?,
     );
     read_request_records(transaction, statement, MAX_OUTSTANDING_PER_RUN).await
@@ -367,6 +374,7 @@ pub(crate) async fn read_approval_request_page_for_person(
     organization: &OrganizationId,
     cursor: Option<&ApprovalRequestId>,
     filter: ApprovalListFilter,
+    at: EngineTime,
     limit: u16,
 ) -> Result<Vec<ApprovalReadRecord>, StoreFailure> {
     let scan_limit = usize::from(limit) + 1;
@@ -380,6 +388,7 @@ pub(crate) async fn read_approval_request_page_for_person(
             i64::from(matches!(filter, ApprovalListFilter::All)),
             "approval_requests.include_ended"
         )?,
+        at = portable_integer(at.timestamp_millis(), "approval_requests.erase_after_ms")?,
         limit = portable_integer(i64::from(limit) + 1, "approval_requests.page_limit")?,
     );
     read_request_records(transaction, statement, scan_limit).await

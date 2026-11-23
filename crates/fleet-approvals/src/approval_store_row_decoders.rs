@@ -13,6 +13,7 @@ use crate::{
     ApprovalActor, ApprovalDestinations, ApprovalEnrollment, ApprovalRequestKey, ApprovalRun,
     ApprovalSession, ApprovalState, EndedApproval, RetainedApproval,
     approval_lifecycle_admission::is_destination,
+    approval_retention::cutoff_at,
     approval_store_scope::{ApprovalDestinationRowId, ApprovalHolderScope, ApprovalRequestRowId},
     approval_stored_tags::{
         parse_delivery_state, parse_stop_marker, parse_stored_time, parse_waiting_status,
@@ -52,10 +53,24 @@ pub(super) fn decode_run_row(stored: StoredRunRow) -> Result<ApprovalRunRecord, 
     {
         return Err(corrupt("approval_router_runs.chronology"));
     }
+    let enrollment_cleanup_at = match stored.enrollment_cleanup_ms.raw() {
+        SqlValue::Null => None,
+        SqlValue::Integer(value) => {
+            let at = CentralTime::from_timestamp_millis(value.get())
+                .filter(|at| supported_time(*at))
+                .filter(|at| retired_at.is_some_and(|retired| retired <= *at))
+                .ok_or_else(|| corrupt("approval_router_runs.enrollment_cleanup_ms"))?;
+            Some(at)
+        }
+        SqlValue::Text(_) | SqlValue::Blob(_) => {
+            return Err(corrupt("approval_router_runs.enrollment_cleanup_ms"));
+        }
+    };
     Ok(ApprovalRunRecord {
         scope,
         registration_order: order.get(),
         retired_at,
+        enrollment_cleanup_at,
     })
 }
 
@@ -172,6 +187,12 @@ pub(super) fn decode_request_row(
             let state = match ended_at {
                 None => ApprovalState::Waiting { saved },
                 Some(ended_at) => {
+                    let SqlValue::Integer(cutoff) = stored.erase_after_ms.raw() else {
+                        return Err(corrupt("approval_requests.erase_after_ms"));
+                    };
+                    if cutoff.get() != cutoff_at(ended_at)?.timestamp_millis() {
+                        return Err(corrupt("approval_requests.erase_after_ms"));
+                    }
                     let closed = decode_ending(&stored, &saved, ended_at)?;
                     if updated_at < ended_at {
                         return Err(corrupt("approval_requests.ending_chronology"));
@@ -195,6 +216,7 @@ fn require_unended(stored: &StoredApprovalRow) -> Result<(), StoreFailure> {
     require_null(
         &[
             stored.ended_at.raw(),
+            stored.erase_after_ms.raw(),
             stored.ending_json.raw(),
             stored.decided_operation_id.raw(),
             stored.delivery_state.raw(),

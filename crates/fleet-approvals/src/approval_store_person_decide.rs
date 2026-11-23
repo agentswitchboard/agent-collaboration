@@ -6,8 +6,7 @@ use approval_request_protocol::{
 use central_engine_model::supported_time;
 use central_storage::StoreFailure;
 use fleet_request_log::{
-    RetainedRequest, decode_organization_request, lookup_organization_request,
-    retain_organization_request, strict_cutoff,
+    RetainedRequest, decode_organization_request, lookup_organization_request, strict_cutoff,
 };
 use fleet_runtime_ports::{stored_values::json, workspace_decode_error::corrupt};
 use fleet_signin::{
@@ -42,6 +41,18 @@ where
     ) -> Result<Option<PendingApprovalReply<ApprovalDecideReply>>, ApprovalApplyFailure> {
         let request = retry.request();
         if self.transaction.organization_id() != &request.organization {
+            return Ok(None);
+        }
+        let at = self.sample_applying_time()?;
+        let record = read_people_approval_request(
+            self.transaction,
+            &request.organization,
+            &request.request_id,
+        )
+        .await?;
+        if let Some(record) = &record
+            && crate::approval_retention::hidden_at(&record.state, at)?
+        {
             return Ok(None);
         }
         let Some(stored) = self
@@ -83,6 +94,21 @@ where
             .digest()
             .map_err(|_| corrupt("runtime_request_log.approval_intent"))?;
         let address = reply_address(admission);
+        let at = self.sample_applying_time()?;
+        let record = read_people_approval_request(
+            self.transaction,
+            admission.organization(),
+            &request.request_id,
+        )
+        .await?;
+        if let Some(record) = &record
+            && crate::approval_retention::hidden_at(&record.state, at)?
+        {
+            return Ok(self.stage_reply(
+                address,
+                ApprovalTransitionOutput::with_reply(ApprovalDecideReply::NotVisible {}),
+            ));
+        }
         if let Some(stored) = self
             .read_person_decision(&request.operation_id, retained_at)
             .await?
@@ -101,8 +127,13 @@ where
             return Ok(self.stage_reply(address, ApprovalTransitionOutput::with_reply(reply)));
         }
 
-        let at = self.sample_applying_time()?;
-        let applied = self.apply_person_decision(admission, &request, at).await?;
+        let applied = match &record {
+            Some(record) => {
+                self.apply_person_decision(admission, &request, record, at)
+                    .await?
+            }
+            None => ApprovalTransitionOutput::with_reply(ApprovalDecideReply::NotVisible {}),
+        };
         match &applied.reply {
             ApprovalDecideReply::SavedDecision { .. }
             | ApprovalDecideReply::AlreadyDecided { .. }
@@ -113,14 +144,28 @@ where
                     .transaction
                     .resolve_person_actor(admission, at, self.row_ids)
                     .await?;
-                for write in retain_organization_request(
-                    &request.operation_id,
-                    &caller,
-                    &digest,
-                    &applied.reply,
-                    &retained_at.to_rfc3339(),
-                    &strict_cutoff(retained_at).to_rfc3339(),
-                )? {
+                let at = retained_at.to_rfc3339();
+                let cutoff = strict_cutoff(retained_at).to_rfc3339();
+                let writes = match record {
+                    Some(record) => crate::approval_decision_log::retain_approval_operation(
+                        &record.row_id,
+                        &request.operation_id,
+                        &caller,
+                        &digest,
+                        &applied.reply,
+                        &at,
+                        &cutoff,
+                    ),
+                    None => fleet_request_log::retain_organization_request(
+                        &request.operation_id,
+                        &caller,
+                        &digest,
+                        &applied.reply,
+                        &at,
+                        &cutoff,
+                    ),
+                }?;
+                for write in writes {
                     self.execute_guarded_write(write).await?;
                 }
             }
@@ -153,19 +198,9 @@ where
         &mut self,
         admission: &ApprovalPersonAdmission,
         request: &ApprovalDecideRequest,
+        record: &ApprovalReadRecord,
         at: CentralTime,
     ) -> Result<ApprovalTransitionOutput<ApprovalDecideReply>, ApprovalApplyFailure> {
-        let record = read_people_approval_request(
-            self.transaction,
-            admission.organization(),
-            &request.request_id,
-        )
-        .await?;
-        let Some(record) = record else {
-            return Ok(ApprovalTransitionOutput::with_reply(
-                ApprovalDecideReply::NotVisible {},
-            ));
-        };
         match &record.state {
             ApprovalState::Ended { closed, .. } => {
                 Ok(ApprovalTransitionOutput::with_reply(ended_reply(closed)))
@@ -185,7 +220,7 @@ where
                 Ok(expired.replace_reply(ApprovalDecideReply::TooLate {}))
             }
             ApprovalState::Waiting { .. } => {
-                self.apply_waiting_person_decision(admission, request, &record, at)
+                self.apply_waiting_person_decision(admission, request, record, at)
                     .await
             }
             ApprovalState::Unraised | ApprovalState::StoppedBeforeRaise { .. } => Ok(

@@ -8,11 +8,10 @@ use sqlx::SqliteConnection;
 use std::collections::{BTreeMap, BTreeSet};
 use workspace_ids::MessageId;
 use workspace_model::{
-    Timestamp,
+    INTERACTION_RETENTION_MILLIS as INBOX_RETENTION_MILLIS, Timestamp,
     central_mail::{MessageBody, MessageRecord},
 };
 
-const INBOX_RETENTION_MILLIS: i64 = 60 * 24 * 60 * 60 * 1_000;
 /// The inbox store uses the longest delivery window even when the body is absent.
 /// This must equal the wire's TimeLeft bound. The store is independent of link protocol types.
 pub const MAX_INBOX_DELIVERY_WINDOW_MS: u32 = 15 * 60 * 1_000;

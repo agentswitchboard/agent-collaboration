@@ -92,6 +92,9 @@ where
         let key = saved.key.clone();
         let recipient = actor.identity();
         let at = self.sample_applying_time()?;
+        if crate::approval_retention::hidden_at(&record.state, at)? {
+            return Ok(refused());
+        }
         let caller = self
             .transaction
             .approval_decision_caller(organization, &actor)
@@ -141,7 +144,7 @@ where
             .for_recipient(&key, &recipient)
             .map_err(|_| corrupt("approval_store.decide_recipient"))?
             .clone();
-        for write in request_log.retain(&reply)? {
+        for write in request_log.retain(&record.row_id, &reply)? {
             self.execute_guarded_write(write).await?;
         }
         Ok(applied.replace_reply(reply))
@@ -287,6 +290,9 @@ where
         let Some(key) = record.state.key() else {
             return Ok(ApprovalTransitionOutput::with_reply(None));
         };
+        if crate::approval_retention::hidden_at(&record.state, at)? {
+            return Ok(ApprovalTransitionOutput::with_reply(None));
+        }
         let event = ApprovalEvent::Read {
             key: key.clone(),
             actor: actor.clone(),

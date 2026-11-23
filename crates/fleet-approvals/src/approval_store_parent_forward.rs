@@ -4,8 +4,7 @@ use approval_request_protocol::{
 };
 use fleet_actor_identity::AuthenticatedSession;
 use fleet_request_log::{
-    decode_organization_request, lookup_organization_request, request_log_digest,
-    retain_organization_request, strict_cutoff,
+    decode_organization_request, lookup_organization_request, request_log_digest, strict_cutoff,
 };
 use fleet_runtime_ports::{stored_values::json, workspace_decode_error::corrupt};
 use serde::Serialize;
@@ -60,6 +59,12 @@ where
             .approval_decision_caller(organization, &actor)
             .await?;
         let at = self.sample_applying_time()?;
+        if crate::approval_retention::hidden_at(&record.state, at)? {
+            return Ok(self.stage_reply(
+                address,
+                ApprovalTransitionOutput::with_reply(PassOnApprovalReply::NotVisible {}),
+            ));
+        }
         let cutoff = strict_cutoff(at).to_rfc3339();
         let digest = request_log_digest(&PassOnIntent {
             operation: "passOnApproval",
@@ -152,7 +157,8 @@ where
                 return Err(corrupt("approval_requests.pass_on_request").into());
             }
         };
-        for write in retain_organization_request(
+        for write in crate::approval_decision_log::retain_approval_operation(
+            &record.row_id,
             &request.operation_id,
             &caller,
             &digest,

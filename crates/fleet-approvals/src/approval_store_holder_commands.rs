@@ -1,5 +1,6 @@
 use approval_request_protocol::{
-    DeliverEndingReply, DeliverEndingRequest, Raise, RaiseReply, RunRefusal, StopReply, StopRequest,
+    DeliverEndingReply, DeliverEndingRequest, ErasedApprovalMarker, Raise, RaiseReply, RunRefusal,
+    StopReply, StopRequest,
 };
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use workspace_ids::ApprovalRequestId;
@@ -10,6 +11,7 @@ use crate::{
     ApprovalRouting, ApprovalSession, ApprovalSessionFacts, ApprovalState, PendingApprovalReply,
     ProviderSessionAvailability, RaiseAdmission,
     approval_lifecycle_admission::stop_binding,
+    approval_retention::{compact_ending, hidden_at, read_erased_approval},
     approval_store_reads::{
         ScopedHolderRequest, count_outstanding_approvals, read_holder_request,
         read_recoverable_approval_rows,
@@ -60,6 +62,16 @@ impl ApprovalHolderCommand {
         match self {
             Self::Raise(_) => ApprovalHolderReply::Raised(RaiseReply::AuthorityRefused { refusal }),
             Self::Stop(_) => ApprovalHolderReply::Stopped(StopReply::AuthorityRefused { refusal }),
+            Self::DeliveryReply { .. } | Self::Reoffer { .. } => ApprovalHolderReply::NoReply,
+        }
+    }
+
+    fn erased_request(&self, marker: ErasedApprovalMarker) -> ApprovalHolderReply {
+        match self {
+            Self::Raise(_) => ApprovalHolderReply::Raised(RaiseReply::AlreadyEnded { marker }),
+            Self::Stop(_) => ApprovalHolderReply::Stopped(StopReply::Stands {
+                ending: marker.ending,
+            }),
             Self::DeliveryReply { .. } | Self::Reoffer { .. } => ApprovalHolderReply::NoReply,
         }
     }
@@ -168,6 +180,7 @@ where
             ));
         }
 
+        let at = self.sample_applying_time()?;
         let request_id = command.approval_request_id();
         let key = ApprovalRequestKey {
             run: scope.run.clone(),
@@ -179,8 +192,35 @@ where
                     command.request_belongs_to_other_holder(),
                 ));
             }
-            ScopedHolderRequest::Unseen => None,
-            ScopedHolderRequest::Retained(record) => Some(record),
+            ScopedHolderRequest::Unseen => {
+                match read_erased_approval(self.transaction, scope, request_id).await? {
+                    crate::approval_retention::ErasedApprovalLookup::Missing => None,
+                    crate::approval_retention::ErasedApprovalLookup::OtherHolder => {
+                        return Ok(ApprovalTransitionOutput::with_reply(
+                            command.request_belongs_to_other_holder(),
+                        ));
+                    }
+                    crate::approval_retention::ErasedApprovalLookup::Owned(marker) => {
+                        return Ok(ApprovalTransitionOutput::with_reply(
+                            command.erased_request(marker),
+                        ));
+                    }
+                }
+            }
+            ScopedHolderRequest::Retained(record) => {
+                if let ApprovalState::Ended { closed, .. } = &record.state
+                    && hidden_at(&record.state, at)?
+                {
+                    return Ok(ApprovalTransitionOutput::with_reply(
+                        command.erased_request(ErasedApprovalMarker {
+                            request_id: request_id.clone(),
+                            router_run: scope.run.router_run.clone(),
+                            ending: compact_ending(closed.ending.clone().into_ending()),
+                        }),
+                    ));
+                }
+                Some(record)
+            }
         };
         let prior = record
             .as_ref()
@@ -188,7 +228,7 @@ where
         let event = match command {
             ApprovalHolderCommand::Raise(raise) => {
                 let (routing, admission) = if record.is_none() {
-                    self.resolve_first_raise(scope, &raise).await?
+                    self.resolve_first_raise(scope, &raise, at).await?
                 } else {
                     // The reducer replays the frozen row with its original route and admission.
                     (
@@ -216,7 +256,6 @@ where
             }
             ApprovalHolderCommand::Reoffer { .. } => ApprovalEvent::Reoffer,
         };
-        let at = self.sample_applying_time()?;
         let row_id = record.as_ref().map(|saved| &saved.row_id);
         let applied = self
             .apply_request_event(row_id, scope, prior, event, at)
@@ -241,9 +280,13 @@ where
         request_id: &approval_request_protocol::ApprovalRequestId,
     ) -> Result<bool, central_storage::StoreFailure> {
         let record = read_holder_request(self.transaction, holder, request_id).await?;
-        Ok(matches!(record, ScopedHolderRequest::Retained(record)
-            if matches!(&record.state, ApprovalState::Ended { closed, .. }
-                if closed.delivery == (approval_request_protocol::Delivery::Owed {}))))
+        let ScopedHolderRequest::Retained(record) = record else {
+            return Ok(false);
+        };
+        let at = self.sample_applying_time()?;
+        Ok(!hidden_at(&record.state, at)?
+            && matches!(&record.state, ApprovalState::Ended { closed, .. }
+                if closed.delivery == (approval_request_protocol::Delivery::Owed {})))
     }
 
     /// Recover all current Owed endings for the exact admitted run.
@@ -300,6 +343,7 @@ where
         &mut self,
         scope: &ApprovalHolderScope,
         raise: &Raise,
+        at: approval_request_protocol::CentralTime,
     ) -> Result<(ApprovalRouting, RaiseAdmission), ApprovalApplyFailure> {
         let (routing, provider_session) = match raise.requesting_session() {
             None => (
@@ -335,7 +379,7 @@ where
                 (route, ProviderSessionAvailability::Live)
             }
         };
-        let outstanding = count_outstanding_approvals(self.transaction, scope).await?;
+        let outstanding = count_outstanding_approvals(self.transaction, scope, at).await?;
         Ok((
             routing,
             RaiseAdmission {

@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM approval_erased_requests\nWHERE router_run_id = ?1 AND approval_row_id IN (\n    SELECT approval_row_id FROM approval_erased_requests\n    WHERE router_run_id = ?1 ORDER BY approval_row_id LIMIT ?2\n)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "98bb78c54fc60915af2c6745edff52de161a9264b674cc482038a629f298705d"
+}

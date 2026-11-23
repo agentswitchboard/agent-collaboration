@@ -9,6 +9,9 @@ mod rule_commands;
 mod rule_results;
 mod validated_values;
 pub use central_mail::NoticeCadence;
+
+/// Retention window shared by the Mac inbox and Central's ended approvals.
+pub const INTERACTION_RETENTION_MILLIS: i64 = 60 * 24 * 60 * 60 * 1_000;
 pub use request_contract::*;
 
 pub use entity_records::*;

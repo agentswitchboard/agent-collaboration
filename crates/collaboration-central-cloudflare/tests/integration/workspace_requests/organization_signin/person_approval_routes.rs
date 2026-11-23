@@ -113,6 +113,10 @@ macro_rules! approval_case {
 }
 
 person_approval_cases!(approval_case);
+approval_case!(
+    ended_person_approval_is_hidden_at_the_retention_cutoff,
+    Case::ErasureCutoff
+);
 
 #[tokio::test]
 async fn approval_preflight_refuses_method_then_headers_then_address() -> ConformanceResult<()> {

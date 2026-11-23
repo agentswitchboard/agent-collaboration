@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE runtime_request_log\nSET approval_row_id = ?2\nWHERE request_id = ?1 AND approval_row_id IS NULL\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 2
+    },
+    "nullable": []
+  },
+  "hash": "839f9010a9751c7d81ddc3f4df76c3ad8c5bd23ecf00c4429ef97a6bf90f8f72"
+}

@@ -48,6 +48,9 @@ pub use delivery_cases::{
     stale_recovery_page,
 };
 pub use proof_cases::{ParentApprovalProof, observe_parent_proof};
+#[path = "parent_approval_erasure.rs"]
+mod erasure;
+pub use erasure::destination_replays_and_unpaid_ending_at_cutoff;
 #[path = "parent_approval_rollback.rs"]
 mod rollback;
 pub use rollback::{enrollment_and_approval_rollback, session_end_and_approval_rollback};

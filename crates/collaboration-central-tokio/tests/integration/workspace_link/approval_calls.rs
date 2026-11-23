@@ -1,3 +1,6 @@
+#[path = "approval_erasure_cases.rs"]
+mod approval_erasure_cases;
+
 #[path = "approval_publication_failure.rs"]
 mod approval_publication_failure;
 

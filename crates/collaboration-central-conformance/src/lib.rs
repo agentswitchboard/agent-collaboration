@@ -4,6 +4,8 @@ pub mod alarm_input_scenarios;
 #[cfg(feature = "session-link-test-support")]
 pub mod approval_authority_scenarios;
 #[cfg(feature = "session-link-test-support")]
+pub mod approval_erasure_scenarios;
+#[cfg(feature = "session-link-test-support")]
 pub mod approval_link_scenarios;
 #[cfg(feature = "session-link-test-support")]
 pub mod approval_provider_scenarios;

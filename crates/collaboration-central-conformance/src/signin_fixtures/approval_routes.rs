@@ -35,6 +35,7 @@ pub enum Case {
     DecideNotVisible,
     DecideTimeout,
     DecideCancelled,
+    ErasureCutoff,
     ApplyingTimeFloor,
     AlreadyDecided,
     InvalidAnswer,
@@ -180,6 +181,53 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
                 expect(retry, 200, json!({"kind":"notVisible"}))?;
                 assert_count(host, "SELECT COUNT(*) FROM runtime_request_log", 2).await?;
             }
+        }
+        Case::ErasureCutoff => {
+            let ending = time(1 - 5_184_000)?;
+            let request = seed(
+                host,
+                10,
+                AnswerClass::Once,
+                InitialApproval::CancelledAt(ending),
+            )
+            .await?;
+            let read_before = expect_status(read(&request).send(host, &owner).await?, 200)?;
+            assert_eq!(
+                serde_json::from_slice::<Value>(&read_before)?
+                    .get("kind")
+                    .and_then(Value::as_str),
+                Some("request")
+            );
+            let retry = decide(&request, &operation, &answer);
+            expect(
+                retry.send(host, &owner).await?,
+                200,
+                json!({"kind":"tooLate"}),
+            )?;
+            assert_count(
+                host,
+                "SELECT COUNT(*) FROM runtime_request_log WHERE approval_row_id IS NOT NULL",
+                1,
+            )
+            .await?;
+
+            let headers = retry.headers(&owner, &fresh_request_id(NOW_SECONDS)?, &|_| {})?;
+            let exact_cutoff = host
+                .post_after_verification(retry.path, &retry.body, headers, 1000)
+                .await?;
+            expect(exact_cutoff, 200, json!({"kind":"notVisible"}))?;
+            expect(
+                read(&request).send(host, &owner).await?,
+                200,
+                json!({"kind":"notVisible"}),
+            )?;
+            expect(
+                list("all", None).send(host, &owner).await?,
+                200,
+                json!({"kind":"page","items":[],"next":null}),
+            )?;
+            assert_count(host, "SELECT COUNT(*) FROM approval_requests", 1).await?;
+            assert_count(host, "SELECT COUNT(*) FROM runtime_request_log", 1).await?;
         }
         Case::DecideTimeout | Case::DecideCancelled => {
             let initial = if matches!(case, Case::DecideTimeout) {
