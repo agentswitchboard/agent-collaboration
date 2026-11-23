@@ -12,6 +12,9 @@ mod approval_holder_policy;
 #[path = "harness_stage_policy.rs"]
 mod harness_stage_policy;
 
+#[path = "machine_core_store_policy.rs"]
+mod machine_core_store_policy;
+
 #[path = "test_support_policy.rs"]
 mod test_support_policy;
 
@@ -193,6 +196,8 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
     workspace_boundaries::check_declared_session_read_edges(&metadata)?;
     harness_stage_policy::check_declared(&metadata)?;
     harness_stage_policy::check_resolved(&metadata)?;
+    machine_core_store_policy::check_declared(&metadata)?;
+    machine_core_store_policy::check_resolved(&metadata)?;
     let graph = NonDevDependencyGraph::from_metadata(metadata);
     for (source, destinations) in &graph.dev_edges {
         if !graph.workspace_members.contains(source) {
@@ -223,10 +228,12 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
     let enabled_metadata = read_metadata(&root, &["--all-features"])?;
     harness_stage_policy::check_resolved(&enabled_metadata)?;
     approval_holder_policy::check_resolved(&enabled_metadata)?;
+    machine_core_store_policy::check_resolved(&enabled_metadata)?;
     workspace_boundaries::check_harness_layers(&NonDevDependencyGraph::from_metadata(
         enabled_metadata,
     ))?;
     workspace_boundaries::check_workspace_package_trees(&root)?;
+    machine_core_store_policy::check_package_trees(&root)?;
     Ok(())
 }
 
