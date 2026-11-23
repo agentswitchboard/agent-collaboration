@@ -9,7 +9,7 @@ use axum::{
     Router,
     body::{Body, Bytes, to_bytes},
     extract::{Request, State},
-    http::{Method, StatusCode, header},
+    http::{HeaderMap, Method, StatusCode, header},
     response::Response,
 };
 use router_clock::{ClockInstant, ManualClock, RuntimeClock, WaitRegistration};
@@ -43,6 +43,7 @@ pub struct Reply {
     status: StatusCode,
     body: Body,
     retry_after: Option<&'static str>,
+    headers: HeaderMap,
     held: Option<oneshot::Receiver<()>>,
 }
 
@@ -56,6 +57,7 @@ impl Reply {
             status,
             body: Body::from(body),
             retry_after: None,
+            headers: HeaderMap::new(),
             held: None,
         }
     }
@@ -70,6 +72,7 @@ impl Reply {
             status,
             body,
             retry_after: None,
+            headers: HeaderMap::new(),
             held: None,
         }
     }
@@ -86,6 +89,11 @@ impl Reply {
 
     pub fn after(mut self, value: &'static str) -> Self {
         self.retry_after = Some(value);
+        self
+    }
+
+    pub fn with_headers(mut self, headers: HeaderMap) -> Self {
+        self.headers = headers;
         self
     }
 }
@@ -153,6 +161,7 @@ impl Observation {
                 ("machine_id", MACHINE),
                 ("organization_id", ORGANIZATION),
                 ("machine_label", "Test Mac"),
+                ("scope", "offline_access"),
             ],
         );
     }
@@ -242,6 +251,10 @@ async fn serve_request(State(state): State<Arc<ScriptState>>, request: Request) 
         let _ = held.await;
     }
     let mut response = Response::builder().status(reply.status);
+    response
+        .headers_mut()
+        .expect("script response headers")
+        .extend(reply.headers);
     if let Some(wait) = reply.retry_after {
         response = response.header(header::RETRY_AFTER, wait);
     }
@@ -376,11 +389,17 @@ pub struct SignInScript {
 
 impl SignInScript {
     pub async fn start(expires_in: u64, polls: impl IntoIterator<Item = Reply>) -> Self {
-        Self::spawn_script(Some(expires_in), None, polls).await
+        Self::from_replies(|issuer| {
+            Self::enrollment_prelude(issuer, expires_in, None)
+                .into_iter()
+                .chain(polls)
+                .collect()
+        })
+        .await
     }
 
     pub async fn token_responses(replies: impl IntoIterator<Item = Reply>) -> Self {
-        Self::spawn_script(None, None, replies).await
+        Self::from_replies(|_| replies.into_iter().collect()).await
     }
 
     pub async fn hold_start(
@@ -389,22 +408,22 @@ impl SignInScript {
     ) -> (Self, oneshot::Sender<()>) {
         let (release, held) = oneshot::channel();
         (
-            Self::spawn_script(Some(expires_in), Some(held), polls).await,
+            Self::from_replies(|issuer| {
+                Self::enrollment_prelude(issuer, expires_in, Some(held))
+                    .into_iter()
+                    .chain(polls)
+                    .collect()
+            })
+            .await,
             release,
         )
     }
 
-    async fn spawn_script(
-        expires_in: Option<u64>,
+    fn enrollment_prelude(
+        issuer: &str,
+        expires_in: u64,
         held_start: Option<oneshot::Receiver<()>>,
-        polls: impl IntoIterator<Item = Reply>,
-    ) -> Self {
-        let listener = TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("loopback listener");
-        let issuer = format!("http://{}", listener.local_addr().expect("bound address"));
-        let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
-        let prelude = expires_in.map(|expires_in| {
+    ) -> [Reply; 2] {
         let discovery = Reply::new(
             StatusCode::OK,
             serde_json::json!({"client_id": ROUTER_CLIENT, "link_url": "https://central.example/v1/organizations/{organization_id}/link"}).to_string(),
@@ -423,10 +442,17 @@ impl SignInScript {
         );
         device.held = held_start;
         [discovery, device]
-        });
+    }
+
+    pub async fn from_replies(replies: impl FnOnce(&str) -> VecDeque<Reply>) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("loopback listener");
+        let issuer = format!("http://{}", listener.local_addr().expect("bound address"));
+        let clock = Arc::new(ManualClock::new(chrono::DateTime::UNIX_EPOCH));
         let (observed, observations) = mpsc::unbounded_channel();
         let state = Arc::new(ScriptState {
-            replies: Mutex::new(prelude.into_iter().flatten().chain(polls).collect()),
+            replies: Mutex::new(replies(&issuer)),
             observed,
             clock: Arc::clone(&clock),
         });

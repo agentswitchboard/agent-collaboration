@@ -12,3 +12,5 @@ mod secret_surfaces;
 mod refresh_reply_identity;
 
 mod response_boundaries;
+
+mod pinned_sign_in_contract;

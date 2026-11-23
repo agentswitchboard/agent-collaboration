@@ -27,6 +27,8 @@ fn discovery_requires_a_secure_organization_path() {
         r#"{"client_id":"019a0000-0000-7000-8000-000000000001"}"#,
         r#"{"client_id":"019a0000-0000-7000-8000-000000000001","link_url":"http://central.example/{organization_id}/link"}"#,
         r#"{"client_id":"019a0000-0000-7000-8000-000000000001","link_url":"https://central.example/static/link"}"#,
+        r#"{"client_id":"019a0000-0000-7000-8000-000000000001","link_url":"https://central.example/static/link/"}"#,
+        r#"{"client_id":"019a0000-0000-7000-8000-000000000001","link_url":"https://central.example/{organization_id}/link/{organization_id}"}"#,
         r#"{"client_id":"019a0000-0000-7000-8000-000000000001","link_url":"https://central.example/{organization_id}/link","extra":true}"#,
     ] {
         assert_eq!(

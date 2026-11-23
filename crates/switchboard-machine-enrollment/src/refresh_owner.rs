@@ -407,6 +407,12 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
                 self.finish_binding(binding, EnrollmentEnd::RefreshRefused, state)
                     .await
             }
+            RefreshAnswer::Refused {
+                reason: InvalidReason::InvalidClient,
+            } => {
+                self.finish_binding(binding, EnrollmentEnd::RefreshClientDisabled, state)
+                    .await
+            }
             RefreshAnswer::Refused { reason } => {
                 RefreshCompletion::Invalid(LeaseConfigurationFault::InvalidAnswer(reason))
             }

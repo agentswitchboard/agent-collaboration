@@ -25,6 +25,7 @@ pub enum EnrollmentEnd {
     Expired,
     Invalid(InvalidReason),
     RefreshRefused,
+    RefreshClientDisabled,
     LocalCredentialLost,
     Revoked,
     Inactive,

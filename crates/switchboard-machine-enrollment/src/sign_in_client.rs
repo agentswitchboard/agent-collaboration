@@ -80,6 +80,7 @@ struct StartForm<'request> {
     machine_id: &'request str,
     machine_label: &'request str,
     organization_id: String,
+    scope: &'static str,
 }
 
 #[derive(Serialize)]
@@ -205,6 +206,7 @@ impl SignInClient {
             machine_id: request.machine_id.as_str(),
             machine_label: label,
             organization_id: request.organization_id.to_string(),
+            scope: "offline_access",
         };
         let answer = self
             .request(self.http.post(self.endpoint(DEVICE_CODE_PATH)).form(&form))

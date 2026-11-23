@@ -142,6 +142,9 @@ fn describe_ending(failure: EnrollmentFailure) -> &'static str {
         EnrollmentFailure::Ended(EnrollmentEnd::LocalCredentialLost) => {
             "The local credential was lost. Run enroll again."
         }
+        EnrollmentFailure::Ended(EnrollmentEnd::RefreshClientDisabled) => {
+            "Sign-in disabled this enrollment. Run enroll again to enroll this Mac."
+        }
         EnrollmentFailure::Ended(
             EnrollmentEnd::RefreshRefused | EnrollmentEnd::Revoked | EnrollmentEnd::Inactive,
         ) => "Enrollment ended. Run enroll again to enroll this Mac.",
