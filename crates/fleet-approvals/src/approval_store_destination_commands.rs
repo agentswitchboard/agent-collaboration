@@ -17,14 +17,13 @@ use crate::{
     ApprovalEvent, ApprovalReceipt, ApprovalReplyAddress, ApprovalSession, ApprovalSessionFacts,
     approval_decision_log::ApprovalDecisionLogKey,
     approval_lifecycle_admission::is_destination,
-    approval_store_reads::{
-        ApprovalReadRecord, read_parent_approval_request, read_people_approval_request,
-    },
+    approval_store_reads::{ApprovalReadRecord, read_people_approval_request},
     approval_store_transaction::ApprovalStoreTransaction,
 };
 #[cfg(feature = "test-support")]
 use crate::{
-    approval_store_reads::read_person_approval_page, approval_store_scope::ApprovalRequestRowId,
+    approval_store_reads::{read_parent_approval_request, read_person_approval_page},
+    approval_store_scope::ApprovalRequestRowId,
 };
 
 impl<Transaction, Sessions> ApprovalApplyingStore<'_, Transaction, Sessions>
@@ -32,6 +31,7 @@ where
     Transaction: ApprovalStoreTransaction,
     Sessions: ApprovalSessionFacts<Transaction>,
 {
+    #[cfg(feature = "test-support")]
     pub(super) async fn decide_approval(
         &mut self,
         organization: &OrganizationId,
