@@ -210,7 +210,17 @@ pub(crate) async fn a_sent_write_past_its_deadline_ends_instead_of_returning(
         ids(&[&fresh]),
         "the overdue post is never resent; the fresh one is"
     );
-    assert!(store.sent_without_answer().await.unwrap().expect_clean() == ids(&[&fresh]));
+    assert!(
+        store
+            .sent_without_answer()
+            .await
+            .unwrap()
+            .expect_clean()
+            .into_iter()
+            .map(|claim| claim.key.request_id)
+            .collect::<Vec<_>>()
+            == ids(&[&fresh])
+    );
 }
 /// A direct message goes out with its row's creation stamp as sent_at,
 /// whatever the submitter wrote, and every replay carries the same value

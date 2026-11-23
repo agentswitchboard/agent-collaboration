@@ -29,6 +29,7 @@ pub use outbox_status::{
 pub use outbox_storage::{MachineLocalOutbox, OutboxFuture, OutboxStorage};
 pub use outbox_store::{
     ClaimedBatch, MacOutbox, NewOutboxItem, OutboxInsert, OutboxStoreError, StoredOutboxWrite,
+    UnansweredOutboxClaim,
 };
 pub use outbox_views::{
     EndedWrite, OutboxWriteTarget, OutgoingOutcome, OutgoingWrite, PendingWrite, PendingWriteState,

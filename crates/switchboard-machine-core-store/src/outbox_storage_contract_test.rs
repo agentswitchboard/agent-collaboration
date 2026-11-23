@@ -102,7 +102,14 @@ pub(crate) async fn lifecycle_and_views(store: &mut dyn OutboxStorage) {
         OutboxRequestStatus::Sent
     );
     assert_eq!(
-        store.sent_without_answer().await.unwrap().expect_clean(),
+        store
+            .sent_without_answer()
+            .await
+            .unwrap()
+            .expect_clean()
+            .into_iter()
+            .map(|claim| claim.key.request_id)
+            .collect::<Vec<_>>(),
         ids(&[&first])
     );
     store

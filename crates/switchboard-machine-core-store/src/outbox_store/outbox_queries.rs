@@ -1,16 +1,17 @@
 //! Caller-scoped reads and selection of pending writes.
 use super::{
-    MacOutbox, OutboxStoreError,
+    MacOutbox, OutboxStoreError, UnansweredOutboxClaim,
     outbox_rows::{
-        StoredPayload, corrupt_row, decode_owned_row, outbox_content, read_owned_outbox,
-        read_rows_in_states, select_outbox_rows, waiting_rows,
+        StoredPayload, corrupt_row, decode_owned_row, in_flight_rows, outbox_content,
+        read_owned_outbox, select_outbox_rows, waiting_rows,
     },
 };
 use crate::OutboxRequestKey;
 use crate::{
     OutboxRequestStatus, OutgoingOutcome, OutgoingWrite, PendingWrite, PendingWriteState,
-    StoreScan, outbox_item_state::OutboxItemState,
+    RowCorruption, RowCorruptionReason, StoreScan, outbox_item_state::OutboxItemState,
 };
+#[cfg(test)]
 use workspace_ids::RequestId;
 use workspace_model::Caller;
 
@@ -169,21 +170,48 @@ impl MacOutbox<'_> {
             }))
     }
 
-    /// Claims without an answer, including ones recovered after reopen.
+    /// Claims awaiting an answer, for custody to reconcile after reopen.
     pub async fn sent_without_answer(
         &mut self,
-    ) -> Result<StoreScan<Vec<RequestId>>, OutboxStoreError> {
-        Ok(read_rows_in_states(
-            &mut self.store.connection,
-            OutboxItemState::Sent,
-            OutboxItemState::Resent,
-        )
-        .await?
-        .map_healthy(|rows| {
-            let mut requests: Vec<_> = rows.into_iter().map(|row| row.request).collect();
-            requests.sort();
-            requests
-        }))
+    ) -> Result<StoreScan<Vec<UnansweredOutboxClaim>>, OutboxStoreError> {
+        let StoreScan {
+            healthy,
+            mut corrupt_rows,
+        } = in_flight_rows(&mut self.store.connection).await?;
+        let mut claims = Vec::with_capacity(healthy.len());
+        for row in healthy {
+            let StoredPayload::Unanswered(write) = row.payload else {
+                corrupt_rows.push(RowCorruption {
+                    key: row.request.to_string(),
+                    field: "payload_json",
+                    reason: RowCorruptionReason::InconsistentState,
+                });
+                continue;
+            };
+            let Some(content) = write.content() else {
+                corrupt_rows.push(RowCorruption {
+                    key: row.request.to_string(),
+                    field: "payload_json",
+                    reason: RowCorruptionReason::UnsupportedOperation,
+                });
+                continue;
+            };
+            claims.push(UnansweredOutboxClaim {
+                key: OutboxRequestKey {
+                    request_id: row.request,
+                    scope: content.target.request_scope(),
+                },
+                caller: row.caller,
+                target: content.target,
+                deadline_ms: row.deadline_ms,
+                payload: write,
+            });
+        }
+        claims.sort_unstable_by(|first, second| first.key.request_id.cmp(&second.key.request_id));
+        Ok(StoreScan {
+            healthy: claims,
+            corrupt_rows,
+        })
     }
 
     pub async fn earliest_waiting(&mut self) -> Result<StoreScan<Option<i64>>, OutboxStoreError> {
