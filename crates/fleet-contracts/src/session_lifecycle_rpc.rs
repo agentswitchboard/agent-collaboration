@@ -29,7 +29,7 @@ impl CorrelatedRpc for CreateFleetSessionRpc {
     type InvalidReply = SessionReplyMismatch;
 
     fn reply_context(request: &Self::Request) -> Self::ReplyContext {
-        request.reply_context()
+        CreateReplyContext::from_request(request)
     }
 
     fn check_reply(
@@ -75,7 +75,7 @@ impl CorrelatedRpc for EndFleetSessionRpc {
     type InvalidReply = SessionReplyMismatch;
 
     fn reply_context(request: &Self::Request) -> Self::ReplyContext {
-        request.reply_context()
+        EndReplyContext::from_request(request)
     }
 
     fn check_reply(

@@ -47,24 +47,22 @@ pub struct CreateReplyContext {
     delegate: bool,
 }
 
-impl CreateFleetSession {
+impl CreateReplyContext {
     #[must_use]
-    pub fn reply_context(&self) -> CreateReplyContext {
-        let caller = match &self.creator {
+    pub fn from_request(request: &CreateFleetSession) -> Self {
+        let caller = match &request.creator {
             SessionCreator::RouterOperator {} => CreateCaller::Operator,
             SessionCreator::Session { presented, .. } => match presented {
                 PresentedSessionSecret::Secret { .. } => CreateCaller::SessionWithSecret,
                 PresentedSessionSecret::Nothing {} => CreateCaller::SessionWithoutSecret,
             },
         };
-        CreateReplyContext {
+        Self {
             caller,
-            delegate: matches!(self.session_kind, CreateSessionKind::Delegate { .. }),
+            delegate: matches!(request.session_kind, CreateSessionKind::Delegate { .. }),
         }
     }
-}
 
-impl CreateReplyContext {
     pub fn check(
         self,
         reply: CreateFleetSessionReply,
@@ -156,19 +154,17 @@ pub enum EndReplyContext {
     OperationId,
 }
 
-impl EndFleetSession {
+impl EndReplyContext {
     #[must_use]
-    pub fn reply_context(&self) -> EndReplyContext {
-        match self.target {
-            EndSessionTarget::CentralId { .. } => EndReplyContext::CentralId {
-                cause: self.cause.clone(),
+    pub fn from_request(request: &EndFleetSession) -> Self {
+        match request.target {
+            EndSessionTarget::CentralId { .. } => Self::CentralId {
+                cause: request.cause.clone(),
             },
-            EndSessionTarget::OperationId { .. } => EndReplyContext::OperationId,
+            EndSessionTarget::OperationId { .. } => Self::OperationId,
         }
     }
-}
 
-impl EndReplyContext {
     pub fn check(
         self,
         reply: EndFleetSessionReply,
