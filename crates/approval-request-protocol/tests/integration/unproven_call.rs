@@ -32,20 +32,19 @@ fn raise_specimen(operation: Value) -> Value {
     })
 }
 
-fn local_refusal_provider_raise() -> Raise {
-    serde_json::from_value(json!({
+fn provider_raise_specimen() -> Value {
+    json!({
         "kind":"providerApproval","requestId":REQUEST_ID,
         "holder":{"routerRun":RUN_ID,"sessionId":SESSION_ID},
         "offer":{"title":"Review","description":null,"subject":null,"options":[
             {"id":1,"label":"Allow","effect":"allow","lasts":{"kind":"thisRequest"}}
         ]}
-    }))
-    .unwrap()
+    })
 }
 
 #[test]
 fn a_projected_local_refusal_cannot_author_an_ending_for_either_family() {
-    let provider = local_refusal_provider_raise();
+    let provider: Raise = serde_json::from_value(provider_raise_specimen()).unwrap();
     let parked: Raise = serde_json::from_value(raise_specimen(end_summary())).unwrap();
     for (original, opposite, kind) in [
         (&provider, &parked, "providerApproval"),
@@ -76,7 +75,7 @@ fn a_projected_local_refusal_cannot_author_an_ending_for_either_family() {
 
 #[test]
 fn an_exact_typed_stop_authors_a_local_refusal_only_for_its_bound_raise() {
-    let provider = local_refusal_provider_raise();
+    let provider: Raise = serde_json::from_value(provider_raise_specimen()).unwrap();
     let parked: Raise = serde_json::from_value(raise_specimen(end_summary())).unwrap();
     for (raise, opposite, stop_kind, other_stop_kind, ending_kind) in [
         (
