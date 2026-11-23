@@ -5,7 +5,7 @@
 //! 1-minute mark (±3 s, the caller picks the jitter), at most one batch in
 //! flight, only on a connected link. On SendBatch the Host claims the next due
 //! rows from the store; a store error is not a link event, and the next mark
-//! retries from the store.
+//! retries from the store. A settled frame can continue the same open mark.
 use crate::flush_marks::{earliest_open_mark, mark_in_window, next_mark_after};
 use runtime_primitives::SyncTime;
 use std::collections::BTreeSet;
@@ -17,6 +17,7 @@ pub struct OutboxFlushState {
     consumed_marks: BTreeSet<SyncTime>,
     /// The mark of the batch on the wire, if any.
     in_flight: Option<SyncTime>,
+    draining_mark: Option<SyncTime>,
     armed_wake: Option<SyncTime>,
 }
 
@@ -54,6 +55,7 @@ pub enum FlushEvent {
     /// never sent because the claim found nothing or the store failed.
     BatchEnded {
         earliest_due: Option<SyncTime>,
+        continue_mark: bool,
     },
 }
 
@@ -96,6 +98,10 @@ impl OutboxFlushState {
     #[must_use]
     pub(crate) const fn armed_mark(&self) -> Option<SyncTime> {
         self.armed_wake
+    }
+
+    pub(crate) fn stop_draining_mark(&mut self) {
+        self.draining_mark = None;
     }
 
     /// A backward Welcome can select older marks the process never used. A mark
@@ -142,6 +148,7 @@ pub(crate) fn advance_schedule(
         }
         FlushEvent::Tick { now, earliest_due } => {
             tick_now = Some(now);
+            discard_closed_drain(state, now);
             state.armed_wake = None;
             if let Some(mark) = flush_on_mark(state, now, earliest_due) {
                 effects.push(FlushEffect::SendBatch { mark });
@@ -150,20 +157,25 @@ pub(crate) fn advance_schedule(
         }
         FlushEvent::LinkConnected { now, earliest_due } => {
             state.link = LinkAvailability::Connected;
+            discard_closed_drain(state, now);
             tick_now = Some(now);
             earliest_due
         }
         FlushEvent::LinkLost => {
             state.link = LinkAvailability::Disconnected;
             state.in_flight = None;
+            state.stop_draining_mark();
             state.armed_wake = None;
             None
         }
-        FlushEvent::BatchEnded { earliest_due } => {
+        FlushEvent::BatchEnded { earliest_due, continue_mark } => {
             state
                 .in_flight
                 .take()
                 .ok_or(FlushTransitionError::NoBatchInFlight)?;
+            if !continue_mark {
+                state.stop_draining_mark();
+            }
             earliest_due
         }
     };
@@ -179,15 +191,22 @@ fn flush_on_mark(
     earliest_due: Option<SyncTime>,
 ) -> Option<SyncTime> {
     let mark = mark_in_window(now)?;
-    let open = !state.consumed_marks.contains(&mark);
+    let open = state.draining_mark == Some(mark) || !state.consumed_marks.contains(&mark);
     let ready = state.link == LinkAvailability::Connected && state.in_flight.is_none();
     let has_due = earliest_due.is_some_and(|due| due <= mark);
     if !(open && ready && has_due) {
         return None;
     }
     state.consumed_marks.insert(mark);
+    state.draining_mark = Some(mark);
     state.in_flight = Some(mark);
     Some(mark)
+}
+
+fn discard_closed_drain(state: &mut OutboxFlushState, now: SyncTime) {
+    if state.draining_mark != mark_in_window(now) {
+        state.stop_draining_mark();
+    }
 }
 
 /// The next mark worth waking for, if it differs from the armed one. Nothing
@@ -203,7 +222,11 @@ fn rearm(
             let candidate = tick_now.map_or(earliest_due, |now| {
                 earliest_due.max(earliest_open_mark(now, None))
             });
-            Some(state.first_unused_mark(candidate))
+            if state.draining_mark == Some(candidate) {
+                Some(candidate)
+            } else {
+                Some(state.first_unused_mark(candidate))
+            }
         }
         (LinkAvailability::Disconnected, _, _) | (_, Some(_), _) | (_, None, None) => None,
     };

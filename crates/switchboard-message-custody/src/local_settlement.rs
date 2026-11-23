@@ -112,6 +112,9 @@ impl LocalSettlements {
                 report
                     .issues
                     .push(BatchDispatchError::UnsettledReply(write.request.clone()));
+                if cutoff == AnswerAtCutoff::StatusOnly {
+                    return;
+                }
                 MemberEvidence::Unanswered
             }
         };
@@ -126,6 +129,32 @@ impl LocalSettlements {
             report,
         )
         .await;
+    }
+
+    pub(crate) async fn recover_cutoff(
+        work: &mut OutboxWork,
+        write: &StoredOutboxWrite,
+    ) -> Result<Option<EndedWrite>, OutboxStoreError> {
+        let key = OutboxRequestKey { request_id: write.request.clone(), scope: write.payload.request_scope() };
+        match work.outbox_storage().scoped_request_status(&write.caller, &key).await? {
+            OutboxRequestStatus::Ended { reason: OutboxCancellation::NotConfirmedWithin15Minutes } => {
+                let target = queued_write_target(&write.payload).ok_or_else(|| OutboxStoreError::UnexpectedState {
+                    request: write.request.clone(),
+                    expected: "a cutoff with its original write target",
+                })?;
+                Ok(Some(EndedWrite {
+                    caller: write.caller.clone(),
+                    request_id: write.request.clone(),
+                    target,
+                    reason: OutboxCancellation::NotConfirmedWithin15Minutes,
+                }))
+            }
+            OutboxRequestStatus::Answered(_) | OutboxRequestStatus::Refused(_) => Ok(None),
+            _ => Err(OutboxStoreError::UnexpectedState {
+                request: write.request.clone(),
+                expected: "an ended or answered batch member",
+            }),
+        }
     }
 
     pub(crate) async fn return_member(

@@ -207,6 +207,24 @@ type WriteReply = (PreparedWriteBatch, WriteBatchDisposition);
 type ReceiptReply = (ReceiptFrame, LinkLaneDisposition<CorrelatedReceiptResults>);
 type OrphanReply = (OrphanProbe, LinkLaneDisposition<CorrelatedStatusReply>);
 
+enum ReadyWriteTurn {
+    Settled(Box<WriteReply>),
+    Deadline,
+}
+
+async fn ready_write_turn(
+    clock: &dyn RuntimeClock,
+    deadline: Option<ClockInstant>,
+    reply: &mut Option<InFlight<WriteReply>>,
+) -> ReadyWriteTurn {
+    // An already available disposition decides the member before a competing cutoff.
+    tokio::select! {
+        biased;
+        outcome = poll_job(reply) => ReadyWriteTurn::Settled(Box::new(outcome)),
+        () = sleep_until(clock, deadline) => ReadyWriteTurn::Deadline,
+    }
+}
+
 struct OutstandingOrphan {
     request: RequestId,
     cutoff_reported: bool,
@@ -321,16 +339,24 @@ async fn run_custody(
                     None => { offer_stream_open = false; }
                 }
             },
-            (ticket, disposition) = poll_job(&mut writes) => {
-                writes = None;
-                let mut report = FlushReport::default();
-                let result = custody.settle_write_turn(ticket, disposition, &mut report).await;
-                report_flush(&*sink, Ok(report));
-                if let Err(error) = result {
-                    sink.record_event(CustodyTaskEvent::Failed(error));
+            write_turn = ready_write_turn(clock.as_ref(), deadline_wake, &mut writes) => match write_turn {
+                ReadyWriteTurn::Settled(completed) => {
+                    let (ticket, disposition) = *completed;
+                    writes = None;
+                    let mut report = FlushReport::default();
+                    let result = custody.settle_write_turn(ticket, disposition, &mut report).await;
+                    report_flush(&*sink, Ok(report));
+                    if let Err(error) = result {
+                        sink.record_event(CustodyTaskEvent::Failed(error));
+                    }
+                    if custody.owes_local_settlement() && retry_settlement_at.is_none() {
+                        retry_settlement_at = Some(clock.monotonic_now().after(LOCAL_RECOVERY_RETRY));
+                    }
                 }
-                if custody.owes_local_settlement() && retry_settlement_at.is_none() {
-                    retry_settlement_at = Some(clock.monotonic_now().after(LOCAL_RECOVERY_RETRY));
+                ReadyWriteTurn::Deadline => {
+                    let ended = custody.end_due_writes().await;
+                    if ended.is_err() { retry_store_at = Some(custody.local_retry_mark()); }
+                    report_flush(&*sink, ended);
                 }
             },
             (frame, disposition) = poll_job(&mut receipts) => {
@@ -340,11 +366,6 @@ async fn run_custody(
                     Err(error) => sink.record_event(CustodyTaskEvent::Failed(error)),
                 }
                 retention_at = next_retention(&mut custody, &*sink).await;
-            },
-            () = sleep_until(clock.as_ref(), deadline_wake) => {
-                let ended = custody.end_due_writes().await;
-                if ended.is_err() { retry_store_at = Some(custody.local_retry_mark()); }
-                report_flush(&*sink, ended);
             },
             () = sleep_until(clock.as_ref(), retry_settlement_at) => {
                 report_flush(&*sink, Ok(custody.retry_local_settlement().await));

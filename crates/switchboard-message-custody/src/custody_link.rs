@@ -103,6 +103,7 @@ pub struct CustodyLink {
     schedule: OutboxFlushState,
     last_clock_anchor: Option<WelcomeClockAnchor>,
     rebased_due_through: Option<SyncTime>,
+    drain_connection: Option<central_link_client::ConnectionAttempt>,
     startup_orphan_claims: Option<BTreeSet<RequestId>>,
 }
 
@@ -125,6 +126,7 @@ impl CustodyLink {
             schedule: OutboxFlushState::default(),
             last_clock_anchor: None,
             rebased_due_through: None,
+            drain_connection: None,
             startup_orphan_claims: None,
         }
     }
@@ -437,6 +439,7 @@ impl CustodyLink {
             self.observe_unavailable()?;
             return Ok(None);
         };
+        self.fence_mark_drain(&admitted);
         let observed_at = self.clock.monotonic_now();
         let now = self.observe_shared_clock(admitted.clock_anchor, observed_at);
         let earliest_due = self.earliest_eligible_mark(now).await?;
@@ -446,9 +449,11 @@ impl CustodyLink {
         }))
     }
 
-    /// An independent deadline for locally ending waiting writes even during a disconnect.
+    /// The independent deadline for waiting writes and the members still held by the driver.
     pub async fn next_write_deadline(&mut self) -> Result<Option<ClockInstant>, CustodyLinkError> {
-        Ok(self.outbox.earliest_deadline().await?)
+        let waiting = self.outbox.earliest_deadline().await?;
+        let active = self.dispatcher.active_deadline(&self.outbox);
+        Ok(waiting.into_iter().chain(active).min())
     }
 
     /// Wait on the injected clock for one scheduled flush, if there is work on an admitted link.
@@ -533,14 +538,18 @@ impl CustodyLink {
 
     /// Run the local deadline wake and return the exact typed endings for the caller to report.
     pub async fn end_due_writes(&mut self) -> Result<FlushReport, CustodyLinkError> {
-        let ended = self.outbox.end_due_writes().await?;
-        Ok(FlushReport {
-            ended,
-            ..FlushReport::default()
-        })
+        let mut report = FlushReport::default();
+        let result = self.end_due_writes_into(&mut report).await;
+        finish_flush(report, result)
     }
 
-    /// Flush on the current armed minute, with one lane submission and member-by-member settlement.
+    async fn end_due_writes_into(&mut self, report: &mut FlushReport) -> Result<(), CustodyLinkError> {
+        self.dispatcher.end_active_due(&mut self.outbox, report).await?;
+        report.ended.extend(self.outbox.end_due_writes().await?);
+        Ok(())
+    }
+
+    /// Drain the current minute while it remains open, settling one batch at a time.
     pub async fn flush_writes(&mut self) -> Result<FlushReport, CustodyLinkError> {
         let mut report = FlushReport::default();
         let result = self.flush_writes_into(&mut report).await;
@@ -555,8 +564,24 @@ impl CustodyLink {
             report.append(self.retry_local_settlement().await);
         }
         self.recover_orphans_into(report).await?;
-        if let Some(batch) = self.prepare_write_turn(report).await? {
-            let disposition = self.lane.submit_write_batch(batch.command()).await;
+        let lane = self.lane.clone();
+        let clock = self.clock.clone();
+        while let Some(batch) = self.prepare_write_turn(report).await? {
+            let mut answering = lane.submit_write_batch(batch.command());
+            let disposition = loop {
+                let deadline = self.next_write_deadline().await?;
+                tokio::select! {
+                    biased;
+                    outcome = &mut answering => break outcome,
+                    () = async {
+                        if let Some(deadline) = deadline {
+                            clock.sleep_until(deadline).await;
+                        } else {
+                            std::future::pending::<()>().await;
+                        }
+                    } => self.end_due_writes_into(report).await?,
+                }
+            };
             self.settle_write_turn(batch, disposition, report).await?;
         }
         Ok(())
@@ -570,12 +595,14 @@ impl CustodyLink {
             self.observe_unavailable()?;
             return Ok(None);
         };
+        self.fence_mark_drain(&admitted);
         let now = self.observe_shared_clock(admitted.clock_anchor, self.clock.monotonic_now());
         let earliest_due = self.earliest_eligible_mark(now).await?;
         self.apply_flush_event(FlushEvent::LinkConnected { now, earliest_due })?;
         let Some(mark) = self.apply_flush_event(FlushEvent::Tick { now, earliest_due })? else {
             return Ok(None);
         };
+        self.drain_connection = Some(admitted.connection.clone());
 
         let eligible_through = self.rebased_due_through.map_or(mark, |old| old.max(mark));
         let prepared = self
@@ -592,12 +619,12 @@ impl CustodyLink {
         let prepared = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
-                self.apply_flush_event(FlushEvent::BatchEnded { earliest_due })?;
+                self.apply_flush_event(FlushEvent::BatchEnded { earliest_due, continue_mark: false })?;
                 return Err(error.into());
             }
         };
         let Some(batch) = prepared else {
-            self.release_flush_slot(report).await?;
+            self.release_flush_slot(report, false).await?;
             return Ok(None);
         };
         let cause = if self.admitted_connection().as_ref() != Some(&admitted) {
@@ -624,6 +651,7 @@ impl CustodyLink {
         disposition: WriteBatchDisposition,
         report: &mut FlushReport,
     ) -> Result<(), CustodyLinkError> {
+        let connection = batch.connection().clone();
         let Some(settled) = self
             .dispatcher
             .settle_batch(&mut self.outbox, batch, disposition)
@@ -632,8 +660,17 @@ impl CustodyLink {
             return Ok(());
         };
         report.append(settled);
-        self.release_flush_slot(report).await?;
+        let continue_mark = self.admitted_connection()
+            .is_some_and(|current| current.connection == connection);
+        self.release_flush_slot(report, continue_mark).await?;
         Ok(())
+    }
+
+    fn fence_mark_drain(&mut self, admitted: &AdmittedConnection) {
+        if self.drain_connection.as_ref().is_some_and(|connection| connection != &admitted.connection) {
+            self.schedule.stop_draining_mark();
+            self.drain_connection = None;
+        }
     }
 
     fn observe_unavailable(&mut self) -> Result<(), FlushTransitionError> {
@@ -691,10 +728,12 @@ impl CustodyLink {
     async fn release_flush_slot(
         &mut self,
         report: &mut FlushReport,
+        continue_mark: bool,
     ) -> Result<(), FlushTransitionError> {
         let earliest_due = self.outbox.earliest_waiting_mark().await;
         self.apply_flush_event(FlushEvent::BatchEnded {
             earliest_due: earliest_due.as_ref().ok().copied().flatten(),
+            continue_mark: continue_mark && earliest_due.as_ref().is_ok_and(Option::is_some),
         })?;
         if let Err(error) = earliest_due {
             report.issues.push(BatchDispatchError::Work(error));
