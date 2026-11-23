@@ -6,13 +6,13 @@ use approval_request_protocol::{
 use central_engine_model::{Context, Machine, TransitionError};
 use workspace_ids::RouterRunId;
 
-use crate::approval_lifecycle_admission::{applying_time, stop_binding};
+use crate::approval_lifecycle_admission::stop_binding;
 use crate::{
-    ActiveApprovalEnrollment, ApprovalActor, ApprovalApply, ApprovalCollection,
-    ApprovalCollectionEffect, ApprovalCollectionEvent, ApprovalDecisionReply, ApprovalEffect,
-    ApprovalEnrollment, ApprovalEvent, ApprovalLifecycle, ApprovalReceipt, ApprovalRefusal,
-    ApprovalRequestKey, ApprovalRouting, ApprovalRun, ApprovalSession, ApprovalState,
-    ProviderSessionAvailability, RaiseAdmission,
+    ActiveApprovalEnrollment, ApprovalActor, ApprovalCollection, ApprovalCollectionEffect,
+    ApprovalCollectionEvent, ApprovalDecisionReply, ApprovalEffect, ApprovalEnrollment,
+    ApprovalEvent, ApprovalLifecycle, ApprovalReceipt, ApprovalRefusal, ApprovalRequestKey,
+    ApprovalRouting, ApprovalRun, ApprovalSession, ApprovalState, ProviderSessionAvailability,
+    RaiseAdmission,
 };
 
 type CollectionChange =
@@ -25,13 +25,10 @@ impl ApprovalCollection {
         event: ApprovalCollectionEvent,
         context: &mut Context<'_>,
     ) -> CollectionChange {
-        let floor = applying_time(context.now, self.high_water)?;
-        let mut next = self.clone();
-        next.high_water = floor;
-        next.apply_at_floor(event, context)
+        self.clone().apply_event(event, context)
     }
 
-    fn apply_at_floor(
+    fn apply_event(
         mut self,
         event: ApprovalCollectionEvent,
         context: &mut Context<'_>,
@@ -285,14 +282,7 @@ impl ApprovalCollection {
     ) -> Result<(), TransitionError<ApprovalRefusal>> {
         let unraised = ApprovalState::Unraised;
         let prior = self.requests.get(key).unwrap_or(&unraised);
-        let (next, effects) = ApprovalLifecycle::transition(
-            prior,
-            ApprovalApply {
-                high_water: self.high_water,
-                event,
-            },
-            context,
-        )?;
+        let (next, effects) = ApprovalLifecycle::transition(prior, event, context)?;
         if &next != prior {
             self.requests.insert(key.clone(), next);
         }

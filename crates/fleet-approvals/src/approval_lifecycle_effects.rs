@@ -55,7 +55,8 @@ fn finish_with_frame(
 ) -> ApprovalChange {
     let closed = EndedApproval {
         ending,
-        ended_at: now,
+        // A rollback before first save cannot put the ending before its own request.
+        ended_at: now.max(saved.window.raised_at()),
         delivery,
     };
     let mut effects = vec![ApprovalEffect::ClearDue {

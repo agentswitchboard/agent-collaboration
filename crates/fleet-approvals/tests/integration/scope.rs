@@ -11,7 +11,7 @@ use fleet_approvals::{
 use super::fixtures::{
     HOUR, ObservedReply as ApprovalReceipt, answer, closed, decide_event, enrollment, key,
     offered_frame, person, provider, provider_stop, raise_event, register, reply, router_run,
-    routing, run_event, session, setup, time,
+    routing, run_event, session, setup,
 };
 
 #[test]
@@ -319,7 +319,7 @@ fn a_holder_frame_before_registration_cannot_create_a_request() {
         enrollment: authority.clone(),
         router_run: router_run(8880),
     };
-    let mut book = ApprovalCollection::new(time(0));
+    let mut book = ApprovalCollection::default();
     run_event(
         &mut book,
         ApprovalCollectionEvent::ActivateEnrollment {

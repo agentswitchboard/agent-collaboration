@@ -3,14 +3,17 @@ use approval_request_protocol::{
     OfferedOption, OfferedOptionId, OfferedOptions, OptionEffect, OptionLifetime, ProviderHolder,
     ProviderStopCause, Raise, RaiseReply, StopReply, StopRequest, Title,
 };
-use central_engine_model::{Context, IdSource, Machine, TransitionError, check_transitions};
+use central_engine_model::{
+    Context, EngineTime, EventTag, IdSource, Machine, MachineKind, Transition, TransitionError,
+    check_transitions,
+};
 use fleet_identity_protocol::EnrollmentId;
 
 use crate::{
-    AdmittedDecider, ApprovalApply, ApprovalDecideInput, ApprovalEffect, ApprovalEnrollment,
-    ApprovalEvent, ApprovalLifecycle, ApprovalReceipt, ApprovalRefusal, ApprovalRequestKey,
-    ApprovalRouting, ApprovalRun, ApprovalSession, ApprovalState, FactorStanding,
-    MAX_OUTSTANDING_PER_RUN, ProviderSessionAvailability, RaiseAdmission,
+    AdmittedDecider, ApprovalDecideInput, ApprovalEffect, ApprovalEnrollment, ApprovalEvent,
+    ApprovalLifecycle, ApprovalReceipt, ApprovalRefusal, ApprovalRequestKey, ApprovalRouting,
+    ApprovalRun, ApprovalSession, ApprovalState, FactorStanding, MAX_OUTSTANDING_PER_RUN,
+    ProviderSessionAvailability, RaiseAdmission,
 };
 
 const HOUR: i64 = 3_600_000;
@@ -28,10 +31,42 @@ fn id(number: u16) -> String {
 fn time(at: i64) -> CentralTime {
     CentralTime::from_timestamp_millis(at).unwrap()
 }
-fn tagged(event: ApprovalEvent, at: i64) -> ApprovalApply {
-    ApprovalApply {
-        high_water: time(at),
-        event,
+#[derive(Clone)]
+struct SampledApprovalEvent {
+    event: ApprovalEvent,
+    at: i64,
+}
+
+impl EventTag for SampledApprovalEvent {
+    fn event_tag(&self) -> &'static str {
+        self.event.event_tag()
+    }
+}
+
+struct ApprovalTransitionWitnesses;
+
+impl Machine for ApprovalTransitionWitnesses {
+    const KIND: MachineKind = ApprovalLifecycle::KIND;
+    type State = ApprovalState;
+    type Event = SampledApprovalEvent;
+    type Effect = ApprovalEffect;
+    type Error = ApprovalRefusal;
+
+    fn transition(
+        state: &Self::State,
+        witness: Self::Event,
+        context: &mut Context<'_>,
+    ) -> central_engine_model::TransitionResult<Self> {
+        context.now = time(witness.at);
+        ApprovalLifecycle::transition(state, witness.event, context)
+    }
+
+    fn transitions() -> &'static [Transition] {
+        ApprovalLifecycle::transitions()
+    }
+
+    fn next_due(state: &Self::State) -> Option<EngineTime> {
+        ApprovalLifecycle::next_due(state)
     }
 }
 
@@ -42,9 +77,9 @@ fn apply(
 ) -> central_engine_model::TransitionResult<ApprovalLifecycle> {
     ApprovalLifecycle::transition(
         state,
-        tagged(event, at),
+        event,
         &mut Context {
-            now: time(0),
+            now: time(at),
             ids: &mut NoIds,
         },
     )
@@ -315,12 +350,18 @@ fn row_matrix_witnesses_every_declared_edge_and_asserts_typed_refusals() {
                         "required successor for {state:?} + {event:?} at {at}: {result:?}"
                     );
                 }
-                witnesses.push((state.clone(), tagged(event.clone(), at)));
+                witnesses.push((
+                    state.clone(),
+                    SampledApprovalEvent {
+                        event: event.clone(),
+                        at,
+                    },
+                ));
             }
         }
     }
     assert_eq!(
-        check_transitions::<ApprovalLifecycle>(
+        check_transitions::<ApprovalTransitionWitnesses>(
             witnesses,
             &mut Context {
                 now: time(0),

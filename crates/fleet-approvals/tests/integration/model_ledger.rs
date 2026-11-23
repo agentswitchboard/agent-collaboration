@@ -1,5 +1,5 @@
 //! Independent expectations in terms of first saves, claims, audiences and authority.
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeSet;
 
 use approval_request_protocol::{
     DeliverEndingReply, PassOnReply, RegisterRunReply, RunRefusal, StopReceiptEnding,
@@ -161,7 +161,7 @@ pub(super) enum OperationEffect {
         row: usize,
         actor: Actor,
         operation: u16,
-        result: Decision,
+        choice: u8,
     },
     Registered(RegisterRunReply),
     Raise(usize, RaiseResult),
@@ -185,6 +185,7 @@ pub(super) struct RequestLedger {
     pub forwarded: bool,
     pub ending: Option<(Ending, i64, Delivery)>,
     pub offered: Option<Offer>,
+    pub accepted_operation: Option<u16>,
 }
 
 impl RequestLedger {
@@ -204,7 +205,6 @@ impl RequestLedger {
 }
 
 pub(super) struct Ledger {
-    pub floor: i64,
     pub rows: [RequestLedger; ROWS.len()],
     active_enrollment: Option<usize>,
     closed_enrollments: BTreeSet<usize>,
@@ -212,13 +212,19 @@ pub(super) struct Ledger {
     ended_parents: BTreeSet<usize>,
     registered: Option<usize>,
     retired: BTreeSet<usize>,
-    operations: BTreeMap<u16, (usize, Actor, u8, Decision)>,
+}
+
+struct DecisionAttempt {
+    row: usize,
+    operation: u16,
+    choice: u8,
+    actor: Actor,
+    fresh_factor: bool,
 }
 
 impl Ledger {
     pub fn new() -> Self {
         Self {
-            floor: 0,
             rows: [RequestLedger::default(); ROWS.len()],
             active_enrollment: Some(0),
             closed_enrollments: BTreeSet::new(),
@@ -226,12 +232,7 @@ impl Ledger {
             ended_parents: BTreeSet::new(),
             registered: Some(0),
             retired: BTreeSet::new(),
-            operations: BTreeMap::new(),
         }
-    }
-
-    pub fn decisions(&self) -> usize {
-        self.operations.len()
     }
 
     fn visible(&self, row: usize, actor: Actor) -> bool {
@@ -275,16 +276,18 @@ impl Ledger {
         row: usize,
         requested: Ending,
         delivery: Delivery,
+        sampled: i64,
         effects: &mut Vec<OperationEffect>,
     ) -> Ending {
         let ledger = &mut self.rows[row];
         assert!(ledger.waiting());
-        let ending = if ledger.late(self.floor) {
+        let ending = if ledger.late(sampled) {
             Ending::TimedOut
         } else {
             requested
         };
-        ledger.ending = Some((ending, self.floor, delivery));
+        let (_, first_save) = ledger.first_save.unwrap();
+        ledger.ending = Some((ending, sampled.max(first_save), delivery));
         effects.push(OperationEffect::Clear(row));
         if delivery == Delivery::Unpaid {
             let offer = Offer {
@@ -301,6 +304,7 @@ impl Ledger {
         &mut self,
         matches_run: impl Fn(usize) -> bool,
         reason: Ending,
+        sampled: i64,
         effects: &mut Vec<OperationEffect>,
     ) {
         for (row, scope) in ROWS.iter().enumerate() {
@@ -308,14 +312,19 @@ impl Ledger {
                 continue;
             }
             if self.rows[row].waiting() {
-                self.finish(row, reason, Delivery::Closed, effects);
+                self.finish(row, reason, Delivery::Closed, sampled, effects);
             } else if let Some((ending, at, Delivery::Unpaid)) = self.rows[row].ending {
                 self.rows[row].ending = Some((ending, at, Delivery::Closed));
             }
         }
     }
 
-    fn end_enrollment(&mut self, enrollment: usize, effects: &mut Vec<OperationEffect>) {
+    fn end_enrollment(
+        &mut self,
+        enrollment: usize,
+        sampled: i64,
+        effects: &mut Vec<OperationEffect>,
+    ) {
         if self.active_enrollment != Some(enrollment) {
             return;
         }
@@ -325,6 +334,7 @@ impl Ledger {
         self.close_deliveries(
             |run| RUN_ENROLLMENTS[run] == enrollment,
             Ending::EnrollmentEnded,
+            sampled,
             effects,
         );
     }
@@ -333,6 +343,7 @@ impl Ledger {
         &mut self,
         row: usize,
         changed: bool,
+        sampled: i64,
         effects: &mut Vec<OperationEffect>,
     ) -> RaiseResult {
         let scope = ROWS[row];
@@ -340,11 +351,13 @@ impl Ledger {
             return RaiseResult::Refused(refusal);
         }
         if let Some((old, at)) = self.rows[row].first_save {
-            return if changed == old {
-                RaiseResult::Receipt(at)
-            } else {
-                RaiseResult::ContentsDiffer
-            };
+            if changed != old {
+                return RaiseResult::ContentsDiffer;
+            }
+            if self.rows[row].waiting() && self.rows[row].late(sampled) {
+                self.finish(row, Ending::TimedOut, Delivery::Unpaid, sampled, effects);
+            }
+            return RaiseResult::Receipt(at);
         }
         if let Some(old) = self.rows[row].marker {
             return if changed == old {
@@ -356,18 +369,19 @@ impl Ledger {
         if !scope.parked && self.ended_requesters.contains(&RUN_ENROLLMENTS[scope.run]) {
             return RaiseResult::SessionEnded;
         }
-        self.rows[row].first_save = Some((changed, self.floor));
+        self.rows[row].first_save = Some((changed, sampled));
         if scope.delegate {
             effects.push(OperationEffect::Notice(row));
         }
-        effects.push(OperationEffect::Due(row, self.floor + HOUR));
-        RaiseResult::Receipt(self.floor)
+        effects.push(OperationEffect::Due(row, sampled + HOUR));
+        RaiseResult::Receipt(sampled)
     }
 
     fn stop(
         &mut self,
         row: usize,
         changed: bool,
+        sampled: i64,
         effects: &mut Vec<OperationEffect>,
     ) -> StopResult {
         if let Some(refusal) = self.holder_refusal(ROWS[row].run) {
@@ -378,7 +392,7 @@ impl Ledger {
                 return StopResult::NotVisible;
             }
             if self.rows[row].waiting() {
-                let ending = self.finish(row, Ending::Stopped, Delivery::Closed, effects);
+                let ending = self.finish(row, Ending::Stopped, Delivery::Closed, sampled, effects);
                 return StopResult::Stands(standing(row, ending));
             }
             let (ending, at, delivery) = self.rows[row].ending.unwrap();
@@ -400,21 +414,32 @@ impl Ledger {
 
     fn decide(
         &mut self,
-        row: usize,
-        actor: Actor,
-        operation: u16,
-        choice: u8,
-        fresh_factor: bool,
+        attempt: DecisionAttempt,
+        sampled: i64,
         effects: &mut Vec<OperationEffect>,
     ) -> Decision {
+        let DecisionAttempt {
+            row,
+            actor,
+            operation,
+            choice,
+            fresh_factor,
+        } = attempt;
         if !self.visible(row, actor) {
             return Decision::NotVisible;
         }
-        if let Some(&(prior_row, prior_actor, prior_choice, result)) =
-            self.operations.get(&operation)
+        if let Some((prior_row, record)) = self
+            .rows
+            .iter()
+            .enumerate()
+            .find(|(_, record)| record.accepted_operation == Some(operation))
         {
-            return if (prior_row, prior_actor, prior_choice) == (row, actor, choice) {
-                result
+            return if prior_row == row
+                && record
+                    .ending
+                    .is_some_and(|(ending, ..)| ending == (Ending::Decided { choice, actor }))
+            {
+                Decision::Won { choice }
             } else {
                 Decision::OperationConflict
             };
@@ -424,45 +449,47 @@ impl Ledger {
         } else {
             choice <= 2 || (choice <= 5 && actor.person() && fresh_factor)
         };
-        let result = if let Some((ending, ..)) = self.rows[row].ending {
+        if let Some((Ending::TimedOut, ..)) = self.rows[row].ending {
+            Decision::TooLate
+        } else if let Some((ending, ..)) = self.rows[row].ending {
             Decision::Standing(ending)
-        } else if self.rows[row].late(self.floor) {
-            self.finish(row, Ending::TimedOut, Delivery::Unpaid, effects);
+        } else if self.rows[row].late(sampled) {
+            self.finish(row, Ending::TimedOut, Delivery::Unpaid, sampled, effects);
             Decision::TooLate
         } else if answer_fits {
             self.finish(
                 row,
                 Ending::Decided { choice, actor },
                 Delivery::Unpaid,
+                sampled,
                 effects,
             );
+            self.rows[row].accepted_operation = Some(operation);
+            effects.push(OperationEffect::Save {
+                row,
+                actor,
+                operation,
+                choice,
+            });
             Decision::Won { choice }
         } else {
             Decision::Invalid
-        };
-        self.operations
-            .insert(operation, (row, actor, choice, result));
-        effects.push(OperationEffect::Save {
-            row,
-            actor,
-            operation,
-            result,
-        });
-        result
+        }
     }
 
     fn forward(
         &mut self,
         row: usize,
         actor: Actor,
+        sampled: i64,
         effects: &mut Vec<OperationEffect>,
     ) -> PassOnReply {
         if actor != Actor::Parent || !self.visible(row, actor) {
             return PassOnReply::NotVisible {};
         }
         let forwarded = self.rows[row].forwarded;
-        if self.rows[row].waiting() && self.rows[row].late(self.floor) {
-            self.finish(row, Ending::TimedOut, Delivery::Unpaid, effects);
+        if self.rows[row].waiting() && self.rows[row].late(sampled) {
+            self.finish(row, Ending::TimedOut, Delivery::Unpaid, sampled, effects);
             return if forwarded {
                 PassOnReply::Forwarded {}
             } else {
@@ -497,11 +524,10 @@ impl Ledger {
                 return Err(ApprovalRefusal::InvalidInitialRoute);
             }
         }
-        self.floor = self.floor.max(sampled);
         let mut effects = Vec::new();
         match step {
             Step::Raise { row, changed } => {
-                let result = self.raise(row, changed, &mut effects);
+                let result = self.raise(row, changed, sampled, &mut effects);
                 effects.push(OperationEffect::Raise(row, result));
             }
             Step::Decide {
@@ -511,21 +537,34 @@ impl Ledger {
                 actor,
                 fresh_factor,
             } => {
-                let result = self.decide(row, actor, operation, choice, fresh_factor, &mut effects);
+                let attempt = DecisionAttempt {
+                    row,
+                    operation,
+                    choice,
+                    actor,
+                    fresh_factor,
+                };
+                let result = self.decide(attempt, sampled, &mut effects);
                 effects.push(OperationEffect::Decide(row, actor, result));
             }
             Step::Stop { row, changed } => {
-                let result = self.stop(row, changed, &mut effects);
+                let result = self.stop(row, changed, sampled, &mut effects);
                 effects.push(OperationEffect::Stop(result));
             }
             Step::Forward { row, actor } => {
-                let result = self.forward(row, actor, &mut effects);
+                let result = self.forward(row, actor, sampled, &mut effects);
                 effects.push(OperationEffect::Forward(row, actor, result));
             }
             Step::Read { row, actor } => {
                 let view = if self.visible(row, actor) {
-                    if self.rows[row].waiting() && self.rows[row].late(self.floor) {
-                        self.finish(row, Ending::TimedOut, Delivery::Unpaid, &mut effects);
+                    if self.rows[row].waiting() && self.rows[row].late(sampled) {
+                        self.finish(
+                            row,
+                            Ending::TimedOut,
+                            Delivery::Unpaid,
+                            sampled,
+                            &mut effects,
+                        );
                     }
                     self.rows[row].view()
                 } else {
@@ -534,8 +573,14 @@ impl Ledger {
                 effects.push(OperationEffect::Read(row, actor, view));
             }
             Step::Alarm { row, stale_token } => {
-                if !stale_token && self.rows[row].waiting() && self.rows[row].late(self.floor) {
-                    self.finish(row, Ending::TimedOut, Delivery::Unpaid, &mut effects);
+                if !stale_token && self.rows[row].waiting() && self.rows[row].late(sampled) {
+                    self.finish(
+                        row,
+                        Ending::TimedOut,
+                        Delivery::Unpaid,
+                        sampled,
+                        &mut effects,
+                    );
                 }
             }
             Step::Deliver {
@@ -580,6 +625,7 @@ impl Ledger {
                         self.close_deliveries(
                             |candidate| candidate == previous,
                             Ending::RequesterGone,
+                            sampled,
                             &mut effects,
                         );
                     }
@@ -601,6 +647,7 @@ impl Ledger {
                                     row,
                                     Ending::SessionEnded,
                                     Delivery::Unpaid,
+                                    sampled,
                                     &mut effects,
                                 );
                             }
@@ -608,10 +655,12 @@ impl Ledger {
                     }
                 }
             }
-            Step::EndEnrollment(enrollment) => self.end_enrollment(enrollment, &mut effects),
+            Step::EndEnrollment(enrollment) => {
+                self.end_enrollment(enrollment, sampled, &mut effects)
+            }
             Step::ReplaceEnrollment => {
                 if !self.closed_enrollments.contains(&1) {
-                    self.end_enrollment(0, &mut effects);
+                    self.end_enrollment(0, sampled, &mut effects);
                     self.active_enrollment = Some(1);
                 }
             }

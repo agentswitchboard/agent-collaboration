@@ -416,13 +416,17 @@ fn a_rollback_cannot_override_deadline_and_alarm_tokens_are_exact() {
         book.requests[&item],
         ApprovalState::Waiting { .. }
     ));
-    assert_eq!(book.high_water, time(HOUR));
+    assert!(matches!(
+        reply(&run_event(&mut book, view_event(&item, 12), HOUR)),
+        ApprovalReceipt::Read(Some(_))
+    ));
+    let timed_out = book.clone();
 
     let decision = decide_event(
         &item,
         person(12, FactorStanding::AbsentOrStale),
         101,
-        answer(15),
+        answer(2),
     );
     let effects = run_event(&mut book, decision, HOUR - 1);
     assert_eq!(
@@ -431,9 +435,50 @@ fn a_rollback_cannot_override_deadline_and_alarm_tokens_are_exact() {
     );
     assert_eq!(closed(&book, &item).ended_at, time(HOUR));
     assert_eq!(closed(&book, &item).delivery, Delivery::Owed {});
+    assert_eq!(book, timed_out);
+}
+
+#[test]
+fn an_invalid_decision_leaves_its_operation_free_and_reevaluates_after_the_ending() {
+    let (mut book, active_run, requester, _) = setup();
+    let item = key(&active_run, 1);
+    let other = key(&active_run, 2);
+    for request_key in [&item, &other] {
+        run_event(
+            &mut book,
+            raise_event(
+                &active_run,
+                provider(request_key, &requester, "Review"),
+                routing(None),
+            ),
+            0,
+        );
+    }
+
+    let stale = decide_event(
+        &item,
+        person(12, FactorStanding::AbsentOrStale),
+        101,
+        answer(3),
+    );
+    let waiting = book.clone();
+    assert_eq!(
+        reply(&run_event(&mut book, stale.clone(), 1)),
+        ApprovalReceipt::Decide(DecideReply::Invalid {})
+    );
+    assert_eq!(book, waiting);
+    let accepted = decide_event(&item, person(12, FactorStanding::Fresh), 102, answer(3));
+    run_event(&mut book, accepted, 2);
+    let ended = book.clone();
     assert!(matches!(
-        reply(&run_event(&mut book, view_event(&item, 12), HOUR)),
-        ApprovalReceipt::Read(Some(_))
+        reply(&run_event(&mut book, stale, 3)),
+        ApprovalReceipt::Decide(DecideReply::Standing { .. })
+    ));
+    assert_eq!(book, ended);
+    let reused = decide_event(&other, person(12, FactorStanding::Fresh), 101, answer(2));
+    assert!(matches!(
+        reply(&run_event(&mut book, reused, 4)),
+        ApprovalReceipt::Decide(DecideReply::SavedDecision { .. })
     ));
 }
 
@@ -469,7 +514,17 @@ fn a_visible_read_materializes_the_timeout_and_hidden_read_changes_no_row() {
         ApprovalState::Waiting { .. }
     ));
 
-    let effects = run_event(&mut book, view_event(&owner_item, 12), HOUR - 1);
+    let before_deadline = run_event(&mut book, view_event(&owner_item, 12), HOUR - 1);
+    assert!(matches!(
+        reply(&before_deadline),
+        ApprovalReceipt::Read(Some(_))
+    ));
+    assert!(matches!(
+        book.requests[&owner_item],
+        ApprovalState::Waiting { .. }
+    ));
+
+    let effects = run_event(&mut book, view_event(&owner_item, 12), HOUR);
     assert!(matches!(reply(&effects), ApprovalReceipt::Read(Some(_))));
     assert_eq!(
         closed(&book, &owner_item).ending.clone().into_ending(),

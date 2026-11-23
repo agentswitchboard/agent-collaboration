@@ -7,7 +7,8 @@ use serde_json::json;
 
 use super::super::fixtures::{HOUR, operation_id, time};
 use super::super::model_ledger::{
-    Actor, Decision, Ledger, OperationEffect, ROWS, RUN_ENROLLMENTS, RaiseResult, Step, StopResult,
+    Actor, Decision, Ending, Ledger, OperationEffect, ROWS, RUN_ENROLLMENTS, RaiseResult, Step,
+    StopResult,
 };
 use super::{Scenario, wire_delivery, wire_waiting};
 
@@ -96,7 +97,7 @@ pub(super) fn assert_effects(
                     row,
                     actor,
                     operation,
-                    result,
+                    choice,
                 },
                 Request(ApprovalEffect::SaveDecision(saved)),
             ) => {
@@ -104,11 +105,7 @@ pub(super) fn assert_effects(
                 assert_eq!(saved.key, key);
                 assert_eq!(saved.actor, scenario.actor(*row, *actor));
                 assert_eq!(saved.operation_id, operation_id(*operation));
-                let payload = saved
-                    .reply
-                    .for_recipient(&key, &scenario.identity(*row, *actor))
-                    .unwrap();
-                assert_decision(scenario, *row, *actor, *result, payload);
+                assert_eq!(saved.value(), &Scenario::choice(*row, *choice));
             }
             (
                 OperationEffect::Raise(row, result),
@@ -184,10 +181,25 @@ pub(super) fn assert_effects(
 }
 
 pub(super) fn assert_state(scenario: &Scenario, ledger: &Ledger, book: &ApprovalCollection) {
-    assert_eq!(book.high_water, time(ledger.floor));
-    assert_eq!(book.decisions.len(), ledger.decisions());
+    assert_eq!(
+        book.decisions.len(),
+        ledger
+            .rows
+            .iter()
+            .filter(|row| row.accepted_operation.is_some())
+            .count()
+    );
     for (row, expected) in ledger.rows.iter().enumerate() {
         let key = scenario.key(row);
+        if let Some(operation) = expected.accepted_operation {
+            let Some((Ending::Decided { choice, actor }, ..)) = expected.ending else {
+                panic!("an accepted operation must belong to a decided row");
+            };
+            let accepted = &book.decisions[&operation_id(operation)];
+            assert_eq!(accepted.key, key);
+            assert_eq!(accepted.actor, scenario.actor(row, actor));
+            assert_eq!(accepted.value(), &Scenario::choice(row, choice));
+        }
         match book.requests.get(&key) {
             None => assert!(expected.first_save.is_none() && expected.marker.is_none()),
             Some(ApprovalState::StoppedBeforeRaise {

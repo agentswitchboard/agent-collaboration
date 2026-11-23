@@ -1,12 +1,10 @@
 use approval_request_protocol::{
-    CentralTime, HolderStopCause, Raise, RequestContentsDigest, StopRequest, WaitingStatus,
+    HolderStopCause, Raise, RequestContentsDigest, StopRequest, WaitingStatus,
 };
-use central_engine_model::{TransitionError, supported_time};
 use workspace_ids::{ApprovalRequestId, RouterRunId};
 
 use crate::{
-    ApprovalActor, ApprovalRefusal, ApprovalRequestKey, ApprovalRouting, ApprovalSession,
-    RetainedApproval,
+    ApprovalActor, ApprovalRequestKey, ApprovalRouting, ApprovalSession, RetainedApproval,
 };
 
 pub(super) fn is_destination(saved: &RetainedApproval, actor: &ApprovalActor) -> bool {
@@ -25,18 +23,6 @@ pub(super) fn is_assigned_parent(saved: &RetainedApproval, parent: &ApprovalSess
             .raise
             .requesting_session()
             .is_some_and(|requester| requester != &parent.session_id)
-}
-
-pub(super) fn applying_time(
-    sample: CentralTime,
-    floor: CentralTime,
-) -> Result<CentralTime, TransitionError<ApprovalRefusal>> {
-    if !supported_time(sample) || !supported_time(floor) {
-        return Err(TransitionError::Domain(
-            ApprovalRefusal::ApplyingTimeOutOfRange,
-        ));
-    }
-    Ok(sample.max(floor))
 }
 
 pub(crate) fn stop_binding(

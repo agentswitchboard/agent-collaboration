@@ -9,7 +9,7 @@ use crate::approval_lifecycle_effects::{ApprovalChange, finish, finish_decided, 
 use crate::{
     AdmittedDecider, ApprovalActor, ApprovalDecideInput, ApprovalDecisionReply, ApprovalEffect,
     ApprovalReceipt, ApprovalRefusal, ApprovalRequestKey, ApprovalSession, ApprovalState,
-    DestinationReply, FactorStanding, RetainedApproval, SavedDecision,
+    FactorStanding, RetainedApproval, SavedDecision,
 };
 
 fn visible<'a>(
@@ -56,17 +56,25 @@ pub(super) fn decide(
                 ),
             );
         }
-        prior
-            .reply
-            .for_recipient(key, &identity)
-            .map_err(|_| TransitionError::Domain(ApprovalRefusal::InvalidRetainedEnding))?;
         return reply(
             state,
-            ApprovalReceipt::Decide(Box::new(prior.reply.clone())),
+            ApprovalReceipt::decide_for(
+                key,
+                identity.clone(),
+                ApprovalDecisionReply::SavedDecision {
+                    answer: prior.value.clone(),
+                    by: identity,
+                },
+            ),
         );
     }
     let admitted = checked_destination(saved, &identity)?;
     let (next, mut effects, result) = match state {
+        ApprovalState::Ended { closed, .. }
+            if matches!(closed.ending.clone().into_ending(), Ending::TimedOut {}) =>
+        {
+            (state.clone(), Vec::new(), ApprovalDecisionReply::TooLate {})
+        }
         ApprovalState::Ended { closed, .. } => (
             state.clone(),
             vec![],
@@ -117,17 +125,17 @@ pub(super) fn decide(
             );
         }
     };
-    let bound = DestinationReply::new(key, identity, result);
-    effects.push(ApprovalEffect::SaveDecision(Box::new(SavedDecision {
-        key: key.clone(),
-        actor,
-        operation_id: request.operation_id,
-        value: request.value,
-        reply: bound.clone(),
-    })));
-    effects.push(ApprovalEffect::Reply(ApprovalReceipt::Decide(Box::new(
-        bound,
-    ))));
+    if matches!(&result, ApprovalDecisionReply::SavedDecision { .. }) {
+        effects.push(ApprovalEffect::SaveDecision(Box::new(SavedDecision {
+            key: key.clone(),
+            actor,
+            operation_id: request.operation_id,
+            value: request.value,
+        })));
+    }
+    effects.push(ApprovalEffect::Reply(ApprovalReceipt::decide_for(
+        key, identity, result,
+    )));
     Ok((next, effects))
 }
 

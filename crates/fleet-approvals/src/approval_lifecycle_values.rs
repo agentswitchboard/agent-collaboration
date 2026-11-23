@@ -254,7 +254,12 @@ pub struct SavedDecision {
     pub actor: ApprovalActor,
     pub operation_id: RequestId,
     pub(crate) value: Answer,
-    pub reply: DestinationReply<ApprovalDecisionReply>,
+}
+
+impl SavedDecision {
+    pub fn value(&self) -> &Answer {
+        &self.value
+    }
 }
 
 impl fmt::Debug for SavedDecision {
@@ -339,16 +344,9 @@ pub enum ApprovalEvent {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ApprovalApply {
-    /// Durable floor sampled beside the selected request or batch.
-    pub high_water: CentralTime,
-    pub event: ApprovalEvent,
-}
-
-impl EventTag for ApprovalApply {
+impl EventTag for ApprovalEvent {
     fn event_tag(&self) -> &'static str {
-        match self.event {
+        match self {
             ApprovalEvent::Raise { .. } => "raise",
             ApprovalEvent::Decide { .. } => "decide",
             ApprovalEvent::Read { .. } => "read",
