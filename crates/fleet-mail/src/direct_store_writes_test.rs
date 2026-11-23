@@ -31,12 +31,12 @@ fn the_executed_direct_write_files_fit_the_owning_central_schema()
             sender_session: None,
             sender_request_id: request.clone(),
             recipient: target.clone(),
-            cutoff: now,
             mark: now,
         },
         lifecycle: DirectLifecycle::Queued,
+        deadline_settled_at: None,
     };
-    let encoding = DirectStateUpdate::new(DirectLifecycle::Queued)?;
+    let encoding = DirectStateUpdate::new(&prior)?;
     macro_rules! write {
         ($file:literal, $($arg:expr),+) => { sqlx::query_file!($file, $($arg),+) };
     }

@@ -5,15 +5,14 @@ use super::{
 };
 use fleet_engine::{CheckedDueFailure, FailureRecord};
 use fleet_mail::{
-    AdmittedDirectSend, AdmittedReceipt, ApplyMark, ApplyReceipt, DirectMark, DirectMessageStore,
-    DirectOffer, DirectOfferLookup, DirectReadFailure, DirectSendLookup, DirectSendResult,
-    DirectWriteFailure, OfferPageLookup, OwnedDirectStatus, RejectedDirectMark,
-    RetainedDirectSendRead, direct_mark_apply, direct_store_reads,
+    AdmittedDirectSend, AdmittedReceipt, AppliedDirectStatus, ApplyMark, ApplyReceipt, DirectMark,
+    DirectMessageStore, DirectOffer, DirectOfferLookup, DirectReadFailure, DirectSendLookup,
+    DirectSendResult, DirectWriteFailure, OfferPageLookup, OwnedDirectStatus, RejectedDirectMark,
+    RetainedDirectSendRead, direct_mark_apply, direct_status_apply, direct_store_reads,
     direct_store_writes::{self, DirectApplyFailure, DirectWriteOutcome},
 };
 use futures_util::future::BoxFuture;
 use std::ops::ControlFlow;
-use workspace_model::central_mail::MessageStatus;
 
 macro_rules! native_read {
     ($name:ident, $command:ty, $answer:ty) => {
@@ -47,7 +46,6 @@ macro_rules! native_write {
 
 impl DirectMessageStore for ObjectStorage {
     native_read!(read_retained_send, DirectSendLookup, RetainedDirectSendRead);
-    native_read!(read_status, OwnedDirectStatus, MessageStatus);
     native_read!(
         read_offer_page,
         OfferPageLookup,
@@ -66,6 +64,12 @@ impl DirectMessageStore for ObjectStorage {
         apply_receipt,
         AdmittedReceipt,
         ApplyReceipt
+    );
+    native_write!(
+        direct_status_apply,
+        settle_and_read_status,
+        OwnedDirectStatus,
+        AppliedDirectStatus
     );
     fn apply_mark(
         &self,

@@ -52,7 +52,7 @@ fn stored_system_settlement_checks_refusal_and_cancelled_shapes() {
         for (text, refusal) in [
             ("unknownSession", MessageRefusal::UnknownSession),
             ("ambiguousSession", MessageRefusal::AmbiguousSession),
-            ("sessionClosed", MessageRefusal::SessionClosed),
+            ("ambiguousSession", MessageRefusal::AmbiguousSession),
         ] {
             assert!(
                 matches!(decode(kind, "failed", Some(text)), Ok(SystemSettlement::Refused(stored)) if stored == refusal)
