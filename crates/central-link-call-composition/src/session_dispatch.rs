@@ -22,7 +22,11 @@ use sqlx_core::{
 use std::sync::Arc;
 use zeroize::Zeroizing;
 
-type FillSessionSecret = fn(&mut [u8; 32]) -> Result<(), SessionServiceError>;
+/// The host could not fill a session secret from secure entropy.
+#[derive(Clone, Copy, Debug)]
+pub struct SessionEntropyUnavailable;
+
+type FillSessionSecret = fn(&mut [u8; 32]) -> Result<(), SessionEntropyUnavailable>;
 
 #[derive(Clone)]
 struct ApplyingInputs {
@@ -167,7 +171,7 @@ struct ApplyingSecrets(FillSessionSecret);
 impl SessionSecretSource for ApplyingSecrets {
     fn new_session_secret(&mut self) -> Result<SessionSecret, SessionServiceError> {
         let mut bytes = Zeroizing::new([0; 32]);
-        (self.0)(&mut bytes)?;
+        (self.0)(&mut bytes).map_err(|_| SessionServiceError::SecretUnavailable)?;
         Ok(SessionSecret::from_bytes(&bytes))
     }
 }

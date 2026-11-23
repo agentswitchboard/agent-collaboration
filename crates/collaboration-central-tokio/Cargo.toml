@@ -14,7 +14,6 @@ test-support = ["central-link-call-composition/test-support", "dep:collaboration
 
 [dependencies]
 central-link-call-composition.workspace = true
-fleet-actor-identity.workspace = true
 fleet-lent-transaction.workspace = true
 fleet-signin.workspace = true
 fleet-mail.workspace = true

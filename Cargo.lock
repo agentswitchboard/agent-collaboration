@@ -1615,7 +1615,6 @@ dependencies = [
  "collaboration-central-conformance",
  "collaboration-central-core",
  "collaboration-central-tokio",
- "fleet-actor-identity",
  "fleet-contracts",
  "fleet-engine",
  "fleet-identity-protocol",

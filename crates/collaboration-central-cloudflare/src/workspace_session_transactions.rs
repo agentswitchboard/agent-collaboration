@@ -1,10 +1,10 @@
 use crate::statement_store::WorkerExecutorLender;
 use central_link_call_composition::{
     OrganizationLoan, OrganizationSessionTransactions, SessionApplyFuture,
+    SessionEntropyUnavailable,
 };
 use central_storage::StoreFailure;
 use collaboration_central_core::CentralCallDispatch;
-use fleet_actor_identity::SessionServiceError;
 use fleet_identity_protocol::OrganizationId;
 use sqlx_durable_object::{DoConnection, DoTransaction};
 use std::sync::Arc;
@@ -54,11 +54,11 @@ impl From<sqlx_core::Error> for SessionTransactionError {
     }
 }
 
-pub(super) fn fill_session_secret(bytes: &mut [u8; 32]) -> Result<(), SessionServiceError> {
+pub(super) fn fill_session_secret(bytes: &mut [u8; 32]) -> Result<(), SessionEntropyUnavailable> {
     let global: web_sys::WorkerGlobalScope = js_sys::global().unchecked_into();
     global
         .crypto()
         .and_then(|crypto| crypto.get_random_values_with_u8_array(bytes))
         .map(|_| ())
-        .map_err(|_| SessionServiceError::SecretUnavailable)
+        .map_err(|_| SessionEntropyUnavailable)
 }
