@@ -94,7 +94,9 @@ impl StartSnapshot {
             Box::new(SnapshotFacts {
                 envelope: stored.envelope,
                 attempt: stored.attempt,
-                facts: StartFacts::from_stored(stored.facts)?,
+                facts: StartFacts {
+                    stored: stored.facts,
+                },
             }),
             stored.phase,
         )
@@ -124,6 +126,9 @@ impl StartSnapshot {
             return Err(CorruptStartRecord::ScopeMismatch);
         }
         let facts = &start.facts;
+        if self.kind() == SnapshotKind::Reserved && facts.reservation.is_none() {
+            return Err(CorruptStartRecord::ReservedWithoutReservation);
+        }
         facts.validate_issues()?;
         for issue in facts
             .secret_issue()
@@ -149,9 +154,6 @@ impl StartSnapshot {
                 validate_opened(&start.envelope, facts, association)
             }
             SnapshotPhase::Reserved => {
-                if facts.reservation.is_none() {
-                    return Err(CorruptStartRecord::ReservedWithoutReservation);
-                }
                 if !matches!(facts.secret, SecretFact::PossiblyStored(_)) {
                     return Err(CorruptStartRecord::ReservedWithoutSecretIntent);
                 }

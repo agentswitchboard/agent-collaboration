@@ -30,18 +30,18 @@ pub use ports::{
     SessionSecretStore, StartRecord, StartRecordError, StartRevision, StartSaveRefusal,
 };
 pub use protocol::{
-    BindNotTaken, CloseResult, Directed, DirectiveId, DirectiveResult, LaunchResult,
-    LinkContradiction, LinkNotTaken, LinkResult, PutSecretNotTaken, PutSecretResult, SaveResult,
-    SetUpNotTaken, SetUpResult, StartDirective, StartEffect, StartInput, StartInstanceId,
-    StartNotification, StartRefusal, WaiterSlot,
+    CloseResult, Directed, DirectiveId, DirectiveResult, LaunchResult, PutSecretNotTaken,
+    PutSecretResult, SaveResult, SetUpNotTaken, SetUpResult, StartDirective, StartEffect,
+    StartInput, StartInstanceId, StartNotification, StartRefusal, WaiterSlot,
 };
 pub use reason::{
     BindDispute, CleanupCall, CorruptStartRecord, FailureReason, HoldLostDuring, IntendedOutcome,
     LaunchNotTaken, StopReason, UnknownReason,
 };
 pub use reply::{
-    BindContradiction, BindReplyKind, CreateAnswer, CreateContradiction, CreateReplyKind,
-    EndContradiction, EndReplyKind, ObservedReservation,
+    BindContradiction, BindNotTaken, BindReplyKind, CreateAnswer, CreateContradiction,
+    CreateReplyKind, EndContradiction, EndReplyKind, LinkContradiction, LinkNotTaken, LinkResult,
+    ObservedReservation,
 };
 pub use snapshot::{
     CleanupOutcome, OpenedSession, SnapshotFacts, SnapshotKind, SnapshotPhase, StartSnapshot,

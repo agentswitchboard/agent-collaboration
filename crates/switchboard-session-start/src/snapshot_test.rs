@@ -155,6 +155,8 @@ fn issue_attempt_mismatch() {
 #[test]
 fn pointer_without_reservation() {
     let mut stored = specimen();
+    stored.phase = SnapshotPhase::Unknown(crate::UnknownReason::Opening);
+    stored.facts.secret = SecretFact::None;
     stored.facts.reservation = None;
     rejects(stored, CorruptStartRecord::PointerWithoutReservation);
 }
@@ -223,19 +225,28 @@ fn opened_without_committed_pointer() {
 
 #[test]
 fn reserved_without_reservation() {
-    let mut stored = specimen();
-    stored.phase = SnapshotPhase::Reserved;
-    stored.facts = StoredFacts::default();
+    let mut stored = reserved_specimen();
+    stored.facts.reservation = None;
     rejects(stored, CorruptStartRecord::ReservedWithoutReservation);
 }
 
 #[test]
 fn reserved_without_secret_intent() {
-    let mut stored = specimen();
-    stored.phase = SnapshotPhase::Reserved;
+    let mut stored = reserved_specimen();
     stored.facts.secret = SecretFact::None;
-    stored.facts.pointer = PointerFact::None;
     rejects(stored, CorruptStartRecord::ReservedWithoutSecretIntent);
+}
+
+fn reserved_specimen() -> StoredSnapshot {
+    let mut stored = specimen();
+    let issue = pointer(&mut stored).clone();
+    stored.phase = SnapshotPhase::Reserved;
+    stored.facts = StoredFacts {
+        reservation: stored.facts.reservation,
+        secret: SecretFact::PossiblyStored(issue),
+        ..Default::default()
+    };
+    stored
 }
 
 #[test]
