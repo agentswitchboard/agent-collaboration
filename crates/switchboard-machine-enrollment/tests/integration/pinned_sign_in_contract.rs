@@ -359,7 +359,7 @@ fn assert_store_submission(
 ) {
     assert_eq!(
         binding.generation,
-        BindingGeneration::from_persisted(generation)
+        BindingGeneration::from_persisted(generation).expect("fixture generation")
     );
     assert_eq!(&binding.context.machine_id, machine);
     assert_eq!(binding.credential.enrollment_id.to_string(), ENROLLMENT);

@@ -128,7 +128,7 @@ fn failing_an_old_ending_does_not_fence_its_successor() {
 }
 
 #[test]
-fn local_credential_loss_completes_when_both_cleanup_operations_stall() {
+fn local_credential_loss_remains_fenced_when_ending_cannot_be_reconciled() {
     let fixture = Fixture::new();
     fixture.store.0.fail_write.store(true, Ordering::SeqCst);
     fixture.store.0.hold_remove.store(true, Ordering::SeqCst);
@@ -137,13 +137,16 @@ fn local_credential_loss_completes_when_both_cleanup_operations_stall() {
     assert!(poll_once(refresh.as_mut()).is_pending());
     fixture.advance(5);
     assert!(poll_once(refresh.as_mut()).is_pending());
+    fixture.store.0.hold_read.store(true, Ordering::SeqCst);
     fixture.advance(1);
     assert!(poll_once(refresh.as_mut()).is_pending());
+    assert_eq!(fixture.store.0.marker_calls.load(Ordering::SeqCst), 0);
     fixture.advance(1);
     let lost = Poll::Ready(Err(LeaseUnavailable::Ended {
         why: EnrollmentEnd::LocalCredentialLost,
     }));
     assert_eq!(poll_once(refresh.as_mut()), lost);
+    fixture.store.0.hold_read.store(false, Ordering::SeqCst);
     assert_eq!(
         poll_once(std::pin::pin!(fixture.owner.lease(AccessRequest::Usable))),
         lost
