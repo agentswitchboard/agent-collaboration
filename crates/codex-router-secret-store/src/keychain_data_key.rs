@@ -252,8 +252,11 @@ pub(crate) fn load_enrollment_row_data_key(
         }
         None => {
             let store_id = PooledCredentialStoreId::new();
-            file_store.write_store_id_file(&store_id.to_string())?;
-            store_id
+            file_store.publish_enrollment_store_id(&store_id.to_string())?;
+            let winner = file_store
+                .read_store_id_file()?
+                .ok_or(SecretStoreError::KeyMissing)?;
+            PooledCredentialStoreId::parse(&winner, file_store)?
         }
     };
     let account = format!("{POOLED_KEY_ACCOUNT_PREFIX}{store_id}");

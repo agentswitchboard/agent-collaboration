@@ -414,3 +414,6 @@ fn enrollment_credential_rejects_empty_and_redacts_debug() {
     assert!(EnrollmentRowCredential::copy_from("").is_none());
     assert_eq!(format!("{:?}", fixture_token()), "[redacted]");
 }
+
+#[path = "enrollment_identity_process_test.rs"]
+mod identity_process;
