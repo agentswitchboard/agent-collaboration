@@ -14,9 +14,8 @@ async fn business_migration_upgrade_failure_rolls_back_both_real_owners_and_all_
                 .join("central")
                 .join(format!("{}.sqlite", f.caller.organization_id().as_str())),
             workspace_migrations::central_migrator as fn() -> sqlx::migrate::Migrator,
-            // Production migration 0011 reserves 0009 and 0010 for other units.
-            // This test build appends one probe fixture.
-            10,
+            // Ten production migrations plus the test-only Engine probe fixture.
+            11,
         ),
         (
             f.root

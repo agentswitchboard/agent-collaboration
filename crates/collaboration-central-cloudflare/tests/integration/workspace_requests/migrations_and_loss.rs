@@ -14,8 +14,8 @@ async fn business_upgrade_failure_preserves_both_owners_and_every_history_column
         .inspect_workspace(&f.workspace, history())
         .await
         .unwrap();
-    // Production migrations 0001–0008 and 0011, plus the test-support probe.
-    assert_eq!(central.rows.len(), 10);
+    // Ten production migrations plus the test-only Engine probe fixture.
+    assert_eq!(central.rows.len(), 11);
     assert_eq!(workspace.rows.len(), 1);
     assert_eq!(central.columns.len(), 6);
     assert_eq!(workspace.columns.len(), 6);

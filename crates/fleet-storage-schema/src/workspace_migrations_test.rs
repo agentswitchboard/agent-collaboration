@@ -1,10 +1,10 @@
 use super::central_migrator;
 
 /// A non-test-support build returns `migrations/central` unchanged, so that
-/// directory explicitly lists the production revisions; test-support appends only the probe
+/// directory must hold 0001-0009 and 0011. Test-support appends only the probe
 /// fixture after it, so no probe migration can ship.
 #[test]
-fn production_history_is_approved_and_test_support_adds_only_the_probe() {
+fn production_history_matches_the_approved_catalog_and_test_support_appends_the_probe() {
     let production = sqlx::migrate!("migrations/central")
         .iter()
         .map(|migration| (migration.version, migration.description.to_string()))
@@ -14,7 +14,7 @@ fn production_history_is_approved_and_test_support_adds_only_the_probe() {
             .iter()
             .map(|(version, _)| *version)
             .collect::<Vec<_>>(),
-        vec![1, 2, 3, 4, 5, 6, 7, 8, 11],
+        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 11],
         "{production:?}"
     );
     assert!(
@@ -27,8 +27,8 @@ fn production_history_is_approved_and_test_support_adds_only_the_probe() {
 
     assert_eq!(production[6].1, "direct message receipts");
     assert_eq!(production[7].1, "machine allowance audit");
-
-    assert_eq!(production[8].1, "actor identity");
+    assert_eq!(production[8].1, "engine due entries");
+    assert_eq!(production[9].1, "actor identity");
 
     let built = central_migrator()
         .iter()

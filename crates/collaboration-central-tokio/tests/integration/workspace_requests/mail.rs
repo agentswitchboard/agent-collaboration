@@ -6,6 +6,8 @@ mod delivery_ack;
 mod direct_mark_guard;
 mod direct_message_cancel;
 mod direct_receipt_sequences;
+mod due_table_history;
+
 mod message_status;
 mod requests;
 mod stored_row_use;
