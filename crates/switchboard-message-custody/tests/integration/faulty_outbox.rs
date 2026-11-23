@@ -14,6 +14,7 @@ use switchboard_machine_core_store::{
     OutboxRequestStatus, OutboxStorage, OutboxStoreError, OutboxWriteOutcome, OutgoingWrite,
     PendingWrite, StoreScan, StoredSenderOutcome,
 };
+use tokio::sync::Notify;
 use workspace_ids::RequestId;
 use workspace_model::Caller;
 
@@ -43,6 +44,14 @@ pub(super) enum FaultStage {
 struct FaultJournal {
     planned: Vec<(FaultSite, FaultStage)>,
     fired: Vec<(FaultSite, FaultStage)>,
+    committed_insert: Option<Arc<CommittedInsertGate>>,
+}
+
+/// A test holds the worker between SQLite's insert commit and its submit reply.
+#[derive(Default)]
+pub(super) struct CommittedInsertGate {
+    pub(super) committed: Notify,
+    pub(super) release: Notify,
 }
 
 /// The campaign uses a plan to arm and observe faults at the store boundary.
@@ -60,6 +69,12 @@ impl StoreFaultPlan {
 
     pub(super) fn is_drained(&self) -> bool {
         self.0.lock().unwrap().planned.is_empty()
+    }
+
+    pub(super) fn hold_next_insert_commit(&self) -> Arc<CommittedInsertGate> {
+        let gate = Arc::new(CommittedInsertGate::default());
+        self.0.lock().unwrap().committed_insert = Some(gate.clone());
+        gate
     }
 
     fn wrap<'call, ResultType: Send + 'call>(
@@ -110,8 +125,18 @@ impl OutboxStorage for FaultyOutbox {
         item: &'call NewOutboxItem,
         now: i64,
     ) -> OutboxFuture<'call, OutboxInsert> {
-        self.plan
-            .wrap(FaultSite::Insert, self.inner.insert(item, now))
+        let gate = self.plan.0.lock().unwrap().committed_insert.take();
+        let insert = self
+            .plan
+            .wrap(FaultSite::Insert, self.inner.insert(item, now));
+        Box::pin(async move {
+            let result = insert.await?;
+            if let Some(gate) = gate {
+                gate.committed.notify_one();
+                gate.release.notified().await;
+            }
+            Ok(result)
+        })
     }
 
     fn request_status<'call>(

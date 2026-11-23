@@ -4,6 +4,7 @@ use central_link_client::{
     RegisteredConnection, RequestStatusCommand, SubmitReceiptsCommand, WriteBatchCommand,
     WriteBatchDisposition,
 };
+use central_link_protocol::{RequestScope, RequestStatusQuery};
 use router_clock::ClockInstant;
 use std::{
     future::{Future, poll_fn},
@@ -12,9 +13,12 @@ use std::{
     task::Poll,
     time::Duration,
 };
-use switchboard_machine_core_store::{InboxStore, MachineLocalStore, OutboxQueuedWrite};
+use switchboard_machine_core_store::{
+    InboxStore, MachineLocalStore, OutboxQueuedWrite, OutboxRequestStatus, OutboxStorage,
+};
 use switchboard_message_custody::{
     custody_link::CustodyLink,
+    custody_status::CustodyRequestStatus,
     custody_submission::{Submission, SubmissionPayload},
     custody_task::{CustodyEventSink, CustodyTaskEvent, custody_task},
     outbox_work::OutboxWork,
@@ -26,6 +30,7 @@ use workspace_model::central_mail::MessageStatus;
 
 use super::{
     batch_replay::{KnownRecipient, NoFlushJitter, ScriptedBatchLane, new_admission},
+    faulted_overlay::FaultCampaign,
     outbox_timing::{manual_clock, open_outbox, thread_post},
 };
 
@@ -198,6 +203,68 @@ async fn a_caller_gone_before_task_admission_leaves_no_outbox_row() {
         "a caller lost before admission cannot leave a row"
     );
     assert!(lane.batch_commands().is_empty());
+    stop.send_replace(true);
+    running.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_caller_gone_after_the_insert_still_has_its_write_flushed_and_answered() {
+    let campaign = FaultCampaign::start().await;
+    let gate = campaign.faults.hold_next_insert_commit();
+    let peer = campaign.peer;
+    let clock = campaign.clock;
+    let (stop, stopped) = watch::channel(false);
+    let (sender, mut events) = mpsc::unbounded_channel();
+    let (calls, task) = custody_task(campaign.custody, stopped, Arc::new(ObserveTask(sender)));
+    let running = tokio::spawn(task);
+    let item = thread_post(62);
+    let OutboxQueuedWrite::Workspace(request) = item.payload else {
+        panic!("thread post fixture required");
+    };
+    let query = RequestStatusQuery {
+        scope: RequestScope::Workspace(request.workspace_id.clone().unwrap()),
+        request_id: item.request.clone(),
+    };
+    let mut submission =
+        Box::pin(calls.submit(item.caller.clone(), SubmissionPayload::Workspace(request)));
+    assert!(
+        poll_fn(|context| Poll::Ready(submission.as_mut().poll(context)))
+            .await
+            .is_pending()
+    );
+    gate.committed.notified().await;
+    let mut store = open_outbox(&campaign.root.path().join("machine_local.sqlite")).await;
+    assert!(matches!(
+        store
+            .request_status(&item.caller, &item.request)
+            .await
+            .unwrap(),
+        OutboxRequestStatus::InOutbox { .. }
+    ));
+    drop(submission);
+    gate.release.notify_one();
+
+    assert!(
+        matches!(
+            calls
+                .request_status(item.caller.clone(), query.clone())
+                .await,
+            CustodyRequestStatus::InOutbox { .. }
+        ),
+        "the worker must retain committed work after the caller leaves"
+    );
+    clock
+        .not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(20)))
+        .await;
+    clock.advance(Duration::from_secs(20)).unwrap();
+    let observed = events.recv().await.unwrap();
+    assert!(matches!(observed, CustodyTaskEvent::Flush(report)
+        if matches!(report.answered.as_slice(), [answer] if answer.request == item.request)));
+    assert!(matches!(
+        calls.request_status(item.caller, query).await,
+        CustodyRequestStatus::Answered(_)
+    ));
+    assert_eq!(peer.batch_commands().len(), 1);
     stop.send_replace(true);
     running.await.unwrap();
 }
