@@ -17,7 +17,7 @@ use switchboard_machine_core_store::{
 use switchboard_message_custody::{
     custody_link::CustodyLink,
     custody_status::CustodyRequestStatus,
-    custody_task::{CustodyTaskEvent, CustodyTaskHandle, custody_task},
+    custody_task::{CustodyEventSink, CustodyTaskEvent, CustodyTaskHandle, custody_task},
     outbox_work::OutboxWork,
     recipient_inbox::RecipientInbox,
     recipient_sessions::{RecipientSessionAnswer, RecipientSessionDirectory},
@@ -173,6 +173,18 @@ impl NoticeFixture {
         mpsc::UnboundedReceiver<CustodyTaskEvent>,
         JoinHandle<()>,
     ) {
+        let (sender, observations) = mpsc::unbounded_channel();
+        let (calls, stop, worker) = self
+            .start_with_sink(directory, Arc::new(ObserveTask(sender)))
+            .await;
+        (calls, stop, observations, worker)
+    }
+
+    async fn start_with_sink(
+        &self,
+        directory: Arc<DeferredDirectory>,
+        sink: Arc<dyn CustodyEventSink>,
+    ) -> (CustodyTaskHandle, watch::Sender<bool>, JoinHandle<()>) {
         let database = self.root.path().join("machine_local.sqlite");
         let inbox = RecipientInbox::new(
             self.reopen().await,
@@ -192,9 +204,8 @@ impl NoticeFixture {
             inbox,
         );
         let (stop, stopped) = watch::channel(false);
-        let (sender, observations) = mpsc::unbounded_channel();
-        let (calls, worker) = custody_task(custody, stopped, Arc::new(ObserveTask(sender)));
-        (calls, stop, observations, tokio::spawn(worker))
+        let (calls, worker) = custody_task(custody, stopped, sink);
+        (calls, stop, tokio::spawn(worker))
     }
 
     async fn status(&self, calls: &CustodyTaskHandle) -> CustodyRequestStatus {
@@ -235,6 +246,65 @@ async fn projection_event(
             panic!("no sender projection event followed the owed work");
         }
     }
+}
+
+struct StoppingNoticeSink;
+
+impl CustodyEventSink for StoppingNoticeSink {
+    #[expect(
+        clippy::panic,
+        reason = "Cut the worker at the exact start of notice hand-off."
+    )]
+    fn record_event(&self, event: CustodyTaskEvent) {
+        if matches!(event, CustodyTaskEvent::Flush(report) if !report.sender_notices.is_empty()) {
+            panic!("fixture stops before accepting the sender notice");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_crash_at_the_sender_notice_sink_replays_the_same_owed_notice() {
+    let fixture = NoticeFixture::prepare().await;
+    fixture.lane.admitted.send_replace(None);
+    let mut inbox = fixture.reopen().await;
+    inbox
+        .record_delivery(&fixture.notice, InboxDecision::Accepted, START_MS)
+        .await
+        .unwrap();
+    inbox
+        .mark_receipt_confirmed(&fixture.notice.message_id, START_MS)
+        .await
+        .unwrap();
+    let (_calls, _stop, first_run) = fixture
+        .start_with_sink(
+            Arc::new(DeferredDirectory::default()),
+            Arc::new(StoppingNoticeSink),
+        )
+        .await;
+    assert!(first_run.await.unwrap_err().is_panic());
+    assert_eq!(
+        inbox.pending_handoffs().await.unwrap().healthy.as_slice(),
+        std::slice::from_ref(&fixture.notice),
+        "the typed notice must still be owed when a sink crashes before accepting it"
+    );
+    let mut outbox = open_outbox(&fixture.root.path().join("machine_local.sqlite")).await;
+    let retained = outbox
+        .sender_outcome(&fixture.item.caller, &fixture.item.request)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(retained.inbox_message_id, fixture.notice.message_id);
+
+    let (calls, stop, mut events, restarted) =
+        fixture.start(Arc::new(DeferredDirectory::default())).await;
+    assert!(
+        matches!(projection_event(&mut events).await, CustodyTaskEvent::Flush(report)
+        if matches!(report.sender_notices.as_slice(), [sent] if sent.notice == retained))
+    );
+    assert_eq!(fixture.status(&calls).await, fixture.projected_status());
+    assert!(inbox.pending_handoffs().await.unwrap().healthy.is_empty());
+    stop.send_replace(true);
+    restarted.await.unwrap();
 }
 
 #[tokio::test]

@@ -293,7 +293,12 @@ async fn run_custody(
             },
             (ticket, disposition) = poll_job(&mut writes) => {
                 writes = None;
-                report_flush(&*sink, custody.settle_write_turn(ticket, disposition).await);
+                let mut report = FlushReport::default();
+                let result = custody.settle_write_turn(ticket, disposition, &mut report).await;
+                report_flush(&*sink, Ok(report));
+                if let Err(error) = result {
+                    sink.record_event(CustodyTaskEvent::Failed(error));
+                }
                 if custody.owes_local_settlement() && retry_settlement_at.is_none() {
                     retry_settlement_at = Some(clock.monotonic_now().after(LOCAL_RECOVERY_RETRY));
                 }
@@ -369,12 +374,14 @@ async fn run_custody(
                 };
             },
             () = sleep_until(clock.as_ref(), write_wake), if can_flush => {
-                match custody.prepare_write_turn().await {
-                    Ok((report, ticket)) => {
-                        report_flush(&*sink, Ok(report));
-                        if custody.owes_local_settlement() && retry_settlement_at.is_none() {
-                            retry_settlement_at = Some(clock.monotonic_now().after(LOCAL_RECOVERY_RETRY));
-                        }
+                let mut report = FlushReport::default();
+                let next_batch = custody.prepare_write_turn(&mut report).await;
+                report_flush(&*sink, Ok(report));
+                if custody.owes_local_settlement() && retry_settlement_at.is_none() {
+                    retry_settlement_at = Some(clock.monotonic_now().after(LOCAL_RECOVERY_RETRY));
+                }
+                match next_batch {
+                    Ok(ticket) => {
                         if let Some(ticket) = ticket {
                             let lane = lane.clone();
                             writes = Some(Box::pin(async move {
@@ -494,12 +501,7 @@ async fn handle_tool(
 
 fn report_flush(sink: &dyn CustodyEventSink, result: Result<FlushReport, CustodyLinkError>) {
     match result {
-        Ok(report)
-            if !report.answered.is_empty()
-                || !report.sender_notices.is_empty()
-                || !report.ended.is_empty()
-                || !report.issues.is_empty() =>
-        {
+        Ok(report) if !report.is_empty() => {
             sink.record_event(CustodyTaskEvent::Flush(report));
         }
         Ok(_) => {}
@@ -511,10 +513,12 @@ async fn project_sender_notices(
     custody: &mut CustodyLink,
     sink: &dyn CustodyEventSink,
 ) -> Option<ClockInstant> {
-    let (report, errors) = custody.drain_sender_notices().await;
-    report_flush(sink, Ok(report));
-    let retry = (!errors.is_empty()).then(|| custody.local_retry_mark());
-    for error in errors {
+    let projected = custody.project_sender_notices().await;
+    report_flush(sink, Ok(projected.report));
+    let finishing = custody.complete_sender_notices(projected.completable).await;
+    let retry =
+        (!projected.errors.is_empty() || !finishing.is_empty()).then(|| custody.local_retry_mark());
+    for error in projected.errors.into_iter().chain(finishing) {
         sink.record_event(CustodyTaskEvent::Failed(error));
     }
     retry

@@ -44,6 +44,12 @@ pub enum BatchDispatchError {
         #[source]
         error: OutboxStoreError,
     },
+    #[error("batch preparation failed after completing local work")]
+    Interrupted {
+        completed: Box<FlushReport>,
+        #[source]
+        error: Box<Self>,
+    },
 }
 
 /// One batch's results, kept by custody for the outcome sink.
@@ -56,6 +62,13 @@ pub struct FlushReport {
 }
 
 impl FlushReport {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.answered.is_empty()
+            && self.sender_notices.is_empty()
+            && self.ended.is_empty()
+            && self.issues.is_empty()
+    }
+
     pub(crate) fn append(&mut self, other: Self) {
         self.answered.extend(other.answered);
         self.sender_notices.extend(other.sender_notices);

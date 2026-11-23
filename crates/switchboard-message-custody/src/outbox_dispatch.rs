@@ -116,8 +116,18 @@ impl OutboxDispatcher {
         anchor: WelcomeClockAnchor,
         mark: SyncTime,
     ) -> Result<PreparedFlush, BatchDispatchError> {
-        self.prepare_due_through(work, connection, anchor, mark, mark)
+        let mut report = FlushReport::default();
+        match self
+            .prepare_due_through(work, connection, anchor, mark, mark, &mut report)
             .await
+        {
+            Ok(batch) => Ok(PreparedFlush { batch, report }),
+            Err(error) if report.is_empty() => Err(error),
+            Err(error) => Err(BatchDispatchError::Interrupted {
+                completed: Box::new(report),
+                error: Box::new(error),
+            }),
+        }
     }
 
     pub(crate) async fn prepare_due_through(
@@ -127,30 +137,21 @@ impl OutboxDispatcher {
         anchor: WelcomeClockAnchor,
         mark: SyncTime,
         eligible_through: SyncTime,
-    ) -> Result<PreparedFlush, BatchDispatchError> {
-        let mut report = FlushReport::default();
+        report: &mut FlushReport,
+    ) -> Result<Option<PreparedWriteBatch>, BatchDispatchError> {
         if self.in_flight.is_some() {
-            return Ok(PreparedFlush {
-                batch: None,
-                report,
-            });
+            return Ok(None);
         }
-        self.settling.retry(work, &mut report).await;
+        self.settling.retry(work, report).await;
         let FlushSelection::Claimed(claimed) = work
             .claim_due_through(anchor, mark, eligible_through)
             .await?
         else {
-            return Ok(PreparedFlush {
-                batch: None,
-                report,
-            });
+            return Ok(None);
         };
         report.ended.extend(claimed.ended);
         if claimed.writes.is_empty() {
-            return Ok(PreparedFlush {
-                batch: None,
-                report,
-            });
+            return Ok(None);
         }
 
         let now_ms = work.local_now_ms();
@@ -163,7 +164,7 @@ impl OutboxDispatcher {
                         selected.push(write);
                     } else {
                         self.settling
-                            .return_member(work, write, MemberReturn::NotTransmitted, &mut report)
+                            .return_member(work, write, MemberReturn::NotTransmitted, report)
                             .await;
                     }
                 }
@@ -174,14 +175,11 @@ impl OutboxDispatcher {
                 if !work.mark_is_open(anchor, mark) || !work.before_elapsed_fence(send_before) {
                     for write in selected {
                         self.settling
-                            .return_member(work, write, MemberReturn::NotTransmitted, &mut report)
+                            .return_member(work, write, MemberReturn::NotTransmitted, report)
                             .await;
                     }
-                    collect_due_writes(work, &mut report).await;
-                    return Ok(PreparedFlush {
-                        batch: None,
-                        report,
-                    });
+                    collect_due_writes(work, report).await;
+                    return Ok(None);
                 }
                 let ticket = PreparedWriteBatch {
                     command: WriteBatchCommand {
@@ -201,14 +199,14 @@ impl OutboxDispatcher {
                 report.issues.push(error);
                 for write in claimed.writes {
                     self.settling
-                        .return_member(work, write, MemberReturn::NotTransmitted, &mut report)
+                        .return_member(work, write, MemberReturn::NotTransmitted, report)
                         .await;
                 }
-                collect_due_writes(work, &mut report).await;
+                collect_due_writes(work, report).await;
                 None
             }
         };
-        Ok(PreparedFlush { batch, report })
+        Ok(batch)
     }
 
     /// Keep checked replies even if other members lost their answers on this batch's connection.

@@ -8,7 +8,10 @@ use router_clock::RuntimeClock;
 use runtime_primitives::SyncTime;
 use std::time::Duration;
 use switchboard_machine_core_store::{OutboxStorage, PendingWriteState};
-use switchboard_message_custody::{outbox_dispatch::OutboxDispatcher, outbox_work::OutboxWork};
+use switchboard_message_custody::{
+    outbox_dispatch::{BatchDispatchError, OutboxDispatcher},
+    outbox_work::OutboxWork,
+};
 
 use super::{
     batch_replay::{ScriptedBatch, ScriptedMemberFate, post_created},
@@ -16,6 +19,74 @@ use super::{
     faulty_outbox::{FaultSite, FaultStage, FaultyOutbox},
     outbox_timing::{open_outbox, thread_post},
 };
+
+#[tokio::test]
+async fn a_failed_next_claim_carries_the_member_settled_before_it() {
+    let campaign = FaultCampaign::start().await;
+    let first = thread_post(2_902);
+    let mut second = thread_post(2_903);
+    second.flush_at_ms += 60_000;
+    let mut store = open_outbox(&campaign.root.path().join("machine_local.sqlite")).await;
+    for item in [&first, &second] {
+        store.insert(item, START_MS).await.unwrap();
+    }
+    let mut work = OutboxWork::new(
+        Box::new(FaultyOutbox {
+            inner: Box::new(store),
+            plan: campaign.faults.clone(),
+        }),
+        campaign.clock.clone(),
+    );
+    let admitted = campaign.peer.admitted.borrow().clone().unwrap();
+    let mut dispatcher = OutboxDispatcher::default();
+    campaign.clock.advance(Duration::from_secs(20)).unwrap();
+    let batch = dispatcher
+        .prepare_at_mark(
+            &mut work,
+            admitted.connection.clone(),
+            admitted.clock_anchor,
+            SyncTime::from_unix_millis(MARK_MS),
+        )
+        .await
+        .unwrap()
+        .batch
+        .unwrap();
+    let result = campaign.peer.submit_write_batch(batch.command()).await;
+    campaign
+        .faults
+        .arm(FaultSite::RecordOutcome, FaultStage::BeforeCall);
+    let pending = dispatcher
+        .settle_batch(&mut work, batch, result)
+        .await
+        .unwrap();
+    assert!(pending.answered.is_empty());
+    assert_eq!(pending.issues.len(), 1);
+
+    campaign.clock.advance(Duration::from_secs(60)).unwrap();
+    campaign
+        .faults
+        .arm(FaultSite::ClaimBatch, FaultStage::BeforeCall);
+    let failed = dispatcher
+        .prepare_at_mark(
+            &mut work,
+            admitted.connection,
+            admitted.clock_anchor,
+            SyncTime::from_unix_millis(second.flush_at_ms),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(
+            failed,
+            BatchDispatchError::Interrupted { completed, error }
+                if matches!(*error, BatchDispatchError::Work(_))
+                    && matches!(completed.answered.as_slice(), [answer] if answer.request == first.request)
+        ),
+        "a later failed claim must carry the earlier completed member's typed report"
+    );
+    assert_eq!(campaign.peer.batch_commands().len(), 1);
+    assert!(campaign.faults.is_drained());
+}
 
 #[tokio::test]
 async fn a_lone_sent_row_at_startup_is_replayed_after_a_restore_fault() {

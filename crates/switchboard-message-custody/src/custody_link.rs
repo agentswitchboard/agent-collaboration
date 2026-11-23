@@ -60,6 +60,34 @@ pub enum CustodyLinkError {
     Inbox(#[from] InboxCustodyError),
     #[error("the inbox receipts could not be sent or confirmed")]
     Receipt(#[from] ReceiptDeliveryError),
+    #[error("a flush failed after completing local work")]
+    InterruptedFlush {
+        completed: Box<FlushReport>,
+        #[source]
+        error: Box<Self>,
+    },
+}
+
+fn finish_flush(
+    report: FlushReport,
+    result: Result<(), CustodyLinkError>,
+) -> Result<FlushReport, CustodyLinkError> {
+    match result {
+        Ok(()) => Ok(report),
+        Err(error) if report.is_empty() => Err(error),
+        Err(error) => Err(CustodyLinkError::InterruptedFlush {
+            completed: Box::new(report),
+            error: Box::new(error),
+        }),
+    }
+}
+
+/// Custody projects durable notices and keeps their inbox payloads until the sink accepts the reports.
+#[derive(Default)]
+pub(crate) struct SenderNoticeProjection {
+    pub(crate) report: FlushReport,
+    pub(crate) completable: Vec<MessageId>,
+    pub(crate) errors: Vec<CustodyLinkError>,
 }
 
 pub use crate::offer_taker::CustodyLinkObservation;
@@ -286,7 +314,12 @@ impl CustodyLink {
         let sender_notice_saved = saved.sender_notice_saved;
         let observation = self.observe_taken_event(saved).await?;
         if sender_notice_saved
-            && let Some(error) = self.drain_sender_notices().await.1.into_iter().next()
+            && let Some(error) = self
+                .project_sender_notices()
+                .await
+                .errors
+                .into_iter()
+                .next()
         {
             return Err(error);
         }
@@ -323,14 +356,16 @@ impl CustodyLink {
         Ok(saved.observation)
     }
 
-    pub(crate) async fn drain_sender_notices(&mut self) -> (FlushReport, Vec<CustodyLinkError>) {
-        let mut report = FlushReport::default();
+    pub(crate) async fn project_sender_notices(&mut self) -> SenderNoticeProjection {
+        let mut projected = SenderNoticeProjection::default();
         let retained = self.inbox.lock().await.pending_sender_notices().await;
         let records = match retained {
             Ok(records) => records,
-            Err(error) => return (report, vec![error.into()]),
+            Err(error) => {
+                projected.errors.push(error.into());
+                return projected;
+            }
         };
-        let mut errors = Vec::new();
         for record in records {
             let Some((caller, notice)) = retained_delivery_notice(&record) else {
                 continue;
@@ -341,34 +376,43 @@ impl CustodyLink {
                     error @ (OutboxStoreError::DeliveryOutcomeMismatch { .. }
                     | OutboxStoreError::ContradictoryFinalOutcome { .. }),
                 ) => {
-                    report.issues.push(BatchDispatchError::StoreMember {
-                        request: notice.request_id.clone(),
-                        error,
-                    });
+                    projected
+                        .report
+                        .issues
+                        .push(BatchDispatchError::StoreMember {
+                            request: notice.request_id.clone(),
+                            error,
+                        });
                     false
                 }
                 Err(error) => {
-                    errors.push(OutboxWorkError::Store(error).into());
+                    projected.errors.push(OutboxWorkError::Store(error).into());
                     continue;
                 }
             };
-            if let Err(error) = self
-                .inbox
-                .lock()
-                .await
-                .finish_sender_notice(&record.message_id)
-                .await
-            {
-                errors.push(error.into());
-                continue;
-            }
+            projected.completable.push(record.message_id);
             if applied {
-                report
+                projected
+                    .report
                     .sender_notices
                     .push(AppliedSenderNotice { caller, notice });
             }
         }
-        (report, errors)
+        projected
+    }
+
+    pub(crate) async fn complete_sender_notices(
+        &mut self,
+        ids: Vec<MessageId>,
+    ) -> Vec<CustodyLinkError> {
+        let mut inbox = self.inbox.lock().await;
+        let mut errors = Vec::new();
+        for id in ids {
+            if let Err(error) = inbox.finish_sender_notice(&id).await {
+                errors.push(error.into());
+            }
+        }
+        errors
     }
 
     async fn apply_sender_notice(
@@ -419,12 +463,20 @@ impl CustodyLink {
     /// Drive an orphan recovery pass without the command worker, using the same scoped status path.
     pub async fn recover_outbox(&mut self) -> Result<FlushReport, CustodyLinkError> {
         let mut report = FlushReport::default();
+        let result = self.recover_orphans_into(&mut report).await;
+        finish_flush(report, result)
+    }
+
+    async fn recover_orphans_into(
+        &mut self,
+        report: &mut FlushReport,
+    ) -> Result<(), CustodyLinkError> {
         let mut checked = BTreeSet::new();
         loop {
             let turn = self.prepare_recovery_turn(true, &checked).await?;
             report.append(turn.report);
             let Some(probe) = turn.probe else {
-                return Ok(report);
+                return Ok(());
             };
             checked.insert(probe.claim.key.request_id.clone());
             let result = self.lane.request_status(probe.command.clone()).await;
@@ -483,31 +535,38 @@ impl CustodyLink {
     /// Flush on the current armed minute, with one lane submission and member-by-member settlement.
     pub async fn flush_writes(&mut self) -> Result<FlushReport, CustodyLinkError> {
         let mut report = FlushReport::default();
+        let result = self.flush_writes_into(&mut report).await;
+        finish_flush(report, result)
+    }
+
+    async fn flush_writes_into(
+        &mut self,
+        report: &mut FlushReport,
+    ) -> Result<(), CustodyLinkError> {
         if self.owes_local_settlement() {
             report.append(self.retry_local_settlement().await);
         }
-        report.append(self.recover_outbox().await?);
-        let (prepared, batch) = self.prepare_write_turn().await?;
-        report.append(prepared);
-        if let Some(batch) = batch {
+        self.recover_orphans_into(report).await?;
+        if let Some(batch) = self.prepare_write_turn(report).await? {
             let disposition = self.lane.submit_write_batch(batch.command()).await;
-            report.append(self.settle_write_turn(batch, disposition).await?);
+            self.settle_write_turn(batch, disposition, report).await?;
         }
-        Ok(report)
+        Ok(())
     }
 
     pub(crate) async fn prepare_write_turn(
         &mut self,
-    ) -> Result<(FlushReport, Option<PreparedWriteBatch>), CustodyLinkError> {
+        report: &mut FlushReport,
+    ) -> Result<Option<PreparedWriteBatch>, CustodyLinkError> {
         let Some(admitted) = self.admitted_connection() else {
             self.observe_unavailable()?;
-            return Ok((FlushReport::default(), None));
+            return Ok(None);
         };
         let now = self.observe_shared_clock(admitted.clock_anchor, self.clock.monotonic_now());
         let earliest_due = self.earliest_eligible_mark(now).await?;
         self.apply_flush_event(FlushEvent::LinkConnected { now, earliest_due })?;
         let Some(mark) = self.apply_flush_event(FlushEvent::Tick { now, earliest_due })? else {
-            return Ok((FlushReport::default(), None));
+            return Ok(None);
         };
 
         let eligible_through = self.rebased_due_through.map_or(mark, |old| old.max(mark));
@@ -519,18 +578,19 @@ impl CustodyLink {
                 admitted.clock_anchor,
                 mark,
                 eligible_through,
+                report,
             )
             .await;
-        let mut prepared = match prepared {
+        let prepared = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
                 self.apply_flush_event(FlushEvent::BatchEnded { earliest_due })?;
                 return Err(error.into());
             }
         };
-        let Some(batch) = prepared.batch else {
-            self.release_flush_slot(&mut prepared.report).await?;
-            return Ok((prepared.report, None));
+        let Some(batch) = prepared else {
+            self.release_flush_slot(report).await?;
+            return Ok(None);
         };
         let cause = if self.admitted_connection().as_ref() != Some(&admitted) {
             Some(UntouchedCommand::ConnectionUnavailable)
@@ -543,29 +603,29 @@ impl CustodyLink {
             None
         };
         if let Some(cause) = cause {
-            let settled = self
-                .settle_write_turn(batch, WriteBatchDisposition::NotReached { cause })
+            self.settle_write_turn(batch, WriteBatchDisposition::NotReached { cause }, report)
                 .await?;
-            prepared.report.append(settled);
-            return Ok((prepared.report, None));
+            return Ok(None);
         }
-        Ok((prepared.report, Some(batch)))
+        Ok(Some(batch))
     }
 
     pub(crate) async fn settle_write_turn(
         &mut self,
         batch: PreparedWriteBatch,
         disposition: WriteBatchDisposition,
-    ) -> Result<FlushReport, CustodyLinkError> {
-        let Some(mut report) = self
+        report: &mut FlushReport,
+    ) -> Result<(), CustodyLinkError> {
+        let Some(settled) = self
             .dispatcher
             .settle_batch(&mut self.outbox, batch, disposition)
             .await
         else {
-            return Ok(FlushReport::default());
+            return Ok(());
         };
-        self.release_flush_slot(&mut report).await?;
-        Ok(report)
+        report.append(settled);
+        self.release_flush_slot(report).await?;
+        Ok(())
     }
 
     fn observe_unavailable(&mut self) -> Result<(), FlushTransitionError> {
