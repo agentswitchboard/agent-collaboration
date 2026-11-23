@@ -1,6 +1,8 @@
 use super::super::workerd_host::c2_controls::WitnessRecord;
-use central_link_protocol::DataFrame;
+use super::fixture;
+use central_link_protocol::{CorrelationId, DataFrame};
 use central_storage::ReadOutcome;
+use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 use fleet_identity_protocol::OrganizationId;
 use serde::Serialize;
 use workspace_ids::MachineId;
@@ -54,4 +56,37 @@ pub(super) struct BatchHibernationReceipt {
     pub store: ReadOutcome,
     pub wakes: ReadOutcome,
     pub disposed: bool,
+}
+
+pub(super) async fn receipt_result(
+    socket: &mut reqwest_websocket::WebSocket,
+    message_id: workspace_ids::MessageId,
+    expected: central_link_protocol::ReceiptResult,
+) -> Result<()> {
+    let correlation_id: CorrelationId = "019f0000-0000-7000-8000-00000000c201".parse()?;
+    fixture::send(
+        socket,
+        &DataFrame::Receipts {
+            correlation_id: correlation_id.clone(),
+            receipts: central_link_protocol::ReceiptBatch::new(vec![
+                central_link_protocol::Receipt {
+                    message_id,
+                    kind: central_link_protocol::ReceiptKind::Delivered {
+                        arrived_at: chrono::DateTime::from_timestamp(signed::NOW_SECONDS, 0)
+                            .ok_or("fixture UTC")?,
+                    },
+                },
+            ])?,
+        },
+    )
+    .await?;
+    if fixture::receive(socket).await?
+        != (DataFrame::ReceiptResults {
+            correlation_id,
+            results: vec![expected],
+        })
+    {
+        return Err("receipt result or correlation changed".into());
+    }
+    Ok(())
 }

@@ -46,8 +46,10 @@ impl StoredSenderOutcome {
 
 // A final receipt is distinct from the provisional deadline observation.
 fn is_final(outcome: MessageOutcome) -> bool {
-    matches!(
-        outcome,
-        MessageOutcome::Refused { .. } | MessageOutcome::NotSeen { .. }
-    )
+    match outcome {
+        MessageOutcome::Refused { .. } => true,
+        MessageOutcome::DeliveryNotConfirmed | MessageOutcome::DeliveredSeenNotConfirmed { .. } => {
+            false
+        }
+    }
 }

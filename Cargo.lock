@@ -900,6 +900,9 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "specta",
+ "specta-serde",
+ "specta-typescript",
  "thiserror 2.0.18",
  "uuid",
  "workspace-ids",
@@ -1229,6 +1232,8 @@ dependencies = [
  "agent-automation",
  "agent-client-protocol",
  "axum",
+ "central-link-client",
+ "central-link-protocol",
  "chrono",
  "claude-code-peer-messaging",
  "codex-acp-adapter",
@@ -1266,6 +1271,8 @@ dependencies = [
  "sha2 0.10.9",
  "sqlx",
  "state-machine-core",
+ "switchboard-machine-core-store",
+ "switchboard-message-custody",
  "switchboard-session-events",
  "switchboard-session-store",
  "tempfile",
@@ -1276,6 +1283,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "workspace-model",
 ]
 
 [[package]]
@@ -7309,6 +7317,7 @@ dependencies = [
  "serde_json",
  "serde_json_canonicalizer",
  "sha2 0.10.9",
+ "specta",
  "thiserror 2.0.18",
  "workspace-ids",
 ]

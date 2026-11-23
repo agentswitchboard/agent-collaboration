@@ -241,5 +241,19 @@ async fn fresh_organization_and_workspace_store_use_the_approved_table_names() {
         let expected: Vec<_> = expected.iter().map(|name| vec![text(name)]).collect();
         assert_eq!(observed.rows, expected);
     }
+    let mail_columns = runtime
+        .runtime()
+        .statement_host()
+        .read(Statement {
+            sql: schema::MAIL_MESSAGE_COLUMN_NAMES,
+            args: vec![],
+        })
+        .await
+        .unwrap();
+    let expected_mail_columns: Vec<_> = schema::MAIL_MESSAGE_COLUMNS
+        .iter()
+        .map(|name| vec![text(name)])
+        .collect();
+    assert_eq!(mail_columns.rows, expected_mail_columns);
     f.host.close().await;
 }

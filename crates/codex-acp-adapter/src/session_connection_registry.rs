@@ -22,6 +22,10 @@ pub enum HeldBindingCheckout {
 
 /// Host-owned bindings survive an ACP frontend connection until the first turn starts.
 pub trait UnmaterializedBindingStore: Send + Sync {
+    fn session_presence(&self) -> Option<crate::CodexSessionPresence> {
+        None
+    }
+
     fn hold(&self, binding: AcpSessionBinding);
     fn checkout(&self, session_id: &str) -> HeldBindingCheckout;
     fn restore(&self, binding: AcpSessionBinding);

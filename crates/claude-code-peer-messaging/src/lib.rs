@@ -2,10 +2,13 @@
 mod claude_code_peer_socket;
 mod claude_code_session_registry;
 mod native_claude_job_reader;
+mod peer_session_census;
+mod registry_process_start;
 pub use native_claude_job_reader::{
     NativeClaudeBackgroundJob, NativeClaudeJobInventory, NativeClaudeJobReadError,
     NativeClaudeJobReader,
 };
+pub use peer_session_census::{PeerCensusAnswer, PeerCensusOutcome, PeerSessionCensus};
 
 pub use claude_code_peer_socket::{
     ClaudeCodePeerSocket, PeerSocketUnsentCause, PeerSocketWriteOutcome,

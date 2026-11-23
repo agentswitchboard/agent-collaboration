@@ -111,6 +111,7 @@ workspace_identifiers!(
     LinkId,
     ChangeId,
     ReadMarkId,
+    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
     MessageId,
     NotificationWindowId,
     NotificationWindowItemId,

@@ -27,7 +27,7 @@ use central_storage::{SqlValue, Statement};
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
 use fixture::{ConnectedLink, Exchange, Fixture, MACHINE_ID, ORGANIZATION, OTHER_ORGANIZATION};
 use futures_util::{FutureExt, SinkExt, StreamExt};
-use receipt::{AreaReceipt, HibernationReceipt};
+use receipt::{AreaReceipt, HibernationReceipt, receipt_result};
 use reqwest_websocket::{Message, RequestBuilderExt};
 use runtime_primitives::Clock;
 use std::{io::Write, panic::AssertUnwindSafe, path::PathBuf, time::Duration};
@@ -38,40 +38,6 @@ use workspace_model::{
 
 const WORKSPACE_NAME: &str = "Real hibernation workspace";
 const AREA_NAME: &str = "Area created after actual hibernation";
-
-async fn receipt_result(
-    socket: &mut reqwest_websocket::WebSocket,
-    message_id: workspace_ids::MessageId,
-    expected: central_link_protocol::ReceiptResult,
-) -> Result<()> {
-    let correlation_id: CorrelationId = "019f0000-0000-7000-8000-00000000c201".parse()?;
-    fixture::send(
-        socket,
-        &DataFrame::Receipts {
-            correlation_id: correlation_id.clone(),
-            receipts: central_link_protocol::ReceiptBatch::new(vec![
-                central_link_protocol::Receipt {
-                    message_id,
-                    kind: central_link_protocol::ReceiptKind::Delivered {
-                        arrived_at: chrono::DateTime::from_timestamp(signed::NOW_SECONDS, 0)
-                            .ok_or("fixture UTC")?,
-                        waiting: None,
-                    },
-                },
-            ])?,
-        },
-    )
-    .await?;
-    if fixture::receive(socket).await?
-        != (DataFrame::ReceiptResults {
-            correlation_id,
-            results: vec![expected],
-        })
-    {
-        return Err("receipt result or correlation changed".into());
-    }
-    Ok(())
-}
 
 #[tokio::test]
 async fn signed_machine_bearer_with_retired_installation_id_is_refused() -> Result<()> {

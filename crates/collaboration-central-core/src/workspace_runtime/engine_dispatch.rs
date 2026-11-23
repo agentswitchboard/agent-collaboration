@@ -60,7 +60,9 @@ impl<H: CentralStore, S: WorkspaceStores> TimedDueDispatch<WorkspaceRuntime<H, S
             machine_kind: kind.kind(),
             due_cutoff_policy: if matches!(
                 kind,
-                DueKind::SystemMessageExpiry | DueKind::ApprovalRequestExpiry
+                DueKind::DirectMessage
+                    | DueKind::SystemMessageExpiry
+                    | DueKind::ApprovalRequestExpiry
             ) {
                 DueCutoff::BatchStart
             } else {
