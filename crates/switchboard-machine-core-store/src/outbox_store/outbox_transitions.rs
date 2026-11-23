@@ -2,8 +2,8 @@
 use super::{
     ANSWERED_RETENTION_MILLIS, MacOutbox, OutboxStoreError, StoredOutboxWrite,
     outbox_rows::{
-        DecodedRow, OutboxRow, StoredPayload, corrupt_row, decode_row, expect_one, outbox_content,
-        payload_content_digest, read_row, waiting_page, waiting_rows,
+        DecodedRow, StoredPayload, corrupt_row, decode_row, expect_one, outbox_content,
+        payload_content_digest, read_row, select_outbox_rows, waiting_page, waiting_rows,
     },
     validate_write_timestamp,
 };
@@ -29,11 +29,9 @@ impl MacOutbox<'_> {
         let not_sent = OutboxItemState::NotSent.as_str();
         let unconfirmed = OutboxItemState::Unconfirmed.as_str();
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
-        let rows = sqlx::query_as!(
-            OutboxRow,
-            r#"SELECT request_id AS "request_id!", caller_json, payload_json, item_state,
-                      flush_at_ms, outcome_json, created_at, expires_at_ms, updated_at
-               FROM outbox_items WHERE item_state IN (?, ?, ?, ?) AND updated_at <= ?"#,
+        let rows = select_outbox_rows!(
+            r#"WHERE item_state IN (?, ?, ?, ?)
+                    AND (typeof(updated_at) <> 'integer' OR updated_at <= ?)"#,
             answered,
             refused,
             not_sent,

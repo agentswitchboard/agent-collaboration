@@ -2,8 +2,8 @@
 use super::{
     MacOutbox, OutboxStoreError,
     outbox_rows::{
-        OutboxRow, StoredPayload, corrupt_row, decode_owned_row, outbox_content, parse_request_id,
-        read_owned_outbox, read_rows_in_states, waiting_rows,
+        StoredPayload, corrupt_row, decode_owned_row, outbox_content, read_owned_outbox,
+        read_rows_in_states, select_outbox_rows, waiting_rows,
     },
 };
 use crate::OutboxRequestKey;
@@ -51,11 +51,8 @@ impl MacOutbox<'_> {
     ) -> Result<Vec<PendingWrite>, OutboxStoreError> {
         let caller_json = serde_json::to_string(caller)?;
         let refused = OutboxItemState::Refused.as_str();
-        let rows = sqlx::query_as!(
-            OutboxRow,
-            r#"SELECT request_id AS "request_id!", caller_json, payload_json, item_state,
-                      flush_at_ms, outcome_json, created_at, expires_at_ms, updated_at
-               FROM outbox_items WHERE caller_json = ? AND item_state <> ?
+        let rows = select_outbox_rows!(
+            r#"WHERE caller_json = ? AND item_state <> ?
                ORDER BY created_at, request_id"#,
             caller_json,
             refused
@@ -67,7 +64,7 @@ impl MacOutbox<'_> {
             let stored = decode_owned_row(row, caller)?;
             let (target, state) = match (stored.state, stored.status, stored.payload) {
                 (OutboxItemState::InOutbox, _, StoredPayload::Unanswered(payload)) => {
-                    let content = outbox_content(&row.request_id, &payload)?;
+                    let content = outbox_content(stored.request.as_str(), &payload)?;
                     (
                         content.target,
                         PendingWriteState::Unsent { body: content.body },
@@ -80,7 +77,7 @@ impl MacOutbox<'_> {
                     _,
                     StoredPayload::Unanswered(payload),
                 ) => {
-                    let content = outbox_content(&row.request_id, &payload)?;
+                    let content = outbox_content(stored.request.as_str(), &payload)?;
                     let body = content.body;
                     (content.target, PendingWriteState::SentAnswerLost { body })
                 }
@@ -94,10 +91,10 @@ impl MacOutbox<'_> {
                     OutboxRequestStatus::Ended { reason },
                     StoredPayload::Answered(cancelled),
                 ) => (cancelled.target, PendingWriteState::Cancelled { reason }),
-                _ => return Err(corrupt_row(&row.request_id, "item_state")),
+                _ => return Err(corrupt_row(stored.request.as_str(), "item_state")),
             };
             pending.push(PendingWrite {
-                request_id: parse_request_id(&row.request_id)?,
+                request_id: stored.request,
                 target,
                 flush_at_ms: row.flush_at_ms,
                 state,
@@ -116,11 +113,8 @@ impl MacOutbox<'_> {
         let answered = OutboxItemState::Answered.as_str();
         let refused = OutboxItemState::Refused.as_str();
         let limit = i64::from(limit);
-        let rows = sqlx::query_as!(
-            OutboxRow,
-            r#"SELECT request_id AS "request_id!", caller_json, payload_json, item_state,
-                      flush_at_ms, outcome_json, created_at, expires_at_ms, updated_at
-               FROM outbox_items WHERE caller_json = ? AND item_state IN (?, ?)
+        let rows = select_outbox_rows!(
+            r#"WHERE caller_json = ? AND item_state IN (?, ?)
                ORDER BY updated_at DESC, request_id DESC LIMIT ?"#,
             caller_json,
             answered,
@@ -131,11 +125,11 @@ impl MacOutbox<'_> {
         .await?;
         let mut outgoing = Vec::with_capacity(rows.len());
         for row in rows {
-            let request_id = row.request_id.clone();
             let stored = decode_owned_row(&row, caller)?;
+            let request_id = stored.request;
             let answered_at_ms = stored.updated_at_ms;
             let StoredPayload::Answered(answered) = stored.payload else {
-                return Err(corrupt_row(&request_id, "payload_json"));
+                return Err(corrupt_row(request_id.as_str(), "payload_json"));
             };
             let outcome = match stored.status {
                 OutboxRequestStatus::Answered(reply) => OutgoingOutcome::Answered(reply),
@@ -144,11 +138,11 @@ impl MacOutbox<'_> {
                 | OutboxRequestStatus::InOutbox { .. }
                 | OutboxRequestStatus::Sent
                 | OutboxRequestStatus::Ended { .. } => {
-                    return Err(corrupt_row(&request_id, "item_state"));
+                    return Err(corrupt_row(request_id.as_str(), "item_state"));
                 }
             };
             outgoing.push(OutgoingWrite {
-                request_id: parse_request_id(&request_id)?,
+                request_id,
                 target: answered.target,
                 outcome,
                 answered_at_ms,

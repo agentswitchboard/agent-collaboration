@@ -1,5 +1,7 @@
 //! Durable delivery custody in machine_local.sqlite.
-use crate::{MachineLocalStore, RowCorruption, RowCorruptionReason, StoreScan};
+use crate::{
+    MachineLocalStore, RowCorruption, RowCorruptionReason, StoreScan, store_scan::diagnostic_key,
+};
 use serde::{Deserialize, Serialize};
 use sqlite_storage_maintenance::TransactionStart;
 use sqlx::SqliteConnection;
@@ -110,27 +112,59 @@ impl StoredDelivery {
 }
 
 struct InboxRow {
-    message_id: String,
+    message_id: Vec<u8>,
     created_at: i64,
     updated_at: i64,
-    message_json: Option<String>,
-    delivery_state_json: String,
+    message_json: Option<Vec<u8>>,
+    delivery_state_json: Vec<u8>,
+    key_is_text: bool,
+    integer_fault: i64,
+}
+
+// Read SQLite TEXT as bytes before interpreting a stored delivery.
+macro_rules! select_inbox_rows {
+    ($clause:literal $(, $argument:expr)* $(,)?) => {
+        sqlx::query_as!(
+            InboxRow,
+            r#"SELECT CAST(message_id AS BLOB) AS "message_id!: Vec<u8>", created_at, updated_at,
+                    CAST(message_json AS BLOB) AS "message_json?: Vec<u8>",
+                    CAST(delivery_state_json AS BLOB) AS "delivery_state_json!: Vec<u8>",
+                    (typeof(message_id) = 'text') AS "key_is_text!: bool",
+                    CASE WHEN typeof(created_at) <> 'integer' THEN 1
+                         WHEN typeof(updated_at) <> 'integer' THEN 2
+                         ELSE 0 END AS "integer_fault!: i64"
+             FROM inbox_messages "# + $clause
+            $(, $argument)*
+        )
+    };
 }
 
 impl InboxRow {
     fn decode(self) -> Result<StoredDelivery, RowCorruption> {
         use RowCorruptionReason::{
-            InconsistentState, InvalidIdentifier, InvalidJson, KeyMismatch, TimestampOutOfRange,
+            InconsistentState, InvalidIdentifier, InvalidJson, InvalidStorageType, KeyMismatch,
+            TimestampOutOfRange,
         };
         let corrupt = |field, reason| RowCorruption {
-            key: self.message_id.clone(),
+            key: diagnostic_key(&self.message_id),
             field,
             reason,
         };
-        let message_id: MessageId = self
-            .message_id
-            .parse()
-            .map_err(|_| corrupt("message_id", InvalidIdentifier))?;
+        if !self.key_is_text {
+            return Err(corrupt("message_id", InvalidIdentifier));
+        }
+        let message_id: MessageId = std::str::from_utf8(&self.message_id)
+            .ok()
+            .and_then(|key| key.parse().ok())
+            .ok_or_else(|| corrupt("message_id", InvalidIdentifier))?;
+        let invalid_integer = match self.integer_fault {
+            1 => Some("created_at"),
+            2 => Some("updated_at"),
+            _ => None,
+        };
+        if let Some(field) = invalid_integer {
+            return Err(corrupt(field, InvalidStorageType));
+        }
         for (value, field) in [
             (self.created_at, "created_at"),
             (self.updated_at, "updated_at"),
@@ -138,12 +172,12 @@ impl InboxRow {
             workspace_model::Timestamp::from_timestamp_millis(value)
                 .ok_or_else(|| corrupt(field, TimestampOutOfRange))?;
         }
-        let state: InboxRowState = serde_json::from_str(&self.delivery_state_json)
+        let state: InboxRowState = serde_json::from_slice(&self.delivery_state_json)
             .map_err(|_| corrupt("delivery_state_json", InvalidJson))?;
         let message: Option<MessageRecord> = self
             .message_json
             .as_deref()
-            .map(serde_json::from_str)
+            .map(serde_json::from_slice)
             .transpose()
             .map_err(|_| corrupt("message_json", InvalidJson))?;
         if let Some(message) = &message {
@@ -284,10 +318,8 @@ impl InboxStore {
     pub async fn pending_handoffs(
         &mut self,
     ) -> Result<StoreScan<Vec<MessageRecord>>, InboxStoreError> {
-        let rows = sqlx::query_as!(
-            InboxRow,
-            "SELECT message_id, created_at, updated_at, message_json, delivery_state_json FROM inbox_messages
-             WHERE message_json IS NOT NULL ORDER BY created_at, message_id",
+        let rows = select_inbox_rows!(
+            r#"WHERE message_json IS NOT NULL ORDER BY created_at, message_id"#,
         )
         .fetch_all(&mut self.store.connection)
         .await?;
@@ -306,13 +338,11 @@ impl InboxStore {
     pub async fn pending_receipts(
         &mut self,
     ) -> Result<StoreScan<Vec<InboxReceipt>>, InboxStoreError> {
-        let rows = sqlx::query_as!(
-            InboxRow,
-            "SELECT message_id, created_at, updated_at, message_json, delivery_state_json FROM inbox_messages
-             WHERE CASE WHEN json_valid(delivery_state_json)
+        let rows = select_inbox_rows!(
+            r#"WHERE CASE WHEN json_valid(delivery_state_json)
                         THEN json_extract(delivery_state_json, '$.receipt.kind') IS NOT 'confirmed'
                         ELSE 1 END
-             ORDER BY created_at, message_id",
+             ORDER BY created_at, message_id"#,
         )
         .fetch_all(&mut self.store.connection)
         .await?;
@@ -372,13 +402,11 @@ async fn retention_candidates(
 ) -> Result<StoreScan<Vec<StoredDelivery>>, InboxStoreError> {
     // Include malformed JSON and incomplete completion markers so the row
     // decoder can report corruption before any custody is removed.
-    Ok(sqlx::query_as!(
-        InboxRow,
-        "SELECT message_id, created_at, updated_at, message_json, delivery_state_json FROM inbox_messages
-         WHERE CASE WHEN json_valid(delivery_state_json)
+    Ok(select_inbox_rows!(
+            r#"WHERE CASE WHEN json_valid(delivery_state_json)
                THEN json_type(delivery_state_json, '$.ended_at_ms') IS NOT 'null'
                     OR (message_json IS NULL AND json_extract(delivery_state_json, '$.receipt.kind') = 'confirmed')
-               ELSE 1 END",
+               ELSE 1 END"#,
     ).fetch_all(connection).await?.into_iter().map(InboxRow::decode).collect())
 }
 
@@ -397,14 +425,9 @@ async fn read_delivery_row(
     message_id: &MessageId,
 ) -> Result<Option<InboxRow>, InboxStoreError> {
     let key = message_id.as_str();
-    Ok(sqlx::query_as!(
-        InboxRow,
-        "SELECT message_id, created_at, updated_at, message_json, delivery_state_json FROM inbox_messages
-         WHERE message_id = ?",
-        key,
-    )
-    .fetch_optional(connection)
-    .await?)
+    Ok(select_inbox_rows!(r#"WHERE message_id = ?"#, key,)
+        .fetch_optional(connection)
+        .await?)
 }
 
 async fn update_delivery(
