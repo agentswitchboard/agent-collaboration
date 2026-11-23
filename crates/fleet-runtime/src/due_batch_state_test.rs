@@ -151,56 +151,51 @@ async fn a_claim_waits_between_the_decision_and_real_watch_publication() {
     assert_eq!(*retained.borrow(), Some(300_000));
 }
 
-#[test]
-fn overflow_is_protected_during_selection_and_until_the_next_mark() {
+#[tokio::test]
+async fn overflow_is_protected_during_selection_and_until_the_next_mark() {
     let state = DueBatchState::default();
     let spacing = chrono::Duration::seconds(30);
     let time = |at| central_engine_model::EngineTime::from_timestamp_millis(at).unwrap();
-    let request = |at| {
-        state
-            .begin_batch(time(at), spacing, DueBatchTrigger::Request)
-            .unwrap()
-    };
-    let alarm = |at| {
-        state
-            .begin_batch(time(at), spacing, DueBatchTrigger::Alarm)
-            .unwrap()
-    };
-    let first = alarm(300_000).unwrap();
-    assert!(request(331_000).is_none());
+    let request = |at| state.begin_batch(time(at), spacing, DueBatchTrigger::Request);
+    let alarm = |at| state.begin_batch(time(at), spacing, DueBatchTrigger::Alarm);
+    let first = alarm(300_000).await.unwrap().unwrap();
+    assert!(request(331_000).await.unwrap().is_none());
     first.record_selection(true);
-    assert!(alarm(600_000).is_none());
+    assert!(alarm(599_999).await.unwrap().is_none());
+    let mut next_mark = std::pin::pin!(alarm(600_000));
+    tokio::select! {
+        biased;
+        _ = &mut next_mark => panic!("a capped batch was still protected"),
+        () = async {} => {}
+    }
     drop(first);
-    assert!(request(599_999).is_none());
-    assert!(alarm(599_999).is_none());
-    let next = alarm(600_000).unwrap();
+    assert!(request(599_999).await.unwrap().is_none());
+    let next = next_mark.await.unwrap().unwrap();
     next.record_selection(true);
     drop(next);
-    assert!(request(631_000).is_none());
-    assert!(alarm(900_000).is_some());
+    assert!(request(631_000).await.unwrap().is_none());
+    assert!(alarm(900_000).await.unwrap().is_some());
 }
 
-#[test]
-fn a_mark_drive_may_follow_a_nearby_ordinary_claim() {
+#[tokio::test]
+async fn a_due_alarm_waits_for_the_prior_requests_selection_at_the_mark() {
     let state = DueBatchState::default();
     let spacing = chrono::Duration::seconds(30);
     let time = |at| central_engine_model::EngineTime::from_timestamp_millis(at).unwrap();
-    let request = |at| {
-        state
-            .begin_batch(time(at), spacing, DueBatchTrigger::Request)
-            .unwrap()
-    };
-    let alarm = |at| {
-        state
-            .begin_batch(time(at), spacing, DueBatchTrigger::Alarm)
-            .unwrap()
-    };
-    let ordinary = request(298_000).unwrap();
+    let request = |at| state.begin_batch(time(at), spacing, DueBatchTrigger::Request);
+    let alarm = |at| state.begin_batch(time(at), spacing, DueBatchTrigger::Alarm);
+    let ordinary = request(298_000).await.unwrap().unwrap();
+    let mut marked = std::pin::pin!(alarm(300_000));
+    tokio::select! {
+        biased;
+        _ = &mut marked => panic!("the alarm returned while discovery was in flight"),
+        () = async {} => {}
+    }
+    assert!(request(300_000).await.unwrap().is_none());
     ordinary.record_selection(false);
-    drop(ordinary);
-    assert!(request(300_000).is_none());
-    let marked = alarm(300_000).unwrap();
+    let marked = marked.await.unwrap().unwrap();
     marked.record_selection(false);
     drop(marked);
-    assert!(alarm(300_001).is_none());
+    drop(ordinary);
+    assert!(alarm(300_001).await.unwrap().is_none());
 }

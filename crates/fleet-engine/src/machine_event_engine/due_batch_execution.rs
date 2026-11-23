@@ -148,6 +148,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
         let due_batch = self
             .due_batch_state()
             .begin_batch(now, DueBatchPolicy::DEFAULT.spacing, trigger)
+            .await
             .map_err(|reason| AlarmNotPublished {
                 failure: StoreFailure::AlarmUnpublishable { reason },
             })?;

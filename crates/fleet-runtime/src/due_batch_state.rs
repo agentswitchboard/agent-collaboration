@@ -3,7 +3,9 @@ use central_storage::AlarmPublicationFailure;
 use std::sync::{
     Mutex, MutexGuard, PoisonError,
     atomic::{AtomicI64, Ordering},
+    pin::pin,
 };
+use tokio::sync::Notify;
 
 const EMPTY: i64 = i64::MIN;
 const LEFTOVERS: i64 = 1;
@@ -14,6 +16,12 @@ const FLAG_COUNT: i64 = 4;
 pub enum DueBatchTrigger {
     Request,
     Alarm,
+}
+
+enum ClaimOutcome {
+    Started,
+    WaitForEarlierClaim,
+    Deferred,
 }
 
 /// Keeps another batch from discovering the same rows before the cap is known.
@@ -58,6 +66,7 @@ pub struct DueUnitStart {
 pub struct DueBatchState {
     encoded: AtomicI64,
     publication_order: Mutex<()>,
+    claim_released: Notify,
     #[cfg(feature = "test-support")]
     claim_waiting: tokio::sync::watch::Sender<usize>,
     #[cfg(feature = "test-support")]
@@ -72,6 +81,7 @@ impl Default for DueBatchState {
         Self {
             encoded: AtomicI64::new(EMPTY),
             publication_order: Mutex::new(()),
+            claim_released: Notify::new(),
             #[cfg(feature = "test-support")]
             claim_waiting: tokio::sync::watch::channel(0).0,
             #[cfg(feature = "test-support")]
@@ -106,16 +116,25 @@ impl DueBatchState {
         snapshot(self.encoded.load(Ordering::Acquire))
     }
 
-    pub fn begin_batch(
+    pub async fn begin_batch(
         &self,
         now: EngineTime,
         spacing: chrono::Duration,
         trigger: DueBatchTrigger,
     ) -> Result<Option<DueBatchClaim<'_>>, AlarmPublicationFailure> {
         let start = now.timestamp_millis();
-        Ok(self
-            .claim(now, spacing, trigger, true)?
-            .then(|| DueBatchClaim { state: self, start }))
+        loop {
+            let mut released = pin!(self.claim_released.notified());
+            if matches!(trigger, DueBatchTrigger::Alarm) {
+                // Subscribe before checking the claim so its release cannot be missed.
+                released.as_mut().enable();
+            }
+            match self.claim(now, spacing, trigger, true)? {
+                ClaimOutcome::Started => return Ok(Some(DueBatchClaim { state: self, start })),
+                ClaimOutcome::WaitForEarlierClaim => released.await,
+                ClaimOutcome::Deferred => return Ok(None),
+            }
+        }
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -126,7 +145,10 @@ impl DueBatchState {
     ) -> Result<bool, AlarmPublicationFailure> {
         let now = EngineTime::from_timestamp_millis(now_unix_millis)
             .ok_or(AlarmPublicationFailure::NowOutOfRange)?;
-        self.claim(now, spacing, DueBatchTrigger::Request, false)
+        Ok(matches!(
+            self.claim(now, spacing, DueBatchTrigger::Request, false)?,
+            ClaimOutcome::Started
+        ))
     }
 
     fn claim(
@@ -135,27 +157,33 @@ impl DueBatchState {
         spacing: chrono::Duration,
         trigger: DueBatchTrigger,
         protect: bool,
-    ) -> Result<bool, AlarmPublicationFailure> {
+    ) -> Result<ClaimOutcome, AlarmPublicationFailure> {
         if !supported_time(now) {
             return Err(AlarmPublicationFailure::NowOutOfRange);
         }
         let _publication = self.claim_lock();
         let prior = self.encoded.load(Ordering::Acquire);
         let current = snapshot(prior);
-        if prior & PROTECTED != 0 {
-            return Ok(false);
-        }
         if let Some(start) = current.last_start_unix_millis {
             let start = EngineTime::from_timestamp_millis(start)
                 .ok_or(AlarmPublicationFailure::NowOutOfRange)?;
             let reached_next_mark = next_five_minute_mark(start).is_ok_and(|mark| now >= mark);
+            if prior & PROTECTED != 0 {
+                return Ok(
+                    if matches!(trigger, DueBatchTrigger::Alarm) && reached_next_mark {
+                        ClaimOutcome::WaitForEarlierClaim
+                    } else {
+                        ClaimOutcome::Deferred
+                    },
+                );
+            }
             let admitted = match (current.leftovers_pending, trigger) {
                 (true, DueBatchTrigger::Request | DueBatchTrigger::Alarm) => reached_next_mark,
                 (false, DueBatchTrigger::Alarm) => reached_next_mark || now - start >= spacing,
                 (false, DueBatchTrigger::Request) => now - start >= spacing,
             };
             if !admitted {
-                return Ok(false);
+                return Ok(ClaimOutcome::Deferred);
             }
         }
         let now_unix_millis = now.timestamp_millis();
@@ -167,7 +195,7 @@ impl DueBatchState {
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
             .push(now_unix_millis);
-        Ok(true)
+        Ok(ClaimOutcome::Started)
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -182,11 +210,12 @@ impl DueBatchState {
         leftovers: Option<bool>,
         protect: bool,
     ) -> bool {
-        let _publication = self
+        let publication = self
             .publication_order
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let current = self.snapshot();
+        let prior = self.encoded.load(Ordering::Acquire);
+        let current = snapshot(prior);
         if current.last_start_unix_millis != Some(started_at_unix_millis) {
             return false;
         }
@@ -198,6 +227,10 @@ impl DueBatchState {
             return false;
         };
         self.encoded.store(next, Ordering::Release);
+        drop(publication);
+        if prior & PROTECTED != 0 && !protect {
+            self.claim_released.notify_waiters();
+        }
         true
     }
 
