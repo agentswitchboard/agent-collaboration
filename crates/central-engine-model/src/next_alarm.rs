@@ -57,7 +57,13 @@ pub fn next_alarm(inputs: &AlarmInputs) -> AlarmDecision {
     if let Some(mark) = inputs.retained_mark
         && supported_time(mark)
         && on_five_minute_grid(mark)
-        && earliest_due <= mark
+        && (earliest_due <= mark
+            || inputs.leftovers_beyond_cap
+                && inputs.last_batch_start.is_some_and(|started| {
+                    started
+                        .checked_add_signed(DueBatchPolicy::DEFAULT.look_ahead)
+                        .is_some_and(|cutoff| earliest_due <= cutoff)
+                }))
         && mark <= inputs.now
         && inputs.last_batch_start.is_none_or(|start| start < mark)
     {

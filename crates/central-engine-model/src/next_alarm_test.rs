@@ -81,6 +81,26 @@ fn due_unclaimed_retained_mark_survives_recomputation() {
 }
 
 #[test]
+fn a_capped_lookahead_tail_preserves_the_armed_continuation() {
+    let pending = AlarmInputs {
+        now: time(300_001),
+        retained_mark: Some(time(300_000)),
+        last_batch_start: Some(time(298_000)),
+        leftovers_beyond_cap: true,
+        earliest_on_grid_due: Some(time(345_000)),
+        ..inputs()
+    };
+    assert_eq!(decide(pending), AlarmDecision::SetAt(time(300_000)));
+    assert_eq!(
+        decide(AlarmInputs {
+            earliest_on_grid_due: Some(time(349_000)),
+            ..pending
+        }),
+        AlarmDecision::SetAt(time(600_000))
+    );
+}
+
+#[test]
 fn future_grid_time_is_kept_and_due_or_past_time_moves_to_next_mark() {
     for (due, expected) in [
         (299_999, 600_000),
