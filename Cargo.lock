@@ -5851,6 +5851,7 @@ dependencies = [
 name = "switchboard-message-custody"
 version = "0.1.158"
 dependencies = [
+ "central-link-client",
  "central-link-protocol",
  "chrono",
  "hegeltest",
@@ -5858,7 +5859,9 @@ dependencies = [
  "runtime-primitives",
  "state-machine-core",
  "switchboard-machine-core-store",
+ "tempfile",
  "thiserror 2.0.18",
+ "tokio",
  "workspace-ids",
  "workspace-model",
 ]

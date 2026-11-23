@@ -7,6 +7,7 @@ publish = false
 autotests = false
 
 [dependencies]
+central-link-client = { path = "../central-link-client" }
 central-link-protocol.workspace = true
 router-clock.workspace = true
 runtime-primitives.workspace = true
@@ -17,9 +18,15 @@ workspace-ids.workspace = true
 workspace-model.workspace = true
 
 [dev-dependencies]
+chrono.workspace = true
 hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
 router-clock = { workspace = true, features = ["test-support"] }
-chrono.workspace = true
+tempfile = "3.27.0"
+tokio.workspace = true
 
 [lints]
 workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
