@@ -11,7 +11,7 @@ use collaboration_central_core::{LinkCallCompletion, MacCallResult, ValidatedMac
 use fleet_approvals::{ApprovalHolderAdmission, CommittedApprovalOffer};
 use fleet_lent_transaction::CentralTransaction;
 use fleet_rpc::CallFailure;
-use futures_util::future::{Either, select};
+use futures_util::future::select;
 use sqlx_core::{
     arguments::IntoArguments, column::ColumnIndex, database::Database, decode::Decode,
     encode::Encode, types::Type,
@@ -20,9 +20,13 @@ use std::{future::Future, pin::Pin, sync::Arc};
 
 type EndingFuture<T> = Pin<Box<dyn Future<Output = T> + Send + 'static>>;
 
+pub type ApplyEndingAnswer =
+    Box<dyn FnOnce(ValidatedMachineConnection) -> LinkCallCompletion + Send>;
+
 pub struct SelectedApprovalSocket {
     pub machine: ValidatedMachineConnection,
     pub ended: LinkCallCompletion,
+    pub apply_answer: Box<dyn FnOnce(ApplyEndingAnswer) -> LinkCallCompletion + Send>,
     pub send: Box<
         dyn FnOnce(Box<DeliverEndingRequest>) -> EndingFuture<MacCallResult<DeliverEndingRpc>>
             + Send,
@@ -165,43 +169,54 @@ where
                 return;
             }
         };
+        let delivery = self.clone();
+        let apply_answer = (selected.apply_answer)(Box::new(move |current| {
+            Box::pin(async move {
+                delivery
+                    .apply_correlated_answer(current, run, request, answer)
+                    .await;
+            })
+        }));
+        let _ = select(selected.ended, apply_answer).await;
+    }
+
+    async fn apply_correlated_answer(
+        &self,
+        machine: ValidatedMachineConnection,
+        run: RouterRunId,
+        request: Box<DeliverEndingRequest>,
+        answer: approval_request_protocol::DeliverEndingReply,
+    ) {
         let apply = self.application.apply_holder(
-            selected.machine,
+            machine,
             run,
             HolderCommand::DeliveryAnswer {
                 request,
                 reply: answer,
             },
         );
-        match select(selected.ended, Box::pin(apply)).await {
-            Either::Right((
-                Ok(HolderApplied::Answer {
-                    reply: HolderReply::DeliveryAnswer,
-                    ..
-                }),
-                _,
-            )) => {
+        match apply.await {
+            Ok(HolderApplied::Answer {
+                reply: HolderReply::DeliveryAnswer,
+                ..
+            }) => {
                 #[cfg(feature = "test-support")]
                 self.transport.fixture_delivery_answer_applied().await;
             }
-            Either::Right((Err(failure), _)) => {
+            Err(failure) => {
                 tracing::warn!(?failure, "could not apply the approval ending answer");
             }
-            Either::Right((Ok(HolderApplied::AuthorityLapsed(cause)), _)) => {
+            Ok(HolderApplied::AuthorityLapsed(cause)) => {
                 tracing::debug!(?cause, "approval ending answer lost link authority");
             }
-            Either::Right((
-                Ok(HolderApplied::Answer {
-                    reply:
-                        HolderReply::Register(_)
-                        | HolderReply::Raise(_)
-                        | HolderReply::Stop(_)
-                        | HolderReply::Recover(_),
-                    ..
-                }),
-                _,
-            )) => tracing::error!("approval ending application returned the wrong reply"),
-            Either::Left(_) => {}
+            Ok(HolderApplied::Answer {
+                reply:
+                    HolderReply::Register(_)
+                    | HolderReply::Raise(_)
+                    | HolderReply::Stop(_)
+                    | HolderReply::Recover(_),
+                ..
+            }) => tracing::error!("approval ending application returned the wrong reply"),
         }
     }
 }

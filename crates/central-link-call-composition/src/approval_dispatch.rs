@@ -13,7 +13,7 @@ use central_link_protocol::{
 };
 use central_storage::StoreFailure;
 use collaboration_central_core::{
-    CentralCallWork, TargetCheckedCentralCall, ValidatedMachineConnection,
+    CentralCallWork, TargetCheckedCentralCall, TypedCallCarrier, ValidatedMachineConnection,
     recheck_lent_link_authority,
 };
 use fleet_approvals::{
@@ -141,7 +141,7 @@ where
         &'call self,
         machine: &'call ValidatedMachineConnection,
         request: Envelope<R::Target, R::Request>,
-        run: RouterRunId,
+        (claimed_run, carrier): (RouterRunId, &'call TypedCallCarrier),
         transport: Arc<dyn crate::ApprovalEndingTransport>,
         command: impl FnOnce(R::Request) -> HolderCommand + Send + 'static,
         wrap: impl FnOnce(ApprovalServiceTarget, HolderReply) -> Option<CentralCallReply>
@@ -156,8 +156,41 @@ where
                 Ok(checked) => checked.into_body(),
                 Err(reason) => return Ok(refused(reason)),
             };
+            let command = command(body);
+            let TypedCallCarrier::Approval { registered_run } = carrier else {
+                return Err(corrupt("typed_approval_call.physical_carrier"));
+            };
+            let run = match (&command, registered_run) {
+                (HolderCommand::Register, None) => claimed_run,
+                (_, Some(bound)) if *bound == claimed_run => bound.clone(),
+                (HolderCommand::Register | HolderCommand::Raise(_) | HolderCommand::Stop(_), _) => {
+                    let reply = match command {
+                        HolderCommand::Register => {
+                            HolderReply::Register(RegisterRunReply::RunNotRegistered {})
+                        }
+                        HolderCommand::Raise(_) => {
+                            HolderReply::Raise(RaiseReply::AuthorityRefused {
+                                refusal: RunRefusal::RunNotRegistered {},
+                            })
+                        }
+                        HolderCommand::Stop(_) => HolderReply::Stop(StopReply::AuthorityRefused {
+                            refusal: RunRefusal::RunNotRegistered {},
+                        }),
+                        HolderCommand::Recover | HolderCommand::DeliveryAnswer { .. } => {
+                            return Err(corrupt("typed_approval_call.direction"));
+                        }
+                    };
+                    return Ok(TypedCallResult::Answered {
+                        reply: wrap(target, reply).ok_or(StoreFailure::Unavailable)?,
+                    }
+                    .into());
+                }
+                (HolderCommand::Recover | HolderCommand::DeliveryAnswer { .. }, _) => {
+                    return Err(corrupt("typed_approval_call.direction"));
+                }
+            };
             let applied = self
-                .apply_holder(machine.clone(), run.clone(), command(body))
+                .apply_holder(machine.clone(), run.clone(), command)
                 .await;
             match applied {
                 Ok(HolderApplied::Answer { reply, offers }) => {
@@ -250,7 +283,9 @@ where
         }
         let holder = ApprovalHolderAdmission::for_connection(&machine, run);
         let address = ApprovalReplyAddress::Holder(holder.holder_scope().clone());
-        let applying_clock = ApprovalApplyingClock(applying_at);
+        let applying_clock = ApprovalApplyingClock(
+            crate::approval_applying_time::observe_applying_time(loan, applying_at).await?,
+        );
         let mut row_ids = ApprovalApplyingIds(ids.as_ref());
         let mut store = ApprovalApplyingStore::new(
             &scope,
@@ -307,7 +342,7 @@ fn refused(reason: LinkCallRefusal) -> CentralCallWork {
     TypedCallResult::Refused { reason }.into()
 }
 
-fn report_approval_failure(
+pub(crate) fn report_approval_failure(
     failure: ApprovalDispatchFailure,
 ) -> Result<CentralCallWork, StoreFailure> {
     match failure {

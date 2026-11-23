@@ -7,7 +7,9 @@ use crate::{
 };
 use approval_request_protocol::{Answer, SessionCallDecision};
 use central_storage::{ReadOutcome, Statement, StoreFailure};
-use collaboration_central_core::{FixtureApprovalDecision, LinkCallCompletion};
+use collaboration_central_core::{
+    FixtureApprovalAnswer, FixtureApprovalDecision, LinkCallCompletion,
+};
 use fleet_approvals::{
     ActorApprovalSessionFacts, AdmittedDecider, ApprovalActor, ApprovalCommitScope,
     ApprovalDecideInput, ApprovalDecisionReply, ApprovalEnrollmentScope,
@@ -102,7 +104,9 @@ where
             transaction,
             person: decision.person_id.clone(),
         };
-        let sampled = ApprovalApplyingClock(clock.now());
+        let sampled = ApprovalApplyingClock(
+            crate::approval_applying_time::observe_applying_time(&mut fixture, clock.now()).await?,
+        );
         let mut row_ids = ApprovalApplyingIds(ids.as_ref());
         let mut store = ApprovalStore::new(
             &scope,
@@ -121,8 +125,14 @@ where
                 ApprovalDecideInput {
                     request_id: decision.request_id,
                     operation_id: decision.operation_id,
-                    value: Answer::UnprovenCall {
-                        decision: SessionCallDecision::Allow,
+                    value: match decision.answer {
+                        FixtureApprovalAnswer::HeldStart => Answer::UnprovenCall {
+                            decision: SessionCallDecision::Allow,
+                        },
+                        FixtureApprovalAnswer::ProviderApproval => Answer::Approval {
+                            option_id: approval_request_protocol::OfferedOptionId::new(1)
+                                .map_err(|_| corrupt("approval_fixture.option"))?,
+                        },
                     },
                 },
             )

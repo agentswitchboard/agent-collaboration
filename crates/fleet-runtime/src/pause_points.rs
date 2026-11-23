@@ -33,6 +33,8 @@ pub enum PausePoint {
     ApprovalEndingNeverReached,
     ApprovalEndingAnswerApplied,
     BeforeApprovalEndingWrite,
+    BeforeApprovalEndingEnqueue,
+    BeforeApprovalCarrierTurn,
     AfterIdleExpiryCommit,
     AfterIdleRenewalPlatformSendError,
     BeforePrivateEnrollmentInvalidation,

@@ -2,11 +2,11 @@
 use crate::ConformanceResult as Result;
 use approval_request_protocol::{
     DeliverEndingReply, DeliverEndingRequest, Raise, RaiseReceipt, RaiseReply, RegisterRunReply,
-    RegisterRunRequest, RouterRunId, RunRefusal, StopReceiptEnding, StopReply, StopRequest,
+    RegisterRunRequest, RouterRunId, StopReceiptEnding, StopReply, StopRequest,
 };
 use central_link_protocol::{
     CentralLinkRpc, CorrelationId, DataFrame, FrameDirection, LinkCallRefusal, LinkFrame, MacCall,
-    MacLinkRpc, MachineLinkCloseCode, TokenRenewalResult, TypedCallResult,
+    MacLinkRpc, TokenRenewalResult, TypedCallResult,
     approval_rpc::{
         ApprovalHolderTarget, ApprovalServiceTarget, DeliverEndingRpc, RaiseApprovalRpc,
         RegisterRunRpc, StopApprovalRpc,
@@ -24,18 +24,41 @@ use std::future::Future;
 pub const ROUTER_RUN: &str = "019f0000-0000-7000-8000-000000005410";
 pub const FIXTURE_DECIDER: &str = "019f0000-0000-7000-8000-000000005413";
 pub const FIXTURE_DECISION_OPERATION: &str = "019f0000-0000-7000-8000-000000005414";
-const SECOND_RUN: &str = "019f0000-0000-7000-8000-000000005411";
 const CORRELATION: &str = "019f0000-0000-7000-8000-000000005412";
+
+#[derive(Clone, Copy)]
+pub enum EnrollmentLoginEnd {
+    Revoke,
+    Supersede,
+    Idle,
+}
 
 pub trait ApprovalLinkFixture {
     fn target(&self) -> Result<ApprovalHolderTarget>;
+    fn now_seconds(&self) -> i64;
+    fn reopen_after_clock_rollback(&self) -> impl Future<Output = Result<()>> {
+        async { Ok(()) }
+    }
+    fn set_wall_seconds(&self, seconds: i64) -> impl Future<Output = Result<()>>;
     fn connect(&self) -> impl Future<Output = Result<WebSocket>>;
     fn read(&self, statement: Statement) -> impl Future<Output = Result<ReadOutcome>>;
     fn advance(&self, seconds: u64) -> impl Future<Output = Result<()>>;
     fn refresh(&self) -> impl Future<Output = Result<String>>;
     fn observe_due_alarm(&self) -> impl Future<Output = Result<()>>;
     fn fail_next_applying_write(&self) -> impl Future<Output = Result<()>>;
+    fn fixture_write(&self, statement: Statement) -> impl Future<Output = Result<()>>;
+    fn decide_provider_approval(
+        &self,
+        request_id: &workspace_ids::ApprovalRequestId,
+    ) -> impl Future<Output = Result<()>>;
+    fn hold_delivery_before_write(&self) -> impl Future<Output = Result<()>>;
+    fn wait_delivery_before_write(&self) -> impl Future<Output = Result<()>>;
+    fn release_delivery_before_write(&self) -> impl Future<Output = Result<()>>;
     fn end_enrollment(&self) -> impl Future<Output = Result<()>>;
+    fn end_enrollment_through_login(
+        &self,
+        event: EnrollmentLoginEnd,
+    ) -> impl Future<Output = Result<()>>;
     fn hold_delivery_answer(&self) -> impl Future<Output = Result<()>>;
     fn observe_delivery_answer(&self) -> impl Future<Output = Result<()>>;
 }
@@ -83,68 +106,6 @@ pub async fn registered_stop_and_replay(fixture: &impl ApprovalLinkFixture) -> R
     Ok(())
 }
 
-pub async fn approval_authority_refusals_leave_store_unchanged(
-    fixture: &impl ApprovalLinkFixture,
-) -> Result<()> {
-    let target = fixture.target()?;
-    let organization = &target.organization_id;
-    let mut socket = fixture.connect().await?;
-    assert_eq!(
-        register_run(&mut socket, organization, &target.router_run).await?,
-        RegisterRunReply::Registered {}
-    );
-    // Replacing the socket and registering a distinct run retires the first.
-    socket.close(CloseCode::Normal, None).await?;
-    let mut socket = fixture.connect().await?;
-    let replacement: RouterRunId = SECOND_RUN.parse()?;
-    assert_eq!(
-        register_run(&mut socket, organization, &replacement).await?,
-        RegisterRunReply::Registered {}
-    );
-    let before = snapshot(fixture).await?;
-    assert_eq!(
-        register_run(&mut socket, organization, &target.router_run).await?,
-        RegisterRunReply::RunRetired {}
-    );
-    assert_eq!(
-        raise(
-            &mut socket,
-            organization,
-            held_start(&target.router_run, 0)?
-        )
-        .await?,
-        RaiseReply::AuthorityRefused {
-            refusal: RunRefusal::RunRetired {}
-        }
-    );
-    assert_eq!(snapshot(fixture).await?, before);
-
-    // End the stored enrollment while retaining the old socket to observe its refusal.
-    fixture.end_enrollment().await?;
-    let before = snapshot(fixture).await?;
-    let result = central_call::<RegisterRunRpc>(
-        &mut socket,
-        organization,
-        RegisterRunRequest {
-            router_run: replacement,
-        },
-    )
-    .await?;
-    assert_eq!(
-        result,
-        TypedCallResult::Refused {
-            reason: LinkCallRefusal::AuthorityLapsed {
-                cause: MachineLinkCloseCode::Revoked
-            }
-        }
-    );
-    assert!(
-        matches!(socket.next().await, Some(Ok(Message::Close { code, .. })) if u16::from(code) == MachineLinkCloseCode::Revoked.code())
-    );
-    assert_eq!(snapshot(fixture).await?, before);
-    Ok(())
-}
-
 #[derive(Clone, Copy)]
 pub enum DeadlineDelivery {
     Connected,
@@ -158,6 +119,13 @@ pub async fn approval_deadline_delivery(
 ) -> Result<()> {
     let target = fixture.target()?;
     let organization = &target.organization_id;
+    let capacity = matches!(scenario, DeadlineDelivery::StopOwedAtCapacity);
+    if capacity {
+        let remaining = u64::try_from((-fixture.now_seconds()).rem_euclid(300))?;
+        if remaining != 0 {
+            fixture.advance(remaining).await?;
+        }
+    }
     let mut socket = fixture.connect().await?;
     assert_eq!(
         register_run(&mut socket, organization, &target.router_run).await?,
@@ -165,7 +133,6 @@ pub async fn approval_deadline_delivery(
     );
     let first = held_start(&target.router_run, 0)?;
     let receipt = require_receipt(raise(&mut socket, organization, first.clone()).await?)?;
-    let capacity = matches!(scenario, DeadlineDelivery::StopOwedAtCapacity);
     if capacity {
         fixture.fail_next_applying_write().await?;
         assert_eq!(
@@ -179,9 +146,13 @@ pub async fn approval_deadline_delivery(
             [text("waiting"), SqlValue::Null]
         );
     }
+    let deadline = receipt.window.deadline().timestamp();
+    let mark = deadline + (-deadline).rem_euclid(300);
     if matches!(scenario, DeadlineDelivery::RecoverAfterReconnect) {
         socket.close(CloseCode::Normal, None).await?;
-        fixture.advance(3600).await?;
+        fixture
+            .advance(u64::try_from(mark - fixture.now_seconds())?)
+            .await?;
         fixture.observe_due_alarm().await?;
         assert_eq!(
             read_request(fixture, &first).await?,
@@ -217,9 +188,19 @@ pub async fn approval_deadline_delivery(
             read_request(fixture, &first).await?,
             [text("waiting"), SqlValue::Null]
         );
-        let remaining =
-            receipt.window.deadline().timestamp() - receipt.window.raised_at().timestamp() - 3500;
-        fixture.advance(u64::try_from(remaining)?).await?;
+        if mark > deadline {
+            fixture
+                .advance(u64::try_from(deadline - fixture.now_seconds())?)
+                .await?;
+            assert_eq!(
+                read_request(fixture, &first).await?,
+                [text("waiting"), SqlValue::Null]
+            );
+            heartbeat(&mut socket).await?;
+        }
+        fixture
+            .advance(u64::try_from(mark - fixture.now_seconds())?)
+            .await?;
         fixture.observe_due_alarm().await?;
     }
     let (correlation, offered) = next_ending(&mut socket, &target).await?;
@@ -349,7 +330,10 @@ pub async fn receive_fixture_decision(
     observe_received(fixture, request).await
 }
 
-async fn observe_received(fixture: &impl ApprovalLinkFixture, request: &Raise) -> Result<()> {
+pub(crate) async fn observe_received(
+    fixture: &impl ApprovalLinkFixture,
+    request: &Raise,
+) -> Result<()> {
     // The answer application runs outside the socket pump. Read from the owning
     // store while keeping the injected clock fixed.
     for _ in 0..128 {
@@ -402,7 +386,7 @@ pub fn require_receipt(reply: RaiseReply) -> Result<RaiseReceipt> {
     Ok(receipt)
 }
 
-async fn stop(
+pub(crate) async fn stop(
     socket: &mut WebSocket,
     organization: &OrganizationId,
     request: StopRequest,
@@ -410,12 +394,23 @@ async fn stop(
     central_call::<StopApprovalRpc>(socket, organization, request).await
 }
 
-fn stop_request(raise: &Raise) -> Result<StopRequest> {
-    Ok(StopRequest::UnprovenCall {
-        request_id: raise.request_id().clone(),
-        router_run: raise.router_run().clone(),
-        contents_digest: raise.contents_digest()?,
-        cause: approval_request_protocol::CallStopCause::CallWithdrawn,
+pub(crate) fn stop_request(raise: &Raise) -> Result<StopRequest> {
+    let request_id = raise.request_id().clone();
+    let router_run = raise.router_run().clone();
+    let contents_digest = raise.contents_digest()?;
+    Ok(match raise {
+        Raise::ProviderApproval { .. } | Raise::ProviderQuestion { .. } => StopRequest::Provider {
+            request_id,
+            router_run,
+            contents_digest,
+            cause: approval_request_protocol::ProviderStopCause::TurnStopped,
+        },
+        Raise::UnprovenCall { .. } => StopRequest::UnprovenCall {
+            request_id,
+            router_run,
+            contents_digest,
+            cause: approval_request_protocol::CallStopCause::CallWithdrawn,
+        },
     })
 }
 
@@ -464,7 +459,7 @@ pub async fn heartbeat(socket: &mut WebSocket) -> Result<()> {
     Ok(())
 }
 
-async fn renew(socket: &mut WebSocket, token: String) -> Result<()> {
+pub(crate) async fn renew(socket: &mut WebSocket, token: String) -> Result<()> {
     let correlation: CorrelationId = CORRELATION.parse()?;
     send_frame(
         socket,
@@ -500,7 +495,7 @@ async fn send_frame(socket: &mut WebSocket, frame: LinkFrame) -> Result<()> {
     Ok(())
 }
 
-async fn central_call<R: CentralLinkRpc<Target = ApprovalServiceTarget>>(
+pub(crate) async fn central_call<R: CentralLinkRpc<Target = ApprovalServiceTarget>>(
     socket: &mut WebSocket,
     organization: &OrganizationId,
     body: R::Request,
@@ -568,7 +563,7 @@ pub async fn read_request(
     }
 }
 
-async fn snapshot(fixture: &impl ApprovalLinkFixture) -> Result<Vec<Vec<SqlValue>>> {
+pub(crate) async fn snapshot(fixture: &impl ApprovalLinkFixture) -> Result<Vec<Vec<SqlValue>>> {
     Ok(fixture
         .read(Statement {
             sql: "SELECT * FROM approval_requests ORDER BY request_id",

@@ -18,6 +18,7 @@ export const testSupportMarkers: readonly string[] = [
   "typed-mac-call",
   "typed-ending-call",
   "/test/typed-mac-waiting",
+  "/test/fixture-mac-ending-transport",
   "/test/approval-fixture-decide",
   "/test/drop-approval-before-write",
   "/test/fail-approval-after-write",

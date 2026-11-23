@@ -31,9 +31,40 @@ impl From<TypedCallResult<CentralCallReply>> for CentralCallWork {
 #[derive(serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct FixtureApprovalDecision {
+    #[serde(default)]
+    pub answer: FixtureApprovalAnswer,
     pub request_id: workspace_ids::ApprovalRequestId,
     pub operation_id: workspace_ids::RequestId,
     pub person_id: workspace_ids::PersonId,
+}
+
+#[cfg(feature = "test-support")]
+#[derive(Clone, Copy, Default, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FixtureApprovalAnswer {
+    #[default]
+    HeldStart,
+    ProviderApproval,
+}
+
+/// The host holds the organization turn while using this physical socket's binding.
+pub enum TypedCallCarrier {
+    Session,
+    Approval {
+        registered_run: Option<workspace_ids::RouterRunId>,
+    },
+}
+
+pub fn is_approval_holder_call(request: Option<&CentralCall>) -> bool {
+    match request {
+        Some(CentralCall::RegisterRun(_) | CentralCall::Raise(_) | CentralCall::Stop(_)) => true,
+        Some(
+            CentralCall::CreateFleetSession(_)
+            | CentralCall::BindFleetSession(_)
+            | CentralCall::EndFleetSession(_),
+        )
+        | None => false,
+    }
 }
 
 /// Dispatches a registered call using the machine identity verified on this connection.
@@ -47,6 +78,13 @@ pub trait CentralLinkDispatcher: Send + Sync {
     {
         Box::pin(async { Err(StoreFailure::Unavailable) })
     }
+
+    fn end_approval_enrollment(
+        &self,
+        organization: fleet_identity_protocol::OrganizationId,
+        invalidation: fleet_contracts::EnrollmentInvalidation,
+        statements: Vec<central_storage::GuardedStatement>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreFailure>> + Send + '_>>;
 
     fn apply_approval_deadline(
         &self,
@@ -64,5 +102,6 @@ pub trait CentralLinkDispatcher: Send + Sync {
         &'call self,
         machine: &'call ValidatedMachineConnection,
         request: CentralCall,
+        carrier: TypedCallCarrier,
     ) -> Pin<Box<dyn Future<Output = Result<CentralCallWork, StoreFailure>> + Send + 'call>>;
 }

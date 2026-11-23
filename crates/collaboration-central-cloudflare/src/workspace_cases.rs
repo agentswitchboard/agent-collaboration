@@ -54,6 +54,8 @@ enum Point {
     ApprovalEndingNeverReached,
     ApprovalEndingAnswerApplied,
     BeforeApprovalEndingWrite,
+    BeforeApprovalEndingEnqueue,
+    BeforeApprovalCarrierTurn,
     AfterIdleExpiryCommit,
     AfterIdleRenewalPlatformSendError,
     BeforePrivateEnrollmentInvalidation,
@@ -87,6 +89,8 @@ impl From<Point> for PausePoint {
             Point::ApprovalEndingNeverReached => Self::ApprovalEndingNeverReached,
             Point::ApprovalEndingAnswerApplied => Self::ApprovalEndingAnswerApplied,
             Point::BeforeApprovalEndingWrite => Self::BeforeApprovalEndingWrite,
+            Point::BeforeApprovalEndingEnqueue => Self::BeforeApprovalEndingEnqueue,
+            Point::BeforeApprovalCarrierTurn => Self::BeforeApprovalCarrierTurn,
             Point::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
             Point::AfterIdleRenewalPlatformSendError => Self::AfterIdleRenewalPlatformSendError,
             Point::BeforePrivateEnrollmentInvalidation => Self::BeforePrivateEnrollmentInvalidation,
@@ -154,11 +158,17 @@ pub(crate) async fn route(
         )
         .await?));
     }
-    if operation == "typed-ending-call" {
+    let ending_path = match operation {
+        "typed-ending-call" => Some(super::workspace_typed_link::FIXTURE_ENDING_CALL_PATH),
+        "typed-ending-production-ingress" => Some(super::workspace_typed_link::MACHINE_CALL_PATH),
+        _ => None,
+    };
+    if let Some(path) = ending_path {
         return Ok(Ok(super::workspace_typed_link::probe_ending(
             env,
             organization,
             request,
+            path,
         )
         .await?));
     }

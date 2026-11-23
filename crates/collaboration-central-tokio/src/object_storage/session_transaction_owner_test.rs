@@ -142,7 +142,13 @@ async fn reject_foreign_executor(fixture: &MachineLinkFixture) -> Result<()> {
             session_kind: CreateSessionKind::Ordinary {},
         },
     });
-    let result = dispatcher.dispatch(&machine, call).await;
+    let result = dispatcher
+        .dispatch(
+            &machine,
+            call,
+            collaboration_central_core::TypedCallCarrier::Session,
+        )
+        .await;
     if !matches!(result, Err(StoreFailure::Corrupt { reason: CorruptReason::BadValue { ref column } }) if column == "signin_organization_identity.id")
     {
         return Err("the foreign executor returned an unexpected outcome".into());

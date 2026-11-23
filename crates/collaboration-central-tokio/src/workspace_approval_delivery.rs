@@ -82,7 +82,8 @@ impl ApprovalEndingTransport for NativeApprovalDelivery {
         &self,
         target: ApprovalHolderTarget,
     ) -> Pin<Box<dyn Future<Output = Result<SelectedApprovalSocket, CallFailure>> + Send>> {
-        let socket = self.registry.select_approval_socket(&target);
+        let registry = self.registry.clone();
+        let socket = registry.select_approval_socket(&target);
         let runtime = self.runtime.get().and_then(Weak::upgrade);
         let clock = self.clock.clone();
         Box::pin(async move {
@@ -93,12 +94,40 @@ impl ApprovalEndingTransport for NativeApprovalDelivery {
             else {
                 return Err(CallFailure::NeverReached);
             };
+            let answer_runtime = runtime.clone();
+            let answer_target = target.clone();
+            let answer_sender = sender.clone();
             Ok(SelectedApprovalSocket {
                 machine,
                 ended: Box::pin(ended.cancelled_owned()),
+                apply_answer: Box::new(move |apply| {
+                    Box::pin(async move {
+                        let _turn = answer_runtime
+                            .runtime()
+                            .take_central_turn_for_admission()
+                            .await;
+                        let Some(attachment) =
+                            registry.current_approval_attachment(&answer_target, &answer_sender)
+                        else {
+                            return;
+                        };
+                        if let Ok(Ok(current)) = answer_runtime
+                            .restore_machine_in_held_turn(&attachment)
+                            .await
+                        {
+                            apply(current).await;
+                        }
+                    })
+                }),
                 send: Box::new(move |request| {
                     Box::pin(async move {
                         let deadline = clock.monotonic_now().after(TYPED_LINK_CALL_TIMEOUT);
+                        #[cfg(feature = "test-support")]
+                        runtime
+                            .runtime()
+                            .pause_points()
+                            .reached_central(fleet_runtime::PausePoint::BeforeApprovalEndingEnqueue)
+                            .await;
                         let correlation = FreshCorrelationId::mint_at(clock.now().unix_millis());
                         let call = DeliverEndingRpc::request(Envelope {
                             target: target.clone(),

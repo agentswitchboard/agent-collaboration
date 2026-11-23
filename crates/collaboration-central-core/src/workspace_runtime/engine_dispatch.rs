@@ -78,6 +78,9 @@ impl<H: CentralStore, S: WorkspaceStores> TimedDueDispatch<WorkspaceRuntime<H, S
         let store = runtime.execution.statement_host();
         match kind {
             DueKind::ApprovalRequestExpiry => {
+                let cutoff = approval_due_cutoff(store, runtime.execution.organization(), cutoff)
+                    .await
+                    .map_err(DueDiscoveryError::ReadFailed)?;
                 fleet_engine::read_due_rows(
                     store,
                     central_engine_model::DueListKind::ApprovalExpiries,
@@ -314,4 +317,18 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         }
         Ok(count)
     }
+}
+
+async fn approval_due_cutoff(
+    store: &impl CentralStore,
+    organization: &fleet_identity_protocol::OrganizationId,
+    batch_start: EngineTime,
+) -> Result<EngineTime, central_storage::StoreFailure> {
+    let result = store
+        .read(fleet_engine::approval_time_floor_statement(
+            organization.as_str(),
+        ))
+        .await?;
+    Ok(fleet_engine::decode_approval_time_floor(&result)?
+        .map_or(batch_start, |observed| batch_start.max(observed)))
 }

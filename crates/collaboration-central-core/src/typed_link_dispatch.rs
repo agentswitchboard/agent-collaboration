@@ -3,7 +3,7 @@
 use crate::FixtureApprovalDecision;
 use crate::{
     CentralCallWork, CentralLinkDispatcher, LinkCallCompletion, MachineLinkRequestAuthority,
-    WorkspaceRuntime,
+    TypedCallCarrier, WorkspaceRuntime,
 };
 use central_link_protocol::{
     CentralCall, CentralCallReply, CentralLinkRpc, LinkCallRefusal, MacCallReply, MacLinkRpc,
@@ -218,8 +218,18 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         &self,
         attachment: &MachineConnectionAttachment,
         request: Option<CentralCall>,
+        carrier: TypedCallCarrier,
     ) -> Result<DispatchedCentralCall, StoreFailure> {
-        let machine = match self.restore_machine_link_request(attachment).await? {
+        let authority = match &carrier {
+            TypedCallCarrier::Session => self.restore_machine_link_request(attachment).await?,
+            TypedCallCarrier::Approval { .. } => {
+                match self.restore_live_authority_held(attachment).await? {
+                    Ok(machine) => MachineLinkRequestAuthority::Admitted(machine),
+                    Err(refusal) => MachineLinkRequestAuthority::Refused(refusal.close),
+                }
+            }
+        };
+        let machine = match authority {
             MachineLinkRequestAuthority::Admitted(machine) => machine,
             MachineLinkRequestAuthority::Refused(cause) => {
                 return Ok(DispatchedCentralCall::refused(
@@ -254,7 +264,8 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                 .reached_central(fleet_runtime::PausePoint::BeforeSessionTransaction)
                 .await;
         }
-        let CentralCallWork { result, completion } = dispatcher.dispatch(&machine, request).await?;
+        let CentralCallWork { result, completion } =
+            dispatcher.dispatch(&machine, request, carrier).await?;
         let registered_run = requested_run.filter(|_| {
             matches!(
                 &result,

@@ -99,6 +99,17 @@ impl MachinePushRegistry {
             .ok_or(CallFailure::NeverReached)
     }
 
+    pub(crate) fn current_approval_attachment(
+        &self,
+        target: &central_link_protocol::approval_rpc::ApprovalHolderTarget,
+        selected: &MacCallSender,
+    ) -> Option<MachineConnectionAttachment> {
+        self.select_approval_socket(target)
+            .ok()
+            .filter(|(_, current, _)| current.same_socket(selected))
+            .map(|(attachment, _, _)| attachment)
+    }
+
     pub(crate) fn queue_call(
         &self,
         organization: &OrganizationId,

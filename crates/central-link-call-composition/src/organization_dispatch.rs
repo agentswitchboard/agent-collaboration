@@ -8,12 +8,12 @@ use central_engine_model::{Context, EngineTime};
 use central_link_protocol::{
     CentralCall, CentralLinkRpc, LinkCallRefusal, TypedCallResult,
     approval_rpc::{RaiseApprovalRpc, RegisterRunRpc, StopApprovalRpc},
-    session_lifecycle_rpc::{BindFleetSessionRpc, CreateFleetSessionRpc, EndFleetSessionRpc},
+    session_lifecycle_rpc::{BindFleetSessionRpc, CreateFleetSessionRpc},
 };
 use central_storage::StoreFailure;
 use collaboration_central_core::{
     CentralCallDispatch, CentralCallWork, CentralLinkDispatcher, TargetCheckedCentralCall,
-    ValidatedMachineConnection, dispatch_fallible_central_call,
+    TypedCallCarrier, ValidatedMachineConnection, dispatch_fallible_central_call,
     dispatch_fallible_correlated_central_call, recheck_lent_link_authority,
 };
 use fleet_actor_identity::{
@@ -181,6 +181,18 @@ where
         .fixture_decide(organization, decision)
     }
 
+    fn end_approval_enrollment(
+        &self,
+        organization: OrganizationId,
+        invalidation: fleet_contracts::EnrollmentInvalidation,
+        statements: Vec<central_storage::GuardedStatement>,
+    ) -> Pin<Box<dyn Future<Output = Result<(), StoreFailure>> + Send + '_>> {
+        Box::pin(
+            self.approvals
+                .end_enrollment(organization, invalidation, statements),
+        )
+    }
+
     fn apply_approval_deadline(
         &self,
         organization: OrganizationId,
@@ -207,6 +219,7 @@ where
         &'call self,
         machine: &'call ValidatedMachineConnection,
         request: CentralCall,
+        carrier: TypedCallCarrier,
     ) -> Pin<Box<dyn Future<Output = Result<CentralCallWork, StoreFailure>> + Send + 'call>> {
         Box::pin(async move {
             match request {
@@ -263,35 +276,21 @@ where
                     )
                     .await
                     .map(CentralCallWork::from),
-                CentralCall::EndFleetSession(request) => self
-                    .apply::<EndFleetSessionRpc>(
-                        machine,
-                        request,
-                        |request, loan, machine, inputs, time| {
-                            Box::pin(async move {
-                                dispatch_fallible_correlated_central_call(request, |body| async {
-                                    let mut ids = ApplyingIds(inputs.ids.as_ref());
-                                    let mut context = Context {
-                                        now: time,
-                                        ids: &mut ids,
-                                    };
-                                    let mut service = SessionService::in_transaction(loan);
-                                    session_reply(service.end(&machine, body, &mut context).await)
-                                })
-                                .await
-                                .map(SessionApplySuccess::Answered)
-                            })
-                        },
-                    )
+                CentralCall::EndFleetSession(request) => {
+                    crate::approval_delivery::ApprovalDelivery {
+                        application: self.approvals.clone(),
+                        transport: self.ending_transport.clone(),
+                    }
+                    .end_session(machine, request)
                     .await
-                    .map(CentralCallWork::from),
+                }
                 CentralCall::RegisterRun(request) => {
                     let run = request.body.router_run.clone();
                     self.approvals
                         .dispatch::<RegisterRunRpc>(
                             machine,
                             request,
-                            run,
+                            (run, &carrier),
                             self.ending_transport.clone(),
                             |_| HolderCommand::Register,
                             |target, reply| {
@@ -310,7 +309,7 @@ where
                         .dispatch::<RaiseApprovalRpc>(
                             machine,
                             request,
-                            run,
+                            (run, &carrier),
                             self.ending_transport.clone(),
                             |body| HolderCommand::Raise(Box::new(body)),
                             |target, reply| {
@@ -333,7 +332,7 @@ where
                         .dispatch::<StopApprovalRpc>(
                             machine,
                             request,
-                            run,
+                            (run, &carrier),
                             self.ending_transport.clone(),
                             HolderCommand::Stop,
                             |target, reply| {

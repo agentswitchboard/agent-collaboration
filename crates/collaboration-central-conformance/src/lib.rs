@@ -2,7 +2,11 @@
 #![forbid(unsafe_code)]
 pub mod alarm_input_scenarios;
 #[cfg(feature = "session-link-test-support")]
+pub mod approval_authority_scenarios;
+#[cfg(feature = "session-link-test-support")]
 pub mod approval_link_scenarios;
+#[cfg(feature = "session-link-test-support")]
+pub mod approval_provider_scenarios;
 mod machine_allowance_fixture;
 #[cfg(feature = "session-link-test-support")]
 pub mod session_link_scenarios;

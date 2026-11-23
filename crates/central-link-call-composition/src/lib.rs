@@ -2,6 +2,8 @@
 #![forbid(unsafe_code)]
 
 mod apply_failure;
+mod approval_applying_time;
+mod approval_authority_end;
 mod approval_deadline;
 mod approval_delivery;
 mod approval_dispatch;
@@ -15,7 +17,7 @@ pub use apply_failure::{
     OrganizationLoanFailure, SessionApplyFailure, SessionApplyFault, SessionApplyResult,
     SessionApplySuccess, SessionWiringFault,
 };
-pub use approval_delivery::{ApprovalEndingTransport, SelectedApprovalSocket};
+pub use approval_delivery::{ApplyEndingAnswer, ApprovalEndingTransport, SelectedApprovalSocket};
 pub use approval_transaction::{
     ApprovalAlarmPublication, ApprovalStatementLoan, ApprovalTransactionFailure,
     ApprovalTransactionFuture, OrganizationApprovalTransactions,

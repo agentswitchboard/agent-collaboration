@@ -216,14 +216,14 @@ fn create() -> Result<CreateFleetSession> {
     })
 }
 
-fn end(session_id: CentralSessionId) -> EndFleetSession {
+pub(crate) fn end(session_id: CentralSessionId) -> EndFleetSession {
     EndFleetSession {
         target: EndSessionTarget::CentralId { session_id },
         cause: RouterEndCause::EndedForGood {},
     }
 }
 
-async fn call<R: CentralLinkRpc<Target = OrganizationId>>(
+pub(crate) async fn call<R: CentralLinkRpc<Target = OrganizationId>>(
     socket: &mut WebSocket,
     organization: &OrganizationId,
     body: R::Request,
@@ -274,7 +274,7 @@ async fn read_reply(
     Ok(*result)
 }
 
-fn answer<R: CentralLinkRpc<Target = OrganizationId>>(
+pub(crate) fn answer<R: CentralLinkRpc<Target = OrganizationId>>(
     result: TypedCallResult<CentralCallReply>,
     organization: &OrganizationId,
 ) -> Result<R::Reply> {

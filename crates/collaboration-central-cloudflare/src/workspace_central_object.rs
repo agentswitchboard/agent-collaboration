@@ -503,7 +503,7 @@ impl DurableObject for CentralObject {
                 return workspace_cases::raw_control(self, request).await;
             }
         }
-        if request.path() == workspace_typed_link::MACHINE_CALL_PATH {
+        if workspace_typed_link::is_mac_call_path(&request.path()) {
             return self.handle_mac_call(request, organization).await;
         }
         self.migrate()

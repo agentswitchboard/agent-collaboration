@@ -183,6 +183,30 @@ where
         })
     }
 
+    /// Fence a per-item failure charge without decoding the corrupt approval payload.
+    pub async fn approval_deadline_still_waiting(
+        transaction: &mut Transaction,
+        subject: &InstanceKey,
+        deadline: CentralTime,
+        now: CentralTime,
+    ) -> Result<bool, StoreFailure> {
+        if now < deadline {
+            return Ok(false);
+        }
+        let row_id = ApprovalRequestRowId::parse(&subject.0)?;
+        let query = fleet_engine::checked_engine_statement!(
+            query_file,
+            [],
+            "src/queries/read_waiting_approval_occurrence.sql",
+            organization = transaction.organization_id().as_str().to_owned(),
+            row_id = row_id.as_str().to_owned(),
+            deadline = central_storage::SafeInteger::try_from(deadline.timestamp_millis())
+                .map_err(|_| corrupt("approval_requests.deadline_ms"))?,
+        );
+        let selected = transaction.read_approval_statement(query).await?;
+        Ok(!selected.rows.is_empty())
+    }
+
     /// Recheck the exact due occurrence on the already-lent applying transaction.
     pub async fn approval_deadline_is_due(
         transaction: &mut Transaction,

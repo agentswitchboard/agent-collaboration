@@ -27,12 +27,12 @@ mod machine_connection_admission;
 mod machine_login_plans;
 mod typed_link_application;
 mod typed_link_dispatch;
-#[cfg(feature = "test-support")]
-pub use typed_link_application::FixtureApprovalDecision;
 pub use typed_link_application::{
     AppliedApprovalDeadline, CentralCallDispatch, CentralCallWork, CentralLinkDispatcher,
-    LinkCallCompletion,
+    LinkCallCompletion, TypedCallCarrier, is_approval_holder_call,
 };
+#[cfg(feature = "test-support")]
+pub use typed_link_application::{FixtureApprovalAnswer, FixtureApprovalDecision};
 pub use typed_link_dispatch::{
     DispatchedCentralCall, MacCallResult, TYPED_LINK_CALL_TIMEOUT, TargetCheckedCentralCall,
     dispatch_fallible_central_call, dispatch_fallible_correlated_central_call,

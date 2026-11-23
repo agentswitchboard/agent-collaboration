@@ -342,9 +342,35 @@ impl TokioWorkspaceHost {
         machine: &MachineId,
         request: Envelope<R::Target, R::Request>,
     ) -> MacCallResult<R> {
-        let deadline = self.clock.monotonic_now().after(TYPED_LINK_CALL_TIMEOUT);
         let target = request.target.clone();
         let call = R::request(request);
+        if matches!(call, central_link_protocol::MacCall::DeliverEnding(_)) {
+            return Err(CallFailure::NeverReached);
+        }
+        self.call_raw_machine::<R>(organization, machine, &target, call)
+            .await
+    }
+
+    #[cfg(feature = "test-support")]
+    pub async fn fixture_call_machine<R: MacLinkRpc>(
+        &self,
+        organization: &OrganizationId,
+        machine: &MachineId,
+        request: Envelope<R::Target, R::Request>,
+    ) -> MacCallResult<R> {
+        let target = request.target.clone();
+        self.call_raw_machine::<R>(organization, machine, &target, R::request(request))
+            .await
+    }
+
+    async fn call_raw_machine<R: MacLinkRpc>(
+        &self,
+        organization: &OrganizationId,
+        machine: &MachineId,
+        target: &R::Target,
+        call: central_link_protocol::MacCall,
+    ) -> MacCallResult<R> {
+        let deadline = self.clock.monotonic_now().after(TYPED_LINK_CALL_TIMEOUT);
         let address = MacCallAddress::from(&call);
         let addressed_organization = address.organization_id().unwrap_or(organization);
         if addressed_organization != organization || address.machine_id() != machine {
@@ -354,7 +380,7 @@ impl TokioWorkspaceHost {
         let pending =
             self.push_registry
                 .queue_call(organization, correlation, call, address, deadline)?;
-        finish_mac_call::<R>(&target, pending.wait(self.clock.as_ref()).await?)
+        finish_mac_call::<R>(target, pending.wait(self.clock.as_ref()).await?)
     }
 
     pub async fn request(

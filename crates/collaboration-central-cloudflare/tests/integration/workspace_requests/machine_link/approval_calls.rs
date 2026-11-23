@@ -1,3 +1,6 @@
+#[path = "approval_login_settlement.rs"]
+mod approval_login_settlement;
+
 use super::fixture::{ConnectedLink, Fixture, MACHINE_ID, receive, send};
 use central_link_protocol::{
     CentralLinkRpc, DataFrame, TypedCallResult,
@@ -5,6 +8,7 @@ use central_link_protocol::{
 };
 use central_storage::{SqlValue, Statement};
 use collaboration_central_conformance::ConformanceResult as Result;
+use collaboration_central_conformance::approval_authority_scenarios::approval_authority_refusals_leave_store_unchanged;
 use fleet_rpc::Envelope;
 use serde_json::json;
 
@@ -60,16 +64,20 @@ async fn production_link_registers_run_in_workerds_owning_approval_store() -> Re
 use central_link_protocol::{LinkFrame, approval_rpc::ApprovalHolderTarget};
 use collaboration_central_conformance::{
     approval_link_scenarios::{
-        ApprovalLinkFixture, DeadlineDelivery, ROUTER_RUN,
-        approval_authority_refusals_leave_store_unchanged, approval_deadline_delivery,
+        ApprovalLinkFixture, DeadlineDelivery, ROUTER_RUN, approval_deadline_delivery,
         receive_frame, registered_stop_and_replay,
     },
     signin_fixtures as signed,
 };
 use fleet_contracts::MachineTokenDecision;
 use reqwest_websocket::{RequestBuilderExt, WebSocket};
+use router_clock::RuntimeClock;
 
 impl ApprovalLinkFixture for Fixture {
+    fn now_seconds(&self) -> i64 {
+        self.clock.utc_now().timestamp()
+    }
+
     fn target(&self) -> Result<ApprovalHolderTarget> {
         Ok(ApprovalHolderTarget {
             organization_id: self.organization.clone(),
@@ -97,6 +105,44 @@ impl ApprovalLinkFixture for Fixture {
             return Err("missing welcomed socket".into());
         }
         Ok(socket)
+    }
+
+    async fn reopen_after_clock_rollback(&self) -> Result<()> {
+        self.host.c2_evict(&self.organization).await?;
+        let _ = self.host.central(&self.organization).await;
+        Ok(())
+    }
+
+    async fn set_wall_seconds(&self, seconds: i64) -> Result<()> {
+        let time = self.clock.utc_now();
+        self.clock
+            .set_utc(time + chrono::Duration::seconds(seconds - time.timestamp()));
+        self.host.set_external_time_ms(seconds * 1000).await?;
+        if !self
+            .runtime()
+            .control::<bool>("clock", &(seconds * 1000))
+            .await?
+        {
+            return Err("worker did not set the corrected wall clock".into());
+        }
+        Ok(())
+    }
+
+    async fn fixture_write(&self, statement: Statement) -> Result<()> {
+        let result = self
+            .runtime()
+            .run_batch(central_storage::StatementBatch {
+                statements: vec![central_storage::GuardedStatement {
+                    statement,
+                    expect: central_storage::RowExpectation::Exactly(1),
+                }],
+                alarm: central_storage::AlarmUpdate::Unchanged,
+            })
+            .await?;
+        if !matches!(result, central_storage::BatchOutcome::Applied { .. }) {
+            return Err("approval fixture update failed".into());
+        }
+        Ok(())
     }
 
     async fn read(&self, statement: Statement) -> Result<central_storage::ReadOutcome> {
@@ -145,6 +191,40 @@ impl ApprovalLinkFixture for Fixture {
         Ok(())
     }
 
+    async fn decide_provider_approval(
+        &self,
+        request_id: &workspace_ids::ApprovalRequestId,
+    ) -> Result<()> {
+        let result: bool = self
+            .runtime()
+            .control(
+                "approval-fixture-decide",
+                &json!({
+                    "requestId": request_id.as_str(),
+                    "operationId": FIXTURE_DECISION_OPERATION,
+                    "personId": FIXTURE_DECIDER,
+                    "answer": "providerApproval",
+                }),
+            )
+            .await?;
+        if !result {
+            return Err("provider approval was not decided".into());
+        }
+        Ok(())
+    }
+
+    async fn hold_delivery_before_write(&self) -> Result<()> {
+        self.delivery_write_control("hold-central").await
+    }
+
+    async fn wait_delivery_before_write(&self) -> Result<()> {
+        self.delivery_write_control("until-held-central").await
+    }
+
+    async fn release_delivery_before_write(&self) -> Result<()> {
+        self.delivery_write_control("release-central").await
+    }
+
     async fn hold_delivery_answer(&self) -> Result<()> {
         if !self
             .runtime()
@@ -167,6 +247,13 @@ impl ApprovalLinkFixture for Fixture {
             return Err("the worker did not apply the delivery answer".into());
         }
         Ok(())
+    }
+
+    async fn end_enrollment_through_login(
+        &self,
+        event: collaboration_central_conformance::approval_link_scenarios::EnrollmentLoginEnd,
+    ) -> Result<()> {
+        approval_login_settlement::settle_enrollment(self, event).await
     }
 
     async fn end_enrollment(&self) -> Result<()> {
@@ -340,3 +427,107 @@ async fn decide_fixture_request(fixture: &Fixture, request_id: &str) -> Result<(
     );
     Ok(())
 }
+
+#[tokio::test]
+async fn workerd_provider_session_end_and_routing() -> Result<()> {
+    let fixture = Fixture::with_production_dispatcher().await?;
+    let result = collaboration_central_conformance::approval_provider_scenarios::provider_session_end_and_refusals(&fixture).await;
+    fixture.close().await?;
+    result
+}
+
+#[tokio::test]
+async fn workerd_provider_deadline_precedes_actions_and_ends_on_cadence() -> Result<()> {
+    use collaboration_central_conformance::approval_provider_scenarios::{
+        ProviderAsk, ProviderExpiryTrigger, provider_deadline,
+    };
+    for (ask, trigger) in [
+        (ProviderAsk::Approval, ProviderExpiryTrigger::Stop),
+        (ProviderAsk::Question, ProviderExpiryTrigger::Engine),
+        (ProviderAsk::Approval, ProviderExpiryTrigger::Registration),
+    ] {
+        let fixture = Fixture::with_production_dispatcher().await?;
+        let result = provider_deadline(&fixture, ask, trigger).await;
+        fixture.close().await?;
+        result?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn workerd_approval_calls_are_bound_to_the_registered_carrier() -> Result<()> {
+    let fixture = Fixture::with_production_dispatcher().await?;
+    let result =
+        collaboration_central_conformance::approval_authority_scenarios::approval_carrier_binding(
+            &fixture,
+        )
+        .await;
+    fixture.close().await?;
+    result
+}
+
+#[tokio::test]
+async fn workerd_enrollment_end_settles_the_approval_run() -> Result<()> {
+    use collaboration_central_conformance::approval_link_scenarios::EnrollmentLoginEnd;
+    for (event, overdue) in [
+        (EnrollmentLoginEnd::Revoke, false),
+        (EnrollmentLoginEnd::Revoke, true),
+        (EnrollmentLoginEnd::Supersede, false),
+        (EnrollmentLoginEnd::Idle, false),
+    ] {
+        let fixture = Fixture::with_production_dispatcher().await?;
+        let result = collaboration_central_conformance::approval_authority_scenarios::enrollment_end_settles_approval_run(&fixture, event, overdue).await;
+        fixture.close().await?;
+        result?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn workerd_durable_floor_wins_after_clock_rollback() -> Result<()> {
+    let fixture = Fixture::with_production_dispatcher().await?;
+    let result = collaboration_central_conformance::approval_authority_scenarios::durable_floor_wins_after_clock_rollback(&fixture).await;
+    fixture.close().await?;
+    result
+}
+
+#[tokio::test]
+async fn workerd_corrupt_approval_charges_only_its_own_attempt() -> Result<()> {
+    let fixture = Fixture::with_production_dispatcher().await?;
+    let result = collaboration_central_conformance::approval_authority_scenarios::corrupt_approval_charges_only_its_own_attempt(&fixture).await;
+    fixture.close().await?;
+    result
+}
+
+impl Fixture {
+    async fn delivery_write_control(&self, operation: &str) -> Result<()> {
+        if !self
+            .runtime()
+            .control::<bool>(operation, &"beforeApprovalEndingWrite")
+            .await?
+        {
+            return Err(format!("worker delivery write control {operation} failed").into());
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn workerd_renewing_the_same_holder_socket_keeps_the_pending_ending() -> Result<()> {
+    use collaboration_central_conformance::approval_provider_scenarios::{
+        RenewalDuringDelivery, same_socket_renewal_keeps_delivery,
+    };
+    for timing in [
+        RenewalDuringDelivery::BeforeWrite,
+        RenewalDuringDelivery::BeforeAnswer,
+    ] {
+        let fixture = Fixture::with_production_dispatcher().await?;
+        let result = same_socket_renewal_keeps_delivery(&fixture, timing).await;
+        fixture.close().await?;
+        result?;
+    }
+    Ok(())
+}
+
+#[path = "approval_carrier_replacement.rs"]
+mod approval_carrier_replacement;

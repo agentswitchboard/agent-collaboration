@@ -154,7 +154,8 @@ where
     for<'row> &'row str: ColumnIndex<Db::Row>,
 {
     Box::pin(async move {
-        let sampled = clock.now();
+        let sampled =
+            crate::approval_applying_time::observe_applying_time(transaction, clock.now()).await?;
         let now = EngineTime::from_timestamp_millis(sampled.unix_millis())
             .ok_or_else(|| corrupt("approval_store.applying_time"))?;
         if !ApprovalStore::approval_deadline_is_due(
@@ -220,9 +221,11 @@ where
     for<'row> &'row str: ColumnIndex<Db::Row>,
 {
     Box::pin(async move {
-        let now = EngineTime::from_timestamp_millis(clock.now().unix_millis())
+        let observed =
+            crate::approval_applying_time::observe_applying_time(transaction, clock.now()).await?;
+        let now = EngineTime::from_timestamp_millis(observed.unix_millis())
             .ok_or_else(|| corrupt("approval_store.applying_time"))?;
-        if !ApprovalStore::approval_deadline_is_due(
+        if !ApprovalStore::approval_deadline_still_waiting(
             transaction,
             &deadline.subject.key,
             deadline.due_at,

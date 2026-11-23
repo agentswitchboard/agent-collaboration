@@ -1,3 +1,6 @@
+#[path = "approval_login_settlement.rs"]
+mod approval_login_settlement;
+
 use super::fixture::{INSTALLATION, send, signed_clock};
 use super::typed_calls::{connect, expect_central_reply};
 use central_link_protocol::{
@@ -6,6 +9,7 @@ use central_link_protocol::{
 };
 use central_storage::{SqlValue, Statement};
 use collaboration_central_conformance::ConformanceResult as Result;
+use collaboration_central_conformance::approval_authority_scenarios::approval_authority_refusals_leave_store_unchanged;
 use collaboration_central_tokio::test_support::start_session_link_fixture;
 use fleet_rpc::Envelope;
 use serde_json::json;
@@ -57,8 +61,7 @@ use super::fixture::Fixture;
 use super::receipt_frames::{EnrollmentAtApply, stored_ending_batch};
 use central_link_protocol::approval_rpc::ApprovalHolderTarget;
 use collaboration_central_conformance::approval_link_scenarios::{
-    ApprovalLinkFixture, DeadlineDelivery, ROUTER_RUN,
-    approval_authority_refusals_leave_store_unchanged, approval_deadline_delivery, receive_frame,
+    ApprovalLinkFixture, DeadlineDelivery, ROUTER_RUN, approval_deadline_delivery, receive_frame,
     registered_stop_and_replay,
 };
 use reqwest_websocket::{RequestBuilderExt, WebSocket};
@@ -71,9 +74,14 @@ struct NativeApprovalFixture {
     link: Fixture,
     before_alarm: Cell<u64>,
     delivery_answer: RefCell<Option<fleet_runtime::HeldPause>>,
+    before_write: RefCell<Option<fleet_runtime::HeldPause>>,
 }
 
 impl ApprovalLinkFixture for NativeApprovalFixture {
+    fn now_seconds(&self) -> i64 {
+        self.link.clock.utc_now().timestamp()
+    }
+
     fn target(&self) -> Result<ApprovalHolderTarget> {
         Ok(ApprovalHolderTarget {
             organization_id: self.link.organization_id.clone(),
@@ -102,6 +110,33 @@ impl ApprovalLinkFixture for NativeApprovalFixture {
             return Err("missing welcomed socket".into());
         }
         Ok(socket)
+    }
+
+    async fn set_wall_seconds(&self, seconds: i64) -> Result<()> {
+        let time = self.link.clock.utc_now();
+        self.link
+            .clock
+            .set_utc(time + chrono::Duration::seconds(seconds - time.timestamp()));
+        Ok(())
+    }
+
+    async fn fixture_write(&self, statement: Statement) -> Result<()> {
+        let owner = self.link.host.central(&self.link.organization_id).await?;
+        let result = owner
+            .runtime()
+            .statement_host()
+            .run_batch(central_storage::StatementBatch {
+                statements: vec![central_storage::GuardedStatement {
+                    statement,
+                    expect: central_storage::RowExpectation::Exactly(1),
+                }],
+                alarm: central_storage::AlarmUpdate::Unchanged,
+            })
+            .await?;
+        if !matches!(result, central_storage::BatchOutcome::Applied { .. }) {
+            return Err("approval fixture update failed".into());
+        }
+        Ok(())
     }
 
     async fn read(&self, statement: Statement) -> Result<central_storage::ReadOutcome> {
@@ -139,6 +174,47 @@ impl ApprovalLinkFixture for NativeApprovalFixture {
         Ok(())
     }
 
+    async fn decide_provider_approval(
+        &self,
+        request_id: &workspace_ids::ApprovalRequestId,
+    ) -> Result<()> {
+        let mut decision = fixture_decision(request_id)?;
+        decision.answer = collaboration_central_core::FixtureApprovalAnswer::ProviderApproval;
+        Ok(self
+            .link
+            .host
+            .fixture_decide_approval(&self.link.organization_id, decision)
+            .await?)
+    }
+
+    async fn hold_delivery_before_write(&self) -> Result<()> {
+        let runtime = self.link.host.central(&self.link.organization_id).await?;
+        let held = runtime
+            .runtime()
+            .pause_points()
+            .hold_central(PausePoint::BeforeApprovalEndingEnqueue);
+        self.before_write.replace(Some(held));
+        Ok(())
+    }
+
+    async fn wait_delivery_before_write(&self) -> Result<()> {
+        let mut held = self
+            .before_write
+            .take()
+            .ok_or("approval send was not held")?;
+        held.until_held().await;
+        self.before_write.replace(Some(held));
+        Ok(())
+    }
+
+    async fn release_delivery_before_write(&self) -> Result<()> {
+        self.before_write
+            .take()
+            .ok_or("approval send was not held")?
+            .release();
+        Ok(())
+    }
+
     async fn hold_delivery_answer(&self) -> Result<()> {
         let owner = self.link.host.central(&self.link.organization_id).await?;
         let held = owner
@@ -157,6 +233,13 @@ impl ApprovalLinkFixture for NativeApprovalFixture {
         held.until_held().await;
         held.release();
         Ok(())
+    }
+
+    async fn end_enrollment_through_login(
+        &self,
+        event: collaboration_central_conformance::approval_link_scenarios::EnrollmentLoginEnd,
+    ) -> Result<()> {
+        approval_login_settlement::settle_enrollment(self, event).await
     }
 
     async fn end_enrollment(&self) -> Result<()> {
@@ -184,6 +267,7 @@ async fn tokio_approval_raise_replay_and_stop_use_the_store() -> Result<()> {
         link: start_session_link_fixture(signed_clock()?).await?,
         before_alarm: Cell::new(0),
         delivery_answer: RefCell::default(),
+        before_write: RefCell::default(),
     };
     let result = registered_stop_and_replay(&fixture).await;
     fixture.link.close().await?;
@@ -196,6 +280,7 @@ async fn tokio_approval_authority_refusals_write_nothing() -> Result<()> {
         link: start_session_link_fixture(signed_clock()?).await?,
         before_alarm: Cell::new(0),
         delivery_answer: RefCell::default(),
+        before_write: RefCell::default(),
     };
     let result = approval_authority_refusals_leave_store_unchanged(&fixture).await;
     fixture.link.close().await?;
@@ -213,6 +298,7 @@ async fn tokio_engine_delivers_or_recovers_approval_timeout_and_applies_stop_owe
             link: start_session_link_fixture(signed_clock()?).await?,
             before_alarm: Cell::new(0),
             delivery_answer: RefCell::default(),
+            before_write: RefCell::default(),
         };
         let result = approval_deadline_delivery(&fixture, scenario).await;
         fixture.link.close().await?;
@@ -227,11 +313,13 @@ use collaboration_central_conformance::approval_link_scenarios::{
 };
 use collaboration_central_core::FixtureApprovalDecision;
 use fleet_runtime::PausePoint;
+use router_clock::RuntimeClock;
 
 fn fixture_decision(
     request_id: &workspace_ids::ApprovalRequestId,
 ) -> Result<FixtureApprovalDecision> {
     Ok(FixtureApprovalDecision {
+        answer: collaboration_central_core::FixtureApprovalAnswer::HeldStart,
         request_id: request_id.clone(),
         operation_id: FIXTURE_DECISION_OPERATION.parse()?,
         person_id: FIXTURE_DECIDER.parse()?,
@@ -244,6 +332,7 @@ async fn tokio_fixture_decide_offers_only_after_commit_and_records_received() ->
         link: start_session_link_fixture(signed_clock()?).await?,
         before_alarm: Cell::new(0),
         delivery_answer: RefCell::default(),
+        before_write: RefCell::default(),
     };
     let observed = async {
         let (target, mut socket, request) = registered_waiting_request(&fixture).await?;
@@ -300,6 +389,7 @@ async fn tokio_queued_approval_ending_never_writes_on_a_replacement() -> Result<
         link: start_session_link_fixture(signed_clock()?).await?,
         before_alarm: Cell::new(0),
         delivery_answer: RefCell::default(),
+        before_write: RefCell::default(),
     };
     let observed = async {
         let (target, _original, request) = registered_waiting_request(&fixture).await?;
@@ -337,3 +427,129 @@ async fn tokio_queued_approval_ending_never_writes_on_a_replacement() -> Result<
     fixture.link.close().await?;
     observed
 }
+
+#[tokio::test]
+async fn tokio_provider_session_end_and_routing() -> Result<()> {
+    let fixture = NativeApprovalFixture {
+        link: start_session_link_fixture(signed_clock()?).await?,
+        before_alarm: Cell::new(0),
+        delivery_answer: RefCell::default(),
+        before_write: RefCell::default(),
+    };
+    let result = collaboration_central_conformance::approval_provider_scenarios::provider_session_end_and_refusals(&fixture).await;
+    fixture.link.close().await?;
+    result
+}
+
+#[tokio::test]
+async fn tokio_provider_deadline_precedes_actions_and_ends_on_cadence() -> Result<()> {
+    use collaboration_central_conformance::approval_provider_scenarios::{
+        ProviderAsk, ProviderExpiryTrigger, provider_deadline,
+    };
+    for (ask, trigger) in [
+        (ProviderAsk::Approval, ProviderExpiryTrigger::Stop),
+        (ProviderAsk::Question, ProviderExpiryTrigger::Engine),
+        (ProviderAsk::Approval, ProviderExpiryTrigger::Registration),
+    ] {
+        let fixture = NativeApprovalFixture {
+            link: start_session_link_fixture(signed_clock()?).await?,
+            before_alarm: Cell::new(0),
+            delivery_answer: RefCell::default(),
+            before_write: RefCell::default(),
+        };
+        let result = provider_deadline(&fixture, ask, trigger).await;
+        fixture.link.close().await?;
+        result?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn tokio_approval_calls_are_bound_to_the_registered_carrier() -> Result<()> {
+    let fixture = NativeApprovalFixture {
+        link: start_session_link_fixture(signed_clock()?).await?,
+        before_alarm: Cell::new(0),
+        delivery_answer: RefCell::default(),
+        before_write: RefCell::default(),
+    };
+    let result =
+        collaboration_central_conformance::approval_authority_scenarios::approval_carrier_binding(
+            &fixture,
+        )
+        .await;
+    fixture.link.close().await?;
+    result
+}
+
+#[tokio::test]
+async fn tokio_enrollment_end_settles_the_approval_run() -> Result<()> {
+    use collaboration_central_conformance::approval_link_scenarios::EnrollmentLoginEnd;
+    for (event, overdue) in [
+        (EnrollmentLoginEnd::Revoke, false),
+        (EnrollmentLoginEnd::Revoke, true),
+        (EnrollmentLoginEnd::Supersede, false),
+        (EnrollmentLoginEnd::Idle, false),
+    ] {
+        let fixture = NativeApprovalFixture {
+            link: start_session_link_fixture(signed_clock()?).await?,
+            before_alarm: Cell::new(0),
+            delivery_answer: RefCell::default(),
+            before_write: RefCell::default(),
+        };
+        let result = collaboration_central_conformance::approval_authority_scenarios::enrollment_end_settles_approval_run(&fixture, event, overdue).await;
+        fixture.link.close().await?;
+        result?;
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn tokio_durable_floor_wins_after_clock_rollback() -> Result<()> {
+    let fixture = NativeApprovalFixture {
+        link: start_session_link_fixture(signed_clock()?).await?,
+        before_alarm: Cell::new(0),
+        delivery_answer: RefCell::default(),
+        before_write: RefCell::default(),
+    };
+    let result = collaboration_central_conformance::approval_authority_scenarios::durable_floor_wins_after_clock_rollback(&fixture).await;
+    fixture.link.close().await?;
+    result
+}
+
+#[tokio::test]
+async fn tokio_corrupt_approval_charges_only_its_own_attempt() -> Result<()> {
+    let fixture = NativeApprovalFixture {
+        link: start_session_link_fixture(signed_clock()?).await?,
+        before_alarm: Cell::new(0),
+        delivery_answer: RefCell::default(),
+        before_write: RefCell::default(),
+    };
+    let result = collaboration_central_conformance::approval_authority_scenarios::corrupt_approval_charges_only_its_own_attempt(&fixture).await;
+    fixture.link.close().await?;
+    result
+}
+
+#[tokio::test]
+async fn tokio_renewing_the_same_holder_socket_keeps_the_pending_ending() -> Result<()> {
+    use collaboration_central_conformance::approval_provider_scenarios::{
+        RenewalDuringDelivery, same_socket_renewal_keeps_delivery,
+    };
+    for timing in [
+        RenewalDuringDelivery::BeforeWrite,
+        RenewalDuringDelivery::BeforeAnswer,
+    ] {
+        let fixture = NativeApprovalFixture {
+            link: start_session_link_fixture(signed_clock()?).await?,
+            before_alarm: Cell::new(0),
+            delivery_answer: RefCell::default(),
+            before_write: RefCell::default(),
+        };
+        let result = same_socket_renewal_keeps_delivery(&fixture, timing).await;
+        fixture.link.close().await?;
+        result?;
+    }
+    Ok(())
+}
+
+#[path = "approval_carrier_replacement.rs"]
+mod approval_carrier_replacement;
