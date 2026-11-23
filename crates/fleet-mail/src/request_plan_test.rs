@@ -37,9 +37,13 @@ fn sourced_notice_plans_the_exact_insert_and_matching_readiness() {
         machine_id: target.machine_id.clone(),
         message_id: message_id.clone(),
     };
-    let (insert, hint) =
+    let (statements, hint) =
         plan_sourced_notice(target, vec![item], source, now, || Ok(message_id)).unwrap();
 
+    let [insert, projection] = statements.as_slice() else {
+        panic!("expected the owner insert and due projection")
+    };
+    assert_eq!(projection.expect, RowExpectation::Any);
     assert_eq!(hint, expected_hint);
     assert_eq!(insert.expect, RowExpectation::Any);
     assert_eq!(

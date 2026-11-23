@@ -418,7 +418,7 @@ async fn a_failed_due_read_for_one_kind_still_handles_the_others() {
 }
 
 #[tokio::test]
-async fn a_due_wake_with_a_null_key_records_source_corruption() {
+async fn an_out_of_band_wake_with_a_null_key_creates_no_dispatch_or_source_attempt() {
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
     let start = now(&fixture);
@@ -436,15 +436,12 @@ async fn a_due_wake_with_a_null_key_records_source_corruption() {
     set_now(&fixture, cutoff);
     let completion = runtime.after_event().await.unwrap();
     assert_eq!(completion.wakes_fired, 0);
-    assert_eq!(
-        source_attempt(&runtime, "wake_timer").await,
-        vec![vec![text("failing"), integer(1), text("corrupt_row")]]
-    );
+    assert!(source_attempt(&runtime, "wake_timer").await.is_empty());
     fixture.host.close().await;
 }
 
 #[tokio::test]
-async fn applying_recompute_dispatches_one_select_and_clear_dispatches_none() {
+async fn applying_recompute_dispatches_one_indexed_select_and_clear_dispatches_none() {
     use central_storage::{
         AlarmPublication, AlarmUpdate, BatchOutcome, EngineAlarmPlan, GuardedStatement,
         RowExpectation, StatementBatch,
@@ -468,6 +465,7 @@ async fn applying_recompute_dispatches_one_select_and_clear_dispatches_none() {
             .collect::<Vec<_>>()
     };
     for production in [false, true] {
+        let wake = probe_id(100 + u32::from(production)).to_string();
         if production {
             store
                 .run_batch(StatementBatch {
@@ -496,41 +494,55 @@ async fn applying_recompute_dispatches_one_select_and_clear_dispatches_none() {
             statements: vec![GuardedStatement {
                 statement: Statement {
                     sql: "INSERT INTO automation_wakes VALUES (?, 'target', ?, 'wake', 'active', ?, ?)",
-                    args: vec![text(probe_id(100 + u32::from(production))), text(due.to_rfc3339()), text(due.to_rfc3339()), text(due.to_rfc3339())],
+                    args: vec![text(&wake), text(due.to_rfc3339()), text(due.to_rfc3339()), text(due.to_rfc3339())],
                 },
                 expect: RowExpectation::Exactly(1),
-            }],
+            }, super::engine_event_support::fixture_due_item(fleet_engine::DueKind::WakeTimer, wake.clone(), due, now(&fixture))],
             alarm: AlarmUpdate::Engine(EngineAlarmPlan::Recompute),
         }).await.unwrap();
         assert_eq!(
             actual,
             BatchOutcome::Applied {
-                rows_affected: vec![1],
+                rows_affected: vec![1, 1],
                 publication: AlarmPublication::Set {
                     unix_millis: due.timestamp_millis()
                 },
             }
         );
         fixture.host.until_log_after(before, prefix).await;
-        assert_eq!(observe(before), ["1"]);
+        assert_eq!(observe(before), [if production { "2" } else { "3" }]);
 
         let before = fixture.host.captured_logs().len();
+        use collaboration_central_core::engine_probe::InstanceKey;
+        let remove = fleet_engine::plan_due_table_change(
+            &fleet_engine::DueTableChange::RemoveItem(fleet_engine::DueItemKey {
+                kind: fleet_engine::DueKind::WakeTimer,
+                subject: InstanceKey(wake),
+            }),
+            due,
+        )
+        .unwrap()
+        .pop()
+        .unwrap();
         assert_eq!(
             store
                 .run_batch(StatementBatch {
-                    statements: vec![GuardedStatement {
-                        statement: Statement {
-                            sql: "DELETE FROM automation_wakes",
-                            args: vec![]
+                    statements: vec![
+                        GuardedStatement {
+                            statement: Statement {
+                                sql: "DELETE FROM automation_wakes",
+                                args: vec![]
+                            },
+                            expect: RowExpectation::Exactly(1),
                         },
-                        expect: RowExpectation::Exactly(1),
-                    }],
+                        remove
+                    ],
                     alarm: AlarmUpdate::Engine(EngineAlarmPlan::Clear),
                 })
                 .await
                 .unwrap(),
             BatchOutcome::Applied {
-                rows_affected: vec![1],
+                rows_affected: vec![1, 1],
                 publication: AlarmPublication::Cleared
             },
         );

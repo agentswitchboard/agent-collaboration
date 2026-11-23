@@ -453,7 +453,7 @@ async fn a_failed_due_read_for_one_kind_still_handles_the_others() {
 }
 
 #[tokio::test]
-async fn a_due_wake_with_a_null_key_records_source_corruption() {
+async fn an_out_of_band_wake_with_a_null_key_creates_no_dispatch_or_source_attempt() {
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
     let start = fixture.clock.utc_now();
@@ -471,9 +471,6 @@ async fn a_due_wake_with_a_null_key_records_source_corruption() {
     fixture.set_utc(cutoff).await;
     let completion = runtime.after_event().await.unwrap();
     assert_eq!(completion.work.wakes_fired, 0);
-    assert_eq!(
-        source_attempt(&runtime, "wake_timer").await,
-        vec![vec![text("failing"), integer(1), text("corrupt_row")]]
-    );
+    assert!(source_attempt(&runtime, "wake_timer").await.is_empty());
     fixture.host.close().await;
 }

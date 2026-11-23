@@ -15,6 +15,7 @@ use crate::{
 use central_engine_model::{Context, Machine, TransitionError};
 use central_storage::{EngineAlarmPlan, StoreFailure};
 use fleet_contracts::MailDeliveryReady;
+use fleet_engine::{DueItemKey, DueKind, DueOwnerTiming, DueTableChange, apply_due_table_change};
 use fleet_lent_transaction::CentralTransaction;
 use fleet_request_log::{
     RetainRequest, prune_expired_organization_requests, upsert_organization_request_answer,
@@ -111,6 +112,7 @@ pub async fn apply_direct_send<T: CentralTransaction>(
 ) -> Result<DirectWriteOutcome<DirectSendResult>, DirectApplyFailure>
 where
     <T::Database as Database>::Arguments: IntoArguments<T::Database>,
+    i64: Type<T::Database> + for<'q> Encode<'q, T::Database>,
     String: Type<T::Database> + for<'q> Encode<'q, T::Database> + for<'r> Decode<'r, T::Database>,
     &'static str: ColumnIndex<<T::Database as Database>::Row>,
 {
@@ -136,16 +138,25 @@ where
             created_at: command.accepted_at,
             updated_at: command.accepted_at,
         };
+        let mark = direct_receipt_mark(command.sent_at, command.accepted_at);
+        let timing = DueOwnerTiming::at(due_key(DueKind::DirectMessage, &message_id), mark)
+            .map_err(|_| corrupt("mail_messages.cancel_due_at"))?;
         let result = insert_send!(
             bind_direct_mail_write,
             message,
-            direct_receipt_mark(command.sent_at, command.accepted_at),
+            mark,
             command.request.request_id,
             delivery_window_ends_at(command.sent_at, command.accepted_at)
         )
         .execute(tx.executor())
         .await?;
         require_one_affected_row::<T>(result)?;
+        apply_due_table_change(
+            tx,
+            &DueTableChange::PublishItem(timing),
+            command.accepted_at,
+        )
+        .await?;
         (
             CentralMailResult::Done(CentralMailAnswer::Queued {
                 message_id: message_id.clone(),
@@ -215,6 +226,7 @@ pub async fn apply_receipt<T: CentralTransaction>(
 ) -> Result<DirectWriteOutcome<ApplyReceipt>, DirectApplyFailure>
 where
     <T::Database as Database>::Arguments: IntoArguments<T::Database>,
+    i64: Type<T::Database> + for<'q> Encode<'q, T::Database>,
     String: Type<T::Database> + for<'q> Encode<'q, T::Database> + for<'r> Decode<'r, T::Database>,
     Option<String>:
         Type<T::Database> + for<'q> Encode<'q, T::Database> + for<'r> Decode<'r, T::Database>,
@@ -352,6 +364,7 @@ pub(super) async fn apply_direct_transition<T: CentralTransaction>(
 ) -> Result<AppliedTransition, DirectApplyFailure>
 where
     <T::Database as Database>::Arguments: IntoArguments<T::Database>,
+    i64: Type<T::Database> + for<'q> Encode<'q, T::Database>,
     String: Type<T::Database> + for<'q> Encode<'q, T::Database> + for<'r> Decode<'r, T::Database>,
     Option<String>:
         Type<T::Database> + for<'q> Encode<'q, T::Database> + for<'r> Decode<'r, T::Database>,
@@ -415,12 +428,38 @@ where
             .execute(tx.executor())
             .await?;
         require_one_affected_row::<T>(result)?;
+        apply_due_table_change(
+            tx,
+            &DueTableChange::PublishItem(DueOwnerTiming::at(
+                due_key(DueKind::SystemMessageExpiry, &message.message_id),
+                cutoff,
+            )?),
+            now,
+        )
+        .await?;
         ready = Some((&message).into());
     }
     clear_attempt!(bind_direct_mail_write, state.subject.id)
         .execute(tx.executor())
         .await?;
+    let key = due_key(DueKind::DirectMessage, &state.subject.id);
+    let due = match next.lifecycle {
+        DirectLifecycle::Queued | DirectLifecycle::Delivered(_) => {
+            DueTableChange::PublishItem(DueOwnerTiming::at(key, state.subject.mark)?)
+        }
+        DirectLifecycle::PastTheMark(_) | DirectLifecycle::Final { .. } => {
+            DueTableChange::RemoveItem(key)
+        }
+    };
+    apply_due_table_change(tx, &due, now).await?;
     Ok(AppliedTransition::Changed(ready))
+}
+
+fn due_key(kind: DueKind, id: &MessageId) -> DueItemKey {
+    DueItemKey {
+        kind,
+        subject: central_engine_model::InstanceKey(id.to_string()),
+    }
 }
 
 struct DirectStateUpdate {

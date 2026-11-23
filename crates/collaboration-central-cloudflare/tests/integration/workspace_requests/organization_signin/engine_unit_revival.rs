@@ -80,6 +80,18 @@ fn failing(count: i64, next: Time) -> Vec<Vec<SqlValue>> {
     ]]
 }
 
+async fn assert_source_retry_projection(engine: &EngineOrg, kind: &str, retry: Time) {
+    let projection = engine.rows(
+        "SELECT effective_due_ms FROM engine_due_entries WHERE work_kind=?1 AND entry_role='source_control' AND subject_key=?1",
+        vec![text(kind)],
+    ).await;
+    assert_eq!(
+        projection,
+        [[integer(retry.timestamp_millis())]],
+        "{kind} source projection must carry the retry mark"
+    );
+}
+
 #[tokio::test]
 async fn the_window_unit_recovers_restarts_its_period_retires_at_60_days_and_returns_by_retry() {
     let engine = EngineOrg::new().await;
@@ -102,6 +114,7 @@ async fn the_window_unit_recovers_restarts_its_period_retires_at_60_days_and_ret
         unit_record(&engine, WINDOWS).await,
         failing(1, due + minutes(5))
     );
+    assert_source_retry_projection(&engine, WINDOWS, due + minutes(5)).await;
     assert_eq!(notices(&engine, &recipient).await, 0, "no window delivered");
     for count in 2..=3 {
         engine.set(due + minutes(5 * (count - 1)));
@@ -298,6 +311,7 @@ async fn the_drain_unit_recovers_restarts_its_period_retires_at_60_days_and_retu
         unit_record(&engine, DRAINS).await,
         corrupt_drain(1, due + minutes(5))
     );
+    assert_source_retry_projection(&engine, DRAINS, due + minutes(5)).await;
     assert_eq!(
         window_items(&engine, &thread).await,
         items_before,
@@ -430,6 +444,7 @@ async fn a_retired_engine_source_is_never_read_until_retry_and_other_kinds_run()
         engine.record("engine_source", "wake_timer").await,
         failing(1, first + minutes(5))
     );
+    assert_source_retry_projection(&engine, "wake_timer", first + minutes(5)).await;
     assert_eq!(
         automation_messages(&engine, &automation).await,
         1,
@@ -525,4 +540,38 @@ async fn a_retired_engine_source_is_never_read_until_retry_and_other_kinds_run()
     )
     .await;
     engine.close().await;
+}
+
+async fn grid_source_failure_projects_retry(kind: &str) {
+    let engine = EngineOrg::new().await;
+    let first = next_mark(engine.now());
+    let runtime = engine.runtime().await;
+    runtime
+        .inject_engine_read_fault(EngineReadFault { kind: kind.into() })
+        .await;
+    engine.set(first);
+    engine.after_event().await;
+
+    let retry = first + minutes(5);
+    assert_eq!(
+        engine.record("engine_source", kind).await,
+        failing(1, retry)
+    );
+    assert_source_retry_projection(&engine, kind, retry).await;
+    engine.close().await;
+}
+
+#[tokio::test]
+async fn schedule_source_failure_projects_retry() {
+    grid_source_failure_projects_retry("automation_timer").await;
+}
+
+#[tokio::test]
+async fn direct_message_source_failure_projects_retry() {
+    grid_source_failure_projects_retry("direct_message").await;
+}
+
+#[tokio::test]
+async fn system_expiry_source_failure_projects_retry() {
+    grid_source_failure_projects_retry("system_message_expiry").await;
 }

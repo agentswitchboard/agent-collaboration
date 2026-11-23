@@ -9,7 +9,7 @@ use collaboration_central_conformance::alarm_input_scenarios::{
 };
 
 #[tokio::test]
-async fn checked_alarm_inputs_match_main_for_every_job() {
+async fn frozen_view_keeps_its_contract_and_projected_reads_detect_no_raw_grid_writes() {
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
     let store = runtime.statement_host();
@@ -67,13 +67,11 @@ async fn checked_alarm_inputs_match_main_for_every_job() {
                     .control("engine-due-schedules", &horizon_ms)
                     .await
                     .unwrap();
-                let typed: Vec<_> = typed
-                    .into_iter()
-                    .map(|(key, occurrence, effective)| {
-                        vec![SqlValue::Text(key), integer(occurrence), integer(effective)]
-                    })
-                    .collect();
-                assert_eq!(typed, expected, "typed list: {}", scenario.name);
+                assert!(
+                    typed.is_empty(),
+                    "unprojected schedule must stay out of dispatch: {}",
+                    scenario.name
+                );
             }
         }
         let main = store
@@ -101,12 +99,7 @@ async fn checked_alarm_inputs_match_main_for_every_job() {
             .unwrap()
             .unwrap();
         assert_eq!(
-            actual,
-            if scenario.name == "delivered direct mail is excluded and queued system mail expires" {
-                [Some(240000), None]
-            } else {
-                scenario.expected
-            },
+            actual, scenario.expected_without_projection,
             "checked projection: {}",
             scenario.name
         );
