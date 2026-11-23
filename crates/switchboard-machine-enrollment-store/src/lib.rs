@@ -29,6 +29,7 @@ use enrollment_worker::{EnrollmentWorker, ReadFailure};
 pub struct MachineEnrollmentStore {
     requests: mpsc::UnboundedSender<EnrollmentRequest>,
     shutdown: watch::Sender<bool>,
+    enrollment_changes: watch::Sender<u64>,
     worker: Arc<Mutex<WorkerCompletion>>,
 }
 
@@ -52,11 +53,13 @@ impl MachineEnrollmentStore {
     fn start(worker: EnrollmentWorker) -> Self {
         let (requests, pending) = mpsc::unbounded_channel();
         let (shutdown, closing) = watch::channel(false);
-        let task = tokio::spawn(worker.run(pending, closing));
+        let (enrollment_changes, _) = watch::channel(0);
+        let task = tokio::spawn(worker.run(pending, closing, enrollment_changes.clone()));
         let worker = Arc::new(Mutex::new(WorkerCompletion::Running(task)));
         Self {
             requests,
             shutdown,
+            enrollment_changes,
             worker,
         }
     }
@@ -68,6 +71,11 @@ impl MachineEnrollmentStore {
             WorkerCompletion::Running(task) => task.abort_handle(),
             WorkerCompletion::Closed(_) => panic!("fixture worker already closed"),
         }
+    }
+
+    /// Tracks enrollment changes from this store's worker.
+    pub fn subscribe_enrollment_changes(&self) -> watch::Receiver<u64> {
+        self.enrollment_changes.subscribe()
     }
 
     /// Stops admission and waits for the active operation and connection to settle.

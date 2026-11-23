@@ -81,6 +81,7 @@ impl EnrollmentWorker {
         mut self,
         mut requests: mpsc::UnboundedReceiver<EnrollmentRequest>,
         mut shutdown: watch::Receiver<bool>,
+        enrollment_changes: watch::Sender<u64>,
     ) -> Result<(), MachineLocalStoreError> {
         while !*shutdown.borrow_and_update() {
             let request = tokio::select! {
@@ -94,14 +95,18 @@ impl EnrollmentWorker {
             if *shutdown.borrow() {
                 break;
             }
-            self.handle(request).await;
+            self.handle(request, &enrollment_changes).await;
         }
         requests.close();
         drop(requests);
         self.store.close().await
     }
 
-    async fn handle(&mut self, request: EnrollmentRequest) {
+    async fn handle(
+        &mut self,
+        request: EnrollmentRequest,
+        enrollment_changes: &watch::Sender<u64>,
+    ) {
         match request {
             EnrollmentRequest::Read(reply) if !reply.is_closed() => {
                 let _ = reply.send(self.read().await);
@@ -115,7 +120,14 @@ impl EnrollmentWorker {
                 reply,
                 stage,
             } if !reply.is_closed() => {
-                let _ = reply.send(self.mutate(expected, mutation, &stage).await);
+                let result = self.mutate(expected, mutation, &stage).await;
+                if matches!(
+                    result,
+                    Ok(ConditionalWrite::Applied) | Err(CredentialStoreError::OutcomeNotKnown)
+                ) {
+                    enrollment_changes.send_modify(|revision| *revision = revision.wrapping_add(1));
+                }
+                let _ = reply.send(result);
             }
             _ => {}
         }

@@ -808,3 +808,45 @@ async fn retirement_uses_valid_metadata_even_when_the_sealed_column_is_unusable(
         );
     }
 }
+
+#[tokio::test]
+async fn the_enrollment_watch_tracks_applied_and_maybe_committed_changes() {
+    let fixture = Fixture::open().await;
+    let mut changes = fixture.store.subscribe_enrollment_changes();
+    let first = fixture.install().await;
+    assert_eq!(*changes.borrow_and_update(), 1);
+
+    assert_eq!(
+        fixture.store.replace(generation(0), &first).await,
+        Ok(ConditionalWrite::Superseded)
+    );
+    assert!(!changes.has_changed().unwrap());
+
+    fixture.faults.arm(TestWriteFault::BeforeCommit);
+    let second = fixture.binding(2, ENROLLMENT, "fictional-watch-refresh");
+    assert_eq!(
+        fixture.store.replace(generation(1), &second).await,
+        Err(CredentialStoreError::Replace)
+    );
+    assert!(!changes.has_changed().unwrap());
+
+    fixture.faults.arm(TestWriteFault::LoseAcknowledgement);
+    assert_eq!(
+        fixture.store.replace(generation(1), &second).await,
+        Err(CredentialStoreError::OutcomeNotKnown)
+    );
+    assert_eq!(*changes.borrow_and_update(), 2);
+    assert_eq!(
+        fixture.store.read().await,
+        Ok(StoredEnrollment::Active(second))
+    );
+
+    assert_eq!(
+        fixture
+            .store
+            .remove(generation(2), EnrollmentEnd::Revoked)
+            .await,
+        Ok(ConditionalWrite::Applied)
+    );
+    assert_eq!(*changes.borrow_and_update(), 3);
+}
