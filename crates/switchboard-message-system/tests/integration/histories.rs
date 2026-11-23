@@ -192,6 +192,35 @@ impl History {
         }
     }
 
+    fn seed_restart(&mut self, case: &hegel::TestCase, exited: bool) {
+        self.apply(Event::MetadataObserved {
+            read: self.model.read,
+            metadata: active(1, 1, 1),
+        });
+        if exited {
+            self.apply(Event::BuildFinished { generation: FIRST });
+            let piece = case.draw(gs::sampled_from(PIECES.to_vec()));
+            self.apply(Event::PieceExited {
+                generation: FIRST,
+                piece,
+            });
+        } else {
+            self.apply(Event::BuildFailed { generation: FIRST });
+        }
+        let read_before_drain = self.model.read;
+        for piece in PIECES {
+            self.apply(Event::StopFinished(report(
+                target(FIRST, piece),
+                StopResult::Joined,
+            )));
+        }
+        self.apply(Event::EnrollmentMayHaveChanged);
+        self.apply(Event::MetadataObserved {
+            read: read_before_drain,
+            metadata: active(1, 1, 1),
+        });
+    }
+
     fn finish(&mut self, case: &hegel::TestCase) {
         self.apply(Event::Close);
         // The model queue comes only from the five possible stop slots.
@@ -236,6 +265,14 @@ impl History {
 #[hegel::test(test_cases = 450)]
 fn generated_histories_preserve_admission_scan_order_and_join_ownership(case: hegel::TestCase) {
     let mut history = History::new();
+    // Short random histories often close before a complete ordinary drain.
+    // Exercise change-signal/late-response order inside one generated history
+    // even when the remaining random suffix never reaches a restart.
+    match case.draw(gs::integers::<u8>().max_value(2)) {
+        0 => {}
+        1 => history.seed_restart(&case, false),
+        _ => history.seed_restart(&case, true),
+    }
     for _ in 0..case.draw(gs::integers::<u8>().min_value(8).max_value(64)) {
         history.apply(history.generated_event(&case));
     }
