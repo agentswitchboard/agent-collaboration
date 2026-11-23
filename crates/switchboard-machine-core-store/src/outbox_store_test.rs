@@ -119,10 +119,8 @@ async fn a_write_moves_in_outbox_sent_accepted_and_survives_a_reopen() {
         vec![StoredOutboxWrite {
             request: write.request.clone(),
             caller: write.caller.clone(),
-            payload: write
-                .payload
-                .clone()
-                .into_wire(chrono::DateTime::UNIX_EPOCH),
+            payload: write.payload.clone(),
+            sent_at: chrono::DateTime::from_timestamp_millis(MARK - 20_000).unwrap(),
         }]
     );
     assert_eq!(after_send, OutboxRequestStatus::Sent);

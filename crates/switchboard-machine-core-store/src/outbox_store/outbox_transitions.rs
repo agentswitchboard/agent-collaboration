@@ -11,7 +11,6 @@ use crate::{
     outbox_deadline::DepartureAtDeadline, outbox_item_state::OutboxItemState,
     outbox_receipt_profile::AnsweredWrite,
 };
-use central_link_protocol::RequestPayload;
 use sqlite_storage_maintenance::TransactionStart;
 use workspace_ids::RequestId;
 
@@ -41,7 +40,8 @@ impl MacOutbox<'_> {
     }
 
     /// Moves outbox writes to sent and returns what goes in the batch frame.
-    pub async fn mark_sent(
+    #[cfg(test)]
+    pub(crate) async fn mark_sent(
         &mut self,
         requests: &[RequestId],
         now_ms: i64,
@@ -64,7 +64,8 @@ impl MacOutbox<'_> {
             writes.push(StoredOutboxWrite {
                 request: request.clone(),
                 caller: stored.caller,
-                payload: with_send_time(payload, created_at)?,
+                sent_at: original_send_stamp(request_id, created_at)?,
+                payload,
             });
         }
         transaction.commit().await?;
@@ -113,7 +114,8 @@ impl MacOutbox<'_> {
             writes.push(StoredOutboxWrite {
                 request: parse_request_id(request_id)?,
                 caller: stored.caller,
-                payload: with_send_time(payload, created_at)?,
+                sent_at: original_send_stamp(request_id, created_at)?,
+                payload,
             });
         }
         transaction.commit().await?;
@@ -404,21 +406,10 @@ async fn put_on_the_wire(
     .await?)
 }
 
-/// A direct message goes out with its outbox row's creation stamp as
-/// sent_at, the agent's send time on this Mac's clock (design 2026-11-17),
-/// so central's cancel mark counts from when the agent sent it and every
-/// replay carries the same value. Other writes are unchanged.
-pub(crate) fn with_send_time(
-    payload: OutboxQueuedWrite,
+fn original_send_stamp(
+    request_id: &str,
     created_at_ms: i64,
-) -> Result<RequestPayload, OutboxStoreError> {
-    let created_at = chrono::DateTime::from_timestamp_millis(created_at_ms).ok_or_else(|| {
-        OutboxStoreError::CorruptItem {
-            request_id: payload
-                .request_id()
-                .map_or_else(String::new, ToString::to_string),
-            field: "created_at",
-        }
-    })?;
-    Ok(payload.into_wire(created_at))
+) -> Result<workspace_model::Timestamp, OutboxStoreError> {
+    chrono::DateTime::from_timestamp_millis(created_at_ms)
+        .ok_or_else(|| corrupt_row(request_id, "created_at"))
 }

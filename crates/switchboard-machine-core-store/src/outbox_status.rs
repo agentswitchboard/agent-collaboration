@@ -39,3 +39,16 @@ pub enum OutboxWriteOutcome {
     Answered(ReplyPayload),
     Refused(OutboxRefusal),
 }
+
+/// An original request's owning store.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum OutboxScope {
+    Organization,
+    Workspace(workspace_ids::WorkspaceId),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OutboxRequestKey {
+    pub request_id: workspace_ids::RequestId,
+    pub scope: OutboxScope,
+}

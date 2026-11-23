@@ -1,12 +1,8 @@
 //! The write as accepted by the Router. Only the outbox claim adds send time.
-use crate::{OutboxWriteContent, OutboxWriteTarget};
-use central_link_protocol::{RequestPayload, RequestScope};
+use crate::{OutboxScope, OutboxWriteContent, OutboxWriteTarget};
 use serde::{Deserialize, Serialize};
 use workspace_ids::RequestId;
-use workspace_model::{
-    Timestamp, WorkspaceRequest,
-    central_mail::{CentralMailOperation, CentralMailRequest, SendMessageRequest},
-};
+use workspace_model::{WorkspaceRequest, central_mail::SendMessageRequest};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
@@ -32,17 +28,17 @@ impl OutboxQueuedWrite {
         }
     }
 
-    pub fn request_scope(&self) -> RequestScope {
+    pub fn request_scope(&self) -> OutboxScope {
         match self {
             Self::Workspace(request) => request
                 .workspace_id
                 .clone()
-                .map_or(RequestScope::Organization, RequestScope::Workspace),
-            Self::SendMessage { .. } => RequestScope::Organization,
+                .map_or(OutboxScope::Organization, OutboxScope::Workspace),
+            Self::SendMessage { .. } => OutboxScope::Organization,
         }
     }
 
-    pub fn content(&self) -> Option<OutboxWriteContent> {
+    pub(crate) fn content(&self) -> Option<OutboxWriteContent> {
         match self {
             Self::Workspace(request) => OutboxWriteContent::workspace(request),
             Self::SendMessage { message, .. } => Some(OutboxWriteContent {
@@ -50,25 +46,6 @@ impl OutboxQueuedWrite {
                     to: message.to.clone(),
                 },
                 body: message.body.clone(),
-            }),
-        }
-    }
-
-    pub fn into_wire(self, sent_at: Timestamp) -> RequestPayload {
-        match self {
-            Self::Workspace(request) => RequestPayload::Workspace(request),
-            Self::SendMessage {
-                request_id,
-                message,
-            } => RequestPayload::Mail(CentralMailRequest {
-                request_id,
-                operation: CentralMailOperation::SendMessage {
-                    to: message.to,
-                    body: message.body,
-                    delivery: message.delivery,
-                    reply_to: message.reply_to,
-                    sent_at,
-                },
             }),
         }
     }

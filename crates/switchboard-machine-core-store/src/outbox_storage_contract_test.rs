@@ -90,13 +90,7 @@ pub(crate) async fn lifecycle_and_views(store: &mut dyn OutboxStorage) {
     );
     let sent = store.mark_sent(&ids(&[&first]), MARK).await.unwrap();
     assert_eq!(sent.len(), 1);
-    assert_eq!(
-        sent[0].payload,
-        first
-            .payload
-            .clone()
-            .into_wire(chrono::DateTime::UNIX_EPOCH)
-    );
+    assert_eq!(sent[0].payload, first.payload.clone());
     assert_eq!(
         store
             .request_status(&first.caller, &first.request)
@@ -358,13 +352,7 @@ pub(crate) async fn claim_takes_due_writes_oldest_first_up_to_the_limit(
             .collect::<Vec<_>>(),
         ids(&[&first, &second])
     );
-    assert_eq!(
-        claimed[0].payload,
-        first
-            .payload
-            .clone()
-            .into_wire(chrono::DateTime::UNIX_EPOCH)
-    );
+    assert_eq!(claimed[0].payload, first.payload.clone());
     assert_eq!(
         store
             .request_status(&first.caller, &first.request)

@@ -5,10 +5,9 @@ use crate::{
     LocalOutboxRefusal, MachineLocalStore, OutboxQueuedWrite, OutboxRequestStatus,
     outbox_item_state::OutboxItemState,
 };
-use central_link_protocol::RequestPayload;
 use sqlite_storage_maintenance::TransactionStart;
 use workspace_ids::RequestId;
-use workspace_model::Caller;
+use workspace_model::{Caller, Timestamp};
 
 mod outbox_queries;
 mod outbox_rows;
@@ -70,7 +69,8 @@ pub enum OutboxInsert {
 pub struct StoredOutboxWrite {
     pub request: RequestId,
     pub caller: Caller,
-    pub payload: RequestPayload,
+    pub payload: OutboxQueuedWrite,
+    pub sent_at: Timestamp,
 }
 
 /// Answered writes are kept this long after their answer, then deleted.
