@@ -40,8 +40,9 @@ mod delivery_cases;
 mod proof_cases;
 pub use delivery_cases::{
     ParentApprovalPause, PauseControl, SettlesRecoveredNotice,
-    pass_notice_reaches_a_separate_destination, pass_notice_survives_origin_loss,
-    queued_notice_stops_at_deadline, read_survives_lost_reply, stale_recovery_page,
+    hidden_approval_matches_an_absent_one_on_wire, pass_notice_reaches_a_separate_destination,
+    pass_notice_survives_origin_loss, queued_notice_stops_at_deadline, read_survives_lost_reply,
+    stale_recovery_page,
 };
 pub use proof_cases::{ParentApprovalProof, observe_parent_proof};
 #[path = "parent_approval_rollback.rs"]

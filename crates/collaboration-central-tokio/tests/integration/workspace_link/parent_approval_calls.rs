@@ -156,6 +156,7 @@ use collaboration_central_conformance::parent_approval_scenarios::{
 
 enum C2DeliveryCase {
     LostRead,
+    HiddenOnWire,
     LostPass,
     LostOtherMachine,
     Deadline,
@@ -218,6 +219,7 @@ async fn observe_delivery(case: C2DeliveryCase) -> Result<()> {
         Ok(())
     };
     let observed = match case {
+        C2DeliveryCase::HiddenOnWire => collaboration_central_conformance::parent_approval_scenarios::hidden_approval_matches_an_absent_one_on_wire(&fixture).await,
         C2DeliveryCase::LostRead => read_survives_lost_reply(&fixture, control).await,
         C2DeliveryCase::LostPass => pass_notice_survives_origin_loss(&fixture, control).await,
         C2DeliveryCase::LostOtherMachine => {
@@ -368,4 +370,9 @@ impl CompetingApprovalFixture for NativeApprovalFixture {
 #[tokio::test]
 async fn pass_notice_reaches_another_machine_when_origin_reply_is_lost() -> Result<()> {
     observe_delivery(C2DeliveryCase::LostOtherMachine).await
+}
+
+#[tokio::test]
+async fn hidden_corrupt_offer_and_absent_approval_reply_identically() -> Result<()> {
+    observe_delivery(C2DeliveryCase::HiddenOnWire).await
 }

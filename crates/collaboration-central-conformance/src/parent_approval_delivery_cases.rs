@@ -377,3 +377,127 @@ pub async fn pass_notice_reaches_a_separate_destination<F: Future<Output = Resul
     );
     heartbeat(&mut destination_socket).await
 }
+
+pub async fn hidden_approval_matches_an_absent_one_on_wire(
+    fixture: &impl ApprovalLinkFixture,
+) -> Result<()> {
+    use approval_request_protocol::{
+        DecideApprovalAsSessionRequest, ReadApprovalForSessionRequest,
+    };
+    use central_link_protocol::{
+        CentralCallReply, FrameDirection, approval_rpc::DecideApprovalAsSessionRpc, decode_text,
+    };
+    use futures_util::StreamExt;
+    use reqwest_websocket::Message;
+
+    let mut setup = ParentSetup::open(fixture, Chain::Direct).await?;
+    let hidden = setup.approval.request_id().clone();
+    let absent = super::ABSENT_REQUEST.parse::<ApprovalRequestId>()?;
+    fixture
+        .fixture_write(Statement {
+            sql: "UPDATE approval_requests SET offer_json='malformed' WHERE request_id=?",
+            args: vec![SqlValue::Text(hidden.as_str().to_owned())],
+        })
+        .await?;
+    let organization = &setup.target.organization_id;
+    let session = &setup.child;
+    for (hidden, absent) in [
+        (
+            ReadApprovalForSessionRpc::request(Envelope {
+                target: ApprovalServiceTarget {
+                    organization_id: organization.clone(),
+                },
+                body: session.request(ReadApprovalForSessionRequest {
+                    request_id: hidden.clone(),
+                }),
+            }),
+            ReadApprovalForSessionRpc::request(Envelope {
+                target: ApprovalServiceTarget {
+                    organization_id: organization.clone(),
+                },
+                body: session.request(ReadApprovalForSessionRequest {
+                    request_id: absent.clone(),
+                }),
+            }),
+        ),
+        (
+            DecideApprovalAsSessionRpc::request(Envelope {
+                target: ApprovalServiceTarget {
+                    organization_id: organization.clone(),
+                },
+                body: session.request(DecideApprovalAsSessionRequest {
+                    request_id: hidden.clone(),
+                    operation_id: typed_id(0xb290)?,
+                    value: option(1)?,
+                }),
+            }),
+            DecideApprovalAsSessionRpc::request(Envelope {
+                target: ApprovalServiceTarget {
+                    organization_id: organization.clone(),
+                },
+                body: session.request(DecideApprovalAsSessionRequest {
+                    request_id: absent.clone(),
+                    operation_id: typed_id(0xb290)?,
+                    value: option(1)?,
+                }),
+            }),
+        ),
+        (
+            PassOnApprovalForSessionRpc::request(Envelope {
+                target: ApprovalServiceTarget {
+                    organization_id: organization.clone(),
+                },
+                body: session.request(PassOnApprovalRequest {
+                    request_id: hidden,
+                    operation_id: typed_id(0xb291)?,
+                }),
+            }),
+            PassOnApprovalForSessionRpc::request(Envelope {
+                target: ApprovalServiceTarget {
+                    organization_id: organization.clone(),
+                },
+                body: session.request(PassOnApprovalRequest {
+                    request_id: absent,
+                    operation_id: typed_id(0xb291)?,
+                }),
+            }),
+        ),
+    ] {
+        let mut responses = Vec::new();
+        for request in [hidden, absent] {
+            let correlation = super::CORRELATION.parse()?;
+            send_frame(
+                &mut setup.socket,
+                LinkFrame::Data(DataFrame::CallCentral {
+                    correlation_id: correlation,
+                    request: Box::new(request),
+                }),
+            )
+            .await?;
+            let Some(Ok(Message::Text(text))) = setup.socket.next().await else {
+                return Err("expected textual Central approval reply".into());
+            };
+            responses.push(text);
+        }
+        assert_eq!(responses.len(), 2);
+        assert_eq!(responses[0], responses[1]);
+        let LinkFrame::Data(DataFrame::CentralCallReply { result, .. }) =
+            decode_text(&responses[0], FrameDirection::ToRouter)?
+        else {
+            return Err("expected a typed Central call reply".into());
+        };
+        let TypedCallResult::Answered { reply } = *result else {
+            return Err("hidden or absent request received a link refusal".into());
+        };
+        assert!(match reply {
+            CentralCallReply::ReadApprovalForSession(reply) =>
+                matches!(reply.body, ReadApprovalForSessionReply::NotVisible {}),
+            CentralCallReply::DecideApprovalAsSession(reply) =>
+                matches!(reply.body, DecideApprovalAsSessionReply::NotVisible {}),
+            CentralCallReply::PassOnApproval(reply) =>
+                matches!(reply.body, PassOnApprovalReply::NotVisible {}),
+            _ => false,
+        });
+    }
+    heartbeat(&mut setup.socket).await
+}

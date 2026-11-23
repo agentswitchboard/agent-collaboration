@@ -69,6 +69,19 @@ where
         let Some(record) = record else {
             return Ok(refused());
         };
+        self.decide_selected_approval(organization, decider, request, &record)
+            .await
+    }
+
+    pub(super) async fn decide_selected_approval(
+        &mut self,
+        organization: &OrganizationId,
+        decider: AdmittedDecider,
+        request: ApprovalDecideInput,
+        record: &ApprovalReadRecord,
+    ) -> Result<ApprovalTransitionOutput<ApprovalDecisionReply>, ApprovalApplyFailure> {
+        let actor = decider.actor();
+        let refused = || ApprovalTransitionOutput::with_reply(ApprovalDecisionReply::NotVisible {});
         let Some(saved) = record
             .state
             .retained()

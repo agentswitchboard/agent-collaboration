@@ -64,10 +64,11 @@ where
             return Ok(SessionDecisionApply::PersonRequired);
         }
         let applied = self
-            .decide_approval(
+            .decide_selected_approval(
                 organization,
                 AdmittedDecider::Session(session.clone()),
                 input.clone(),
+                &record,
             )
             .await?;
         let reply = match &applied.reply {
