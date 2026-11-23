@@ -117,7 +117,7 @@ pub async fn queued_for_session_held(
 ) -> Result<mail::SessionQueue, StoreFailure> {
     // UUIDv7 normally follows admission within one process. A reopen or clock
     // rollback can change that order; no FIFO promise is made inside a batch.
-    let rows=host.read(Statement{sql:"SELECT message_id,sender,target_machine_id,target_session,message_kind,body,state,failure_reason,source_change_id,recipient_actor,source_workspace_id,source_thread_id,created_at,updated_at FROM mail_messages WHERE target_machine_id=? AND state='queued' ORDER BY message_id",args:vec![SqlValue::Text(session.machine_id.to_string())]}).await?;
+    let rows=host.read(Statement{sql:"SELECT message_id,sender,target_machine_id,target_session,message_kind,body,state,failure_reason,source_change_id,recipient_actor,source_workspace_id,source_thread_id,created_at,updated_at FROM mail_messages WHERE target_machine_id=? AND state='queued' AND (message_kind!='direct' OR deadline_settled_at IS NULL) ORDER BY message_id",args:vec![SqlValue::Text(session.machine_id.to_string())]}).await?;
     let mut messages = decode_messages(&rows)?;
     messages.retain(|message| &message.target == session);
     messages.sort_by(|left, right| left.message_id.cmp(&right.message_id));

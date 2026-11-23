@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT message_id AS \"message_id!: String\",sender,target_machine_id,target_session,message_kind,body,state,\n       failure_reason,source_change_id,recipient_actor,source_workspace_id,source_thread_id,\n       created_at,updated_at,delivery_window_ends_at\nFROM mail_messages\nWHERE target_machine_id=?1 AND state='queued' AND message_kind IN ('direct','notice','deliveryOutcome')\n  AND delivery_window_ends_at>?2 AND (message_kind!='direct' OR delivery_window_ends_at>created_at)\n  AND (?3 IS NULL OR (created_at,message_id)>(?3,?4))\nORDER BY created_at,message_id LIMIT ?5\n",
+  "query": "SELECT message_id AS \"message_id!: String\",sender,target_machine_id,target_session,message_kind,body,state,\n       failure_reason,source_change_id,recipient_actor,source_workspace_id,source_thread_id,\n       created_at,updated_at,delivery_window_ends_at,cancel_due_at,deadline_settled_at\nFROM mail_messages\nWHERE message_id=? AND target_machine_id=? AND state='queued' AND message_kind IN ('direct','notice','deliveryOutcome')\n  AND (message_kind!='direct' OR (EXISTS (SELECT 1 FROM direct_message_due_candidates AS candidate WHERE candidate.message_id=mail_messages.message_id) AND delivery_window_ends_at > created_at)) AND delivery_window_ends_at > ?\n",
   "describe": {
     "columns": [
       {
@@ -167,10 +167,32 @@
             "name": "delivery_window_ends_at"
           }
         }
+      },
+      {
+        "name": "cancel_due_at",
+        "ordinal": 15,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "cancel_due_at"
+          }
+        }
+      },
+      {
+        "name": "deadline_settled_at",
+        "ordinal": 16,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "mail_messages",
+            "name": "deadline_settled_at"
+          }
+        }
       }
     ],
     "parameters": {
-      "Right": 5
+      "Right": 3
     },
     "nullable": [
       true,
@@ -187,8 +209,10 @@
       true,
       false,
       false,
+      true,
+      true,
       true
     ]
   },
-  "hash": "db10f4e87c2d63e11ee65747be7c19dc87a8f2a5601a0e5af835eeec4a3f67ad"
+  "hash": "b4a7753e797f23c6a3ad6efbdd8ed00edf3079b738b572b65ea4c877a0e58959"
 }

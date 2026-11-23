@@ -1,12 +1,5 @@
-WITH message_mark(occurrence_ms) AS (
-  SELECT CASE
-    WHEN unixepoch(cancel_due_at) IS NULL OR abs(unixepoch(cancel_due_at)*1000+CAST(substr(strftime('%f',cancel_due_at),4,3) AS INTEGER))>9223372036854
-    THEN 0
-    ELSE unixepoch(cancel_due_at)*1000+CAST(substr(strftime('%f',cancel_due_at),4,3) AS INTEGER)
-  END
-  FROM mail_messages
-  WHERE message_id=?1 AND message_kind='direct'
-    AND state IN ('queued','delivered') AND cancel_due_at IS NOT NULL
+WITH message_mark(occurrence_ms) AS MATERIALIZED (
+  SELECT occurrence_ms FROM direct_message_due_candidates WHERE message_id=?1
 )
 SELECT occurrence_ms AS "occurrence_ms!: i64",
        CASE WHEN attempt.uses_subject_attempt=1 THEN attempt.due_at_ms ELSE occurrence_ms END AS "effective_due_ms!: i64"

@@ -13,7 +13,6 @@ use fleet_engine::{
     record_checked_attempt,
 };
 use fleet_lent_transaction::CentralTransaction;
-use fleet_runtime_ports::workspace_decode_error::corrupt;
 use sqlx_core::{
     arguments::IntoArguments, column::ColumnIndex, database::Database, decode::Decode,
     encode::Encode, query_as::query_as, types::Type,
@@ -50,10 +49,9 @@ where
     for<'row> &'row str: ColumnIndex<<T::Database as Database>::Row>,
     i64: Type<T::Database> + for<'row> Decode<'row, T::Database>,
 {
-    let horizon = mark
-        .now
-        .checked_add_signed(central_engine_model::DueBatchPolicy::DEFAULT.look_ahead)
-        .ok_or_else(|| CheckedDueFailure::from_store(corrupt("mail_messages.cancel_due_at")))?;
+    if mark.now < mark.occurrence {
+        return Ok(false);
+    }
     macro_rules! bind_due_mark_guard {
         ($file:literal, $($arg:expr),+) => {
             query_as::<T::Database, StoredMarkGuard>(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $file)))$(.bind($arg))+
@@ -64,8 +62,8 @@ where
         .await
         .map_err(|_| CheckedDueFailure::Unavailable)?;
     Ok(due.is_some_and(|due| {
-        due.occurrence_ms == mark.occurrence.timestamp_millis()
-            && due.effective_due_ms <= horizon.timestamp_millis()
+        (due.occurrence_ms == mark.occurrence.timestamp_millis() || due.occurrence_ms == 0)
+            && due.effective_due_ms <= mark.now.timestamp_millis()
     }))
 }
 

@@ -1,0 +1,28 @@
+{
+  "db_name": "SQLite",
+  "query": "WITH message_mark(occurrence_ms) AS MATERIALIZED (\n  SELECT occurrence_ms FROM direct_message_due_candidates WHERE message_id=?1\n)\nSELECT occurrence_ms AS \"occurrence_ms!: i64\",\n       CASE WHEN attempt.uses_subject_attempt=1 THEN attempt.due_at_ms ELSE occurrence_ms END AS \"effective_due_ms!: i64\"\nFROM message_mark\nLEFT JOIN engine_due_attempt_controls attempt\n  ON attempt.machine_kind='direct_message' AND attempt.subject_key=?1\nWHERE COALESCE(attempt.retired,0)=0\n  AND NOT EXISTS (\n    SELECT 1 FROM engine_due_attempt_controls\n    WHERE machine_kind='engine_source' AND subject_key='direct_message'\n  );\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "occurrence_ms!: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "effective_due_ms!: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "d02cb08911384d7530ec362aa06d9247bdb1ba36cbac6eefa402ed4ea4f7c703"
+}

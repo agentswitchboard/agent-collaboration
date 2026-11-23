@@ -29,11 +29,23 @@ async fn a_real_link_answers_one_and_sixty_four_receipts_and_refuses_invalid_fra
             }
         }
 
-        let invalid = [
+        let mut invalid = vec![
             serde_json::json!({"kind":"receipts", "correlationId":correlation_id, "receipts":[]}),
             serde_json::json!({"kind":"receipts", "correlationId":correlation_id, "receipts":vec![receipt; 65]}),
             serde_json::json!({"kind":"ack","messageId":"019f0000-0000-7000-8000-00000000ce92","answer":{"kind":"accepted"}}),
         ];
+        invalid.extend(
+            [
+                serde_json::json!({"kind":"notSeen","waiting":"busy"}),
+                serde_json::json!({"kind":"delivered","arrivedAt":"2030-01-01T00:00:00Z","waiting":null}),
+                serde_json::json!({"kind":"refused","reason":"sessionClosed"}),
+            ]
+            .into_iter()
+            .map(|removed_receipt| serde_json::json!({
+                "kind":"receipts","correlationId":correlation_id,
+                "receipts":[{"messageId":"019f0000-0000-7000-8000-00000000ce92","kind":removed_receipt}],
+            })),
+        );
         for frame in invalid {
             let mut socket = fixture.connect().await?;
     receive(&mut socket).await?;

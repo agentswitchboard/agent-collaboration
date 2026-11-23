@@ -130,7 +130,7 @@ where
             "failed",
             Some(enum_text(reason)?),
         ),
-        ReceiptKind::Seen { .. } | ReceiptKind::NotSeen { .. } => {
+        ReceiptKind::Seen { .. } => {
             return Ok(ApplyReceipt::Stop(ReceiptResult::NotApplicable));
         }
     };

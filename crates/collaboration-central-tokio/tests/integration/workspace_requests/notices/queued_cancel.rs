@@ -18,6 +18,8 @@ async fn leaving_cancels_the_fired_collated_notice_and_retains_direct_message() 
     else {
         panic!("post")
     };
+    // Put the direct cutoff after this notice's 15-minute mark.
+    f.advance(Duration::from_secs(1)).await;
     let sent = f
         .host
         .request_central(
@@ -48,7 +50,7 @@ async fn leaving_cancels_the_fired_collated_notice_and_retains_direct_message() 
     f.clock
         .not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(900)))
         .await;
-    f.advance(Duration::from_secs(900)).await;
+    f.advance(Duration::from_secs(899)).await;
     fired.until_held().await;
     let rows = runtime.runtime().statement_host().read(Statement {
         sql: "SELECT message_id,state,sender,body FROM mail_messages WHERE recipient_actor=? AND source_thread_id=? AND message_kind='notice'",
