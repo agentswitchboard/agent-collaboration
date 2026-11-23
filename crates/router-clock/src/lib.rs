@@ -9,7 +9,7 @@ pub use system_runtime_clock::SystemRuntimeClock;
 #[cfg(any(test, feature = "test-support"))]
 mod manual_clock;
 #[cfg(any(test, feature = "test-support"))]
-pub use manual_clock::{ClockAdvanceError, ManualClock};
+pub use manual_clock::{ClockAdvanceError, ManualClock, WaitRegistration};
 #[cfg(any(test, feature = "test-support"))]
 mod gated_clock;
 #[cfg(any(test, feature = "test-support"))]

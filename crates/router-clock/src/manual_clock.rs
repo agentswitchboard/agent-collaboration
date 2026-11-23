@@ -21,9 +21,19 @@ struct SleepCheck {
 #[error("the manual clock advance exceeds its UTC or elapsed range")]
 pub struct ClockAdvanceError;
 
+/// The manual clock distinguishes each wait's construction, first poll and drop.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WaitRegistration {
+    pub id: usize,
+    pub deadline: ClockInstant,
+    pub first_polled_at: Option<ClockInstant>,
+    pub dropped: bool,
+}
+
 pub struct ManualClock {
     reading: watch::Sender<ClockReading>,
     checks: watch::Sender<Vec<SleepCheck>>,
+    registrations: watch::Sender<Vec<WaitRegistration>>,
 }
 
 impl ManualClock {
@@ -36,6 +46,7 @@ impl ManualClock {
             })
             .0,
             checks: watch::channel(Vec::new()).0,
+            registrations: watch::channel(Vec::new()).0,
         }
     }
 
@@ -93,6 +104,36 @@ impl ManualClock {
         })
     }
 
+    /// Returns the registration index for the next constructed wait.
+    #[must_use]
+    pub fn wait_checkpoint(&self) -> usize {
+        self.registrations.borrow().len()
+    }
+
+    #[must_use]
+    pub fn wait_registrations_since(&self, checkpoint: usize) -> Vec<WaitRegistration> {
+        self.registrations
+            .borrow()
+            .iter()
+            .skip(checkpoint)
+            .copied()
+            .collect()
+    }
+
+    fn register_wait(&self, deadline: ClockInstant) -> ObserveWaitDrop<'_> {
+        let mut id = 0;
+        self.registrations.send_modify(|registrations| {
+            id = registrations.len();
+            registrations.push(WaitRegistration {
+                id,
+                deadline,
+                first_polled_at: None,
+                dropped: false,
+            });
+        });
+        ObserveWaitDrop { clock: self, id }
+    }
+
     fn record_sleep_check(&self, check: SleepCheck) {
         self.checks.send_if_modified(|checks| {
             if checks.contains(&check) {
@@ -100,6 +141,32 @@ impl ManualClock {
             } else {
                 checks.push(check);
                 true
+            }
+        });
+    }
+}
+
+struct ObserveWaitDrop<'clock> {
+    clock: &'clock ManualClock,
+    id: usize,
+}
+
+impl ObserveWaitDrop<'_> {
+    fn record_first_poll(&self) {
+        let now = self.clock.monotonic_now();
+        self.clock.registrations.send_modify(|registrations| {
+            if let Some(wait) = registrations.get_mut(self.id) {
+                wait.first_polled_at = Some(now);
+            }
+        });
+    }
+}
+
+impl Drop for ObserveWaitDrop<'_> {
+    fn drop(&mut self) {
+        self.clock.registrations.send_modify(|registrations| {
+            if let Some(wait) = registrations.get_mut(self.id) {
+                wait.dropped = true;
             }
         });
     }
@@ -137,7 +204,10 @@ impl RuntimeClock for ManualClock {
     }
 
     fn sleep_until(&self, deadline: ClockInstant) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
+        let observe_drop = self.register_wait(deadline);
         Box::pin(async move {
+            let observe_drop = observe_drop;
+            observe_drop.record_first_poll();
             let mut changes = self.reading.subscribe();
             loop {
                 let now = changes.borrow_and_update().elapsed;
