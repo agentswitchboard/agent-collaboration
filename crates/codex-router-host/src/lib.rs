@@ -106,6 +106,9 @@ pub type ProviderSteeringOutcome = acp_client_runtime::ProviderSteeringOutcome<
     collaboration_protocol::OperationId,
     external_provider_approval_context::ExternalProviderApprovalContext,
 >;
+mod recipient_codex_inventory;
+pub mod recipient_session_inventory;
+mod recipient_terminal_inventory;
 mod router_compatibility;
 mod router_executable_observation;
 mod session_message_route_composition;

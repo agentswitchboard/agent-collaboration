@@ -1,5 +1,7 @@
 //! Host-lifetime ownership of unfinished Codex creates and detached prompt drains.
-use codex_acp_adapter::{AcpSessionBinding, HeldBindingCheckout, UnmaterializedBindingStore};
+use codex_acp_adapter::{
+    AcpSessionBinding, CodexSessionPresence, HeldBindingCheckout, UnmaterializedBindingStore,
+};
 use collaboration_protocol::CodexGeneration;
 use std::{
     collections::{BTreeMap, btree_map::Entry},
@@ -30,6 +32,7 @@ impl HeldThread {
 #[derive(Default)]
 pub struct UnmaterializedThreadHolder {
     threads: Mutex<BTreeMap<String, HeldThread>>,
+    session_presence: CodexSessionPresence,
     host_tasks: tokio_util::task::TaskTracker,
 }
 
@@ -37,6 +40,11 @@ impl UnmaterializedThreadHolder {
     #[must_use]
     pub fn new() -> Self {
         Self::default()
+    }
+
+    #[must_use]
+    pub fn session_presence(&self) -> CodexSessionPresence {
+        self.session_presence.clone()
     }
 
     #[must_use]
@@ -91,6 +99,10 @@ impl Drop for HeldBindingCleanup<'_> {
 }
 
 impl UnmaterializedBindingStore for UnmaterializedThreadHolder {
+    fn session_presence(&self) -> Option<CodexSessionPresence> {
+        Some(self.session_presence())
+    }
+
     fn hold(&self, binding: AcpSessionBinding) {
         if !binding.is_unmaterialized() {
             return;
