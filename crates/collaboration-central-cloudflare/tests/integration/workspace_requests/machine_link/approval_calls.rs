@@ -145,6 +145,30 @@ impl ApprovalLinkFixture for Fixture {
         Ok(())
     }
 
+    async fn hold_delivery_answer(&self) -> Result<()> {
+        if !self
+            .runtime()
+            .control::<bool>("hold-central", &"approvalEndingAnswerApplied")
+            .await?
+        {
+            return Err("could not hold the worker after applying the delivery answer".into());
+        }
+        Ok(())
+    }
+
+    async fn observe_delivery_answer(&self) -> Result<()> {
+        let runtime = self.runtime();
+        let point = "approvalEndingAnswerApplied";
+        if !runtime
+            .control::<bool>("until-held-central", &point)
+            .await?
+            || !runtime.control::<bool>("release-central", &point).await?
+        {
+            return Err("the worker did not apply the delivery answer".into());
+        }
+        Ok(())
+    }
+
     async fn end_enrollment(&self) -> Result<()> {
         use super::receipt_frames::{EnrollmentAtApply, stored_ending_batch};
         let ended = stored_ending_batch(

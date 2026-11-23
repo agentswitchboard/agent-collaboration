@@ -19,6 +19,7 @@ pub(super) async fn control(
                     | Point::BeforeReceiptTransaction
                     | Point::BeforeSessionTransaction
                     | Point::ApprovalEndingNeverReached
+                    | Point::ApprovalEndingAnswerApplied
                     | Point::BeforeApprovalEndingWrite
                     | Point::AfterIdleExpiryCommit
                     | Point::AfterIdleRenewalPlatformSendError

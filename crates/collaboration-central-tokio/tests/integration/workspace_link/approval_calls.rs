@@ -62,11 +62,15 @@ use collaboration_central_conformance::approval_link_scenarios::{
     registered_stop_and_replay,
 };
 use reqwest_websocket::{RequestBuilderExt, WebSocket};
-use std::{cell::Cell, time::Duration};
+use std::{
+    cell::{Cell, RefCell},
+    time::Duration,
+};
 
 struct NativeApprovalFixture {
     link: Fixture,
     before_alarm: Cell<u64>,
+    delivery_answer: RefCell<Option<fleet_runtime::HeldPause>>,
 }
 
 impl ApprovalLinkFixture for NativeApprovalFixture {
@@ -135,6 +139,26 @@ impl ApprovalLinkFixture for NativeApprovalFixture {
         Ok(())
     }
 
+    async fn hold_delivery_answer(&self) -> Result<()> {
+        let owner = self.link.host.central(&self.link.organization_id).await?;
+        let held = owner
+            .runtime()
+            .pause_points()
+            .hold_central(PausePoint::ApprovalEndingAnswerApplied);
+        self.delivery_answer.replace(Some(held));
+        Ok(())
+    }
+
+    async fn observe_delivery_answer(&self) -> Result<()> {
+        let mut held = self
+            .delivery_answer
+            .take()
+            .ok_or("delivery-answer pause was not armed")?;
+        held.until_held().await;
+        held.release();
+        Ok(())
+    }
+
     async fn end_enrollment(&self) -> Result<()> {
         let owner = self.link.host.central(&self.link.organization_id).await?;
         let ended = stored_ending_batch(
@@ -159,6 +183,7 @@ async fn tokio_approval_raise_replay_and_stop_use_the_store() -> Result<()> {
     let fixture = NativeApprovalFixture {
         link: start_session_link_fixture(signed_clock()?).await?,
         before_alarm: Cell::new(0),
+        delivery_answer: RefCell::default(),
     };
     let result = registered_stop_and_replay(&fixture).await;
     fixture.link.close().await?;
@@ -170,6 +195,7 @@ async fn tokio_approval_authority_refusals_write_nothing() -> Result<()> {
     let fixture = NativeApprovalFixture {
         link: start_session_link_fixture(signed_clock()?).await?,
         before_alarm: Cell::new(0),
+        delivery_answer: RefCell::default(),
     };
     let result = approval_authority_refusals_leave_store_unchanged(&fixture).await;
     fixture.link.close().await?;
@@ -186,6 +212,7 @@ async fn tokio_engine_delivers_or_recovers_approval_timeout_and_applies_stop_owe
         let fixture = NativeApprovalFixture {
             link: start_session_link_fixture(signed_clock()?).await?,
             before_alarm: Cell::new(0),
+            delivery_answer: RefCell::default(),
         };
         let result = approval_deadline_delivery(&fixture, scenario).await;
         fixture.link.close().await?;
@@ -216,6 +243,7 @@ async fn tokio_fixture_decide_offers_only_after_commit_and_records_received() ->
     let fixture = NativeApprovalFixture {
         link: start_session_link_fixture(signed_clock()?).await?,
         before_alarm: Cell::new(0),
+        delivery_answer: RefCell::default(),
     };
     let observed = async {
         let (target, mut socket, request) = registered_waiting_request(&fixture).await?;
@@ -271,6 +299,7 @@ async fn tokio_queued_approval_ending_never_writes_on_a_replacement() -> Result<
     let fixture = NativeApprovalFixture {
         link: start_session_link_fixture(signed_clock()?).await?,
         before_alarm: Cell::new(0),
+        delivery_answer: RefCell::default(),
     };
     let observed = async {
         let (target, _original, request) = registered_waiting_request(&fixture).await?;

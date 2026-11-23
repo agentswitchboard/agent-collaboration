@@ -31,6 +31,11 @@ pub struct SelectedApprovalSocket {
 
 /// Select a physical socket once. Its send capability cannot route through a replacement.
 pub trait ApprovalEndingTransport: Send + Sync {
+    #[cfg(feature = "test-support")]
+    fn fixture_delivery_answer_applied(&self) -> LinkCallCompletion {
+        Box::pin(async {})
+    }
+
     fn select(
         &self,
         target: ApprovalHolderTarget,
@@ -168,8 +173,35 @@ where
                 reply: answer,
             },
         );
-        if let Either::Right((Err(failure), _)) = select(selected.ended, Box::pin(apply)).await {
-            tracing::warn!(?failure, "could not apply the approval ending answer");
+        match select(selected.ended, Box::pin(apply)).await {
+            Either::Right((
+                Ok(HolderApplied::Answer {
+                    reply: HolderReply::DeliveryAnswer,
+                    ..
+                }),
+                _,
+            )) => {
+                #[cfg(feature = "test-support")]
+                self.transport.fixture_delivery_answer_applied().await;
+            }
+            Either::Right((Err(failure), _)) => {
+                tracing::warn!(?failure, "could not apply the approval ending answer");
+            }
+            Either::Right((Ok(HolderApplied::AuthorityLapsed(cause)), _)) => {
+                tracing::debug!(?cause, "approval ending answer lost link authority");
+            }
+            Either::Right((
+                Ok(HolderApplied::Answer {
+                    reply:
+                        HolderReply::Register(_)
+                        | HolderReply::Raise(_)
+                        | HolderReply::Stop(_)
+                        | HolderReply::Recover(_),
+                    ..
+                }),
+                _,
+            )) => tracing::error!("approval ending application returned the wrong reply"),
+            Either::Left(_) => {}
         }
     }
 }

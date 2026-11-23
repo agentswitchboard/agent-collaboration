@@ -46,6 +46,20 @@ impl WorkerApprovalDelivery {
 }
 
 impl ApprovalEndingTransport for WorkerApprovalDelivery {
+    #[cfg(feature = "test-support")]
+    fn fixture_delivery_answer_applied(&self) -> collaboration_central_core::LinkCallCompletion {
+        let runtime = self.runtime.get().and_then(Weak::upgrade);
+        Box::pin(async move {
+            if let Some(runtime) = runtime {
+                runtime
+                    .runtime()
+                    .pause_points()
+                    .reached_central(fleet_runtime::PausePoint::ApprovalEndingAnswerApplied)
+                    .await;
+            }
+        })
+    }
+
     fn select(
         &self,
         target: ApprovalHolderTarget,

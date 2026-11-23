@@ -31,6 +31,7 @@ pub enum PausePoint {
     BeforeSessionTransaction,
     BeforeApprovalCommit,
     ApprovalEndingNeverReached,
+    ApprovalEndingAnswerApplied,
     BeforeApprovalEndingWrite,
     AfterIdleExpiryCommit,
     AfterIdleRenewalPlatformSendError,

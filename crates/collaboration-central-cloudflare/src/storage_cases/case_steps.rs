@@ -134,6 +134,7 @@ pub(crate) enum CasePausePoint {
     BeforeSessionTransaction,
     BeforeApprovalCommit,
     ApprovalEndingNeverReached,
+    ApprovalEndingAnswerApplied,
     BeforeApprovalEndingWrite,
     AfterIdleExpiryCommit,
     AfterIdleRenewalPlatformSendError,
@@ -169,6 +170,7 @@ impl From<CasePausePoint> for PausePoint {
             CasePausePoint::BeforeSessionTransaction => Self::BeforeSessionTransaction,
             CasePausePoint::BeforeApprovalCommit => Self::BeforeApprovalCommit,
             CasePausePoint::ApprovalEndingNeverReached => Self::ApprovalEndingNeverReached,
+            CasePausePoint::ApprovalEndingAnswerApplied => Self::ApprovalEndingAnswerApplied,
             CasePausePoint::BeforeApprovalEndingWrite => Self::BeforeApprovalEndingWrite,
             CasePausePoint::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
             CasePausePoint::AfterIdleRenewalPlatformSendError => {
@@ -209,6 +211,7 @@ impl From<PausePoint> for CasePausePoint {
             PausePoint::BeforeSessionTransaction => Self::BeforeSessionTransaction,
             PausePoint::BeforeApprovalCommit => Self::BeforeApprovalCommit,
             PausePoint::ApprovalEndingNeverReached => Self::ApprovalEndingNeverReached,
+            PausePoint::ApprovalEndingAnswerApplied => Self::ApprovalEndingAnswerApplied,
             PausePoint::BeforeApprovalEndingWrite => Self::BeforeApprovalEndingWrite,
             PausePoint::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
             PausePoint::AfterIdleRenewalPlatformSendError => {

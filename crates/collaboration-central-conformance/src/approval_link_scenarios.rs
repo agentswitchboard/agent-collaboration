@@ -36,6 +36,8 @@ pub trait ApprovalLinkFixture {
     fn observe_due_alarm(&self) -> impl Future<Output = Result<()>>;
     fn fail_next_applying_write(&self) -> impl Future<Output = Result<()>>;
     fn end_enrollment(&self) -> impl Future<Output = Result<()>>;
+    fn hold_delivery_answer(&self) -> impl Future<Output = Result<()>>;
+    fn observe_delivery_answer(&self) -> impl Future<Output = Result<()>>;
 }
 
 pub async fn registered_stop_and_replay(fixture: &impl ApprovalLinkFixture) -> Result<()> {
@@ -205,15 +207,7 @@ pub async fn approval_deadline_delivery(
                     .await?,
                 )?;
             }
-            assert_eq!(
-                raise(
-                    &mut socket,
-                    organization,
-                    held_start(&target.router_run, 256)?
-                )
-                .await?,
-                RaiseReply::TooManyOutstanding {}
-            );
+            require_capacity_refusal(fixture, &mut socket, &target).await?;
         }
         for seconds in [499, 500, 500, 500, 500, 500, 500] {
             fixture.advance(seconds).await?;
@@ -242,6 +236,7 @@ pub async fn approval_deadline_delivery(
 
     if capacity {
         let before = snapshot(fixture).await?;
+        fixture.hold_delivery_answer().await?;
         answer_ending(
             &mut socket,
             target.clone(),
@@ -249,8 +244,9 @@ pub async fn approval_deadline_delivery(
             DeliverEndingReply::StopOwed {},
         )
         .await?;
-        heartbeat(&mut socket).await?;
+        fixture.observe_delivery_answer().await?;
         assert_eq!(snapshot(fixture).await?, before);
+        require_capacity_refusal(fixture, &mut socket, &target).await?;
         assert_eq!(
             stop(&mut socket, organization, stop_request(&first)?).await?,
             TypedCallResult::Answered {
@@ -282,6 +278,27 @@ pub async fn approval_deadline_delivery(
         observe_received(fixture, &first).await?;
     }
     socket.close(CloseCode::Normal, None).await?;
+    Ok(())
+}
+
+async fn require_capacity_refusal(
+    fixture: &impl ApprovalLinkFixture,
+    socket: &mut WebSocket,
+    target: &ApprovalHolderTarget,
+) -> Result<()> {
+    let before = snapshot(fixture).await?;
+    let reply = raise(
+        socket,
+        &target.organization_id,
+        held_start(&target.router_run, 256)?,
+    )
+    .await?;
+    if reply != (RaiseReply::TooManyOutstanding {}) {
+        return Err(format!("the 257th Raise returned {reply:?}").into());
+    }
+    if snapshot(fixture).await? != before {
+        return Err("the refused 257th Raise changed stored approval requests".into());
+    }
     Ok(())
 }
 
