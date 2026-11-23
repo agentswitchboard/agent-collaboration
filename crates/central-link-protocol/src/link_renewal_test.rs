@@ -76,8 +76,8 @@ fn every_refusal_reason_has_its_camel_case_wire_name() {
     let names = [
         (TokenRenewalRefusal::TokenRejected, "tokenRejected"),
         (
-            TokenRenewalRefusal::PresentedEnrollmentNotActive,
-            "presentedEnrollmentNotActive",
+            TokenRenewalRefusal::PresentedTokenExpired,
+            "presentedTokenExpired",
         ),
         (
             TokenRenewalRefusal::ConnectionEnrollmentEnded,
@@ -101,7 +101,9 @@ fn every_refusal_reason_has_its_camel_case_wire_name() {
             reason
         );
     }
-    assert!(serde_json::from_value::<TokenRenewalRefusal>(json!("enrollmentNotActive")).is_err());
+    for removed in ["enrollmentNotActive", "presentedEnrollmentNotActive"] {
+        assert!(serde_json::from_value::<TokenRenewalRefusal>(json!(removed)).is_err());
+    }
 }
 
 #[test]

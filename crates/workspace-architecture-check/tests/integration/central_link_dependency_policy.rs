@@ -49,6 +49,7 @@ const CLIENT_NORMAL: &[Edge] = &[
     workspace("workspace-model", &[]),
     workspace("router-clock", &[]),
     registry("thiserror", true, &[]),
+    registry("tokio", false, &["sync"]),
     registry("uuid", true, &["v5", "v7"]),
 ];
 const CLIENT_DEV: &[Edge] = &[

@@ -334,6 +334,7 @@ fn production_input(
             attempt: attempt_id(attempt),
             correlation_id: identifier(correlation),
             reason: TokenRenewalRefusal::ConnectionEnrollmentEnded,
+            now: at(elapsed),
         },
         OrderEvent::Close { attempt, ending } => Input::SocketClosed {
             attempt: attempt_id(attempt),

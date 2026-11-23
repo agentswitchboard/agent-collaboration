@@ -1,8 +1,9 @@
 //! Approval RPC markers and addresses carried by the authenticated machine link.
+pub use approval_request_protocol::RegisterRunReply;
 use approval_request_protocol::{
     DecideReply, DecideRequest, DeliverEndingReply, DeliverEndingRequest, PassOnReply,
-    PassOnRequest, Raise, RaiseReply, RegisterRunReply, RegisterRunRequest, RouterRunId, StopReply,
-    StopRequest, decode_named_map,
+    PassOnRequest, Raise, RaiseReply, RegisterRunRequest, RouterRunId, StopReply, StopRequest,
+    decode_named_map,
 };
 use fleet_identity_protocol::{EnrollmentId, OrganizationId};
 use fleet_rpc::Rpc;

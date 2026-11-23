@@ -89,13 +89,13 @@ fn typed_inbound_frames_are_forwarded_only_for_the_current_connected_attempt() {
     let attempt = connect(&mut client);
     let correlation_id: CorrelationId = "01890f2e-7b4c-7cc0-98c4-000000000012".parse().unwrap();
     let call = decode_text(
-        r#"{"kind":"callMac","correlationId":"01890f2e-7b4c-7cc0-98c4-000000000012","request":{"call":"macProbe","envelope":{"target":"01890f2e-7b4c-7cc0-98c4-000000000002","body":{"sequence":7}}}}"#,
+        r#"{"kind":"callMac","correlationId":"01890f2e-7b4c-7cc0-98c4-000000000012","request":{"call":"deliverEnding","envelope":{"target":{"organizationId":"01890f2e-7b4c-7cc0-98c4-000000000001","machineId":"01890f2e-7b4c-7cc0-98c4-000000000002","enrollmentId":"01890f2e-7b4c-7cc0-98c4-000000000003","routerRun":"01890f2e-7b4c-7cc0-98c4-000000000004"},"body":{"requestId":"01890f2e-7b4c-7cc0-98c4-000000000005","contentsDigest":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","ending":{"kind":"providerApproval","ending":{"kind":"timedOut"}}}}}}"#,
         FrameDirection::ToRouter,
     )
     .unwrap();
     let event = client.receive(&attempt, call.clone()).unwrap();
     assert!(
-        matches!(event, ClientEvent::CallMac { correlation_id: id, request } if id == correlation_id && matches!(&*request, MacCall::MacProbe(envelope) if envelope.body.sequence == 7))
+        matches!(event, ClientEvent::CallMac { correlation_id: id, request } if id == correlation_id && matches!(&*request, MacCall::DeliverEnding(envelope) if envelope.target.machine_id == client.machine))
     );
 
     let reply = LinkFrame::Data(DataFrame::CentralCallReply {

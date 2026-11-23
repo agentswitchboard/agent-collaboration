@@ -259,6 +259,11 @@ export const c2WitnessWrapperSource = `
 import * as original from './index.js';
 export * from './index.js';
 export default original.default;
+function observedAuthority(socket) {
+  const attachment = socket.deserializeAttachment();
+  // The qualification stand-in writes the flat authority snapshot directly.
+  return attachment?.authority ?? attachment;
+}
 export class CentralObject extends original.CentralObject {
   constructor(state, env) {
     // Queue wrapper events before delegating, and route Rust callbacks through
@@ -321,11 +326,11 @@ export class CentralObject extends original.CentralObject {
     }
     const response = await super.fetch(request);
     if (response.status === 101) this.recordWitness({kind:'upgrade',
-      attachments:this.witnessState.getWebSockets().map(socket => socket.deserializeAttachment())});
+      attachments:this.witnessState.getWebSockets().map(observedAuthority)});
     return response;
   }
   async webSocketMessage(socket, message) {
-    this.recordWitness({kind:'handler', attachment:socket.deserializeAttachment()});
+    this.recordWitness({kind:'handler', attachment:observedAuthority(socket)});
     return super.webSocketMessage(socket, message);
   }
 }

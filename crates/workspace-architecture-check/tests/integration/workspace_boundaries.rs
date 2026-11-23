@@ -12,6 +12,9 @@ use workspace_package_tree_policy::{
     SERVICE_SUPPORT_PACKAGES, check_package_targets, check_package_tree, check_package_tree_output,
 };
 
+#[path = "link_reachability.rs"]
+mod link_reachability;
+
 #[cfg(test)]
 #[path = "job_layer_tests.rs"]
 mod job_layer_tests;
@@ -304,23 +307,7 @@ pub(super) fn check_boundaries(
         }
         check_workspace_driver_edges(graph, source)?;
     }
-    check_job_reachability(
-        graph,
-        "central-link-protocol",
-        &[
-            "fleet-contracts",
-            "central-storage",
-            "central-engine-model",
-            "fleet-engine",
-            "fleet-runtime",
-            "fleet-runtime-ports",
-            "fleet-storage-schema",
-            "fleet-store-sqlx",
-            CENTRAL_CORE,
-            CENTRAL_WORKER,
-            "collaboration-central-tokio",
-        ],
-    )?;
+    link_reachability::check_link_reachability(graph)?;
     check_resolved_session_read_dev_edges(graph)?;
     check_closed_workspace_edges(
         graph,
@@ -736,30 +723,6 @@ fn fleet_package_tree_rejects_an_indirect_wasm_worker_dependency() {
                 "{package} dependency tree for wasm32-unknown-unknown: BD2: pure rules transitively reach worker"
             )
         );
-    }
-}
-
-#[test]
-fn the_machine_link_rejects_contract_storage_and_engine_dependencies_through_a_leaf() {
-    for kind in [DependencyKind::Normal, DependencyKind::Build] {
-        for forbidden in [
-            "fleet-contracts",
-            "central-storage",
-            "central-engine-model",
-            FLEET_ENGINE,
-        ] {
-            let dependencies = graph(&[
-                ("central-link-protocol", "workspace-model", kind),
-                ("workspace-model", "message-board", kind),
-                ("message-board", forbidden, kind),
-            ]);
-            let observed =
-                check_boundaries(&dependencies).expect_err("link reaches a Central owner");
-            assert_eq!(
-                observed.to_string(),
-                format!("BD1: forbidden reachable dependency central-link-protocol -> {forbidden}")
-            );
-        }
     }
 }
 

@@ -44,6 +44,7 @@ mod transport_limits;
 
 const TOKEN: &str = "fictional-fixture-access-token.0.signature";
 const REFRESHED: &str = "fictional-fixture-access-token.1.signature";
+const NEXT_REFRESHED: &str = "fictional-fixture-access-token.2.signature";
 const DELIVER_FRAME: &str = r#"{"kind":"deliver","timeLeft":1,"sender":{"kind":"central"},"message":{"messageId":"01890f2e-7b4c-7cc0-98c4-000000000009","sender":{"kind":"central"},"target":{"machineId":"01890f2e-7b4c-7cc0-98c4-000000000002","sessionId":"s"},"body":{"kind":"direct","body":"hello","delivery":"auto","replyTo":null},"state":{"kind":"queued"},"source":null}}"#;
 
 fn machine() -> MachineId {
@@ -80,10 +81,10 @@ impl LeaseSource<u8> for FakeSource {
                     version: LeaseVersion(newer_than.map_or(1, |old| old.0 + 1)),
                     usable_until: tick(600),
                 },
-                token: if newer_than.is_some() {
-                    REFRESHED
-                } else {
-                    TOKEN
+                token: match newer_than {
+                    None => TOKEN,
+                    Some(LeaseVersion(1)) => REFRESHED,
+                    Some(_) => NEXT_REFRESHED,
                 }
                 .to_owned()
                 .try_into()

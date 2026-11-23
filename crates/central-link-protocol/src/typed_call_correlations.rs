@@ -1,5 +1,5 @@
 //! Per-connection routing of typed replies to live waiters.
-use crate::CorrelationId;
+use crate::{CorrelationId, FreshCorrelationId};
 use std::collections::{BTreeMap, VecDeque};
 
 pub const MAX_PENDING_TYPED_CALLS: usize = 64;
@@ -20,8 +20,16 @@ impl<Waiter> Default for TypedCallCorrelations<Waiter> {
 }
 
 impl<Waiter> TypedCallCorrelations<Waiter> {
-    /// Reserve space before dispatch. A retry must mint a fresh correlation.
-    pub fn register(&mut self, correlation: CorrelationId, waiter: Waiter) -> Result<(), Waiter> {
+    /// Reserve space before dispatch. Parsed or previously issued wire IDs are lookup-only.
+    ///
+    /// ```compile_fail,E0308
+    /// use central_link_protocol::{CorrelationId, TypedCallCorrelations};
+    /// let parsed: CorrelationId = "019f0000-0000-7000-8000-000000000001".parse().unwrap();
+    /// let mut pending = TypedCallCorrelations::default();
+    /// pending.register(parsed, ()).unwrap();
+    /// ```
+    pub fn register(&mut self, fresh: FreshCorrelationId, waiter: Waiter) -> Result<(), Waiter> {
+        let correlation = fresh.into_wire_id();
         if self.pending.len() == MAX_PENDING_TYPED_CALLS
             || self.pending.contains_key(&correlation)
             || self.resolved.contains(&correlation)
@@ -30,6 +38,24 @@ impl<Waiter> TypedCallCorrelations<Waiter> {
         }
         self.pending.insert(correlation, waiter);
         Ok(())
+    }
+
+    /// Observe the live waiter from a test fixture without settling it.
+    #[cfg(feature = "test-support")]
+    pub fn pending(&self, correlation: &CorrelationId) -> Option<&Waiter> {
+        self.pending.get(correlation)
+    }
+
+    /// Retire only after the pending attempt and its expected answer agree.
+    pub fn take_if(
+        &mut self,
+        correlation: &CorrelationId,
+        matches: impl FnOnce(&Waiter) -> bool,
+    ) -> Option<Waiter> {
+        if !matches(self.pending.get(correlation)?) {
+            return None;
+        }
+        self.retire(correlation)
     }
 
     /// Replies, duplicate replies and replies after retirement use the same lookup.

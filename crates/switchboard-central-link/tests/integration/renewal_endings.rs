@@ -11,14 +11,33 @@ use tokio_tungstenite::{
     tungstenite::{Message, protocol::CloseFrame},
 };
 
-use super::{DELIVER_FRAME, Fixture, text, tick, welcome};
+use super::{DELIVER_FRAME, Fixture, NEXT_REFRESHED, text, tick, welcome};
 use std::time::Duration;
+
+async fn send_renewal_result(
+    socket: &mut WebSocketStream<TcpStream>,
+    correlation_id: central_link_protocol::CorrelationId,
+    result: TokenRenewalResult,
+) {
+    let wire = encode_text(
+        &LinkFrame::Data(DataFrame::MachineTokenRenewal {
+            correlation_id,
+            result,
+        }),
+        FrameDirection::ToRouter,
+    )
+    .unwrap();
+    socket.send(Message::Text(wire.into())).await.unwrap();
+}
 
 #[expect(
     clippy::panic,
     reason = "A missing typed renewal fails the fixture at the wire assertion."
 )]
-async fn refuse_renewal(fixture: &mut Fixture) -> WebSocketStream<TcpStream> {
+async fn refuse_renewal_with_reason(
+    fixture: &mut Fixture,
+    reason: TokenRenewalRefusal,
+) -> WebSocketStream<TcpStream> {
     let mut socket = fixture.accept().await;
     assert_eq!(fixture.acquired.recv().await, Some(None));
     welcome(&mut socket).await;
@@ -38,15 +57,63 @@ async fn refuse_renewal(fixture: &mut Fixture) -> WebSocketStream<TcpStream> {
     else {
         panic!("expected a renewal on the existing connection");
     };
-    let answer = LinkFrame::Data(DataFrame::MachineTokenRenewal {
+    send_renewal_result(
+        &mut socket,
         correlation_id,
-        result: TokenRenewalResult::Refused {
-            reason: TokenRenewalRefusal::ConnectionEnrollmentEnded,
-        },
-    });
-    let wire = encode_text(&answer, FrameDirection::ToRouter).unwrap();
-    socket.send(Message::Text(wire.into())).await.unwrap();
+        TokenRenewalResult::Refused { reason },
+    )
+    .await;
     socket
+}
+
+async fn refuse_renewal(fixture: &mut Fixture) -> WebSocketStream<TcpStream> {
+    refuse_renewal_with_reason(fixture, TokenRenewalRefusal::ConnectionEnrollmentEnded).await
+}
+
+#[tokio::test]
+#[expect(
+    clippy::panic,
+    reason = "The fixture must observe a second typed renewal on the original socket."
+)]
+async fn presented_token_expired_refreshes_and_renews_on_the_same_link() {
+    use futures_util::FutureExt;
+
+    let mut fixture = Fixture::new().await;
+    let mut socket =
+        refuse_renewal_with_reason(&mut fixture, TokenRenewalRefusal::PresentedTokenExpired).await;
+    assert!(receive_after_refusal(&mut fixture, &mut socket).await);
+    assert_eq!(
+        fixture.acquired.recv().now_or_never().flatten(),
+        Some(Some(LeaseVersion(2))),
+        "expired candidate must request a strictly fresher bearer on the original attempt"
+    );
+    let retry = text(&mut socket).await;
+    let LinkFrame::Data(DataFrame::RenewMachineToken {
+        correlation_id,
+        token,
+    }) = decode_text(&retry, FrameDirection::ToCentral).unwrap()
+    else {
+        panic!("expected another renewal on the original socket");
+    };
+    assert!(token.expose() == NEXT_REFRESHED);
+    send_renewal_result(
+        &mut socket,
+        correlation_id,
+        TokenRenewalResult::Renewed {
+            central_time: "2030-01-01T00:01:30Z".parse().unwrap(),
+            effective_expires_at: "2030-01-01T00:05:30Z".parse().unwrap(),
+        },
+    )
+    .await;
+    assert!(receive_after_refusal(&mut fixture, &mut socket).await);
+    fixture.clock.advance(Duration::from_secs(31)).unwrap();
+    assert_eq!(
+        text(&mut socket).await,
+        "ping",
+        "only accepting the fresh bearer may carry the socket beyond its original deadline"
+    );
+    assert!(fixture.ended.try_recv().is_err());
+    fixture.stop().await;
 }
 
 async fn receive_after_refusal(

@@ -574,6 +574,7 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
                         attempt: attempt.clone(),
                         correlation_id,
                         reason,
+                        now: self.clock.monotonic_now(),
                     },
                 };
                 let _ = self.apply(event);

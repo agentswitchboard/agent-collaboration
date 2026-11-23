@@ -246,7 +246,8 @@ fn current_renewal_alone_can_move_the_elapsed_link_deadline(case: hegel::TestCas
             Input::RenewalRefused {
                 attempt: attempt.clone(),
                 correlation_id,
-                reason: TokenRenewalRefusal::PresentedEnrollmentNotActive,
+                reason: TokenRenewalRefusal::TokenRejected,
+                now: at(70),
             },
         );
         assert_eq!(
@@ -431,6 +432,7 @@ fn expired_close_refreshes_and_renewal_refusal_keeps_the_confirmed_deadline() {
                 attempt: second.clone(),
                 correlation_id,
                 reason: TokenRenewalRefusal::ConnectionEnrollmentEnded,
+                now: at(101),
             }
         ),
         []
@@ -447,6 +449,90 @@ fn expired_close_refreshes_and_renewal_refusal_keeps_the_confirmed_deadline() {
             }
         ]
     );
+}
+
+#[test]
+fn every_renewal_refusal_preserves_attachment_deadline_and_enrollment() {
+    use TokenRenewalRefusal as Refusal;
+
+    let (attempt, _) = attempt_pair();
+    let mut pending = waiting();
+    dial(&mut pending, &attempt, lease(4), 0);
+    apply(
+        &mut pending,
+        Input::Welcome {
+            attempt: attempt.clone(),
+            machine_id: machine(),
+            deadline: at(120),
+            now: at(0),
+        },
+    );
+    apply(&mut pending, Input::Tick { now: at(60) });
+    let correlation_id = identifier(8);
+    apply(
+        &mut pending,
+        Input::RenewalLease {
+            attempt: attempt.clone(),
+            lease: lease(5),
+            correlation_id: correlation_id.clone(),
+            now: at(61),
+        },
+    );
+    for reason in [
+        Refusal::TokenRejected,
+        Refusal::PresentedTokenExpired,
+        Refusal::ConnectionEnrollmentEnded,
+        Refusal::DifferentMachine,
+        Refusal::DifferentEnrollment,
+        Refusal::CentralUnavailable,
+    ] {
+        let mut state = pending.clone();
+        let refusal = Input::RenewalRefused {
+            attempt: attempt.clone(),
+            correlation_id: correlation_id.clone(),
+            reason,
+            now: at(70),
+        };
+        assert!(apply(&mut state, refusal.clone()).is_empty());
+        assert_eq!(
+            state.renewal_deadline(),
+            Some(at(120)),
+            "{reason:?} leaves the confirmed deadline in force"
+        );
+        assert!(
+            matches!(state.status(), LinkStatus::Welcomed { .. }),
+            "{reason:?} does not end the enrollment"
+        );
+        assert_eq!(
+            Policy::transition(&state, refusal),
+            Err(TransitionError::Stale)
+        );
+        let expected = if reason == Refusal::PresentedTokenExpired {
+            vec![Effect::NeedLease {
+                binding: 1,
+                newer_than: Some(LeaseVersion(5)),
+            }]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(
+            apply(&mut state, Input::Tick { now: at(70) }),
+            expected,
+            "same-link refresh policy for {reason:?}"
+        );
+        assert_eq!(
+            apply(&mut state, Input::Tick { now: at(120) }),
+            [
+                Effect::BackOff {
+                    attempt: attempt.clone()
+                },
+                Effect::NeedLease {
+                    binding: 1,
+                    newer_than: Some(LeaseVersion(5))
+                }
+            ]
+        );
+    }
 }
 
 #[test]

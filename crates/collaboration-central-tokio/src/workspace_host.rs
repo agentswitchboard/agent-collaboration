@@ -16,13 +16,13 @@ use fleet_rpc::{CallFailure, Envelope, Transport, dispatch};
 use fleet_workspace_service::WorkspaceService;
 #[path = "workspace_alarm_owner.rs"]
 mod workspace_alarm_owner;
-use central_link_protocol::{CorrelationId, MacLinkRpc};
+use central_link_protocol::{FreshCorrelationId, MacCallAddress, MacLinkRpc};
 use central_storage::{
     BatchOutcome, ReadOutcome, Statement, StatementBatch, StoreCall, StoreFailure, StoreReply,
 };
 use collaboration_central_core::{
-    OrganizationAdminAnswer, OrganizationSignInPort, SignInTrustSettings, TYPED_LINK_CALL_TIMEOUT,
-    WorkspaceRuntime, finish_mac_call,
+    MacCallResult, OrganizationAdminAnswer, OrganizationSignInPort, SignInTrustSettings,
+    TYPED_LINK_CALL_TIMEOUT, WorkspaceRuntime, finish_mac_call,
     identity_contract::{AuthorizationRevision, AuthorizationRevisionAcknowledgement},
     person_request::PersonRequestInput,
 };
@@ -295,29 +295,19 @@ impl TokioWorkspaceHost {
         organization: &OrganizationId,
         machine: &MachineId,
         request: Envelope<R::Target, R::Request>,
-    ) -> Result<Envelope<R::Target, R::Reply>, CallFailure> {
+    ) -> MacCallResult<R> {
         let deadline = self.clock.monotonic_now().after(TYPED_LINK_CALL_TIMEOUT);
-        let runtime = router_clock::timeout_at(self.clock.as_ref(), deadline, self.orgs.lock())
-            .await
-            .map_err(|_| CallFailure::NeverReached)?
-            .get(organization)
-            .cloned()
-            .ok_or(CallFailure::NeverReached)?;
-        let correlation: CorrelationId = runtime
-            .runtime()
-            .ids()
-            .new_id()
-            .to_string()
-            .parse()
-            .map_err(|_| CallFailure::NeverReached)?;
         let target = request.target.clone();
-        let pending = self.push_registry.queue_call::<R>(
-            organization,
-            machine,
-            correlation,
-            request,
-            deadline,
-        )?;
+        let call = R::request(request);
+        let address = MacCallAddress::from(&call);
+        let addressed_organization = address.organization_id().unwrap_or(organization);
+        if addressed_organization != organization || address.machine_id() != machine {
+            return Err(CallFailure::NeverReached);
+        }
+        let correlation = FreshCorrelationId::mint_at(self.clock.now().unix_millis());
+        let pending =
+            self.push_registry
+                .queue_call(organization, correlation, call, address, deadline)?;
         finish_mac_call::<R>(&target, pending.wait(self.clock.as_ref()).await?)
     }
 
