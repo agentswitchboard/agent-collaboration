@@ -5,9 +5,9 @@
 )]
 
 use approval_request_protocol::{
-    CancelReason, DeliverEndingReply, DeliverEndingRequest, Ending, InvalidApprovalEnding,
-    ProviderStopCause, RaiseReceipt, RaiseReply, RegisterRunReply, RegisterRunRequest, RunRefusal,
-    StopReceiptEnding, StopReply, StopRequest,
+    CallStopCause, CancelReason, DeliverEndingReply, DeliverEndingRequest, Ending, HolderStopCause,
+    InvalidApprovalEnding, ProviderStopCause, Raise, RaiseReceipt, RaiseReply, RegisterRunReply,
+    RegisterRunRequest, RunRefusal, StopReceiptEnding, StopReply, StopRequest,
 };
 use hegel::generators as gs;
 use state_machine_core::{StateMachine, TransitionError};
@@ -15,16 +15,17 @@ use switchboard_approval_holder::{
     run_gate::{
         AuthorityEnd, CallAttempt, CallKey, DialAttempt, LinkAttempt, RunGate, RunGateState,
     },
-    waiting_request::{LocalNegative, ProviderReply, WaitState, WriterOutcome},
+    waiting_request::{LocalNegative, ProviderReply, WaitRefusal, WaitState, WriterOutcome},
 };
 
 use super::fixtures::{
     GateEffect, GateEvent, RESPONDER, RequestEffect, RequestEvent, RequestMachine, authority,
-    raise, try_offer, try_publish,
+    call_raise, raise, try_offer, try_publish,
 };
 
-const STOP: ProviderStopCause = ProviderStopCause::TurnStopped {};
-const LOST: ProviderStopCause = ProviderStopCause::ProviderConnectionLost {};
+const STOP: HolderStopCause = HolderStopCause::TurnStopped;
+const LOST: HolderStopCause = HolderStopCause::ProviderConnectionLost;
+const CALL_WITHDRAWN: HolderStopCause = HolderStopCause::CallWithdrawn;
 
 type Key = CallKey<u8>;
 type Link = LinkAttempt<u8>;
@@ -34,10 +35,12 @@ enum Observation {
     Gate(GateEffect),
     Wait(RequestEffect),
     Refusal { key: Key, reason: RunRefusal },
+    StopCauseRefused,
 }
 
 #[derive(Default)]
 struct HistoryFacts {
+    call_wait: bool,
     dial: Option<Link>,
     welcomed: bool,
     registration: Option<Key>,
@@ -58,6 +61,14 @@ struct HistoryFacts {
 }
 
 impl HistoryFacts {
+    fn request(&self) -> Raise {
+        if self.call_wait {
+            call_raise()
+        } else {
+            raise()
+        }
+    }
+
     fn closed(&self) -> bool {
         (self.central_done || self.refusing_locally) && self.handle_released && !self.writer_started
     }
@@ -216,7 +227,7 @@ impl HistoryFacts {
             effects.push(Observation::Wait(RequestEffect::Raise {
                 call: key,
                 authority: authority(),
-                request: raise(),
+                request: self.request(),
             }));
         }
         Some(())
@@ -240,7 +251,7 @@ impl HistoryFacts {
                 DeliverEndingReply::Received {}
             } else {
                 effects.push(Observation::Wait(RequestEffect::EndingConflict {
-                    request_id: request.request_id.clone(),
+                    request_id: request.request_id().clone(),
                     reason: InvalidApprovalEnding::BindingMismatch,
                 }));
                 DeliverEndingReply::EndingDiffers {}
@@ -254,7 +265,7 @@ impl HistoryFacts {
         } else {
             self.recorded_ending = Some(request.clone());
             self.central_done = true;
-            self.claim(ProviderReply::CentralEnding(request.ending.clone()));
+            self.claim(ProviderReply::CentralEnding(request.ending().clone()));
             DeliverEndingReply::Received {}
         };
         effects.push(Observation::Wait(RequestEffect::EndingReply {
@@ -266,10 +277,10 @@ impl HistoryFacts {
 
     fn stop_locally(
         &mut self,
-        cause: ProviderStopCause,
+        cause: HolderStopCause,
         effects: &mut Vec<Observation>,
     ) -> Option<()> {
-        if cause == LOST {
+        if cause == LOST || cause == CALL_WITHDRAWN {
             if self.owed.is_none() && !self.central_done && !self.refusing_locally {
                 self.record_stop(cause);
             }
@@ -292,18 +303,33 @@ impl HistoryFacts {
         } else {
             self.record_stop(cause);
         }
-        self.claim(ProviderReply::LocalNegative(LocalNegative::Stopped(cause)));
+        self.claim(ProviderReply::LocalNegative(LocalNegative::Stopped(
+            ProviderStopCause::try_from(cause).unwrap(),
+        )));
         Some(())
     }
 
-    fn record_stop(&mut self, cause: ProviderStopCause) {
+    fn record_stop(&mut self, cause: HolderStopCause) {
         if self.exposed {
-            let request = raise();
-            self.owed = Some(StopRequest::Provider {
-                request_id: request.request_id().clone(),
-                router_run: request.router_run().clone(),
-                contents_digest: request.contents_digest().unwrap(),
-                cause,
+            let request = self.request();
+            let request_id = request.request_id().clone();
+            let router_run = request.router_run().clone();
+            let contents_digest = request.contents_digest().unwrap();
+            self.owed = Some(if self.call_wait {
+                assert_eq!(cause, CALL_WITHDRAWN);
+                StopRequest::UnprovenCall {
+                    request_id,
+                    router_run,
+                    contents_digest,
+                    cause: CallStopCause::CallWithdrawn,
+                }
+            } else {
+                StopRequest::Provider {
+                    request_id,
+                    router_run,
+                    contents_digest,
+                    cause: ProviderStopCause::try_from(cause).unwrap(),
+                }
             });
         } else {
             self.refusing_locally = true;
@@ -328,7 +354,11 @@ impl HistoryFacts {
                     RaiseReply::Receipt { .. } if self.owed.is_none() && !self.central_done => {
                         self.saved = true
                     }
-                    _ => {}
+                    RaiseReply::Receipt { .. }
+                    | RaiseReply::AlreadyStopped {}
+                    | RaiseReply::SessionEnded {}
+                    | RaiseReply::ContentsDiffer {}
+                    | RaiseReply::TooManyOutstanding {} => {}
                 }
             }
             WaitInput::Stop { key, reply } if self.stop.as_ref() == Some(key) => {
@@ -343,8 +373,8 @@ impl HistoryFacts {
                         self.central_done = true;
                         self.owed = None;
                         effects.push(Observation::Wait(RequestEffect::StopNotVisible {
-                            request_id: raise().request_id().clone(),
-                            contents_digest: raise().contents_digest().unwrap(),
+                            request_id: self.request().request_id().clone(),
+                            contents_digest: self.request().contents_digest().unwrap(),
                         }));
                     }
                     StopReply::AuthorityRefused { refusal } => {
@@ -372,6 +402,9 @@ impl HistoryFacts {
             }
             _ if self.closed() || self.ended => return None,
             WaitInput::Publish(attempt) => self.publish(*attempt, &mut effects)?,
+            WaitInput::LocalStop(cause) if self.call_wait != (*cause == CALL_WITHDRAWN) => {
+                effects.push(Observation::StopCauseRefused);
+            }
             WaitInput::LocalStop(cause) => self.stop_locally(*cause, &mut effects)?,
             WaitInput::Permit { responder, reply }
                 if *responder == RESPONDER
@@ -393,12 +426,15 @@ impl HistoryFacts {
                     reply: reply.clone(),
                 }));
             }
+            WaitInput::ProviderWithdrew(_) if self.call_wait => {
+                effects.push(Observation::StopCauseRefused);
+            }
             WaitInput::ProviderWithdrew(responder)
                 if *responder == RESPONDER && !self.handle_released =>
             {
                 if !self.writer_started {
                     if self.owed.is_none() && !self.central_done && !self.refusing_locally {
-                        self.record_stop(ProviderStopCause::AskWithdrawn);
+                        self.record_stop(HolderStopCause::AskWithdrawn);
                     }
                     self.release(&mut effects);
                 }
@@ -429,7 +465,7 @@ enum WaitInput {
         link: Link,
         request: DeliverEndingRequest,
     },
-    LocalStop(ProviderStopCause),
+    LocalStop(HolderStopCause),
     Permit {
         responder: u8,
         reply: ProviderReply,
@@ -449,10 +485,10 @@ struct Product {
 }
 
 impl Product {
-    fn new() -> Self {
+    fn new(request: Raise) -> Self {
         Self {
             gate: RunGateState::new(authority()),
-            wait: WaitState::bound(raise(), RESPONDER).unwrap(),
+            wait: WaitState::bound(request, RESPONDER).unwrap(),
         }
     }
 
@@ -522,6 +558,9 @@ impl Product {
         let (next, effects) = match result {
             Ok(result) => result,
             Err(TransitionError::Stale) => return None,
+            Err(TransitionError::Domain(WaitRefusal::StopCauseForDifferentKind)) => {
+                return Some(vec![Observation::StopCauseRefused]);
+            }
             Err(error) => panic!("Unexpected wait refusal: {error:?}"),
         };
         self.wait = next;
@@ -579,7 +618,7 @@ impl Product {
     }
 }
 
-fn ending(alternate: bool) -> DeliverEndingRequest {
+fn ending(request: &Raise, alternate: bool) -> DeliverEndingRequest {
     let value = if alternate {
         Ending::Cancelled {
             reason: CancelReason::RequesterGone {},
@@ -587,7 +626,7 @@ fn ending(alternate: bool) -> DeliverEndingRequest {
     } else {
         Ending::TimedOut {}
     };
-    DeliverEndingRequest::from_raise(&raise(), value).unwrap()
+    DeliverEndingRequest::from_raise(request, value).unwrap()
 }
 
 fn assert_observations(actual: &Product, model: &HistoryFacts) {
@@ -610,8 +649,21 @@ fn assert_observations(actual: &Product, model: &HistoryFacts) {
 
 #[hegel::test(test_cases = 300)]
 fn generated_gate_and_wait_histories_match_the_independent_facts(case: hegel::TestCase) {
-    let mut actual = Product::new();
-    let mut model = HistoryFacts::default();
+    exercise_history(case, false);
+}
+
+#[hegel::test(test_cases = 300)]
+fn generated_gate_and_call_wait_histories_match_the_independent_facts(case: hegel::TestCase) {
+    exercise_history(case, true);
+}
+
+fn exercise_history(case: hegel::TestCase, call_wait: bool) {
+    let mut model = HistoryFacts {
+        call_wait,
+        ..HistoryFacts::default()
+    };
+    let request = model.request();
+    let mut actual = Product::new(request.clone());
     let initial = Link {
         connection: 1,
         dial: DialAttempt::new(1),
@@ -708,11 +760,9 @@ fn generated_gate_and_wait_histories_match_the_independent_facts(case: hegel::Te
                 "history step {step}: {event:?}"
             );
         } else {
-            let reply = model
-                .selected
-                .clone()
-                .filter(|_| exact)
-                .unwrap_or_else(|| ProviderReply::CentralEnding(ending(alternate).ending));
+            let reply = model.selected.clone().filter(|_| exact).unwrap_or_else(|| {
+                ProviderReply::CentralEnding(ending(&request, alternate).ending().clone())
+            });
             let responder = if alternate { RESPONDER } else { 2 };
             let input = match event {
                 7 => WaitInput::Publish(CallAttempt::new(serial)),
@@ -720,7 +770,7 @@ fn generated_gate_and_wait_histories_match_the_independent_facts(case: hegel::Te
                     key: key(&model.raise),
                     reply: RaiseReply::Receipt {
                         receipt: RaiseReceipt {
-                            request_id: raise().request_id().clone(),
+                            request_id: request.request_id().clone(),
                             window: "2026-11-22T17:00:00Z"
                                 .parse()
                                 .map(approval_request_protocol::ApprovalWindow::from_first_save)
@@ -762,9 +812,15 @@ fn generated_gate_and_wait_histories_match_the_independent_facts(case: hegel::Te
                 12 => WaitInput::Lost(key(if alternate { &model.raise } else { &model.stop })),
                 13 | 14 => WaitInput::Ending {
                     link,
-                    request: ending(alternate),
+                    request: ending(&request, alternate),
                 },
-                15 => WaitInput::LocalStop(if alternate { LOST } else { STOP }),
+                15 => WaitInput::LocalStop(if call_wait {
+                    if alternate { CALL_WITHDRAWN } else { LOST }
+                } else if alternate {
+                    LOST
+                } else {
+                    STOP
+                }),
                 16 => WaitInput::Permit { responder, reply },
                 17 => WaitInput::Start { responder, reply },
                 18 => WaitInput::Withdraw,

@@ -8,8 +8,8 @@ use std::{
 };
 
 use approval_request_protocol::{
-    ProviderStopCause, Raise, RaiseReply, RegisterRunReply, RegisterRunRequest, RunRefusal,
-    StopReceiptEnding, StopReply, StopRequest,
+    HolderStopCause, ProviderStopCause, Raise, RaiseReply, RegisterRunReply, RegisterRunRequest,
+    RunRefusal, StopReceiptEnding, StopReply, StopRequest,
 };
 use state_machine_core::{StateMachine, TransitionError};
 use switchboard_approval_holder::{
@@ -87,7 +87,7 @@ async fn central_peer(lost: Arc<AtomicUsize>) -> turmoil::Result {
                 request_id: raise().request_id().clone(),
                 router_run: authority().router_run,
                 contents_digest: raise().contents_digest()?,
-                cause: ProviderStopCause::TurnStopped {},
+                cause: ProviderStopCause::TurnStopped,
             }
         );
         if connection == 3 {
@@ -186,8 +186,10 @@ fn lost_registration_and_stop_replies_recover_across_two_reconnects() {
             }]
         );
         send(&mut link, &serde_json::to_vec(&published_raise)?).await?;
-        let cause = ProviderStopCause::TurnStopped {};
-        mac.wait_event(RequestEvent::LocalStop { cause });
+        let cause = ProviderStopCause::TurnStopped;
+        mac.wait_event(RequestEvent::LocalStop {
+            cause: HolderStopCause::TurnStopped,
+        });
         let negative = ProviderReply::LocalNegative(LocalNegative::Stopped(cause));
         mac.wait_event(RequestEvent::TakeFinalPermit {
             responder: RESPONDER,

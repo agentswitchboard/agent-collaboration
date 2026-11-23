@@ -10,3 +10,4 @@ mod core_model_traces;
 mod fixtures;
 mod generated_history;
 mod review_regressions;
+mod unproven_call;

@@ -1,6 +1,6 @@
 use approval_request_protocol::{
-    DeliverEndingReply, DeliverEndingRequest, Ending, ProviderStopCause, RaiseReply,
-    RegisterRunReply, RunRefusal, StopReply, StopRequest,
+    DeliverEndingReply, DeliverEndingRequest, Ending, HolderStopCause, ProviderStopCause,
+    RaiseReply, RegisterRunReply, RunRefusal, StopReply, StopRequest,
 };
 use state_machine_core::{StateMachine, TransitionError};
 use switchboard_approval_holder::{
@@ -13,8 +13,8 @@ use super::fixtures::{
     call, ending_reply, link, raise, try_offer, try_publish,
 };
 
-const STOP: ProviderStopCause = ProviderStopCause::TurnStopped {};
-const LOST: ProviderStopCause = ProviderStopCause::ProviderConnectionLost {};
+const STOP: ProviderStopCause = ProviderStopCause::TurnStopped;
+const LOST: ProviderStopCause = ProviderStopCause::ProviderConnectionLost;
 
 fn ready() -> Mac {
     let mut mac = Mac::new();
@@ -148,7 +148,9 @@ fn same_carrier_raise_and_stop_retries_ignore_old_replies_and_failures() {
             "late Raise completion on same carrier"
         );
     }
-    mac.wait_event(RequestEvent::LocalStop { cause: STOP });
+    mac.wait_event(RequestEvent::LocalStop {
+        cause: HolderStopCause::TurnStopped,
+    });
     let [RequestEffect::Stop { request, .. }]: [RequestEffect; 1] =
         mac.publish().try_into().unwrap()
     else {
@@ -192,9 +194,14 @@ fn recoverable_refusal_retires_link_and_preserves_multiple_wait_duties() {
     other = try_publish(&other, &mac.gate, CallAttempt::new(8))
         .unwrap()
         .0;
-    other = RequestMachine::transition(&other, RequestEvent::LocalStop { cause: STOP })
-        .unwrap()
-        .0;
+    other = RequestMachine::transition(
+        &other,
+        RequestEvent::LocalStop {
+            cause: HolderStopCause::TurnStopped,
+        },
+    )
+    .unwrap()
+    .0;
     let (next, effects) = try_publish(&other, &mac.gate, CallAttempt::new(9)).unwrap();
     other = next;
     let [RequestEffect::Stop { request: stop, .. }]: [RequestEffect; 1] =
@@ -267,7 +274,9 @@ fn displaced_raise_terminal_refusal_fences_the_gate_before_provider_start() {
     ] {
         let mut mac = ready();
         mac.publish();
-        mac.wait_event(RequestEvent::LocalStop { cause: STOP });
+        mac.wait_event(RequestEvent::LocalStop {
+            cause: HolderStopCause::TurnStopped,
+        });
         let negative = ProviderReply::LocalNegative(LocalNegative::Stopped(STOP));
         mac.wait_event(permit(negative.clone()));
 
@@ -348,7 +357,7 @@ fn known_provider_disconnect_releases_once_without_submitting_and_keeps_stop() {
         RequestMachine::transition(
             &ready().wait,
             RequestEvent::LocalStop {
-                cause: ProviderStopCause::AskWithdrawn
+                cause: HolderStopCause::AskWithdrawn
             }
         ),
         Err(TransitionError::Stale),
@@ -360,7 +369,7 @@ fn known_provider_disconnect_releases_once_without_submitting_and_keeps_stop() {
             mac.publish();
         }
         let ending = timed_out();
-        let reply = ProviderReply::CentralEnding(ending.ending.clone());
+        let reply = ProviderReply::CentralEnding(ending.ending().clone());
         if phase >= 2 {
             mac.offer(1, ending);
         }
@@ -371,7 +380,9 @@ fn known_provider_disconnect_releases_once_without_submitting_and_keeps_stop() {
             mac.wait_event(start(reply.clone()));
         }
 
-        let effects = mac.wait_event(RequestEvent::LocalStop { cause: LOST });
+        let effects = mac.wait_event(RequestEvent::LocalStop {
+            cause: HolderStopCause::ProviderConnectionLost,
+        });
         if phase == 4 {
             assert!(effects.is_empty());
             assert_eq!(
@@ -436,7 +447,9 @@ fn known_provider_disconnect_releases_once_without_submitting_and_keeps_stop() {
 fn stop_digest_conflict_is_reported_as_unresolved_independently_of_writer() {
     let mut mac = ready();
     mac.publish();
-    mac.wait_event(RequestEvent::LocalStop { cause: STOP });
+    mac.wait_event(RequestEvent::LocalStop {
+        cause: HolderStopCause::TurnStopped,
+    });
     mac.publish();
     // Central returns NotVisible for a Stop whose digest differs from the incumbent.
     assert_eq!(

@@ -1,7 +1,7 @@
 use approval_request_protocol::{
-    ApprovalOffer, DeliverEndingReply, DeliverEndingRequest, OfferedOption, OfferedOptionId,
-    OfferedOptions, OptionEffect, OptionLifetime, ProviderHolder, Raise, RegisterRunReply,
-    RegisterRunRequest,
+    ApprovalOffer, CallOffer, DeliverEndingReply, DeliverEndingRequest, InvocationDigest,
+    OfferedOption, OfferedOptionId, OfferedOptions, OptionEffect, OptionLifetime, ParkedCallHolder,
+    ProviderHolder, Raise, RegisterRunReply, RegisterRunRequest, SessionCallOperation,
 };
 use state_machine_core::{StateMachine, TransitionError};
 use switchboard_approval_holder::{
@@ -89,6 +89,21 @@ pub fn raise() -> Raise {
     raise_for("01890f2e-7b4c-7cc0-98c4-000000000002".parse().unwrap())
 }
 
+pub fn call_raise() -> Raise {
+    Raise::UnprovenCall {
+        request_id: raise().request_id().clone(),
+        holder: ParkedCallHolder {
+            router_run: authority().router_run,
+        },
+        invocation: InvocationDigest::from_bound_bytes(b"held end-for-good invocation"),
+        offer: CallOffer {
+            operation: SessionCallOperation::EndSessionForGood {
+                session_id: "01890f2e-7b4c-7cc0-98c4-000000000003".parse().unwrap(),
+            },
+        },
+    }
+}
+
 pub fn raise_for(request_id: workspace_ids::ApprovalRequestId) -> Raise {
     Raise::ProviderApproval {
         request_id,
@@ -120,9 +135,13 @@ pub struct Mac {
 
 impl Mac {
     pub fn new() -> Self {
+        Self::with_raise(raise())
+    }
+
+    pub fn with_raise(raise: Raise) -> Self {
         Self {
             gate: RunGateState::new(authority()),
-            wait: WaitState::bound(raise(), RESPONDER).unwrap(),
+            wait: WaitState::bound(raise, RESPONDER).unwrap(),
             next_attempt: 1,
         }
     }

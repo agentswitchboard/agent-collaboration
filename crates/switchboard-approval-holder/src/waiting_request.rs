@@ -1,11 +1,11 @@
-//! One provider ask, its exact responder and its Central Raise or Stop duty.
+//! One approval wait, its exact responder and its Central Raise or Stop duty.
 
 use std::marker::PhantomData;
 
 use approval_request_protocol::{
-    ApprovalDigestError, DeliverEndingReply, DeliverEndingRequest, InvalidApprovalEnding,
-    PrivateEnding, ProviderStopCause, Raise, RaiseReply, RequestContentsDigest, StopReply,
-    StopRequest,
+    ApprovalDigestError, DeliverEndingReply, DeliverEndingRequest, HolderStopCause,
+    InvalidApprovalEnding, PrivateEnding, ProviderStopCause, Raise, RaiseReply,
+    RequestContentsDigest, RequestKind, StopReply, StopRequest,
 };
 use state_machine_core::{
     EventTag, RefusalTag, StateMachine, StateMachineResult, StateTag, Transition, TransitionError,
@@ -97,7 +97,7 @@ enum Authority {
     Ended,
 }
 
-/// Central duty and responder custody for a single provider ask.
+/// Central duty and responder custody for a single approval wait.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WaitState<Responder, Connection> {
     request_id: Option<ApprovalRequestId>,
@@ -219,7 +219,7 @@ pub enum WaitEvent<Responder, Connection> {
         link: LinkAttempt<Connection>,
     },
     LocalStop {
-        cause: ProviderStopCause,
+        cause: HolderStopCause,
     },
     TakeFinalPermit {
         responder: Responder,
@@ -285,13 +285,14 @@ pub enum WaitEffect<Responder, Connection, Enrollment> {
     },
 }
 
-/// A current Raise reply names a different request.
+/// An input conflicts with the approval wait's binding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WaitRefusal {
     ReceiptForDifferentRequest,
+    StopCauseForDifferentKind,
 }
 
-/// Owns a provider ask through its one-shot handover and any exact owed Stop.
+/// Owns an approval wait through its one-shot handover and any exact owed Stop.
 pub struct WaitingRequest<Responder, Connection, Enrollment>(
     PhantomData<(Responder, Connection, Enrollment)>,
 );
@@ -340,6 +341,7 @@ impl RefusalTag for WaitRefusal {
     fn refusal_tag(&self) -> &'static str {
         match self {
             Self::ReceiptForDifferentRequest => "receipt_for_different_request",
+            Self::StopCauseForDifferentKind => "stop_cause_for_different_kind",
         }
     }
 }
@@ -361,20 +363,20 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
         request: DeliverEndingRequest,
         effects: &mut Effects<Responder, Connection, Enrollment>,
     ) -> Result<DeliverEndingReply, WaitError> {
-        if self.request_id.as_ref() != Some(&request.request_id) {
+        if self.request_id.as_ref() != Some(request.request_id()) {
             return Err(TransitionError::Stale);
         }
         let Some(frozen) = self.frozen.as_ref() else {
             return Ok(DeliverEndingReply::NotHeld {});
         };
-        let validation = if request.contents_digest != frozen.digest {
+        let validation = if request.contents_digest() != &frozen.digest {
             Err(InvalidApprovalEnding::BindingMismatch)
         } else {
-            request.ending.check_bound_raise(&frozen.body)
+            request.ending().check_bound_raise(&frozen.body)
         };
         if let Err(reason) = validation {
             effects.push(WaitEffect::EndingConflict {
-                request_id: request.request_id,
+                request_id: request.request_id().clone(),
                 reason,
             });
             return Ok(DeliverEndingReply::EndingDiffers {});
@@ -384,7 +386,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
                 return Ok(DeliverEndingReply::Received {});
             }
             effects.push(WaitEffect::EndingConflict {
-                request_id: request.request_id,
+                request_id: request.request_id().clone(),
                 reason: InvalidApprovalEnding::BindingMismatch,
             });
             return Ok(DeliverEndingReply::EndingDiffers {});
@@ -392,7 +394,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
         Ok(match self.central {
             CentralDuty::Unsent | CentralDuty::Refusing => DeliverEndingReply::HolderNotReady {},
             CentralDuty::Raising(_) | CentralDuty::WaitingForEnding => {
-                self.claim_available(ProviderReply::CentralEnding(request.ending.clone()))?;
+                self.claim_available(ProviderReply::CentralEnding(request.ending().clone()))?;
                 self.preserve_raising_call();
                 self.central = CentralDuty::Done;
                 self.claim = Some(request);
@@ -403,8 +405,50 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
         })
     }
 
-    fn local_stop(&mut self, cause: ProviderStopCause) -> Result<(), WaitError> {
-        let reply = ProviderReply::LocalNegative(LocalNegative::Stopped(cause));
+    fn check_stop_cause(&self, cause: HolderStopCause) -> Result<(), WaitError> {
+        let call_wait = match self.frozen.as_ref().map(|frozen| frozen.body.kind()) {
+            Some(RequestKind::UnprovenCall) => true,
+            Some(RequestKind::ProviderApproval | RequestKind::ProviderQuestion) | None => false,
+        };
+        let call_cause = match cause {
+            HolderStopCause::CallWithdrawn => true,
+            HolderStopCause::TurnStopped
+            | HolderStopCause::AskReplaced
+            | HolderStopCause::AskWithdrawn
+            | HolderStopCause::SessionClosed
+            | HolderStopCause::ProviderConnectionLost => false,
+        };
+        if call_wait == call_cause {
+            Ok(())
+        } else {
+            Err(TransitionError::Domain(
+                WaitRefusal::StopCauseForDifferentKind,
+            ))
+        }
+    }
+
+    fn stop_locally<Enrollment>(
+        &mut self,
+        cause: HolderStopCause,
+        effects: &mut Effects<Responder, Connection, Enrollment>,
+    ) -> Result<(), WaitError> {
+        self.check_stop_cause(cause)?;
+        match cause {
+            HolderStopCause::ProviderConnectionLost | HolderStopCause::CallWithdrawn => {
+                self.abandon_reply(cause, effects)
+            }
+            HolderStopCause::TurnStopped
+            | HolderStopCause::SessionClosed
+            | HolderStopCause::AskReplaced => self.refuse_provider(cause),
+            HolderStopCause::AskWithdrawn => Err(TransitionError::Stale),
+        }
+    }
+
+    fn refuse_provider(&mut self, cause: HolderStopCause) -> Result<(), WaitError> {
+        let provider_cause = cause
+            .try_into()
+            .map_err(|_| TransitionError::Domain(WaitRefusal::StopCauseForDifferentKind))?;
+        let reply = ProviderReply::LocalNegative(LocalNegative::Stopped(provider_cause));
         match &self.central {
             CentralDuty::Unsent => {
                 self.claim_available(reply)?;
@@ -447,6 +491,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
         exact: &Responder,
         effects: &mut Effects<Responder, Connection, Enrollment>,
     ) -> Result<(), WaitError> {
+        self.check_stop_cause(HolderStopCause::AskWithdrawn)?;
         match &self.custody {
             Custody::Available(responder)
             | Custody::Claimed { responder, .. }
@@ -462,12 +507,12 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
                 return Err(TransitionError::Stale);
             }
         }
-        self.abandon_provider_reply(ProviderStopCause::AskWithdrawn, effects)
+        self.abandon_reply(HolderStopCause::AskWithdrawn, effects)
     }
 
-    fn abandon_provider_reply<Enrollment>(
+    fn abandon_reply<Enrollment>(
         &mut self,
-        cause: ProviderStopCause,
+        cause: HolderStopCause,
         effects: &mut Effects<Responder, Connection, Enrollment>,
     ) -> Result<(), WaitError> {
         match self.central {
@@ -618,19 +663,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq, Enrollment> StateMachine
             _ if !state.holds_place() || state.authority == Authority::Ended => {
                 return Err(TransitionError::Stale);
             }
-            WaitEvent::LocalStop {
-                cause: ProviderStopCause::ProviderConnectionLost,
-            } => next
-                .abandon_provider_reply(ProviderStopCause::ProviderConnectionLost, &mut effects)?,
-            WaitEvent::LocalStop {
-                cause:
-                    cause @ (ProviderStopCause::TurnStopped
-                    | ProviderStopCause::SessionClosed
-                    | ProviderStopCause::AskReplaced),
-            } => next.local_stop(cause)?,
-            WaitEvent::LocalStop {
-                cause: ProviderStopCause::AskWithdrawn,
-            } => return Err(TransitionError::Stale),
+            WaitEvent::LocalStop { cause } => next.stop_locally(cause, &mut effects)?,
             WaitEvent::TakeFinalPermit { responder, reply } => next.permit(&responder, &reply)?,
             WaitEvent::StartWrite { responder, reply } => {
                 effects.push(next.start(responder, reply)?)

@@ -3,7 +3,7 @@ use super::{
     ProviderReply, RaiseRefusal, RunAuthority, WaitEffect, WaitError, WaitRefusal, WaitState,
 };
 use approval_request_protocol::{
-    ProviderStopCause, RaiseReply, RunRefusal, StopReply, StopRequest,
+    CallStopCause, HolderStopCause, RaiseReply, RunRefusal, StopReply, StopRequest,
 };
 use state_machine_core::TransitionError;
 
@@ -45,13 +45,30 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
         }
     }
 
-    pub(super) fn begin_stop(&mut self, cause: ProviderStopCause) -> Result<(), WaitError> {
+    pub(super) fn begin_stop(&mut self, cause: HolderStopCause) -> Result<(), WaitError> {
         let frozen = self.frozen.as_ref().ok_or(TransitionError::Stale)?;
-        let request = StopRequest::Provider {
-            request_id: frozen.body.request_id().clone(),
-            router_run: frozen.body.router_run().clone(),
-            contents_digest: frozen.digest.clone(),
-            cause,
+        let request_id = frozen.body.request_id().clone();
+        let router_run = frozen.body.router_run().clone();
+        let contents_digest = frozen.digest.clone();
+        let request = match cause {
+            HolderStopCause::CallWithdrawn => StopRequest::UnprovenCall {
+                request_id,
+                router_run,
+                contents_digest,
+                cause: CallStopCause::CallWithdrawn,
+            },
+            HolderStopCause::TurnStopped
+            | HolderStopCause::AskReplaced
+            | HolderStopCause::AskWithdrawn
+            | HolderStopCause::SessionClosed
+            | HolderStopCause::ProviderConnectionLost => StopRequest::Provider {
+                request_id,
+                router_run,
+                contents_digest,
+                cause: cause
+                    .try_into()
+                    .map_err(|_| TransitionError::Domain(WaitRefusal::StopCauseForDifferentKind))?,
+            },
         };
         self.preserve_raising_call();
         self.central = CentralDuty::Stopping {
@@ -152,6 +169,11 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
         let CentralDuty::Stopping {
             request:
                 StopRequest::Provider {
+                    request_id,
+                    contents_digest,
+                    ..
+                }
+                | StopRequest::UnprovenCall {
                     request_id,
                     contents_digest,
                     ..
