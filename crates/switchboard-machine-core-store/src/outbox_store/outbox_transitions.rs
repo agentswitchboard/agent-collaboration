@@ -87,20 +87,25 @@ impl MacOutbox<'_> {
         Ok(writes)
     }
 
-    /// Claims the next batch: up to `limit` writes waiting for `mark` or
-    /// earlier and still before their deadline, oldest first by (created_at,
-    /// request_id), moved to sent in one transaction and returned for the
-    /// batch frame. The same transaction first ends every waiting write past
-    /// its deadline, so an overdue write is never claimed (step 9). The table
-    /// is the only list of what waits (Lead A, 2026-11-18).
+    /// Claims up to `limit` due writes in creation and request ID order.
+    /// A live write is eligible only if its deadline exceeds
+    /// `required_deadline_after_ms`. Waiting writes expire at `now_ms`.
     pub async fn claim_next_batch(
         &mut self,
         mark_ms: i64,
         limit: u16,
         now_ms: i64,
+        required_deadline_after_ms: i64,
     ) -> Result<StoreScan<ClaimedBatch>, OutboxStoreError> {
         validate_write_timestamp(mark_ms, "mark_ms")?;
         validate_write_timestamp(now_ms, "updated_at")?;
+        validate_write_timestamp(required_deadline_after_ms, "required_deadline_after_ms")?;
+        if required_deadline_after_ms < now_ms {
+            return Err(OutboxStoreError::ClaimDeadlineThresholdBeforeNow {
+                required_deadline_after_ms,
+                now_ms,
+            });
+        }
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
         let mut cursor = None;
         let mut corrupt_rows = Vec::new();
@@ -113,7 +118,10 @@ impl MacOutbox<'_> {
                 if row.deadline_ms <= now_ms {
                     let departure = waiting_departure(row.state);
                     ended.push(end_row(&mut transaction, row, departure, now_ms).await?);
-                } else if row.flush_at_ms <= mark_ms && writes.len() < usize::from(limit) {
+                } else if row.deadline_ms > required_deadline_after_ms
+                    && row.flush_at_ms <= mark_ms
+                    && writes.len() < usize::from(limit)
+                {
                     writes.push(claim_row(&mut transaction, row, now_ms).await?);
                 }
             }

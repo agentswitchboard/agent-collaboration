@@ -26,7 +26,7 @@ pub(crate) async fn an_overdue_write_is_never_claimed_and_ends_with_its_reason(
         .expect_clean();
 
     let early = store
-        .claim_next_batch(MARK, 1, deadline - 1)
+        .claim_next_batch(MARK, 1, deadline - 1, deadline - 1)
         .await
         .unwrap()
         .expect_clean();
@@ -36,7 +36,7 @@ pub(crate) async fn an_overdue_write_is_never_claimed_and_ends_with_its_reason(
         .unwrap()
         .expect_clean();
     let claimed = store
-        .claim_next_batch(MARK, 64, deadline)
+        .claim_next_batch(MARK, 64, deadline, deadline)
         .await
         .unwrap()
         .expect_clean();
@@ -175,6 +175,7 @@ pub(crate) async fn a_sent_write_past_its_deadline_ends_instead_of_returning(
             stored_at + FIFTEEN_MINUTES_MS + 60_000,
             64,
             stored_at + FIFTEEN_MINUTES_MS,
+            stored_at + FIFTEEN_MINUTES_MS,
         )
         .await
         .unwrap()
@@ -224,7 +225,7 @@ pub(crate) async fn a_direct_message_goes_out_with_its_creation_stamp_as_sent_at
     store.insert(&post, stored_at).await.unwrap();
 
     let first = store
-        .claim_next_batch(MARK, 64, MARK)
+        .claim_next_batch(MARK, 64, MARK, MARK)
         .await
         .unwrap()
         .expect_clean()
@@ -235,7 +236,7 @@ pub(crate) async fn a_direct_message_goes_out_with_its_creation_stamp_as_sent_at
         .unwrap()
         .expect_clean();
     let replay = store
-        .claim_next_batch(MARK + 60_000, 64, MARK + 60_000)
+        .claim_next_batch(MARK + 60_000, 64, MARK + 60_000, MARK + 60_000)
         .await
         .unwrap()
         .expect_clean()
