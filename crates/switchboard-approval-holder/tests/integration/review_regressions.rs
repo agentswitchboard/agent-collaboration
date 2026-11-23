@@ -360,7 +360,7 @@ fn known_provider_disconnect_releases_once_without_submitting_and_keeps_stop() {
             mac.publish();
         }
         let ending = timed_out();
-        let reply = ProviderReply::CentralEnding(ending.ending.clone());
+        let reply = ProviderReply::CentralEnding(ending.ending().clone());
         if phase >= 2 {
             mac.offer(1, ending);
         }

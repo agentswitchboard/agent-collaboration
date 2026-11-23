@@ -39,11 +39,11 @@ fn holder_delivery_settles_only_on_exact_received_or_authoritative_not_held() {
         1,
     );
     let offer = offered_frame(&commit);
-    assert_eq!(offer.request_id, item.request_id);
-    assert_eq!(offer.ending, closed(&book, &item).ending);
+    assert_eq!(offer.request_id(), &item.request_id);
+    assert_eq!(&offer, &closed(&book, &item).ending);
     assert_eq!(
-        offer.contents_digest,
-        provider(&item, &requester, "Bound")
+        offer.contents_digest(),
+        &provider(&item, &requester, "Bound")
             .contents_digest()
             .unwrap()
     );
@@ -64,11 +64,12 @@ fn holder_delivery_settles_only_on_exact_received_or_authoritative_not_held() {
     .unwrap();
     let wrong_contents = DeliverEndingRequest::from_raise(
         &provider(&item, &requester, "Different"),
-        offer.ending.clone().into_ending(),
+        offer.clone().into_ending(),
     )
     .unwrap();
-    let mut wrong_target = offer.clone();
-    wrong_target.request_id = different.request_id;
+    let mut wrong_wire = serde_json::to_value(&offer).unwrap();
+    wrong_wire["requestId"] = serde_json::json!(different.request_id);
+    let wrong_target = serde_json::from_value(wrong_wire).unwrap();
     for mismatched in [&wrong_ending, &wrong_contents, &wrong_target] {
         run_event(
             &mut book,

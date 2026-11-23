@@ -52,7 +52,22 @@ fn visit<Wire: DeserializeOwned>(
                 path.pop();
             }
         }
-        Value::Null | Value::Bool(_) | Value::Number(_) | Value::String(_) => {}
+        Value::String(text) => {
+            let is_parked =
+                |value: &Value| value.get("kind").and_then(Value::as_str) == Some("unprovenCall");
+            let parked_shape = is_parked(original) || original.get("ending").is_some_and(is_parked);
+            if matches!(path.last(), Some(Segment::Field(name)) if name == "agentProgram"
+                || name == "decision" || (parked_shape && name == "cause" && text == "callWithdrawn"))
+            {
+                assert_rejects::<Wire>(
+                    original,
+                    path,
+                    json!({ (text): null }),
+                    "object alias for a scalar",
+                )?;
+            }
+        }
+        Value::Null | Value::Bool(_) | Value::Number(_) => {}
     }
     Ok(())
 }

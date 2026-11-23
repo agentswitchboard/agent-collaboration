@@ -2,8 +2,8 @@ use std::fmt;
 
 use approval_request_protocol::{
     Answer, ApprovalWindow, CentralTime, DecideRequest, DecidedBy, DeliverEndingReply,
-    DeliverEndingRequest, Delivery, EndingView, HolderStopCause, PassOnReply, PrivateEnding, Raise,
-    RaiseReply, RequestContentsDigest, RequestView, StopReply, StopRequest, WaitingStatus,
+    DeliverEndingRequest, Delivery, EndingView, HolderStopCause, PassOnReply, Raise, RaiseReply,
+    RequestContentsDigest, RequestView, StopReply, StopRequest, WaitingStatus,
 };
 use central_engine_model::{EventTag, RefusalTag, StateTag};
 
@@ -103,19 +103,19 @@ impl RetainedApproval {
         self.waiting_status
     }
 
-    pub fn provider_session(&self) -> ApprovalSession {
-        let (Raise::ProviderApproval { holder, .. } | Raise::ProviderQuestion { holder, .. }) =
-            &self.raise;
-        ApprovalSession {
-            enrollment: self.key.run.enrollment.clone(),
-            session_id: holder.session_id.clone(),
-        }
+    pub fn provider_session(&self) -> Option<ApprovalSession> {
+        self.raise
+            .requesting_session()
+            .map(|session_id| ApprovalSession {
+                enrollment: self.key.run.enrollment.clone(),
+                session_id: session_id.clone(),
+            })
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EndedApproval {
-    pub ending: PrivateEnding,
+    pub ending: DeliverEndingRequest,
     pub ended_at: CentralTime,
     pub delivery: Delivery,
 }
@@ -272,12 +272,31 @@ impl fmt::Debug for SavedDecision {
 pub enum ProviderSessionAvailability {
     Live,
     NotAvailable,
+    SessionFree,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct RaiseAdmission {
     pub provider_session: ProviderSessionAvailability,
     pub outstanding: usize,
+}
+
+/// Shared applying input. The parent-session wire can supply only provider answers.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ApprovalDecideInput {
+    pub request_id: ApprovalRequestId,
+    pub operation_id: RequestId,
+    pub value: Answer,
+}
+
+impl From<DecideRequest> for ApprovalDecideInput {
+    fn from(request: DecideRequest) -> Self {
+        Self {
+            request_id: request.request_id,
+            operation_id: request.operation_id,
+            value: request.value.into(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -291,7 +310,7 @@ pub enum ApprovalEvent {
     Decide {
         key: ApprovalRequestKey,
         actor: AdmittedDecider,
-        request: DecideRequest,
+        request: ApprovalDecideInput,
         prior: Option<Box<SavedDecision>>,
     },
     Read {
