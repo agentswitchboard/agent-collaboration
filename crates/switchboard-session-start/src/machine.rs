@@ -2,12 +2,12 @@ use fleet_identity_protocol::CreateSessionAttempt;
 use state_machine_core::{StateMachine, StateMachineResult, StateTag, Transition, TransitionError};
 
 use crate::{
-    CentralStanding, CleanupOutcome, Directed, DirectiveId, DirectiveResult, EnvelopeRefusal,
-    FaultContext, FinishedOutcome, NotSentNowReason, OpenedSession, Recording, SecretIssue,
-    SnapshotFacts, SnapshotKind, StartAnswer, StartDirective, StartEffect, StartEnvelope,
-    StartFacts, StartFault, StartInput, StartInstanceId, StartNotification, StartRefusal,
-    StartRevision, StartSnapshot, StopReason, UnknownReason, WaiterSlot,
-    transition_table::TRANSITIONS,
+    CentralStanding, CleanupOutcome, CorruptStartRecord, Directed, DirectiveId, DirectiveResult,
+    EnvelopeRefusal, FaultContext, FinishedOutcome, IntendedOutcome, NotSentNowReason,
+    OpenedSession, Recording, SecretIssue, SnapshotFacts, SnapshotKind, SnapshotPhase, StartAnswer,
+    StartDirective, StartEffect, StartEnvelope, StartFacts, StartFault, StartInput,
+    StartInstanceId, StartNotification, StartRefusal, StartRevision, StartScope, StartSnapshot,
+    StopReason, UnknownReason, WaiterSlot, transition_table::TRANSITIONS,
 };
 
 mod central;
@@ -23,6 +23,7 @@ pub enum StartStateKind {
     SavingCreate,
     CreateSent,
     CreateUnknown,
+    SavingReservation,
     StoringSecret,
     SavingLaunchIntent,
     Launching,
@@ -52,6 +53,7 @@ impl StartStateKind {
             Self::SavingCreate => "SavingCreate",
             Self::CreateSent => "CreateSent",
             Self::CreateUnknown => "CreateUnknown",
+            Self::SavingReservation => "SavingReservation",
             Self::StoringSecret => "StoringSecret",
             Self::SavingLaunchIntent => "SavingLaunchIntent",
             Self::Launching => "Launching",
@@ -80,6 +82,7 @@ impl StartStateKind {
             self,
             Self::SavingCreate
                 | Self::CreateSent
+                | Self::SavingReservation
                 | Self::StoringSecret
                 | Self::SavingLaunchIntent
                 | Self::Launching
@@ -132,6 +135,7 @@ impl Stage {
         match self {
             Self::Saving(snapshot) => match snapshot.kind() {
                 SnapshotKind::CreateIntended => StartStateKind::SavingCreate,
+                SnapshotKind::Reserved => StartStateKind::SavingReservation,
                 SnapshotKind::LaunchIntended => StartStateKind::SavingLaunchIntent,
                 SnapshotKind::Held => StartStateKind::SavingHeld,
                 SnapshotKind::BindIntended => StartStateKind::SavingBind,
@@ -173,6 +177,7 @@ enum AfterClose {
     Stop {
         why: StopReason,
         while_saving: SnapshotKind,
+        intended: Option<IntendedOutcome>,
     },
 }
 
@@ -253,32 +258,33 @@ impl StartMachine {
 
     pub fn restored(
         instance: StartInstanceId,
+        scope: &StartScope,
         revision: StartRevision,
         snapshot: StartSnapshot,
-    ) -> Self {
+    ) -> Result<Self, CorruptStartRecord> {
+        snapshot.validate(scope)?;
         let data = snapshot.start();
         let envelope = data.envelope.clone();
         let attempt = data.attempt;
         let facts = data.facts.clone();
-        let stage = match snapshot {
-            StartSnapshot::Opened { session, .. } => Stage::Opened(session),
-            StartSnapshot::Failed { reason, .. } => {
-                Stage::Finished(FinishedOutcome::Failed(reason))
+        let stage = match snapshot.phase() {
+            SnapshotPhase::Opened(session) => Stage::Opened(session.clone()),
+            SnapshotPhase::Failed(reason) => {
+                Stage::Finished(FinishedOutcome::Failed(reason.clone()))
             }
-            StartSnapshot::Settled(_) => Stage::Finished(FinishedOutcome::Settled),
-            StartSnapshot::Fenced(_) => Stage::Finished(FinishedOutcome::Fenced),
-            StartSnapshot::Unknown { reason, .. } => {
-                Stage::Finished(FinishedOutcome::Unknown(reason))
-            }
-            interrupted @ (StartSnapshot::CreateIntended(_)
-            | StartSnapshot::CreateUnknown(_)
-            | StartSnapshot::LaunchIntended(_)
-            | StartSnapshot::Held(_)
-            | StartSnapshot::BindIntended(_)
-            | StartSnapshot::BindUnknown(_)
-            | StartSnapshot::CleaningUp { .. }) => Stage::Interrupted(interrupted),
+            SnapshotPhase::Settled => Stage::Finished(FinishedOutcome::Settled),
+            SnapshotPhase::Fenced => Stage::Finished(FinishedOutcome::Fenced),
+            SnapshotPhase::Unknown(reason) => Stage::Finished(FinishedOutcome::Unknown(*reason)),
+            SnapshotPhase::CreateIntended
+            | SnapshotPhase::CreateUnknown
+            | SnapshotPhase::Reserved
+            | SnapshotPhase::LaunchIntended
+            | SnapshotPhase::Held
+            | SnapshotPhase::BindIntended
+            | SnapshotPhase::BindUnknown
+            | SnapshotPhase::CleaningUp(_) => Stage::Interrupted(snapshot),
         };
-        Self {
+        Ok(Self {
             instance,
             sequence: 0,
             accepted: Some(Box::new(AcceptedStart {
@@ -290,7 +296,7 @@ impl StartMachine {
                 waiting: Vec::new(),
                 stage,
             })),
-        }
+        })
     }
 
     pub fn kind(&self) -> StartStateKind {
@@ -414,16 +420,13 @@ fn ask(
     let mut start = Box::new(AcceptedStart {
         envelope: candidate,
         attempt,
-        facts: StartFacts::default(),
+        facts: StartFacts::initial(),
         revision: None,
         recording: Recording::NotRecorded,
         waiting: vec![slot],
         stage: Stage::CreateUnknown,
     });
-    start.save(
-        StartSnapshot::CreateIntended(start.snapshot_facts()),
-        outputs,
-    )?;
+    start.save(SnapshotPhase::CreateIntended, outputs)?;
     *accepted = Some(start);
     Ok(())
 }
@@ -446,14 +449,11 @@ impl AcceptedStart {
             outputs.tell(slot, StartAnswer::RefusedNoCentral(central));
         } else if matches!(self.stage, Stage::BindUnknown) {
             self.hold(slot);
-            self.save(StartSnapshot::BindIntended(self.snapshot_facts()), outputs)?;
+            self.save(SnapshotPhase::BindIntended, outputs)?;
         } else if let Some(attempt) = self.attempt.checked_next() {
             self.hold(slot);
             self.attempt = attempt;
-            self.save(
-                StartSnapshot::CreateIntended(self.snapshot_facts()),
-                outputs,
-            )?;
+            self.save(SnapshotPhase::CreateIntended, outputs)?;
         } else {
             self.hold(slot);
             self.wind_down(WindDown::Unknown(UnknownReason::AttemptCeiling), outputs)?;

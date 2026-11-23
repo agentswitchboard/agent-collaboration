@@ -1,7 +1,10 @@
 use fleet_identity_protocol::SessionSecret;
-use workspace_ids::{CentralSessionId, SessionId, SessionRef};
+use workspace_ids::SessionRef;
 
-use crate::{SecretIssue, StartScope, StartSnapshot};
+use crate::{
+    ConversationFact, CorruptStartRecord, OpenedSession, PointerFact, SecretIssue, SnapshotFacts,
+    SnapshotPhase, StartEnvelope, StartFacts, StartScope, StartSnapshot,
+};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct StartRevision(u64);
@@ -18,11 +21,61 @@ impl StartRevision {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct OpeningCommit {
-    pub address: SessionRef,
-    pub session_id: CentralSessionId,
-    pub harness_session_id: SessionId,
-    pub issue: SecretIssue,
-    pub opened: StartSnapshot,
+    association: OpenedSession,
+    opened: StartSnapshot,
+}
+
+impl OpeningCommit {
+    pub fn new(
+        envelope: &StartEnvelope,
+        facts: &StartFacts,
+        address: SessionRef,
+    ) -> Result<Self, CorruptStartRecord> {
+        if facts.conversation != ConversationFact::Held {
+            return Err(CorruptStartRecord::OpenedWithoutHeldConversation);
+        }
+        let PointerFact::Committed(issue) = &facts.pointer else {
+            return Err(CorruptStartRecord::OpenedWithoutCommittedPointer);
+        };
+        let reservation = facts
+            .reservation
+            .as_ref()
+            .ok_or(CorruptStartRecord::PointerWithoutReservation)?;
+        let harness_session_id = facts
+            .harness_session_id
+            .as_ref()
+            .ok_or(CorruptStartRecord::AssociationHarnessMismatch)?;
+        let association = OpenedSession {
+            address,
+            session_id: reservation.session_id.clone(),
+            harness_session_id: harness_session_id.clone(),
+            issue: issue.clone(),
+        };
+        let opened = StartSnapshot::checked(
+            Box::new(SnapshotFacts {
+                envelope: envelope.clone(),
+                attempt: reservation.attempt,
+                facts: facts.clone(),
+            }),
+            SnapshotPhase::Opened(association.clone()),
+        )?;
+        Ok(Self {
+            association,
+            opened,
+        })
+    }
+
+    pub const fn association(&self) -> &OpenedSession {
+        &self.association
+    }
+
+    pub const fn opened(&self) -> &StartSnapshot {
+        &self.opened
+    }
+
+    pub const fn issue(&self) -> &SecretIssue {
+        &self.association.issue
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,6 +84,8 @@ pub enum OpeningNotCommitted {
     RevisionMismatch,
     RecordUnavailable,
     PreparationFailed,
+    ConnectionRetired,
+    HoldLost,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -75,7 +130,11 @@ pub trait StartRecord {
     ) -> Result<StartRevision, StartSaveRefusal>;
 
     /// Decides the association, start result and visibility in one write.
-    /// The write checks the enrollment and the expected revision.
+    /// The opening authority checks the enrollment, revision, the connection
+    /// that delivered Active, and custody of the original conversation handle
+    /// at the one write. Lost custody takes priority over a retired connection.
+    /// The route, lane and first events are prepared privately before this
+    /// write. Readers use the published visibility decision.
     fn commit_opening(
         &self,
         scope: &StartScope,

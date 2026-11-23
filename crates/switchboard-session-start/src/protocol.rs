@@ -1,12 +1,12 @@
 use fleet_identity_protocol::{
-    BindFleetSessionReply, CreateFleetSession, CreateFleetSessionReply, EndFleetSession,
-    EndFleetSessionReply, SessionSecret,
+    BindFleetSessionReply, CreateFleetSession, EndFleetSession, EndFleetSessionReply,
 };
 use state_machine_core::{EventTag, RefusalTag};
 use workspace_ids::{CentralSessionId, RequestId, SessionId};
 
 use crate::{
-    CentralStanding, EnvelopeRefusal, OpeningCommit, OpeningOutcome, SecretIssue, StartAnswer,
+    BindContradiction, CentralStanding, CreateAnswer, CreateContradiction, EndContradiction,
+    EnvelopeRefusal, LaunchNotTaken, OpeningCommit, OpeningOutcome, SecretIssue, StartAnswer,
     StartEnvelope, StartFault, StartRevision, StartSnapshot,
 };
 
@@ -85,7 +85,6 @@ pub enum StartDirective {
     SendCreate(CreateFleetSession),
     PutSecret {
         issue: SecretIssue,
-        secret: SessionSecret,
     },
     Launch,
     SetUp,
@@ -99,6 +98,9 @@ pub enum StartDirective {
         opening: Box<OpeningCommit>,
     },
     SendEnd(EndFleetSession),
+    /// Stops setup before acting on the start's original conversation handle.
+    /// An unavailable handle yields Closed only with proof it is gone.
+    /// CloseFailed requires a close attempt on the original handle.
     CloseConversation,
 }
 
@@ -109,18 +111,19 @@ pub enum StartNotification {
         answer: StartAnswer,
     },
     ReportFault(StartFault),
+    DiscardPendingSecret(SecretIssue),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum DirectiveResult {
     Save(SaveResult),
-    SendCreate(LinkResult<CreateFleetSessionReply, LinkNotTaken>),
+    SendCreate(LinkResult<CreateAnswer, CreateContradiction>),
     PutSecret(PutSecretResult),
     Launch(LaunchResult),
     SetUp(SetUpResult),
-    SendBind(LinkResult<BindFleetSessionReply, BindNotTaken>),
+    SendBind(LinkResult<BindFleetSessionReply, BindContradiction>),
     CommitOpening(OpeningOutcome),
-    SendEnd(LinkResult<EndFleetSessionReply, LinkNotTaken>),
+    SendEnd(LinkResult<EndFleetSessionReply, EndContradiction>),
     CloseConversation(CloseResult),
 }
 
@@ -162,32 +165,54 @@ pub enum BindNotTaken {
     HoldLost,
 }
 
+/// The take refusal vocabulary associated with each checked call's evidence.
+pub trait LinkContradiction {
+    type NotTaken: Clone + std::fmt::Debug + Eq;
+}
+
+impl LinkContradiction for CreateContradiction {
+    type NotTaken = LinkNotTaken;
+}
+
+impl LinkContradiction for BindContradiction {
+    type NotTaken = BindNotTaken;
+}
+
+impl LinkContradiction for EndContradiction {
+    type NotTaken = LinkNotTaken;
+}
+
+/// The outcome of the exactly correlated link call.
+///
+/// The bridge checks positive reply currency at delivery and stages a Reserved
+/// credential only after that check. It matches Bind Active against both address
+/// fields. An enrollment-ended result needs a terminal close on the current
+/// connection or a confirmed refresh. An advisory AuthorityLapsed refusal maps
+/// to LinkNotReady. An expired lease allows reconnecting under the same
+/// enrollment. A close on an older connection gives no evidence about the current one.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum LinkResult<Reply, NotTaken> {
+pub enum LinkResult<Reply, Contradiction: LinkContradiction> {
     Answered(Reply),
-    NotTaken(NotTaken),
+    NotTaken(Contradiction::NotTaken),
     AnswerLost,
     ProvenNotWritten,
-    Contradicted,
+    Contradicted(Contradiction),
     EnrollmentEnded,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum PutSecretResult {
     Stored,
-    NotTaken(EnrollmentEnded),
+    NotTaken(PutSecretNotTaken),
     NotStored,
     OutcomeNotKnown,
+    HeldWithDifferentValue,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct EnrollmentEnded;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum LaunchNotTaken {
-    LinkNotReady,
+pub enum PutSecretNotTaken {
     EnrollmentEnded,
-    ReservationElapsed,
+    PendingSecretMissing,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

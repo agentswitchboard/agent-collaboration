@@ -1,9 +1,8 @@
-use fleet_identity_protocol::{CreateFleetSessionReply, CreateSessionRefusal};
 use workspace_ids::{CentralSessionId, SessionRef};
 
 use crate::{
-    BindDispute, EnvelopeRefusal, FailureReason, Recording, SnapshotKind, StartFacts, StartScope,
-    StopReason, UnknownReason,
+    BindDispute, CreateReplyKind, EnvelopeRefusal, FailureReason, IntendedOutcome, Recording,
+    SnapshotKind, StartFacts, StartScope, StopReason, UnknownReason,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -22,6 +21,7 @@ pub enum FinishedOutcome {
     Stopped {
         why: StopReason,
         while_saving: SnapshotKind,
+        intended: Option<IntendedOutcome>,
     },
 }
 
@@ -59,37 +59,6 @@ pub enum StartAnswer {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum CreateReplyKind {
-    Reserved,
-    Superseded,
-    Active,
-    Settled,
-    Refused(CreateSessionRefusal),
-    Conflict,
-    NoSecret,
-    NoSuchSession,
-    SessionEnded,
-    WrongSecret,
-}
-
-impl From<&CreateFleetSessionReply> for CreateReplyKind {
-    fn from(reply: &CreateFleetSessionReply) -> Self {
-        match reply {
-            CreateFleetSessionReply::Reserved { .. } => Self::Reserved,
-            CreateFleetSessionReply::Superseded {} => Self::Superseded,
-            CreateFleetSessionReply::Active { .. } => Self::Active,
-            CreateFleetSessionReply::Settled { .. } => Self::Settled,
-            CreateFleetSessionReply::Refused { reason } => Self::Refused(reason.clone()),
-            CreateFleetSessionReply::Conflict {} => Self::Conflict,
-            CreateFleetSessionReply::NoSecret {} => Self::NoSecret,
-            CreateFleetSessionReply::NoSuchSession {} => Self::NoSuchSession,
-            CreateFleetSessionReply::SessionEnded {} => Self::SessionEnded,
-            CreateFleetSessionReply::WrongSecret {} => Self::WrongSecret,
-        }
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum StartFault {
     CreateContradicted {
         reply: Option<CreateReplyKind>,
@@ -97,6 +66,7 @@ pub enum StartFault {
     },
     BindContradicted(FaultContext),
     BindAssociationDisputed(BindDispute, FaultContext),
+    SecretIssueCollision(FaultContext),
     EndContradicted(FaultContext),
     EndNotYours(FaultContext),
 }

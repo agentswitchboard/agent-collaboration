@@ -9,6 +9,7 @@ mod outcome;
 mod ports;
 mod protocol;
 mod reason;
+mod reply;
 mod snapshot;
 mod transition_table;
 
@@ -18,24 +19,31 @@ pub use envelope::{
 };
 pub use facts::{
     ConversationFact, EndLeg, EndNotDue, EndNotSent, Exposure, LaunchFact, PointerFact, Recording,
-    Reservation, SecretFact, SecretIssue, StartFacts,
+    Reservation, SecretFact, SecretIssue, StartFacts, StoredFacts,
 };
 pub use machine::{StartMachine, StartStateKind};
 pub use outcome::{
-    CentralStanding, CreateReplyKind, FaultContext, FinishedOutcome, NotSentNowReason, StartAnswer,
-    StartFault,
+    CentralStanding, FaultContext, FinishedOutcome, NotSentNowReason, StartAnswer, StartFault,
 };
 pub use ports::{
     OpeningCommit, OpeningNotCommitted, OpeningOutcome, SecretPutRefusal, SecretReadError,
     SessionSecretStore, StartRecord, StartRecordError, StartRevision, StartSaveRefusal,
 };
 pub use protocol::{
-    BindNotTaken, CloseResult, Directed, DirectiveId, DirectiveResult, EnrollmentEnded,
-    LaunchNotTaken, LaunchResult, LinkNotTaken, LinkResult, PutSecretResult, SaveResult,
+    BindNotTaken, CloseResult, Directed, DirectiveId, DirectiveResult, LaunchResult,
+    LinkContradiction, LinkNotTaken, LinkResult, PutSecretNotTaken, PutSecretResult, SaveResult,
     SetUpNotTaken, SetUpResult, StartDirective, StartEffect, StartInput, StartInstanceId,
     StartNotification, StartRefusal, WaiterSlot,
 };
 pub use reason::{
-    BindDispute, CleanupCall, FailureReason, HoldLostDuring, StopReason, UnknownReason,
+    BindDispute, CleanupCall, CorruptStartRecord, FailureReason, HoldLostDuring, IntendedOutcome,
+    LaunchNotTaken, StopReason, UnknownReason,
 };
-pub use snapshot::{CleanupOutcome, OpenedSession, SnapshotFacts, SnapshotKind, StartSnapshot};
+pub use reply::{
+    BindContradiction, BindReplyKind, CreateAnswer, CreateContradiction, CreateReplyKind,
+    EndContradiction, EndReplyKind, ObservedReservation,
+};
+pub use snapshot::{
+    CleanupOutcome, OpenedSession, SnapshotFacts, SnapshotKind, SnapshotPhase, StartSnapshot,
+    StoredSnapshot,
+};

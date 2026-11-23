@@ -1,9 +1,9 @@
 use super::{AcceptedStart, NOT_EXPECTED, Outputs, RecordedStop, Reduced, Stage, WindDown};
 use crate::{
-    ConversationFact, EndLeg, EndNotDue, EndNotSent, EnrollmentEnded, FailureReason,
-    FinishedOutcome, HoldLostDuring, LaunchFact, LaunchNotTaken, LaunchResult, OpeningNotCommitted,
-    OpeningOutcome, PointerFact, PutSecretResult, Recording, SecretFact, SetUpNotTaken,
-    SetUpResult, SnapshotKind, StartSnapshot, UnknownReason,
+    ConversationFact, EndLeg, EndNotDue, EndNotSent, FailureReason, FinishedOutcome,
+    HoldLostDuring, LaunchFact, LaunchNotTaken, LaunchResult, OpeningNotCommitted, OpeningOutcome,
+    PointerFact, PutSecretNotTaken, PutSecretResult, Recording, SecretFact, SetUpNotTaken,
+    SetUpResult, SnapshotKind, SnapshotPhase, StartFault, UnknownReason,
 };
 
 impl AcceptedStart {
@@ -17,19 +17,30 @@ impl AcceptedStart {
         };
         match result {
             PutSecretResult::Stored => {
-                self.facts.secret = SecretFact::Stored(issue.clone());
+                self.facts.stored.secret = SecretFact::Stored(issue.clone());
                 let mut launch_intent = self.snapshot_facts();
-                launch_intent.facts.pointer = PointerFact::Committed(issue.clone());
-                launch_intent.facts.launch = LaunchFact::Sent;
-                self.save(StartSnapshot::LaunchIntended(launch_intent), outputs)
+                launch_intent.facts.stored.pointer = PointerFact::Committed(issue.clone());
+                launch_intent.facts.stored.launch = LaunchFact::Intended;
+                self.save_with_facts(SnapshotPhase::LaunchIntended, launch_intent, outputs)
             }
-            PutSecretResult::NotTaken(EnrollmentEnded) => self.wind_down(WindDown::Fenced, outputs),
-            PutSecretResult::NotStored => {
+            PutSecretResult::NotTaken(PutSecretNotTaken::EnrollmentEnded) => {
+                self.facts.stored.secret = SecretFact::None;
+                self.wind_down(WindDown::Fenced, outputs)
+            }
+            PutSecretResult::NotStored
+            | PutSecretResult::NotTaken(PutSecretNotTaken::PendingSecretMissing) => {
+                self.facts.stored.secret = SecretFact::None;
                 self.cleanup_failure(FailureReason::SecretNotStored, EndLeg::Due, outputs)
             }
             PutSecretResult::OutcomeNotKnown => {
-                self.facts.secret = SecretFact::PossiblyStored(issue.clone());
                 self.cleanup_failure(FailureReason::SecretStoreNotKnown, EndLeg::Due, outputs)
+            }
+            PutSecretResult::HeldWithDifferentValue => {
+                Self::report(
+                    StartFault::SecretIssueCollision(self.fault_context()),
+                    outputs,
+                );
+                self.cleanup_failure(FailureReason::SecretIssueCollision, EndLeg::Due, outputs)
             }
         }
     }
@@ -44,32 +55,37 @@ impl AcceptedStart {
         };
         match result {
             LaunchResult::Started { harness_session_id } => {
-                self.facts.conversation = ConversationFact::Held(Some(harness_session_id));
-                self.save(StartSnapshot::Held(self.snapshot_facts()), outputs)
+                self.facts.stored.launch = LaunchFact::Started;
+                self.facts.stored.harness_session_id = Some(harness_session_id);
+                self.facts.stored.conversation = ConversationFact::Held;
+                self.save(SnapshotPhase::Held, outputs)
             }
             LaunchResult::NotTaken(why) => {
-                self.facts.launch = LaunchFact::NotSent;
+                self.facts.stored.launch = LaunchFact::ProvenNotTaken(why);
                 match why {
                     LaunchNotTaken::ReservationElapsed => {
-                        self.facts.end = EndLeg::NotDue(EndNotDue::RanOutAtCentral);
+                        self.facts.stored.end = EndLeg::NotDue(EndNotDue::RanOutAtCentral);
                         self.fail(FailureReason::ReservationRanOut, outputs)
                     }
                     LaunchNotTaken::LinkNotReady => {
-                        self.facts.end = EndLeg::NotSent(EndNotSent::LinkNotReady);
+                        self.facts.stored.end = EndLeg::NotSent(EndNotSent::LinkNotReady);
                         self.fail(FailureReason::NotLaunched, outputs)
                     }
                     LaunchNotTaken::EnrollmentEnded => self.wind_down(WindDown::Fenced, outputs),
                 }
             }
             LaunchResult::FailedNoConversation => {
+                self.facts.stored.launch = LaunchFact::FailedNoConversation;
                 self.cleanup_failure(FailureReason::LaunchFailed, EndLeg::Due, outputs)
             }
             LaunchResult::FailedDuplicateId => {
-                self.facts.conversation = ConversationFact::Held(None);
+                self.facts.stored.launch = LaunchFact::Started;
+                self.facts.stored.conversation = ConversationFact::Held;
                 self.cleanup_failure(FailureReason::DuplicateHarnessId, EndLeg::Due, outputs)
             }
             LaunchResult::OutcomeNotKnown => {
-                self.facts.conversation = ConversationFact::NotKnown;
+                self.facts.stored.launch = LaunchFact::NotKnown;
+                self.facts.stored.conversation = ConversationFact::NotKnown;
                 self.wind_down(WindDown::Unknown(UnknownReason::Launch), outputs)
             }
         }
@@ -84,14 +100,12 @@ impl AcceptedStart {
             return Err(NOT_EXPECTED);
         };
         match result {
-            SetUpResult::Done => {
-                self.save(StartSnapshot::BindIntended(self.snapshot_facts()), outputs)
-            }
+            SetUpResult::Done => self.save(SnapshotPhase::BindIntended, outputs),
             SetUpResult::Failed => {
                 self.cleanup_failure(FailureReason::SetUpFailed, EndLeg::Due, outputs)
             }
             SetUpResult::NotTaken(SetUpNotTaken::HoldLost) => {
-                self.facts.conversation = ConversationFact::NotKnown;
+                self.facts.stored.conversation = ConversationFact::NotKnown;
                 self.cleanup_failure(
                     FailureReason::HoldLost {
                         during: HoldLostDuring::SetUp,
@@ -135,6 +149,19 @@ impl AcceptedStart {
             }
             OpeningOutcome::NotCommitted(OpeningNotCommitted::RecordUnavailable) => {
                 self.record_lost(RecordedStop::NotCommitted, SnapshotKind::Opened, outputs)
+            }
+            OpeningOutcome::NotCommitted(OpeningNotCommitted::ConnectionRetired) => {
+                self.save(SnapshotPhase::BindUnknown, outputs)
+            }
+            OpeningOutcome::NotCommitted(OpeningNotCommitted::HoldLost) => {
+                self.facts.stored.conversation = ConversationFact::NotKnown;
+                self.cleanup_failure(
+                    FailureReason::HoldLost {
+                        during: HoldLostDuring::Opening,
+                    },
+                    EndLeg::Due,
+                    outputs,
+                )
             }
             OpeningOutcome::Uncertain => {
                 self.recording = Recording::NotKnown;

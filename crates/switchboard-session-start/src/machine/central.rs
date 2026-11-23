@@ -1,21 +1,22 @@
 use fleet_identity_protocol::{
-    AbandonedSessionCause, BindFleetSessionReply, CreateFleetSessionReply, CreateSessionRefusal,
-    EndFleetSessionReply, EndedSessionCause, NewAbandonmentCause, NewEndSettlement, RouterEndCause,
-    SessionSettlement,
+    AbandonedSessionCause, BindFleetSessionReply, CreateSessionRefusal, EndFleetSessionReply,
+    EndedSessionCause, NewAbandonmentCause, NewEndSettlement, RouterEndCause, SessionSettlement,
 };
 
 use super::{AcceptedStart, NOT_EXPECTED, Outputs, Reduced, Stage, WindDown};
 use crate::{
-    BindDispute, BindNotTaken, CleanupCall, CleanupOutcome, ConversationFact, CreateReplyKind,
-    EndLeg, EndNotDue, EndNotSent, Exposure, FailureReason, HoldLostDuring, LinkNotTaken,
-    LinkResult, NotSentNowReason, OpenedSession, OpeningCommit, PointerFact, Reservation,
-    SecretIssue, StartAsker, StartDirective, StartFault, StartSnapshot, UnknownReason,
+    BindContradiction, BindDispute, BindNotTaken, CleanupCall, CleanupOutcome, ConversationFact,
+    CreateAnswer, CreateContradiction, CreateReplyKind, EndContradiction, EndLeg, EndNotDue,
+    EndNotSent, EndReplyKind, Exposure, FailureReason, HoldLostDuring, LinkNotTaken, LinkResult,
+    NotSentNowReason, ObservedReservation, OpeningCommit, PointerFact, Reservation, SecretFact,
+    SecretIssue, SnapshotPhase, StartAsker, StartDirective, StartFault, StartNotification,
+    UnknownReason,
 };
 
 impl AcceptedStart {
     pub(super) fn create_result(
         &mut self,
-        result: LinkResult<CreateFleetSessionReply, LinkNotTaken>,
+        result: LinkResult<CreateAnswer, CreateContradiction>,
         outputs: &mut Outputs<'_>,
     ) -> Reduced {
         let Stage::CreateSent = self.stage else {
@@ -38,66 +39,67 @@ impl AcceptedStart {
                 },
                 outputs,
             ),
-            LinkResult::Contradicted => self.create_contradicted(None, outputs),
+            LinkResult::Contradicted(evidence) => {
+                if let Some(reservation) = evidence.reservation {
+                    self.observe_reservation(reservation);
+                }
+                self.create_contradicted(evidence.reply, outputs)
+            }
             LinkResult::EnrollmentEnded => {
-                self.facts.create_exposure =
+                self.facts.stored.create_exposure =
                     self.facts.create_exposure.max(Exposure::MayHaveReached);
                 self.wind_down(WindDown::Fenced, outputs)
             }
         }
     }
 
-    fn create_answered(
-        &mut self,
-        reply: CreateFleetSessionReply,
-        outputs: &mut Outputs<'_>,
-    ) -> Reduced {
+    fn create_answered(&mut self, reply: CreateAnswer, outputs: &mut Outputs<'_>) -> Reduced {
         if matches!(self.envelope.asker(), StartAsker::Session { .. }) {
-            if reply == (CreateFleetSessionReply::NoSecret {}) {
+            if reply == CreateAnswer::NoSecret {
                 return self.fail(FailureReason::NoSecret, outputs);
             }
-            if let CreateFleetSessionReply::Reserved {
+            if let CreateAnswer::Reserved {
                 session_id,
                 reserved_until,
-                ..
             } = &reply
             {
-                self.facts.reservation = Some(Reservation {
+                self.observe_reservation(ObservedReservation {
                     session_id: session_id.clone(),
                     reserved_until: reserved_until.clone(),
-                    attempt: self.attempt,
                 });
+                outputs.notify(StartNotification::DiscardPendingSecret(SecretIssue {
+                    enrollment: self.envelope.scope().enrollment.clone(),
+                    session_id: session_id.clone(),
+                    attempt: self.attempt,
+                }));
             }
             return self.create_contradicted(Some(CreateReplyKind::from(&reply)), outputs);
         }
         match reply {
-            CreateFleetSessionReply::Reserved {
+            CreateAnswer::Reserved {
                 session_id,
-                secret,
                 reserved_until,
             } => {
-                self.facts.create_exposure = Exposure::Witnessed;
-                self.facts.reservation = Some(Reservation {
+                self.facts.stored.create_exposure = Exposure::Witnessed;
+                self.observe_reservation(ObservedReservation {
                     session_id: session_id.clone(),
                     reserved_until,
-                    attempt: self.attempt,
                 });
                 let issue = SecretIssue {
                     enrollment: self.envelope.scope().enrollment.clone(),
                     session_id,
                     attempt: self.attempt,
                 };
-                self.stage = Stage::StoringSecret(issue.clone());
-                outputs.directive(StartDirective::PutSecret { issue, secret })
+                let mut reserved = self.snapshot_facts();
+                reserved.facts.stored.secret = SecretFact::PossiblyStored(issue);
+                self.save_with_facts(SnapshotPhase::Reserved, reserved, outputs)
             }
-            CreateFleetSessionReply::Superseded {} => {
-                self.create_unknown(Exposure::Witnessed, outputs)
-            }
-            CreateFleetSessionReply::Refused {
+            CreateAnswer::Superseded => self.create_unknown(Exposure::Witnessed, outputs),
+            CreateAnswer::Refused {
                 reason: CreateSessionRefusal::CreatorNotAllowed {},
             } => self.fail(FailureReason::CreatorNotAllowed, outputs),
-            CreateFleetSessionReply::Conflict {} => self.fail(FailureReason::Conflict, outputs),
-            CreateFleetSessionReply::Active {
+            CreateAnswer::Conflict => self.fail(FailureReason::Conflict, outputs),
+            CreateAnswer::Active {
                 session_id,
                 address,
             } => self.fail(
@@ -107,23 +109,33 @@ impl AcceptedStart {
                 },
                 outputs,
             ),
-            CreateFleetSessionReply::Settled { settlement } => {
+            CreateAnswer::Settled { settlement } => {
                 self.observe_settlement(settlement);
                 self.wind_down(WindDown::Cleanup(CleanupOutcome::Settled), outputs)
             }
-            ref contradicted @ (CreateFleetSessionReply::NoSecret {}
-            | CreateFleetSessionReply::NoSuchSession {}
-            | CreateFleetSessionReply::SessionEnded {}
-            | CreateFleetSessionReply::WrongSecret {}
-            | CreateFleetSessionReply::Refused {
+            ref contradicted @ (CreateAnswer::NoSecret
+            | CreateAnswer::NoSuchSession
+            | CreateAnswer::SessionEnded
+            | CreateAnswer::WrongSecret
+            | CreateAnswer::Refused {
                 reason: CreateSessionRefusal::ParentNotValid {},
             }) => self.create_contradicted(Some(CreateReplyKind::from(contradicted)), outputs),
         }
     }
 
+    fn observe_reservation(&mut self, reservation: ObservedReservation) {
+        if self.facts.reservation.is_none() {
+            self.facts.stored.reservation = Some(Reservation {
+                session_id: reservation.session_id,
+                reserved_until: reservation.reserved_until,
+                attempt: self.attempt,
+            });
+        }
+    }
+
     fn create_unknown(&mut self, exposure: Exposure, outputs: &mut Outputs<'_>) -> Reduced {
-        self.facts.create_exposure = self.facts.create_exposure.max(exposure);
-        self.save(StartSnapshot::CreateUnknown(self.snapshot_facts()), outputs)
+        self.facts.stored.create_exposure = self.facts.create_exposure.max(exposure);
+        self.save(SnapshotPhase::CreateUnknown, outputs)
     }
 
     fn create_contradicted(
@@ -131,7 +143,7 @@ impl AcceptedStart {
         reply: Option<CreateReplyKind>,
         outputs: &mut Outputs<'_>,
     ) -> Reduced {
-        self.facts.create_exposure = Exposure::Witnessed;
+        self.facts.stored.create_exposure = Exposure::Witnessed;
         Self::report(
             StartFault::CreateContradicted {
                 reply,
@@ -156,9 +168,11 @@ impl AcceptedStart {
     }
 
     pub(super) fn send_bind(&mut self, outputs: &mut Outputs<'_>) -> Reduced {
-        let (ConversationFact::Held(Some(harness_session_id)), PointerFact::Committed(issue)) =
-            (&self.facts.conversation, &self.facts.pointer)
-        else {
+        let (ConversationFact::Held, Some(harness_session_id), PointerFact::Committed(issue)) = (
+            self.facts.conversation,
+            &self.facts.harness_session_id,
+            &self.facts.pointer,
+        ) else {
             return Err(NOT_EXPECTED);
         };
         self.stage = Stage::BindSent;
@@ -171,7 +185,7 @@ impl AcceptedStart {
 
     pub(super) fn bind_result(
         &mut self,
-        result: LinkResult<BindFleetSessionReply, BindNotTaken>,
+        result: LinkResult<BindFleetSessionReply, BindContradiction>,
         outputs: &mut Outputs<'_>,
     ) -> Reduced {
         let Stage::BindSent = self.stage else {
@@ -179,30 +193,11 @@ impl AcceptedStart {
         };
         match result {
             LinkResult::Answered(BindFleetSessionReply::Active { address }) => {
-                let (
-                    ConversationFact::Held(Some(harness_session_id)),
-                    PointerFact::Committed(issue),
-                ) = (&self.facts.conversation, &self.facts.pointer)
-                else {
-                    return Err(NOT_EXPECTED);
-                };
                 let expected = self.revision.ok_or(NOT_EXPECTED)?;
-                self.facts.bind_exposure = Exposure::Witnessed;
-                let session = OpenedSession {
-                    address: address.clone(),
-                    session_id: issue.session_id.clone(),
-                };
-                let opening = OpeningCommit {
-                    address,
-                    session_id: issue.session_id.clone(),
-                    harness_session_id: harness_session_id.clone(),
-                    issue: issue.clone(),
-                    opened: StartSnapshot::Opened {
-                        start: self.snapshot_facts(),
-                        session: session.clone(),
-                    },
-                };
-                self.stage = Stage::Opening(session);
+                self.facts.stored.bind_exposure = Exposure::Witnessed;
+                let opening = OpeningCommit::new(&self.envelope, &self.facts, address)
+                    .map_err(|_| NOT_EXPECTED)?;
+                self.stage = Stage::Opening(opening.association().clone());
                 outputs.directive(StartDirective::CommitOpening {
                     expected,
                     opening: Box::new(opening),
@@ -210,7 +205,7 @@ impl AcceptedStart {
             }
             LinkResult::AnswerLost => {
                 self.mark_bind_exposure();
-                self.save(StartSnapshot::BindUnknown(self.snapshot_facts()), outputs)
+                self.save(SnapshotPhase::BindUnknown, outputs)
             }
             LinkResult::NotTaken(
                 why @ (BindNotTaken::LinkNotReady | BindNotTaken::SecretUnavailable),
@@ -225,8 +220,8 @@ impl AcceptedStart {
                 Ok(())
             }
             LinkResult::NotTaken(BindNotTaken::HoldLost) => {
-                self.facts.conversation = ConversationFact::NotKnown;
-                let end = if self.facts.bind_exposure == Exposure::None {
+                self.facts.stored.conversation = ConversationFact::NotKnown;
+                let end = if self.facts.stored.bind_exposure == Exposure::None {
                     EndLeg::Due
                 } else {
                     EndLeg::NotDue(EndNotDue::BindMayHaveReached)
@@ -239,7 +234,7 @@ impl AcceptedStart {
                     outputs,
                 )
             }
-            LinkResult::Contradicted => {
+            LinkResult::Contradicted(_) => {
                 self.mark_bind_exposure();
                 Self::report(StartFault::BindContradicted(self.fault_context()), outputs);
                 self.wind_down(WindDown::Unknown(UnknownReason::Contradicted), outputs)
@@ -297,18 +292,18 @@ impl AcceptedStart {
     }
 
     fn mark_bind_exposure(&mut self) {
-        self.facts.bind_exposure = self.facts.bind_exposure.max(Exposure::MayHaveReached);
+        self.facts.stored.bind_exposure = self.facts.bind_exposure.max(Exposure::MayHaveReached);
     }
 
     fn observe_settlement(&mut self, settlement: SessionSettlement) {
         if self.facts.settlement.is_none() {
-            self.facts.settlement = Some(settlement);
+            self.facts.stored.settlement = Some(settlement);
         }
     }
 
     pub(super) fn end_result(
         &mut self,
-        result: LinkResult<EndFleetSessionReply, LinkNotTaken>,
+        result: LinkResult<EndFleetSessionReply, EndContradiction>,
         outputs: &mut Outputs<'_>,
     ) -> Reduced {
         let Stage::Ending(outcome) = &self.stage else {
@@ -318,36 +313,40 @@ impl AcceptedStart {
         match result {
             LinkResult::Answered(EndFleetSessionReply::Settled { settlement }) => {
                 self.observe_settlement(settlement_fact(&settlement));
-                self.facts.end = EndLeg::Settled(settlement);
+                self.facts.stored.end = EndLeg::Settled(settlement);
             }
             LinkResult::Answered(EndFleetSessionReply::AlreadySettled { settlement }) => {
                 self.observe_settlement(settlement.clone());
-                self.facts.end = EndLeg::AlreadySettled(settlement);
+                self.facts.stored.end = EndLeg::AlreadySettled(settlement);
             }
             LinkResult::Answered(EndFleetSessionReply::NoSuchStart {}) => {
-                self.facts.end = EndLeg::NoSuchStart
+                self.facts.stored.end = EndLeg::NoSuchStart
             }
             LinkResult::NotTaken(LinkNotTaken::LinkNotReady) => {
-                self.facts.end = EndLeg::NotSent(EndNotSent::LinkNotReady)
+                self.facts.stored.end = EndLeg::NotSent(EndNotSent::LinkNotReady)
             }
-            LinkResult::AnswerLost => self.facts.end = EndLeg::NotKnown,
-            LinkResult::ProvenNotWritten => {
-                self.facts.end = EndLeg::NotSent(EndNotSent::CentralFault)
-            }
-            LinkResult::Contradicted => {
-                self.facts.end = EndLeg::NotKnown;
-                Self::report(StartFault::EndContradicted(self.fault_context()), outputs);
+            LinkResult::AnswerLost => self.facts.stored.end = EndLeg::NotKnown,
+            LinkResult::ProvenNotWritten => self.facts.stored.end = EndLeg::NotApplied,
+            LinkResult::Contradicted(evidence) => {
+                self.facts.stored.end = EndLeg::NotKnown;
+                let context = self.fault_context();
+                let fault = if evidence.reply == Some(EndReplyKind::NotYoursToEnd) {
+                    StartFault::EndNotYours(context)
+                } else {
+                    StartFault::EndContradicted(context)
+                };
+                Self::report(fault, outputs);
             }
             LinkResult::Answered(EndFleetSessionReply::NotYoursToEnd {}) => {
-                self.facts.end = EndLeg::NotKnown;
+                self.facts.stored.end = EndLeg::NotKnown;
                 Self::report(StartFault::EndNotYours(self.fault_context()), outputs);
             }
             LinkResult::NotTaken(LinkNotTaken::EnrollmentEnded) => {
-                self.facts.end = EndLeg::NotSent(EndNotSent::EnrollmentEnded);
+                self.facts.stored.end = EndLeg::NotSent(EndNotSent::EnrollmentEnded);
                 return self.wind_down(WindDown::Fenced, outputs);
             }
             LinkResult::EnrollmentEnded => {
-                self.facts.end = EndLeg::AuthorityRefused;
+                self.facts.stored.end = EndLeg::AuthorityRefused;
                 return self.wind_down(WindDown::Fenced, outputs);
             }
         }
