@@ -19,6 +19,7 @@ approval-request-protocol.workspace = true
 state-machine-core.workspace = true
 switchboard-approval-holder.workspace = true
 switchboard-approval-ports.workspace = true
+tempfile = "3.27.0"
 
 [[test]]
 name = "integration"
