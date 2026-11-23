@@ -73,6 +73,8 @@ approval_text!(Title, Some(TITLE_MAX_CHARACTERS), false);
 approval_text!(Description, Some(DESCRIPTION_MAX_CHARACTERS), false);
 approval_text!(Subject, Some(SUBJECT_MAX_CHARACTERS), false);
 approval_text!(Label, Some(LABEL_MAX_CHARACTERS), false);
+approval_text!(SessionCallFolder, Some(DESCRIPTION_MAX_CHARACTERS), true);
+approval_text!(SessionCallMode, Some(LABEL_MAX_CHARACTERS), true);
 const MAX_OPTION_ORDINAL: u8 = 16;
 const MAX_FIELD_ORDINAL: u8 = 32;
 pub const MAX_OFFERED_OPTIONS: usize = MAX_OPTION_ORDINAL as usize;

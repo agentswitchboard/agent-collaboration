@@ -7,7 +7,9 @@ use central_engine_model::{
     Context, EngineTime, Machine, MachineKind, Transition, TransitionError, supported_time,
 };
 
-use crate::approval_lifecycle_admission::{applying_time, matches_key, stop_binding};
+use crate::approval_lifecycle_admission::{
+    applying_time, matches_key, stop_binding, stop_cause_matches_raise,
+};
 use crate::approval_lifecycle_delivery::{receive, reoffer};
 use crate::approval_lifecycle_destinations::{decide, pass_on, read};
 use crate::approval_lifecycle_effects::{
@@ -110,10 +112,12 @@ fn apply_raise(
             reply(state, ApprovalReceipt::Raise(result))
         }
         ApprovalState::StoppedBeforeRaise {
-            contents_digest, ..
+            contents_digest,
+            cause,
+            ..
         } => {
             let digest = raise_digest(&raise)?;
-            let result = if contents_digest == &digest {
+            let result = if contents_digest == &digest && stop_cause_matches_raise(*cause, &raise) {
                 RaiseReply::AlreadyStopped {}
             } else {
                 RaiseReply::ContentsDiffer {}
@@ -121,8 +125,33 @@ fn apply_raise(
             reply(state, ApprovalReceipt::Raise(result))
         }
         ApprovalState::Unraised => {
-            if admission.provider_session == ProviderSessionAvailability::NotAvailable {
-                return reply(state, ApprovalReceipt::Raise(RaiseReply::SessionEnded {}));
+            match (&raise, admission.provider_session) {
+                (Raise::UnprovenCall { .. }, ProviderSessionAvailability::SessionFree)
+                    if routing == ApprovalRouting::Owner => {}
+                (
+                    Raise::ProviderApproval { .. } | Raise::ProviderQuestion { .. },
+                    ProviderSessionAvailability::Live,
+                ) => {}
+                (
+                    Raise::ProviderApproval { .. } | Raise::ProviderQuestion { .. },
+                    ProviderSessionAvailability::NotAvailable,
+                ) => {
+                    return reply(state, ApprovalReceipt::Raise(RaiseReply::SessionEnded {}));
+                }
+                (
+                    Raise::UnprovenCall { .. },
+                    ProviderSessionAvailability::SessionFree
+                    | ProviderSessionAvailability::Live
+                    | ProviderSessionAvailability::NotAvailable,
+                )
+                | (
+                    Raise::ProviderApproval { .. } | Raise::ProviderQuestion { .. },
+                    ProviderSessionAvailability::SessionFree,
+                ) => {
+                    return Err(TransitionError::Domain(
+                        ApprovalRefusal::InvalidInitialRoute,
+                    ));
+                }
             }
             if admission.outstanding >= MAX_OUTSTANDING_PER_RUN {
                 return reply(
@@ -144,7 +173,7 @@ fn apply_raise(
                 waiting_status: WaitingStatus::Pending,
             };
             if let ApprovalRouting::Delegate { admitted_parent } = &saved.routing
-                && saved.provider_session().session_id == admitted_parent.session_id
+                && saved.raise.requesting_session() == Some(&admitted_parent.session_id)
             {
                 return Err(TransitionError::Domain(
                     ApprovalRefusal::InvalidInitialRoute,
@@ -214,7 +243,10 @@ fn apply_stop(
                 reason: CancelReason::Stopped { cause: *cause },
             }),
         ),
-        ApprovalState::Waiting { saved } if &saved.contents_digest == digest => {
+        ApprovalState::Waiting { saved }
+            if &saved.contents_digest == digest
+                && stop_cause_matches_raise(cause, &saved.raise) =>
+        {
             let ending = deadline_ending(
                 saved,
                 Ending::Cancelled {
@@ -228,7 +260,10 @@ fn apply_stop(
             effects.push(ApprovalEffect::Reply(receipt));
             Ok((next, effects))
         }
-        ApprovalState::Ended { saved, closed } if &saved.contents_digest == digest => {
+        ApprovalState::Ended { saved, closed }
+            if &saved.contents_digest == digest
+                && stop_cause_matches_raise(cause, &saved.raise) =>
+        {
             let receipt = response(standing(&closed.ending.clone().into_ending()));
             if closed.delivery == (Delivery::Owed {}) {
                 Ok((
@@ -279,9 +314,14 @@ fn end_authority(
         AuthorityEnd::ProviderSession => CancelReason::SessionEnded {},
     };
     match (state, authority) {
-        (ApprovalState::Waiting { saved }, AuthorityEnd::ProviderSession) => {
+        (ApprovalState::Waiting { saved }, AuthorityEnd::ProviderSession)
+            if saved.raise.requesting_session().is_some() =>
+        {
             let ending = deadline_ending(saved, Ending::Cancelled { reason }, now);
             finish(saved, ending, Delivery::Owed {}, now)
+        }
+        (ApprovalState::Waiting { .. }, AuthorityEnd::ProviderSession) => {
+            Ok((state.clone(), Vec::new()))
         }
         (ApprovalState::Waiting { saved }, AuthorityEnd::Run | AuthorityEnd::Enrollment) => {
             let ending = deadline_ending(saved, Ending::Cancelled { reason }, now);

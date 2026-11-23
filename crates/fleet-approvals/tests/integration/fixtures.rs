@@ -203,11 +203,16 @@ pub(super) fn raise_event(
     raise: Raise,
     routing: ApprovalRouting,
 ) -> ApprovalCollectionEvent {
+    let provider_session = if raise.requesting_session().is_some() {
+        ProviderSessionAvailability::Live
+    } else {
+        ProviderSessionAvailability::SessionFree
+    };
     ApprovalCollectionEvent::Raise {
         run: run.clone(),
         raise: Box::new(raise),
         routing,
-        provider_session: ProviderSessionAvailability::Live,
+        provider_session,
     }
 }
 

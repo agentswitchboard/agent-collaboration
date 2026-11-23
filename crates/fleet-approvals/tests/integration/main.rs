@@ -13,3 +13,6 @@ mod scope;
 
 #[cfg(test)]
 mod model_ledger;
+
+#[cfg(test)]
+mod unproven_call_lifecycle;

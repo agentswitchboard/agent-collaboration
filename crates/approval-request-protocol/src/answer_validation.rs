@@ -47,8 +47,16 @@ pub fn check_answer(offer: &OfferView, answer: &Answer) -> Result<(), InvalidAns
         (OfferView::ProviderQuestion { offer }, Answer::Question { answer }) => {
             check_question_answer(&offer.fields, answer)
         }
-        (OfferView::ProviderApproval { .. }, Answer::Question { .. })
-        | (OfferView::ProviderQuestion { .. }, Answer::Approval { .. }) => {
+        (OfferView::UnprovenCall { .. }, Answer::UnprovenCall { .. }) => Ok(()),
+        (
+            OfferView::ProviderApproval { .. },
+            Answer::Question { .. } | Answer::UnprovenCall { .. },
+        )
+        | (
+            OfferView::ProviderQuestion { .. },
+            Answer::Approval { .. } | Answer::UnprovenCall { .. },
+        )
+        | (OfferView::UnprovenCall { .. }, Answer::Approval { .. } | Answer::Question { .. }) => {
             Err(InvalidAnswer::WrongKind {})
         }
     }

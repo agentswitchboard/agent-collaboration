@@ -103,13 +103,13 @@ impl RetainedApproval {
         self.waiting_status
     }
 
-    pub fn provider_session(&self) -> ApprovalSession {
-        let (Raise::ProviderApproval { holder, .. } | Raise::ProviderQuestion { holder, .. }) =
-            &self.raise;
-        ApprovalSession {
-            enrollment: self.key.run.enrollment.clone(),
-            session_id: holder.session_id.clone(),
-        }
+    pub fn provider_session(&self) -> Option<ApprovalSession> {
+        self.raise
+            .requesting_session()
+            .map(|session_id| ApprovalSession {
+                enrollment: self.key.run.enrollment.clone(),
+                session_id: session_id.clone(),
+            })
     }
 }
 
@@ -272,6 +272,7 @@ impl fmt::Debug for SavedDecision {
 pub enum ProviderSessionAvailability {
     Live,
     NotAvailable,
+    SessionFree,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

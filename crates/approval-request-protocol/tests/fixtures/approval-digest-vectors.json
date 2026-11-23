@@ -55,5 +55,49 @@
       "canonical": "{\"holder\":{\"routerRun\":\"01934a50-1000-7000-8000-000000000002\",\"sessionId\":\"01934a50-1000-7000-8000-000000000014\"},\"kind\":\"providerQuestion\",\"offer\":{\"fields\":[{\"description\":null,\"fieldId\":1,\"kind\":\"number\",\"label\":\"Metres\",\"required\":true}],\"prompt\":\"Which distance?\"},\"requestId\":\"01934a50-1000-7000-8000-000000000001\"}",
       "digest": "268EIFaAguF5uPRHt_OqQig0cn-fDHmCKeBpo5Fm3W4"
     }
+  },
+  {
+    "kind": "startSession",
+    "raise": {
+      "body": {
+        "kind": "unprovenCall",
+        "requestId": "01934a50-1000-7000-8000-000000000011",
+        "holder": {
+          "routerRun": "01934a50-1000-7000-8000-000000000002"
+        },
+        "invocation": "yq9M7sQvc4y3jqOKlZLHnnjyzRrHfEKM9n98Qxjs_wc",
+        "offer": {
+          "operation": {
+            "kind": "startSession",
+            "agentProgram": "claude",
+            "workingFolder": "/project",
+            "mode": "plan"
+          }
+        }
+      },
+      "canonical": "{\"holder\":{\"routerRun\":\"01934a50-1000-7000-8000-000000000002\"},\"invocation\":\"yq9M7sQvc4y3jqOKlZLHnnjyzRrHfEKM9n98Qxjs_wc\",\"kind\":\"unprovenCall\",\"offer\":{\"operation\":{\"agentProgram\":\"claude\",\"kind\":\"startSession\",\"mode\":\"plan\",\"workingFolder\":\"/project\"}},\"requestId\":\"01934a50-1000-7000-8000-000000000011\"}",
+      "digest": "hJcCJhFoNEOTNd9rdFt9FN-kZoxYJdYqObf_uogwLew"
+    }
+  },
+  {
+    "kind": "endSessionForGood",
+    "raise": {
+      "body": {
+        "kind": "unprovenCall",
+        "requestId": "01934a50-1000-7000-8000-000000000012",
+        "holder": {
+          "routerRun": "01934a50-1000-7000-8000-000000000002"
+        },
+        "invocation": "J6KSt0TRrx7eVc-VwE20kFRn7PKdv2ZIztT5jS3J8qU",
+        "offer": {
+          "operation": {
+            "kind": "endSessionForGood",
+            "sessionId": "01934a50-1000-7000-8000-000000000021"
+          }
+        }
+      },
+      "canonical": "{\"holder\":{\"routerRun\":\"01934a50-1000-7000-8000-000000000002\"},\"invocation\":\"J6KSt0TRrx7eVc-VwE20kFRn7PKdv2ZIztT5jS3J8qU\",\"kind\":\"unprovenCall\",\"offer\":{\"operation\":{\"kind\":\"endSessionForGood\",\"sessionId\":\"01934a50-1000-7000-8000-000000000021\"}},\"requestId\":\"01934a50-1000-7000-8000-000000000012\"}",
+      "digest": "jXME_pmMusuzFjTsnO3rEy3DBONChsYiwNxhgzOH-Tc"
+    }
   }
 ]

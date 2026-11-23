@@ -262,11 +262,12 @@ impl ApprovalCollection {
         raise: &Raise,
         admitted: ProviderSessionAvailability,
     ) -> ProviderSessionAvailability {
-        let (Raise::ProviderApproval { holder, .. } | Raise::ProviderQuestion { holder, .. }) =
-            raise;
+        let Some(session_id) = raise.requesting_session() else {
+            return ProviderSessionAvailability::SessionFree;
+        };
         let session = ApprovalSession {
             enrollment: key.run.enrollment.clone(),
-            session_id: holder.session_id.clone(),
+            session_id: session_id.clone(),
         };
         if self.ended_sessions.contains(&session) {
             ProviderSessionAvailability::NotAvailable
@@ -334,7 +335,9 @@ impl ApprovalCollection {
             .requests
             .iter()
             .filter_map(|(key, row)| match row {
-                ApprovalState::Waiting { saved } if &saved.provider_session() == session => {
+                ApprovalState::Waiting { saved }
+                    if saved.provider_session().as_ref() == Some(session) =>
+                {
                     Some(key.clone())
                 }
                 ApprovalState::Unraised
