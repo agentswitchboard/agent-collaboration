@@ -6,13 +6,14 @@ use approval_request_protocol::{
 use hegel::generators as gs;
 use switchboard_approval_holder::{
     run_gate::{AuthorityEnd, CallAttempt, CallKey, DialAttempt, LinkAttempt},
-    waiting_request::{LocalNegative, ProviderReply, WriterOutcome},
+    waiting_request::{LocalNegative, ProviderReply, RaiseRefusal, WriterOutcome},
 };
 
 use super::fixtures::{
     GateEffect, GateEvent, RESPONDER, RequestEffect, authority, call_raise, raise,
 };
 
+mod capacity_history;
 mod product_adapter;
 
 use product_adapter::Product;
@@ -50,6 +51,7 @@ struct HistoryFacts {
     recorded_ending: Option<DeliverEndingRequest>,
     central_done: bool,
     refusing_locally: bool,
+    capacity_refused: bool,
     selected: Option<ProviderReply>,
     permitted: bool,
     writer_started: bool,
@@ -66,7 +68,13 @@ impl HistoryFacts {
     }
 
     fn closed(&self) -> bool {
-        (self.central_done || self.refusing_locally) && self.handle_released && !self.writer_started
+        (self.central_done || self.refusing_locally && !self.capacity_refusal_exposure())
+            && self.handle_released
+            && !self.writer_started
+    }
+
+    fn capacity_refusal_exposure(&self) -> bool {
+        self.capacity_refused && self.could_be_admitted && !self.central_done
     }
 
     fn claim(&mut self, reply: ProviderReply) {
@@ -264,6 +272,9 @@ impl HistoryFacts {
             DeliverEndingReply::StopOwed {}
         } else if self.owed.is_some() {
             DeliverEndingReply::StopOwed {}
+        } else if self.capacity_refusal_exposure() {
+            self.central_done = true;
+            DeliverEndingReply::NotHeld {}
         } else if self.central_done {
             DeliverEndingReply::NotHeld {}
         } else if !self.published || self.refusing_locally {
@@ -290,7 +301,7 @@ impl HistoryFacts {
             if self.owed.is_none()
                 && self.withdrawal_waiting_for_link.is_none()
                 && !self.central_done
-                && !self.refusing_locally
+                && (!self.refusing_locally || self.capacity_refusal_exposure())
             {
                 self.record_stop(cause);
             }
@@ -324,6 +335,8 @@ impl HistoryFacts {
 
     fn record_stop(&mut self, cause: HolderStopCause) {
         if self.saved || self.could_be_admitted {
+            self.refusing_locally = false;
+            self.capacity_refused = false;
             let request = self.request();
             let request_id = request.request_id().clone();
             let router_run = request.router_run().clone();
@@ -376,6 +389,19 @@ impl HistoryFacts {
                     RaiseReply::Receipt { .. } if self.owed.is_none() && !self.central_done => {
                         self.saved = true;
                         self.settle_withdrawal();
+                    }
+                    RaiseReply::TooManyOutstanding {}
+                        if self.owed.is_none() && !self.central_done =>
+                    {
+                        if self.withdrawal_waiting_for_link.is_some() {
+                            self.settle_withdrawal();
+                        } else {
+                            self.refusing_locally = true;
+                            self.capacity_refused = true;
+                            self.claim(ProviderReply::LocalNegative(LocalNegative::RaiseRefused(
+                                RaiseRefusal::TooManyOutstanding,
+                            )));
+                        }
                     }
                     RaiseReply::Receipt { .. }
                     | RaiseReply::AlreadyStopped {}
@@ -463,7 +489,7 @@ impl HistoryFacts {
                     if self.owed.is_none()
                         && self.withdrawal_waiting_for_link.is_none()
                         && !self.central_done
-                        && !self.refusing_locally
+                        && (!self.refusing_locally || self.capacity_refusal_exposure())
                     {
                         self.record_stop(HolderStopCause::AskWithdrawn);
                     }
@@ -527,6 +553,10 @@ fn assert_observations(actual: &Product, model: &HistoryFacts) {
     assert_eq!(actual.gate.ready_link(), ready);
     assert_eq!(actual.wait.holds_place(), !model.closed());
     assert_eq!(
+        actual.wait.holds_capacity_refusal_exposure(),
+        model.capacity_refusal_exposure()
+    );
+    assert_eq!(
         actual.wait.may_be_forgotten(),
         model.closed() && model.raise.is_none() && model.stop.is_none()
     );
@@ -551,6 +581,8 @@ fn generated_gate_and_call_wait_histories_match_the_independent_facts(case: hege
 }
 
 fn exercise_history(case: hegel::TestCase, call_wait: bool) {
+    capacity_history::check(call_wait, false);
+    capacity_history::check(call_wait, true);
     for earlier_answer_lost in [false, true] {
         check_exposure_history(call_wait, earlier_answer_lost);
     }
@@ -641,7 +673,7 @@ fn exercise_generated_steps(
 ) {
     let steps = case.draw(gs::integers::<u8>().min_value(6).max_value(48));
     for step in 0..steps {
-        let event = case.draw(gs::integers::<u8>().max_value(23));
+        let event = case.draw(gs::integers::<u8>().max_value(24));
         let exact = case.draw(gs::booleans());
         let alternate = case.draw(gs::booleans());
         let serial = u64::from(step) + 3;
@@ -785,6 +817,10 @@ fn exercise_generated_steps(
                 23 => {
                     WaitInput::NotReached(key(if alternate { &model.raise } else { &model.stop }))
                 }
+                24 => WaitInput::Raise {
+                    key: key(&model.raise),
+                    reply: RaiseReply::TooManyOutstanding {},
+                },
                 _ => WaitInput::Publish(CallAttempt::new(serial)),
             };
             assert_eq!(

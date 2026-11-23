@@ -4,6 +4,7 @@
 )]
 
 mod agent_withdrawal;
+mod capacity_exposure;
 mod capacity_refusals;
 mod confirmation_regressions;
 mod core_link_loss;

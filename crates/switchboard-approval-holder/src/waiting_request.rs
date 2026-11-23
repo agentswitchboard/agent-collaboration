@@ -41,12 +41,19 @@ enum CentralDuty<Connection> {
         raise: CallKey<Connection>,
         stop: StopRequest,
     },
+    CapacityRefusalExposure(CapacityRefusalExposure<Connection>),
     Stopping {
         request: StopRequest,
         call: Call<Connection>,
     },
     Refusing,
     Done,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum CapacityRefusalExposure<Connection> {
+    UnresolvedAttempts(Vec<CallKey<Connection>>),
+    ConfirmedAdmission,
 }
 
 /// Why the Mac must refuse a provider ask through its existing responder.
@@ -117,8 +124,8 @@ pub struct WaitState<Responder, Connection> {
     request_id: Option<ApprovalRequestId>,
     router_run: Option<RouterRunId>,
     displaced_raise: Option<CallKey<Connection>>,
-    // A new attempt's non-admission cannot disprove an earlier lost answer.
-    earlier_raise_may_be_admitted: bool,
+    // Each lost answer can conceal an admission independently of a later reply.
+    earlier_unresolved_raises: Vec<CallKey<Connection>>,
     frozen: Option<FrozenRaise>,
     central: CentralDuty<Connection>,
     custody: Custody<Responder>,
@@ -140,7 +147,7 @@ impl<Responder, Connection> WaitState<Responder, Connection> {
             request_id: Some(raise.request_id().clone()),
             router_run: Some(raise.router_run().clone()),
             displaced_raise: None,
-            earlier_raise_may_be_admitted: false,
+            earlier_unresolved_raises: Vec::new(),
             frozen: Some(FrozenRaise {
                 body: raise,
                 digest,
@@ -174,7 +181,7 @@ impl<Responder, Connection> WaitState<Responder, Connection> {
             request_id: None,
             router_run: None,
             displaced_raise: None,
-            earlier_raise_may_be_admitted: false,
+            earlier_unresolved_raises: Vec::new(),
             frozen: None,
             central: CentralDuty::Refusing,
             custody: Custody::Claimed {
@@ -194,6 +201,11 @@ impl<Responder, Connection> WaitState<Responder, Connection> {
     /// Can be discarded once any matched Central calls have also drained.
     pub const fn may_be_forgotten(&self) -> bool {
         !self.holds_place() && !self.has_pending_calls()
+    }
+
+    /// Counts a capacity-refused wait whose older Raise still needs settlement.
+    pub const fn holds_capacity_refusal_exposure(&self) -> bool {
+        matches!(self.central, CentralDuty::CapacityRefusalExposure(_))
     }
 
     /// A completed local wait can still have a matched Raise response to drain.
@@ -230,18 +242,19 @@ impl<Responder, Connection> WaitState<Responder, Connection> {
             self.central = CentralDuty::Done;
         }
         if !self.holds_place() {
+            self.earlier_unresolved_raises.clear();
             self.frozen = None;
             self.claim = None;
         }
     }
 }
 
-/// The link's final disposition of one exact outgoing frame.
+/// The link's observed disposition of one exact outgoing frame.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LinkAttemptDisposition {
     /// The writer proved that this frame never started.
     NotReached,
-    /// The frame may have reached Central and no answer can now settle it.
+    /// The frame may have reached Central. The link has no answer for it.
     AnswerLost,
     Answered(LinkCallAnswer),
 }
@@ -251,6 +264,11 @@ pub enum LinkCallAnswer {
     Raise(RaiseReply),
     Stop(StopReply),
 }
+
+/// Evidence for the future typed Stop after the holder finishes its local refusal.
+/// The protocol does not yet supply that cause.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum HolderRefusedLocallyStopCause {}
 
 /// Inputs from the authenticated link owner or the exact responder owner.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -262,6 +280,9 @@ pub enum WaitEvent<Responder, Connection> {
     /// Retires the carrier. An unresolved Raise still needs its exact disposition.
     ConnectionRetired {
         link: LinkAttempt<Connection>,
+    },
+    HolderRefusedLocallyStopAvailable {
+        cause: HolderRefusedLocallyStopCause,
     },
     LocalStop {
         cause: HolderStopCause,
@@ -375,6 +396,9 @@ impl<Responder, Connection> EventTag for WaitEvent<Responder, Connection> {
                 }
             },
             Self::ConnectionRetired { .. } => "connection_retired",
+            Self::HolderRefusedLocallyStopAvailable { .. } => {
+                "holder_refused_locally_stop_available"
+            }
             Self::LocalStop { .. } => "local_stop",
             Self::TakeFinalPermit { .. } => "take_permit",
             Self::StartWrite { .. } => "start_write",
@@ -454,6 +478,11 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
                 self.stop_after_raise_proven_by_ending();
                 DeliverEndingReply::StopOwed {}
             }
+            CentralDuty::CapacityRefusalExposure(_) => {
+                self.central = CentralDuty::Done;
+                self.close_if_done();
+                DeliverEndingReply::NotHeld {}
+            }
             CentralDuty::Done => DeliverEndingReply::NotHeld {},
         })
     }
@@ -525,6 +554,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
                 | Custody::FencedAfterStart(_) => return Err(TransitionError::Stale),
             },
             CentralDuty::AwaitingRaiseDisposition { .. }
+            | CentralDuty::CapacityRefusalExposure(_)
             | CentralDuty::Stopping { .. }
             | CentralDuty::Refusing
             | CentralDuty::Done => {
@@ -564,9 +594,10 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
         effects: &mut Effects<Responder, Connection, Enrollment>,
     ) -> Result<(), WaitError> {
         match self.central {
-            CentralDuty::Unsent | CentralDuty::Raising(_) | CentralDuty::WaitingForEnding => {
-                self.begin_stop(cause)?;
-            }
+            CentralDuty::Unsent
+            | CentralDuty::Raising(_)
+            | CentralDuty::WaitingForEnding
+            | CentralDuty::CapacityRefusalExposure(_) => self.begin_stop(cause)?,
             CentralDuty::AwaitingRaiseDisposition { .. }
             | CentralDuty::Stopping { .. }
             | CentralDuty::Refusing
@@ -667,6 +698,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
     fn fence<Enrollment>(&mut self, effects: &mut Effects<Responder, Connection, Enrollment>) {
         self.authority = Authority::Ended;
         self.displaced_raise = None;
+        self.earlier_unresolved_raises.clear();
         self.central = CentralDuty::Done;
         self.claim = None;
         self.frozen = None;
@@ -715,6 +747,9 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq, Enrollment> StateMachine
                 LinkAttemptDisposition::AnswerLost => next.settle_unanswered(&call, true)?,
             },
             WaitEvent::ConnectionRetired { link } => next.retire_connection(&link)?,
+            // This input will move CapacityRefusalExposure to Stopping once the
+            // protocol can carry the exact HolderRefusedLocally cause.
+            WaitEvent::HolderRefusedLocallyStopAvailable { cause } => match cause {},
             _ if !state.holds_place() || state.authority == Authority::Ended => {
                 return Err(TransitionError::Stale);
             }
