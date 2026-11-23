@@ -31,6 +31,7 @@ pub struct AccessLease {
     pub token: SecretValue,
     pub usable_until: ClockInstant,
     pub binding_generation: BindingGeneration,
+    pub key: EnrollmentKey,
 }
 
 /// A link caller requests any usable lease or one newer than a rejected lease.
@@ -500,6 +501,7 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
                     token: grant.access_token,
                     usable_until,
                     binding_generation: generation,
+                    key,
                 });
             }
             let retry = self

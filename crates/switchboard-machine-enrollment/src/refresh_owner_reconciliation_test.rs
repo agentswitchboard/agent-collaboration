@@ -176,3 +176,30 @@ fn maximum_active_generation_can_end_without_spending_another_refresh() {
         }
     );
 }
+
+#[test]
+fn a_lease_after_enrollment_replacement_carries_the_new_key() {
+    let fixture = Fixture::new();
+    let original = fixture.store.snapshot().key().expect("original enrollment");
+    let first = poll_once(std::pin::pin!(fixture.owner.lease(AccessRequest::Usable)));
+    assert!(matches!(first, Poll::Ready(Ok(lease)) if lease.key == original));
+
+    let mut replacement = binding(3, 1);
+    replacement.credential.enrollment_id = "019a0000-0000-7000-8000-000000000010"
+        .parse()
+        .expect("replacement enrollment");
+    let replacement_key = replacement.key();
+    assert_eq!(
+        fixture
+            .store
+            .write(generation(2), StoredEnrollment::Active(replacement)),
+        ConditionalWrite::Applied
+    );
+
+    let next = poll_once(std::pin::pin!(fixture.owner.lease(AccessRequest::Usable)));
+    assert!(matches!(
+        next,
+        Poll::Ready(Ok(lease)) if lease.key == replacement_key
+            && lease.binding_generation == generation(4)
+    ));
+}
