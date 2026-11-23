@@ -328,7 +328,12 @@ impl CompetingApprovalFixture for NativeApprovalFixture {
         &self,
     ) -> Result<(ApprovalHolderTarget, reqwest_websocket::WebSocket)> {
         use super::super::{fixture::OTHER_MACHINE, typed_call_holder::connect_other_machine};
-        let socket = connect_other_machine(&self.link).await?;
+        let mut socket = connect_other_machine(&self.link).await?;
+        collaboration_central_conformance::approval_link_scenarios::announce_mac_calls(
+            &mut socket,
+            vec![central_link_protocol::MacCallKind::ApprovalNotice],
+        )
+        .await?;
         Ok((competing_target(self, OTHER_MACHINE).await?, socket))
     }
 

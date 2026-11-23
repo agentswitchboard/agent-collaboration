@@ -5,6 +5,9 @@ use fleet_contracts::CentralObservation;
 /// Modern org runtime sink; only the core closed classification crosses here.
 pub(crate) fn observe_signin(observation: CentralObservation) {
     match observation {
+        CentralObservation::MacCallLedgerSaturated { capacity } => {
+            worker::console_log!("Mac call ledger saturated: capacity={capacity}");
+        }
         CentralObservation::EngineAlarmNotPublished { failure } => {
             worker::console_log!("central engine alarm not published: {failure:?}");
         }

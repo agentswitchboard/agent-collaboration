@@ -1,7 +1,7 @@
 use crate::{
     CentralCall, CentralCallReply, CorrelationId, DeliveryMessage, FrameDirection, LinkRequest,
-    LinkRequestBatch, MacCall, MacCallReply, MachineTokenText, ProtocolError, ReceiptBatch,
-    ReceiptResult, ReplyPayload, RequestStatusAnswer, RequestStatusQuery, TimeLeft,
+    LinkRequestBatch, MacCall, MacCallReply, MacCapabilities, MachineTokenText, ProtocolError,
+    ReceiptBatch, ReceiptResult, ReplyPayload, RequestStatusAnswer, RequestStatusQuery, TimeLeft,
     TokenRenewalResult, TypedCallResult,
     link_typed_calls::{named_map, unregistered_call},
 };
@@ -53,6 +53,7 @@ define_data_frame! {
         central_time: Timestamp,
         effective_expires_at: Timestamp,
     },
+    MacCapabilities(MacCapabilities),
     Request {
         request: Box<LinkRequest>,
     },
@@ -129,6 +130,7 @@ impl LinkFrame {
             Self::Data(data) => match data {
                 DataFrame::CallCentral { .. }
                 | DataFrame::MacCallReply { .. }
+                | DataFrame::MacCapabilities(_)
                 | DataFrame::Request { .. }
                 | DataFrame::Batch { .. }
                 | DataFrame::RequestStatus { .. }

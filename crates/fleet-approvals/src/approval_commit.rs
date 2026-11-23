@@ -110,14 +110,28 @@ impl PendingApprovalEffects {
 
 #[derive(Default)]
 pub struct CommittedApprovalEffects {
+    pub settled_mac_calls: Vec<SettledApprovalMacCall>,
     pub endings: Vec<CommittedApprovalOffer>,
     pub notices: Vec<CommittedApprovalNotice>,
 }
 
 impl CommittedApprovalEffects {
     pub fn is_empty(&self) -> bool {
-        self.endings.is_empty() && self.notices.is_empty()
+        self.endings.is_empty() && self.notices.is_empty() && self.settled_mac_calls.is_empty()
     }
+}
+
+/// A delivery debt that the owning approval transaction durably settled.
+pub enum SettledApprovalMacCall {
+    Ending {
+        holder: ApprovalHolderScope,
+        request_id: ApprovalRequestId,
+    },
+    Notice {
+        organization: OrganizationId,
+        destination: ApprovalSession,
+        request_id: ApprovalRequestId,
+    },
 }
 
 pub struct CommittedApprovalNotice {
@@ -152,6 +166,10 @@ pub struct CommittedApprovalOffer {
 impl CommittedApprovalOffer {
     pub(crate) fn new(holder: ApprovalHolderScope, request: Box<DeliverEndingRequest>) -> Self {
         Self { holder, request }
+    }
+
+    pub fn request_id(&self) -> &ApprovalRequestId {
+        self.request.request_id()
     }
 
     pub fn holder_address(&self) -> &ApprovalHolderScope {

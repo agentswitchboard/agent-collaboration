@@ -98,7 +98,7 @@ impl ApprovalLinkFixture for NativeApprovalFixture {
         })
     }
 
-    async fn connect(&self) -> Result<WebSocket> {
+    async fn connect_without_capabilities(&self) -> Result<WebSocket> {
         let token = self.refresh().await?;
         let mut socket = self
             .link
@@ -628,3 +628,6 @@ mod approval_carrier_replacement;
 mod parent_approval_calls;
 #[path = "person_approval_races.rs"]
 mod person_approval_races;
+
+#[path = "approval_capability_calls.rs"]
+mod approval_capability_calls;

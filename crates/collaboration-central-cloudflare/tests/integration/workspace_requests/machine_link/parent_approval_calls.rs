@@ -289,6 +289,11 @@ impl CompetingApprovalFixture for Fixture {
         assert!(
             matches!(receive_frame(&mut socket).await?, central_link_protocol::LinkFrame::Data(central_link_protocol::DataFrame::Welcome { machine_id, .. }) if machine_id.as_str() == MACHINE)
         );
+        collaboration_central_conformance::approval_link_scenarios::announce_mac_calls(
+            &mut socket,
+            vec![central_link_protocol::MacCallKind::ApprovalNotice],
+        )
+        .await?;
         Ok((competing_target(self, MACHINE).await?, socket))
     }
 

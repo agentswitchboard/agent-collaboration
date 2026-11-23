@@ -2,6 +2,9 @@
 use fleet_contracts::CentralObservation;
 pub(crate) fn observe(observation: CentralObservation) {
     match observation {
+        CentralObservation::MacCallLedgerSaturated { capacity } => {
+            tracing::info!(target: "collaboration_central::link", capacity, "Mac call ledger saturated");
+        }
         CentralObservation::EngineAlarmNotPublished { failure } => {
             tracing::warn!(target:"collaboration_central::engine",?failure,"central engine alarm not published")
         }

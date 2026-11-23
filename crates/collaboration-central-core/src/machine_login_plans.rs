@@ -120,13 +120,19 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         if let Some(invalidation) = invalidation
             && let Some(dispatcher) = &self.link_call_dispatcher
         {
-            return dispatcher
+            let settled = dispatcher
                 .end_approval_enrollment(
                     self.execution.organization().clone(),
                     invalidation.clone(),
                     statements,
                 )
-                .await;
+                .await?;
+            if let Some(completion) = settled
+                && let Some(schedule) = &self.approval_delivery_completion
+            {
+                schedule(completion);
+            }
+            return Ok(());
         }
         if !statements.is_empty() {
             match self

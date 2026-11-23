@@ -29,7 +29,8 @@ pub use approval_collection_values::*;
 pub use approval_commit::{
     ApprovalCommitOwner, ApprovalCommitProof, ApprovalCommitScope, ApprovalReleaseFailure,
     ApprovalReplyAddress, CommittedApprovalEffects, CommittedApprovalNotice,
-    CommittedApprovalOffer, PendingApprovalEffects, PendingApprovalReply, complete_approval_commit,
+    CommittedApprovalOffer, PendingApprovalEffects, PendingApprovalReply, SettledApprovalMacCall,
+    complete_approval_commit,
 };
 pub use approval_lifecycle::{ApprovalLifecycle, MAX_OUTSTANDING_PER_RUN};
 pub use approval_lifecycle_values::*;

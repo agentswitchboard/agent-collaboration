@@ -125,6 +125,57 @@ fn address_agrees(
 }
 
 impl CentralObject {
+    pub(super) async fn announce_mac_capabilities(
+        &self,
+        runtime: &OrgRuntime,
+        socket: &WebSocket,
+        attachment: &MachineConnectionAttachment,
+        announcement: central_link_protocol::MacCapabilities,
+    ) -> worker::Result<()> {
+        let turn = runtime.runtime().take_central_turn_for_admission().await;
+        if !is_current_socket(&self.state, socket, attachment.machine_id()) {
+            return Ok(());
+        }
+        let Some(mut current) = SocketAttachment::read(socket)? else {
+            return self.close_machine_link(socket, 1008, Some("connection identity missing"));
+        };
+        if current.mac_calls.announce(announcement).is_err() {
+            return self.close_machine_link(socket, 1008, Some("duplicate Mac capabilities"));
+        }
+        current.save(socket)?;
+        let recover_notices = current
+            .mac_calls
+            .handles(central_link_protocol::MacCallKind::ApprovalNotice);
+        let holder_run = current.registered_run.filter(|_| {
+            current
+                .mac_calls
+                .handles(central_link_protocol::MacCallKind::DeliverEnding)
+        });
+        if !recover_notices && holder_run.is_none() {
+            return Ok(());
+        }
+        let machine = match runtime
+            .restore_machine_in_held_turn(&current.authority)
+            .await
+        {
+            Ok(Ok(machine)) => machine,
+            Ok(Err(cause)) => return self.close_machine_authority(socket, cause),
+            Err(_) => return self.close_machine_link(socket, 1011, Some("central unavailable")),
+        };
+        drop(turn);
+        if let Some(run) = holder_run
+            && let Some(recovery) = runtime.recover_approval_endings(machine.clone(), run)
+        {
+            self.pending_mac_calls
+                .run_socket_completion(&self.state, socket, recovery);
+        }
+        if recover_notices && let Some(recovery) = runtime.recover_approval_notices(machine) {
+            self.pending_mac_calls
+                .run_socket_completion(&self.state, socket, recovery);
+        }
+        Ok(())
+    }
+
     pub(super) async fn dispatch_typed_machine_call(
         &self,
         runtime: &OrgRuntime,
@@ -147,9 +198,14 @@ impl CentralObject {
             let Some(current) = SocketAttachment::read(socket)? else {
                 return self.close_machine_link(socket, 1008, Some("connection identity missing"));
             };
+            let recover_after_registration = current.registered_run.is_none()
+                && current
+                    .mac_calls
+                    .handles(central_link_protocol::MacCallKind::DeliverEnding);
             (
                 TypedCallCarrier::Approval {
                     registered_run: current.registered_run,
+                    recover_after_registration,
                 },
                 current.authority,
                 Some(turn),
@@ -290,7 +346,29 @@ impl CentralObject {
         invocation: MacCallInvocation,
         deadline: SyncTime,
     ) -> Result<LinkReply, CallFailure> {
-        let prepare = self.write_mac_call(organization, invocation, deadline);
+        let address = MacCallAddress::from(invocation.request.as_ref());
+        if !address_agrees(&address, &organization, &invocation.machine_id) {
+            return Err(CallFailure::NeverReached);
+        }
+        let socket = self
+            .state
+            .get_websockets_with_tag(address.machine_id().as_str())
+            .into_iter()
+            .find(socket_open)
+            .ok_or(CallFailure::NeverReached)?;
+        let attachment = matching_attachment(&socket, &address, &organization)?;
+        attachment
+            .mac_calls
+            .check_request(&invocation.request)
+            .map_err(|_| CallFailure::NeverReached)?;
+        let prepare = self.write_mac_call(
+            organization,
+            invocation,
+            deadline,
+            socket,
+            address,
+            attachment,
+        );
         let written = match select(pin!(self.clock.wait_until(deadline)), pin!(prepare)).await {
             Either::Left(_) => return Err(CallFailure::NeverReached),
             Either::Right((written, _)) => written?,
@@ -309,18 +387,10 @@ impl CentralObject {
         organization: OrganizationId,
         invocation: MacCallInvocation,
         deadline: SyncTime,
+        socket: WebSocket,
+        address: MacCallAddress,
+        attachment: SocketAttachment,
     ) -> Result<WrittenMacCall<'_>, CallFailure> {
-        let address = MacCallAddress::from(invocation.request.as_ref());
-        if !address_agrees(&address, &organization, &invocation.machine_id) {
-            return Err(CallFailure::NeverReached);
-        }
-        let socket = self
-            .state
-            .get_websockets_with_tag(address.machine_id().as_str())
-            .into_iter()
-            .find(socket_open)
-            .ok_or(CallFailure::NeverReached)?;
-        let attachment = matching_attachment(&socket, &address, &organization)?;
         let socket_tag = socket_tag(&self.state, &socket).ok_or(CallFailure::NeverReached)?;
         self.migrate()
             .await

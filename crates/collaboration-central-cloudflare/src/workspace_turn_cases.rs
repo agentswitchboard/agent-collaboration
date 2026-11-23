@@ -28,6 +28,12 @@ pub(super) async fn control(
                     | Point::BeforeApprovalNoticeWrite
                     | Point::AfterApprovalNoticeAttempt
                     | Point::AfterApprovalNoticeRecovery
+                    | Point::BeforeMacEndingOffer
+                    | Point::AfterMacEndingOffer
+                    | Point::BeforeMacNoticeOffer
+                    | Point::AfterMacNoticeOffer
+                    | Point::MacEndingRecoveryStarted
+                    | Point::MacEndingRecoveryFinished
                     | Point::BeforePersonApprovalTurn
                     | Point::AfterPersonApprovalCommit
                     | Point::AfterIdleExpiryCommit

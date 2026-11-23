@@ -144,6 +144,13 @@ pub(crate) enum CasePausePoint {
     BeforeApprovalNoticeWrite,
     AfterApprovalNoticeAttempt,
     AfterApprovalNoticeRecovery,
+    BeforeMacEndingOffer,
+    AfterMacEndingOffer,
+    BeforeMacNoticeOffer,
+    AfterMacNoticeOffer,
+    MacEndingRecoveryStarted,
+    MacEndingRecoveryFinished,
+    MacEndingRegistrationRecoveryScheduled,
     BeforePersonApprovalTurn,
     AfterPersonApprovalCommit,
     AfterIdleExpiryCommit,
@@ -189,6 +196,15 @@ impl From<CasePausePoint> for PausePoint {
                 Self::BeforeParentApprovalTransaction
             }
             CasePausePoint::AfterApprovalNoticeRecovery => Self::AfterApprovalNoticeRecovery,
+            CasePausePoint::BeforeMacEndingOffer => Self::BeforeMacEndingOffer,
+            CasePausePoint::AfterMacEndingOffer => Self::AfterMacEndingOffer,
+            CasePausePoint::BeforeMacNoticeOffer => Self::BeforeMacNoticeOffer,
+            CasePausePoint::AfterMacNoticeOffer => Self::AfterMacNoticeOffer,
+            CasePausePoint::MacEndingRecoveryStarted => Self::MacEndingRecoveryStarted,
+            CasePausePoint::MacEndingRecoveryFinished => Self::MacEndingRecoveryFinished,
+            CasePausePoint::MacEndingRegistrationRecoveryScheduled => {
+                Self::MacEndingRegistrationRecoveryScheduled
+            }
             CasePausePoint::BeforeParentApprovalReply => Self::BeforeParentApprovalReply,
             CasePausePoint::BeforeApprovalNoticeWrite => Self::BeforeApprovalNoticeWrite,
             CasePausePoint::AfterApprovalNoticeAttempt => Self::AfterApprovalNoticeAttempt,
@@ -243,6 +259,15 @@ impl From<PausePoint> for CasePausePoint {
             PausePoint::BeforeApprovalNoticeWrite => Self::BeforeApprovalNoticeWrite,
             PausePoint::AfterApprovalNoticeAttempt => Self::AfterApprovalNoticeAttempt,
             PausePoint::AfterApprovalNoticeRecovery => Self::AfterApprovalNoticeRecovery,
+            PausePoint::BeforeMacEndingOffer => Self::BeforeMacEndingOffer,
+            PausePoint::AfterMacEndingOffer => Self::AfterMacEndingOffer,
+            PausePoint::BeforeMacNoticeOffer => Self::BeforeMacNoticeOffer,
+            PausePoint::AfterMacNoticeOffer => Self::AfterMacNoticeOffer,
+            PausePoint::MacEndingRecoveryStarted => Self::MacEndingRecoveryStarted,
+            PausePoint::MacEndingRecoveryFinished => Self::MacEndingRecoveryFinished,
+            PausePoint::MacEndingRegistrationRecoveryScheduled => {
+                Self::MacEndingRegistrationRecoveryScheduled
+            }
             PausePoint::BeforePersonApprovalTurn => Self::BeforePersonApprovalTurn,
             PausePoint::AfterPersonApprovalCommit => Self::AfterPersonApprovalCommit,
             PausePoint::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,

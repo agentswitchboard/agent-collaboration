@@ -198,7 +198,7 @@ where
         organization: OrganizationId,
         invalidation: fleet_contracts::EnrollmentInvalidation,
         statements: Vec<central_storage::GuardedStatement>,
-    ) -> Result<(), StoreFailure> {
+    ) -> Result<Vec<fleet_approvals::SettledApprovalMacCall>, StoreFailure> {
         let enrollment = ApprovalEnrollmentScope {
             organization_id: organization.clone(),
             enrollment: ApprovalEnrollment {
@@ -245,10 +245,10 @@ where
         let offers = effects
             .release(&proof)
             .map_err(|_| StoreFailure::AnswerLost)?;
-        if !offers.is_empty() {
+        if !offers.endings.is_empty() || !offers.notices.is_empty() {
             return Err(corrupt("approval_requests.ended_enrollment_offer"));
         }
-        Ok(())
+        Ok(offers.settled_mac_calls)
     }
 }
 

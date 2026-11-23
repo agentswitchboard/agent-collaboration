@@ -192,16 +192,56 @@ where
             .fixture_decide(organization, decision)
     }
 
+    fn recover_approval_endings(
+        &self,
+        machine: ValidatedMachineConnection,
+        run: workspace_ids::RouterRunId,
+    ) -> Option<collaboration_central_core::LinkCallCompletion> {
+        self.approval_delivery().after_reply(
+            fleet_approvals::CommittedApprovalEffects::default(),
+            Some((machine, run)),
+        )
+    }
+
     fn end_approval_enrollment(
         &self,
         organization: OrganizationId,
         invalidation: fleet_contracts::EnrollmentInvalidation,
         statements: Vec<central_storage::GuardedStatement>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), StoreFailure>> + Send + '_>> {
-        Box::pin(
-            self.approvals
-                .end_enrollment(organization, invalidation, statements),
-        )
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        Option<collaboration_central_core::LinkCallCompletion>,
+                        StoreFailure,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        let delivery = self.approval_delivery();
+        Box::pin(async move {
+            let settled_mac_calls = self
+                .approvals
+                .end_enrollment(organization, invalidation, statements)
+                .await?;
+            Ok(delivery.after_reply(
+                fleet_approvals::CommittedApprovalEffects {
+                    settled_mac_calls,
+                    ..Default::default()
+                },
+                None,
+            ))
+        })
+    }
+
+    fn approval_ending_is_owed<'call>(
+        &'call self,
+        holder: &'call central_link_protocol::approval_rpc::ApprovalHolderTarget,
+        request: &'call workspace_ids::ApprovalRequestId,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, StoreFailure>> + Send + 'call>> {
+        let delivery = self.approval_delivery();
+        Box::pin(async move { delivery.ending_is_owed(holder, request).await })
     }
 
     fn approval_notice_deadline<'call>(
@@ -217,7 +257,8 @@ where
         &self,
         machine: ValidatedMachineConnection,
     ) -> collaboration_central_core::LinkCallCompletion {
-        self.approval_delivery().on_welcome(machine)
+        self.approval_delivery()
+            .recover_notices_after_announcement(machine)
     }
 
     fn apply_approval_deadline(

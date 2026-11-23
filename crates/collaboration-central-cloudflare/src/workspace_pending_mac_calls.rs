@@ -1,5 +1,5 @@
 //! Owns pending calls and completion tasks for each physical socket.
-use super::{LinkReply, socket_open, socket_tag};
+use super::{LinkReply, SocketAttachment, socket_open, socket_tag};
 use crate::worker_clock::WorkspaceClock;
 use central_link_protocol::{
     CorrelationId, DataFrame, FrameDirection, FreshCorrelationId, LinkFrame, MacCall,
@@ -51,6 +51,12 @@ impl PendingMacCalls {
         if !socket_open(socket) || clock.now() >= deadline {
             return Err(CallFailure::NeverReached);
         }
+        SocketAttachment::read(socket)
+            .map_err(|_| CallFailure::NeverReached)?
+            .ok_or(CallFailure::NeverReached)?
+            .mac_calls
+            .check_request(&request)
+            .map_err(|_| CallFailure::NeverReached)?;
         let correlation = FreshCorrelationId::mint_at(clock.now().unix_millis());
         let frame = LinkFrame::Data(DataFrame::CallMac {
             correlation_id: correlation.wire_id().clone(),

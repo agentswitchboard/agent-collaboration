@@ -234,6 +234,18 @@ where
         Ok(applied.replace_reply(reply))
     }
 
+    /// A staged live effect may outlive the durable debt it represented.
+    pub async fn holder_ending_is_owed(
+        &mut self,
+        holder: &ApprovalHolderScope,
+        request_id: &approval_request_protocol::ApprovalRequestId,
+    ) -> Result<bool, central_storage::StoreFailure> {
+        let record = read_holder_request(self.transaction, holder, request_id).await?;
+        Ok(matches!(record, ScopedHolderRequest::Retained(record)
+            if matches!(&record.state, ApprovalState::Ended { closed, .. }
+                if closed.delivery == (approval_request_protocol::Delivery::Owed {}))))
+    }
+
     /// Recover all current Owed endings for the exact admitted run.
     pub async fn recover_owed_approval_endings(
         &mut self,

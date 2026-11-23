@@ -22,6 +22,7 @@ pub(crate) struct WorkspaceClock {
 #[derive(Default)]
 struct HeldClock {
     time: Option<SyncTime>,
+    mac_call_waits: u64,
     after_receipt_enrollment_read: Option<i64>,
     changes: Vec<futures_channel::oneshot::Sender<()>>,
 }
@@ -54,6 +55,19 @@ impl WorkspaceClock {
         if let Some(milliseconds) = milliseconds {
             self.hold(milliseconds);
         }
+    }
+
+    pub(crate) async fn wait_for_mac_call(&self, deadline: SyncTime) {
+        #[cfg(feature = "test-support")]
+        {
+            self.held().mac_call_waits += 1;
+        }
+        self.wait_until(deadline).await;
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(crate) fn mac_call_waits(&self) -> u64 {
+        self.held().mac_call_waits
     }
 
     pub(crate) async fn wait_until(&self, deadline: SyncTime) {
