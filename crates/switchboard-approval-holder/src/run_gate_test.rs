@@ -1,9 +1,10 @@
-use approval_request_protocol::{DeliverEndingReply, RegisterRunReply, RunRefusal};
+use approval_request_protocol::{RegisterRunReply, RunRefusal};
 use hegel::generators as gs;
 use state_machine_core::{EventTag, StateMachine, StateTag, Transition, TransitionError};
 
 use super::{
-    AuthorityEnd, EndingIngress, RunAuthority, RunGate, RunGateEffect, RunGateEvent, RunGateState,
+    AuthorityEnd, CallAttempt, CallKey, DialAttempt, EndingIngress, LinkAttempt, MatchedRunRefusal,
+    RunAuthority, RunGate, RunGateEffect, RunGateEvent, RunGateState,
 };
 
 type Gate = RunGate<u8, u8>;
@@ -31,24 +32,49 @@ fn apply(state: &mut State, event: Event) -> Vec<Effect> {
     effects
 }
 
+fn link(connection: u8) -> LinkAttempt<u8> {
+    LinkAttempt {
+        connection,
+        dial: DialAttempt::new(u64::from(connection)),
+    }
+}
+
+fn call(connection: u8, attempt: u64) -> CallKey<u8> {
+    CallKey {
+        link: link(connection),
+        attempt: CallAttempt::new(attempt),
+    }
+}
+
 fn welcome(state: &mut State, connection: u8) {
+    apply(
+        state,
+        Event::DialStarted {
+            link: link(connection),
+        },
+    );
     assert!(
         apply(
             state,
             Event::Welcome {
                 authority: authority(),
-                connection
+                link: link(connection)
             }
         )
         .is_empty()
     );
 }
 
-fn publish(state: &mut State, connection: u8) {
+fn publish(state: &mut State, connection: u8, attempt: u64) {
     assert_eq!(
-        apply(state, Event::PublishRegistration { connection }),
+        apply(
+            state,
+            Event::PublishRegistration {
+                call: call(connection, attempt)
+            }
+        ),
         [Effect::Register {
-            connection,
+            call: call(connection, attempt),
             request: approval_request_protocol::RegisterRunRequest {
                 router_run: authority().router_run
             },
@@ -56,9 +82,9 @@ fn publish(state: &mut State, connection: u8) {
     );
 }
 
-fn registered(connection: u8) -> Event {
+fn registered(connection: u8, attempt: u64) -> Event {
     Event::RegistrationReply {
-        connection,
+        call: call(connection, attempt),
         reply: RegisterRunReply::Registered {},
     }
 }
@@ -70,42 +96,54 @@ fn only_current_pending_registration_opens_the_run_gate(case: hegel::TestCase) {
     for connection in 1..=connections {
         welcome(&mut state, connection);
         assert_eq!(
-            Gate::transition(&state, registered(connection)),
+            Gate::transition(&state, registered(connection, 1)),
             Err(TransitionError::Stale),
             "a Register reply without a pending typed call cannot open"
         );
-        publish(&mut state, connection);
+        publish(&mut state, connection, 1);
 
         for ended in 1..connection {
             assert_eq!(
-                Gate::transition(&state, registered(ended)),
+                Gate::transition(&state, registered(ended, 1)),
                 Err(TransitionError::Stale),
                 "a reply for a disconnected connection cannot open"
             );
         }
         assert_eq!(
-            state.ending_ingress(&authority(), &connection),
-            EndingIngress::Reply(DeliverEndingReply::HolderNotReady {})
+            state.ending_ingress(&authority(), &link(connection)),
+            EndingIngress::NotReady
         );
 
+        let mut attempt = 1;
         if case.draw(gs::booleans()) {
-            apply(&mut state, Event::RegistrationFailed { connection });
+            apply(
+                &mut state,
+                Event::RegistrationFailed {
+                    call: call(connection, 1),
+                },
+            );
             assert_eq!(
-                Gate::transition(&state, registered(connection)),
+                Gate::transition(&state, registered(connection, 1)),
                 Err(TransitionError::Stale)
             );
-            publish(&mut state, connection);
+            attempt = 2;
+            publish(&mut state, connection, attempt);
         }
         if connection < connections {
-            apply(&mut state, Event::ConnectionLost { connection });
+            apply(
+                &mut state,
+                Event::ConnectionLost {
+                    link: link(connection),
+                },
+            );
             assert_eq!(state.ready_connection(), None);
         } else {
-            apply(&mut state, registered(connection));
+            apply(&mut state, registered(connection, attempt));
             assert_eq!(state.ready_connection(), Some(&connection));
-            assert_eq!(
-                state.ending_ingress(&authority(), &connection),
-                EndingIngress::Authoritative
-            );
+            assert!(matches!(
+                state.ending_ingress(&authority(), &link(connection)),
+                EndingIngress::Admitted(_)
+            ));
         }
     }
 }
@@ -121,23 +159,28 @@ fn current_run_refusal_re_registers_or_fences_the_waits() {
     ] {
         let mut state = State::new(authority());
         welcome(&mut state, 1);
-        publish(&mut state, 1);
-        apply(&mut state, registered(1));
+        publish(&mut state, 1, 1);
+        apply(&mut state, registered(1, 1));
 
-        apply(
-            &mut state,
-            Event::HolderAuthorityRefused {
-                connection: 1,
-                refusal: RunRefusal::RunNotRegistered {},
-            },
+        assert_eq!(
+            apply(
+                &mut state,
+                Event::HolderAuthorityRefused(MatchedRunRefusal {
+                    call: call(1, 2),
+                    router_run: authority().router_run,
+                    refusal: RunRefusal::RunNotRegistered {},
+                }),
+            ),
+            [Effect::RetireConnection { link: link(1) }]
         );
         assert_eq!(state.ready_connection(), None);
-        publish(&mut state, 1);
+        welcome(&mut state, 2);
+        publish(&mut state, 2, 1);
         assert_eq!(
             apply(
                 &mut state,
                 Event::RegistrationReply {
-                    connection: 1,
+                    call: call(2, 1),
                     reply: terminal_reply
                 }
             ),
@@ -147,12 +190,72 @@ fn current_run_refusal_re_registers_or_fences_the_waits() {
             }],
         );
         assert_eq!(
-            state.ending_ingress(&authority(), &1),
+            state.ending_ingress(&authority(), &link(2)),
             EndingIngress::Discard
         );
         assert_eq!(
-            Gate::transition(&state, registered(1)),
+            Gate::transition(&state, registered(1, 1)),
             Err(TransitionError::Stale)
         );
     }
+}
+
+#[test]
+fn gate_transition_matrix_reaches_exactly_its_declared_edges() {
+    use super::Phase;
+    use state_machine_core::check_state_machine_transitions;
+
+    let phases = [
+        Phase::AwaitingDial,
+        Phase::Dialing(link(1)),
+        Phase::RegistrationDue(link(1)),
+        Phase::Registering(call(1, 1)),
+        Phase::Ready(link(1)),
+        Phase::Ended(AuthorityEnd::RunRetired),
+    ];
+    let mut events = vec![
+        Event::DialStarted { link: link(1) },
+        Event::Welcome {
+            authority: authority(),
+            link: link(1),
+        },
+        Event::PublishRegistration { call: call(1, 1) },
+        Event::RegistrationFailed { call: call(1, 1) },
+        Event::ConnectionLost { link: link(1) },
+        Event::AuthenticatedEnrollmentEnded { enrollment: 1 },
+    ];
+    for reply in [
+        RegisterRunReply::Registered {},
+        RegisterRunReply::RunNotRegistered {},
+        RegisterRunReply::RunRetired {},
+        RegisterRunReply::EnrollmentEnded {},
+    ] {
+        events.push(Event::RegistrationReply {
+            call: call(1, 1),
+            reply,
+        });
+    }
+    for refusal in [
+        RunRefusal::RunNotRegistered {},
+        RunRefusal::RunRetired {},
+        RunRefusal::EnrollmentEnded {},
+    ] {
+        events.push(Event::HolderAuthorityRefused(MatchedRunRefusal {
+            call: call(1, 2),
+            router_run: authority().router_run,
+            refusal,
+        }));
+    }
+    let cases = phases.into_iter().flat_map(|phase| {
+        events.iter().cloned().map(move |event| {
+            (
+                State {
+                    authority: authority(),
+                    phase: phase.clone(),
+                },
+                event,
+            )
+        })
+    });
+    check_state_machine_transitions::<Gate>(cases).unwrap();
 }

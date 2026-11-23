@@ -7,13 +7,19 @@ use hegel::generators as gs;
 use state_machine_core::{EventTag, StateMachine, StateTag, Transition, TransitionError};
 
 use super::{
-    LocalNegative, ProviderReply, WaitEffect, WaitEvent, WaitState, WaitingRequest, WriterOutcome,
+    LocalNegative, ProviderReply, RaiseRefusal, WaitEffect, WaitEvent, WaitState, WaitingRequest,
+    WriterOutcome,
 };
-use crate::run_gate::EndingIngress;
+use crate::run_gate::{
+    CallAttempt, CallKey, DialAttempt, EndingIngress, LinkAttempt, RunAuthority, RunGate,
+    RunGateEvent, RunGateState,
+};
+use approval_request_protocol::RegisterRunReply;
+use std::sync::OnceLock;
 
-type Wait = WaitingRequest<u8, u8>;
+type Wait = WaitingRequest<'static, u8, u8>;
 type State = WaitState<u8, u8>;
-type Event = WaitEvent<u8, u8>;
+type Event = WaitEvent<'static, u8, u8>;
 type Effect = WaitEffect<u8, u8>;
 const RESPONDER: u8 = 3;
 const STOP_CAUSE: ProviderStopCause = ProviderStopCause::TurnStopped {};
@@ -53,10 +59,56 @@ fn apply(state: &mut State, event: Event) -> Vec<Effect> {
     effects
 }
 
+fn call(connection: u8, attempt: u64) -> CallKey<u8> {
+    CallKey {
+        link: LinkAttempt {
+            connection,
+            dial: DialAttempt::new(u64::from(connection)),
+        },
+        attempt: CallAttempt::new(attempt),
+    }
+}
+
+fn ready_gate(connection: u8) -> &'static RunGateState<u8, u8> {
+    static GATES: [OnceLock<RunGateState<u8, u8>>; 2] = [const { OnceLock::new() }; 2];
+    GATES[usize::from(connection - 1)].get_or_init(|| {
+        let authority = RunAuthority {
+            enrollment: 1u8,
+            router_run: raise().router_run().clone(),
+        };
+        let key = call(connection, 0);
+        let mut gate = RunGateState::new(authority.clone());
+        for event in [
+            RunGateEvent::DialStarted {
+                link: key.link.clone(),
+            },
+            RunGateEvent::Welcome {
+                authority,
+                link: key.link.clone(),
+            },
+            RunGateEvent::PublishRegistration { call: key.clone() },
+            RunGateEvent::RegistrationReply {
+                call: key,
+                reply: RegisterRunReply::Registered {},
+            },
+        ] {
+            gate = RunGate::transition(&gate, event).unwrap().0;
+        }
+        gate
+    })
+}
+
+fn publish(connection: u8, attempt: u64) -> Event {
+    Event::Publish {
+        ready: ready_gate(connection).ready_run().unwrap(),
+        attempt: CallAttempt::new(attempt),
+    }
+}
+
 fn deliver(request: DeliverEndingRequest) -> Event {
     Event::DeliverEnding {
         request,
-        ingress: EndingIngress::Authoritative,
+        ingress: EndingIngress::Admitted(ready_gate(1).ready_run().unwrap()),
     }
 }
 
@@ -67,9 +119,9 @@ fn bound() -> State {
 fn published() -> State {
     let mut state = bound();
     assert_eq!(
-        apply(&mut state, Event::Publish { connection: 1 }),
+        apply(&mut state, publish(1, 1)),
         [Effect::Raise {
-            connection: 1,
+            call: call(1, 1),
             request: raise()
         }]
     );
@@ -302,18 +354,21 @@ fn a_writer_result_describes_only_the_local_submission() {
 
 #[test]
 fn capacity_and_other_terminal_refusals_use_the_same_one_time_writer() {
-    for refusal in [
-        RaiseReply::TooManyOutstanding {},
-        RaiseReply::AlreadyStopped {},
-        RaiseReply::ContentsDiffer {},
-        RaiseReply::SessionEnded {},
+    for (reply, refusal) in [
+        (
+            RaiseReply::TooManyOutstanding {},
+            RaiseRefusal::TooManyOutstanding,
+        ),
+        (RaiseReply::AlreadyStopped {}, RaiseRefusal::AlreadyStopped),
+        (RaiseReply::ContentsDiffer {}, RaiseRefusal::ContentsDiffer),
+        (RaiseReply::SessionEnded {}, RaiseRefusal::SessionEnded),
     ] {
         let mut state = published();
         apply(
             &mut state,
             Event::RaiseReply {
-                connection: 1,
-                reply: refusal.clone(),
+                call: call(1, 1),
+                reply,
             },
         );
         let negative = ProviderReply::LocalNegative(LocalNegative::RaiseRefused(refusal));
@@ -323,7 +378,7 @@ fn capacity_and_other_terminal_refusals_use_the_same_one_time_writer() {
             "a capacity refusal must claim the same responder as every terminal refusal"
         );
         assert_eq!(
-            Wait::transition(&state, Event::Publish { connection: 1 }),
+            Wait::transition(&state, publish(1, 1)),
             Err(TransitionError::Stale)
         );
         permit(&mut state, &negative);
@@ -341,7 +396,7 @@ fn capacity_and_other_terminal_refusals_use_the_same_one_time_writer() {
     let negative = ProviderReply::LocalNegative(LocalNegative::SessionNotBound);
     assert_eq!(state.claimed_reply(), Some((&RESPONDER, &negative)));
     assert_eq!(
-        Wait::transition(&state, Event::Publish { connection: 1 }),
+        Wait::transition(&state, publish(1, 1)),
         Err(TransitionError::Stale)
     );
     permit(&mut state, &negative);
@@ -373,9 +428,9 @@ fn owed_stop_is_exact_after_local_write_lost_reply_and_reconnect() {
         [Effect::EndingReply(DeliverEndingReply::StopOwed {})]
     );
     assert_eq!(
-        apply(&mut state, Event::Publish { connection: 1 }),
+        apply(&mut state, publish(1, 2)),
         [Effect::Stop {
-            connection: 1,
+            call: call(1, 2),
             request: stop.clone()
         }]
     );
@@ -388,11 +443,16 @@ fn owed_stop_is_exact_after_local_write_lost_reply_and_reconnect() {
         "provider completion cannot clear the exact Stop debt"
     );
 
-    apply(&mut state, Event::CallEndedWithoutReply { connection: 1 });
+    apply(
+        &mut state,
+        Event::ConnectionRetired {
+            link: call(1, 2).link,
+        },
+    );
     assert_eq!(
-        apply(&mut state, Event::Publish { connection: 2 }),
+        apply(&mut state, publish(2, 3)),
         [Effect::Stop {
-            connection: 2,
+            call: call(2, 3),
             request: stop
         }]
     );
@@ -403,7 +463,7 @@ fn owed_stop_is_exact_after_local_write_lost_reply_and_reconnect() {
         Wait::transition(
             &state,
             Event::StopReply {
-                connection: 1,
+                call: call(1, 2),
                 reply: authoritative.clone()
             }
         ),
@@ -413,11 +473,115 @@ fn owed_stop_is_exact_after_local_write_lost_reply_and_reconnect() {
         apply(
             &mut state,
             Event::StopReply {
-                connection: 2,
-                reply: authoritative.clone()
+                call: call(2, 3),
+                reply: authoritative
             }
         ),
-        [Effect::StopReconciled(authoritative)]
+        [Effect::StopReconciled(StopReceiptEnding::TimedOut {})]
     );
     assert!(state.is_closed());
+}
+
+#[test]
+fn wait_transition_matrix_reaches_exactly_its_declared_edges() {
+    use approval_request_protocol::{ApprovalWindow, RaiseReceipt, RunRefusal};
+    use state_machine_core::check_state_machine_transitions;
+
+    let ending = DeliverEndingRequest::from_raise(&raise(), Ending::TimedOut {}).unwrap();
+    let ready = ready_gate(1).ready_run().unwrap();
+    let mut events = vec![
+        publish(1, 1),
+        publish(1, 2),
+        publish(2, 3),
+        deliver(ending.clone()),
+        Event::DeliverEnding {
+            request: ending.clone(),
+            ingress: EndingIngress::Discard,
+        },
+        Event::LocalStop { cause: STOP_CAUSE },
+        Event::LocalStop {
+            cause: ProviderStopCause::ProviderConnectionLost {},
+        },
+        Event::ProviderWithdrew {
+            responder: RESPONDER,
+        },
+        Event::CapabilityWithdrawn {
+            responder: RESPONDER,
+        },
+        finish(WriterOutcome::WriteReturned),
+        Event::AuthorityEnded,
+    ];
+    for key in [call(1, 1), call(1, 2), call(2, 3)] {
+        for reply in [
+            RaiseReply::Receipt {
+                receipt: RaiseReceipt {
+                    request_id: raise().request_id().clone(),
+                    window: ApprovalWindow::from_first_save(
+                        "2026-11-22T17:00:00Z".parse().unwrap(),
+                    )
+                    .unwrap(),
+                },
+            },
+            RaiseReply::TooManyOutstanding {},
+            RaiseReply::AuthorityRefused {
+                refusal: RunRefusal::RunRetired {},
+            },
+        ] {
+            events.push(Event::RaiseReply {
+                call: key.clone(),
+                reply,
+            });
+        }
+        for reply in [
+            StopReply::Stands {
+                ending: StopReceiptEnding::TimedOut {},
+            },
+            StopReply::NotVisible {},
+            StopReply::AuthorityRefused {
+                refusal: RunRefusal::RunNotRegistered {},
+            },
+        ] {
+            events.push(Event::StopReply {
+                call: key.clone(),
+                reply,
+            });
+        }
+        events.push(Event::CallEndedWithoutReply { call: key.clone() });
+        events.push(Event::ConnectionRetired { link: key.link });
+    }
+    for reply in [
+        ProviderReply::CentralEnding(ending.ending),
+        ProviderReply::LocalNegative(LocalNegative::Stopped(STOP_CAUSE)),
+        ProviderReply::LocalNegative(LocalNegative::HolderAtCapacity),
+        ProviderReply::LocalNegative(LocalNegative::RaiseRefused(
+            RaiseRefusal::TooManyOutstanding,
+        )),
+    ] {
+        events.push(Event::TakeFinalPermit {
+            responder: RESPONDER,
+            reply: reply.clone(),
+        });
+        events.push(start(&reply));
+    }
+    assert_eq!(ready.router_run(), raise().router_run());
+
+    let mut states = vec![bound(), State::at_capacity(RESPONDER)];
+    let mut index = 0;
+    while index < states.len() {
+        for event in &events {
+            if let Ok((next, _)) = Wait::transition(&states[index], event.clone())
+                && !states.contains(&next)
+            {
+                states.push(next);
+            }
+        }
+        index += 1;
+    }
+    let cases = states.into_iter().flat_map(|state| {
+        events
+            .iter()
+            .cloned()
+            .map(move |event| (state.clone(), event))
+    });
+    check_state_machine_transitions::<Wait>(cases).unwrap();
 }

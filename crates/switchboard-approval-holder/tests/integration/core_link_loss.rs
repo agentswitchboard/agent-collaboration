@@ -8,8 +8,8 @@ use std::{
 };
 
 use approval_request_protocol::{
-    ProviderStopCause, Raise, RegisterRunReply, RegisterRunRequest, StopReceiptEnding, StopReply,
-    StopRequest,
+    ProviderStopCause, Raise, RaiseReply, RegisterRunReply, RegisterRunRequest, RunRefusal,
+    StopReceiptEnding, StopReply, StopRequest,
 };
 use state_machine_core::{StateMachine, TransitionError};
 use switchboard_approval_holder::{
@@ -19,7 +19,9 @@ use switchboard_approval_holder::{
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use turmoil::net::{TcpListener, TcpStream};
 
-use super::fixtures::{GateEvent, Mac, RESPONDER, RequestEffect, RequestEvent, authority, raise};
+use super::fixtures::{
+    GateEvent, Mac, RESPONDER, RequestEffect, RequestEvent, authority, call, raise,
+};
 
 async fn send(stream: &mut TcpStream, body: &[u8]) -> io::Result<()> {
     let length = u32::try_from(body.len()).map_err(io::Error::other)?;
@@ -45,7 +47,8 @@ async fn central_peer(lost: Arc<AtomicUsize>) -> turmoil::Result {
     })?;
     let mut held_connections = Vec::new();
     let mut first_stop = None;
-    for connection in 1..=3 {
+    let mut first_raise = None;
+    for connection in 1..=4 {
         let (mut link, _) = listener.accept().await?;
         let register: RegisterRunRequest = serde_json::from_slice(&receive(&mut link).await?)?;
         assert_eq!(register.router_run, authority().router_run);
@@ -59,8 +62,21 @@ async fn central_peer(lost: Arc<AtomicUsize>) -> turmoil::Result {
 
         send(&mut link, &registered).await?;
         if connection == 2 {
-            let request: Raise = serde_json::from_slice(&receive(&mut link).await?)?;
-            assert_eq!(request, raise());
+            let bytes = receive(&mut link).await?;
+            assert_eq!(serde_json::from_slice::<Raise>(&bytes)?, raise());
+            first_raise = Some(bytes);
+            let refusal = RaiseReply::AuthorityRefused {
+                refusal: RunRefusal::RunNotRegistered {},
+            };
+            send(&mut link, &serde_json::to_vec(&refusal)?).await?;
+            continue;
+        }
+        if connection == 3 {
+            assert_eq!(
+                Some(receive(&mut link).await?),
+                first_raise,
+                "new link keeps the Raise body"
+            );
         }
 
         let stop_bytes = receive(&mut link).await?;
@@ -74,7 +90,7 @@ async fn central_peer(lost: Arc<AtomicUsize>) -> turmoil::Result {
                 cause: ProviderStopCause::TurnStopped {},
             }
         );
-        if connection == 2 {
+        if connection == 3 {
             first_stop = Some(stop_bytes);
             turmoil::partition_oneway("central", "mac");
             send(&mut link, &standing).await?;
@@ -114,7 +130,7 @@ fn lost_registration_and_stop_replies_recover_across_two_reconnects() {
             "the simulated Register reply must be lost at the link"
         );
         assert_eq!(mac.gate.ready_connection(), None);
-        mac.gate_event(GateEvent::RegistrationFailed { connection: 1 });
+        mac.gate_event(GateEvent::RegistrationFailed { call: call(1, 0) });
         mac.lose_connection(1);
         drop(link);
         turmoil::repair_oneway("central", "mac");
@@ -125,7 +141,7 @@ fn lost_registration_and_stop_replies_recover_across_two_reconnects() {
             RunGate::transition(
                 &mac.gate,
                 GateEvent::RegistrationReply {
-                    connection: 1,
+                    call: call(1, 0),
                     reply: registered.clone(),
                 }
             ),
@@ -139,13 +155,35 @@ fn lost_registration_and_stop_replies_recover_across_two_reconnects() {
         let published_raise = start
             .into_iter()
             .find_map(|effect| match effect {
-                RequestEffect::Raise {
-                    connection: 2,
-                    request,
-                } => Some(request),
+                RequestEffect::Raise { call, request } if call.link.connection == 2 => {
+                    Some(request)
+                }
                 _ => None,
             })
             .unwrap();
+        send(&mut link, &serde_json::to_vec(&published_raise)?).await?;
+        let refusal = serde_json::from_slice(&receive(&mut link).await?)?;
+        mac.wait_event(RequestEvent::RaiseReply {
+            call: call(2, 1),
+            reply: refusal,
+        });
+        assert_eq!(
+            mac.gate.ready_connection(),
+            None,
+            "RunNotRegistered retires the actual carrier"
+        );
+        drop(link);
+
+        let mut link = TcpStream::connect("central:7789").await?;
+        send(&mut link, &serde_json::to_vec(&mac.welcome(3))?).await?;
+        mac.registered(3, serde_json::from_slice(&receive(&mut link).await?)?);
+        assert_eq!(
+            mac.publish(),
+            [RequestEffect::Raise {
+                call: call(3, 2),
+                request: published_raise.clone()
+            }]
+        );
         send(&mut link, &serde_json::to_vec(&published_raise)?).await?;
         let cause = ProviderStopCause::TurnStopped {};
         mac.wait_event(RequestEvent::LocalStop { cause });
@@ -173,10 +211,7 @@ fn lost_registration_and_stop_replies_recover_across_two_reconnects() {
             .publish()
             .into_iter()
             .find_map(|effect| match effect {
-                RequestEffect::Stop {
-                    connection: 2,
-                    request,
-                } => Some(request),
+                RequestEffect::Stop { call, request } if call.link.connection == 3 => Some(request),
                 _ => None,
             })
             .unwrap();
@@ -187,7 +222,7 @@ fn lost_registration_and_stop_replies_recover_across_two_reconnects() {
                 .is_err(),
             "the simulated authoritative Stop reply must be lost"
         );
-        mac.lose_connection(2);
+        mac.lose_connection(3);
         assert!(
             !mac.wait.is_closed(),
             "the owed Stop must survive the simulated lost reply"
@@ -196,17 +231,14 @@ fn lost_registration_and_stop_replies_recover_across_two_reconnects() {
         turmoil::repair_oneway("central", "mac");
 
         let mut link = TcpStream::connect("central:7789").await?;
-        send(&mut link, &serde_json::to_vec(&mac.welcome(3))?).await?;
-        mac.registered(3, serde_json::from_slice(&receive(&mut link).await?)?);
+        send(&mut link, &serde_json::to_vec(&mac.welcome(4))?).await?;
+        mac.registered(4, serde_json::from_slice(&receive(&mut link).await?)?);
         let effects = mac.publish();
         assert_eq!(effects.len(), 1);
         let second_stop = effects
             .into_iter()
             .find_map(|effect| match effect {
-                RequestEffect::Stop {
-                    connection: 3,
-                    request,
-                } => Some(request),
+                RequestEffect::Stop { call, request } if call.link.connection == 4 => Some(request),
                 _ => None,
             })
             .unwrap();
@@ -215,10 +247,12 @@ fn lost_registration_and_stop_replies_recover_across_two_reconnects() {
         let reply: StopReply = serde_json::from_slice(&receive(&mut link).await?)?;
         assert_eq!(
             mac.wait_event(RequestEvent::StopReply {
-                connection: 3,
-                reply: reply.clone()
+                call: call(4, 4),
+                reply
             }),
-            [RequestEffect::StopReconciled(reply)]
+            [RequestEffect::StopReconciled(
+                StopReceiptEnding::TimedOut {}
+            )]
         );
         assert!(mac.wait.is_closed());
         Ok(())

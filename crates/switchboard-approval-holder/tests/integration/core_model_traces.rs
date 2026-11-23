@@ -2,13 +2,15 @@ use approval_request_protocol::{
     DeliverEndingReply, DeliverEndingRequest, Ending, RaiseReply, RegisterRunReply, RunRefusal,
 };
 use state_machine_core::{StateMachine, TransitionError};
+use switchboard_approval_holder::run_gate::CallAttempt;
 use switchboard_approval_holder::waiting_request::{ProviderReply, WaitingRequest, WriterOutcome};
 
-use super::fixtures::{GateEvent, Mac, RESPONDER, RequestEffect, RequestEvent, authority, raise};
+use super::fixtures::{
+    GateEvent, Mac, RESPONDER, RequestEffect, RequestEvent, authority, call, link, raise,
+};
 
 fn offer(mac: &mut Mac, connection: u8, request: DeliverEndingRequest) -> Vec<RequestEffect> {
-    let ingress = mac.gate.ending_ingress(&authority(), &connection);
-    mac.wait_event(RequestEvent::DeliverEnding { ingress, request })
+    mac.offer(connection, request)
 }
 
 #[test]
@@ -28,7 +30,7 @@ fn same_ending_after_lost_received_and_reconnect_has_no_finished_claim_to_replay
     assert_eq!(
         mac.publish(),
         [RequestEffect::Raise {
-            connection: 1,
+            call: call(1, 1),
             request: raise()
         }]
     );
@@ -117,7 +119,7 @@ fn run_not_registered_holds_the_same_wait_until_registration_recovers() {
     mac.registered(1, RegisterRunReply::Registered {});
     let first = mac.publish();
     mac.wait_event(RequestEvent::RaiseReply {
-        connection: 1,
+        call: call(1, 1),
         reply: RaiseReply::AuthorityRefused {
             refusal: RunRefusal::RunNotRegistered {},
         },
@@ -125,18 +127,30 @@ fn run_not_registered_holds_the_same_wait_until_registration_recovers() {
     assert_eq!(mac.gate.ready_connection(), None);
     assert_eq!(mac.wait.claimed_reply(), None);
     let request = DeliverEndingRequest::from_raise(&raise(), Ending::TimedOut {}).unwrap();
+    assert!(offer(&mut mac, 1, request).is_empty());
     assert_eq!(
-        offer(&mut mac, 1, request),
-        [RequestEffect::EndingReply(
-            DeliverEndingReply::HolderNotReady {}
-        )]
+        switchboard_approval_holder::run_gate::RunGate::transition(
+            &mac.gate,
+            GateEvent::PublishRegistration { call: call(1, 2) }
+        ),
+        Err(TransitionError::Stale)
     );
 
-    mac.publish_registration(1);
-    mac.registered(1, RegisterRunReply::Registered {});
+    mac.welcome(2);
+    mac.registered(2, RegisterRunReply::Registered {});
+    assert_eq!(
+        first,
+        [RequestEffect::Raise {
+            call: call(1, 1),
+            request: raise()
+        }]
+    );
     assert_eq!(
         mac.publish(),
-        first,
+        [RequestEffect::Raise {
+            call: call(2, 2),
+            request: raise()
+        }],
         "recovery republishes the exact unacknowledged Raise"
     );
 }
@@ -229,7 +243,7 @@ fn acknowledged_wait_continues_through_loss_until_central_offers_its_ending() {
     mac.publish();
     let saved = "2026-11-22T17:00:00Z".parse().unwrap();
     mac.wait_event(RequestEvent::RaiseReply {
-        connection: 1,
+        call: call(1, 1),
         reply: RaiseReply::Receipt {
             receipt: approval_request_protocol::RaiseReceipt {
                 request_id: raise().request_id().clone(),
@@ -243,7 +257,13 @@ fn acknowledged_wait_continues_through_loss_until_central_offers_its_ending() {
     mac.welcome(2);
     mac.registered(2, RegisterRunReply::Registered {});
     assert_eq!(
-        WaitingRequest::transition(&mac.wait, RequestEvent::Publish { connection: 2 }),
+        WaitingRequest::transition(
+            &mac.wait,
+            RequestEvent::Publish {
+                ready: mac.gate.ready_run().unwrap(),
+                attempt: CallAttempt::new(3)
+            }
+        ),
         Err(TransitionError::Stale),
         "acknowledged replay is outside the core"
     );
@@ -282,13 +302,18 @@ fn replaced_ask_keeps_its_stop_while_a_new_wait_raises_on_the_same_gate() {
     let new_request =
         super::fixtures::raise_for("01890f2e-7b4c-7cc0-98c4-000000000010".parse().unwrap());
     let new_wait = WaitState::bound(new_request.clone(), 2u8).unwrap();
-    let connection = *mac.gate.ready_connection().unwrap();
-    let (new_wait, publication) =
-        WaitingRequest::transition(&new_wait, RequestEvent::Publish { connection }).unwrap();
+    let (new_wait, publication) = WaitingRequest::transition(
+        &new_wait,
+        RequestEvent::Publish {
+            ready: mac.gate.ready_run().unwrap(),
+            attempt: CallAttempt::new(3),
+        },
+    )
+    .unwrap();
     assert_eq!(
         publication,
         [RequestEffect::Raise {
-            connection: 1,
+            call: call(1, 3),
             request: new_request
         }]
     );
@@ -312,7 +337,13 @@ fn unsent_stop_claims_a_local_reply_without_a_central_call() {
     let cause = ProviderStopCause::TurnStopped {};
     assert!(mac.wait_event(RequestEvent::LocalStop { cause }).is_empty());
     assert_eq!(
-        WaitingRequest::transition(&mac.wait, RequestEvent::Publish { connection: 1 }),
+        WaitingRequest::transition(
+            &mac.wait,
+            RequestEvent::Publish {
+                ready: mac.gate.ready_run().unwrap(),
+                attempt: CallAttempt::new(3)
+            }
+        ),
         Err(TransitionError::Stale),
     );
     let negative = ProviderReply::LocalNegative(LocalNegative::Stopped(cause));
@@ -347,7 +378,7 @@ fn an_exact_provider_question_uses_the_same_one_shot_writer() {
     assert_eq!(
         mac.publish(),
         [RequestEffect::Raise {
-            connection: 1,
+            call: call(1, 1),
             request: question.clone()
         }]
     );
@@ -406,7 +437,7 @@ fn one_wait_cannot_answer_not_held_for_another_request() {
     mac.publish();
     let other = super::fixtures::raise_for("01890f2e-7b4c-7cc0-98c4-00000000000b".parse().unwrap());
     let request = DeliverEndingRequest::from_raise(&other, Ending::TimedOut {}).unwrap();
-    let ingress = mac.gate.ending_ingress(&authority(), &1);
+    let ingress = mac.gate.ending_ingress(&authority(), &link(1));
     assert_eq!(
         WaitingRequest::transition(&mac.wait, RequestEvent::DeliverEnding { request, ingress }),
         Err(TransitionError::Stale),

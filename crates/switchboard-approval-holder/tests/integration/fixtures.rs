@@ -1,18 +1,35 @@
 use approval_request_protocol::{
-    ApprovalOffer, OfferedOption, OfferedOptionId, OfferedOptions, OptionEffect, OptionLifetime,
-    ProviderHolder, Raise, RegisterRunReply, RegisterRunRequest,
+    ApprovalOffer, DeliverEndingRequest, OfferedOption, OfferedOptionId, OfferedOptions,
+    OptionEffect, OptionLifetime, ProviderHolder, Raise, RegisterRunReply, RegisterRunRequest,
 };
 use state_machine_core::{StateMachine, TransitionError};
 use switchboard_approval_holder::{
-    run_gate::{RunAuthority, RunGate, RunGateEffect, RunGateEvent, RunGateState},
+    run_gate::{
+        CallAttempt, CallKey, DialAttempt, LinkAttempt, RunAuthority, RunGate, RunGateEffect,
+        RunGateEvent, RunGateState,
+    },
     waiting_request::{WaitEffect, WaitEvent, WaitState, WaitingRequest},
 };
 
 pub const RESPONDER: u8 = 1;
 pub type GateEvent = RunGateEvent<u8, u8>;
 pub type GateEffect = RunGateEffect<u8, u8>;
-pub type RequestEvent = WaitEvent<u8, u8>;
+pub type RequestEvent<'gate> = WaitEvent<'gate, u8, u8>;
 pub type RequestEffect = WaitEffect<u8, u8>;
+
+pub fn link(connection: u8) -> LinkAttempt<u8> {
+    LinkAttempt {
+        connection,
+        dial: DialAttempt::new(u64::from(connection)),
+    }
+}
+
+pub fn call(connection: u8, attempt: u64) -> CallKey<u8> {
+    CallKey {
+        link: link(connection),
+        attempt: CallAttempt::new(attempt),
+    }
+}
 
 pub fn authority() -> RunAuthority<u8> {
     RunAuthority {
@@ -51,6 +68,7 @@ pub fn raise_for(request_id: workspace_ids::ApprovalRequestId) -> Raise {
 pub struct Mac {
     pub gate: RunGateState<u8, u8>,
     pub wait: WaitState<u8, u8>,
+    next_attempt: u64,
 }
 
 impl Mac {
@@ -58,6 +76,7 @@ impl Mac {
         Self {
             gate: RunGateState::new(authority()),
             wait: WaitState::bound(raise(), RESPONDER).unwrap(),
+            next_attempt: 1,
         }
     }
 
@@ -65,76 +84,100 @@ impl Mac {
         let (next, effects) = RunGate::transition(&self.gate, event).unwrap();
         self.gate = next;
         for effect in &effects {
-            if let GateEffect::FenceWaits {
-                authority: ended, ..
-            } = effect
-            {
-                assert_eq!(ended, &authority());
-                self.wait_event(RequestEvent::AuthorityEnded);
+            match effect {
+                GateEffect::FenceWaits {
+                    authority: ended, ..
+                } => {
+                    assert_eq!(ended, &authority());
+                    self.wait_event(RequestEvent::AuthorityEnded);
+                }
+                GateEffect::RetireConnection { link } => self.retire_wait_link(link.clone()),
+                GateEffect::Register { .. } => {}
             }
         }
         effects
     }
 
     pub fn welcome(&mut self, connection: u8) -> RegisterRunRequest {
+        self.gate_event(GateEvent::DialStarted {
+            link: link(connection),
+        });
         self.gate_event(GateEvent::Welcome {
             authority: authority(),
-            connection,
+            link: link(connection),
         });
         self.publish_registration(connection)
     }
 
     pub fn publish_registration(&mut self, connection: u8) -> RegisterRunRequest {
-        let effects = self.gate_event(GateEvent::PublishRegistration { connection });
+        let effects = self.gate_event(GateEvent::PublishRegistration {
+            call: call(connection, 0),
+        });
         assert_eq!(effects.len(), 1);
         effects
             .into_iter()
             .find_map(|effect| match effect {
                 GateEffect::Register {
-                    connection: actual,
+                    call: actual,
                     request,
                 } => {
-                    assert_eq!(actual, connection);
+                    assert_eq!(actual, call(connection, 0));
                     Some(request)
                 }
-                GateEffect::FenceWaits { .. } => None,
+                GateEffect::FenceWaits { .. } | GateEffect::RetireConnection { .. } => None,
             })
             .unwrap()
     }
 
     pub fn registered(&mut self, connection: u8, reply: RegisterRunReply) {
-        self.gate_event(GateEvent::RegistrationReply { connection, reply });
+        self.gate_event(GateEvent::RegistrationReply {
+            call: call(connection, 0),
+            reply,
+        });
     }
 
-    pub fn wait_event(&mut self, event: RequestEvent) -> Vec<RequestEffect> {
+    pub fn wait_event(&mut self, event: RequestEvent<'_>) -> Vec<RequestEffect> {
         let (next, effects) = WaitingRequest::transition(&self.wait, event).unwrap();
         self.wait = next;
         for effect in &effects {
-            if let RequestEffect::RunRefused {
-                connection,
-                refusal,
-            } = effect
-            {
-                self.gate_event(GateEvent::HolderAuthorityRefused {
-                    connection: *connection,
-                    refusal: *refusal,
-                });
+            if let RequestEffect::RunRefused(matched) = effect {
+                self.gate_event(GateEvent::HolderAuthorityRefused(matched.clone()));
             }
         }
         effects
     }
 
     pub fn publish(&mut self) -> Vec<RequestEffect> {
-        let connection = *self.gate.ready_connection().unwrap();
-        self.wait_event(RequestEvent::Publish { connection })
+        let ready = self.gate.ready_run().unwrap();
+        let attempt = CallAttempt::new(self.next_attempt);
+        self.next_attempt += 1;
+        let (next, effects) =
+            WaitingRequest::transition(&self.wait, RequestEvent::Publish { ready, attempt })
+                .unwrap();
+        self.wait = next;
+        effects
+    }
+
+    pub fn offer(&mut self, connection: u8, request: DeliverEndingRequest) -> Vec<RequestEffect> {
+        let ingress = self.gate.ending_ingress(&authority(), &link(connection));
+        let (next, effects) = WaitingRequest::transition(
+            &self.wait,
+            RequestEvent::DeliverEnding { request, ingress },
+        )
+        .unwrap();
+        self.wait = next;
+        effects
     }
 
     pub fn lose_connection(&mut self, connection: u8) {
-        self.gate_event(GateEvent::ConnectionLost { connection });
-        match WaitingRequest::transition(
-            &self.wait,
-            RequestEvent::CallEndedWithoutReply { connection },
-        ) {
+        self.gate_event(GateEvent::ConnectionLost {
+            link: link(connection),
+        });
+        self.retire_wait_link(link(connection));
+    }
+
+    fn retire_wait_link(&mut self, link: LinkAttempt<u8>) {
+        match WaitingRequest::transition(&self.wait, RequestEvent::ConnectionRetired { link }) {
             Ok((next, effects)) => {
                 assert!(effects.is_empty());
                 self.wait = next;
