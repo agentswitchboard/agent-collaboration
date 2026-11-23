@@ -410,6 +410,9 @@ impl RefusalTag for WaitRefusal {
     fn refusal_tag(&self) -> &'static str {
         match self {
             Self::ReceiptForDifferentRequest => "receipt_for_different_request",
+            Self::ErasureMarkerForDifferentRequestOrRun => {
+                "erasure_marker_for_different_request_or_run"
+            }
             Self::StopCauseForDifferentKind => "stop_cause_for_different_kind",
             Self::HolderRefusedLocallyRequiresRefusalSelection => {
                 "holder_refused_locally_requires_refusal_selection"
