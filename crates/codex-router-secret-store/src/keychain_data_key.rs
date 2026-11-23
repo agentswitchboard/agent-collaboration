@@ -208,14 +208,7 @@ pub(crate) fn load_or_create_pooled_credential_data_key(
     file_store: &FileSecretStore,
     keychain: &dyn KeychainAccess,
 ) -> Result<PooledCredentialDataKey, SecretStoreError> {
-    let store_id = match file_store.read_store_id_file()? {
-        Some(value) => PooledCredentialStoreId::parse(&value, file_store)?,
-        None => {
-            let store_id = PooledCredentialStoreId::new();
-            file_store.write_store_id_file(&store_id.to_string())?;
-            store_id
-        }
-    };
+    let store_id = read_or_publish_store_id(file_store, false)?;
     let keychain_account = format!("{POOLED_KEY_ACCOUNT_PREFIX}{store_id}");
     let stored_key = read_keychain_secret(keychain, &keychain_account)?;
     if let Some(secret) = stored_key {
@@ -245,20 +238,7 @@ pub(crate) fn load_enrollment_row_data_key(
     keychain: &dyn KeychainAccess,
     sealed_bytes_present: bool,
 ) -> Result<PooledCredentialDataKey, SecretStoreError> {
-    let store_id = match file_store.read_store_id_file()? {
-        Some(value) => PooledCredentialStoreId::parse(&value, file_store)?,
-        None if sealed_bytes_present || file_store.has_any_v2_files()? => {
-            return Err(SecretStoreError::KeyMissing);
-        }
-        None => {
-            let store_id = PooledCredentialStoreId::new();
-            file_store.publish_enrollment_store_id(&store_id.to_string())?;
-            let winner = file_store
-                .read_store_id_file()?
-                .ok_or(SecretStoreError::KeyMissing)?;
-            PooledCredentialStoreId::parse(&winner, file_store)?
-        }
-    };
+    let store_id = read_or_publish_store_id(file_store, sealed_bytes_present)?;
     let account = format!("{POOLED_KEY_ACCOUNT_PREFIX}{store_id}");
     if let Some(secret) = read_keychain_secret(keychain, &account)? {
         return data_key_from_secret(secret);
@@ -275,6 +255,26 @@ pub(crate) fn load_enrollment_row_data_key(
             None => Err(SecretStoreError::KeyUnavailable),
         },
         Err(error) => Err(error),
+    }
+}
+
+fn read_or_publish_store_id(
+    file_store: &FileSecretStore,
+    sealed_bytes_present: bool,
+) -> Result<PooledCredentialStoreId, SecretStoreError> {
+    match file_store.read_store_id_file()? {
+        Some(value) => PooledCredentialStoreId::parse(&value, file_store),
+        None if sealed_bytes_present || file_store.has_any_v2_files()? => {
+            Err(SecretStoreError::KeyMissing)
+        }
+        None => {
+            let candidate = PooledCredentialStoreId::new();
+            file_store.publish_store_id_if_absent(&candidate.to_string())?;
+            let winner = file_store
+                .read_store_id_file()?
+                .ok_or(SecretStoreError::KeyMissing)?;
+            PooledCredentialStoreId::parse(&winner, file_store)
+        }
     }
 }
 
@@ -566,6 +566,178 @@ mod tests {
 
         assert_eq!(first_key.bytes(), second_key.bytes());
         assert_eq!(*keychain.read_count.lock().expect("read count lock"), 2);
+    }
+
+    type StoreKeyOpener = fn(
+        &crate::file_backend::FileSecretStore,
+        &dyn KeychainAccess,
+    )
+        -> Result<PooledCredentialDataKey, crate::model::SecretStoreError>;
+
+    fn open_enrollment_key(
+        store: &crate::file_backend::FileSecretStore,
+        keychain: &dyn KeychainAccess,
+    ) -> Result<PooledCredentialDataKey, crate::model::SecretStoreError> {
+        super::load_enrollment_row_data_key(store, keychain, false)
+    }
+
+    fn assert_store_id_publication_order(wins: StoreKeyOpener, loses: StoreKeyOpener) {
+        use crate::file_backend::{FileSecretStore, FileWriteTrace};
+        use std::{
+            fs,
+            sync::{Arc, mpsc},
+        };
+
+        let root = tempfile::tempdir().expect("temporary secret root");
+        let keychain = Arc::new(MemoryKeychainAccess::default());
+        let trace = FileWriteTrace::default();
+        let winner_store = FileSecretStore::open(root.path()).expect("winning store");
+        let winner_keychain = Arc::clone(&keychain);
+        let (published, publication) = mpsc::channel();
+        trace.before_store_id_publication(move || {
+            assert_eq!(
+                winner_store
+                    .read_store_id_file()
+                    .expect("read marker before the winner"),
+                None
+            );
+            let key = wins(&winner_store, winner_keychain.as_ref()).expect("winner opens");
+            let marker = winner_store
+                .read_store_id_file()
+                .expect("read winner marker")
+                .expect("winner published");
+            published
+                .send((marker, key))
+                .expect("winner publication witness");
+        });
+        let loser_store =
+            FileSecretStore::open_with_write_trace(root.path(), trace).expect("losing store");
+
+        // Reenter through the other real opener after the loser's absent read
+        // and staged write, but before the loser publishes.
+        let adopted =
+            loses(&loser_store, keychain.as_ref()).expect("loser adopts the winning item");
+
+        let (marker, winning_key) = publication.try_recv().expect("forced winning publication");
+        assert_eq!(
+            loser_store.read_store_id_file().expect("read final marker"),
+            Some(marker)
+        );
+        assert!(
+            adopted.bytes() == winning_key.bytes(),
+            "both paths must open the same data key"
+        );
+        assert_eq!(keychain.items.lock().expect("memory keychain").len(), 1);
+        assert_eq!(
+            fs::read_dir(root.path()).expect("published files").count(),
+            1
+        );
+    }
+
+    #[test]
+    fn legacy_store_opener_adopts_enrollment_publication_after_its_absent_read() {
+        assert_store_id_publication_order(
+            open_enrollment_key,
+            super::load_or_create_pooled_credential_data_key,
+        );
+    }
+
+    #[test]
+    fn legacy_store_opener_winner_is_adopted_by_enrollment_after_its_absent_read() {
+        assert_store_id_publication_order(
+            super::load_or_create_pooled_credential_data_key,
+            open_enrollment_key,
+        );
+    }
+
+    #[test]
+    fn legacy_store_opener_uses_the_key_for_an_existing_marker() {
+        use crate::file_backend::{FileSecretStore, FileWriteTrace};
+
+        let root = tempfile::tempdir().expect("temporary secret root");
+        let marker = "019a0000-0000-7000-8000-000000000033";
+        let trace = FileWriteTrace::default();
+        let store =
+            FileSecretStore::open_with_write_trace(root.path(), trace.clone()).expect("file store");
+        std::fs::write(root.path().join("store-id"), marker).expect("existing marker");
+        let keychain = MemoryKeychainAccess::default();
+        let winner_key = [0x57; 32];
+        keychain
+            .add_secret(
+                ROUTER_KEYCHAIN_SERVICE,
+                &format!("{}{marker}", super::POOLED_KEY_ACCOUNT_PREFIX),
+                &winner_key,
+            )
+            .expect("existing item");
+
+        let key = super::load_or_create_pooled_credential_data_key(&store, &keychain)
+            .expect("open existing item");
+
+        assert!(
+            key.bytes() == &winner_key,
+            "must use the existing marker's key"
+        );
+        assert_eq!(
+            store
+                .read_store_id_file()
+                .expect("read unchanged marker")
+                .as_deref(),
+            Some(marker)
+        );
+        assert!(
+            trace.events().is_empty(),
+            "must not write a replacement marker"
+        );
+        assert_eq!(keychain.items.lock().expect("memory keychain").len(), 1);
+    }
+
+    #[test]
+    fn legacy_store_opener_refuses_sealed_files_without_a_marker_before_writing() {
+        use crate::{
+            encrypted_credential_store::encrypt_envelope,
+            file_backend::{FileSecretStore, FileWriteTrace},
+            model::{SecretKey, SecretStoreError},
+        };
+
+        let root = tempfile::tempdir().expect("temporary secret root");
+        let envelope_store = FileSecretStore::open(root.path()).expect("envelope store");
+        let credential = SecretKey::new("openai_credential_bundle.fixture.1").expect("fixture key");
+        let envelope = encrypt_envelope(
+            &PooledCredentialDataKey::from_bytes([0x57; 32]),
+            &credential,
+            b"synthetic fixture",
+        )
+        .expect("sealed envelope");
+        envelope_store
+            .write_credential_envelope(&credential, &envelope)
+            .expect("write fixture envelope");
+        let trace = FileWriteTrace::default();
+        let store =
+            FileSecretStore::open_with_write_trace(root.path(), trace.clone()).expect("file store");
+        let keychain = MemoryKeychainAccess::default();
+
+        let result = super::load_or_create_pooled_credential_data_key(&store, &keychain);
+
+        assert!(matches!(result, Err(SecretStoreError::KeyMissing)));
+        assert_eq!(store.read_store_id_file().expect("no marker write"), None);
+        assert_eq!(
+            store
+                .read_credential_envelope(&credential)
+                .expect("unchanged envelope"),
+            envelope
+        );
+        assert_eq!(
+            std::fs::read_dir(root.path())
+                .expect("fixture files")
+                .count(),
+            1
+        );
+        assert!(
+            trace.events().is_empty(),
+            "no marker staging or other write"
+        );
+        assert_eq!(*keychain.read_count.lock().expect("memory keychain"), 0);
+        assert!(keychain.items.lock().expect("memory keychain").is_empty());
     }
 
     #[cfg(target_os = "macos")]
