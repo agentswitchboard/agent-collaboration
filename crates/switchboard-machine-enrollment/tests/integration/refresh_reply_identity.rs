@@ -57,7 +57,7 @@ async fn enrolled_store(script: &SignInScript) -> (ScriptStore, EnrollmentBindin
         machine_id: machine_id(),
     };
     let binding = EnrollmentBinding {
-        generation: BindingGeneration::from_persisted(1),
+        generation: BindingGeneration::from_persisted(1).expect("fixture generation"),
         context,
         credential: RefreshCredential {
             enrollment_id: ENROLLMENT_ID.parse().expect("old enrollment"),

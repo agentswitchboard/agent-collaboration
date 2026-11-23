@@ -13,6 +13,11 @@ use sqlx::{
     sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous},
 };
 use std::{path::Path, time::Duration};
+use tokio::time::{Instant, sleep_until, timeout_at};
+
+const BUSY_TIMEOUT: Duration = Duration::from_secs(1);
+const CONNECT_RETRY_PAUSE: Duration = Duration::from_millis(15);
+const MAX_CONNECT_ATTEMPTS: usize = 64;
 
 static MIGRATOR: sqlx::migrate::Migrator = sqlx::migrate!("./migrations");
 
@@ -38,6 +43,13 @@ impl MachineLocalStore {
     /// Opens (creating if missing) and migrates the database. It lives in the
     /// Router's private state directory, like provider-operations.sqlite.
     pub async fn open(path: &Path) -> Result<Self, MachineLocalStoreError> {
+        Self::open_with_busy_callback(path, || {}).await
+    }
+
+    async fn open_with_busy_callback(
+        path: &Path,
+        on_first_busy: impl FnOnce(),
+    ) -> Result<Self, MachineLocalStoreError> {
         let options = configure_new_database_options(
             SqliteConnectOptions::new()
                 .filename(path)
@@ -45,10 +57,10 @@ impl MachineLocalStore {
                 .foreign_keys(true)
                 .journal_mode(SqliteJournalMode::Wal)
                 .synchronous(SqliteSynchronous::Full)
-                .busy_timeout(Duration::from_secs(1)),
+                .busy_timeout(BUSY_TIMEOUT),
             path,
         )?;
-        let mut connection = SqliteConnection::connect_with(&options).await?;
+        let mut connection = connect_machine_database(&options, on_first_busy).await?;
         prepare_existing_database(&mut connection, path).await?;
         let mut transaction = connection.begin_with("BEGIN IMMEDIATE").await?;
         MIGRATOR.run_direct(None, &mut *transaction, false).await?;
@@ -78,6 +90,45 @@ impl MachineLocalStore {
         self.connection.close().await?;
         Ok(())
     }
+}
+
+async fn connect_machine_database(
+    options: &SqliteConnectOptions,
+    on_first_busy: impl FnOnce(),
+) -> Result<SqliteConnection, sqlx::Error> {
+    let deadline = Instant::now() + BUSY_TIMEOUT;
+    let original = match SqliteConnection::connect_with(options).await {
+        Err(error) if is_sqlite_busy(&error) => error,
+        result => return result,
+    };
+    on_first_busy();
+
+    // Promoting a rollback-journal database to WAL can skip SQLite's busy
+    // handler because the pragma upgrades an existing read transaction.
+    for _ in 1..MAX_CONNECT_ATTEMPTS {
+        let retry_at = Instant::now() + CONNECT_RETRY_PAUSE;
+        if retry_at >= deadline {
+            break;
+        }
+        sleep_until(retry_at).await;
+        let remaining = deadline.saturating_duration_since(Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        let retry_options = options.clone().busy_timeout(remaining);
+        match timeout_at(deadline, SqliteConnection::connect_with(&retry_options)).await {
+            Ok(Err(error)) if is_sqlite_busy(&error) => {}
+            Ok(result) => return result,
+            Err(_) => break,
+        }
+    }
+    Err(original)
+}
+
+fn is_sqlite_busy(error: &sqlx::Error) -> bool {
+    error
+        .as_database_error()
+        .is_some_and(|error| error.code().as_deref() == Some("5"))
 }
 
 #[cfg(test)]

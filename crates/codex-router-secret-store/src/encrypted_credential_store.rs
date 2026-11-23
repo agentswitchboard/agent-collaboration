@@ -9,6 +9,7 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use crate::backend::SecretStore;
+use crate::credential_cipher::{self, AES_GCM_NONCE_LENGTH, AES_GCM_TAG_LENGTH};
 use crate::credential_key::AccountCredentialKey;
 use crate::credential_key::{
     SecretStorageClass, classify_secret_key, require_encrypted_secret_key,
@@ -26,7 +27,6 @@ use crate::model::SecretStoreError;
 use crate::model::StoreUnavailable;
 
 const ENCRYPTED_CREDENTIAL_FORMAT: u8 = 2;
-const AES_GCM_NONCE_LENGTH: usize = 12;
 
 /// Process-wide visibility of one pooled credential store.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -395,27 +395,8 @@ pub(crate) fn encrypt_envelope(
     secret_key: &SecretKey,
     plaintext: &[u8],
 ) -> Result<Vec<u8>, SecretStoreError> {
-    use aes_gcm::Aes256Gcm;
-    use aes_gcm::Nonce;
-    use aes_gcm::aead::Aead;
-    use aes_gcm::aead::KeyInit;
-    use aes_gcm::aead::Payload;
-    use aes_gcm::aead::consts::U12;
-
-    let cipher = Aes256Gcm::new_from_slice(data_key.bytes())
-        .map_err(|_| SecretStoreError::CipherInitializationFailed)?;
-    let mut nonce_bytes = [0_u8; AES_GCM_NONCE_LENGTH];
-    getrandom::fill(&mut nonce_bytes).map_err(SecretStoreError::RandomnessUnavailable)?;
-    let nonce: Nonce<U12> = Nonce::from(nonce_bytes);
-    let ciphertext = cipher
-        .encrypt(
-            &nonce,
-            Payload {
-                msg: plaintext,
-                aad: secret_key.as_str().as_bytes(),
-            },
-        )
-        .map_err(|_| SecretStoreError::CredentialAuthenticationFailed)?;
+    let (nonce_bytes, ciphertext) =
+        credential_cipher::encrypt(data_key, secret_key.as_str().as_bytes(), plaintext)?;
     let envelope = EncryptedCredentialEnvelope {
         format: ENCRYPTED_CREDENTIAL_FORMAT,
         nonce: STANDARD.encode(nonce_bytes),
@@ -429,13 +410,6 @@ pub(crate) fn decrypt_envelope(
     secret_key: &SecretKey,
     envelope_bytes: &[u8],
 ) -> Result<SecretString, SecretStoreError> {
-    use aes_gcm::Aes256Gcm;
-    use aes_gcm::Nonce;
-    use aes_gcm::aead::Aead;
-    use aes_gcm::aead::KeyInit;
-    use aes_gcm::aead::Payload;
-    use aes_gcm::aead::consts::U12;
-
     let envelope: EncryptedCredentialEnvelope = serde_json::from_slice(envelope_bytes)
         .map_err(|_| SecretStoreError::InvalidCredentialEnvelope)?;
     if envelope.format != ENCRYPTED_CREDENTIAL_FORMAT {
@@ -450,21 +424,15 @@ pub(crate) fn decrypt_envelope(
     let ciphertext = STANDARD
         .decode(envelope.ciphertext)
         .map_err(|_| SecretStoreError::InvalidCredentialEnvelope)?;
-    if ciphertext.len() < 16 {
+    if ciphertext.len() < AES_GCM_TAG_LENGTH {
         return Err(SecretStoreError::InvalidCredentialEnvelope);
     }
-    let nonce: Nonce<U12> = Nonce::from(nonce_array);
-    let cipher = Aes256Gcm::new_from_slice(data_key.bytes())
-        .map_err(|_| SecretStoreError::CipherInitializationFailed)?;
-    let plaintext = cipher
-        .decrypt(
-            &nonce,
-            Payload {
-                msg: &ciphertext,
-                aad: secret_key.as_str().as_bytes(),
-            },
-        )
-        .map_err(|_| SecretStoreError::CredentialAuthenticationFailed)?;
+    let plaintext = credential_cipher::decrypt(
+        data_key,
+        secret_key.as_str().as_bytes(),
+        nonce_array,
+        &ciphertext,
+    )?;
     let plaintext =
         String::from_utf8(plaintext).map_err(|_| SecretStoreError::InvalidCredentialEncoding)?;
     Ok(SecretString::new(plaintext))

@@ -127,17 +127,45 @@ impl SignInClient {
         Ok(client)
     }
 
+    /// Builds the verified HTTPS transport with a test fixture's private trust root.
+    #[cfg(all(feature = "test-support", debug_assertions))]
+    pub fn new_https_fixture(
+        issuer: Url,
+        clock: Arc<dyn RuntimeClock + Send + Sync>,
+        certificate_pem: &[u8],
+    ) -> Result<Self, SignInClientError> {
+        let deployment =
+            SignInDeployment::new(issuer).map_err(|_| SignInClientError::InvalidIssuer)?;
+        let certificate = reqwest::Certificate::from_pem(certificate_pem)
+            .map_err(|_| SignInClientError::ClientSetup)?;
+        Self::with_http_builder(
+            deployment,
+            clock,
+            Self::http_builder().add_root_certificate(certificate),
+        )
+    }
+
+    fn http_builder() -> reqwest::ClientBuilder {
+        Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .retry(reqwest::retry::never())
+            .no_proxy()
+    }
+
     fn with_deployment(
         deployment: SignInDeployment,
         clock: Arc<dyn RuntimeClock + Send + Sync>,
     ) -> Result<Self, SignInClientError> {
+        Self::with_http_builder(deployment, clock, Self::http_builder())
+    }
+
+    fn with_http_builder(
+        deployment: SignInDeployment,
+        clock: Arc<dyn RuntimeClock + Send + Sync>,
+        http: reqwest::ClientBuilder,
+    ) -> Result<Self, SignInClientError> {
         let date_anchor = (clock.utc_now().into(), clock.monotonic_now());
-        let http = Client::builder()
-            .redirect(reqwest::redirect::Policy::none())
-            .retry(reqwest::retry::never())
-            .no_proxy()
-            .build()
-            .map_err(|_| SignInClientError::ClientSetup)?;
+        let http = http.build().map_err(|_| SignInClientError::ClientSetup)?;
         Ok(Self {
             deployment,
             date_anchor,

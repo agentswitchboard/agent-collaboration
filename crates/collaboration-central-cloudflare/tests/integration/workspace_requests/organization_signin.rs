@@ -26,6 +26,7 @@ mod stamp_trace;
 mod trust_trace;
 
 mod engine_admin;
+mod engine_admin_decision_rows;
 mod engine_admin_support;
 mod engine_failing_retry;
 mod engine_owner_guards;

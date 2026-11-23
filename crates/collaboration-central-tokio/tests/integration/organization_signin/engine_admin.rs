@@ -324,7 +324,7 @@ async fn automation_state(
 }
 
 #[tokio::test]
-async fn discard_runs_the_finishing_transition_and_refuses_unsupported_and_stale_subjects() {
+async fn discard_runs_the_finishing_transition_and_refuses_unsupported_attempts() {
     let engine = EngineOrg::new().await;
     let (automation, attempt) = retired_automation(&engine).await;
     let operation = engine.fresh();
@@ -392,30 +392,6 @@ async fn discard_runs_the_finishing_transition_and_refuses_unsupported_and_stale
         vec![vec![text("active")]]
     );
 
-    // A subject changed meanwhile: the discard's reload finds it disabled.
-    let (moved, moved_attempt) = retired_automation(&engine).await;
-    let runtime = engine.runtime().await;
-    let mut held = runtime
-        .runtime()
-        .pause_points()
-        .hold_engine(PausePoint::AfterEngineLoad, &moved);
-    let change = async {
-        held.until_held().await;
-        engine
-            .raw(
-                "UPDATE automation_schedules SET state='disabled' WHERE automation_id=?",
-                vec![text(&moved)],
-            )
-            .await;
-        held.release();
-    };
-    let (stale, ()) = tokio::join!(engine.discard(&moved_attempt), change);
-    assert_eq!(stale, refused("stale"));
-    assert_eq!(
-        engine.record("automation_timer", &moved).await[0][..2],
-        [text("retired"), integer(2)],
-        "nothing changed: the record stays"
-    );
     engine.close().await;
 }
 
@@ -549,6 +525,9 @@ async fn discarding_a_retired_subject_whose_lifecycle_state_will_not_decode_repo
     );
     engine.close().await;
 }
+
+#[path = "engine_discard_moved_subject.rs"]
+mod discard_moved_subject;
 
 #[path = "engine_retired_paging.rs"]
 mod retired_paging;

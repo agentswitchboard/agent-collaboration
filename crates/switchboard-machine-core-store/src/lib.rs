@@ -1,5 +1,7 @@
 //! SQLite persistence for the Mac Router's machine identity, outbox and inbox.
 
+mod enrollment_row;
+mod enrollment_row_store;
 #[cfg(all(feature = "test-support", debug_assertions))]
 mod inbox_commit_pause;
 mod inbox_store;
@@ -19,6 +21,11 @@ mod store_scan;
 #[cfg(all(feature = "test-support", debug_assertions))]
 pub use inbox_commit_pause::HeldInboxCommit;
 
+pub use enrollment_row::{
+    EnrollmentRowCorruption, StoredEnrollmentEnd, StoredEnrollmentRow,
+    StoredInvalidEnrollmentReason,
+};
+pub use enrollment_row_store::{EnrollmentRowChange, EnrollmentRowStoreError, EnrollmentRowWrite};
 pub use inbox_store::{
     InboxDecision, InboxOfferExpiry, InboxReceipt, InboxRefusalReason, InboxStore, InboxStoreError,
     MAX_INBOX_DELIVERY_WINDOW_MS, RecordDelivery,
