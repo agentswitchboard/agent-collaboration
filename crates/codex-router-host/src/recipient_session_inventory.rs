@@ -2,6 +2,7 @@
 
 use crate::ExternalProviderSupervisor;
 use claude_code_peer_messaging::{ClaudeCodeSessionRegistry, PeerSessionLookup};
+use codex_acp_adapter::CodexSessionPresence;
 use codex_native_integration::{
     StoredThreadCatalog, StoredThreadCursor, StoredThreadProvider, StoredThreadQuery,
     StoredThreadRoot, StoredThreadSort, StoredThreadSource,
@@ -31,7 +32,7 @@ const fn complete(at_least: usize) -> SessionInventoryAnswer {
 
 pub struct CodexSessionInventory {
     codex_home: PathBuf,
-    unmaterialized_threads: Arc<UnmaterializedThreadHolder>,
+    session_presence: CodexSessionPresence,
 }
 
 impl CodexSessionInventory {
@@ -42,13 +43,13 @@ impl CodexSessionInventory {
     ) -> Self {
         Self {
             codex_home,
-            unmaterialized_threads,
+            session_presence: unmaterialized_threads.session_presence(),
         }
     }
 
     async fn lookup_stored(&self, session_id: &SessionId) -> SessionInventoryAnswer {
         match tokio::fs::try_exists(self.codex_home.join("state_5.sqlite")).await {
-            Ok(false) => return complete(0),
+            Ok(false) => return UNAVAILABLE,
             Ok(true) => {}
             Err(_) => return UNAVAILABLE,
         }
@@ -58,8 +59,9 @@ impl CodexSessionInventory {
         let found = contains_stored_thread(&catalog, session_id.as_str()).await;
         catalog.close().await;
         match found {
-            Ok(present) => complete(usize::from(present)),
-            Err(_) => UNAVAILABLE,
+            Ok(true) => complete(1),
+            // The opaque native relay does not index its pre-persistence threads.
+            Ok(false) | Err(_) => UNAVAILABLE,
         }
     }
 }
@@ -70,7 +72,10 @@ impl SessionInventory for CodexSessionInventory {
         session_id: &'lookup SessionId,
     ) -> Pin<Box<dyn Future<Output = SessionInventoryAnswer> + Send + 'lookup>> {
         Box::pin(async move {
-            if self.unmaterialized_threads.contains(session_id.as_str()) {
+            if let Ok(native_id) =
+                collaboration_protocol::SessionId::try_from(session_id.as_str().to_owned())
+                && self.session_presence.contains(&native_id)
+            {
                 return complete(1);
             }
             self.lookup_stored(session_id).await

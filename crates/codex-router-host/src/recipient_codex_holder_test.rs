@@ -1,59 +1,60 @@
-use super::{ROUTER, SAVED, create_codex_catalog, seed_codex_thread, session_id};
-use crate::recipient_session_inventory::CodexSessionInventory;
+use super::{ROUTER, SAVED, complete, create_codex_catalog, seed_codex_thread, session_id};
+use crate::recipient_session_inventory::{CodexSessionInventory, UNAVAILABLE};
 use codex_acp_adapter::{
-    AcpSchemaCatalog, AcpSessionBinding, ConversationOperationRecorder, ConversationRecordFuture,
-    SessionSetupInputs, UnmaterializedBindingStore,
+    AcpConnectionInputs, CodexSessionPresence, ConversationOperationRecorder,
+    ConversationRecordFuture, HeldBindingCheckout, NativeStoredSessions,
+    UnmaterializedBindingStore, serve_acp_connection,
 };
-use codex_native_integration::{
-    NativePayloadSchemas, NativeProtocolConnection, NativeSchemaBundle,
-};
+use codex_native_integration::{NativePayloadSchemas, NativeSchemaBundle};
 use collaboration_protocol::{CodexGeneration, CodexPermissionModeReport, OperationId, SessionId};
 use collaboration_runtime::{OpenScratchScopes, UnmaterializedThreadHolder};
-use futures_util::{SinkExt, StreamExt};
+use futures_util::{FutureExt, SinkExt, StreamExt};
 use serde_json::{Value, json};
 use sqlx::Connection as _;
 use std::{
     collections::BTreeMap, future::ready, io, os::unix::fs::PermissionsExt, path::Path, sync::Arc,
 };
-use switchboard_message_custody::recipient_sessions::{SessionInventory, SessionInventoryAnswer};
-use tokio::net::UnixStream;
-use tokio_tungstenite::{
-    WebSocketStream,
-    tungstenite::{Message, protocol::Role},
+use switchboard_message_custody::recipient_sessions::SessionInventory;
+use tokio::{
+    io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream},
+    net::{UnixListener, UnixStream},
+    task::JoinHandle,
 };
+use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
+use tokio_util::sync::CancellationToken;
 
-struct UnusedRecorder;
+const OPERATION: &str = "019f0000-0000-7000-8000-000000000051";
 
-fn unexpected_recording() -> ConversationRecordFuture<'static> {
-    Box::pin(ready(Err(io::Error::other(
-        "inventory fixture has no recorded operation",
-    ))))
-}
+struct ObservingRecorder(CodexSessionPresence);
 
-impl ConversationOperationRecorder for UnusedRecorder {
+impl ConversationOperationRecorder for ObservingRecorder {
     fn admit_create<'a>(
         &'a self,
         _: &'a OperationId,
         _: &'a CodexGeneration,
     ) -> ConversationRecordFuture<'a> {
-        unexpected_recording()
+        Box::pin(ready(Ok(())))
     }
 
     fn before_native_dispatch<'a>(&'a self, _: &'a OperationId) -> ConversationRecordFuture<'a> {
-        unexpected_recording()
+        Box::pin(ready(Ok(())))
     }
 
     fn record_created<'a>(
         &'a self,
         _: &'a OperationId,
-        _: &'a SessionId,
+        session: &'a SessionId,
         _: &'a CodexPermissionModeReport,
     ) -> ConversationRecordFuture<'a> {
-        unexpected_recording()
+        assert!(
+            self.0.contains(session),
+            "presence must precede record_created"
+        );
+        Box::pin(ready(Ok(())))
     }
 
     fn record_failure<'a>(&'a self, _: &'a OperationId, _: bool) -> ConversationRecordFuture<'a> {
-        unexpected_recording()
+        Box::pin(ready(Ok(())))
     }
 }
 
@@ -72,7 +73,11 @@ fn native_schemas() -> Arc<NativePayloadSchemas> {
         definitions.insert(format!("{name}Params"), json!({"type": "object"}));
         definitions.insert(format!("{name}Response"), json!({"type": "object"}));
     }
-    let schemas = json!({"definitions": {"v2": definitions}});
+    let schemas = json!({"definitions":{
+        "v2": definitions,
+        "ServerRequest":{"type":"object"},
+        "ServerNotification":{"type":"object"}
+    }});
     let bundle = NativeSchemaBundle::from_documents(BTreeMap::from([(
         "codex_app_server_protocol.schemas.json".to_owned(),
         serde_json::to_vec(&schemas).unwrap(),
@@ -81,7 +86,7 @@ fn native_schemas() -> Arc<NativePayloadSchemas> {
     Arc::new(NativePayloadSchemas::from_bundle(&bundle).unwrap())
 }
 
-async fn held_thread(root: &Path) -> AcpSessionBinding {
+fn new_params(root: &Path) -> Value {
     let scope = format!("session-{ROUTER}");
     let scratch = root.join("scratch").join(&scope);
     std::fs::create_dir_all(&scratch).unwrap();
@@ -90,96 +95,259 @@ async fn held_thread(root: &Path) -> AcpSessionBinding {
         "endpoint": {"serviceId": ROUTER, "endpointId": "codex-local"},
         "sessionId": ROUTER,
     });
-    let params = json!({"cwd": root, "mcpServers": [], "_meta": {"codexRouter": {
-        "model": "fixture-model", "effort": "medium", "access": "write-restricted",
-        "scratchScope": scope, "scratchPath": scratch, "createdBy": actor, "approver": actor,
-    }}});
-    let generation =
-        serde_json::from_value(json!({"serviceEpoch": ROUTER, "generation": 1})).unwrap();
-    let (client, server) = UnixStream::pair().unwrap();
-    let connection = NativeProtocolConnection::from_websocket(
-        WebSocketStream::from_raw_socket(client, Role::Client, None).await,
-    );
-    let mut catalog = AcpSchemaCatalog::load().unwrap();
-    let native = async {
-        let mut wire = WebSocketStream::from_raw_socket(server, Role::Server, None).await;
-        let frame = wire.next().await.unwrap().unwrap();
-        let request: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
-        assert_eq!(request["method"], "thread/start");
-        wire.send(Message::text(
-            json!({"id": request["id"], "result": {
-                "cwd": root, "model": "fixture-model", "thread": {"id": SAVED, "cwd": root}
-            }})
-            .to_string(),
-        ))
+    json!({"cwd": root, "mcpServers": [], "_meta": {"codexRouter": {
+        "operationId": OPERATION, "model": "fixture-model", "effort": "medium",
+        "access": "write-restricted", "scratchScope": scope, "scratchPath": scratch,
+        "createdBy": actor, "approver": actor,
+    }}})
+}
+
+struct Frontend {
+    stream: BufReader<DuplexStream>,
+    route: JoinHandle<io::Result<()>>,
+}
+
+impl Frontend {
+    async fn open(
+        root: &Path,
+        holder: Arc<UnmaterializedThreadHolder>,
+        retired: CancellationToken,
+    ) -> Self {
+        let (front, router) = tokio::io::duplex(16 * 1024);
+        let recorder = Arc::new(ObservingRecorder(holder.session_presence()));
+        let route = tokio::spawn(serve_acp_connection(
+            router,
+            AcpConnectionInputs {
+                backend_path: root.join("native.sock"),
+                generation: serde_json::from_value(
+                    json!({"serviceEpoch": ROUTER, "generation": 1}),
+                )
+                .unwrap(),
+                schemas: native_schemas(),
+                stored_sessions: Arc::new(NativeStoredSessions::new(
+                    root.to_owned(),
+                    "codex-local".to_owned(),
+                )),
+                retired,
+                holder,
+                recorder,
+                scratch_scopes: Arc::new(OpenScratchScopes::new()),
+            },
+        ));
+        let mut frontend = Self {
+            stream: BufReader::new(front),
+            route,
+        };
+        frontend
+            .send(1, "initialize", json!({"protocolVersion":1}))
+            .await;
+        let reply = frontend.receive(1).await;
+        assert!(reply.get("result").is_some(), "{reply}");
+        frontend
+    }
+
+    async fn send(&mut self, id: u64, method: &str, params: Value) {
+        let mut frame =
+            serde_json::to_vec(&json!({"jsonrpc":"2.0","id":id,"method":method,"params":params}))
+                .unwrap();
+        frame.push(b'\n');
+        self.stream.write_all(&frame).await.unwrap();
+    }
+
+    async fn receive(&mut self, id: u64) -> Value {
+        let observed = self.read_frame().await;
+        assert_eq!(observed["id"], id);
+        observed
+    }
+
+    async fn read_frame(&mut self) -> Value {
+        let mut line = String::new();
+        assert!(self.stream.read_line(&mut line).await.unwrap() > 0);
+        serde_json::from_str(&line).unwrap()
+    }
+
+    async fn close(self) {
+        drop(self.stream);
+        self.route.await.unwrap().unwrap();
+    }
+}
+
+async fn native_request(wire: &mut WebSocketStream<UnixStream>, method: &str) -> Value {
+    let frame = wire.next().await.unwrap().unwrap();
+    let received: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
+    assert_eq!(received["method"], method);
+    received
+}
+
+async fn native_reply(wire: &mut WebSocketStream<UnixStream>, request: &Value, result: Value) {
+    wire.send(Message::text(
+        json!({"id": request["id"], "result": result}).to_string(),
+    ))
+    .await
+    .unwrap();
+}
+
+fn thread_result(root: &Path) -> Value {
+    json!({
+        "cwd": root, "model": "fixture-model",
+        "thread": {"id": SAVED, "cwd": root, "status": {"type": "idle"}, "turns": []}
+    })
+}
+
+async fn native_setup(
+    listener: &UnixListener,
+    root: &Path,
+    method: &str,
+) -> WebSocketStream<UnixStream> {
+    let mut wire = tokio_tungstenite::accept_async(listener.accept().await.unwrap().0)
         .await
         .unwrap();
-    };
-    let (binding, ()) = tokio::join!(
-        AcpSessionBinding::create(
-            &mut catalog,
-            SessionSetupInputs {
-                connection,
-                schemas: native_schemas(),
-                generation,
-                params,
-                operation_id: None,
-                recorder: Arc::new(UnusedRecorder),
-                scratch_scopes: Arc::new(OpenScratchScopes::new()),
-            }
-        ),
-        native,
-    );
-    binding.unwrap()
+    let initialize = native_request(&mut wire, "initialize").await;
+    native_reply(&mut wire, &initialize, json!({})).await;
+    native_request(&mut wire, "initialized").await;
+    let request = native_request(&mut wire, method).await;
+    native_reply(&mut wire, &request, thread_result(root)).await;
+    wire
 }
 
 #[tokio::test]
-async fn held_codex_thread_is_authoritative_and_counts_once_with_its_stored_row() {
-    let root = tempfile::tempdir().unwrap();
+async fn attached_session_new_stays_visible_during_checkout_and_after_frontend_eof() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    let mut catalog = create_codex_catalog(root).await;
     let holder = Arc::new(UnmaterializedThreadHolder::new());
-    holder.hold(held_thread(root.path()).await);
+    let retirement = CancellationToken::new();
+    let listener = UnixListener::bind(root.join("native.sock")).unwrap();
+    let mut frontend = Frontend::open(root, holder.clone(), retirement.clone()).await;
+    frontend.send(2, "session/new", new_params(root)).await;
+    let (mut native, created) = tokio::join!(
+        native_setup(&listener, root, "thread/start"),
+        frontend.receive(2)
+    );
+    assert_eq!(created["result"]["sessionId"], SAVED, "{created}");
+    assert!(!holder.contains(SAVED), "the frontend owns the binding");
+    assert_eq!(
+        sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM threads")
+            .fetch_one(&mut catalog)
+            .await
+            .unwrap(),
+        0
+    );
+
+    let codex = Arc::new(CodexSessionInventory::new(root.to_owned(), holder.clone()));
+    assert_eq!(codex.lookup_session(&session_id(SAVED)).await, complete(1));
+    assert_eq!(
+        codex.lookup_session(&session_id(super::ABSENT)).await,
+        UNAVAILABLE
+    );
+    assert!(
+        native.next().now_or_never().is_none(),
+        "custody sent a native frame"
+    );
+
+    // Detaching this frontend returns the same unmaterialized binding to the Host.
+    frontend.close().await;
     assert!(holder.contains(SAVED));
-    let inventory = CodexSessionInventory::new(root.path().to_owned(), holder);
-    let target = session_id(SAVED);
-    let present = SessionInventoryAnswer {
-        at_least: 1,
-        complete: true,
+    let HeldBindingCheckout::Ready(binding) = holder.checkout(SAVED) else {
+        panic!("detached unmaterialized binding must be available for checkout");
     };
-    assert_eq!(
-        inventory.lookup_session(&target).await,
-        present,
-        "no state file"
-    );
+    assert_eq!(codex.lookup_session(&session_id(SAVED)).await, complete(1));
+    holder.restore(*binding);
+    seed_codex_thread(&mut catalog, SAVED, 1, false)
+        .await
+        .unwrap();
+    assert_eq!(codex.lookup_session(&session_id(SAVED)).await, complete(1));
 
-    let file = root.path().join("state_5.sqlite");
-    tokio::fs::write(&file, b"not a SQLite database")
+    // A stored row still establishes the identity after the native generation retires.
+    retirement.cancel();
+    assert_eq!(codex.lookup_session(&session_id(SAVED)).await, complete(1));
+    sqlx::query("DELETE FROM threads")
+        .execute(&mut catalog)
         .await
         .unwrap();
-    assert_eq!(
-        inventory.lookup_session(&target).await,
-        present,
-        "unreadable state"
-    );
-    tokio::fs::remove_file(&file).await.unwrap();
+    catalog.close().await.unwrap();
+    assert_eq!(codex.lookup_session(&session_id(SAVED)).await, UNAVAILABLE);
+}
 
-    let mut connection = create_codex_catalog(root.path()).await;
-    seed_codex_thread(&mut connection, SAVED, 1, false)
-        .await
-        .unwrap();
-    assert_eq!(
-        inventory.lookup_session(&target).await,
-        present,
-        "one live thread and its stored view"
+#[tokio::test]
+async fn ordinary_load_presence_is_fenced_by_generation_before_frontend_drop() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    let holder = Arc::new(UnmaterializedThreadHolder::new());
+    let retirement = CancellationToken::new();
+    let listener = UnixListener::bind(root.join("native.sock")).unwrap();
+    let mut frontend = Frontend::open(root, holder.clone(), retirement.clone()).await;
+    frontend
+        .send(
+            2,
+            "session/load",
+            json!({"sessionId": SAVED, "cwd":root, "mcpServers": []}),
+        )
+        .await;
+    let (_native, reply) = tokio::join!(
+        native_setup(&listener, root, "thread/resume"),
+        frontend.receive(2)
     );
-    sqlx::query("UPDATE threads SET archived = 1 WHERE id = ?")
-        .bind(SAVED)
-        .execute(&mut connection)
-        .await
-        .unwrap();
-    connection.close().await.unwrap();
-    assert_eq!(
-        inventory.lookup_session(&target).await,
-        present,
-        "live claim still present"
+    assert!(reply.get("result").is_some(), "{reply}");
+    assert!(!holder.contains(SAVED));
+    let codex = CodexSessionInventory::new(root.to_owned(), holder);
+    assert_eq!(codex.lookup_session(&session_id(SAVED)).await, complete(1));
+
+    retirement.cancel();
+    assert_eq!(codex.lookup_session(&session_id(SAVED)).await, UNAVAILABLE);
+    frontend.close().await;
+}
+
+#[tokio::test]
+async fn materialized_prompt_keeps_presence_through_frontend_eof_and_detached_drain() {
+    let temporary = tempfile::tempdir().unwrap();
+    let root = temporary.path();
+    create_codex_catalog(root).await.close().await.unwrap();
+    let holder = Arc::new(UnmaterializedThreadHolder::new());
+    let retirement = CancellationToken::new();
+    let listener = UnixListener::bind(root.join("native.sock")).unwrap();
+    let mut frontend = Frontend::open(root, holder.clone(), retirement.clone()).await;
+    frontend.send(2, "session/new", new_params(root)).await;
+    let (mut native, created) = tokio::join!(
+        native_setup(&listener, root, "thread/start"),
+        frontend.receive(2),
     );
+    assert_eq!(created["result"]["sessionId"], SAVED, "{created}");
+    let codex = CodexSessionInventory::new(root.to_owned(), holder.clone());
+    let target = session_id(SAVED);
+
+    frontend
+        .send(
+            3,
+            "session/prompt",
+            json!({
+                "sessionId": SAVED, "prompt": [{"type":"text","text":"presence proof"}]
+            }),
+        )
+        .await;
+    let read = native_request(&mut native, "thread/read").await;
+    native_reply(&mut native, &read, thread_result(root)).await;
+    let turn = native_request(&mut native, "turn/start").await;
+    native_reply(
+        &mut native,
+        &turn,
+        json!({
+            "turn": {"id":"presence-turn","status":"inProgress"}
+        }),
+    )
+    .await;
+    native.send(Message::text(json!({
+        "method":"item/agentMessage/delta",
+        "params":{"threadId":SAVED,"turnId":"presence-turn","itemId":"presence-message","delta":"materialized"}
+    }).to_string())).await.unwrap();
+    let update = frontend.read_frame().await;
+    assert_eq!(update["method"], "session/update", "{update}");
+    assert_eq!(codex.lookup_session(&target).await, complete(1));
+
+    frontend.close().await;
+    assert!(!holder.contains(SAVED));
+    assert_eq!(codex.lookup_session(&target).await, complete(1));
+    retirement.cancel();
+    assert_eq!(codex.lookup_session(&target).await, UNAVAILABLE);
+    holder.drain_host_tasks().await;
 }

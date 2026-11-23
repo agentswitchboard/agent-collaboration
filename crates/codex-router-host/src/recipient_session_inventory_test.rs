@@ -98,16 +98,16 @@ async fn codex_saved_session_counts_across_pages_with_primary_key_uniqueness() {
     );
     assert_eq!(
         inventory.lookup_session(&session_id(ABSENT)).await,
-        complete(0)
+        UNAVAILABLE
     );
     assert_eq!(
         inventory.lookup_session(&session_id(ARCHIVED)).await,
-        complete(0)
+        UNAVAILABLE
     );
 }
 
 #[tokio::test]
-async fn codex_catalog_distinguishes_missing_file_from_unreadable_state() {
+async fn codex_catalog_cannot_assert_absence_on_missing_or_unreadable_state() {
     let root = tempfile::tempdir().unwrap();
     let inventory = CodexSessionInventory::new(
         root.path().to_owned(),
@@ -115,7 +115,7 @@ async fn codex_catalog_distinguishes_missing_file_from_unreadable_state() {
     );
     let target = session_id(SAVED);
 
-    assert_eq!(inventory.lookup_session(&target).await, complete(0));
+    assert_eq!(inventory.lookup_session(&target).await, UNAVAILABLE);
     tokio::fs::write(root.path().join("state_5.sqlite"), b"not a SQLite database")
         .await
         .unwrap();
