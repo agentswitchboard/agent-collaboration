@@ -24,6 +24,10 @@ pub struct RemoteLaunch {
 }
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum HarnessKind {
     Codex,
     Claude,

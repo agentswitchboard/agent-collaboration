@@ -116,6 +116,19 @@ approval_digest!(
     /// Identity of the complete admitted Raise body.
     RequestContentsDigest
 );
+approval_digest!(
+    /// An opaque digest of the whole request held by the Router.
+    InvocationDigest
+);
+
+impl InvocationDigest {
+    /// The Router hashes its canonical whole-request fingerprint before raising.
+    #[must_use]
+    pub fn from_bound_bytes(bytes: &[u8]) -> Self {
+        Self(sha256_url(bytes))
+    }
+}
+
 impl RequestContentsDigest {
     pub(crate) fn from_wire(value: &impl Serialize) -> Result<Self, ApprovalDigestError> {
         digest_wire(value).map(Self)

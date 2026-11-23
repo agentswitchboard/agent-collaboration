@@ -13,6 +13,7 @@ mod machine_connection_refusal;
 mod mail_delivery_ready;
 pub mod mail_link;
 mod revision_failure;
+mod session_lifecycle_rpc;
 mod statement_refusal;
 pub mod workspace_description;
 mod workspace_directory;
@@ -27,6 +28,7 @@ pub use machine_connection::{
 };
 pub use machine_connection_refusal::MachineConnectionRefusal;
 pub use revision_failure::AuthorizationRevisionFailure;
+pub use session_lifecycle_rpc::{BindFleetSessionRpc, CreateFleetSessionRpc, EndFleetSessionRpc};
 pub use statement_refusal::{FleetOrganizationStatementRefusal, StoredStatementRefusal};
 
 pub use engine_attempts::{

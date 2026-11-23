@@ -6,8 +6,20 @@ use std::process::Command;
 
 use serde::Deserialize;
 
+#[path = "approval_holder_policy.rs"]
+mod approval_holder_policy;
+
+#[path = "approval_ports_policy.rs"]
+mod approval_ports_policy;
+
 #[path = "central_link_dependency_policy.rs"]
 mod central_link_dependency_policy;
+
+#[path = "enrollment_dependency_policy.rs"]
+mod enrollment_dependency_policy;
+
+#[path = "enrollment_shipping_policy.rs"]
+mod enrollment_shipping_policy;
 
 #[path = "harness_stage_policy.rs"]
 mod harness_stage_policy;
@@ -34,6 +46,9 @@ struct CargoPackage {
     id: String,
     name: String,
     manifest_path: PathBuf,
+    #[serde(default)]
+    #[serde(rename = "features")]
+    package_features: BTreeMap<String, Vec<String>>,
     source: Option<String>,
     #[serde(default)]
     dependencies: Vec<ManifestDependency>,
@@ -42,6 +57,7 @@ struct CargoPackage {
 #[derive(Deserialize)]
 struct ManifestDependency {
     name: String,
+    rename: Option<String>,
     kind: Option<DependencyKind>,
     path: Option<PathBuf>,
     source: Option<String>,
@@ -57,6 +73,8 @@ struct CargoResolve {
 #[derive(Deserialize)]
 struct CargoNode {
     id: String,
+    #[serde(default)]
+    features: BTreeSet<String>,
     deps: Vec<CargoDependency>,
 }
 
@@ -166,9 +184,19 @@ fn read_metadata(
     root: &Path,
     feature_arguments: &[&str],
 ) -> Result<CargoMetadata, Box<dyn std::error::Error>> {
+    read_cargo_metadata(
+        root,
+        std::iter::once("--locked").chain(feature_arguments.iter().copied()),
+    )
+}
+
+fn read_cargo_metadata<'argument>(
+    root: &Path,
+    arguments: impl IntoIterator<Item = &'argument str>,
+) -> Result<CargoMetadata, Box<dyn std::error::Error>> {
     let output = Command::new("cargo")
-        .args(["metadata", "--locked", "--offline", "--format-version", "1"])
-        .args(feature_arguments)
+        .args(["metadata", "--offline", "--format-version", "1"])
+        .args(arguments)
         .current_dir(root)
         .output()?;
     if !output.status.success() {
@@ -188,10 +216,17 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
     let metadata = read_metadata(&root, &[])?;
     test_support_policy::check_workspace(&metadata.packages, &metadata.workspace_members)?;
     workspace_boundaries::check_declared_session_owner_edges(&metadata)?;
+    approval_holder_policy::check_declared(&metadata)?;
+    approval_holder_policy::check_resolved(&metadata)?;
     workspace_boundaries::check_declared_session_read_edges(&metadata)?;
+    enrollment_dependency_policy::check_declared(&metadata)?;
+    enrollment_dependency_policy::check_resolved(&metadata)?;
+    enrollment_shipping_policy::check_shipping(&root, &metadata)?;
     harness_stage_policy::check_declared(&metadata)?;
     harness_stage_policy::check_resolved(&metadata)?;
     central_link_dependency_policy::check(&metadata)?;
+    approval_ports_policy::check_declared(&metadata)?;
+    approval_ports_policy::check_resolved(&metadata)?;
     let graph = NonDevDependencyGraph::from_metadata(metadata);
     for (source, destinations) in &graph.dev_edges {
         if !graph.workspace_members.contains(source) {
@@ -220,7 +255,11 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
     workspace_boundaries::check_boundaries(&graph)?;
     // Cargo features are additive. This resolution includes selectable optional edges.
     let enabled_metadata = read_metadata(&root, &["--all-features"])?;
+    enrollment_dependency_policy::check_resolved(&enabled_metadata)?;
     harness_stage_policy::check_resolved(&enabled_metadata)?;
+    approval_holder_policy::check_resolved(&enabled_metadata)?;
+    approval_ports_policy::check_resolved(&enabled_metadata)?;
+    approval_ports_policy::check_rooted_features(&root)?;
     workspace_boundaries::check_harness_layers(&NonDevDependencyGraph::from_metadata(
         enabled_metadata,
     ))?;
@@ -274,6 +313,7 @@ fn fixture_metadata(
         id: id.to_owned(),
         name: name.to_owned(),
         manifest_path: PathBuf::from(format!("/workspace/{id}/Cargo.toml")),
+        package_features: Default::default(),
         source: None,
         dependencies: Vec::new(),
     })
@@ -284,6 +324,7 @@ fn fixture_metadata(
         workspace_members,
         resolve: CargoResolve {
             nodes: vec![CargoNode {
+                features: BTreeSet::new(),
                 id: source.to_owned(),
                 deps: vec![CargoDependency {
                     pkg: destination.to_owned(),
@@ -338,6 +379,7 @@ fn harness_contracts_reject_workspace_dependencies() {
                     id: "store".to_owned(),
                     name: "switchboard-session-store".to_owned(),
                     manifest_path: PathBuf::from("/workspace/store/Cargo.toml"),
+                    package_features: Default::default(),
                     source: None,
                     dependencies: Vec::new(),
                 },
@@ -345,6 +387,7 @@ fn harness_contracts_reject_workspace_dependencies() {
                     id: "events".to_owned(),
                     name: "switchboard-session-events".to_owned(),
                     manifest_path: PathBuf::from("/workspace/events/Cargo.toml"),
+                    package_features: Default::default(),
                     source: None,
                     dependencies: Vec::new(),
                 },
@@ -352,9 +395,11 @@ fn harness_contracts_reject_workspace_dependencies() {
                     id: "harness".to_owned(),
                     name: contract.to_owned(),
                     manifest_path: PathBuf::from("/workspace/harness/Cargo.toml"),
+                    package_features: Default::default(),
                     source: None,
                     dependencies: vec![ManifestDependency {
                         name: deciding_code.to_owned(),
+                        rename: None,
                         kind: Some(kind),
                         path: Some(PathBuf::from("/workspace/deciding-code")),
                         source: None,
@@ -366,6 +411,7 @@ fn harness_contracts_reject_workspace_dependencies() {
                     id: "deciding-code".to_owned(),
                     name: deciding_code.to_owned(),
                     manifest_path: PathBuf::from("/workspace/deciding-code/Cargo.toml"),
+                    package_features: Default::default(),
                     source: None,
                     dependencies: Vec::new(),
                 },
@@ -373,6 +419,7 @@ fn harness_contracts_reject_workspace_dependencies() {
                     id: "harness-carrier".to_owned(),
                     name: "switchboard-harness-shared-mechanics".to_owned(),
                     manifest_path: PathBuf::from("/workspace/harness-carrier/Cargo.toml"),
+                    package_features: Default::default(),
                     source: None,
                     dependencies: Vec::new(),
                 },
@@ -426,6 +473,7 @@ fn harness_contracts_reject_a_registry_dev_dependency_resolved_to_a_workspace_me
         .expect("harness manifest fixture");
     declaration.dependencies.push(ManifestDependency {
         name: "provider-session-machines".to_owned(),
+        rename: None,
         kind: Some(DependencyKind::Dev),
         path: None,
         source: Some(harness_stage_policy::CRATES_IO.to_owned()),
@@ -464,6 +512,7 @@ fn harness_carrier_declared_guard_rejects_inactive_workspace_edges() {
             .expect("carrier fixture package");
         package.dependencies.push(ManifestDependency {
             name: "provider-session-machines".to_owned(),
+            rename: None,
             kind: Some(kind),
             path: Some(PathBuf::from("/workspace/deciding-code")),
             source: None,
@@ -498,6 +547,7 @@ fn harness_carrier_resolved_guard_rejects_workspace_edges() {
             .expect("carrier fixture package");
         package.dependencies.push(ManifestDependency {
             name: "provider-session-machines".to_owned(),
+            rename: None,
             kind: Some(kind),
             path: None,
             source: Some(harness_stage_policy::CRATES_IO.to_owned()),

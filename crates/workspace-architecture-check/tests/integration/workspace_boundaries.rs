@@ -172,6 +172,15 @@ pub(super) const SESSION_READ_CRATES: [(&str, &[&str]); 2] = [
     ("switchboard-session-calls", &["workspace-ids"]),
 ];
 
+const APPROVAL_HOLDER: (&str, &[&str]) = (
+    "switchboard-approval-holder",
+    &[
+        "approval-request-protocol",
+        "state-machine-core",
+        "workspace-ids",
+    ],
+);
+
 const PURE_CRATES: [(&str, &[&str]); 8] = [
     ("workspace-ids", &[]),
     (
@@ -220,7 +229,7 @@ fn is_collaboration(name: &str) -> bool {
         || name.starts_with("central-")
         || matches!(name, "agent-collaboration" | "agent-automation")
 }
-fn is_effectful(name: &str) -> bool {
+pub(super) fn is_effectful(name: &str) -> bool {
     name.starts_with("tokio")
         || name.starts_with("futures")
         || name.starts_with("async-")
@@ -276,6 +285,7 @@ pub(super) fn check_boundaries(
         .into_iter()
         .chain(FLEET_PURE_CRATES)
         .chain(SESSION_READ_CRATES)
+        .chain([APPROVAL_HOLDER])
     {
         let Some(source) = graph.workspace_id(name) else {
             continue;
@@ -940,6 +950,10 @@ fn proxy_boundary_rejects_direct_and_transitive_normal_and_build_edges() {
         .is_ok()
     );
 }
+
+#[cfg(test)]
+#[path = "approval_holder_dependency_test.rs"]
+mod approval_holder_dependency_tests;
 
 #[cfg(test)]
 #[path = "session_read_dependency_test.rs"]
