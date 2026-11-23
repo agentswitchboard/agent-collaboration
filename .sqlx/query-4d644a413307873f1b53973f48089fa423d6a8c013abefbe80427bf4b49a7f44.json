@@ -1,0 +1,38 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT person.actor_id, actor.actor_kind\nFROM actor_persons AS person\nLEFT JOIN actor_identities AS actor ON actor.actor_id = person.actor_id\nWHERE person.person_id = ?\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "actor_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_persons",
+            "name": "actor_id"
+          }
+        }
+      },
+      {
+        "name": "actor_kind",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "actor_identities",
+            "name": "actor_kind"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      true
+    ]
+  },
+  "hash": "4d644a413307873f1b53973f48089fa423d6a8c013abefbe80427bf4b49a7f44"
+}

@@ -100,7 +100,7 @@ fn person_claims_json() -> Value {
         "person_revision": 4,
         "organization_revision": 3,
         "permission_policy_digest": "af40ec7fb999c4ef7f9611f322bab013e05666b56cd1d3101fac1e9e001d074a",
-        "permissions": ["organization:view"],
+        "permissions": ["approval:decide", "organization:view"],
         "second_factor_at": null,
         "second_factor_method": null,
         "session_expires_at_ms": 1_900_086_400_000_i64,

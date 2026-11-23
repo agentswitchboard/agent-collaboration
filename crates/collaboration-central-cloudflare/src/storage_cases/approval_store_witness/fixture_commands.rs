@@ -69,13 +69,8 @@ impl From<WitnessSession> for ApprovalSession {
     rename_all_fields = "camelCase"
 )]
 pub(super) enum WitnessDecider {
-    Person {
-        person_id: PersonId,
-        fresh_factor: bool,
-    },
-    Session {
-        session: WitnessSession,
-    },
+    Person { person_id: PersonId },
+    Session { session: WitnessSession },
 }
 
 #[derive(Deserialize)]

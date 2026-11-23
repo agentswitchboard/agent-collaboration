@@ -9,6 +9,7 @@ use central_link_call_composition::{
 use central_storage::{EngineAlarmDecider, ReadOutcome, Statement, StoreFailure};
 use fleet_identity_protocol::OrganizationId;
 use fleet_lent_transaction::CentralTransaction;
+use fleet_runtime_ports::{Clock, SyncTime};
 use sqlx_core::{database::Database, executor::Executor};
 use sqlx_durable_object::{Do, DoConnection, DoTransaction};
 use std::sync::{
@@ -29,6 +30,7 @@ pub(super) struct WorkerApprovalTransactions {
 pub(super) struct WorkerApprovalLoan<'connection> {
     transaction: &'connection DoTransaction,
     wrote: &'connection AtomicBool,
+    clock: &'connection WorkspaceClock,
 }
 
 impl CentralTransaction for WorkerApprovalLoan<'_> {
@@ -44,6 +46,10 @@ impl CentralTransaction for WorkerApprovalLoan<'_> {
 }
 
 impl ApprovalStatementLoan for WorkerApprovalLoan<'_> {
+    fn sample_time(&self) -> Result<SyncTime, StoreFailure> {
+        Ok(self.clock.now())
+    }
+
     async fn read_lent(&mut self, statement: Statement) -> Result<ReadOutcome, StoreFailure> {
         statement_store::read_lent_approval_statement(self.transaction, statement).await
     }
@@ -76,6 +82,7 @@ impl OrganizationApprovalTransactions for WorkerApprovalTransactions {
         );
         #[cfg(feature = "test-support")]
         let fail_after_write = self.fail_after_write.clone();
+        let clock = self.clock.clone();
         self.connection
             .transaction(move |transaction| async move {
                 let wrote = AtomicBool::new(false);
@@ -83,6 +90,7 @@ impl OrganizationApprovalTransactions for WorkerApprovalTransactions {
                     WorkerApprovalLoan {
                         transaction: &transaction,
                         wrote: &wrote,
+                        clock: &clock,
                     },
                     &organization,
                 )
@@ -99,7 +107,7 @@ impl OrganizationApprovalTransactions for WorkerApprovalTransactions {
                         ApprovalTransactionFailure::fixture_rejected_write(),
                     ));
                 }
-                if wrote && matches!(alarm, ApprovalAlarmPublication::WithCommit) {
+                if wrote && alarm.publishes_with_commit() {
                     statement_store::publish_approval_alarm(&transaction, policy)
                         .await
                         .map_err(|failure| WorkerApprovalAbort::Applying(failure.into()))?;

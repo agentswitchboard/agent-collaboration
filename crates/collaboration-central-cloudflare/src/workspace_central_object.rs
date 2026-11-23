@@ -364,26 +364,26 @@ impl CentralObject {
                 self.pending_mac_calls.clone(),
             ),
         );
-        let dispatcher: Arc<dyn collaboration_central_core::CentralLinkDispatcher> =
-            Arc::new(OrganizationLinkDispatcher::new(
-                WorkerSessionTransactions {
-                    connection: host.connection.clone(),
-                    #[cfg(feature = "test-support")]
-                    fail_reserved_session_reply: self.controls.fail_reserved_session_reply.clone(),
-                },
-                WorkerApprovalTransactions {
-                    connection: host.connection.clone(),
-                    state: self.state.clone(),
-                    clock: self.clock.clone(),
-                    decide_alarm: host.decide_alarm.clone(),
-                    #[cfg(feature = "test-support")]
-                    fail_after_write: self.controls.fail_approval_after_write.clone(),
-                },
-                ending_transport.clone(),
-                clock.clone(),
-                self.link_ids.clone(),
-                fill_session_secret,
-            ));
+        let dispatcher = Arc::new(OrganizationLinkDispatcher::new(
+            WorkerSessionTransactions {
+                connection: host.connection.clone(),
+                #[cfg(feature = "test-support")]
+                fail_reserved_session_reply: self.controls.fail_reserved_session_reply.clone(),
+            },
+            WorkerApprovalTransactions {
+                connection: host.connection.clone(),
+                state: self.state.clone(),
+                clock: self.clock.clone(),
+                decide_alarm: host.decide_alarm.clone(),
+                #[cfg(feature = "test-support")]
+                fail_after_write: self.controls.fail_approval_after_write.clone(),
+            },
+            ending_transport.clone(),
+            clock.clone(),
+            self.link_ids.clone(),
+            fill_session_secret,
+        ));
+        let central = central.with_person_approval_transactions(dispatcher.clone());
         #[cfg(not(feature = "test-support"))]
         let central = central.with_link_call_dispatcher(dispatcher);
         #[cfg(feature = "test-support")]

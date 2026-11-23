@@ -204,9 +204,9 @@ fn question_shapes_reject_extra_fields_and_values_without_a_wire_type() {
 }
 
 #[test]
-fn only_retained_or_unverified_lifetimes_require_a_fresh_factor() {
+fn session_answers_require_a_bounded_verified_lifetime() {
     for effect in ["allow", "decline", "abort"] {
-        for (lifetime, needs_factor) in [
+        for (lifetime, session_ineligible) in [
             (json!({"kind":"thisRequest"}), false),
             (json!({"kind":"thisTurn","kept":"agentMemory"}), false),
             (json!({"kind":"thisSession","kept":"agentMemory"}), false),
@@ -221,8 +221,8 @@ fn only_retained_or_unverified_lifetimes_require_a_fresh_factor() {
             }))
             .unwrap();
             assert_eq!(
-                offered_option.needs_person_with_fresh_factor(),
-                needs_factor,
+                offered_option.admits_session_answer(),
+                !session_ineligible,
                 "{effect}: {lifetime}"
             );
         }

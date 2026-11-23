@@ -16,6 +16,7 @@ conformance = []
 test-support = ["central-link-protocol/test-support", "fleet-signin/test-support", "fleet-engine/test-support", "fleet-runtime/test-support", "dep:sqlx-core", "fleet-storage-schema/test-support"]
 
 [dependencies]
+fleet-approvals.workspace = true
 fleet-signin.workspace = true
 fleet-machine-login.workspace = true
 fleet-rpc.workspace = true

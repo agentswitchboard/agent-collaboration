@@ -56,7 +56,6 @@ pub(super) fn apply_fixed_prefix(case: &hegel::TestCase, mut compare: impl FnMut
                 operation: 101,
                 choice: 2,
                 actor: Actor::FirstPerson,
-                fresh_factor: true,
             },
             2,
         );
@@ -66,7 +65,6 @@ pub(super) fn apply_fixed_prefix(case: &hegel::TestCase, mut compare: impl FnMut
                 operation: 101,
                 choice: 2,
                 actor: Actor::FirstPerson,
-                fresh_factor: true,
             },
             3,
         );
@@ -158,14 +156,13 @@ pub(super) fn apply_fixed_prefix(case: &hegel::TestCase, mut compare: impl FnMut
             },
             1,
         );
-        for (operation, choice) in [(112, 1), (113, 2)] {
+        for (operation, choice) in [(112, 3), (113, 4)] {
             compare(
                 Step::Decide {
                     row: 4,
                     operation,
                     choice,
                     actor: Actor::FirstPerson,
-                    fresh_factor: false,
                 },
                 1,
             );
@@ -176,7 +173,6 @@ pub(super) fn apply_fixed_prefix(case: &hegel::TestCase, mut compare: impl FnMut
                 operation: 114,
                 choice: if case.draw(gs::booleans()) { 1 } else { 2 },
                 actor: Actor::FirstPerson,
-                fresh_factor: true,
             },
             2,
         );

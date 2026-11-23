@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO approval_request_destinations (\n    approval_destination_id, approval_row_id, organization_id, request_id, destination_kind,\n    session_machine_id, session_enrollment_id, session_id, raised_notice_at, created_at, updated_at\n) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?10)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": []
+  },
+  "hash": "e5e65d4f8b91147594a05a38929e544f9d701340b43f6c39d6e48447228e8f34"
+}

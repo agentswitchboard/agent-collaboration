@@ -32,7 +32,11 @@ fn create() -> VerifiedPersonRequest {
         person_revision: 4,
         organization_revision: 3,
         permission_policy_digest: POLICY.into(),
-        permissions: vec!["workspace:create".into(), "organization:view".into()],
+        permissions: vec![
+            "approval:decide".into(),
+            "workspace:create".into(),
+            "organization:view".into(),
+        ],
         second_factor_at: Some(NOW / 1000 - 60),
         request_id: request_at(NOW - 1_000),
         request_time_ms: NOW - 1_000,
@@ -282,8 +286,8 @@ fn corrupt_floor_domain_values_are_rejected() {
 
 #[test]
 fn persisted_floor_rows_fail_closed_on_wrong_storage_types_and_pair_binding() {
-    use crate::authorization_floor_rows::{decode_organization_floor, decode_person_floor};
     use central_storage::{ReadOutcome, SafeInteger, SqlValue};
+    use fleet_signin::authorization_floor_store::{decode_organization_floor, decode_person_floor};
     let number = |value| SqlValue::Integer(SafeInteger::new(value).unwrap());
     let text = |value: &str| SqlValue::Text(value.to_owned());
     let organization = ReadOutcome {

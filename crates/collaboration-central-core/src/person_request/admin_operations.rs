@@ -273,9 +273,9 @@ impl AdminRoute {
             Self::WorkspaceLookup | Self::ListWorkspaces => "organization:view",
             Self::ReadChangeRecords => "organization:readAudit",
             Self::EngineHealth | Self::EngineListRetired => "organization:readAudit",
-            // Mapped by the sign-in service's policy (Fleet access Lead); until it
-            // is, admission refuses these two routes with NotPermitted.
-            Self::EngineRetry | Self::EngineDiscard => "organization:repairWork",
+            Self::EngineRetry | Self::EngineDiscard => {
+                fleet_signin::FleetPermission::RepairWork.as_str()
+            }
             Self::RevokeMachineEnrollment => {
                 fleet_contracts::RevokePermission::MachineRevoke.as_str()
             }

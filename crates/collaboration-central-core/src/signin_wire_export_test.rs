@@ -19,6 +19,11 @@ use fleet_contracts::{
 };
 use fleet_identity_protocol::{EnrollmentId, OrganizationId, UnixMillis, UnixSeconds};
 use fleet_signin::{
+    FleetPermission,
+    approval_person_wire::{
+        ApprovalDecideReply, ApprovalDecideRequest, ApprovalIntent, ApprovalListReply,
+        ApprovalListRequest, ApprovalReadReply, ApprovalReadRequest,
+    },
     machine_token::{MachineAccessTokenClaims, MachineAccessTokenHeader},
     organization_authority::{OrganizationStampClaims, OrganizationStampHeader},
 };
@@ -32,10 +37,13 @@ use std::{
     process::{Command, Output},
 };
 
+#[path = "signin_approval_wire_specimens_test.rs"]
+mod signin_approval_wire_specimens_test;
 #[path = "signin_schema_parity_test.rs"]
 mod signin_schema_parity_test;
 #[path = "signin_wire_specimens_test.rs"]
 mod signin_wire_specimens_test;
+use signin_approval_wire_specimens_test::{approval_wire_replies, approval_wire_requests};
 use signin_wire_specimens_test::{
     checked_signed_specimens, description_codec_specimens, numeric_boundary_specimens,
     signed_intent_vector,
@@ -134,6 +142,14 @@ const SIGNIN_ROOTS: &[WireRoot] = &[
     wire_root!(read_only OrganizationStampClaims, checked_signed_specimens),
     wire_root!(read_only MachineAccessTokenHeader, checked_signed_specimens),
     wire_root!(read_only MachineAccessTokenClaims, checked_signed_specimens),
+    wire_root!(FleetPermission, approval_wire_requests),
+    wire_root!(ApprovalListRequest, approval_wire_requests),
+    wire_root!(ApprovalReadRequest, approval_wire_requests),
+    wire_root!(ApprovalDecideRequest, approval_wire_requests),
+    wire_root!(ApprovalListReply, approval_wire_replies),
+    wire_root!(ApprovalReadReply, approval_wire_replies),
+    wire_root!(ApprovalDecideReply, approval_wire_replies),
+    wire_root!(ApprovalIntent, approval_wire_replies),
 ];
 
 fn contract_directory() -> PathBuf {
@@ -283,9 +299,18 @@ fn admin_intent_specimens(name: &str) -> Vec<WireSpecimen> {
 }
 
 fn exported_typescript() -> String {
-    let types = SIGNIN_ROOTS
+    let mut types = SIGNIN_ROOTS
         .iter()
         .fold(Types::default(), |types, root| (root.register)(types));
+    types.iter_mut(|definition| {
+        if definition
+            .module_path
+            .starts_with("approval_request_protocol::")
+            && definition.name == "Description"
+        {
+            definition.name = "ApprovalDescription".into();
+        }
+    });
     let mut header = concat!(
         "// Phase suffixes are from Central's perspective.\n",
         "// Use _Deserialize for requests and signed payloads Central only reads.\n",

@@ -5,8 +5,8 @@ use fleet_runtime_ports::{Clock, workspace_decode_error::corrupt};
 
 use crate::{
     ApprovalCommitScope, ApprovalEffect, ApprovalEvent, ApprovalLifecycle, ApprovalReceipt,
-    ApprovalRefusal, ApprovalReplyAddress, ApprovalRouting, ApprovalSessionFacts, ApprovalState,
-    CommittedApprovalOffer, PendingApprovalHolderEffects, PendingApprovalReply,
+    ApprovalRefusal, ApprovalReplyAddress, ApprovalRouting, ApprovalState, CommittedApprovalOffer,
+    PendingApprovalHolderEffects, PendingApprovalReply,
     approval_store_scope::{ApprovalHolderScope, ApprovalRequestRowId},
     approval_store_transaction::ApprovalStoreTransaction,
     approval_store_writes::{
@@ -21,6 +21,15 @@ mod destination_commands;
 mod fixture_destinations;
 #[path = "approval_store_holder_commands.rs"]
 mod holder_commands;
+#[path = "approval_store_person_commands.rs"]
+mod person_commands;
+#[path = "approval_store_person_decide.rs"]
+mod person_decide;
+#[path = "approval_store_signed_person.rs"]
+mod signed_person;
+pub use signed_person::{
+    PersonApprovalStoreOutput, PersonApprovalStoreReply, apply_person_command,
+};
 #[path = "approval_store_run_commands.rs"]
 mod run_commands;
 
@@ -80,7 +89,6 @@ pub struct ApprovalApplyingStore<'loan, Transaction, Sessions> {
 impl<'loan, Transaction, Sessions> ApprovalApplyingStore<'loan, Transaction, Sessions>
 where
     Transaction: ApprovalStoreTransaction,
-    Sessions: ApprovalSessionFacts<Transaction>,
 {
     pub fn new(
         commit: &'loan ApprovalCommitScope,

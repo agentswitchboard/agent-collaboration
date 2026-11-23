@@ -21,6 +21,7 @@ pub struct WorkspaceRuntime<Host: CentralStore, Stores: WorkspaceStores> {
     pub(crate) link_call_dispatcher: Option<Arc<dyn crate::CentralLinkDispatcher>>,
     #[cfg(feature = "test-support")]
     pub(crate) fixture_link_calls: bool,
+    pub(crate) person_approval_transactions: Option<Arc<dyn crate::PersonApprovalTransactions>>,
     pub(crate) signin_authority: crate::organization_authority_cache::OrganizationAuthority,
     #[cfg(feature = "test-support")]
     pub(crate) machine_restore_failure:
@@ -43,6 +44,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             #[cfg(feature = "test-support")]
             fixture_link_calls: false,
             signin_authority: Default::default(),
+            person_approval_transactions: None,
             mail_delivery_ready: Arc::new(|_| {}),
             enrollment_invalidated: Arc::new(|_| {}),
             #[cfg(feature = "test-support")]
@@ -96,6 +98,14 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         self.enrollment_invalidated = observer;
         self
     }
+    pub fn with_person_approval_transactions(
+        mut self,
+        transactions: Arc<dyn crate::PersonApprovalTransactions>,
+    ) -> Self {
+        self.person_approval_transactions = Some(transactions);
+        self
+    }
+
     pub fn with_sign_in_verification(
         self,
         check: Arc<dyn crate::organization_authority::SignInVerification>,

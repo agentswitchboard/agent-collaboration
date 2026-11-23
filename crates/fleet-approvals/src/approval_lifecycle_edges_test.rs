@@ -12,7 +12,7 @@ use fleet_identity_protocol::EnrollmentId;
 use crate::{
     AdmittedDecider, ApprovalDecideInput, ApprovalEffect, ApprovalEnrollment, ApprovalEvent,
     ApprovalLifecycle, ApprovalReceipt, ApprovalRefusal, ApprovalRequestKey, ApprovalRouting,
-    ApprovalRun, ApprovalSession, ApprovalState, FactorStanding, MAX_OUTSTANDING_PER_RUN,
+    ApprovalRun, ApprovalSession, ApprovalState, MAX_OUTSTANDING_PER_RUN,
     ProviderSessionAvailability, RaiseAdmission,
 };
 
@@ -213,13 +213,11 @@ fn row_matrix_witnesses_every_declared_edge_and_asserts_typed_refusals() {
     let parent_decide = decide(AdmittedDecider::Session(parent));
     let person_decide = decide(AdmittedDecider::Person {
         person_id: person_id.clone(),
-        factor: FactorStanding::Fresh,
     });
     let mismatched_decide = ApprovalEvent::Decide {
         key: key.clone(),
         actor: AdmittedDecider::Person {
             person_id: person_id.clone(),
-            factor: FactorStanding::Fresh,
         },
         request: ApprovalDecideInput {
             request_id: id(88).parse().unwrap(),

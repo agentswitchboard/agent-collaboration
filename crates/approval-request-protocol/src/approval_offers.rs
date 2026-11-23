@@ -170,11 +170,13 @@ approval_wire_record! {
 
 impl OfferedOption {
     #[must_use]
-    pub const fn needs_person_with_fresh_factor(&self) -> bool {
-        matches!(
-            self.lasts,
-            OptionLifetime::KeptUntilChanged { .. } | OptionLifetime::NotVerified {}
-        )
+    pub const fn admits_session_answer(&self) -> bool {
+        match self.lasts {
+            OptionLifetime::ThisRequest {}
+            | OptionLifetime::ThisTurn { .. }
+            | OptionLifetime::ThisSession { .. } => true,
+            OptionLifetime::KeptUntilChanged { .. } | OptionLifetime::NotVerified {} => false,
+        }
     }
 }
 
