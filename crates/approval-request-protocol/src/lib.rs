@@ -6,7 +6,9 @@ mod approval_digests;
 mod approval_endings;
 mod approval_holder_endings;
 mod approval_offers;
+mod approval_request_summary;
 mod approval_request_views;
+pub use approval_request_summary::{ApprovalSummaryEnding, ApprovalSummaryState, RequestSummary};
 mod approval_values;
 mod approval_wire_codec;
 mod destination_admission;
@@ -49,7 +51,7 @@ pub use approval_values::{
 };
 #[doc(hidden)]
 pub use approval_wire_codec::decode_named_map;
-pub use destination_admission::{AdmittedDestination, DecisionFactor, DestinationProjection};
+pub use destination_admission::{AdmittedDestination, DestinationProjection};
 pub use destination_requests::{
     DecideReply, DecideReplyWire, DecideRequest, PassOnReply, PassOnRequest,
     RetainedSessionDecision,

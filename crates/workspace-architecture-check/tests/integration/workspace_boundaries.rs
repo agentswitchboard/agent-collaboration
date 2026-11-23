@@ -52,6 +52,7 @@ pub(super) const APPROVALS_LAYER: (&str, &[&str]) = (
         FLEET_ENGINE,
         "fleet-identity-protocol",
         "fleet-machine-login",
+        "fleet-signin",
         REQUEST_LOG,
         "fleet-runtime-ports",
         LENT_TRANSACTION,

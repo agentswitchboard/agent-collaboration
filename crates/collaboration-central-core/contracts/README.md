@@ -62,3 +62,6 @@ deliberate contract change, run the two generators before checking the fixtures.
 UPDATE_CENTRAL_SIGNIN_TYPES=1 cargo test --locked -p collaboration-central-core --features wire-export --lib signin_wire_export_test::central_signin_types_match_generated_serde_wire -- --exact
 UPDATE_CENTRAL_SIGNIN_TYPES=1 cargo test --locked -p collaboration-central-core --features wire-export --lib signin_wire_export_test::canonical_signin_intent_hash_matches_shared_vector -- --exact
 ```
+
+The [person approval result matrix](approval-person-results.md) records the C3
+HTTP statuses and writes alongside the generated types and vectors.

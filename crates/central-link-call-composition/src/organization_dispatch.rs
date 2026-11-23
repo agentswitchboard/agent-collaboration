@@ -34,6 +34,9 @@ use zeroize::Zeroizing;
 #[derive(Clone, Copy, Debug)]
 pub struct SessionEntropyUnavailable;
 
+#[path = "person_approval_dispatch.rs"]
+mod person_approval_dispatch;
+
 type FillSessionSecret = fn(&mut [u8; 32]) -> Result<(), SessionEntropyUnavailable>;
 
 #[derive(Clone)]

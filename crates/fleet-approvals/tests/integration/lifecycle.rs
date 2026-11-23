@@ -8,7 +8,7 @@ use fleet_approvals::ApprovalDecisionReply as DecideReply;
 
 use fleet_approvals::{
     AdmittedDecider, ApprovalCollectionEffect, ApprovalCollectionEvent, ApprovalEffect,
-    ApprovalState, FactorStanding,
+    ApprovalState,
 };
 
 use super::fixtures::{
@@ -18,7 +18,7 @@ use super::fixtures::{
 };
 
 #[test]
-fn applying_factor_and_offer_are_checked_before_the_deadline() {
+fn a_forwarded_request_preserves_session_answer_limits_and_permits_person_answers() {
     let (mut book, active_run, requester, parent) = setup();
     for slot in 3..=5_u8 {
         let item = key(&active_run, u16::from(slot));
@@ -52,25 +52,19 @@ fn applying_factor_and_offer_are_checked_before_the_deadline() {
             reply(&run_event(&mut book, forward, 0)),
             ApprovalReceipt::PassOn(PassOnReply::Forwarded {})
         );
-        for (actor, suffix) in [
-            (AdmittedDecider::Session(parent.clone()), 10),
-            (person(12, FactorStanding::AbsentOrStale), 11),
-        ] {
-            let op = 200 + u16::from(slot) * 10 + suffix;
-            let refused = decide_event(&item, actor, op, answer(slot));
-            assert_eq!(
-                reply(&run_event(&mut book, refused, 0)),
-                ApprovalReceipt::Decide(DecideReply::Invalid {})
-            );
-        }
-        let fresh = decide_event(
+        let refused = decide_event(
             &item,
-            person(12, FactorStanding::Fresh),
-            500 + u16::from(slot),
+            AdmittedDecider::Session(parent.clone()),
+            210 + u16::from(slot) * 10,
             answer(slot),
         );
+        assert_eq!(
+            reply(&run_event(&mut book, refused, 0)),
+            ApprovalReceipt::Decide(DecideReply::Invalid {})
+        );
+        let accepted = decide_event(&item, person(12), 500 + u16::from(slot), answer(slot));
         assert!(matches!(
-            reply(&run_event(&mut book, fresh, 0)),
+            reply(&run_event(&mut book, accepted, 0)),
             ApprovalReceipt::Decide(DecideReply::SavedDecision { .. })
         ));
     }
@@ -313,12 +307,7 @@ fn a_rollback_cannot_override_deadline_and_alarm_tokens_are_exact() {
     );
     let timed_out = book.clone();
 
-    let decision = decide_event(
-        &item,
-        person(12, FactorStanding::AbsentOrStale),
-        101,
-        answer(2),
-    );
+    let decision = decide_event(&item, person(12), 101, answer(2));
     let effects = run_event(&mut book, decision, HOUR - 1);
     assert_eq!(
         reply(&effects),

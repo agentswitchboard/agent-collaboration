@@ -10,7 +10,7 @@ use workspace_ids::{ApprovalRequestId, MachineId, PersonId, RequestId, RouterRun
 use fleet_approvals::{
     AdmittedDecider, ApprovalCollection, ApprovalCollectionEffect, ApprovalCollectionEvent,
     ApprovalDecideInput, ApprovalEffect, ApprovalEnrollment, ApprovalReceipt, ApprovalRequestKey,
-    ApprovalRouting, ApprovalRun, ApprovalSession, ApprovalState, EndedApproval, FactorStanding,
+    ApprovalRouting, ApprovalRun, ApprovalSession, ApprovalState, EndedApproval,
     ProviderSessionAvailability,
 };
 
@@ -73,10 +73,9 @@ pub(super) fn answer(number: u8) -> Answer {
         option_id: option(number),
     }
 }
-pub(super) fn person(number: u16, factor: FactorStanding) -> AdmittedDecider {
+pub(super) fn person(number: u16) -> AdmittedDecider {
     AdmittedDecider::Person {
         person_id: person_id(number),
-        factor,
     }
 }
 

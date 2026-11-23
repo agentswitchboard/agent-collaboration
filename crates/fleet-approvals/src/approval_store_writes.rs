@@ -6,6 +6,7 @@ use fleet_engine::{
     plan_due_table_change,
 };
 use fleet_runtime_ports::{stored_values::format_utc_millis, workspace_decode_error::corrupt};
+use workspace_ids::ApprovalRequestId;
 
 use crate::{
     ApprovalRequestKey, ApprovalRouting, ApprovalSession, ApprovalState, EndedApproval,
@@ -91,6 +92,7 @@ pub(crate) fn plan_approval_state_change(
                     &destination_id,
                     row_id,
                     scope,
+                    &saved.key.request_id,
                     parent,
                     saved.window.raised_at(),
                 ),
@@ -101,7 +103,14 @@ pub(crate) fn plan_approval_state_change(
             let changed_at = context.now.max(saved.window.raised_at());
             Ok(vec![
                 plan_forward_waiting(row_id, scope, saved, changed_at)?,
-                plan_destination(&destination_id, row_id, scope, None, changed_at),
+                plan_destination(
+                    &destination_id,
+                    row_id,
+                    scope,
+                    &saved.key.request_id,
+                    None,
+                    changed_at,
+                ),
             ])
         }
         (ApprovalState::Waiting { saved }, ApprovalState::Ended { closed, .. }) => {
@@ -221,6 +230,7 @@ fn plan_destination(
     destination_id: &ApprovalDestinationRowId,
     row_id: &ApprovalRequestRowId,
     scope: &ApprovalHolderScope,
+    request_id: &ApprovalRequestId,
     parent: Option<&ApprovalSession>,
     at: CentralTime,
 ) -> GuardedStatement {
@@ -237,6 +247,7 @@ fn plan_destination(
         destination_id = destination_id.as_str().to_owned(),
         row_id = row_id.as_str().to_owned(),
         organization_id = scope.organization_id.as_str().to_owned(),
+        request_id = request_id.as_str().to_owned(),
         destination_kind = destination_kind.to_owned(),
         machine_id = parent.map(|session| session.enrollment.machine_id.as_str().to_owned()),
         enrollment_id = parent.map(|session| session.enrollment.enrollment_id.as_str().to_owned()),
