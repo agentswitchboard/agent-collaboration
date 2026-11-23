@@ -1,30 +1,38 @@
-#![expect(
-    clippy::panic,
-    clippy::unwrap_in_result,
-    reason = "The generated test fails loudly on unexpected machine refusals or missing executor effects."
-)]
-
 use approval_request_protocol::{
-    CancelReason, DeliverEndingReply, DeliverEndingRequest, Ending, InvalidApprovalEnding,
-    ProviderStopCause, RaiseReceipt, RaiseReply, RegisterRunReply, RegisterRunRequest, RunRefusal,
-    StopReceiptEnding, StopReply, StopRequest,
+    CallStopCause, CancelReason, DeliverEndingReply, DeliverEndingRequest, Ending, HolderStopCause,
+    InvalidApprovalEnding, ProviderStopCause, Raise, RaiseReceipt, RaiseReply, RegisterRunReply,
+    RegisterRunRequest, RunRefusal, StopReceiptEnding, StopReply, StopRequest,
 };
 use hegel::generators as gs;
-use state_machine_core::{StateMachine, TransitionError};
 use switchboard_approval_holder::{
-    run_gate::{
-        AuthorityEnd, CallAttempt, CallKey, DialAttempt, LinkAttempt, RunGate, RunGateState,
-    },
-    waiting_request::{LocalNegative, ProviderReply, WaitState, WriterOutcome},
+    run_gate::{AuthorityEnd, CallAttempt, CallKey, DialAttempt, LinkAttempt},
+    waiting_request::{LocalNegative, ProviderReply, RaiseRefusal, WriterOutcome},
 };
 
 use super::fixtures::{
-    GateEffect, GateEvent, RESPONDER, RequestEffect, RequestEvent, RequestMachine, authority,
-    raise, try_offer, try_publish,
+    GateEffect, GateEvent, RESPONDER, RequestEffect, authority, call_raise, raise,
 };
 
-const STOP: ProviderStopCause = ProviderStopCause::TurnStopped {};
-const LOST: ProviderStopCause = ProviderStopCause::ProviderConnectionLost {};
+mod capacity_history;
+mod product_adapter;
+
+use product_adapter::Product;
+
+const STOP: HolderStopCause = HolderStopCause::TurnStopped;
+const LOST: HolderStopCause = HolderStopCause::ProviderConnectionLost;
+const CALL_WITHDRAWN: HolderStopCause = HolderStopCause::CallWithdrawn;
+
+fn provider_cause(cause: HolderStopCause) -> Option<ProviderStopCause> {
+    match cause {
+        HolderStopCause::TurnStopped => Some(ProviderStopCause::TurnStopped),
+        HolderStopCause::AskReplaced => Some(ProviderStopCause::AskReplaced),
+        HolderStopCause::AskWithdrawn => Some(ProviderStopCause::AskWithdrawn),
+        HolderStopCause::SessionClosed => Some(ProviderStopCause::SessionClosed),
+        HolderStopCause::ProviderConnectionLost => Some(ProviderStopCause::ProviderConnectionLost),
+        HolderStopCause::HolderRefusedLocally => Some(ProviderStopCause::HolderRefusedLocally),
+        HolderStopCause::CallWithdrawn => None,
+    }
+}
 
 type Key = CallKey<u8>;
 type Link = LinkAttempt<u8>;
@@ -34,20 +42,24 @@ enum Observation {
     Gate(GateEffect),
     Wait(RequestEffect),
     Refusal { key: Key, reason: RunRefusal },
+    StopCauseRefused,
 }
 
 #[derive(Default)]
 struct HistoryFacts {
+    call_wait: bool,
     dial: Option<Link>,
     welcomed: bool,
     registration: Option<Key>,
     ready: bool,
     ended: bool,
-    exposed: bool,
+    published: bool,
+    could_be_admitted: bool,
     saved: bool,
     raise: Option<Key>,
     stop: Option<Key>,
     owed: Option<StopRequest>,
+    withdrawal_waiting_for_link: Option<HolderStopCause>,
     recorded_ending: Option<DeliverEndingRequest>,
     central_done: bool,
     refusing_locally: bool,
@@ -58,6 +70,14 @@ struct HistoryFacts {
 }
 
 impl HistoryFacts {
+    fn request(&self) -> Raise {
+        if self.call_wait {
+            call_raise()
+        } else {
+            raise()
+        }
+    }
+
     fn closed(&self) -> bool {
         (self.central_done || self.refusing_locally) && self.handle_released && !self.writer_started
     }
@@ -83,7 +103,9 @@ impl HistoryFacts {
         self.welcomed = false;
         self.registration = None;
         self.ready = false;
-        if self.raise.as_ref().is_some_and(|key| &key.link == link) {
+        if (self.central_done || self.owed.is_some())
+            && self.raise.as_ref().is_some_and(|key| &key.link == link)
+        {
             self.raise = None;
         }
         if self.stop.as_ref().is_some_and(|key| &key.link == link) {
@@ -97,6 +119,7 @@ impl HistoryFacts {
         self.raise = None;
         self.stop = None;
         self.owed = None;
+        self.withdrawal_waiting_for_link = None;
         self.central_done = true;
         self.recorded_ending = None;
         effects.push(Observation::Gate(GateEffect::FenceWaits {
@@ -111,6 +134,9 @@ impl HistoryFacts {
             key: key.clone(),
             reason,
         });
+        if !self.ready || self.dial.as_ref() != Some(&key.link) {
+            return;
+        }
         match reason {
             RunRefusal::RunNotRegistered {} => {
                 self.retire(&key.link);
@@ -211,12 +237,12 @@ impl HistoryFacts {
             if self.central_done || self.refusing_locally || self.raise.is_some() || self.saved {
                 return None;
             }
-            self.exposed = true;
+            self.published = true;
             self.raise = Some(key.clone());
             effects.push(Observation::Wait(RequestEffect::Raise {
                 call: key,
                 authority: authority(),
-                request: raise(),
+                request: self.request(),
             }));
         }
         Some(())
@@ -245,11 +271,15 @@ impl HistoryFacts {
                 }));
                 DeliverEndingReply::EndingDiffers {}
             }
+        } else if let Some(cause) = self.withdrawal_waiting_for_link.take() {
+            self.could_be_admitted = true;
+            self.record_stop(cause);
+            DeliverEndingReply::StopOwed {}
         } else if self.owed.is_some() {
             DeliverEndingReply::StopOwed {}
         } else if self.central_done {
             DeliverEndingReply::NotHeld {}
-        } else if !self.exposed || self.refusing_locally {
+        } else if !self.published || self.refusing_locally {
             DeliverEndingReply::HolderNotReady {}
         } else {
             self.recorded_ending = Some(request.clone());
@@ -266,11 +296,15 @@ impl HistoryFacts {
 
     fn stop_locally(
         &mut self,
-        cause: ProviderStopCause,
+        cause: HolderStopCause,
         effects: &mut Vec<Observation>,
     ) -> Option<()> {
-        if cause == LOST {
-            if self.owed.is_none() && !self.central_done && !self.refusing_locally {
+        if cause == LOST || cause == CALL_WITHDRAWN {
+            if self.owed.is_none()
+                && self.withdrawal_waiting_for_link.is_none()
+                && !self.central_done
+                && !self.refusing_locally
+            {
                 self.record_stop(cause);
             }
             if !self.writer_started {
@@ -278,7 +312,10 @@ impl HistoryFacts {
             }
             return Some(());
         }
-        if self.owed.is_some() || self.refusing_locally {
+        if self.owed.is_some()
+            || self.refusing_locally
+            || self.withdrawal_waiting_for_link.is_some()
+        {
             return None;
         }
         if self.central_done {
@@ -292,21 +329,49 @@ impl HistoryFacts {
         } else {
             self.record_stop(cause);
         }
-        self.claim(ProviderReply::LocalNegative(LocalNegative::Stopped(cause)));
+        self.claim(ProviderReply::LocalNegative(LocalNegative::Stopped(
+            provider_cause(cause)?,
+        )));
         Some(())
     }
 
-    fn record_stop(&mut self, cause: ProviderStopCause) {
-        if self.exposed {
-            let request = raise();
-            self.owed = Some(StopRequest::Provider {
-                request_id: request.request_id().clone(),
-                router_run: request.router_run().clone(),
-                contents_digest: request.contents_digest().unwrap(),
-                cause,
+    fn record_stop(&mut self, cause: HolderStopCause) {
+        if self.saved || self.could_be_admitted {
+            self.refusing_locally = false;
+            let request = self.request();
+            let request_id = request.request_id().clone();
+            let router_run = request.router_run().clone();
+            let contents_digest = request.contents_digest().unwrap();
+            self.owed = Some(if self.call_wait {
+                assert!(cause == CALL_WITHDRAWN || cause == HolderStopCause::HolderRefusedLocally);
+                StopRequest::UnprovenCall {
+                    request_id,
+                    router_run,
+                    contents_digest,
+                    cause: if cause == CALL_WITHDRAWN {
+                        CallStopCause::CallWithdrawn
+                    } else {
+                        CallStopCause::HolderRefusedLocally
+                    },
+                }
+            } else {
+                StopRequest::Provider {
+                    request_id,
+                    router_run,
+                    contents_digest,
+                    cause: provider_cause(cause).unwrap(),
+                }
             });
+        } else if self.raise.is_some() {
+            self.withdrawal_waiting_for_link = Some(cause);
         } else {
             self.refusing_locally = true;
+        }
+    }
+
+    fn settle_withdrawal(&mut self) {
+        if let Some(cause) = self.withdrawal_waiting_for_link.take() {
+            self.record_stop(cause);
         }
     }
 
@@ -323,12 +388,30 @@ impl HistoryFacts {
                 self.raise = None;
                 match reply {
                     RaiseReply::AuthorityRefused { refusal } => {
+                        self.settle_withdrawal();
                         self.authority_refused(key.clone(), *refusal, &mut effects)
                     }
                     RaiseReply::Receipt { .. } if self.owed.is_none() && !self.central_done => {
-                        self.saved = true
+                        self.saved = true;
+                        self.settle_withdrawal();
                     }
-                    _ => {}
+                    RaiseReply::TooManyOutstanding {}
+                        if self.owed.is_none() && !self.central_done =>
+                    {
+                        if self.withdrawal_waiting_for_link.is_some() {
+                            self.settle_withdrawal();
+                        } else {
+                            self.record_stop(HolderStopCause::HolderRefusedLocally);
+                            self.claim(ProviderReply::LocalNegative(LocalNegative::RaiseRefused(
+                                RaiseRefusal::TooManyOutstanding,
+                            )));
+                        }
+                    }
+                    RaiseReply::Receipt { .. }
+                    | RaiseReply::AlreadyStopped {}
+                    | RaiseReply::SessionEnded {}
+                    | RaiseReply::ContentsDiffer {}
+                    | RaiseReply::TooManyOutstanding {} => {}
                 }
             }
             WaitInput::Stop { key, reply } if self.stop.as_ref() == Some(key) => {
@@ -343,8 +426,8 @@ impl HistoryFacts {
                         self.central_done = true;
                         self.owed = None;
                         effects.push(Observation::Wait(RequestEffect::StopNotVisible {
-                            request_id: raise().request_id().clone(),
-                            contents_digest: raise().contents_digest().unwrap(),
+                            request_id: self.request().request_id().clone(),
+                            contents_digest: self.request().contents_digest().unwrap(),
                         }));
                     }
                     StopReply::AuthorityRefused { refusal } => {
@@ -352,11 +435,15 @@ impl HistoryFacts {
                     }
                 }
             }
-            WaitInput::Lost(key)
+            WaitInput::AnswerLost(key) | WaitInput::NotReached(key)
                 if self.raise.as_ref() == Some(key) || self.stop.as_ref() == Some(key) =>
             {
                 if self.raise.as_ref() == Some(key) {
                     self.raise = None;
+                    if matches!(action, WaitInput::AnswerLost(_)) {
+                        self.could_be_admitted = true;
+                    }
+                    self.settle_withdrawal();
                 }
                 if self.stop.as_ref() == Some(key) {
                     self.stop = None;
@@ -372,6 +459,9 @@ impl HistoryFacts {
             }
             _ if self.closed() || self.ended => return None,
             WaitInput::Publish(attempt) => self.publish(*attempt, &mut effects)?,
+            WaitInput::LocalStop(cause) if self.call_wait != (*cause == CALL_WITHDRAWN) => {
+                effects.push(Observation::StopCauseRefused);
+            }
             WaitInput::LocalStop(cause) => self.stop_locally(*cause, &mut effects)?,
             WaitInput::Permit { responder, reply }
                 if *responder == RESPONDER
@@ -393,12 +483,19 @@ impl HistoryFacts {
                     reply: reply.clone(),
                 }));
             }
+            WaitInput::ProviderWithdrew(_) if self.call_wait => {
+                effects.push(Observation::StopCauseRefused);
+            }
             WaitInput::ProviderWithdrew(responder)
                 if *responder == RESPONDER && !self.handle_released =>
             {
                 if !self.writer_started {
-                    if self.owed.is_none() && !self.central_done && !self.refusing_locally {
-                        self.record_stop(ProviderStopCause::AskWithdrawn);
+                    if self.owed.is_none()
+                        && self.withdrawal_waiting_for_link.is_none()
+                        && !self.central_done
+                        && !self.refusing_locally
+                    {
+                        self.record_stop(HolderStopCause::AskWithdrawn);
                     }
                     self.release(&mut effects);
                 }
@@ -424,12 +521,13 @@ enum WaitInput {
         key: Key,
         reply: StopReply,
     },
-    Lost(Key),
+    AnswerLost(Key),
+    NotReached(Key),
     Ending {
         link: Link,
         request: DeliverEndingRequest,
     },
-    LocalStop(ProviderStopCause),
+    LocalStop(HolderStopCause),
     Permit {
         responder: u8,
         reply: ProviderReply,
@@ -443,143 +541,7 @@ enum WaitInput {
     Finish(WriterOutcome),
 }
 
-struct Product {
-    gate: RunGateState<u8, u8>,
-    wait: WaitState<u8, u8>,
-}
-
-impl Product {
-    fn new() -> Self {
-        Self {
-            gate: RunGateState::new(authority()),
-            wait: WaitState::bound(raise(), RESPONDER).unwrap(),
-        }
-    }
-
-    fn gate(&mut self, event: GateEvent) -> Option<Vec<Observation>> {
-        let lost = match &event {
-            GateEvent::ConnectionLost { link } => Some(link.clone()),
-            _ => None,
-        };
-        let (next, effects) = match RunGate::transition(&self.gate, event) {
-            Ok(result) => result,
-            Err(TransitionError::Stale) => return None,
-            Err(TransitionError::Domain(impossible)) => match impossible {},
-            Err(error @ TransitionError::NotAllowed { .. }) => {
-                panic!("Unexpected gate refusal: {error:?}")
-            }
-        };
-        self.gate = next;
-        let mut observed = Vec::new();
-        for effect in effects {
-            observed.push(Observation::Gate(effect.clone()));
-            match effect {
-                GateEffect::RetireConnection { link } => self.retire(link),
-                GateEffect::FenceWaits { .. } => observed.extend(
-                    self.apply_local(RequestEvent::AuthorityEnded)
-                        .unwrap()
-                        .into_iter()
-                        .map(Observation::Wait),
-                ),
-                GateEffect::Register { .. } => {}
-            }
-        }
-        if let Some(link) = lost {
-            self.retire(link);
-        }
-        Some(observed)
-    }
-
-    fn retire(&mut self, link: Link) {
-        if let Some(effects) = self.apply_local(RequestEvent::ConnectionRetired { link }) {
-            assert!(effects.is_empty());
-        }
-    }
-
-    fn apply_local(&mut self, event: RequestEvent) -> Option<Vec<RequestEffect>> {
-        match RequestMachine::transition(&self.wait, event) {
-            Ok((state, effects)) => {
-                self.wait = state;
-                Some(effects)
-            }
-            Err(TransitionError::Stale) => None,
-            Err(error) => panic!("Unexpected wait refusal: {error:?}"),
-        }
-    }
-
-    fn wait(&mut self, input: &WaitInput) -> Option<Vec<Observation>> {
-        let result = match input {
-            WaitInput::Publish(attempt) => try_publish(&self.wait, &self.gate, *attempt),
-            WaitInput::Ending { link, request } => try_offer(
-                &self.wait,
-                &self.gate,
-                authority(),
-                link.clone(),
-                request.clone(),
-            ),
-            other => RequestMachine::transition(&self.wait, Self::local_event(other)?),
-        };
-        let (next, effects) = match result {
-            Ok(result) => result,
-            Err(TransitionError::Stale) => return None,
-            Err(error) => panic!("Unexpected wait refusal: {error:?}"),
-        };
-        self.wait = next;
-        let mut observed = Vec::new();
-        for effect in effects {
-            match effect {
-                RequestEffect::RunRefused(matched) => {
-                    observed.push(Observation::Refusal {
-                        key: matched.call().clone(),
-                        reason: matched.reason(),
-                    });
-                    observed.extend(
-                        self.gate(GateEvent::HolderAuthorityRefused(matched))
-                            .unwrap(),
-                    );
-                }
-                other => observed.push(Observation::Wait(other)),
-            }
-        }
-        Some(observed)
-    }
-
-    fn local_event(input: &WaitInput) -> Option<RequestEvent> {
-        Some(match input {
-            WaitInput::Publish(_) | WaitInput::Ending { .. } => return None,
-            WaitInput::Raise { key, reply } => RequestEvent::RaiseReply {
-                call: key.clone(),
-                reply: reply.clone(),
-            },
-            WaitInput::Stop { key, reply } => RequestEvent::StopReply {
-                call: key.clone(),
-                reply: reply.clone(),
-            },
-            WaitInput::Lost(key) => RequestEvent::CallEndedWithoutReply { call: key.clone() },
-            WaitInput::LocalStop(cause) => RequestEvent::LocalStop { cause: *cause },
-            WaitInput::Permit { responder, reply } => RequestEvent::TakeFinalPermit {
-                responder: *responder,
-                reply: reply.clone(),
-            },
-            WaitInput::Start { responder, reply } => RequestEvent::StartWrite {
-                responder: *responder,
-                reply: reply.clone(),
-            },
-            WaitInput::ProviderWithdrew(responder) => RequestEvent::ProviderWithdrew {
-                responder: *responder,
-            },
-            WaitInput::Withdraw => RequestEvent::CapabilityWithdrawn {
-                responder: RESPONDER,
-            },
-            WaitInput::Finish(outcome) => RequestEvent::WriteFinished {
-                responder: RESPONDER,
-                outcome: *outcome,
-            },
-        })
-    }
-}
-
-fn ending(alternate: bool) -> DeliverEndingRequest {
+fn ending(request: &Raise, alternate: bool) -> DeliverEndingRequest {
     let value = if alternate {
         Ending::Cancelled {
             reason: CancelReason::RequesterGone {},
@@ -587,7 +549,7 @@ fn ending(alternate: bool) -> DeliverEndingRequest {
     } else {
         Ending::TimedOut {}
     };
-    DeliverEndingRequest::from_raise(&raise(), value).unwrap()
+    DeliverEndingRequest::from_raise(request, value).unwrap()
 }
 
 fn assert_observations(actual: &Product, model: &HistoryFacts) {
@@ -610,8 +572,37 @@ fn assert_observations(actual: &Product, model: &HistoryFacts) {
 
 #[hegel::test(test_cases = 300)]
 fn generated_gate_and_wait_histories_match_the_independent_facts(case: hegel::TestCase) {
-    let mut actual = Product::new();
-    let mut model = HistoryFacts::default();
+    exercise_history(case, false);
+}
+
+#[hegel::test(test_cases = 300)]
+fn generated_gate_and_call_wait_histories_match_the_independent_facts(case: hegel::TestCase) {
+    exercise_history(case, true);
+}
+
+fn exercise_history(case: hegel::TestCase, call_wait: bool) {
+    capacity_history::check(call_wait, false);
+    capacity_history::check(call_wait, true);
+    for earlier_answer_lost in [false, true] {
+        check_exposure_history(call_wait, earlier_answer_lost);
+    }
+    let (mut actual, mut model) = registered_history(call_wait);
+    let request = model.request();
+    let first = WaitInput::Publish(CallAttempt::new(2));
+    assert_eq!(
+        actual.wait(&first),
+        model.wait(&first),
+        "initial publication"
+    );
+    exercise_generated_steps(case, &mut actual, &mut model, &request, call_wait);
+}
+
+fn registered_history(call_wait: bool) -> (Product, HistoryFacts) {
+    let mut model = HistoryFacts {
+        call_wait,
+        ..HistoryFacts::default()
+    };
+    let mut actual = Product::new(model.request());
     let initial = Link {
         connection: 1,
         dial: DialAttempt::new(1),
@@ -639,15 +630,50 @@ fn generated_gate_and_wait_histories_match_the_independent_facts(case: hegel::Te
         assert_eq!(actual.gate(event.clone()), model.gate(&event), "{event:?}");
         assert_observations(&actual, &model);
     }
-    let first = WaitInput::Publish(CallAttempt::new(2));
+    (actual, model)
+}
+
+fn check_exposure_history(call_wait: bool, earlier_answer_lost: bool) {
+    let (mut actual, mut model) = registered_history(call_wait);
+    let mut inputs = vec![WaitInput::Publish(CallAttempt::new(2))];
+    if earlier_answer_lost {
+        inputs.push(WaitInput::AnswerLost(super::fixtures::call(1, 2)));
+        inputs.push(WaitInput::Publish(CallAttempt::new(3)));
+    }
+    inputs.push(WaitInput::NotReached(super::fixtures::call(
+        1,
+        if earlier_answer_lost { 3 } else { 2 },
+    )));
+    inputs.push(if call_wait {
+        WaitInput::LocalStop(CALL_WITHDRAWN)
+    } else {
+        WaitInput::ProviderWithdrew(RESPONDER)
+    });
+    for input in inputs {
+        assert_eq!(actual.wait(&input), model.wait(&input), "{input:?}");
+        assert_observations(&actual, &model);
+    }
+    let publish = WaitInput::Publish(CallAttempt::new(4));
+    let expected = model.wait(&publish);
+    assert_eq!(expected.is_some(), earlier_answer_lost);
     assert_eq!(
-        actual.wait(&first),
-        model.wait(&first),
-        "initial publication"
+        actual.wait(&publish),
+        expected,
+        "stop eligibility after an unseen Raise"
     );
+    assert_observations(&actual, &model);
+}
+
+fn exercise_generated_steps(
+    case: hegel::TestCase,
+    actual: &mut Product,
+    model: &mut HistoryFacts,
+    request: &Raise,
+    call_wait: bool,
+) {
     let steps = case.draw(gs::integers::<u8>().min_value(6).max_value(48));
     for step in 0..steps {
-        let event = case.draw(gs::integers::<u8>().max_value(22));
+        let event = case.draw(gs::integers::<u8>().max_value(24));
         let exact = case.draw(gs::booleans());
         let alternate = case.draw(gs::booleans());
         let serial = u64::from(step) + 3;
@@ -709,7 +735,7 @@ fn generated_gate_and_wait_histories_match_the_independent_facts(case: hegel::Te
             );
         } else {
             let reply = model.selected.clone().filter(|_| exact).unwrap_or_else(|| {
-                ProviderReply::CentralEnding(ending(alternate).ending().clone())
+                ProviderReply::CentralEnding(ending(request, alternate).ending().clone())
             });
             let responder = if alternate { RESPONDER } else { 2 };
             let input = match event {
@@ -718,7 +744,7 @@ fn generated_gate_and_wait_histories_match_the_independent_facts(case: hegel::Te
                     key: key(&model.raise),
                     reply: RaiseReply::Receipt {
                         receipt: RaiseReceipt {
-                            request_id: raise().request_id().clone(),
+                            request_id: request.request_id().clone(),
                             window: "2026-11-22T17:00:00Z"
                                 .parse()
                                 .map(approval_request_protocol::ApprovalWindow::from_first_save)
@@ -757,12 +783,20 @@ fn generated_gate_and_wait_histories_match_the_independent_facts(case: hegel::Te
                         },
                     },
                 },
-                12 => WaitInput::Lost(key(if alternate { &model.raise } else { &model.stop })),
+                12 => {
+                    WaitInput::AnswerLost(key(if alternate { &model.raise } else { &model.stop }))
+                }
                 13 | 14 => WaitInput::Ending {
                     link,
-                    request: ending(alternate),
+                    request: ending(request, alternate),
                 },
-                15 => WaitInput::LocalStop(if alternate { LOST } else { STOP }),
+                15 => WaitInput::LocalStop(if call_wait {
+                    if alternate { CALL_WITHDRAWN } else { LOST }
+                } else if alternate {
+                    LOST
+                } else {
+                    STOP
+                }),
                 16 => WaitInput::Permit { responder, reply },
                 17 => WaitInput::Start { responder, reply },
                 18 => WaitInput::Withdraw,
@@ -780,6 +814,13 @@ fn generated_gate_and_wait_histories_match_the_independent_facts(case: hegel::Te
                     reply,
                 },
                 22 => WaitInput::ProviderWithdrew(responder),
+                23 => {
+                    WaitInput::NotReached(key(if alternate { &model.raise } else { &model.stop }))
+                }
+                24 => WaitInput::Raise {
+                    key: key(&model.raise),
+                    reply: RaiseReply::TooManyOutstanding {},
+                },
                 _ => WaitInput::Publish(CallAttempt::new(serial)),
             };
             assert_eq!(
@@ -788,6 +829,6 @@ fn generated_gate_and_wait_histories_match_the_independent_facts(case: hegel::Te
                 "history step {step}: {input:?}"
             );
         }
-        assert_observations(&actual, &model);
+        assert_observations(actual, model);
     }
 }

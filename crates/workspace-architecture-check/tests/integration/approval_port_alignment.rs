@@ -1,6 +1,6 @@
 use approval_request_protocol::{
-    ProviderHolder, ProviderStopCause, QuestionField, QuestionFieldId, QuestionFields,
-    QuestionOffer, Raise, RegisterRunReply,
+    HolderStopCause, ProviderHolder, ProviderStopCause, QuestionField, QuestionFieldId,
+    QuestionFields, QuestionOffer, Raise, RegisterRunReply, StopRequest,
 };
 use state_machine_core::{StateMachine, TransitionError};
 use std::num::NonZeroU64;
@@ -9,8 +9,8 @@ use switchboard_approval_holder::run_gate::{
     RunGateRefusal, RunGateState,
 };
 use switchboard_approval_holder::waiting_request::{
-    LocalNegative, ProviderReply, RaiseRefusal, WaitEffect, WaitEvent, WaitState, WaitingRequest,
-    WriterOutcome,
+    LinkAttemptDisposition, LocalNegative, ProviderReply, RaiseRefusal, WaitEffect, WaitEvent,
+    WaitRefusal, WaitState, WaitingRequest, WriterOutcome,
     gate_access::{GateWaitEvent, step_under_gate},
 };
 use switchboard_approval_ports::{
@@ -130,24 +130,38 @@ fn pre_start_handle_loss_releases_the_responder_and_keeps_the_exact_stop_due() {
         dial: DialAttempt::new(1),
     };
     let gate = registered_gate(&authority, &link).unwrap();
-    let wait = WaitState::bound(raise, responder.clone()).unwrap();
+    let stop_request = StopRequest::Provider {
+        request_id: raise.request_id().clone(),
+        router_run: raise.router_run().clone(),
+        contents_digest: raise.contents_digest().unwrap(),
+        cause: ProviderStopCause::TurnStopped,
+    };
+    let raise_call = CallKey {
+        link: link.clone(),
+        attempt: CallAttempt::new(1),
+    };
+    let wait = WaitState::bound(raise.clone(), responder.clone()).unwrap();
     let (raising, raises) = step_under_gate(
         &wait,
         &gate,
         GateWaitEvent::Publish {
             authority: authority.clone(),
-            call: CallKey {
-                link: link.clone(),
-                attempt: CallAttempt::new(1),
-            },
+            call: raise_call.clone(),
         },
     )
     .unwrap();
-    assert!(matches!(raises.as_slice(), [WaitEffect::Raise { .. }]));
-    let (stopping, effects) = ExactWait::transition(
+    assert_eq!(
+        raises,
+        [WaitEffect::Raise {
+            call: raise_call.clone(),
+            authority: authority.clone(),
+            request: raise,
+        }]
+    );
+    let (awaiting_disposition, effects) = ExactWait::transition(
         &raising,
         WaitEvent::LocalStop {
-            cause: ProviderStopCause::TurnStopped,
+            cause: HolderStopCause::TurnStopped,
         },
     )
     .unwrap();
@@ -162,17 +176,35 @@ fn pre_start_handle_loss_releases_the_responder_and_keeps_the_exact_stop_due() {
         responder: responder.clone(),
         reply: reply.clone(),
     };
+    let stop_call = CallKey {
+        link,
+        attempt: CallAttempt::new(2),
+    };
     let publish_stop = || GateWaitEvent::Publish {
         authority: authority.clone(),
-        call: CallKey {
-            link: link.clone(),
-            attempt: CallAttempt::new(2),
-        },
+        call: stop_call.clone(),
     };
+    assert_eq!(
+        step_under_gate(&awaiting_disposition, &gate, publish_stop()),
+        Err(TransitionError::Stale)
+    );
+    let (stopping, effects) = ExactWait::transition(
+        &awaiting_disposition,
+        WaitEvent::AttemptSettled {
+            call: raise_call,
+            disposition: LinkAttemptDisposition::AnswerLost,
+        },
+    )
+    .unwrap();
+    assert!(effects.is_empty());
     let (_, expected_stop) = step_under_gate(&stopping, &gate, publish_stop()).unwrap();
-    assert!(
-        matches!(expected_stop.as_slice(), [WaitEffect::Stop { request, .. }]
-        if request.cause() == approval_request_protocol::HolderStopCause::TurnStopped)
+    assert_eq!(
+        expected_stop,
+        [WaitEffect::Stop {
+            call: stop_call.clone(),
+            authority: authority.clone(),
+            request: stop_request,
+        }]
     );
     let (permitted, effects) = ExactWait::transition(&stopping, permit()).unwrap();
     assert!(effects.is_empty());
@@ -238,7 +270,9 @@ fn replyable_stops_exhaust_the_holder_claims() {
                 responder: RESPONDER,
             }
         } else {
-            WaitEvent::LocalStop { cause }
+            WaitEvent::LocalStop {
+                cause: cause.holder_cause(),
+            }
         };
         let (stopped, _) = HolderWait::transition(&state, event).unwrap();
         let expected = replyable_cause(cause).map(|replyable| {
@@ -253,8 +287,15 @@ fn replyable_stops_exhaust_the_holder_claims() {
     let cause = ProviderStopCause::HolderRefusedLocally;
     assert_eq!(replyable_cause(cause), None);
     assert_eq!(
-        HolderWait::transition(&bound_wait().unwrap(), WaitEvent::LocalStop { cause }),
-        Err(TransitionError::Stale)
+        HolderWait::transition(
+            &bound_wait().unwrap(),
+            WaitEvent::LocalStop {
+                cause: cause.holder_cause()
+            }
+        ),
+        Err(TransitionError::Domain(
+            WaitRefusal::HolderRefusedLocallyRequiresRefusalSelection
+        ))
     );
 }
 
