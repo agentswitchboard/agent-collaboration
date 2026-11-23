@@ -1,11 +1,11 @@
-//! One provider ask, its exact responder and its Central Raise or Stop duty.
+//! One approval wait, its exact responder and its Central Raise or Stop duty.
 
 use std::marker::PhantomData;
 
 use approval_request_protocol::{
-    ApprovalDigestError, DeliverEndingReply, DeliverEndingRequest, InvalidApprovalEnding,
-    PrivateEnding, ProviderStopCause, Raise, RaiseReply, RequestContentsDigest, StopReply,
-    StopRequest,
+    ApprovalDigestError, CallStopCause, DeliverEndingReply, DeliverEndingRequest, HolderStopCause,
+    InvalidApprovalEnding, PrivateEnding, ProviderStopCause, Raise, RaiseReply,
+    RequestContentsDigest, RequestKind, StopReply, StopRequest,
 };
 use state_machine_core::{
     EventTag, RefusalTag, StateMachine, StateMachineResult, StateTag, Transition, TransitionError,
@@ -35,9 +35,16 @@ enum CentralDuty<Connection> {
     Unsent,
     Raising(Call<Connection>),
     WaitingForEnding,
+    // Local custody has ended or claimed a negative. Only evidence from the
+    // exact pending Raise can make this candidate Stop eligible.
+    AwaitingRaiseDisposition {
+        raise: CallKey<Connection>,
+        stop: StopRequest,
+    },
     Stopping {
         request: StopRequest,
         call: Call<Connection>,
+        published_attempts: Vec<CallKey<Connection>>,
     },
     Refusing,
     Done,
@@ -97,12 +104,37 @@ enum Authority {
     Ended,
 }
 
-/// Central duty and responder custody for a single provider ask.
+/// Which local responder this wait owns, including local capacity refusals.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RequestFamily {
+    ProviderAsk,
+    HeldCall,
+}
+
+#[derive(Clone, Copy)]
+enum FamilyStopCause {
+    Provider(ProviderStopCause),
+    Call(CallStopCause),
+}
+
+impl FamilyStopCause {
+    const fn family(self) -> RequestFamily {
+        match self {
+            Self::Provider(_) => RequestFamily::ProviderAsk,
+            Self::Call(_) => RequestFamily::HeldCall,
+        }
+    }
+}
+
+/// Central duty and responder custody for a single approval wait.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WaitState<Responder, Connection> {
+    family: RequestFamily,
     request_id: Option<ApprovalRequestId>,
     router_run: Option<RouterRunId>,
     displaced_raise: Option<CallKey<Connection>>,
+    // A later retry cannot disprove an admission concealed by a lost answer.
+    earlier_raise_may_be_admitted: bool,
     frozen: Option<FrozenRaise>,
     central: CentralDuty<Connection>,
     custody: Custody<Responder>,
@@ -113,10 +145,18 @@ pub struct WaitState<Responder, Connection> {
 impl<Responder, Connection> WaitState<Responder, Connection> {
     pub fn bound(raise: Raise, responder: Responder) -> Result<Self, ApprovalDigestError> {
         let digest = raise.contents_digest()?;
+        let family = match raise.kind() {
+            RequestKind::ProviderApproval | RequestKind::ProviderQuestion => {
+                RequestFamily::ProviderAsk
+            }
+            RequestKind::UnprovenCall => RequestFamily::HeldCall,
+        };
         Ok(Self {
+            family,
             request_id: Some(raise.request_id().clone()),
             router_run: Some(raise.router_run().clone()),
             displaced_raise: None,
+            earlier_raise_may_be_admitted: false,
             frozen: Some(FrozenRaise {
                 body: raise,
                 digest,
@@ -129,18 +169,28 @@ impl<Responder, Connection> WaitState<Responder, Connection> {
     }
 
     pub const fn unbound(responder: Responder) -> Self {
-        Self::local_refusal(responder, LocalNegative::SessionNotBound)
+        Self::local_refusal(
+            RequestFamily::ProviderAsk,
+            responder,
+            LocalNegative::SessionNotBound,
+        )
     }
 
-    pub const fn at_capacity(responder: Responder) -> Self {
-        Self::local_refusal(responder, LocalNegative::HolderAtCapacity)
+    pub const fn at_capacity(family: RequestFamily, responder: Responder) -> Self {
+        Self::local_refusal(family, responder, LocalNegative::HolderAtCapacity)
     }
 
-    const fn local_refusal(responder: Responder, reason: LocalNegative) -> Self {
+    const fn local_refusal(
+        family: RequestFamily,
+        responder: Responder,
+        reason: LocalNegative,
+    ) -> Self {
         Self {
+            family,
             request_id: None,
             router_run: None,
             displaced_raise: None,
+            earlier_raise_may_be_admitted: false,
             frozen: None,
             central: CentralDuty::Refusing,
             custody: Custody::Claimed {
@@ -168,6 +218,7 @@ impl<Responder, Connection> WaitState<Responder, Connection> {
             || matches!(
                 self.central,
                 CentralDuty::Raising(Call::InFlight(_))
+                    | CentralDuty::AwaitingRaiseDisposition { .. }
                     | CentralDuty::Stopping {
                         call: Call::InFlight(_),
                         ..
@@ -195,31 +246,42 @@ impl<Responder, Connection> WaitState<Responder, Connection> {
             self.central = CentralDuty::Done;
         }
         if !self.holds_place() {
+            self.earlier_raise_may_be_admitted = false;
             self.frozen = None;
             self.claim = None;
         }
     }
 }
 
+/// The link's observed disposition of one exact outgoing frame.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LinkAttemptDisposition {
+    /// The writer proved that this frame never started.
+    NotReached,
+    /// The frame may have reached Central. The link has no answer for it.
+    AnswerLost,
+    Answered(LinkCallAnswer),
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum LinkCallAnswer {
+    Raise(RaiseReply),
+    Stop(StopReply),
+}
+
 /// Inputs from the authenticated link owner or the exact responder owner.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WaitEvent<Responder, Connection> {
-    RaiseReply {
+    AttemptSettled {
         call: CallKey<Connection>,
-        reply: RaiseReply,
+        disposition: LinkAttemptDisposition,
     },
-    StopReply {
-        call: CallKey<Connection>,
-        reply: StopReply,
-    },
-    CallEndedWithoutReply {
-        call: CallKey<Connection>,
-    },
+    /// Retires the carrier. An unresolved Raise still needs its exact disposition.
     ConnectionRetired {
         link: LinkAttempt<Connection>,
     },
     LocalStop {
-        cause: ProviderStopCause,
+        cause: HolderStopCause,
     },
     TakeFinalPermit {
         responder: Responder,
@@ -285,13 +347,15 @@ pub enum WaitEffect<Responder, Connection, Enrollment> {
     },
 }
 
-/// A current Raise reply names a different request.
+/// An input conflicts with the approval wait's binding.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WaitRefusal {
     ReceiptForDifferentRequest,
+    StopCauseForDifferentKind,
+    HolderRefusedLocallyRequiresRefusalSelection,
 }
 
-/// Owns a provider ask through its one-shot handover and any exact owed Stop.
+/// Owns an approval wait through its one-shot handover and any exact owed Stop.
 pub struct WaitingRequest<Responder, Connection, Enrollment>(
     PhantomData<(Responder, Connection, Enrollment)>,
 );
@@ -321,9 +385,13 @@ impl<Responder, Connection> StateTag for WaitState<Responder, Connection> {
 impl<Responder, Connection> EventTag for WaitEvent<Responder, Connection> {
     fn event_tag(&self) -> &'static str {
         match self {
-            Self::RaiseReply { .. } => "raise_reply",
-            Self::StopReply { .. } => "stop_reply",
-            Self::CallEndedWithoutReply { .. } => "call_ended",
+            Self::AttemptSettled { disposition, .. } => match disposition {
+                LinkAttemptDisposition::Answered(LinkCallAnswer::Raise(_)) => "raise_reply",
+                LinkAttemptDisposition::Answered(LinkCallAnswer::Stop(_)) => "stop_reply",
+                LinkAttemptDisposition::NotReached | LinkAttemptDisposition::AnswerLost => {
+                    "call_ended"
+                }
+            },
             Self::ConnectionRetired { .. } => "connection_retired",
             Self::LocalStop { .. } => "local_stop",
             Self::TakeFinalPermit { .. } => "take_permit",
@@ -340,6 +408,10 @@ impl RefusalTag for WaitRefusal {
     fn refusal_tag(&self) -> &'static str {
         match self {
             Self::ReceiptForDifferentRequest => "receipt_for_different_request",
+            Self::StopCauseForDifferentKind => "stop_cause_for_different_kind",
+            Self::HolderRefusedLocallyRequiresRefusalSelection => {
+                "holder_refused_locally_requires_refusal_selection"
+            }
         }
     }
 }
@@ -399,20 +471,64 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
                 DeliverEndingReply::Received {}
             }
             CentralDuty::Stopping { .. } => DeliverEndingReply::StopOwed {},
+            CentralDuty::AwaitingRaiseDisposition { .. } => {
+                self.stop_after_raise_proven_by_ending();
+                DeliverEndingReply::StopOwed {}
+            }
             CentralDuty::Done => DeliverEndingReply::NotHeld {},
         })
     }
 
-    fn local_stop(&mut self, cause: ProviderStopCause) -> Result<(), WaitError> {
+    fn check_stop_family(&self, family: RequestFamily) -> Result<(), WaitError> {
+        if self.family == family {
+            Ok(())
+        } else {
+            Err(TransitionError::Domain(
+                WaitRefusal::StopCauseForDifferentKind,
+            ))
+        }
+    }
+
+    fn stop_locally<Enrollment>(
+        &mut self,
+        cause: HolderStopCause,
+        effects: &mut Effects<Responder, Connection, Enrollment>,
+    ) -> Result<(), WaitError> {
+        if cause != HolderStopCause::HolderRefusedLocally
+            && (!self.holds_place() || self.authority == Authority::Ended)
+        {
+            return Err(TransitionError::Stale);
+        }
+        match cause {
+            HolderStopCause::ProviderConnectionLost => self.abandon_reply(
+                FamilyStopCause::Provider(ProviderStopCause::ProviderConnectionLost),
+                effects,
+            ),
+            HolderStopCause::CallWithdrawn => {
+                self.abandon_reply(FamilyStopCause::Call(CallStopCause::CallWithdrawn), effects)
+            }
+            HolderStopCause::TurnStopped => self.refuse_provider(ProviderStopCause::TurnStopped),
+            HolderStopCause::SessionClosed => {
+                self.refuse_provider(ProviderStopCause::SessionClosed)
+            }
+            HolderStopCause::AskReplaced => self.refuse_provider(ProviderStopCause::AskReplaced),
+            HolderStopCause::AskWithdrawn => {
+                self.check_stop_family(RequestFamily::ProviderAsk)?;
+                Err(TransitionError::Stale)
+            }
+            HolderStopCause::HolderRefusedLocally => Err(TransitionError::Domain(
+                WaitRefusal::HolderRefusedLocallyRequiresRefusalSelection,
+            )),
+        }
+    }
+
+    fn refuse_provider(&mut self, cause: ProviderStopCause) -> Result<(), WaitError> {
+        self.check_stop_family(RequestFamily::ProviderAsk)?;
         let reply = ProviderReply::LocalNegative(LocalNegative::Stopped(cause));
         match &self.central {
-            CentralDuty::Unsent => {
+            CentralDuty::Unsent | CentralDuty::Raising(_) | CentralDuty::WaitingForEnding => {
                 self.claim_available(reply)?;
-                self.central = CentralDuty::Refusing;
-            }
-            CentralDuty::Raising(_) | CentralDuty::WaitingForEnding => {
-                self.claim_available(reply)?;
-                self.begin_stop(cause)?;
+                self.begin_stop(FamilyStopCause::Provider(cause))?;
             }
             CentralDuty::Done if self.claim.is_some() => match &self.custody {
                 Custody::Claimed {
@@ -435,7 +551,10 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
                 | Custody::Released
                 | Custody::FencedAfterStart(_) => return Err(TransitionError::Stale),
             },
-            CentralDuty::Stopping { .. } | CentralDuty::Refusing | CentralDuty::Done => {
+            CentralDuty::AwaitingRaiseDisposition { .. }
+            | CentralDuty::Stopping { .. }
+            | CentralDuty::Refusing
+            | CentralDuty::Done => {
                 return Err(TransitionError::Stale);
             }
         }
@@ -447,6 +566,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
         exact: &Responder,
         effects: &mut Effects<Responder, Connection, Enrollment>,
     ) -> Result<(), WaitError> {
+        self.check_stop_family(RequestFamily::ProviderAsk)?;
         match &self.custody {
             Custody::Available(responder)
             | Custody::Claimed { responder, .. }
@@ -462,20 +582,26 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
                 return Err(TransitionError::Stale);
             }
         }
-        self.abandon_provider_reply(ProviderStopCause::AskWithdrawn, effects)
+        self.abandon_reply(
+            FamilyStopCause::Provider(ProviderStopCause::AskWithdrawn),
+            effects,
+        )
     }
 
-    fn abandon_provider_reply<Enrollment>(
+    fn abandon_reply<Enrollment>(
         &mut self,
-        cause: ProviderStopCause,
+        cause: FamilyStopCause,
         effects: &mut Effects<Responder, Connection, Enrollment>,
     ) -> Result<(), WaitError> {
+        self.check_stop_family(cause.family())?;
         match self.central {
-            CentralDuty::Unsent => self.central = CentralDuty::Refusing,
-            CentralDuty::Raising(_) | CentralDuty::WaitingForEnding => {
+            CentralDuty::Unsent | CentralDuty::Raising(_) | CentralDuty::WaitingForEnding => {
                 self.begin_stop(cause)?;
             }
-            CentralDuty::Stopping { .. } | CentralDuty::Refusing | CentralDuty::Done => {}
+            CentralDuty::AwaitingRaiseDisposition { .. }
+            | CentralDuty::Stopping { .. }
+            | CentralDuty::Refusing
+            | CentralDuty::Done => {}
         }
         match &self.custody {
             Custody::Available(responder)
@@ -572,6 +698,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
     fn fence<Enrollment>(&mut self, effects: &mut Effects<Responder, Connection, Enrollment>) {
         self.authority = Authority::Ended;
         self.displaced_raise = None;
+        self.earlier_raise_may_be_admitted = false;
         self.central = CentralDuty::Done;
         self.claim = None;
         self.frozen = None;
@@ -609,28 +736,21 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq, Enrollment> StateMachine
                 next.complete(responder, outcome, &mut effects)?
             }
             WaitEvent::AuthorityEnded => next.fence(&mut effects),
-            WaitEvent::RaiseReply { call, reply } => {
-                next.receive_raise(call, reply, &mut effects)?
-            }
-            WaitEvent::StopReply { call, reply } => next.receive_stop(call, reply, &mut effects)?,
-            WaitEvent::CallEndedWithoutReply { call } => next.end_call(&call)?,
+            WaitEvent::AttemptSettled { call, disposition } => match disposition {
+                LinkAttemptDisposition::Answered(LinkCallAnswer::Raise(reply)) => {
+                    next.receive_raise(call, reply, &mut effects)?
+                }
+                LinkAttemptDisposition::Answered(LinkCallAnswer::Stop(reply)) => {
+                    next.receive_stop(call, reply, &mut effects)?
+                }
+                LinkAttemptDisposition::NotReached => next.settle_unanswered(&call, false)?,
+                LinkAttemptDisposition::AnswerLost => next.settle_unanswered(&call, true)?,
+            },
             WaitEvent::ConnectionRetired { link } => next.retire_connection(&link)?,
+            WaitEvent::LocalStop { cause } => next.stop_locally(cause, &mut effects)?,
             _ if !state.holds_place() || state.authority == Authority::Ended => {
                 return Err(TransitionError::Stale);
             }
-            WaitEvent::LocalStop {
-                cause: ProviderStopCause::ProviderConnectionLost,
-            } => next
-                .abandon_provider_reply(ProviderStopCause::ProviderConnectionLost, &mut effects)?,
-            WaitEvent::LocalStop {
-                cause:
-                    cause @ (ProviderStopCause::TurnStopped
-                    | ProviderStopCause::SessionClosed
-                    | ProviderStopCause::AskReplaced),
-            } => next.local_stop(cause)?,
-            WaitEvent::LocalStop {
-                cause: ProviderStopCause::AskWithdrawn | ProviderStopCause::HolderRefusedLocally,
-            } => return Err(TransitionError::Stale),
             WaitEvent::TakeFinalPermit { responder, reply } => next.permit(&responder, &reply)?,
             WaitEvent::StartWrite { responder, reply } => {
                 effects.push(next.start(responder, reply)?)
@@ -665,9 +785,11 @@ const fn step(
 
 const WAIT_TRANSITIONS: &[Transition] = &[
     step("live", "raise_reply", "live", false),
+    step("live", "raise_reply", "closed", true),
     step("live", "stop_reply", "live", false),
     step("live", "stop_reply", "closed", true),
     step("live", "call_ended", "live", false),
+    step("live", "call_ended", "closed", true),
     step("draining", "call_ended", "closed", true),
     step("live", "connection_retired", "live", false),
     step("draining", "connection_retired", "closed", true),

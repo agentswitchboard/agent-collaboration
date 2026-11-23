@@ -83,8 +83,8 @@ pub fn step_under_gate<Responder: Clone + Eq, Connection: Clone + Eq, Enrollment
 }
 
 /// At transport enqueue, check the exact authority and link on a wire candidate.
-/// On refusal, report the exact Raise or Stop call as
-/// [ended without reply](super::WaitEvent::CallEndedWithoutReply) and drop any ending reply.
+/// On refusal, settle the exact Raise or Stop attempt as
+/// [not reached](super::LinkAttemptDisposition::NotReached) and drop any ending reply.
 /// Local effects are never transport candidates.
 pub fn may_enqueue<Responder, Connection: Eq, Enrollment: Eq>(
     gate: &RunGateState<Enrollment, Connection>,

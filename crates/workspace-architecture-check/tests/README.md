@@ -10,6 +10,9 @@ cargo nextest run --locked --profile ci -p workspace-architecture-check
 Cases enforce normal/build crate layers, test-support dependency ownership, and
 the module-cycle ratchet; the tool-dependent cycle scan retains its existing ignored status. Library unit tests remain colocated with their implementations.
 
+The holder refusal cleanup cases drive the real holder and Central reducers
+together to check both arrival orders of an older Raise and its exact Stop.
+
 Each aggregate declares shared helper implementations once. Existing fixture
 directories remain in place. Only nonempty test categories are declared in
 Cargo.toml; CI selects no separate e2e category for this package.
