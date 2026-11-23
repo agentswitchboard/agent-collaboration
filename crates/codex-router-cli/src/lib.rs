@@ -26,6 +26,9 @@ mod central_command;
 mod credential_runtime;
 mod credential_upkeep_worker;
 pub mod doctor;
+#[cfg(unix)]
+#[doc(hidden)]
+pub mod enrollment_command;
 mod host_command;
 mod live;
 mod presentation;
