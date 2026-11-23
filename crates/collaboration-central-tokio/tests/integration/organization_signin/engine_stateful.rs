@@ -685,6 +685,60 @@ impl EngineModel {
     }
 
     #[invariant(always_run)]
+    fn projected_wakes_and_alarm_inputs_match_the_reference(&self, _: TestCase) {
+        use fleet_runtime_ports::CentralStore;
+        self.block(async {
+            let central = self.engine().runtime().await;
+            let store = central.runtime().statement_host();
+            let reference_alarm = store
+                .read(central_storage::Statement {
+                    sql: include_str!("../../../../fleet-engine/src/queries/read_alarm_inputs.sql"),
+                    args: vec![],
+                })
+                .await
+                .unwrap();
+            let projected_alarm = store.engine_alarm_inputs().await.unwrap();
+            let alarm_cell = |cell: Option<i64>| cell.map_or(SqlValue::Null, integer);
+            assert_eq!(
+                reference_alarm.rows,
+                [[
+                    alarm_cell(projected_alarm.earliest_on_grid_due_unix_millis),
+                    alarm_cell(projected_alarm.earliest_legacy_due_unix_millis),
+                ]]
+            );
+
+            let now = self.engine().now();
+            let horizon = now + chrono::Duration::hours(24);
+            let reference_list = store
+                .read(central_storage::Statement {
+                    sql: include_str!("../../../../fleet-wakes/src/queries/read_due_wakes.sql"),
+                    args: vec![integer(horizon.timestamp_millis()), integer(250)],
+                })
+                .await
+                .unwrap();
+            let projected_list = fleet_engine::read_due_rows(
+                store,
+                fleet_runtime_ports::DueListKind::Wakes,
+                horizon,
+                250,
+            )
+            .await
+            .unwrap_or_else(|_| panic!("projected wake discovery failed"));
+            let projected: Vec<_> = projected_list
+                .into_iter()
+                .map(|row| {
+                    vec![
+                        text(row.key.0),
+                        integer(row.occurrence_ms),
+                        integer(row.effective_due_ms),
+                    ]
+                })
+                .collect();
+            assert_eq!(reference_list.rows, projected);
+        });
+    }
+
+    #[invariant(always_run)]
     fn the_thirty_second_floor_holds(&self, _: TestCase) {
         let mut starts = self.batch_starts.clone();
         starts.sort_unstable();

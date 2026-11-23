@@ -66,7 +66,27 @@ async fn an_unpublishable_request_batch_rolls_back_inside_its_transaction() {
     // A machine token minted at the edge itself.
     fixture.caller = super::super::support::fresh_auth(&fixture.host, &fixture.caller);
 
-    let result = send_message(&fixture, 30002).await;
+    use workspace_model::{
+        NoticeCadence,
+        central_mail::{CentralMailOperation, CentralMailRequest},
+    };
+    let snapshot = || Statement {
+        sql: "SELECT actor_identity_id,notice_cadence,updated_at FROM access_actor_identities ORDER BY actor_identity_id",
+        args: vec![],
+    };
+    let before = runtime.read(snapshot()).await.unwrap();
+    let result = fixture
+        .host
+        .request_central(
+            &fixture.caller,
+            CentralMailRequest {
+                request_id: id(30002),
+                operation: CentralMailOperation::SetNoticeCadence {
+                    cadence: NoticeCadence::M55,
+                },
+            },
+        )
+        .await;
 
     assert_eq!(
         result,
@@ -74,14 +94,9 @@ async fn an_unpublishable_request_batch_rolls_back_inside_its_transaction() {
         "the request's own batch could not decide its alarm"
     );
     assert_eq!(
-        count(
-            &runtime,
-            "SELECT COUNT(*) FROM mail_messages WHERE message_kind='direct'",
-            vec![]
-        )
-        .await,
-        0,
-        "the message row rolled back with the publication"
+        runtime.read(snapshot()).await.unwrap(),
+        before,
+        "the cadence write rolled back"
     );
     assert_eq!(receipts(&runtime, 30002).await, 0, "no receipt either");
     fixture.host.close().await;
@@ -342,7 +357,9 @@ async fn a_rejected_physical_alarm_rolls_back_the_guarded_request_and_allows_exa
         .await;
     assert_eq!(alarm_ms(&runtime).await, previous_alarm);
     let direct_count = "SELECT COUNT(*) FROM mail_messages WHERE message_kind='direct'";
+    let projected_count = "SELECT COUNT(*) FROM engine_due_entries WHERE work_kind='direct_message' AND entry_role='item'";
     assert_eq!(count(&runtime, direct_count, vec![]).await, 0);
+    assert_eq!(count(&runtime, projected_count, vec![]).await, 0);
     assert_eq!(receipts(&runtime, 30281).await, 0);
 
     let retry = send_message(&fixture, 30281).await.unwrap();
@@ -351,6 +368,7 @@ async fn a_rejected_physical_alarm_rolls_back_the_guarded_request_and_allows_exa
         CentralMailResult::Done(CentralMailAnswer::Queued { .. })
     ));
     assert_eq!(count(&runtime, direct_count, vec![]).await, 1);
+    assert_eq!(count(&runtime, projected_count, vec![]).await, 1);
     assert_eq!(receipts(&runtime, 30281).await, 1);
     let rows = runtime
         .read(Statement {

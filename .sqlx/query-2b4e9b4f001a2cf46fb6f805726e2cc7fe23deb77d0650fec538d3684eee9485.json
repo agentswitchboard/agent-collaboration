@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE engine_due_entries AS due SET effective_due_ms = (\n    SELECT CASE\n        WHEN attempt.retired THEN NULL\n        WHEN attempt.uses_subject_attempt THEN attempt.due_at_ms\n        ELSE due.base_due_ms\n    END\n    FROM (SELECT 1)\n    LEFT JOIN engine_due_attempt_controls attempt\n        ON attempt.machine_kind = due.work_kind AND attempt.subject_key = due.subject_key\n), updated_at = ?3\nWHERE work_kind = ?1 AND entry_role = 'item' AND subject_key = ?2\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "2b4e9b4f001a2cf46fb6f805726e2cc7fe23deb77d0650fec538d3684eee9485"
+}

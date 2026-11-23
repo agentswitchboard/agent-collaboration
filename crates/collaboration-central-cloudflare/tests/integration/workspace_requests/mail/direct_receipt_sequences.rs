@@ -288,7 +288,7 @@ async fn exercise_direct_receipt_sequence(order: u8, reject_mark: bool) {
     fixture.host.close().await;
 }
 
-async fn apply_fixture_receipt(
+pub(super) async fn apply_fixture_receipt(
     fixture: &Fixture,
     central: &RemoteRuntime,
     message: &MessageId,
