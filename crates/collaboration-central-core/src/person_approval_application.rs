@@ -10,14 +10,15 @@ use fleet_approvals::{
 };
 use fleet_identity_protocol::OrganizationId;
 use fleet_runtime_ports::IdSource;
+#[cfg(feature = "test-support")]
+use fleet_signin::approval_person_wire::ApprovalPersonOperation;
 use fleet_signin::{
     VerifiedApprovalPersonRequest,
-    approval_person_wire::{
-        ApprovalDecideReply, ApprovalListReply, ApprovalPersonOperation, ApprovalReadReply,
-    },
+    approval_person_wire::{ApprovalDecideReply, ApprovalListReply, ApprovalReadReply},
     person_proof::AdmissionRefusal,
 };
 use futures_util::future::BoxFuture;
+#[cfg(feature = "test-support")]
 use workspace_ids::RequestId;
 
 pub enum PersonApprovalAnswer {
@@ -97,6 +98,7 @@ impl PersonApprovalApplication {
     }
 }
 
+#[cfg(feature = "test-support")]
 pub(super) fn decide_operation_id(operation: &ApprovalPersonOperation) -> Option<&RequestId> {
     match operation {
         ApprovalPersonOperation::Decide(request) => Some(&request.operation_id),
