@@ -8,6 +8,7 @@ mod faulted_recovery;
 mod faulty_outbox;
 mod flush_reanchor;
 mod inbox_custody;
+mod inbox_expiry;
 mod local_store_maintenance;
 mod mark_drain;
 mod outbox_timing;

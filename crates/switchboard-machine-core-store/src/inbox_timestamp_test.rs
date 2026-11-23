@@ -1,4 +1,6 @@
-use super::{InboxDecision, InboxStore, InboxStoreError, MachineLocalStore, message};
+use super::{
+    InboxDecision, InboxStore, InboxStoreError, MachineLocalStore, fixture_expiry, message,
+};
 
 type InboxClockSnapshot = (String, Option<String>, String, i64, i64);
 
@@ -21,7 +23,12 @@ async fn invalid_incoming_inbox_creation_clock_admits_no_message() {
     for invalid in [i64::MIN, i64::MAX] {
         assert!(matches!(
             inbox
-                .record_delivery(&event, InboxDecision::Accepted, invalid)
+                .record_delivery(
+                    &event,
+                    InboxDecision::Accepted,
+                    invalid,
+                    fixture_expiry(invalid)
+                )
                 .await,
             Err(InboxStoreError::InvalidTimestamp {
                 field: "created_at"
@@ -39,7 +46,7 @@ async fn invalid_incoming_inbox_transition_clocks_leave_pending_custody_intact()
     let mut inbox = InboxStore::new(MachineLocalStore::open(&path).await.unwrap());
     let event = message(0);
     inbox
-        .record_delivery(&event, InboxDecision::Accepted, 0)
+        .record_delivery(&event, InboxDecision::Accepted, 0, fixture_expiry(0))
         .await
         .unwrap();
     let mut database = MachineLocalStore::open(&path).await.unwrap();
@@ -60,7 +67,7 @@ async fn invalid_incoming_inbox_transition_clocks_leave_pending_custody_intact()
         })
     ));
     assert!(matches!(
-        inbox.prune_ended(i64::MAX).await,
+        inbox.prune_past_retention(i64::MAX).await,
         Err(InboxStoreError::InvalidTimestamp { field: "now_ms" })
     ));
     assert_eq!(snapshot(&mut database).await, before);
