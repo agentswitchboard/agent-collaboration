@@ -526,6 +526,7 @@ impl LinkClient {
                 | DataFrame::Receipts { .. }
                 | DataFrame::CallCentral { .. }
                 | DataFrame::MacCallReply { .. }
+                | DataFrame::MacCapabilities(_)
                 | DataFrame::RenewMachineToken { .. },
             ) => Err(ClientError::UnexpectedFrame),
         }

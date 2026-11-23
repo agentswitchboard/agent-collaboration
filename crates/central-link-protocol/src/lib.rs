@@ -10,6 +10,7 @@ mod link_renewal;
 mod link_request;
 mod link_typed_calls;
 mod mac_call_address;
+mod mac_call_capabilities;
 mod request_status;
 pub mod session_lifecycle_rpc;
 mod typed_call_correlations;
@@ -38,6 +39,9 @@ pub use link_request::{
     RequestScope,
 };
 pub use mac_call_address::MacCallAddress;
+pub use mac_call_capabilities::{
+    DuplicateMacCallKind, HandledMacCalls, MacCallKind, MacCapabilities,
+};
 
 /// The receiving end of a machine-link frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

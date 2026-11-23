@@ -182,6 +182,10 @@ impl CentralObject {
             Err(_) => return self.close_machine_link(&socket, 1008, Some("invalid link frame")),
         };
         let requests = match frame {
+            // Negotiation is not enabled by the wire-types checkpoint.
+            LinkFrame::Data(DataFrame::MacCapabilities(_)) => {
+                return self.close_machine_link(&socket, 1008, Some("invalid link frame"));
+            }
             LinkFrame::Data(DataFrame::CallCentral {
                 correlation_id,
                 request,

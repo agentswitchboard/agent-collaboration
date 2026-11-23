@@ -308,6 +308,11 @@ async fn serve_link(
             }
         };
         match frame {
+            // Negotiation is not enabled by the wire-types checkpoint.
+            LinkFrame::Data(DataFrame::MacCapabilities(_)) => {
+                writes.close(&mut socket, close_code::PROTOCOL, "invalid link frame");
+                return;
+            }
             LinkFrame::Data(DataFrame::CallCentral {
                 correlation_id,
                 request,
