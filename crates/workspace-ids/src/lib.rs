@@ -94,6 +94,7 @@ workspace_identifiers!(
     SessionOperationId => SessionOperationIdError,
     PersonId,
     AreaId,
+    #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
     ProjectId,
     InitiativeId,
     ActorIdentityId,

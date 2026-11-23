@@ -60,14 +60,7 @@ macro_rules! uuid_v7_identity {
     )+};
 }
 
-uuid_v7_identity!(
-    #[cfg_attr(
-        all(feature = "wire-export", not(target_arch = "wasm32")),
-        derive(specta::Type)
-    )]
-    ProjectId,
-    BoardId
-);
+uuid_v7_identity!(ProjectId, BoardId);
 
 uuid_v7_identity!(
     #[cfg_attr(

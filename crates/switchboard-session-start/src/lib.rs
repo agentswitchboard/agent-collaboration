@@ -37,7 +37,7 @@ pub use protocol::{
 };
 pub use reason::{
     BindDispute, CleanupCall, CorruptStartRecord, FactName, FailureReason, HoldLostDuring,
-    IntendedOutcome, LaunchNotTaken, SnapshotKind, StopReason, UnknownReason,
+    IntendedOutcome, LaunchNotTaken, ProjectRefusal, SnapshotKind, StopReason, UnknownReason,
 };
 pub use reply::{
     BindContradiction, BindNotTaken, BindReplyKind, CentralRefusalNow, CreateAnswer,

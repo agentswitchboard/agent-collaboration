@@ -1,6 +1,5 @@
 //! Closed causes shared by the durable snapshots and the runtime answers.
 
-use fleet_identity_protocol::CreateSessionRefusal;
 use workspace_ids::{CentralSessionId, SessionRef};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -22,12 +21,20 @@ pub enum BindDispute {
     AlreadyBoundToDifferentId,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectRefusal {
+    ProjectRequired,
+    ProjectNotInWorkspace,
+    MachineNotAllowed,
+    HelperOutsideWorkspace,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FailureReason {
     CouldNotSave,
     CreatorNotAllowed,
     ProjectRefused {
-        reason: CreateSessionRefusal,
+        reason: ProjectRefusal,
     },
     Conflict,
     ActiveWithoutLocalProof {

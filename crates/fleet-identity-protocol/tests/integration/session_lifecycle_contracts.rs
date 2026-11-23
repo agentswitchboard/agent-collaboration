@@ -81,7 +81,8 @@ fn create_requests_cover_both_kinds_and_every_creator_and_presentation() {
         match request.project {
             StartProject::Named { project_ref } => {
                 assert_ne!(kind, "delegate");
-                assert_eq!(project_ref.project.as_str(), PROJECT);
+                let stored_project: workspace_ids::ProjectId = PROJECT.parse().unwrap();
+                assert_eq!(project_ref.project, stored_project);
                 assert_eq!(project_ref.workspace.as_str(), WORKSPACE);
             }
             StartProject::SameAsParent {} => assert_eq!(kind, "delegate"),

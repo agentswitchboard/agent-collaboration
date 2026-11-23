@@ -9,8 +9,8 @@ use crate::{
     CleanupOutcome, ConversationFact, CreateAnswer, CreateContradiction, CreateReplyKind,
     EndContradiction, EndLeg, EndNotApplied, EndNotDue, EndNotSent, EndReplyKind, Exposure,
     FailureReason, HoldLostDuring, LinkNotTaken, LinkResult, NotSentNowReason, ObservedReservation,
-    OpeningCommit, PointerFact, Reservation, SecretFact, SecretIssue, SnapshotPhase, StartAsker,
-    StartDirective, StartFault, UnknownReason,
+    OpeningCommit, PointerFact, ProjectRefusal, Reservation, SecretFact, SecretIssue,
+    SnapshotPhase, StartAsker, StartDirective, StartFault, UnknownReason,
 };
 
 impl AcceptedStart {
@@ -100,16 +100,26 @@ impl AcceptedStart {
                 self.save_with_facts(SnapshotPhase::Reserved, reserved, outputs)
             }
             CreateAnswer::Superseded => self.create_unknown(Exposure::Witnessed, outputs),
-            CreateAnswer::Refused {
-                reason: CreateSessionRefusal::CreatorNotAllowed {},
-            } => self.fail(FailureReason::CreatorNotAllowed, outputs),
-            CreateAnswer::Refused {
-                reason:
-                    reason @ (CreateSessionRefusal::ProjectRequired {}
-                    | CreateSessionRefusal::ProjectNotInWorkspace {}
-                    | CreateSessionRefusal::MachineNotAllowed {}
-                    | CreateSessionRefusal::HelperOutsideWorkspace {}),
-            } => self.fail(FailureReason::ProjectRefused { reason }, outputs),
+            CreateAnswer::Refused { reason } => {
+                let reason = match reason {
+                    CreateSessionRefusal::CreatorNotAllowed {} => {
+                        return self.fail(FailureReason::CreatorNotAllowed, outputs);
+                    }
+                    CreateSessionRefusal::ParentNotValid {} => {
+                        let reply_kind = CreateReplyKind::Refused(reason);
+                        return self.create_contradicted(Some(reply_kind), outputs);
+                    }
+                    CreateSessionRefusal::ProjectRequired {} => ProjectRefusal::ProjectRequired,
+                    CreateSessionRefusal::ProjectNotInWorkspace {} => {
+                        ProjectRefusal::ProjectNotInWorkspace
+                    }
+                    CreateSessionRefusal::MachineNotAllowed {} => ProjectRefusal::MachineNotAllowed,
+                    CreateSessionRefusal::HelperOutsideWorkspace {} => {
+                        ProjectRefusal::HelperOutsideWorkspace
+                    }
+                };
+                self.fail(FailureReason::ProjectRefused { reason }, outputs)
+            }
             CreateAnswer::Conflict => self.fail(FailureReason::Conflict, outputs),
             CreateAnswer::Active {
                 session_id,
@@ -128,10 +138,9 @@ impl AcceptedStart {
             ref contradicted @ (CreateAnswer::NoSecret
             | CreateAnswer::NoSuchSession
             | CreateAnswer::SessionEnded
-            | CreateAnswer::WrongSecret
-            | CreateAnswer::Refused {
-                reason: CreateSessionRefusal::ParentNotValid {},
-            }) => self.create_contradicted(Some(CreateReplyKind::from(contradicted)), outputs),
+            | CreateAnswer::WrongSecret) => {
+                self.create_contradicted(Some(CreateReplyKind::from(contradicted)), outputs)
+            }
         }
     }
 

@@ -1,9 +1,10 @@
 //! The three session lifecycle calls on the authenticated link.
 
 use crate::{CreateSessionAttempt, CreateSessionDigest, HarnessKind, SessionSecret, SessionTime};
-use message_board::ProjectId;
 use serde::{Deserialize, Deserializer, de::value::StrDeserializer};
-use workspace_ids::{CentralSessionId, SessionId, SessionOperationId, SessionRef, WorkspaceId};
+use workspace_ids::{
+    CentralSessionId, ProjectId, SessionId, SessionOperationId, SessionRef, WorkspaceId,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, schemars::JsonSchema)]
 #[cfg_attr(
