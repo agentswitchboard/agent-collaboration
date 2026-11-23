@@ -196,7 +196,7 @@ async fn retry_wakes_an_idle_object_and_refuses_missing_failing_and_unadmitted_c
     );
 
     // A revived overdue item is armed at the next strict mark.
-    let last_start = engine.now();
+    let publication_mark = next_mark(engine.now());
     let answer = engine
         .change_as(RETRY, &operation, &attempt, &engine.repairer())
         .await;
@@ -206,11 +206,8 @@ async fn retry_wakes_an_idle_object_and_refuses_missing_failing_and_unadmitted_c
         engine.record("wake_timer", &wakes[0]).await.is_empty(),
         "record gone"
     );
-    let publication_mark = next_mark(last_start);
-    assert_eq!(
-        engine.alarm_ms().await,
-        Some(publication_mark.timestamp_millis())
-    );
+    let publication_ms = publication_mark.timestamp_millis();
+    assert_eq!(engine.alarm_ms().await, Some(publication_ms));
     assert_eq!(
         engine
             .change_as(RETRY, &operation, &attempt, &engine.repairer())
