@@ -90,9 +90,10 @@ fn stale(state: &ApprovalState, event: &ApprovalEvent, at: CentralTime) -> bool 
         ApprovalEvent::Alarm { deadline } => !matches!(
             state, ApprovalState::Waiting { saved } if saved.window.deadline() == *deadline && at >= *deadline
         ),
-        ApprovalEvent::Reoffer => !matches!(
-            state, ApprovalState::Ended { closed, .. } if closed.delivery == (Delivery::Owed {})
-        ),
+        ApprovalEvent::Reoffer => {
+            !matches!(state, ApprovalState::Ended { closed, .. } if closed.delivery == (Delivery::Owed {}))
+                && !matches!(state, ApprovalState::Waiting { saved } if at >= saved.window.deadline())
+        }
         ApprovalEvent::DeliveryReply { key, request, .. } => !matches!(
             state, ApprovalState::Ended { saved, closed, .. }
             if &saved.key == key && request.request_id() == &key.request_id

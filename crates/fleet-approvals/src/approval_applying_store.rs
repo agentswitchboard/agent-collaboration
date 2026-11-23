@@ -1,12 +1,13 @@
-use approval_request_protocol::{CentralTime, DeliverEndingRequest, RequestView};
+use approval_request_protocol::{CentralTime, RequestView};
 use central_engine_model::{Context, IdSource, Machine, TransitionError};
 use central_storage::{GuardedStatement, StoreFailure};
 use fleet_runtime_ports::{Clock, workspace_decode_error::corrupt};
 
 use crate::{
-    ApprovalEffect, ApprovalEvent, ApprovalLifecycle, ApprovalReceipt, ApprovalRefusal,
-    ApprovalRouting, ApprovalRun, ApprovalSessionFacts, ApprovalState,
-    approval_store_scope::{ApprovalHolderScope, ApprovalRowId},
+    ApprovalCommitScope, ApprovalEffect, ApprovalEvent, ApprovalLifecycle, ApprovalReceipt,
+    ApprovalRefusal, ApprovalReplyAddress, ApprovalRouting, ApprovalSessionFacts, ApprovalState,
+    CommittedApprovalOffer, PendingApprovalHolderEffects, PendingApprovalReply,
+    approval_store_scope::{ApprovalHolderScope, ApprovalRequestRowId},
     approval_store_transaction::ApprovalStoreTransaction,
     approval_store_writes::{
         plan_approval_state_change, plan_register_approval_deadline, plan_remove_approval_deadline,
@@ -14,7 +15,11 @@ use crate::{
 };
 
 #[path = "approval_store_destination_commands.rs"]
+#[cfg(feature = "test-support")]
 mod destination_commands;
+#[path = "approval_store_fixture_destinations.rs"]
+#[cfg(feature = "test-support")]
+mod fixture_destinations;
 #[path = "approval_store_holder_commands.rs"]
 mod holder_commands;
 #[path = "approval_store_run_commands.rs"]
@@ -36,21 +41,12 @@ impl From<StoreFailure> for ApprovalApplyFailure {
     }
 }
 
-/// A delivery to this exact holder, ready to queue once the owning write commits.
-#[derive(Debug, Eq, PartialEq)]
-pub struct PendingApprovalOffer {
-    pub holder: ApprovalRun,
-    pub request: Box<DeliverEndingRequest>,
+struct ApprovalTransitionOutput<Reply> {
+    reply: Reply,
+    ending_offers: Vec<CommittedApprovalOffer>,
 }
 
-/// The transaction owner releases these outputs after committing its write.
-#[derive(Debug)]
-pub struct PendingApprovalApply<Reply> {
-    pub reply: Reply,
-    pub ending_offers: Vec<PendingApprovalOffer>,
-}
-
-impl<Reply> PendingApprovalApply<Reply> {
+impl<Reply> ApprovalTransitionOutput<Reply> {
     fn with_reply(reply: Reply) -> Self {
         Self {
             reply,
@@ -58,8 +54,8 @@ impl<Reply> PendingApprovalApply<Reply> {
         }
     }
 
-    fn replace_reply<NewReply>(self, reply: NewReply) -> PendingApprovalApply<NewReply> {
-        PendingApprovalApply {
+    fn replace_reply<NewReply>(self, reply: NewReply) -> ApprovalTransitionOutput<NewReply> {
+        ApprovalTransitionOutput {
             reply,
             ending_offers: self.ending_offers,
         }
@@ -69,15 +65,17 @@ impl<Reply> PendingApprovalApply<Reply> {
 #[derive(Debug)]
 pub struct ApprovalReadPage {
     pub requests: Vec<RequestView>,
-    pub next_after: Option<ApprovalRowId>,
+    pub next_after: Option<ApprovalRequestRowId>,
 }
 
 /// Owns the approval transitions on an applying transaction lent by Central.
 pub struct ApprovalApplyingStore<'loan, Transaction, Sessions> {
+    commit: &'loan ApprovalCommitScope,
     transaction: &'loan mut Transaction,
     sessions: &'loan Sessions,
     clock: &'loan dyn Clock,
     row_ids: &'loan mut dyn IdSource,
+    holder_offers: Vec<CommittedApprovalOffer>,
 }
 
 impl<'loan, Transaction, Sessions> ApprovalApplyingStore<'loan, Transaction, Sessions>
@@ -86,17 +84,33 @@ where
     Sessions: ApprovalSessionFacts<Transaction>,
 {
     pub fn new(
+        commit: &'loan ApprovalCommitScope,
         transaction: &'loan mut Transaction,
         sessions: &'loan Sessions,
         clock: &'loan dyn Clock,
         row_ids: &'loan mut dyn IdSource,
     ) -> Self {
         Self {
+            commit,
             transaction,
             sessions,
             clock,
             row_ids,
+            holder_offers: Vec::new(),
         }
+    }
+
+    pub fn finish_holder_effects(self) -> PendingApprovalHolderEffects {
+        self.commit.pending_holder_effects(self.holder_offers)
+    }
+
+    fn stage_reply<Reply>(
+        &mut self,
+        address: ApprovalReplyAddress,
+        mut transition: ApprovalTransitionOutput<Reply>,
+    ) -> PendingApprovalReply<Reply> {
+        self.holder_offers.append(&mut transition.ending_offers);
+        self.commit.pending_reply(address, transition.reply)
     }
 
     fn sample_applying_time(&self) -> Result<CentralTime, StoreFailure> {
@@ -106,19 +120,19 @@ where
 
     async fn apply_request_event(
         &mut self,
-        row_id: Option<&ApprovalRowId>,
+        row_id: Option<&ApprovalRequestRowId>,
         scope: &ApprovalHolderScope,
         prior: &ApprovalState,
         event: ApprovalEvent,
         at: CentralTime,
-    ) -> Result<PendingApprovalApply<Option<ApprovalReceipt>>, ApprovalApplyFailure> {
+    ) -> Result<ApprovalTransitionOutput<Option<ApprovalReceipt>>, ApprovalApplyFailure> {
         let mut context = Context {
             now: at,
             ids: &mut *self.row_ids,
         };
         let (next, effects) = match ApprovalLifecycle::transition(prior, event, &mut context) {
             Ok(transition) => transition,
-            Err(TransitionError::Stale) => return Ok(PendingApprovalApply::with_reply(None)),
+            Err(TransitionError::Stale) => return Ok(ApprovalTransitionOutput::with_reply(None)),
             Err(TransitionError::Domain(refusal)) => {
                 return Err(ApprovalApplyFailure::Lifecycle(refusal));
             }
@@ -127,10 +141,10 @@ where
             }
         };
 
-        let mut output = PendingApprovalApply::with_reply(None);
+        let mut output = ApprovalTransitionOutput::with_reply(None);
         let mut due_writes = Vec::new();
         let new_row_id = if prior != &next && row_id.is_none() {
-            Some(ApprovalRowId::mint(context.ids)?)
+            Some(ApprovalRequestRowId::mint(context.ids)?)
         } else {
             None
         };
@@ -140,9 +154,12 @@ where
             match effect {
                 ApprovalEffect::Reply(receipt) => output.reply = Some(receipt),
                 ApprovalEffect::OfferEnding { holder, request } => {
+                    if holder != scope.run {
+                        return Err(corrupt("approval_requests.ending_holder").into());
+                    }
                     output
                         .ending_offers
-                        .push(PendingApprovalOffer { holder, request });
+                        .push(CommittedApprovalOffer::new(scope.clone(), request));
                 }
                 ApprovalEffect::StoreSessionNotice { key, session } => {
                     // This notice is the initial parent destination's durable notice slot.

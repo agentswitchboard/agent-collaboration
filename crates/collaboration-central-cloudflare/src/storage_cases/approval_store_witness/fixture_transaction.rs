@@ -4,7 +4,7 @@ use fleet_approvals::{
     ApprovalRouting, ApprovalSession, ApprovalSessionFacts, ApprovalStoreTransaction,
 };
 use fleet_identity_protocol::{EnrollmentId, OrganizationId};
-use fleet_lent_transaction::CentralTransaction;
+use fleet_lent_transaction::{CentralTransaction, OrganizationTransaction};
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use sqlx_durable_object::{Do, DoTransaction};
 use std::{cell::RefCell, rc::Rc};
@@ -19,9 +19,16 @@ pub(super) struct FixtureEvidence {
 }
 
 pub(super) struct WorkerApprovalTransaction {
+    pub organization_id: OrganizationId,
     pub transaction: DoTransaction,
     pub fail_after_write: Option<usize>,
     pub evidence: Rc<RefCell<FixtureEvidence>>,
+}
+
+impl OrganizationTransaction for WorkerApprovalTransaction {
+    fn organization_id(&self) -> &OrganizationId {
+        &self.organization_id
+    }
 }
 
 impl CentralTransaction for WorkerApprovalTransaction {

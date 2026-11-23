@@ -9,9 +9,11 @@ use std::{
 use approval_request_protocol::CentralTime;
 use central_engine_model::{DueListKind, IdSource, InstanceKey, due_list_query};
 use fleet_approvals::{
-    AdmittedDecider, ApprovalApplyFailure, ApprovalApplyingStore, ApprovalDecideInput,
-    ApprovalDecisionReply, ApprovalEnrollmentScope, ApprovalHolderCommand, ApprovalHolderReply,
-    ApprovalHolderScope, FactorStanding, PendingApprovalApply,
+    AdmittedDecider, ApprovalApplyFailure, ApprovalApplyingStore, ApprovalCommitOwner,
+    ApprovalCommitProof, ApprovalCommitScope, ApprovalDecideInput, ApprovalDecisionReply,
+    ApprovalEnrollmentScope, ApprovalHolderAdmission, ApprovalHolderCommand, ApprovalHolderReply,
+    ApprovalHolderScope, FactorStanding, PendingApprovalHolderEffects, PendingApprovalReply,
+    complete_approval_commit,
 };
 use fleet_runtime_ports::{Clock, SyncTime};
 use serde_json::{Value, json};
@@ -65,6 +67,7 @@ enum WitnessFailure {
     Storage,
     Clock,
     EmptyPage,
+    Release,
 }
 
 impl From<ApprovalApplyFailure> for WitnessFailure {
@@ -101,17 +104,28 @@ pub(super) async fn apply_fixture(
         return observe_due_rows(state, cutoff_ms, limit).await;
     }
     let evidence = Rc::new(RefCell::new(FixtureEvidence::default()));
-    let captured = Rc::clone(&evidence);
-    let outcome = connection
-        .transaction(move |transaction| async move {
-            let mut transaction = WorkerApprovalTransaction {
-                transaction,
-                fail_after_write: input.fail_after_write,
-                evidence: captured,
-            };
-            apply_command(&mut transaction, input).await
-        })
-        .await;
+    let outcome = complete_approval_commit(WorkerApprovalCommit {
+        connection,
+        input,
+        evidence: Rc::clone(&evidence),
+    })
+    .await
+    .and_then(|(proof, (reply, holder_effects))| {
+        let offers = holder_effects
+            .map_or_else(
+                || Ok(Vec::new()),
+                |effects| effects.release(&proof).map_err(|_| WitnessFailure::Release),
+            )?
+            .into_iter()
+            .map(|offer| {
+                let holder = ApprovalHolderAdmission::for_fixture_scope(offer.holder_address());
+                offer
+                    .take_for_holder(&holder)
+                    .map_err(|_| WitnessFailure::Release)
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        reply(&proof, offers)
+    });
     let evidence = evidence.borrow();
     let (reply, error) = match outcome {
         Ok(value) => (Some(value), None),
@@ -162,27 +176,49 @@ async fn observe_due_rows(state: &State, cutoff_ms: i64, limit: usize) -> worker
 async fn apply_command(
     transaction: &mut WorkerApprovalTransaction,
     input: ApprovalWitnessInput,
-) -> Result<Value, WitnessFailure> {
+    commit: &ApprovalCommitScope,
+) -> Result<PendingWitnessApply, WitnessFailure> {
+    let command = match input.command {
+        fixture @ (ApprovalWitnessCommand::StoreEnrollment { .. }
+        | ApprovalWitnessCommand::StoreSession { .. }
+        | ApprovalWitnessCommand::Inspect
+        | ApprovalWitnessCommand::Corrupt { .. }
+        | ApprovalWitnessCommand::SeedDuePopulation { .. }) => {
+            let value = apply_fixture_sql(transaction, fixture).await?;
+            return Ok((Box::new(move |_, _| Ok(value)), None));
+        }
+        command => command,
+    };
     let clock = WitnessClock(input.at_ms);
     let mut ids = WitnessIds(input.at_ms);
     let mut applying_store =
-        ApprovalApplyingStore::new(transaction, &FixtureSessionFacts, &clock, &mut ids);
-    let reply = match input.command {
+        ApprovalApplyingStore::new(commit, transaction, &FixtureSessionFacts, &clock, &mut ids);
+    let reply = match command {
         ApprovalWitnessCommand::Register { holder } => {
-            let applied = applying_store.register_approval_run(&holder.into()).await?;
-            outcome_json(&applied, json!(applied.reply))
+            let applied = applying_store
+                .register_approval_run(
+                    &fleet_approvals::ApprovalHolderAdmission::for_fixture_scope(&holder.into()),
+                )
+                .await?;
+            applied_json(applied, |reply| json!(reply))
         }
         ApprovalWitnessCommand::Raise { holder, request } => {
             let applied = applying_store
-                .apply_holder_command(&holder.into(), ApprovalHolderCommand::Raise(request))
+                .apply_holder_command(
+                    &fleet_approvals::ApprovalHolderAdmission::for_fixture_scope(&holder.into()),
+                    ApprovalHolderCommand::Raise(request),
+                )
                 .await?;
-            holder_json(&applied)
+            applied_json(applied, holder_json)
         }
         ApprovalWitnessCommand::Stop { holder, request } => {
             let applied = applying_store
-                .apply_holder_command(&holder.into(), ApprovalHolderCommand::Stop(request))
+                .apply_holder_command(
+                    &fleet_approvals::ApprovalHolderAdmission::for_fixture_scope(&holder.into()),
+                    ApprovalHolderCommand::Stop(request),
+                )
                 .await?;
-            holder_json(&applied)
+            applied_json(applied, holder_json)
         }
         ApprovalWitnessCommand::Deliver {
             holder,
@@ -191,20 +227,20 @@ async fn apply_command(
         } => {
             let applied = applying_store
                 .apply_holder_command(
-                    &holder.into(),
+                    &fleet_approvals::ApprovalHolderAdmission::for_fixture_scope(&holder.into()),
                     ApprovalHolderCommand::DeliveryReply { request, reply },
                 )
                 .await?;
-            holder_json(&applied)
+            applied_json(applied, holder_json)
         }
         ApprovalWitnessCommand::Reoffer { holder, request_id } => {
             let applied = applying_store
                 .apply_holder_command(
-                    &holder.into(),
+                    &fleet_approvals::ApprovalHolderAdmission::for_fixture_scope(&holder.into()),
                     ApprovalHolderCommand::Reoffer { request_id },
                 )
                 .await?;
-            holder_json(&applied)
+            applied_json(applied, holder_json)
         }
         ApprovalWitnessCommand::Decide {
             organization,
@@ -233,21 +269,9 @@ async fn apply_command(
                 value,
             };
             let applied = applying_store
-                .decide_approval(&organization, decider, request)
+                .fixture_decide_approval(&organization, decider, request)
                 .await?;
-            let reply = match &applied.reply {
-                ApprovalDecisionReply::SavedDecision { answer, by } => {
-                    json!({"kind":"savedDecision","answer":answer,"by":by})
-                }
-                ApprovalDecisionReply::Standing { ending } => {
-                    json!({"kind":"standing","ending":ending})
-                }
-                ApprovalDecisionReply::NotVisible {} => json!({"kind":"notVisible"}),
-                ApprovalDecisionReply::Invalid {} => json!({"kind":"invalid"}),
-                ApprovalDecisionReply::TooLate {} => json!({"kind":"tooLate"}),
-                ApprovalDecisionReply::OperationConflict {} => json!({"kind":"operationConflict"}),
-            };
-            outcome_json(&applied, reply)
+            applied_json(applied, decision_json)
         }
         ApprovalWitnessCommand::PassOn {
             organization,
@@ -255,9 +279,9 @@ async fn apply_command(
             request_id,
         } => {
             let applied = applying_store
-                .pass_on_approval(&organization, parent.into(), &request_id)
+                .fixture_pass_on_approval(&organization, parent.into(), &request_id)
                 .await?;
-            outcome_json(&applied, json!(applied.reply))
+            applied_json(applied, |reply| json!(reply))
         }
         ApprovalWitnessCommand::Read {
             organization,
@@ -265,9 +289,9 @@ async fn apply_command(
             request_id,
         } => {
             let applied = applying_store
-                .read_person_approval(&organization, &person, &request_id)
+                .fixture_read_person_approval(&organization, &person, &request_id)
                 .await?;
-            outcome_json(&applied, json!(applied.reply))
+            applied_json(applied, |reply| json!(reply))
         }
         ApprovalWitnessCommand::List {
             organization,
@@ -276,15 +300,13 @@ async fn apply_command(
         } => {
             let limit = NonZeroU16::new(limit).ok_or(WitnessFailure::EmptyPage)?;
             let applied = applying_store
-                .list_person_approvals(&organization, &person, None, limit)
+                .fixture_list_person_approvals(&organization, &person, None, limit)
                 .await?;
-            outcome_json(
-                &applied,
+            applied_json(applied, |reply| {
                 json!({
-                    "requests": applied.reply.requests,
-                    "hasNextPage": applied.reply.next_after.is_some(),
-                }),
-            )
+                    "requests": reply.requests, "hasNextPage": reply.next_after.is_some(),
+                })
+            })
         }
         ApprovalWitnessCommand::Deadline {
             subject,
@@ -295,16 +317,15 @@ async fn apply_command(
             let offers = applying_store
                 .apply_approval_deadline(&InstanceKey(subject), deadline)
                 .await?;
-            json!(
-                offers
-                    .into_iter()
-                    .map(|offer| offer.request)
-                    .collect::<Vec<_>>()
-            )
+            witness_json(offers, |(), offers| json!(offers))
         }
         ApprovalWitnessCommand::Retire { holder } => {
-            let applied = applying_store.retire_approval_run(&holder.into()).await?;
-            json!(applied.reply)
+            let applied = applying_store
+                .retire_approval_run(
+                    &fleet_approvals::ApprovalHolderAdmission::for_fixture_scope(&holder.into()),
+                )
+                .await?;
+            witness_json(applied, |reply, _| json!(reply))
         }
         ApprovalWitnessCommand::EndSession {
             organization,
@@ -313,23 +334,36 @@ async fn apply_command(
             let offers = applying_store
                 .end_approval_session(&organization, &session.into())
                 .await?;
-            json!(
-                offers
-                    .into_iter()
-                    .map(|offer| offer.request)
-                    .collect::<Vec<_>>()
-            )
+            witness_json(offers, |(), offers| json!(offers))
         }
         ApprovalWitnessCommand::EndEnrollment { holder } => {
             let holder: ApprovalHolderScope = holder.into();
-            applying_store
+            let applied = applying_store
                 .end_approval_enrollment(&ApprovalEnrollmentScope {
                     organization_id: holder.organization_id,
                     enrollment: holder.run.enrollment,
                 })
                 .await?;
-            Value::Null
+            witness_json(applied, |(), _| Value::Null)
         }
+        ApprovalWitnessCommand::Recover { holder } => {
+            let applied = applying_store
+                .recover_owed_approval_endings(&ApprovalHolderAdmission::for_fixture_scope(
+                    &holder.into(),
+                ))
+                .await?;
+            applied_json(applied, |reply| json!(reply))
+        }
+        _ => return Err(WitnessFailure::Storage),
+    };
+    Ok((reply, Some(applying_store.finish_holder_effects())))
+}
+
+async fn apply_fixture_sql(
+    transaction: &mut WorkerApprovalTransaction,
+    command: ApprovalWitnessCommand,
+) -> Result<Value, WitnessFailure> {
+    let reply = match command {
         ApprovalWitnessCommand::StoreEnrollment { holder, live } => {
             let holder: ApprovalHolderScope = holder.into();
             sqlx::query("INSERT INTO fixture_enrollments VALUES (?1,?2,?3,?4)
@@ -401,27 +435,94 @@ async fn apply_command(
             .await?;
             json!(rows)
         }
-        ApprovalWitnessCommand::DueRows { .. } => return Err(WitnessFailure::Storage),
+        _ => return Err(WitnessFailure::Storage),
     };
     Ok(reply)
 }
 
-fn holder_json(applied: &PendingApprovalApply<ApprovalHolderReply>) -> Value {
-    let reply = match &applied.reply {
+type WitnessOffers = Vec<Box<approval_request_protocol::DeliverEndingRequest>>;
+type WitnessReply =
+    Box<dyn FnOnce(&ApprovalCommitProof, WitnessOffers) -> Result<Value, WitnessFailure>>;
+type PendingWitnessApply = (WitnessReply, Option<PendingApprovalHolderEffects>);
+
+struct WorkerApprovalCommit<'storage> {
+    connection: &'storage DoConnection,
+    input: ApprovalWitnessInput,
+    evidence: Rc<RefCell<FixtureEvidence>>,
+}
+
+impl ApprovalCommitOwner<PendingWitnessApply> for WorkerApprovalCommit<'_> {
+    type Error = WitnessFailure;
+
+    async fn apply_and_commit(
+        self,
+        commit: ApprovalCommitScope,
+    ) -> Result<PendingWitnessApply, Self::Error> {
+        let Self {
+            connection,
+            input,
+            evidence,
+        } = self;
+        connection
+            .transaction(move |transaction| async move {
+                let mut transaction = WorkerApprovalTransaction {
+                    organization_id: fleet_identity_protocol::OrganizationId::try_from(
+                        "019ac19f-aa00-7000-8000-0000000013ed".to_owned(),
+                    )
+                    .map_err(|_| WitnessFailure::Storage)?,
+                    transaction,
+                    fail_after_write: input.fail_after_write,
+                    evidence,
+                };
+                apply_command(&mut transaction, input, &commit).await
+            })
+            .await
+    }
+}
+
+fn witness_json<Reply: 'static>(
+    pending: PendingApprovalReply<Reply>,
+    project: impl FnOnce(Reply, WitnessOffers) -> Value + 'static,
+) -> WitnessReply {
+    Box::new(move |proof, offers| {
+        let reply = pending
+            .take_fixture_reply(proof)
+            .map_err(|_| WitnessFailure::Release)?;
+        Ok(project(reply, offers))
+    })
+}
+
+fn applied_json<Reply: 'static>(
+    pending: PendingApprovalReply<Reply>,
+    project: impl FnOnce(Reply) -> Value + 'static,
+) -> WitnessReply {
+    witness_json(
+        pending,
+        move |reply, offers| json!({ "result": project(reply), "offers": offers }),
+    )
+}
+
+fn holder_json(reply: ApprovalHolderReply) -> Value {
+    match reply {
         ApprovalHolderReply::Raised(reply) => json!(reply),
         ApprovalHolderReply::Stopped(reply) => json!(reply),
         ApprovalHolderReply::NoReply => Value::Null,
-    };
-    outcome_json(applied, reply)
+    }
 }
 
-fn outcome_json<Reply>(applied: &PendingApprovalApply<Reply>, reply: Value) -> Value {
-    let offers: Vec<_> = applied
-        .ending_offers
-        .iter()
-        .map(|offer| &offer.request)
-        .collect();
-    json!({ "result": reply, "offers": offers })
+fn decision_json(reply: ApprovalDecisionReply) -> Value {
+    match reply {
+        ApprovalDecisionReply::SavedDecision { answer, by } => {
+            json!({"kind":"savedDecision","answer":answer,"by":by})
+        }
+        ApprovalDecisionReply::Standing { ending } => {
+            json!({"kind":"standing","ending":ending})
+        }
+        ApprovalDecisionReply::NotVisible {} => json!({"kind":"notVisible"}),
+        ApprovalDecisionReply::Invalid {} => json!({"kind":"invalid"}),
+        ApprovalDecisionReply::TooLate {} => json!({"kind":"tooLate"}),
+        ApprovalDecisionReply::OperationConflict {} => json!({"kind":"operationConflict"}),
+    }
 }
 
 fn witness_error(error: impl std::fmt::Display) -> worker::Error {

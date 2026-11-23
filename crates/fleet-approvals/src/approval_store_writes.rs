@@ -10,7 +10,7 @@ use fleet_runtime_ports::{stored_values::format_utc_millis, workspace_decode_err
 use crate::{
     ApprovalRequestKey, ApprovalRouting, ApprovalSession, ApprovalState, EndedApproval,
     RetainedApproval,
-    approval_store_scope::{ApprovalHolderScope, ApprovalRowId},
+    approval_store_scope::{ApprovalDestinationRowId, ApprovalHolderScope, ApprovalRequestRowId},
     approval_stored_tags::{
         delivery_state_tag, request_kind_tag, stop_cause_tag, waiting_status_tag,
     },
@@ -54,7 +54,7 @@ pub(crate) fn plan_retire_approval_run(
 }
 
 pub(crate) fn plan_approval_state_change(
-    row_id: &ApprovalRowId,
+    row_id: &ApprovalRequestRowId,
     scope: &ApprovalHolderScope,
     prior: &ApprovalState,
     next: &ApprovalState,
@@ -84,7 +84,7 @@ pub(crate) fn plan_approval_state_change(
                 ApprovalRouting::Owner => None,
                 ApprovalRouting::Delegate { admitted_parent } => Some(admitted_parent),
             };
-            let destination_id = ApprovalRowId::mint(context.ids)?;
+            let destination_id = ApprovalDestinationRowId::mint(context.ids)?;
             Ok(vec![
                 plan_first_save(row_id, scope, saved)?,
                 plan_destination(
@@ -97,7 +97,7 @@ pub(crate) fn plan_approval_state_change(
             ])
         }
         (ApprovalState::Waiting { saved }, ApprovalState::Waiting { .. }) => {
-            let destination_id = ApprovalRowId::mint(context.ids)?;
+            let destination_id = ApprovalDestinationRowId::mint(context.ids)?;
             let changed_at = context.now.max(saved.window.raised_at());
             Ok(vec![
                 plan_forward_waiting(row_id, scope, saved, changed_at)?,
@@ -126,7 +126,7 @@ pub(crate) fn plan_approval_state_change(
 }
 
 pub(crate) fn plan_register_approval_deadline(
-    row_id: &ApprovalRowId,
+    row_id: &ApprovalRequestRowId,
     deadline: CentralTime,
     at: CentralTime,
 ) -> Result<Vec<GuardedStatement>, StoreFailure> {
@@ -135,13 +135,13 @@ pub(crate) fn plan_register_approval_deadline(
 }
 
 pub(crate) fn plan_remove_approval_deadline(
-    row_id: &ApprovalRowId,
+    row_id: &ApprovalRequestRowId,
     at: CentralTime,
 ) -> Result<Vec<GuardedStatement>, StoreFailure> {
     plan_due_table_change(&DueTableChange::RemoveItem(approval_due_key(row_id)), at)
 }
 
-fn approval_due_key(row_id: &ApprovalRowId) -> DueItemKey {
+fn approval_due_key(row_id: &ApprovalRequestRowId) -> DueItemKey {
     DueItemKey {
         kind: DueKind::ApprovalRequestExpiry,
         subject: InstanceKey(row_id.as_str().to_owned()),
@@ -149,7 +149,7 @@ fn approval_due_key(row_id: &ApprovalRowId) -> DueItemKey {
 }
 
 fn plan_first_save(
-    row_id: &ApprovalRowId,
+    row_id: &ApprovalRequestRowId,
     scope: &ApprovalHolderScope,
     saved: &RetainedApproval,
 ) -> Result<GuardedStatement, StoreFailure> {
@@ -184,7 +184,7 @@ fn plan_first_save(
 }
 
 fn plan_stop_marker(
-    row_id: &ApprovalRowId,
+    row_id: &ApprovalRequestRowId,
     scope: &ApprovalHolderScope,
     key: &ApprovalRequestKey,
     contents_digest: &RequestContentsDigest,
@@ -208,8 +208,8 @@ fn plan_stop_marker(
 }
 
 fn plan_destination(
-    destination_id: &ApprovalRowId,
-    row_id: &ApprovalRowId,
+    destination_id: &ApprovalDestinationRowId,
+    row_id: &ApprovalRequestRowId,
     scope: &ApprovalHolderScope,
     parent: Option<&ApprovalSession>,
     at: CentralTime,
@@ -237,7 +237,7 @@ fn plan_destination(
 }
 
 fn plan_first_ending(
-    row_id: &ApprovalRowId,
+    row_id: &ApprovalRequestRowId,
     scope: &ApprovalHolderScope,
     saved: &RetainedApproval,
     closed: &EndedApproval,
@@ -265,7 +265,7 @@ fn plan_first_ending(
 }
 
 fn plan_forward_waiting(
-    row_id: &ApprovalRowId,
+    row_id: &ApprovalRequestRowId,
     scope: &ApprovalHolderScope,
     saved: &RetainedApproval,
     at: CentralTime,
@@ -286,7 +286,7 @@ fn plan_forward_waiting(
 }
 
 fn plan_delivery_change(
-    row_id: &ApprovalRowId,
+    row_id: &ApprovalRequestRowId,
     scope: &ApprovalHolderScope,
     saved: &RetainedApproval,
     before: &EndedApproval,

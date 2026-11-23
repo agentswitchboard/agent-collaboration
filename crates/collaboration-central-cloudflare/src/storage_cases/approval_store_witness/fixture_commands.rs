@@ -93,6 +93,9 @@ pub(super) enum StoredCorruption {
     rename_all_fields = "camelCase"
 )]
 pub(super) enum ApprovalWitnessCommand {
+    Recover {
+        holder: WitnessHolder,
+    },
     StoreEnrollment {
         holder: WitnessHolder,
         live: bool,

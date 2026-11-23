@@ -2,6 +2,8 @@
 mod approval_applying_store;
 mod approval_collection;
 mod approval_collection_values;
+mod approval_commit;
+#[cfg(feature = "test-support")]
 mod approval_decision_log;
 mod approval_lifecycle;
 mod approval_lifecycle_admission;
@@ -19,11 +21,18 @@ mod approval_stored_tags;
 
 pub use approval_applying_store::{
     ApprovalApplyFailure, ApprovalApplyingStore, ApprovalHolderCommand, ApprovalHolderReply,
-    ApprovalReadPage, PendingApprovalApply, PendingApprovalOffer,
+    ApprovalReadPage,
 };
 pub use approval_collection_values::*;
+pub use approval_commit::{
+    ApprovalCommitOwner, ApprovalCommitProof, ApprovalCommitScope, ApprovalReleaseFailure,
+    ApprovalReplyAddress, CommittedApprovalOffer, PendingApprovalHolderEffects,
+    PendingApprovalReply, complete_approval_commit,
+};
 pub use approval_lifecycle::{ApprovalLifecycle, MAX_OUTSTANDING_PER_RUN};
 pub use approval_lifecycle_values::*;
 pub use approval_session_facts::ApprovalSessionFacts;
-pub use approval_store_scope::{ApprovalEnrollmentScope, ApprovalHolderScope, ApprovalRowId};
+pub use approval_store_scope::{
+    ApprovalEnrollmentScope, ApprovalHolderAdmission, ApprovalHolderScope, ApprovalRequestRowId,
+};
 pub use approval_store_transaction::{ApprovalEnrollmentStanding, ApprovalStoreTransaction};

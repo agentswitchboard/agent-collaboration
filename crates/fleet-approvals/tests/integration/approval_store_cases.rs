@@ -35,7 +35,11 @@ pub(super) async fn register(fixture: &NativeApprovalStoreFixture, holder: &Appr
     fixture.store_enrollment(holder, "live").await;
     let (outcome, evidence) = fixture
         .apply(None, async |store| {
-            store.register_approval_run(holder).await
+            store
+                .register_approval_run(
+                    &fleet_approvals::ApprovalHolderAdmission::for_fixture_scope(holder),
+                )
+                .await
         })
         .await;
     assert_eq!(outcome.unwrap().reply, RegisterRunReply::Registered {});
@@ -78,7 +82,7 @@ pub(super) async fn raise_and_commit(
         .apply(None, async |store| {
             store
                 .apply_holder_command(
-                    holder,
+                    &fleet_approvals::ApprovalHolderAdmission::for_fixture_scope(holder),
                     ApprovalHolderCommand::Raise(Box::new(raise.clone())),
                 )
                 .await
@@ -190,7 +194,7 @@ async fn public_raise_installs_the_recorded_parent_and_unknown_session_writes_no
     let refused = fixture
         .apply(None, async |store| {
             store
-                .decide_approval(
+                .fixture_decide_approval(
                     &holder.organization_id,
                     AdmittedDecider::Session(unrelated),
                     decide_input(&request.request_id, 101, 2),
@@ -207,7 +211,7 @@ async fn public_raise_installs_the_recorded_parent_and_unknown_session_writes_no
     let accepted = fixture
         .apply(None, async |store| {
             store
-                .decide_approval(
+                .fixture_decide_approval(
                     &holder.organization_id,
                     AdmittedDecider::Session(parent),
                     decide_input(&request.request_id, 101, 2),
@@ -252,7 +256,7 @@ async fn simultaneous_decisions_commit_once_and_the_accepted_binding_replays_aft
     let invalid = fixture
         .apply(None, async |store| {
             store
-                .decide_approval(
+                .fixture_decide_approval(
                     &holder.organization_id,
                     first_actor.clone(),
                     invalid_input.clone(),
@@ -266,7 +270,7 @@ async fn simultaneous_decisions_commit_once_and_the_accepted_binding_replays_aft
     let (first, second) = tokio::join!(
         fixture.apply(None, async |store| {
             store
-                .decide_approval(
+                .fixture_decide_approval(
                     &holder.organization_id,
                     first_actor.clone(),
                     first_input.clone(),
@@ -275,7 +279,7 @@ async fn simultaneous_decisions_commit_once_and_the_accepted_binding_replays_aft
         }),
         fixture.apply(None, async |store| {
             store
-                .decide_approval(
+                .fixture_decide_approval(
                     &holder.organization_id,
                     second_actor.clone(),
                     second_input.clone(),
@@ -324,7 +328,11 @@ async fn simultaneous_decisions_commit_once_and_the_accepted_binding_replays_aft
     let retry = fixture
         .apply(None, async |store| {
             store
-                .decide_approval(&holder.organization_id, winner.clone(), saved_input.clone())
+                .fixture_decide_approval(
+                    &holder.organization_id,
+                    winner.clone(),
+                    saved_input.clone(),
+                )
                 .await
         })
         .await;
@@ -346,7 +354,7 @@ async fn simultaneous_decisions_commit_once_and_the_accepted_binding_replays_aft
         let conflict = fixture
             .apply(None, async |store| {
                 store
-                    .decide_approval(&holder.organization_id, actor, input)
+                    .fixture_decide_approval(&holder.organization_id, actor, input)
                     .await
             })
             .await;
@@ -359,7 +367,7 @@ async fn simultaneous_decisions_commit_once_and_the_accepted_binding_replays_aft
     let refused_again = fixture
         .apply(None, async |store| {
             store
-                .decide_approval(&holder.organization_id, first_actor, invalid_input)
+                .fixture_decide_approval(&holder.organization_id, first_actor, invalid_input)
                 .await
         })
         .await;
@@ -395,7 +403,7 @@ async fn a_page_times_out_only_its_rows_and_held_alarms_cannot_restore_waiting()
     let (page, evidence) = fixture
         .apply(None, async |store| {
             store
-                .list_person_approvals(
+                .fixture_list_person_approvals(
                     &holder.organization_id,
                     &person_id(11),
                     None,
@@ -423,13 +431,13 @@ async fn a_page_times_out_only_its_rows_and_held_alarms_cannot_restore_waiting()
                 .await
         })
         .await;
-    assert!(stale.unwrap().is_empty() && evidence.sql_writes.is_empty());
+    assert!(stale.unwrap().ending_offers.is_empty() && evidence.sql_writes.is_empty());
 
     fixture.clock.set_millis(HOUR - 1);
     let (reply, evidence) = fixture
         .apply(None, async |store| {
             store
-                .decide_approval(
+                .fixture_decide_approval(
                     &holder.organization_id,
                     person(11, FactorStanding::Fresh),
                     decide_input(&expired_first.request_id, 101, 1),
@@ -454,7 +462,7 @@ async fn a_page_times_out_only_its_rows_and_held_alarms_cannot_restore_waiting()
                 .await
         })
         .await;
-    let offers = ending.unwrap();
+    let offers = ending.unwrap().ending_offers;
     assert_eq!(
         offers[0].request.request_id(),
         &expired_after_page.request_id
@@ -489,7 +497,7 @@ async fn stored_kind_state_and_ending_are_rejected_by_the_public_read() {
     let ended = fixture
         .apply(None, async |store| {
             store
-                .decide_approval(
+                .fixture_decide_approval(
                     &holder.organization_id,
                     person(11, FactorStanding::Fresh),
                     decide_input(&request.request_id, 101, 2),
@@ -513,7 +521,7 @@ async fn assert_corrupt_read(
     let (read, evidence) = fixture
         .apply(None, async |store| {
             store
-                .read_person_approval(&holder.organization_id, &person_id(11), request_id)
+                .fixture_read_person_approval(&holder.organization_id, &person_id(11), request_id)
                 .await
         })
         .await;

@@ -19,7 +19,7 @@ test-support = ["fleet-engine/test-support", "fleet-runtime/test-support", "flee
 
 [dependencies]
 fleet-lent-transaction.workspace = true
-fleet-approvals = { workspace = true, optional = true }
+fleet-approvals = { workspace = true, features = ["test-support"], optional = true }
 approval-request-protocol = { workspace = true, optional = true }
 central-engine-model = { workspace = true, optional = true }
 fleet-signin.workspace = true

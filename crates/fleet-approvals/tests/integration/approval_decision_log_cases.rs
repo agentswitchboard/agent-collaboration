@@ -26,7 +26,11 @@ async fn admitted_refusal_and_acceptance_replay_their_first_answers_until_the_st
     let invalid = fixture
         .apply(None, async |store| {
             store
-                .decide_approval(&holder.organization_id, stale_actor.clone(), retry.clone())
+                .fixture_decide_approval(
+                    &holder.organization_id,
+                    stale_actor.clone(),
+                    retry.clone(),
+                )
                 .await
         })
         .await;
@@ -35,7 +39,7 @@ async fn admitted_refusal_and_acceptance_replay_their_first_answers_until_the_st
     let fresh_retry = fixture
         .apply(None, async |store| {
             store
-                .decide_approval(&holder.organization_id, live_actor.clone(), retry.clone())
+                .fixture_decide_approval(&holder.organization_id, live_actor.clone(), retry.clone())
                 .await
         })
         .await;
@@ -48,7 +52,11 @@ async fn admitted_refusal_and_acceptance_replay_their_first_answers_until_the_st
     let accepted = fixture
         .apply(None, async |store| {
             store
-                .decide_approval(&holder.organization_id, live_actor.clone(), allowed.clone())
+                .fixture_decide_approval(
+                    &holder.organization_id,
+                    live_actor.clone(),
+                    allowed.clone(),
+                )
                 .await
         })
         .await;
@@ -67,7 +75,7 @@ async fn admitted_refusal_and_acceptance_replay_their_first_answers_until_the_st
         let (answer, evidence) = fixture
             .apply(None, async |store| {
                 store
-                    .decide_approval(&holder.organization_id, live_actor.clone(), input)
+                    .fixture_decide_approval(&holder.organization_id, live_actor.clone(), input)
                     .await
             })
             .await;
@@ -80,7 +88,7 @@ async fn admitted_refusal_and_acceptance_replay_their_first_answers_until_the_st
     let (first_at_cutoff, evidence) = fixture
         .apply(None, async |store| {
             store
-                .decide_approval(&holder.organization_id, live_actor.clone(), retry.clone())
+                .fixture_decide_approval(&holder.organization_id, live_actor.clone(), retry.clone())
                 .await
         })
         .await;
@@ -93,7 +101,7 @@ async fn admitted_refusal_and_acceptance_replay_their_first_answers_until_the_st
     let retained_standing = fixture
         .apply(None, async |store| {
             store
-                .decide_approval(&holder.organization_id, live_actor.clone(), retry)
+                .fixture_decide_approval(&holder.organization_id, live_actor.clone(), retry)
                 .await
         })
         .await;
@@ -103,7 +111,7 @@ async fn admitted_refusal_and_acceptance_replay_their_first_answers_until_the_st
     let (expired_acceptance, evidence) = fixture
         .apply(None, async |store| {
             store
-                .decide_approval(&holder.organization_id, live_actor.clone(), allowed)
+                .fixture_decide_approval(&holder.organization_id, live_actor.clone(), allowed)
                 .await
         })
         .await;
@@ -138,7 +146,7 @@ async fn shared_request_log_conflicts_and_expired_operation_id_can_be_new_proven
     let collided = fixture
         .apply(None, async |store| {
             store
-                .decide_approval(
+                .fixture_decide_approval(
                     &holder.organization_id,
                     actor.clone(),
                     decide_input(first.request_id(), 101, 1),
@@ -156,7 +164,7 @@ async fn shared_request_log_conflicts_and_expired_operation_id_can_be_new_proven
     let first_acceptance = fixture
         .apply(None, async |store| {
             store
-                .decide_approval(
+                .fixture_decide_approval(
                     &holder.organization_id,
                     actor.clone(),
                     decide_input(first.request_id(), 102, 1),
@@ -175,7 +183,7 @@ async fn shared_request_log_conflicts_and_expired_operation_id_can_be_new_proven
     let second_acceptance = fixture
         .apply(None, async |store| {
             store
-                .decide_approval(
+                .fixture_decide_approval(
                     &holder.organization_id,
                     actor.clone(),
                     decide_input(second.request_id(), 102, 2),
@@ -211,7 +219,7 @@ async fn a_tampered_retained_answer_cannot_release_a_different_giver() {
     let accepted = fixture
         .apply(None, async |store| {
             store
-                .decide_approval(&holder.organization_id, actor.clone(), command.clone())
+                .fixture_decide_approval(&holder.organization_id, actor.clone(), command.clone())
                 .await
         })
         .await;
@@ -229,7 +237,7 @@ async fn a_tampered_retained_answer_cannot_release_a_different_giver() {
     let (replay, evidence) = fixture
         .apply(None, async |store| {
             store
-                .decide_approval(&holder.organization_id, actor, command)
+                .fixture_decide_approval(&holder.organization_id, actor, command)
                 .await
         })
         .await;

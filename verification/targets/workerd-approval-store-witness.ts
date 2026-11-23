@@ -5,7 +5,56 @@ import type {
   Raise_Serialize,
   StopRequest,
 } from "../../crates/approval-request-protocol/contracts/approval-requests.ts";
-import type { WorkerdStorage } from "./workerd-storage.ts";
+import { realpathSync } from "node:fs";
+import { rm } from "node:fs/promises";
+import { createFixtureDirectory } from "../test-support/fixture-directory.ts";
+import { centralTestBundle, WorkerdStorage } from "./workerd-storage.ts";
+
+export class ApprovalWorkerdHost {
+  private host: WorkerdStorage;
+  private readonly persistenceDirectory: string;
+
+  private constructor(host: WorkerdStorage, persistenceDirectory: string) {
+    this.host = host;
+    this.persistenceDirectory = persistenceDirectory;
+  }
+
+  static async start(): Promise<ApprovalWorkerdHost> {
+    const persistenceDirectory = realpathSync(createFixtureDirectory("workerd-approval-store"));
+    try {
+      return new ApprovalWorkerdHost(
+        await ApprovalWorkerdHost.open(persistenceDirectory),
+        persistenceDirectory,
+      );
+    } catch (error: unknown) {
+      await rm(persistenceDirectory, { recursive: true, force: true });
+      throw error;
+    }
+  }
+
+  private static async open(persistenceDirectory: string): Promise<WorkerdStorage> {
+    return WorkerdStorage.start(centralTestBundle(), undefined, undefined, {
+      persistenceDirectory,
+    });
+  }
+
+  async dispatchJson(path: string, command: unknown): Promise<unknown> {
+    return this.host.dispatchJson(path, command);
+  }
+
+  async reopen(): Promise<void> {
+    await this.host.close();
+    this.host = await ApprovalWorkerdHost.open(this.persistenceDirectory);
+  }
+
+  async close(): Promise<void> {
+    try {
+      await this.host.close();
+    } finally {
+      await rm(this.persistenceDirectory, { recursive: true, force: true });
+    }
+  }
+}
 
 const replySchema = z.object({
   reply: z.unknown(),
@@ -87,7 +136,7 @@ export function commandPath(database: string): string {
 }
 
 interface InvokeApprovalWitness {
-  readonly central: WorkerdStorage;
+  readonly central: ApprovalWorkerdHost;
   readonly database: string;
   readonly atMs?: number;
   readonly failAfterWrite?: number;
@@ -115,7 +164,7 @@ export function typedResult(reply: WitnessReply): unknown {
 }
 
 export async function initializeApprovals(
-  central: WorkerdStorage,
+  central: ApprovalWorkerdHost,
   database: string,
   delegated = false,
 ): Promise<void> {
@@ -149,7 +198,7 @@ export async function initializeApprovals(
   }
 }
 
-export async function snapshot(central: WorkerdStorage, database: string): Promise<string[]> {
+export async function snapshot(central: ApprovalWorkerdHost, database: string): Promise<string[]> {
   const inspected = await invokeApprovalWitness({
     central,
     database,
@@ -180,8 +229,10 @@ export async function assertRollbackAtEachWrite(
   for (let write = 1; write <= props.writes; write += 1) {
     const failed = await invokeApprovalWitness({ ...props, failAfterWrite: write });
     assert.equal(failed.committed, false);
+    assert.equal(failed.reply, null);
     assert.match(failed.error ?? "", /Store\(Unavailable\)/);
     assert.equal(failed.writes, write);
+    await props.central.reopen();
     assert.deepEqual(await snapshot(props.central, props.database), before);
   }
   const result = await invokeApprovalWitness(props);

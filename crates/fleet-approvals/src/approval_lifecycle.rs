@@ -65,7 +65,7 @@ impl Machine for ApprovalLifecycle {
             ApprovalEvent::RunRetired => end_authority(state, AuthorityEnd::Run, now),
             ApprovalEvent::EnrollmentEnded => end_authority(state, AuthorityEnd::Enrollment, now),
             ApprovalEvent::SessionEnded => end_authority(state, AuthorityEnd::ProviderSession, now),
-            ApprovalEvent::Reoffer => reoffer(state),
+            ApprovalEvent::Reoffer => reoffer(state, now),
         }
     }
 

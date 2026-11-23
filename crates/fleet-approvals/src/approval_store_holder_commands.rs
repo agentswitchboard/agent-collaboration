@@ -4,14 +4,17 @@ use approval_request_protocol::{
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use workspace_ids::ApprovalRequestId;
 
-use super::{ApprovalApplyFailure, ApprovalApplyingStore, PendingApprovalApply};
+use super::{ApprovalApplyFailure, ApprovalApplyingStore, ApprovalTransitionOutput};
 use crate::{
-    ApprovalEvent, ApprovalReceipt, ApprovalRefusal, ApprovalRequestKey, ApprovalRouting,
-    ApprovalSession, ApprovalSessionFacts, ApprovalState, ProviderSessionAvailability,
-    RaiseAdmission,
+    ApprovalEvent, ApprovalReceipt, ApprovalRefusal, ApprovalReplyAddress, ApprovalRequestKey,
+    ApprovalRouting, ApprovalSession, ApprovalSessionFacts, ApprovalState, CommittedApprovalOffer,
+    PendingApprovalReply, ProviderSessionAvailability, RaiseAdmission,
     approval_lifecycle_admission::stop_binding,
-    approval_store_reads::{ScopedHolderRequest, count_outstanding_approvals, read_holder_request},
-    approval_store_scope::ApprovalHolderScope,
+    approval_store_reads::{
+        ScopedHolderRequest, count_outstanding_approvals, read_holder_request,
+        read_owed_approval_endings,
+    },
+    approval_store_scope::{ApprovalHolderAdmission, ApprovalHolderScope},
     approval_store_transaction::ApprovalStoreTransaction,
 };
 
@@ -78,14 +81,27 @@ where
     /// Apply a request from an authenticated holder. The Raise body carries no route.
     pub async fn apply_holder_command(
         &mut self,
-        scope: &ApprovalHolderScope,
+        holder: &ApprovalHolderAdmission,
         command: ApprovalHolderCommand,
-    ) -> Result<PendingApprovalApply<ApprovalHolderReply>, ApprovalApplyFailure> {
+    ) -> Result<PendingApprovalReply<ApprovalHolderReply>, ApprovalApplyFailure> {
+        let applied = self.apply_holder(holder, command).await?;
+        Ok(self.stage_reply(
+            ApprovalReplyAddress::Holder(holder.holder_scope().clone()),
+            applied,
+        ))
+    }
+
+    async fn apply_holder(
+        &mut self,
+        holder: &ApprovalHolderAdmission,
+        command: ApprovalHolderCommand,
+    ) -> Result<ApprovalTransitionOutput<ApprovalHolderReply>, ApprovalApplyFailure> {
+        let scope = holder.holder_scope();
         if let Err(refusal) = self
             .check_holder_fence(scope, command.holder_binding_matches(scope))
             .await?
         {
-            return Ok(PendingApprovalApply::with_reply(
+            return Ok(ApprovalTransitionOutput::with_reply(
                 command.authority_refused(refusal),
             ));
         }
@@ -97,7 +113,7 @@ where
         };
         let record = match read_holder_request(self.transaction, scope, request_id).await? {
             ScopedHolderRequest::OtherHolder => {
-                return Ok(PendingApprovalApply::with_reply(
+                return Ok(ApprovalTransitionOutput::with_reply(
                     command.request_belongs_to_other_holder(),
                 ));
             }
@@ -154,6 +170,45 @@ where
             }
         };
         Ok(applied.replace_reply(reply))
+    }
+
+    /// Recover all current Owed endings for the exact admitted run.
+    pub async fn recover_owed_approval_endings(
+        &mut self,
+        holder: &ApprovalHolderAdmission,
+    ) -> Result<PendingApprovalReply<Result<(), RunRefusal>>, ApprovalApplyFailure> {
+        let applied = self.read_owed_endings(holder).await?;
+        Ok(self.stage_reply(
+            ApprovalReplyAddress::Holder(holder.holder_scope().clone()),
+            applied,
+        ))
+    }
+
+    async fn read_owed_endings(
+        &mut self,
+        holder: &ApprovalHolderAdmission,
+    ) -> Result<ApprovalTransitionOutput<Result<(), RunRefusal>>, ApprovalApplyFailure> {
+        let scope = holder.holder_scope();
+        if let Err(refusal) = self.check_holder_fence(scope, true).await? {
+            return Ok(ApprovalTransitionOutput::with_reply(Err(refusal)));
+        }
+        let records = read_owed_approval_endings(self.transaction, scope).await?;
+        let mut pending = ApprovalTransitionOutput::with_reply(Ok(()));
+        for record in records {
+            let ApprovalState::Ended { closed, .. } = record.state else {
+                return Err(corrupt("approval_requests.owed_selection").into());
+            };
+            if record.scope != *scope
+                || closed.delivery != (approval_request_protocol::Delivery::Owed {})
+            {
+                return Err(corrupt("approval_requests.owed_selection").into());
+            }
+            pending.ending_offers.push(CommittedApprovalOffer::new(
+                record.scope,
+                Box::new(closed.ending),
+            ));
+        }
+        Ok(pending)
     }
 
     async fn resolve_first_raise(

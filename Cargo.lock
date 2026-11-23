@@ -2471,9 +2471,11 @@ dependencies = [
  "approval-request-protocol",
  "central-engine-model",
  "central-storage",
+ "fleet-approvals",
  "fleet-engine",
  "fleet-identity-protocol",
  "fleet-lent-transaction",
+ "fleet-machine-login",
  "fleet-request-log",
  "fleet-runtime-ports",
  "fleet-storage-schema",
@@ -2556,6 +2558,7 @@ dependencies = [
 name = "fleet-lent-transaction"
 version = "0.1.158"
 dependencies = [
+ "fleet-identity-protocol",
  "sqlx",
 ]
 

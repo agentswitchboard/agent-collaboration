@@ -33,7 +33,7 @@ async fn first_raise_forward_decide_delivery_and_run_replacement_roll_back_at_ev
     assert_rollback_each_write(&fixture, 3, async |store| {
         store
             .apply_holder_command(
-                &holder,
+                &fleet_approvals::ApprovalHolderAdmission::for_fixture_scope(&holder),
                 ApprovalHolderCommand::Raise(Box::new(raise.clone())),
             )
             .await
@@ -41,14 +41,18 @@ async fn first_raise_forward_decide_delivery_and_run_replacement_roll_back_at_ev
     .await;
     assert_rollback_each_write(&fixture, 2, async |store| {
         store
-            .pass_on_approval(&holder.organization_id, parent.clone(), &request.request_id)
+            .fixture_pass_on_approval(&holder.organization_id, parent.clone(), &request.request_id)
             .await
     })
     .await;
     let repeat_pass = fixture
         .apply(None, async |store| {
             store
-                .pass_on_approval(&holder.organization_id, parent.clone(), &request.request_id)
+                .fixture_pass_on_approval(
+                    &holder.organization_id,
+                    parent.clone(),
+                    &request.request_id,
+                )
                 .await
         })
         .await;
@@ -56,7 +60,7 @@ async fn first_raise_forward_decide_delivery_and_run_replacement_roll_back_at_ev
     assert!(repeat_pass.1.sql_writes.is_empty());
     let decided = assert_rollback_each_write(&fixture, 4, async |store| {
         store
-            .decide_approval(
+            .fixture_decide_approval(
                 &holder.organization_id,
                 person(11, FactorStanding::Fresh),
                 decide_input(&request.request_id, 101, 1),
@@ -68,7 +72,7 @@ async fn first_raise_forward_decide_delivery_and_run_replacement_roll_back_at_ev
     assert_rollback_each_write(&fixture, 1, async |store| {
         store
             .apply_holder_command(
-                &holder,
+                &fleet_approvals::ApprovalHolderAdmission::for_fixture_scope(&holder),
                 ApprovalHolderCommand::DeliveryReply {
                     request: offer.request.clone(),
                     reply: DeliverEndingReply::Received {},
@@ -82,14 +86,20 @@ async fn first_raise_forward_decide_delivery_and_run_replacement_roll_back_at_ev
     let unseen = provider(&marked_request, &requester, "Before raise");
     assert_rollback_each_write(&fixture, 1, async |store| {
         store
-            .apply_holder_command(&holder, ApprovalHolderCommand::Stop(provider_stop(&unseen)))
+            .apply_holder_command(
+                &fleet_approvals::ApprovalHolderAdmission::for_fixture_scope(&holder),
+                ApprovalHolderCommand::Stop(provider_stop(&unseen)),
+            )
             .await
     })
     .await;
     let stop_replay = fixture
         .apply(None, async |store| {
             store
-                .apply_holder_command(&holder, ApprovalHolderCommand::Stop(provider_stop(&unseen)))
+                .apply_holder_command(
+                    &fleet_approvals::ApprovalHolderAdmission::for_fixture_scope(&holder),
+                    ApprovalHolderCommand::Stop(provider_stop(&unseen)),
+                )
                 .await
         })
         .await;
@@ -109,7 +119,11 @@ async fn first_raise_forward_decide_delivery_and_run_replacement_roll_back_at_ev
         organization_id: holder.organization_id.clone(),
     };
     assert_rollback_each_write(&fixture, 4, async |store| {
-        store.register_approval_run(&replacement).await
+        store
+            .register_approval_run(
+                &fleet_approvals::ApprovalHolderAdmission::for_fixture_scope(&replacement),
+            )
+            .await
     })
     .await;
     let (reply, evidence) = raise_and_commit(&fixture, &holder, &saved).await;
@@ -138,7 +152,13 @@ async fn retirement_at_capacity_commits_the_fence_endings_and_due_removals_toget
     assert!(evidence.sql_writes.is_empty());
 
     let (retired, evidence) = fixture
-        .apply(None, async |store| store.retire_approval_run(&holder).await)
+        .apply(None, async |store| {
+            store
+                .retire_approval_run(
+                    &fleet_approvals::ApprovalHolderAdmission::for_fixture_scope(&holder),
+                )
+                .await
+        })
         .await;
     assert_eq!(retired.unwrap().reply, Ok(()));
     assert_eq!(evidence.sql_writes.len(), 1 + 2 * MAX_OUTSTANDING_PER_RUN);
@@ -181,7 +201,10 @@ async fn session_end_enrollment_end_alarm_and_waiting_stop_roll_back_after_each_
     }
     assert_rollback_each_write(&fixture, 2, async |store| {
         store
-            .apply_holder_command(&holder, ApprovalHolderCommand::Stop(provider_stop(&stop)))
+            .apply_holder_command(
+                &fleet_approvals::ApprovalHolderAdmission::for_fixture_scope(&holder),
+                ApprovalHolderCommand::Stop(provider_stop(&stop)),
+            )
             .await
     })
     .await;
@@ -191,7 +214,10 @@ async fn session_end_enrollment_end_alarm_and_waiting_stop_roll_back_after_each_
         store.apply_approval_deadline(&due[0].key, time(HOUR)).await
     })
     .await;
-    assert_eq!(timed_out[0].request.request_id(), expire.request_id());
+    assert_eq!(
+        timed_out.ending_offers[0].request.request_id(),
+        expire.request_id()
+    );
     fixture.clock.set_millis(2);
     let premature_session_end = fixture
         .apply(None, async |store| {
@@ -200,7 +226,7 @@ async fn session_end_enrollment_end_alarm_and_waiting_stop_roll_back_after_each_
                 .await
         })
         .await;
-    assert!(premature_session_end.0.unwrap().is_empty());
+    assert!(premature_session_end.0.unwrap().ending_offers.is_empty());
     assert!(premature_session_end.1.sql_writes.is_empty());
 
     let scope = fleet_approvals::ApprovalEnrollmentScope {
@@ -224,7 +250,10 @@ async fn session_end_enrollment_end_alarm_and_waiting_stop_roll_back_after_each_
             .await
     })
     .await;
-    assert_eq!(cancelled[0].request.request_id(), cancel.request_id());
+    assert_eq!(
+        cancelled.ending_offers[0].request.request_id(),
+        cancel.request_id()
+    );
     fixture.store_enrollment(&holder, "ended").await;
     // Two previously ended Owed rows close delivery, the last waiting row ends,
     // its due entry clears, and the run's fence retires.
@@ -298,8 +327,9 @@ async fn assert_rollback_each_write<Reply>(
             super::native_approval_store::NativeApprovalTransaction,
             super::native_approval_store::StoredSessionFacts,
         >,
-    ) -> Result<Reply, ApprovalApplyFailure>,
-) -> Reply {
+    )
+        -> Result<fleet_approvals::PendingApprovalReply<Reply>, ApprovalApplyFailure>,
+) -> super::native_approval_store::FixtureCommittedApply<Reply> {
     let before = snapshot(fixture).await;
     for ordinal in 1..=expected_writes {
         let (failed, evidence) = fixture.apply(Some(ordinal), &apply).await;

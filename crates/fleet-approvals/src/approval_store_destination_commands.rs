@@ -5,14 +5,19 @@ use fleet_identity_protocol::OrganizationId;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use workspace_ids::{ApprovalRequestId, PersonId};
 
-use super::{ApprovalApplyFailure, ApprovalApplyingStore, ApprovalReadPage, PendingApprovalApply};
+use super::{
+    ApprovalApplyFailure, ApprovalApplyingStore, ApprovalReadPage, ApprovalTransitionOutput,
+};
 use crate::{
     AdmittedDecider, ApprovalActor, ApprovalDecideInput, ApprovalDecisionReply, ApprovalEvent,
     ApprovalReceipt, ApprovalSession, ApprovalSessionFacts,
     approval_decision_log::ApprovalDecisionLogKey,
     approval_lifecycle_admission::is_destination,
-    approval_store_reads::{ApprovalReadRecord, read_approval_request, read_person_approval_page},
-    approval_store_scope::ApprovalRowId,
+    approval_store_reads::{
+        ApprovalReadRecord, read_parent_approval_request, read_people_approval_request,
+        read_person_approval_page,
+    },
+    approval_store_scope::ApprovalRequestRowId,
     approval_store_transaction::ApprovalStoreTransaction,
 };
 
@@ -21,13 +26,16 @@ where
     Transaction: ApprovalStoreTransaction,
     Sessions: ApprovalSessionFacts<Transaction>,
 {
-    pub async fn decide_approval(
+    pub(super) async fn decide_approval(
         &mut self,
         organization: &OrganizationId,
         decider: AdmittedDecider,
         request: ApprovalDecideInput,
-    ) -> Result<PendingApprovalApply<ApprovalDecisionReply>, ApprovalApplyFailure> {
-        let refused = || PendingApprovalApply::with_reply(ApprovalDecisionReply::NotVisible {});
+    ) -> Result<ApprovalTransitionOutput<ApprovalDecisionReply>, ApprovalApplyFailure> {
+        let refused = || ApprovalTransitionOutput::with_reply(ApprovalDecisionReply::NotVisible {});
+        if organization != self.transaction.organization_id() {
+            return Ok(refused());
+        }
         let actor = decider.actor();
         if let ApprovalActor::Session(session) = &actor
             && !self
@@ -37,8 +45,21 @@ where
         {
             return Ok(refused());
         }
-        let record =
-            read_approval_request(self.transaction, organization, &request.request_id).await?;
+        let record = match &actor {
+            ApprovalActor::Person(_) => {
+                read_people_approval_request(self.transaction, organization, &request.request_id)
+                    .await?
+            }
+            ApprovalActor::Session(session) => {
+                read_parent_approval_request(
+                    self.transaction,
+                    organization,
+                    &request.request_id,
+                    session,
+                )
+                .await?
+            }
+        };
         let Some(record) = record else {
             return Ok(refused());
         };
@@ -62,7 +83,23 @@ where
             .read_approval_statement(request_log.lookup_statement())
             .await?;
         if let Some(reply) = request_log.replay(&retained, &request, &recipient, &record.state)? {
-            return Ok(PendingApprovalApply::with_reply(reply));
+            if let crate::ApprovalState::Waiting { saved } = &record.state
+                && at >= saved.window.deadline()
+            {
+                let expired = self
+                    .apply_request_event(
+                        Some(&record.row_id),
+                        &record.scope,
+                        &record.state,
+                        ApprovalEvent::Alarm {
+                            deadline: saved.window.deadline(),
+                        },
+                        at,
+                    )
+                    .await?;
+                return Ok(expired.replace_reply(reply));
+            }
+            return Ok(ApprovalTransitionOutput::with_reply(reply));
         }
         let event = ApprovalEvent::Decide {
             key: key.clone(),
@@ -91,13 +128,16 @@ where
         Ok(applied.replace_reply(reply))
     }
 
-    pub async fn pass_on_approval(
+    pub(super) async fn pass_on_approval(
         &mut self,
         organization: &OrganizationId,
         parent: ApprovalSession,
         request_id: &ApprovalRequestId,
-    ) -> Result<PendingApprovalApply<PassOnReply>, ApprovalApplyFailure> {
-        let refused = || PendingApprovalApply::with_reply(PassOnReply::NotVisible {});
+    ) -> Result<ApprovalTransitionOutput<PassOnReply>, ApprovalApplyFailure> {
+        let refused = || ApprovalTransitionOutput::with_reply(PassOnReply::NotVisible {});
+        if organization != self.transaction.organization_id() {
+            return Ok(refused());
+        }
         if !self
             .sessions
             .session_is_live(self.transaction, organization, &parent)
@@ -105,7 +145,9 @@ where
         {
             return Ok(refused());
         }
-        let record = read_approval_request(self.transaction, organization, request_id).await?;
+        let record =
+            read_parent_approval_request(self.transaction, organization, request_id, &parent)
+                .await?;
         let Some(record) = record else {
             return Ok(refused());
         };
@@ -137,27 +179,37 @@ where
         Ok(applied.replace_reply(reply))
     }
 
-    pub async fn read_person_approval(
+    pub(super) async fn read_person_approval(
         &mut self,
         organization: &OrganizationId,
         person_id: &PersonId,
         request_id: &ApprovalRequestId,
-    ) -> Result<PendingApprovalApply<Option<RequestView>>, ApprovalApplyFailure> {
-        let record = read_approval_request(self.transaction, organization, request_id).await?;
+    ) -> Result<ApprovalTransitionOutput<Option<RequestView>>, ApprovalApplyFailure> {
+        if organization != self.transaction.organization_id() {
+            return Ok(ApprovalTransitionOutput::with_reply(None));
+        }
+        let record =
+            read_people_approval_request(self.transaction, organization, request_id).await?;
         let Some(record) = record else {
-            return Ok(PendingApprovalApply::with_reply(None));
+            return Ok(ApprovalTransitionOutput::with_reply(None));
         };
         let at = self.sample_applying_time()?;
         self.read_selected_approval(&record, person_id, at).await
     }
 
-    pub async fn list_person_approvals(
+    pub(super) async fn list_person_approvals(
         &mut self,
         organization: &OrganizationId,
         person_id: &PersonId,
-        after: Option<&ApprovalRowId>,
+        after: Option<&ApprovalRequestRowId>,
         limit: NonZeroU16,
-    ) -> Result<PendingApprovalApply<ApprovalReadPage>, ApprovalApplyFailure> {
+    ) -> Result<ApprovalTransitionOutput<ApprovalReadPage>, ApprovalApplyFailure> {
+        if organization != self.transaction.organization_id() {
+            return Ok(ApprovalTransitionOutput::with_reply(ApprovalReadPage {
+                requests: Vec::new(),
+                next_after: None,
+            }));
+        }
         let mut records =
             read_person_approval_page(self.transaction, organization, after, limit).await?;
         let page_size = usize::from(limit.get());
@@ -178,7 +230,7 @@ where
             requests.push(request);
             ending_offers.extend(applied.ending_offers);
         }
-        Ok(PendingApprovalApply {
+        Ok(ApprovalTransitionOutput {
             reply: ApprovalReadPage {
                 requests,
                 next_after,
@@ -192,9 +244,9 @@ where
         record: &ApprovalReadRecord,
         person: &PersonId,
         at: CentralTime,
-    ) -> Result<PendingApprovalApply<Option<RequestView>>, ApprovalApplyFailure> {
+    ) -> Result<ApprovalTransitionOutput<Option<RequestView>>, ApprovalApplyFailure> {
         let Some(key) = record.state.key() else {
-            return Ok(PendingApprovalApply::with_reply(None));
+            return Ok(ApprovalTransitionOutput::with_reply(None));
         };
         let event = ApprovalEvent::Read {
             key: key.clone(),

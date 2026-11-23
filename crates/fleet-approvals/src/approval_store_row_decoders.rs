@@ -8,13 +8,12 @@ use central_engine_model::supported_time;
 use central_storage::{ReadOutcome, SqlValue, StoreFailure};
 use fleet_identity_protocol::{EnrollmentId, OrganizationId};
 use fleet_runtime_ports::{stored_values::json, workspace_decode_error::corrupt};
-use workspace_ids::RequestId;
 
 use crate::{
     ApprovalActor, ApprovalEnrollment, ApprovalRequestKey, ApprovalRouting, ApprovalRun,
     ApprovalSession, ApprovalState, EndedApproval, RetainedApproval,
     approval_lifecycle_admission::is_destination,
-    approval_store_scope::{ApprovalHolderScope, ApprovalRowId},
+    approval_store_scope::{ApprovalDestinationRowId, ApprovalHolderScope, ApprovalRequestRowId},
     approval_stored_tags::{
         parse_delivery_state, parse_stop_cause, parse_stored_time, parse_waiting_status,
         request_kind_tag,
@@ -91,7 +90,7 @@ fn decode_holder_scope(
 }
 
 pub(super) fn decode_request_row(
-    row_id: ApprovalRowId,
+    row_id: ApprovalRequestRowId,
     stored: StoredApprovalRow,
     destinations: &ReadOutcome,
 ) -> Result<ApprovalReadRecord, StoreFailure> {
@@ -186,7 +185,7 @@ fn decode_retained_approval(
     stored: &StoredApprovalRow,
     key: ApprovalRequestKey,
     contents_digest: RequestContentsDigest,
-    row_id: &ApprovalRowId,
+    row_id: &ApprovalRequestRowId,
     scope: &ApprovalHolderScope,
     destinations: &ReadOutcome,
 ) -> Result<RetainedApproval, StoreFailure> {
@@ -275,7 +274,7 @@ fn decode_provider_holder(
 
 fn decode_route(
     destinations: &ReadOutcome,
-    row_id: &ApprovalRowId,
+    row_id: &ApprovalRequestRowId,
     scope: &ApprovalHolderScope,
     raise: &Raise,
     waiting_status: WaitingStatus,
@@ -285,10 +284,7 @@ fn decode_route(
     let mut parent = None;
     for cells in &destinations.rows {
         let row = StoredDestinationRow::read_named(destinations, cells)?;
-        let _: RequestId = parse_identifier(
-            row.approval_destination_id.stored_text()?,
-            "approval_destination_id",
-        )?;
+        ApprovalDestinationRowId::parse(row.approval_destination_id.stored_text()?)?;
         let created_at = parse_stored_time(row.created_at.stored_text()?, "created_at")?;
         let updated_at = parse_stored_time(row.updated_at.stored_text()?, "updated_at")?;
         if row.approval_row_id.stored_text()? != row_id.as_str()

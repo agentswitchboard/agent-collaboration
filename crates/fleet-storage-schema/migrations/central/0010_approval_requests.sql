@@ -7,9 +7,11 @@ CREATE TABLE approval_router_runs (
     registered_at TEXT NOT NULL,
     retired_at TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE (organization_id, machine_id, enrollment_id, registration_order)
+    updated_at TEXT NOT NULL
 );
+
+CREATE UNIQUE INDEX approval_router_runs_registration_order
+ON approval_router_runs (organization_id, machine_id, enrollment_id, registration_order);
 
 CREATE UNIQUE INDEX approval_router_runs_active_scope
 ON approval_router_runs (organization_id, machine_id, enrollment_id)
@@ -37,9 +39,11 @@ CREATE TABLE approval_requests (
     decided_operation_id TEXT,
     delivery_state TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE (organization_id, request_id)
+    updated_at TEXT NOT NULL
 );
+
+CREATE UNIQUE INDEX approval_requests_organization_request
+ON approval_requests (organization_id, request_id);
 
 -- Both Waiting and unpaid endings occupy the run's capacity.
 CREATE INDEX approval_requests_outstanding

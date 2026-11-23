@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT requests.*\nFROM approval_requests AS requests\nWHERE approval_row_id = ?1\n",
+  "query": "SELECT requests.*\nFROM approval_requests AS requests\nWHERE requests.organization_id = ?1 AND requests.request_id = ?2\n  AND EXISTS (\n      SELECT 1 FROM approval_request_destinations AS destination\n      WHERE destination.approval_row_id = requests.approval_row_id\n        AND destination.organization_id = requests.organization_id\n        AND destination.destination_kind = 'parent_session'\n        AND destination.session_machine_id = ?3\n        AND destination.session_enrollment_id = ?4\n        AND destination.session_id = ?5\n  )\n",
   "describe": {
     "columns": [
       {
@@ -247,7 +247,7 @@
       }
     ],
     "parameters": {
-      "Right": 1
+      "Right": 5
     },
     "nullable": [
       false,
@@ -274,5 +274,5 @@
       false
     ]
   },
-  "hash": "767ef742b91daa4c0701fa77dfa7b2d364ec59300a84642cae91f3bbfe726dcf"
+  "hash": "45ad85d0088fade6d360adafce0dfc6b1c7dfdefef867fa6188cb2f6c61d83ef"
 }

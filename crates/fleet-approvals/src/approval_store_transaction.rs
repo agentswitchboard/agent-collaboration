@@ -2,7 +2,7 @@ use std::future::Future;
 
 use central_storage::{ReadOutcome, Statement, StoreFailure};
 use fleet_identity_protocol::OrganizationId;
-use fleet_lent_transaction::CentralTransaction;
+use fleet_lent_transaction::OrganizationTransaction;
 use workspace_ids::ActorIdentityId;
 
 use crate::{ApprovalActor, approval_store_scope::ApprovalEnrollmentScope};
@@ -16,7 +16,7 @@ pub enum ApprovalEnrollmentStanding {
 
 /// The host lends the already applying transaction and retains commit and rollback.
 /// Its enrollment lookup delegates to the machine-login owner in that transaction.
-pub trait ApprovalStoreTransaction: CentralTransaction {
+pub trait ApprovalStoreTransaction: OrganizationTransaction {
     fn read_approval_statement(
         &mut self,
         statement: Statement,

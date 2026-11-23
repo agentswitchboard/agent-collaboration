@@ -11,12 +11,14 @@ use central_engine_model::{
 };
 use central_storage::{ReadOutcome, SafeInteger, SqlValue, Statement, StoreFailure};
 use fleet_approvals::{
-    ApprovalActor, ApprovalApplyFailure, ApprovalApplyingStore, ApprovalEnrollment,
-    ApprovalEnrollmentScope, ApprovalEnrollmentStanding, ApprovalHolderScope, ApprovalRouting,
-    ApprovalSession, ApprovalSessionFacts, ApprovalStoreTransaction,
+    ApprovalActor, ApprovalApplyFailure, ApprovalApplyingStore, ApprovalCommitOwner,
+    ApprovalCommitProof, ApprovalCommitScope, ApprovalEnrollment, ApprovalEnrollmentScope,
+    ApprovalEnrollmentStanding, ApprovalHolderAdmission, ApprovalHolderScope, ApprovalRouting,
+    ApprovalSession, ApprovalSessionFacts, ApprovalStoreTransaction, PendingApprovalHolderEffects,
+    PendingApprovalReply, complete_approval_commit,
 };
 use fleet_identity_protocol::{EnrollmentId, OrganizationId};
-use fleet_lent_transaction::CentralTransaction;
+use fleet_lent_transaction::{CentralTransaction, OrganizationTransaction};
 use fleet_runtime_ports::{Clock, SyncTime, workspace_decode_error::corrupt};
 use sqlx::{
     Column, Row, Sqlite, SqlitePool, Transaction, ValueRef,
@@ -24,6 +26,11 @@ use sqlx::{
     sqlite::{SqliteArguments, SqliteConnectOptions, SqlitePoolOptions},
 };
 use workspace_ids::ActorIdentityId;
+
+#[path = "native_approval_store_commit.rs"]
+mod native_approval_store_commit;
+use native_approval_store_commit::NativeApprovalCommit;
+pub use native_approval_store_commit::{FixtureCommittedApply, FixtureHolderOffer};
 
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(1);
 
@@ -59,9 +66,20 @@ pub struct ApprovalTransactionEvidence {
 }
 
 pub struct NativeApprovalTransaction {
+    organization_id: OrganizationId,
     transaction: Transaction<'static, Sqlite>,
     fail_after_write: Option<usize>,
     evidence: ApprovalTransactionEvidence,
+}
+
+impl OrganizationTransaction for NativeApprovalTransaction {
+    fn organization_id(&self) -> &OrganizationId {
+        &self.organization_id
+    }
+}
+
+fn fixture_organization() -> OrganizationId {
+    OrganizationId::try_from("019ac19f-aa00-7000-8000-00000000a100".to_owned()).unwrap()
 }
 
 impl CentralTransaction for NativeApprovalTransaction {
@@ -306,32 +324,57 @@ impl NativeApprovalStoreFixture {
         fail_after_write: Option<usize>,
         run_command: impl AsyncFnOnce(
             &mut ApprovalApplyingStore<'_, NativeApprovalTransaction, StoredSessionFacts>,
-        ) -> Result<Reply, ApprovalApplyFailure>,
+        )
+            -> Result<PendingApprovalReply<Reply>, ApprovalApplyFailure>,
     ) -> (
-        Result<Reply, ApprovalApplyFailure>,
+        Result<FixtureCommittedApply<Reply>, ApprovalApplyFailure>,
         ApprovalTransactionEvidence,
     ) {
-        let pool = self.reopen_pool().await;
-        let mut transaction = NativeApprovalTransaction {
-            transaction: pool.begin_with("BEGIN IMMEDIATE").await.unwrap(),
+        let (committed, evidence) = self.commit_pending(fail_after_write, run_command).await;
+        let result = committed.map(|(proof, (reply, holder_effects))| FixtureCommittedApply {
+            reply: reply.take_fixture_reply(&proof).unwrap(),
+            ending_offers: holder_effects
+                .release(&proof)
+                .unwrap()
+                .into_iter()
+                .map(|offer| {
+                    let holder = ApprovalHolderAdmission::for_fixture_scope(offer.holder_address());
+                    FixtureHolderOffer {
+                        request: offer.take_for_holder(&holder).unwrap(),
+                    }
+                })
+                .collect(),
+        });
+        (result, evidence)
+    }
+
+    pub async fn commit_pending<Reply>(
+        &self,
+        fail_after_write: Option<usize>,
+        run_command: impl AsyncFnOnce(
+            &mut ApprovalApplyingStore<'_, NativeApprovalTransaction, StoredSessionFacts>,
+        )
+            -> Result<PendingApprovalReply<Reply>, ApprovalApplyFailure>,
+    ) -> (
+        Result<
+            (
+                ApprovalCommitProof,
+                (PendingApprovalReply<Reply>, PendingApprovalHolderEffects),
+            ),
+            ApprovalApplyFailure,
+        >,
+        ApprovalTransactionEvidence,
+    ) {
+        let mut evidence = ApprovalTransactionEvidence::default();
+        let committed = complete_approval_commit(NativeApprovalCommit {
+            fixture: self,
             fail_after_write,
-            evidence: ApprovalTransactionEvidence::default(),
-        };
-        let mut ids = StoreFixtureIds(&self.ids);
-        let result = run_command(&mut ApprovalApplyingStore::new(
-            &mut transaction,
-            &StoredSessionFacts,
-            &self.clock,
-            &mut ids,
-        ))
+            run_command,
+            evidence: &mut evidence,
+        })
         .await;
-        if result.is_ok() {
-            transaction.transaction.commit().await.unwrap();
-        } else {
-            transaction.transaction.rollback().await.unwrap();
-        }
-        pool.close().await;
-        (result, transaction.evidence)
+
+        (committed, evidence)
     }
 
     pub async fn store_enrollment(&self, holder: &ApprovalHolderScope, standing: &str) {
@@ -377,6 +420,8 @@ impl NativeApprovalStoreFixture {
     pub async fn due_rows(&self, cutoff: EngineTime, cap: usize) -> Vec<DueRow> {
         let pool = self.reopen_pool().await;
         let mut transaction = NativeApprovalTransaction {
+            organization_id: fixture_organization(),
+
             transaction: pool.begin().await.unwrap(),
             fail_after_write: None,
             evidence: ApprovalTransactionEvidence::default(),
@@ -397,6 +442,8 @@ impl NativeApprovalStoreFixture {
     ) -> Vec<fleet_engine::DueTableDifference> {
         let pool = self.reopen_pool().await;
         let mut transaction = NativeApprovalTransaction {
+            organization_id: fixture_organization(),
+
             transaction: pool.begin().await.unwrap(),
             fail_after_write: None,
             evidence: ApprovalTransactionEvidence::default(),
@@ -442,6 +489,8 @@ impl NativeApprovalStoreFixture {
     pub async fn due_rows_with_progress(&self, cutoff: EngineTime) -> (Vec<DueRow>, u64) {
         let pool = self.reopen_pool().await;
         let mut transaction = NativeApprovalTransaction {
+            organization_id: fixture_organization(),
+
             transaction: pool.begin().await.unwrap(),
             fail_after_write: None,
             evidence: ApprovalTransactionEvidence::default(),

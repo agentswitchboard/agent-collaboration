@@ -1,10 +1,8 @@
 import assert from "node:assert/strict";
-import { rm } from "node:fs/promises";
 import { test } from "node:test";
 import { z } from "zod";
-import { createFixtureDirectory } from "../test-support/fixture-directory.ts";
-import { centralTestBundle, WorkerdStorage } from "./workerd-storage.ts";
 import {
+  ApprovalWorkerdHost,
   appliedSchema,
   dueSchema,
   hourMs,
@@ -27,11 +25,8 @@ import {
 } from "./workerd-approval-store-witness.ts";
 
 test("Workerd approvals reopen with exact receipts, real parent routing and one accepted decision", async (): Promise<void> => {
-  const persistenceDirectory = createFixtureDirectory("workerd-approval-store");
   const database = "approval-reopen";
-  let central = await WorkerdStorage.start(centralTestBundle(), undefined, undefined, {
-    persistenceDirectory,
-  });
+  const central = await ApprovalWorkerdHost.start();
   try {
     await initializeApprovals(central, database, true);
     const request = raiseRequest(1, "Original");
@@ -53,10 +48,7 @@ test("Workerd approvals reopen with exact receipts, real parent routing and one 
     assert.equal(first.rowsChanged, 3);
     const firstReceipt = typedResult(first);
     assert.equal(z.object({ kind: z.string() }).parse(firstReceipt).kind, "receipt");
-    await central.close();
-    central = await WorkerdStorage.start(centralTestBundle(), undefined, undefined, {
-      persistenceDirectory,
-    });
+    await central.reopen();
 
     const replay = await invokeApprovalWitness({
       central,
@@ -123,12 +115,11 @@ test("Workerd approvals reopen with exact receipts, real parent routing and one 
     );
   } finally {
     await central.close();
-    await rm(persistenceDirectory, { recursive: true, force: true });
   }
 });
 
 test("Workerd approvals time out only selected rows and seek the deadline index at scale", async (): Promise<void> => {
-  const central = await WorkerdStorage.start(centralTestBundle());
+  const central = await ApprovalWorkerdHost.start();
   try {
     const database = "approval-deadlines";
     await initializeApprovals(central, database);
@@ -201,7 +192,7 @@ test("Workerd approvals time out only selected rows and seek the deadline index 
       central,
       database,
       atMs: hourMs,
-      command: { kind: "deadline", subject: due.subject, deadlineMs: hourMs + 1 },
+      command: { kind: "deadline", subject: due.subject, deadlineMs: hourMs - 1 },
     });
     assert.deepEqual(committedResult(stale), []);
     assert.equal(stale.writes, 0);
@@ -223,7 +214,7 @@ test("Workerd approvals time out only selected rows and seek the deadline index 
 });
 
 test("Workerd approvals bound retirement and refuse unknown stored kinds, states and endings", async (): Promise<void> => {
-  const central = await WorkerdStorage.start(centralTestBundle());
+  const central = await ApprovalWorkerdHost.start();
   try {
     const database = "approval-retirement";
     await initializeApprovals(central, database);
@@ -305,7 +296,7 @@ test("Workerd approvals bound retirement and refuse unknown stored kinds, states
 });
 
 test("Workerd approval endings and a run replacement roll back after every guarded write", async (): Promise<void> => {
-  const central = await WorkerdStorage.start(centralTestBundle());
+  const central = await ApprovalWorkerdHost.start();
   const database = "approval-ending-rollback";
   try {
     await initializeApprovals(central, database);
@@ -378,7 +369,7 @@ test("Workerd approval endings and a run replacement roll back after every guard
 });
 
 async function verifyDelegateDecision(
-  central: WorkerdStorage,
+  central: ApprovalWorkerdHost,
   database: string,
   requestId: string,
 ): Promise<void> {
@@ -443,7 +434,7 @@ async function verifyDelegateDecision(
   assert.equal(delivery.rowsChanged, 1);
 }
 
-async function verifyDeadlineSeek(central: WorkerdStorage): Promise<void> {
+async function verifyDeadlineSeek(central: ApprovalWorkerdHost): Promise<void> {
   const readings: number[][] = [];
   for (const waiting of [20, 10_000]) {
     const indexed = `approval-due-${waiting}`;
@@ -474,7 +465,7 @@ async function verifyDeadlineSeek(central: WorkerdStorage): Promise<void> {
 }
 
 async function verifyRunReplacement(
-  central: WorkerdStorage,
+  central: ApprovalWorkerdHost,
   database: string,
   priorStop: ReturnType<typeof stopRequest>,
 ): Promise<void> {
@@ -531,72 +522,3 @@ async function verifyRunReplacement(
   );
   assert.deepEqual(due.rows, []);
 }
-
-test("Workerd Decide replays accepted and refused answers through the shared 24-hour log", async (): Promise<void> => {
-  const central = await WorkerdStorage.start(centralTestBundle());
-  const database = "approval-request-log";
-  try {
-    await initializeApprovals(central, database);
-    const request = raiseRequest(1, "Logged decision");
-    await invokeApprovalWitness({ central, database, command: { kind: "raise", holder, request } });
-    const invalid = personDecision(request.requestId, uuid(5601), 15);
-    const chose = personDecision(request.requestId, uuid(5602), 2);
-    const refusal = await assertRollbackAtEachWrite({
-      central,
-      database,
-      atMs: 1,
-      command: invalid,
-      writes: 2,
-    });
-    assert.deepEqual(typedResult(refusal), { kind: "invalid" });
-    const accepted = await assertRollbackAtEachWrite({
-      central,
-      database,
-      atMs: 1,
-      command: chose,
-      writes: 4,
-    });
-    assert.equal(z.object({ kind: z.string() }).parse(typedResult(accepted)).kind, "savedDecision");
-    const logRows = (await snapshot(central, database))
-      .map((row) => z.array(z.unknown()).parse(JSON.parse(row)))
-      .filter((row) => row[0] === "requestLog");
-    assert.deepEqual(
-      logRows.map((row) => row[1]),
-      [uuid(5601), uuid(5602)],
-    );
-
-    const withinWindow = 24 * hourMs;
-    for (const { command, firstReply } of [
-      { command: invalid, firstReply: refusal },
-      { command: chose, firstReply: accepted },
-    ]) {
-      const replay = await invokeApprovalWitness({
-        central,
-        database,
-        atMs: withinWindow,
-        command,
-      });
-      assert.deepEqual(typedResult(replay), typedResult(firstReply));
-      assert.equal(replay.writes, 0);
-    }
-
-    const conflict = await invokeApprovalWitness({
-      central,
-      database,
-      atMs: withinWindow,
-      command: personDecision(request.requestId, uuid(5602), 1),
-    });
-    assert.deepEqual(typedResult(conflict), { kind: "operationConflict" });
-    assert.equal(conflict.writes, 0);
-    const expired = await invokeApprovalWitness({
-      central,
-      database,
-      atMs: withinWindow + 1,
-      command: chose,
-    });
-    assert.equal(z.object({ kind: z.string() }).parse(typedResult(expired)).kind, "standing");
-    assert.equal(expired.writes, 2);
-  } finally {
-    await central.close();
-  }
-});

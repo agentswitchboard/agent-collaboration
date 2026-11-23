@@ -38,7 +38,11 @@ async fn holder_admission_refuses_wrong_or_ended_scope_before_request_and_sessio
     register(&fixture, &holder).await;
     let replay = fixture
         .apply(None, async |store| {
-            store.register_approval_run(&holder).await
+            store
+                .register_approval_run(
+                    &fleet_approvals::ApprovalHolderAdmission::for_fixture_scope(&holder),
+                )
+                .await
         })
         .await;
     assert_eq!(replay.0.unwrap().reply, RegisterRunReply::Registered {});
@@ -120,7 +124,7 @@ async fn provider_saves_and_parent_actions_require_live_exact_sessions() {
         .apply(None, async |store| {
             store
                 .apply_holder_command(
-                    &holder,
+                    &fleet_approvals::ApprovalHolderAdmission::for_fixture_scope(&holder),
                     fleet_approvals::ApprovalHolderCommand::Raise(Box::new(request.clone())),
                 )
                 .await
@@ -149,7 +153,7 @@ async fn provider_saves_and_parent_actions_require_live_exact_sessions() {
     let pass = fixture
         .apply(None, async |store| {
             store
-                .pass_on_approval(
+                .fixture_pass_on_approval(
                     &holder.organization_id,
                     parent.clone(),
                     request.request_id(),
@@ -162,7 +166,7 @@ async fn provider_saves_and_parent_actions_require_live_exact_sessions() {
     let decision = fixture
         .apply(None, async |store| {
             store
-                .decide_approval(
+                .fixture_decide_approval(
                     &holder.organization_id,
                     AdmittedDecider::Session(parent.clone()),
                     decide_input(request.request_id(), 101, 1),
