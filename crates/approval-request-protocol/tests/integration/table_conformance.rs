@@ -45,6 +45,7 @@ fn stop_standing_case(ending: StopReceiptEnding) -> &'static str {
                 HolderStopCause::SessionClosed => "sessionClosed",
                 HolderStopCause::ProviderConnectionLost => "providerConnectionLost",
                 HolderStopCause::CallWithdrawn => "callWithdrawn",
+                HolderStopCause::HolderRefusedLocally => "holderRefusedLocally",
             },
         },
     }
@@ -171,6 +172,7 @@ fn table_requests_and_reply_cases_match_the_core_protocol() -> Result<(), String
         "askWithdrawn",
         "sessionClosed",
         "providerConnectionLost",
+        "holderRefusedLocally",
     ] {
         slice_case::<StopRequest>(
             "Stop request",
@@ -179,12 +181,14 @@ fn table_requests_and_reply_cases_match_the_core_protocol() -> Result<(), String
             }),
         )?;
     }
-    slice_case::<StopRequest>(
-        "Unproven call Stop request",
-        json!({
-            "kind":"unprovenCall","requestId":REQUEST,"routerRun":RUN,"contentsDigest":DIGEST,"cause":"callWithdrawn"
-        }),
-    )?;
+    for cause in ["callWithdrawn", "holderRefusedLocally"] {
+        slice_case::<StopRequest>(
+            "Unproven call Stop request",
+            json!({
+                "kind":"unprovenCall","requestId":REQUEST,"routerRun":RUN,"contentsDigest":DIGEST,"cause":cause
+            }),
+        )?;
+    }
     let mut stop_cases = vec![
         (
             "timedOut",
@@ -204,7 +208,7 @@ fn table_requests_and_reply_cases_match_the_core_protocol() -> Result<(), String
             )
         }),
     );
-    stop_cases.extend(["turnStopped","askReplaced","askWithdrawn","sessionClosed","providerConnectionLost","callWithdrawn"].map(|cause| {
+    stop_cases.extend(["turnStopped","askReplaced","askWithdrawn","sessionClosed","providerConnectionLost","callWithdrawn","holderRefusedLocally"].map(|cause| {
         (cause, json!({"kind":"stands","ending":{"kind":"cancelled","reason":{"kind":"stopped","cause":cause}}}))
     }));
     assert_authority_reply::<StopReply>("Stop", &stop_cases, |reply| match reply {

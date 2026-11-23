@@ -1,12 +1,12 @@
 use approval_request_protocol::{
-    CentralTime, HolderStopCause, Raise, RequestContentsDigest, StopRequest, WaitingStatus,
+    CentralTime, Raise, RequestContentsDigest, StopRequest, WaitingStatus,
 };
 use central_engine_model::{TransitionError, supported_time};
 use workspace_ids::{ApprovalRequestId, RouterRunId};
 
 use crate::{
     ApprovalActor, ApprovalRefusal, ApprovalRequestKey, ApprovalRouting, ApprovalSession,
-    RetainedApproval,
+    RetainedApproval, StopMarkerCause,
 };
 
 pub(super) fn is_destination(saved: &RetainedApproval, actor: &ApprovalActor) -> bool {
@@ -58,7 +58,7 @@ pub(crate) fn stop_binding(
     }
 }
 
-pub(super) fn stop_cause_matches_raise(cause: HolderStopCause, raise: &Raise) -> bool {
+pub(super) fn stop_cause_matches_raise(cause: StopMarkerCause, raise: &Raise) -> bool {
     let parked = match raise {
         Raise::UnprovenCall { .. } => true,
         Raise::ProviderApproval { .. } | Raise::ProviderQuestion { .. } => false,
@@ -67,20 +67,16 @@ pub(super) fn stop_cause_matches_raise(cause: HolderStopCause, raise: &Raise) ->
 }
 
 pub(super) fn stop_marker_matches_cause(
-    stored: HolderStopCause,
-    incoming: HolderStopCause,
+    stored: StopMarkerCause,
+    incoming: StopMarkerCause,
 ) -> bool {
     is_parked_stop_cause(stored) == is_parked_stop_cause(incoming)
 }
 
-fn is_parked_stop_cause(cause: HolderStopCause) -> bool {
+fn is_parked_stop_cause(cause: StopMarkerCause) -> bool {
     match cause {
-        HolderStopCause::CallWithdrawn => true,
-        HolderStopCause::TurnStopped
-        | HolderStopCause::AskReplaced
-        | HolderStopCause::AskWithdrawn
-        | HolderStopCause::SessionClosed
-        | HolderStopCause::ProviderConnectionLost => false,
+        StopMarkerCause::UnprovenCall(_) => true,
+        StopMarkerCause::Provider(_) => false,
     }
 }
 

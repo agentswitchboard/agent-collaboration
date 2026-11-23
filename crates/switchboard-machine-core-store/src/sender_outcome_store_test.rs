@@ -167,7 +167,7 @@ async fn late_outcome_recovers_only_the_expired_request_that_may_have_left() {
         outbox.insert(write, START).await.unwrap();
     }
     let batch = outbox
-        .claim_next_batch(MARK, 1, MARK)
+        .claim_next_batch(MARK, 1, MARK, MARK)
         .await
         .unwrap()
         .expect_clean();

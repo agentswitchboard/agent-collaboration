@@ -629,7 +629,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq, Enrollment> StateMachine
                     | ProviderStopCause::AskReplaced),
             } => next.local_stop(cause)?,
             WaitEvent::LocalStop {
-                cause: ProviderStopCause::AskWithdrawn,
+                cause: ProviderStopCause::AskWithdrawn | ProviderStopCause::HolderRefusedLocally,
             } => return Err(TransitionError::Stale),
             WaitEvent::TakeFinalPermit { responder, reply } => next.permit(&responder, &reply)?,
             WaitEvent::StartWrite { responder, reply } => {
