@@ -6,7 +6,9 @@ use std::{
     },
 };
 
-use central_engine_model::{DueListKind, DueRow, EngineTime, IdSource, due_list_query};
+use central_engine_model::{
+    AlarmInputs, DueBatchPolicy, DueListKind, DueRow, EngineTime, IdSource, due_list_query,
+};
 use central_storage::{ReadOutcome, SafeInteger, SqlValue, Statement, StoreFailure};
 use fleet_approvals::{
     ApprovalApplyFailure, ApprovalApplyingStore, ApprovalEnrollment, ApprovalEnrollmentScope,
@@ -370,6 +372,39 @@ impl NativeApprovalStoreFixture {
         transaction.transaction.rollback().await.unwrap();
         pool.close().await;
         result
+    }
+
+    pub async fn compare_due_table(
+        &self,
+        now: EngineTime,
+        cutoff: EngineTime,
+    ) -> Vec<fleet_engine::DueTableDifference> {
+        let pool = self.reopen_pool().await;
+        let mut transaction = NativeApprovalTransaction {
+            transaction: pool.begin().await.unwrap(),
+            fail_after_write: None,
+            evidence: ApprovalTransactionEvidence::default(),
+        };
+        let inputs = AlarmInputs {
+            now,
+            last_batch_start: None,
+            leftovers_beyond_cap: false,
+            earliest_on_grid_due: None,
+            earliest_legacy_due: None,
+        };
+        let policy = DueBatchPolicy::DEFAULT;
+        let differences = fleet_engine::compare_due_table(
+            &mut transaction,
+            cutoff,
+            policy.per_kind_cap,
+            inputs,
+            &policy,
+        )
+        .await
+        .unwrap();
+        transaction.transaction.rollback().await.unwrap();
+        pool.close().await;
+        differences
     }
 
     pub async fn seed_due_population(&self, waiting: i64) {

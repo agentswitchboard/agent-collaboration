@@ -140,6 +140,13 @@ async fn reopened_store_preserves_the_first_receipt_and_fences_other_holders_and
     assert_eq!(reply, RaiseReply::ContentsDiffer {});
     assert!(evidence.sql_writes.is_empty() && evidence.session_route_reads.is_empty());
     assert_eq!(snapshot(&fixture).await, before);
+
+    fixture
+        .alter_fixture("UPDATE approval_requests SET request_kind='future_kind'")
+        .await;
+    let (reply, evidence) = raise_and_commit(&fixture, &other_holder, &cross_holder).await;
+    assert_eq!(reply, RaiseReply::ContentsDiffer {});
+    assert!(evidence.sql_writes.is_empty() && evidence.session_route_reads.is_empty());
 }
 
 #[tokio::test]

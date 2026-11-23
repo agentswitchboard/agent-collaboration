@@ -104,6 +104,12 @@ struct ReferenceLegacyInputs {
 }
 
 #[derive(sqlx::FromRow)]
+struct ReferenceApprovalAlarmInput {
+    #[sqlx(rename = "approval_due_ms?: i64")]
+    approval_due_ms: Option<i64>,
+}
+
+#[derive(sqlx::FromRow)]
 struct StoredSource {
     #[sqlx(rename = "kind!: String")]
     kind: String,
@@ -161,6 +167,10 @@ macro_rules! comparison_queries {
     ($emit:ident) => {
         (
             $emit!(StoredAlarmInputs, "src/queries/read_alarm_inputs.sql"),
+            $emit!(
+                ReferenceApprovalAlarmInput,
+                "src/queries/read_approval_expiry_alarm_input.sql"
+            ),
             $emit!(
                 ReferenceLegacyInputs,
                 "src/queries/compare_legacy_alarm_inputs.sql"
@@ -375,7 +385,7 @@ where
                 .map_err(|error| map_central_query_failure(error, $context))?
         };
     }
-    let (alarm, legacy_alarm, sources, legacy_times, projection, owners) =
+    let (alarm, approval_alarm, legacy_alarm, sources, legacy_times, projection, owners) =
         comparison_queries!(query_as);
     let mut differences = Vec::new();
     let projection = Projection::decode(
@@ -423,8 +433,16 @@ where
         .fetch_one(transaction.executor())
         .await
         .map_err(|error| map_central_query_failure(error, "reference alarm inputs"))?;
+    let approval_alarm = approval_alarm
+        .fetch_one(transaction.executor())
+        .await
+        .map_err(|error| map_central_query_failure(error, "reference approval alarm input"))?;
     let reference = EngineAlarmTimes {
-        earliest_on_grid_due_unix_millis: alarm.on_grid_due,
+        earliest_on_grid_due_unix_millis: alarm
+            .on_grid_due
+            .into_iter()
+            .chain(approval_alarm.approval_due_ms)
+            .min(),
         earliest_legacy_due_unix_millis: alarm.legacy_due,
     };
     let legacy_alarm = legacy_alarm

@@ -193,6 +193,28 @@ async fn session_end_enrollment_end_alarm_and_waiting_stop_roll_back_after_each_
     .await;
     assert_eq!(timed_out[0].request.request_id(), expire.request_id());
     fixture.clock.set_millis(2);
+    let premature_session_end = fixture
+        .apply(None, async |store| {
+            store
+                .end_approval_session(&holder.organization_id, &requester)
+                .await
+        })
+        .await;
+    assert!(premature_session_end.0.unwrap().is_empty());
+    assert!(premature_session_end.1.sql_writes.is_empty());
+
+    let scope = fleet_approvals::ApprovalEnrollmentScope {
+        organization_id: holder.organization_id.clone(),
+        enrollment: holder.run.enrollment.clone(),
+    };
+    let premature_enrollment_end = fixture
+        .apply(None, async |store| {
+            store.end_approval_enrollment(&scope).await
+        })
+        .await;
+    premature_enrollment_end.0.unwrap();
+    assert!(premature_enrollment_end.1.sql_writes.is_empty());
+
     fixture
         .store_session(&holder.organization_id, &requester, None, false)
         .await;
@@ -204,10 +226,6 @@ async fn session_end_enrollment_end_alarm_and_waiting_stop_roll_back_after_each_
     .await;
     assert_eq!(cancelled[0].request.request_id(), cancel.request_id());
     fixture.store_enrollment(&holder, "ended").await;
-    let scope = fleet_approvals::ApprovalEnrollmentScope {
-        organization_id: holder.organization_id.clone(),
-        enrollment: holder.run.enrollment.clone(),
-    };
     // Two previously ended Owed rows close delivery, the last waiting row ends,
     // its due entry clears, and the run's fence retires.
     assert_rollback_each_write(&fixture, 5, async |store| {
@@ -237,6 +255,39 @@ async fn the_real_engine_lookup_has_constant_sqlite_work_with_twenty_and_ten_tho
     }
     assert_eq!(measured[0], measured[1]);
     assert!((1..=150).contains(&measured[0]), "{measured:?}");
+}
+
+#[tokio::test]
+async fn the_engine_diagnostic_includes_the_approval_owner_and_alarm_contribution() {
+    let (fixture, holder, requester) = fixture_with_owner().await;
+    fixture
+        .alter_fixture(
+            "INSERT INTO signin_organization_identity
+         VALUES ('019ac19f-aa00-7000-8000-00000000a100','fixture',1,1)",
+        )
+        .await;
+    let due = provider(
+        &key(&holder.run, 1),
+        &requester,
+        "Diagnostic approval deadline",
+    );
+    raise_and_commit(&fixture, &holder, &due).await;
+    let comparison = fixture.compare_due_table(time(0), time(HOUR)).await;
+    assert!(comparison.is_empty(), "{comparison:?}");
+
+    fixture
+        .alter_fixture("DELETE FROM engine_due_entries WHERE work_kind='approval_request'")
+        .await;
+    let comparison = fixture.compare_due_table(time(0), time(HOUR)).await;
+    assert!(
+        comparison.iter().any(|difference| matches!(
+            difference,
+            fleet_engine::DueTableDifference::WrongAlarmInputs { reference, projected }
+                if reference.earliest_on_grid_due_unix_millis == Some(HOUR)
+                    && projected.earliest_on_grid_due_unix_millis.is_none()
+        )),
+        "{comparison:?}"
+    );
 }
 async fn assert_rollback_each_write<Reply>(
     fixture: &NativeApprovalStoreFixture,
