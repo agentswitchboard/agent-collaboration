@@ -208,16 +208,18 @@ fn withdrawal_after_capacity_refused_retry_stops_the_delayed_original_in_both_fa
                 !mac.wait.may_be_forgotten(),
                 "the older Raise can still reach Central"
             );
-            let [
-                RequestEffect::Stop {
-                    call: stop_call,
-                    request,
-                    ..
-                },
-            ]: [RequestEffect; 1] = mac.publish().try_into().unwrap()
-            else {
-                unreachable!("withdrawal owes the exact Stop");
-            };
+            let publication = mac.publish();
+            assert_eq!(publication.len(), 1);
+            let (stop_call, request) = publication
+                .into_iter()
+                .find_map(|effect| {
+                    if let RequestEffect::Stop { call, request, .. } = effect {
+                        Some((call, request))
+                    } else {
+                        None
+                    }
+                })
+                .unwrap();
 
             // The modeled Central is now below capacity. The Stop wins the race
             // to the unraised row and installs the marker before A arrives.
