@@ -1,4 +1,5 @@
 //! Org-scoped central: shared core over a statement-only DO adapter, no Fleet engine.
+use crate::workspace_approval_transactions::WorkerApprovalTransactions;
 use crate::workspace_session_transactions::{WorkerSessionTransactions, fill_session_secret};
 use crate::{
     object_location::ObjectAddress,
@@ -6,7 +7,7 @@ use crate::{
     statement_store::{self, AlarmPolicy},
     worker_clock::WorkspaceClock,
 };
-use central_link_call_composition::SessionLinkDispatcher;
+use central_link_call_composition::OrganizationLinkDispatcher;
 use central_storage::{
     BatchOutcome, ReadOutcome, Statement, StatementBatch, StoreCall, StoreFailure, StoreReply,
 };
@@ -355,24 +356,34 @@ impl CentralObject {
             ),
             host.clone(),
             host.clone(),
-        )
-        .with_person_approval_transactions(Arc::new(
-            crate::workspace_person_approval_transactions::WorkerPersonApprovalTransactions {
+        );
+        let ending_transport = Arc::new(
+            workspace_typed_link::approval_delivery::WorkerApprovalDelivery::new(
+                self.state.clone(),
+                self.clock.clone(),
+                self.pending_mac_calls.clone(),
+            ),
+        );
+        let dispatcher = Arc::new(OrganizationLinkDispatcher::new(
+            WorkerSessionTransactions {
                 connection: host.connection.clone(),
-                ids: self.link_ids.clone(),
+                #[cfg(feature = "test-support")]
+                fail_reserved_session_reply: self.controls.fail_reserved_session_reply.clone(),
             },
+            WorkerApprovalTransactions {
+                connection: host.connection.clone(),
+                state: self.state.clone(),
+                clock: self.clock.clone(),
+                decide_alarm: host.decide_alarm.clone(),
+                #[cfg(feature = "test-support")]
+                fail_after_write: self.controls.fail_approval_after_write.clone(),
+            },
+            ending_transport.clone(),
+            clock.clone(),
+            self.link_ids.clone(),
+            fill_session_secret,
         ));
-        let dispatcher: Arc<dyn collaboration_central_core::CentralLinkDispatcher> =
-            Arc::new(SessionLinkDispatcher::new(
-                WorkerSessionTransactions {
-                    connection: host.connection.clone(),
-                    #[cfg(feature = "test-support")]
-                    fail_reserved_session_reply: self.controls.fail_reserved_session_reply.clone(),
-                },
-                clock.clone(),
-                self.link_ids.clone(),
-                fill_session_secret,
-            ));
+        let central = central.with_person_approval_transactions(dispatcher.clone());
         #[cfg(not(feature = "test-support"))]
         let central = central.with_link_call_dispatcher(dispatcher);
         #[cfg(feature = "test-support")]
@@ -399,8 +410,12 @@ impl CentralObject {
         let mail_pushes = self.mail_pushes.clone();
         let state_for_revocation = self.state.clone();
         let calls_for_revocation = self.pending_mac_calls.clone();
+        let deadline_state = self.state.clone();
         let central = Arc::new(
             central
+                .with_approval_deadline_completion(Arc::new(move |work| {
+                    deadline_state.wait_until(work)
+                }))
                 .with_mail_delivery_observer(Arc::new(move |message| {
                     mail_pushes
                         .lock()
@@ -417,6 +432,7 @@ impl CentralObject {
                 })),
         );
         central.recompute_alarm().await?;
+        ending_transport.install_runtime(&central);
         *initialized = Some(central.clone());
         Ok(central)
     }
@@ -487,7 +503,7 @@ impl DurableObject for CentralObject {
                 return workspace_cases::raw_control(self, request).await;
             }
         }
-        if request.path() == workspace_typed_link::MACHINE_CALL_PATH {
+        if workspace_typed_link::is_mac_call_path(&request.path()) {
             return self.handle_mac_call(request, organization).await;
         }
         self.migrate()

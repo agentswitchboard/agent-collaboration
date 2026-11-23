@@ -1,6 +1,9 @@
 //! Generic execution, attempts and administration for Fleet machines.
 #![forbid(unsafe_code)]
 
+mod approval_clock_projection;
+pub use approval_clock_projection::{approval_time_floor_statement, decode_approval_time_floor};
+
 mod machine_event_engine;
 
 pub use central_engine_model::FailureRecord;

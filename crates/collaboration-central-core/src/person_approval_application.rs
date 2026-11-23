@@ -1,14 +1,16 @@
-//! The private person approval request has one applying time and one commit.
+//! The person approval transaction checks proof freshness and applies lifecycle changes.
 
-use central_engine_model::IdSource as EngineIdSource;
+use central_engine_model::{EngineTime, IdSource as EngineIdSource, supported_time};
 use central_storage::{GuardedStatement, StoreFailure};
 use fleet_approvals::{
     ApprovalApplyFailure, ApprovalApplyingStore, ApprovalCommitOwner, ApprovalCommitProof,
     ApprovalCommitScope, ApprovalPersonStoreTransaction, ApprovalReplyAddress,
-    PendingApprovalHolderEffects, PendingApprovalReply, complete_approval_commit,
+    CommittedApprovalOffer, PendingApprovalHolderEffects, PendingApprovalReply,
+    complete_approval_commit,
 };
+use fleet_engine::{approval_time_floor_statement, decode_approval_time_floor};
 use fleet_identity_protocol::OrganizationId;
-use fleet_runtime_ports::{Clock, IdSource, SyncTime};
+use fleet_runtime_ports::{Clock, IdSource, SyncTime, workspace_decode_error::corrupt};
 use fleet_signin::{
     ApprovalApplyingContext, FleetPermission, VerifiedApprovalPersonRequest,
     approval_person_wire::{
@@ -42,6 +44,11 @@ pub trait PersonApprovalTransactions: Send + Sync + 'static {
         application: PersonApprovalApplication,
         scope: ApprovalCommitScope,
     ) -> BoxFuture<'request, Result<AppliedPersonApproval, StoreFailure>>;
+
+    fn delivery_after_commit(
+        &self,
+        offers: Vec<CommittedApprovalOffer>,
+    ) -> Option<crate::LinkCallCompletion>;
 }
 
 /// Verified input for the current organization turn. Only Core builds this.
@@ -118,7 +125,16 @@ impl PersonApprovalApplication {
             person_floor: person_floor.as_ref(),
             proof_used: proof_was_used(&proof_rows, &proof_id)?,
         };
-        let clock = ApplyingClock(self.time);
+        let retained_at = EngineTime::from_timestamp_millis(now_ms)
+            .filter(|time| supported_time(*time))
+            .ok_or_else(|| corrupt("approval_store.applying_time"))?;
+        let rows = transaction
+            .read_approval_statement(approval_time_floor_statement(organization))
+            .await?;
+        let floor = decode_approval_time_floor(&rows)?;
+        let lifecycle_at = floor.map_or(retained_at, |previous| previous.max(retained_at));
+        let moves_time_floor = floor.is_none_or(|previous| lifecycle_at > previous);
+        let clock = ApplyingClock(SyncTime::from_unix_millis(lifecycle_at.timestamp_millis()));
         let mut ids = ApprovalIds(ids);
         let mut approvals = ApprovalApplyingStore::new(commit, transaction, &(), &clock, &mut ids);
 
@@ -129,7 +145,7 @@ impl PersonApprovalApplication {
             .any(|grant| grant == FleetPermission::DecideApproval.as_str())
             && let Some(retry) = self.verified.authorize_retained_decision(applying)?
             && let Some(reply) = approvals
-                .replay_person_decision(&retry)
+                .replay_person_decision(&retry, retained_at)
                 .await
                 .map_err(apply_failure)?
         {
@@ -164,15 +180,19 @@ impl PersonApprovalApplication {
             ),
             ApprovalPersonOperation::Decide(request) => PendingReply::Decide(
                 approvals
-                    .decide_person_request(&authority, request)
+                    .decide_person_request(&authority, request, retained_at)
                     .await
                     .map_err(apply_failure)?,
             ),
         };
+        let effects = approvals
+            .finish_person_effects(moves_time_floor)
+            .await
+            .map_err(apply_failure)?;
         let applied = AppliedPersonApproval::admitted(
             reply,
             reply_address(authority.organization(), authority.person()),
-            approvals.finish_holder_effects(),
+            effects,
         );
         reserve_and_finish(transaction, reservation, applied).await
     }
@@ -278,21 +298,21 @@ impl AppliedPersonApproval {
     pub(super) fn publish(
         self,
         commit: &ApprovalCommitProof,
-    ) -> Result<PersonApprovalAnswer, StoreFailure> {
+    ) -> Result<(PersonApprovalAnswer, Vec<CommittedApprovalOffer>), StoreFailure> {
         let (reply, address, effects) = match self.0 {
-            ApplyingOutcome::Refused(reason) => return Ok(PersonApprovalAnswer::Refused(reason)),
+            ApplyingOutcome::Refused(reason) => {
+                return Ok((PersonApprovalAnswer::Refused(reason), Vec::new()));
+            }
             ApplyingOutcome::Admitted {
                 reply,
                 address,
                 effects,
             } => (reply, address, effects),
         };
-        // The approval store committed the holder's durable owed ending. Its delivery is
-        // retrieved on the holder's link, separately from this person's answer.
-        let _offers = effects
+        let offers = effects
             .release(commit)
             .map_err(|_| StoreFailure::Unavailable)?;
-        match *reply {
+        let answer = match *reply {
             PendingReply::List(pending) => pending
                 .take_for_recipient(commit, &address)
                 .map(PersonApprovalAnswer::List),
@@ -303,7 +323,8 @@ impl AppliedPersonApproval {
                 .take_for_recipient(commit, &address)
                 .map(PersonApprovalAnswer::Decide),
         }
-        .map_err(|_| StoreFailure::Unavailable)
+        .map_err(|_| StoreFailure::Unavailable)?;
+        Ok((answer, offers))
     }
 }
 
@@ -312,15 +333,11 @@ struct PersonApprovalCommit<'request> {
     application: PersonApprovalApplication,
 }
 
-impl ApprovalCommitOwner<AppliedPersonApproval> for PersonApprovalCommit<'_> {
+impl<'request> ApprovalCommitOwner<AppliedPersonApproval> for PersonApprovalCommit<'request> {
     type Error = StoreFailure;
+    type Commit = BoxFuture<'request, Result<AppliedPersonApproval, StoreFailure>>;
 
-    async fn apply_and_commit(
-        self,
-        scope: ApprovalCommitScope,
-    ) -> Result<AppliedPersonApproval, StoreFailure> {
-        self.transactions
-            .apply_and_commit(self.application, scope)
-            .await
+    fn apply_and_commit(self, scope: ApprovalCommitScope) -> Self::Commit {
+        self.transactions.apply_and_commit(self.application, scope)
     }
 }

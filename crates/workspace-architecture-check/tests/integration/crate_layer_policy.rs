@@ -25,6 +25,12 @@ const LAYER_POLICY: [(&str, &[&str]); 46] = [
     (
         "central-link-call-composition",
         &[
+            "approval-request-protocol",
+            "fleet-approvals",
+            "fleet-engine",
+            "fleet-contracts",
+            "fleet-machine-login",
+            "workspace-ids",
             "central-engine-model",
             "central-link-protocol",
             "central-storage",
@@ -99,7 +105,6 @@ const LAYER_POLICY: [(&str, &[&str]); 46] = [
             "central-storage",
             "collaboration-central-conformance",
             "collaboration-central-core",
-            "fleet-approvals",
             "fleet-contracts",
             "fleet-engine",
             "fleet-identity-protocol",

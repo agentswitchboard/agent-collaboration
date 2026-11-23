@@ -37,12 +37,16 @@ where
     pub async fn replay_person_decision(
         &mut self,
         retry: &VerifiedApprovalDecideRetry<'_>,
+        retained_at: CentralTime,
     ) -> Result<Option<PendingApprovalReply<ApprovalDecideReply>>, ApprovalApplyFailure> {
         let request = retry.request();
         if self.transaction.organization_id() != &request.organization {
             return Ok(None);
         }
-        let Some(stored) = self.read_person_decision(&request.operation_id).await? else {
+        let Some(stored) = self
+            .read_person_decision(&request.operation_id, retained_at)
+            .await?
+        else {
             return Ok(None);
         };
         let actor = self.transaction.find_person_actor(retry.person()).await?;
@@ -65,6 +69,7 @@ where
         &mut self,
         admission: &ApprovalPersonAdmission,
         request: ApprovalDecideRequest,
+        retained_at: CentralTime,
     ) -> Result<PendingApprovalReply<ApprovalDecideReply>, ApprovalApplyFailure> {
         if admission.organization() != self.transaction.organization_id()
             || admission.organization() != &request.organization
@@ -76,7 +81,10 @@ where
             .digest()
             .map_err(|_| corrupt("runtime_request_log.approval_intent"))?;
         let address = reply_address(admission);
-        if let Some(stored) = self.read_person_decision(&request.operation_id).await? {
+        if let Some(stored) = self
+            .read_person_decision(&request.operation_id, retained_at)
+            .await?
+        {
             let actor = self
                 .transaction
                 .find_person_actor(admission.person())
@@ -102,8 +110,8 @@ where
                 &caller,
                 &digest,
                 &applied.reply,
-                &at.to_rfc3339(),
-                &strict_cutoff(at).to_rfc3339(),
+                &retained_at.to_rfc3339(),
+                &strict_cutoff(retained_at).to_rfc3339(),
             )? {
                 self.execute_guarded_write(write).await?;
             }
@@ -114,16 +122,16 @@ where
     async fn read_person_decision(
         &mut self,
         operation: &RequestId,
+        retained_at: CentralTime,
     ) -> Result<Option<RetainedRequest>, ApprovalApplyFailure> {
-        let at = self.sample_applying_time()?;
-        if !supported_time(at) {
+        if !supported_time(retained_at) {
             return Err(corrupt("runtime_request_log.applying_time").into());
         }
         let stored = self
             .transaction
             .read_approval_statement(lookup_organization_request(
                 operation,
-                &strict_cutoff(at).to_rfc3339(),
+                &strict_cutoff(retained_at).to_rfc3339(),
             ))
             .await?;
         Ok(decode_organization_request(&stored)?)

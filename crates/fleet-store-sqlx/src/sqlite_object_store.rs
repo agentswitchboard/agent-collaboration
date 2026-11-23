@@ -184,13 +184,31 @@ impl SqliteObjectStore {
             .acquire()
             .await
             .map_err(|_| StoreFailure::Unavailable)?;
-        read_on_transaction(&mut *connection, statement).await
+        read_rows(&mut connection, statement).await
     }
 
     /// The owning database's existing migrated pool for local repositories.
     pub fn pool(&self) -> &SqlitePool {
         &self.pool
     }
+}
+
+/// Read through a connection already borrowed by a composing transaction owner.
+pub async fn read_lent_statement(
+    connection: &mut SqliteConnection,
+    statement: Statement,
+) -> Result<ReadOutcome, StoreFailure> {
+    read_rows(connection, statement).await
+}
+
+/// Execute a checked effect through its owning transaction's borrowed connection.
+pub async fn execute_lent_statement(
+    connection: &mut SqliteConnection,
+    statement: Statement,
+) -> Result<u64, StoreFailure> {
+    execute(connection, statement.sql, bind_arguments(statement.args)?)
+        .await
+        .map_err(|_| StoreFailure::Unavailable)
 }
 
 fn bind_arguments(args: Vec<SqlValue>) -> Result<SqliteArguments, StoreFailure> {
@@ -216,22 +234,8 @@ async fn execute(
     Ok(result.rows_affected())
 }
 
-/// Execute a portable write using the caller's already-open SQLite transaction.
-pub async fn write_on_transaction<'connection>(
-    connection: impl sqlx::Executor<'connection, Database = sqlx::Sqlite>,
-    statement: Statement,
-) -> Result<u64, StoreFailure> {
-    let arguments = bind_arguments(statement.args)?;
-    sqlx::query_with(statement.sql, arguments)
-        .execute(connection)
-        .await
-        .map(|result| result.rows_affected())
-        .map_err(|_| StoreFailure::Unavailable)
-}
-
-/// Read portable rows using the caller's already-open SQLite transaction.
-pub async fn read_on_transaction<'connection>(
-    connection: impl sqlx::Executor<'connection, Database = sqlx::Sqlite>,
+async fn read_rows(
+    connection: &mut SqliteConnection,
     statement: Statement,
 ) -> Result<ReadOutcome, StoreFailure> {
     let arguments = bind_arguments(statement.args)?;
@@ -303,7 +307,7 @@ async fn alarm_from_query(
     connection: &mut SqliteConnection,
     query: Statement,
 ) -> Result<AlarmChange, StoreFailure> {
-    let answer = read_on_transaction(connection, query).await?;
+    let answer = read_rows(connection, query).await?;
     let column = answer.columns.first().cloned().unwrap_or_default();
     let bad_value = || StoreFailure::Corrupt {
         reason: CorruptReason::BadValue {

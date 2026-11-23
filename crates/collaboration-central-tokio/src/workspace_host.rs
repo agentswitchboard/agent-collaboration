@@ -16,11 +16,12 @@ use fleet_rpc::{CallFailure, Envelope, Transport, dispatch};
 use fleet_workspace_service::WorkspaceService;
 #[path = "workspace_alarm_owner.rs"]
 mod workspace_alarm_owner;
-use crate::object_storage::person_approval_transaction::NativePersonApprovalTransactions;
+#[path = "workspace_approval_delivery.rs"]
+pub(crate) mod workspace_approval_delivery;
 use crate::object_storage::session_transaction_owner::{
     NativeSessionTransactions, fill_session_secret,
 };
-use central_link_call_composition::SessionLinkDispatcher;
+use central_link_call_composition::OrganizationLinkDispatcher;
 use central_link_protocol::{FreshCorrelationId, MacCallAddress, MacLinkRpc};
 use central_storage::{
     BatchOutcome, ReadOutcome, Statement, StatementBatch, StoreCall, StoreFailure, StoreReply,
@@ -159,6 +160,7 @@ pub struct TokioWorkspaceHost {
         Mutex<BTreeMap<OrganizationId, Arc<WorkspaceRuntime<ObjectStorage, TokioWorkspaceStores>>>>,
     alarms: Mutex<Vec<WorkspaceAlarmOwner>>,
     pub(crate) push_registry: MachinePushRegistry,
+    approval_deadline_tasks: workspace_approval_delivery::ApprovalDeadlineTasks,
     #[cfg(feature = "test-support")]
     fixture_link_calls: bool,
 }
@@ -196,6 +198,7 @@ impl TokioWorkspaceHost {
             orgs: Default::default(),
             alarms: Default::default(),
             push_registry: MachinePushRegistry::default(),
+            approval_deadline_tasks: Default::default(),
             #[cfg(feature = "test-support")]
             fixture_link_calls: false,
         };
@@ -266,18 +269,22 @@ impl TokioWorkspaceHost {
             ),
             storage.clone(),
             storage.clone(),
-        )
-        .with_person_approval_transactions(Arc::new(NativePersonApprovalTransactions {
-            storage: storage.clone(),
-            ids: ids.clone(),
-        }));
-        let dispatcher: Arc<dyn collaboration_central_core::CentralLinkDispatcher> =
-            Arc::new(SessionLinkDispatcher::new(
-                NativeSessionTransactions { storage },
-                clock.clone(),
-                ids,
-                fill_session_secret,
-            ));
+        );
+        let ending_transport = Arc::new(workspace_approval_delivery::NativeApprovalDelivery::new(
+            self.push_registry.clone(),
+            self.clock.clone(),
+        ));
+        let dispatcher = Arc::new(OrganizationLinkDispatcher::new(
+            NativeSessionTransactions {
+                storage: storage.clone(),
+            },
+            NativeSessionTransactions { storage },
+            ending_transport.clone(),
+            clock.clone(),
+            ids,
+            fill_session_secret,
+        ));
+        let central = central.with_person_approval_transactions(dispatcher.clone());
         #[cfg(not(feature = "test-support"))]
         let central = central.with_link_call_dispatcher(dispatcher);
         #[cfg(feature = "test-support")]
@@ -299,8 +306,12 @@ impl TokioWorkspaceHost {
         let organization_key = organization.clone();
         let revocation_registry = self.push_registry.clone();
         let revocation_org = organization.clone();
+        let deadline_tasks = self.approval_deadline_tasks.clone();
         let central = Arc::new(
             central
+                .with_approval_deadline_completion(Arc::new(move |work| {
+                    deadline_tasks.schedule(work)
+                }))
                 .with_mail_delivery_observer(Arc::new(move |delivery| {
                     registry.offer(&organization_key, &delivery.machine_id, delivery.message_id);
                 }))
@@ -308,6 +319,7 @@ impl TokioWorkspaceHost {
                     revocation_registry.invalidate_enrollment(&revocation_org, &invalidation);
                 })),
         );
+        ending_transport.install_runtime(&central);
         central.recompute_alarm().await?;
         self.alarms.lock().await.push(WorkspaceAlarmOwner::start(
             central.clone(),
@@ -331,9 +343,35 @@ impl TokioWorkspaceHost {
         machine: &MachineId,
         request: Envelope<R::Target, R::Request>,
     ) -> MacCallResult<R> {
-        let deadline = self.clock.monotonic_now().after(TYPED_LINK_CALL_TIMEOUT);
         let target = request.target.clone();
         let call = R::request(request);
+        if matches!(call, central_link_protocol::MacCall::DeliverEnding(_)) {
+            return Err(CallFailure::NeverReached);
+        }
+        self.call_raw_machine::<R>(organization, machine, &target, call)
+            .await
+    }
+
+    #[cfg(feature = "test-support")]
+    pub async fn fixture_call_machine<R: MacLinkRpc>(
+        &self,
+        organization: &OrganizationId,
+        machine: &MachineId,
+        request: Envelope<R::Target, R::Request>,
+    ) -> MacCallResult<R> {
+        let target = request.target.clone();
+        self.call_raw_machine::<R>(organization, machine, &target, R::request(request))
+            .await
+    }
+
+    async fn call_raw_machine<R: MacLinkRpc>(
+        &self,
+        organization: &OrganizationId,
+        machine: &MachineId,
+        target: &R::Target,
+        call: central_link_protocol::MacCall,
+    ) -> MacCallResult<R> {
+        let deadline = self.clock.monotonic_now().after(TYPED_LINK_CALL_TIMEOUT);
         let address = MacCallAddress::from(&call);
         let addressed_organization = address.organization_id().unwrap_or(organization);
         if addressed_organization != organization || address.machine_id() != machine {
@@ -343,7 +381,7 @@ impl TokioWorkspaceHost {
         let pending =
             self.push_registry
                 .queue_call(organization, correlation, call, address, deadline)?;
-        finish_mac_call::<R>(&target, pending.wait(self.clock.as_ref()).await?)
+        finish_mac_call::<R>(target, pending.wait(self.clock.as_ref()).await?)
     }
 
     pub async fn request(
@@ -391,11 +429,31 @@ impl TokioWorkspaceHost {
         self.orgs.lock().await.keys().cloned().collect()
     }
 
+    #[cfg(feature = "test-support")]
+    pub async fn fixture_decide_approval(
+        &self,
+        organization: &OrganizationId,
+        decision: collaboration_central_core::FixtureApprovalDecision,
+    ) -> Result<(), StoreFailure> {
+        let runtime = self
+            .orgs
+            .lock()
+            .await
+            .get(organization)
+            .cloned()
+            .ok_or(StoreFailure::Unavailable)?;
+        if let Some(completion) = runtime.fixture_decide_approval(decision).await? {
+            self.approval_deadline_tasks.schedule(completion);
+        }
+        Ok(())
+    }
+
     pub async fn close(&self) {
         let alarms = std::mem::take(&mut *self.alarms.lock().await);
         for alarm in alarms {
             alarm.close().await;
         }
+        self.approval_deadline_tasks.close().await;
         for runtime in self.orgs.lock().await.values() {
             runtime.runtime().statement_host().close().await;
         }

@@ -6,6 +6,7 @@ use central_link_call_composition::{
 use fleet_identity_protocol::OrganizationId;
 use std::{ops::ControlFlow, sync::Arc};
 
+#[derive(Clone)]
 pub(crate) struct NativeSessionTransactions {
     pub(crate) storage: Arc<ObjectStorage>,
 }

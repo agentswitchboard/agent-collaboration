@@ -1,6 +1,7 @@
 //! The store's production person commands take authority from fleet-signin.
 
 use approval_request_protocol::{ApprovalSummaryState, RequestSummary};
+use central_storage::{GuardedStatement, RowExpectation, SafeInteger};
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use fleet_signin::{
     ApprovalPersonAdmission,
@@ -10,7 +11,8 @@ use workspace_ids::ApprovalRequestId;
 
 use super::{ApprovalApplyFailure, ApprovalApplyingStore, ApprovalTransitionOutput};
 use crate::{
-    ApprovalReplyAddress, ApprovalStatementTransaction, PendingApprovalReply,
+    ApprovalReplyAddress, ApprovalStoreTransaction, PendingApprovalHolderEffects,
+    PendingApprovalReply, advance_approval_time_statement,
     approval_store_reads::read_approval_request_page_for_person,
 };
 
@@ -18,8 +20,29 @@ const APPROVAL_PAGE_SIZE: u16 = 100;
 
 impl<Transaction, Sessions> ApprovalApplyingStore<'_, Transaction, Sessions>
 where
-    Transaction: ApprovalStatementTransaction,
+    Transaction: ApprovalStoreTransaction,
 {
+    /// Endings advance the floor within the transaction that settles the approval.
+    pub async fn finish_person_effects(
+        mut self,
+        moves_time_floor: bool,
+    ) -> Result<PendingApprovalHolderEffects, ApprovalApplyFailure> {
+        if moves_time_floor && !self.holder_offers.is_empty() {
+            let at = self.sample_applying_time()?;
+            self.execute_guarded_write(GuardedStatement {
+                statement: advance_approval_time_statement(
+                    self.transaction.organization_id(),
+                    SafeInteger::try_from(at.timestamp_millis())
+                        .map_err(|_| corrupt("approval_applying_time.observed_ms"))?,
+                    at.to_rfc3339(),
+                ),
+                expect: RowExpectation::Exactly(1),
+            })
+            .await?;
+        }
+        Ok(self.finish_holder_effects())
+    }
+
     pub async fn read_person_request(
         &mut self,
         admission: &ApprovalPersonAdmission,

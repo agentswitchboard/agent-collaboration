@@ -8,7 +8,7 @@ use crate::{
     ApprovalRefusal, ApprovalReplyAddress, ApprovalRouting, ApprovalState, CommittedApprovalOffer,
     PendingApprovalHolderEffects, PendingApprovalReply,
     approval_store_scope::{ApprovalHolderScope, ApprovalRequestRowId},
-    approval_store_transaction::ApprovalStatementTransaction,
+    approval_store_transaction::ApprovalStoreTransaction,
     approval_store_writes::{
         plan_approval_state_change, plan_register_approval_deadline, plan_remove_approval_deadline,
     },
@@ -83,7 +83,7 @@ pub struct ApprovalApplyingStore<'loan, Transaction, Sessions> {
 
 impl<'loan, Transaction, Sessions> ApprovalApplyingStore<'loan, Transaction, Sessions>
 where
-    Transaction: ApprovalStatementTransaction,
+    Transaction: ApprovalStoreTransaction,
 {
     pub fn new(
         commit: &'loan ApprovalCommitScope,

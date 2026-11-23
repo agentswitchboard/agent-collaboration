@@ -8,9 +8,16 @@ use crate::ConformanceResult;
 
 pub use super::{approval_harness::PersonApprovalHarness, approval_rows::AnswerClass};
 
-const LIST: &str = "/organization-admin/v1/approval-list";
-const READ: &str = "/organization-admin/v1/approval-read";
-const DECIDE: &str = "/organization-admin/v1/approval-decide";
+#[cfg(feature = "session-link-test-support")]
+mod holder_delivery;
+mod request;
+#[cfg(feature = "session-link-test-support")]
+use request::decide_in_organization;
+use request::{READ, decide, list, read};
+
+#[cfg(feature = "session-link-test-support")]
+pub use holder_delivery::check_signed_holder_delivery;
+
 const REVISIONS: &str = "/internal/organization-authorization-revisions";
 
 pub enum Case {
@@ -22,6 +29,7 @@ pub enum Case {
     DecideNotVisible,
     DecideTimeout,
     DecideCancelled,
+    ApplyingTimeFloor,
     AlreadyDecided,
     InvalidAnswer,
     Replay(ReplayCase),
@@ -85,6 +93,7 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
             )?;
             assert_count(host, "SELECT COUNT(*) FROM actor_persons", 0).await?;
             assert_count(host, "SELECT COUNT(*) FROM admin_used_requests", 2).await?;
+            assert_count(host, "SELECT COUNT(*) FROM approval_applying_time", 0).await?;
         }
         Case::ListDeadlinePrecedence => {
             let expired = seed(host, 10, AnswerClass::Once, InitialApproval::PastDeadline).await?;
@@ -185,6 +194,31 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
                 0,
             )
             .await?;
+        }
+        Case::ApplyingTimeFloor => {
+            let request = seed(host, 10, AnswerClass::Once, InitialApproval::Waiting).await?;
+            let happened_at = time(3590)?;
+            let floor_ms = happened_at.timestamp_millis();
+            let stored_at = happened_at.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+            host.write(
+                "INSERT INTO approval_applying_time (organization_id, observed_ms, created_at, updated_at) VALUES (?1, ?2, ?3, ?3)",
+                vec![text(ORGANIZATION), SqlValue::Integer(floor_ms.try_into()?), text(&stored_at)],
+            ).await?;
+            // The proof is current on the admin clock, while the stored approval window
+            // has elapsed at the holder's durable applying time.
+            expect(
+                decide(&request, &operation, &answer)
+                    .send(host, &owner)
+                    .await?,
+                200,
+                json!({"kind":"tooLate"}),
+            )?;
+            let ended = host.read("SELECT ended_at FROM approval_requests").await?;
+            require(
+                ended == vec![vec![text(stored_at)]],
+                &json!({"expected":"ending at the retained approval floor"}),
+            )?;
+            assert_count(host, "SELECT COUNT(*) FROM admin_used_requests", 1).await?;
         }
         Case::AlreadyDecided => {
             let request = seed(host, 10, AnswerClass::Once, InitialApproval::Waiting).await?;
@@ -361,12 +395,14 @@ async fn check_factor(
         assert_count(host, "SELECT COUNT(*) FROM runtime_request_log", 0).await?;
         assert_count(host, "SELECT COUNT(*) FROM actor_persons", 0).await?;
         assert_count(host, "SELECT COUNT(*) FROM admin_used_requests", 1).await?;
+        assert_count(host, "SELECT COUNT(*) FROM approval_applying_time", 0).await?;
         owner.second_factor_at = Some(NOW_SECONDS);
         expect(call.send(host, &owner).await?, 200, saved(&answer))?;
     } else {
         expect(reply, 200, saved(&answer))?;
     }
     assert_count(host, "SELECT COUNT(*) FROM actor_persons", 1).await?;
+    assert_count(host, "SELECT COUNT(*) FROM approval_applying_time", 1).await?;
     assert_count(
         host,
         "SELECT COUNT(*) FROM approval_requests WHERE delivery_state='owed'",
@@ -525,67 +561,6 @@ fn expect(reply: (u16, Vec<u8>), status: u16, expected: Value) -> ConformanceRes
         actual == expected,
         &json!({"expected":expected,"actual":actual}),
     )
-}
-
-struct SignedRequest {
-    path: &'static str,
-    body: Value,
-    intent: Value,
-}
-
-impl SignedRequest {
-    fn headers(
-        &self,
-        person: &Person,
-        jti: &str,
-        adjust: &dyn Fn(&mut Value),
-    ) -> ConformanceResult<Vec<(&'static str, String)>> {
-        person.headers_with(self.path, &self.intent, jti, NOW_SECONDS, adjust)
-    }
-
-    async fn send(
-        &self,
-        host: &impl PersonApprovalHarness,
-        person: &Person,
-    ) -> ConformanceResult<(u16, Vec<u8>)> {
-        host.post(
-            self.path,
-            &self.body,
-            self.headers(person, &fresh_request_id(NOW_SECONDS)?, &|_| {})?,
-        )
-        .await
-    }
-}
-
-fn list(filter: &str, cursor: Option<&str>) -> SignedRequest {
-    let mut body = json!({"organization":ORGANIZATION,"filter":filter});
-    if let (Some(cursor), Some(fields)) = (cursor, body.as_object_mut()) {
-        fields.insert("cursor".to_owned(), json!(cursor));
-    }
-    SignedRequest {
-        path: LIST,
-        body,
-        intent: json!({"v":1,"operation":"ApprovalList","organization":ORGANIZATION,
-            "target":ORGANIZATION,"operationId":null,"params":{"filter":filter,"cursor":cursor}}),
-    }
-}
-
-fn read(request: &str) -> SignedRequest {
-    SignedRequest {
-        path: READ,
-        body: json!({"organization":ORGANIZATION,"requestId":request}),
-        intent: json!({"v":1,"operation":"ApprovalRead","organization":ORGANIZATION,
-            "target":request,"operationId":null,"params":{}}),
-    }
-}
-
-fn decide(request: &str, operation: &str, answer: &Value) -> SignedRequest {
-    SignedRequest {
-        path: DECIDE,
-        body: json!({"organization":ORGANIZATION,"requestId":request,"operationId":operation,"answer":answer}),
-        intent: json!({"v":1,"operation":"ApprovalDecide","organization":ORGANIZATION,
-            "target":request,"operationId":operation,"params":{"answer":answer}}),
-    }
 }
 
 pub const fn factor(answer: AnswerClass, fresh: bool) -> Case {

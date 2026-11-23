@@ -1,8 +1,10 @@
 //! V3 applies the real approvals service in a test-only SQLite Durable Object.
 use std::{
     cell::Cell,
+    future::Future,
     num::NonZeroU16,
-    sync::{Arc, Mutex},
+    pin::Pin,
+    sync::{Arc, Mutex, PoisonError},
 };
 
 use approval_request_protocol::CentralTime;
@@ -127,9 +129,7 @@ pub(super) async fn apply_fixture(
             .collect::<Result<Vec<_>, _>>()?;
         reply(&proof, offers)
     });
-    let evidence = evidence
-        .lock()
-        .map_err(|_| worker::Error::RustError("approval evidence unavailable".into()))?;
+    let evidence = evidence.lock().unwrap_or_else(PoisonError::into_inner);
     let (reply, error) = match outcome {
         Ok(value) => (Some(value), None),
         Err(WitnessFailure::Apply(failure)) => (None, Some(format!("{failure:?}"))),
@@ -470,32 +470,34 @@ struct WorkerApprovalCommit<'storage> {
     evidence: Arc<Mutex<FixtureEvidence>>,
 }
 
-impl ApprovalCommitOwner<PendingWitnessApply> for WorkerApprovalCommit<'_> {
+impl<'owner> ApprovalCommitOwner<PendingWitnessApply> for WorkerApprovalCommit<'owner> {
     type Error = WitnessFailure;
 
-    async fn apply_and_commit(
-        self,
-        commit: ApprovalCommitScope,
-    ) -> Result<PendingWitnessApply, Self::Error> {
-        let Self {
-            connection,
-            input,
-            evidence,
-        } = self;
-        connection
-            .transaction(move |transaction| async move {
-                let mut transaction = WorkerApprovalTransaction {
-                    organization_id: fleet_identity_protocol::OrganizationId::try_from(
-                        "019ac19f-aa00-7000-8000-0000000013ed".to_owned(),
-                    )
-                    .map_err(|_| WitnessFailure::Storage)?,
-                    transaction,
-                    fail_after_write: input.fail_after_write,
-                    evidence,
-                };
-                apply_command(&mut transaction, input, &commit).await
-            })
-            .await
+    type Commit =
+        Pin<Box<dyn Future<Output = Result<PendingWitnessApply, Self::Error>> + Send + 'owner>>;
+
+    fn apply_and_commit(self, commit: ApprovalCommitScope) -> Self::Commit {
+        Box::pin(async move {
+            let Self {
+                connection,
+                input,
+                evidence,
+            } = self;
+            connection
+                .transaction(move |transaction| async move {
+                    let mut transaction = WorkerApprovalTransaction {
+                        organization_id: fleet_identity_protocol::OrganizationId::try_from(
+                            "019ac19f-aa00-7000-8000-0000000013ed".to_owned(),
+                        )
+                        .map_err(|_| WitnessFailure::Storage)?,
+                        transaction,
+                        fail_after_write: input.fail_after_write,
+                        evidence,
+                    };
+                    apply_command(&mut transaction, input, &commit).await
+                })
+                .await
+        })
     }
 }
 

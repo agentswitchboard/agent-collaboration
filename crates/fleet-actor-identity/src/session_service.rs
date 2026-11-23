@@ -3,8 +3,8 @@ use central_engine_model::{Context, EngineTime, Machine, TransitionError, suppor
 use central_storage::StoreFailure;
 use fleet_identity_protocol::{
     BindFleetSession, BindFleetSessionReply, CreateFleetSession, CreateFleetSessionReply,
-    CreateSessionKind, CreateSessionRefusal, EndFleetSession, EndFleetSessionReply,
-    EndSessionTarget, EnrollmentId, PresentedSessionSecret, SessionCreator, SessionSecret,
+    CreateSessionKind, CreateSessionRefusal, EndFleetSessionReply, EnrollmentId,
+    PresentedSessionSecret, SessionCreator, SessionSecret,
 };
 use fleet_lent_transaction::OrganizationTransaction;
 use fleet_machine_login::{
@@ -20,9 +20,8 @@ use workspace_ids::{CentralSessionId, MachineId};
 use crate::session_repository::SessionRepository;
 use crate::{
     AddressAvailability, AuthenticatedSession, BoundSession, NewSessionAdmission,
-    RecordedSessionCreator, ScopedSession, SessionApply, SessionCreatorAdmission,
-    SessionEndIdentity, SessionEvent, SessionLifecycle, SessionMachineRefusal, SessionReceipt,
-    SessionReservation, SessionState,
+    RecordedSessionCreator, ScopedSession, SessionApply, SessionCreatorAdmission, SessionEvent,
+    SessionLifecycle, SessionMachineRefusal, SessionReceipt, SessionReservation, SessionState,
 };
 
 const RESERVATION_DURATION_MILLIS: i64 = 600_000;
@@ -38,6 +37,11 @@ pub struct SessionLookupScope {
 pub enum SessionCallOutcome<Reply> {
     Answered(Reply),
     Revoked,
+}
+
+pub struct AppliedSessionEnd {
+    pub reply: EndFleetSessionReply,
+    pub ended_session: Option<CentralSessionId>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -271,59 +275,6 @@ where
             SessionReceipt::Bind(reply) => Ok(SessionCallOutcome::Answered(reply)),
             SessionReceipt::Create(_) | SessionReceipt::End(_) => {
                 Err(corrupt("actor_sessions.bind_receipt").into())
-            }
-        }
-    }
-
-    pub async fn end(
-        &mut self,
-        connection: &ValidatedMachineConnection,
-        request: EndFleetSession,
-        context: &mut Context<'_>,
-    ) -> Result<SessionCallOutcome<EndFleetSessionReply>, SessionServiceError> {
-        if self.repository.tx.organization_id() != connection.organization_id() {
-            return Ok(SessionCallOutcome::Revoked);
-        }
-        let caller = &SessionLookupScope {
-            machine_id: connection.machine_id().clone(),
-            enrollment_id: connection.enrollment_id().clone(),
-        };
-        if !self.is_current(caller).await? {
-            return Ok(SessionCallOutcome::Revoked);
-        }
-        let (prior, by) = match request.target {
-            EndSessionTarget::CentralId { session_id } => (
-                self.repository
-                    .by_id(&caller.machine_id, &session_id)
-                    .await?,
-                SessionEndIdentity::CentralId,
-            ),
-            EndSessionTarget::OperationId {
-                operation_id,
-                contents_digest,
-            } => (
-                self.repository
-                    .by_operation(&caller.machine_id, &operation_id)
-                    .await?,
-                SessionEndIdentity::OperationDigest(contents_digest),
-            ),
-        };
-        let historical = self.historical_end(caller, &prior).await?;
-        let receipt = self
-            .apply(
-                prior,
-                SessionEvent::End {
-                    by,
-                    cause: request.cause,
-                },
-                historical,
-                context,
-            )
-            .await?;
-        match receipt {
-            SessionReceipt::End(reply) => Ok(SessionCallOutcome::Answered(reply)),
-            SessionReceipt::Create(_) | SessionReceipt::Bind(_) => {
-                Err(corrupt("actor_sessions.end_receipt").into())
             }
         }
     }
@@ -585,3 +536,6 @@ fn reserve_until(now: EngineTime) -> Result<EngineTime, SessionServiceError> {
         .filter(|deadline| supported_time(*deadline))
         .ok_or(SessionServiceError::TimeOutOfRange)
 }
+
+#[path = "session_end_service.rs"]
+mod session_end_service;

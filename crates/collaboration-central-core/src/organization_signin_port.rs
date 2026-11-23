@@ -202,7 +202,7 @@ impl<H: CentralStore, S: WorkspaceStores> crate::WorkspaceRuntime<H, S> {
             return Ok(PersonApprovalAnswer::Unauthenticated);
         }
 
-        let _turn = self.execution.take_central_turn().await;
+        let turn = self.execution.take_central_turn().await;
         self.prepare_signin_authority().await?;
         let time = SyncTime::from_unix_millis(self.execution.now()?.timestamp_millis());
         if self.signin_authority.standing(time) != StampStanding::Valid {
@@ -214,16 +214,27 @@ impl<H: CentralStore, S: WorkspaceStores> crate::WorkspaceRuntime<H, S> {
             .person_approval_transactions
             .as_deref()
             .ok_or(StoreFailure::Unavailable)?;
+        let schedule = self
+            .approval_deadline_completion
+            .as_ref()
+            .ok_or(StoreFailure::Unavailable)?;
         let application = PersonApprovalApplication::new(organization, verified, time);
         let (proof, applied) = application.commit(transactions).await?;
         #[cfg(feature = "test-support")]
-        if applied.is_admitted()
+        let reply_was_admitted = applied.is_admitted();
+        let (answer, offers) = applied.publish(&proof)?;
+        drop(turn);
+        if let Some(completion) = transactions.delivery_after_commit(offers) {
+            schedule(completion);
+        }
+        #[cfg(feature = "test-support")]
+        if reply_was_admitted
             && operation_id
                 .as_ref()
                 .is_some_and(|id| self.execution.take_lost_reply(id))
         {
             return Err(StoreFailure::AnswerLost);
         }
-        applied.publish(&proof)
+        Ok(answer)
     }
 }

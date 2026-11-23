@@ -1,14 +1,13 @@
 use central_storage::{ReadOutcome, Statement, StoreFailure};
 use fleet_approvals::{
     ApprovalActor, ApprovalEnrollment, ApprovalEnrollmentScope, ApprovalEnrollmentStanding,
-    ApprovalRouting, ApprovalSession, ApprovalSessionFacts, ApprovalStatementTransaction,
-    ApprovalStoreTransaction,
+    ApprovalRouting, ApprovalSession, ApprovalSessionFacts, ApprovalStoreTransaction,
 };
 use fleet_identity_protocol::{EnrollmentId, OrganizationId};
 use fleet_lent_transaction::{CentralTransaction, OrganizationTransaction};
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use sqlx_durable_object::{Do, DoTransaction};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, PoisonError};
 use workspace_ids::ActorIdentityId;
 
 use crate::{statement_store, store_wire::OwnedStatement};
@@ -44,7 +43,22 @@ impl CentralTransaction for WorkerApprovalTransaction {
     }
 }
 
-impl ApprovalStatementTransaction for WorkerApprovalTransaction {
+impl ApprovalStoreTransaction for WorkerApprovalTransaction {
+    async fn approval_decision_caller(
+        &mut self,
+        _organization: &OrganizationId,
+        actor: &ApprovalActor,
+    ) -> Result<ActorIdentityId, StoreFailure> {
+        // The fixture uses disjoint issued person and session identities.
+        let fixture_id = match actor {
+            ApprovalActor::Person(person) => person.as_str(),
+            ApprovalActor::Session(session) => session.session_id.as_str(),
+        };
+        fixture_id
+            .parse()
+            .map_err(|_| corrupt("fixture_actor_identity"))
+    }
+
     async fn read_approval_statement(
         &mut self,
         statement: Statement,
@@ -65,33 +79,13 @@ impl ApprovalStatementTransaction for WorkerApprovalTransaction {
             .await
             .map_err(sql_failure)?
             .rows_affected();
-        let mut evidence = self
-            .evidence
-            .lock()
-            .map_err(|_| StoreFailure::Unavailable)?;
+        let mut evidence = self.evidence.lock().unwrap_or_else(PoisonError::into_inner);
         evidence.write_count += 1;
         evidence.rows_changed += rows;
         if Some(evidence.write_count) == self.fail_after_write {
             return Err(StoreFailure::Unavailable);
         }
         Ok(rows)
-    }
-}
-
-impl ApprovalStoreTransaction for WorkerApprovalTransaction {
-    async fn approval_decision_caller(
-        &mut self,
-        _organization: &OrganizationId,
-        actor: &ApprovalActor,
-    ) -> Result<ActorIdentityId, StoreFailure> {
-        // The fixture uses disjoint issued person and session identities.
-        let fixture_id = match actor {
-            ApprovalActor::Person(person) => person.as_str(),
-            ApprovalActor::Session(session) => session.session_id.as_str(),
-        };
-        fixture_id
-            .parse()
-            .map_err(|_| corrupt("fixture_actor_identity"))
     }
 
     async fn approval_enrollment_standing(

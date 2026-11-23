@@ -21,7 +21,7 @@ use crate::{
     approval_store_reads::{
         ApprovalReadRecord, read_parent_approval_request, read_people_approval_request,
     },
-    approval_store_transaction::{ApprovalStatementTransaction, ApprovalStoreTransaction},
+    approval_store_transaction::ApprovalStoreTransaction,
 };
 #[cfg(feature = "test-support")]
 use crate::{
@@ -260,7 +260,7 @@ where
 
 impl<Transaction, Sessions> ApprovalApplyingStore<'_, Transaction, Sessions>
 where
-    Transaction: ApprovalStatementTransaction,
+    Transaction: ApprovalStoreTransaction,
 {
     pub(super) async fn read_person_approval(
         &mut self,

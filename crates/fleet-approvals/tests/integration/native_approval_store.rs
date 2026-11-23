@@ -14,8 +14,8 @@ use fleet_approvals::{
     ApprovalActor, ApprovalApplyFailure, ApprovalApplyingStore, ApprovalCommitOwner,
     ApprovalCommitProof, ApprovalCommitScope, ApprovalEnrollment, ApprovalEnrollmentScope,
     ApprovalEnrollmentStanding, ApprovalHolderAdmission, ApprovalHolderScope, ApprovalRouting,
-    ApprovalSession, ApprovalSessionFacts, ApprovalStatementTransaction, ApprovalStoreTransaction,
-    PendingApprovalHolderEffects, PendingApprovalReply, complete_approval_commit,
+    ApprovalSession, ApprovalSessionFacts, ApprovalStoreTransaction, PendingApprovalHolderEffects,
+    PendingApprovalReply, complete_approval_commit,
 };
 use fleet_identity_protocol::{EnrollmentId, OrganizationId};
 use fleet_lent_transaction::{CentralTransaction, OrganizationTransaction};
@@ -94,7 +94,22 @@ impl CentralTransaction for NativeApprovalTransaction {
     }
 }
 
-impl ApprovalStatementTransaction for NativeApprovalTransaction {
+impl ApprovalStoreTransaction for NativeApprovalTransaction {
+    async fn approval_decision_caller(
+        &mut self,
+        _organization: &OrganizationId,
+        actor: &ApprovalActor,
+    ) -> Result<ActorIdentityId, StoreFailure> {
+        // The fixture uses disjoint issued person and session identities.
+        let fixture_id = match actor {
+            ApprovalActor::Person(person) => person.as_str(),
+            ApprovalActor::Session(session) => session.session_id.as_str(),
+        };
+        fixture_id
+            .parse()
+            .map_err(|_| corrupt("fixture_actor_identity"))
+    }
+
     async fn read_approval_statement(
         &mut self,
         statement: Statement,
@@ -152,23 +167,6 @@ impl ApprovalStatementTransaction for NativeApprovalTransaction {
             return Err(StoreFailure::Unavailable);
         }
         Ok(rows)
-    }
-}
-
-impl ApprovalStoreTransaction for NativeApprovalTransaction {
-    async fn approval_decision_caller(
-        &mut self,
-        _organization: &OrganizationId,
-        actor: &ApprovalActor,
-    ) -> Result<ActorIdentityId, StoreFailure> {
-        // The fixture uses disjoint issued person and session identities.
-        let fixture_id = match actor {
-            ApprovalActor::Person(person) => person.as_str(),
-            ApprovalActor::Session(session) => session.session_id.as_str(),
-        };
-        fixture_id
-            .parse()
-            .map_err(|_| corrupt("fixture_actor_identity"))
     }
 
     async fn approval_enrollment_standing(

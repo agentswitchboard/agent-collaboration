@@ -25,11 +25,18 @@ pub use fleet_machine_login::link_transitions::{
 };
 mod machine_connection_admission;
 mod machine_login_plans;
+mod typed_link_application;
 mod typed_link_dispatch;
+pub use typed_link_application::{
+    AppliedApprovalDeadline, CentralCallDispatch, CentralCallWork, CentralLinkDispatcher,
+    LinkCallCompletion, TypedCallCarrier, is_approval_holder_call,
+};
+#[cfg(feature = "test-support")]
+pub use typed_link_application::{FixtureApprovalAnswer, FixtureApprovalDecision};
 pub use typed_link_dispatch::{
-    CentralCallDispatch, CentralLinkDispatcher, DispatchedCentralCall, MacCallResult,
-    TYPED_LINK_CALL_TIMEOUT, TargetCheckedCentralCall, dispatch_fallible_central_call,
-    dispatch_fallible_correlated_central_call, dispatch_registered_central_call, finish_mac_call,
+    DispatchedCentralCall, MacCallResult, TYPED_LINK_CALL_TIMEOUT, TargetCheckedCentralCall,
+    dispatch_fallible_central_call, dispatch_fallible_correlated_central_call,
+    dispatch_registered_central_call, finish_mac_call,
 };
 #[cfg(feature = "test-support")]
 mod machine_login_test_control;

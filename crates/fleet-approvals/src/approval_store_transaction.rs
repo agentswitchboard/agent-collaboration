@@ -20,8 +20,9 @@ pub enum ApprovalEnrollmentStanding {
     Unavailable,
 }
 
-/// Host-provided storage for the existing applying organization transaction.
-pub trait ApprovalStatementTransaction: OrganizationTransaction {
+/// The host lends the already applying transaction and retains commit and rollback.
+/// Its enrollment lookup delegates to the machine-login owner in that transaction.
+pub trait ApprovalStoreTransaction: OrganizationTransaction + Send {
     fn read_approval_statement(
         &mut self,
         statement: Statement,
@@ -31,25 +32,22 @@ pub trait ApprovalStatementTransaction: OrganizationTransaction {
         &mut self,
         statement: Statement,
     ) -> impl Future<Output = Result<u64, StoreFailure>> + Send;
-}
 
-/// Lifecycle commands also resolve the holder and session authority in the same turn.
-pub trait ApprovalStoreTransaction: ApprovalStatementTransaction {
     fn approval_enrollment_standing(
         &mut self,
         scope: &ApprovalEnrollmentScope,
-    ) -> impl Future<Output = Result<ApprovalEnrollmentStanding, StoreFailure>>;
+    ) -> impl Future<Output = Result<ApprovalEnrollmentStanding, StoreFailure>> + Send;
 
     /// Resolve the already admitted destination through Central's actor identity owner.
     fn approval_decision_caller(
         &mut self,
         organization: &OrganizationId,
         actor: &ApprovalActor,
-    ) -> impl Future<Output = Result<ActorIdentityId, StoreFailure>>;
+    ) -> impl Future<Output = Result<ActorIdentityId, StoreFailure>> + Send;
 }
 
 /// A C3 applying transaction can reach the actor owner's existing person mapping.
-pub trait ApprovalPersonStoreTransaction: ApprovalStatementTransaction {
+pub trait ApprovalPersonStoreTransaction: ApprovalStoreTransaction {
     fn find_person_actor(
         &mut self,
         person: &PersonId,
@@ -65,7 +63,7 @@ pub trait ApprovalPersonStoreTransaction: ApprovalStatementTransaction {
 
 impl<Transaction> ApprovalPersonStoreTransaction for Transaction
 where
-    Transaction: ApprovalStatementTransaction + Send,
+    Transaction: ApprovalStoreTransaction + Send,
     <Transaction::Database as Database>::Arguments: IntoArguments<Transaction::Database>,
     String: Type<Transaction::Database>
         + for<'query> Encode<'query, Transaction::Database>

@@ -79,7 +79,8 @@ produce two consecutive changes, both are drained, and replay preserves the curs
 
 - `organization_signin::person_approval_routes`: signed list, read and decide on
   the Unix sign-in link. The shared decision table checks factor boundaries,
-  visibility and deadlines, retained replies, permission changes and proof replay.
+  visibility and deadlines, retained replies, permission changes and proof replay. A signed
+  decision also reaches the live holder on the machine link.
 
 - `organization_signin::machine_login`: the real private device/token decision
   routes, exact immutable three-field approval replies across reopen, both BA1

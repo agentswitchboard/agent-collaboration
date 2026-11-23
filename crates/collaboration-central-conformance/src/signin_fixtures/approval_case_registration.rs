@@ -10,6 +10,7 @@ macro_rules! person_approval_cases {
         $case!(decide_not_visible, Case::DecideNotVisible);
         $case!(decide_timeout, Case::DecideTimeout);
         $case!(decide_cancelled, Case::DecideCancelled);
+        $case!(applying_time_floor, Case::ApplyingTimeFloor);
         $case!(already_decided, Case::AlreadyDecided);
         $case!(invalid_answer, Case::InvalidAnswer);
         $case!(
