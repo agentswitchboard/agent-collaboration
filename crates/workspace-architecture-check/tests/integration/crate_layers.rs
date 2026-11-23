@@ -40,6 +40,8 @@ struct CargoPackage {
     source: Option<String>,
     #[serde(default)]
     dependencies: Vec<ManifestDependency>,
+    #[serde(default)]
+    features: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -229,6 +231,7 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
     harness_stage_policy::check_resolved(&enabled_metadata)?;
     approval_holder_policy::check_resolved(&enabled_metadata)?;
     approval_ports_policy::check_resolved(&enabled_metadata)?;
+    approval_ports_policy::check_rooted_features(&root)?;
     workspace_boundaries::check_harness_layers(&NonDevDependencyGraph::from_metadata(
         enabled_metadata,
     ))?;
@@ -284,6 +287,7 @@ fn fixture_metadata(
         manifest_path: PathBuf::from(format!("/workspace/{id}/Cargo.toml")),
         source: None,
         dependencies: Vec::new(),
+        features: BTreeMap::new(),
     })
     .collect();
     let workspace_members = packages.iter().map(|package| package.id.clone()).collect();
@@ -348,6 +352,7 @@ fn harness_contracts_reject_workspace_dependencies() {
                     manifest_path: PathBuf::from("/workspace/store/Cargo.toml"),
                     source: None,
                     dependencies: Vec::new(),
+                    features: BTreeMap::new(),
                 },
                 CargoPackage {
                     id: "events".to_owned(),
@@ -355,6 +360,7 @@ fn harness_contracts_reject_workspace_dependencies() {
                     manifest_path: PathBuf::from("/workspace/events/Cargo.toml"),
                     source: None,
                     dependencies: Vec::new(),
+                    features: BTreeMap::new(),
                 },
                 CargoPackage {
                     id: "harness".to_owned(),
@@ -369,6 +375,7 @@ fn harness_contracts_reject_workspace_dependencies() {
                         features: Vec::new(),
                         uses_default_features: true,
                     }],
+                    features: BTreeMap::new(),
                 },
                 CargoPackage {
                     id: "deciding-code".to_owned(),
@@ -376,6 +383,7 @@ fn harness_contracts_reject_workspace_dependencies() {
                     manifest_path: PathBuf::from("/workspace/deciding-code/Cargo.toml"),
                     source: None,
                     dependencies: Vec::new(),
+                    features: BTreeMap::new(),
                 },
                 CargoPackage {
                     id: "harness-carrier".to_owned(),
@@ -383,6 +391,7 @@ fn harness_contracts_reject_workspace_dependencies() {
                     manifest_path: PathBuf::from("/workspace/harness-carrier/Cargo.toml"),
                     source: None,
                     dependencies: Vec::new(),
+                    features: BTreeMap::new(),
                 },
             ],
             workspace_members: [

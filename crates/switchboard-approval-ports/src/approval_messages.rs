@@ -1,7 +1,7 @@
 use approval_request_protocol::{OfferView, PrivateEnding, ProviderStopCause};
 use workspace_ids::RequestId;
 
-use crate::{ApprovalScope, WaitingRequestId};
+use crate::{ApprovalScope, LocalSessionBindingId, WaitingRequestId};
 
 /// A losslessly translated ask that the harness makes after identifying its exact scope.
 ///
@@ -78,11 +78,24 @@ pub enum LocalApprovalRefusal {
     #[error("session is not known to central")]
     UnknownCentralSession,
     #[error("the wait stopped: {0:?}")]
-    WaitStopped(MacWaitCause),
+    WaitStopped(ReplyableStopCause),
     #[error("central refused the raise: {0:?}")]
     RaiseRefused(TerminalRaiseRefusal),
     #[error("the approval holder has no room")]
     NoRoom,
+}
+
+/// The stop custody can report in a reply while the provider's slot can still be used.
+///
+/// ```compile_fail,E0308
+/// use switchboard_approval_ports::{LocalApprovalRefusal, MacWaitCause};
+/// let _ = LocalApprovalRefusal::WaitStopped(MacWaitCause::AgentAskWithdrawn);
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplyableStopCause {
+    TurnStopped,
+    SessionClosed,
+    AskReplaced,
 }
 
 /// The terminal Raise outcome custody records from central's reply after excluding receipts and run authority.
@@ -128,14 +141,16 @@ impl ApprovalReply {
     }
 }
 
-/// Custody's instruction to write one reply on the named waiting request.
+/// Custody's one-use submission made for the exact writer after the holder commits its start.
+///
+/// This belongs to the inline enqueue call, separate from any queued work or permit.
 #[derive(Debug, Eq, PartialEq)]
-pub struct ReplyInstruction {
+pub struct StartedReplySubmission {
     waiting_request: WaitingRequestId,
     reply: ApprovalReply,
 }
 
-impl ReplyInstruction {
+impl StartedReplySubmission {
     /// Gives the harness the exact local wait and reply to use at the hand-over point.
     #[must_use]
     pub fn into_parts(self) -> (WaitingRequestId, ApprovalReply) {
@@ -143,11 +158,32 @@ impl ReplyInstruction {
     }
 }
 
-/// Custody's instruction to release one named waiting request without a reply.
+/// Custody's instruction to revoke the harness's lookup authority for one wait.
+///
+/// It applies even after a writer has started. Revocation preserves that writer's ability to
+/// report its original outcome and leaves responder disposal to the appropriate owner.
 #[derive(Debug, Eq, PartialEq)]
-pub struct WaitingRequestRelease(WaitingRequestId);
+pub struct WaitBindingRevocation(WaitingRequestId);
 
-impl WaitingRequestRelease {
+impl WaitBindingRevocation {
+    #[must_use]
+    pub const fn waiting_request(&self) -> &WaitingRequestId {
+        &self.0
+    }
+}
+
+/// Custody's instruction to dispose of one unstarted responder after revoking its lookup.
+///
+/// ```compile_fail,E0308
+/// use switchboard_approval_ports::{ApprovalHarnessPort, WaitBindingRevocation};
+/// fn wrong_release(port: &impl ApprovalHarnessPort, revocation: WaitBindingRevocation) {
+///     port.release_unstarted_wait(revocation);
+/// }
+/// ```
+#[derive(Debug, Eq, PartialEq)]
+pub struct UnstartedWaitRelease(WaitingRequestId);
+
+impl UnstartedWaitRelease {
     #[must_use]
     pub const fn waiting_request(&self) -> &WaitingRequestId {
         &self.0
@@ -161,13 +197,17 @@ pub enum WaitReleaseKind {
     ReleasedWithoutReply,
     /// That exact waiting request was already gone.
     AlreadyGone,
-    /// The harness could not settle the wait silently on the live connection.
+    /// The harness could not dispose of the responder silently on the live connection.
     CannotReleaseSilently,
     /// The harness cannot establish what happened during release.
     CannotTell,
 }
 
-/// The release observation the harness reports to custody for the exact wait.
+/// The harness's local disposal result for the exact unstarted wait.
+///
+/// Released and already gone settle the local duty. A blocked or unknown disposal remains
+/// with the harness under that waiting request. It grants no new reply right and produces
+/// no provider outcome or central receipt.
 ///
 /// ```compile_fail,E0423
 /// use switchboard_approval_ports::{WaitReleaseKind, WaitReleaseOutcome};
@@ -191,18 +231,27 @@ pub enum ReplyHandoverKind {
     CannotTell,
 }
 
-/// The harness's report from the hand-over point. Queue admission proves only local hand-over.
+/// What the harness observed for the submission of an already-started reply.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReplySubmissionKind {
+    /// The exact slot had vanished before any submission could be attempted.
+    SlotGoneBeforeSubmission,
+    /// The observation made at the agent connection's hand-over point.
+    Handover(ReplyHandoverKind),
+}
+
+/// The harness's report for one started writer. Queue admission proves local hand-over.
 ///
 /// ```compile_fail,E0423
-/// use switchboard_approval_ports::{ReplyHandover, ReplyHandoverKind};
-/// let _ = ReplyHandover(ReplyHandoverKind::HandedToConnection);
+/// use switchboard_approval_ports::{ReplySubmissionKind, ReplySubmissionOutcome};
+/// let _ = ReplySubmissionOutcome(ReplySubmissionKind::SlotGoneBeforeSubmission);
 /// ```
 #[derive(Debug, Eq, PartialEq)]
-pub struct ReplyHandover(ReplyHandoverKind);
+pub struct ReplySubmissionOutcome(ReplySubmissionKind);
 
-impl ReplyHandover {
+impl ReplySubmissionOutcome {
     #[must_use]
-    pub const fn kind(&self) -> ReplyHandoverKind {
+    pub const fn kind(&self) -> ReplySubmissionKind {
         self.0
     }
 }
@@ -217,7 +266,10 @@ pub enum MacWaitCause {
 }
 
 impl MacWaitCause {
-    /// Maps each Mac fact to its exact provider stop cause for central.
+    /// Names the cause for a provider Stop sent to central.
+    ///
+    /// Custody routes an exact withdrawal as the holder's ProviderWithdrew event. The other
+    /// facts enter LocalStop. This wire cause alone does not select the holder input.
     #[must_use]
     pub const fn provider_stop_cause(self) -> ProviderStopCause {
         match self {
@@ -248,7 +300,7 @@ impl MacWaitEnded {
 /// ```compile_fail,E0599
 /// use switchboard_approval_ports::{HarnessApprovalValues, ReplyKind, WaitingRequestId};
 /// fn forge(harness: &HarnessApprovalValues, wait: WaitingRequestId, reply: ReplyKind) {
-///     harness.write_reply(wait, reply);
+///     harness.started_reply_submission(wait, reply);
 /// }
 /// ```
 #[derive(Debug)]
@@ -257,6 +309,12 @@ pub struct HarnessApprovalValues {
 }
 
 impl HarnessApprovalValues {
+    /// Wraps the fresh UUIDv7 allocated once for the exact managed session and current owner.
+    #[must_use]
+    pub const fn bind_session_owner(&self, owner_nonce: RequestId) -> LocalSessionBindingId {
+        LocalSessionBindingId::from_owner_nonce(owner_nonce)
+    }
+
     /// Names an admitted ask using a fresh harness-allocated UUIDv7.
     ///
     /// Custody associates the name with its own approval holder run.
@@ -282,10 +340,13 @@ impl HarnessApprovalValues {
         }
     }
 
-    /// Records what the harness observed when it tried to hand a reply over.
+    /// Records the harness's outcome for the writer whose inline submission it received.
     #[must_use]
-    pub const fn reply_handover(&self, kind: ReplyHandoverKind) -> ReplyHandover {
-        ReplyHandover(kind)
+    pub const fn reply_submission_outcome(
+        &self,
+        kind: ReplySubmissionKind,
+    ) -> ReplySubmissionOutcome {
+        ReplySubmissionOutcome(kind)
     }
 
     /// Records what the harness observed when it tried to release the wait silently.
@@ -328,9 +389,9 @@ impl HarnessApprovalValues {
 /// ```
 ///
 /// ```compile_fail,E0599
-/// use switchboard_approval_ports::{CustodyApprovalValues, ReplyHandoverKind};
+/// use switchboard_approval_ports::{CustodyApprovalValues, ReplySubmissionKind};
 /// fn forge(custody: &CustodyApprovalValues) {
-///     custody.reply_handover(ReplyHandoverKind::HandedToConnection);
+///     custody.reply_submission_outcome(ReplySubmissionKind::SlotGoneBeforeSubmission);
 /// }
 /// ```
 #[derive(Debug)]
@@ -339,30 +400,42 @@ pub struct CustodyApprovalValues {
 }
 
 impl CustodyApprovalValues {
-    /// Authorizes the harness to write this reply for one wait.
+    /// Forms the consuming request for the exact reply the holder has already started.
     #[must_use]
-    pub const fn write_reply(
+    pub const fn started_reply_submission(
         &self,
         waiting_request: WaitingRequestId,
         kind: ReplyKind,
-    ) -> ReplyInstruction {
-        ReplyInstruction {
+    ) -> StartedReplySubmission {
+        StartedReplySubmission {
             waiting_request,
             reply: ApprovalReply(kind),
         }
     }
 
-    /// Authorizes the harness to release the wait without writing a reply.
+    /// Requests unconditional revocation of the exact waiting binding.
     #[must_use]
-    pub const fn release_wait(&self, waiting_request: WaitingRequestId) -> WaitingRequestRelease {
-        WaitingRequestRelease(waiting_request)
+    pub const fn revoke_wait_binding(
+        &self,
+        waiting_request: WaitingRequestId,
+    ) -> WaitBindingRevocation {
+        WaitBindingRevocation(waiting_request)
+    }
+
+    /// Requests silent disposal of an unstarted responder whose lookup has been revoked.
+    #[must_use]
+    pub const fn release_unstarted_wait(
+        &self,
+        waiting_request: WaitingRequestId,
+    ) -> UnstartedWaitRelease {
+        UnstartedWaitRelease(waiting_request)
     }
 }
 
 /// The Host obtains both constructor sets and gives each component only its own set.
 ///
-/// Each side can construct only its own envelopes when given its own set. Rust
-/// visibility does not restrict this composition function to a particular dependent crate.
+/// The sets enforce envelope shape and document the Host's composition convention. The single
+/// ordered custody executor enforces live authority. Rust lets any dependent call this factory.
 #[must_use]
 pub const fn approval_value_builders() -> (HarnessApprovalValues, CustodyApprovalValues) {
     (
@@ -371,26 +444,44 @@ pub const fn approval_value_builders() -> (HarnessApprovalValues, CustodyApprova
     )
 }
 
-/// The ACP harness implements these two requests from custody and reports its local outcome.
+/// The ACP harness implements custody's inline submission and local release requests.
 ///
 /// ```compile_fail,E0308
-/// use switchboard_approval_ports::{ApprovalHarnessPort, ReplyHandover, WaitingRequestRelease};
-/// fn wrong_return(port: &impl ApprovalHarnessPort, request: WaitingRequestRelease) -> ReplyHandover {
-///     port.release_wait(request)
+/// use switchboard_approval_ports::{ApprovalHarnessPort, ReplySubmissionOutcome, UnstartedWaitRelease};
+/// fn wrong_return(port: &impl ApprovalHarnessPort, request: UnstartedWaitRelease) -> ReplySubmissionOutcome {
+///     port.release_unstarted_wait(request)
 /// }
 /// ```
 pub trait ApprovalHarnessPort {
-    /// Applies the final check and reports the exact reply's queue hand-over outcome.
-    fn write_reply(&self, instruction: ReplyInstruction) -> ReplyHandover;
+    /// Consumes the started reply inline under the authority that orders stops, take-backs and run fences.
+    ///
+    /// Custody takes the final permit and commits the start under that same authority. This synchronous
+    /// call neither awaits, queues its own work nor calls back into custody. It enqueues at the agent
+    /// connection's hand-over point or reports that the exact slot was gone before submission.
+    /// Only this started writer's outcome can become the holder's WriteFinished.
+    fn submit_started_reply(&self, submission: StartedReplySubmission) -> ReplySubmissionOutcome;
 
-    /// Tries to release the exact wait without sending a reply and reports the local result.
-    fn release_wait(&self, instruction: WaitingRequestRelease) -> WaitReleaseOutcome;
+    /// Removes the exact lookup even on a fence after start. The started writer can still report its outcome.
+    fn revoke_wait_binding(&self, revocation: WaitBindingRevocation);
+
+    /// Disposes of the exact unstarted responder after revocation, keeping any unresolved duty locally.
+    fn release_unstarted_wait(&self, release: UnstartedWaitRelease) -> WaitReleaseOutcome;
 }
 
 /// The Mac custody service implements these immediate ingress calls from the harness.
+///
+/// ```compile_fail,E0308
+/// use switchboard_approval_ports::{ApprovalAsk, ApprovalCustodyPort, LocalApprovalRefusal};
+/// fn wrong_result(port: &impl ApprovalCustodyPort, ask: ApprovalAsk) -> Result<(), LocalApprovalRefusal> {
+///     port.admit_ask(ask)
+/// }
+/// ```
 pub trait ApprovalCustodyPort {
-    /// Accepts the checked ask for custody or returns a local refusal without waiting on central.
-    fn admit_ask(&self, ask: ApprovalAsk) -> Result<(), LocalApprovalRefusal>;
+    /// Takes the checked ask and its sole reply right without waiting on central.
+    ///
+    /// An unbound or at-capacity ask transfers that right too. Custody sends its local refusal
+    /// through the same permit, start and inline submission path.
+    fn admit_ask(&self, ask: ApprovalAsk);
 
     /// Receives a proved terminal fact for the named waiting request.
     fn wait_ended(&self, event: MacWaitEnded);

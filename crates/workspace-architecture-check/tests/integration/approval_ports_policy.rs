@@ -1,11 +1,49 @@
 //! The approval ports may depend only on the two workspace data crates and thiserror.
 
-use std::collections::BTreeSet;
+use std::{collections::BTreeSet, path::Path, process::Command};
 
 use super::{CargoMetadata, CargoPackage, DependencyKind, harness_stage_policy::CRATES_IO};
 
 const APPROVAL_PORTS: &str = "switchboard-approval-ports";
 const DATA_CRATES: [&str; 2] = ["approval-request-protocol", "workspace-ids"];
+// Approved external reach: UUID validation, protocol encoding/digests, derives,
+// and their platform primitives. The ports manifest adds no external features.
+const PURE_SUPPORT: &[&str] = &[
+    "autocfg",
+    "base64",
+    "block-buffer",
+    "cfg-if",
+    "chrono",
+    "cpufeatures",
+    "crypto-common",
+    "digest",
+    "dyn-clone",
+    "generic-array",
+    "itoa",
+    "libc",
+    "memchr",
+    "num-traits",
+    "proc-macro2",
+    "quote",
+    "ref-cast",
+    "ref-cast-impl",
+    "schemars",
+    "schemars_derive",
+    "serde",
+    "serde_core",
+    "serde_derive",
+    "serde_derive_internals",
+    "serde_json",
+    "sha2",
+    "syn",
+    "thiserror",
+    "thiserror-impl",
+    "typenum",
+    "unicode-ident",
+    "uuid",
+    "version_check",
+    "zmij",
+];
 
 fn workspace_package<'a>(metadata: &'a CargoMetadata, name: &str) -> Option<&'a CargoPackage> {
     metadata.packages.iter().find(|package| {
@@ -18,6 +56,12 @@ fn workspace_package<'a>(metadata: &'a CargoMetadata, name: &str) -> Option<&'a 
 pub(super) fn check_declared(metadata: &CargoMetadata) -> Result<(), String> {
     let root = workspace_package(metadata, APPROVAL_PORTS)
         .ok_or_else(|| format!("approval ports workspace package missing: {APPROVAL_PORTS}"))?;
+    if !root.features.is_empty() {
+        return Err(format!(
+            "approval ports forbid declared package features: {:?}",
+            root.features
+        ));
+    }
     for dependency in &root.dependencies {
         let name = dependency.name.as_str();
         let kind = dependency.kind.unwrap_or(DependencyKind::Normal);
@@ -42,6 +86,75 @@ pub(super) fn check_declared(metadata: &CargoMetadata) -> Result<(), String> {
                 dependency.features, dependency.uses_default_features
             ));
         }
+    }
+    Ok(())
+}
+
+pub(super) fn check_rooted_features(root: &Path) -> Result<(), Box<dyn std::error::Error>> {
+    // Workspace-wide cargo metadata merges unrelated roots' features. Select the
+    // ports as the only root to get its defaults and all its selectable features.
+    let feature_modes: [&[&str]; 2] = [&[], &["--all-features"]];
+    for feature_arguments in feature_modes {
+        let output = Command::new("cargo")
+            .args([
+                "tree",
+                "--offline",
+                "--locked",
+                "--color",
+                "never",
+                "-p",
+                APPROVAL_PORTS,
+                "--target",
+                "all",
+                "-e",
+                "normal,build,dev",
+                "--prefix",
+                "none",
+                "--format",
+                "{p}\t{f}\t",
+            ])
+            .args(feature_arguments)
+            .current_dir(root)
+            .output()?;
+        if !output.status.success() {
+            return Err(format!(
+                "approval ports rooted graph: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
+        check_rooted_graph(&String::from_utf8(output.stdout)?)?;
+    }
+    Ok(())
+}
+
+fn check_rooted_graph(tree: &str) -> Result<(), String> {
+    let mut first = true;
+    for line in tree.lines() {
+        let mut columns = line.split('\t');
+        let name = columns
+            .next()
+            .and_then(|package| package.split_whitespace().next())
+            .ok_or("missing package in approval ports rooted graph")?;
+        let features = columns
+            .next()
+            .ok_or("missing features in approval ports rooted graph")?;
+        if first && name != APPROVAL_PORTS {
+            return Err(format!("approval ports expected its own root, saw {name}"));
+        }
+        first = false;
+        if name == APPROVAL_PORTS || DATA_CRATES.contains(&name) {
+            if !features.is_empty() {
+                return Err(format!(
+                    "approval ports forbid rooted features for {name}: {features}"
+                ));
+            }
+        } else if !PURE_SUPPORT.contains(&name) {
+            return Err(format!("approval ports forbid rooted dependency {name}"));
+        }
+    }
+    if first {
+        return Err("approval ports rooted graph was empty".to_owned());
     }
     Ok(())
 }

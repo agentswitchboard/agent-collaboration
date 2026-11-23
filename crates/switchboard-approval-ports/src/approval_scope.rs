@@ -1,5 +1,18 @@
 use std::num::NonZeroU64;
-use workspace_ids::{RequestId, SessionId};
+use workspace_ids::RequestId;
+
+/// The opaque identity the harness allocates for one managed session under one live owner.
+///
+/// All asks from that binding use the same identity. Another harness or a replacement owner
+/// gets a fresh identity even when its native session ID matches.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct LocalSessionBindingId(RequestId);
+
+impl LocalSessionBindingId {
+    pub(crate) const fn from_owner_nonce(owner_nonce: RequestId) -> Self {
+        Self(owner_nonce)
+    }
+}
 
 /// A local turn identity the harness supplies from the turn proved at admission.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -31,29 +44,38 @@ pub enum InvalidApprovalTurnId {
 /// The exact local session, admitted session run and turn the harness fixes at admission.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ApprovalScope {
-    session_id: SessionId,
+    session_binding: LocalSessionBindingId,
     session_run: NonZeroU64,
     turn_id: ApprovalTurnId,
 }
 
 impl ApprovalScope {
     /// Captures the harness's proved scope. A form keeps the turn current at admission.
+    ///
+    /// ```compile_fail,E0308
+    /// use std::num::NonZeroU64;
+    /// use switchboard_approval_ports::{ApprovalScope, ApprovalTurnId};
+    /// use workspace_ids::SessionId;
+    /// fn wrong_scope(native_id: SessionId, run: NonZeroU64, turn: ApprovalTurnId) {
+    ///     ApprovalScope::from_admitted_turn(native_id, run, turn);
+    /// }
+    /// ```
     #[must_use]
     pub const fn from_admitted_turn(
-        session_id: SessionId,
+        session_binding: LocalSessionBindingId,
         session_run: NonZeroU64,
         turn_id: ApprovalTurnId,
     ) -> Self {
         Self {
-            session_id,
+            session_binding,
             session_run,
             turn_id,
         }
     }
 
     #[must_use]
-    pub const fn session_id(&self) -> &SessionId {
-        &self.session_id
+    pub const fn session_binding(&self) -> &LocalSessionBindingId {
+        &self.session_binding
     }
 
     #[must_use]

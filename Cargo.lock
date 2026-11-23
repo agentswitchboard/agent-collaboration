@@ -7025,8 +7025,12 @@ dependencies = [
 name = "workspace-architecture-check"
 version = "0.1.158"
 dependencies = [
+ "approval-request-protocol",
  "serde",
  "serde_json",
+ "state-machine-core",
+ "switchboard-approval-holder",
+ "switchboard-approval-ports",
  "thiserror 2.0.18",
 ]
 

@@ -1,4 +1,6 @@
-use super::{APPROVAL_PORTS, CRATES_IO, CargoMetadata, check_declared, check_resolved};
+use super::{
+    APPROVAL_PORTS, CRATES_IO, CargoMetadata, check_declared, check_resolved, check_rooted_graph,
+};
 use serde_json::{Value, json};
 
 fn edge(package_id: &str, kind: Option<&str>) -> Value {
@@ -41,6 +43,42 @@ const EDGE_KINDS: [(Option<&str>, &str); 3] = [
     (Some("build"), "Build"),
     (Some("dev"), "Dev"),
 ];
+
+#[test]
+fn approval_ports_reject_forwarding_with_an_unchanged_package_set() {
+    let mut metadata = fixture(
+        registry_dependency("thiserror", None),
+        vec![edge("thiserror", None)],
+        vec![],
+    );
+    let root = metadata
+        .packages
+        .iter_mut()
+        .find(|package| package.name == APPROVAL_PORTS)
+        .expect("fixture root");
+    root.features.insert(
+        "wire-export".to_owned(),
+        vec!["approval-request-protocol/wire-export".to_owned()],
+    );
+    assert_eq!(check_resolved(&metadata), Ok(()));
+    assert_eq!(check_declared(&metadata), Err(
+        "approval ports forbid declared package features: {\"wire-export\": [\"approval-request-protocol/wire-export\"]}".to_owned()
+    ));
+}
+
+#[test]
+fn approval_ports_rooted_graph_rejects_runtime_and_unapproved_features() {
+    let root = format!("{APPROVAL_PORTS} v1\t\t\napproval-request-protocol v1\t\t");
+    assert_eq!(check_rooted_graph(&root), Ok(()));
+    assert_eq!(
+        check_rooted_graph(&format!("{root}\ntokio v1\trt\t")),
+        Err("approval ports forbid rooted dependency tokio".to_owned())
+    );
+    assert_eq!(
+        check_rooted_graph(&format!("{root}\nworkspace-ids v1\twire-export\t")),
+        Err("approval ports forbid rooted features for workspace-ids: wire-export".to_owned())
+    );
+}
 
 #[test]
 fn approval_ports_reject_inactive_declared_edges_of_each_kind() {

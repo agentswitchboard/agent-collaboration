@@ -1,9 +1,23 @@
 use approval_request_protocol::{OfferView, PrivateEnding, ProviderStopCause};
+use std::num::NonZeroU64;
 use switchboard_approval_ports::{
-    InvalidApprovalTurnId, LocalApprovalRefusal, MacWaitCause, OpenedSessionFence,
-    OpenedSessionIdentity, ReplyHandoverKind, ReplyKind, TerminalRaiseRefusal, UncarriableAsk,
-    UncarriableShape, WaitReleaseKind, approval_value_builders,
+    ApprovalScope, ApprovalTurnId, InvalidApprovalTurnId, LocalApprovalRefusal, MacWaitCause,
+    ReplyHandoverKind, ReplyKind, ReplySubmissionKind, ReplyableStopCause, TerminalRaiseRefusal,
+    UncarriableAsk, UncarriableShape, WaitReleaseKind, approval_value_builders,
 };
+
+#[test]
+fn replaced_owner_cannot_share_the_old_approval_scope() {
+    let (harness, _) = approval_value_builders();
+    let old_owner =
+        harness.bind_session_owner("01890f2e-7b4c-7cc0-98c4-000000000011".parse().unwrap());
+    let new_owner =
+        harness.bind_session_owner("01890f2e-7b4c-7cc0-98c4-000000000012".parse().unwrap());
+    let turn = ApprovalTurnId::parse("01890f2e-7b4c-7cc0-98c4-000000000013").unwrap();
+    let old_scope = ApprovalScope::from_admitted_turn(old_owner, NonZeroU64::MIN, turn.clone());
+    let new_scope = ApprovalScope::from_admitted_turn(new_owner, NonZeroU64::MIN, turn);
+    assert_ne!(old_scope, new_scope);
+}
 
 // These reads compile as an external consumer. A new case requires an explicit read.
 fn read_offer(offer: OfferView) {
@@ -19,9 +33,12 @@ fn read_reply(reply: ReplyKind) {
             | PrivateEnding::ProviderQuestion { ending: _ } => {}
         },
         ReplyKind::LocalRefusal(refusal) => match refusal {
-            LocalApprovalRefusal::UnknownCentralSession
-            | LocalApprovalRefusal::WaitStopped(_)
-            | LocalApprovalRefusal::NoRoom => {}
+            LocalApprovalRefusal::UnknownCentralSession | LocalApprovalRefusal::NoRoom => {}
+            LocalApprovalRefusal::WaitStopped(cause) => match cause {
+                ReplyableStopCause::TurnStopped
+                | ReplyableStopCause::SessionClosed
+                | ReplyableStopCause::AskReplaced => {}
+            },
             LocalApprovalRefusal::RaiseRefused(reason) => match reason {
                 TerminalRaiseRefusal::AlreadyStopped
                 | TerminalRaiseRefusal::SessionEnded
@@ -47,11 +64,14 @@ fn read_unadmitted(reason: UncarriableAsk) {
     }
 }
 
-fn read_handover(kind: ReplyHandoverKind) -> u8 {
+fn read_submission(kind: ReplySubmissionKind) -> u8 {
     match kind {
-        ReplyHandoverKind::NotHandedOver => 0,
-        ReplyHandoverKind::HandedToConnection => 1,
-        ReplyHandoverKind::CannotTell => 2,
+        ReplySubmissionKind::Handover(handover) => match handover {
+            ReplyHandoverKind::NotHandedOver => 0,
+            ReplyHandoverKind::HandedToConnection => 1,
+            ReplyHandoverKind::CannotTell => 2,
+        },
+        ReplySubmissionKind::SlotGoneBeforeSubmission => 3,
     }
 }
 
@@ -64,27 +84,12 @@ fn read_release(kind: WaitReleaseKind) -> u8 {
     }
 }
 
-fn read_opened_session(identity: OpenedSessionIdentity) {
-    match identity {
-        OpenedSessionIdentity::NotKnownToCentral
-        | OpenedSessionIdentity::Opened {
-            central_session_id: _,
-        } => {}
-        OpenedSessionIdentity::KnownButFenced { reason } => match reason {
-            OpenedSessionFence::SettledByCentral
-            | OpenedSessionFence::EndInProgress
-            | OpenedSessionFence::EnrollmentEnded => {}
-        },
-    }
-}
-
 #[test]
 fn public_contract_reads_every_closed_case() {
     let _compile_readers = (
         read_offer,
         read_reply,
         read_unadmitted,
-        read_opened_session,
         |error| match error {
             InvalidApprovalTurnId::InvalidUuid => {}
         },
@@ -97,12 +102,13 @@ fn public_contract_reads_every_closed_case() {
     );
     let (harness_values, _) = approval_value_builders();
     let observations = [
-        ReplyHandoverKind::NotHandedOver,
-        ReplyHandoverKind::HandedToConnection,
-        ReplyHandoverKind::CannotTell,
+        ReplySubmissionKind::Handover(ReplyHandoverKind::NotHandedOver),
+        ReplySubmissionKind::Handover(ReplyHandoverKind::HandedToConnection),
+        ReplySubmissionKind::Handover(ReplyHandoverKind::CannotTell),
+        ReplySubmissionKind::SlotGoneBeforeSubmission,
     ]
-    .map(|kind| read_handover(harness_values.reply_handover(kind).kind()));
-    assert_eq!(observations, [0, 1, 2]);
+    .map(|kind| read_submission(harness_values.reply_submission_outcome(kind).kind()));
+    assert_eq!(observations, [0, 1, 2, 3]);
     let releases = [
         WaitReleaseKind::ReleasedWithoutReply,
         WaitReleaseKind::AlreadyGone,
