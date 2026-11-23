@@ -12,7 +12,7 @@ const session = "01934a50-1000-7000-8000-000000000003";
 export const turnMemory = { kind: "thisTurn", kept: "agentMemory" } satisfies OptionLifetime;
 export const cancelledProviderQuestion = {
   kind: "providerQuestion",
-  ending: { kind: "cancelled", reason: { kind: "stopped", cause: "askReplaced" } },
+  ending: { kind: "cancelled", reason: { kind: "stopped", cause: "askWithdrawn" } },
 } satisfies PrivateEnding;
 export const checkedNumericAnswer = { kind: "number", value: "3" } satisfies QuestionAnswerValue;
 export const received = { kind: "receivedByHolder" } satisfies Delivery;
