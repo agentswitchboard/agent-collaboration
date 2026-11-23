@@ -476,3 +476,129 @@ fn a_stale_refresh_refusal_does_not_fence_a_newer_generation_of_the_same_key() {
         vec![refresh_secret(0), refresh_secret(1)]
     );
 }
+
+#[test]
+fn exact_key_lease_never_refreshes_a_different_active_or_ended_enrollment() {
+    let fixture = Fixture::new();
+    let requested = binding(1, 0).key();
+    let mut replacement = binding(2, 0);
+    replacement.credential.enrollment_id = "019a0000-0000-7000-8000-000000000008".parse().unwrap();
+    assert_eq!(
+        fixture
+            .store
+            .write(generation(1), StoredEnrollment::Active(replacement.clone())),
+        ConditionalWrite::Applied
+    );
+
+    assert_eq!(
+        poll_once(std::pin::pin!(
+            fixture.owner.lease_for(&requested, AccessRequest::Usable)
+        )),
+        Poll::Ready(Err(LeaseUnavailable::DifferentEnrollment))
+    );
+    assert!(fixture.server.sent().is_empty());
+    assert_eq!(
+        fixture.store.snapshot(),
+        StoredEnrollment::Active(replacement)
+    );
+    assert_eq!(
+        fixture.store.end(generation(2), EnrollmentEnd::Revoked),
+        ConditionalWrite::Applied
+    );
+    assert_eq!(
+        poll_once(std::pin::pin!(
+            fixture.owner.lease_for(&requested, AccessRequest::Usable)
+        )),
+        Poll::Ready(Err(LeaseUnavailable::DifferentEnrollment))
+    );
+}
+
+#[test]
+fn exact_key_lease_rejects_a_different_ending_seen_after_the_refresh() {
+    let fixture = Fixture::new();
+    let requested = binding(1, 0).key();
+    fixture.server.block.store(true, Ordering::SeqCst);
+    let mut lease = std::pin::pin!(fixture.owner.lease_for(&requested, AccessRequest::Usable));
+    assert!(poll_once(lease.as_mut()).is_pending());
+    let mut replacement = binding(2, 1);
+    replacement.credential.enrollment_id = "019a0000-0000-7000-8000-000000000008".parse().unwrap();
+    assert_eq!(
+        fixture
+            .store
+            .write(generation(1), StoredEnrollment::Active(replacement)),
+        ConditionalWrite::Applied
+    );
+    assert_eq!(
+        fixture.store.end(generation(2), EnrollmentEnd::Inactive),
+        ConditionalWrite::Applied
+    );
+    fixture.server.block.store(false, Ordering::SeqCst);
+
+    assert_eq!(
+        poll_once(lease.as_mut()),
+        Poll::Ready(Err(LeaseUnavailable::DifferentEnrollment))
+    );
+    assert_eq!(fixture.server.sent(), vec![refresh_secret(0)]);
+}
+
+#[test]
+fn exact_key_waiter_does_not_join_another_keys_ending_refresh() {
+    let fixture = Fixture::new();
+    let original_key = binding(1, 0).key();
+    fixture.server.revision.store(1, Ordering::SeqCst);
+    fixture.store.0.hold_remove.store(true, Ordering::SeqCst);
+    fixture.store.0.fail_remove.store(true, Ordering::SeqCst);
+    fixture.store.0.fail_marker.store(true, Ordering::SeqCst);
+    let mut original = std::pin::pin!(
+        fixture
+            .owner
+            .lease_for(&original_key, AccessRequest::Usable)
+    );
+    assert!(poll_once(original.as_mut()).is_pending());
+    assert_eq!(fixture.server.sent(), vec![refresh_secret(0)]);
+
+    let mut replacement = binding(2, 1);
+    replacement.credential.enrollment_id = "019a0000-0000-7000-8000-000000000008".parse().unwrap();
+    let replacement_key = replacement.key();
+    assert_eq!(
+        fixture
+            .store
+            .write(generation(1), StoredEnrollment::Active(replacement)),
+        ConditionalWrite::Applied
+    );
+    let mut successor = std::pin::pin!(
+        fixture
+            .owner
+            .lease_for(&replacement_key, AccessRequest::Usable)
+    );
+    let successor_first_poll = poll_once(successor.as_mut());
+
+    fixture.store.0.fail_read.store(true, Ordering::SeqCst);
+    fixture.store.0.hold_remove.store(false, Ordering::SeqCst);
+    assert_eq!(
+        poll_once(original.as_mut()),
+        Poll::Ready(Err(LeaseUnavailable::Ended {
+            why: EnrollmentEnd::RefreshRefused,
+        }))
+    );
+    let successor_result = match successor_first_poll {
+        Poll::Ready(result) => Poll::Ready(result),
+        Poll::Pending => poll_once(successor.as_mut()),
+    };
+    assert_eq!(
+        successor_result,
+        Poll::Ready(Err(LeaseUnavailable::DifferentEnrollment))
+    );
+    assert_eq!(fixture.server.sent(), vec![refresh_secret(0)]);
+
+    fixture.store.0.fail_read.store(false, Ordering::SeqCst);
+    expect_lease(
+        poll_once(std::pin::pin!(
+            fixture
+                .owner
+                .lease_for(&replacement_key, AccessRequest::Usable)
+        )),
+        3,
+        2,
+    );
+}

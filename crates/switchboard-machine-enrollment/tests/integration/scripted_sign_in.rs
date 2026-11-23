@@ -7,6 +7,7 @@ use std::{
     },
     time::Duration,
 };
+use switchboard_machine_enrollment::{EnrollmentKey, KeyedEnrollment};
 
 use axum::{
     Router,
@@ -373,6 +374,21 @@ impl CredentialStore for ScriptStore {
             return ready(Err(CredentialStoreError::Read));
         }
         ready(Ok(self.snapshot()))
+    }
+
+    async fn read_for_key(
+        &self,
+        requested: &EnrollmentKey,
+    ) -> Result<KeyedEnrollment, CredentialStoreError> {
+        self.read()
+            .await
+            .map(|snapshot| KeyedEnrollment::from_snapshot(snapshot, requested))
+    }
+
+    async fn read_metadata(
+        &self,
+    ) -> Result<switchboard_machine_enrollment::EnrollmentMetadata, CredentialStoreError> {
+        self.read().await.map(Into::into)
     }
 
     fn replace(

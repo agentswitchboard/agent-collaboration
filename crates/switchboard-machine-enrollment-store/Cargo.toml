@@ -9,6 +9,9 @@ autotests = false
 [lints]
 workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
 codex-router-secret-store = { path = "../codex-router-secret-store", version = "0.1.158" }
 router-clock.workspace = true

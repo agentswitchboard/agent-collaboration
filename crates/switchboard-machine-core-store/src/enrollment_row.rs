@@ -111,51 +111,125 @@ impl StoredEnrollmentRow {
         json: Option<&[u8]>,
         sealed: Option<Vec<u8>>,
     ) -> Result<Self, EnrollmentRowCorruption> {
+        let metadata = StoredEnrollmentRowMetadata::from_columns(generation, json)?;
+        match (metadata, sealed) {
+            (StoredEnrollmentRowMetadata::Empty, None) => Ok(Self::Empty),
+            (
+                StoredEnrollmentRowMetadata::Active {
+                    organization_id,
+                    deployment,
+                    enrollment_id,
+                    ..
+                },
+                Some(sealed),
+            ) => {
+                if sealed.len() < MINIMUM_SEALED_LENGTH
+                    || sealed.first() != Some(&SEALED_FORMAT_VERSION)
+                {
+                    return Err(EnrollmentRowCorruption::SealedFormat);
+                }
+                Ok(Self::Active {
+                    generation,
+                    organization_id,
+                    deployment,
+                    enrollment_id,
+                    sealed,
+                })
+            }
+            (
+                StoredEnrollmentRowMetadata::Ended {
+                    organization_id,
+                    enrollment_id,
+                    why,
+                    ..
+                },
+                None,
+            ) => Ok(Self::Ended {
+                generation,
+                organization_id,
+                enrollment_id,
+                why,
+            }),
+            _ => Err(EnrollmentRowCorruption::Shape),
+        }
+    }
+}
+
+/// Decoded enrollment row state, independent of the credential column.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum StoredEnrollmentRowMetadata {
+    Empty,
+    Active {
+        generation: i64,
+        organization_id: String,
+        deployment: String,
+        enrollment_id: String,
+    },
+    Ended {
+        generation: i64,
+        organization_id: String,
+        enrollment_id: String,
+        why: StoredEnrollmentEnd,
+    },
+}
+
+impl StoredEnrollmentRowMetadata {
+    #[must_use]
+    pub const fn generation(&self) -> i64 {
+        match self {
+            Self::Empty => 0,
+            Self::Active { generation, .. } | Self::Ended { generation, .. } => *generation,
+        }
+    }
+
+    pub(crate) fn from_columns(
+        generation: i64,
+        json: Option<&[u8]>,
+    ) -> Result<Self, EnrollmentRowCorruption> {
         if generation < 0 {
             return Err(EnrollmentRowCorruption::Generation);
         }
-        if generation == 0 || json.is_none() {
-            return if generation == 0 && json.is_none() && sealed.is_none() {
+        if generation == 0 {
+            return if json.is_none() {
                 Ok(Self::Empty)
             } else {
                 Err(EnrollmentRowCorruption::Shape)
             };
         }
-        let json = json.ok_or(EnrollmentRowCorruption::Shape)?;
         let decoded: EnrollmentMetadata<'_> =
-            serde_json::from_slice(json).map_err(|_| EnrollmentRowCorruption::Json)?;
-        let stored = match (decoded, sealed) {
-            (
-                EnrollmentMetadata::Active {
-                    organization_id,
-                    deployment,
-                    enrollment_id,
-                },
-                Some(sealed),
-            ) => Self::Active {
-                generation,
-                organization_id: organization_id.into_owned(),
-                deployment: deployment.into_owned(),
-                enrollment_id: enrollment_id.into_owned(),
-                sealed,
-            },
-            (
-                EnrollmentMetadata::Ended {
-                    organization_id,
-                    enrollment_id,
-                    why,
-                },
-                None,
-            ) => Self::Ended {
-                generation,
-                organization_id: organization_id.into_owned(),
-                enrollment_id: enrollment_id.into_owned(),
+            serde_json::from_slice(json.ok_or(EnrollmentRowCorruption::Shape)?)
+                .map_err(|_| EnrollmentRowCorruption::Json)?;
+        match decoded {
+            EnrollmentMetadata::Active {
+                organization_id,
+                deployment,
+                enrollment_id,
+            } => {
+                if generation == i64::MAX {
+                    return Err(EnrollmentRowCorruption::Generation);
+                }
+                validate_ids(&organization_id, &enrollment_id)?;
+                Ok(Self::Active {
+                    generation,
+                    organization_id: organization_id.into_owned(),
+                    deployment: deployment.into_owned(),
+                    enrollment_id: enrollment_id.into_owned(),
+                })
+            }
+            EnrollmentMetadata::Ended {
+                organization_id,
+                enrollment_id,
                 why,
-            },
-            _ => return Err(EnrollmentRowCorruption::Shape),
-        };
-        stored.validate()?;
-        Ok(stored)
+            } => {
+                validate_ids(&organization_id, &enrollment_id)?;
+                Ok(Self::Ended {
+                    generation,
+                    organization_id: organization_id.into_owned(),
+                    enrollment_id: enrollment_id.into_owned(),
+                    why,
+                })
+            }
+        }
     }
 }
 

@@ -22,7 +22,7 @@ mod store_scan;
 pub use inbox_commit_pause::HeldInboxCommit;
 
 pub use enrollment_row::{
-    EnrollmentRowCorruption, StoredEnrollmentEnd, StoredEnrollmentRow,
+    EnrollmentRowCorruption, StoredEnrollmentEnd, StoredEnrollmentRow, StoredEnrollmentRowMetadata,
     StoredInvalidEnrollmentReason,
 };
 pub use enrollment_row_store::{EnrollmentRowChange, EnrollmentRowStoreError, EnrollmentRowWrite};

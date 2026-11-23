@@ -5929,7 +5929,10 @@ dependencies = [
  "runtime-primitives",
  "serde_json",
  "switchboard-central-link",
+ "switchboard-link-lease",
  "switchboard-machine-core-store",
+ "switchboard-machine-enrollment",
+ "switchboard-machine-enrollment-store",
  "switchboard-message-custody",
  "tokio",
  "tungstenite 0.29.0",
@@ -5953,6 +5956,18 @@ dependencies = [
  "switchboard-harness-contracts",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "switchboard-link-lease"
+version = "0.1.158"
+dependencies = [
+ "central-link-client",
+ "hegeltest",
+ "router-clock",
+ "switchboard-central-link",
+ "switchboard-machine-enrollment",
+ "tokio",
 ]
 
 [[package]]
