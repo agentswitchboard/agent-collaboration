@@ -2467,7 +2467,9 @@ version = "0.1.158"
 dependencies = [
  "approval-request-protocol",
  "central-engine-model",
+ "central-storage",
  "fleet-identity-protocol",
+ "fleet-lent-transaction",
  "hegeltest",
  "serde",
  "serde_json",
