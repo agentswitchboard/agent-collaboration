@@ -2,13 +2,11 @@
 
 use std::{cell::RefCell, collections::HashMap, num::NonZeroU64};
 
-use approval_request_protocol::{
-    OfferView, QuestionField, QuestionFieldId, QuestionFields, QuestionOffer,
-};
+use approval_request_protocol::{QuestionField, QuestionFieldId, QuestionFields, QuestionOffer};
 use switchboard_approval_ports::{
     ApprovalAsk, ApprovalCustodyPort, ApprovalScope, ApprovalTurnId, HarnessApprovalValues,
-    LocalApprovalRefusal, LocalSessionBindingId, MacWaitEnded, ReplyHandleUnavailable,
-    SessionBindingCustodyPort, approval_value_builders,
+    LocalApprovalRefusal, LocalSessionBindingId, MacWaitEnded, ProviderAskOffer,
+    ReplyHandleUnavailable, SessionBindingCustodyPort, approval_value_builders,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -64,7 +62,7 @@ fn submit_ask(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let turn = ApprovalTurnId::parse("01890f2e-7b4c-7cc0-98c4-000000000003")?;
     let scope = ApprovalScope::from_admitted_turn(binding, NonZeroU64::MIN, turn);
-    let offer = OfferView::ProviderQuestion {
+    let offer = ProviderAskOffer::ProviderQuestion {
         offer: QuestionOffer {
             prompt: "Confirm the ask".to_owned().try_into()?,
             fields: QuestionFields::new(vec![QuestionField::Boolean {

@@ -1,24 +1,26 @@
-use approval_request_protocol::{OfferView, PrivateEnding, ProviderStopCause};
+use approval_request_protocol::{ParkedCallEnding, PrivateEnding, ProviderStopCause};
 use switchboard_approval_ports::{
-    InvalidApprovalTurnId, LocalApprovalRefusal, MacWaitCause, ReplyHandoverKind, ReplyKind,
-    ReplySubmissionKind, ReplyableStopCause, TerminalRaiseRefusal, UncarriableAsk,
-    UncarriableShape, WaitReleaseKind, approval_value_builders,
+    InvalidApprovalTurnId, InvalidProviderAskEnding, LocalApprovalRefusal, MacWaitCause,
+    ProviderAskEnding, ProviderAskOffer, ReplyHandoverKind, ReplyKind, ReplySubmissionKind,
+    ReplyableStopCause, TerminalRaiseRefusal, UncarriableAsk, UncarriableShape, WaitReleaseKind,
+    approval_value_builders,
 };
 
 mod session_binding;
 
 // These reads compile as an external consumer. A new case requires an explicit read.
-fn read_offer(offer: OfferView) {
+fn read_offer(offer: ProviderAskOffer) {
     match offer {
-        OfferView::ProviderApproval { offer: _ } | OfferView::ProviderQuestion { offer: _ } => {}
+        ProviderAskOffer::ProviderApproval { offer: _ }
+        | ProviderAskOffer::ProviderQuestion { offer: _ } => {}
     }
 }
 
 fn read_reply(reply: ReplyKind) {
     match reply {
         ReplyKind::CentralEnding(ending) => match ending {
-            PrivateEnding::ProviderApproval { ending: _ }
-            | PrivateEnding::ProviderQuestion { ending: _ } => {}
+            ProviderAskEnding::ProviderApproval { ending: _ }
+            | ProviderAskEnding::ProviderQuestion { ending: _ } => {}
         },
         ReplyKind::LocalRefusal(refusal) => match refusal {
             LocalApprovalRefusal::UnregisteredSessionBinding
@@ -37,6 +39,18 @@ fn read_reply(reply: ReplyKind) {
             },
         },
     }
+}
+
+#[test]
+fn custody_rejects_a_held_session_call_ending() {
+    let (_, custody, _) = approval_value_builders();
+    let held_call = PrivateEnding::UnprovenCall {
+        ending: ParkedCallEnding::TimedOut {},
+    };
+    assert_eq!(
+        custody.central_reply_kind(held_call),
+        Err(InvalidProviderAskEnding::HeldSessionCall)
+    );
 }
 
 fn read_unadmitted(reason: UncarriableAsk) {

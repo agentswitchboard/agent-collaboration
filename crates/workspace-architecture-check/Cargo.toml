@@ -17,8 +17,8 @@ thiserror.workspace = true
 [dev-dependencies]
 approval-request-protocol.workspace = true
 state-machine-core.workspace = true
-switchboard-approval-holder = { path = "../switchboard-approval-holder" }
-switchboard-approval-ports = { path = "../switchboard-approval-ports" }
+switchboard-approval-holder.workspace = true
+switchboard-approval-ports.workspace = true
 
 [[test]]
 name = "integration"

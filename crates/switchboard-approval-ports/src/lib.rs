@@ -2,6 +2,7 @@
 
 mod approval_messages;
 mod approval_scope;
+mod provider_ask_payload;
 
 pub use approval_messages::{
     ApprovalAsk, ApprovalCustodyPort, ApprovalHarnessPort, ApprovalReply, CustodyApprovalValues,
@@ -15,3 +16,4 @@ pub use approval_scope::{
     ApprovalScope, ApprovalTurnId, InvalidApprovalTurnId, LocalSessionBindingId,
     SessionBindingCustodyPort, SessionOwnerApprovalValues, WaitingRequestId,
 };
+pub use provider_ask_payload::{InvalidProviderAskEnding, ProviderAskEnding, ProviderAskOffer};

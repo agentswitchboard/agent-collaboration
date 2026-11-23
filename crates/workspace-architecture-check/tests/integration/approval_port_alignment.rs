@@ -14,8 +14,8 @@ use switchboard_approval_holder::waiting_request::{
     gate_access::{GateWaitEvent, step_under_gate},
 };
 use switchboard_approval_ports::{
-    ApprovalScope, ApprovalTurnId, ReplyableStopCause, TerminalRaiseRefusal, WaitingRequestId,
-    approval_value_builders,
+    ApprovalScope, ApprovalTurnId, ProviderAskOffer, ReplyableStopCause, TerminalRaiseRefusal,
+    WaitingRequestId, approval_value_builders,
 };
 
 macro_rules! raise_refusal_pairs {
@@ -45,25 +45,32 @@ const RESPONDER: u8 = 1;
 type HolderWait = WaitingRequest<u8, u8, u8>;
 
 fn bound_wait() -> Result<WaitState<u8, u8>, Box<dyn std::error::Error>> {
-    Ok(WaitState::bound(question_raise()?, RESPONDER)?)
+    Ok(WaitState::bound(
+        question_raise(question_offer()?)?,
+        RESPONDER,
+    )?)
 }
 
-fn question_raise() -> Result<Raise, Box<dyn std::error::Error>> {
+fn question_raise(offer: QuestionOffer) -> Result<Raise, Box<dyn std::error::Error>> {
     Ok(Raise::ProviderQuestion {
         request_id: "01890f2e-7b4c-7cc0-98c4-000000000001".parse()?,
         holder: ProviderHolder {
             session_id: "01890f2e-7b4c-7cc0-98c4-000000000002".parse()?,
             router_run: "01890f2e-7b4c-7cc0-98c4-000000000003".parse()?,
         },
-        offer: QuestionOffer {
-            prompt: "Confirm the ask".to_owned().try_into()?,
-            fields: QuestionFields::new(vec![QuestionField::Boolean {
-                field_id: QuestionFieldId::new(1)?,
-                label: "Confirm".to_owned().try_into()?,
-                description: None,
-                required: true,
-            }])?,
-        },
+        offer,
+    })
+}
+
+fn question_offer() -> Result<QuestionOffer, Box<dyn std::error::Error>> {
+    Ok(QuestionOffer {
+        prompt: "Confirm the ask".to_owned().try_into()?,
+        fields: QuestionFields::new(vec![QuestionField::Boolean {
+            field_id: QuestionFieldId::new(1)?,
+            label: "Confirm".to_owned().try_into()?,
+            description: None,
+            required: true,
+        }])?,
     })
 }
 
@@ -106,11 +113,12 @@ fn pre_start_handle_loss_releases_the_responder_and_keeps_the_exact_stop_due() {
         NonZeroU64::MIN,
         ApprovalTurnId::parse("01890f2e-7b4c-7cc0-98c4-000000000012").unwrap(),
     );
-    let raise = question_raise().unwrap();
+    let offer = question_offer().unwrap();
+    let raise = question_raise(offer.clone()).unwrap();
     let ask = harness.admitted_ask(
         scope,
         "01890f2e-7b4c-7cc0-98c4-000000000013".parse().unwrap(),
-        raise.offer_view(),
+        ProviderAskOffer::ProviderQuestion { offer },
     );
     let responder = ask.waiting_request().clone();
     let authority = RunAuthority {

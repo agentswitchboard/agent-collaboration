@@ -1,14 +1,16 @@
-use approval_request_protocol::{OfferView, PrivateEnding, ProviderStopCause};
+use approval_request_protocol::{PrivateEnding, ProviderStopCause};
 use workspace_ids::RequestId;
 
-use crate::{ApprovalScope, SessionOwnerApprovalValues, WaitingRequestId};
+use crate::{
+    ApprovalScope, InvalidProviderAskEnding, ProviderAskEnding, ProviderAskOffer,
+    SessionOwnerApprovalValues, WaitingRequestId,
+};
 
 /// A losslessly translated ask that the harness makes after identifying its exact scope.
 ///
 /// ```compile_fail,E0451
-/// use approval_request_protocol::OfferView;
-/// use switchboard_approval_ports::{ApprovalAsk, ApprovalScope, WaitingRequestId};
-/// fn forge(scope: ApprovalScope, waiting_request: WaitingRequestId, offer: OfferView) -> ApprovalAsk {
+/// use switchboard_approval_ports::{ApprovalAsk, ApprovalScope, ProviderAskOffer, WaitingRequestId};
+/// fn forge(scope: ApprovalScope, waiting_request: WaitingRequestId, offer: ProviderAskOffer) -> ApprovalAsk {
 ///     ApprovalAsk { scope, waiting_request, offer }
 /// }
 /// ```
@@ -16,7 +18,7 @@ use crate::{ApprovalScope, SessionOwnerApprovalValues, WaitingRequestId};
 pub struct ApprovalAsk {
     scope: ApprovalScope,
     waiting_request: WaitingRequestId,
-    offer: OfferView,
+    offer: ProviderAskOffer,
 }
 
 impl ApprovalAsk {
@@ -31,13 +33,13 @@ impl ApprovalAsk {
     }
 
     #[must_use]
-    pub const fn offer(&self) -> &OfferView {
+    pub const fn offer(&self) -> &ProviderAskOffer {
         &self.offer
     }
 
     /// Gives custody the admitted offer and its routing keys.
     #[must_use]
-    pub fn into_parts(self) -> (ApprovalScope, WaitingRequestId, OfferView) {
+    pub fn into_parts(self) -> (ApprovalScope, WaitingRequestId, ProviderAskOffer) {
         (self.scope, self.waiting_request, self.offer)
     }
 }
@@ -125,7 +127,7 @@ pub enum TerminalRaiseRefusal {
 /// The reply contents custody selects after claiming an ending or producing a local refusal.
 #[derive(Debug, Eq, PartialEq)]
 pub enum ReplyKind {
-    CentralEnding(PrivateEnding),
+    CentralEnding(ProviderAskEnding),
     LocalRefusal(LocalApprovalRefusal),
 }
 
@@ -333,9 +335,8 @@ impl HarnessApprovalValues {
     /// Custody associates the name with its own approval holder run.
     ///
     /// ```compile_fail,E0308
-    /// use approval_request_protocol::OfferView;
-    /// use switchboard_approval_ports::{ApprovalScope, HarnessApprovalValues};
-    /// fn bad(values: &HarnessApprovalValues, scope: ApprovalScope, offer: OfferView) {
+    /// use switchboard_approval_ports::{ApprovalScope, HarnessApprovalValues, ProviderAskOffer};
+    /// fn bad(values: &HarnessApprovalValues, scope: ApprovalScope, offer: ProviderAskOffer) {
     ///     values.admitted_ask(scope, 42_u64, offer);
     /// }
     /// ```
@@ -344,7 +345,7 @@ impl HarnessApprovalValues {
         &self,
         scope: ApprovalScope,
         fresh_local_nonce: RequestId,
-        offer: OfferView,
+        offer: ProviderAskOffer,
     ) -> ApprovalAsk {
         ApprovalAsk {
             scope,
@@ -394,11 +395,10 @@ impl HarnessApprovalValues {
 /// Side-specific constructors the Host gives to the Mac custody service at composition.
 ///
 /// ```compile_fail,E0599
-/// use approval_request_protocol::OfferView;
-/// use switchboard_approval_ports::{ApprovalScope, CustodyApprovalValues};
+/// use switchboard_approval_ports::{ApprovalScope, CustodyApprovalValues, ProviderAskOffer};
 /// use workspace_ids::RequestId;
 /// fn forge(custody: &CustodyApprovalValues, scope: ApprovalScope, nonce: RequestId,
-///          offer: OfferView) {
+///          offer: ProviderAskOffer) {
 ///     custody.admitted_ask(scope, nonce, offer);
 /// }
 /// ```
@@ -422,6 +422,16 @@ pub struct CustodyApprovalValues {
 }
 
 impl CustodyApprovalValues {
+    /// Prepares a provider reply from a private ending before the holder starts submission.
+    ///
+    /// A held session call returns a typed error for custody to handle on the session-owner path.
+    pub fn central_reply_kind(
+        &self,
+        ending: PrivateEnding,
+    ) -> Result<ReplyKind, InvalidProviderAskEnding> {
+        ProviderAskEnding::try_from(ending).map(ReplyKind::CentralEnding)
+    }
+
     /// Forms the consuming request for the exact reply the holder has already started.
     #[must_use]
     pub const fn started_reply_submission(
