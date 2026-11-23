@@ -7,10 +7,11 @@ use workspace_ids::PersonId;
 
 use crate::{
     FleetPermission,
-    approval_person_wire::{ApprovalPersonOperation, ApprovalPersonRoute},
+    approval_person_wire::{ApprovalDecideRequest, ApprovalPersonOperation, ApprovalPersonRoute},
     person_proof::{
         AdmissionRefusal, FactorStanding, OrganizationFloor, PersonFloor, PersonProofFacts,
         PersonProofVerifier, PersonRequestRefusal, decide_admission,
+        decide_retained_approval_admission,
     },
 };
 
@@ -61,6 +62,7 @@ pub struct VerifiedApprovalPersonRequest {
 }
 
 /// Values read in the applying organization turn. They carry no authority by themselves.
+#[derive(Clone, Copy)]
 pub struct ApprovalApplyingContext<'turn> {
     pub organization: &'turn OrganizationId,
     pub now_ms: i64,
@@ -78,6 +80,33 @@ impl VerifiedApprovalPersonRequest {
     #[must_use]
     pub const fn operation(&self) -> &ApprovalPersonOperation {
         &self.operation
+    }
+
+    /// Authenticate a retry without granting permission to apply a new decision.
+    pub fn authorize_retained_decision(
+        &self,
+        applying: ApprovalApplyingContext<'_>,
+    ) -> Result<Option<VerifiedApprovalDecideRetry<'_>>, StoreFailure> {
+        let ApprovalPersonOperation::Decide(request) = &self.operation else {
+            return Ok(None);
+        };
+        if applying.organization != &self.proof.organization_id
+            || decide_retained_approval_admission(
+                &(&self.proof).into(),
+                applying.now_ms,
+                applying.organization_floor,
+                applying.person_floor,
+                applying.proof_used,
+            )?
+            .is_err()
+        {
+            return Ok(None);
+        }
+        Ok(Some(VerifiedApprovalDecideRetry {
+            person: &self.person,
+            request,
+            intent_digest: &self.proof.intent_digest,
+        }))
     }
 
     /// The caller still has to reserve the proof and commit it with any effect.
@@ -108,6 +137,30 @@ impl VerifiedApprovalPersonRequest {
             operation: self.operation,
             proof: self.proof,
         }))
+    }
+}
+
+/// This checked identity may retrieve its own exact retained decision.
+pub struct VerifiedApprovalDecideRetry<'request> {
+    person: &'request PersonId,
+    request: &'request ApprovalDecideRequest,
+    intent_digest: &'request str,
+}
+
+impl<'request> VerifiedApprovalDecideRetry<'request> {
+    #[must_use]
+    pub const fn person(&self) -> &'request PersonId {
+        self.person
+    }
+
+    #[must_use]
+    pub const fn request(&self) -> &'request ApprovalDecideRequest {
+        self.request
+    }
+
+    #[must_use]
+    pub const fn intent_digest(&self) -> &'request str {
+        self.intent_digest
     }
 }
 

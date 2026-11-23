@@ -1532,6 +1532,7 @@ dependencies = [
 name = "collaboration-central-conformance"
 version = "0.1.158"
 dependencies = [
+ "approval-request-protocol",
  "axum",
  "base64 0.22.1",
  "central-link-protocol",
@@ -1562,6 +1563,7 @@ dependencies = [
  "central-link-protocol",
  "central-storage",
  "chrono",
+ "fleet-approvals",
  "fleet-contracts",
  "fleet-engine",
  "fleet-identity-protocol",
@@ -1621,6 +1623,7 @@ dependencies = [
  "collaboration-central-conformance",
  "collaboration-central-core",
  "collaboration-central-tokio",
+ "fleet-approvals",
  "fleet-contracts",
  "fleet-engine",
  "fleet-identity-protocol",
@@ -2517,6 +2520,7 @@ dependencies = [
  "fleet-lent-transaction",
  "fleet-machine-login",
  "fleet-runtime-ports",
+ "fleet-signin",
  "fleet-storage-schema",
  "fleet-store-sqlx",
  "futures-util",
@@ -2549,6 +2553,7 @@ dependencies = [
  "fleet-machine-login",
  "fleet-request-log",
  "fleet-runtime-ports",
+ "fleet-signin",
  "fleet-storage-schema",
  "hegeltest",
  "serde",

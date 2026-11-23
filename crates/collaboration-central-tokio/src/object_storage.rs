@@ -68,6 +68,7 @@ pub struct ObjectStorage {
 
 #[path = "object_storage_direct_mail.rs"]
 mod direct_mail;
+pub(crate) mod person_approval_transaction;
 pub(crate) mod session_transaction_owner;
 pub(crate) struct NativeTransaction<'a>(&'a mut sqlx::SqliteConnection);
 

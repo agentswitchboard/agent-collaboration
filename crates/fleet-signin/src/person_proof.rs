@@ -6,6 +6,7 @@ mod refusal;
 mod signed_claims;
 mod verifier;
 
+pub(crate) use admission::decide_retained_approval_admission;
 pub use admission::{
     AdmissionRefusal, AdmittedRequest, FactorStanding, FloorRevision, OrganizationFloor,
     OrganizationFloorState, PersonAdmissionFacts, PersonFloor, PersonFloorState,

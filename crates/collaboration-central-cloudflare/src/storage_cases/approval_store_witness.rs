@@ -1,8 +1,7 @@
 //! V3 applies the real approvals service in a test-only SQLite Durable Object.
 use std::{
-    cell::{Cell, RefCell},
+    cell::Cell,
     num::NonZeroU16,
-    rc::Rc,
     sync::{Arc, Mutex},
 };
 
@@ -105,11 +104,11 @@ pub(super) async fn apply_fixture(
     if let ApprovalWitnessCommand::DueRows { cutoff_ms, limit } = input.command {
         return observe_due_rows(state, cutoff_ms, limit).await;
     }
-    let evidence = Rc::new(RefCell::new(FixtureEvidence::default()));
+    let evidence = Arc::new(Mutex::new(FixtureEvidence::default()));
     let outcome = complete_approval_commit(WorkerApprovalCommit {
         connection,
         input,
-        evidence: Rc::clone(&evidence),
+        evidence: Arc::clone(&evidence),
     })
     .await
     .and_then(|(proof, (reply, holder_effects))| {
@@ -128,7 +127,9 @@ pub(super) async fn apply_fixture(
             .collect::<Result<Vec<_>, _>>()?;
         reply(&proof, offers)
     });
-    let evidence = evidence.borrow();
+    let evidence = evidence
+        .lock()
+        .map_err(|_| worker::Error::RustError("approval evidence unavailable".into()))?;
     let (reply, error) = match outcome {
         Ok(value) => (Some(value), None),
         Err(WitnessFailure::Apply(failure)) => (None, Some(format!("{failure:?}"))),
@@ -466,7 +467,7 @@ type PendingWitnessApply = (WitnessReply, Option<PendingApprovalHolderEffects>);
 struct WorkerApprovalCommit<'storage> {
     connection: &'storage DoConnection,
     input: ApprovalWitnessInput,
-    evidence: Rc<RefCell<FixtureEvidence>>,
+    evidence: Arc<Mutex<FixtureEvidence>>,
 }
 
 impl ApprovalCommitOwner<PendingWitnessApply> for WorkerApprovalCommit<'_> {

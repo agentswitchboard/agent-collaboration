@@ -7,7 +7,7 @@ mod fleet_permission;
 
 pub use approval_person_admission::{
     AdmittedApprovalPersonOperation, ApprovalApplyingContext, ApprovalPersonAdmission,
-    ApprovalPersonVerificationInput, VerifiedApprovalPersonRequest,
+    ApprovalPersonVerificationInput, VerifiedApprovalDecideRetry, VerifiedApprovalPersonRequest,
 };
 pub use fleet_permission::FleetPermission;
 pub use person_proof::FactorStanding;

@@ -10,11 +10,12 @@ publish.workspace = true
 workspace = true
 
 [features]
-signin-test-support = ["dep:reqwest", "dep:chrono", "dep:tokio", "dep:sha2", "dep:ring", "dep:base64", "dep:axum", "dep:serde_json"]
+signin-test-support = ["dep:approval-request-protocol", "dep:central-storage", "dep:reqwest", "dep:chrono", "dep:tokio", "dep:sha2", "dep:ring", "dep:base64", "dep:axum", "dep:serde_json"]
 
 session-link-test-support = ["dep:central-link-protocol", "dep:central-storage", "dep:fleet-identity-protocol", "dep:fleet-rpc", "dep:futures-util", "dep:reqwest-websocket", "dep:serde_json", "dep:workspace-ids"]
 
 [dependencies]
+approval-request-protocol = { workspace = true, optional = true }
 central-link-protocol = { workspace = true, optional = true }
 central-storage = { workspace = true, optional = true }
 fleet-identity-protocol = { path = "../fleet-identity-protocol", version = "0.1.158", optional = true }

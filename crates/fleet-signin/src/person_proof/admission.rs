@@ -112,6 +112,44 @@ pub fn decide_admission(
     require_fresh_factor: bool,
     request_used: bool,
 ) -> Result<Result<AdmittedRequest, AdmissionRefusal>, StoreFailure> {
+    check_person_admission(
+        request,
+        now_ms,
+        organization_floor,
+        person_floor,
+        Some(permission),
+        require_fresh_factor,
+        request_used,
+    )
+}
+
+pub(crate) fn decide_retained_approval_admission(
+    request: &PersonAdmissionFacts<'_>,
+    now_ms: i64,
+    organization_floor: Option<&OrganizationFloor>,
+    person_floor: Option<&PersonFloor>,
+    request_used: bool,
+) -> Result<Result<AdmittedRequest, AdmissionRefusal>, StoreFailure> {
+    check_person_admission(
+        request,
+        now_ms,
+        organization_floor,
+        person_floor,
+        None,
+        false,
+        request_used,
+    )
+}
+
+fn check_person_admission(
+    request: &PersonAdmissionFacts<'_>,
+    now_ms: i64,
+    organization_floor: Option<&OrganizationFloor>,
+    person_floor: Option<&PersonFloor>,
+    permission: Option<&str>,
+    require_fresh_factor: bool,
+    request_used: bool,
+) -> Result<Result<AdmittedRequest, AdmissionRefusal>, StoreFailure> {
     if let Err(refusal) = admission_before_person(request, now_ms, organization_floor)? {
         return Ok(Err(refusal));
     }
@@ -133,10 +171,8 @@ pub fn decide_admission(
         }
         PersonFloorState::Active => {}
     }
-    if !request
-        .permissions
-        .iter()
-        .any(|granted| granted == permission)
+    if permission
+        .is_some_and(|permission| !request.permissions.iter().any(|grant| grant == permission))
     {
         return Ok(Err(AdmissionRefusal::NotPermitted));
     }

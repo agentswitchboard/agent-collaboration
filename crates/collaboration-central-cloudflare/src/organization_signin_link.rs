@@ -8,23 +8,24 @@ use fleet_contracts::{ORGANIZATION_STATEMENT_DIGEST_ROUTE, PROVISION_ORGANIZATIO
 use worker::Env;
 
 pub(crate) fn is_signin_path(path: &str) -> bool {
-    [
-        PROVISION_ORGANIZATION_ROUTE,
-        ORGANIZATION_STATEMENT_DIGEST_ROUTE,
-        AUTHORIZATION_REVISIONS_ROUTE,
-        "/internal/device-login-decisions",
-        "/internal/machine-token-decisions",
-        AdminRoute::CreateWorkspace.path(),
-        AdminRoute::WorkspaceLookup.path(),
-        AdminRoute::ListWorkspaces.path(),
-        AdminRoute::ReadChangeRecords.path(),
-        AdminRoute::EngineHealth.path(),
-        AdminRoute::EngineListRetired.path(),
-        AdminRoute::EngineRetry.path(),
-        AdminRoute::EngineDiscard.path(),
-        AdminRoute::RevokeMachineEnrollment.path(),
-    ]
-    .contains(&path)
+    fleet_signin::approval_person_wire::ApprovalPersonRoute::from_path(path).is_some()
+        || [
+            PROVISION_ORGANIZATION_ROUTE,
+            ORGANIZATION_STATEMENT_DIGEST_ROUTE,
+            AUTHORIZATION_REVISIONS_ROUTE,
+            "/internal/device-login-decisions",
+            "/internal/machine-token-decisions",
+            AdminRoute::CreateWorkspace.path(),
+            AdminRoute::WorkspaceLookup.path(),
+            AdminRoute::ListWorkspaces.path(),
+            AdminRoute::ReadChangeRecords.path(),
+            AdminRoute::EngineHealth.path(),
+            AdminRoute::EngineListRetired.path(),
+            AdminRoute::EngineRetry.path(),
+            AdminRoute::EngineDiscard.path(),
+            AdminRoute::RevokeMachineEnrollment.path(),
+        ]
+        .contains(&path)
 }
 
 /// A deployment with no sign-in configuration keeps ordinary central operation.
@@ -148,7 +149,17 @@ mod private_entry {
         let bytes = axum::body::to_bytes(body, usize::MAX)
             .await
             .map_err(|_| worker::Error::RustError("sign-in body unavailable".into()))?;
-        let Ok(Addressed { organization_id }) = serde_json::from_slice(&bytes) else {
+        let organization =
+            if fleet_signin::approval_person_wire::ApprovalPersonRoute::from_path(parts.uri.path())
+                .is_some()
+            {
+                collaboration_central_core::person_approval_organization(&bytes)
+            } else {
+                serde_json::from_slice::<Addressed>(&bytes)
+                    .ok()
+                    .map(|address| address.organization_id)
+            };
+        let Some(organization_id) = organization else {
             return Response::empty().map(|response| response.with_status(400));
         };
         let address = ObjectAddress::Central(organization_id);

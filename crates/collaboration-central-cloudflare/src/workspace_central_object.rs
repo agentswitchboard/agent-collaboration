@@ -355,7 +355,13 @@ impl CentralObject {
             ),
             host.clone(),
             host.clone(),
-        );
+        )
+        .with_person_approval_transactions(Arc::new(
+            crate::workspace_person_approval_transactions::WorkerPersonApprovalTransactions {
+                connection: host.connection.clone(),
+                ids: self.link_ids.clone(),
+            },
+        ));
         let dispatcher: Arc<dyn collaboration_central_core::CentralLinkDispatcher> =
             Arc::new(SessionLinkDispatcher::new(
                 WorkerSessionTransactions {

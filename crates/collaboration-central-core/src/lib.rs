@@ -84,6 +84,13 @@ mod organization_engine_admin_plans;
 mod organization_provisioning_plans;
 mod organization_signin_http;
 mod organization_signin_port;
+mod person_approval_application;
+mod person_approval_http;
+pub use person_approval_application::{
+    AppliedPersonApproval, PersonApprovalAnswer, PersonApprovalApplication,
+    PersonApprovalTransactions,
+};
+pub use person_approval_http::person_approval_organization;
 mod person_admission_plans;
 mod person_proof_repository;
 mod private_machine_revocation;

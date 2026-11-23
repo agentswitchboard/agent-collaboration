@@ -36,4 +36,7 @@ pub use approval_session_facts::ApprovalSessionFacts;
 pub use approval_store_scope::{
     ApprovalEnrollmentScope, ApprovalHolderAdmission, ApprovalHolderScope, ApprovalRequestRowId,
 };
-pub use approval_store_transaction::{ApprovalEnrollmentStanding, ApprovalStoreTransaction};
+pub use approval_store_transaction::{
+    ApprovalEnrollmentStanding, ApprovalPersonStoreTransaction, ApprovalStatementTransaction,
+    ApprovalStoreTransaction,
+};

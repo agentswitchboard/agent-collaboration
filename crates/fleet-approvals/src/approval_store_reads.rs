@@ -8,12 +8,13 @@ use fleet_engine::owner_sql::CheckedStorage;
 use fleet_engine::{checked_engine_statement, checked_subject_projection};
 use fleet_identity_protocol::OrganizationId;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
+use fleet_signin::approval_person_wire::ApprovalListFilter;
 use workspace_ids::{ApprovalRequestId, RouterRunId};
 
 use crate::{
     ApprovalSession, ApprovalState, MAX_OUTSTANDING_PER_RUN,
     approval_store_scope::{ApprovalEnrollmentScope, ApprovalHolderScope, ApprovalRequestRowId},
-    approval_store_transaction::ApprovalStoreTransaction,
+    approval_store_transaction::ApprovalStatementTransaction,
 };
 
 checked_subject_projection!(StoredRunRow {
@@ -102,7 +103,7 @@ pub(crate) enum ScopedHolderRequest {
 }
 
 pub(crate) async fn read_approval_run(
-    transaction: &mut impl ApprovalStoreTransaction,
+    transaction: &mut impl ApprovalStatementTransaction,
     run: &RouterRunId,
 ) -> Result<Option<ApprovalRunRecord>, StoreFailure> {
     let statement = checked_engine_statement!(
@@ -115,7 +116,7 @@ pub(crate) async fn read_approval_run(
 }
 
 pub(crate) async fn read_last_approval_run(
-    transaction: &mut impl ApprovalStoreTransaction,
+    transaction: &mut impl ApprovalStatementTransaction,
     scope: &ApprovalEnrollmentScope,
 ) -> Result<Option<ApprovalRunRecord>, StoreFailure> {
     let statement = checked_engine_statement!(
@@ -130,7 +131,7 @@ pub(crate) async fn read_last_approval_run(
 }
 
 async fn read_run_record(
-    transaction: &mut impl ApprovalStoreTransaction,
+    transaction: &mut impl ApprovalStatementTransaction,
     statement: Statement,
 ) -> Result<Option<ApprovalRunRecord>, StoreFailure> {
     let outcome = transaction.read_approval_statement(statement).await?;
@@ -153,7 +154,7 @@ fn approval_request_statement(
 }
 
 pub(crate) async fn read_holder_request(
-    transaction: &mut impl ApprovalStoreTransaction,
+    transaction: &mut impl ApprovalStatementTransaction,
     scope: &ApprovalHolderScope,
     request_id: &ApprovalRequestId,
 ) -> Result<ScopedHolderRequest, StoreFailure> {
@@ -175,7 +176,7 @@ pub(crate) async fn read_holder_request(
 }
 
 pub(crate) async fn read_people_approval_request(
-    transaction: &mut impl ApprovalStoreTransaction,
+    transaction: &mut impl ApprovalStatementTransaction,
     organization: &OrganizationId,
     request_id: &ApprovalRequestId,
 ) -> Result<Option<ApprovalReadRecord>, StoreFailure> {
@@ -190,7 +191,7 @@ pub(crate) async fn read_people_approval_request(
 }
 
 pub(crate) async fn read_parent_approval_request(
-    transaction: &mut impl ApprovalStoreTransaction,
+    transaction: &mut impl ApprovalStatementTransaction,
     organization: &OrganizationId,
     request_id: &ApprovalRequestId,
     parent: &ApprovalSession,
@@ -209,7 +210,7 @@ pub(crate) async fn read_parent_approval_request(
 }
 
 pub(crate) async fn read_owed_approval_endings(
-    transaction: &mut impl ApprovalStoreTransaction,
+    transaction: &mut impl ApprovalStatementTransaction,
     scope: &ApprovalHolderScope,
 ) -> Result<Vec<ApprovalReadRecord>, StoreFailure> {
     let statement = checked_engine_statement!(
@@ -226,7 +227,7 @@ pub(crate) async fn read_owed_approval_endings(
 }
 
 pub(crate) async fn read_approval_due_subject(
-    transaction: &mut impl ApprovalStoreTransaction,
+    transaction: &mut impl ApprovalStatementTransaction,
     row_id: &ApprovalRequestRowId,
 ) -> Result<Option<ApprovalReadRecord>, StoreFailure> {
     let organization = transaction.organization_id();
@@ -241,7 +242,7 @@ pub(crate) async fn read_approval_due_subject(
 }
 
 pub(crate) async fn count_outstanding_approvals(
-    transaction: &mut impl ApprovalStoreTransaction,
+    transaction: &mut impl ApprovalStatementTransaction,
     scope: &ApprovalHolderScope,
 ) -> Result<usize, StoreFailure> {
     let statement = checked_engine_statement!(
@@ -267,7 +268,7 @@ pub(crate) async fn count_outstanding_approvals(
 }
 
 pub(crate) async fn read_outstanding_approval_rows(
-    transaction: &mut impl ApprovalStoreTransaction,
+    transaction: &mut impl ApprovalStatementTransaction,
     scope: &ApprovalHolderScope,
 ) -> Result<Vec<ApprovalReadRecord>, StoreFailure> {
     let statement = checked_engine_statement!(
@@ -284,7 +285,7 @@ pub(crate) async fn read_outstanding_approval_rows(
 }
 
 pub(crate) async fn read_waiting_approval_session_rows(
-    transaction: &mut impl ApprovalStoreTransaction,
+    transaction: &mut impl ApprovalStatementTransaction,
     organization: &OrganizationId,
     session: &ApprovalSession,
 ) -> Result<Vec<ApprovalReadRecord>, StoreFailure> {
@@ -303,7 +304,7 @@ pub(crate) async fn read_waiting_approval_session_rows(
 
 #[cfg(feature = "test-support")]
 pub(crate) async fn read_person_approval_page(
-    transaction: &mut impl ApprovalStoreTransaction,
+    transaction: &mut impl ApprovalStatementTransaction,
     organization: &OrganizationId,
     after: Option<&ApprovalRequestRowId>,
     limit: NonZeroU16,
@@ -320,8 +321,31 @@ pub(crate) async fn read_person_approval_page(
     read_request_records(transaction, statement, with_next).await
 }
 
+pub(crate) async fn read_approval_request_page_for_person(
+    transaction: &mut impl ApprovalStatementTransaction,
+    organization: &OrganizationId,
+    cursor: Option<&ApprovalRequestId>,
+    filter: ApprovalListFilter,
+    limit: u16,
+) -> Result<Vec<ApprovalReadRecord>, StoreFailure> {
+    let scan_limit = usize::from(limit) + 1;
+    let statement = checked_engine_statement!(
+        query_file_as,
+        [CheckedApprovalRow],
+        "src/queries/read_person_approval_request_page.sql",
+        organization_id = organization.as_str().to_owned(),
+        cursor = cursor.map_or("", ApprovalRequestId::as_str).to_owned(),
+        include_ended = portable_integer(
+            i64::from(matches!(filter, ApprovalListFilter::All)),
+            "approval_requests.include_ended"
+        )?,
+        limit = portable_integer(i64::from(limit) + 1, "approval_requests.page_limit")?,
+    );
+    read_request_records(transaction, statement, scan_limit).await
+}
+
 async fn read_request_record(
-    transaction: &mut impl ApprovalStoreTransaction,
+    transaction: &mut impl ApprovalStatementTransaction,
     statement: Statement,
 ) -> Result<Option<ApprovalReadRecord>, StoreFailure> {
     let outcome = transaction.read_approval_statement(statement).await?;
@@ -333,7 +357,7 @@ async fn read_request_record(
 }
 
 async fn read_request_records(
-    transaction: &mut impl ApprovalStoreTransaction,
+    transaction: &mut impl ApprovalStatementTransaction,
     statement: Statement,
     maximum: usize,
 ) -> Result<Vec<ApprovalReadRecord>, StoreFailure> {
@@ -350,7 +374,7 @@ async fn read_request_records(
 }
 
 async fn load_request_record(
-    transaction: &mut impl ApprovalStoreTransaction,
+    transaction: &mut impl ApprovalStatementTransaction,
     stored: StoredApprovalRow,
 ) -> Result<ApprovalReadRecord, StoreFailure> {
     let row_id = ApprovalRequestRowId::parse(stored.approval_row_id.stored_text()?)?;

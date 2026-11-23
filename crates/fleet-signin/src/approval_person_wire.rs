@@ -207,6 +207,13 @@ pub enum ApprovalPersonRoute {
 }
 
 impl ApprovalPersonRoute {
+    pub const ALL: [Self; 3] = [Self::List, Self::Read, Self::Decide];
+
+    #[must_use]
+    pub fn from_path(path: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|route| route.path() == path)
+    }
+
     #[must_use]
     pub const fn path(self) -> &'static str {
         match self {

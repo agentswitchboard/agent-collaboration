@@ -155,16 +155,28 @@ pub(crate) fn decode_person_floor(
     .map(Some)
 }
 
+pub(crate) fn organization_floor_statement(organization: &str) -> Statement {
+    checked_proof_statement!(
+        read OrganizationFloorRow,
+        "src/person_proof_queries/read_organization_floor.sql",
+        [text(organization)]
+    )
+}
+
+pub(crate) fn person_floor_statement(organization: &str, person: &str) -> Statement {
+    checked_proof_statement!(
+        read PersonFloorRow,
+        "src/person_proof_queries/read_person_floor.sql",
+        [text(organization), text(person)]
+    )
+}
+
 pub(crate) async fn read_organization_floor(
     host: &impl CentralStore,
     organization: &str,
 ) -> Result<Option<OrganizationFloor>, StoreFailure> {
     let rows = host
-        .read(checked_proof_statement!(
-            read OrganizationFloorRow,
-            "src/person_proof_queries/read_organization_floor.sql",
-            [text(organization)]
-        ))
+        .read(organization_floor_statement(organization))
         .await?;
     decode_organization_floor(&rows, organization)
 }
@@ -175,11 +187,7 @@ pub(crate) async fn read_person_floor(
     person: &str,
 ) -> Result<Option<PersonFloor>, StoreFailure> {
     let rows = host
-        .read(checked_proof_statement!(
-            read PersonFloorRow,
-            "src/person_proof_queries/read_person_floor.sql",
-            [text(organization), text(person)]
-        ))
+        .read(person_floor_statement(organization, person))
         .await?;
     decode_person_floor(&rows, organization, person)
 }

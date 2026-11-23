@@ -16,6 +16,7 @@ use fleet_rpc::{CallFailure, Envelope, Transport, dispatch};
 use fleet_workspace_service::WorkspaceService;
 #[path = "workspace_alarm_owner.rs"]
 mod workspace_alarm_owner;
+use crate::object_storage::person_approval_transaction::NativePersonApprovalTransactions;
 use crate::object_storage::session_transaction_owner::{
     NativeSessionTransactions, fill_session_secret,
 };
@@ -25,8 +26,8 @@ use central_storage::{
     BatchOutcome, ReadOutcome, Statement, StatementBatch, StoreCall, StoreFailure, StoreReply,
 };
 use collaboration_central_core::{
-    MacCallResult, OrganizationAdminAnswer, OrganizationSignInPort, SignInTrustSettings,
-    TYPED_LINK_CALL_TIMEOUT, WorkspaceRuntime, finish_mac_call,
+    MacCallResult, OrganizationAdminAnswer, OrganizationSignInPort, PersonApprovalAnswer,
+    SignInTrustSettings, TYPED_LINK_CALL_TIMEOUT, WorkspaceRuntime, finish_mac_call,
     identity_contract::{AuthorizationRevision, AuthorizationRevisionAcknowledgement},
     person_request::PersonRequestInput,
 };
@@ -35,6 +36,7 @@ use fleet_identity_protocol::OrganizationId;
 use fleet_runtime::{ClockIds, FleetRuntime};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use fleet_runtime_ports::{Clock, IdSource, SyncTime};
+use fleet_signin::ApprovalPersonVerificationInput;
 use router_clock::RuntimeClock;
 use std::{
     collections::BTreeMap,
@@ -264,7 +266,11 @@ impl TokioWorkspaceHost {
             ),
             storage.clone(),
             storage.clone(),
-        );
+        )
+        .with_person_approval_transactions(Arc::new(NativePersonApprovalTransactions {
+            storage: storage.clone(),
+            ids: ids.clone(),
+        }));
         let dispatcher: Arc<dyn collaboration_central_core::CentralLinkDispatcher> =
             Arc::new(SessionLinkDispatcher::new(
                 NativeSessionTransactions { storage },
@@ -443,6 +449,17 @@ impl OrganizationSignInPort for TokioWorkspaceHost {
             .admin(organization, input)
             .await
     }
+    async fn person_approval(
+        &self,
+        organization: OrganizationId,
+        input: ApprovalPersonVerificationInput<'_>,
+    ) -> Result<PersonApprovalAnswer, StoreFailure> {
+        self.central(&organization)
+            .await?
+            .person_approval(organization, input)
+            .await
+    }
+
     async fn device_login(
         &self,
         request: &fleet_contracts::DecideDeviceLogin,

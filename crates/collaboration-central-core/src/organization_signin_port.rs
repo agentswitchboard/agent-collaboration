@@ -1,5 +1,6 @@
 //! The private sign-in link delegates organization work to a scoped runtime.
 use crate::{
+    PersonApprovalAnswer,
     identity_contract::{AuthorizationRevision, AuthorizationRevisionAcknowledgement},
     organization_admin_contract::OrganizationAdminAnswer,
     person_request::PersonRequestInput,
@@ -11,6 +12,7 @@ use fleet_contracts::{
     ReadOrganizationStatementDigest,
 };
 use fleet_identity_protocol::OrganizationId;
+use fleet_signin::ApprovalPersonVerificationInput;
 use std::future::Future;
 
 /// Hosts supply routing to the named organization's runtime; this port does
@@ -41,6 +43,12 @@ pub trait OrganizationSignInPort: Send + Sync + 'static {
         organization: OrganizationId,
         input: PersonRequestInput,
     ) -> impl Future<Output = Result<OrganizationAdminAnswer, StoreFailure>> + Send;
+    fn person_approval(
+        &self,
+        organization: OrganizationId,
+        input: ApprovalPersonVerificationInput<'_>,
+    ) -> impl Future<Output = Result<PersonApprovalAnswer, StoreFailure>> + Send;
+
     fn device_login(
         &self,
         request: &fleet_contracts::DecideDeviceLogin,
@@ -89,6 +97,18 @@ impl<H: fleet_runtime_ports::CentralStore, S: fleet_runtime_ports::WorkspaceStor
         self.after_signin_event().await;
         answer
     }
+    async fn person_approval(
+        &self,
+        organization: OrganizationId,
+        input: ApprovalPersonVerificationInput<'_>,
+    ) -> Result<PersonApprovalAnswer, StoreFailure> {
+        let answer = self
+            .apply_person_approval_request(&organization, input)
+            .await;
+        self.after_signin_event().await;
+        answer
+    }
+
     async fn device_login(
         &self,
         request: &fleet_contracts::DecideDeviceLogin,

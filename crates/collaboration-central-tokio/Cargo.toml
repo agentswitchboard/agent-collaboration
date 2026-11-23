@@ -13,6 +13,7 @@ workspace = true
 test-support = ["central-link-call-composition/test-support", "dep:collaboration-central-conformance", "dep:reqwest-websocket", "dep:tempfile", "central-link-protocol/test-support", "fleet-engine/test-support", "fleet-runtime/test-support", "fleet-storage-schema/test-support", "collaboration-central-core/test-support", "router-clock/test-support"]
 
 [dependencies]
+fleet-approvals.workspace = true
 central-link-call-composition.workspace = true
 fleet-lent-transaction.workspace = true
 fleet-signin.workspace = true

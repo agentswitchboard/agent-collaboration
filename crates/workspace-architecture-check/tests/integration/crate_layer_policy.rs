@@ -64,6 +64,7 @@ const LAYER_POLICY: [(&str, &[&str]); 46] = [
     (
         "collaboration-central-core",
         &[
+            "fleet-approvals",
             "fleet-engine",
             "fleet-mail",
             "fleet-request-log",
@@ -98,6 +99,7 @@ const LAYER_POLICY: [(&str, &[&str]); 46] = [
             "central-storage",
             "collaboration-central-conformance",
             "collaboration-central-core",
+            "fleet-approvals",
             "fleet-contracts",
             "fleet-engine",
             "fleet-identity-protocol",
@@ -201,6 +203,7 @@ const LAYER_POLICY: [(&str, &[&str]); 46] = [
             "fleet-lent-transaction",
             "fleet-machine-login",
             "fleet-runtime-ports",
+            "fleet-signin",
             "workspace-ids",
         ],
     ),
