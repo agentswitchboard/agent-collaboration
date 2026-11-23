@@ -204,6 +204,7 @@ async fn a_retained_central_notice_recovers_the_senders_original_acceptance() {
     );
     let admitted = lane.admitted.borrow().clone().unwrap();
     lane.push_event(LinkLaneEvent::Deliver {
+        arrived_at: admitted.clock_anchor.central_time,
         connection: admitted.connection,
         offer: ValidatedDeliveryOffer::new(Box::new(DeliveryMessage::System(notice)), None)
             .unwrap(),

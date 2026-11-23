@@ -421,6 +421,8 @@ pub enum LinkLaneEvent {
     },
     Deliver {
         connection: ConnectionAttempt,
+        /// The socket owner's injected UTC time when it accepted the validated offer.
+        arrived_at: Timestamp,
         offer: ValidatedDeliveryOffer,
         sender: ResolvedSender,
     },
