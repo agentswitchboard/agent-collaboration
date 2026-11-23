@@ -5,7 +5,6 @@ use super::engine_probe_support::*;
 use central_storage::{
     AlarmPublication, AlarmUpdate, BatchOutcome, EngineAlarmPlan, StatementBatch,
 };
-use fleet_runtime::PausePoint;
 use router_clock::RuntimeClock;
 use workspace_model::central_mail::{
     CentralMailAnswer, CentralMailOperation, CentralMailRequest, CentralMailResult,
