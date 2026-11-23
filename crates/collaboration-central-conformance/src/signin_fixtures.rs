@@ -293,3 +293,5 @@ pub use standing_trace::{StandingProbe, StandingSample, prove_standing_trace};
 pub use trust_trace::TrustTraceHost;
 
 pub mod machine_lifecycle;
+
+pub mod engine_admin_decisions;

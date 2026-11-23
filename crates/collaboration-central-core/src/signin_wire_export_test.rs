@@ -39,6 +39,8 @@ use std::{
 
 #[path = "signin_approval_wire_specimens_test.rs"]
 mod signin_approval_wire_specimens_test;
+#[path = "signin_engine_wire_specimens_test.rs"]
+mod signin_engine_wire_specimens_test;
 #[path = "signin_schema_parity_test.rs"]
 mod signin_schema_parity_test;
 #[path = "signin_wire_specimens_test.rs"]
@@ -112,7 +114,7 @@ const SIGNIN_ROOTS: &[WireRoot] = &[
     wire_root!(ListWorkspacesRequest, core_request),
     wire_root!(ListWorkspacesResult, core_reply),
     wire_root!(ReadChangeRecordsRequest, change_records_requests),
-    wire_root!(OrganizationAdminResult, core_reply),
+    wire_root!(OrganizationAdminResult, admin_reply_specimens),
     wire_root!(OrganizationChangeRecord, change_records_replies),
     wire_root!(ProvisionOrganization, core_request),
     wire_root!(ProvisionOrganizationResult, core_reply),
@@ -278,8 +280,15 @@ fn change_records_replies(_: &str) -> Vec<WireSpecimen> {
         .collect()
 }
 
+fn admin_reply_specimens(name: &str) -> Vec<WireSpecimen> {
+    let mut specimens = core_reply(name);
+    specimens.extend(signin_engine_wire_specimens_test::engine_reply_specimens());
+    specimens
+}
+
 fn admin_intent_specimens(name: &str) -> Vec<WireSpecimen> {
     let mut specimens = core_reply(name);
+    specimens.extend(signin_engine_wire_specimens_test::engine_intent_specimens());
     let raw = json!({
         "v": 1,
         "operation": "RevokeMachineEnrollment",
