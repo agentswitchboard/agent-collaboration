@@ -107,3 +107,68 @@ async fn a_local_change_publishes_an_incompatible_key_without_contacting_discove
     work.await.unwrap();
     fixture.source.close().await.unwrap();
 }
+
+#[test]
+fn discovery_failure_uses_cached_address_only_for_unavailable_and_pins_retry_delay() {
+    use switchboard_machine_enrollment::InvalidReason;
+
+    let fixture_deployment =
+        SignInDeployment::new("https://sign-in.example/".parse().unwrap()).unwrap();
+    let target = DiscoveryTarget {
+        key: EnrollmentKey {
+            machine_id: "019a0000-0000-7000-8000-000000000002".parse().unwrap(),
+            organization_id: "019a0000-0000-7000-8000-000000000001".parse().unwrap(),
+            enrollment_id: "019a0000-0000-7000-8000-000000000003".parse().unwrap(),
+        },
+        deployment: fixture_deployment,
+    };
+    let addr =
+        DialAddress::secure("wss://central.example:8443/019a0000-0000-7000-8000-000000000001/link")
+            .unwrap();
+    let invalid = || Err(AddressError::InvalidLocation);
+    let mut saved = None;
+    assert_eq!(
+        project_discovery(&target, Ok(discovery("link")), &mut saved),
+        (Ok(addr.clone()), None)
+    );
+    for (retry_after, expected) in [
+        (None, 30),
+        (Some(Duration::ZERO), 1),
+        (Some(Duration::from_secs(45)), 45),
+    ] {
+        assert_eq!(
+            project_discovery(
+                &target,
+                Err(SignInFailure::Unavailable { retry_after }),
+                &mut saved
+            ),
+            (Ok(addr.clone()), Some(Duration::from_secs(expected)))
+        );
+    }
+    assert_eq!(
+        project_discovery(&target, Ok(discovery("link?route=public")), &mut saved),
+        (invalid(), Some(Duration::from_secs(30)))
+    );
+    assert!(saved.is_none());
+    assert_eq!(
+        project_discovery(
+            &target,
+            Err(SignInFailure::Unavailable { retry_after: None }),
+            &mut saved
+        ),
+        (invalid(), Some(Duration::from_secs(30)))
+    );
+
+    for reason in [
+        InvalidReason::MalformedAnswer,
+        InvalidReason::OversizedAnswer,
+        InvalidReason::InvalidClient,
+    ] {
+        saved = Some(addr.clone());
+        assert_eq!(
+            project_discovery(&target, Err(SignInFailure::Invalid { reason }), &mut saved),
+            (invalid(), Some(Duration::from_secs(30)))
+        );
+        assert!(saved.is_none());
+    }
+}

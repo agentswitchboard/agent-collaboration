@@ -247,9 +247,19 @@ fn project_discovery(
     answer: Result<DiscoveryAnswer, SignInFailure>,
     last_good: &mut Option<DialAddress>,
 ) -> (Result<DialAddress, AddressError>, Option<Duration>) {
-    let address = answer
-        .map_err(|_| AddressError::InvalidLocation)
-        .and_then(|answer| secure_address(target, answer));
+    let address = match answer {
+        Ok(answer) => secure_address(target, answer),
+        Err(SignInFailure::Invalid { .. }) => Err(AddressError::InvalidLocation),
+        Err(SignInFailure::Unavailable { retry_after }) => {
+            let delay = retry_after
+                .unwrap_or(DISCOVERY_RETRY)
+                .max(Duration::from_secs(1));
+            return (
+                last_good.clone().ok_or(AddressError::InvalidLocation),
+                Some(delay),
+            );
+        }
+    };
     *last_good = address.as_ref().ok().cloned();
     let retry = address.is_err().then_some(DISCOVERY_RETRY);
     (address, retry)
