@@ -11,7 +11,8 @@ use crate::{
     ApprovalRouting, ApprovalSession, ApprovalSessionFacts, ApprovalState, PendingApprovalReply,
     ProviderSessionAvailability, RaiseAdmission,
     approval_lifecycle_admission::stop_binding,
-    approval_retention::{compact_ending, hidden_at, read_erased_approval},
+    approval_lifecycle_effects::standing,
+    approval_retention::{EffectiveEndingDelivery, hidden_at, read_erased_approval},
     approval_store_reads::{
         ScopedHolderRequest, count_outstanding_approvals, read_holder_request,
         read_recoverable_approval_rows,
@@ -215,7 +216,7 @@ where
                         command.erased_request(ErasedApprovalMarker {
                             request_id: request_id.clone(),
                             router_run: scope.run.router_run.clone(),
-                            ending: compact_ending(closed.ending.clone().into_ending()),
+                            ending: standing(&closed.ending.clone().into_ending()),
                         }),
                     ));
                 }
@@ -284,9 +285,14 @@ where
             return Ok(false);
         };
         let at = self.sample_applying_time()?;
-        Ok(!hidden_at(&record.state, at)?
-            && matches!(&record.state, ApprovalState::Ended { closed, .. }
-                if closed.delivery == (approval_request_protocol::Delivery::Owed {})))
+        match &record.state {
+            ApprovalState::Ended { closed, .. } => {
+                Ok(EffectiveEndingDelivery::at(closed, at)?.is_owed())
+            }
+            ApprovalState::Unraised
+            | ApprovalState::StoppedBeforeRaise { .. }
+            | ApprovalState::Waiting { .. } => Ok(false),
+        }
     }
 
     /// Recover all current Owed endings for the exact admitted run.
@@ -319,7 +325,7 @@ where
             let due_or_owed = match &record.state {
                 ApprovalState::Waiting { saved } => at >= saved.window.deadline(),
                 ApprovalState::Ended { closed, .. } => {
-                    closed.delivery == (approval_request_protocol::Delivery::Owed {})
+                    EffectiveEndingDelivery::at(closed, at)?.is_owed()
                 }
                 ApprovalState::Unraised | ApprovalState::StoppedBeforeRaise { .. } => false,
             };

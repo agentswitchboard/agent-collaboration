@@ -1,7 +1,5 @@
 //! The elapsed-time cutoff shared by approval reads and physical erasure.
-use approval_request_protocol::{
-    ApprovalRequestId, CentralTime, Ending, ErasedApprovalMarker, StopReceiptEnding,
-};
+use approval_request_protocol::{ApprovalRequestId, CentralTime, Delivery, ErasedApprovalMarker};
 use central_engine_model::{CENTRAL_RECORD_RETENTION_MILLIS, supported_time};
 use central_storage::StoreFailure;
 #[cfg(test)]
@@ -9,7 +7,7 @@ use fleet_engine::owner_sql::CheckedStorage;
 use fleet_engine::{checked_engine_statement, checked_subject_projection};
 use fleet_runtime_ports::{stored_values::json, workspace_decode_error::corrupt};
 
-use crate::{ApprovalHolderScope, ApprovalState, ApprovalStoreTransaction};
+use crate::{ApprovalHolderScope, ApprovalState, ApprovalStoreTransaction, EndedApproval};
 
 checked_subject_projection!(StoredErasedApproval {
     request_id: String,
@@ -94,12 +92,28 @@ pub(crate) fn hidden_at(state: &ApprovalState, at: CentralTime) -> Result<bool, 
     }
 }
 
-pub(crate) fn compact_ending(ending: Ending) -> StopReceiptEnding {
-    match ending {
-        Ending::Decided { .. } | Ending::UnprovenCallDecided { .. } => {
-            StopReceiptEnding::DecidedEarlier {}
+/// The effective holder debt can lapse before the cleanup transaction.
+pub(crate) enum EffectiveEndingDelivery {
+    Owed,
+    ReceivedByHolder,
+    ClosedWithoutReceipt,
+    ReceiptUnknown,
+}
+
+impl EffectiveEndingDelivery {
+    pub(crate) fn at(ended: &EndedApproval, now: CentralTime) -> Result<Self, StoreFailure> {
+        match ended.delivery {
+            Delivery::Owed {} if now >= cutoff_at(ended.ended_at)? => Ok(Self::ReceiptUnknown),
+            Delivery::Owed {} => Ok(Self::Owed),
+            Delivery::ReceivedByHolder {} => Ok(Self::ReceivedByHolder),
+            Delivery::ClosedWithoutReceipt {} => Ok(Self::ClosedWithoutReceipt),
         }
-        Ending::TimedOut {} => StopReceiptEnding::TimedOut {},
-        Ending::Cancelled { reason } => StopReceiptEnding::Cancelled { reason },
+    }
+
+    pub(crate) const fn is_owed(&self) -> bool {
+        match self {
+            Self::Owed => true,
+            Self::ReceivedByHolder | Self::ClosedWithoutReceipt | Self::ReceiptUnknown => false,
+        }
     }
 }

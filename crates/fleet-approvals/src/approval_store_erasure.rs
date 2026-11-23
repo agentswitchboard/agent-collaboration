@@ -13,7 +13,8 @@ use super::{ApprovalApplyFailure, ApprovalApplyingStore, ApprovalTransitionOutpu
 use crate::{
     ApprovalEnrollmentStanding, ApprovalHolderScope, ApprovalReplyAddress, ApprovalRequestRowId,
     ApprovalState, ApprovalStoreTransaction, PendingApprovalReply,
-    approval_retention::{compact_ending, cutoff_at},
+    approval_lifecycle_effects::standing,
+    approval_retention::cutoff_at,
     approval_store_reads::{ApprovalReadRecord, read_approval_due_subject, read_approval_run},
     approval_store_writes::{approval_due_key, encode_stored_json, plan_approval_due},
 };
@@ -86,7 +87,7 @@ impl EraseApproval {
             row_id: record.row_id,
             scope: record.scope,
             request_id: saved.key.request_id,
-            ending: compact_ending(closed.ending.into_ending()),
+            ending: standing(&closed.ending.into_ending()),
             cutoff,
         }))
     }
