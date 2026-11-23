@@ -4,7 +4,6 @@ pub fn accepted_reads(name: &str, literals: &[Value]) -> Vec<Value> {
     let mut reads = Vec::new();
     for literal in literals {
         let fields: &[&str] = match name {
-            "LaunchContext" => &["repository", "commit", "model"],
             "DecideDeviceLogin" => &["approverSecondFactorAt"],
             "MachineEnrollment" => &["endsAt"],
             _ => &[],
