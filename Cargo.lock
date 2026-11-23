@@ -7163,6 +7163,8 @@ name = "workspace-architecture-check"
 version = "0.1.158"
 dependencies = [
  "approval-request-protocol",
+ "central-engine-model",
+ "fleet-approvals",
  "serde",
  "serde_json",
  "state-machine-core",
@@ -7170,6 +7172,7 @@ dependencies = [
  "switchboard-approval-ports",
  "tempfile",
  "thiserror 2.0.18",
+ "uuid",
 ]
 
 [[package]]

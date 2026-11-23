@@ -129,6 +129,12 @@ pub(super) async fn waiting_rows(
     .await
 }
 
+pub(super) async fn in_flight_rows(
+    connection: &mut sqlx::SqliteConnection,
+) -> Result<StoreScan<Vec<DecodedRow>>, OutboxStoreError> {
+    read_rows_in_states(connection, OutboxItemState::Sent, OutboxItemState::Resent).await
+}
+
 const CLAIM_SCAN_PAGE_SIZE: i64 = 128;
 
 pub(super) struct WaitingScanPosition {

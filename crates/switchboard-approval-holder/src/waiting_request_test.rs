@@ -1,6 +1,7 @@
+use super::{LinkAttemptDisposition, LinkCallAnswer, RequestFamily};
 use approval_request_protocol::{
-    ApprovalOffer, CancelReason, DeliverEndingReply, DeliverEndingRequest, Ending, OfferedOption,
-    OfferedOptionId, OfferedOptions, OptionEffect, OptionLifetime, ProviderHolder,
+    ApprovalOffer, CancelReason, DeliverEndingReply, DeliverEndingRequest, Ending, HolderStopCause,
+    OfferedOption, OfferedOptionId, OfferedOptions, OptionEffect, OptionLifetime, ProviderHolder,
     ProviderStopCause, Raise, RaiseReply, StopReceiptEnding, StopReply, StopRequest,
 };
 use hegel::generators as gs;
@@ -72,7 +73,7 @@ fn ending_reply(reply: DeliverEndingReply) -> Effect {
     }
 }
 const RESPONDER: u8 = 3;
-const STOP_CAUSE: ProviderStopCause = ProviderStopCause::TurnStopped {};
+const STOP_CAUSE: ProviderStopCause = ProviderStopCause::TurnStopped;
 
 fn raise() -> Raise {
     Raise::ProviderApproval {
@@ -270,7 +271,10 @@ fn finished_and_released_exact_offer_is_not_held_and_never_writes_twice() {
     assert!(!state.may_be_forgotten());
     apply(
         &mut state,
-        Event::CallEndedWithoutReply { call: call(1, 1) },
+        Event::AttemptSettled {
+            call: call(1, 1),
+            disposition: LinkAttemptDisposition::AnswerLost,
+        },
     );
     assert_eq!(
         apply(&mut state, deliver(ending)),
@@ -334,7 +338,15 @@ fn one_capability_across_ending_local_negative_withdrawal_and_fence(case: hegel:
             );
         }
         2 => {
-            assert!(apply(&mut state, Event::LocalStop { cause: STOP_CAUSE }).is_empty());
+            assert!(
+                apply(
+                    &mut state,
+                    Event::LocalStop {
+                        cause: HolderStopCause::TurnStopped
+                    }
+                )
+                .is_empty()
+            );
             let negative = ProviderReply::LocalNegative(LocalNegative::Stopped(STOP_CAUSE));
             permit(&mut state, &negative);
             assert_eq!(
@@ -365,7 +377,13 @@ fn one_capability_across_ending_local_negative_withdrawal_and_fence(case: hegel:
                 },]
             );
             assert!(
-                apply(&mut state, Event::LocalStop { cause: STOP_CAUSE }).is_empty(),
+                apply(
+                    &mut state,
+                    Event::LocalStop {
+                        cause: HolderStopCause::TurnStopped
+                    }
+                )
+                .is_empty(),
                 "a local Stop cannot displace a started write"
             );
             assert_eq!(
@@ -431,9 +449,9 @@ fn capacity_and_other_terminal_refusals_use_the_same_one_time_writer() {
         let mut state = published();
         apply(
             &mut state,
-            Event::RaiseReply {
+            Event::AttemptSettled {
                 call: call(1, 1),
-                reply,
+                disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Raise(reply)),
             },
         );
         let negative = ProviderReply::LocalNegative(LocalNegative::RaiseRefused(refusal));
@@ -486,7 +504,12 @@ fn owed_stop_is_exact_after_local_write_lost_reply_and_reconnect() {
         contents_digest: frozen.contents_digest().unwrap(),
         cause: STOP_CAUSE,
     };
-    apply(&mut state, Event::LocalStop { cause: STOP_CAUSE });
+    apply(
+        &mut state,
+        Event::LocalStop {
+            cause: HolderStopCause::TurnStopped,
+        },
+    );
     let offered = DeliverEndingRequest::from_raise(&frozen, Ending::TimedOut {}).unwrap();
     assert_eq!(
         apply(&mut state, deliver(offered)),
@@ -529,9 +552,11 @@ fn owed_stop_is_exact_after_local_write_lost_reply_and_reconnect() {
     assert_eq!(
         Wait::transition(
             &state,
-            Event::StopReply {
+            Event::AttemptSettled {
                 call: call(1, 2),
-                reply: authoritative.clone()
+                disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Stop(
+                    authoritative.clone()
+                ))
             }
         ),
         Err(TransitionError::Stale)
@@ -539,9 +564,9 @@ fn owed_stop_is_exact_after_local_write_lost_reply_and_reconnect() {
     assert_eq!(
         apply(
             &mut state,
-            Event::StopReply {
+            Event::AttemptSettled {
                 call: call(2, 3),
-                reply: authoritative
+                disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Stop(authoritative))
             }
         ),
         [Effect::StopReconciled(StopReceiptEnding::TimedOut {})]
@@ -551,15 +576,32 @@ fn owed_stop_is_exact_after_local_write_lost_reply_and_reconnect() {
 
 #[test]
 fn wait_transition_matrix_reaches_exactly_its_declared_edges() {
-    use approval_request_protocol::{ApprovalWindow, RaiseReceipt, RunRefusal};
+    use approval_request_protocol::{
+        ApprovalWindow, CallOffer, InvocationDigest, ParkedCallHolder, RaiseReceipt, RunRefusal,
+        SessionCallOperation,
+    };
     use state_machine_core::check_declared_transitions;
 
     let ending = DeliverEndingRequest::from_raise(&raise(), Ending::TimedOut {}).unwrap();
+    let call_raise = Raise::UnprovenCall {
+        request_id: raise().request_id().clone(),
+        holder: ParkedCallHolder {
+            router_run: authority().router_run,
+        },
+        invocation: InvocationDigest::from_bound_bytes(b"held invocation for matrix"),
+        offer: CallOffer {
+            operation: SessionCallOperation::EndSessionForGood {
+                session_id: raise().requesting_session().unwrap().clone(),
+            },
+        },
+    };
+    let call_ending = DeliverEndingRequest::from_raise(&call_raise, Ending::TimedOut {}).unwrap();
     let mut events = vec![
         publish(1, 1),
         publish(1, 2),
         publish(2, 3),
         deliver(ending.clone()),
+        deliver(call_ending.clone()),
         Input::UnderGate {
             gate: ready_gate(2),
             event: GateWaitEvent::DeliverEnding {
@@ -568,9 +610,16 @@ fn wait_transition_matrix_reaches_exactly_its_declared_edges() {
                 link: call(1, 0).link,
             },
         },
-        Event::LocalStop { cause: STOP_CAUSE }.into(),
         Event::LocalStop {
-            cause: ProviderStopCause::ProviderConnectionLost {},
+            cause: HolderStopCause::TurnStopped,
+        }
+        .into(),
+        Event::LocalStop {
+            cause: HolderStopCause::ProviderConnectionLost,
+        }
+        .into(),
+        Event::LocalStop {
+            cause: HolderStopCause::CallWithdrawn,
         }
         .into(),
         Event::ProviderWithdrew {
@@ -601,9 +650,9 @@ fn wait_transition_matrix_reaches_exactly_its_declared_edges() {
             },
         ] {
             events.push(
-                Event::RaiseReply {
+                Event::AttemptSettled {
                     call: key.clone(),
-                    reply,
+                    disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Raise(reply)),
                 }
                 .into(),
             );
@@ -618,18 +667,30 @@ fn wait_transition_matrix_reaches_exactly_its_declared_edges() {
             },
         ] {
             events.push(
-                Event::StopReply {
+                Event::AttemptSettled {
                     call: key.clone(),
-                    reply,
+                    disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Stop(reply)),
                 }
                 .into(),
             );
         }
-        events.push(Event::CallEndedWithoutReply { call: key.clone() }.into());
+        for disposition in [
+            LinkAttemptDisposition::AnswerLost,
+            LinkAttemptDisposition::NotReached,
+        ] {
+            events.push(
+                Event::AttemptSettled {
+                    call: key.clone(),
+                    disposition,
+                }
+                .into(),
+            );
+        }
         events.push(Event::ConnectionRetired { link: key.link }.into());
     }
     for reply in [
         ProviderReply::CentralEnding(ending.ending().clone()),
+        ProviderReply::CentralEnding(call_ending.ending().clone()),
         ProviderReply::LocalNegative(LocalNegative::Stopped(STOP_CAUSE)),
         ProviderReply::LocalNegative(LocalNegative::HolderAtCapacity),
         ProviderReply::LocalNegative(LocalNegative::RaiseRefused(
@@ -646,7 +707,12 @@ fn wait_transition_matrix_reaches_exactly_its_declared_edges() {
         events.push(start(&reply).into());
     }
 
-    let mut states = vec![bound(), State::at_capacity(RESPONDER)];
+    let mut states = vec![
+        bound(),
+        State::bound(call_raise, RESPONDER).unwrap(),
+        State::at_capacity(RequestFamily::ProviderAsk, RESPONDER),
+        State::at_capacity(RequestFamily::HeldCall, RESPONDER),
+    ];
     let mut index = 0;
     while index < states.len() {
         for event in &events {

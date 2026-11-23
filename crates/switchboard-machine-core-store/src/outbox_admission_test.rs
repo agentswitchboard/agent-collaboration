@@ -170,7 +170,14 @@ async fn incompatible_results_and_authority_loss_leave_the_claim_recoverable() {
         Err(OutboxStoreError::InvalidOutcome { .. })
     ));
     assert_eq!(
-        outbox.sent_without_answer().await.unwrap().expect_clean(),
+        outbox
+            .sent_without_answer()
+            .await
+            .unwrap()
+            .expect_clean()
+            .into_iter()
+            .map(|claim| claim.key.request_id)
+            .collect::<Vec<_>>(),
         std::slice::from_ref(&claim.request)
     );
     let waiting = outbox.pending_for(&write.caller).await.unwrap();

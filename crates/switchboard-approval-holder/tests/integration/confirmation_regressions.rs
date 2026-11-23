@@ -2,6 +2,7 @@ use approval_request_protocol::{
     DeliverEndingReply, DeliverEndingRequest, Ending, RaiseReply, RegisterRunReply, RunRefusal,
 };
 use state_machine_core::{StateMachine, StateTag, TransitionError};
+use switchboard_approval_holder::waiting_request::{LinkAttemptDisposition, LinkCallAnswer};
 use switchboard_approval_holder::waiting_request::{
     ProviderReply, WriterOutcome,
     gate_access::{GateWaitEvent, may_enqueue, step_under_gate},
@@ -103,7 +104,10 @@ fn queued_c1_raise_is_refused_at_enqueue_and_still_due() {
         "C2 cannot enqueue the queued C1 Raise"
     );
     assert!(mac.wait.has_pending_calls());
-    mac.wait_event(RequestEvent::CallEndedWithoutReply { call: call(1, 1) });
+    mac.wait_event(RequestEvent::AttemptSettled {
+        call: call(1, 1),
+        disposition: LinkAttemptDisposition::NotReached,
+    });
     assert!(!mac.wait.has_pending_calls());
     let [retried]: [RequestEffect; 1] = mac.publish().try_into().unwrap();
     assert_eq!(
@@ -121,7 +125,10 @@ fn queued_c1_raise_is_refused_at_enqueue_and_still_due() {
 fn queued_c1_stop_is_refused_at_enqueue_and_still_due() {
     let mut mac = ready();
     mac.publish();
-    mac.wait_event(RequestEvent::CallEndedWithoutReply { call: call(1, 1) });
+    mac.wait_event(RequestEvent::AttemptSettled {
+        call: call(1, 1),
+        disposition: LinkAttemptDisposition::AnswerLost,
+    });
     mac.wait_event(RequestEvent::ProviderWithdrew {
         responder: RESPONDER,
     });
@@ -136,7 +143,10 @@ fn queued_c1_stop_is_refused_at_enqueue_and_still_due() {
         !may_enqueue(&mac.gate, &candidate),
         "C2 cannot enqueue the queued C1 Stop"
     );
-    mac.wait_event(RequestEvent::CallEndedWithoutReply { call: call(1, 2) });
+    mac.wait_event(RequestEvent::AttemptSettled {
+        call: call(1, 2),
+        disposition: LinkAttemptDisposition::NotReached,
+    });
     assert!(mac.wait.holds_place(), "a lost Stop still owes settlement");
     let [retried]: [RequestEffect; 1] = mac.publish().try_into().unwrap();
     assert_eq!(
@@ -218,11 +228,13 @@ fn draining_releases_the_place_and_late_run_retirement_still_fences_the_gate() {
     );
     assert!(mac.gate.ready_connection().is_some());
 
-    let effects = mac.wait_event(RequestEvent::RaiseReply {
+    let effects = mac.wait_event(RequestEvent::AttemptSettled {
         call: call(1, 1),
-        reply: RaiseReply::AuthorityRefused {
-            refusal: RunRefusal::RunRetired {},
-        },
+        disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Raise(
+            RaiseReply::AuthorityRefused {
+                refusal: RunRefusal::RunRetired {},
+            },
+        )),
     });
     assert!(
         matches!(
@@ -240,12 +252,17 @@ fn draining_only_accepts_exact_call_end_and_does_not_answer_an_ending() {
     let mut mac = draining();
     assert!(!mac.wait.holds_place() && !mac.wait.is_terminal());
     for event in [
-        RequestEvent::CallEndedWithoutReply { call: call(1, 9) },
-        RequestEvent::RaiseReply {
+        RequestEvent::AttemptSettled {
             call: call(1, 9),
-            reply: RaiseReply::AuthorityRefused {
-                refusal: RunRefusal::RunRetired {},
-            },
+            disposition: LinkAttemptDisposition::AnswerLost,
+        },
+        RequestEvent::AttemptSettled {
+            call: call(1, 9),
+            disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Raise(
+                RaiseReply::AuthorityRefused {
+                    refusal: RunRefusal::RunRetired {},
+                },
+            )),
         },
         RequestEvent::ConnectionRetired { link: link(2) },
         RequestEvent::ProviderWithdrew {
@@ -263,8 +280,11 @@ fn draining_only_accepts_exact_call_end_and_does_not_answer_an_ending() {
         "a drain accepts only events that resolve the outstanding call"
     );
     assert!(
-        mac.wait_event(RequestEvent::CallEndedWithoutReply { call: call(1, 1) })
-            .is_empty()
+        mac.wait_event(RequestEvent::AttemptSettled {
+            call: call(1, 1),
+            disposition: LinkAttemptDisposition::AnswerLost
+        })
+        .is_empty()
     );
     assert_drained(&mac);
     assert!(mac.gate.ready_connection().is_some());

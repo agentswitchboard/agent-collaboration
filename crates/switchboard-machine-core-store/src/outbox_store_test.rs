@@ -14,6 +14,8 @@ mod claim_guards;
 mod corruption;
 #[path = "outbox_store_model_test.rs"]
 mod model;
+#[path = "outbox_orphan_reconcile_test.rs"]
+mod orphan_reconcile;
 #[path = "sender_outcome_store_test.rs"]
 mod sender_outcomes;
 
@@ -404,7 +406,10 @@ async fn unanswered_writes_return_with_their_receipt_mark_and_refusals_are_kept(
         .sent_without_answer()
         .await
         .unwrap()
-        .expect_clean();
+        .expect_clean()
+        .into_iter()
+        .map(|claim| claim.key.request_id)
+        .collect::<Vec<_>>();
     MacOutbox::new(&mut store)
         .return_unanswered(std::slice::from_ref(&first.request), MARK + 70_000)
         .await
