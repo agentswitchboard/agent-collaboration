@@ -1,25 +1,31 @@
 //! Test-only application and observation of the session service on Durable Object SQLite.
 
 use central_engine_model::{Context, IdSource};
+use central_link_call_composition::{OrganizationLoan, OrganizationLoanFailure};
 use chrono::{DateTime, SecondsFormat};
 use fleet_actor_identity::{
-    ActorApprovalSessionFacts, LiveSessionFacts, OrganizationTransaction, SessionAvailability,
-    SessionCallOutcome, SessionLookupScope, SessionSecretSource, SessionService,
-    SessionServiceError,
+    LiveSessionFacts, SessionAvailability, SessionCallOutcome, SessionLookupScope,
+    SessionSecretSource, SessionService, SessionServiceError,
 };
-use fleet_approvals::{ApprovalEnrollment, ApprovalRouting, ApprovalSession, ApprovalSessionFacts};
+use fleet_approvals::{
+    ActorApprovalSessionFacts, ApprovalEnrollment, ApprovalRouting, ApprovalSession,
+    ApprovalSessionFacts,
+};
 use fleet_contracts::{ClientId, MachineConnectionAttachment};
 use fleet_identity_protocol::{
     BindFleetSession, CreateFleetSession, EndFleetSession, EnrollmentId, OrganizationId,
     SessionSecret, UnixSeconds,
 };
-use fleet_lent_transaction::CentralTransaction;
+use fleet_lent_transaction::OrganizationTransaction;
 use fleet_machine_login::link_authority::{ValidatedMachineConnection, restore_fixture_link};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx_core::{query::query, query_scalar::query_scalar};
-use sqlx_durable_object::{DoConnection, DoTransaction};
-use std::sync::{Arc, Mutex};
+use sqlx_durable_object::{Do, DoConnection, DoTransaction};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+};
 use worker::{Response, Result, Storage};
 use workspace_ids::{CentralSessionId, MachineId};
 
@@ -105,6 +111,8 @@ enum SessionCaseError {
     Sql(#[from] sqlx_core::Error),
     #[error(transparent)]
     Service(#[from] SessionServiceError),
+    #[error(transparent)]
+    Loan(#[from] OrganizationLoanFailure),
     #[error("the fixture supplied an invalid date, enrollment or request")]
     InvalidFixture,
 }
@@ -123,7 +131,12 @@ pub(super) async fn apply(
 ) -> Result<Response> {
     let observed_reads = Arc::new(Mutex::new(Vec::new()));
     let capture_reads = observed_reads.clone();
+    let measuring_service = Arc::new(AtomicBool::new(false));
+    let observing_service = measuring_service.clone();
     let connection = DoConnection::new(storage).with_fetch_observer(move |sql, rows_read| {
+        if !observing_service.load(Ordering::Relaxed) {
+            return;
+        }
         capture_reads
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -138,7 +151,7 @@ pub(super) async fn apply(
     });
     let outcome = connection
         .transaction(move |transaction| async move {
-            apply_command(&transaction, &organization, input).await
+            apply_command(&transaction, &organization, input, &measuring_service).await
         })
         .await;
     let reads = observed_reads
@@ -156,6 +169,7 @@ async fn apply_command(
     transaction: &DoTransaction,
     organization: &OrganizationId,
     input: SessionCase,
+    measuring_service: &AtomicBool,
 ) -> std::result::Result<Value, SessionCaseError> {
     let caller = SessionLookupScope {
         machine_id: input.machine_id,
@@ -163,17 +177,31 @@ async fn apply_command(
     };
     let now =
         DateTime::from_timestamp_millis(input.now_ms).ok_or(SessionCaseError::InvalidFixture)?;
-    let mut lender = OrganizationLender {
-        lender: WorkerExecutorLender::from_storage_executor(transaction),
+    if let SessionCommand::Seed { unrelated_sessions } = input.command {
+        query("INSERT INTO signin_organization_identity (id,organization_statement,created_at,updated_at) VALUES (?,'session-storage-fixture',0,0)")
+            .bind(organization.as_str()).execute(transaction).await?;
+        seed(transaction, &caller, unrelated_sessions).await?;
+        return Ok(json!({ "seeded": unrelated_sessions }));
+    }
+    if let SessionCommand::ApprovalFacts {
+        requested_organization,
+        ..
+    } = &input.command
+        && requested_organization != organization
+    {
+        return Ok(approval_facts_reply(false, None));
+    }
+    let mut lender = OrganizationLoan::verify(
+        WorkerExecutorLender::from_storage_executor(transaction),
         organization,
-    };
+    )
+    .await?;
+    // These budgets cover SessionService reads. The owner has already checked its stamp.
+    measuring_service.store(true, Ordering::Relaxed);
     let mut ids = HeldSessionId(uuid::Uuid::nil());
     let mut context = Context { now, ids: &mut ids };
     match input.command {
-        SessionCommand::Seed { unrelated_sessions } => {
-            seed(transaction, &caller, unrelated_sessions).await?;
-            Ok(json!({ "seeded": unrelated_sessions }))
-        }
+        SessionCommand::Seed { .. } => Err(SessionCaseError::InvalidFixture),
         SessionCommand::ReplaceIdleEnrollment { replacement_id } => {
             let ended_at = now.to_rfc3339_opts(SecondsFormat::Millis, true);
             replace_idle_enrollment(transaction, &caller, &replacement_id, &ended_at).await?;
@@ -241,6 +269,9 @@ async fn apply_command(
             session_id,
             requested_organization,
         } => {
+            if lender.organization_id() != &requested_organization {
+                return Ok(approval_facts_reply(false, None));
+            }
             let facts = ActorApprovalSessionFacts;
             let subject = ApprovalSession {
                 enrollment: ApprovalEnrollment {
@@ -250,11 +281,11 @@ async fn apply_command(
                 session_id,
             };
             let live = facts
-                .session_is_live(&mut lender, &requested_organization, &subject)
+                .session_is_live(&mut lender, &subject)
                 .await
                 .map_err(SessionServiceError::from)?;
             let route = facts
-                .session_initial_route(&mut lender, &requested_organization, &subject)
+                .session_initial_route(&mut lender, &subject)
                 .await
                 .map_err(SessionServiceError::from)?;
             Ok(approval_facts_reply(live, route))
@@ -310,33 +341,8 @@ async fn apply_command(
     }
 }
 
-struct OrganizationLender<'a> {
-    lender: WorkerExecutorLender<'a, DoTransaction>,
-    organization: &'a OrganizationId,
-}
-
-impl CentralTransaction for OrganizationLender<'_> {
-    type Database = <WorkerExecutorLender<'static, DoTransaction> as CentralTransaction>::Database;
-
-    fn executor(&mut self) -> impl sqlx_core::executor::Executor<'_, Database = Self::Database> {
-        self.lender.executor()
-    }
-
-    fn rows_affected(
-        result: <Self::Database as sqlx_core::database::Database>::QueryResult,
-    ) -> u64 {
-        WorkerExecutorLender::<DoTransaction>::rows_affected(result)
-    }
-}
-
-impl OrganizationTransaction for OrganizationLender<'_> {
-    fn organization_id(&self) -> &OrganizationId {
-        self.organization
-    }
-}
-
 async fn admit_fixture(
-    lender: &mut OrganizationLender<'_>,
+    lender: &mut impl OrganizationTransaction<Database = Do>,
     scope: &SessionLookupScope,
     now: DateTime<chrono::Utc>,
 ) -> std::result::Result<Option<ValidatedMachineConnection>, SessionCaseError> {

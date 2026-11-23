@@ -1,7 +1,7 @@
 //! Allowed normal/build edges between workspace packages.
 use super::workspace_boundaries;
 
-const LAYER_POLICY: [(&str, &[&str]); 45] = [
+const LAYER_POLICY: [(&str, &[&str]); 46] = [
     ("workspace-ids", &[]),
     (
         "workspace-model",
@@ -20,6 +20,21 @@ const LAYER_POLICY: [(&str, &[&str]); 45] = [
             "fleet-rpc",
             "workspace-ids",
             "workspace-model",
+        ],
+    ),
+    (
+        "central-link-call-composition",
+        &[
+            "central-engine-model",
+            "central-link-protocol",
+            "central-storage",
+            "collaboration-central-core",
+            "fleet-actor-identity",
+            "fleet-identity-protocol",
+            "fleet-lent-transaction",
+            "fleet-rpc",
+            "fleet-runtime-ports",
+            "fleet-signin",
         ],
     ),
     (
@@ -78,6 +93,7 @@ const LAYER_POLICY: [(&str, &[&str]); 45] = [
     (
         "collaboration-central-tokio",
         &[
+            "central-link-call-composition",
             "central-link-protocol",
             "central-storage",
             "collaboration-central-conformance",
@@ -103,6 +119,7 @@ const LAYER_POLICY: [(&str, &[&str]); 45] = [
         "collaboration-central-cloudflare",
         &[
             "central-engine-model",
+            "central-link-call-composition",
             "central-link-protocol",
             "central-storage",
             "collaboration-central-core",
@@ -179,7 +196,6 @@ const LAYER_POLICY: [(&str, &[&str]); 45] = [
         &[
             "central-engine-model",
             "central-storage",
-            "fleet-approvals",
             "fleet-identity-protocol",
             "fleet-lent-transaction",
             "fleet-machine-login",
@@ -201,7 +217,10 @@ const LAYER_POLICY: [(&str, &[&str]); 45] = [
             "workspace-ids",
         ],
     ),
-    (workspace_boundaries::LENT_TRANSACTION, &[]),
+    (
+        workspace_boundaries::LENT_TRANSACTION,
+        &["fleet-identity-protocol"],
+    ),
     ("fleet-storage-schema", &[]),
     (
         "fleet-store-sqlx",

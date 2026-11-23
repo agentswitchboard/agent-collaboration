@@ -25,7 +25,7 @@ async fn unanswered_claims_keep_their_reconciliation_projection_across_two_reope
         store.insert(&direct, direct_created).await.unwrap();
         let now = clock.utc_now().timestamp_millis();
         let first = store
-            .claim_next_batch(MARK, 2, now, now)
+            .claim_next_batch(MARK, 2, now, now, &BTreeSet::new())
             .await
             .unwrap()
             .expect_clean();
@@ -38,7 +38,7 @@ async fn unanswered_claims_keep_their_reconciliation_projection_across_two_reope
             .unwrap()
             .expect_clean();
         let replay = store
-            .claim_next_batch(MARK, 1, now, now)
+            .claim_next_batch(MARK, 1, now, now, &BTreeSet::new())
             .await
             .unwrap()
             .expect_clean();
@@ -122,7 +122,7 @@ async fn overdue_orphans_end_at_the_original_deadline_without_ending_live_claims
         }
         store.insert(&later, created_at + 1).await.unwrap();
         let first = store
-            .claim_next_batch(MARK, 4, MARK, MARK)
+            .claim_next_batch(MARK, 4, MARK, MARK, &BTreeSet::new())
             .await
             .unwrap()
             .expect_clean();
@@ -135,7 +135,7 @@ async fn overdue_orphans_end_at_the_original_deadline_without_ending_live_claims
             .unwrap()
             .expect_clean();
         let retry = store
-            .claim_next_batch(MARK, 1, now, now)
+            .claim_next_batch(MARK, 1, now, now, &BTreeSet::new())
             .await
             .unwrap()
             .expect_clean();
@@ -222,7 +222,7 @@ async fn late_permanent_answer_settles_the_reopened_claim_using_its_projection()
         let mut store = MachineLocalOutbox::new(open(&directory).await);
         store.insert(&write, MARK - 1_000).await.unwrap();
         let first = store
-            .claim_next_batch(MARK, 1, MARK, MARK)
+            .claim_next_batch(MARK, 1, MARK, MARK, &BTreeSet::new())
             .await
             .unwrap()
             .expect_clean();

@@ -9,16 +9,18 @@ pub enum DueKind {
     WakeTimer,
     AutomationTimer,
     SystemMessageExpiry,
+    ApprovalRequestExpiry,
     DirectMessage,
     LegacyNoticeWindows,
     LegacyWorkspaceDrains,
 }
 
 impl DueKind {
-    pub const GRID: [Self; 4] = [
+    pub const GRID: [Self; 5] = [
         Self::WakeTimer,
         Self::AutomationTimer,
         Self::SystemMessageExpiry,
+        Self::ApprovalRequestExpiry,
         Self::DirectMessage,
     ];
 
@@ -27,6 +29,7 @@ impl DueKind {
             Self::WakeTimer => "wake_timer",
             Self::AutomationTimer => "automation_timer",
             Self::SystemMessageExpiry => "system_message_expiry",
+            Self::ApprovalRequestExpiry => "approval_request",
             Self::DirectMessage => "direct_message",
             Self::LegacyNoticeWindows => "legacy_notice_windows",
             Self::LegacyWorkspaceDrains => "legacy_workspace_drains",
@@ -38,6 +41,7 @@ impl DueKind {
             "wake_timer" => Some(Self::WakeTimer),
             "automation_timer" => Some(Self::AutomationTimer),
             "system_message_expiry" => Some(Self::SystemMessageExpiry),
+            "approval_request" => Some(Self::ApprovalRequestExpiry),
             "direct_message" => Some(Self::DirectMessage),
             "legacy_notice_windows" => Some(Self::LegacyNoticeWindows),
             "legacy_workspace_drains" => Some(Self::LegacyWorkspaceDrains),
@@ -50,6 +54,7 @@ impl DueKind {
             Self::WakeTimer
             | Self::AutomationTimer
             | Self::SystemMessageExpiry
+            | Self::ApprovalRequestExpiry
             | Self::DirectMessage => DueLane::OnGrid,
             Self::LegacyNoticeWindows | Self::LegacyWorkspaceDrains => DueLane::Legacy,
         }

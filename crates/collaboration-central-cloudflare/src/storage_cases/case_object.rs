@@ -73,6 +73,7 @@ pub struct StorageCaseObject {
     env: Env,
     connection: DoConnection,
     opened: Cell<bool>,
+    approvals_opened: Cell<bool>,
     pauses: PausePoints,
     turns: Arc<WorkspaceTurns>,
     holds: RefCell<BTreeMap<(WorkspaceId, CasePausePoint), HeldPause>>,
@@ -321,6 +322,7 @@ impl DurableObject for StorageCaseObject {
             env,
             connection,
             opened: Cell::new(false),
+            approvals_opened: Cell::new(false),
             pauses: PausePoints::default(),
             turns: Arc::new(WorkspaceTurns::default()),
             holds: RefCell::new(BTreeMap::new()),
@@ -328,6 +330,15 @@ impl DurableObject for StorageCaseObject {
     }
 
     async fn fetch(&self, request: Request) -> Result<Response> {
+        if request.path() == "/approval-store" {
+            return super::approval_store_witness::apply_fixture(
+                &self.state,
+                &self.connection,
+                &self.approvals_opened,
+                request,
+            )
+            .await;
+        }
         let migrator: CaseMigrator = serde_json::from_str(
             &request
                 .headers()

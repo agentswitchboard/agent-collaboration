@@ -8,7 +8,7 @@ use central_engine_model::{
 };
 
 use crate::approval_lifecycle_admission::{
-    applying_time, matches_key, stop_binding, stop_cause_matches_raise, stop_marker_matches_cause,
+    matches_key, stop_binding, stop_cause_matches_raise, stop_marker_matches_cause,
 };
 use crate::approval_lifecycle_delivery::{receive, reoffer};
 use crate::approval_lifecycle_destinations::{decide, pass_on, read};
@@ -16,7 +16,7 @@ use crate::approval_lifecycle_effects::{
     ApprovalChange, finish, finish_stopped, parent_notice, reply, standing, with_delivery,
 };
 use crate::{
-    ApprovalActor, ApprovalApply, ApprovalEffect, ApprovalEvent, ApprovalReceipt, ApprovalRefusal,
+    ApprovalActor, ApprovalEffect, ApprovalEvent, ApprovalReceipt, ApprovalRefusal,
     ApprovalRequestKey, ApprovalRouting, ApprovalState, ProviderSessionAvailability,
     RaiseAdmission, RetainedApproval, StopMarkerCause,
 };
@@ -29,17 +29,17 @@ pub struct ApprovalLifecycle;
 impl Machine for ApprovalLifecycle {
     const KIND: MachineKind = MachineKind("approval_request");
     type State = ApprovalState;
-    type Event = ApprovalApply;
+    type Event = ApprovalEvent;
     type Effect = ApprovalEffect;
     type Error = ApprovalRefusal;
 
     fn transition(
         state: &ApprovalState,
-        apply: ApprovalApply,
+        event: ApprovalEvent,
         context: &mut Context<'_>,
     ) -> ApprovalChange {
-        let now = applying_time(context.now, apply.high_water)?;
-        match apply.event {
+        let now = context.now;
+        match event {
             ApprovalEvent::Raise {
                 key,
                 raise,
@@ -50,8 +50,7 @@ impl Machine for ApprovalLifecycle {
                 key,
                 actor,
                 request,
-                prior,
-            } => decide(state, &key, &actor, request, prior.as_deref(), now),
+            } => decide(state, &key, &actor, request, now),
             ApprovalEvent::Read { key, person_id } => {
                 read(state, &key, &ApprovalActor::Person(person_id), now)
             }
@@ -66,7 +65,7 @@ impl Machine for ApprovalLifecycle {
             ApprovalEvent::RunRetired => end_authority(state, AuthorityEnd::Run, now),
             ApprovalEvent::EnrollmentEnded => end_authority(state, AuthorityEnd::Enrollment, now),
             ApprovalEvent::SessionEnded => end_authority(state, AuthorityEnd::ProviderSession, now),
-            ApprovalEvent::Reoffer => reoffer(state),
+            ApprovalEvent::Reoffer => reoffer(state, now),
         }
     }
 
@@ -99,17 +98,23 @@ fn apply_raise(
     }
     match state {
         ApprovalState::Waiting { saved } | ApprovalState::Ended { saved, .. } => {
-            let result = if saved.contents_digest == raise_digest(&raise)? {
-                RaiseReply::Receipt {
-                    receipt: RaiseReceipt {
-                        request_id: saved.key.request_id.clone(),
-                        window: saved.window,
-                    },
-                }
+            if saved.contents_digest != raise_digest(&raise)? {
+                return reply(state, ApprovalReceipt::Raise(RaiseReply::ContentsDiffer {}));
+            }
+            let receipt = ApprovalReceipt::Raise(RaiseReply::Receipt {
+                receipt: RaiseReceipt {
+                    request_id: saved.key.request_id.clone(),
+                    window: saved.window,
+                },
+            });
+            if matches!(state, ApprovalState::Waiting { .. }) && now >= saved.window.deadline() {
+                let (next, mut effects) =
+                    finish(saved, Ending::TimedOut {}, Delivery::Owed {}, now)?;
+                effects.push(ApprovalEffect::Reply(receipt));
+                Ok((next, effects))
             } else {
-                RaiseReply::ContentsDiffer {}
-            };
-            reply(state, ApprovalReceipt::Raise(result))
+                reply(state, receipt)
+            }
         }
         ApprovalState::StoppedBeforeRaise {
             contents_digest,
@@ -158,6 +163,11 @@ fn apply_raise(
                     state,
                     ApprovalReceipt::Raise(RaiseReply::TooManyOutstanding {}),
                 );
+            }
+            if !supported_time(now) {
+                return Err(TransitionError::Domain(
+                    ApprovalRefusal::ApplyingTimeOutOfRange,
+                ));
             }
             let window = ApprovalWindow::from_first_save(now)
                 .ok()

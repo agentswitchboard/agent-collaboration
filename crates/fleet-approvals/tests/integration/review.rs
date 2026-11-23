@@ -135,7 +135,7 @@ fn delegate_starts_with_only_its_exact_parent_and_only_first_raise_notifies() {
 }
 
 #[test]
-fn saved_replayed_standing_and_read_replies_keep_the_request_and_recipient_binding() {
+fn machine_decision_and_read_replies_keep_the_request_and_recipient_binding() {
     let (mut book, run, requester, _) = setup();
     let item = key(&run, 1);
     let other = key(&run, 2);
@@ -156,13 +156,13 @@ fn saved_replayed_standing_and_read_replies_keep_the_request_and_recipient_bindi
     );
     let original = decide_event(&item, person(10, FactorStanding::Fresh), 100, answer(2));
     let won = run_event(&mut book, original.clone(), 1);
-    let replayed = run_event(&mut book, original, 2);
+    let previously_decided = run_event(&mut book, original, 2);
     let standing = run_event(
         &mut book,
         decide_event(&item, person(10, FactorStanding::Fresh), 101, answer(1)),
         3,
     );
-    for effects in [&won, &replayed, &standing] {
+    for effects in [&won, &previously_decided, &standing] {
         let ApprovalReceipt::Decide(bound) = raw_reply(effects) else {
             panic!("expected Decide");
         };
@@ -223,18 +223,19 @@ fn saved_replayed_standing_and_read_replies_keep_the_request_and_recipient_bindi
 }
 
 #[test]
-fn out_of_range_sample_or_restored_floor_cannot_poison_the_collection() {
+fn a_first_save_rejects_out_of_range_time_without_affecting_the_next_raise() {
     let (mut book, run, requester, _) = setup();
     let item = key(&run, 1);
-    let alarm = ApprovalCollectionEvent::Alarm {
-        key: item.clone(),
-        deadline: time(1),
-    };
+    let raise = raise_event(
+        &run,
+        provider(&item, &requester, "Ordinary"),
+        ApprovalRouting::Owner,
+    );
     let unavailable_time = time(MAX_ALARM_UNIX_MILLIS + 1);
     let before = book.clone();
     assert_eq!(
         book.apply(
-            alarm.clone(),
+            raise.clone(),
             &mut Context {
                 now: unavailable_time,
                 ids: &mut UnusedIds
@@ -245,27 +246,6 @@ fn out_of_range_sample_or_restored_floor_cannot_poison_the_collection() {
         ))
     );
     assert_eq!(book, before);
-    let mut restored = book.clone();
-    restored.high_water = unavailable_time;
-    assert_eq!(
-        restored.apply(
-            alarm.clone(),
-            &mut Context {
-                now: time(1),
-                ids: &mut UnusedIds
-            }
-        ),
-        Err(TransitionError::Domain(
-            ApprovalRefusal::ApplyingTimeOutOfRange
-        ))
-    );
-    assert!(run_event(&mut book, alarm, 2).is_empty());
-    assert_eq!(book.high_water, time(2));
-    let raise = raise_event(
-        &run,
-        provider(&item, &requester, "Ordinary"),
-        ApprovalRouting::Owner,
-    );
     let too_near_end = time(MAX_ALARM_UNIX_MILLIS + 1 - HOUR);
     assert_eq!(
         book.apply(
@@ -277,10 +257,10 @@ fn out_of_range_sample_or_restored_floor_cannot_poison_the_collection() {
         ),
         Err(TransitionError::Domain(ApprovalRefusal::DeadlineOutOfRange))
     );
-    assert_eq!(book.high_water, time(2));
+    assert_eq!(book, before);
     let received = run_event(&mut book, raise, 1);
     let ObservedReply::Raise(RaiseReply::Receipt { receipt }) = reply(&received) else {
         panic!("expected first receipt");
     };
-    assert_eq!(receipt.window.deadline(), time(2 + HOUR));
+    assert_eq!(receipt.window.deadline(), time(1 + HOUR));
 }

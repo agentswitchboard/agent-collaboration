@@ -4,10 +4,9 @@ use central_storage::StoreFailure;
 use fleet_identity_protocol::{
     BindFleetSession, BindFleetSessionReply, CreateFleetSession, CreateFleetSessionReply,
     CreateSessionKind, CreateSessionRefusal, EndFleetSession, EndFleetSessionReply,
-    EndSessionTarget, EnrollmentId, OrganizationId, PresentedSessionSecret, SessionCreator,
-    SessionSecret,
+    EndSessionTarget, EnrollmentId, PresentedSessionSecret, SessionCreator, SessionSecret,
 };
-use fleet_lent_transaction::CentralTransaction;
+use fleet_lent_transaction::OrganizationTransaction;
 use fleet_machine_login::{
     SessionEnrollmentStatus, link_authority::ValidatedMachineConnection, read_session_enrollment,
 };
@@ -20,17 +19,13 @@ use workspace_ids::{CentralSessionId, MachineId};
 
 use crate::session_repository::SessionRepository;
 use crate::{
-    AddressAvailability, BoundSession, NewSessionAdmission, RecordedSessionCreator, SessionApply,
-    SessionCreatorAdmission, SessionEndIdentity, SessionEvent, SessionLifecycle,
-    SessionMachineRefusal, SessionReceipt, SessionReservation, SessionState,
+    AddressAvailability, AuthenticatedSession, BoundSession, NewSessionAdmission,
+    RecordedSessionCreator, ScopedSession, SessionApply, SessionCreatorAdmission,
+    SessionEndIdentity, SessionEvent, SessionLifecycle, SessionMachineRefusal, SessionReceipt,
+    SessionReservation, SessionState,
 };
 
 const RESERVATION_DURATION_MILLIS: i64 = 600_000;
-
-/// The physical organization owner lends its transaction with the scope it opened.
-pub trait OrganizationTransaction: CentralTransaction {
-    fn organization_id(&self) -> &OrganizationId;
-}
 
 /// Lookup keys for trusted facts reads.
 pub struct SessionLookupScope {
@@ -69,13 +64,6 @@ pub trait SessionSecretSource {
 /// A host owns the transaction and commits only an Ok result.
 pub struct SessionService<'a, Transaction> {
     repository: SessionRepository<'a, Transaction>,
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ScopedSession {
-    pub session_id: CentralSessionId,
-    pub machine_id: MachineId,
-    pub enrollment_id: EnrollmentId,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -214,10 +202,10 @@ where
     /// A lookup scope containing only IDs cannot issue a command.
     ///
     /// ```compile_fail,E0308
-    /// use fleet_actor_identity::{OrganizationTransaction, SessionLookupScope, SessionService};
+    /// use fleet_actor_identity::{SessionLookupScope, SessionService};
     /// use fleet_identity_protocol::{BindFleetSession, OrganizationId};
     /// use central_engine_model::Context;
-    /// use fleet_lent_transaction::CentralTransaction;
+    /// use fleet_lent_transaction::{CentralTransaction, OrganizationTransaction};
     /// use sqlx::{Sqlite, SqliteConnection};
     /// struct Lender<'a>(&'a mut SqliteConnection, OrganizationId);
     /// impl CentralTransaction for Lender<'_> {
@@ -382,6 +370,41 @@ where
             return Ok(None);
         };
         Ok(self.is_current(caller).await?.then_some(bound))
+    }
+
+    pub async fn session_is_live(
+        &mut self,
+        caller: &SessionLookupScope,
+        session_id: &CentralSessionId,
+    ) -> Result<bool, StoreFailure> {
+        Ok(self.live_session(caller, session_id).await?.is_some())
+    }
+
+    /// Check the presented secret in the same organization and live enrollment.
+    pub async fn authenticate_live_session(
+        &mut self,
+        connection: &ValidatedMachineConnection,
+        session_id: &CentralSessionId,
+        presented: &PresentedSessionSecret,
+    ) -> Result<Option<AuthenticatedSession>, StoreFailure> {
+        if self.repository.tx.organization_id() != connection.organization_id() {
+            return Ok(None);
+        }
+        let PresentedSessionSecret::Secret { secret } = presented else {
+            return Ok(None);
+        };
+        let caller = SessionLookupScope {
+            machine_id: connection.machine_id().clone(),
+            enrollment_id: connection.enrollment_id().clone(),
+        };
+        let Some(bound) = self.live_session(&caller, session_id).await? else {
+            return Ok(None);
+        };
+        Ok(bound
+            .reserved
+            .secret_hash
+            .matches(secret)
+            .then(|| AuthenticatedSession::from_checked_connection(connection, session_id.clone())))
     }
 
     async fn apply(

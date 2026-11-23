@@ -2,7 +2,9 @@
 use crate::{OutboxScope, OutboxWriteContent, OutboxWriteTarget};
 use serde::{Deserialize, Serialize};
 use workspace_ids::RequestId;
-use workspace_model::{WorkspaceRequest, central_mail::SendMessageRequest};
+use workspace_model::{
+    DigestError, WorkspaceRequest, central_mail::SendMessageRequest, operation_content_digest,
+};
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(
@@ -47,6 +49,14 @@ impl OutboxQueuedWrite {
                 },
                 body: message.body.clone(),
             }),
+        }
+    }
+
+    /// The same operation digest that Central's request log retains.
+    pub(crate) fn content_digest(&self) -> Result<String, DigestError> {
+        match self {
+            Self::Workspace(request) => operation_content_digest(&request.operation),
+            Self::SendMessage { message, .. } => operation_content_digest(message),
         }
     }
 }

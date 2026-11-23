@@ -4,6 +4,7 @@ use crate::{
     OutboxRequestStatus, OutboxScope, OutboxStoreError, OutboxWriteOutcome, OutboxWriteTarget,
     PendingWriteState, StoredOutboxWrite, StoredSenderOutcome,
 };
+use std::collections::BTreeSet;
 use workspace_model::{ItemRef, RefusalReason, Timestamp, central_mail::MessageOutcome};
 
 async fn return_and_reclaim(
@@ -20,7 +21,7 @@ async fn return_and_reclaim(
             .is_empty()
     );
     outbox
-        .claim_next_batch(MARK, 2, MARK + 1, MARK + 1)
+        .claim_next_batch(MARK, 2, MARK + 1, MARK + 1, &BTreeSet::new())
         .await
         .unwrap()
         .expect_clean()
@@ -38,7 +39,7 @@ async fn swapped_same_kind_settlements_leave_both_claims_recoverable() {
         outbox.insert(write, MARK - 1_000).await.unwrap();
     }
     let claims = outbox
-        .claim_next_batch(MARK, 2, MARK, MARK)
+        .claim_next_batch(MARK, 2, MARK, MARK, &BTreeSet::new())
         .await
         .unwrap()
         .expect_clean()
@@ -98,7 +99,7 @@ async fn not_found_from_another_workspace_cannot_settle_the_claim() {
     let mut outbox = MacOutbox::new(&mut database);
     outbox.insert(&write, MARK - 1_000).await.unwrap();
     let claims = outbox
-        .claim_next_batch(MARK, 1, MARK, MARK)
+        .claim_next_batch(MARK, 1, MARK, MARK, &BTreeSet::new())
         .await
         .unwrap()
         .expect_clean()
@@ -184,7 +185,7 @@ async fn invalid_incoming_outbox_clocks_leave_enqueued_and_claimed_rows_intact()
     }
     assert_eq!(
         outbox
-            .claim_next_batch(MARK, 1, MARK, MARK)
+            .claim_next_batch(MARK, 1, MARK, MARK, &BTreeSet::new())
             .await
             .unwrap()
             .expect_clean()
@@ -214,11 +215,15 @@ async fn invalid_incoming_outbox_clocks_leave_enqueued_and_claimed_rows_intact()
         "updated_at",
     );
     invalid_timestamp(
-        outbox.claim_next_batch(MARK, 1, i64::MAX, i64::MAX).await,
+        outbox
+            .claim_next_batch(MARK, 1, i64::MAX, i64::MAX, &BTreeSet::new())
+            .await,
         "updated_at",
     );
     invalid_timestamp(
-        outbox.claim_next_batch(i64::MAX, 1, MARK, MARK).await,
+        outbox
+            .claim_next_batch(i64::MAX, 1, MARK, MARK, &BTreeSet::new())
+            .await,
         "mark_ms",
     );
     invalid_timestamp(outbox.end_overdue(i64::MAX).await, "updated_at");
@@ -243,7 +248,7 @@ async fn invalid_incoming_sender_outcome_clock_preserves_the_claim() {
     let mut outbox = MacOutbox::new(&mut database);
     outbox.insert(&write, MARK).await.unwrap();
     outbox
-        .claim_next_batch(MARK, 1, MARK, MARK)
+        .claim_next_batch(MARK, 1, MARK, MARK, &BTreeSet::new())
         .await
         .unwrap()
         .expect_clean();

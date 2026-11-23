@@ -45,7 +45,8 @@ impl MacOutbox<'_> {
     }
     /// The caller's own writes not yet resolved, oldest first: unsent, sent
     /// with a lost answer (or still in flight), and answered ones the read
-    /// layer drops once it sees their created ids. Refused writes are excluded.
+    /// layer drops once it sees their created ids. A late refusal replaces the
+    /// unconfirmed cancellation in this view; ordinary refusals are excluded.
     pub async fn pending_for(
         &mut self,
         caller: &Caller,
@@ -83,10 +84,15 @@ impl MacOutbox<'_> {
                     (content.target, PendingWriteState::SentAnswerLost { body })
                 }
                 (
-                    OutboxItemState::Answered,
+                    OutboxItemState::Answered | OutboxItemState::Unconfirmed,
                     OutboxRequestStatus::Answered(reply),
                     StoredPayload::Answered(answered),
                 ) => (answered.target, PendingWriteState::Answered(reply)),
+                (
+                    OutboxItemState::Unconfirmed,
+                    OutboxRequestStatus::Refused(refusal),
+                    StoredPayload::Answered(profile),
+                ) => (profile.target, PendingWriteState::Refused(refusal)),
                 (
                     OutboxItemState::NotSent | OutboxItemState::Unconfirmed,
                     OutboxRequestStatus::Ended { reason },

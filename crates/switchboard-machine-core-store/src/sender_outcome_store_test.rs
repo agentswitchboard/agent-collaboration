@@ -3,6 +3,7 @@ use crate::{
     MacOutbox, NewOutboxItem, OutboxAccepted, OutboxQueuedWrite, OutboxRequestStatus,
     OutboxStoreError, StoredSenderOutcome,
 };
+use std::collections::BTreeSet;
 use workspace_model::central_mail::{MessageOutcome, MessageRefusal, WaitingReason};
 
 pub(super) fn direct_write(seed: u16) -> NewOutboxItem {
@@ -167,7 +168,7 @@ async fn late_outcome_recovers_only_the_expired_request_that_may_have_left() {
         outbox.insert(write, START).await.unwrap();
     }
     let batch = outbox
-        .claim_next_batch(MARK, 1, MARK, MARK)
+        .claim_next_batch(MARK, 1, MARK, MARK, &BTreeSet::new())
         .await
         .unwrap()
         .expect_clean();

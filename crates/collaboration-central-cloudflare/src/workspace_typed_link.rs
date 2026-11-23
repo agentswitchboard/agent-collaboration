@@ -5,9 +5,8 @@ use super::workspace_socket_attachment::SocketAttachment;
 use super::{CentralObject, OrgRuntime, OrganizationId};
 use crate::{cloudflare_transport, object_location::ObjectAddress};
 use central_link_protocol::{
-    CentralCall, CorrelationId, DataFrame, FrameDirection, FreshCorrelationId, LinkCallRefusal,
-    LinkFrame, MacCall, MacCallAddress, MacCallReply, MacLinkRpc, TypedCallCorrelations,
-    TypedCallResult, encode_text,
+    CentralCall, CorrelationId, DataFrame, FrameDirection, FreshCorrelationId, LinkFrame, MacCall,
+    MacCallAddress, MacCallReply, MacLinkRpc, TypedCallCorrelations, TypedCallResult, encode_text,
 };
 use collaboration_central_core::{MacCallResult, TYPED_LINK_CALL_TIMEOUT, finish_mac_call};
 use fleet_contracts::MachineConnectionAttachment;
@@ -126,15 +125,52 @@ impl CentralObject {
                 return result.map(|_| ()).and(closed);
             }
         }
-        let lapsed = match &dispatched.result {
-            TypedCallResult::Refused {
-                reason: LinkCallRefusal::AuthorityLapsed { cause },
-            } => Some(*cause),
-            _ => None,
+        self.send_central_call_result(socket, correlation_id, dispatched.result)
+    }
+
+    #[cfg(feature = "test-support")]
+    pub(super) async fn dispatch_fixture_probe(
+        &self,
+        runtime: &OrgRuntime,
+        socket: &WebSocket,
+        authority: &MachineConnectionAttachment,
+        correlation_id: CorrelationId,
+        request: central_link_protocol::fixture_central_probe::ProbeRequestEnvelope,
+    ) -> worker::Result<()> {
+        match runtime
+            .dispatch_fixture_central_probe(authority, request)
+            .await
+        {
+            Ok(answer @ TypedCallResult::Answered { .. }) => {
+                let text = central_link_protocol::fixture_central_probe::encode_probe_reply(
+                    correlation_id,
+                    answer,
+                )
+                .map_err(|error| worker::Error::RustError(error.to_string()))?;
+                socket.send_with_str(&text)
+            }
+            Ok(TypedCallResult::Refused { reason }) => self.send_central_call_result(
+                socket,
+                correlation_id,
+                TypedCallResult::Refused { reason },
+            ),
+            Err(_) => self.close_machine_link(socket, 1011, Some("central unavailable")),
+        }
+    }
+
+    fn send_central_call_result(
+        &self,
+        socket: &WebSocket,
+        correlation_id: CorrelationId,
+        result: TypedCallResult<central_link_protocol::CentralCallReply>,
+    ) -> worker::Result<()> {
+        let lapsed = match &result {
+            TypedCallResult::Refused { reason } => reason.authority_close(),
+            TypedCallResult::Answered { .. } => None,
         };
         let frame = DataFrame::CentralCallReply {
             correlation_id,
-            result: Box::new(dispatched.result),
+            result: Box::new(result),
         };
         #[cfg(feature = "test-support")]
         let fail_send = lapsed.is_some() && self.controls.fail_typed_refusal_send.replace(false);

@@ -847,6 +847,28 @@ dependencies = [
 ]
 
 [[package]]
+name = "central-link-call-composition"
+version = "0.1.158"
+dependencies = [
+ "central-engine-model",
+ "central-link-protocol",
+ "central-storage",
+ "chrono",
+ "collaboration-central-core",
+ "fleet-actor-identity",
+ "fleet-identity-protocol",
+ "fleet-lent-transaction",
+ "fleet-rpc",
+ "fleet-runtime-ports",
+ "fleet-signin",
+ "sqlx-core",
+ "thiserror 2.0.18",
+ "tracing",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
 name = "central-link-client"
 version = "0.1.158"
 dependencies = [
@@ -1449,9 +1471,11 @@ dependencies = [
 name = "collaboration-central-cloudflare"
 version = "0.1.158"
 dependencies = [
+ "approval-request-protocol",
  "axum",
  "base64 0.22.1",
  "central-engine-model",
+ "central-link-call-composition",
  "central-link-client",
  "central-link-protocol",
  "central-storage",
@@ -1510,12 +1534,19 @@ version = "0.1.158"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "central-link-protocol",
+ "central-storage",
  "chrono",
+ "fleet-identity-protocol",
+ "fleet-rpc",
+ "futures-util",
  "reqwest 0.12.28",
+ "reqwest-websocket",
  "ring",
  "serde_json",
  "sha2 0.10.9",
  "tokio",
+ "workspace-ids",
 ]
 
 [[package]]
@@ -1582,6 +1613,7 @@ dependencies = [
  "aws-lc-rs",
  "axum",
  "base64 0.22.1",
+ "central-link-call-composition",
  "central-link-client",
  "central-link-protocol",
  "central-storage",
@@ -2480,7 +2512,6 @@ dependencies = [
  "central-engine-model",
  "central-storage",
  "chrono",
- "fleet-approvals",
  "fleet-contracts",
  "fleet-identity-protocol",
  "fleet-lent-transaction",
@@ -2510,11 +2541,21 @@ dependencies = [
  "approval-request-protocol",
  "central-engine-model",
  "central-storage",
+ "fleet-actor-identity",
+ "fleet-approvals",
+ "fleet-engine",
  "fleet-identity-protocol",
  "fleet-lent-transaction",
+ "fleet-machine-login",
+ "fleet-request-log",
+ "fleet-runtime-ports",
+ "fleet-storage-schema",
  "hegeltest",
  "serde",
  "serde_json",
+ "sqlx",
+ "sqlx-core",
+ "tokio",
  "uuid",
  "workspace-ids",
 ]
@@ -2589,6 +2630,7 @@ dependencies = [
 name = "fleet-lent-transaction"
 version = "0.1.158"
 dependencies = [
+ "fleet-identity-protocol",
  "sqlx",
 ]
 

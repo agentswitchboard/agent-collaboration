@@ -13,12 +13,18 @@ mod machine_connection_refusal;
 mod mail_delivery_ready;
 pub mod mail_link;
 mod revision_failure;
-mod session_lifecycle_rpc;
+#[cfg(test)]
+mod session_lifecycle_rpc_test;
+#[cfg(test)]
+mod session_reply_pairs_test;
 mod statement_refusal;
 pub mod workspace_description;
 mod workspace_directory;
 mod workspace_rpc;
 
+pub use central_link_protocol::session_lifecycle_rpc::{
+    BindFleetSessionRpc, CreateFleetSessionRpc, EndFleetSessionRpc,
+};
 pub use central_observation::CentralObservation;
 pub use client_id::ClientId;
 pub use event_completion::{AlarmNotPublished, AlarmResult, EventCompletion, EventCompletionHook};
@@ -28,7 +34,6 @@ pub use machine_connection::{
 };
 pub use machine_connection_refusal::MachineConnectionRefusal;
 pub use revision_failure::AuthorizationRevisionFailure;
-pub use session_lifecycle_rpc::{BindFleetSessionRpc, CreateFleetSessionRpc, EndFleetSessionRpc};
 pub use statement_refusal::{FleetOrganizationStatementRefusal, StoredStatementRefusal};
 
 pub use engine_attempts::{

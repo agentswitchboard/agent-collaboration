@@ -1,0 +1,32 @@
+[package]
+name = "central-link-call-composition"
+description = "Central's organization-scoped dispatch of machine-link calls"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+autotests = false
+
+[features]
+test-support = []
+
+[dependencies]
+central-engine-model.workspace = true
+central-link-protocol.workspace = true
+central-storage.workspace = true
+collaboration-central-core = { path = "../collaboration-central-core", version = "0.1.158" }
+fleet-actor-identity.workspace = true
+fleet-identity-protocol = { path = "../fleet-identity-protocol", version = "0.1.158" }
+fleet-lent-transaction.workspace = true
+fleet-runtime-ports.workspace = true
+fleet-rpc.workspace = true
+fleet-signin.workspace = true
+tracing.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+sqlx-core.workspace = true
+uuid.workspace = true
+zeroize.workspace = true
+
+[lints]
+workspace = true

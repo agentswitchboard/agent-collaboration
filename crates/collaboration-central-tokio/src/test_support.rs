@@ -35,31 +35,46 @@ pub struct MachineLinkFixture {
 
 /// Start a real Tokio Central using the caller's clock and isolated fixture sign-in.
 pub async fn start_machine_link_fixture(clock: Arc<ManualClock>) -> Result<MachineLinkFixture> {
+    open_machine_link_fixture(clock, true).await
+}
+
+/// Start the real link with its default production dispatch table.
+pub async fn start_session_link_fixture(clock: Arc<ManualClock>) -> Result<MachineLinkFixture> {
+    open_machine_link_fixture(clock, false).await
+}
+
+async fn open_machine_link_fixture(
+    clock: Arc<ManualClock>,
+    fixture_link_calls: bool,
+) -> Result<MachineLinkFixture> {
     let root = tempfile::Builder::new()
         .prefix("workspace-link-")
         .tempdir()?;
     let now_seconds = clock.utc_now().timestamp();
     let keys = signed::SignInKeys::start().await?;
-    let host = Arc::new(
-        TokioWorkspaceHost::open_with_signin(
-            &root.path().join("modern"),
-            clock.clone(),
-            SignInTrustSettings {
-                issuer: signed::ISSUER.into(),
-                audience: signed::AUDIENCE.into(),
-                admin_audience: signed::ADMIN_AUDIENCE.into(),
-                machine_audience: signed::MACHINE_AUDIENCE.into(),
-                public_origin: signed::PUBLIC_ORIGIN.into(),
-                jwks_url: keys.url.clone(),
-                service_id: Some(
-                    "019f0000-0000-7000-8000-00000000ce05"
-                        .to_owned()
-                        .try_into()?,
-                ),
-            },
-        )
-        .await?,
-    );
+    let host = TokioWorkspaceHost::open_with_signin(
+        &root.path().join("modern"),
+        clock.clone(),
+        SignInTrustSettings {
+            issuer: signed::ISSUER.into(),
+            audience: signed::AUDIENCE.into(),
+            admin_audience: signed::ADMIN_AUDIENCE.into(),
+            machine_audience: signed::MACHINE_AUDIENCE.into(),
+            public_origin: signed::PUBLIC_ORIGIN.into(),
+            jwks_url: keys.url.clone(),
+            service_id: Some(
+                "019f0000-0000-7000-8000-00000000ce05"
+                    .to_owned()
+                    .try_into()?,
+            ),
+        },
+    )
+    .await?;
+    let host = Arc::new(if fixture_link_calls {
+        host.with_fixture_link_calls()
+    } else {
+        host
+    });
     let organization: OrganizationId = signed::ORGANIZATION.to_owned().try_into()?;
     let runtime = host.central(&organization).await?;
     runtime

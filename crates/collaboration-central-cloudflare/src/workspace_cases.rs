@@ -17,6 +17,7 @@ mod workspace_turn_cases;
 
 #[derive(Default)]
 pub(crate) struct Controls {
+    pub(super) fail_reserved_session_reply: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub(super) fail_typed_refusal_send: std::cell::Cell<bool>,
     pub(super) faults: std::sync::Arc<fleet_runtime::TestFaults>,
     pub(super) zero_next_write_alarm: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -47,6 +48,7 @@ enum Point {
     AfterDrainCommit,
     BeforeTimerCommit,
     BeforeReceiptTransaction,
+    BeforeSessionTransaction,
     AfterIdleExpiryCommit,
     AfterIdleRenewalPlatformSendError,
     BeforePrivateEnrollmentInvalidation,
@@ -75,6 +77,7 @@ impl From<Point> for PausePoint {
             Point::AfterDrainCommit => Self::AfterDrainCommit,
             Point::BeforeTimerCommit => Self::BeforeTimerCommit,
             Point::BeforeReceiptTransaction => Self::BeforeReceiptTransaction,
+            Point::BeforeSessionTransaction => Self::BeforeSessionTransaction,
             Point::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
             Point::AfterIdleRenewalPlatformSendError => Self::AfterIdleRenewalPlatformSendError,
             Point::BeforePrivateEnrollmentInvalidation => Self::BeforePrivateEnrollmentInvalidation,
@@ -176,6 +179,13 @@ pub(super) async fn control(
             .json::<central_link_protocol::CorrelationId>()
             .await?;
         return Response::from_json(&object.pending_mac_calls.is_waiting(&correlation));
+    }
+    if path == "/test/fail-reserved-session-reply" {
+        object.controls.fail_reserved_session_reply.store(
+            request.json::<bool>().await?,
+            std::sync::atomic::Ordering::Release,
+        );
+        return Response::from_json(&true);
     }
     if path == "/test/fail-typed-refusal-send" {
         object

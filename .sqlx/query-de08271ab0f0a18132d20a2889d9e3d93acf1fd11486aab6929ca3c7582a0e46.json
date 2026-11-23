@@ -1,0 +1,122 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT router_run_id, organization_id, machine_id, enrollment_id,\n       registration_order, registered_at, retired_at, created_at, updated_at\nFROM approval_router_runs\nWHERE organization_id = ?1 AND machine_id = ?2 AND enrollment_id = ?3\nORDER BY registration_order DESC\nLIMIT 1\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "router_run_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "router_run_id"
+          }
+        }
+      },
+      {
+        "name": "organization_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "organization_id"
+          }
+        }
+      },
+      {
+        "name": "machine_id",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "machine_id"
+          }
+        }
+      },
+      {
+        "name": "enrollment_id",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "enrollment_id"
+          }
+        }
+      },
+      {
+        "name": "registration_order",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "registration_order"
+          }
+        }
+      },
+      {
+        "name": "registered_at",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "registered_at"
+          }
+        }
+      },
+      {
+        "name": "retired_at",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "retired_at"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_router_runs",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "de08271ab0f0a18132d20a2889d9e3d93acf1fd11486aab6929ca3c7582a0e46"
+}
