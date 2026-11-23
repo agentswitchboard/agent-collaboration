@@ -7,6 +7,7 @@ mod outbox_deadline;
 mod outbox_item_state;
 mod outbox_queued_write;
 mod outbox_receipt_profile;
+mod outbox_settlement;
 mod outbox_status;
 mod outbox_storage;
 mod outbox_store;
@@ -19,9 +20,10 @@ pub use inbox_store::{
 pub use machine_identity_store::{MachineIdentityError, load_or_create_machine_id};
 pub use machine_local_store::{MACHINE_LOCAL_DATABASE, MachineLocalStore, MachineLocalStoreError};
 pub use outbox_queued_write::OutboxQueuedWrite;
+pub use outbox_settlement::{InvalidOutboxOutcome, OutboxWriteOutcome};
 pub use outbox_status::{
     LocalOutboxRefusal, OutboxCancellation, OutboxRefusal, OutboxRequestKey, OutboxRequestStatus,
-    OutboxScope, OutboxWriteOutcome,
+    OutboxScope,
 };
 pub use outbox_storage::{MachineLocalOutbox, OutboxFuture, OutboxStorage};
 pub use outbox_store::{

@@ -13,3 +13,7 @@ The outbox tests exercise queued and claimed writes, caller-scoped views,
 replay, deadlines, and terminal rows through SQLite. The storage contract
 cases run against the production adapter. The Hegel model checks status,
 waiting order, pending and outgoing views, and terminal payload removal.
+
+The integration target starts two independent identity loaders against one
+fresh root, releases both through process pipes, and verifies that both
+returned the UUIDv7 read from the reopened database.

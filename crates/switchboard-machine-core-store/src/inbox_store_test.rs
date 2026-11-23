@@ -408,3 +408,38 @@ async fn inbox_rejects_unknown_state_and_a_payload_with_the_wrong_message_id() {
         })
     ));
 }
+
+#[tokio::test]
+async fn corrupt_completion_marker_cannot_prune_a_message_with_work_owed() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("machine_local.sqlite");
+    let mut database = MachineLocalStore::open(&path).await.unwrap();
+    let event = message(0);
+    let body = serde_json::to_string(&event).unwrap();
+    let state = r#"{"decision":{"kind":"accepted"},"receipt":{"kind":"pending"},"ended_at_ms":0}"#;
+    sqlx::query(
+        "INSERT INTO inbox_messages (message_id, message_json, delivery_state_json, created_at, updated_at)
+         VALUES (?, ?, ?, 0, 0)",
+    ).bind(event.message_id.as_str()).bind(&body).bind(state).execute(&mut database.connection).await.unwrap();
+    let mut inbox = InboxStore::new(database);
+
+    for result in [
+        inbox.next_prune_at_ms().await.map(|_| ()),
+        inbox.prune_ended(24 * 60 * 60 * 1000 + 1).await,
+    ] {
+        assert!(matches!(
+            result,
+            Err(InboxStoreError::Corrupt {
+                field: "delivery_state_json.ended_at_ms",
+                ..
+            })
+        ));
+    }
+    let mut reopened = MachineLocalStore::open(&path).await.unwrap();
+    let retained: (String, String) =
+        sqlx::query_as("SELECT message_json, delivery_state_json FROM inbox_messages")
+            .fetch_one(&mut reopened.connection)
+            .await
+            .unwrap();
+    assert_eq!(retained, (body, state.to_owned()));
+}

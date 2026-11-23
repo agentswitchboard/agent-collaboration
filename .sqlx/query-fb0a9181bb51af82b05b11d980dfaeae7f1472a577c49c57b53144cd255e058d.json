@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT request_id AS \"request_id!\", caller_json, payload_json, item_state,\n                          flush_at_ms, outcome_json\n                   FROM outbox_items\n                   WHERE request_id = ? AND item_state IN (?, ?) AND expires_at_ms <= ?",
+  "query": "SELECT request_id AS \"request_id!\", caller_json, payload_json, item_state,\n                  flush_at_ms, outcome_json, created_at, expires_at_ms, updated_at\n           FROM outbox_items WHERE item_state IN (?, ?) ORDER BY created_at, request_id",
   "describe": {
     "columns": [
       {
@@ -68,10 +68,43 @@
             "name": "outcome_json"
           }
         }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "outbox_items",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "expires_at_ms",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "outbox_items",
+            "name": "expires_at_ms"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "outbox_items",
+            "name": "updated_at"
+          }
+        }
       }
     ],
     "parameters": {
-      "Right": 4
+      "Right": 2
     },
     "nullable": [
       false,
@@ -79,8 +112,11 @@
       false,
       false,
       false,
-      true
+      true,
+      false,
+      false,
+      false
     ]
   },
-  "hash": "b982a5f40e07ce3f44b940dc676765c74cf546c07b914eaf041cb641bfae46dd"
+  "hash": "fb0a9181bb51af82b05b11d980dfaeae7f1472a577c49c57b53144cd255e058d"
 }

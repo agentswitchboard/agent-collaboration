@@ -101,6 +101,7 @@ impl StoredDelivery {
 struct InboxRow {
     message_id: String,
     created_at: i64,
+    updated_at: i64,
     message_json: Option<String>,
     delivery_state_json: String,
 }
@@ -112,6 +113,13 @@ impl InboxRow {
             field,
         };
         let message_id: MessageId = self.message_id.parse().map_err(|_| corrupt("message_id"))?;
+        for (value, field) in [
+            (self.created_at, "created_at"),
+            (self.updated_at, "updated_at"),
+        ] {
+            workspace_model::Timestamp::from_timestamp_millis(value)
+                .ok_or_else(|| corrupt(field))?;
+        }
         let state: InboxRowState = serde_json::from_str(&self.delivery_state_json)
             .map_err(|_| corrupt("delivery_state_json"))?;
         let message: Option<MessageRecord> = self
@@ -130,6 +138,9 @@ impl InboxRow {
         }
         if state.ended_at_ms.is_some()
             != (message.is_none() && state.receipt == ReceiptConfirmation::Confirmed)
+            || state
+                .ended_at_ms
+                .is_some_and(|ended| ended != self.updated_at)
         {
             return Err(corrupt("delivery_state_json.ended_at_ms"));
         }
@@ -240,7 +251,7 @@ impl InboxStore {
     pub async fn pending_handoffs(&mut self) -> Result<Vec<MessageRecord>, InboxStoreError> {
         let rows = sqlx::query_as!(
             InboxRow,
-            "SELECT message_id, created_at, message_json, delivery_state_json FROM inbox_messages
+            "SELECT message_id, created_at, updated_at, message_json, delivery_state_json FROM inbox_messages
              WHERE message_json IS NOT NULL ORDER BY created_at, message_id",
         )
         .fetch_all(&mut self.store.connection)
@@ -258,8 +269,10 @@ impl InboxStore {
     pub async fn pending_receipts(&mut self) -> Result<Vec<InboxReceipt>, InboxStoreError> {
         let rows = sqlx::query_as!(
             InboxRow,
-            "SELECT message_id, created_at, message_json, delivery_state_json FROM inbox_messages
-             WHERE json_extract(delivery_state_json, '$.receipt.kind') IS NOT 'confirmed'
+            "SELECT message_id, created_at, updated_at, message_json, delivery_state_json FROM inbox_messages
+             WHERE CASE WHEN json_valid(delivery_state_json)
+                        THEN json_extract(delivery_state_json, '$.receipt.kind') IS NOT 'confirmed'
+                        ELSE 1 END
              ORDER BY created_at, message_id",
         )
         .fetch_all(&mut self.store.connection)
@@ -271,27 +284,51 @@ impl InboxStore {
 
     /// First time an ended row is eligible for pruning, in Unix milliseconds.
     pub async fn next_prune_at_ms(&mut self) -> Result<Option<i64>, InboxStoreError> {
-        let oldest = sqlx::query_scalar!(
-            "SELECT min(json_extract(delivery_state_json, '$.ended_at_ms')) AS \"oldest?: i64\"
-             FROM inbox_messages",
-        )
-        .fetch_one(&mut self.store.connection)
-        .await?;
+        let mut transaction = self.store.transaction(TransactionStart::Deferred).await?;
+        let oldest = retention_candidates(&mut transaction)
+            .await?
+            .into_iter()
+            .filter_map(|delivery| delivery.state.ended_at_ms)
+            .min();
+        transaction.commit().await?;
         Ok(oldest.and_then(|ended| ended.checked_add(RETENTION_MILLIS + 1)))
     }
 
     pub async fn prune_ended(&mut self, now_ms: i64) -> Result<(), InboxStoreError> {
         let cutoff = now_ms.saturating_sub(RETENTION_MILLIS);
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
-        sqlx::query!(
-            "DELETE FROM inbox_messages WHERE json_extract(delivery_state_json, '$.ended_at_ms') < ?",
-            cutoff,
-        )
-        .execute(&mut *transaction)
-        .await?;
+        for delivery in retention_candidates(&mut transaction).await? {
+            if delivery
+                .state
+                .ended_at_ms
+                .is_some_and(|ended| ended < cutoff)
+            {
+                sqlx::query!(
+                    "DELETE FROM inbox_messages WHERE message_id = ?",
+                    delivery.message_id.as_str()
+                )
+                .execute(&mut *transaction)
+                .await?;
+            }
+        }
         transaction.commit().await?;
         Ok(())
     }
+}
+
+async fn retention_candidates(
+    connection: &mut SqliteConnection,
+) -> Result<Vec<StoredDelivery>, InboxStoreError> {
+    // Include malformed JSON and incomplete completion markers so the row
+    // decoder can report corruption before any custody is removed.
+    sqlx::query_as!(
+        InboxRow,
+        "SELECT message_id, created_at, updated_at, message_json, delivery_state_json FROM inbox_messages
+         WHERE CASE WHEN json_valid(delivery_state_json)
+               THEN json_type(delivery_state_json, '$.ended_at_ms') IS NOT 'null'
+                    OR (message_json IS NULL AND json_extract(delivery_state_json, '$.receipt.kind') = 'confirmed')
+               ELSE 1 END",
+    ).fetch_all(connection).await?.into_iter().map(InboxRow::decode).collect()
 }
 
 async fn read_delivery(
@@ -301,7 +338,7 @@ async fn read_delivery(
     let key = message_id.as_str();
     sqlx::query_as!(
         InboxRow,
-        "SELECT message_id, created_at, message_json, delivery_state_json FROM inbox_messages
+        "SELECT message_id, created_at, updated_at, message_json, delivery_state_json FROM inbox_messages
          WHERE message_id = ?",
         key,
     )

@@ -15,13 +15,18 @@ mod outbox_transitions;
 mod sender_outcome_store;
 
 use outbox_rows::{
-    OutboxRow, StoredPayload, decode_row, outbox_content, payload_content_digest,
-    read_decoded_outbox,
+    StoredPayload, decode_row, outbox_content, payload_content_digest, read_owned_outbox, read_row,
 };
 pub use outbox_transitions::ClaimedBatch;
 
 #[derive(Debug, thiserror::Error)]
 pub enum OutboxStoreError {
+    #[error("outbox timestamp {field} is out of range")]
+    InvalidTimestamp { field: &'static str },
+    #[error("outbox outcome does not settle the claimed operation for request {request}")]
+    InvalidOutcome { request: RequestId },
+    #[error("central reported contradictory final outcomes for request {request}")]
+    ContradictoryFinalOutcome { request: RequestId },
     #[error("central delivery outcome does not match request {request}")]
     DeliveryOutcomeMismatch { request: RequestId },
     #[error("the outbox insert did not start")]
@@ -108,15 +113,7 @@ impl<'store> MacOutbox<'store> {
             .transaction(TransactionStart::Immediate)
             .await
             .map_err(OutboxStoreError::InsertNotStarted)?;
-        let existing = sqlx::query_as!(
-            OutboxRow,
-            r#"SELECT request_id AS "request_id!", caller_json, payload_json, item_state,
-                      flush_at_ms, outcome_json
-               FROM outbox_items WHERE request_id = ?"#,
-            request_id
-        )
-        .fetch_optional(&mut *transaction)
-        .await?;
+        let existing = read_row(&mut transaction, &item.request).await?;
         if let Some(row) = existing {
             let stored = decode_row(&row)?;
             let same_write = match &stored.payload {
@@ -139,6 +136,10 @@ impl<'store> MacOutbox<'store> {
         }
         // The creation stamp is the agent's send time (design 2026-11-17).
         outbox_content(request_id, &item.payload)?;
+        for (value, field) in [(now_ms, "created_at"), (flush_at_ms, "flush_at_ms")] {
+            Timestamp::from_timestamp_millis(value)
+                .ok_or(OutboxStoreError::InvalidTimestamp { field })?;
+        }
         let expires_at_ms = crate::outbox_deadline::expires_at_ms(now_ms);
         sqlx::query!(
             "INSERT INTO outbox_items
@@ -166,14 +167,11 @@ impl<'store> MacOutbox<'store> {
         caller: &Caller,
         request: &RequestId,
     ) -> Result<OutboxRequestStatus, OutboxStoreError> {
-        let Some(stored) = read_decoded_outbox(&mut self.store.connection, request).await? else {
+        let Some(stored) = read_owned_outbox(&mut self.store.connection, caller, request).await?
+        else {
             return Ok(OutboxRequestStatus::NotFound);
         };
-        Ok(if stored.caller == *caller {
-            stored.status
-        } else {
-            OutboxRequestStatus::NotFound
-        })
+        Ok(stored.status)
     }
 }
 #[cfg(test)]
