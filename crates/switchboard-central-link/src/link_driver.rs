@@ -31,7 +31,7 @@ use crate::{
     link_policy::{DialFailure, LinkEffect, LinkInput, LinkPolicy, LinkState, LinkStatus},
     socket_input::{SocketInput, SocketPriority, next_socket_input},
     socket_upgrade::{MAX_CREDENTIAL_BYTES, MAX_OUTBOUND_TEXT_BYTES},
-    wire_write_fence::WireWriteFence,
+    wire_write_fence::{LinkConnector, WireWriteFence, default_http_connector},
 };
 
 const MIN_LEASE_RETRY: Duration = Duration::from_secs(1);
@@ -90,8 +90,9 @@ impl<Binding: Clone + Eq> Control<'_, Binding> {
     }
 }
 
-struct BindingDriver<'source, Binding, Source> {
+struct BindingDriver<'source, Binding, Source, MakeConnector> {
     lease_source: &'source Source,
+    make_connector: &'source MakeConnector,
     clock: Arc<dyn RuntimeClock>,
     status: &'source watch::Sender<LinkStatus>,
     address: Result<DialAddress, AddressError>,
@@ -127,7 +128,14 @@ where
     Source: LeaseSource<Binding>,
 {
     /// Run the link until shutdown or until the configuration sender closes.
-    pub async fn run(mut self) {
+    pub async fn run(self) {
+        self.run_with_connector(default_http_connector).await;
+    }
+
+    pub(super) async fn run_with_connector<Connector: LinkConnector>(
+        mut self,
+        make_connector: impl Fn() -> Connector + Sync,
+    ) {
         let mut terminal_binding = None;
         loop {
             if *self.shutdown.borrow() {
@@ -157,6 +165,7 @@ where
             terminal_binding = None;
             let mut driver = BindingDriver {
                 lease_source: self.lease_source.as_ref(),
+                make_connector: &make_connector,
                 clock: self.clock.clone(),
                 status: &self.status,
                 address: settings.address,
@@ -177,8 +186,12 @@ where
     }
 }
 
-impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
-    BindingDriver<'_, Binding, Source>
+impl<Binding, Source, MakeConnector, Connector> BindingDriver<'_, Binding, Source, MakeConnector>
+where
+    Binding: Clone + Eq + Send + Sync,
+    Source: LeaseSource<Binding>,
+    MakeConnector: Fn() -> Connector + Sync,
+    Connector: LinkConnector,
 {
     fn apply(&mut self, event: LinkInput<Binding>) -> Option<Vec<LinkEffect<Binding>>> {
         let (state, effects) = LinkPolicy::transition(&self.state, event).ok()?;
@@ -338,7 +351,7 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
                     tokio::select! {
                         biased;
                         () = self.clock.sleep_until(deadline) => Err(DialFailure::Transport),
-                        result = Box::pin(address.dial(&lease.token, self.clock.clone())) => result,
+                        result = Box::pin(address.dial(&lease.token, self.clock.clone(), self.make_connector)) => result,
                     }
                 })
                 .await;

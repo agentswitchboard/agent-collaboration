@@ -10,6 +10,30 @@ use super::{MAX_OUTBOUND_TEXT_BYTES, socket_config};
 mod http_upgrade_budget;
 
 #[tokio::test]
+async fn default_connector_opens_raw_tcp_for_the_https_layer() {
+    use hyper_util::{client::legacy::connect::HttpConnector, rt::TokioIo};
+    use tokio::net::{TcpListener, TcpStream};
+    use tower_service::Service;
+
+    use crate::wire_write_fence::default_http_connector;
+
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let mut connector: HttpConnector = default_http_connector();
+    let (stream, (_, peer)): (TokioIo<TcpStream>, _) = tokio::join!(
+        async {
+            connector
+                .call(format!("https://{address}/link").parse().unwrap())
+                .await
+                .unwrap()
+        },
+        async { listener.accept().await.unwrap() },
+    );
+    assert_eq!(stream.inner().peer_addr().unwrap(), address);
+    assert_eq!(stream.inner().local_addr().unwrap(), peer);
+}
+
+#[tokio::test]
 async fn masked_write_buffer_accepts_its_exact_limit_and_refuses_one_more_byte() {
     for difference in [0, 1] {
         let (stream, _blocked_peer) = tokio::io::duplex(1);
@@ -42,6 +66,7 @@ async fn oversized_bearer_fails_before_the_http_upgrade() {
     };
 
     use super::{DialAddress, DialFailure, MAX_CREDENTIAL_BYTES};
+    use crate::wire_write_fence::default_http_connector;
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let dial =
@@ -60,7 +85,7 @@ async fn oversized_bearer_fails_before_the_http_upgrade() {
     let clock = std::sync::Arc::new(router_clock::ManualClock::new(
         "2030-01-01T00:00:00Z".parse().unwrap(),
     ));
-    let outcome = dial.dial(&token, clock).await;
+    let outcome = dial.dial(&token, clock, &default_http_connector).await;
     peer.abort();
     let _ = peer.await;
     assert!(
