@@ -15,7 +15,9 @@ pub struct RequestSummary {
     pub request_id: ApprovalRequestId,
     pub kind: RequestKind,
     pub state: ApprovalSummaryState,
+    /// First saved time as an RFC 3339 CentralTime string.
     pub raised_at: CentralTime,
+    /// Deadline as an RFC 3339 CentralTime string.
     pub deadline: CentralTime,
 }
 }

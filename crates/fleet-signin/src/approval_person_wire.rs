@@ -34,12 +34,12 @@ macro_rules! named_record {
 
 macro_rules! reply_union {
     ($name:ident as $remote:literal {
-         $($variant:ident { $($(#[$field_annotation:meta])* $field:ident: $ty:ty $(=> $reader:literal)?),* $(,)? }),+ $(,)?
+         $($(#[$variant_note:meta])* $variant:ident { $($(#[$field_annotation:meta])* $field:ident: $ty:ty $(=> $reader:literal)?),* $(,)? }),+ $(,)?
     }) => {
         #[derive(Clone, Debug, Eq, PartialEq, Serialize)]
         #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
         #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
-        pub enum $name { $($variant { $($(#[$field_annotation])* $field: $ty),* }),+ }
+        pub enum $name { $($(#[$variant_note])* $variant { $($(#[$field_annotation])* $field: $ty),* }),+ }
 
         impl<'de> Deserialize<'de> for $name {
             fn deserialize<Input: Deserializer<'de>>(input: Input) -> Result<Self, Input::Error> {
@@ -131,6 +131,7 @@ reply_union! {
 
 reply_union! {
     ApprovalReadReply as "ApprovalReadReply" {
+        /// Window and ending timestamps are RFC 3339 CentralTime strings.
         Request { view: RequestView },
         NotVisible {},
     }
@@ -139,7 +140,9 @@ reply_union! {
 reply_union! {
     ApprovalDecideReply as "ApprovalDecideReply" {
         SavedDecision { decision: GiverDecision<Answer> },
+        /// An actual saved decision. Its time is an RFC 3339 CentralTime string.
         AlreadyDecided { by: DecidedBy, at: CentralTime },
+        /// The request ended before this answer, through expiry or holder/provider closure.
         TooLate {},
         FactorRequired { within_seconds: ApprovalFactorWindow },
         Invalid { reason: ApprovalInvalidReason },
@@ -250,7 +253,7 @@ impl ApprovalPersonOperation {
     pub fn intent(&self) -> ApprovalIntent {
         let organization = self.organization().clone();
         match self {
-            Self::List(request) => ApprovalIntent::List {
+            Self::List(request) => ApprovalIntent::ApprovalList {
                 v: ApprovalIntentVersion,
                 target: organization.clone(),
                 organization,
@@ -260,14 +263,14 @@ impl ApprovalPersonOperation {
                     cursor: request.cursor.clone(),
                 },
             },
-            Self::Read(request) => ApprovalIntent::Read {
+            Self::Read(request) => ApprovalIntent::ApprovalRead {
                 v: ApprovalIntentVersion,
                 organization,
                 target: request.request_id.clone(),
                 operation_id: (),
                 params: EmptyApprovalIntentParams {},
             },
-            Self::Decide(request) => ApprovalIntent::Decide {
+            Self::Decide(request) => ApprovalIntent::ApprovalDecide {
                 v: ApprovalIntentVersion,
                 organization,
                 target: request.request_id.clone(),
@@ -287,24 +290,21 @@ impl ApprovalPersonOperation {
 )]
 #[serde(tag = "operation", rename_all_fields = "camelCase")]
 pub enum ApprovalIntent {
-    #[serde(rename = "approval.list")]
-    List {
+    ApprovalList {
         v: ApprovalIntentVersion,
         organization: OrganizationId,
         target: OrganizationId,
         operation_id: (),
         params: ApprovalListIntentParams,
     },
-    #[serde(rename = "approval.read")]
-    Read {
+    ApprovalRead {
         v: ApprovalIntentVersion,
         organization: OrganizationId,
         target: ApprovalRequestId,
         operation_id: (),
         params: EmptyApprovalIntentParams,
     },
-    #[serde(rename = "approval.decide")]
-    Decide {
+    ApprovalDecide {
         v: ApprovalIntentVersion,
         organization: OrganizationId,
         target: ApprovalRequestId,

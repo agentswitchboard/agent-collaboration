@@ -43,7 +43,11 @@ export type ApprovalDecideIntentParams = {
 	answer: Answer,
 };
 
-export type ApprovalDecideReply = { kind: "savedDecision"; decision: GiverDecision<Answer> } | { kind: "alreadyDecided"; by: DecidedBy; at: string } | { kind: "tooLate" } | { kind: "factorRequired"; withinSeconds: 900 } | { kind: "invalid"; reason: ApprovalInvalidReason } | { kind: "notVisible" } | { kind: "operationConflict" };
+export type ApprovalDecideReply = { kind: "savedDecision"; decision: GiverDecision<Answer> } |
+/**  An actual saved decision. Its time is an RFC 3339 CentralTime string. */
+{ kind: "alreadyDecided"; by: DecidedBy; at: string } |
+/**  The request ended before this answer, through expiry or holder/provider closure. */
+{ kind: "tooLate" } | { kind: "factorRequired"; withinSeconds: 900 } | { kind: "invalid"; reason: ApprovalInvalidReason } | { kind: "notVisible" } | { kind: "operationConflict" };
 
 export type ApprovalDecideRequest = {
 	organization: OrganizationId,
@@ -58,9 +62,9 @@ export type ApprovalDigestError = "serialization" | "nonInteger";
 
 export type ApprovalIntent = ApprovalIntent_Serialize | ApprovalIntent_Deserialize;
 
-export type ApprovalIntent_Deserialize = { operation: "approval.list"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ApprovalListIntentParams_Deserialize } | { operation: "approval.read"; v: 1; organization: OrganizationId; target: ApprovalRequestId; operationId: null; params: EmptyApprovalIntentParams } | { operation: "approval.decide"; v: 1; organization: OrganizationId; target: ApprovalRequestId; operationId: string; params: ApprovalDecideIntentParams };
+export type ApprovalIntent_Deserialize = { operation: "ApprovalList"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ApprovalListIntentParams_Deserialize } | { operation: "ApprovalRead"; v: 1; organization: OrganizationId; target: ApprovalRequestId; operationId: null; params: EmptyApprovalIntentParams } | { operation: "ApprovalDecide"; v: 1; organization: OrganizationId; target: ApprovalRequestId; operationId: string; params: ApprovalDecideIntentParams };
 
-export type ApprovalIntent_Serialize = { operation: "approval.list"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ApprovalListIntentParams_Serialize } | { operation: "approval.read"; v: 1; organization: OrganizationId; target: ApprovalRequestId; operationId: null; params: EmptyApprovalIntentParams } | { operation: "approval.decide"; v: 1; organization: OrganizationId; target: ApprovalRequestId; operationId: string; params: ApprovalDecideIntentParams };
+export type ApprovalIntent_Serialize = { operation: "ApprovalList"; v: 1; organization: OrganizationId; target: OrganizationId; operationId: null; params: ApprovalListIntentParams_Serialize } | { operation: "ApprovalRead"; v: 1; organization: OrganizationId; target: ApprovalRequestId; operationId: null; params: EmptyApprovalIntentParams } | { operation: "ApprovalDecide"; v: 1; organization: OrganizationId; target: ApprovalRequestId; operationId: string; params: ApprovalDecideIntentParams };
 
 export type ApprovalInvalidReason = { kind: "invalidAnswer"; reason: InvalidAnswer } | { kind: "invalidApprovalEnding"; reason: InvalidApprovalEnding };
 
@@ -116,9 +120,13 @@ export type ApprovalOffer_Serialize = {
 
 export type ApprovalReadReply = ApprovalReadReply_Serialize | ApprovalReadReply_Deserialize;
 
-export type ApprovalReadReply_Deserialize = { kind: "request"; view: RequestView_Deserialize } | { kind: "notVisible" };
+export type ApprovalReadReply_Deserialize =
+/**  Window and ending timestamps are RFC 3339 CentralTime strings. */
+{ kind: "request"; view: RequestView_Deserialize } | { kind: "notVisible" };
 
-export type ApprovalReadReply_Serialize = { kind: "request"; view: RequestView_Serialize } | { kind: "notVisible" };
+export type ApprovalReadReply_Serialize =
+/**  Window and ending timestamps are RFC 3339 CentralTime strings. */
+{ kind: "request"; view: RequestView_Serialize } | { kind: "notVisible" };
 
 export type ApprovalReadRequest = {
 	organization: OrganizationId,
@@ -780,7 +788,9 @@ export type RequestSummary = {
 	requestId: ApprovalRequestId,
 	kind: RequestKind,
 	state: ApprovalSummaryState,
+	/**  First saved time as an RFC 3339 CentralTime string. */
 	raisedAt: string,
+	/**  Deadline as an RFC 3339 CentralTime string. */
 	deadline: string,
 };
 
