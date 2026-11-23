@@ -6,7 +6,13 @@
 
 use std::{sync::Arc, time::Duration};
 
-use central_link_client::EnrollmentEnd;
+use central_link_client::{
+    EnrollmentEnd, LinkLaneCommand, LinkLaneDisposition, LinkLaneReply, ReadyLinkLane,
+};
+use central_link_protocol::{
+    DataFrame, FrameDirection, LinkFrame, ReplyPayload, RequestScope, RequestStatusQuery,
+    decode_text,
+};
 use collaboration_central_conformance::signin_fixtures as signed;
 use collaboration_central_tokio::test_support::{
     MACHINE_LINK_FIXTURE_MACHINE, MachineLinkFixture, start_machine_link_fixture,
@@ -17,6 +23,7 @@ use switchboard_central_link::{
     DialAddress,
     lease_source::{LeaseFailure, LeaseFuture, LeaseSource, LinkLease},
     link_driver::{DriverSettings, LinkDriver},
+    link_lane::{LinkLaneHandle, link_lane_channel},
     link_policy::{LeaseVersion, LeaseWindow, LinkStatus},
 };
 use tokio::{
@@ -74,7 +81,7 @@ struct Journey {
     endings: mpsc::UnboundedReceiver<(u8, EnrollmentEnd)>,
     shutdown: watch::Sender<bool>,
     _settings: watch::Sender<DriverSettings<u8>>,
-    _inbox: mpsc::Receiver<central_link_client::ClientEvent>,
+    lane: LinkLaneHandle,
     driver: JoinHandle<()>,
 }
 
@@ -98,7 +105,7 @@ impl Journey {
         });
         let (shutdown, shutdown_rx) = watch::channel(false);
         let (status_tx, mut status) = watch::channel(LinkStatus::NotEnrolled);
-        let (inbox_tx, inbox) = mpsc::channel(4);
+        let (inbox, lane) = link_lane_channel();
         let (acquired_tx, mut acquisitions) = mpsc::unbounded_channel();
         let (ended_tx, endings) = mpsc::unbounded_channel();
         let driver = tokio::spawn(
@@ -114,7 +121,7 @@ impl Journey {
                 settings: settings_rx,
                 shutdown: shutdown_rx,
                 status: status_tx,
-                inbox: inbox_tx,
+                lane,
             }
             .run(),
         );
@@ -145,7 +152,7 @@ impl Journey {
             endings,
             shutdown,
             _settings: settings,
-            _inbox: inbox,
+            lane: inbox,
             driver,
         }
     }
@@ -160,6 +167,61 @@ impl Journey {
         );
         central.unwrap().close().await.unwrap();
     }
+}
+
+#[tokio::test]
+async fn real_machine_admission_allows_immediate_request_and_status_without_registration() {
+    let journey = Journey::start().await;
+    let admitted_watch = journey.lane.watch_admitted();
+    let admitted = admitted_watch.borrow().clone();
+    assert!(
+        admitted.is_some(),
+        "Central's checked Welcome must enable the message lane"
+    );
+    let admitted = admitted.unwrap();
+    assert!(journey.lane.watch_registered().borrow().is_none());
+    let wire = format!(
+        r#"{{"kind":"request","request":{{"correlationId":"01890f2e-7b4c-7cc0-98c4-000000000031","caller":{{"kind":"session","value":{{"machineId":"{MACHINE_LINK_FIXTURE_MACHINE}","sessionId":"fixture-lane"}}}},"payload":{{"kind":"mail","request":{{"requestId":"01890f2e-7b4c-7cc0-98c4-000000000032","operation":{{"kind":"setNoticeCadence","cadence":"m25"}}}}}}}}}}"#
+    );
+    let LinkFrame::Data(DataFrame::Request { request }) =
+        decode_text(&wire, FrameDirection::ToCentral).unwrap()
+    else {
+        panic!("fixture expected one immediate request");
+    };
+    let correlation_id = request.correlation_id().clone();
+    let caller = request.caller().clone();
+    let query = RequestStatusQuery {
+        request_id: request.payload().write_request_id().unwrap().clone(),
+        scope: RequestScope::Organization,
+    };
+    let result = journey
+        .lane
+        .submit_command(LinkLaneCommand::ImmediateRequest {
+            connection: admitted.connection.clone(),
+            request,
+        })
+        .await;
+    assert!(
+        matches!(result, LinkLaneDisposition::Answered { reply: LinkLaneReply::ImmediateRequest { reply } } if reply.correlation_id == correlation_id && matches!(*reply.result, ReplyPayload::Mail(_))),
+        "the real Central must answer the admitted immediate request"
+    );
+    let status_correlation = "01890f2e-7b4c-7cc0-98c4-000000000033"
+        .parse::<central_link_protocol::CorrelationId>()
+        .unwrap();
+    let status = journey
+        .lane
+        .submit_command(LinkLaneCommand::RequestStatus {
+            connection: admitted.connection,
+            correlation_id: status_correlation.clone(),
+            caller,
+            query,
+        })
+        .await;
+    assert!(
+        matches!(status, LinkLaneDisposition::Answered { reply: LinkLaneReply::RequestStatus { correlation_id, .. } } if correlation_id == status_correlation),
+        "the real Central must answer the admitted status request"
+    );
+    journey.close().await;
 }
 
 #[tokio::test]

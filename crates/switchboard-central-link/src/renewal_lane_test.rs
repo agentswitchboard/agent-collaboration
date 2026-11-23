@@ -162,7 +162,14 @@ async fn a_continuously_ready_socket_renews_before_expiry_and_reads_the_final_cl
     fixture.clock.advance(Duration::from_secs(60)).unwrap();
     assert!(
         driver
-            .open_socket(&mut socket, &attempt, &1, elapsed_tick(0), &mut control)
+            .open_socket(
+                &mut socket,
+                &attempt,
+                &1,
+                elapsed_tick(0),
+                &mut control,
+                &mut crate::link_lane::link_lane_channel().1
+            )
             .await
             .is_ok()
     );

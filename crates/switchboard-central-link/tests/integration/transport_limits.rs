@@ -1,4 +1,4 @@
-use central_link_client::ClientEvent;
+use central_link_client::LinkLaneEvent;
 use futures_util::SinkExt;
 use switchboard_central_link::link_policy::LinkStatus;
 use tokio::net::TcpStream;
@@ -59,7 +59,7 @@ async fn assert_message_limit(fragmented: bool) {
         .unwrap();
     send_padded_delivery(&mut socket, EXPECTED_MESSAGE_LIMIT, fragmented).await;
     tokio::select! {
-        event = fixture.inbox_events.recv() => assert!(matches!(event, Some(ClientEvent::Deliver { .. }))),
+        event = fixture.inbox_events.recv() => assert!(matches!(event, Some(LinkLaneEvent::Deliver { .. }))),
         exit = fixture.status.wait_for(|status| *status == LinkStatus::Connecting) =>
             assert!(exit.is_err(), "one MiB must be accepted"),
     }
