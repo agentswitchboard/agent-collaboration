@@ -2,11 +2,11 @@
 use super::{AlarmPolicy, CentralStatements, SendFuture, statement_store};
 use fleet_engine::{CheckedDueFailure, FailureRecord};
 use fleet_mail::{
-    AdmittedDirectSend, AdmittedReceipt, AppliedDirectStatus, ApplyMark, ApplyReceipt, DirectMark,
+    AdmittedDirectSend, AppliedDirectStatus, ApplyMark, ApplyReceipt, DirectMark,
     DirectMessageStore, DirectOffer, DirectOfferLookup, DirectReadFailure, DirectSendLookup,
     DirectSendResult, DirectWriteFailure, OfferPageLookup, OwnedDirectStatus, RejectedDirectMark,
-    RetainedDirectSendRead, direct_mark_apply, direct_status_apply, direct_store_reads,
-    direct_store_writes,
+    RestoredMailReceipt, RetainedDirectSendRead, direct_mark_apply, direct_status_apply,
+    direct_store_reads, direct_store_writes,
 };
 use futures_util::future::BoxFuture;
 use std::ops::ControlFlow;
@@ -86,12 +86,34 @@ impl DirectMessageStore for CentralStatements {
         AdmittedDirectSend,
         DirectSendResult
     );
-    worker_write!(
-        direct_store_writes,
-        apply_receipt,
-        AdmittedReceipt,
-        ApplyReceipt
-    );
+    fn apply_receipt(
+        &self,
+        receipt: RestoredMailReceipt,
+        ids: std::sync::Arc<dyn fleet_runtime_ports::IdSource>,
+    ) -> BoxFuture<'_, Result<ApplyReceipt, DirectWriteFailure>> {
+        let clock = self.clock.clone();
+        Box::pin(SendFuture::new(async move {
+            statement_store::write_direct_with_engine_alarm(
+                &self.connection,
+                AlarmPolicy::Engine(
+                    self.state.storage(),
+                    clock.clone(),
+                    self.direct_write_decider(),
+                ),
+                async move |transaction| {
+                    #[cfg(feature = "test-support")]
+                    let mut loan =
+                        crate::receipt_witness::WorkerReceiptTransaction::new(transaction, &clock);
+                    #[cfg(not(feature = "test-support"))]
+                    let mut loan =
+                        statement_store::WorkerExecutorLender::from_storage_executor(transaction);
+                    direct_store_writes::apply_receipt(&mut loan, receipt, &clock, ids.as_ref())
+                        .await
+                },
+            )
+            .await
+        }))
+    }
     worker_write!(
         direct_status_apply,
         settle_and_read_status,

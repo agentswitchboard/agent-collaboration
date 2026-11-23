@@ -4,7 +4,8 @@ use central_storage::StoreFailure;
 use fleet_contracts::{
     MachineConnectionAttachment,
     mail_link::{
-        MailReceiptSettlement, WelcomeDeliveryCursor, WelcomeDeliveryPage, WindowedDeliveryDecision,
+        MachineLinkCloseCode, MailReceiptSettlement, WelcomeDeliveryCursor, WelcomeDeliveryPage,
+        WindowedDeliveryDecision,
     },
 };
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
@@ -48,17 +49,24 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         receipt: ReceiptKind,
     ) -> Result<MailReceiptSettlement, StoreFailure> {
         let _turn = self.execution.take_central_turn().await;
-        if let Err(refusal) = self.restore_live_authority_held(connection).await? {
-            return Ok(MailReceiptSettlement::AuthorityLapsed(refusal.close));
+        if connection.organization_id() != self.execution.organization() {
+            return Ok(MailReceiptSettlement::AuthorityLapsed(
+                MachineLinkCloseCode::Inactive,
+            ));
         }
-
-        let admitted_receipt = fleet_mail::AdmittedReceipt {
-            authority: connection.clone(),
-            message_id: message_id.clone(),
-            receipt,
-            clock: self.execution.shared_clock(),
-            ids: self.execution.shared_ids(),
+        fleet_machine_login::link_authority::validate_shape(connection)?;
+        let time = self
+            .machine_login_time(connection.organization_id())
+            .await?;
+        let receipt = match self
+            .machine_login_service()
+            .restore_receipt(connection, time, message_id.clone(), receipt)
+            .await?
+        {
+            Ok(restored) => restored,
+            Err(refusal) => return Ok(MailReceiptSettlement::AuthorityLapsed(refusal.close)),
         };
+        let ids = self.execution.shared_ids();
         #[cfg(feature = "test-support")]
         self.execution
             .pause_points()
@@ -67,7 +75,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
 
         let applied = self
             .direct_messages
-            .apply_receipt(admitted_receipt)
+            .apply_receipt(receipt, ids)
             .await
             .map_err(StoreFailure::from)?;
         Ok(match applied {
