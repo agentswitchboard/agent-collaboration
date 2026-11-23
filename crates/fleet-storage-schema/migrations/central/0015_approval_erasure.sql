@@ -10,7 +10,7 @@ CREATE TABLE approval_erased_requests (
 );
 
 CREATE UNIQUE INDEX approval_erased_requests_identity
-ON approval_erased_requests (organization_id, request_id);
+ON approval_erased_requests (organization_id, request_id, router_run_id);
 
 CREATE INDEX approval_erased_requests_run
 ON approval_erased_requests (router_run_id, approval_row_id);

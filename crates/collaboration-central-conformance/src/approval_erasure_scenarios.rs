@@ -242,6 +242,11 @@ pub async fn erase_batches_isolate_corruption_and_retain_only_live_markers(
             remaining,
         )
         .await?;
+        assert_count(
+            fixture,
+            "SELECT count(*) FROM engine_due_entries WHERE work_kind='approval_request' AND subject_key LIKE 'retired-run:%'",
+            i64::from(remaining != 0),
+        ).await?;
     }
     socket.close(CloseCode::Normal, None).await?;
     assert_count(fixture, "SELECT count(*) FROM approval_router_runs", 2).await?;

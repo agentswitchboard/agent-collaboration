@@ -162,7 +162,7 @@ test("Workerd approvals time out only selected rows and seek the deadline index 
       database,
       atMs: hourMs,
       command: page,
-      writes: 2,
+      writes: 3,
     });
     const sent = appliedSchema.parse(committedResult(read));
     assert.deepEqual(
@@ -178,7 +178,7 @@ test("Workerd approvals time out only selected rows and seek the deadline index 
       command: personDecision(firstExpired, uuid(5401), 1),
     });
     assert.deepEqual(typedResult(rollback), { kind: "tooLate" });
-    assert.equal(rollback.writes, 2);
+    assert.equal(rollback.writes, 3);
     const pending = dueSchema.parse(
       await central.dispatchJson(commandPath(database), {
         atMs: hourMs,
@@ -201,7 +201,7 @@ test("Workerd approvals time out only selected rows and seek the deadline index 
       database,
       atMs: hourMs + 10,
       command: { kind: "deadline", subject: due.subject, deadlineMs: hourMs },
-      writes: 2,
+      writes: 3,
     });
     assert.deepEqual(z.array(z.object({ requestId: z.string() })).parse(committedResult(alarm)), [
       { requestId: secondExpired },
@@ -297,17 +297,17 @@ test("Workerd approvals bound retirement and refuse unknown stored kinds, states
       command: { kind: "retire", holder },
     });
     assert.deepEqual(committedResult(retired), { Ok: null });
-    assert.equal(retired.writes, 513);
+    assert.equal(retired.writes, 769);
     assert.equal(retired.rowsChanged, 513);
     const after = await snapshot(central, database);
-    assert.equal(after.length, before.length - 256);
+    assert.equal(after.length, before.length);
     const requests = after
       .map((row) => z.array(z.unknown()).parse(JSON.parse(row)))
       .filter((row) => row[0] === "request");
     assert.equal(requests.length, 256);
     assert.ok(requests.every((row) => row[3] === "ended" && row[8] === "closed_without_receipt"));
     console.log(
-      "retirement at 256 requests committed 513 guarded row changes in one Workerd transaction",
+      "retirement at 256 requests executed 769 guarded statements and changed 513 rows in one Workerd transaction",
     );
 
     for (const field of ["requestKind", "recordState", "ending"]) {
@@ -325,7 +325,7 @@ test("Workerd approvals bound retirement and refuse unknown stored kinds, states
           database: corruptDatabase,
           command: personDecision(request.requestId, uuid(5501), 1),
         });
-        assert.equal(decided.writes, 4);
+        assert.equal(decided.writes, 6);
       }
       committedResult(
         await invokeApprovalWitness({
@@ -377,13 +377,13 @@ test("Workerd approval endings and a run replacement roll back after every guard
     await assertRollbackAtEachWrite({
       central,
       database,
-      writes: 2,
+      writes: 3,
       command: { kind: "stop", holder, request: stopRequest(stopped) },
     });
     const accepted = await assertRollbackAtEachWrite({
       central,
       database,
-      writes: 4,
+      writes: 6,
       command: personDecision(decided.requestId, uuid(5502), 1),
     });
     const offered = appliedSchema.parse(committedResult(accepted)).offers[0];
@@ -411,7 +411,7 @@ test("Workerd approval endings and a run replacement roll back after every guard
     await assertRollbackAtEachWrite({
       central,
       database,
-      writes: 2,
+      writes: 3,
       command: {
         kind: "endSession",
         organization: holder.organization,
@@ -467,7 +467,7 @@ async function verifyDelegateDecision(
   assert.deepEqual(results.toSorted(), ["savedDecision", "standing"]);
   assert.equal(
     race.map((reply) => reply.writes).reduce((sum, writes) => sum + writes, 0),
-    6,
+    9,
   );
   const winner = results.indexOf("savedDecision");
   const won = race[winner];
@@ -530,7 +530,7 @@ async function verifyRunReplacement(
   await assertRollbackAtEachWrite({
     central,
     database,
-    writes: 5,
+    writes: 6,
     command: { kind: "register", holder: replacement },
   });
   const retired = await invokeApprovalWitness({
@@ -568,7 +568,7 @@ async function verifyRunReplacement(
   await assertRollbackAtEachWrite({
     central,
     database,
-    writes: 3,
+    writes: 6,
     command: { kind: "endEnrollment", holder: replacement },
   });
   const due = dueSchema.parse(
@@ -577,5 +577,6 @@ async function verifyRunReplacement(
       command: { kind: "dueRows", cutoffMs: hourMs, limit: 10 },
     }),
   );
-  assert.deepEqual(due.rows, []);
+  assert.equal(due.rows.length, 1);
+  assert.equal(due.rows[0]?.subject, `ended-enrollment:${replacement.runId}`);
 }

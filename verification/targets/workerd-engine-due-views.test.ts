@@ -496,6 +496,12 @@ function quotedLedgerBindings(sql: string, binds: readonly string[]): string {
   });
 }
 
+function currentCentralSchema(): readonly string[] {
+  return readdirSync(migrationDirectory)
+    .sort()
+    .map((name): string => readFileSync(new URL(name, migrationDirectory), "utf8"));
+}
+
 test("organization request replay and pruning keep main's strict cutoff on both stores", async (context): Promise<void> => {
   // The three frozen statements are from fleet-runtime at main 6cf6c254c.
   const original = {
@@ -567,13 +573,14 @@ test("organization request replay and pruning keep main's strict cutoff on both 
     return [retained, firstSurvivors, replayAtEquality, updatedBeforePrune, finalSurvivors];
   };
 
+  const schema = currentCentralSchema();
   const outcomes = [];
   for (const [name, statements] of [
     ["main", original],
     ["checked", current],
   ] as const) {
     const object = `request-cutoff-${name}`;
-    await prepareDueViewStore(object, oldSchema);
+    await prepareDueViewStore(object, schema);
     const worker = await executeComparison(
       statements,
       async (sql, binds): Promise<DueViewQueryResult["rows"]> =>
@@ -581,7 +588,7 @@ test("organization request replay and pruning keep main's strict cutoff on both 
     );
     const native = new DatabaseSync(":memory:");
     try {
-      for (const sql of oldSchema) native.exec(sql);
+      for (const sql of schema) native.exec(sql);
       const sqlite = await executeComparison(statements, async (sql, binds): Promise<unknown[]> =>
         native
           .prepare(sql)
