@@ -8,31 +8,36 @@ use workspace_model::{
     central_mail::{CentralMailAnswer, CentralMailOperation, CentralMailResult, NoticeCadence},
 };
 
+/// The link client derives the expected reply from the original request.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum ReplyExpectation {
+pub struct ReplyExpectation(ExpectedFamily);
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum ExpectedFamily {
     Mail(MailSuccess),
     Workspace(WorkspaceSuccess),
 }
 
 impl ReplyExpectation {
-    pub(super) fn from_request(request: &RequestPayload) -> Self {
-        match request {
+    pub fn from_request(request: &RequestPayload) -> Self {
+        Self(match request {
             RequestPayload::Mail(request) => {
-                Self::Mail(MailSuccess::for_operation(&request.operation))
+                ExpectedFamily::Mail(MailSuccess::for_operation(&request.operation))
             }
             RequestPayload::Workspace(request) => {
-                Self::Workspace(WorkspaceSuccess::for_request(request))
+                ExpectedFamily::Workspace(WorkspaceSuccess::for_request(request))
             }
-        }
+        })
     }
 
-    pub(super) fn accepts(&self, reply: &ReplyPayload) -> bool {
-        match (self, reply) {
-            (Self::Mail(expected), ReplyPayload::Mail(CentralMailResult::Done(answer))) => {
-                expected.accepts(answer)
-            }
+    pub fn accepts(&self, reply: &ReplyPayload) -> bool {
+        match (&self.0, reply) {
             (
-                Self::Mail(_),
+                ExpectedFamily::Mail(expected),
+                ReplyPayload::Mail(CentralMailResult::Done(answer)),
+            ) => expected.accepts(answer),
+            (
+                ExpectedFamily::Mail(_),
                 ReplyPayload::Mail(
                     CentralMailResult::Refused(_)
                     | CentralMailResult::Conflict
@@ -40,22 +45,24 @@ impl ReplyExpectation {
                     | CentralMailResult::CentralUnavailable,
                 ),
             ) => true,
-            (Self::Workspace(expected), ReplyPayload::Workspace(reply)) => match &reply.result {
-                WorkspaceResult::Done(answer) => expected.accepts(answer),
-                WorkspaceResult::Refused(_)
-                | WorkspaceResult::NotFound { .. }
-                | WorkspaceResult::Conflict
-                | WorkspaceResult::OutcomeUnknown
-                | WorkspaceResult::CentralUnavailable => true,
-            },
-            (Self::Mail(_), ReplyPayload::Workspace(_))
-            | (Self::Workspace(_), ReplyPayload::Mail(_)) => false,
+            (ExpectedFamily::Workspace(expected), ReplyPayload::Workspace(reply)) => {
+                match &reply.result {
+                    WorkspaceResult::Done(answer) => expected.accepts(answer),
+                    WorkspaceResult::Refused(_)
+                    | WorkspaceResult::NotFound { .. }
+                    | WorkspaceResult::Conflict
+                    | WorkspaceResult::OutcomeUnknown
+                    | WorkspaceResult::CentralUnavailable => true,
+                }
+            }
+            (ExpectedFamily::Mail(_), ReplyPayload::Workspace(_))
+            | (ExpectedFamily::Workspace(_), ReplyPayload::Mail(_)) => false,
         }
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum MailSuccess {
+enum MailSuccess {
     CadenceSet(NoticeCadence),
     MessageQueued,
     WakeSet(Timestamp),
@@ -101,7 +108,7 @@ impl MailSuccess {
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub(super) enum WorkspaceSuccess {
+enum WorkspaceSuccess {
     WorkspaceCreated,
     WorkspaceUpdated(Option<WorkspaceId>),
     ItemCreated(ItemKind),

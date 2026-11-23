@@ -3,6 +3,9 @@ mod error;
 mod link_state;
 mod pending_calls;
 mod ready_lane;
+mod reply_matcher;
+
+pub use reply_matcher::ReplyExpectation;
 
 pub use link_state::{
     AttemptOutcome, ClientAction, ClientEvent, ConnectionAttempt, EnrollmentEnd, LinkClient,
@@ -13,10 +16,10 @@ pub use ready_lane::{
     AdmittedConnection, BatchResultsError, CheckedBatchMember, CheckedBatchResults,
     CorrelatedReceiptResults, CorrelatedRequestReply, CorrelatedStatusReply,
     ImmediateRequestCommand, InvalidDeliveryOffer, LINK_LANE_FRAME_BYTES, LaneFrameSizeError,
-    LinkLaneDisposition, LinkLaneEvent, ReadyLinkLane, RegisteredConnection, RequestStatusCommand,
-    SubmitReceiptsCommand, UntouchedCommand, ValidatedDeliveryOffer, WRITE_BATCH_ENVELOPE_BYTES,
-    WelcomeClockAnchor, WriteBatchCommand, WriteBatchDisposition, WriteBatchMemberDisposition,
-    encoded_request_size,
+    LinkLaneDisposition, LinkLaneEvent, LinkLocalFault, PendingRunRegistration, ReadyLinkLane,
+    RegisteredConnection, RequestStatusCommand, RunRegistrationEvidence, SubmitReceiptsCommand,
+    UntouchedCommand, ValidatedDeliveryOffer, WRITE_BATCH_ENVELOPE_BYTES, WelcomeClockAnchor,
+    WriteBatchCommand, WriteBatchDisposition, WriteBatchMemberDisposition, encoded_request_size,
 };
 
 pub use error::ClientError;
