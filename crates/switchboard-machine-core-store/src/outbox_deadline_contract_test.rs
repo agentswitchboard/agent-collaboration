@@ -3,6 +3,7 @@ use crate::{
     LocalOutboxRefusal, OutboxCancellation, OutboxInsert, OutboxRequestStatus, OutboxStorage,
     OutboxStoreError, PendingWriteState, StoredOutboxWrite,
 };
+use std::collections::BTreeSet;
 use workspace_ids::RequestId;
 
 /// A waiting write is never claimed at or past its deadline; the same claim
@@ -26,7 +27,7 @@ pub(crate) async fn an_overdue_write_is_never_claimed_and_ends_with_its_reason(
         .expect_clean();
 
     let early = store
-        .claim_next_batch(MARK, 1, deadline - 1, deadline - 1)
+        .claim_next_batch(MARK, 1, deadline - 1, deadline - 1, &BTreeSet::new())
         .await
         .unwrap()
         .expect_clean();
@@ -36,7 +37,7 @@ pub(crate) async fn an_overdue_write_is_never_claimed_and_ends_with_its_reason(
         .unwrap()
         .expect_clean();
     let claimed = store
-        .claim_next_batch(MARK, 64, deadline, deadline)
+        .claim_next_batch(MARK, 64, deadline, deadline, &BTreeSet::new())
         .await
         .unwrap()
         .expect_clean();
@@ -176,6 +177,7 @@ pub(crate) async fn a_sent_write_past_its_deadline_ends_instead_of_returning(
             64,
             stored_at + FIFTEEN_MINUTES_MS,
             stored_at + FIFTEEN_MINUTES_MS,
+            &BTreeSet::new(),
         )
         .await
         .unwrap()
@@ -235,7 +237,7 @@ pub(crate) async fn a_direct_message_goes_out_with_its_creation_stamp_as_sent_at
     store.insert(&post, stored_at).await.unwrap();
 
     let first = store
-        .claim_next_batch(MARK, 64, MARK, MARK)
+        .claim_next_batch(MARK, 64, MARK, MARK, &BTreeSet::new())
         .await
         .unwrap()
         .expect_clean()
@@ -246,7 +248,13 @@ pub(crate) async fn a_direct_message_goes_out_with_its_creation_stamp_as_sent_at
         .unwrap()
         .expect_clean();
     let replay = store
-        .claim_next_batch(MARK + 60_000, 64, MARK + 60_000, MARK + 60_000)
+        .claim_next_batch(
+            MARK + 60_000,
+            64,
+            MARK + 60_000,
+            MARK + 60_000,
+            &BTreeSet::new(),
+        )
         .await
         .unwrap()
         .expect_clean()

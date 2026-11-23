@@ -3,14 +3,14 @@ use serde::{Deserialize, Serialize};
 use workspace_ids::{MessageId, PostId};
 use workspace_model::{ActorView, ChangePosition, RefusalReason, central_mail::CentralMailRefusal};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
 pub enum LocalOutboxRefusal {
     RequestIdConflict,
 }
 
 /// Refusals retain their source. Central reasons serialize in their native form.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(untagged)]
 pub enum OutboxRefusal {
     Local(LocalOutboxRefusal),
@@ -18,7 +18,7 @@ pub enum OutboxRefusal {
 }
 
 /// A central domain refusal retained in `outcome_json`.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     tag = "kind",
     content = "reason",

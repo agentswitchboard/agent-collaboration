@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE outbox_items SET outcome_json = ?\n             WHERE request_id = ? AND item_state = ? AND outcome_json IS NULL",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "b1f44cf8560e1d6a20e6298ab11cf74f9dfb7dafa1f9316cdbfb3aeb56126eaa"
+}
