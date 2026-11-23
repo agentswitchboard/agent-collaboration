@@ -9,3 +9,5 @@ Central's real Axum router over Turmoil TCP. They inspect the simulator's queued
 TCP segments to delay or drop a selected WebSocket frame and model connections
 that reset or outlive their requests. The existing fixture supplies the signed
 enrollment and JWKS service.
+
+The enrolled lease journey drives the real refresh owner, lease adapter, Mac enrollment SQLite store and Central's signed revocation route. Its sign-in grant and loopback address are supplied at the fixture boundary. The adjacent enrollment cases run lease mapping and settings publication against the same real store with an injected Keychain.

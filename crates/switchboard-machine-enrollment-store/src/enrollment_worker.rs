@@ -26,6 +26,8 @@ pub(crate) struct EnrollmentWorker {
     secret_root: PathBuf,
     machine_id: MachineId,
     clock: Arc<dyn RuntimeClock + Send + Sync>,
+    #[cfg(any(test, all(feature = "test-support", debug_assertions)))]
+    keychain: Option<Arc<dyn codex_router_secret_store::keychain_data_key::KeychainAccess>>,
     #[cfg(test)]
     test_dependencies: Option<TestDependencies>,
 }
@@ -63,9 +65,20 @@ impl EnrollmentWorker {
             secret_root,
             machine_id,
             clock,
+            #[cfg(any(test, all(feature = "test-support", debug_assertions)))]
+            keychain: None,
             #[cfg(test)]
             test_dependencies: None,
         }
+    }
+
+    #[cfg(all(feature = "test-support", debug_assertions))]
+    pub(crate) fn with_keychain(
+        mut self,
+        keychain: Arc<dyn codex_router_secret_store::keychain_data_key::KeychainAccess>,
+    ) -> Self {
+        self.keychain = Some(keychain);
+        self
     }
 
     #[cfg(test)]
@@ -74,7 +87,8 @@ impl EnrollmentWorker {
         keychain: Arc<dyn codex_router_secret_store::keychain_data_key::KeychainAccess>,
         faults: Arc<TestWriteFaults>,
     ) {
-        self.test_dependencies = Some(TestDependencies { keychain, faults });
+        self.keychain = Some(keychain);
+        self.test_dependencies = Some(TestDependencies { faults });
     }
 
     pub(crate) async fn run(
@@ -378,13 +392,10 @@ impl EnrollmentWorker {
         sealed_bytes_present: bool,
     ) -> Result<EnrollmentRowSealer, SecretStoreError> {
         let root = self.secret_root.clone();
-        #[cfg(test)]
-        let keychain = self
-            .test_dependencies
-            .as_ref()
-            .map(|test| Arc::clone(&test.keychain));
+        #[cfg(any(test, all(feature = "test-support", debug_assertions)))]
+        let keychain = self.keychain.clone();
         tokio::task::spawn_blocking(move || {
-            #[cfg(test)]
+            #[cfg(any(test, all(feature = "test-support", debug_assertions)))]
             if let Some(keychain) = keychain {
                 return EnrollmentRowSealer::acquire_with_keychain(
                     &root,

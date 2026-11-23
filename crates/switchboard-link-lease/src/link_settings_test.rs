@@ -172,3 +172,52 @@ fn discovery_failure_uses_cached_address_only_for_unavailable_and_pins_retry_del
         assert!(saved.is_none());
     }
 }
+
+#[tokio::test]
+async fn a_metadata_error_starts_unbound_then_preserves_last_publication_after_start() {
+    let fixture = Fixture::new();
+    fixture.store.fail_metadata.send_replace(true);
+    let (requests, mut discovery_calls) = mpsc::unbounded_channel();
+    let (changed, changes) = watch::channel(0);
+    let (stop, shutdown) = watch::channel(false);
+    let (source, mut settings) = LinkSettingsSource::with_discovery(
+        fixture.store.clone(),
+        Script(requests),
+        fixture.binding.context.clone(),
+        fixture.clock.clone(),
+        changes,
+    );
+    let task = tokio::spawn(source.run(shutdown));
+    fixture
+        .clock
+        .not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(5)))
+        .await;
+    assert_eq!(*settings.borrow(), no_settings());
+    assert!(discovery_calls.try_recv().is_err());
+
+    fixture.store.fail_metadata.send_replace(false);
+    fixture.clock.advance(Duration::from_secs(5)).unwrap();
+    discovery_calls
+        .recv()
+        .await
+        .unwrap()
+        .send(Ok(discovery("link")))
+        .unwrap();
+    let published = settings
+        .wait_for(|current| current.address.is_ok())
+        .await
+        .unwrap()
+        .clone();
+    fixture.store.fail_metadata.send_replace(true);
+    changed.send_replace(1);
+    fixture
+        .clock
+        .not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(10)))
+        .await;
+    assert_eq!(*settings.borrow(), published);
+    assert!(discovery_calls.try_recv().is_err());
+
+    stop.send_replace(true);
+    task.await.unwrap();
+    fixture.source.close().await.unwrap();
+}

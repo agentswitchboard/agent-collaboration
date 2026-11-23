@@ -21,6 +21,10 @@ use tokio::{
 
 mod enrollment_row_mapping;
 mod enrollment_worker;
+#[cfg(all(feature = "test-support", debug_assertions))]
+pub mod test_support {
+    pub use codex_router_secret_store::keychain_data_key::{KeychainAccess, KeychainAccessError};
+}
 
 use enrollment_worker::{EnrollmentWorker, ReadFailure};
 
@@ -48,6 +52,21 @@ impl MachineEnrollmentStore {
             machine_id,
             clock,
         )))
+    }
+
+    /// Opens a real fixture database with a caller-owned Keychain test double.
+    #[cfg(all(feature = "test-support", debug_assertions))]
+    pub async fn open_with_test_keychain(
+        database: &Path,
+        secret_root: PathBuf,
+        machine_id: MachineId,
+        clock: Arc<dyn RuntimeClock + Send + Sync>,
+        keychain: Arc<dyn test_support::KeychainAccess>,
+    ) -> Result<Self, MachineLocalStoreError> {
+        let database = MachineLocalStore::open(database).await?;
+        let worker =
+            EnrollmentWorker::new(database, secret_root, machine_id, clock).with_keychain(keychain);
+        Ok(Self::start(worker))
     }
 
     fn start(worker: EnrollmentWorker) -> Self {

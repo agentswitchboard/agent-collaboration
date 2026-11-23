@@ -14,6 +14,7 @@ use super::*;
 pub(crate) struct RowStore {
     pub(crate) row: watch::Sender<StoredEnrollment>,
     pub(crate) fail_end: watch::Sender<bool>,
+    pub(crate) fail_metadata: watch::Sender<bool>,
 }
 
 impl CredentialStore for RowStore {
@@ -22,6 +23,9 @@ impl CredentialStore for RowStore {
     }
 
     async fn read_metadata(&self) -> Result<EnrollmentMetadata, CredentialStoreError> {
+        if *self.fail_metadata.borrow() {
+            return Err(CredentialStoreError::Read);
+        }
         Ok(self.row.borrow().clone().into())
     }
 
@@ -128,6 +132,7 @@ impl Fixture {
         let store = RowStore {
             row: watch::channel(StoredEnrollment::Active(binding.clone())).0,
             fail_end: watch::channel(false).0,
+            fail_metadata: watch::channel(false).0,
         };
         let clock = Arc::new(ManualClock::new(Default::default()));
         let (reached, refreshes) = mpsc::unbounded_channel();
