@@ -65,7 +65,9 @@ fn automation_sequences_never_repeat_an_occurrence_and_catch_up_once(case: hegel
                                 "the next interval is strictly after the evaluation watermark"
                             );
                         }
-                        State::Done { evaluated } => assert_eq!(*evaluated, Some(through)),
+                        State::Done { evaluated } => {
+                            assert_eq!(*evaluated, Some(occurrence.max(now)));
+                        }
                         State::Disabled { .. } => panic!("Due never disables a timer"),
                     }
                 } else {
