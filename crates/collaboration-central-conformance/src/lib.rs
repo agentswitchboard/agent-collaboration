@@ -20,3 +20,6 @@ pub mod workspace_schema_fixture;
 
 /// The error-boxing result every shared fixture and host scenario returns.
 pub type ConformanceResult<TValue> = Result<TValue, Box<dyn std::error::Error + Send + Sync>>;
+
+#[cfg(feature = "session-link-test-support")]
+pub mod machine_link_boundary;

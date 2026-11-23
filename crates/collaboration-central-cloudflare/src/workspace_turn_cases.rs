@@ -18,6 +18,8 @@ pub(super) async fn control(
                 Point::BeforeTimerCommit
                     | Point::BeforeWakeRequestCommit
                     | Point::BeforeReceiptTransaction
+                    | Point::BeforeMachineLinkWelcome
+                    | Point::AfterMachineLinkWelcome
                     | Point::BeforeSessionTransaction
                     | Point::ApprovalEndingNeverReached
                     | Point::ApprovalEndingAnswerApplied

@@ -487,7 +487,7 @@ fn is_current_socket(state: &State, socket: &WebSocket, machine: &MachineId) -> 
         .is_some_and(|tag| tag == physical_tag)
 }
 
-fn socket_tag(state: &State, socket: &WebSocket) -> Option<String> {
+pub(super) fn socket_tag(state: &State, socket: &WebSocket) -> Option<String> {
     state
         .as_raw()
         .get_tags(socket.as_ref())

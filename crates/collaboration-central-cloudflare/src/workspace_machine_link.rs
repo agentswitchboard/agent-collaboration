@@ -5,7 +5,7 @@ use super::{CentralObject, OrgRuntime, OrganizationId};
 use central_link_protocol::{
     CentralCall, CorrelationId, DataFrame, FrameDirection, LinkFrame, LinkRequest,
     LinkRequestBatch, ProtocolError, ReceiptBatch, ReceiptResult, ReplyPayload, RequestPayload,
-    RequestRefusal, RequestStatusAnswer, RequestStatusQuery, TimeLeft,
+    RequestRefusal, RequestStatusAnswer, RequestStatusQuery,
 };
 use collaboration_central_core::WorkspaceCaller;
 use collaboration_central_core::{
@@ -15,10 +15,7 @@ use collaboration_central_core::{
 use fleet_contracts::mail_link::MailReceiptSettlement;
 use fleet_contracts::{EnrollmentInvalidation, MachineConnectionAttachment};
 use fleet_runtime_ports::{Clock, IdSource};
-use worker::{
-    Request, Response, Result, WebSocket, WebSocketIncomingMessage, WebSocketPair,
-    WebSocketRequestResponsePair,
-};
+use worker::{Request, Response, Result, WebSocket, WebSocketIncomingMessage, WebSocketPair};
 
 enum IncomingRequests {
     #[cfg(feature = "test-support")]
@@ -60,6 +57,7 @@ impl CentralObject {
         code: u16,
         reason: Option<&str>,
     ) -> Result<()> {
+        self.forget_mail_offers(socket);
         self.pending_mac_calls
             .close(&self.state, socket, code, reason)
     }
@@ -109,9 +107,6 @@ impl CentralObject {
         };
         let pair = WebSocketPair::new()?;
         SocketAttachment::new(connection.attachment()).save(&pair.server)?;
-        let auto_response =
-            WebSocketRequestResponsePair::new("ping", "pong").map_err(worker::Error::from)?;
-        self.state.set_websocket_auto_response(&auto_response);
         // Queue before the safety call; only send after its attempt has completed.
         let welcome = DataFrame::Welcome {
             machine_id: connection.machine_id().clone(),
@@ -126,6 +121,7 @@ impl CentralObject {
         let older = match runtime
             .register_active_machine(&connection.attachment(), || {
                 let older = self.state.get_websockets_with_tag(tag);
+                self.mail_offers.begin_welcome(physical_tag.clone());
                 self.state
                     .accept_websocket_with_tags(&pair.server, &[tag, &physical_tag]);
                 older
@@ -136,10 +132,26 @@ impl CentralObject {
             Ok(Err(_)) => return Response::error("machine refused", 401),
             Err(_) => return Response::error("machine admission unavailable", 503),
         };
-        send(&pair.server, welcome)?;
+        #[cfg(feature = "test-support")]
+        super::workspace_machine_link_io::hold_welcome(
+            &runtime,
+            fleet_runtime::PausePoint::BeforeMachineLinkWelcome,
+        )
+        .await;
+        if let Err(error) = send(&pair.server, welcome) {
+            self.mail_offers.forget(&physical_tag);
+            return Err(error);
+        }
+        self.mail_offers.finish_welcome(physical_tag);
         for socket in older {
             let _ = self.close_machine_link(&socket, 1000, Some("machine link replaced"));
         }
+        #[cfg(feature = "test-support")]
+        super::workspace_machine_link_io::hold_welcome(
+            &runtime,
+            fleet_runtime::PausePoint::AfterMachineLinkWelcome,
+        )
+        .await;
         self.send_welcome_mail(&runtime, &pair.server, &connection.attachment())
             .await?;
         Response::from_websocket(pair.client)
@@ -150,8 +162,8 @@ impl CentralObject {
         socket: WebSocket,
         incoming: WebSocketIncomingMessage,
     ) -> Result<()> {
-        let WebSocketIncomingMessage::String(text) = incoming else {
-            return self.close_machine_link(&socket, 1008, Some("text frame required"));
+        let Some(text) = self.machine_text(&socket, incoming)? else {
+            return Ok(());
         };
         let frame = match central_link_protocol::decode_text(&text, FrameDirection::ToCentral) {
             Ok(frame) => frame,
@@ -225,9 +237,8 @@ impl CentralObject {
                 correlation_id,
                 receipts,
             },
-            // Literal ping/pong is answered by the platform without calling this handler.
-            LinkFrame::Ping
-            | LinkFrame::Pong
+            LinkFrame::Ping => return self.answer_heartbeat(&socket).await,
+            LinkFrame::Pong
             | LinkFrame::Data(
                 DataFrame::Welcome { .. }
                 | DataFrame::Reply { .. }
@@ -498,131 +509,6 @@ impl CentralObject {
                     )?;
                 }
                 Ok(())
-            }
-        }
-    }
-
-    async fn send_welcome_mail(
-        &self,
-        runtime: &OrgRuntime,
-        socket: &WebSocket,
-        attachment: &MachineConnectionAttachment,
-    ) -> Result<()> {
-        use fleet_contracts::mail_link::{WELCOME_PAGE_SIZE, WelcomeDeliveryPage};
-        let mut cursor = None;
-        loop {
-            let page = runtime
-                .windowed_welcome_page(attachment, cursor.as_ref())
-                .await
-                .map_err(|error| worker::Error::RustError(error.to_string()))?;
-            let rows = match page {
-                WelcomeDeliveryPage::Ready(rows) => rows,
-                WelcomeDeliveryPage::AuthorityLapsed(cause) => {
-                    return self.close_machine_authority(socket, cause);
-                }
-            };
-            cursor = rows
-                .last()
-                .map(fleet_contracts::mail_link::WindowedDelivery::cursor);
-            let count = rows.len();
-            for row in rows {
-                if !self
-                    .offer_windowed_mail(runtime, socket, attachment, &row.message.message_id)
-                    .await?
-                {
-                    return Ok(());
-                }
-            }
-            if count < WELCOME_PAGE_SIZE {
-                return Ok(());
-            }
-        }
-    }
-
-    pub(super) async fn flush_ready_mail(&self, runtime: &OrgRuntime) {
-        let ready = std::mem::take(
-            &mut *self
-                .mail_pushes
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner),
-        );
-        for message in ready {
-            for socket in self
-                .state
-                .get_websockets_with_tag(message.machine_id.as_str())
-            {
-                if socket.as_ref().ready_state() != web_sys::WebSocket::OPEN {
-                    continue;
-                }
-                if let Ok(Some(attachment)) = SocketAttachment::read(&socket)
-                    && let Err(error) = self
-                        .offer_windowed_mail(
-                            runtime,
-                            &socket,
-                            &attachment.authority,
-                            &message.message_id,
-                        )
-                        .await
-                {
-                    worker::console_warn!("central delivery offer failed: {error}");
-                }
-            }
-        }
-    }
-
-    async fn offer_windowed_mail(
-        &self,
-        runtime: &OrgRuntime,
-        socket: &WebSocket,
-        attachment: &MachineConnectionAttachment,
-        message_id: &workspace_ids::MessageId,
-    ) -> Result<bool> {
-        use fleet_contracts::mail_link::WindowedDeliveryDecision;
-        let decision = runtime
-            .prepare_windowed_delivery(attachment, message_id)
-            .await
-            .map_err(|error| worker::Error::RustError(error.to_string()))?;
-        match decision {
-            WindowedDeliveryDecision::Ready(delivery) => {
-                if socket.as_ref().ready_state() != web_sys::WebSocket::OPEN {
-                    return Ok(false);
-                }
-                let now = chrono::DateTime::from_timestamp_millis(self.clock.now().unix_millis())
-                    .ok_or_else(|| {
-                    worker::Error::RustError("offer clock unavailable".into())
-                })?;
-                if now >= delivery.expires_at {
-                    return Ok(true);
-                }
-                let time_left = if matches!(
-                    delivery.message.body,
-                    workspace_model::central_mail::MessageBody::Direct { .. }
-                ) {
-                    let Some(time_left) =
-                        TimeLeft::at_handoff(delivery.message.created_at, delivery.expires_at, now)
-                    else {
-                        return Ok(true);
-                    };
-                    Some(time_left)
-                } else {
-                    None
-                };
-                send(
-                    socket,
-                    DataFrame::Deliver {
-                        message: Box::new(central_link_protocol::DeliveryMessage::from(
-                            *delivery.message,
-                        )),
-                        sender: delivery.sender,
-                        time_left,
-                    },
-                )?;
-                Ok(true)
-            }
-            WindowedDeliveryDecision::Ineligible => Ok(true),
-            WindowedDeliveryDecision::AuthorityLapsed(cause) => {
-                self.close_machine_authority(socket, cause)?;
-                Ok(false)
             }
         }
     }

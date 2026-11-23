@@ -29,6 +29,8 @@ pub enum PausePoint {
     BeforeTimerCommit,
     BeforeWakeRequestCommit,
     BeforeReceiptTransaction,
+    BeforeMachineLinkWelcome,
+    AfterMachineLinkWelcome,
     BeforeSessionTransaction,
     BeforeApprovalCommit,
     ApprovalEndingNeverReached,

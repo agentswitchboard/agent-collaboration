@@ -12,7 +12,7 @@ use axum::{
 };
 use central_link_protocol::{
     DataFrame, FrameDirection, LinkFrame, LinkRequest, MachineLinkCloseCode, ProtocolError,
-    ReceiptResult, ReplyPayload, RequestPayload, RequestRefusal, RequestStatusAnswer, TimeLeft,
+    ReceiptResult, ReplyPayload, RequestPayload, RequestRefusal, RequestStatusAnswer,
     TokenRenewalRefusal, TokenRenewalResult, decode_text, encode_text,
 };
 use collaboration_central_core::{
@@ -21,9 +21,7 @@ use collaboration_central_core::{
 };
 use collaboration_central_core::{ValidatedMachineConnection, WorkspaceCaller};
 use fleet_contracts::EnrollmentInvalidation;
-use fleet_contracts::mail_link::{
-    MailReceiptSettlement, WELCOME_PAGE_SIZE, WelcomeDeliveryPage, WindowedDeliveryDecision,
-};
+use fleet_contracts::mail_link::MailReceiptSettlement;
 use fleet_identity_protocol::OrganizationId;
 use futures_util::FutureExt;
 use router_clock::RuntimeClock;
@@ -32,8 +30,14 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
+#[path = "workspace_link_io.rs"]
+mod link_io;
 #[path = "workspace_typed_link.rs"]
 mod typed_link;
+use link_io::{
+    configure_upgrade, handle_heartbeat, offer_windowed_delivery, receive_text,
+    send_welcome_backlog,
+};
 use typed_link::{offer_mac_call, reply_to_typed_call};
 
 type Runtime = WorkspaceRuntime<ObjectStorage, TokioWorkspaceStores>;
@@ -90,6 +94,7 @@ async fn upgrade_link(
     headers: HeaderMap,
     upgrade: WebSocketUpgrade,
 ) -> Response {
+    let upgrade = configure_upgrade(upgrade);
     // Track admission as well as the upgraded connection, including failures.
     let task = state.tasks.token();
     if state.stop.is_cancelled() {
@@ -210,10 +215,28 @@ async fn serve_link(
         clock: state.host.link_clock(),
         tasks: &state.tasks,
     };
+    #[cfg(feature = "test-support")]
+    link_io::hold_welcome(
+        &runtime,
+        fleet_runtime::PausePoint::BeforeMachineLinkWelcome,
+    )
+    .await;
     if !writes.send(&mut socket, &welcome).await {
         return;
     }
-    if !send_welcome_backlog(&mut socket, &state, &writes, &runtime, &connection).await {
+    #[cfg(feature = "test-support")]
+    link_io::hold_welcome(&runtime, fleet_runtime::PausePoint::AfterMachineLinkWelcome).await;
+    let mut offers = central_link_protocol::SocketDirectMailOffers::default();
+    if !send_welcome_backlog(
+        &mut socket,
+        &state,
+        &writes,
+        &runtime,
+        &connection,
+        &mut offers,
+    )
+    .await
+    {
         return;
     }
     loop {
@@ -230,7 +253,7 @@ async fn serve_link(
             message = socket.recv() => message,
             ready = registration.receiver.recv() => {
                 let Some(message_id) = ready else { return; };
-                if !offer_windowed_delivery(&mut socket, &state, &writes, &runtime, &connection, &message_id).await {
+                if !offer_windowed_delivery(&mut socket, &state, &writes, &runtime, &connection, &mut offers, &message_id).await {
                     return;
                 }
                 continue;
@@ -243,19 +266,10 @@ async fn serve_link(
                 continue;
             }
         };
-        let Some(Ok(message)) = message else {
-            return;
-        };
-        let text = match message {
-            Message::Text(text) => text,
-            Message::Close(_) => return,
-            // axum handles RFC WebSocket control frames; application heartbeats
-            // are the protocol's literal text ping and pong.
-            Message::Ping(_) | Message::Pong(_) => continue,
-            Message::Binary(_) => {
-                writes.close(&mut socket, close_code::UNSUPPORTED, "text frames required");
-                return;
-            }
+        let text = match receive_text(&mut socket, &writes, message) {
+            link_io::IncomingText::Text(text) => text,
+            link_io::IncomingText::Control => continue,
+            link_io::IncomingText::Ended => return,
         };
         let frame = match decode_text(&text, FrameDirection::ToCentral) {
             Ok(frame) => frame,
@@ -367,7 +381,7 @@ async fn serve_link(
                     .answer(&correlation_id, *result, writes.clock);
             }
             LinkFrame::Ping => {
-                if !writes.send(&mut socket, &LinkFrame::Pong).await {
+                if !handle_heartbeat(&mut socket, &writes, &runtime, &connection).await {
                     return;
                 }
             }
@@ -534,111 +548,6 @@ async fn serve_link(
             }
         }
     }
-}
-
-async fn send_welcome_backlog(
-    socket: &mut WebSocket,
-    state: &LinkState,
-    writes: &LinkWrites<'_>,
-    runtime: &Runtime,
-    connection: &ValidatedMachineConnection,
-) -> bool {
-    let attachment = connection.attachment();
-    let mut cursor = None;
-    loop {
-        let page = tokio::select! {
-            biased;
-            () = state.stop.cancelled() => { writes.close_if_authority_cancelled(socket); return false; }
-            () = writes.replaced.cancelled() => { writes.close_if_authority_cancelled(socket); return false; }
-            page = runtime.windowed_welcome_page(&attachment, cursor.as_ref()) => page,
-        };
-        let rows = match page {
-            Ok(WelcomeDeliveryPage::Ready(rows)) => rows,
-            Ok(WelcomeDeliveryPage::AuthorityLapsed(cause)) => {
-                writes.close_authority(socket, cause);
-                return false;
-            }
-            Err(_) => return false,
-        };
-        cursor = rows
-            .last()
-            .map(fleet_contracts::mail_link::WindowedDelivery::cursor);
-        let count = rows.len();
-        for row in rows {
-            if !offer_windowed_delivery(
-                socket,
-                state,
-                writes,
-                runtime,
-                connection,
-                &row.message.message_id,
-            )
-            .await
-            {
-                return false;
-            }
-        }
-        if count < WELCOME_PAGE_SIZE {
-            return true;
-        }
-    }
-}
-
-async fn offer_windowed_delivery(
-    socket: &mut WebSocket,
-    state: &LinkState,
-    writes: &LinkWrites<'_>,
-    runtime: &Runtime,
-    connection: &ValidatedMachineConnection,
-    message_id: &workspace_ids::MessageId,
-) -> bool {
-    let attachment = connection.attachment();
-    let decision = tokio::select! {
-        biased;
-        () = state.stop.cancelled() => { writes.close_if_authority_cancelled(socket); return false; }
-        () = writes.replaced.cancelled() => { writes.close_if_authority_cancelled(socket); return false; }
-        decision = runtime.prepare_windowed_delivery(&attachment, message_id) => decision,
-    };
-    let delivery = match decision {
-        Ok(WindowedDeliveryDecision::Ready(delivery)) => delivery,
-        Ok(WindowedDeliveryDecision::Ineligible) => {
-            return true;
-        }
-        Ok(WindowedDeliveryDecision::AuthorityLapsed(cause)) => {
-            writes.close_authority(socket, cause);
-            return false;
-        }
-        Err(_) => return false,
-    };
-    let Some(now) =
-        chrono::DateTime::from_timestamp_millis(state.host.current_time().unix_millis())
-    else {
-        return false;
-    };
-    if now >= delivery.expires_at {
-        return true;
-    }
-    let time_left = if matches!(
-        delivery.message.body,
-        workspace_model::central_mail::MessageBody::Direct { .. }
-    ) {
-        let Some(time_left) =
-            TimeLeft::at_handoff(delivery.message.created_at, delivery.expires_at, now)
-        else {
-            return true;
-        };
-        Some(time_left)
-    } else {
-        None
-    };
-    let frame = LinkFrame::Data(DataFrame::Deliver {
-        message: Box::new(central_link_protocol::DeliveryMessage::from(
-            *delivery.message,
-        )),
-        sender: delivery.sender,
-        time_left,
-    });
-    writes.send(socket, &frame).await
 }
 
 /// R40/V32 renewal on the open connection: a renewed connection replaces the

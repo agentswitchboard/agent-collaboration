@@ -349,7 +349,16 @@ pub(crate) async fn receive_decision(
     request: &Raise,
     expected: approval_request_protocol::Ending,
 ) -> Result<()> {
-    let (correlation, offered) = next_ending(socket, &target).await?;
+    let observation_budget = async {
+        // Drive the real owning store while the socket is quiet, without
+        // moving the injected clock or waiting for a wall-clock deadline.
+        for _ in 0..128 {
+            read_request(fixture, request).await?;
+        }
+        Ok(())
+    };
+    let frame = approval_socket_frames::receive_frame_before(socket, observation_budget).await?;
+    let (correlation, offered) = ending_frame(frame, &target)?;
     assert_eq!(offered.request_id(), request.request_id());
     assert_eq!(offered.contents_digest(), &request.contents_digest()?);
     assert_eq!(offered.into_ending(), expected);
@@ -446,10 +455,17 @@ pub async fn next_ending(
     socket: &mut WebSocket,
     expected: &ApprovalHolderTarget,
 ) -> Result<(CorrelationId, DeliverEndingRequest)> {
+    ending_frame(receive_frame(socket).await?, expected)
+}
+
+fn ending_frame(
+    frame: LinkFrame,
+    expected: &ApprovalHolderTarget,
+) -> Result<(CorrelationId, DeliverEndingRequest)> {
     let LinkFrame::Data(DataFrame::CallMac {
         correlation_id,
         request,
-    }) = receive_frame(socket).await?
+    }) = frame
     else {
         return Err("expected a holder ending offer".into());
     };

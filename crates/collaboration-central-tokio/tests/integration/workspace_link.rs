@@ -8,6 +8,7 @@ mod caller_authority;
 mod delivery;
 mod fixture;
 mod idle_expiry;
+mod link_boundary;
 mod link_support;
 mod private_enrollment_invalidation;
 mod receipt_enrollment_clock;

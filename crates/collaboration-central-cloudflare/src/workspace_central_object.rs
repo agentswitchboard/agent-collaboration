@@ -237,6 +237,7 @@ pub struct CentralObject {
     pending_mac_calls: workspace_typed_link::PendingMacCalls,
     due_batches: Arc<fleet_runtime::DueBatchState>,
     mail_pushes: Arc<std::sync::Mutex<Vec<fleet_contracts::MailDeliveryReady>>>,
+    mail_offers: workspace_machine_link_io::WorkerMailOffers,
     #[cfg(feature = "test-support")]
     controls: workspace_cases::Controls,
     #[cfg(feature = "test-support")]
@@ -450,6 +451,7 @@ impl DurableObject for CentralObject {
             pending_mac_calls: workspace_typed_link::PendingMacCalls::default(),
             due_batches: Arc::new(fleet_runtime::DueBatchState::default()),
             mail_pushes: Default::default(),
+            mail_offers: Default::default(),
             #[cfg(feature = "test-support")]
             controls: workspace_cases::Controls::default(),
             #[cfg(feature = "test-support")]
@@ -570,6 +572,8 @@ mod signin_launcher_controls;
 
 #[path = "workspace_machine_link.rs"]
 mod workspace_machine_link;
+#[path = "workspace_machine_link_io.rs"]
+mod workspace_machine_link_io;
 
 #[path = "workspace_socket_attachment.rs"]
 mod workspace_socket_attachment;

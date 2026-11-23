@@ -7,6 +7,7 @@ mod caller_authority;
 mod delivery;
 mod fixture;
 mod idle_expiry;
+mod link_boundary;
 mod private_enrollment_invalidation;
 mod probe_diagnostic;
 mod receipt;

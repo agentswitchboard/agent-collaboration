@@ -8,6 +8,7 @@ mod link_codec;
 mod link_delivery;
 mod link_renewal;
 mod link_request;
+mod link_size;
 mod link_typed_calls;
 mod mac_call_address;
 mod mac_call_capabilities;
@@ -15,6 +16,7 @@ mod mac_call_capabilities;
 mod parent_session_rpc_test;
 mod request_status;
 pub mod session_lifecycle_rpc;
+mod socket_direct_mail;
 mod socket_mac_call_capabilities;
 mod typed_call_correlations;
 
@@ -41,10 +43,12 @@ pub use link_request::{
     LinkRequest, LinkRequestBatch, MAX_LINK_REQUEST_BATCH_SIZE, ReplyPayload, RequestPayload,
     RequestScope,
 };
+pub use link_size::{LINK_MAX_TEXT_BYTES, LinkSizeRefusal};
 pub use mac_call_address::MacCallAddress;
 pub use mac_call_capabilities::{
     DuplicateMacCallKind, HandledMacCalls, MacCallKind, MacCapabilities,
 };
+pub use socket_direct_mail::SocketDirectMailOffers;
 pub use socket_mac_call_capabilities::{
     DuplicateMacCapabilities, MAX_SOCKET_MAC_CALL_ITEMS, MacCallDeliveryKey, MacCallSkip,
     SocketMacCallState,
