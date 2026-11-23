@@ -239,6 +239,45 @@ pub(crate) fn load_or_create_pooled_credential_data_key(
     }
 }
 
+/// The enrollment path can provision the shared item only for an unsealed row.
+pub(crate) fn load_enrollment_row_data_key(
+    file_store: &FileSecretStore,
+    keychain: &dyn KeychainAccess,
+    sealed_bytes_present: bool,
+) -> Result<PooledCredentialDataKey, SecretStoreError> {
+    let store_id = match file_store.read_store_id_file()? {
+        Some(value) => PooledCredentialStoreId::parse(&value, file_store)?,
+        None if sealed_bytes_present || file_store.has_any_v2_files()? => {
+            return Err(SecretStoreError::KeyMissing);
+        }
+        None => {
+            let store_id = PooledCredentialStoreId::new();
+            file_store.publish_enrollment_store_id(&store_id.to_string())?;
+            let winner = file_store
+                .read_store_id_file()?
+                .ok_or(SecretStoreError::KeyMissing)?;
+            PooledCredentialStoreId::parse(&winner, file_store)?
+        }
+    };
+    let account = format!("{POOLED_KEY_ACCOUNT_PREFIX}{store_id}");
+    if let Some(secret) = read_keychain_secret(keychain, &account)? {
+        return data_key_from_secret(secret);
+    }
+    if sealed_bytes_present || file_store.has_any_v2_files()? {
+        return Err(SecretStoreError::KeyMissing);
+    }
+
+    let generated_key = PooledCredentialDataKey::generate()?;
+    match add_keychain_secret(keychain, &account, generated_key.bytes()) {
+        Ok(()) => Ok(generated_key),
+        Err(SecretStoreError::KeyUnavailable) => match read_keychain_secret(keychain, &account)? {
+            Some(secret) => data_key_from_secret(secret),
+            None => Err(SecretStoreError::KeyUnavailable),
+        },
+        Err(error) => Err(error),
+    }
+}
+
 fn read_keychain_secret(
     keychain: &dyn KeychainAccess,
     account: &str,

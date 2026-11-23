@@ -9,10 +9,15 @@ pub struct BindingGeneration(u64);
 
 impl BindingGeneration {
     pub const EMPTY: Self = Self(0);
+    const MAX: Self = Self(i64::MAX as u64);
 
     #[must_use]
-    pub const fn from_persisted(generation: u64) -> Self {
-        Self(generation)
+    pub const fn from_persisted(generation: u64) -> Option<Self> {
+        if generation <= Self::MAX.0 {
+            Some(Self(generation))
+        } else {
+            None
+        }
     }
 
     #[must_use]
@@ -22,7 +27,13 @@ impl BindingGeneration {
 
     #[must_use]
     pub fn successor(self) -> Option<Self> {
-        self.0.checked_add(1).map(Self)
+        Self::from_persisted(self.0 + 1)
+    }
+
+    /// A live binding leaves a generation available for its durable ending.
+    #[must_use]
+    pub fn binding_successor(self) -> Option<Self> {
+        self.successor().filter(|next| *next < Self::MAX)
     }
 }
 
@@ -94,6 +105,12 @@ pub struct EnrollmentBinding {
 }
 
 impl EnrollmentBinding {
+    pub(crate) fn matches_replacement(&self, stored: &EnrollmentBinding) -> bool {
+        stored.generation == self.generation
+            && stored.key() == self.key()
+            && stored.credential == self.credential
+    }
+
     #[must_use]
     pub fn key(&self) -> EnrollmentKey {
         EnrollmentKey {

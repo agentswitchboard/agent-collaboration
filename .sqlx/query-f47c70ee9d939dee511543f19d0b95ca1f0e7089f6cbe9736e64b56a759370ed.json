@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE machine_identity\n                SET enrollment_generation = ?, enrollment_json = ?, enrollment_sealed = ?, updated_at = ?\n                WHERE machine_id = ? AND enrollment_generation = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "f47c70ee9d939dee511543f19d0b95ca1f0e7089f6cbe9736e64b56a759370ed"
+}

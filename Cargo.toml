@@ -20,6 +20,7 @@ members = [
     "crates/switchboard-harness-contracts",
     "crates/switchboard-harness-shared-mechanics",
     "crates/switchboard-machine-enrollment",
+    "crates/switchboard-machine-enrollment-store",
     "crates/fleet-runtime-ports",
     "crates/fleet-runtime",
     "crates/fleet-request-log",

@@ -25,10 +25,17 @@ use super::{
 struct StoreState {
     saved: Mutex<StoredEnrollment>,
     hold_write: AtomicBool,
+    unknown_write_before_commit: AtomicBool,
+    unknown_write_after_commit: AtomicBool,
+    replace_calls: AtomicUsize,
+    read_calls: AtomicUsize,
+    marker_calls: AtomicUsize,
     hold_write_ack_generation: std::sync::atomic::AtomicU64,
     hold_read: AtomicBool,
     fail_read: AtomicBool,
     hold_remove: AtomicBool,
+    hold_remove_ack: AtomicBool,
+    unknown_remove: AtomicBool,
     hold_marker: AtomicBool,
     hold_marker_ack: AtomicBool,
     fail_write: AtomicBool,
@@ -89,6 +96,7 @@ impl CredentialStore for FakeStore {
     }
 
     async fn read(&self) -> Result<StoredEnrollment, CredentialStoreError> {
+        self.0.read_calls.fetch_add(1, Ordering::SeqCst);
         wait_while_held(&self.0.hold_read).await;
         if self.0.fail_read.load(Ordering::SeqCst) {
             return Err(CredentialStoreError::Read);
@@ -101,6 +109,14 @@ impl CredentialStore for FakeStore {
         expected: BindingGeneration,
         binding: &EnrollmentBinding,
     ) -> Result<ConditionalWrite, CredentialStoreError> {
+        self.0.replace_calls.fetch_add(1, Ordering::SeqCst);
+        if self
+            .0
+            .unknown_write_before_commit
+            .swap(false, Ordering::SeqCst)
+        {
+            return Err(CredentialStoreError::OutcomeNotKnown);
+        }
         poll_fn(|_| {
             if self.0.hold_write.load(Ordering::SeqCst) {
                 Poll::Pending
@@ -121,6 +137,13 @@ impl CredentialStore for FakeStore {
             }
         })
         .await;
+        if self
+            .0
+            .unknown_write_after_commit
+            .swap(false, Ordering::SeqCst)
+        {
+            return Err(CredentialStoreError::OutcomeNotKnown);
+        }
         Ok(committed)
     }
 
@@ -130,10 +153,15 @@ impl CredentialStore for FakeStore {
         why: EnrollmentEnd,
     ) -> Result<ConditionalWrite, CredentialStoreError> {
         wait_while_held(&self.0.hold_remove).await;
+        if self.0.unknown_remove.load(Ordering::SeqCst) {
+            return Err(CredentialStoreError::OutcomeNotKnown);
+        }
         if self.0.fail_remove.load(Ordering::SeqCst) {
             Err(CredentialStoreError::Remove)
         } else {
-            Ok(self.end(expected, why))
+            let committed = self.end(expected, why);
+            wait_while_held(&self.0.hold_remove_ack).await;
+            Ok(committed)
         }
     }
 
@@ -142,6 +170,7 @@ impl CredentialStore for FakeStore {
         expected: BindingGeneration,
         why: EnrollmentEnd,
     ) -> Result<ConditionalWrite, CredentialStoreError> {
+        self.0.marker_calls.fetch_add(1, Ordering::SeqCst);
         wait_while_held(&self.0.hold_marker).await;
         if self.0.fail_marker.load(Ordering::SeqCst) {
             Err(CredentialStoreError::Replace)
@@ -243,7 +272,7 @@ fn access_secret(revision: usize) -> SecretValue {
 }
 
 fn generation(value: u64) -> BindingGeneration {
-    BindingGeneration::from_persisted(value)
+    BindingGeneration::from_persisted(value).expect("fixture generation")
 }
 
 fn context() -> EnrollmentContext {
@@ -288,10 +317,17 @@ impl Fixture {
         let store = FakeStore(Arc::new(StoreState {
             saved: Mutex::new(StoredEnrollment::Active(binding(1, 0))),
             hold_write: AtomicBool::new(false),
+            unknown_write_before_commit: AtomicBool::new(false),
+            unknown_write_after_commit: AtomicBool::new(false),
+            replace_calls: AtomicUsize::new(0),
+            read_calls: AtomicUsize::new(0),
+            marker_calls: AtomicUsize::new(0),
             hold_write_ack_generation: std::sync::atomic::AtomicU64::new(0),
             hold_read: AtomicBool::new(false),
             fail_read: AtomicBool::new(false),
             hold_remove: AtomicBool::new(false),
+            hold_remove_ack: AtomicBool::new(false),
+            unknown_remove: AtomicBool::new(false),
             hold_marker: AtomicBool::new(false),
             hold_marker_ack: AtomicBool::new(false),
             fail_write: AtomicBool::new(false),
@@ -690,3 +726,6 @@ fn generated_refresh_callers_match_the_rotation_model(case: hegel::TestCase) {
 
 #[path = "refresh_owner_review_test.rs"]
 mod review;
+
+#[path = "refresh_owner_reconciliation_test.rs"]
+mod reconciliation;
