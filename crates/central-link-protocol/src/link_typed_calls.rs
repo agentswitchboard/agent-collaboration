@@ -1,7 +1,11 @@
 //! Registered RPC calls carried by an authenticated machine connection.
 use crate::{
     CorrelationId, FrameDirection, MachineLinkCloseCode,
-    approval_rpc::{DeliverEndingRpc, RaiseApprovalRpc, RegisterRunRpc, StopApprovalRpc},
+    approval_rpc::{
+        ApprovalNoticeRpc, DecideApprovalAsSessionRpc, DeliverEndingRpc,
+        ListApprovalsForSessionRpc, PassOnApprovalForSessionRpc, RaiseApprovalRpc,
+        ReadApprovalForSessionRpc, RegisterRunRpc, StopApprovalRpc,
+    },
     session_lifecycle_rpc::{BindFleetSessionRpc, CreateFleetSessionRpc, EndFleetSessionRpc},
 };
 use fleet_rpc::{Envelope, Rpc};
@@ -247,6 +251,10 @@ register_calls! {
     "registerRun" => RegisterRun(RegisterRunRpc),
     "raise" => Raise(RaiseApprovalRpc),
     "stop" => Stop(StopApprovalRpc),
+    "listApprovalsForSession" => ListApprovalsForSession(ListApprovalsForSessionRpc),
+    "readApprovalForSession" => ReadApprovalForSession(ReadApprovalForSessionRpc),
+    "decideApprovalAsSession" => DecideApprovalAsSession(DecideApprovalAsSessionRpc),
+    "passOnApproval" => PassOnApproval(PassOnApprovalForSessionRpc),
     "createFleetSession" => CreateFleetSession(CreateFleetSessionRpc),
     "bindFleetSession" => BindFleetSession(BindFleetSessionRpc),
     "endFleetSession" => EndFleetSession(EndFleetSessionRpc),
@@ -255,6 +263,7 @@ register_calls! {
 register_calls! {
     MacCall, "MacCall", MacCallReader, MacCallReply, "MacCallReply", MacCallReplyReader, MacLinkRpc;
     "deliverEnding" => DeliverEnding(DeliverEndingRpc),
+    "approvalNotice" => ApprovalNotice(ApprovalNoticeRpc),
     #[cfg(any(test, feature = "test-support"))] "macProbe" => MacProbe(test_calls::MacProbe),
 }
 

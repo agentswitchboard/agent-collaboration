@@ -12,7 +12,7 @@ use crate::{
 };
 
 approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub enum StandingEnding<Cancellation> {
     Decided { by: DecidedBy },
@@ -23,7 +23,7 @@ pub enum StandingEnding<Cancellation> {
 
 approval_wire_record! {
 [deny_unknown_fields]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub struct GiverDecision<AcceptedAnswer> {
     pub by: DecidedBy,
@@ -32,7 +32,7 @@ pub struct GiverDecision<AcceptedAnswer> {
 }
 
 approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub enum DestinationEnding<AcceptedAnswer, Cancellation> {
     Standing { ending: StandingEnding<Cancellation> },
@@ -60,7 +60,7 @@ impl<AcceptedAnswer, Cancellation> DestinationEnding<AcceptedAnswer, Cancellatio
 }
 
 approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub enum ParkedCallEndingView {
     Decided {
@@ -101,7 +101,7 @@ impl ParkedCallEndingView {
 }
 
 approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub enum ParkedCallStateView {
     Waiting {},
@@ -197,7 +197,7 @@ impl EndingView {
 }
 
 approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -244,12 +244,12 @@ impl<AcceptedAnswer, Cancellation> RequestStateView<AcceptedAnswer, Cancellation
 }
 
 approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
 )]
-enum RequestViewFields {
+pub(crate) enum RequestViewFields {
     ProviderApproval {
         request_id: ApprovalRequestId,
         offer: ApprovalOffer,
@@ -273,7 +273,7 @@ enum RequestViewFields {
 
 /// Named request-kind arms carry only the matching offer and ending.
 /// Decoding also checks any disclosed answer against the dynamic offer contents.
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "RequestViewFields", into = "RequestViewFields")]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
@@ -282,6 +282,10 @@ enum RequestViewFields {
 pub struct RequestView(RequestViewFields);
 
 impl RequestView {
+    pub(crate) const fn fields(&self) -> &RequestViewFields {
+        &self.0
+    }
+
     pub fn waiting<'request>(
         admitted: &AdmittedDestination<'request>,
         status: WaitingStatus,

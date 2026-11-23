@@ -116,7 +116,7 @@ pub enum CancelReason {
 }
 
 approval_wire_union! {
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub enum Delivery {
     Owed {},
@@ -125,7 +125,7 @@ pub enum Delivery {
 }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
@@ -149,7 +149,7 @@ pub enum RequestState {
 }
 
 approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub enum SessionDecider {
     Session { session: CentralSessionId },
@@ -158,7 +158,7 @@ pub enum SessionDecider {
 
 approval_wire_record! {
     [deny_unknown_fields]
-    #[derive(Clone, Debug, Eq, PartialEq)]
+    #[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
     #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
     pub struct ApprovalDecision {
         pub answer: ProviderAnswer,

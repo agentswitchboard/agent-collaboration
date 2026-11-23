@@ -284,6 +284,13 @@ where
                     .end_session(machine, request)
                     .await
                 }
+                CentralCall::ListApprovalsForSession(_)
+                | CentralCall::ReadApprovalForSession(_)
+                | CentralCall::DecideApprovalAsSession(_)
+                | CentralCall::PassOnApproval(_) => Ok(TypedCallResult::Refused {
+                    reason: LinkCallRefusal::UnknownCall,
+                }
+                .into()),
                 CentralCall::RegisterRun(request) => {
                     let run = request.body.router_run.clone();
                     self.approvals

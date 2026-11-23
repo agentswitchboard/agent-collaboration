@@ -7,6 +7,15 @@ export type ApprovalDecision = {
 	by: SessionDecider,
 };
 
+export type ApprovalDestination = { kind: "session"; sessionId: CentralSessionId } | { kind: "people" };
+
+/**  The destination session is part of the typed link address. */
+export type ApprovalNotice = {
+	requestId: ApprovalRequestId,
+};
+
+export type ApprovalNoticeReply = { kind: "received" } | { kind: "notHere" };
+
 export type ApprovalOffer = ApprovalOffer_Serialize | ApprovalOffer_Deserialize;
 
 export type ApprovalOffer_Deserialize = {
@@ -25,6 +34,17 @@ export type ApprovalOffer_Serialize = {
 
 /**  One approval request raised by a Router. */
 export type ApprovalRequestId = string;
+
+/**  The machine link supplies its validated secret type. This is a presented credential. */
+export type ApprovalSessionCall<Secret, Payload> = {
+	sessionId: CentralSessionId,
+	secret: Secret,
+	input: Payload,
+};
+
+export type ApprovalSummaryEnding = "decided" | "cancelled" | "timedOut";
+
+export type ApprovalSummaryState = { kind: "waiting" } | { kind: "ended"; ending: ApprovalSummaryEnding };
 
 /**  The immutable first-save time and exact one-hour deadline. */
 export type ApprovalWindow = ApprovalWindowFields;
@@ -59,6 +79,14 @@ export type ChoiceOption = {
 };
 
 export type ChoiceOptions = ChoiceOption[];
+
+export type DecideApprovalAsSessionReply = { kind: "savedDecision"; decision: ApprovalDecision } | { kind: "alreadyDecided"; by: DecidedBy; at: string } | { kind: "tooLate" } | { kind: "personRequired" } | { kind: "invalid"; reason: InvalidAnswer } | { kind: "notVisible" } | { kind: "operationConflict" };
+
+export type DecideApprovalAsSessionRequest = {
+	requestId: ApprovalRequestId,
+	operationId: string,
+	value: Answer,
+};
 
 /**  A parent-session decision reply. Use the checked request builders to publish it. */
 export type DecideReply = DecideReplyWire;
@@ -105,10 +133,22 @@ export type HolderEnding<AcceptedAnswer, Cancellation> = { kind: "decided"; answ
 
 export type HolderStopCause = "turnStopped" | "askReplaced" | "askWithdrawn" | "sessionClosed" | "providerConnectionLost" | "callWithdrawn" | "holderRefusedLocally";
 
+export type InvalidAnswer = { kind: "wrongKind" } | { kind: "unofferedOption"; optionId: OfferedOptionId } | { kind: "unofferedField"; fieldId: QuestionFieldId } | { kind: "missingRequiredField"; fieldId: QuestionFieldId } | { kind: "repeatedField"; fieldId: QuestionFieldId } | { kind: "wrongValueType"; fieldId: QuestionFieldId } | { kind: "repeatedSelection"; fieldId: QuestionFieldId; optionId: OfferedOptionId } | { kind: "wrongSelectionCount"; fieldId: QuestionFieldId };
+
 /**  An opaque digest of the whole request held by the Router. */
 export type InvocationDigest = string;
 
 export type Label = string;
+
+export type ListApprovalsForSessionReply = ListApprovalsForSessionReply_Serialize | ListApprovalsForSessionReply_Deserialize;
+
+export type ListApprovalsForSessionReply_Deserialize = { kind: "page"; items: RequestSummary[]; next: ApprovalRequestId | null };
+
+export type ListApprovalsForSessionReply_Serialize = { kind: "page"; items: RequestSummary[]; next: ApprovalRequestId | null };
+
+export type ListApprovalsForSessionRequest = {
+	cursor: ApprovalRequestId | null,
+};
 
 export type MultiChoiceSelection = MultiChoiceSelection_Serialize | MultiChoiceSelection_Deserialize;
 
@@ -173,6 +213,13 @@ export type ParkedCallHolder = {
 };
 
 export type ParkedCallStateView = { kind: "waiting" } | { kind: "ended"; ending: ParkedCallEndingView; endedAt: string; delivery: Delivery };
+
+export type PassOnApprovalReply = { kind: "passedOn"; to: ApprovalDestination } | { kind: "alreadyDecided"; by: DecidedBy; at: string } | { kind: "tooLate" } | { kind: "notVisible" } | { kind: "operationConflict" };
+
+export type PassOnApprovalRequest = {
+	requestId: ApprovalRequestId,
+	operationId: string,
+};
 
 export type PassOnReply = { kind: "forwarded" } | { kind: "notVisible" } | { kind: "tooLate" } | { kind: "ended" };
 
@@ -255,6 +302,16 @@ export type Raise_Deserialize = { kind: "providerApproval"; requestId: ApprovalR
 
 export type Raise_Serialize = { kind: "providerApproval"; requestId: ApprovalRequestId; holder: ProviderHolder; offer: ApprovalOffer_Serialize } | { kind: "providerQuestion"; requestId: ApprovalRequestId; holder: ProviderHolder; offer: QuestionOffer_Serialize } | { kind: "unprovenCall"; requestId: ApprovalRequestId; holder: ParkedCallHolder; invocation: InvocationDigest; offer: CallOffer };
 
+export type ReadApprovalForSessionReply = ReadApprovalForSessionReply_Serialize | ReadApprovalForSessionReply_Deserialize;
+
+export type ReadApprovalForSessionReply_Deserialize = { kind: "request"; view: RequestView_Deserialize } | { kind: "notVisible" };
+
+export type ReadApprovalForSessionReply_Serialize = { kind: "request"; view: RequestView_Serialize } | { kind: "notVisible" };
+
+export type ReadApprovalForSessionRequest = {
+	requestId: ApprovalRequestId,
+};
+
 export type RegisterRunReply = { kind: "registered" } | { kind: "runRetired" } | { kind: "runNotRegistered" } | { kind: "enrollmentEnded" };
 
 export type RegisterRunRequest = {
@@ -264,9 +321,21 @@ export type RegisterRunRequest = {
 /**  Identity of the complete admitted Raise body. */
 export type RequestContentsDigest = string;
 
+export type RequestKind = "providerApproval" | "providerQuestion" | "unprovenCall";
+
 export type RequestState = { kind: "waiting"; status: WaitingStatus } | { kind: "ended"; ending: Ending };
 
 export type RequestStateView<AcceptedAnswer, Cancellation> = { kind: "waiting"; status: WaitingStatus } | { kind: "ended"; ending: DestinationEnding<AcceptedAnswer, Cancellation>; endedAt: string; delivery: Delivery };
+
+export type RequestSummary = {
+	requestId: ApprovalRequestId,
+	kind: RequestKind,
+	state: ApprovalSummaryState,
+	/**  First saved time as an RFC 3339 CentralTime string. */
+	raisedAt: string,
+	/**  Deadline as an RFC 3339 CentralTime string. */
+	deadline: string,
+};
 
 /**
  *  Named request-kind arms carry only the matching offer and ending.

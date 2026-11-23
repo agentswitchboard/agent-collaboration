@@ -61,7 +61,11 @@ pub fn is_approval_holder_call(request: Option<&CentralCall>) -> bool {
         Some(
             CentralCall::CreateFleetSession(_)
             | CentralCall::BindFleetSession(_)
-            | CentralCall::EndFleetSession(_),
+            | CentralCall::EndFleetSession(_)
+            | CentralCall::ListApprovalsForSession(_)
+            | CentralCall::ReadApprovalForSession(_)
+            | CentralCall::DecideApprovalAsSession(_)
+            | CentralCall::PassOnApproval(_),
         )
         | None => false,
     }
