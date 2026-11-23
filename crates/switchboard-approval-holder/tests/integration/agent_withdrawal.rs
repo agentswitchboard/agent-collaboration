@@ -3,6 +3,7 @@ use approval_request_protocol::{
     StopReceiptEnding, StopReply, StopRequest,
 };
 use state_machine_core::{StateMachine, TransitionError};
+use switchboard_approval_holder::waiting_request::{LinkAttemptDisposition, LinkCallAnswer};
 use switchboard_approval_holder::{
     run_gate::CallAttempt,
     waiting_request::{ProviderReply, WriterOutcome},
@@ -107,6 +108,7 @@ fn agent_take_back_after_possible_raise_keeps_an_exact_stop_across_reconnect() {
         "exposed take-back owes a Stop before closure"
     );
     no_second_release(&mac);
+    mac.lose_answer(1, 1);
     let request = StopRequest::Provider {
         request_id: raise().request_id().clone(),
         router_run: authority().router_run,
@@ -134,11 +136,13 @@ fn agent_take_back_after_possible_raise_keeps_an_exact_stop_across_reconnect() {
         }]
     );
     assert_eq!(
-        mac.wait_event(RequestEvent::StopReply {
+        mac.wait_event(RequestEvent::AttemptSettled {
             call: call(2, 3),
-            reply: StopReply::Stands {
-                ending: StopReceiptEnding::TimedOut {}
-            },
+            disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Stop(
+                StopReply::Stands {
+                    ending: StopReceiptEnding::TimedOut {}
+                }
+            ))
         }),
         [RequestEffect::StopReconciled(
             StopReceiptEnding::TimedOut {}
