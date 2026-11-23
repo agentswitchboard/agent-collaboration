@@ -215,7 +215,7 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
                 && next_address.is_ok()
                 && self.apply(LinkInput::AddressCorrected).is_some()
             {
-                self.client.reenrolled();
+                self.client.retry_after_fault();
             }
             self.address = next_address;
         }
@@ -241,7 +241,7 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
                 let _ = self.apply(LinkInput::Tick {
                     now: self.clock.monotonic_now(),
                 });
-                self.client.reenrolled();
+                self.client.retry_after_fault();
                 continue;
             }
             let Some(newer_than) = self.state.dial_requirement() else {

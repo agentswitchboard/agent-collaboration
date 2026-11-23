@@ -570,6 +570,16 @@ impl LinkClient {
         reason: ParkReason,
     ) -> Result<Vec<FailedCall>, ClientError> {
         self.check_most_recent_attempt(attempt)?;
+        if let ConnectionState::Parked {
+            reason: ParkReason::EnrollmentEnded(ended),
+            ..
+        } = self.state
+        {
+            return match reason {
+                ParkReason::EnrollmentEnded(cause) if cause == ended => Ok(Vec::new()),
+                _ => Err(ClientError::StaleConnection),
+            };
+        }
         self.state = ConnectionState::Parked {
             attempt: attempt.clone(),
             reason,
@@ -637,13 +647,23 @@ impl LinkClient {
         ))
     }
 
-    pub fn reenrolled(&mut self) {
-        if matches!(self.state, ConnectionState::Parked { .. }) {
-            self.state = ConnectionState::Waiting {
-                reconnect_at: self.clock.monotonic_now(),
-                last_attempt: None,
-            };
+    /// Rearm a fault after its owner supplies the permitted recovery input.
+    /// The owner creates a new client when it observes a different enrollment binding.
+    pub fn retry_after_fault(&mut self) -> bool {
+        if !matches!(
+            self.state,
+            ConnectionState::Parked {
+                reason: ParkReason::Fault(_),
+                ..
+            }
+        ) {
+            return false;
         }
+        self.state = ConnectionState::Waiting {
+            reconnect_at: self.clock.monotonic_now(),
+            last_attempt: None,
+        };
+        true
     }
 }
 

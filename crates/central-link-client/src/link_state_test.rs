@@ -152,7 +152,8 @@ fn down_pre_welcome_and_refused_calls_fail_without_queueing() {
         client.begin_request(caller(), payload()),
         Err(ClientError::CentralUnavailable)
     );
-    client.reenrolled();
+    assert!(!client.retry_after_fault());
+    let mut client = LinkClient::new(client.machine.clone(), clock);
     connect(&mut client);
     assert!(matches!(client.status(), LinkStatus::Connected { .. }));
 }
@@ -704,7 +705,7 @@ fn an_explicit_fault_parks_the_attempt_until_the_owner_retries() {
     assert_eq!(client.next_deadline(), None);
     clock.advance(Duration::from_secs(60)).unwrap();
     assert_eq!(client.poll_time(), None);
-    client.reenrolled();
+    assert!(client.retry_after_fault());
     assert!(matches!(
         client.poll_time(),
         Some(ClientAction::Connect { .. })

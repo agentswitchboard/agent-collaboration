@@ -333,7 +333,8 @@ fn refusal_order_is_idempotent_and_an_old_attempt_cannot_refuse_a_new_one() {
     );
     assert!(client.closed(&old).unwrap().is_empty());
     assert_eq!(client.poll_time(), None);
-    client.reenrolled();
+    assert!(!client.retry_after_fault());
+    let mut client = LinkClient::new(client.machine.clone(), clock.clone());
     let current = connect(&mut client);
     assert_eq!(
         client.finish_attempt(
@@ -362,6 +363,61 @@ fn refusal_order_is_idempotent_and_an_old_attempt_cannot_refuse_a_new_one() {
     assert!(client.closed(&current).unwrap().is_empty());
     clock.advance(Duration::from_secs(100)).unwrap();
     assert_eq!(client.poll_time(), None);
+}
+
+#[test]
+fn a_final_close_rejects_a_late_fault_and_cannot_be_retried_as_a_fault() {
+    let (mut client, clock) = fixture();
+    let attempt = connect(&mut client);
+    client
+        .close_received(&attempt, Some(MachineLinkCloseCode::Revoked))
+        .unwrap();
+    assert_eq!(
+        client.finish_attempt(
+            &attempt,
+            AttemptOutcome::Fault {
+                kind: LinkFault::MalformedAddress
+            }
+        ),
+        Err(ClientError::StaleConnection)
+    );
+    assert!(!client.retry_after_fault());
+    clock.advance(Duration::from_secs(100)).unwrap();
+    assert_eq!(client.poll_time(), None);
+    assert_eq!(
+        client.status(),
+        LinkStatus::EnrollmentEnded {
+            cause: EnrollmentEnd::Revoked
+        }
+    );
+}
+
+#[test]
+fn a_final_close_accepts_an_exact_duplicate_and_preserves_its_first_cause() {
+    let (mut client, _) = fixture();
+    let attempt = connect(&mut client);
+    request(&mut client);
+    assert_eq!(
+        client
+            .close_received(&attempt, Some(MachineLinkCloseCode::Inactive))
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        client.close_received(&attempt, Some(MachineLinkCloseCode::Inactive)),
+        Ok(vec![])
+    );
+    assert_eq!(
+        client.close_received(&attempt, Some(MachineLinkCloseCode::Revoked)),
+        Err(ClientError::StaleConnection)
+    );
+    assert_eq!(
+        client.status(),
+        LinkStatus::EnrollmentEnded {
+            cause: EnrollmentEnd::Inactive
+        }
+    );
 }
 
 #[test]
