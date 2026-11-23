@@ -6,8 +6,13 @@ Run the package with its workspace CI features:
 cargo nextest run --locked --profile ci -p fleet-identity-protocol
 ```
 
-`integration/main.rs` gathers 6 former external test roots.
-Cases cover identity values, connection and registration wires, remote starts, activity, and launch validation. Library unit tests remain colocated with their implementations.
+`integration/main.rs` covers identity values, connection wire, remote starts,
+activity, and the create, bind, and end session contracts. The session tests
+check every reply case, malformed records at every nesting level, and fixed
+create digest vectors. Library unit tests sit beside their implementations.
+
+With `wire-export` enabled, the integration target checks the generated
+TypeScript against the six request and reply roots.
 
 Each aggregate declares shared helper implementations once. Existing fixture
 directories remain in place. Only nonempty test categories are declared in

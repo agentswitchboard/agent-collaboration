@@ -6,7 +6,7 @@ use central_link_protocol::{
 };
 use central_storage::StoreFailure;
 use fleet_contracts::MachineConnectionAttachment;
-use fleet_rpc::{CallFailure, Envelope};
+use fleet_rpc::{CallFailure, Envelope, IndependentReplyRpc};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 use workspace_ids::RouterRunId;
@@ -49,7 +49,7 @@ pub async fn dispatch_registered_central_call<R, Handler, Answer>(
     handler: Handler,
 ) -> TypedCallResult<CentralCallReply>
 where
-    R: CentralLinkRpc,
+    R: CentralLinkRpc + IndependentReplyRpc,
     Handler: FnOnce(R::Request) -> Answer,
     Answer: Future<Output = R::Reply>,
 {
