@@ -177,7 +177,7 @@ async fn workerd_central_fault_rolls_back_create_and_keeps_the_link_open() -> Re
 }
 
 #[tokio::test]
-async fn workerd_session_projects_are_admitted_on_the_link_and_survive_reopen() -> Result<()> {
+async fn workerd_session_projects_are_admitted_on_the_link_and_survive_reopen() {
     use collaboration_central_conformance::{
         session_project_fixture::{FIRST_WORKSPACE, withdraw_session_allowance},
         session_project_scenarios::{
@@ -188,7 +188,7 @@ async fn workerd_session_projects_are_admitted_on_the_link_and_survive_reopen() 
     };
     use futures_util::StreamExt;
 
-    let fixture = Fixture::with_production_dispatcher().await?;
+    let fixture = Fixture::with_production_dispatcher().await.unwrap();
     let observed: Result<()> = async {
         let mut link = ConnectedLink::open(&fixture).await?;
         let store = fixture.runtime();
@@ -216,6 +216,6 @@ async fn workerd_session_projects_are_admitted_on_the_link_and_survive_reopen() 
         assert_session_project_migration(reopened.read(session_project_migration()).await?);
         Ok(())
     }.await;
-    fixture.close().await?;
-    observed
+    fixture.close().await.unwrap();
+    observed.unwrap();
 }

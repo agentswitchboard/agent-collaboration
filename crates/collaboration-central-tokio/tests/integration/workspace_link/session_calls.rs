@@ -193,7 +193,7 @@ async fn tokio_wrong_target_refuses_before_the_failing_lender() -> Result<()> {
 }
 
 #[tokio::test]
-async fn tokio_session_projects_are_admitted_on_the_link_and_survive_reopen() -> Result<()> {
+async fn tokio_session_projects_are_admitted_on_the_link_and_survive_reopen() {
     use collaboration_central_conformance::{
         session_project_fixture::{FIRST_WORKSPACE, withdraw_session_allowance},
         session_project_scenarios::{
@@ -205,7 +205,9 @@ async fn tokio_session_projects_are_admitted_on_the_link_and_survive_reopen() ->
     use fleet_runtime::PausePoint;
     use futures_util::StreamExt;
 
-    let fixture = start_session_link_fixture(signed_clock()?).await?;
+    let fixture = start_session_link_fixture(signed_clock().unwrap())
+        .await
+        .unwrap();
     let observed: Result<()> = async {
         let mut socket = connect(&fixture).await?;
         let owner = fixture.host.central(&fixture.organization_id).await?;
@@ -253,6 +255,6 @@ async fn tokio_session_projects_are_admitted_on_the_link_and_survive_reopen() ->
         Ok(())
     }
     .await;
-    fixture.close().await?;
-    observed
+    fixture.close().await.unwrap();
+    observed.unwrap();
 }

@@ -333,9 +333,9 @@ impl Action {
                     } else {
                         SessionCreatorAdmission::Admitted
                     },
-                    first: (!refused).then(|| {
-                        NewSessionAdmission::Refused(CreateSessionRefusal::ParentNotValid {})
-                    }),
+                    first: (!refused).then_some(NewSessionAdmission::Refused(
+                        CreateSessionRefusal::ParentNotValid {},
+                    )),
                     contents_digest: Content::Original.digest(),
                     attempt: 1.try_into().unwrap(),
                     candidate_secret: None,
