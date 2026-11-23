@@ -1,0 +1,73 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT CAST(message_id AS BLOB) AS \"message_id!: Vec<u8>\", created_at, updated_at,\n                    CAST(message_json AS BLOB) AS \"message_json?: Vec<u8>\",\n                    CAST(delivery_state_json AS BLOB) AS \"delivery_state_json!: Vec<u8>\",\n                    (typeof(message_id) = 'text') AS \"key_is_text!: bool\",\n                    CASE WHEN typeof(created_at) <> 'integer' THEN 1\n                         WHEN typeof(updated_at) <> 'integer' THEN 2\n                         ELSE 0 END AS \"integer_fault!: i64\"\n             FROM inbox_messages WHERE message_id = ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "message_id!: Vec<u8>",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": "Expression"
+      },
+      {
+        "name": "created_at",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "inbox_messages",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "inbox_messages",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "name": "message_json?: Vec<u8>",
+        "ordinal": 3,
+        "type_info": "Blob",
+        "origin": "Expression"
+      },
+      {
+        "name": "delivery_state_json!: Vec<u8>",
+        "ordinal": 4,
+        "type_info": "Blob",
+        "origin": "Expression"
+      },
+      {
+        "name": "key_is_text!: bool",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "integer_fault!: i64",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "1e8e4d8d722ce91ea069366478d3078fdd74f1c71bf668bc7c84446ab6d6c197"
+}

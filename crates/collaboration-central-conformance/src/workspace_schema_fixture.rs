@@ -4,6 +4,10 @@ pub const APPLICATION_TABLE_NAMES: &str = "SELECT name FROM sqlite_schema WHERE 
 
 pub const ORGANIZATION_TABLES: &[&str] = &[
     "access_actor_identities",
+    "actor_delegates",
+    "actor_identities",
+    "actor_persons",
+    "actor_sessions",
     "admin_used_requests",
     "automation_schedules",
     "automation_wakes",

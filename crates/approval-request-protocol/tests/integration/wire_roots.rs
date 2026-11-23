@@ -138,12 +138,15 @@ macro_rules! expected_wire_roots {
         $root!(StopRequest,
             json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"cause":"turnStopped"}),
             json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"cause":"askReplaced"}),
-            json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"cause":"askWithdrawn"}));
+            json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"cause":"askWithdrawn"}),
+            json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"cause":"holderRefusedLocally"}),
+            json!({"kind":"unprovenCall","requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"cause":"holderRefusedLocally"}));
         $root!(HolderStopCause, json!("turnStopped"), json!("sessionClosed"),
-            json!("providerConnectionLost"), json!("askReplaced"), json!("askWithdrawn"));
+            json!("providerConnectionLost"), json!("askReplaced"), json!("askWithdrawn"), json!("holderRefusedLocally"));
         $root!(StopReply,
             json!({"kind":"stands","ending":{"kind":"cancelled","reason":{"kind":"stopped","cause":"turnStopped"}}}),
             json!({"kind":"stands","ending":{"kind":"cancelled","reason":{"kind":"stopped","cause":"askWithdrawn"}}}),
+            json!({"kind":"stands","ending":{"kind":"cancelled","reason":{"kind":"stopped","cause":"holderRefusedLocally"}}}),
             json!({"kind":"stands","ending":{"kind":"cancelled","reason":{"kind":"sessionEnded"}}}),
             json!({"kind":"stands","ending":{"kind":"cancelled","reason":{"kind":"enrollmentEnded"}}}),
             json!({"kind":"stands","ending":{"kind":"timedOut"}}),
@@ -151,7 +154,8 @@ macro_rules! expected_wire_roots {
             json!({"kind":"notVisible"}), authority_refused());
         $root!(StopReceiptEnding, json!({"kind":"timedOut"}), json!({"kind":"decidedEarlier"}));
         $root!(PrivateEnding, private_approval_ending(),
-            json!({"kind":"providerQuestion","ending":{"kind":"decided","answer":{"kind":"declined"},"by":deciding_person()}}));
+            json!({"kind":"providerQuestion","ending":{"kind":"decided","answer":{"kind":"declined"},"by":deciding_person()}}),
+            json!({"kind":"unprovenCall","ending":{"kind":"cancelled","reason":{"kind":"stopped","cause":"holderRefusedLocally"}}}));
         $root!(DeliverEndingRequest, json!({"requestId":REQUEST_ID,"contentsDigest":DIGEST,"ending":private_approval_ending()}));
         $root!(DeliverEndingReply, json!({"kind":"received"}), json!({"kind":"stopOwed"}),
             json!({"kind":"notHeld"}), json!({"kind":"holderNotReady"}), json!({"kind":"endingDiffers"}));
@@ -494,6 +498,18 @@ fn stop_requires_a_cause_for_the_kind_of_wait_and_the_ending_keeps_that_cause() 
         json!({"kind":"cancelled","reason":{"kind":"stopped","cause":"providerConnectionLost"}})
     );
 
+    for kind in ["provider", "unprovenCall"] {
+        let request: StopRequest = serde_json::from_value(json!({
+            "kind":kind,"requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"cause":"holderRefusedLocally"
+        }))
+        .unwrap();
+        assert_eq!(
+            request.cause(),
+            HolderStopCause::HolderRefusedLocally,
+            "{kind}"
+        );
+    }
+
     for (kind, cause) in [
         ("provider", "callWithdrawn"),
         ("unprovenCall", "turnStopped"),
@@ -535,6 +551,7 @@ fn each_concrete_ending_and_request_state_uses_the_named_reader() -> Result<(), 
                 "sessionEnded",
                 "turnStopped",
                 "askWithdrawn",
+                "holderRefusedLocally",
             ][..],
         ),
         (
@@ -547,6 +564,7 @@ fn each_concrete_ending_and_request_state_uses_the_named_reader() -> Result<(), 
                 "sessionEnded",
                 "askReplaced",
                 "askWithdrawn",
+                "holderRefusedLocally",
             ][..],
         ),
     ] {
@@ -557,7 +575,11 @@ fn each_concrete_ending_and_request_state_uses_the_named_reader() -> Result<(), 
         ];
         endings.extend(reasons.iter().map(|reason| {
             let cancellation = match *reason {
-                "turnStopped" | "askReplaced" | "askWithdrawn" | "callWithdrawn" => {
+                "turnStopped"
+                | "askReplaced"
+                | "askWithdrawn"
+                | "callWithdrawn"
+                | "holderRefusedLocally" => {
                     json!({"kind":"stopped","cause":reason})
                 }
                 _ => json!({"kind":reason}),

@@ -1,8 +1,8 @@
 use approval_request_protocol::{
     AdmittedDestination, Answer, ApprovalWindow, CallStopCause, DecideReply, DecideRequest,
     DecidedBy, DecisionFactor, DeliverEndingRequest, Delivery, Ending, EndingView, HolderStopCause,
-    InvalidApprovalEnding, InvocationDigest, Raise, RequestView, SessionCallDecision, StopRequest,
-    WaitingStatus,
+    InvalidApprovalEnding, InvocationDigest, PrivateEnding, Raise, RequestView,
+    SessionCallDecision, StopRequest, WaitingStatus,
 };
 use serde_json::{Value, json};
 
@@ -30,6 +30,102 @@ fn raise_specimen(operation: Value) -> Value {
         "invocation":InvocationDigest::from_bound_bytes(b"opaque test fingerprint"),
         "offer":{"operation":operation}
     })
+}
+
+fn provider_raise_specimen() -> Value {
+    json!({
+        "kind":"providerApproval","requestId":REQUEST_ID,
+        "holder":{"routerRun":RUN_ID,"sessionId":SESSION_ID},
+        "offer":{"title":"Review","description":null,"subject":null,"options":[
+            {"id":1,"label":"Allow","effect":"allow","lasts":{"kind":"thisRequest"}}
+        ]}
+    })
+}
+
+#[test]
+fn a_projected_local_refusal_cannot_author_an_ending_for_either_family() {
+    let provider: Raise = serde_json::from_value(provider_raise_specimen()).unwrap();
+    let parked: Raise = serde_json::from_value(raise_specimen(end_summary())).unwrap();
+    for (original, opposite, kind) in [
+        (&provider, &parked, "providerApproval"),
+        (&parked, &provider, "unprovenCall"),
+    ] {
+        let typed: PrivateEnding = serde_json::from_value(json!({
+            "kind":kind,"ending":{"kind":"cancelled","reason":{
+                "kind":"stopped","cause":"holderRefusedLocally"
+            }}
+        }))
+        .unwrap();
+        assert_eq!(typed.check_bound_raise(original), Ok(()));
+        assert_eq!(
+            typed.check_bound_raise(opposite),
+            Err(InvalidApprovalEnding::BindingMismatch)
+        );
+        let projected = typed.into_ending();
+        for target in [opposite, original] {
+            assert_eq!(
+                DeliverEndingRequest::from_raise(target, projected.clone()),
+                Err(InvalidApprovalEnding::BindingMismatch),
+                "{kind} against {:?}",
+                target.kind()
+            );
+        }
+    }
+}
+
+#[test]
+fn an_exact_typed_stop_authors_a_local_refusal_only_for_its_bound_raise() {
+    let provider: Raise = serde_json::from_value(provider_raise_specimen()).unwrap();
+    let parked: Raise = serde_json::from_value(raise_specimen(end_summary())).unwrap();
+    for (raise, opposite, stop_kind, other_stop_kind, ending_kind) in [
+        (
+            &provider,
+            &parked,
+            "provider",
+            "unprovenCall",
+            "providerApproval",
+        ),
+        (
+            &parked,
+            &provider,
+            "unprovenCall",
+            "provider",
+            "unprovenCall",
+        ),
+    ] {
+        let specimen = json!({
+            "kind":stop_kind,"requestId":raise.request_id(),"routerRun":raise.router_run(),
+            "contentsDigest":raise.contents_digest().unwrap(),"cause":"holderRefusedLocally"
+        });
+        let exact = serde_json::from_value::<StopRequest>(specimen.clone()).unwrap();
+        let frame = DeliverEndingRequest::from_stop(raise, &exact).unwrap();
+        assert_eq!(frame.check_bound_raise(raise), Ok(()));
+        assert_eq!(
+            serde_json::to_value(&frame).unwrap(),
+            json!({
+                "requestId":raise.request_id(),"contentsDigest":raise.contents_digest().unwrap(),
+                "ending":{"kind":ending_kind,"ending":{"kind":"cancelled","reason":{
+                    "kind":"stopped","cause":"holderRefusedLocally"
+                }}}
+            })
+        );
+
+        for (field, wrong_value) in [
+            ("requestId", json!("01934a50-1000-7000-8000-000000000012")),
+            ("routerRun", json!("01934a50-1000-7000-8000-000000000003")),
+            ("contentsDigest", json!(opposite.contents_digest().unwrap())),
+            ("kind", json!(other_stop_kind)),
+        ] {
+            let mut mismatched = specimen.clone();
+            mismatched[field] = wrong_value;
+            let mismatched = serde_json::from_value::<StopRequest>(mismatched).unwrap();
+            assert_eq!(
+                DeliverEndingRequest::from_stop(raise, &mismatched),
+                Err(InvalidApprovalEnding::BindingMismatch),
+                "{stop_kind} with mismatched {field}"
+            );
+        }
+    }
 }
 
 #[test]

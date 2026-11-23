@@ -140,7 +140,7 @@ authority_projection!(
     "login_machine_approvals.current_enrollment"
 );
 
-fn lent_read_failure(error: sqlx::Error) -> StoreFailure {
+pub(super) fn lent_read_failure(error: sqlx::Error) -> StoreFailure {
     match error {
         sqlx::Error::ColumnNotFound(column) | sqlx::Error::ColumnDecode { index: column, .. } => {
             corrupt(&column)

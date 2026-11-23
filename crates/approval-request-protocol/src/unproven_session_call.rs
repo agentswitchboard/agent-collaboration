@@ -15,11 +15,11 @@ use crate::SessionCallWorkFolder;
 use crate::approval_wire_codec::{approval_wire_record, approval_wire_union};
 
 macro_rules! wire_string {
-    ($name:ident { $($variant:ident => $value:literal),+ $(,)? }) => {
+    ($name:ident { $($(#[$attribute:meta])* $variant:ident => $value:literal),+ $(,)? }) => {
         #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
         #[serde(rename_all = "camelCase")]
         #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
-        pub enum $name { $($variant),+ }
+        pub enum $name { $($(#[$attribute])* $variant),+ }
 
         impl<'de> Deserialize<'de> for $name {
             fn deserialize<D: serde::Deserializer<'de>>(decoder: D) -> Result<Self, D::Error> {
@@ -110,4 +110,8 @@ pub struct CallOffer {
 
 wire_string!(SessionCallDecision { Allow => "allow", Decline => "decline" });
 
-wire_string!(CallStopCause { CallWithdrawn => "callWithdrawn" });
+wire_string!(CallStopCause {
+    CallWithdrawn => "callWithdrawn",
+    /// The holder has already given the requester a final local refusal.
+    HolderRefusedLocally => "holderRefusedLocally",
+});

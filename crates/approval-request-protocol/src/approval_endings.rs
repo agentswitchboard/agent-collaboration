@@ -3,7 +3,9 @@ use crate::approval_wire_codec::approval_wire_union;
 use serde::{Deserialize, Serialize};
 use workspace_ids::{CentralSessionId, PersonId};
 
-use crate::{ApprovalDigestError, InvalidAnswer, ProviderAnswer, SessionCallDecision};
+use crate::{
+    ApprovalDigestError, CallStopCause, InvalidAnswer, ProviderAnswer, SessionCallDecision,
+};
 
 approval_wire_union! {
 #[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
@@ -52,6 +54,18 @@ pub enum HolderStopCause {
     SessionClosed,
     ProviderConnectionLost,
     CallWithdrawn,
+    HolderRefusedLocally,
+}
+
+impl HolderStopCause {
+    /// Returns the cause recorded in a holder ending for a parked call.
+    #[must_use]
+    pub const fn from_call(cause: CallStopCause) -> Self {
+        match cause {
+            CallStopCause::CallWithdrawn => Self::CallWithdrawn,
+            CallStopCause::HolderRefusedLocally => Self::HolderRefusedLocally,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -67,32 +81,22 @@ pub enum ProviderStopCause {
     AskWithdrawn,
     SessionClosed,
     ProviderConnectionLost,
+    /// The holder has already given the requester a final local refusal.
+    HolderRefusedLocally,
 }
 
 impl ProviderStopCause {
-    pub(crate) const fn holder_cause(self) -> HolderStopCause {
+    /// Returns the cause recorded in a holder ending.
+    #[must_use]
+    pub const fn holder_cause(self) -> HolderStopCause {
         match self {
             Self::TurnStopped => HolderStopCause::TurnStopped,
             Self::AskReplaced => HolderStopCause::AskReplaced,
             Self::AskWithdrawn => HolderStopCause::AskWithdrawn,
             Self::SessionClosed => HolderStopCause::SessionClosed,
             Self::ProviderConnectionLost => HolderStopCause::ProviderConnectionLost,
+            Self::HolderRefusedLocally => HolderStopCause::HolderRefusedLocally,
         }
-    }
-}
-
-impl TryFrom<HolderStopCause> for ProviderStopCause {
-    type Error = InvalidApprovalEnding;
-
-    fn try_from(cause: HolderStopCause) -> Result<Self, Self::Error> {
-        Ok(match cause {
-            HolderStopCause::TurnStopped => Self::TurnStopped,
-            HolderStopCause::AskReplaced => Self::AskReplaced,
-            HolderStopCause::AskWithdrawn => Self::AskWithdrawn,
-            HolderStopCause::SessionClosed => Self::SessionClosed,
-            HolderStopCause::ProviderConnectionLost => Self::ProviderConnectionLost,
-            HolderStopCause::CallWithdrawn => return Err(InvalidApprovalEnding::BindingMismatch),
-        })
     }
 }
 

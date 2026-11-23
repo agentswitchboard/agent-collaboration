@@ -86,7 +86,7 @@ async fn fresh_production_catalog_contains_machine_allowances_and_an_empty_due_t
         .unwrap()
         .unwrap();
     let ledger = catalog["ledger"]["rows"].as_array().unwrap();
-    assert_eq!(ledger.len(), 9);
+    assert_eq!(ledger.len(), 10);
     let tables = current.read(central_storage::Statement {
         sql: "SELECT COUNT(*) AS allowances, (SELECT COUNT(*) FROM engine_due_entries) AS due_entries FROM login_machine_allowances",
         args: vec![],
