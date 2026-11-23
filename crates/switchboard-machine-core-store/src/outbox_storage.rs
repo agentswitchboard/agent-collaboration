@@ -97,6 +97,12 @@ pub trait OutboxStorage: Send {
         outcome: &'call OutboxWriteOutcome,
         now: i64,
     ) -> OutboxFuture<'call, ()>;
+    /// Records a permanent result after an unconfirmed cutoff.
+    fn record_late_outcome<'call>(
+        &'call mut self,
+        request: &'call RequestId,
+        outcome: &'call OutboxWriteOutcome,
+    ) -> OutboxFuture<'call, ()>;
     fn return_not_transmitted<'call>(
         &'call mut self,
         request: &'call RequestId,
@@ -279,6 +285,17 @@ impl OutboxStorage for MachineLocalOutbox {
         Box::pin(async move {
             MacOutbox::new(&mut self.store)
                 .return_not_transmitted(request, now)
+                .await
+        })
+    }
+    fn record_late_outcome<'call>(
+        &'call mut self,
+        request: &'call RequestId,
+        outcome: &'call OutboxWriteOutcome,
+    ) -> OutboxFuture<'call, ()> {
+        Box::pin(async move {
+            MacOutbox::new(&mut self.store)
+                .record_late_outcome(request, outcome)
                 .await
         })
     }

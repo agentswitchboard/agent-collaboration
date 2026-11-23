@@ -5,11 +5,11 @@ use crate::{
     StoreScan,
     outbox_item_state::OutboxItemState,
     outbox_receipt_profile::AnsweredWrite,
-    outbox_settlement::{is_permanent_answer, is_permanent_refusal},
+    outbox_settlement::{SettledWrite, is_permanent_answer, is_permanent_refusal},
     store_scan::diagnostic_key,
 };
 use workspace_ids::RequestId;
-use workspace_model::{Caller, Timestamp, operation_content_digest};
+use workspace_model::{Caller, Timestamp};
 pub(super) struct OutboxRow {
     pub(super) request_id: Vec<u8>,
     pub(super) caller_json: Vec<u8>,
@@ -266,6 +266,11 @@ pub(super) fn decode_row(row: &OutboxRow) -> Result<DecodedRow, RowCorruption> {
         (OutboxItemState::Refused, Some(outcome)) => OutboxRequestStatus::Refused(
             serde_json::from_slice(outcome).map_err(|_| corrupt("outcome_json", InvalidJson))?,
         ),
+        (OutboxItemState::Unconfirmed, Some(outcome)) => {
+            serde_json::from_slice::<SettledWrite>(outcome)
+                .map_err(|_| corrupt("outcome_json", InvalidJson))?
+                .into_request_status()
+        }
         (ended @ (OutboxItemState::NotSent | OutboxItemState::Unconfirmed), None) => {
             OutboxRequestStatus::Ended {
                 reason: ended
@@ -278,8 +283,7 @@ pub(super) fn decode_row(row: &OutboxRow) -> Result<DecodedRow, RowCorruption> {
             | OutboxItemState::SentAnswerLost
             | OutboxItemState::Sent
             | OutboxItemState::Resent
-            | OutboxItemState::NotSent
-            | OutboxItemState::Unconfirmed,
+            | OutboxItemState::NotSent,
             Some(_),
         )
         | (OutboxItemState::Answered | OutboxItemState::Refused, None) => {
@@ -340,11 +344,9 @@ pub(super) fn outbox_content(
 pub(super) fn payload_content_digest(
     payload: &OutboxQueuedWrite,
 ) -> Result<String, OutboxStoreError> {
-    let digest = match payload {
-        OutboxQueuedWrite::Workspace(request) => operation_content_digest(&request.operation),
-        OutboxQueuedWrite::SendMessage { message, .. } => operation_content_digest(message),
-    };
-    digest.map_err(|_| OutboxStoreError::Digest)
+    payload
+        .content_digest()
+        .map_err(|_| OutboxStoreError::Digest)
 }
 
 pub(super) fn corrupt_row(request_id: &str, field: &'static str) -> OutboxStoreError {
