@@ -15,6 +15,7 @@ members = [
     "crates/state-machine-core",
     "crates/provider-session-machines",
     "crates/switchboard-approval-holder",
+    "crates/switchboard-session-start",
     "crates/switchboard-harness-contracts",
     "crates/switchboard-harness-shared-mechanics",
     "crates/switchboard-machine-enrollment",
@@ -108,6 +109,7 @@ publish = false
 approval-request-protocol = { path = "crates/approval-request-protocol", version = "0.1.158" }
 switchboard-approval-holder = { path = "crates/switchboard-approval-holder", version = "0.1.158" }
 switchboard-approval-ports = { path = "crates/switchboard-approval-ports", version = "0.1.158" }
+switchboard-session-start = { path = "crates/switchboard-session-start", version = "0.1.158" }
 switchboard-harness-shared-mechanics = { path = "crates/switchboard-harness-shared-mechanics", version = "0.1.158" }
 switchboard-harness-contracts = { path = "crates/switchboard-harness-contracts", version = "0.1.158" }
 central-link-protocol = { path = "crates/central-link-protocol", version = "0.1.153" }
