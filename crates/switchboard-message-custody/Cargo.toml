@@ -7,12 +7,12 @@ publish = false
 autotests = false
 
 [dependencies]
-central-link-client = { path = "../central-link-client" }
+central-link-client.workspace = true
 central-link-protocol.workspace = true
 router-clock.workspace = true
 runtime-primitives.workspace = true
 state-machine-core.workspace = true
-switchboard-machine-core-store = { path = "../switchboard-machine-core-store" }
+switchboard-machine-core-store.workspace = true
 thiserror.workspace = true
 tokio.workspace = true
 workspace-ids.workspace = true

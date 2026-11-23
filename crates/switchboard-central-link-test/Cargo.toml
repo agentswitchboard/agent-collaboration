@@ -10,8 +10,8 @@ autotests = false
 central-link-client = { path = "../central-link-client" }
 central-link-protocol.workspace = true
 switchboard-central-link = { path = "../switchboard-central-link", features = ["test-support"] }
-switchboard-machine-core-store = { path = "../switchboard-machine-core-store" }
-switchboard-message-custody = { path = "../switchboard-message-custody" }
+switchboard-machine-core-store.workspace = true
+switchboard-message-custody.workspace = true
 collaboration-central-tokio = { path = "../collaboration-central-tokio", features = ["test-support"] }
 collaboration-central-conformance = { path = "../collaboration-central-conformance", features = ["signin-test-support"] }
 router-clock = { workspace = true, features = ["test-support"] }
