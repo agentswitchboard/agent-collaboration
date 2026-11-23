@@ -19,20 +19,9 @@ const centralProgramTarget = "codex-router";
 const cargoMetadata = z.object({
   target_directory: z.string(),
   workspace_members: z.array(z.string()),
-  packages: z.array(z.object({ id: z.string(), name: z.string() })),
-  resolve: z.object({
-    nodes: z.array(
-      z.object({
-        id: z.string(),
-        deps: z.array(
-          z.object({
-            pkg: z.string(),
-            dep_kinds: z.array(z.object({ kind: z.string().nullable() })),
-          }),
-        ),
-      }),
-    ),
-  }),
+  packages: z.array(
+    z.object({ id: z.string(), name: z.string(), version: z.string(), manifest_path: z.string() }),
+  ),
 });
 const cargoMessageReason = z.object({ reason: z.string() });
 const cargoArtifact = z.object({
@@ -64,7 +53,10 @@ async function checkFixtureSql(artifact: string, description: string): Promise<v
   }
 }
 
-function resolveNativeWorkspace(metadata: z.infer<typeof cargoMetadata>): {
+function resolveNativeWorkspace(
+  metadata: z.infer<typeof cargoMetadata>,
+  productionTree: string,
+): {
   programPackage: string;
   workspacePackages: Map<string, string>;
 } {
@@ -74,20 +66,18 @@ function resolveNativeWorkspace(metadata: z.infer<typeof cargoMetadata>): {
   );
   if (program === undefined) throw new Error(`Missing workspace package ${centralProgramPackage}`);
 
-  const nodes = new Map(metadata.resolve.nodes.map((node) => [node.id, node.deps]));
-  const reachable = new Set([program.id]);
-  for (const id of reachable) {
-    const dependencies = nodes.get(id);
-    if (dependencies === undefined) throw new Error(`Cargo metadata has no resolve node for ${id}`);
-    for (const dependency of dependencies) {
-      if (dependency.dep_kinds.some(({ kind }) => kind === null)) reachable.add(dependency.pkg);
-    }
-  }
+  const productionPackages = new Set(
+    productionTree.split("\n").map((line) => line.trimEnd().replace(/ \(\*\)$/, "")),
+  );
+  const isInProduction = (pkg: (typeof metadata.packages)[number]): boolean =>
+    productionPackages.has(pkg.name + " v" + pkg.version + " (" + dirname(pkg.manifest_path) + ")");
+  if (!isInProduction(program))
+    throw new Error("Production dependency tree omits codex-router-cli");
   return {
     programPackage: program.id,
     workspacePackages: new Map(
       metadata.packages
-        .filter(({ id }) => members.has(id) && reachable.has(id))
+        .filter((pkg) => members.has(pkg.id) && isInProduction(pkg))
         .map(({ id, name }) => [id, name]),
     ),
   };
@@ -97,9 +87,10 @@ export async function checkCentralNativeArtifacts(
   cargoMetadataFile: string,
   cargoMessagesFile: string,
   hostTarget: string,
+  productionTree: string,
 ): Promise<number> {
   const metadata = cargoMetadata.parse(JSON.parse(readFileSync(cargoMetadataFile, "utf8")));
-  const { programPackage, workspacePackages } = resolveNativeWorkspace(metadata);
+  const { programPackage, workspacePackages } = resolveNativeWorkspace(metadata, productionTree);
   const buildDirectory = join(metadata.target_directory, hostTarget, "debug");
   const archiveDirectory = join(buildDirectory, "deps");
   const expectedExecutable = join(buildDirectory, centralProgramTarget);
@@ -190,21 +181,35 @@ async function checkCentralNativeBuild(evidenceParent: string): Promise<void> {
   const metadataFile = join(evidence, "metadata.json");
   const messagesFile = join(evidence, "cargo.jsonl");
   const metadata = runChecked(
-    [
-      "cargo",
-      "metadata",
-      "--locked",
-      "--format-version",
-      "1",
-      "--no-default-features",
-      "--filter-platform",
-      host,
-    ],
+    ["cargo", "metadata", "--locked", "--format-version", "1", "--no-deps"],
     { env },
   );
   writeFileSync(metadataFile, metadata);
   if (cargoMetadata.parse(JSON.parse(metadata)).target_directory !== env.CARGO_TARGET_DIR)
     throw new Error("Cargo metadata points outside the guard's build directory");
+
+  // Workspace metadata includes test feature resolution. Match the package and
+  // feature selection used by the executable build for the dependency graph.
+  const productionTree = runChecked(
+    [
+      "cargo",
+      "tree",
+      "--locked",
+      "-p",
+      centralProgramPackage,
+      "--no-default-features",
+      "--target",
+      host,
+      "--edges",
+      "normal",
+      "--prefix",
+      "none",
+      "--format",
+      "{p}",
+    ],
+    { env },
+  );
+  writeFileSync(join(evidence, "production-tree.txt"), productionTree);
 
   const messages = openSync(messagesFile, "wx");
   try {
@@ -230,7 +235,7 @@ async function checkCentralNativeBuild(evidenceParent: string): Promise<void> {
   } finally {
     closeSync(messages);
   }
-  const count = await checkCentralNativeArtifacts(metadataFile, messagesFile, host);
+  const count = await checkCentralNativeArtifacts(metadataFile, messagesFile, host, productionTree);
   console.log(
     `Native Central checked ${count} workspace archives and the ${centralProgramTarget} executable for fixture SQL`,
   );

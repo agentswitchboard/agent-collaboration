@@ -1,5 +1,5 @@
 //! Only a session bound to the signed machine may act on a public link.
-use super::fixture::{Fixture, INSTALLATION, receive, send};
+use super::fixture::{Fixture, INSTALLATION, receive, send, start_fixture};
 use central_link_protocol::{
     CorrelationId, DataFrame, LinkFrame, LinkRequest, LinkRequestBatch, ReplyPayload,
     RequestPayload, RequestRefusal, RequestScope, RequestStatusAnswer, RequestStatusQuery,
@@ -13,7 +13,7 @@ use workspace_model::{
 
 #[tokio::test]
 async fn public_link_refuses_unverified_person_and_foreign_session_callers() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = rejected_callers(&fixture).await;
     fixture.close().await?;
     result

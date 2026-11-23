@@ -1,5 +1,5 @@
 //! A live admission read can fail independently for one batch member.
-use super::fixture::{Fixture, receive, send};
+use super::fixture::{Fixture, receive, send, start_fixture};
 use super::link_support::caller as session_caller;
 use central_link_protocol::{
     DataFrame, LinkFrame, LinkRequest, LinkRequestBatch, ReplyPayload, RequestPayload,
@@ -13,7 +13,7 @@ use workspace_model::{
 
 #[tokio::test]
 async fn batch_continues_after_a_transient_middle_admission_failure() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = transient_admission_faults(&fixture).await;
     fixture.close().await?;
     result

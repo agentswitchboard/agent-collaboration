@@ -4,7 +4,7 @@ use fleet_contracts::MachinePrincipal;
 
 #[tokio::test]
 async fn private_signed_revocation_commits_and_closes_the_idle_machine_link() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = revocation_journey(&fixture).await;
     fixture.close().await?;
     result
@@ -113,7 +113,7 @@ fn issuer_one_machine_id_vectors_are_closed_on_this_host() -> Result<()> {
 
 #[tokio::test]
 async fn valid_uuid_for_the_wrong_stored_client_is_corrupt() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = mismatched_stored_client(&fixture).await;
     fixture.close().await?;
     result

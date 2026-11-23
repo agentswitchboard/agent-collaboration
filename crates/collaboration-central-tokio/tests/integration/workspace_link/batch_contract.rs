@@ -1,5 +1,5 @@
 //! One native batch preserves ordered independent replies across a semantic refusal.
-use super::fixture::{Fixture, INSTALLATION, receive, send};
+use super::fixture::{INSTALLATION, receive, send, start_fixture};
 use central_link_client::{ClientAction, ClientEvent, LinkClient};
 use central_link_protocol::{
     DataFrame, LinkFrame, LinkRequest, LinkRequestBatch, ReplyPayload, RequestPayload,
@@ -32,7 +32,7 @@ fn request_from_client(frame: LinkFrame) -> Result<LinkRequest> {
 #[tokio::test]
 async fn native_batch_keeps_order_and_continues_after_a_middle_semantic_refusal() -> Result<()> {
     // Arrange: real signed admission and an ordinary machine_id-addressed session.
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let target: SessionRef = serde_json::from_value(json!({
         "machineId":INSTALLATION,
         "sessionId":"019f0000-0000-7000-8000-00000000cf07"

@@ -34,7 +34,7 @@ pub(crate) fn validate_options<'a>(
 
 approval_wire_record! {
 [deny_unknown_fields]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -46,7 +46,7 @@ pub struct ChoiceOption {
 }
 
 approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -111,7 +111,7 @@ impl QuestionField {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "Vec<ChoiceOption>", into = "Vec<ChoiceOption>")]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
@@ -150,7 +150,7 @@ impl From<ChoiceOptions> for Vec<ChoiceOption> {
 
 approval_wire_record! {
     [deny_unknown_fields]
-    #[derive(Clone, Debug, Eq, PartialEq)]
+    #[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
     #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
     struct MultiChoiceSelectionFields {
         options: ChoiceOptions,
@@ -159,7 +159,7 @@ approval_wire_record! {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     try_from = "MultiChoiceSelectionFields",
     into = "MultiChoiceSelectionFields"
@@ -222,7 +222,7 @@ pub enum InvalidQuestionFields {
     DuplicateField,
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "Vec<QuestionField>", into = "Vec<QuestionField>")]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),

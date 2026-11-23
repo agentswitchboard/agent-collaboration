@@ -16,11 +16,13 @@ use fleet_rpc::{CallFailure, Envelope, Transport, dispatch};
 use fleet_workspace_service::WorkspaceService;
 #[path = "workspace_alarm_owner.rs"]
 mod workspace_alarm_owner;
+use central_link_protocol::{FreshCorrelationId, MacCallAddress, MacLinkRpc};
 use central_storage::{
     BatchOutcome, ReadOutcome, Statement, StatementBatch, StoreCall, StoreFailure, StoreReply,
 };
 use collaboration_central_core::{
-    OrganizationAdminAnswer, OrganizationSignInPort, SignInTrustSettings, WorkspaceRuntime,
+    MacCallResult, OrganizationAdminAnswer, OrganizationSignInPort, SignInTrustSettings,
+    TYPED_LINK_CALL_TIMEOUT, WorkspaceRuntime, finish_mac_call,
     identity_contract::{AuthorizationRevision, AuthorizationRevisionAcknowledgement},
     person_request::PersonRequestInput,
 };
@@ -37,6 +39,7 @@ use std::{
 };
 use tokio::sync::Mutex;
 use workspace_alarm_owner::WorkspaceAlarmOwner;
+use workspace_ids::MachineId;
 use workspace_model::central_mail::{CentralMailRequest, CentralMailResult};
 use workspace_model::{WorkspaceId, WorkspaceReply, WorkspaceRequest};
 
@@ -284,6 +287,28 @@ impl TokioWorkspaceHost {
 
     pub fn current_time(&self) -> runtime_primitives::SyncTime {
         self.clock.now()
+    }
+
+    /// Route a registered RPC to the current socket for this organization machine.
+    pub async fn call_machine<R: MacLinkRpc>(
+        &self,
+        organization: &OrganizationId,
+        machine: &MachineId,
+        request: Envelope<R::Target, R::Request>,
+    ) -> MacCallResult<R> {
+        let deadline = self.clock.monotonic_now().after(TYPED_LINK_CALL_TIMEOUT);
+        let target = request.target.clone();
+        let call = R::request(request);
+        let address = MacCallAddress::from(&call);
+        let addressed_organization = address.organization_id().unwrap_or(organization);
+        if addressed_organization != organization || address.machine_id() != machine {
+            return Err(CallFailure::NeverReached);
+        }
+        let correlation = FreshCorrelationId::mint_at(self.clock.now().unix_millis());
+        let pending =
+            self.push_registry
+                .queue_call(organization, correlation, call, address, deadline)?;
+        finish_mac_call::<R>(&target, pending.wait(self.clock.as_ref()).await?)
     }
 
     pub async fn request(

@@ -199,9 +199,19 @@ pub(super) async fn approve(
     request_id: &str,
     now: i64,
 ) -> Result<EnrollmentId> {
+    approve_machine(host, client, MACHINE_ID, request_id, now).await
+}
+
+pub(super) async fn approve_machine(
+    host: &WorkerdHost,
+    client: &reqwest::Client,
+    machine_id: &str,
+    request_id: &str,
+    now: i64,
+) -> Result<EnrollmentId> {
     let request: DecideDeviceLogin = serde_json::from_value(json!({
         "organizationId":ORGANIZATION,"approver":signed::OWNER,"permissionChecked":"machine:enroll",
-        "requestId":request_id,"machineId":MACHINE_ID,"label":"Hibernating machine",
+        "requestId":request_id,"machineId":machine_id,"label":"Hibernating machine",
         "allowedWorkspaces":[],"approverSecondFactorAt":now-60,"codeExpiresAt":now+600,
     }))?;
     match post(host, client, "/internal/device-login-decisions", &request).await? {

@@ -49,6 +49,8 @@ pub enum PausePoint {
     /// Keyed "driver": the host's alarm driver woke for a due alarm, before it
     /// takes its drive guard from a gated test clock.
     BeforeDriveGuard,
+    /// The renewal token is verified and the organization turn is held.
+    BeforeRenewalApplyingSample,
     BeforeSignInSample,
     AfterSignInSample,
 }
