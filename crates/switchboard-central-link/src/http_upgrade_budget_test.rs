@@ -74,13 +74,30 @@ fn padded_head(prefix: &str, total_bytes: usize) -> Vec<u8> {
 }
 
 fn switching_head(total_bytes: usize) -> Vec<u8> {
+    switching_head_with_version(total_bytes, "HTTP/1.1")
+}
+
+fn switching_head_with_version(total_bytes: usize, version: &str) -> Vec<u8> {
     let accept_key = derive_accept_key(TEST_SOCKET_KEY.as_bytes());
     padded_head(
         &format!(
-            "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: {accept_key}\r\n"
+            "{version} 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: {accept_key}\r\n"
         ),
         total_bytes,
     )
+}
+
+#[tokio::test]
+async fn switching_protocols_requires_http_11_with_otherwise_identical_headers() {
+    let (http_11, _) = dial_raw_response(switching_head(200), 4096).await;
+    assert!(http_11.is_ok(), "a valid HTTP/1.1 101 must upgrade");
+
+    let http_10_head = switching_head_with_version(200, "HTTP/1.0");
+    let (http_10, _) = dial_raw_response(http_10_head, 4096).await;
+    assert!(
+        matches!(http_10, Err(DialFailure::Transport)),
+        "an otherwise valid HTTP/1.0 101 must fail as a transport fault"
+    );
 }
 
 fn inactive_close() -> [u8; 4] {

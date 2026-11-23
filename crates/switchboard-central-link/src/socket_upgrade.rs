@@ -14,7 +14,9 @@ use std::{
 use central_link_protocol::MachineTokenText;
 use futures_util::future::try_join;
 use http_body_util::Empty;
-use hyper::{Request, StatusCode, Uri, body::Bytes, client::conn::http1, upgrade::Upgraded};
+use hyper::{
+    Request, StatusCode, Uri, Version, body::Bytes, client::conn::http1, upgrade::Upgraded,
+};
 use hyper_rustls::HttpsConnectorBuilder;
 use hyper_util::rt::TokioIo;
 use tokio::io::{AsyncRead, AsyncWrite, ReadBuf};
@@ -162,7 +164,7 @@ async fn upgrade_over_stream(
             .await
             .map_err(|_| DialFailure::Transport)?;
         match response.status() {
-            StatusCode::SWITCHING_PROTOCOLS => {
+            StatusCode::SWITCHING_PROTOCOLS if response.version() == Version::HTTP_11 => {
                 check_upgrade_headers(response.headers(), websocket_key)?
             }
             StatusCode::UNAUTHORIZED => return Err(DialFailure::Unauthorized),

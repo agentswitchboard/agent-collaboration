@@ -10,7 +10,7 @@ credential text in a Close reason. The Router can forward `log` records to traci
 The Mac link uses Hyper for the authenticated HTTP/1.1 upgrade and hands the upgraded stream to
 Tokio-Tungstenite as a client socket. Its normal dependency on `log` enables `max_level_info`,
 which compiles out the frame traces and Close debug records in every profile. The response still
-has to be HTTP 101 with the expected WebSocket handshake headers. Hyper limits the inbound header
+has to be an HTTP/1.1 101 with the expected WebSocket handshake headers. Hyper limits the inbound header
 block to 124 headers. The driver enforces a cumulative budget of 64 KiB and 512 successful,
 nonempty reads across every response head, including informational heads. The budget stops when
 the handshake succeeds. Hyper replays any bytes it read alongside the 101 before reading from
