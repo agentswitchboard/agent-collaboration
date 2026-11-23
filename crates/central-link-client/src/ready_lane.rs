@@ -8,6 +8,7 @@ use central_link_protocol::{
 };
 use router_clock::ClockInstant;
 use tokio::sync::watch;
+use workspace_ids::RouterRunId;
 use workspace_model::{Caller, ResolvedSender, Timestamp};
 
 use crate::ConnectionAttempt;
@@ -19,11 +20,19 @@ pub struct WelcomeClockAnchor {
     pub observed_at: ClockInstant,
 }
 
-/// The socket owner publishes this only after registration and admission on this connection.
+/// The socket owner publishes this after Central welcomes and admits this connection.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ReadyConnection {
+pub struct AdmittedConnection {
     pub connection: ConnectionAttempt,
     pub clock_anchor: WelcomeClockAnchor,
+}
+
+/// The run gate publishes this after Central registers the run on the admitted connection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegisteredConnection {
+    pub connection: ConnectionAttempt,
+    pub clock_anchor: WelcomeClockAnchor,
+    pub router_run: RouterRunId,
 }
 
 /// A link user prepares a batch of writes for one connection, retaining each supplied request ID.
@@ -33,7 +42,7 @@ pub struct WriteBatchCommand {
     pub requests: LinkRequestBatch,
 }
 
-/// A link user prepares one single-answer frame for the connection it observed as ready.
+/// A link user prepares one single-answer frame for the connection it observed as admitted.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LinkLaneCommand {
     SubmitReceipts {
@@ -105,11 +114,11 @@ pub enum LinkLaneDisposition {
     AnswerLost,
 }
 
-/// The socket owner stamps each delivery and each readiness change with its connection.
+/// The socket owner stamps message deliveries and admission changes with their connection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LinkLaneEvent {
-    ConnectionReady(ReadyConnection),
-    ConnectionNotReady {
+    ConnectionAdmitted(AdmittedConnection),
+    ConnectionNotAdmitted {
         connection: ConnectionAttempt,
     },
     Deliver {
@@ -122,8 +131,11 @@ pub enum LinkLaneEvent {
 
 /// The socket owner supplies readiness, a command lane and an event stream to its link users.
 pub trait ReadyLinkLane: Send + Sync {
-    /// The current ready connection. The watch contains `None` while unavailable.
-    fn watch_readiness(&self) -> watch::Receiver<Option<ReadyConnection>>;
+    /// The currently admitted connection for message operations.
+    fn watch_admitted(&self) -> watch::Receiver<Option<AdmittedConnection>>;
+
+    /// The current connection for operations requiring a registered Router run.
+    fn watch_registered(&self) -> watch::Receiver<Option<RegisteredConnection>>;
 
     /// Hand over a batch for its named connection and await its writer and per-member facts.
     /// An unknown, repeated or foreign correlation settles no member.

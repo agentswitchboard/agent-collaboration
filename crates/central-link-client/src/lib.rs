@@ -10,9 +10,9 @@ pub use link_state::{
 };
 pub use pending_calls::{CallFailure, FailedCall, SendFailure};
 pub use ready_lane::{
-    CorrelatedRequestReply, LinkLaneCommand, LinkLaneDisposition, LinkLaneEvent, LinkLaneReply,
-    ReadyConnection, ReadyLinkLane, WelcomeClockAnchor, WriteBatchCommand, WriteBatchDisposition,
-    WriteBatchMemberDisposition,
+    AdmittedConnection, CorrelatedRequestReply, LinkLaneCommand, LinkLaneDisposition,
+    LinkLaneEvent, LinkLaneReply, ReadyLinkLane, RegisteredConnection, WelcomeClockAnchor,
+    WriteBatchCommand, WriteBatchDisposition, WriteBatchMemberDisposition,
 };
 
 pub use error::ClientError;
