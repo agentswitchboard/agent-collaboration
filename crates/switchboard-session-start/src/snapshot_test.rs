@@ -78,6 +78,13 @@ fn pointer(stored: &mut StoredSnapshot) -> &mut SecretIssue {
     issue
 }
 
+fn stored_issue(stored: &mut StoredSnapshot) -> &mut SecretIssue {
+    let SecretFact::Stored(issue) = &mut stored.facts.secret else {
+        panic!("opened test specimen")
+    };
+    issue
+}
+
 fn restore_with_scope(
     stored: StoredSnapshot,
     scope: &StartScope,
@@ -125,7 +132,7 @@ fn scope_mismatch() {
 #[test]
 fn issue_enrollment_mismatch() {
     let mut stored = specimen();
-    pointer(&mut stored).enrollment = String::from("019c0000-0000-7000-8000-000000000010")
+    stored_issue(&mut stored).enrollment = String::from("019c0000-0000-7000-8000-000000000010")
         .try_into()
         .unwrap();
     rejects(stored, CorruptStartRecord::IssueEnrollmentMismatch);
@@ -134,14 +141,14 @@ fn issue_enrollment_mismatch() {
 #[test]
 fn issue_session_mismatch() {
     let mut stored = specimen();
-    pointer(&mut stored).session_id = "019c0000-0000-7000-8000-000000000010".parse().unwrap();
+    stored_issue(&mut stored).session_id = "019c0000-0000-7000-8000-000000000010".parse().unwrap();
     rejects(stored, CorruptStartRecord::IssueSessionMismatch);
 }
 
 #[test]
 fn issue_attempt_mismatch() {
     let mut stored = specimen();
-    pointer(&mut stored).attempt = 2.try_into().unwrap();
+    stored_issue(&mut stored).attempt = 2.try_into().unwrap();
     rejects(stored, CorruptStartRecord::IssueAttemptMismatch);
 }
 
