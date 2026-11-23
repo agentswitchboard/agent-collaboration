@@ -2,6 +2,7 @@ use central_storage::{CorruptReason, StoreFailure};
 use fleet_actor_identity::{
     LiveSessionFacts, SessionAvailability, SessionCallOutcome, SessionServiceError,
 };
+use fleet_approvals::{ApprovalEnrollment, ApprovalRouting, ApprovalSession};
 use fleet_identity_protocol::{
     BindFleetSession, BindFleetSessionReply, CreateFleetSessionReply, CreateSessionKind,
     CreateSessionRefusal, EndFleetSession, EndFleetSessionReply, EndSessionTarget, EnrollmentId,
@@ -320,6 +321,35 @@ async fn authenticated_creator_is_checked_before_replay_and_only_that_session_ca
     assert_eq!(facts.session_id, parent);
     assert_eq!(facts.machine_id, store.caller.machine_id);
     assert_eq!(facts.enrollment_id, store.caller.enrollment_id);
+    let organization = id(700).try_into().unwrap();
+    let another_organization = id(701).try_into().unwrap();
+    let parent_route = ApprovalRouting::Delegate {
+        admitted_parent: ApprovalSession {
+            enrollment: ApprovalEnrollment {
+                machine_id: facts.machine_id,
+                enrollment_id: facts.enrollment_id,
+            },
+            session_id: facts.session_id,
+        },
+    };
+    assert_eq!(
+        store
+            .approval_facts(&parent, &organization, &organization)
+            .await,
+        (true, Some(ApprovalRouting::Owner))
+    );
+    assert_eq!(
+        store
+            .approval_facts(&child, &organization, &organization)
+            .await,
+        (true, Some(parent_route.clone()))
+    );
+    assert_eq!(
+        store
+            .approval_facts(&child, &organization, &another_organization)
+            .await,
+        (false, None)
+    );
 
     store
         .apply(
@@ -333,6 +363,18 @@ async fn authenticated_creator_is_checked_before_replay_and_only_that_session_ca
         )
         .await
         .unwrap();
+    assert_eq!(
+        store
+            .approval_facts(&parent, &organization, &organization)
+            .await,
+        (false, None)
+    );
+    assert_eq!(
+        store
+            .approval_facts(&child, &organization, &organization)
+            .await,
+        (true, Some(parent_route))
+    );
     assert_eq!(
         store
             .apply(make_child(proof, parent.clone()), 6)

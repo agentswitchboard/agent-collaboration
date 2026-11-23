@@ -231,6 +231,25 @@ test("Workerd orders creator authentication before replay and binds a delegate t
     },
   );
 
+  const storeOrganization = sessionId(700);
+  const routeRequest = {
+    kind: "approvalFacts",
+    sessionId: delegate.sessionId,
+    storeOrganization,
+    requestedOrganization: storeOrganization,
+  };
+  assert.deepEqual((await command(object, routeRequest)).reply, {
+    live: true,
+    route: { kind: "delegate", parent: { sessionId: parent.sessionId, machineId, enrollmentId } },
+  });
+  assert.deepEqual(
+    await command(object, {
+      ...routeRequest,
+      requestedOrganization: sessionId(701),
+    }),
+    { reply: { live: false, route: null }, reads: [] },
+  );
+
   const usingNothing = createRequest(11, 1, creator(parent.sessionId, { kind: "nothing" }), child);
   assert.deepEqual((await command(object, createCommand(usingNothing, 102, 3))).reply, {
     result: "noSecret",
@@ -245,6 +264,10 @@ test("Workerd orders creator authentication before replay and binds a delegate t
     result: "wrongSecret",
   });
   await command(object, endCommand({ kind: "centralId", sessionId: parent.sessionId }));
+  assert.deepEqual(
+    (await command(object, { ...routeRequest, sessionId: parent.sessionId })).reply,
+    { live: false, route: null },
+  );
   assert.deepEqual((await command(object, createCommand(childRequest, 102, 3))).reply, {
     result: "sessionEnded",
   });

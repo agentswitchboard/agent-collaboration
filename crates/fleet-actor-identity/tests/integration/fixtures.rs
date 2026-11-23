@@ -5,13 +5,14 @@ use std::{
 
 use central_engine_model::{Context, EngineTime, IdSource};
 use fleet_actor_identity::{
-    SessionAvailability, SessionCallOutcome, SessionMachineCaller, SessionSecretSource,
-    SessionService, SessionServiceError,
+    ActorApprovalSessionFacts, SessionAvailability, SessionCallOutcome, SessionMachineCaller,
+    SessionSecretSource, SessionService, SessionServiceError,
 };
+use fleet_approvals::{ApprovalEnrollment, ApprovalRouting, ApprovalSession, ApprovalSessionFacts};
 use fleet_identity_protocol::{
     BindFleetSession, BindFleetSessionReply, CreateFleetSession, CreateFleetSessionReply,
     CreateSessionKind, EndFleetSession, EndFleetSessionReply, EnrollmentId, HarnessKind,
-    SessionCreator, SessionSecret,
+    OrganizationId, SessionCreator, SessionSecret,
 };
 use fleet_lent_transaction::CentralTransaction;
 use fleet_store_sqlx::SqliteObjectStore;
@@ -192,6 +193,42 @@ impl SessionStoreFixture {
                     .session_facts(&self.caller, session_id)
                     .await?;
                 Ok(ControlFlow::<std::convert::Infallible, _>::Continue(facts))
+            })
+            .await;
+        store.close().await;
+        match result.unwrap() {
+            ControlFlow::Continue(facts) => facts,
+            ControlFlow::Break(never) => match never {},
+        }
+    }
+
+    pub async fn approval_facts(
+        &self,
+        session_id: &workspace_ids::CentralSessionId,
+        store_organization: &OrganizationId,
+        requested_organization: &OrganizationId,
+    ) -> (bool, Option<ApprovalRouting>) {
+        let reader = ActorApprovalSessionFacts::for_organization(store_organization.clone());
+        let subject = ApprovalSession {
+            enrollment: ApprovalEnrollment {
+                machine_id: self.caller.machine_id.clone(),
+                enrollment_id: self.caller.enrollment_id.clone(),
+            },
+            session_id: session_id.clone(),
+        };
+        let store = self.open_tokio_store().await;
+        let result = store
+            .run_transaction(async |connection| {
+                let mut lent = SqliteTransaction(connection);
+                let live = reader
+                    .session_is_live(&mut lent, requested_organization, &subject)
+                    .await?;
+                let route = reader
+                    .session_initial_route(&mut lent, requested_organization, &subject)
+                    .await?;
+                Ok(ControlFlow::<std::convert::Infallible, _>::Continue((
+                    live, route,
+                )))
             })
             .await;
         store.close().await;

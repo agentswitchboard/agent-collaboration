@@ -100,6 +100,7 @@ const LAYER_POLICY: [(&str, &[&str]); 45] = [
             "central-storage",
             "collaboration-central-core",
             "fleet-actor-identity",
+            "fleet-approvals",
             "fleet-contracts",
             "fleet-engine",
             "fleet-identity-protocol",
@@ -170,6 +171,7 @@ const LAYER_POLICY: [(&str, &[&str]); 45] = [
         &[
             "central-engine-model",
             "central-storage",
+            "fleet-approvals",
             "fleet-identity-protocol",
             "fleet-lent-transaction",
             "fleet-machine-login",

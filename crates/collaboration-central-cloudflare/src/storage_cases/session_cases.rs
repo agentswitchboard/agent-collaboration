@@ -3,11 +3,13 @@
 use central_engine_model::{Context, IdSource};
 use chrono::{DateTime, SecondsFormat};
 use fleet_actor_identity::{
-    LiveSessionFacts, SessionAvailability, SessionCallOutcome, SessionMachineCaller,
-    SessionSecretSource, SessionService, SessionServiceError,
+    ActorApprovalSessionFacts, LiveSessionFacts, SessionAvailability, SessionCallOutcome,
+    SessionMachineCaller, SessionSecretSource, SessionService, SessionServiceError,
 };
+use fleet_approvals::{ApprovalEnrollment, ApprovalRouting, ApprovalSession, ApprovalSessionFacts};
 use fleet_identity_protocol::{
-    BindFleetSession, CreateFleetSession, EndFleetSession, EnrollmentId, SessionSecret,
+    BindFleetSession, CreateFleetSession, EndFleetSession, EnrollmentId, OrganizationId,
+    SessionSecret,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -59,6 +61,11 @@ enum SessionCommand {
     },
     Facts {
         session_id: CentralSessionId,
+    },
+    ApprovalFacts {
+        session_id: CentralSessionId,
+        store_organization: OrganizationId,
+        requested_organization: OrganizationId,
     },
     Digest {
         request: CreateFleetSession,
@@ -201,6 +208,29 @@ async fn apply_command(
                 }),
             })
         }
+        SessionCommand::ApprovalFacts {
+            session_id,
+            store_organization,
+            requested_organization,
+        } => {
+            let facts = ActorApprovalSessionFacts::for_organization(store_organization);
+            let subject = ApprovalSession {
+                enrollment: ApprovalEnrollment {
+                    machine_id: caller.machine_id,
+                    enrollment_id: caller.enrollment_id,
+                },
+                session_id,
+            };
+            let live = facts
+                .session_is_live(&mut lender, &requested_organization, &subject)
+                .await
+                .map_err(SessionServiceError::from)?;
+            let route = facts
+                .session_initial_route(&mut lender, &requested_organization, &subject)
+                .await
+                .map_err(SessionServiceError::from)?;
+            Ok(approval_facts_reply(live, route))
+        }
         SessionCommand::Digest { request } => {
             let digest = request
                 .contents_digest()
@@ -250,6 +280,22 @@ async fn apply_command(
             Ok(json!({ "cleared": true }))
         }
     }
+}
+
+fn approval_facts_reply(live: bool, route: Option<ApprovalRouting>) -> Value {
+    let route = match route {
+        Some(ApprovalRouting::Owner) => json!({ "kind": "owner" }),
+        Some(ApprovalRouting::Delegate { admitted_parent }) => json!({
+            "kind": "delegate",
+            "parent": {
+                "sessionId": admitted_parent.session_id,
+                "machineId": admitted_parent.enrollment.machine_id,
+                "enrollmentId": admitted_parent.enrollment.enrollment_id,
+            }
+        }),
+        None => Value::Null,
+    };
+    json!({ "live": live, "route": route })
 }
 
 fn call_reply<Reply: Serialize>(outcome: SessionCallOutcome<Reply>) -> Value {

@@ -17,7 +17,7 @@ use workspace_ids::{CentralSessionId, MachineId};
 
 use crate::session_repository::SessionRepository;
 use crate::{
-    AddressAvailability, NewSessionAdmission, RecordedSessionCreator, SessionApply,
+    AddressAvailability, BoundSession, NewSessionAdmission, RecordedSessionCreator, SessionApply,
     SessionCreatorAdmission, SessionEndIdentity, SessionEvent, SessionLifecycle,
     SessionMachineRefusal, SessionReceipt, SessionReservation, SessionState,
 };
@@ -293,16 +293,9 @@ where
         caller: &SessionMachineCaller,
         session: &CentralSessionId,
     ) -> Result<SessionAvailability, StoreFailure> {
-        let SessionState::Active(bound) = self
-            .repository
-            .in_enrollment(&caller.machine_id, &caller.enrollment_id, session)
-            .await?
-        else {
+        let Some(bound) = self.live_session(caller, session).await? else {
             return Ok(SessionAvailability::Unavailable);
         };
-        if !self.is_current(caller).await? {
-            return Ok(SessionAvailability::Unavailable);
-        }
         match bound.reserved.reservation.kind {
             CreateSessionKind::Ordinary {} => {
                 Ok(SessionAvailability::Live(LiveSessionFacts::Owner))
@@ -325,6 +318,21 @@ where
                 }))
             }
         }
+    }
+
+    pub(crate) async fn live_session(
+        &mut self,
+        caller: &SessionMachineCaller,
+        session: &CentralSessionId,
+    ) -> Result<Option<BoundSession>, StoreFailure> {
+        let SessionState::Active(bound) = self
+            .repository
+            .in_enrollment(&caller.machine_id, &caller.enrollment_id, session)
+            .await?
+        else {
+            return Ok(None);
+        };
+        Ok(self.is_current(caller).await?.then_some(bound))
     }
 
     async fn apply(
