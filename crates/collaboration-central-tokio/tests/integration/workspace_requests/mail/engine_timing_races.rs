@@ -319,8 +319,15 @@ async fn a_claim_samples_selection_time_after_the_publication_lock_releases() {
     );
     assert_eq!(central.alarm(), Some(sync(at(start, 5, 29, 0))));
     assert_eq!(
-        probe_facts(&central_service, probe, group).await[0],
-        text("fired")
+        central
+            .read(central_storage::Statement {
+                sql: "SELECT state FROM engine_probe_items WHERE item_id=?",
+                args: vec![text(probe)],
+            })
+            .await
+            .unwrap()
+            .rows,
+        [vec![text("fired")]]
     );
     central.close().await;
     workspace.close().await;

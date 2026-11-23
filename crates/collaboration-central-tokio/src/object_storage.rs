@@ -197,8 +197,10 @@ impl ObjectStorage {
         if let Some(result) = commit_fault.as_ref().and_then(|fault| fault.before()) {
             return result;
         }
-        if matches!(&batch.alarm, central_storage::AlarmUpdate::Engine(_))
-            && self.engine_publication.is_none()
+        if matches!(
+            &batch.alarm,
+            central_storage::AlarmUpdate::Engine(central_storage::EngineAlarmPlan::Recompute)
+        ) && self.engine_publication.is_none()
         {
             return Err(StoreFailure::AlarmUnpublishable {
                 reason: AlarmPublicationFailure::ClockUnavailable,
