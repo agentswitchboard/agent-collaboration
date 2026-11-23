@@ -2,20 +2,18 @@
 
 use central_link_client::{
     AdmittedConnection, CorrelatedReceiptResults, ImmediateRequestCommand, LinkLaneDisposition,
-    LinkLaneEvent, ReadyLinkLane, RequestStatusCommand, UntouchedCommand, WelcomeClockAnchor,
+    ReadyLinkLane, RequestStatusCommand, UntouchedCommand, WelcomeClockAnchor,
     WriteBatchDisposition,
 };
-use central_link_protocol::{DeliveryMessage, FreshCorrelationId, RequestStatusQuery};
+use central_link_protocol::{FreshCorrelationId, RequestStatusQuery};
 use router_clock::{ClockInstant, RuntimeClock};
 use runtime_primitives::SyncTime;
 use std::{sync::Arc, time::Duration};
-use switchboard_machine_core_store::{
-    InboxDecision, OutgoingWrite, PendingWrite, StoredSenderOutcome,
-};
+use switchboard_machine_core_store::{OutgoingWrite, PendingWrite, StoredSenderOutcome};
 use workspace_ids::{MessageId, RequestId, SessionRef};
 use workspace_model::{
     Caller,
-    central_mail::{MessageBody, MessageRecord, MessageStatus},
+    central_mail::{MessageRecord, MessageStatus},
 };
 
 use crate::{
@@ -30,11 +28,12 @@ use crate::{
         submit_to_outbox,
     },
     flush_clock::{FlushJitter, shared_time_at, wake_for_mark},
+    offer_taker::{SharedRecipientInbox, TakenEvent, admitted_for, take_event},
     outbox_dispatch::{BatchDispatchError, FlushReport, OutboxDispatcher, PreparedWriteBatch},
     outbox_flush::{FlushEffect, FlushEvent, FlushTransitionError, OutboxFlushState, transition},
     outbox_work::{OutboxWork, OutboxWorkError},
     receipt_delivery::{ReceiptDeliveryError, ReceiptFrame, ReceiptFrameOutcome},
-    recipient_inbox::{InboxCustodyError, InboxOfferResult, RecipientInbox},
+    recipient_inbox::{InboxCustodyError, RecipientInbox},
 };
 
 const IMMEDIATE_COMMAND_WINDOW: Duration = Duration::from_secs(30);
@@ -56,14 +55,7 @@ pub enum CustodyLinkError {
     Receipt(#[from] ReceiptDeliveryError),
 }
 
-/// The result custody produces after observing an admitted link event.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CustodyLinkObservation {
-    AdmissionChanged,
-    Delivery(InboxOfferResult),
-    StaleDelivery,
-    DriverClosed,
-}
+pub use crate::offer_taker::CustodyLinkObservation;
 
 /// Custody owns the stores, one minute scheduler and one consumer of the driver's admitted message lane.
 pub struct CustodyLink {
@@ -71,7 +63,7 @@ pub struct CustodyLink {
     pub(crate) clock: Arc<dyn RuntimeClock>,
     jitter: Arc<dyn FlushJitter>,
     outbox: OutboxWork,
-    inbox: RecipientInbox,
+    pub(crate) inbox: SharedRecipientInbox,
     dispatcher: OutboxDispatcher,
     schedule: OutboxFlushState,
     last_clock_anchor: Option<WelcomeClockAnchor>,
@@ -91,7 +83,7 @@ impl CustodyLink {
             clock,
             jitter,
             outbox,
-            inbox,
+            inbox: Arc::new(tokio::sync::Mutex::new(inbox)),
             dispatcher: OutboxDispatcher::default(),
             schedule: OutboxFlushState::default(),
             last_clock_anchor: None,
@@ -99,7 +91,7 @@ impl CustodyLink {
     }
 
     fn admitted_connection(&self) -> Option<AdmittedConnection> {
-        self.lane.watch_admitted().borrow().clone()
+        admitted_for(self.lane.as_ref())
     }
 
     /// Submit through the frozen seam. Only a message or thread post enters the outbox.
@@ -267,60 +259,31 @@ impl CustodyLink {
             .map_err(OutboxWorkError::Store)?)
     }
 
-    /// Drive one link event through the custody-owned inbox.
+    /// Drive one delivery using the same save-only path as the offer task.
     pub async fn observe_next_event(&mut self) -> Result<CustodyLinkObservation, CustodyLinkError> {
         let event = self.lane.next_event().await;
-        self.observe_event(event).await
+        let saved = take_event(self.lane.as_ref(), &self.inbox, event).await?;
+        self.observe_taken_event(saved).await
     }
 
-    pub(crate) async fn observe_event(
+    pub(crate) async fn observe_taken_event(
         &mut self,
-        event: Option<LinkLaneEvent>,
+        saved: TakenEvent,
     ) -> Result<CustodyLinkObservation, CustodyLinkError> {
-        let Some(event) = event else {
-            self.observe_unavailable()?;
-            return Ok(CustodyLinkObservation::DriverClosed);
-        };
-        match event {
-            LinkLaneEvent::ConnectionAdmitted(_) | LinkLaneEvent::ConnectionNotAdmitted { .. } => {
+        match saved.observation {
+            CustodyLinkObservation::AdmissionChanged => {
                 self.refresh_flush_wake().await?;
-                Ok(CustodyLinkObservation::AdmissionChanged)
             }
-            LinkLaneEvent::Deliver {
-                connection,
-                offer,
-                sender: _,
-            } => {
-                if !self
-                    .admitted_connection()
-                    .is_some_and(|admitted| admitted.connection == connection)
-                {
-                    return Ok(CustodyLinkObservation::StaleDelivery);
-                }
-                let notice_key = match offer.message() {
-                    DeliveryMessage::System(record)
-                        if matches!(record.body, MessageBody::DeliveryOutcome { .. }) =>
-                    {
-                        Some((record.target.clone(), record.message_id.clone()))
-                    }
-                    DeliveryMessage::System(_) | DeliveryMessage::Direct(_) => None,
-                };
-                let kept = self.inbox.receive_offer(offer).await?;
-                if let Some((target, notice_id)) = notice_key
-                    && matches!(
-                        kept,
-                        InboxOfferResult::Recorded {
-                            decision: InboxDecision::Accepted
-                        } | InboxOfferResult::AlreadyDecided {
-                            decision: InboxDecision::Accepted
-                        }
-                    )
-                {
-                    self.record_sender_notice(&target, &notice_id).await?;
-                }
-                Ok(CustodyLinkObservation::Delivery(kept))
+            CustodyLinkObservation::DriverClosed => {
+                self.observe_unavailable()?;
             }
+            CustodyLinkObservation::Delivery(_) | CustodyLinkObservation::StaleDelivery => {}
         }
+        if let Some(notice) = saved.sender_notice {
+            self.record_sender_notice(&notice.target, &notice.message_id)
+                .await?;
+        }
+        Ok(saved.observation)
     }
 
     async fn record_sender_notice(
@@ -328,7 +291,7 @@ impl CustodyLink {
         session: &SessionRef,
         notice_id: &MessageId,
     ) -> Result<(), CustodyLinkError> {
-        let retained = self.inbox.waiting_for_session(session).await?;
+        let retained = self.inbox.lock().await.waiting_for_session(session).await?;
         let notice = retained
             .iter()
             .find(|notice| &notice.message_id == notice_id)
@@ -510,7 +473,12 @@ impl CustodyLink {
         let Some(admitted) = self.admitted_connection() else {
             return Ok(None);
         };
-        Ok(self.inbox.prepare_receipts(&admitted.connection).await?)
+        Ok(self
+            .inbox
+            .lock()
+            .await
+            .prepare_receipts(&admitted.connection)
+            .await?)
     }
 
     pub(crate) async fn settle_receipt_turn(
@@ -521,6 +489,8 @@ impl CustodyLink {
         let current = self.admitted_connection();
         Ok(self
             .inbox
+            .lock()
+            .await
             .settle_receipts(
                 frame,
                 current.as_ref().map(|admitted| &admitted.connection),
@@ -529,8 +499,8 @@ impl CustodyLink {
             .await?)
     }
 
-    pub(crate) fn next_inbox_minute(
-        &self,
+    pub(crate) async fn next_inbox_minute(
+        &mut self,
         last_mark: Option<SyncTime>,
     ) -> Option<(SyncTime, ClockInstant)> {
         let now = self.clock.monotonic_now();
@@ -543,7 +513,7 @@ impl CustodyLink {
                 mark,
                 wake_for_mark(admitted.clock_anchor, mark, self.jitter.jitter_millis(mark)),
             ))
-        } else if self.inbox.needs_local_retry() {
+        } else if self.inbox.lock().await.needs_local_retry() {
             let local = self.outbox.local_now_ms();
             let mark = crate::flush_marks::next_mark_after(SyncTime::from_unix_millis(local));
             let remaining = mark.unix_millis().saturating_sub(local);
@@ -567,13 +537,13 @@ impl CustodyLink {
 
     /// Retry offers deferred by local lookup or storage at the next minute wake.
     pub async fn retry_inbox(&mut self) -> Vec<InboxCustodyError> {
-        self.inbox.retry_uncommitted().await
+        self.inbox.lock().await.retry_uncommitted().await
     }
 
     /// Read typed corruption events on the operator path, independent of session queries.
-    pub fn take_operator_events(&mut self) -> Vec<CustodyOperatorEvent> {
+    pub async fn take_operator_events(&mut self) -> Vec<CustodyOperatorEvent> {
         let mut events = self.outbox.take_operator_events();
-        events.extend(self.inbox.take_operator_events());
+        events.extend(self.inbox.lock().await.take_operator_events());
         events
     }
 
@@ -582,7 +552,7 @@ impl CustodyLink {
         &mut self,
         session: &SessionRef,
     ) -> Result<Vec<MessageRecord>, CustodyLinkError> {
-        Ok(self.inbox.waiting_for_session(session).await?)
+        Ok(self.inbox.lock().await.waiting_for_session(session).await?)
     }
 
     fn apply_flush_event(

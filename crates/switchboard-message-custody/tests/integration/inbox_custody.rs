@@ -59,14 +59,14 @@ fn recipient_machine() -> MachineId {
     "019f0000-0000-7000-8000-000000000011".parse().unwrap()
 }
 
-fn recipient_session() -> SessionRef {
+pub(super) fn recipient_session() -> SessionRef {
     SessionRef {
         machine_id: recipient_machine(),
         session_id: "recipient-session".parse().unwrap(),
     }
 }
 
-fn direct_offer(id: &str, text: &str) -> ValidatedDeliveryOffer {
+pub(super) fn direct_offer(id: &str, text: &str) -> ValidatedDeliveryOffer {
     let message = DeliveryMessage::Direct(DirectOfferMessage {
         message_id: id.parse().unwrap(),
         sender: MessageSender::Central,

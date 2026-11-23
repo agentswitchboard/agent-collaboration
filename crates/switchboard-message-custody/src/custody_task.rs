@@ -31,8 +31,10 @@ use crate::{
         PreparedSubmission, Submission, SubmissionPayload, SubmissionRoute, SubmitRefusal,
         choose_submission_route, settle_immediate_request, wire_scope,
     },
+    offer_taker::{TakenEvent, run_offer_taker},
     outbox_dispatch::{FlushReport, PreparedWriteBatch},
     receipt_delivery::{ReceiptFrame, ReceiptFrameOutcome},
+    recipient_inbox::InboxCustodyError,
 };
 
 /// The task's result and diagnostic stream for the Host. It never changes a caller's status reply.
@@ -178,10 +180,20 @@ pub fn custody_task(
     sink: Arc<dyn CustodyEventSink>,
 ) -> (CustodyTaskHandle, impl Future<Output = ()> + Send) {
     let (commands, receiver) = mpsc::channel(MAX_LINK_REQUEST_BATCH_SIZE);
-    (
-        CustodyTaskHandle { commands },
-        run_custody(custody, receiver, stop, sink),
-    )
+    let task = async move {
+        let (saved, offers) = mpsc::unbounded_channel();
+        let (stop_offers, offers_stopped) = watch::channel(false);
+        let taking = tokio::spawn(run_offer_taker(
+            custody.lane.clone(),
+            custody.inbox.clone(),
+            offers_stopped,
+            saved,
+        ));
+        run_custody(custody, receiver, offers, stop, sink).await;
+        stop_offers.send_replace(true);
+        let _ = taking.await;
+    };
+    (CustodyTaskHandle { commands }, task)
 }
 
 type InFlight<T> = Pin<Box<dyn Future<Output = T> + Send>>;
@@ -191,13 +203,13 @@ type ReceiptReply = (ReceiptFrame, LinkLaneDisposition<CorrelatedReceiptResults>
 async fn run_custody(
     mut custody: CustodyLink,
     mut commands: mpsc::Receiver<CustodyCommand>,
+    mut offers: mpsc::UnboundedReceiver<Result<TakenEvent, InboxCustodyError>>,
     mut stop: watch::Receiver<bool>,
     sink: Arc<dyn CustodyEventSink>,
 ) {
     let clock = custody.clock.clone();
     let lane = custody.lane.clone();
-    let mut read_event = lane.next_event();
-    let mut stream_open = true;
+    let mut offer_stream_open = true;
     let mut writes: Option<InFlight<WriteReply>> = None;
     let mut receipts: Option<InFlight<ReceiptReply>> = None;
     let mut inbox_mark = None;
@@ -223,8 +235,8 @@ async fn run_custody(
                 }
             }
         };
-        let inbox_wake = custody.next_inbox_minute(inbox_mark);
-        for event in custody.take_operator_events() {
+        let inbox_wake = custody.next_inbox_minute(inbox_mark).await;
+        for event in custody.take_operator_events().await {
             sink.record_event(CustodyTaskEvent::Operator(event));
         }
 
@@ -234,11 +246,15 @@ async fn run_custody(
                 Some(command) => handle_tool(&mut custody, &mut tool_requests, command).await,
                 None => break,
             },
-            event = &mut read_event, if stream_open => {
-                stream_open = event.is_some();
-                if stream_open { read_event = lane.next_event(); }
-                if let Err(error) = custody.observe_event(event).await {
-                    sink.record_event(CustodyTaskEvent::Failed(error));
+            event = offers.recv(), if offer_stream_open => {
+                match event {
+                    Some(Ok(saved)) => {
+                        if let Err(error) = custody.observe_taken_event(saved).await {
+                            sink.record_event(CustodyTaskEvent::Failed(error));
+                        }
+                    }
+                    Some(Err(error)) => sink.record_event(CustodyTaskEvent::Failed(error.into())),
+                    None => { offer_stream_open = false; }
                 }
             },
             (ticket, disposition) = poll_job(&mut writes) => {

@@ -8,6 +8,7 @@ pub mod custody_task;
 pub mod delivery_custody;
 pub mod flush_clock;
 pub mod flush_marks;
+mod offer_taker;
 pub mod outbox_dispatch;
 pub mod outbox_flush;
 mod outbox_wire;
