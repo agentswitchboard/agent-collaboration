@@ -82,6 +82,8 @@ pub enum PendingWriteState {
     SentAnswerLost { body: PostText },
     /// Central answered; the read layer drops it once it sees the created id.
     Answered(OutboxAccepted),
+    /// Central's refusal arrived after the Router stopped trying to send it.
+    Refused(crate::OutboxRefusal),
     /// The Router stopped trying to send it; its text is gone.
     Cancelled { reason: crate::OutboxCancellation },
 }

@@ -32,6 +32,8 @@ pub enum OutboxStoreError {
     InvalidOutcome { request: RequestId },
     #[error("central reported contradictory final outcomes for request {request}")]
     ContradictoryFinalOutcome { request: RequestId },
+    #[error("outbox request {request} ended without being sent and cannot have a late outcome")]
+    LateOutcomeForNotSent { request: RequestId },
     #[error("central delivery outcome does not match request {request}")]
     DeliveryOutcomeMismatch { request: RequestId },
     #[error("the outbox insert did not start")]
