@@ -126,6 +126,7 @@ impl ObservedWorker {
         let (stop, stopped) = watch::channel(false);
         let (events_sink, events) = mpsc::unbounded_channel();
         let (calls, worker) = custody_task(custody, stopped, Arc::new(ObserveTask(events_sink)));
+        let worker = Box::pin(worker);
         let worker_clock = clock.clone();
         let task = tokio::spawn(async move { worker_clock.observe(worker).await });
         Self {

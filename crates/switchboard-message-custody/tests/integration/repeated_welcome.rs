@@ -1,6 +1,7 @@
 //! A fresh receipt remains a lower bound through successive backward welcomes.
 
 #![expect(
+    clippy::panic,
     clippy::unwrap_used,
     reason = "The fixture and its observed frames must be complete."
 )]
@@ -36,7 +37,7 @@ pub(super) async fn check_repeated_welcome(visit_named_mark: bool, older_suffix:
     let old_ids = queue_posts(&mut custody, covered_count + older_suffix).await;
     let fresh = thread_post(covered_count + older_suffix + 1);
     let Caller::Session(owner) = &fresh.caller else {
-        unreachable!("the fixture has a session caller");
+        panic!("the fixture has a session caller");
     };
     let mut first_welcome = new_admission(owner.machine_id.clone(), clock.clone());
     first_welcome.clock_anchor.central_time =
@@ -49,7 +50,7 @@ pub(super) async fn check_repeated_welcome(visit_named_mark: bool, older_suffix:
     first_gate.entered.notified().await;
 
     let OutboxQueuedWrite::Workspace(post) = fresh.payload else {
-        unreachable!("the fixture creates a thread post");
+        panic!("the fixture creates a thread post");
     };
     let first_mark = MARK_MS - 2 * MINUTE_MS;
     let named_mark = first_mark + MINUTE_MS;
