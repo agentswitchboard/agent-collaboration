@@ -63,6 +63,8 @@ const DRIVER_NORMAL: &[Edge] = &[
     workspace("router-clock", &[]),
     workspace("state-machine-core", &[]),
     workspace("workspace-ids", &[]),
+    workspace("workspace-model", &[]),
+    registry("serde_json", true, &[]),
     registry("futures-util", false, &["sink", "std"]),
     registry("http-body-util", true, &[]),
     registry("hyper", true, &["http1", "http2", "client", "server"]),

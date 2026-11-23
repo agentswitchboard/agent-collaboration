@@ -5785,6 +5785,7 @@ dependencies = [
  "hyper-util",
  "log",
  "router-clock",
+ "serde_json",
  "state-machine-core",
  "tokio",
  "tokio-tungstenite",
@@ -5792,6 +5793,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "workspace-ids",
+ "workspace-model",
 ]
 
 [[package]]

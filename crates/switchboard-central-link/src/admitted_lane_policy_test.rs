@@ -230,15 +230,14 @@ fn generated_admitted_orders_preserve_exact_custody_and_partial_answers(case: he
         };
         let expected = match expected {
             OracleSettlement::NoSettlement => vec![],
-            OracleSettlement::NotReached => vec![LaneEffect::Settle(LaneResult::Batch(
-                WriteBatchDisposition::NotReached,
+            OracleSettlement::NotReached => vec![LaneEffect::Settle(LaneResult::Untouched(
+                UntouchedCommand::ConnectionUnavailable,
             ))],
-            OracleSettlement::BatchMembers(answered) => vec![LaneEffect::Settle(
-                LaneResult::Batch(WriteBatchDisposition::MemberResults {
-                    members: [1, 2]
-                        .into_iter()
-                        .zip(answered)
-                        .map(|(member, answered)| {
+            OracleSettlement::BatchMembers(answered) => {
+                vec![LaneEffect::Settle(LaneResult::Batch(
+                    CheckedBatchResults::new(
+                        &requests,
+                        [1, 2].into_iter().zip(answered).map(|(member, answered)| {
                             if answered {
                                 WriteBatchMemberDisposition::Answered {
                                     reply: CorrelatedRequestReply {
@@ -251,10 +250,11 @@ fn generated_admitted_orders_preserve_exact_custody_and_partial_answers(case: he
                                     correlation_id: correlation(member),
                                 }
                             }
-                        })
-                        .collect(),
-                }),
-            )],
+                        }),
+                    )
+                    .unwrap(),
+                ))]
+            }
         };
         assert_eq!(actual, expected, "effect after {step:?}");
         assert_eq!(

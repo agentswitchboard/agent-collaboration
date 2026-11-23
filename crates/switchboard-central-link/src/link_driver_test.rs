@@ -224,3 +224,84 @@ async fn oversized_renewal_credential_is_rejected_before_writing_a_frame() {
         "a renewal credential over the bearer bound must fail before the sink"
     );
 }
+
+#[test]
+fn correlated_reply_at_the_authority_boundary_cannot_settle_the_writer() {
+    use crate::{
+        admitted_lane_policy::{ExpectedReply, LaneResult},
+        admitted_lane_socket::{AdmittedSocketLane, FrameOffer},
+        link_lane::{LaneRequest, link_lane_channel},
+        link_policy::{LeaseWindow, LinkInput},
+    };
+    use central_link_client::{AdmittedConnection, WelcomeClockAnchor};
+    use central_link_protocol::RequestStatusAnswer;
+
+    let fixture = HeartbeatFixture::new();
+    let (mut driver, attempt) = fixture.welcomed_driver(&NoLeaseSource);
+    assert!(driver.apply(LinkInput::BindingAvailable(1)).is_some());
+    assert!(
+        driver
+            .apply(LinkInput::DialStarted {
+                attempt: attempt.clone(),
+                lease: LeaseWindow {
+                    binding: 1,
+                    version: LeaseVersion(1),
+                    usable_until: elapsed_tick(200)
+                },
+                now: elapsed_tick(0),
+            })
+            .is_some()
+    );
+    assert!(
+        driver
+            .apply(LinkInput::Welcome {
+                attempt: attempt.clone(),
+                machine_id: fixture.machine.clone(),
+                deadline: elapsed_tick(120),
+                now: elapsed_tick(0)
+            })
+            .is_some()
+    );
+    let (_user, owner) = link_lane_channel();
+    let mut lane = AdmittedSocketLane::new(&owner);
+    assert!(lane.admit(AdmittedConnection {
+        connection: attempt.clone(),
+        clock_anchor: WelcomeClockAnchor {
+            central_time: fixture.clock.utc_now(),
+            observed_at: elapsed_tick(0)
+        }
+    }));
+    let (settled, mut disposition) = oneshot::channel();
+    let correlation_id = "01890f2e-7b4c-7cc0-98c4-000000000090"
+        .parse::<central_link_protocol::CorrelationId>()
+        .unwrap();
+    assert!(matches!(
+        lane.offer(
+            LaneRequest {
+                connection: attempt.clone(),
+                send_before: elapsed_tick(119),
+                wire: "test".into(),
+                expected: ExpectedReply::RequestStatus(correlation_id.clone()),
+                settled,
+            },
+            elapsed_tick(110)
+        ),
+        FrameOffer::Queued { .. }
+    ));
+    assert!(lane.start_write());
+    lane.finish_write(elapsed_tick(110));
+
+    fixture.clock.advance(Duration::from_secs(120)).unwrap();
+    let reply = LinkFrame::Data(DataFrame::RequestStatusReply {
+        correlation_id,
+        result: Box::new(RequestStatusAnswer::NotFound),
+    });
+    assert!(driver.receive_frame(&attempt, reply, elapsed_tick(0), None, &mut lane, None));
+    assert_eq!(
+        disposition.try_recv(),
+        Err(oneshot::error::TryRecvError::Empty),
+        "reply cannot settle at authority equality"
+    );
+    drop(lane);
+    assert_eq!(disposition.try_recv(), Ok(LaneResult::SingleLost));
+}

@@ -7,11 +7,12 @@
 use std::{sync::Arc, time::Duration};
 
 use central_link_client::{
-    EnrollmentEnd, LinkLaneCommand, LinkLaneDisposition, LinkLaneReply, ReadyLinkLane,
+    CorrelatedRequestReply, CorrelatedStatusReply, EnrollmentEnd, ImmediateRequestCommand,
+    LinkLaneDisposition, ReadyLinkLane, RequestStatusCommand,
 };
 use central_link_protocol::{
-    DataFrame, FrameDirection, LinkFrame, ReplyPayload, RequestScope, RequestStatusQuery,
-    decode_text,
+    DataFrame, FrameDirection, LinkFrame, ReplyPayload, RequestScope, RequestStatusAnswer,
+    RequestStatusQuery, decode_text,
 };
 use collaboration_central_conformance::signin_fixtures as signed;
 use collaboration_central_tokio::test_support::{
@@ -196,30 +197,48 @@ async fn real_machine_admission_allows_immediate_request_and_status_without_regi
     };
     let result = journey
         .lane
-        .submit_command(LinkLaneCommand::ImmediateRequest {
+        .submit_immediate_request(ImmediateRequestCommand {
             connection: admitted.connection.clone(),
+            send_before: ClockInstant::ZERO.after(Duration::from_secs(3)),
             request,
         })
         .await;
-    assert!(
-        matches!(result, LinkLaneDisposition::Answered { reply: LinkLaneReply::ImmediateRequest { reply } } if reply.correlation_id == correlation_id && matches!(*reply.result, ReplyPayload::Mail(_))),
-        "the real Central must answer the admitted immediate request"
+    let expected: ReplyPayload = serde_json::from_value(json!({
+        "kind":"mail", "reply":{"kind":"done", "value":{"kind":"noticeCadenceSet", "cadence":"m25"}}
+    }))
+    .unwrap();
+    assert_eq!(
+        result,
+        LinkLaneDisposition::Answered {
+            reply: CorrelatedRequestReply {
+                correlation_id,
+                result: Box::new(expected.clone()),
+            }
+        },
+        "Central must successfully apply the submitted cadence"
     );
     let status_correlation = "01890f2e-7b4c-7cc0-98c4-000000000033"
         .parse::<central_link_protocol::CorrelationId>()
         .unwrap();
     let status = journey
         .lane
-        .submit_command(LinkLaneCommand::RequestStatus {
+        .request_status(RequestStatusCommand {
             connection: admitted.connection,
+            send_before: ClockInstant::ZERO.after(Duration::from_secs(3)),
             correlation_id: status_correlation.clone(),
             caller,
             query,
         })
         .await;
-    assert!(
-        matches!(status, LinkLaneDisposition::Answered { reply: LinkLaneReply::RequestStatus { correlation_id, .. } } if correlation_id == status_correlation),
-        "the real Central must answer the admitted status request"
+    assert_eq!(
+        status,
+        LinkLaneDisposition::Answered {
+            reply: CorrelatedStatusReply {
+                correlation_id: status_correlation,
+                result: Box::new(RequestStatusAnswer::Answered(expected)),
+            }
+        },
+        "status must read the exact stored cadence outcome for the same caller, scope and request ID"
     );
     journey.close().await;
 }
