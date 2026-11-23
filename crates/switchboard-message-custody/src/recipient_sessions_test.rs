@@ -6,7 +6,7 @@ use crate::recipient_inbox::{InboxOfferResult, RecipientInbox};
 use central_link_client::ValidatedDeliveryOffer;
 use central_link_protocol::{DeliveryMessage, DirectOfferBody, DirectOfferMessage, TimeLeft};
 use hegel::generators as gs;
-use router_clock::ManualClock;
+use router_clock::{ManualClock, RuntimeClock};
 use runtime_primitives::SyncTime;
 use std::{
     future::{Future, ready},
@@ -147,6 +147,7 @@ async fn real_directory_drives_durable_refusals_and_deferred_lookup_distinctly()
             incomplete: false,
         }),
     ]));
+    let arrival = clock.utc_now();
     let mut inbox = RecipientInbox::new(
         InboxStore::new(MachineLocalStore::open(&path).await.unwrap()),
         machine_id.clone(),
@@ -162,7 +163,7 @@ async fn real_directory_drives_durable_refusals_and_deferred_lookup_distinctly()
     };
     assert_eq!(
         inbox
-            .receive_offer(offer(&machine_id, unknown, "unknown"))
+            .receive_offer(offer(&machine_id, unknown, "unknown"), arrival)
             .await
             .unwrap(),
         InboxOfferResult::Recorded {
@@ -171,7 +172,7 @@ async fn real_directory_drives_durable_refusals_and_deferred_lookup_distinctly()
     );
     assert_eq!(
         inbox
-            .receive_offer(offer(&machine_id, unknown, "unknown"))
+            .receive_offer(offer(&machine_id, unknown, "unknown"), arrival)
             .await
             .unwrap(),
         InboxOfferResult::AlreadyDecided {
@@ -180,7 +181,7 @@ async fn real_directory_drives_durable_refusals_and_deferred_lookup_distinctly()
     );
     assert_eq!(
         inbox
-            .receive_offer(offer(&machine_id, duplicate, "duplicate"))
+            .receive_offer(offer(&machine_id, duplicate, "duplicate"), arrival)
             .await
             .unwrap(),
         InboxOfferResult::Recorded {
@@ -191,7 +192,7 @@ async fn real_directory_drives_durable_refusals_and_deferred_lookup_distinctly()
     );
     assert_eq!(
         inbox
-            .receive_offer(offer(&machine_id, unavailable, "unavailable"))
+            .receive_offer(offer(&machine_id, unavailable, "unavailable"), arrival)
             .await
             .unwrap(),
         InboxOfferResult::LookupDeferred
