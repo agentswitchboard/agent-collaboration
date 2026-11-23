@@ -5,6 +5,10 @@ use switchboard_machine_core_store::{RowCorruption, StoreScan};
 #[derive(Debug, Eq, PartialEq)]
 pub enum CustodyOperatorEvent {
     CorruptOutboxRow(RowCorruption),
+    CorruptOutboxPoint {
+        request_id: String,
+        field: &'static str,
+    },
     CorruptInboxRow(RowCorruption),
     UntouchedBatchFault(UntouchedCommand),
     LinkFaulted {

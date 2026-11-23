@@ -91,6 +91,15 @@ impl OutboxWork {
         self.operator_events.push(event);
     }
 
+    pub(crate) fn report_point_read_error(&mut self, error: &OutboxStoreError) {
+        if let OutboxStoreError::CorruptItem { request_id, field } = error {
+            self.report_operator_event(CustodyOperatorEvent::CorruptOutboxPoint {
+                request_id: request_id.clone(),
+                field,
+            });
+        }
+    }
+
     pub(crate) fn before_elapsed_fence(&self, fence: ClockInstant) -> bool {
         self.clock.monotonic_now() < fence
     }

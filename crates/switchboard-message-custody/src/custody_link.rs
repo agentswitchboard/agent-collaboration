@@ -193,7 +193,8 @@ impl CustodyLink {
                     return PreparedRequestStatus::Complete(answer);
                 }
             }
-            Err(_) => {
+            Err(error) => {
+                self.outbox.report_point_read_error(&error);
                 return PreparedRequestStatus::Complete(CustodyRequestStatus::StatusUnavailable);
             }
         }
@@ -227,12 +228,8 @@ impl CustodyLink {
         &mut self,
         caller: &Caller,
     ) -> Result<Vec<PendingWrite>, CustodyLinkError> {
-        Ok(self
-            .outbox
-            .outbox_storage()
-            .pending_for(caller)
-            .await
-            .map_err(OutboxWorkError::Store)?)
+        let result = self.outbox.outbox_storage().pending_for(caller).await;
+        self.report_outbox_read(result)
     }
 
     /// Read the sender's local history, scoped to the caller.
@@ -241,12 +238,12 @@ impl CustodyLink {
         caller: &Caller,
         limit: u16,
     ) -> Result<Vec<OutgoingWrite>, CustodyLinkError> {
-        Ok(self
+        let result = self
             .outbox
             .outbox_storage()
             .outgoing_for(caller, limit)
-            .await
-            .map_err(OutboxWorkError::Store)?)
+            .await;
+        self.report_outbox_read(result)
     }
 
     /// Read the retained central delivery notice for the caller's own original request.
@@ -255,12 +252,26 @@ impl CustodyLink {
         caller: &Caller,
         request: &RequestId,
     ) -> Result<Option<StoredSenderOutcome>, CustodyLinkError> {
-        Ok(self
+        let result = self
             .outbox
             .outbox_storage()
             .sender_outcome(caller, request)
-            .await
-            .map_err(OutboxWorkError::Store)?)
+            .await;
+        self.report_outbox_read(result)
+    }
+
+    fn report_outbox_read<Value>(
+        &mut self,
+        result: Result<Value, OutboxStoreError>,
+    ) -> Result<Value, CustodyLinkError> {
+        result.map_err(|error| {
+            self.outbox.report_point_read_error(&error);
+            OutboxWorkError::Store(error).into()
+        })
+    }
+
+    pub(crate) fn take_outbox_operator_events(&mut self) -> Vec<CustodyOperatorEvent> {
+        self.outbox.take_operator_events()
     }
 
     /// Drive one delivery using the same save-only path as the offer task.
@@ -650,7 +661,7 @@ impl CustodyLink {
 
     /// Read typed corruption events on the operator path, independent of session queries.
     pub async fn take_operator_events(&mut self) -> Vec<CustodyOperatorEvent> {
-        let mut events = self.outbox.take_operator_events();
+        let mut events = self.take_outbox_operator_events();
         events.extend(self.inbox.lock().await.take_operator_events());
         events
     }

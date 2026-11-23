@@ -1,20 +1,27 @@
+use central_link_protocol::{RequestScope, RequestStatusQuery};
 use router_clock::ClockInstant;
 use std::{future::Future, path::Path, process::Command, sync::Arc, time::Duration};
 use switchboard_machine_core_store::{
-    InboxDecision, InboxRefusalReason, InboxStore, MachineLocalStore,
+    InboxDecision, InboxRefusalReason, InboxStore, MachineLocalStore, OutboxAccepted,
+    OutboxStorage, OutboxWriteOutcome,
 };
 use switchboard_message_custody::{
     custody_operator::CustodyOperatorEvent,
+    custody_status::CustodyRequestStatus,
+    custody_submission::{Submission, SubmissionPayload},
     custody_task::{CustodyTaskEvent, custody_task},
 };
 use tokio::sync::{mpsc, watch};
 use workspace_model::{
-    Timestamp,
+    Caller, ChangePosition, Timestamp,
     central_mail::{MessageBody, MessageRecord},
 };
 
 use super::{
-    batch_limits::limits_fixture, custody_task::ObserveTask, inbox_custody::recipient_session,
+    batch_limits::limits_fixture,
+    custody_task::ObserveTask,
+    inbox_custody::recipient_session,
+    outbox_timing::{open_outbox, thread_post},
 };
 
 const NOW_MS: i64 = 1_763_380_780_000;
@@ -157,6 +164,111 @@ async fn offline_inbox_retention_prunes_only_healthy_completed_rows() {
         1
     );
     assert!(lane.batch_commands().is_empty());
+    stop.send_replace(true);
+    running.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_corrupt_owned_point_is_reported_without_leaking_it_to_other_callers() {
+    use switchboard_machine_core_store::OutboxQueuedWrite;
+
+    let (root, custody, lane, clock) = limits_fixture().await;
+    let database = root.path().join("machine_local.sqlite");
+    let mut store = open_outbox(&database).await;
+    let damaged = thread_post(184);
+    let OutboxQueuedWrite::Workspace(original) = &damaged.payload else {
+        panic!("fixture must have a thread post");
+    };
+    store.insert(&damaged, NOW_MS).await.unwrap();
+    assert_eq!(
+        store
+            .claim_next_batch(damaged.flush_at_ms, 1, NOW_MS, NOW_MS)
+            .await
+            .unwrap()
+            .healthy
+            .writes
+            .len(),
+        1
+    );
+    let answered = OutboxWriteOutcome::from_accepted(
+        &damaged.payload,
+        OutboxAccepted::ThreadPost {
+            post_id: "019f0000-0000-7000-8000-000000000f04".parse().unwrap(),
+            position: ChangePosition::try_from(1_u64).unwrap(),
+            actors: Vec::new(),
+        },
+    )
+    .unwrap();
+    store
+        .record_outcome(&damaged.request, &answered, NOW_MS)
+        .await
+        .unwrap();
+    mutate_fixture_row(
+        &database,
+        &format!(
+            "UPDATE outbox_items SET outcome_json = '{{' WHERE request_id = '{}';",
+            damaged.request
+        ),
+    );
+
+    let (stop, stopped) = watch::channel(false);
+    let (sender, mut observations) = mpsc::unbounded_channel();
+    let (calls, worker) = custody_task(custody, stopped, Arc::new(ObserveTask(sender)));
+    let running = tokio::spawn(worker);
+    let query = RequestStatusQuery {
+        request_id: damaged.request.clone(),
+        scope: RequestScope::Workspace(original.workspace_id.clone().unwrap()),
+    };
+    let foreign = Caller::Session(recipient_session());
+    assert_ne!(foreign, damaged.caller);
+    assert_eq!(
+        calls.request_status(foreign.clone(), query.clone()).await,
+        CustodyRequestStatus::NotFound
+    );
+    assert!(
+        observations.try_recv().is_err(),
+        "outbox corruption remains opaque to other callers"
+    );
+    assert_eq!(
+        calls.request_status(damaged.caller, query).await,
+        CustodyRequestStatus::StatusUnavailable
+    );
+    assert!(
+        matches!(
+            observations.try_recv(),
+            Ok(CustodyTaskEvent::Operator(CustodyOperatorEvent::CorruptOutboxPoint { request_id, field: "outcome_json" }))
+                if request_id == damaged.request.as_str()
+        ),
+        "the operator must receive the typed point diagnostic before the tool reply"
+    );
+    assert_eq!(
+        lane.take_calls().len(),
+        1,
+        "only the foreign miss may ask Central"
+    );
+
+    let healthy = thread_post(185);
+    let OutboxQueuedWrite::Workspace(request) = healthy.payload else {
+        panic!("fixture must have a thread post");
+    };
+    assert!(matches!(
+        calls
+            .submit(foreign, SubmissionPayload::Workspace(request))
+            .await,
+        Submission::InOutbox(_)
+    ));
+    let mark = ClockInstant::ZERO.after(Duration::from_secs(20));
+    maintenance_progress(
+        clock.not_due_check_now(mark),
+        "the healthy writer's flush wake",
+    )
+    .await;
+    clock.advance(Duration::from_secs(20)).unwrap();
+    assert!(
+        matches!(maintenance_progress(observations.recv(), "a healthy settlement").await,
+        Some(CustodyTaskEvent::Flush(report))
+            if matches!(report.answered.as_slice(), [answer] if answer.request == healthy.request))
+    );
     stop.send_replace(true);
     running.await.unwrap();
 }

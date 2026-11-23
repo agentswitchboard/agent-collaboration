@@ -248,7 +248,7 @@ async fn run_custody(
         tokio::select! {
             () = async { let _ = stop.wait_for(|stop| *stop).await; } => break,
             command = commands.recv() => match command {
-                Some(command) => handle_tool(&mut custody, &mut tool_requests, command).await,
+                Some(command) => handle_tool(&mut custody, &mut tool_requests, command, &*sink).await,
                 None => break,
             },
             event = offers.recv(), if offer_stream_open => {
@@ -343,6 +343,7 @@ async fn handle_tool(
     custody: &mut CustodyLink,
     pending_requests: &mut JoinSet<()>,
     command: CustodyCommand,
+    sink: &dyn CustodyEventSink,
 ) {
     match command {
         CustodyCommand::Submit {
@@ -378,7 +379,11 @@ async fn handle_tool(
             if reply.is_closed() {
                 return;
             }
-            match custody.prepare_request_status(caller, query).await {
+            let prepared = custody.prepare_request_status(caller, query).await;
+            for diagnostic in custody.take_outbox_operator_events() {
+                sink.record_event(CustodyTaskEvent::Operator(diagnostic));
+            }
+            match prepared {
                 PreparedRequestStatus::Complete(result) => {
                     let _ = reply.send(result);
                 }
@@ -396,7 +401,11 @@ async fn handle_tool(
             }
         }
         CustodyCommand::Pending { caller, reply } => {
-            let _ = reply.send(custody.pending_writes(&caller).await);
+            let result = custody.pending_writes(&caller).await;
+            for diagnostic in custody.take_outbox_operator_events() {
+                sink.record_event(CustodyTaskEvent::Operator(diagnostic));
+            }
+            let _ = reply.send(result);
         }
         CustodyCommand::Waiting { session, reply } => {
             let _ = reply.send(custody.waiting_for_session(&session).await);
