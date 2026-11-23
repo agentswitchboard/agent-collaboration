@@ -1,5 +1,5 @@
 use approval_request_protocol::{
-    Answer, ApprovalOffer, CentralTime, DecideRequest, DeliverEndingRequest, Label, OfferedOption,
+    Answer, ApprovalOffer, CentralTime, DeliverEndingRequest, Label, OfferedOption,
     OfferedOptionId, OfferedOptions, OptionEffect, OptionLifetime, ProviderHolder,
     ProviderStopCause, Raise, RegisterRunReply, RetainedOptionStorage, StopRequest, Title,
 };
@@ -9,8 +9,8 @@ use workspace_ids::{ApprovalRequestId, MachineId, PersonId, RequestId, RouterRun
 
 use fleet_approvals::{
     AdmittedDecider, ApprovalCollection, ApprovalCollectionEffect, ApprovalCollectionEvent,
-    ApprovalEffect, ApprovalEnrollment, ApprovalReceipt, ApprovalRequestKey, ApprovalRouting,
-    ApprovalRun, ApprovalSession, ApprovalState, EndedApproval, FactorStanding,
+    ApprovalDecideInput, ApprovalEffect, ApprovalEnrollment, ApprovalReceipt, ApprovalRequestKey,
+    ApprovalRouting, ApprovalRun, ApprovalSession, ApprovalState, EndedApproval, FactorStanding,
     ProviderSessionAvailability,
 };
 
@@ -203,11 +203,16 @@ pub(super) fn raise_event(
     raise: Raise,
     routing: ApprovalRouting,
 ) -> ApprovalCollectionEvent {
+    let provider_session = if raise.requesting_session().is_some() {
+        ProviderSessionAvailability::Live
+    } else {
+        ProviderSessionAvailability::SessionFree
+    };
     ApprovalCollectionEvent::Raise {
         run: run.clone(),
         raise: Box::new(raise),
         routing,
-        provider_session: ProviderSessionAvailability::Live,
+        provider_session,
     }
 }
 
@@ -220,7 +225,7 @@ pub(super) fn decide_event(
     ApprovalCollectionEvent::Decide {
         key: key.clone(),
         actor,
-        request: DecideRequest {
+        request: ApprovalDecideInput {
             request_id: key.request_id.clone(),
             operation_id: operation_id(operation),
             value,

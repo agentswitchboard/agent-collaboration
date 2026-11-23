@@ -1,15 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use approval_request_protocol::{
-    CentralTime, DecideRequest, DeliverEndingReply, DeliverEndingRequest, PassOnRequest, Raise,
-    RegisterRunReply, StopRequest,
+    CentralTime, DeliverEndingReply, DeliverEndingRequest, PassOnRequest, Raise, RegisterRunReply,
+    StopRequest,
 };
 use fleet_identity_protocol::EnrollmentId;
 use workspace_ids::{MachineId, PersonId, RequestId, RouterRunId};
 
 use crate::{
-    AdmittedDecider, ApprovalEffect, ApprovalEnrollment, ApprovalRequestKey, ApprovalRouting,
-    ApprovalRun, ApprovalSession, ApprovalState, ProviderSessionAvailability, SavedDecision,
+    AdmittedDecider, ApprovalDecideInput, ApprovalEffect, ApprovalEnrollment, ApprovalRequestKey,
+    ApprovalRouting, ApprovalRun, ApprovalSession, ApprovalState, ProviderSessionAvailability,
+    SavedDecision,
 };
 
 /// One organization's facts for a guarded apply, including every affected row.
@@ -68,7 +69,7 @@ pub enum ApprovalCollectionEvent {
     Decide {
         key: ApprovalRequestKey,
         actor: AdmittedDecider,
-        request: DecideRequest,
+        request: ApprovalDecideInput,
     },
     Read {
         key: ApprovalRequestKey,

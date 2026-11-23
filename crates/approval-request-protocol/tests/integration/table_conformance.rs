@@ -3,8 +3,8 @@ use std::fmt::Debug;
 
 use approval_request_protocol::{
     CancelReason, DecideReply, DecideReplyWire, DecideRequest, DeliverEndingReply,
-    DeliverEndingRequest, DestinationEnding, EndingViewWire, HolderStopCause, PassOnReply,
-    PassOnRequest, Raise, RaiseReply, RegisterRunReply, RegisterRunRequest, RunRefusal,
+    DeliverEndingRequest, DestinationEnding, HolderStopCause, PassOnReply, PassOnRequest,
+    ProviderEndingView, Raise, RaiseReply, RegisterRunReply, RegisterRunRequest, RunRefusal,
     SessionDecider, StandingEnding, StopReceiptEnding, StopReply, StopRequest,
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -44,6 +44,7 @@ fn stop_standing_case(ending: StopReceiptEnding) -> &'static str {
                 HolderStopCause::AskWithdrawn => "askWithdrawn",
                 HolderStopCause::SessionClosed => "sessionClosed",
                 HolderStopCause::ProviderConnectionLost => "providerConnectionLost",
+                HolderStopCause::CallWithdrawn => "callWithdrawn",
             },
         },
     }
@@ -178,6 +179,12 @@ fn table_requests_and_reply_cases_match_the_core_protocol() -> Result<(), String
             }),
         )?;
     }
+    slice_case::<StopRequest>(
+        "Unproven call Stop request",
+        json!({
+            "kind":"unprovenCall","requestId":REQUEST,"routerRun":RUN,"contentsDigest":DIGEST,"cause":"callWithdrawn"
+        }),
+    )?;
     let mut stop_cases = vec![
         (
             "timedOut",
@@ -197,7 +204,7 @@ fn table_requests_and_reply_cases_match_the_core_protocol() -> Result<(), String
             )
         }),
     );
-    stop_cases.extend(["turnStopped","askReplaced","askWithdrawn","sessionClosed","providerConnectionLost"].map(|cause| {
+    stop_cases.extend(["turnStopped","askReplaced","askWithdrawn","sessionClosed","providerConnectionLost","callWithdrawn"].map(|cause| {
         (cause, json!({"kind":"stands","ending":{"kind":"cancelled","reason":{"kind":"stopped","cause":cause}}}))
     }));
     assert_authority_reply::<StopReply>("Stop", &stop_cases, |reply| match reply {
@@ -326,11 +333,11 @@ fn decide_standing_cases_cover_every_request_kind_and_disclosure() -> Result<(),
             let DecideReplyWire::Standing { ending } = reply.wire_shape() else {
                 return Err("Decide standing decoded as another reply".to_owned());
             };
-            let observed = match ending.wire_shape() {
-                EndingViewWire::ProviderApproval { ending } => {
+            let observed = match ending {
+                ProviderEndingView::ProviderApproval { ending } => {
                     ("providerApproval", destination_standing_case(ending))
                 }
-                EndingViewWire::ProviderQuestion { ending } => {
+                ProviderEndingView::ProviderQuestion { ending } => {
                     ("providerQuestion", destination_standing_case(ending))
                 }
             };

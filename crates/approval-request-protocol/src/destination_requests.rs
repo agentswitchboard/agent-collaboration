@@ -3,8 +3,8 @@ use serde::{Deserialize, Serialize};
 use workspace_ids::{ApprovalRequestId, CentralSessionId, RequestId};
 
 use crate::{
-    AdmittedDestination, Answer, ApprovalDecision, DeliverEndingRequest, EndingView,
-    InvalidApprovalEnding, SessionDecider,
+    AdmittedDestination, ApprovalDecision, DeliverEndingRequest, EndingView, InvalidApprovalEnding,
+    ProviderAnswer, ProviderEndingView, SessionDecider,
     approval_holder_endings::check_decision_actor,
     approval_wire_codec::{approval_wire_record, approval_wire_union},
 };
@@ -20,7 +20,7 @@ pub struct DecideRequest {
     pub request_id: ApprovalRequestId,
     #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = String))]
     pub operation_id: RequestId,
-    pub value: Answer,
+    pub value: ProviderAnswer,
 }
 }
 
@@ -32,7 +32,7 @@ approval_wire_union! {
 )]
 pub enum DecideReplyWire {
     SavedDecision { decision: ApprovalDecision },
-    Standing { ending: EndingView },
+    Standing { ending: ProviderEndingView },
     NotVisible {},
     Invalid {},
     TooLate {},
@@ -89,7 +89,7 @@ pub struct RetainedSessionDecision {
     pub request_id: ApprovalRequestId,
     pub session: CentralSessionId,
     pub operation_id: RequestId,
-    pub answer: Answer,
+    pub answer: ProviderAnswer,
 }
 
 impl DecideRequest {
@@ -108,7 +108,11 @@ impl DecideRequest {
         {
             return Err(InvalidApprovalEnding::RetainedDecisionMismatch);
         }
-        check_decision_actor(admitted.raise(), &retained.answer, admitted.actor())?;
+        check_decision_actor(
+            admitted.raise(),
+            &retained.answer.clone().into(),
+            admitted.actor(),
+        )?;
         Ok(DecideReply(DecideReplyWire::SavedDecision {
             decision: ApprovalDecision {
                 answer: retained.answer.clone(),
@@ -130,7 +134,7 @@ impl DecideRequest {
         }
         let projection = EndingView::for_destination(admitted, ending)?;
         Ok(DecideReply(DecideReplyWire::Standing {
-            ending: projection.for_recipient(admitted.actor())?,
+            ending: projection.for_recipient(admitted.actor())?.try_into()?,
         }))
     }
 }

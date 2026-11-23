@@ -9,22 +9,31 @@ use fleet_approvals::ApprovalRefusal;
 
 use super::fixtures::HOUR;
 
-pub(super) const ROWS: [RowScope; 4] = [
+pub(super) const ROWS: [RowScope; 5] = [
     RowScope {
         run: 0,
         delegate: true,
+        parked: false,
     },
     RowScope {
         run: 0,
         delegate: false,
+        parked: false,
     },
     RowScope {
         run: 1,
         delegate: true,
+        parked: false,
     },
     RowScope {
         run: 2,
         delegate: false,
+        parked: false,
+    },
+    RowScope {
+        run: 0,
+        delegate: false,
+        parked: true,
     },
 ];
 pub(super) const RUN_ENROLLMENTS: [usize; 3] = [0, 0, 1];
@@ -33,6 +42,7 @@ pub(super) const RUN_ENROLLMENTS: [usize; 3] = [0, 0, 1];
 pub(super) struct RowScope {
     pub run: usize,
     pub delegate: bool,
+    pub parked: bool,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -60,6 +70,7 @@ pub(super) enum Step {
         operation: u16,
         choice: u8,
         actor: Actor,
+        fresh_factor: bool,
     },
     Stop {
         row: usize,
@@ -194,7 +205,7 @@ impl RequestLedger {
 
 pub(super) struct Ledger {
     pub floor: i64,
-    pub rows: [RequestLedger; 4],
+    pub rows: [RequestLedger; ROWS.len()],
     active_enrollment: Option<usize>,
     closed_enrollments: BTreeSet<usize>,
     ended_requesters: BTreeSet<usize>,
@@ -208,7 +219,7 @@ impl Ledger {
     pub fn new() -> Self {
         Self {
             floor: 0,
-            rows: [RequestLedger::default(); 4],
+            rows: [RequestLedger::default(); ROWS.len()],
             active_enrollment: Some(0),
             closed_enrollments: BTreeSet::new(),
             ended_requesters: BTreeSet::new(),
@@ -342,7 +353,7 @@ impl Ledger {
                 RaiseResult::ContentsDiffer
             };
         }
-        if self.ended_requesters.contains(&RUN_ENROLLMENTS[scope.run]) {
+        if !scope.parked && self.ended_requesters.contains(&RUN_ENROLLMENTS[scope.run]) {
             return RaiseResult::SessionEnded;
         }
         self.rows[row].first_save = Some((changed, self.floor));
@@ -368,13 +379,13 @@ impl Ledger {
             }
             if self.rows[row].waiting() {
                 let ending = self.finish(row, Ending::Stopped, Delivery::Closed, effects);
-                return StopResult::Stands(standing(ending));
+                return StopResult::Stands(standing(row, ending));
             }
             let (ending, at, delivery) = self.rows[row].ending.unwrap();
             if delivery == Delivery::Unpaid {
                 self.rows[row].ending = Some((ending, at, Delivery::Closed));
             }
-            return StopResult::Stands(standing(ending));
+            return StopResult::Stands(standing(row, ending));
         }
 
         if self.rows[row]
@@ -384,7 +395,7 @@ impl Ledger {
             return StopResult::NotVisible;
         }
         self.rows[row].marker = Some(changed);
-        StopResult::Stands(standing(Ending::Stopped))
+        StopResult::Stands(standing(row, Ending::Stopped))
     }
 
     fn decide(
@@ -393,6 +404,7 @@ impl Ledger {
         actor: Actor,
         operation: u16,
         choice: u8,
+        fresh_factor: bool,
         effects: &mut Vec<OperationEffect>,
     ) -> Decision {
         if !self.visible(row, actor) {
@@ -407,12 +419,17 @@ impl Ledger {
                 Decision::OperationConflict
             };
         }
+        let answer_fits = if ROWS[row].parked {
+            choice <= 2 && actor.person() && fresh_factor
+        } else {
+            choice <= 2 || (choice <= 5 && actor.person() && fresh_factor)
+        };
         let result = if let Some((ending, ..)) = self.rows[row].ending {
             Decision::Standing(ending)
         } else if self.rows[row].late(self.floor) {
             self.finish(row, Ending::TimedOut, Delivery::Unpaid, effects);
             Decision::TooLate
-        } else if choice <= 2 || (choice <= 5 && actor.person()) {
+        } else if answer_fits {
             self.finish(
                 row,
                 Ending::Decided { choice, actor },
@@ -492,8 +509,9 @@ impl Ledger {
                 operation,
                 choice,
                 actor,
+                fresh_factor,
             } => {
-                let result = self.decide(row, actor, operation, choice, &mut effects);
+                let result = self.decide(row, actor, operation, choice, fresh_factor, &mut effects);
                 effects.push(OperationEffect::Decide(row, actor, result));
             }
             Step::Stop { row, changed } => {
@@ -575,7 +593,9 @@ impl Ledger {
                         self.ended_parents.insert(enrollment);
                     } else if self.ended_requesters.insert(enrollment) {
                         for (row, scope) in ROWS.iter().enumerate() {
-                            if RUN_ENROLLMENTS[scope.run] == enrollment && self.rows[row].waiting()
+                            if !scope.parked
+                                && RUN_ENROLLMENTS[scope.run] == enrollment
+                                && self.rows[row].waiting()
                             {
                                 self.finish(
                                     row,
@@ -600,14 +620,18 @@ impl Ledger {
     }
 }
 
-fn standing(ending: Ending) -> StopReceiptEnding {
+fn standing(row: usize, ending: Ending) -> StopReceiptEnding {
     use approval_request_protocol::{CancelReason, HolderStopCause};
     match ending {
         Ending::Decided { .. } => StopReceiptEnding::DecidedEarlier {},
         Ending::TimedOut => StopReceiptEnding::TimedOut {},
         Ending::Stopped => StopReceiptEnding::Cancelled {
             reason: CancelReason::Stopped {
-                cause: HolderStopCause::AskReplaced,
+                cause: if ROWS[row].parked {
+                    HolderStopCause::CallWithdrawn
+                } else {
+                    HolderStopCause::AskReplaced
+                },
             },
         },
         Ending::SessionEnded => StopReceiptEnding::Cancelled {
