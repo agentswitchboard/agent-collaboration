@@ -48,6 +48,9 @@ fn connect(client: &mut LinkClient) -> ConnectionAttempt {
 fn caller() -> Caller {
     serde_json::from_str(r#"{"kind":"session","value":{"machineId":"01890f2e-7b4c-7cc0-98c4-000000000002","sessionId":"s"}}"#).unwrap()
 }
+fn report_ping(client: &mut LinkClient, attempt: &ConnectionAttempt, clock: &ManualClock) {
+    assert_eq!(client.ping_written(attempt, clock.monotonic_now()), Ok(()));
+}
 fn payload() -> RequestPayload {
     RequestPayload::Workspace(WorkspaceRequest {
         request_id: Some("01890f2e-7b4c-7cc0-98c4-000000000004".parse().unwrap()),
@@ -217,14 +220,17 @@ fn injected_clock_drives_exact_pings_pong_recovery_and_two_missed_answers() {
     assert_eq!(client.poll_time(), None);
     clock.advance(Duration::from_secs(1)).unwrap();
     assert_eq!(client.poll_time(), Some(ClientAction::SendPing));
+    report_ping(&mut client, &attempt, &clock);
     assert_eq!(
         client.receive(&attempt, LinkFrame::Pong),
         Ok(ClientEvent::Pong)
     );
     clock.advance(Duration::from_secs(20)).unwrap();
     assert_eq!(client.poll_time(), Some(ClientAction::SendPing));
+    report_ping(&mut client, &attempt, &clock);
     clock.advance(Duration::from_secs(20)).unwrap();
     assert_eq!(client.poll_time(), Some(ClientAction::SendPing));
+    report_ping(&mut client, &attempt, &clock);
     clock.advance(Duration::from_secs(20)).unwrap();
     assert!(matches!(
         client.poll_time(),
@@ -389,6 +395,7 @@ fn late_clock_poll_counts_actual_unanswered_probes_and_ids_follow_the_same_clock
     let attempt = connect(&mut client);
     clock.advance(Duration::from_secs(100)).unwrap();
     assert_eq!(client.poll_time(), Some(ClientAction::SendPing));
+    report_ping(&mut client, &attempt, &clock);
     assert_eq!(
         client.receive(&attempt, LinkFrame::Pong),
         Ok(ClientEvent::Pong)
@@ -402,8 +409,10 @@ fn late_clock_poll_counts_actual_unanswered_probes_and_ids_follow_the_same_clock
     assert_eq!(seconds, 1_893_456_100);
     clock.advance(Duration::from_secs(20)).unwrap();
     assert_eq!(client.poll_time(), Some(ClientAction::SendPing));
+    report_ping(&mut client, &attempt, &clock);
     clock.advance(Duration::from_secs(40)).unwrap();
     assert_eq!(client.poll_time(), Some(ClientAction::SendPing));
+    report_ping(&mut client, &attempt, &clock);
     clock.advance(Duration::from_secs(20)).unwrap();
     assert!(matches!(
         client.poll_time(),
@@ -632,6 +641,7 @@ fn welcomed_link_serves_transport_frames_and_holds_ordinary_requests_until_ready
     );
     clock.advance(Duration::from_secs(20)).unwrap();
     assert_eq!(client.poll_time(), Some(ClientAction::SendPing));
+    report_ping(&mut client, &attempt, &clock);
     assert_eq!(
         client.receive(&attempt, LinkFrame::Pong),
         Ok(ClientEvent::Pong)

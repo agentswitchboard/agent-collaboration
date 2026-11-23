@@ -13,7 +13,7 @@ use central_link_protocol::{
     DataFrame, FrameDirection, LinkFrame, MachineLinkCloseCode, TokenRenewalResult, decode_text,
     encode_text,
 };
-use futures_util::{FutureExt, SinkExt, StreamExt};
+use futures_util::{FutureExt, Sink, SinkExt, StreamExt};
 use router_clock::{ClockInstant, RuntimeClock};
 use state_machine_core::StateMachine;
 use tokio::sync::{mpsc, watch};
@@ -401,8 +401,7 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
             }
             match self.client.poll_time() {
                 Some(ClientAction::SendPing) => {
-                    if !self.write(socket, LinkFrame::Ping, control).await? {
-                        self.close(attempt, None);
+                    if !self.write_heartbeat(socket, attempt, control).await? {
                         return Ok(());
                     }
                     continue;
@@ -580,9 +579,27 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
         }
     }
 
+    async fn write_heartbeat(
+        &mut self,
+        socket: &mut (impl Sink<Message> + Unpin),
+        attempt: &ConnectionAttempt,
+        control: &mut Control<'_, Binding>,
+    ) -> Result<bool, Interrupted> {
+        if self.write(socket, LinkFrame::Ping, control).await?
+            && self
+                .client
+                .ping_written(attempt, self.clock.monotonic_now())
+                .is_ok()
+        {
+            return Ok(true);
+        }
+        self.close(attempt, None);
+        Ok(false)
+    }
+
     async fn write(
         &mut self,
-        socket: &mut Socket,
+        socket: &mut (impl Sink<Message> + Unpin),
         frame: LinkFrame,
         control: &mut Control<'_, Binding>,
     ) -> Result<bool, Interrupted> {
@@ -621,3 +638,7 @@ async fn acquire_if_pending<Binding>(
         None => pending().await,
     }
 }
+
+#[cfg(test)]
+#[path = "link_driver_test.rs"]
+mod tests;

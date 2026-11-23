@@ -54,6 +54,7 @@ pub enum LinkStatus {
     Fault { kind: LinkFault },
 }
 
+/// An exact connection attempt minted by the client and carried by its socket owner.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ConnectionAttempt(CorrelationId);
 
@@ -72,7 +73,6 @@ enum ConnectionState {
     Welcomed {
         readiness: Readiness,
         attempt: ConnectionAttempt,
-        next_ping: ClockInstant,
         heartbeat: Heartbeat,
     },
     Parked {
@@ -89,11 +89,25 @@ enum ParkReason {
     Fault(LinkFault),
 }
 enum Heartbeat {
-    Idle,
-    OneUnansweredProbe,
-    TwoUnansweredProbes,
+    IdleUntil(ClockInstant),
+    FirstWritePending,
+    FirstResponseDue(ClockInstant),
+    SecondWritePending,
+    SecondResponseDue(ClockInstant),
 }
 
+impl Heartbeat {
+    fn deadline(&self) -> Option<ClockInstant> {
+        match self {
+            Self::IdleUntil(at) | Self::FirstResponseDue(at) | Self::SecondResponseDue(at) => {
+                Some(*at)
+            }
+            Self::FirstWritePending | Self::SecondWritePending => None,
+        }
+    }
+}
+
+/// Work the client asks its socket owner to perform after an elapsed timer check.
 #[derive(Debug, Eq, PartialEq)]
 pub enum ClientAction {
     Connect { attempt: ConnectionAttempt },
@@ -102,6 +116,7 @@ pub enum ClientAction {
     CallsExpired { failed: Vec<FailedCall> },
 }
 
+/// A checked server frame produced by the client for its socket owner.
 #[derive(Debug, Eq, PartialEq)]
 pub enum ClientEvent {
     Welcomed {
@@ -149,6 +164,7 @@ struct PendingReceiptFrame {
     expires_at: ClockInstant,
 }
 
+/// Connection-attempt policy created and driven by the socket owner.
 pub struct LinkClient {
     clock: Arc<dyn RuntimeClock>,
     machine: MachineId,
@@ -238,7 +254,7 @@ impl LinkClient {
         let connection = match self.state {
             ConnectionState::Waiting { reconnect_at, .. } => Some(reconnect_at),
             ConnectionState::AwaitingWelcome { expires_at, .. } => Some(expires_at),
-            ConnectionState::Welcomed { next_ping, .. } => Some(next_ping),
+            ConnectionState::Welcomed { ref heartbeat, .. } => heartbeat.deadline(),
             ConnectionState::PreparingDial { .. } | ConnectionState::Parked { .. } => None,
         };
         connection
@@ -279,32 +295,52 @@ impl LinkClient {
                 let failed = self.disconnect();
                 Some(ClientAction::Reconnect { failed })
             }
-            ConnectionState::Welcomed {
-                next_ping,
-                heartbeat,
-                ..
-            } if now >= *next_ping => match heartbeat {
-                Heartbeat::TwoUnansweredProbes => {
-                    let failed = self.disconnect();
-                    Some(ClientAction::Reconnect { failed })
+            ConnectionState::Welcomed { heartbeat, .. }
+                if heartbeat.deadline().is_some_and(|deadline| now >= deadline) =>
+            {
+                match heartbeat {
+                    Heartbeat::SecondResponseDue(_) => {
+                        let failed = self.disconnect();
+                        Some(ClientAction::Reconnect { failed })
+                    }
+                    Heartbeat::IdleUntil(_) => {
+                        *heartbeat = Heartbeat::FirstWritePending;
+                        Some(ClientAction::SendPing)
+                    }
+                    Heartbeat::FirstResponseDue(_) => {
+                        *heartbeat = Heartbeat::SecondWritePending;
+                        Some(ClientAction::SendPing)
+                    }
+                    Heartbeat::FirstWritePending | Heartbeat::SecondWritePending => None,
                 }
-                Heartbeat::Idle => {
-                    *heartbeat = Heartbeat::OneUnansweredProbe;
-                    *next_ping = now.after(PING_INTERVAL);
-                    Some(ClientAction::SendPing)
-                }
-                Heartbeat::OneUnansweredProbe => {
-                    *heartbeat = Heartbeat::TwoUnansweredProbes;
-                    *next_ping = now.after(PING_INTERVAL);
-                    Some(ClientAction::SendPing)
-                }
-            },
+            }
             ConnectionState::Waiting { .. }
             | ConnectionState::PreparingDial { .. }
             | ConnectionState::Welcomed { .. }
             | ConnectionState::AwaitingWelcome { .. }
             | ConnectionState::Parked { .. } => None,
         }
+    }
+
+    /// Confirm the current pending heartbeat after the socket owner finishes its write.
+    pub fn ping_written(
+        &mut self,
+        attempt: &ConnectionAttempt,
+        completed_at: ClockInstant,
+    ) -> Result<(), ClientError> {
+        self.check_attempt(attempt)?;
+        let ConnectionState::Welcomed { heartbeat, .. } = &mut self.state else {
+            return Err(ClientError::UnexpectedFrame);
+        };
+        let deadline = completed_at.after(PING_INTERVAL);
+        *heartbeat = match heartbeat {
+            Heartbeat::FirstWritePending => Heartbeat::FirstResponseDue(deadline),
+            Heartbeat::SecondWritePending => Heartbeat::SecondResponseDue(deadline),
+            Heartbeat::IdleUntil(_)
+            | Heartbeat::FirstResponseDue(_)
+            | Heartbeat::SecondResponseDue(_) => return Err(ClientError::UnexpectedFrame),
+        };
+        Ok(())
     }
 
     pub fn begin_request(
@@ -378,8 +414,7 @@ impl LinkClient {
             self.state = ConnectionState::Welcomed {
                 readiness: Readiness::WaitingForRegistration,
                 attempt: attempt.clone(),
-                next_ping: self.clock.monotonic_now().after(PING_INTERVAL),
-                heartbeat: Heartbeat::Idle,
+                heartbeat: Heartbeat::IdleUntil(self.clock.monotonic_now().after(PING_INTERVAL)),
             };
             return Ok(ClientEvent::Welcomed {
                 central_time: *central_time,
@@ -394,7 +429,13 @@ impl LinkClient {
                 let ConnectionState::Welcomed { heartbeat, .. } = &mut self.state else {
                     return Err(ClientError::UnexpectedFrame);
                 };
-                *heartbeat = Heartbeat::Idle;
+                match heartbeat {
+                    Heartbeat::FirstResponseDue(at) | Heartbeat::SecondResponseDue(at) => {
+                        *heartbeat = Heartbeat::IdleUntil(*at);
+                    }
+                    Heartbeat::SecondWritePending => *heartbeat = Heartbeat::FirstWritePending,
+                    Heartbeat::IdleUntil(_) | Heartbeat::FirstWritePending => {}
+                }
                 Ok(ClientEvent::Pong)
             }
             LinkFrame::Data(DataFrame::Reply {
