@@ -72,6 +72,7 @@ fn declared_inactive_or_aliased_upper_layer_is_refused_by_kind() {
         "collaboration-runtime",
         "switchboard-harness-contracts",
         "central-link-client",
+        "central-link-protocol",
         "collaboration-central-core",
     ] {
         for (kind, label) in [
@@ -198,13 +199,15 @@ fn resolved_edges_reject_forbidden_packages_even_without_a_matching_declaration(
 
 #[test]
 fn isolated_trees_reject_indirect_upper_layers_and_production_test_packages() {
-    let allowable = format!("{CORE_STORE} v1\t\nsqlx v0.9\tsqlite,sqlite-bundled\t");
+    let allowable =
+        format!("{CORE_STORE} v1\t\nworkspace-model v1\t\nsqlx v0.9\tsqlite,sqlite-bundled\t");
     assert!(check_tree(&allowable, BuildView::Production).is_ok());
     for name in [
         "codex-router-host",
         "collaboration-runtime",
         "acp-client-runtime",
         "switchboard-central-link",
+        "central-link-protocol",
         "collaboration-central-tokio",
     ] {
         let tree = format!("{allowable}\n{name} v1\t\t");

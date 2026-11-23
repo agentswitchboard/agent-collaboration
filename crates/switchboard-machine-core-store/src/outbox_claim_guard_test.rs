@@ -1,13 +1,10 @@
 use super::{MARK, accepted, caller, item, open, sender_outcomes::direct_write, uuid_v7};
 use crate::{
-    MacOutbox, MachineLocalStore, OutboxRequestStatus, OutboxStoreError, OutboxWriteOutcome,
-    OutboxWriteTarget, PendingWriteState, StoredOutboxWrite, StoredSenderOutcome,
+    MacOutbox, MachineLocalStore, OutboxAccepted, OutboxCentralRefusal, OutboxRefusal,
+    OutboxRequestStatus, OutboxScope, OutboxStoreError, OutboxWriteOutcome, OutboxWriteTarget,
+    PendingWriteState, StoredOutboxWrite, StoredSenderOutcome,
 };
-use central_link_protocol::ReplyPayload;
-use workspace_model::{
-    ItemRef, Timestamp, WorkspaceReply, WorkspaceResult,
-    central_mail::{CentralMailAnswer, CentralMailResult, MessageOutcome},
-};
+use workspace_model::{ItemRef, RefusalReason, Timestamp, central_mail::MessageOutcome};
 
 async fn return_and_reclaim(
     outbox: &mut MacOutbox<'_>,
@@ -50,11 +47,11 @@ async fn swapped_same_kind_settlements_leave_both_claims_recoverable() {
         .iter()
         .zip([412, 413])
         .map(|(claim, seed)| {
-            OutboxWriteOutcome::from_reply(
+            OutboxWriteOutcome::from_accepted(
                 &claim.payload,
-                ReplyPayload::Mail(CentralMailResult::Done(CentralMailAnswer::Queued {
+                OutboxAccepted::SendMessage {
                     message_id: uuid_v7(seed).parse().unwrap(),
-                })),
+                },
             )
             .unwrap()
         })
@@ -114,18 +111,16 @@ async fn not_found_from_another_workspace_cannot_settle_the_claim() {
     else {
         panic!("a claimed thread post")
     };
-    let reply = |workspace_id| {
-        ReplyPayload::Workspace(WorkspaceReply {
-            result: WorkspaceResult::NotFound {
-                workspace_id,
-                item: ItemRef::Thread(thread_id.clone()),
-            },
-            actors: vec![],
-        })
-    };
-
-    let wrong = reply(uuid_v7(421).parse().unwrap());
-    assert!(OutboxWriteOutcome::from_reply(&claim.payload, wrong).is_err());
+    let wrong = OutboxScope::Workspace(uuid_v7(421).parse().unwrap());
+    let item = ItemRef::Thread(thread_id);
+    assert!(
+        OutboxWriteOutcome::from_workspace_not_found(&claim.payload, &wrong, item.clone()).is_err()
+    );
+    let contextless =
+        OutboxRefusal::Central(OutboxCentralRefusal::Workspace(RefusalReason::NotFound {
+            item: item.clone(),
+        }));
+    assert!(OutboxWriteOutcome::from_refusal(&claim.payload, contextless).is_err());
     assert_eq!(
         outbox
             .request_status(&write.caller, &write.request)
@@ -138,7 +133,12 @@ async fn not_found_from_another_workspace_cannot_settle_the_claim() {
         PendingWriteState::SentAnswerLost { body } if body.as_str() == "retain the original post")
     );
     assert_eq!(return_and_reclaim(&mut outbox, &claims).await, claims);
-    let compatible = OutboxWriteOutcome::from_reply(&claim.payload, reply(workspace_id)).unwrap();
+    let compatible = OutboxWriteOutcome::from_workspace_not_found(
+        &claim.payload,
+        &OutboxScope::Workspace(workspace_id),
+        item,
+    )
+    .unwrap();
     outbox
         .record_outcome(&claim.request, &compatible, MARK + 2)
         .await

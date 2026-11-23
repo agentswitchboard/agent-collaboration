@@ -3,12 +3,9 @@ use crate::{
     OutboxRefusal, OutboxRequestStatus, OutboxStorage, OutboxStoreError, OutboxWriteOutcome,
     OutgoingOutcome, PendingWriteState,
 };
-use central_link_protocol::ReplyPayload;
 use serde_json::json;
 use workspace_ids::RequestId;
-use workspace_model::{
-    Caller, ChangePosition, ItemRef, WorkspaceAnswer, WorkspaceReply, WorkspaceResult,
-};
+use workspace_model::{Caller, ChangePosition};
 
 #[path = "outbox_deadline_contract_test.rs"]
 mod deadline_cases;
@@ -69,15 +66,6 @@ fn answer() -> crate::OutboxAccepted {
     }
 }
 
-fn reply() -> ReplyPayload {
-    ReplyPayload::Workspace(WorkspaceReply {
-        result: WorkspaceResult::Done(WorkspaceAnswer::Created {
-            item: ItemRef::Post(uuid_v7(60_004).parse().unwrap()),
-            position: ChangePosition::ZERO,
-        }),
-        actors: Vec::new(),
-    })
-}
 fn ids(items: &[&NewOutboxItem]) -> Vec<RequestId> {
     items.iter().map(|item| item.request.clone()).collect()
 }
@@ -118,7 +106,7 @@ pub(crate) async fn lifecycle_and_views(store: &mut dyn OutboxStorage) {
     store
         .record_outcome(
             &first.request,
-            &OutboxWriteOutcome::from_reply(&first.payload, reply()).unwrap(),
+            &OutboxWriteOutcome::from_accepted(&first.payload, answer()).unwrap(),
             MARK + 1_000,
         )
         .await
@@ -158,7 +146,7 @@ pub(crate) async fn replay_needs_the_same_caller_target_and_content(store: &mut 
     store
         .record_outcome(
             &write.request,
-            &OutboxWriteOutcome::from_reply(&write.payload, reply()).unwrap(),
+            &OutboxWriteOutcome::from_accepted(&write.payload, answer()).unwrap(),
             MARK + 1_000,
         )
         .await
@@ -251,7 +239,7 @@ pub(crate) async fn retention_prune(store: &mut dyn OutboxStorage) {
     store
         .record_outcome(
             &write.request,
-            &OutboxWriteOutcome::from_reply(&write.payload, reply()).unwrap(),
+            &OutboxWriteOutcome::from_accepted(&write.payload, answer()).unwrap(),
             MARK,
         )
         .await
@@ -296,7 +284,7 @@ pub(crate) async fn refusals_and_isolation(store: &mut dyn OutboxStorage) {
     let early_outcome = store
         .record_outcome(
             &write.request,
-            &OutboxWriteOutcome::from_reply(&write.payload, reply()).unwrap(),
+            &OutboxWriteOutcome::from_accepted(&write.payload, answer()).unwrap(),
             MARK,
         )
         .await;

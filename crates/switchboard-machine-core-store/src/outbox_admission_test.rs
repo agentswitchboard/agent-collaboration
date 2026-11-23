@@ -1,6 +1,6 @@
 use super::{MARK, central_refusal, item, open};
 use crate::{MacOutbox, OutboxRefusal, OutboxRequestStatus, OutboxStoreError, OutboxWriteOutcome};
-use crate::{OutboxRequestKey, OutboxScope};
+use crate::{OutboxAccepted, OutboxCentralRefusal, OutboxRequestKey, OutboxScope};
 
 #[tokio::test]
 async fn insert_failure_distinguishes_before_begin_and_after_begin() {
@@ -41,7 +41,7 @@ async fn insert_failure_distinguishes_before_begin_and_after_begin() {
 }
 
 #[tokio::test]
-async fn central_refusal_uses_the_main_payload_and_preserves_caller_and_scope() {
+async fn workspace_refusal_retains_the_original_json_bytes_and_caller_scope() {
     let root = tempfile::tempdir().unwrap();
     let mut database = open(&root).await;
     let write = item(97, "a refused post", MARK);
@@ -91,7 +91,10 @@ async fn central_refusal_uses_the_main_payload_and_preserves_caller_and_scope() 
         .fetch_one(&mut database.connection)
         .await
         .unwrap();
-    assert_eq!(stored, serde_json::to_string(&reason).unwrap());
+    assert_eq!(
+        stored,
+        r#"{"kind":"workspace","reason":{"kind":"requestIdReused"}}"#
+    );
     sqlx::query("UPDATE outbox_items SET outcome_json = '{\"kind\":\"unrecognized\"}'")
         .execute(&mut database.connection)
         .await
@@ -108,10 +111,9 @@ async fn central_refusal_uses_the_main_payload_and_preserves_caller_and_scope() 
 }
 
 #[tokio::test]
-async fn transient_and_wrong_operation_replies_leave_the_claim_recoverable() {
+async fn incompatible_results_and_authority_loss_leave_the_claim_recoverable() {
     use crate::{NewOutboxItem, OutboxQueuedWrite, PendingWriteState};
-    use central_link_protocol::{MachineLinkCloseCode, ReplyPayload};
-    use workspace_model::central_mail::{CentralMailAnswer, CentralMailRefusal, CentralMailResult};
+    use workspace_model::{RefusalReason, central_mail::CentralMailRefusal};
 
     let root = tempfile::tempdir().unwrap();
     let mut database = open(&root).await;
@@ -139,25 +141,27 @@ async fn transient_and_wrong_operation_replies_leave_the_claim_recoverable() {
         .writes
         .pop()
         .unwrap();
-    for reply in [
-        ReplyPayload::Mail(CentralMailResult::CentralUnavailable),
-        ReplyPayload::Mail(CentralMailResult::OutcomeUnknown),
-        ReplyPayload::Mail(ReplyPayload::mail_authority_refused(
-            MachineLinkCloseCode::Revoked,
-        )),
-        ReplyPayload::Mail(CentralMailResult::Done(CentralMailAnswer::WakeSet {
+    for reason in [
+        CentralMailRefusal::Workspace(RefusalReason::MachineRevoked),
+        CentralMailRefusal::WakeNotFound {
             wake_id: super::uuid_v7(122).parse().unwrap(),
-            due_at: chrono::DateTime::UNIX_EPOCH,
-        })),
-        ReplyPayload::Mail(CentralMailResult::Refused(
-            CentralMailRefusal::WakeNotFound {
-                wake_id: super::uuid_v7(122).parse().unwrap(),
-            },
-        )),
-        super::accepted_reply(),
+        },
+        CentralMailRefusal::UnknownSession {
+            target: serde_json::from_value(serde_json::json!({
+                "machineId": super::uuid_v7(121), "sessionId": "another"
+            }))
+            .unwrap(),
+        },
     ] {
-        assert!(OutboxWriteOutcome::from_reply(&claim.payload, reply).is_err());
+        assert!(
+            OutboxWriteOutcome::from_refusal(
+                &claim.payload,
+                OutboxRefusal::Central(OutboxCentralRefusal::Mail(reason))
+            )
+            .is_err()
+        );
     }
+    assert!(OutboxWriteOutcome::from_accepted(&claim.payload, super::accepted_answer()).is_err());
     let wrong_operation = super::accepted(&item(123, "post fixture", MARK).payload);
     assert!(matches!(
         outbox
@@ -191,24 +195,19 @@ async fn transient_and_wrong_operation_replies_leave_the_claim_recoverable() {
 
 #[tokio::test]
 async fn accepted_post_uses_the_store_result_in_all_three_read_views() {
-    use crate::{OutboxAccepted, OutgoingOutcome, PendingWriteState};
-    use central_link_protocol::ReplyPayload;
-    use workspace_model::{
-        ChangePosition, ItemRef, WorkspaceAnswer, WorkspaceReply, WorkspaceResult,
-    };
+    use crate::{OutgoingOutcome, PendingWriteState};
+    use workspace_model::ChangePosition;
 
     let root = tempfile::tempdir().unwrap();
     let mut database = open(&root).await;
     let write = item(124, "post accepted with position", MARK);
     let post_id = super::uuid_v7(125).parse().unwrap();
     let position = ChangePosition::try_from(27).unwrap();
-    let reply = ReplyPayload::Workspace(WorkspaceReply {
-        result: WorkspaceResult::Done(WorkspaceAnswer::Created {
-            item: ItemRef::Post(post_id),
-            position,
-        }),
+    let expected = OutboxAccepted::ThreadPost {
+        post_id,
+        position,
         actors: vec![],
-    });
+    };
     let mut outbox = MacOutbox::new(&mut database);
     outbox.insert(&write, MARK).await.unwrap();
     let claimed = outbox
@@ -217,7 +216,7 @@ async fn accepted_post_uses_the_store_result_in_all_three_read_views() {
         .unwrap()
         .expect_clean();
     let claim = &claimed.writes[0];
-    let accepted = OutboxWriteOutcome::from_reply(&claim.payload, reply).unwrap();
+    let accepted = OutboxWriteOutcome::from_accepted(&claim.payload, expected.clone()).unwrap();
     outbox
         .record_outcome(&claim.request, &accepted, MARK)
         .await
@@ -226,11 +225,6 @@ async fn accepted_post_uses_the_store_result_in_all_three_read_views() {
     database.close().await.unwrap();
     let mut reopened = open(&root).await;
     let mut outbox = MacOutbox::new(&mut reopened);
-    let expected = OutboxAccepted::ThreadPost {
-        post_id: super::uuid_v7(125).parse().unwrap(),
-        position,
-        actors: vec![],
-    };
     assert_eq!(
         outbox
             .request_status(&write.caller, &write.request)
@@ -245,5 +239,51 @@ async fn accepted_post_uses_the_store_result_in_all_three_read_views() {
     assert_eq!(
         outbox.outgoing_for(&write.caller, 1).await.unwrap()[0].outcome,
         OutgoingOutcome::Answered(expected)
+    );
+}
+
+#[tokio::test]
+async fn mail_refusal_retains_the_original_json_bytes_and_round_trips() {
+    use super::sender_outcomes::direct_write;
+    use workspace_model::central_mail::CentralMailRefusal;
+
+    let directory = tempfile::tempdir().unwrap();
+    let mut database = open(&directory).await;
+    let write = direct_write(455);
+    let refusal = OutboxRefusal::Central(OutboxCentralRefusal::Mail(
+        CentralMailRefusal::TimeOutOfRange {
+            field: "anchorAt".to_owned(),
+        },
+    ));
+    let mut outbox = MacOutbox::new(&mut database);
+    outbox.insert(&write, MARK).await.unwrap();
+    let claimed = outbox
+        .claim_next_batch(MARK, 1, MARK)
+        .await
+        .unwrap()
+        .expect_clean();
+    let claim = &claimed.writes[0];
+    let decision = OutboxWriteOutcome::from_refusal(&claim.payload, refusal.clone()).unwrap();
+    outbox
+        .record_outcome(&claim.request, &decision, MARK)
+        .await
+        .unwrap();
+
+    let stored: String = sqlx::query_scalar("SELECT outcome_json FROM outbox_items")
+        .fetch_one(&mut database.connection)
+        .await
+        .unwrap();
+    assert_eq!(
+        stored,
+        r#"{"kind":"mail","reason":{"kind":"timeOutOfRange","value":{"field":"anchorAt"}}}"#
+    );
+    database.close().await.unwrap();
+    let mut reopened = open(&directory).await;
+    assert_eq!(
+        MacOutbox::new(&mut reopened)
+            .request_status(&write.caller, &write.request)
+            .await
+            .unwrap(),
+        OutboxRequestStatus::Refused(refusal)
     );
 }

@@ -10,7 +10,6 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-central-link-protocol.workspace = true
 chrono.workspace = true
 schemars.workspace = true
 serde.workspace = true

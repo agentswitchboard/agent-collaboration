@@ -1,8 +1,7 @@
 //! The durable answer to a caller's outbox status query.
-use central_link_protocol::RequestRefusal;
 use serde::{Deserialize, Serialize};
 use workspace_ids::{MessageId, PostId};
-use workspace_model::{ActorView, ChangePosition};
+use workspace_model::{ActorView, ChangePosition, RefusalReason, central_mail::CentralMailRefusal};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -15,7 +14,20 @@ pub enum LocalOutboxRefusal {
 #[serde(untagged)]
 pub enum OutboxRefusal {
     Local(LocalOutboxRefusal),
-    Central(RequestRefusal),
+    Central(OutboxCentralRefusal),
+}
+
+/// A central domain refusal retained in `outcome_json`.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "reason",
+    rename_all = "camelCase",
+    deny_unknown_fields
+)]
+pub enum OutboxCentralRefusal {
+    Workspace(RefusalReason),
+    Mail(CentralMailRefusal),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -376,9 +376,6 @@ async fn corrupt_rows_are_hidden_from_foreign_status_and_sender_outcome_calls() 
 
 #[tokio::test]
 async fn row_decode_rejects_temporary_or_wrong_operation_settlements() {
-    use central_link_protocol::ReplyPayload;
-    use workspace_model::{WorkspaceReply, WorkspaceResult};
-
     let root = tempfile::tempdir().unwrap();
     let mut database = open(&root).await;
     let transient = item(118, "transient", MARK);
@@ -386,11 +383,8 @@ async fn row_decode_rejects_temporary_or_wrong_operation_settlements() {
     for (write, reply) in [
         (
             &transient,
-            serde_json::to_string(&ReplyPayload::Workspace(WorkspaceReply {
-                result: WorkspaceResult::OutcomeUnknown,
-                actors: vec![],
-            }))
-            .unwrap(),
+            r#"{"kind":"workspace","reply":{"result":{"kind":"outcomeUnknown"},"actors":[]}}"#
+                .to_owned(),
         ),
         (
             &wrong_operation,
