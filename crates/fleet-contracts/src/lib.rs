@@ -14,7 +14,9 @@ mod mail_delivery_ready;
 pub mod mail_link;
 mod revision_failure;
 #[cfg(test)]
-mod session_lifecycle_rpc;
+mod session_lifecycle_rpc_test;
+#[cfg(test)]
+mod session_reply_pairs_test;
 mod statement_refusal;
 pub mod workspace_description;
 mod workspace_directory;
