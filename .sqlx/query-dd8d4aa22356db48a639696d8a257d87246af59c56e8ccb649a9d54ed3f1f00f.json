@@ -1,0 +1,70 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n    CASE WHEN typeof(due_entry_id) = 'text' THEN due_entry_id ELSE hex(due_entry_id) END AS \"id!: String\",\n    CASE WHEN typeof(work_kind) = 'text' THEN work_kind ELSE hex(work_kind) END AS \"kind!: String\",\n    CASE WHEN typeof(entry_role) = 'text' THEN entry_role ELSE hex(entry_role) END AS \"role!: String\",\n    CASE WHEN typeof(subject_key) = 'text' THEN subject_key ELSE hex(subject_key) END AS \"key!: String\",\n    CASE WHEN typeof(occurrence_ms) = 'integer' THEN occurrence_ms END AS \"occurrence_ms?: i64\",\n    CASE WHEN typeof(base_due_ms) = 'integer' THEN base_due_ms END AS \"base_due_ms?: i64\",\n    CASE WHEN typeof(effective_due_ms) = 'integer' THEN effective_due_ms END AS \"effective_due_ms?: i64\",\n    CASE WHEN typeof(due_entry_id) = 'text' AND typeof(work_kind) = 'text'\n        AND typeof(entry_role) = 'text' AND typeof(subject_key) = 'text'\n        AND typeof(occurrence_ms) IN ('integer', 'null')\n        AND typeof(base_due_ms) IN ('integer', 'null')\n        AND typeof(effective_due_ms) IN ('integer', 'null')\n        THEN 1 ELSE 0 END AS \"valid_storage!: i64\"\nFROM engine_due_entries\nORDER BY work_kind, entry_role, subject_key\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "id!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "kind!: String",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "role!: String",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "key!: String",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": "Expression"
+      },
+      {
+        "name": "occurrence_ms?: i64",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "base_due_ms?: i64",
+        "ordinal": 5,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "effective_due_ms?: i64",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "valid_storage!: i64",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "dd8d4aa22356db48a639696d8a257d87246af59c56e8ccb649a9d54ed3f1f00f"
+}

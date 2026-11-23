@@ -199,3 +199,26 @@ pub(super) async fn drain_due(fixture: &Fixture, runtime: &Runtime) -> SqlValue 
         .rows[0][0]
         .clone()
 }
+
+pub(crate) fn fixture_due_item(
+    kind: fleet_engine::DueKind,
+    key: impl Into<String>,
+    due: Time,
+    at: Time,
+) -> central_storage::GuardedStatement {
+    use collaboration_central_core::engine_probe::InstanceKey;
+    use fleet_engine::{DueItemKey, DueOwnerTiming, DueTableChange};
+    let timing = DueOwnerTiming::at(
+        DueItemKey {
+            kind,
+            subject: InstanceKey(key.into()),
+        },
+        due,
+    )
+    .unwrap();
+    let [statement] = fleet_engine::plan_due_table_change(&DueTableChange::PublishItem(timing), at)
+        .unwrap()
+        .try_into()
+        .expect("one fixture projection statement");
+    statement
+}

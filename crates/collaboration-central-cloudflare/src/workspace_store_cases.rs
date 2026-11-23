@@ -29,18 +29,19 @@ pub(super) async fn control(
                 &statement_store::run_batch(&object.connection, batch, policy).await,
             )
         }
-        "/test/engine-due-schedules" => {
+        "/test/engine-due-schedules" | "/test/engine-due-system-expiries" => {
             let horizon_ms = request.json::<i64>().await?;
             let horizon = fleet_runtime_ports::EngineTime::from_timestamp_millis(horizon_ms)
                 .ok_or_else(|| error("test list horizon is outside the supported range"))?;
-            let rows = fleet_engine::read_due_rows(
-                object.statement_host().as_ref(),
-                fleet_runtime_ports::DueListKind::Schedules,
-                horizon,
-                250,
-            )
-            .await
-            .map_err(|_| error("typed schedule list failed"))?;
+            let kind = if path == "/test/engine-due-schedules" {
+                fleet_runtime_ports::DueListKind::Schedules
+            } else {
+                fleet_runtime_ports::DueListKind::SystemExpiries
+            };
+            let rows =
+                fleet_engine::read_due_rows(object.statement_host().as_ref(), kind, horizon, 250)
+                    .await
+                    .map_err(|_| error("typed due list failed"))?;
             let rows: Vec<_> = rows
                 .into_iter()
                 .map(|row| (row.key.0, row.occurrence_ms, row.effective_due_ms))

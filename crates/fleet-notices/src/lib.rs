@@ -13,6 +13,6 @@ mod window_unit;
 mod workspace_notice_plan;
 
 pub use cadence_request::plan_notice_cadence_held;
-pub use notice_mailbox::NoticeMailbox;
+pub use notice_mailbox::{NoticeCancellation, NoticeMailbox};
 pub use window_unit::{DueWindowPlan, plan_due_windows_held, window_unit};
 pub use workspace_notice_plan::{WorkspaceNoticePlan, plan_workspace_notices_held};

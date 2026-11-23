@@ -20,6 +20,15 @@ pub(crate) fn refusal(
         CentralMailOperation::SetAutomation { timing, .. } => {
             fleet_schedules::set_automation_refusal(timing, now)
         }
+        CentralMailOperation::SendMessage { sent_at, .. }
+            if !supported_time(fleet_mail::message_deadline::direct_receipt_mark(
+                *sent_at, now,
+            )) =>
+        {
+            Some(CentralMailRefusal::TimeOutOfRange {
+                field: "anchorAt".to_owned(),
+            })
+        }
         _ => None,
     }
 }

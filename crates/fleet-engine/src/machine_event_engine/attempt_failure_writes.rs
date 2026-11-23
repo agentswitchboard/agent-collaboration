@@ -209,10 +209,17 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
             Ok(statement) => statement,
             Err(failure) => return FailureOutcome::StoreDown(failure),
         };
+        let mut statements = vec![statement];
+        if let Some(change) = crate::due_change_for_attempt(subject) {
+            match crate::plan_due_table_change(&change, now) {
+                Ok(projection) => statements.extend(projection),
+                Err(failure) => return FailureOutcome::StoreDown(failure),
+            }
+        }
         match classify_batch_application(
             self.central_store()
                 .run_batch(StatementBatch {
-                    statements: vec![statement],
+                    statements,
                     alarm: AlarmUpdate::Unchanged,
                 })
                 .await,
