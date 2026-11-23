@@ -14,11 +14,12 @@ async fn engine_alarm_publication_sets_the_real_retained_deadline() {
     let runtime = fixture.host.central(&fixture.caller.organization_id).await;
     // Embedded setup allowance: the fixture's setup claimed the due batch at T0, so
     // the held clock moves to T0 + 30 s before this publication; the query's own
-    // deadline then lies past the 30 s floor and reaches the real alarm unchanged.
+    // unaligned deadline then reaches the physical alarm at the next mark.
     let now = fixture.clock.0.load(Ordering::SeqCst) + 30_000;
     fixture.clock.0.store(now, Ordering::SeqCst);
     let _: bool = runtime.control("clock", &now).await.unwrap();
     let due = now + 5_000;
+    let mark = (due.div_euclid(300_000) + 1) * 300_000;
     let stamp = chrono::DateTime::from_timestamp_millis(due)
         .unwrap()
         .to_rfc3339();
@@ -46,7 +47,7 @@ async fn engine_alarm_publication_sets_the_real_retained_deadline() {
         result,
         BatchOutcome::Applied {
             rows_affected: vec![1],
-            publication: AlarmPublication::Set { unix_millis: due }
+            publication: AlarmPublication::Set { unix_millis: mark }
         }
     );
     assert_eq!(
@@ -54,7 +55,7 @@ async fn engine_alarm_publication_sets_the_real_retained_deadline() {
             .control::<Option<i64>>("raw-alarm-time", &())
             .await
             .unwrap(),
-        Some(due)
+        Some(mark)
     );
     fixture.host.close().await;
 }

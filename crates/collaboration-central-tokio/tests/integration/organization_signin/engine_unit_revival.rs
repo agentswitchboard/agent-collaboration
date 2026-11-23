@@ -202,8 +202,8 @@ async fn the_window_unit_recovers_restarts_its_period_retires_at_60_days_and_ret
     let alarm = engine.alarm_ms().await.expect("the alarm is published");
     assert_eq!(
         alarm,
-        (last + chrono::Duration::seconds(30)).timestamp_millis(),
-        "P4 floor after the last batch"
+        next_mark(last).timestamp_millis(),
+        "the strict next mark after retry"
     );
     assert_eq!(engine.invocations().await.windows, stopped);
     engine
@@ -406,10 +406,7 @@ async fn the_drain_unit_recovers_restarts_its_period_retires_at_60_days_and_retu
     );
     assert!(unit_record(&engine, DRAINS).await.is_empty());
     let alarm = engine.alarm_ms().await.expect("the alarm is published");
-    assert_eq!(
-        alarm,
-        (last + chrono::Duration::seconds(30)).timestamp_millis()
-    );
+    assert_eq!(alarm, next_mark(last).timestamp_millis());
     engine
         .set(chrono::DateTime::from_timestamp_millis(alarm).unwrap())
         .await;
@@ -528,10 +525,7 @@ async fn a_retired_engine_source_is_never_read_until_retry_and_other_kinds_run()
             .is_empty()
     );
     let alarm = engine.alarm_ms().await.expect("alarm published");
-    assert_eq!(
-        alarm,
-        (last + chrono::Duration::seconds(30)).timestamp_millis()
-    );
+    assert_eq!(alarm, next_mark(last).timestamp_millis());
     engine
         .set(chrono::DateTime::from_timestamp_millis(alarm).unwrap())
         .await;

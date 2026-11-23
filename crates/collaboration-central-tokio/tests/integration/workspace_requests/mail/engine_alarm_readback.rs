@@ -65,7 +65,7 @@ async fn done_wakes_due_by(runtime: &Runtime, through: Time) -> i64 {
 }
 
 #[tokio::test]
-async fn six_hundred_due_wakes_drain_earliest_first_in_capped_batches_thirty_seconds_apart() {
+async fn six_hundred_due_wakes_drain_earliest_first_in_capped_batches_one_mark_at_a_time() {
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
     let start = fixture.clock.utc_now();
@@ -118,18 +118,18 @@ async fn six_hundred_due_wakes_drain_earliest_first_in_capped_batches_thirty_sec
         250,
         "earliest first"
     );
-    assert_eq!(alarm_ms(&runtime), ms(at(start, 5, 30)), "continuation");
+    assert_eq!(alarm_ms(&runtime), ms(at(start, 10, 0)), "continuation");
 
-    due_batch_at(&fixture, &runtime, at(start, 5, 30)).await;
+    due_batch_at(&fixture, &runtime, at(start, 10, 0)).await;
     assert_eq!(done_wakes(&runtime).await, 500);
     assert_eq!(
         done_wakes_due_by(&runtime, due(499)).await,
         500,
         "earliest first"
     );
-    assert_eq!(alarm_ms(&runtime), ms(at(start, 6, 0)));
+    assert_eq!(alarm_ms(&runtime), ms(at(start, 15, 0)));
 
-    due_batch_at(&fixture, &runtime, at(start, 6, 0)).await;
+    due_batch_at(&fixture, &runtime, at(start, 15, 0)).await;
     assert_eq!(done_wakes(&runtime).await, 600);
     assert_eq!(
         count(

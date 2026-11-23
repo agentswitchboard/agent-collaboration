@@ -195,8 +195,7 @@ async fn retry_wakes_an_idle_object_and_refuses_missing_failing_and_unadmitted_c
         text("retired")
     );
 
-    // Retried within 30 s of the last due batch's start: P4 places the alarm at
-    // its floor, last start + 30 s. (V13 as ruled: re-published by P4's rule.)
+    // A revived overdue item is armed at the next strict mark.
     let last_start = engine.now();
     let answer = engine
         .change_as(RETRY, &operation, &attempt, &engine.repairer())
@@ -207,11 +206,10 @@ async fn retry_wakes_an_idle_object_and_refuses_missing_failing_and_unadmitted_c
         engine.record("wake_timer", &wakes[0]).await.is_empty(),
         "record gone"
     );
-    let floor = last_start + chrono::Duration::seconds(30);
+    let publication_mark = next_mark(last_start);
     assert_eq!(
         engine.alarm_ms().await,
-        Some(floor.timestamp_millis()),
-        "alarm published"
+        Some(publication_mark.timestamp_millis())
     );
     assert_eq!(
         engine
@@ -221,7 +219,7 @@ async fn retry_wakes_an_idle_object_and_refuses_missing_failing_and_unadmitted_c
         "a replay with the same operation ID returns the stored answer"
     );
     assert_eq!(engine.wake_messages(&wakes[0]).await, 0, "not worked yet");
-    engine.set(floor).await;
+    engine.set(publication_mark).await;
     engine.after_event().await;
     assert_eq!(
         engine.wake_messages(&wakes[0]).await,

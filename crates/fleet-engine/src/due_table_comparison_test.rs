@@ -19,7 +19,7 @@ use super::{DueTableDifference, compare_due_table};
 use crate::{
     DueEntryKey, DueItemKey, DueKind, DueOwnerTiming, DueTableChange, apply_due_table_change,
 };
-use central_engine_model::{AlarmInputs, DueBatchPolicy, EngineTime, InstanceKey};
+use central_engine_model::{AlarmInputs, EngineTime, InstanceKey};
 use fleet_lent_transaction::CentralTransaction;
 use sqlx::{Connection, Sqlite, SqliteConnection, sqlite::SqliteQueryResult};
 
@@ -54,7 +54,7 @@ async fn due_comparison_identifies_missing_wrong_stale_and_out_of_band_rows() {
         .bind(SUBJECT).bind(AT).execute(&mut *tx).await.unwrap();
     let epoch = EngineTime::UNIX_EPOCH;
     let due = EngineTime::from_timestamp_millis(300_000).unwrap();
-    let policy = DueBatchPolicy::DEFAULT;
+
     let alarm = AlarmInputs {
         now: epoch,
         last_batch_start: None,
@@ -62,7 +62,7 @@ async fn due_comparison_identifies_missing_wrong_stale_and_out_of_band_rows() {
         earliest_on_grid_due: None,
         earliest_legacy_due: None,
     };
-    let differences = compare_due_table(&mut LendingSqlite(&mut tx), due, 1, alarm, &policy)
+    let differences = compare_due_table(&mut LendingSqlite(&mut tx), due, 1, alarm)
         .await
         .unwrap();
     assert!(differences.iter().any(|difference| matches!(difference,
@@ -83,7 +83,7 @@ async fn due_comparison_identifies_missing_wrong_stale_and_out_of_band_rows() {
         .await
         .unwrap();
     assert!(
-        compare_due_table(&mut LendingSqlite(&mut tx), due, 1, alarm, &policy)
+        compare_due_table(&mut LendingSqlite(&mut tx), due, 1, alarm)
             .await
             .unwrap()
             .is_empty()
@@ -104,7 +104,7 @@ async fn due_comparison_identifies_missing_wrong_stale_and_out_of_band_rows() {
         .await
         .unwrap();
     assert_eq!(id, id_after);
-    let differences = compare_due_table(&mut LendingSqlite(&mut tx), due, 1, alarm, &policy)
+    let differences = compare_due_table(&mut LendingSqlite(&mut tx), due, 1, alarm)
         .await
         .unwrap();
     assert!(differences.iter().any(|difference| matches!(difference,
@@ -122,7 +122,7 @@ async fn due_comparison_identifies_missing_wrong_stale_and_out_of_band_rows() {
         .execute(&mut *tx)
         .await
         .unwrap();
-    let differences = compare_due_table(&mut LendingSqlite(&mut tx), due, 1, alarm, &policy)
+    let differences = compare_due_table(&mut LendingSqlite(&mut tx), due, 1, alarm)
         .await
         .unwrap();
     assert!(differences.iter().any(|difference| matches!(difference,
@@ -137,7 +137,7 @@ async fn due_comparison_identifies_missing_wrong_stale_and_out_of_band_rows() {
         .unwrap();
     sqlx::query("INSERT INTO mail_notification_windows VALUES ('019f0000-0000-7000-8000-000000000003','recipient',?1,'not-canonical',?1,?1)")
         .bind(AT).execute(&mut *tx).await.unwrap();
-    let differences = compare_due_table(&mut LendingSqlite(&mut tx), due, 1, alarm, &policy)
+    let differences = compare_due_table(&mut LendingSqlite(&mut tx), due, 1, alarm)
         .await
         .unwrap();
     assert!(differences.iter().any(|difference| matches!(difference,
@@ -151,7 +151,7 @@ async fn due_comparison_identifies_missing_wrong_stale_and_out_of_band_rows() {
         .bind(SUBJECT).bind(AT).execute(&mut *tx).await.unwrap();
     sqlx::query("INSERT INTO engine_work_attempts VALUES ('019f0000-0000-7000-8000-000000000004','wake_timer',?1,'retired',4,NULL,'refused',NULL,?2,?2,?2,?2,?2)")
         .bind(SUBJECT).bind(AT).execute(&mut *tx).await.unwrap();
-    let differences = compare_due_table(&mut LendingSqlite(&mut tx), due, 1, alarm, &policy)
+    let differences = compare_due_table(&mut LendingSqlite(&mut tx), due, 1, alarm)
         .await
         .unwrap();
     assert!(differences.iter().any(|difference| matches!(difference,
@@ -166,7 +166,7 @@ async fn due_comparison_identifies_missing_wrong_stale_and_out_of_band_rows() {
     apply_due_table_change(&mut LendingSqlite(&mut tx), &change, epoch)
         .await
         .unwrap();
-    let differences = compare_due_table(&mut LendingSqlite(&mut tx), due, 1, alarm, &policy)
+    let differences = compare_due_table(&mut LendingSqlite(&mut tx), due, 1, alarm)
         .await
         .unwrap();
     assert!(
@@ -176,7 +176,7 @@ async fn due_comparison_identifies_missing_wrong_stale_and_out_of_band_rows() {
     );
     tx.rollback().await.unwrap();
     assert!(
-        compare_due_table(&mut LendingSqlite(&mut connection), due, 1, alarm, &policy)
+        compare_due_table(&mut LendingSqlite(&mut connection), due, 1, alarm)
             .await
             .unwrap()
             .is_empty()
@@ -210,7 +210,6 @@ async fn differences(connection: &mut SqliteConnection) -> Vec<DueTableDifferenc
             earliest_on_grid_due: None,
             earliest_legacy_due: None,
         },
-        &DueBatchPolicy::DEFAULT,
     )
     .await
     .unwrap()

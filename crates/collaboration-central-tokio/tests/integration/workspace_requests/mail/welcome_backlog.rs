@@ -9,6 +9,64 @@ use workspace_model::central_mail::{
 };
 
 #[tokio::test]
+async fn welcome_stops_offering_direct_mail_at_cutoff_before_the_retained_mark() {
+    let fixture = Fixture::new().await;
+    let runtime = fixture
+        .host
+        .central(fixture.caller.organization_id())
+        .await
+        .unwrap();
+    let accepted = fixture.clock.utc_now();
+    let cutoff = accepted + chrono::Duration::seconds(10);
+    let message = runtime
+        .request_central(
+            &fixture.caller,
+            CentralMailRequest {
+                request_id: id(1541),
+                operation: CentralMailOperation::SendMessage {
+                    to: session(&fixture.caller),
+                    body: "Off-mark delivery cutoff".to_owned().try_into().unwrap(),
+                    delivery: MessageDelivery::Auto,
+                    reply_to: None,
+                    sent_at: cutoff - chrono::Duration::minutes(15),
+                },
+            },
+        )
+        .await
+        .unwrap();
+    let CentralMailResult::Done(CentralMailAnswer::Queued { message_id }) = message else {
+        panic!("fixture send did not queue: {message:?}");
+    };
+    let alarm = runtime.runtime().statement_host().alarm().unwrap();
+    let after_cutoff = cutoff + chrono::Duration::milliseconds(1);
+    assert!(after_cutoff.timestamp_millis() < alarm.unix_millis());
+    assert_eq!(alarm.unix_millis() % 300_000, 0);
+
+    let attachment = fixture.caller.connection().attachment();
+    for (at, expected_offer) in [
+        (cutoff - chrono::Duration::milliseconds(1), true),
+        (after_cutoff, false),
+    ] {
+        fixture.set_utc(at).await;
+        let WelcomeDeliveryPage::Ready(messages) = runtime
+            .windowed_welcome_page(&attachment, None)
+            .await
+            .unwrap()
+        else {
+            panic!("fixture lost its admitted connection");
+        };
+        assert_eq!(
+            messages
+                .iter()
+                .any(|row| row.message.message_id == message_id),
+            expected_offer
+        );
+        assert_eq!(runtime.runtime().statement_host().alarm(), Some(alarm));
+    }
+    fixture.host.close().await;
+}
+
+#[tokio::test]
 async fn welcome_pages_by_creation_then_id_and_excludes_a_row_at_its_deadline() {
     let fixture = Fixture::new().await;
     let runtime = fixture

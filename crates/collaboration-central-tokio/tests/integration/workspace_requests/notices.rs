@@ -317,8 +317,6 @@ async fn leave_notifications_off_and_resolution_cancel_notices_but_keep_direct_m
 
 #[tokio::test]
 async fn restart_driver_drains_applied_workspace_write_without_another_request() {
-    use router_clock::ClockInstant;
-    use std::time::Duration;
     let mut f = Fixture::new().await;
     let area = f.area(7130).await;
     let thread = f.thread(7131, area).await;
@@ -371,10 +369,11 @@ async fn restart_driver_drains_applied_workspace_write_without_another_request()
         .runtime()
         .pause_points()
         .hold(&f.workspace, PausePoint::AfterDrainCommit);
+    let physical_alarm = reopened.runtime().statement_host().alarm().unwrap();
     f.clock
-        .not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(5)))
+        .not_due_check_now(f.clock.wall_deadline(physical_alarm))
         .await;
-    f.advance(Duration::from_secs(5)).await;
+    f.advance_to(physical_alarm).await;
     drained.until_held().await;
     let rows = reopened.runtime().statement_host().read(Statement { sql: "SELECT drain_due_at,(SELECT COUNT(*) FROM mail_notification_window_items i JOIN mail_notification_windows w ON w.window_id=i.window_id WHERE w.recipient_actor=? AND i.thread_id=?) FROM mail_workspace_drains WHERE workspace_id=?", args: vec![text(&actor), text(&thread), text(&f.workspace)] }).await.unwrap();
     assert_eq!(

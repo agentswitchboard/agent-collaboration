@@ -66,8 +66,8 @@ impl<Deadline: Copy> AlarmSchedule<Deadline> {
 
 fn retry_mark(failed_at: SyncTime) -> Option<SyncTime> {
     let now = failed_at.unix_millis();
-    central_storage::alarm_publication_time(Some(now), now)
+    let now = central_engine_model::EngineTime::from_timestamp_millis(now)?;
+    central_engine_model::next_five_minute_mark(now)
         .ok()
-        .flatten()
-        .map(SyncTime::from_unix_millis)
+        .map(|mark| SyncTime::from_unix_millis(mark.timestamp_millis()))
 }

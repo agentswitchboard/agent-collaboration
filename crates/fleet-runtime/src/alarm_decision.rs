@@ -1,5 +1,5 @@
 use super::DueBatchState;
-use central_engine_model::{AlarmDecision, AlarmInputs, DueBatchPolicy, EngineTime, next_alarm};
+use central_engine_model::{AlarmDecision, AlarmInputs, EngineTime, next_alarm};
 use central_storage::{AlarmPublicationFailure, EngineAlarmDecider};
 use std::sync::Arc;
 
@@ -22,14 +22,13 @@ pub fn engine_alarm_decider(state: Arc<DueBatchState>) -> EngineAlarmDecider {
                 earliest_on_grid_due: time(times.earliest_on_grid_due_unix_millis)?,
                 earliest_legacy_due: time(times.earliest_legacy_due_unix_millis)?,
             };
-            let time = match next_alarm(&inputs, &DueBatchPolicy::DEFAULT) {
+            let time = match next_alarm(&inputs) {
                 AlarmDecision::Clear => None,
                 AlarmDecision::SetAt(time) => Some(time.timestamp_millis()),
                 AlarmDecision::Unpublishable => {
                     return Err(AlarmPublicationFailure::NoLaterGridMark);
                 }
             };
-            let time = central_storage::alarm_publication_time(time, now_unix_millis)?;
             write(time);
             Ok(time)
         })

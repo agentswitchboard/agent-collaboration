@@ -31,7 +31,7 @@ async fn window_due_at(central_service: &Runtime, due: Time) {
 }
 
 #[tokio::test]
-async fn a_publication_held_before_a_newer_claim_publishes_the_newer_floor() {
+async fn a_publication_held_before_a_newer_claim_publishes_the_due_mark() {
     let fixture = Fixture::new().await;
     let central_service = runtime(&fixture).await;
     let start = fixture.clock.utc_now();
@@ -77,15 +77,15 @@ async fn a_publication_held_before_a_newer_claim_publishes_the_newer_floor() {
 
     assert_eq!(
         published_a,
-        set(at(start, 5, 28, 0)),
-        "A used B's floor, never its own 10:05:00"
+        set(at(start, 5, 0, 0)),
+        "A publishes the 10:05 mark after B's ordinary claim"
     );
-    assert_eq!(completion_b.publication, set(at(start, 5, 28, 0)));
+    assert_eq!(completion_b.publication, set(at(start, 5, 0, 0)));
     assert_eq!(
         completion_b.work.windows_fired, 0,
         "the window is not run early"
     );
-    assert_eq!(alarm_ms(&central_service), ms(at(start, 5, 28, 0)));
+    assert_eq!(alarm_ms(&central_service), ms(at(start, 5, 0, 0)));
     assert_eq!(
         window_due(&central_service).await,
         vec![vec![stamp(at(start, 5, 0, 0))]]
@@ -133,7 +133,7 @@ async fn a_request_held_across_a_capped_batch_publishes_the_continuation() {
 
     let completion_b = central_service.after_event().await.unwrap();
 
-    assert_eq!(completion_b.publication, set(at(start, 5, 28, 0)));
+    assert_eq!(completion_b.publication, set(at(start, 5, 0, 0)));
     assert!(
         central_service
             .runtime()
@@ -158,8 +158,8 @@ async fn a_request_held_across_a_capped_batch_publishes_the_continuation() {
     ));
     assert_eq!(
         alarm_ms(&central_service),
-        ms(at(start, 5, 28, 0)),
-        "A, published last, kept the continuation, not the 10:05:00 due"
+        ms(at(start, 5, 0, 0)),
+        "A preserves the continuation at the 10:05 mark"
     );
     fixture.host.close().await;
 }
@@ -299,14 +299,14 @@ async fn a_claim_waits_for_a_publication_between_its_decision_and_its_write() {
     );
     assert_eq!(
         event_b.await.unwrap().unwrap().publication,
-        set(at(start, 5, 28, 0)),
-        "B claimed after A published and published its own floor"
+        set(at(start, 5, 0, 0)),
+        "B claimed after A published and kept the due mark"
     );
     assert_eq!(
         due_batches.snapshot().last_start_unix_millis,
         ms(at(start, 4, 58, 0))
     );
-    assert_eq!(central.alarm(), Some(sync(at(start, 5, 28, 0))));
+    assert_eq!(central.alarm(), Some(sync(at(start, 5, 0, 0))));
     central.close().await;
     workspace.close().await;
 }
@@ -382,8 +382,8 @@ async fn a_wake_due_with_a_window_fires_early_and_the_window_waits_for_its_slot(
         0,
         "the window is not run early"
     );
-    assert_eq!(alarm_ms(&central_service), ms(at(start, 15, 10, 0)));
-    driver_fires_at(&fixture, &central_service, at(start, 15, 10, 0)).await;
+    assert_eq!(alarm_ms(&central_service), ms(at(start, 15, 0, 0)));
+    driver_fires_at(&fixture, &central_service, at(start, 15, 0, 0)).await;
     assert_eq!(
         notices(&central_service).await,
         windows,

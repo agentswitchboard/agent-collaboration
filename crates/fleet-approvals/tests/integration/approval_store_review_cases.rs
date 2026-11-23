@@ -17,6 +17,58 @@ use super::{
 };
 
 #[tokio::test]
+async fn native_approval_touch_applies_its_deadline_before_the_projected_alarm() {
+    use central_engine_model::{AlarmDecision, AlarmInputs, next_alarm};
+
+    let (fixture, holder, requester) = fixture_with_owner().await;
+    fixture.clock.set_millis(1);
+    let request = provider(&key(&holder.run, 1), &requester, "Off-mark deadline");
+    assert!(matches!(
+        raise_and_commit(&fixture, &holder, &request).await.0,
+        RaiseReply::Receipt { .. }
+    ));
+    let deadline = HOUR + 1;
+    let touched_at = deadline + 1;
+    let due_rows = fixture.due_rows(time(deadline), 1).await;
+    let [approval] = due_rows.as_slice() else {
+        panic!("expected one indexed approval deadline: {due_rows:?}");
+    };
+    assert_eq!(approval.effective_due_ms, deadline);
+    let alarm_times = fixture.read_alarm_times().await;
+    assert_eq!(alarm_times.earliest_on_grid_due_unix_millis, Some(deadline));
+    assert_eq!(
+        next_alarm(&AlarmInputs {
+            now: time(1),
+            last_batch_start: None,
+            leftovers_beyond_cap: false,
+            earliest_on_grid_due: alarm_times.earliest_on_grid_due_unix_millis.map(time),
+            earliest_legacy_due: alarm_times.earliest_legacy_due_unix_millis.map(time),
+        }),
+        AlarmDecision::SetAt(time(HOUR + 300_000))
+    );
+
+    fixture.clock.set_millis(touched_at);
+    let (answer, _) = fixture
+        .apply(None, async |store| {
+            store
+                .fixture_decide_approval(
+                    &holder.organization_id,
+                    person(11, FactorStanding::Fresh),
+                    decide_input(request.request_id(), 5_430, 1),
+                )
+                .await
+        })
+        .await;
+    let answer = answer.unwrap();
+    assert_eq!(answer.reply, ApprovalDecisionReply::TooLate {});
+    let [offer] = answer.ending_offers.as_slice() else {
+        panic!("the touch did not retain a timeout");
+    };
+    assert_eq!(offer.request.clone().into_ending(), Ending::TimedOut {});
+    assert!(fixture.due_rows(time(touched_at), 1).await.is_empty());
+}
+
+#[tokio::test]
 async fn retained_refusals_conflicts_and_holder_reoffers_persist_the_deadline() {
     let (fixture, holder, requester) = fixture_with_owner().await;
     let admission = ApprovalHolderAdmission::for_fixture_scope(&holder);

@@ -323,6 +323,69 @@ async fn zero_time_offer_journey(fixture: &Fixture) -> Result<()> {
 }
 
 #[tokio::test]
+async fn reconnect_stops_offering_direct_mail_at_cutoff_before_the_retained_mark() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let result = direct_cutoff_journey(&fixture).await;
+    fixture.close().await?;
+    result
+}
+
+async fn direct_cutoff_journey(fixture: &Fixture) -> Result<()> {
+    let mut sender = ConnectedLink::open(fixture).await?;
+    let Caller::Session(destination) = fixture::session_caller()? else {
+        return Err("fixture must be a session".into());
+    };
+    let accepted = chrono::DateTime::from_timestamp(signed::NOW_SECONDS, 0).ok_or("fixture UTC")?;
+    let cutoff = accepted + chrono::Duration::seconds(10);
+    let request = RequestPayload::Mail(serde_json::from_value(json!({
+        "requestId":"019f0000-0000-7000-8000-00000000cfa8",
+        "operation":{
+            "kind":"sendMessage","to":destination,"body":"Off-mark delivery cutoff",
+            "delivery":"queue","replyTo":null,"sentAt":cutoff - chrono::Duration::minutes(15),
+        },
+    }))?);
+    let (_, replies) = sender.batch(vec![request]).await?;
+    let [DataFrame::Reply { result, .. }] = replies.as_slice() else {
+        return Err("the direct send did not answer".into());
+    };
+    let ReplyPayload::Mail(CentralMailResult::Done(CentralMailAnswer::Queued { message_id })) =
+        result.as_ref()
+    else {
+        return Err("the direct send was not accepted".into());
+    };
+    let runtime = fixture.runtime();
+    let alarm: Option<i64> = runtime.control("raw-alarm-time", &()).await?;
+    let alarm = alarm.ok_or("no retained alarm after admitting the direct send")?;
+    assert!((cutoff + chrono::Duration::seconds(1)).timestamp_millis() < alarm);
+    assert_eq!(alarm % 300_000, 0);
+    sender.close().await?;
+
+    super::renewal::advance(fixture, 9).await?;
+    let mut before_cutoff = ConnectedLink::open(fixture).await?;
+    assert!(
+        matches!(fixture::receive(&mut before_cutoff.socket).await?, DataFrame::Deliver { message, time_left: Some(time_left), .. } if message.message_id() == message_id && u32::from(time_left) == 1_000)
+    );
+    before_cutoff.close().await?;
+
+    super::renewal::advance(fixture, 2).await?;
+    let mut after_cutoff = ConnectedLink::open(fixture).await?;
+    after_cutoff
+        .socket
+        .send(Message::Text("ping".into()))
+        .await?;
+    assert!(
+        matches!(after_cutoff.socket.next().await, Some(Ok(Message::Text(pong))) if pong=="pong")
+    );
+    assert_eq!(
+        runtime
+            .control::<Option<i64>>("raw-alarm-time", &())
+            .await?,
+        Some(alarm)
+    );
+    after_cutoff.close().await
+}
+
+#[tokio::test]
 async fn reconnect_samples_time_left_across_the_backlog_page_boundary() -> Result<()> {
     let fixture = Fixture::new().await?;
     let result = backlog_page_journey(&fixture).await;

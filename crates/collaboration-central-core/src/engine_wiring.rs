@@ -85,4 +85,9 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
     pub async fn after_event(&self) -> Result<EventCompletion, AlarmNotPublished> {
         self.execution.after_event(&FleetEngine::new(self)).await
     }
+
+    /// Completes the drive of a retained physical alarm.
+    pub async fn after_alarm(&self) -> Result<EventCompletion, AlarmNotPublished> {
+        FleetEngine::new(self).complete_alarm().await
+    }
 }

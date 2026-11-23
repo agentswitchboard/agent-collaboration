@@ -11,9 +11,11 @@ CREATE TABLE login_machine_allowances (
     change_request_id TEXT NOT NULL,
     change_origin TEXT NOT NULL,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE (machine_id, workspace_id)
+    updated_at TEXT NOT NULL
 );
+
+CREATE UNIQUE INDEX login_machine_allowances_machine_workspace
+ON login_machine_allowances (machine_id, workspace_id);
 
 CREATE INDEX login_machine_allowances_active
 ON login_machine_allowances (machine_id, workspace_id)

@@ -213,6 +213,55 @@ test("Workerd approvals time out only selected rows and seek the deadline index 
   }
 });
 
+test("Workerd touches approval after its deadline and before the retained mark", async (): Promise<void> => {
+  const central = await ApprovalWorkerdHost.start();
+  try {
+    const database = "approval-before-alarm";
+    const baseMark = Date.UTC(2099, 0, 1);
+    const raisedAt = baseMark + 1_000;
+    const deadline = raisedAt + hourMs;
+    const alarmMark = baseMark + hourMs + 300_000;
+    await initializeApprovals(central, database);
+    const added = await invokeApprovalWitness({
+      central,
+      database,
+      atMs: raisedAt,
+      command: { kind: "raise", holder, request: raiseRequest(1, "Off mark") },
+    });
+    assert.equal(added.writes, 3);
+    assert.deepEqual(
+      await central.dispatchJson(commandPath(database), {
+        atMs: raisedAt,
+        command: { kind: "publishAlarmMark" },
+      }),
+      { alarmMs: alarmMark },
+    );
+    const touched = await invokeApprovalWitness({
+      central,
+      database,
+      atMs: deadline + 1,
+      command: personDecision(uuid(1), uuid(5430), 1),
+    });
+    const applied = appliedSchema.parse(committedResult(touched));
+    assert.deepEqual(applied.result, { kind: "tooLate" });
+    assert.deepEqual(
+      applied.offers.map(({ requestId, ending }) => ({ requestId, ending })),
+      [{ requestId: uuid(1), ending: { kind: "providerApproval", ending: { kind: "timedOut" } } }],
+    );
+    assert.deepEqual(
+      dueSchema.parse(
+        await central.dispatchJson(commandPath(database), {
+          atMs: deadline + 1,
+          command: { kind: "dueRows", cutoffMs: deadline + 1, limit: 1 },
+        }),
+      ).rows,
+      [],
+    );
+  } finally {
+    await central.close();
+  }
+});
+
 test("Workerd approvals bound retirement and refuse unknown stored kinds, states and endings", async (): Promise<void> => {
   const central = await ApprovalWorkerdHost.start();
   try {

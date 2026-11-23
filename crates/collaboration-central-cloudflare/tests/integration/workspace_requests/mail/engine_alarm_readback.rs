@@ -70,7 +70,7 @@ async fn done_wakes_due_by(runtime: &Runtime, through: Time) -> i64 {
 }
 
 #[tokio::test]
-async fn six_hundred_due_wakes_drain_earliest_first_in_capped_batches_thirty_seconds_apart() {
+async fn six_hundred_due_wakes_drain_earliest_first_in_capped_batches_one_mark_at_a_time() {
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
     let start = now(&fixture);
@@ -122,7 +122,7 @@ async fn six_hundred_due_wakes_drain_earliest_first_in_capped_batches_thirty_sec
         "earliest first"
     );
 
-    retained_alarm_fires_at(&fixture, &runtime, at(start, 5, 30)).await;
+    retained_alarm_fires_at(&fixture, &runtime, at(start, 10, 0)).await;
     assert_eq!(done_wakes(&runtime).await, 500);
     assert_eq!(
         done_wakes_due_by(&runtime, due(499)).await,
@@ -130,7 +130,7 @@ async fn six_hundred_due_wakes_drain_earliest_first_in_capped_batches_thirty_sec
         "earliest first"
     );
 
-    retained_alarm_fires_at(&fixture, &runtime, at(start, 6, 0)).await;
+    retained_alarm_fires_at(&fixture, &runtime, at(start, 15, 0)).await;
     assert_eq!(done_wakes(&runtime).await, 600);
     assert_eq!(
         count(

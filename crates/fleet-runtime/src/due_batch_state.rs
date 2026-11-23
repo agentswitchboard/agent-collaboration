@@ -1,3 +1,4 @@
+use central_engine_model::{EngineTime, next_five_minute_mark, supported_time};
 use central_storage::AlarmPublicationFailure;
 use std::sync::{
     Mutex, MutexGuard, PoisonError,
@@ -5,6 +6,35 @@ use std::sync::{
 };
 
 const EMPTY: i64 = i64::MIN;
+const LEFTOVERS: i64 = 1;
+const PROTECTED: i64 = 2;
+const FLAG_COUNT: i64 = 4;
+
+#[derive(Clone, Copy)]
+pub enum DueBatchTrigger {
+    Request,
+    Alarm,
+}
+
+/// Keeps another batch from discovering the same rows before the cap is known.
+/// Only capped batches keep this protection while applying their selected rows.
+pub struct DueBatchClaim<'state> {
+    state: &'state DueBatchState,
+    start: i64,
+}
+
+impl DueBatchClaim<'_> {
+    pub fn record_selection(&self, has_leftovers: bool) {
+        self.state
+            .update_claim(self.start, Some(has_leftovers), has_leftovers);
+    }
+}
+
+impl Drop for DueBatchClaim<'_> {
+    fn drop(&mut self) {
+        self.state.update_claim(self.start, None, false);
+    }
+}
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct DueBatchSnapshot {
@@ -24,8 +54,7 @@ pub struct DueUnitStart {
     pub subject_key: String,
 }
 
-/// The start and backlog bit share one CAS, so a publisher reads one coherent
-/// snapshot. The portable timestamp range leaves room for the backlog bit.
+/// The start and flags share one word, so a publisher reads one coherent snapshot.
 pub struct DueBatchState {
     encoded: AtomicI64,
     publication_order: Mutex<()>,
@@ -61,14 +90,15 @@ fn snapshot(encoded: i64) -> DueBatchSnapshot {
         }
     } else {
         DueBatchSnapshot {
-            last_start_unix_millis: Some(encoded.div_euclid(2)),
-            leftovers_pending: encoded.rem_euclid(2) == 1,
+            last_start_unix_millis: Some(encoded.div_euclid(FLAG_COUNT)),
+            leftovers_pending: encoded & LEFTOVERS != 0,
         }
     }
 }
 
-fn encode(start: i64, leftovers: bool) -> Option<i64> {
-    start.checked_mul(2)?.checked_add(i64::from(leftovers))
+fn encode(start: i64, leftovers: bool, protected: bool) -> Option<i64> {
+    let flags = i64::from(leftovers) * LEFTOVERS + i64::from(protected) * PROTECTED;
+    start.checked_mul(FLAG_COUNT)?.checked_add(flags)
 }
 
 impl DueBatchState {
@@ -76,72 +106,99 @@ impl DueBatchState {
         snapshot(self.encoded.load(Ordering::Acquire))
     }
 
-    /// The spacing check and new start claim happen before any caller awaits.
+    pub fn begin_batch(
+        &self,
+        now: EngineTime,
+        spacing: chrono::Duration,
+        trigger: DueBatchTrigger,
+    ) -> Result<Option<DueBatchClaim<'_>>, AlarmPublicationFailure> {
+        let start = now.timestamp_millis();
+        Ok(self
+            .claim(now, spacing, trigger, true)?
+            .then(|| DueBatchClaim { state: self, start }))
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub fn try_claim(
         &self,
         now_unix_millis: i64,
         spacing: chrono::Duration,
     ) -> Result<bool, AlarmPublicationFailure> {
-        let _publication = self.claim_lock();
-        if !(-central_engine_model::MAX_ALARM_UNIX_MILLIS
-            ..=central_engine_model::MAX_ALARM_UNIX_MILLIS)
-            .contains(&now_unix_millis)
-        {
-            return Err(AlarmPublicationFailure::NowOutOfRange);
-        }
-        let mut prior = self.encoded.load(Ordering::Acquire);
-        loop {
-            let current = snapshot(prior);
-            if current.last_start_unix_millis.is_some_and(|start| {
-                now_unix_millis.saturating_sub(start) < spacing.num_milliseconds()
-            }) {
-                return Ok(false);
-            }
-            let next = encode(now_unix_millis, current.leftovers_pending)
-                .ok_or(AlarmPublicationFailure::NowOutOfRange)?;
-            match self.encoded.compare_exchange_weak(
-                prior,
-                next,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {
-                    #[cfg(feature = "test-support")]
-                    self.claimed_starts
-                        .lock()
-                        .unwrap_or_else(PoisonError::into_inner)
-                        .push(now_unix_millis);
-                    return Ok(true);
-                }
-                Err(actual) => prior = actual,
-            }
-        }
+        let now = EngineTime::from_timestamp_millis(now_unix_millis)
+            .ok_or(AlarmPublicationFailure::NowOutOfRange)?;
+        self.claim(now, spacing, DueBatchTrigger::Request, false)
     }
 
-    /// An old, slow batch cannot overwrite the newest batch's backlog result.
+    fn claim(
+        &self,
+        now: EngineTime,
+        spacing: chrono::Duration,
+        trigger: DueBatchTrigger,
+        protect: bool,
+    ) -> Result<bool, AlarmPublicationFailure> {
+        if !supported_time(now) {
+            return Err(AlarmPublicationFailure::NowOutOfRange);
+        }
+        let _publication = self.claim_lock();
+        let prior = self.encoded.load(Ordering::Acquire);
+        let current = snapshot(prior);
+        if prior & PROTECTED != 0 {
+            return Ok(false);
+        }
+        if let Some(start) = current.last_start_unix_millis {
+            let start = EngineTime::from_timestamp_millis(start)
+                .ok_or(AlarmPublicationFailure::NowOutOfRange)?;
+            let reached_next_mark = next_five_minute_mark(start).is_ok_and(|mark| now >= mark);
+            let admitted = match (current.leftovers_pending, trigger) {
+                (true, DueBatchTrigger::Request | DueBatchTrigger::Alarm) => reached_next_mark,
+                (false, DueBatchTrigger::Alarm) => reached_next_mark || now - start >= spacing,
+                (false, DueBatchTrigger::Request) => now - start >= spacing,
+            };
+            if !admitted {
+                return Ok(false);
+            }
+        }
+        let now_unix_millis = now.timestamp_millis();
+        let next = encode(now_unix_millis, current.leftovers_pending, protect)
+            .ok_or(AlarmPublicationFailure::NowOutOfRange)?;
+        self.encoded.store(next, Ordering::Release);
+        #[cfg(feature = "test-support")]
+        self.claimed_starts
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push(now_unix_millis);
+        Ok(true)
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub fn finish(&self, started_at_unix_millis: i64, leftovers_pending: bool) -> bool {
+        self.update_claim(started_at_unix_millis, Some(leftovers_pending), false)
+    }
+
+    /// An old batch cannot change a newer batch's selection or release its claim.
+    fn update_claim(
+        &self,
+        started_at_unix_millis: i64,
+        leftovers: Option<bool>,
+        protect: bool,
+    ) -> bool {
         let _publication = self
             .publication_order
             .lock()
             .unwrap_or_else(PoisonError::into_inner);
-        let mut prior = self.encoded.load(Ordering::Acquire);
-        loop {
-            if snapshot(prior).last_start_unix_millis != Some(started_at_unix_millis) {
-                return false;
-            }
-            let Some(next) = encode(started_at_unix_millis, leftovers_pending) else {
-                return false;
-            };
-            match self.encoded.compare_exchange_weak(
-                prior,
-                next,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => return true,
-                Err(actual) => prior = actual,
-            }
+        let current = self.snapshot();
+        if current.last_start_unix_millis != Some(started_at_unix_millis) {
+            return false;
         }
+        let Some(next) = encode(
+            started_at_unix_millis,
+            leftovers.unwrap_or(current.leftovers_pending),
+            protect,
+        ) else {
+            return false;
+        };
+        self.encoded.store(next, Ordering::Release);
+        true
     }
 
     pub(super) fn with_publication<R>(&self, publish: impl FnOnce(DueBatchSnapshot) -> R) -> R {

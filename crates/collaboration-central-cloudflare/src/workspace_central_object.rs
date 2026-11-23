@@ -225,10 +225,6 @@ impl Transport<WorkspaceServiceProtocol> for WorkspaceTransport {
 }
 
 type OrgRuntime = WorkspaceRuntime<CentralStatements, WorkspaceTransport>;
-enum AlarmFailure {
-    Store(StoreFailure),
-    Platform(worker::Error),
-}
 #[durable_object]
 pub struct CentralObject {
     state: Arc<SendWrapper<State>>,
@@ -414,32 +410,6 @@ impl CentralObject {
         *initialized = Some(central.clone());
         Ok(central)
     }
-    async fn alarm_runtime(
-        &self,
-    ) -> std::result::Result<Option<(OrganizationId, Arc<OrgRuntime>)>, AlarmFailure> {
-        self.migrate().await.map_err(AlarmFailure::Store)?;
-        let host = self.statement_host();
-        let identity =
-            collaboration_central_core::prepare_central_alarm(host.as_ref(), host.as_ref())
-                .await
-                .map_err(AlarmFailure::Store)?;
-        let collaboration_central_core::CentralOrganizationIdentity::Stamped { organization_id } =
-            identity
-        else {
-            return Ok(None);
-        };
-        self.check_physical_organization(&organization_id)
-            .map_err(AlarmFailure::Platform)?;
-        #[cfg(feature = "test-support")]
-        signin_launcher_controls::sample_clock(self, &organization_id)
-            .await
-            .map_err(AlarmFailure::Platform)?;
-        let runtime = self
-            .runtime_checked(organization_id.clone())
-            .await
-            .map_err(AlarmFailure::Store)?;
-        Ok(Some((organization_id, runtime)))
-    }
 }
 impl DurableObject for CentralObject {
     fn new(state: State, env: Env) -> Self {
@@ -557,23 +527,7 @@ impl DurableObject for CentralObject {
     }
 
     async fn alarm(&self) -> Result<Response> {
-        #[cfg(feature = "test-support")]
-        return workspace_cases::alarm_with_receipt(self).await;
-        #[cfg(not(feature = "test-support"))]
-        {
-            let runtime = match self.alarm_runtime().await {
-                Ok(Some((_, runtime))) => runtime,
-                Ok(None) => return Response::ok("unprovisioned"),
-                Err(AlarmFailure::Store(error)) => {
-                    return Err(worker::Error::RustError(error.to_string()));
-                }
-                Err(AlarmFailure::Platform(error)) => return Err(error),
-            };
-            let result = runtime.after_event().await;
-            self.flush_ready_mail(&runtime).await;
-            result.map_err(|error| worker::Error::RustError(error.to_string()))?;
-            Response::ok("alarm applied")
-        }
+        self.drive_workspace_alarm().await
     }
 }
 
@@ -626,3 +580,8 @@ mod stamp_store;
 
 #[path = "workspace_direct_mail.rs"]
 mod direct_mail;
+
+#[path = "workspace_alarm_owner.rs"]
+mod workspace_alarm_owner;
+#[cfg(feature = "test-support")]
+use workspace_alarm_owner::AlarmFailure;

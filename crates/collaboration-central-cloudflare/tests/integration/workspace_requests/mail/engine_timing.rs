@@ -149,7 +149,7 @@ async fn a_burst_of_forty_requests_runs_only_the_first_events_due_batch() {
     assert_eq!(callbacks(&runtime).await, before, "no alarm callback ran");
     assert_eq!(
         alarm_ms(&runtime).await,
-        Some(at(start, 5, 48, 0).timestamp_millis())
+        Some(at(start, 10, 0, 0).timestamp_millis())
     );
     fixture.host.close().await;
 }
@@ -182,14 +182,14 @@ async fn the_look_ahead_includes_fifty_seconds_and_excludes_fifty_one() {
     );
     assert_eq!(
         alarm_ms(&runtime).await,
-        Some(at(start, 5, 1, 0).timestamp_millis()),
-        "the excluded item is the alarm, past the 10:04:40 floor"
+        Some(at(start, 10, 0, 0).timestamp_millis()),
+        "the excluded item's fallback is the next grid mark"
     );
     fixture.host.close().await;
 }
 
 #[tokio::test]
-async fn the_fallback_alarm_waits_for_the_floor_and_then_runs_the_item() {
+async fn the_fallback_alarm_waits_for_the_first_mark_after_an_unaligned_due() {
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
     let start = now(&fixture);
@@ -202,20 +202,20 @@ async fn the_fallback_alarm_waits_for_the_floor_and_then_runs_the_item() {
 
     assert_eq!(
         alarm_ms(&runtime).await,
-        Some(at(start, 5, 28, 0).timestamp_millis()),
-        "10:05:10 is raised to the 10:05:28 floor"
+        Some(at(start, 10, 0, 0).timestamp_millis()),
+        "the 10:05:10 due time publishes the 10:10:00 mark"
     );
-    set_now(&fixture, at(start, 5, 27, 999));
+    set_now(&fixture, at(start, 9, 59, 999));
     assert_eq!(
         runtime.dispatch_due_alarm().await.unwrap(),
         None,
-        "not due before the floor"
+        "not publishable before the mark"
     );
     assert_eq!(
         probe_facts(&runtime, item, group).await,
         vec![text("waiting"), integer(0), integer(0)]
     );
-    set_now(&fixture, at(start, 5, 28, 0));
+    set_now(&fixture, at(start, 10, 0, 0));
     assert!(runtime.dispatch_due_alarm().await.unwrap().is_some());
     assert_eq!(
         probe_facts(&runtime, item, group).await,

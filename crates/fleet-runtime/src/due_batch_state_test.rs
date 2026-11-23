@@ -1,4 +1,4 @@
-use super::{DueBatchSnapshot, DueBatchState};
+use super::{DueBatchSnapshot, DueBatchState, DueBatchTrigger};
 use crate::engine_alarm_decider;
 use central_storage::EngineAlarmTimes;
 use std::sync::{Arc, Barrier};
@@ -68,11 +68,11 @@ fn a_late_old_batch_cannot_clear_the_newest_batchs_leftovers() {
 }
 
 #[test]
-fn a_prepared_publisher_uses_the_latest_batch_floor() {
+fn a_prepared_publisher_uses_the_latest_capped_batch_mark() {
     let state = Arc::new(DueBatchState::default());
     let decide = engine_alarm_decider(state.clone());
     let times = EngineAlarmTimes {
-        earliest_on_grid_due_unix_millis: Some(35_000),
+        earliest_on_grid_due_unix_millis: Some(600_000),
         earliest_legacy_due_unix_millis: None,
     };
     assert!(state.try_claim(0, chrono::Duration::seconds(30)).unwrap());
@@ -81,7 +81,8 @@ fn a_prepared_publisher_uses_the_latest_batch_floor() {
             .try_claim(31_000, chrono::Duration::seconds(30))
             .unwrap()
     );
-    assert_eq!(decide(times, 32_000, &mut |_| {}), Ok(Some(61_000)));
+    assert!(state.finish(31_000, true));
+    assert_eq!(decide(times, 32_000, &mut |_| {}), Ok(Some(300_000)));
 }
 
 #[cfg(feature = "test-support")]
@@ -91,7 +92,7 @@ async fn a_claim_waits_between_the_decision_and_real_watch_publication() {
     assert!(state.try_claim(0, chrono::Duration::seconds(30)).unwrap());
     let decide = engine_alarm_decider(state.clone());
     let times = EngineAlarmTimes {
-        earliest_on_grid_due_unix_millis: Some(35_000),
+        earliest_on_grid_due_unix_millis: Some(600_000),
         earliest_legacy_due_unix_millis: None,
     };
     let (alarm, retained) = tokio::sync::watch::channel(None::<i64>);
@@ -111,7 +112,7 @@ async fn a_claim_waits_between_the_decision_and_real_watch_publication() {
             .unwrap()
         })
     };
-    assert_eq!(ready.await.unwrap(), Some(35_000));
+    assert_eq!(ready.await.unwrap(), Some(600_000));
     let (finished_send, mut finished) = tokio::sync::oneshot::channel();
     let claiming = {
         let state = state.clone();
@@ -121,6 +122,7 @@ async fn a_claim_waits_between_the_decision_and_real_watch_publication() {
                     .try_claim(31_000, chrono::Duration::seconds(30))
                     .unwrap()
             );
+            assert!(state.finish(31_000, true));
             decide(times, 32_000, &mut |time| {
                 alarm.send_replace(time);
             })
@@ -146,5 +148,59 @@ async fn a_claim_waits_between_the_decision_and_real_watch_publication() {
         waited,
         "claim crossed the decision/publication critical section"
     );
-    assert_eq!(*retained.borrow(), Some(61_000));
+    assert_eq!(*retained.borrow(), Some(300_000));
+}
+
+#[test]
+fn overflow_is_protected_during_selection_and_until_the_next_mark() {
+    let state = DueBatchState::default();
+    let spacing = chrono::Duration::seconds(30);
+    let time = |at| central_engine_model::EngineTime::from_timestamp_millis(at).unwrap();
+    let request = |at| {
+        state
+            .begin_batch(time(at), spacing, DueBatchTrigger::Request)
+            .unwrap()
+    };
+    let alarm = |at| {
+        state
+            .begin_batch(time(at), spacing, DueBatchTrigger::Alarm)
+            .unwrap()
+    };
+    let first = alarm(300_000).unwrap();
+    assert!(request(331_000).is_none());
+    first.record_selection(true);
+    assert!(alarm(600_000).is_none());
+    drop(first);
+    assert!(request(599_999).is_none());
+    assert!(alarm(599_999).is_none());
+    let next = alarm(600_000).unwrap();
+    next.record_selection(true);
+    drop(next);
+    assert!(request(631_000).is_none());
+    assert!(alarm(900_000).is_some());
+}
+
+#[test]
+fn a_mark_drive_may_follow_a_nearby_ordinary_claim() {
+    let state = DueBatchState::default();
+    let spacing = chrono::Duration::seconds(30);
+    let time = |at| central_engine_model::EngineTime::from_timestamp_millis(at).unwrap();
+    let request = |at| {
+        state
+            .begin_batch(time(at), spacing, DueBatchTrigger::Request)
+            .unwrap()
+    };
+    let alarm = |at| {
+        state
+            .begin_batch(time(at), spacing, DueBatchTrigger::Alarm)
+            .unwrap()
+    };
+    let ordinary = request(298_000).unwrap();
+    ordinary.record_selection(false);
+    drop(ordinary);
+    assert!(request(300_000).is_none());
+    let marked = alarm(300_000).unwrap();
+    marked.record_selection(false);
+    drop(marked);
+    assert!(alarm(300_001).is_none());
 }

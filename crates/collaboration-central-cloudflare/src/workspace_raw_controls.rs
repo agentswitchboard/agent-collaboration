@@ -231,7 +231,7 @@ pub(in crate::workspace_central_object) async fn alarm_with_receipt(
             return Ok(None);
         };
         organization = Some(org);
-        let result = runtime.after_event().await;
+        let result = runtime.after_alarm().await;
         object.flush_ready_mail(&runtime).await;
         result
             .map(Some)

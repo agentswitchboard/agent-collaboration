@@ -52,7 +52,9 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                 adapter, caller, request, key, event,
             )
             .await;
-        let _ = self.complete_event_with_observation().await;
+        let _ = self
+            .complete_event_with_observation(fleet_runtime::DueBatchTrigger::Request)
+            .await;
         answer
     }
 

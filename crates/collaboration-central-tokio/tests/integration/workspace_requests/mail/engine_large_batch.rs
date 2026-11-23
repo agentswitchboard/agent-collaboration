@@ -1,5 +1,5 @@
 //! V9 on the native host: 1,000 due probe instances of one kind complete in four
-//! capped due batches 30 s apart, earliest first and each once, with at most
+//! capped due batches on consecutive marks, earliest first and each once, with at most
 //! eight units in flight. Batch timings are printed as measurement only.
 use super::super::{Statement, support::*};
 use super::engine_event_support::*;
@@ -32,7 +32,7 @@ async fn fired_items(runtime: &Runtime, group: uuid::Uuid) -> Vec<SqlValue> {
 }
 
 #[tokio::test]
-async fn a_thousand_due_instances_complete_in_four_capped_batches_thirty_seconds_apart() {
+async fn a_thousand_due_instances_complete_in_four_capped_batches_on_consecutive_marks() {
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
     let start = fixture.clock.utc_now();
@@ -53,23 +53,32 @@ async fn a_thousand_due_instances_complete_in_four_capped_batches_thirty_seconds
     let expected: Vec<_> = items.iter().map(text).collect();
     let mut measurements = Vec::new();
 
-    for (batch, (minutes, seconds)) in [(5, 0), (5, 30), (6, 0), (6, 30)].into_iter().enumerate() {
+    for (batch, (minutes, seconds)) in [(5, 0), (10, 0), (15, 0), (20, 0)].into_iter().enumerate() {
         let time = at(start, minutes, seconds, 0);
         if batch > 0 {
             assert_eq!(
                 alarm_ms(&runtime),
                 ms(time),
-                "batch {batch} is the continuation 30 s after the last start"
+                "batch {batch} is the continuation at the next mark"
             );
         }
         let started = std::time::Instant::now();
-        due_batch_at(&fixture, &runtime, time).await;
+        if batch == 0 {
+            due_batch_at(&fixture, &runtime, time).await;
+        } else {
+            driver_fires_at(&fixture, &runtime, time).await;
+        }
         measurements.push(started.elapsed());
         assert_eq!(
             fired_items(&runtime, group).await,
             expected[..CAP * (batch + 1)],
             "batch {batch} handled exactly the next 250, earliest first"
         );
+        if batch == 0 {
+            due_batch_at(&fixture, &runtime, at(start, 5, 31, 0)).await;
+            assert_eq!(fired_items(&runtime, group).await, expected[..CAP]);
+            assert_eq!(alarm_ms(&runtime), ms(at(start, 10, 0, 0)));
+        }
     }
 
     assert_eq!(alarm_ms(&runtime), None, "nothing is pending afterwards");

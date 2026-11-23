@@ -259,3 +259,22 @@ async fn the_failure_table_has_the_p2_columns_and_indexes_no_check_and_uuid7_key
     assert_eq!(id.parse::<uuid::Uuid>().unwrap().get_version_num(), 7);
     fixture.host.close().await;
 }
+
+#[tokio::test]
+async fn central_business_uniqueness_has_named_non_partial_indexes_in_column_order() {
+    use collaboration_central_conformance::workspace_schema_fixture as schema;
+    let fixture = Fixture::new().await;
+    let runtime = runtime(&fixture).await;
+    let indexes = runtime
+        .runtime()
+        .statement_host()
+        .read(Statement {
+            sql: schema::BUSINESS_UNIQUENESS,
+            args: vec![],
+        })
+        .await
+        .unwrap()
+        .rows;
+    assert_eq!(indexes, schema::central_business_uniqueness());
+    fixture.host.close().await;
+}

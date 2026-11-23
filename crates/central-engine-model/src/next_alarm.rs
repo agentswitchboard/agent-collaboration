@@ -1,7 +1,6 @@
-use crate::{DueBatchPolicy, EngineTime};
+use crate::{EngineTime, aligned_at_or_after, aligned_strictly_after, supported_time};
 
-pub const MAX_ALARM_UNIX_MILLIS: i64 = 9_223_372_036_854;
-const FIVE_MINUTE_MILLIS: i64 = 300_000;
+const FIVE_MINUTE_SECONDS: u32 = 300;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AlarmInputs {
@@ -27,29 +26,21 @@ pub enum AlarmDecisionError {
     OutOfRange,
 }
 
-pub fn supported_time(time: EngineTime) -> bool {
-    (-MAX_ALARM_UNIX_MILLIS..=MAX_ALARM_UNIX_MILLIS).contains(&time.timestamp_millis())
-}
-
 pub fn next_five_minute_mark(now: EngineTime) -> Result<EngineTime, AlarmDecisionError> {
     if !supported_time(now) {
         return Err(AlarmDecisionError::OutOfRange);
     }
-    now.timestamp_millis()
-        .div_euclid(FIVE_MINUTE_MILLIS)
-        .checked_add(1)
-        .and_then(|mark| mark.checked_mul(FIVE_MINUTE_MILLIS))
-        .and_then(EngineTime::from_timestamp_millis)
-        .filter(|mark| supported_time(*mark))
-        .ok_or(AlarmDecisionError::NoLaterGridMark)
+    aligned_strictly_after(now, FIVE_MINUTE_SECONDS).ok_or(AlarmDecisionError::NoLaterGridMark)
 }
 
 /// Combine pending times after an event; an idle object has no alarm.
-pub fn next_alarm(inputs: &AlarmInputs, policy: &DueBatchPolicy) -> AlarmDecision {
-    if inputs.earliest_on_grid_due.is_none()
-        && inputs.earliest_legacy_due.is_none()
-        && !inputs.leftovers_beyond_cap
-    {
+pub fn next_alarm(inputs: &AlarmInputs) -> AlarmDecision {
+    let earliest_due = inputs
+        .earliest_on_grid_due
+        .into_iter()
+        .chain(inputs.earliest_legacy_due)
+        .min();
+    if earliest_due.is_none() && !inputs.leftovers_beyond_cap {
         return AlarmDecision::Clear;
     }
     if !supported_time(inputs.now)
@@ -60,35 +51,22 @@ pub fn next_alarm(inputs: &AlarmInputs, policy: &DueBatchPolicy) -> AlarmDecisio
     {
         return AlarmDecision::Unpublishable;
     }
-    let floor = match inputs.last_batch_start {
-        Some(start) => match start
-            .checked_add_signed(policy.spacing)
-            .filter(|time| supported_time(*time))
-        {
-            Some(floor) => Some(floor),
-            None => return AlarmDecision::Unpublishable,
-        },
-        None => None,
-    };
-    let wanted = if inputs.leftovers_beyond_cap {
-        match floor {
-            Some(floor) => floor,
-            None => return AlarmDecision::Unpublishable,
-        }
+    let alarm = if inputs.leftovers_beyond_cap {
+        inputs.last_batch_start.and_then(|start| {
+            supported_time(start)
+                .then_some(start.max(inputs.now))
+                .and_then(|after| next_five_minute_mark(after).ok())
+        })
     } else {
-        // At least one input is present, as established above.
-        match (inputs.earliest_on_grid_due, inputs.earliest_legacy_due) {
-            (Some(grid), Some(legacy)) => grid.min(legacy),
-            (Some(due), None) | (None, Some(due)) => due,
-            (None, None) => return AlarmDecision::Clear,
-        }
+        earliest_due.and_then(|due| {
+            if due > inputs.now {
+                aligned_at_or_after(due, FIVE_MINUTE_SECONDS)
+            } else {
+                next_five_minute_mark(inputs.now).ok()
+            }
+        })
     };
-    let wanted = floor.map_or(wanted, |floor| wanted.max(floor));
-    if wanted <= inputs.now {
-        next_five_minute_mark(inputs.now).map_or(AlarmDecision::Unpublishable, AlarmDecision::SetAt)
-    } else {
-        AlarmDecision::SetAt(wanted)
-    }
+    alarm.map_or(AlarmDecision::Unpublishable, AlarmDecision::SetAt)
 }
 
 #[cfg(test)]

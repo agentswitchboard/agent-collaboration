@@ -9,7 +9,7 @@
 use serde::Serialize;
 
 mod alarm_publication;
-pub use alarm_publication::{AlarmPublicationFailure, alarm_publication_time};
+pub use alarm_publication::AlarmPublicationFailure;
 mod publication_receipt;
 pub use publication_receipt::{AlarmPublication, EngineAlarmDecider, EngineAlarmTimes};
 

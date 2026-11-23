@@ -122,6 +122,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
     /// first await; only individual units perform async work, at most eight wide.
     pub(crate) async fn complete_event_with_observation(
         &self,
+        trigger: fleet_runtime::DueBatchTrigger,
     ) -> Result<EventCompletion, AlarmNotPublished> {
         #[cfg(feature = "test-support")]
         {
@@ -130,20 +131,23 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                 .reached_central(fleet_runtime::PausePoint::EngineCompletionEntered)
                 .await;
         }
-        let result = self.complete_due_work_and_alarm().await;
+        let result = self.complete_due_work_and_alarm(trigger).await;
         if let Err(error) = &result {
             self.observe_alarm_not_published(error.failure.clone());
         }
         result
     }
 
-    async fn complete_due_work_and_alarm(&self) -> Result<EventCompletion, AlarmNotPublished> {
+    async fn complete_due_work_and_alarm(
+        &self,
+        trigger: fleet_runtime::DueBatchTrigger,
+    ) -> Result<EventCompletion, AlarmNotPublished> {
         let now = self
             .current_engine_time()
             .map_err(|failure| AlarmNotPublished { failure })?;
-        let due_batch_claimed = self
+        let due_batch = self
             .due_batch_state()
-            .try_claim(now.timestamp_millis(), DueBatchPolicy::DEFAULT.spacing)
+            .begin_batch(now, DueBatchPolicy::DEFAULT.spacing, trigger)
             .map_err(|reason| AlarmNotPublished {
                 failure: StoreFailure::AlarmUnpublishable { reason },
             })?;
@@ -160,8 +164,8 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
             });
         }
         let mut due_work_result = AlarmResult::default();
-        if due_batch_claimed {
-            due_work_result = self.run_due_batch(now).await;
+        if let Some(claim) = due_batch {
+            due_work_result = self.run_due_batch(now, claim).await;
         }
         let publication = self
             .publish_engine_alarm(EngineAlarmPlan::Recompute)
@@ -204,7 +208,11 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
         }
     }
 
-    async fn run_due_batch(&self, now: EngineTime) -> AlarmResult {
+    async fn run_due_batch(
+        &self,
+        now: EngineTime,
+        claim: fleet_runtime::DueBatchClaim<'_>,
+    ) -> AlarmResult {
         let policy = DueBatchPolicy::DEFAULT;
         let Some(horizon) = now
             .checked_add_signed(policy.look_ahead)
@@ -290,6 +298,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                 }
             }
         }
+        claim.record_selection(more_timed_rows_due);
         let mut due_work_result = AlarmResult::default();
         if !central_down {
             units.extend(
@@ -322,8 +331,6 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
                 due_work_result += done;
             }
         }
-        self.due_batch_state()
-            .finish(now.timestamp_millis(), more_timed_rows_due);
         due_work_result
     }
 

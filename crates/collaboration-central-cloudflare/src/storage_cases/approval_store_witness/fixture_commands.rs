@@ -164,6 +164,7 @@ pub(super) enum ApprovalWitnessCommand {
         subject: String,
         deadline_ms: i64,
     },
+    PublishAlarmMark,
     DueRows {
         cutoff_ms: i64,
         limit: usize,

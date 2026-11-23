@@ -105,6 +105,9 @@ pub(super) async fn apply_fixture(
     if let ApprovalWitnessCommand::DueRows { cutoff_ms, limit } = input.command {
         return observe_due_rows(state, cutoff_ms, limit).await;
     }
+    if matches!(input.command, ApprovalWitnessCommand::PublishAlarmMark) {
+        return publish_alarm_mark(state, connection, input.at_ms).await;
+    }
     let evidence = Rc::new(RefCell::new(FixtureEvidence::default()));
     let outcome = complete_approval_commit(WorkerApprovalCommit {
         connection,
@@ -141,6 +144,51 @@ pub(super) async fn apply_fixture(
         "rowsChanged": evidence.rows_changed,
         "committed": error.is_none(),
     }))
+}
+
+async fn publish_alarm_mark(
+    state: &State,
+    connection: &DoConnection,
+    now_ms: i64,
+) -> worker::Result<Response> {
+    use crate::statement_store::{AlarmPolicy, run_batch};
+    use central_storage::{
+        AlarmPublication, AlarmUpdate, BatchOutcome, EngineAlarmPlan, GuardedStatement,
+        RowExpectation, Statement, StatementBatch,
+    };
+
+    let clock = crate::worker_clock::WorkspaceClock::default();
+    clock.hold(now_ms);
+    let decision = fleet_runtime::engine_alarm_decider(Arc::default());
+    let batch = StatementBatch {
+        statements: vec![GuardedStatement {
+            statement: Statement {
+                sql: include_str!(
+                    "../../../fleet-approvals/tests/fixtures/approval_alarm_provisioned.sql"
+                ),
+                args: vec![],
+            },
+            expect: RowExpectation::Any,
+        }],
+        alarm: AlarmUpdate::Engine(EngineAlarmPlan::Recompute),
+    };
+    let outcome = run_batch(
+        connection,
+        batch.into(),
+        AlarmPolicy::Engine(state.storage(), clock, decision),
+    )
+    .await
+    .map_err(witness_error)?;
+    if !matches!(
+        outcome,
+        BatchOutcome::Applied {
+            publication: AlarmPublication::Set { .. },
+            ..
+        }
+    ) {
+        return Err(witness_error("approval fixture alarm did not publish"));
+    }
+    Response::from_json(&json!({ "alarmMs": state.storage().get_alarm().await? }))
 }
 
 async fn observe_due_rows(state: &State, cutoff_ms: i64, limit: usize) -> worker::Result<Response> {

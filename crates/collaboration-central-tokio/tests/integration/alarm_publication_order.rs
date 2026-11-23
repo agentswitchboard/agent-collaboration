@@ -168,7 +168,7 @@ fn project_widget(
 }
 
 #[tokio::test]
-async fn a_batch_prepared_before_a_new_claim_publishes_the_latest_floor() {
+async fn a_batch_prepared_before_a_new_claim_publishes_the_latest_backlog_mark() {
     let root = tempfile::tempdir().unwrap();
     let clock = HeldClock::at(32_000);
     let state = Arc::new(fleet_runtime::DueBatchState::default());
@@ -194,11 +194,11 @@ async fn a_batch_prepared_before_a_new_claim_publishes_the_latest_floor() {
                     "floor-owner",
                     SqlValue::Text("floor".to_owned()),
                     SqlValue::Integer(1.try_into().unwrap()),
-                    Some(35_000.try_into().unwrap()),
+                    Some(600_000.try_into().unwrap()),
                 ),
             ],
             "floor-widget",
-            35_000,
+            600_000,
         ),
         alarm: engine_alarm_from_widgets(),
     };
@@ -222,17 +222,18 @@ async fn a_batch_prepared_before_a_new_claim_publishes_the_latest_floor() {
             .try_claim(31_000, chrono::Duration::seconds(30))
             .unwrap()
     );
+    assert!(state.finish(31_000, true));
     held.release();
     assert_eq!(
         pending.await.unwrap(),
         BatchOutcome::Applied {
             rows_affected: vec![1, 1, 1],
             publication: central_storage::AlarmPublication::Set {
-                unix_millis: 61_000
+                unix_millis: 300_000
             }
         }
     );
-    assert_eq!(storage.alarm(), Some(SyncTime::from_unix_millis(61_000)));
+    assert_eq!(storage.alarm(), Some(SyncTime::from_unix_millis(300_000)));
     storage.close().await;
 }
 

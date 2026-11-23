@@ -64,3 +64,52 @@ pub const WORKSPACE_TABLES: &[&str] = &[
     "workspace_work_log_entries",
     "workspace_work_log_tags",
 ];
+
+/// Inspect named and inline uniqueness using the database's catalog.
+pub const BUSINESS_UNIQUENESS: &str = r#"
+SELECT tables.name, indexes.name, indexes.origin, CAST(indexes.partial AS TEXT),
+       (SELECT group_concat(name) FROM
+           (SELECT name FROM pragma_index_info(indexes.name) ORDER BY seqno))
+FROM sqlite_schema tables, pragma_index_list(tables.name) indexes
+WHERE tables.type = 'table'
+  AND tables.name IN ('actor_persons', 'actor_sessions', 'engine_due_entries', 'login_machine_allowances')
+  AND indexes."unique" = 1 AND indexes.origin <> 'pk'
+ORDER BY tables.name, indexes.name"#;
+
+pub fn central_business_uniqueness() -> Vec<Vec<central_storage::SqlValue>> {
+    use central_storage::SqlValue;
+    [
+        ("actor_persons", "actor_persons_person", "person_id"),
+        (
+            "actor_sessions",
+            "actor_sessions_machine_harness",
+            "machine_id,harness_session_id",
+        ),
+        (
+            "actor_sessions",
+            "actor_sessions_machine_operation",
+            "machine_id,create_operation_id",
+        ),
+        (
+            "engine_due_entries",
+            "engine_due_entries_kind_role_subject",
+            "work_kind,entry_role,subject_key",
+        ),
+        (
+            "login_machine_allowances",
+            "login_machine_allowances_machine_workspace",
+            "machine_id,workspace_id",
+        ),
+    ]
+    .into_iter()
+    .map(|(table, index, columns)| {
+        vec![
+            SqlValue::Text(table.to_owned()),
+            SqlValue::Text(index.to_owned()),
+            SqlValue::Text("c".to_owned()),
+            SqlValue::Text("0".to_owned()),
+            SqlValue::Text(columns.to_owned()),
+        ]
+    })
+    .collect()
+}
