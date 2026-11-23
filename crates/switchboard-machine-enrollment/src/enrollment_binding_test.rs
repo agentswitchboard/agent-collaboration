@@ -4,7 +4,8 @@ use super::{BindingGeneration, EnrollmentEnd, EnrollmentKey, SignInDeployment, S
 
 #[test]
 fn a_durable_ending_keeps_its_generation_and_never_wraps() {
-    let last = BindingGeneration::from_persisted(u64::MAX);
+    let last = BindingGeneration::from_persisted(u64::try_from(i64::MAX).expect("SQLite maximum"))
+        .expect("fixture generation");
     let ended = StoredEnrollment::Ended {
         generation: last,
         why: EnrollmentEnd::Revoked,
@@ -22,6 +23,7 @@ fn a_durable_ending_keeps_its_generation_and_never_wraps() {
     };
     assert_eq!(ended.generation(), last);
     assert_eq!(last.successor(), None);
+    assert_eq!(BindingGeneration::from_persisted(last.get() + 1), None);
     assert_eq!(
         StoredEnrollment::Empty
             .generation()

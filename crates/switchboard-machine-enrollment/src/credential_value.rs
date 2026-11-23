@@ -15,6 +15,18 @@ impl SecretValue {
         (!secret.is_empty()).then_some(Self(secret))
     }
 
+    /// Copies a nonempty UTF-8 token directly into zeroizing storage.
+    #[must_use]
+    pub fn copy_from_utf8(bytes: &[u8]) -> Option<Self> {
+        let plaintext = std::str::from_utf8(bytes).ok()?;
+        if plaintext.is_empty() {
+            return None;
+        }
+        let mut secret = Zeroizing::new(String::with_capacity(plaintext.len()));
+        secret.push_str(plaintext);
+        Some(Self(secret))
+    }
+
     /// Exposes the value for an authorized wire or credential-store operation.
     #[must_use]
     pub fn expose_secret(&self) -> &str {

@@ -146,7 +146,10 @@ fn describe_ending(failure: EnrollmentFailure) -> &'static str {
             "Sign-in disabled this enrollment. Run enroll again to enroll this Mac."
         }
         EnrollmentFailure::Ended(
-            EnrollmentEnd::RefreshRefused | EnrollmentEnd::Revoked | EnrollmentEnd::Inactive,
+            EnrollmentEnd::RefreshRefused
+            | EnrollmentEnd::Revoked
+            | EnrollmentEnd::Inactive
+            | EnrollmentEnd::EndedByCentral,
         ) => "Enrollment ended. Run enroll again to enroll this Mac.",
     }
 }

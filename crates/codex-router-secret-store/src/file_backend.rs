@@ -332,6 +332,32 @@ impl FileSecretStore {
         self.write_atomically(&path, "store-id", store_id.as_bytes())
     }
 
+    /// Publishes a complete private identity only if no other enrollment opener won.
+    pub(crate) fn publish_enrollment_store_id(
+        &self,
+        store_id: &str,
+    ) -> Result<(), SecretStoreError> {
+        let target = self.root.join("store-id");
+        reject_symlink_path(&target)?;
+        let temporary = stage_atomic_file(&self.root, "store-id", store_id.as_bytes(), None)?;
+        let publication = fs::hard_link(&temporary, &target);
+        let cleanup = fs::remove_file(&temporary);
+        match publication {
+            Ok(()) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(source) => {
+                return Err(SecretStoreError::Filesystem {
+                    path: target,
+                    source,
+                });
+            }
+        }
+        cleanup.map_err(|source| SecretStoreError::Filesystem {
+            path: temporary,
+            source,
+        })
+    }
+
     /// Reports whether the completed format-v2 marker exists and contains the supported value.
     pub(crate) fn has_format_v2_marker(&self) -> Result<bool, SecretStoreError> {
         match self.read_optional_metadata("format-v2.marker")? {
@@ -461,6 +487,20 @@ fn write_atomic_file(
     observer: Option<&dyn FileWriteObserver>,
 ) -> Result<(), SecretStoreError> {
     reject_symlink_path(target_path)?;
+    let temp_path = stage_atomic_file(root, temp_stem, contents, observer)?;
+    rename(&temp_path, target_path)?;
+    if let Some(observer) = observer {
+        observer.file_renamed(&temp_path, target_path);
+    }
+    set_private_file_permissions(target_path)
+}
+
+fn stage_atomic_file(
+    root: &Path,
+    temp_stem: &str,
+    contents: &[u8],
+    observer: Option<&dyn FileWriteObserver>,
+) -> Result<PathBuf, SecretStoreError> {
     let temp_path = root.join(format!(
         ".{temp_stem}.tmp.{}.{}",
         std::process::id(),
@@ -474,11 +514,7 @@ fn write_atomic_file(
     }
     sync_file(&temp_file, &temp_path)?;
     drop(temp_file);
-    rename(&temp_path, target_path)?;
-    if let Some(observer) = observer {
-        observer.file_renamed(&temp_path, target_path);
-    }
-    set_private_file_permissions(target_path)
+    Ok(temp_path)
 }
 
 fn reject_codex_home_path(path: &Path) -> Result<(), SecretStoreError> {
