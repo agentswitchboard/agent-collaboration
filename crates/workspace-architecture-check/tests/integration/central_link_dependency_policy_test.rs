@@ -213,3 +213,43 @@ fn driver_transport_edges_require_the_approved_source_identity() {
         "{error}"
     );
 }
+
+#[test]
+fn lease_adapter_declares_its_approved_edge_and_the_network_fixture_keeps_keychain_test_only() {
+    let metadata = fixture(
+        "switchboard-link-lease",
+        declared("switchboard-machine-enrollment", None, &[]),
+        "switchboard-machine-enrollment",
+        Some(DependencyKind::Normal),
+    );
+    assert!(check(&metadata).is_ok());
+    let forbidden = fixture(
+        "switchboard-link-lease",
+        declared("switchboard-machine-enrollment-store", None, &[]),
+        "switchboard-machine-enrollment-store",
+        Some(DependencyKind::Normal),
+    );
+    assert!(check(&forbidden).is_err());
+    let forbidden_fixture = fixture(
+        "codex-router-host",
+        declared(
+            "switchboard-machine-enrollment-store",
+            None,
+            &["test-support"],
+        ),
+        "switchboard-machine-enrollment-store",
+        Some(DependencyKind::Normal),
+    );
+    assert!(check(&forbidden_fixture).is_err());
+    let approved = fixture(
+        "switchboard-central-link-test",
+        declared(
+            "switchboard-machine-enrollment-store",
+            Some("dev"),
+            &["test-support"],
+        ),
+        "switchboard-machine-enrollment-store",
+        Some(DependencyKind::Dev),
+    );
+    assert!(check(&approved).is_ok());
+}

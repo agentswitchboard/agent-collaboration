@@ -2,11 +2,12 @@ use codex_router_secret_store::{
     enrollment_row_sealer::EnrollmentRowContext, model::SecretStoreError,
 };
 use switchboard_machine_core_store::{
-    EnrollmentRowCorruption, StoredEnrollmentEnd, StoredEnrollmentRow,
+    EnrollmentRowCorruption, StoredEnrollmentEnd, StoredEnrollmentRow, StoredEnrollmentRowMetadata,
     StoredInvalidEnrollmentReason,
 };
 use switchboard_machine_enrollment::{
-    BindingGeneration, EnrollmentEnd, EnrollmentKey, InvalidReason, MachineId, SignInDeployment,
+    BindingGeneration, EnrollmentEnd, EnrollmentKey, EnrollmentMetadata, InvalidReason, MachineId,
+    SignInDeployment,
 };
 
 #[derive(Eq, PartialEq)]
@@ -39,27 +40,8 @@ impl EnrollmentSnapshot {
                 enrollment_id,
                 sealed,
             } => {
-                let organization_id = organization_id
-                    .parse()
-                    .map_err(|_| EnrollmentRowCorruption::EnrollmentId)?;
-                let saved_deployment = deployment;
-                let deployment = SignInDeployment::new(
-                    saved_deployment
-                        .parse()
-                        .map_err(|_| EnrollmentRowCorruption::Deployment)?,
-                )
-                .map_err(|_| EnrollmentRowCorruption::Deployment)?;
-                if deployment.origin().as_str() != saved_deployment {
-                    return Err(EnrollmentRowCorruption::Deployment);
-                }
-                let enrollment_id = enrollment_id
-                    .parse()
-                    .map_err(|_| EnrollmentRowCorruption::EnrollmentId)?;
-                let key = EnrollmentKey {
-                    machine_id: machine_id.clone(),
-                    organization_id,
-                    enrollment_id,
-                };
+                let key = enrollment_key(machine_id, &organization_id, &enrollment_id)?;
+                let deployment = deployment_origin(&deployment)?;
                 Ok(Self::Active {
                     key,
                     deployment,
@@ -73,18 +55,17 @@ impl EnrollmentSnapshot {
                 enrollment_id,
                 why,
             } => Ok(Self::Ended {
-                key: EnrollmentKey {
-                    machine_id: machine_id.clone(),
-                    organization_id: organization_id
-                        .parse()
-                        .map_err(|_| EnrollmentRowCorruption::EnrollmentId)?,
-                    enrollment_id: enrollment_id
-                        .parse()
-                        .map_err(|_| EnrollmentRowCorruption::EnrollmentId)?,
-                },
+                key: enrollment_key(machine_id, &organization_id, &enrollment_id)?,
                 generation: binding_generation(generation)?,
                 why: enrollment_end(why),
             }),
+        }
+    }
+
+    pub(crate) fn key(&self) -> Option<&EnrollmentKey> {
+        match self {
+            Self::Empty => None,
+            Self::Active { key, .. } | Self::Ended { key, .. } => Some(key),
         }
     }
 
@@ -94,6 +75,63 @@ impl EnrollmentSnapshot {
             Self::Active { generation, .. } | Self::Ended { generation, .. } => *generation,
         }
     }
+}
+
+pub(crate) fn enrollment_metadata(
+    row: StoredEnrollmentRowMetadata,
+    machine_id: &MachineId,
+) -> Result<EnrollmentMetadata, EnrollmentRowCorruption> {
+    match row {
+        StoredEnrollmentRowMetadata::Empty => Ok(EnrollmentMetadata::Empty),
+        StoredEnrollmentRowMetadata::Active {
+            generation,
+            organization_id,
+            deployment,
+            enrollment_id,
+        } => Ok(EnrollmentMetadata::Active {
+            key: enrollment_key(machine_id, &organization_id, &enrollment_id)?,
+            deployment: deployment_origin(&deployment)?,
+            generation: binding_generation(generation)?,
+        }),
+        StoredEnrollmentRowMetadata::Ended {
+            generation,
+            organization_id,
+            enrollment_id,
+            why,
+        } => Ok(EnrollmentMetadata::Ended {
+            key: enrollment_key(machine_id, &organization_id, &enrollment_id)?,
+            why: enrollment_end(why),
+            generation: binding_generation(generation)?,
+        }),
+    }
+}
+
+fn enrollment_key(
+    machine_id: &MachineId,
+    organization_id: &str,
+    enrollment_id: &str,
+) -> Result<EnrollmentKey, EnrollmentRowCorruption> {
+    Ok(EnrollmentKey {
+        machine_id: machine_id.clone(),
+        organization_id: organization_id
+            .parse()
+            .map_err(|_| EnrollmentRowCorruption::EnrollmentId)?,
+        enrollment_id: enrollment_id
+            .parse()
+            .map_err(|_| EnrollmentRowCorruption::EnrollmentId)?,
+    })
+}
+
+fn deployment_origin(text: &str) -> Result<SignInDeployment, EnrollmentRowCorruption> {
+    let deployment = SignInDeployment::new(
+        text.parse()
+            .map_err(|_| EnrollmentRowCorruption::Deployment)?,
+    )
+    .map_err(|_| EnrollmentRowCorruption::Deployment)?;
+    if deployment.origin().as_str() != text {
+        return Err(EnrollmentRowCorruption::Deployment);
+    }
+    Ok(deployment)
 }
 
 fn binding_generation(generation: i64) -> Result<BindingGeneration, EnrollmentRowCorruption> {

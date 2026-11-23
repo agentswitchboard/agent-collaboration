@@ -11,13 +11,14 @@ use switchboard_machine_core_store::{
 };
 use switchboard_machine_enrollment::{
     BindingGeneration, ConditionalWrite, CredentialStoreError, EnrollmentBinding,
-    EnrollmentContext, EnrollmentEnd, MachineId, RefreshCredential, SecretValue, StoredEnrollment,
+    EnrollmentContext, EnrollmentEnd, EnrollmentKey, EnrollmentMetadata, KeyedEnrollment,
+    MachineId, RefreshCredential, SecretValue, StoredEnrollment,
 };
 use tokio::sync::{mpsc, watch};
 
 use crate::{
     EnrollmentMutation, EnrollmentRequest, MutationStage, WriteResult,
-    enrollment_row_mapping::{EnrollmentSnapshot, seal_context, stored_end},
+    enrollment_row_mapping::{EnrollmentSnapshot, enrollment_metadata, seal_context, stored_end},
 };
 
 pub(crate) struct EnrollmentWorker {
@@ -25,6 +26,8 @@ pub(crate) struct EnrollmentWorker {
     secret_root: PathBuf,
     machine_id: MachineId,
     clock: Arc<dyn RuntimeClock + Send + Sync>,
+    #[cfg(any(test, all(feature = "test-support", debug_assertions)))]
+    keychain: Option<Arc<dyn codex_router_secret_store::keychain_data_key::KeychainAccess>>,
     #[cfg(test)]
     test_dependencies: Option<TestDependencies>,
 }
@@ -62,9 +65,20 @@ impl EnrollmentWorker {
             secret_root,
             machine_id,
             clock,
+            #[cfg(any(test, all(feature = "test-support", debug_assertions)))]
+            keychain: None,
             #[cfg(test)]
             test_dependencies: None,
         }
+    }
+
+    #[cfg(all(feature = "test-support", debug_assertions))]
+    pub(crate) fn with_keychain(
+        mut self,
+        keychain: Arc<dyn codex_router_secret_store::keychain_data_key::KeychainAccess>,
+    ) -> Self {
+        self.keychain = Some(keychain);
+        self
     }
 
     #[cfg(test)]
@@ -73,13 +87,15 @@ impl EnrollmentWorker {
         keychain: Arc<dyn codex_router_secret_store::keychain_data_key::KeychainAccess>,
         faults: Arc<TestWriteFaults>,
     ) {
-        self.test_dependencies = Some(TestDependencies { keychain, faults });
+        self.keychain = Some(keychain);
+        self.test_dependencies = Some(TestDependencies { faults });
     }
 
     pub(crate) async fn run(
         mut self,
         mut requests: mpsc::UnboundedReceiver<EnrollmentRequest>,
         mut shutdown: watch::Receiver<bool>,
+        enrollment_changes: watch::Sender<u64>,
     ) -> Result<(), MachineLocalStoreError> {
         while !*shutdown.borrow_and_update() {
             let request = tokio::select! {
@@ -93,17 +109,24 @@ impl EnrollmentWorker {
             if *shutdown.borrow() {
                 break;
             }
-            self.handle(request).await;
+            self.handle(request, &enrollment_changes).await;
         }
         requests.close();
         drop(requests);
         self.store.close().await
     }
 
-    async fn handle(&mut self, request: EnrollmentRequest) {
+    async fn handle(
+        &mut self,
+        request: EnrollmentRequest,
+        enrollment_changes: &watch::Sender<u64>,
+    ) {
         match request {
-            EnrollmentRequest::Read(reply) if !reply.is_closed() => {
-                let _ = reply.send(self.read().await);
+            EnrollmentRequest::Read { key, reply } if !reply.is_closed() => {
+                let _ = reply.send(self.read(key.as_ref()).await);
+            }
+            EnrollmentRequest::ReadMetadata(reply) if !reply.is_closed() => {
+                let _ = reply.send(self.read_metadata().await);
             }
             EnrollmentRequest::Mutate {
                 expected,
@@ -111,25 +134,48 @@ impl EnrollmentWorker {
                 reply,
                 stage,
             } if !reply.is_closed() => {
-                let _ = reply.send(self.mutate(expected, mutation, &stage).await);
+                let result = self.mutate(expected, mutation, &stage).await;
+                if matches!(
+                    result,
+                    Ok(ConditionalWrite::Applied) | Err(CredentialStoreError::OutcomeNotKnown)
+                ) {
+                    enrollment_changes.send_modify(|revision| *revision = revision.wrapping_add(1));
+                }
+                let _ = reply.send(result);
             }
             _ => {}
         }
     }
 
-    async fn read(&mut self) -> Result<StoredEnrollment, ReadFailure> {
+    async fn read_metadata(&mut self) -> Result<EnrollmentMetadata, ReadFailure> {
+        let row = self
+            .store
+            .read_enrollment_metadata(&self.machine_id)
+            .await?;
+        Ok(enrollment_metadata(row, &self.machine_id)?)
+    }
+
+    async fn read(
+        &mut self,
+        requested: Option<&EnrollmentKey>,
+    ) -> Result<KeyedEnrollment, ReadFailure> {
         let snapshot = self.snapshot().await?;
-        match snapshot {
-            EnrollmentSnapshot::Empty => Ok(StoredEnrollment::Empty),
+        if let Some(requested) = requested
+            && snapshot.key().is_some_and(|key| key != requested)
+        {
+            return Ok(KeyedEnrollment::DifferentEnrollment);
+        }
+        let stored = match snapshot {
+            EnrollmentSnapshot::Empty => StoredEnrollment::Empty,
             EnrollmentSnapshot::Ended {
                 generation,
                 why,
                 key,
-            } => Ok(StoredEnrollment::Ended {
+            } => StoredEnrollment::Ended {
                 generation,
                 why,
                 key,
-            }),
+            },
             EnrollmentSnapshot::Active {
                 key,
                 deployment,
@@ -147,7 +193,7 @@ impl EnrollmentWorker {
                     .map_err(|_| ReadFailure::SealedBytesUnreadable)?;
                 let refresh_token = SecretValue::copy_from_utf8(credential.expose_bytes())
                     .ok_or(ReadFailure::SealedBytesUnreadable)?;
-                Ok(StoredEnrollment::Active(EnrollmentBinding {
+                StoredEnrollment::Active(EnrollmentBinding {
                     generation,
                     context: EnrollmentContext {
                         machine_id: key.machine_id,
@@ -158,9 +204,10 @@ impl EnrollmentWorker {
                         enrollment_id: key.enrollment_id,
                         refresh_token,
                     },
-                }))
+                })
             }
-        }
+        };
+        Ok(KeyedEnrollment::Snapshot(stored))
     }
 
     async fn mutate(
@@ -195,25 +242,34 @@ impl EnrollmentWorker {
             // The caller can distinguish reply loss before the first poll of
             // this transaction from loss during a possible durable write.
             stage.begin_transaction();
-            self.store
-                .write_enrollment_row(machine_id, expected_sql, timestamp, |row| {
-                    let snapshot = match EnrollmentSnapshot::from_row(row, machine_id) {
-                        Ok(snapshot) => snapshot,
-                        Err(corrupt) => return EnrollmentRowChange::Corrupt(corrupt),
-                    };
-                    match decision {
-                        MutationDecision::Replace(Some(replacement)) => {
-                            if snapshot == replacement.witness {
-                                EnrollmentRowChange::Write(replacement.row)
-                            } else {
-                                EnrollmentRowChange::Abort(())
+            match decision {
+                MutationDecision::Replace(prepared) => {
+                    self.store
+                        .write_enrollment_row(machine_id, expected_sql, timestamp, |row| {
+                            let snapshot = match EnrollmentSnapshot::from_row(row, machine_id) {
+                                Ok(snapshot) => snapshot,
+                                Err(corrupt) => return EnrollmentRowChange::Corrupt(corrupt),
+                            };
+                            match prepared {
+                                Some(replacement) if snapshot == replacement.witness => {
+                                    EnrollmentRowChange::Write(replacement.row)
+                                }
+                                _ => EnrollmentRowChange::Abort(()),
                             }
-                        }
-                        MutationDecision::Replace(None) => EnrollmentRowChange::Abort(()),
-                        MutationDecision::End(why) => end_row(snapshot, why),
-                    }
-                })
-                .await
+                        })
+                        .await
+                }
+                MutationDecision::End(why) => {
+                    self.store
+                        .write_enrollment_ending(machine_id, expected_sql, timestamp, |row| {
+                            match enrollment_metadata(row, machine_id) {
+                                Ok(metadata) => end_row(metadata, why),
+                                Err(corrupt) => EnrollmentRowChange::Corrupt(corrupt),
+                            }
+                        })
+                        .await
+                }
+            }
         };
         #[cfg(not(test))]
         let outcome = write.await;
@@ -244,13 +300,26 @@ impl EnrollmentWorker {
                         .probes
                         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }
-                let observed = self
-                    .store
-                    .probe_enrollment_commit(&self.machine_id)
-                    .await
-                    .ok()
-                    .and_then(|row| EnrollmentSnapshot::from_row(row, &self.machine_id).ok());
-                if observed.is_some_and(|snapshot| snapshot.generation() == expected) {
+                let observed = if definite_error == CredentialStoreError::Remove {
+                    self.store
+                        .probe_enrollment_ending(&self.machine_id)
+                        .await
+                        .ok()
+                        .and_then(|row| enrollment_metadata(row, &self.machine_id).ok())
+                        .map(|metadata| match metadata {
+                            EnrollmentMetadata::Empty => BindingGeneration::EMPTY,
+                            EnrollmentMetadata::Active { generation, .. }
+                            | EnrollmentMetadata::Ended { generation, .. } => generation,
+                        })
+                } else {
+                    self.store
+                        .probe_enrollment_commit(&self.machine_id)
+                        .await
+                        .ok()
+                        .and_then(|row| EnrollmentSnapshot::from_row(row, &self.machine_id).ok())
+                        .map(|snapshot| snapshot.generation())
+                };
+                if observed == Some(expected) {
                     Err(definite_error)
                 } else {
                     Err(CredentialStoreError::OutcomeNotKnown)
@@ -332,13 +401,10 @@ impl EnrollmentWorker {
         sealed_bytes_present: bool,
     ) -> Result<EnrollmentRowSealer, SecretStoreError> {
         let root = self.secret_root.clone();
-        #[cfg(test)]
-        let keychain = self
-            .test_dependencies
-            .as_ref()
-            .map(|test| Arc::clone(&test.keychain));
+        #[cfg(any(test, all(feature = "test-support", debug_assertions)))]
+        let keychain = self.keychain.clone();
         tokio::task::spawn_blocking(move || {
-            #[cfg(test)]
+            #[cfg(any(test, all(feature = "test-support", debug_assertions)))]
             if let Some(keychain) = keychain {
                 return EnrollmentRowSealer::acquire_with_keychain(
                     &root,
@@ -363,10 +429,10 @@ enum MutationDecision {
     End(EnrollmentEnd),
 }
 
-fn end_row(snapshot: EnrollmentSnapshot, why: EnrollmentEnd) -> EnrollmentRowChange<()> {
-    let EnrollmentSnapshot::Active {
+fn end_row(metadata: EnrollmentMetadata, why: EnrollmentEnd) -> EnrollmentRowChange<()> {
+    let EnrollmentMetadata::Active {
         key, generation, ..
-    } = snapshot
+    } = metadata
     else {
         return EnrollmentRowChange::Abort(());
     };

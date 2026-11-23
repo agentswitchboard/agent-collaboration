@@ -161,6 +161,44 @@ impl StoredEnrollment {
     }
 }
 
+/// Enrollment state available without accessing a refresh credential.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum EnrollmentMetadata {
+    Empty,
+    Active {
+        key: EnrollmentKey,
+        deployment: SignInDeployment,
+        generation: BindingGeneration,
+    },
+    Ended {
+        key: EnrollmentKey,
+        why: EnrollmentEnd,
+        generation: BindingGeneration,
+    },
+}
+
+impl From<StoredEnrollment> for EnrollmentMetadata {
+    fn from(stored: StoredEnrollment) -> Self {
+        match stored {
+            StoredEnrollment::Empty => Self::Empty,
+            StoredEnrollment::Active(binding) => Self::Active {
+                key: binding.key(),
+                deployment: binding.context.deployment,
+                generation: binding.generation,
+            },
+            StoredEnrollment::Ended {
+                key,
+                why,
+                generation,
+            } => Self::Ended {
+                key,
+                why,
+                generation,
+            },
+        }
+    }
+}
+
 /// The command receives this receipt only after sign-in's new binding has been stored.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct EnrollmentReceipt {

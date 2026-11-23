@@ -1,6 +1,9 @@
 use std::future::Future;
 
-use crate::{BindingGeneration, EnrollmentBinding, EnrollmentEnd, StoredEnrollment};
+use crate::{
+    BindingGeneration, EnrollmentBinding, EnrollmentEnd, EnrollmentKey, EnrollmentMetadata,
+    StoredEnrollment,
+};
 
 /// A credential store adapter reports failed operations without carrying secret-bearing errors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -24,6 +27,23 @@ pub enum ConditionalWrite {
     Superseded,
 }
 
+/// An exact-key credential read can classify a replacement without opening its credential.
+#[derive(Debug, Eq, PartialEq)]
+pub enum KeyedEnrollment {
+    Snapshot(StoredEnrollment),
+    DifferentEnrollment,
+}
+
+impl KeyedEnrollment {
+    /// Classifies an already-open, coherent snapshot from an in-memory store.
+    pub fn from_snapshot(snapshot: StoredEnrollment, requested: &EnrollmentKey) -> Self {
+        if snapshot.key().is_some_and(|key| &key != requested) {
+            return Self::DifferentEnrollment;
+        }
+        Self::Snapshot(snapshot)
+    }
+}
+
 /// The store reports whether writing can produce a credential another process can read.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum StoreDurability {
@@ -43,6 +63,17 @@ pub trait CredentialStore: Send + Sync {
     fn durability(&self) -> StoreDurability;
 
     fn read(&self) -> impl Future<Output = Result<StoredEnrollment, CredentialStoreError>> + Send;
+
+    /// Compares the requested key in the same snapshot before opening its credential.
+    fn read_for_key(
+        &self,
+        requested: &EnrollmentKey,
+    ) -> impl Future<Output = Result<KeyedEnrollment, CredentialStoreError>> + Send;
+
+    /// Reads enrollment identity and phase without accessing a refresh credential.
+    fn read_metadata(
+        &self,
+    ) -> impl Future<Output = Result<EnrollmentMetadata, CredentialStoreError>> + Send;
 
     /// Atomically commits the complete binding at expected + 1 if expected is current.
     fn replace(

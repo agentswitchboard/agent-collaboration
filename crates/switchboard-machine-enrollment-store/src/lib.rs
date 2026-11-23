@@ -12,7 +12,8 @@ use router_clock::RuntimeClock;
 use switchboard_machine_core_store::{MachineLocalStore, MachineLocalStoreError};
 use switchboard_machine_enrollment::{
     BindingGeneration, ConditionalWrite, CredentialStore, CredentialStoreError, EnrollmentBinding,
-    EnrollmentEnd, MachineId, StoreDurability, StoredEnrollment,
+    EnrollmentEnd, EnrollmentKey, EnrollmentMetadata, KeyedEnrollment, MachineId, StoreDurability,
+    StoredEnrollment,
 };
 use tokio::{
     sync::{Mutex, mpsc, oneshot, watch},
@@ -21,6 +22,10 @@ use tokio::{
 
 mod enrollment_row_mapping;
 mod enrollment_worker;
+#[cfg(all(feature = "test-support", debug_assertions))]
+pub mod test_support {
+    pub use codex_router_secret_store::keychain_data_key::{KeychainAccess, KeychainAccessError};
+}
 
 use enrollment_worker::{EnrollmentWorker, ReadFailure};
 
@@ -29,6 +34,7 @@ use enrollment_worker::{EnrollmentWorker, ReadFailure};
 pub struct MachineEnrollmentStore {
     requests: mpsc::UnboundedSender<EnrollmentRequest>,
     shutdown: watch::Sender<bool>,
+    enrollment_changes: watch::Sender<u64>,
     worker: Arc<Mutex<WorkerCompletion>>,
 }
 
@@ -49,14 +55,31 @@ impl MachineEnrollmentStore {
         )))
     }
 
+    /// Opens a real fixture database with a caller-owned Keychain test double.
+    #[cfg(all(feature = "test-support", debug_assertions))]
+    pub async fn open_with_test_keychain(
+        database: &Path,
+        secret_root: PathBuf,
+        machine_id: MachineId,
+        clock: Arc<dyn RuntimeClock + Send + Sync>,
+        keychain: Arc<dyn test_support::KeychainAccess>,
+    ) -> Result<Self, MachineLocalStoreError> {
+        let database = MachineLocalStore::open(database).await?;
+        let worker =
+            EnrollmentWorker::new(database, secret_root, machine_id, clock).with_keychain(keychain);
+        Ok(Self::start(worker))
+    }
+
     fn start(worker: EnrollmentWorker) -> Self {
         let (requests, pending) = mpsc::unbounded_channel();
         let (shutdown, closing) = watch::channel(false);
-        let task = tokio::spawn(worker.run(pending, closing));
+        let (enrollment_changes, _) = watch::channel(0);
+        let task = tokio::spawn(worker.run(pending, closing, enrollment_changes.clone()));
         let worker = Arc::new(Mutex::new(WorkerCompletion::Running(task)));
         Self {
             requests,
             shutdown,
+            enrollment_changes,
             worker,
         }
     }
@@ -68,6 +91,11 @@ impl MachineEnrollmentStore {
             WorkerCompletion::Running(task) => task.abort_handle(),
             WorkerCompletion::Closed(_) => panic!("fixture worker already closed"),
         }
+    }
+
+    /// Tracks enrollment changes from this store's worker.
+    pub fn subscribe_enrollment_changes(&self) -> watch::Receiver<u64> {
+        self.enrollment_changes.subscribe()
     }
 
     /// Stops admission and waits for the active operation and connection to settle.
@@ -84,6 +112,23 @@ impl MachineEnrollmentStore {
         };
         *completion = WorkerCompletion::Closed(result.clone());
         result
+    }
+
+    async fn read_enrollment(
+        &self,
+        key: Option<EnrollmentKey>,
+    ) -> Result<KeyedEnrollment, CredentialStoreError> {
+        if *self.shutdown.borrow() {
+            return Err(CredentialStoreError::Read);
+        }
+        let (reply, result) = oneshot::channel();
+        self.requests
+            .send(EnrollmentRequest::Read { key, reply })
+            .map_err(|_| CredentialStoreError::Read)?;
+        result
+            .await
+            .map_err(|_| CredentialStoreError::Read)?
+            .map_err(|_| CredentialStoreError::Read)
     }
 
     async fn mutate(
@@ -117,12 +162,26 @@ impl CredentialStore for MachineEnrollmentStore {
     }
 
     async fn read(&self) -> Result<StoredEnrollment, CredentialStoreError> {
+        match self.read_enrollment(None).await? {
+            KeyedEnrollment::Snapshot(stored) => Ok(stored),
+            KeyedEnrollment::DifferentEnrollment => Err(CredentialStoreError::Read),
+        }
+    }
+
+    async fn read_for_key(
+        &self,
+        requested: &EnrollmentKey,
+    ) -> Result<KeyedEnrollment, CredentialStoreError> {
+        self.read_enrollment(Some(requested.clone())).await
+    }
+
+    async fn read_metadata(&self) -> Result<EnrollmentMetadata, CredentialStoreError> {
         if *self.shutdown.borrow() {
             return Err(CredentialStoreError::Read);
         }
         let (reply, result) = oneshot::channel();
         self.requests
-            .send(EnrollmentRequest::Read(reply))
+            .send(EnrollmentRequest::ReadMetadata(reply))
             .map_err(|_| CredentialStoreError::Read)?;
         result
             .await
@@ -174,7 +233,11 @@ enum WorkerCompletion {
 type WriteResult = Result<ConditionalWrite, CredentialStoreError>;
 
 enum EnrollmentRequest {
-    Read(oneshot::Sender<Result<StoredEnrollment, ReadFailure>>),
+    Read {
+        key: Option<EnrollmentKey>,
+        reply: oneshot::Sender<Result<KeyedEnrollment, ReadFailure>>,
+    },
+    ReadMetadata(oneshot::Sender<Result<EnrollmentMetadata, ReadFailure>>),
     Mutate {
         expected: BindingGeneration,
         mutation: EnrollmentMutation,

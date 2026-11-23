@@ -5,12 +5,9 @@ use std::{
 
 use tokio::sync::oneshot;
 
-use codex_router_secret_store::keychain_data_key::KeychainAccess;
-
 use super::{EnrollmentRowStoreError, EnrollmentRowWrite};
 
 pub(crate) struct TestDependencies {
-    pub(crate) keychain: Arc<dyn KeychainAccess>,
     pub(crate) faults: Arc<TestWriteFaults>,
 }
 

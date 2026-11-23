@@ -11,17 +11,18 @@ mod enrollment_identity;
 mod enrollment_outcome;
 mod refresh_owner;
 mod response_object;
+mod retirement_fence;
 mod sign_in_answers;
 mod sign_in_client;
 
 pub use credential_store::{
-    ConditionalWrite, CredentialStore, CredentialStoreError, StoreDurability,
+    ConditionalWrite, CredentialStore, CredentialStoreError, KeyedEnrollment, StoreDurability,
 };
 pub use credential_value::{RefreshCredential, SecretValue};
 pub use device_state::{DeviceEnrollment, DeviceEnrollmentInput, DevicePollSchedule};
 pub use enrollment_binding::{
-    BindingGeneration, EnrollmentBinding, EnrollmentContext, EnrollmentKey, EnrollmentReceipt,
-    InvalidDeployment, SignInDeployment, StoredEnrollment,
+    BindingGeneration, EnrollmentBinding, EnrollmentContext, EnrollmentKey, EnrollmentMetadata,
+    EnrollmentReceipt, InvalidDeployment, SignInDeployment, StoredEnrollment,
 };
 pub use enrollment_identity::{
     EnrollmentId, EnrollmentIdentifierError, OrganizationId, RouterClientId,
@@ -31,6 +32,7 @@ pub use refresh_owner::{
     AccessLease, AccessRequest, LeaseConfigurationFault, LeaseUnavailable, RefreshOwner,
     RefreshSource,
 };
+pub use retirement_fence::RetirementFence;
 pub use sign_in_answers::{
     DeviceAuthorization, DeviceInstructions, PollAnswer, RefreshAnswer, SignInFailure, TokenGrant,
     decode_device_authorization, decode_poll, decode_refresh, decode_start_failure,

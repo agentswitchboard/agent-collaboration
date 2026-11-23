@@ -1,0 +1,42 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT CAST(machine_id AS BLOB) AS \"machine_id!: Vec<u8>\",\n                  CASE WHEN typeof(enrollment_generation) = 'integer' THEN enrollment_generation END\n                      AS \"generation?: i64\",\n                  CAST(enrollment_json AS BLOB) AS \"metadata?: Vec<u8>\",\n                  (typeof(machine_id) = 'text'\n                   AND typeof(enrollment_json) IN ('text', 'null')) AS \"valid_storage!: bool\"\n           FROM machine_identity LIMIT 2",
+  "describe": {
+    "columns": [
+      {
+        "name": "machine_id!: Vec<u8>",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": "Expression"
+      },
+      {
+        "name": "generation?: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "metadata?: Vec<u8>",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": "Expression"
+      },
+      {
+        "name": "valid_storage!: bool",
+        "ordinal": 3,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      true,
+      true,
+      false
+    ]
+  },
+  "hash": "2216824eff37050ae592c1d5fb0a95a1b8839f533b6ccdc2aa482071c3c8e8b9"
+}

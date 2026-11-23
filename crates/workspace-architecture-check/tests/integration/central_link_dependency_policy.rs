@@ -10,6 +10,9 @@ use super::{
 const CLIENT: &str = "central-link-client";
 const DRIVER: &str = "switchboard-central-link";
 const MAC_STORE: &str = "switchboard-machine-core-store";
+const LEASE: &str = "switchboard-link-lease";
+const ENROLLMENT: &str = "switchboard-machine-enrollment";
+const ENROLLMENT_STORE: &str = "switchboard-machine-enrollment-store";
 const REAL_TEST: &str = "switchboard-central-link-test";
 const TOKIO_CENTRAL: &str = "collaboration-central-tokio";
 const CLOCK_SOURCE: &str = "git+https://github.com/agent-collaboration/agent-fleet-sync.git?rev=b75d072c116afa46cfa82facd34db6317f380687";
@@ -115,6 +118,30 @@ const DRIVER_DEV: &[Edge] = &[
     registry("tracing", true, &[]),
     registry("tracing-subscriber", true, &["env-filter", "fmt", "json"]),
 ];
+const LEASE_NORMAL: &[Edge] = &[
+    workspace(CLIENT, &[]),
+    workspace(DRIVER, &[]),
+    workspace(ENROLLMENT, &[]),
+    workspace("router-clock", &[]),
+    registry(
+        "tokio",
+        true,
+        &[
+            "rt-multi-thread",
+            "macros",
+            "net",
+            "time",
+            "sync",
+            "signal",
+            "process",
+            "io-util",
+        ],
+    ),
+];
+const LEASE_DEV: &[Edge] = &[
+    workspace("router-clock", &["test-support"]),
+    registry("hegeltest", true, &["static-engine"]),
+];
 const REAL_TEST_DEV: &[Edge] = &[
     registry("axum", false, &["http1", "tokio"]),
     registry("tungstenite", false, &[]),
@@ -132,6 +159,9 @@ const REAL_TEST_DEV: &[Edge] = &[
     },
     workspace("fleet-runtime", &["test-support"]),
     workspace(MAC_STORE, &["test-support"]),
+    workspace(LEASE, &[]),
+    workspace(ENROLLMENT, &[]),
+    workspace(ENROLLMENT_STORE, &["test-support"]),
     workspace("switchboard-message-custody", &[]),
     workspace("workspace-ids", &[]),
     workspace("workspace-model", &[]),
@@ -164,6 +194,8 @@ fn edges(owner: &str, kind: DependencyKind) -> &[Edge] {
         (CLIENT, DependencyKind::Dev) => CLIENT_DEV,
         (DRIVER, DependencyKind::Normal) => DRIVER_NORMAL,
         (DRIVER, DependencyKind::Dev) => DRIVER_DEV,
+        (LEASE, DependencyKind::Normal) => LEASE_NORMAL,
+        (LEASE, DependencyKind::Dev) => LEASE_DEV,
         (REAL_TEST, DependencyKind::Dev) => REAL_TEST_DEV,
         _ => &[],
     }
@@ -231,6 +263,7 @@ fn test_constructor_scope(package: &CargoPackage) -> Result<(), PolicyError> {
         let test_api = match dependency.name.as_str() {
             DRIVER => "the link's loopback test constructor",
             MAC_STORE => "the inbox commit pause",
+            ENROLLMENT_STORE => "the enrollment store test Keychain",
             _ => continue,
         };
         if dependency
@@ -354,7 +387,7 @@ pub(super) fn check(metadata: &CargoMetadata) -> Result<(), PolicyError> {
         .filter(|package| workspace_package(metadata, package))
     {
         test_constructor_scope(package)?;
-        if matches!(package.name.as_str(), CLIENT | DRIVER | REAL_TEST) {
+        if matches!(package.name.as_str(), CLIENT | DRIVER | LEASE | REAL_TEST) {
             for dependency in &package.dependencies {
                 check_declaration(metadata, package, dependency)?;
             }

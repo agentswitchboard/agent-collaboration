@@ -24,6 +24,9 @@ mod tls;
 #[path = "enrollment_process_test.rs"]
 mod process;
 
+#[path = "enrollment_keyed_read_test.rs"]
+mod keyed_read;
+
 fn assert_queued<T>(future: Pin<&mut impl Future<Output = T>>) {
     assert!(
         future
@@ -744,4 +747,109 @@ async fn close_finishes_the_started_write_and_refuses_queued_admission() {
         reopened.read().await,
         Ok(StoredEnrollment::Active(successor))
     );
+}
+
+#[tokio::test]
+async fn retirement_uses_valid_metadata_even_when_the_sealed_column_is_unusable() {
+    use switchboard_machine_enrollment::{
+        RefreshAnswer, RefreshCredential, RefreshOwner, RefreshSource,
+    };
+
+    struct UnusedSignIn;
+    impl RefreshSource for UnusedSignIn {
+        async fn refresh(&self, _: &RefreshCredential) -> RefreshAnswer {
+            panic!("retirement must not refresh")
+        }
+    }
+
+    let fixture = Fixture::open().await;
+    let mut connection = fixture.connection().await;
+    for (index, sealed_expression) in [
+        "UPDATE machine_identity SET enrollment_sealed = NULL",
+        "UPDATE machine_identity SET enrollment_sealed = 'not a blob'",
+        "UPDATE machine_identity SET enrollment_sealed = X'01'",
+        "UPDATE machine_identity SET enrollment_sealed = zeroblob(30)",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let before = u64::try_from(index).unwrap() * 2;
+        let binding = fixture.binding(before + 1, ENROLLMENT, TOKEN);
+        fixture.keychain.unavailable.store(false, SeqCst);
+        assert_eq!(
+            fixture.store.replace(generation(before), &binding).await,
+            Ok(ConditionalWrite::Applied)
+        );
+        sqlx::query(sealed_expression)
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        fixture.keychain.unavailable.store(true, SeqCst);
+        let reads = fixture.keychain.reads.load(SeqCst);
+        assert_eq!(fixture.store.read().await, Err(CredentialStoreError::Read));
+
+        let owner = RefreshOwner::new(
+            fixture.store.clone(),
+            UnusedSignIn,
+            fixture.clock.clone(),
+            binding.context.clone(),
+        );
+        let key = binding.key();
+        assert_eq!(
+            owner.end_enrollment(&key, EnrollmentEnd::Revoked).await,
+            Ok(ConditionalWrite::Applied)
+        );
+        assert_eq!(fixture.keychain.reads.load(SeqCst), reads);
+        assert!(row_columns(&mut connection).await.2.is_none());
+        assert_eq!(
+            fixture.store.read().await,
+            Ok(StoredEnrollment::Ended {
+                key,
+                why: EnrollmentEnd::Revoked,
+                generation: generation(before + 2),
+            })
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_enrollment_watch_tracks_applied_and_maybe_committed_changes() {
+    let fixture = Fixture::open().await;
+    let mut changes = fixture.store.subscribe_enrollment_changes();
+    let first = fixture.install().await;
+    assert_eq!(*changes.borrow_and_update(), 1);
+
+    assert_eq!(
+        fixture.store.replace(generation(0), &first).await,
+        Ok(ConditionalWrite::Superseded)
+    );
+    assert!(!changes.has_changed().unwrap());
+
+    fixture.faults.arm(TestWriteFault::BeforeCommit);
+    let second = fixture.binding(2, ENROLLMENT, "fictional-watch-refresh");
+    assert_eq!(
+        fixture.store.replace(generation(1), &second).await,
+        Err(CredentialStoreError::Replace)
+    );
+    assert!(!changes.has_changed().unwrap());
+
+    fixture.faults.arm(TestWriteFault::LoseAcknowledgement);
+    assert_eq!(
+        fixture.store.replace(generation(1), &second).await,
+        Err(CredentialStoreError::OutcomeNotKnown)
+    );
+    assert_eq!(*changes.borrow_and_update(), 2);
+    assert_eq!(
+        fixture.store.read().await,
+        Ok(StoredEnrollment::Active(second))
+    );
+
+    assert_eq!(
+        fixture
+            .store
+            .remove(generation(2), EnrollmentEnd::Revoked)
+            .await,
+        Ok(ConditionalWrite::Applied)
+    );
+    assert_eq!(*changes.borrow_and_update(), 3);
 }
