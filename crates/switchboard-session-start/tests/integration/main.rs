@@ -10,4 +10,5 @@ mod executor;
 mod fixtures;
 mod histories;
 mod model;
+mod revision_4;
 mod wrong_builds;

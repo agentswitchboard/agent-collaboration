@@ -2,18 +2,22 @@
 
 use std::cell::{Cell, RefCell};
 
-use fleet_identity_protocol::{BindFleetSessionReply, CreateFleetSessionReply, SessionSecret};
+use fleet_identity_protocol::SessionSecret;
 use state_machine_core::StateMachine;
 use switchboard_session_start::{
-    BindNotTaken, Directed, DirectiveId, DirectiveResult, EndLeg, EnrollmentEnded, LaunchNotTaken,
-    LaunchResult, LinkNotTaken, LinkResult, OpeningCommit, OpeningNotCommitted, OpeningOutcome,
-    PointerFact, PutSecretResult, SaveResult, SecretFact, SecretIssue, SecretPutRefusal,
-    SecretReadError, SessionSecretStore, SetUpNotTaken, SetUpResult, SnapshotKind, StartAnswer,
-    StartDirective, StartEffect, StartInput, StartMachine, StartNotification, StartRecord,
-    StartRecordError, StartRevision, StartSaveRefusal, StartScope, StartSnapshot,
+    BindNotTaken, Directed, DirectiveId, DirectiveResult, EndLeg, LaunchNotTaken, LaunchResult,
+    LinkNotTaken, LinkResult, OpeningCommit, OpeningNotCommitted, OpeningOutcome, PointerFact,
+    PutSecretNotTaken, PutSecretResult, SaveResult, SecretFact, SecretIssue, SecretPutRefusal,
+    SecretReadError, SessionSecretStore, SetUpNotTaken, SetUpResult, SnapshotKind, SnapshotPhase,
+    StartAnswer, StartDirective, StartEffect, StartInput, StartMachine, StartNotification,
+    StartRecord, StartRecordError, StartRevision, StartSaveRefusal, StartScope, StartSnapshot,
+    StoredFacts,
 };
 
 use super::{choices, fixtures, model::Model};
+
+#[path = "executor_effects.rs"]
+mod effects;
 
 type Record = (StartScope, StartRevision, StartSnapshot);
 
@@ -65,8 +69,8 @@ impl StartRecord for MemoryRecord {
         if self.fence.get() {
             return OpeningOutcome::NotCommitted(OpeningNotCommitted::EnrollmentEnded);
         }
-        assert!(matches!(opening.opened, StartSnapshot::Opened { .. }));
-        match self.save(scope, Some(expected), &opening.opened) {
+        assert_eq!(opening.opened().kind(), SnapshotKind::Opened);
+        match self.save(scope, Some(expected), opening.opened()) {
             Ok(revision) => OpeningOutcome::Committed(revision),
             Err(StartSaveRefusal::RevisionMismatch) => {
                 OpeningOutcome::NotCommitted(OpeningNotCommitted::RevisionMismatch)
@@ -113,6 +117,14 @@ struct HistoryEntry {
     kind: &'static str,
     taken: bool,
     completed: bool,
+    delivered: bool,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum OriginalHold {
+    Held,
+    ProvedGone,
+    Unknown,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -127,7 +139,13 @@ pub(super) struct Executor {
     pub machine: StartMachine,
     model: Model,
     pub pending: Option<Directed>,
-    returned: Option<DirectiveResult>,
+    taken_result: Option<(DirectiveResult, u64)>,
+    returned: Option<(DirectiveResult, u64)>,
+    connection: u64,
+    admitted_bind: Option<u64>,
+    original_hold: OriginalHold,
+    close_attempts: usize,
+    pending_secret: Option<(SecretIssue, SessionSecret)>,
     history: Vec<HistoryEntry>,
     record: MemoryRecord,
     secrets: MemorySecrets,
@@ -143,7 +161,13 @@ impl Executor {
             machine: StartMachine::new(instance.clone()),
             model: Model::new(instance),
             pending: None,
+            taken_result: None,
             returned: None,
+            connection: 1,
+            admitted_bind: None,
+            original_hold: OriginalHold::Unknown,
+            close_attempts: 0,
+            pending_secret: None,
             history: Vec::new(),
             record: MemoryRecord::default(),
             secrets: MemorySecrets::default(),
@@ -159,12 +183,11 @@ impl Executor {
 
     pub(super) fn interrupted() -> Self {
         let mut executor = Self::new();
-        let data = fixtures::snapshot_facts(switchboard_session_start::StartFacts::default());
+        let snapshot = fixtures::snapshot(SnapshotPhase::CreateIntended, StoredFacts::default());
         let instance = fixtures::instance(103);
         let revision = StartRevision::new(1);
-        executor.model = Model::interrupted(instance.clone(), revision, &data);
-        executor.machine =
-            StartMachine::restored(instance, revision, StartSnapshot::CreateIntended(data));
+        executor.model = Model::interrupted(instance.clone(), revision, snapshot.start());
+        executor.machine = fixtures::restore(instance, revision, snapshot);
         executor
     }
 
@@ -209,7 +232,8 @@ impl Executor {
             self.model.envelope.as_ref().map(|_| self.model.attempt)
         );
         assert_eq!(
-            next.facts(),
+            next.facts()
+                .map(switchboard_session_start::StartFacts::as_stored),
             self.model.envelope.as_ref().map(|_| &self.model.facts)
         );
         assert_eq!(next.revision(), self.model.revision);
@@ -240,6 +264,7 @@ impl Executor {
                         kind,
                         taken: false,
                         completed: false,
+                        delivered: false,
                     });
                     assert!(self.pending.replace(directed).is_none());
                 }
@@ -249,6 +274,15 @@ impl Executor {
                 }) => {
                     assert_eq!(self.openings, 1);
                     assert_eq!(self.durable_kind(), Some(SnapshotKind::Opened));
+                }
+                StartEffect::Notification(StartNotification::DiscardPendingSecret(issue)) => {
+                    if self
+                        .pending_secret
+                        .as_ref()
+                        .is_some_and(|(held, _)| held == &issue)
+                    {
+                        self.pending_secret = None;
+                    }
                 }
                 StartEffect::Notification(_) => {}
             }
@@ -266,8 +300,23 @@ impl Executor {
             if before.settlement.is_some() {
                 assert_eq!(before.settlement, after.settlement);
             }
-            if before.secret != SecretFact::None {
+            if matches!(before.secret, SecretFact::Stored(_)) {
                 assert_eq!(before.secret, after.secret);
+            }
+            if before.harness_session_id.is_some() {
+                assert_eq!(before.harness_session_id, after.harness_session_id);
+            }
+            if matches!(
+                before.launch,
+                switchboard_session_start::LaunchFact::Started
+                    | switchboard_session_start::LaunchFact::ProvenNotTaken(_)
+                    | switchboard_session_start::LaunchFact::FailedNoConversation
+                    | switchboard_session_start::LaunchFact::NotKnown
+            ) {
+                assert_eq!(before.launch, after.launch);
+            }
+            if !matches!(before.end, EndLeg::NotDue(_) | EndLeg::Due) {
+                assert_eq!(before.end, after.end);
             }
             if before.pointer != PointerFact::None {
                 assert_eq!(before.pointer, after.pointer);
@@ -295,43 +344,6 @@ impl Executor {
             id.sequence = id.sequence.saturating_sub(1);
         }
         self.feed(StartInput::DirectiveResult { id, result });
-    }
-
-    pub(super) fn take(&mut self, choice: usize, timing: Timing, persist_unknown: bool) {
-        assert!(self.returned.is_none());
-        let directed = self.pending.as_ref().unwrap();
-        let mut results = choices::results(&directed.directive, StartRevision::new(1));
-        let selected = results.swap_remove(choice);
-        if matches!(timing, Timing::FenceBeforeTake) {
-            self.record.fence.set(true);
-        }
-        let local = matches!(
-            directed.directive,
-            StartDirective::Save { .. } | StartDirective::CloseConversation
-        );
-        let fenced_before = self.record.fence.get() && !local;
-        let taken = !fenced_before && !not_taken(&selected);
-        if taken {
-            self.assert_take_allowed(&directed.directive);
-        }
-        let entry = self.history.last_mut().unwrap();
-        assert_eq!(entry.id, directed.id);
-        entry.taken = taken;
-        if matches!(timing, Timing::FenceAfterTake) {
-            self.record.fence.set(true);
-        }
-        let result = if fenced_before {
-            fenced_result(&directed.directive)
-        } else {
-            self.complete_effect(&directed.directive, selected, timing, persist_unknown)
-        };
-        if result == DirectiveResult::SetUp(SetUpResult::OutcomeNotKnown) {
-            self.maybe_running_setup = true;
-        }
-        if matches!(directed.directive, StartDirective::CloseConversation) {
-            self.maybe_running_setup = false;
-        }
-        self.returned = Some(result);
     }
 
     fn assert_take_allowed(&self, directive: &StartDirective) {
@@ -364,111 +376,18 @@ impl Executor {
                 assert_eq!(previous_takes("SendEnd"), 0);
             }
             StartDirective::CloseConversation => assert_eq!(previous_takes("CloseConversation"), 0),
+            StartDirective::PutSecret { issue } => {
+                let (_, snapshot) = self.durable_snapshot().unwrap();
+                assert_eq!(
+                    snapshot.reserved().map(|(_, recorded)| recorded),
+                    Some(issue)
+                );
+            }
             StartDirective::Save { .. }
             | StartDirective::SendCreate(_)
-            | StartDirective::PutSecret { .. }
             | StartDirective::SetUp
             | StartDirective::CommitOpening { .. } => {}
         }
-    }
-
-    fn complete_effect(
-        &self,
-        directive: &StartDirective,
-        selected: DirectiveResult,
-        timing: Timing,
-        persist_unknown: bool,
-    ) -> DirectiveResult {
-        let scope = self.machine.envelope().unwrap().scope();
-        match (directive, selected) {
-            (
-                StartDirective::Save { expected, snapshot },
-                DirectiveResult::Save(SaveResult::Saved(_)),
-            ) => {
-                let revision = self.record.save(scope, *expected, snapshot).unwrap();
-                DirectiveResult::Save(SaveResult::Saved(revision))
-            }
-            (
-                StartDirective::Save { expected, snapshot },
-                result @ DirectiveResult::Save(SaveResult::OutcomeNotKnown),
-            ) if persist_unknown => {
-                self.record.save(scope, *expected, snapshot).unwrap();
-                result
-            }
-            (
-                StartDirective::PutSecret { issue, secret },
-                result @ DirectiveResult::PutSecret(PutSecretResult::Stored),
-            ) => {
-                self.secrets.put(issue, secret.clone()).unwrap();
-                result
-            }
-            (
-                StartDirective::PutSecret { issue, secret },
-                result @ DirectiveResult::PutSecret(PutSecretResult::OutcomeNotKnown),
-            ) if persist_unknown => {
-                self.secrets.put(issue, secret.clone()).unwrap();
-                result
-            }
-            (
-                StartDirective::CommitOpening { expected, opening },
-                DirectiveResult::CommitOpening(OpeningOutcome::Committed(_)),
-            ) => {
-                self.secrets.read(&opening.issue).unwrap();
-                DirectiveResult::CommitOpening(
-                    self.record.commit_opening(scope, *expected, opening),
-                )
-            }
-            (
-                StartDirective::CommitOpening { expected, opening },
-                result @ DirectiveResult::CommitOpening(OpeningOutcome::Uncertain),
-            ) if persist_unknown => {
-                self.record.commit_opening(scope, *expected, opening);
-                result
-            }
-            (
-                _,
-                DirectiveResult::SendCreate(LinkResult::Answered(
-                    CreateFleetSessionReply::Reserved { .. }
-                    | CreateFleetSessionReply::Active { .. },
-                )),
-            ) if self.record.fence.get() || matches!(timing, Timing::RetireConnectionAfterTake) => {
-                DirectiveResult::SendCreate(LinkResult::AnswerLost)
-            }
-            (
-                _,
-                DirectiveResult::SendBind(LinkResult::Answered(BindFleetSessionReply::Active {
-                    ..
-                })),
-            ) if self.record.fence.get() || matches!(timing, Timing::RetireConnectionAfterTake) => {
-                DirectiveResult::SendBind(LinkResult::AnswerLost)
-            }
-            (_, result) => result,
-        }
-    }
-
-    pub(super) fn deliver(&mut self) {
-        let result = self.returned.take().unwrap();
-        let directed = self.pending.take().unwrap();
-        let entry = self.history.last_mut().unwrap();
-        assert_eq!(entry.id, directed.id);
-        assert!(!entry.completed);
-        entry.completed = true;
-        match result {
-            DirectiveResult::Save(
-                SaveResult::NotCommitted
-                | SaveResult::RevisionMismatch
-                | SaveResult::OutcomeNotKnown,
-            ) => self.stopped_by_save = true,
-            DirectiveResult::CommitOpening(OpeningOutcome::Committed(_)) => {
-                self.openings += 1;
-                assert_eq!(self.openings, 1);
-            }
-            _ => {}
-        }
-        self.feed(StartInput::DirectiveResult {
-            id: directed.id,
-            result,
-        });
     }
 
     fn durable_kind(&self) -> Option<SnapshotKind> {
@@ -486,7 +405,8 @@ impl Executor {
         );
         if self.machine.kind().is_terminal() {
             assert!(!self.maybe_running_setup);
-            let incomplete = self.history.iter().filter(|entry| !entry.completed).count();
+            assert!(self.pending_secret.is_none());
+            let incomplete = self.history.iter().filter(|entry| !entry.delivered).count();
             assert_eq!(incomplete, 0);
         }
     }
@@ -509,9 +429,9 @@ fn fenced_result(directive: &StartDirective) -> DirectiveResult {
         StartDirective::SendCreate(_) => {
             DirectiveResult::SendCreate(LinkResult::NotTaken(LinkNotTaken::EnrollmentEnded))
         }
-        StartDirective::PutSecret { .. } => {
-            DirectiveResult::PutSecret(PutSecretResult::NotTaken(EnrollmentEnded))
-        }
+        StartDirective::PutSecret { .. } => DirectiveResult::PutSecret(PutSecretResult::NotTaken(
+            PutSecretNotTaken::EnrollmentEnded,
+        )),
         StartDirective::Launch => {
             DirectiveResult::Launch(LaunchResult::NotTaken(LaunchNotTaken::EnrollmentEnded))
         }
@@ -536,9 +456,9 @@ fn fenced_result(directive: &StartDirective) -> DirectiveResult {
 #[test]
 fn record_and_secret_ports_enforce_revision_fence_and_immutable_issue() {
     let record = MemoryRecord::default();
-    let start = fixtures::snapshot_facts(switchboard_session_start::StartFacts::default());
-    let scope = start.envelope.scope().clone();
-    let initial = StartSnapshot::CreateIntended(start.clone());
+    let initial = fixtures::snapshot(SnapshotPhase::CreateIntended, StoredFacts::default());
+    let envelope = fixtures::envelope();
+    let scope = envelope.scope().clone();
     let revision = record.save(&scope, None, &initial).unwrap();
     assert_eq!(
         record.save(&scope, None, &initial),
@@ -561,19 +481,8 @@ fn record_and_secret_ports_enforce_revision_fence_and_immutable_issue() {
         secrets.put(&issue, fixtures::secret(12)),
         Err(SecretPutRefusal::IssueAlreadyHeld)
     );
-    let opening = OpeningCommit {
-        address: fixtures::address(),
-        session_id: fixtures::central_id(),
-        harness_session_id: fixtures::harness_id(),
-        issue,
-        opened: StartSnapshot::Opened {
-            start,
-            session: switchboard_session_start::OpenedSession {
-                address: fixtures::address(),
-                session_id: fixtures::central_id(),
-            },
-        },
-    };
+    let opening =
+        OpeningCommit::new(&envelope, &fixtures::held_facts(), fixtures::address()).unwrap();
     record.fence.set(true);
     assert_eq!(
         record.commit_opening(&scope, revision, &opening),
@@ -591,6 +500,6 @@ fn record_and_secret_ports_enforce_revision_fence_and_immutable_issue() {
     };
     assert_eq!(
         record.load(&scope).unwrap(),
-        Some((new_revision, opening.opened))
+        Some((new_revision, opening.opened().clone()))
     );
 }

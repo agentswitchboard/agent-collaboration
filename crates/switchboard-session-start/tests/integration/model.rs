@@ -7,11 +7,12 @@ use fleet_identity_protocol::{
 use state_machine_core::TransitionError;
 use switchboard_session_start::{
     CentralStanding, CleanupOutcome, ConversationFact, Directed, DirectiveId, EndLeg, EndNotDue,
-    EndNotSent, EnvelopeRefusal, Exposure, FaultContext, FinishedOutcome, LaunchFact,
-    OpenedSession, OpeningCommit, PointerFact, Recording, SecretFact, SnapshotFacts, SnapshotKind,
-    StartAnswer, StartAsker, StartDirective, StartEffect, StartEnvelope, StartFacts, StartInput,
-    StartInstanceId, StartNotification, StartRefusal, StartRevision, StartSnapshot,
-    StartStateKind as State, StopReason, WaiterSlot,
+    EndNotSent, EnvelopeRefusal, Exposure, FaultContext, FinishedOutcome, IntendedOutcome,
+    LaunchFact, OpenedSession, OpeningCommit, PointerFact, Recording, SecretFact, SnapshotFacts,
+    SnapshotKind, SnapshotPhase, StartAnswer, StartAsker, StartDirective, StartEffect,
+    StartEnvelope, StartFacts, StartInput, StartInstanceId, StartNotification, StartRefusal,
+    StartRevision, StartSnapshot, StartStateKind as State, StopReason, StoredFacts, StoredSnapshot,
+    WaiterSlot,
 };
 
 #[path = "model_rows.rs"]
@@ -24,7 +25,7 @@ use rows::{Destination, Row};
 pub(super) struct Model {
     pub state: State,
     pub envelope: Option<StartEnvelope>,
-    pub facts: StartFacts,
+    pub facts: StoredFacts,
     pub attempt: u64,
     pub revision: Option<StartRevision>,
     pub recording: Recording,
@@ -44,12 +45,13 @@ impl Model {
         Self {
             state: State::NotStarted,
             envelope: None,
-            facts: StartFacts {
+            facts: StoredFacts {
                 create_exposure: Exposure::None,
                 reservation: None,
                 secret: SecretFact::None,
                 pointer: PointerFact::None,
-                launch: LaunchFact::NotSent,
+                launch: LaunchFact::NotIntended,
+                harness_session_id: None,
                 conversation: ConversationFact::None,
                 bind_exposure: Exposure::None,
                 settlement: None,
@@ -78,7 +80,7 @@ impl Model {
         let mut model = Self::new(instance);
         model.state = State::Interrupted;
         model.envelope = Some(data.envelope.clone());
-        model.facts = data.facts.clone();
+        model.facts = data.facts.as_stored().clone();
         model.attempt = data.attempt.get();
         model.revision = Some(revision);
         model.recording = Recording::Recorded;
@@ -136,7 +138,7 @@ impl Model {
                 self.waiters.push(slot);
                 self.write(
                     State::SavingCreate,
-                    StartSnapshot::CreateIntended(self.data()),
+                    self.snapshot(SnapshotPhase::CreateIntended),
                     effects,
                 );
                 return;
@@ -154,7 +156,7 @@ impl Model {
                     self.attempt += 1;
                     self.write(
                         State::SavingCreate,
-                        StartSnapshot::CreateIntended(self.data()),
+                        self.snapshot(SnapshotPhase::CreateIntended),
                         effects,
                     );
                 } else {
@@ -171,7 +173,7 @@ impl Model {
                 self.waiters.push(slot);
                 self.write(
                     State::SavingBind,
-                    StartSnapshot::BindIntended(self.data()),
+                    self.snapshot(SnapshotPhase::BindIntended),
                     effects,
                 );
                 return;
@@ -190,17 +192,14 @@ impl Model {
             Row::Save(state, snapshot) => self.write(state, snapshot, effects),
             Row::Cleanup(outcome, end) => {
                 self.facts.end = end;
-                let snapshot = StartSnapshot::CleaningUp {
-                    start: self.data(),
-                    outcome,
-                };
+                let snapshot = self.snapshot(SnapshotPhase::CleaningUp(outcome));
                 self.write(State::SavingCleanUp, snapshot, effects);
             }
             Row::WindDown(destination) => self.wind_down(destination, effects),
             Row::SaveFailed(why, kind) => self.save_failed(why, kind, effects),
             Row::Idle(state, why) => {
                 self.state = state;
-                let facts = Box::new(self.facts.clone());
+                let facts = self.checked_facts();
                 let answer = why.map_or_else(
                     || StartAnswer::OutcomeNotKnown {
                         facts: facts.clone(),
@@ -213,21 +212,33 @@ impl Model {
                 self.tell_waiters(&answer, effects);
             }
             Row::Finish(destination) => self.finish(destination, effects),
-            Row::WithFault(fault, next) => {
-                effects.push(StartEffect::Notification(StartNotification::ReportFault(
-                    fault,
-                )));
+            Row::Notify(notification, next) => {
+                effects.push(StartEffect::Notification(notification));
                 self.apply(*next, effects);
             }
         }
     }
 
-    fn data(&self) -> Box<SnapshotFacts> {
-        Box::new(SnapshotFacts {
-            envelope: self.envelope.as_ref().unwrap().clone(),
-            attempt: attempt(self.attempt),
-            facts: self.facts.clone(),
-        })
+    fn snapshot(&self, phase: SnapshotPhase) -> StartSnapshot {
+        self.snapshot_with(phase, self.facts.clone())
+    }
+
+    fn snapshot_with(&self, phase: SnapshotPhase, facts: StoredFacts) -> StartSnapshot {
+        let envelope = self.envelope.as_ref().unwrap();
+        StartSnapshot::from_stored(
+            envelope.scope(),
+            StoredSnapshot {
+                envelope: envelope.clone(),
+                attempt: attempt(self.attempt),
+                facts,
+                phase,
+            },
+        )
+        .unwrap()
+    }
+
+    fn checked_facts(&self) -> Box<StartFacts> {
+        Box::new(StartFacts::from_stored(self.facts.clone()).unwrap())
     }
 
     fn issue(&mut self, state: State, directive: StartDirective, effects: &mut Vec<StartEffect>) {
@@ -271,8 +282,8 @@ impl Model {
     }
 
     fn bind(&self) -> StartDirective {
-        let switchboard_session_start::ConversationFact::Held(Some(harness_session_id)) =
-            &self.facts.conversation
+        let (ConversationFact::Held, Some(harness_session_id)) =
+            (self.facts.conversation, &self.facts.harness_session_id)
         else {
             panic!("missing held id")
         };
@@ -306,59 +317,52 @@ impl Model {
         };
         let session = OpenedSession {
             address: address.clone(),
-            session_id: session_id.clone(),
+            session_id,
+            harness_session_id,
+            issue,
         };
-        self.opening = Some(session.clone());
+        let opening = OpeningCommit::new(
+            self.envelope.as_ref().unwrap(),
+            &self.checked_facts(),
+            address,
+        )
+        .unwrap();
+        assert_eq!(opening.association(), &session);
+        self.opening = Some(session);
         StartDirective::CommitOpening {
             expected: self.revision.unwrap(),
-            opening: Box::new(OpeningCommit {
-                address,
-                session_id,
-                harness_session_id,
-                issue,
-                opened: StartSnapshot::Opened {
-                    start: self.data(),
-                    session,
-                },
-            }),
+            opening: Box::new(opening),
         }
     }
 
     fn fault_context(&self) -> FaultContext {
         FaultContext {
             scope: self.envelope.as_ref().unwrap().scope().clone(),
-            facts: Box::new(self.facts.clone()),
+            facts: self.checked_facts(),
         }
     }
 
     fn wind_down(&mut self, destination: Destination, effects: &mut Vec<StartEffect>) {
         use switchboard_session_start::ConversationFact;
-        if matches!(self.facts.conversation, ConversationFact::Held(_)) {
+        if self.facts.conversation == ConversationFact::Held {
             self.close_then = Some(destination);
             self.issue(State::Closing, StartDirective::CloseConversation, effects);
             return;
         }
-        let data = self.data();
         let target = if self.facts.settlement.is_some() {
-            StartSnapshot::Settled(data)
+            SnapshotPhase::Settled
         } else {
             match destination {
-                Destination::Failed(reason) => StartSnapshot::Failed {
-                    start: data,
-                    reason,
-                },
-                Destination::Settled => StartSnapshot::Settled(data),
-                Destination::Fenced => StartSnapshot::Fenced(data),
-                Destination::Unknown(reason) => StartSnapshot::Unknown {
-                    start: data,
-                    reason,
-                },
+                Destination::Failed(reason) => SnapshotPhase::Failed(reason),
+                Destination::Settled => SnapshotPhase::Settled,
+                Destination::Fenced => SnapshotPhase::Fenced,
+                Destination::Unknown(reason) => SnapshotPhase::Unknown(reason),
                 Destination::Opened | Destination::Stopped(..) => {
                     panic!("invalid wind-down destination")
                 }
             }
         };
-        self.write(State::SavingOutcome, target, effects);
+        self.write(State::SavingOutcome, self.snapshot(target), effects);
     }
 
     fn save_failed(
@@ -385,13 +389,36 @@ impl Model {
             Recording::NotKnown => StopReason::RecordNotKnown,
             Recording::Recorded => panic!("confirmed record passed to failure handler"),
         };
-        let destination = Destination::Stopped(stop, while_saving);
+        let intended = if while_saving == SnapshotKind::Opened {
+            None
+        } else {
+            self.save.as_ref().and_then(|snapshot| {
+                if let Some((_, issue)) = snapshot.reserved() {
+                    effects.push(StartEffect::Notification(
+                        StartNotification::DiscardPendingSecret(issue.clone()),
+                    ));
+                }
+                match snapshot.phase() {
+                    SnapshotPhase::Failed(reason) => Some(IntendedOutcome::Failed(reason.clone())),
+                    SnapshotPhase::CleaningUp(CleanupOutcome::Failed(reason)) => {
+                        Some(IntendedOutcome::CleaningUp(reason.clone()))
+                    }
+                    SnapshotPhase::Settled | SnapshotPhase::CleaningUp(CleanupOutcome::Settled) => {
+                        Some(IntendedOutcome::Settled)
+                    }
+                    SnapshotPhase::Fenced => Some(IntendedOutcome::Fenced),
+                    SnapshotPhase::Unknown(reason) => Some(IntendedOutcome::Unknown(*reason)),
+                    _ => None,
+                }
+            })
+        };
+        let destination = Destination::Stopped(stop, while_saving, intended);
         if while_saving == SnapshotKind::CreateIntended
             && self.revision.is_none()
             && why == Recording::NotRecorded
         {
             self.finish(Destination::Failed(FailureReason::CouldNotSave), effects);
-        } else if matches!(self.facts.conversation, ConversationFact::Held(_)) {
+        } else if self.facts.conversation == ConversationFact::Held {
             self.close_then = Some(destination);
             self.issue(State::Closing, StartDirective::CloseConversation, effects);
         } else {
@@ -416,15 +443,19 @@ impl Model {
             Destination::Settled => (State::Settled, FinishedOutcome::Settled),
             Destination::Fenced => (State::Fenced, FinishedOutcome::Fenced),
             Destination::Unknown(reason) => (State::Unknown, FinishedOutcome::Unknown(reason)),
-            Destination::Stopped(why, while_saving) => (
+            Destination::Stopped(why, while_saving, intended) => (
                 State::Stopped,
-                FinishedOutcome::Stopped { why, while_saving },
+                FinishedOutcome::Stopped {
+                    why,
+                    while_saving,
+                    intended,
+                },
             ),
         };
         self.state = state;
         let answer = StartAnswer::Finished {
             outcome,
-            facts: Box::new(self.facts.clone()),
+            facts: self.checked_facts(),
             recording: self.recording,
         };
         self.tell_waiters(&answer, effects);

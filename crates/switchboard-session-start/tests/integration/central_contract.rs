@@ -8,9 +8,10 @@ use fleet_identity_protocol::{
     SessionSecret, SessionSettlement,
 };
 use switchboard_session_start::{
-    CloseResult, DirectiveResult, EndLeg, Exposure, LinkResult, OpeningOutcome, PutSecretResult,
-    SetUpResult, StartAnswer, StartDirective, StartMachine, StartNotification, StartRevision,
-    StartStateKind,
+    BindContradiction, BindReplyKind, CloseResult, CreateAnswer, CreateContradiction,
+    CreateReplyKind, DirectiveResult, EndLeg, Exposure, LinkResult, ObservedReservation,
+    OpeningOutcome, PutSecretResult, SetUpResult, StartAnswer, StartDirective, StartNotification,
+    StartRevision, StartStateKind,
 };
 use workspace_ids::{MachineId, SessionRef};
 
@@ -152,12 +153,72 @@ fn create_call(journey: &Journey) -> CreateFleetSession {
     request.clone()
 }
 
-fn checked_create(request: &CreateFleetSession, reply: CreateFleetSessionReply) -> DirectiveResult {
-    let output = match CreateReplyContext::from_request(request).check(reply) {
-        Ok(checked) => LinkResult::Answered(checked.into_wire()),
-        Err(_) => LinkResult::Contradicted,
+pub(super) fn checked_create(
+    request: &CreateFleetSession,
+    reply: CreateFleetSessionReply,
+) -> (DirectiveResult, Option<SessionSecret>) {
+    use CreateFleetSessionReply as Wire;
+    let answer = match &reply {
+        Wire::Reserved {
+            session_id,
+            reserved_until,
+            ..
+        } => CreateAnswer::Reserved {
+            session_id: session_id.clone(),
+            reserved_until: reserved_until.clone(),
+        },
+        Wire::Superseded {} => CreateAnswer::Superseded,
+        Wire::Active {
+            session_id,
+            address,
+        } => CreateAnswer::Active {
+            session_id: session_id.clone(),
+            address: address.clone(),
+        },
+        Wire::Settled { settlement } => CreateAnswer::Settled {
+            settlement: settlement.clone(),
+        },
+        Wire::Refused { reason } => CreateAnswer::Refused {
+            reason: reason.clone(),
+        },
+        Wire::Conflict {} => CreateAnswer::Conflict,
+        Wire::NoSecret {} => CreateAnswer::NoSecret,
+        Wire::NoSuchSession {} => CreateAnswer::NoSuchSession,
+        Wire::SessionEnded {} => CreateAnswer::SessionEnded,
+        Wire::WrongSecret {} => CreateAnswer::WrongSecret,
     };
-    DirectiveResult::SendCreate(output)
+    match CreateReplyContext::from_request(request).check(reply) {
+        Ok(checked) => {
+            let pending = match checked.into_wire() {
+                Wire::Reserved { secret, .. } => Some(secret),
+                _ => None,
+            };
+            (
+                DirectiveResult::SendCreate(LinkResult::Answered(answer)),
+                pending,
+            )
+        }
+        Err(_) => {
+            let kind = CreateReplyKind::from(&answer);
+            let reservation = match answer {
+                CreateAnswer::Reserved {
+                    session_id,
+                    reserved_until,
+                } => Some(ObservedReservation {
+                    session_id,
+                    reserved_until,
+                }),
+                _ => None,
+            };
+            (
+                DirectiveResult::SendCreate(LinkResult::Contradicted(CreateContradiction {
+                    reply: Some(kind),
+                    reservation,
+                })),
+                None,
+            )
+        }
+    }
 }
 
 fn checked_bind(
@@ -170,7 +231,9 @@ fn checked_bind(
             if &address.machine_id != machine
                 || address.session_id != request.harness_session_id =>
         {
-            LinkResult::Contradicted
+            LinkResult::Contradicted(BindContradiction {
+                reply: Some(BindReplyKind::Active),
+            })
         }
         _ => LinkResult::Answered(reply),
     };
@@ -179,13 +242,18 @@ fn checked_bind(
 
 fn issue_and_hold(journey: &mut Journey, reply: CreateFleetSessionReply) -> SessionSecret {
     let create = create_call(journey);
-    journey.result(checked_create(&create, reply));
-    let StartDirective::PutSecret { secret, issue } = &journey.pending.as_ref().unwrap().directive
-    else {
+    let (result, pending) = checked_create(&create, reply);
+    let received = pending.unwrap();
+    journey.result(result);
+    assert_eq!(
+        journey.snapshot().kind(),
+        switchboard_session_start::SnapshotKind::Reserved
+    );
+    journey.saved();
+    let StartDirective::PutSecret { issue } = &journey.pending.as_ref().unwrap().directive else {
         panic!("expected secret put")
     };
     assert_eq!(issue.attempt, create.attempt);
-    let received = secret.clone();
     journey.result(DirectiveResult::PutSecret(PutSecretResult::Stored));
     assert!(!format!("{:?}", journey.machine).contains(received.expose_secret()));
     assert!(!format!("{:?}", journey.snapshot()).contains(received.expose_secret()));
@@ -291,7 +359,7 @@ fn central_rotates_the_attempt_secret_and_replays_the_same_active_bind() {
     else {
         panic!("opening expected")
     };
-    let persisted = opening.opened.clone();
+    let persisted = opening.opened().clone();
     assert!(!journal.notices.iter().any(|notice| matches!(
         notice,
         StartNotification::Tell {
@@ -302,7 +370,7 @@ fn central_rotates_the_attempt_secret_and_replays_the_same_active_bind() {
     journal.result(DirectiveResult::CommitOpening(OpeningOutcome::Committed(
         StartRevision::new(99),
     )));
-    let mut restarted = Journey::on(StartMachine::restored(
+    let mut restarted = Journey::on(fixtures::restore(
         fixtures::instance(999),
         StartRevision::new(99),
         persisted,
@@ -331,7 +399,12 @@ fn every_half_of_a_wrong_active_address_is_delivered_as_a_contradiction() {
             &fixtures::machine_id(1),
             BindFleetSessionReply::Active { address },
         );
-        assert_eq!(result, DirectiveResult::SendBind(LinkResult::Contradicted));
+        assert_eq!(
+            result,
+            DirectiveResult::SendBind(LinkResult::Contradicted(BindContradiction {
+                reply: Some(BindReplyKind::Active)
+            }))
+        );
         journal.result(result);
         journal.result(DirectiveResult::CloseConversation(CloseResult::Closed));
         journal.saved();

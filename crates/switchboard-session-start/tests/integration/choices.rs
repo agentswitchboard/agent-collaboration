@@ -1,10 +1,11 @@
 use fleet_identity_protocol::{
-    BindFleetSessionReply, CreateFleetSessionReply, CreateSessionRefusal, EndFleetSessionReply,
-    NewAbandonmentCause, NewEndSettlement, RouterEndCause,
+    BindFleetSessionReply, CreateSessionRefusal, EndFleetSessionReply, NewAbandonmentCause,
+    NewEndSettlement, RouterEndCause,
 };
 use switchboard_session_start::{
-    BindNotTaken, CloseResult, DirectiveResult, EnrollmentEnded, LaunchNotTaken, LaunchResult,
-    LinkNotTaken, LinkResult, OpeningNotCommitted, OpeningOutcome, PutSecretResult, SaveResult,
+    BindContradiction, BindNotTaken, CloseResult, CreateAnswer, CreateContradiction,
+    DirectiveResult, EndContradiction, LaunchNotTaken, LaunchResult, LinkNotTaken, LinkResult,
+    OpeningNotCommitted, OpeningOutcome, PutSecretNotTaken, PutSecretResult, SaveResult,
     SetUpNotTaken, SetUpResult, StartDirective, StartRevision,
 };
 
@@ -23,30 +24,30 @@ pub(super) fn results(directive: &StartDirective, revision: StartRevision) -> Ve
         .collect(),
         StartDirective::SendCreate(_) => [
             LinkResult::Answered(reserved()),
-            LinkResult::Answered(CreateFleetSessionReply::Superseded {}),
-            LinkResult::Answered(CreateFleetSessionReply::Active {
+            LinkResult::Answered(CreateAnswer::Superseded),
+            LinkResult::Answered(CreateAnswer::Active {
                 session_id: central_id(),
                 address: address(),
             }),
-            LinkResult::Answered(CreateFleetSessionReply::Settled {
+            LinkResult::Answered(CreateAnswer::Settled {
                 settlement: abandoned(),
             }),
-            LinkResult::Answered(CreateFleetSessionReply::Refused {
+            LinkResult::Answered(CreateAnswer::Refused {
                 reason: CreateSessionRefusal::CreatorNotAllowed {},
             }),
-            LinkResult::Answered(CreateFleetSessionReply::Refused {
+            LinkResult::Answered(CreateAnswer::Refused {
                 reason: CreateSessionRefusal::ParentNotValid {},
             }),
-            LinkResult::Answered(CreateFleetSessionReply::Conflict {}),
-            LinkResult::Answered(CreateFleetSessionReply::NoSecret {}),
-            LinkResult::Answered(CreateFleetSessionReply::NoSuchSession {}),
-            LinkResult::Answered(CreateFleetSessionReply::SessionEnded {}),
-            LinkResult::Answered(CreateFleetSessionReply::WrongSecret {}),
+            LinkResult::Answered(CreateAnswer::Conflict),
+            LinkResult::Answered(CreateAnswer::NoSecret),
+            LinkResult::Answered(CreateAnswer::NoSuchSession),
+            LinkResult::Answered(CreateAnswer::SessionEnded),
+            LinkResult::Answered(CreateAnswer::WrongSecret),
             LinkResult::NotTaken(LinkNotTaken::LinkNotReady),
             LinkResult::NotTaken(LinkNotTaken::EnrollmentEnded),
             LinkResult::AnswerLost,
             LinkResult::ProvenNotWritten,
-            LinkResult::Contradicted,
+            LinkResult::Contradicted(CreateContradiction::default()),
             LinkResult::EnrollmentEnded,
         ]
         .into_iter()
@@ -54,9 +55,11 @@ pub(super) fn results(directive: &StartDirective, revision: StartRevision) -> Ve
         .collect(),
         StartDirective::PutSecret { .. } => [
             PutSecretResult::Stored,
-            PutSecretResult::NotTaken(EnrollmentEnded),
+            PutSecretResult::NotTaken(PutSecretNotTaken::EnrollmentEnded),
             PutSecretResult::NotStored,
             PutSecretResult::OutcomeNotKnown,
+            PutSecretResult::HeldWithDifferentValue,
+            PutSecretResult::NotTaken(PutSecretNotTaken::PendingSecretMissing),
         ]
         .into_iter()
         .map(DirectiveResult::PutSecret)
@@ -100,7 +103,7 @@ pub(super) fn results(directive: &StartDirective, revision: StartRevision) -> Ve
             LinkResult::NotTaken(BindNotTaken::HoldLost),
             LinkResult::AnswerLost,
             LinkResult::ProvenNotWritten,
-            LinkResult::Contradicted,
+            LinkResult::Contradicted(BindContradiction::default()),
             LinkResult::EnrollmentEnded,
         ]
         .into_iter()
@@ -113,6 +116,8 @@ pub(super) fn results(directive: &StartDirective, revision: StartRevision) -> Ve
             OpeningOutcome::NotCommitted(OpeningNotCommitted::RecordUnavailable),
             OpeningOutcome::NotCommitted(OpeningNotCommitted::PreparationFailed),
             OpeningOutcome::Uncertain,
+            OpeningOutcome::NotCommitted(OpeningNotCommitted::ConnectionRetired),
+            OpeningOutcome::NotCommitted(OpeningNotCommitted::HoldLost),
         ]
         .into_iter()
         .map(DirectiveResult::CommitOpening)
@@ -139,7 +144,7 @@ pub(super) fn results(directive: &StartDirective, revision: StartRevision) -> Ve
             LinkResult::NotTaken(LinkNotTaken::EnrollmentEnded),
             LinkResult::AnswerLost,
             LinkResult::ProvenNotWritten,
-            LinkResult::Contradicted,
+            LinkResult::Contradicted(EndContradiction::default()),
             LinkResult::EnrollmentEnded,
         ]
         .into_iter()

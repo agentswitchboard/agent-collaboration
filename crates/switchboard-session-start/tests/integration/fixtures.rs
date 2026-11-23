@@ -1,14 +1,15 @@
 use fleet_identity_protocol::{
-    AbandonedSessionCause, CreateFleetSessionReply, CreateSessionAttempt, CreateSessionKind,
-    HarnessKind, SessionSecret, SessionSettlement, SessionTime,
+    AbandonedSessionCause, CreateSessionAttempt, CreateSessionKind, HarnessKind, SessionSecret,
+    SessionSettlement, SessionTime,
 };
 use state_machine_core::{StateMachine, TransitionError};
 use switchboard_session_start::{
-    CandidateAsker, CentralStanding, Directed, DirectiveId, DirectiveResult, EnvelopeRefusal,
-    LaunchResult, LaunchSpecRef, LinkResult, LocalStartDigest, PutSecretResult, SaveResult,
-    SetUpResult, SnapshotFacts, StartCandidate, StartDirective, StartEffect, StartEnvelope,
-    StartFacts, StartInput, StartInstanceId, StartMachine, StartNotification, StartRefusal,
-    StartRevision, StartScope, StartSnapshot, WaiterSlot,
+    CandidateAsker, CentralStanding, ConversationFact, CreateAnswer, Directed, DirectiveId,
+    DirectiveResult, EnvelopeRefusal, LaunchResult, LaunchSpecRef, LinkResult, LocalStartDigest,
+    PutSecretResult, SaveResult, SetUpResult, SnapshotPhase, StartCandidate, StartDirective,
+    StartEffect, StartEnvelope, StartFacts, StartInput, StartInstanceId, StartMachine,
+    StartNotification, StartRefusal, StartRevision, StartScope, StartSnapshot, StoredFacts,
+    StoredSnapshot, WaiterSlot,
 };
 use workspace_ids::{CentralSessionId, MachineId, SessionId, SessionRef};
 
@@ -78,10 +79,9 @@ pub(super) fn secret(seed: u8) -> SessionSecret {
     SessionSecret::from_bytes(&[seed; 32])
 }
 
-pub(super) fn reserved() -> CreateFleetSessionReply {
-    CreateFleetSessionReply::Reserved {
+pub(super) fn reserved() -> CreateAnswer {
+    CreateAnswer::Reserved {
         session_id: central_id(),
-        secret: secret(17),
         reserved_until: time(),
     }
 }
@@ -97,12 +97,57 @@ pub(super) fn attempt(value: u64) -> CreateSessionAttempt {
     value.try_into().unwrap()
 }
 
-pub(super) fn snapshot_facts(facts: StartFacts) -> Box<SnapshotFacts> {
-    Box::new(SnapshotFacts {
-        envelope: envelope(),
+pub(super) fn snapshot(phase: SnapshotPhase, facts: StoredFacts) -> StartSnapshot {
+    let envelope = envelope();
+    let scope = envelope.scope().clone();
+    StartSnapshot::from_stored(
+        &scope,
+        StoredSnapshot {
+            envelope,
+            attempt: attempt(1),
+            facts,
+            phase,
+        },
+    )
+    .unwrap()
+}
+
+pub(super) fn restore(
+    instance: StartInstanceId,
+    revision: StartRevision,
+    snapshot: StartSnapshot,
+) -> StartMachine {
+    let scope = snapshot.start().envelope.scope().clone();
+    StartMachine::restored(instance, &scope, revision, snapshot).unwrap()
+}
+
+pub(super) fn issue() -> switchboard_session_start::SecretIssue {
+    switchboard_session_start::SecretIssue {
+        enrollment: candidate().scope.enrollment,
+        session_id: central_id(),
         attempt: attempt(1),
-        facts,
+    }
+}
+
+pub(super) fn held_facts() -> StartFacts {
+    use switchboard_session_start::{Exposure, LaunchFact, PointerFact, Reservation, SecretFact};
+    let issue = issue();
+    StartFacts::from_stored(StoredFacts {
+        create_exposure: Exposure::Witnessed,
+        reservation: Some(Reservation {
+            session_id: central_id(),
+            reserved_until: time(),
+            attempt: attempt(1),
+        }),
+        secret: SecretFact::Stored(issue.clone()),
+        pointer: PointerFact::Committed(issue),
+        launch: LaunchFact::Started,
+        harness_session_id: Some(harness_id()),
+        conversation: ConversationFact::Held,
+        bind_exposure: Exposure::Witnessed,
+        ..Default::default()
     })
+    .unwrap()
 }
 
 pub(super) struct Journey {
@@ -185,11 +230,17 @@ impl Journey {
         journey
     }
 
-    pub(super) fn storing_secret() -> Self {
+    pub(super) fn saving_reservation() -> Self {
         let mut journey = Self::creating();
         journey.result(DirectiveResult::SendCreate(
             LinkResult::Answered(reserved()),
         ));
+        journey
+    }
+
+    pub(super) fn storing_secret() -> Self {
+        let mut journey = Self::saving_reservation();
+        journey.saved();
         journey
     }
 

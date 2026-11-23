@@ -1,17 +1,16 @@
-use fleet_identity_protocol::{
-    BindFleetSessionReply, CreateFleetSessionReply, EndFleetSessionReply,
-};
+use fleet_identity_protocol::{BindFleetSessionReply, EndFleetSessionReply};
 use switchboard_session_start::{
-    CandidateAsker, CentralStanding, CloseResult, ConversationFact, DirectiveResult, EndLeg,
-    EnvelopeRefusal, Exposure, FinishedOutcome, LinkResult, LocalStartDigest, OpeningOutcome,
-    PointerFact, PutSecretResult, Recording, SaveResult, SetUpResult, SnapshotKind, StartAnswer,
-    StartDirective, StartEnvelope, StartMachine, StartNotification, StartRefusal, StartRevision,
-    StartSnapshot, StartStateKind, UnknownReason,
+    BindContradiction, CandidateAsker, CentralStanding, CloseResult, ConversationFact,
+    CreateAnswer, CreateContradiction, DirectiveResult, EndLeg, EnvelopeRefusal, Exposure,
+    FinishedOutcome, LinkResult, LocalStartDigest, OpeningOutcome, PointerFact, PutSecretResult,
+    Recording, SaveResult, SetUpResult, SnapshotKind, SnapshotPhase, StartAnswer, StartDirective,
+    StartEnvelope, StartNotification, StartRefusal, StartRevision, StartStateKind, StoredFacts,
+    UnknownReason,
 };
 
 use super::fixtures::{
     Journey, abandoned, address, ask, candidate, central_id, envelope, instance, machine_id,
-    snapshot_facts,
+    restore, snapshot,
 };
 
 fn bind_active() -> DirectiveResult {
@@ -72,7 +71,7 @@ fn unsaved_cleanup_cannot_send_end() {
 fn create_conflict_cannot_send_end() {
     let mut journey = Journey::creating();
     journey.result(DirectiveResult::SendCreate(LinkResult::Answered(
-        CreateFleetSessionReply::Conflict {},
+        CreateAnswer::Conflict,
     )));
     expect_finished_without_end(&mut journey, StartStateKind::Failed);
 }
@@ -82,19 +81,15 @@ fn active_create_without_local_proof_cannot_send_end() {
     let mut journey = Journey::creating();
     let observed = address();
     journey.result(DirectiveResult::SendCreate(LinkResult::Answered(
-        CreateFleetSessionReply::Active {
+        CreateAnswer::Active {
             session_id: central_id(),
             address: observed.clone(),
         },
     )));
-    let StartSnapshot::Failed {
-        reason:
-            switchboard_session_start::FailureReason::ActiveWithoutLocalProof {
-                session_id,
-                address,
-            },
-        ..
-    } = journey.snapshot()
+    let SnapshotPhase::Failed(switchboard_session_start::FailureReason::ActiveWithoutLocalProof {
+        session_id,
+        address,
+    }) = journey.snapshot().phase()
     else {
         panic!("active evidence missing from {:?}", journey.snapshot())
     };
@@ -124,14 +119,18 @@ fn different_bound_id_cannot_send_end() {
 #[test]
 fn contradicted_bind_cannot_send_end() {
     let mut journey = Journey::binding();
-    journey.result(DirectiveResult::SendBind(LinkResult::Contradicted));
+    journey.result(DirectiveResult::SendBind(LinkResult::Contradicted(
+        BindContradiction::default(),
+    )));
     expect_finished_without_end(&mut journey, StartStateKind::Unknown);
 }
 
 #[test]
 fn contradicted_create_cannot_send_end() {
     let mut journey = Journey::creating();
-    journey.result(DirectiveResult::SendCreate(LinkResult::Contradicted));
+    journey.result(DirectiveResult::SendCreate(LinkResult::Contradicted(
+        CreateContradiction::default(),
+    )));
     expect_finished_without_end(&mut journey, StartStateKind::Unknown);
 }
 
@@ -191,7 +190,9 @@ fn record_conflict_closes_once_without_saving_again() {
 #[test]
 fn wrong_bind_address_cannot_be_retried() {
     let mut journey = Journey::binding();
-    journey.result(DirectiveResult::SendBind(LinkResult::Contradicted));
+    journey.result(DirectiveResult::SendBind(LinkResult::Contradicted(
+        BindContradiction::default(),
+    )));
     complete_local_wind_down(&mut journey);
     journey.ask();
     if matches!(
@@ -349,21 +350,22 @@ fn different_asker_cannot_see_stored_start() {
 
 #[test]
 fn nonterminal_snapshots_restore_as_interrupted_and_are_retained() {
-    let data = snapshot_facts(switchboard_session_start::StartFacts::default());
-    for snapshot in [
-        StartSnapshot::CreateIntended(data.clone()),
-        StartSnapshot::CreateUnknown(data.clone()),
-        StartSnapshot::LaunchIntended(data.clone()),
-        StartSnapshot::Held(data.clone()),
-        StartSnapshot::BindIntended(data.clone()),
-        StartSnapshot::BindUnknown(data.clone()),
-        StartSnapshot::CleaningUp {
-            start: data,
-            outcome: switchboard_session_start::CleanupOutcome::Settled,
-        },
-    ] {
+    let mut snapshots = [
+        SnapshotPhase::CreateIntended,
+        SnapshotPhase::CreateUnknown,
+        SnapshotPhase::LaunchIntended,
+        SnapshotPhase::Held,
+        SnapshotPhase::BindIntended,
+        SnapshotPhase::BindUnknown,
+        SnapshotPhase::CleaningUp(switchboard_session_start::CleanupOutcome::Settled),
+    ]
+    .into_iter()
+    .map(|phase| snapshot(phase, StoredFacts::default()))
+    .collect::<Vec<_>>();
+    snapshots.push(Journey::saving_reservation().snapshot().clone());
+    for snapshot in snapshots {
         assert!(snapshot.must_be_retained());
-        let mut journey = Journey::on(StartMachine::restored(
+        let mut journey = Journey::on(restore(
             instance(91),
             StartRevision::new(8),
             snapshot.clone(),
@@ -388,19 +390,21 @@ fn nonterminal_snapshots_restore_as_interrupted_and_are_retained() {
 
 #[test]
 fn settled_restores_as_settled() {
-    let facts = switchboard_session_start::StartFacts {
+    let facts = StoredFacts {
         settlement: Some(abandoned()),
         ..Default::default()
     };
-    let snapshot = StartSnapshot::Settled(snapshot_facts(facts.clone()));
-    let mut journey = Journey::on(StartMachine::restored(
-        instance(91),
-        StartRevision::new(8),
-        snapshot,
-    ));
+    let snapshot = snapshot(SnapshotPhase::Settled, facts.clone());
+    let mut journey = Journey::on(restore(instance(91), StartRevision::new(8), snapshot));
     journey.ask();
     assert_eq!(journey.machine.kind(), StartStateKind::Settled);
-    assert_eq!(journey.machine.facts(), Some(&facts));
+    assert_eq!(
+        journey
+            .machine
+            .facts()
+            .map(switchboard_session_start::StartFacts::as_stored),
+        Some(&facts)
+    );
     assert!(matches!(
         journey.notices.last(),
         Some(StartNotification::Tell {
@@ -416,13 +420,13 @@ fn settled_restores_as_settled() {
 #[test]
 fn settled_with_unknown_close_must_be_retained() {
     for conversation in [ConversationFact::CloseFailed, ConversationFact::NotKnown] {
-        let facts = switchboard_session_start::StartFacts {
+        let facts = StoredFacts {
             conversation,
             create_exposure: Exposure::Witnessed,
             settlement: Some(abandoned()),
             ..Default::default()
         };
-        assert!(StartSnapshot::Settled(snapshot_facts(facts)).must_be_retained());
+        assert!(snapshot(SnapshotPhase::Settled, facts).must_be_retained());
     }
 }
 

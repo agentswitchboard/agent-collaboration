@@ -5,7 +5,7 @@ use state_machine_core::{EventTag, StateMachine, StateTag, Transition};
 use switchboard_session_start::{
     CandidateAsker, CentralStanding, ConversationFact, Directed, EndLeg, EnvelopeRefusal,
     LaunchSpecRef, LocalStartDigest, Recording, SnapshotKind, StartDirective, StartEffect,
-    StartEnvelope, StartInput, StartMachine, StartRevision, StartSnapshot, StartStateKind,
+    StartEnvelope, StartInput, StartMachine, StartRevision, StartStateKind,
 };
 
 use super::{
@@ -27,29 +27,21 @@ const PREFIXES: &[&[usize]] = &[
     &[0, 0, 0, 0, 0, 0, 0],
     &[0, 0, 0, 0, 0, 0, 0, 0],
     &[0, 0, 0, 0, 0, 0, 0, 0, 0],
-    &[0, 0, 0, 0, 0, 0, 3],
-    &[0, 0, 0, 0, 0, 0, 3, 0],
-    &[0, 0, 0, 0, 0, 0, 4],
-    &[0, 0, 0, 0, 0, 0, 4, 0],
+    &[0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    &[0, 0, 0, 0, 0, 0, 0, 3],
+    &[0, 0, 0, 0, 0, 0, 0, 3, 0],
+    &[0, 0, 0, 0, 0, 0, 0, 4],
+    &[0, 0, 0, 0, 0, 0, 0, 4, 0],
     &[0, 13],
     &[0, 13, 0],
-    &[0, 0, 0, 0, 0, 0, 0, 0, 10],
-    &[0, 0, 0, 0, 0, 0, 0, 0, 10, 0],
+    &[0, 0, 0, 0, 0, 0, 0, 0, 0, 10],
+    &[0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 0],
     &[1],
     &[2],
     &[0, 12, 0],
     &[0, 3, 0],
     &[0, 15, 0],
 ];
-
-fn timing(number: u8) -> Timing {
-    match number {
-        0 => Timing::FenceBeforeTake,
-        1 => Timing::FenceAfterTake,
-        2 => Timing::RetireConnectionAfterTake,
-        _ => Timing::BeforeFence,
-    }
-}
 
 fn prefix(indices: &[usize]) -> Executor {
     let mut executor = Executor::new();
@@ -59,8 +51,7 @@ fn prefix(indices: &[usize]) -> Executor {
         CentralStanding::Ready,
     ));
     for index in indices {
-        executor.take(*index, Timing::BeforeFence, false);
-        executor.deliver();
+        executor.complete_step(*index, Timing::BeforeFence, false);
     }
     executor
 }
@@ -76,16 +67,23 @@ fn generated_histories_agree_on_every_effect_and_preserve_take_invariants(case: 
     let steps = case.draw(gs::integers::<u8>().min_value(6).max_value(56));
     for _ in 0..steps {
         let operation = case.draw(gs::integers::<u8>().max_value(9));
-        if operation < 4 {
+        if operation == 0 {
+            executor.end_enrollment();
+        } else if operation == 1 {
+            executor.retire_connection();
+        } else if operation == 2 && executor.machine.kind() == StartStateKind::Opening {
+            executor.lose_original_hold();
+        } else if operation < 6 {
             if executor.result_is_waiting() {
                 executor.deliver();
-            } else if executor.pending.is_some() {
+            } else if executor.is_taken() {
+                executor.complete(case.draw(gs::booleans()));
+            } else if executor.can_take() {
                 let choice =
                     case.draw(gs::integers::<usize>().max_value(executor.selectable_results() - 1));
-                let order = timing(case.draw(gs::integers::<u8>().max_value(16)));
-                executor.take(choice, order, case.draw(gs::booleans()));
+                executor.take(choice);
             }
-        } else if operation < 6 {
+        } else if operation < 8 {
             executor.wrong_id(case.draw(gs::booleans()));
         } else {
             let central = match case.draw(gs::integers::<u8>().max_value(5)) {
@@ -119,7 +117,17 @@ fn every_directive_result_and_fence_order_is_exercised_against_the_model() {
                 let mut executor = prefix(indices);
                 executor.wrong_id(false);
                 executor.wrong_id(true);
-                executor.take(choice, order, true);
+                if matches!(order, Timing::FenceBeforeTake) {
+                    executor.end_enrollment();
+                }
+                executor.take(choice);
+                if matches!(order, Timing::FenceAfterTake) {
+                    executor.end_enrollment();
+                }
+                executor.complete(true);
+                if matches!(order, Timing::RetireConnectionAfterTake) {
+                    executor.retire_connection();
+                }
                 for kind in 0..=7 {
                     let candidate = varied_candidate(&executor.machine, kind);
                     executor.feed(fixtures::ask(
@@ -147,11 +155,9 @@ fn session_asker_replies_obey_the_model_without_storing_a_secret(case: hegel::Te
         StartEnvelope::new(candidate),
         CentralStanding::Ready,
     ));
-    executor.take(0, Timing::BeforeFence, false);
-    executor.deliver();
+    executor.complete_step(0, Timing::BeforeFence, false);
     let choice = case.draw(gs::integers::<usize>().max_value(executor.selectable_results() - 1));
-    executor.take(choice, Timing::BeforeFence, false);
-    executor.deliver();
+    executor.complete_step(choice, Timing::BeforeFence, false);
     assert!(!matches!(
         executor.pending.as_ref().map(|item| &item.directive),
         Some(StartDirective::PutSecret { .. })
@@ -213,7 +219,7 @@ fn edge_class(machine: &StartMachine, directive: Option<&Directed>) -> EdgeClass
         state: machine.kind(),
         first_attempt: machine.attempt() == Some(fixtures::attempt(1)),
         recorded: machine.recording(),
-        held: facts.is_some_and(|facts| matches!(facts.conversation, ConversationFact::Held(_))),
+        held: facts.is_some_and(|facts| facts.conversation == ConversationFact::Held),
         exposure: facts.map(|facts| facts.bind_exposure),
         end_due: facts.is_some_and(|facts| facts.end == EndLeg::Due),
         snapshot: match directive.map(|directed| &directed.directive) {
@@ -226,12 +232,13 @@ fn edge_class(machine: &StartMachine, directive: Option<&Directed>) -> EdgeClass
 #[test]
 fn finite_witnesses_reach_each_declared_edge() {
     let boot = StartMachine::new(fixtures::instance(501));
-    let interrupted = StartMachine::restored(
+    let interrupted = fixtures::restore(
         fixtures::instance(502),
         StartRevision::new(1),
-        StartSnapshot::CreateIntended(fixtures::snapshot_facts(
-            switchboard_session_start::StartFacts::default(),
-        )),
+        fixtures::snapshot(
+            switchboard_session_start::SnapshotPhase::CreateIntended,
+            switchboard_session_start::StoredFacts::default(),
+        ),
     );
     let mut unexplored = VecDeque::from([(boot, None), (interrupted, None)]);
     let mut visited = Vec::new();
