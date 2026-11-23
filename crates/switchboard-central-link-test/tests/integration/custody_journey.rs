@@ -155,9 +155,7 @@ impl CustodyEventSink for RecordCustody {
     }
 }
 
-pub(super) async fn next_flush(
-    events: &mut mpsc::UnboundedReceiver<CustodyTaskEvent>,
-) -> FlushReport {
+async fn next_flush(events: &mut mpsc::UnboundedReceiver<CustodyTaskEvent>) -> FlushReport {
     loop {
         match events.recv().await.unwrap() {
             CustodyTaskEvent::Flush(report) => return report,

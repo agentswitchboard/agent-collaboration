@@ -5,7 +5,7 @@ use switchboard_machine_core_store::OutboxCancellation;
 
 use super::{
     CustodyRequestStatus, DataFrame, Duration, FrameKind, InFlightFrame, LinkFrame, MessageStatus,
-    NetworkCustody, ReceiptResult, assert_one_offer_per_socket, assert_replayed_member, next_flush,
+    NetworkCustody, ReceiptResult, assert_one_offer_per_socket, assert_replayed_member,
     offered_message, queued_message, run_link_case,
 };
 use crate::simulated_link::{CENTRAL, MAC};
@@ -285,13 +285,13 @@ fn a_partition_past_fifteen_minutes_ends_sent_and_unsent_writes() {
             CustodyRequestStatus::InOutbox { .. }
         ));
         case.advance_to(first_cutoff);
-        let ended = next_flush(&mut case.events).await;
+        let ended = case.next_write_report().await;
         assert!(
             matches!(ended.ended.as_slice(), [write] if write.request_id == first.id
             && write.reason == OutboxCancellation::NotConfirmedWithin15Minutes)
         );
         case.advance_to(second_cutoff);
-        let ended = next_flush(&mut case.events).await;
+        let ended = case.next_write_report().await;
         assert!(
             matches!(ended.ended.as_slice(), [write] if write.request_id == second.id
             && write.reason == OutboxCancellation::NotSentWithin15Minutes)

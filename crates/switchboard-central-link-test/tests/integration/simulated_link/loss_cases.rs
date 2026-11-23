@@ -1,7 +1,7 @@
 use super::{
     CustodyRequestStatus, DataFrame, Duration, FrameKind, LinkFrame, MessageId, MessageStatus,
     NetworkCustody, ReceiptFrameOutcome, ReceiptResult, assert_kept_receipt,
-    assert_one_offer_per_socket, assert_replayed_member, next_receipt, offered_message, offers_for,
+    assert_one_offer_per_socket, assert_replayed_member, offered_message, offers_for,
     queued_message, run_link_case,
 };
 
@@ -186,7 +186,7 @@ fn lost_receipt_result_retries_the_durable_decision_without_a_reoffer() {
             case.central_status(&message).await,
             MessageStatus::Delivered { .. }
         ));
-        let previous = next_receipt(&mut case.events).await;
+        let previous = case.next_receipt_outcome().await;
         assert!(
             matches!(
                 previous,

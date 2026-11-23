@@ -3,7 +3,7 @@
     reason = "The test reports the unexpected protocol or custody result."
 )]
 
-use std::{sync::Arc, time::Duration};
+use std::{collections::VecDeque, sync::Arc, time::Duration};
 
 #[path = "loss_cases.rs"]
 mod loss_cases;
@@ -25,6 +25,7 @@ use switchboard_message_custody::{
     custody_task::{CustodyTaskEvent, CustodyTaskHandle, custody_task},
     flush_clock::{FlushJitter, MachineFlushJitter, shared_time_at, wake_for_mark},
     flush_marks::{mark_in_window, next_mark_after},
+    outbox_dispatch::FlushReport,
     outbox_work::OutboxWork,
     receipt_delivery::ReceiptFrameOutcome,
     recipient_inbox::RecipientInbox,
@@ -47,13 +48,14 @@ use super::{
     packet_flight::{FrameKind, InFlightFrame},
     run_link_case,
 };
-use crate::custody_journey::{KnownDeliverySession, RecordCustody, next_flush, next_receipt};
+use crate::custody_journey::{KnownDeliverySession, RecordCustody, next_receipt};
 
 struct NetworkCustody {
     link: SimulatedLink,
     session: SessionRef,
     calls: CustodyTaskHandle,
     events: mpsc::UnboundedReceiver<CustodyTaskEvent>,
+    receipt_outcomes: VecDeque<ReceiptFrameOutcome>,
     stop: watch::Sender<bool>,
     worker: JoinHandle<()>,
     jitter: Arc<MachineFlushJitter>,
@@ -97,6 +99,7 @@ impl NetworkCustody {
             session,
             calls,
             events,
+            receipt_outcomes: VecDeque::new(),
             stop,
             worker,
             jitter,
@@ -204,7 +207,7 @@ impl NetworkCustody {
     }
 
     async fn finish_write(&mut self, receipt: &OutboxReceipt) -> MessageId {
-        let flush = next_flush(&mut self.events).await;
+        let flush = self.next_write_report().await;
         assert!(flush.issues.is_empty(), "{:?}", flush.issues);
         let answer = flush
             .answered
@@ -224,6 +227,19 @@ impl NetworkCustody {
             CustodyRequestStatus::Answered(answer.reply.clone()),
         );
         message_id.clone()
+    }
+
+    async fn next_write_report(&mut self) -> FlushReport {
+        loop {
+            match self.events.recv().await.unwrap() {
+                CustodyTaskEvent::Flush(report) => return report,
+                // Replays and receipts can share a mark and finish in either order.
+                CustodyTaskEvent::Receipt(outcome) => self.receipt_outcomes.push_back(outcome),
+                failure @ (CustodyTaskEvent::Operator(_) | CustodyTaskEvent::Failed(_)) => {
+                    panic!("custody failed before reporting the write: {failure:?}");
+                }
+            }
+        }
     }
 
     async fn wait_for_kept(&mut self, message: &MessageId) {
@@ -306,13 +322,21 @@ impl NetworkCustody {
 
     async fn wait_for_confirmation(&mut self, expected: &[ReceiptResult]) {
         loop {
-            match next_receipt(&mut self.events).await {
+            match self.next_receipt_outcome().await {
                 ReceiptFrameOutcome::Confirmed { results } => {
                     assert_eq!(results, expected);
                     return;
                 }
                 ReceiptFrameOutcome::RetryPending | ReceiptFrameOutcome::StaleCompletion => {}
             }
+        }
+    }
+
+    async fn next_receipt_outcome(&mut self) -> ReceiptFrameOutcome {
+        if let Some(outcome) = self.receipt_outcomes.pop_front() {
+            outcome
+        } else {
+            next_receipt(&mut self.events).await
         }
     }
 
