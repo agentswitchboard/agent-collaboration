@@ -57,6 +57,13 @@ async fn an_ordinary_request_at_the_mark_retains_the_unclaimed_alarm() {
     assert_eq!(alarm_ms(&runtime).await, ms(mark));
     assert_eq!(window_due(&runtime).await, vec![vec![stamp(mark)]]);
     assert_eq!(notices(&runtime).await, 0);
+    let recipients = count(
+        &runtime,
+        "SELECT COUNT(*) FROM mail_notification_windows",
+        vec![],
+    )
+    .await;
+    assert!(recipients > 0);
 
     let callback_count = callbacks(&runtime).await;
     set_now(&fixture, mark);
@@ -79,10 +86,22 @@ async fn an_ordinary_request_at_the_mark_retains_the_unclaimed_alarm() {
         .await
         .unwrap()
         .expect("the retained mark dispatches the real callback");
-    assert_eq!(completion.windows_fired, 1);
+    assert_eq!(
+        completion.windows_fired,
+        usize::try_from(recipients).unwrap()
+    );
     assert_eq!(callbacks(&runtime).await, callback_count + 1);
     assert!(window_due(&runtime).await.is_empty());
-    assert_eq!(notices(&runtime).await, 1);
+    assert_eq!(notices(&runtime).await, recipients);
+    assert_eq!(
+        count(
+            &runtime,
+            "SELECT COUNT(DISTINCT recipient_actor) FROM mail_messages WHERE message_kind='notice'",
+            vec![]
+        )
+        .await,
+        recipients
+    );
     fixture.host.close().await;
 }
 

@@ -178,6 +178,11 @@ impl DueBatchState {
             {
                 let _publication = self.claim_lock();
                 let now = sample_clock()?;
+                if !supported_time(now) {
+                    return Err(StoreFailure::AlarmUnpublishable {
+                        reason: AlarmPublicationFailure::NowOutOfRange,
+                    });
+                }
                 let prior = self.encoded.load(Ordering::Acquire);
                 let current = snapshot(prior);
                 if now < due_at

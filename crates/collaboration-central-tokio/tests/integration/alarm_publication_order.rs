@@ -320,6 +320,7 @@ async fn publication_uses_the_shared_clock_after_both_committed_publication_hold
 async fn postcommit_upper_edge_failure_preserves_applied_rows_and_the_previous_alarm() {
     let root = tempfile::tempdir().unwrap();
     let clock = HeldClock::at(0);
+    let due_batches = Arc::new(fleet_runtime::DueBatchState::default());
     let storage = Arc::new(
         ObjectStorage::new(
             root.path().join("publication-failure.sqlite"),
@@ -327,7 +328,7 @@ async fn postcommit_upper_edge_failure_preserves_applied_rows_and_the_previous_a
         )
         .with_engine_publication(
             clock.clone(),
-            fleet_runtime::engine_alarm_decider(Arc::new(fleet_runtime::DueBatchState::default())),
+            fleet_runtime::engine_alarm_decider(due_batches.clone()),
         ),
     );
     assert_eq!(
@@ -363,6 +364,11 @@ async fn postcommit_upper_edge_failure_preserves_applied_rows_and_the_previous_a
     );
     let previous = storage.alarm();
     assert_eq!(previous, Some(SyncTime::from_unix_millis(600_000)));
+    assert!(
+        due_batches
+            .try_claim(600_000, chrono::Duration::seconds(30))
+            .unwrap()
+    );
     let mut held = storage.hold_alarm_publication();
     let applying = storage.clone();
     let batch =

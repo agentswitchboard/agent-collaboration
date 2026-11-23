@@ -436,7 +436,7 @@ impl CentralObject {
         ending_transport.install_runtime(&central);
         match startup {
             ColdAlarmStart::DriveFollows => central.recompute_alarm().await?,
-            ColdAlarmStart::RecoverOverdueWakes => central.recover_cold_alarm().await?,
+            ColdAlarmStart::RecoverOverdueWakes => Box::pin(central.recover_cold_alarm()).await?,
         }
         *initialized = Some(central.clone());
         Ok(central)

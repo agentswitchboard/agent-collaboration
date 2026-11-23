@@ -118,7 +118,7 @@ impl Machine for AutomationTimer {
                     }
                     None => (
                         State::Done {
-                            evaluated: Some(through),
+                            evaluated: Some(occurrence.max(context.now)),
                         },
                         Effect::ClearSchedule,
                     ),

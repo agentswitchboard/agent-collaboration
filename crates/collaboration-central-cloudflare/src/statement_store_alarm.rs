@@ -33,21 +33,36 @@ pub(super) async fn apply_alarm(
                 }
                 at
             }
-            OwnedAlarmUpdate::Engine(EngineAlarmPlan::Clear) => None,
-            OwnedAlarmUpdate::Engine(EngineAlarmPlan::Recompute) => {
-                let (clock, decide) =
-                    clock.ok_or(BatchStop::Failed(StoreFailure::AlarmUnpublishable {
-                        reason: AlarmPublicationFailure::ClockUnavailable,
-                    }))?;
+            OwnedAlarmUpdate::Engine(plan) => {
                 let mut alarm_executor_lender =
                     WorkerExecutorLender::from_storage_executor(transaction);
-                let alarm_inputs = fleet_engine::read_alarm_inputs(&mut alarm_executor_lender)
-                    .await
-                    .map_err(BatchStop::Failed)?;
-                let retained = storage
-                    .get_alarm()
-                    .await
-                    .map_err(|_| BatchStop::Failed(StoreFailure::Unavailable))?;
+                let (decided, retained) = match plan {
+                    EngineAlarmPlan::Clear => (None, None),
+                    EngineAlarmPlan::Recompute => {
+                        let (clock, decide) =
+                            clock.ok_or(BatchStop::Failed(StoreFailure::AlarmUnpublishable {
+                                reason: AlarmPublicationFailure::ClockUnavailable,
+                            }))?;
+                        let alarm_inputs =
+                            fleet_engine::read_alarm_inputs(&mut alarm_executor_lender)
+                                .await
+                                .map_err(BatchStop::Failed)?;
+                        let retained = storage
+                            .get_alarm()
+                            .await
+                            .map_err(|_| BatchStop::Failed(StoreFailure::Unavailable))?;
+                        let decided = decide(
+                            alarm_inputs,
+                            clock.now().unix_millis(),
+                            &|| retained,
+                            &mut |_| {},
+                        )
+                        .map_err(|reason| {
+                            BatchStop::Failed(StoreFailure::AlarmUnpublishable { reason })
+                        })?;
+                        (decided, retained)
+                    }
+                };
                 #[cfg(feature = "test-support")]
                 worker::console_log!(
                     "Central alarm input SELECTs: {}",
@@ -55,13 +70,6 @@ pub(super) async fn apply_alarm(
                         .read_dispatches
                         .load(std::sync::atomic::Ordering::Relaxed)
                 );
-                let decided = decide(
-                    alarm_inputs,
-                    clock.now().unix_millis(),
-                    &|| retained,
-                    &mut |_| {},
-                )
-                .map_err(|reason| BatchStop::Failed(StoreFailure::AlarmUnpublishable { reason }))?;
                 if let Some(unix_millis) = decided.filter(|mark| Some(*mark) == retained) {
                     return Ok(AlarmPublication::Set { unix_millis });
                 }

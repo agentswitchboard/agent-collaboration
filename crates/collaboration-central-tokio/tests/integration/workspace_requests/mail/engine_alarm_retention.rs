@@ -58,6 +58,13 @@ async fn an_ordinary_request_at_the_mark_retains_the_unclaimed_alarm() {
     assert_eq!(alarm_ms(&runtime), ms(mark));
     assert_eq!(window_due(&runtime).await, vec![vec![stamp(mark)]]);
     assert_eq!(notices(&runtime).await, 0);
+    let recipients = count(
+        &runtime,
+        "SELECT COUNT(*) FROM mail_notification_windows",
+        vec![],
+    )
+    .await;
+    assert!(recipients > 0);
 
     driver_settled(&fixture, &runtime).await;
     let completed = runtime.runtime().alarm_completion_count();
@@ -91,7 +98,16 @@ async fn an_ordinary_request_at_the_mark_retains_the_unclaimed_alarm() {
     held.release();
     runtime.runtime().until_alarm_completed(completed + 1).await;
     assert!(window_due(&runtime).await.is_empty());
-    assert_eq!(notices(&runtime).await, 1);
+    assert_eq!(notices(&runtime).await, recipients);
+    assert_eq!(
+        count(
+            &runtime,
+            "SELECT COUNT(DISTINCT recipient_actor) FROM mail_messages WHERE message_kind='notice'",
+            vec![]
+        )
+        .await,
+        recipients
+    );
     fixture.host.close().await;
 }
 

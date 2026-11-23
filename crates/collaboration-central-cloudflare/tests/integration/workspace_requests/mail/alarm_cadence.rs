@@ -5,7 +5,7 @@ use workspace_model::central_mail::{
 };
 
 #[tokio::test]
-async fn a_pending_due_at_now_recomputes_to_the_next_mark() {
+async fn a_cold_open_at_the_due_mark_applies_the_accepted_wake_and_clears_the_alarm() {
     let mut fixture = Fixture::new().await;
     let due = chrono::DateTime::from_timestamp_millis(fixture.clock.0.load(Ordering::SeqCst))
         .unwrap()
@@ -50,12 +50,12 @@ async fn a_pending_due_at_now_recomputes_to_the_next_mark() {
             .control::<Option<i64>>("raw-alarm-time", &())
             .await
             .unwrap(),
-        Some((due + chrono::Duration::minutes(5)).timestamp_millis())
+        None
     );
     assert_eq!(
         rows.rows,
         vec![vec![central_storage::SqlValue::Integer(
-            0.try_into().unwrap()
+            1.try_into().unwrap()
         )]]
     );
     fixture.host.close().await;

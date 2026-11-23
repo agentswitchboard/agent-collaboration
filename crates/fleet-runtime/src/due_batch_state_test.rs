@@ -210,3 +210,34 @@ async fn a_due_alarm_waits_for_the_prior_requests_selection_at_the_mark() {
     drop(ordinary);
     assert!(alarm(300_001).await.unwrap().is_none());
 }
+
+#[tokio::test]
+async fn overdue_wake_admission_observes_a_cap_discovered_by_the_earlier_claim() {
+    let batches = DueBatchState::default();
+    let time = |millis| central_engine_model::EngineTime::from_timestamp_millis(millis).unwrap();
+    let claim = batches
+        .begin_batch(
+            || Ok(time(300_000)),
+            chrono::Duration::seconds(30),
+            DueBatchTrigger::Alarm,
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    let mut entering =
+        std::pin::pin!(batches.admit_overdue_wake(time(300_001), || Ok(time(331_000))));
+    tokio::select! {
+        biased;
+        _ = &mut entering => panic!("the wake bypassed unfinished discovery"),
+        () = async {} => {},
+    }
+    claim.record_selection(true);
+    drop(claim);
+    assert!(!entering.await.unwrap());
+    assert!(
+        batches
+            .admit_overdue_wake(time(300_001), || Ok(time(600_000)))
+            .await
+            .unwrap()
+    );
+}

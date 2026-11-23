@@ -97,13 +97,29 @@ async fn an_unpublishable_alarm_rolls_back_rows_and_keeps_the_real_deadline() {
 
     let result = runtime
         .run_batch(StatementBatch {
-            statements: vec![GuardedStatement {
-                statement: Statement {
-                    sql: "UPDATE automation_wakes SET text='must roll back' WHERE wake_id=?",
-                    args: vec![text(&wake_id)],
+            statements: vec![
+                GuardedStatement {
+                    statement: Statement {
+                        sql: "UPDATE automation_wakes SET text='must roll back' WHERE wake_id=?",
+                        args: vec![text(&wake_id)],
+                    },
+                    expect: RowExpectation::Exactly(1),
                 },
-                expect: RowExpectation::Exactly(1),
-            }],
+                GuardedStatement {
+                    // The pending item moves beyond the previously armed mark;
+                    // holding the old alarm would no longer serve any due work.
+                    statement: Statement {
+                        sql: "UPDATE engine_due_entries SET effective_due_ms=? WHERE work_kind='wake_timer' AND subject_key=?",
+                        args: vec![
+                            central_storage::SqlValue::Integer(
+                                (prior.unwrap() + 300_000).try_into().unwrap(),
+                            ),
+                            text(&wake_id),
+                        ],
+                    },
+                    expect: RowExpectation::Exactly(1),
+                },
+            ],
             alarm: AlarmUpdate::Engine(EngineAlarmPlan::Recompute),
         })
         .await;

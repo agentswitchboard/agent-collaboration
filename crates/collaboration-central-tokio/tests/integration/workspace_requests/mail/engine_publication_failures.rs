@@ -63,7 +63,7 @@ async fn a_post_commit_publication_failure_keeps_committed_rows_and_the_previous
             .take_alarm_publication_failures()
             .is_empty()
     );
-    // A due batch claimed here has no representable 30 s floor, so the
+    // A due batch claimed here has no representable later mark, so the
     // decision fails only after the database committed.
     let edge = MAX_ALARM_UNIX_MILLIS - 10_000;
     // The upper edge needs organization authority and a machine token live then.
@@ -148,6 +148,18 @@ async fn with_no_later_mark_the_alarm_is_unpublishable_and_nothing_is_armed() {
     assert!(
         (NO_LATER_MARK_UNIX_MILLIS.div_euclid(300_000) + 1) * 300_000 > MAX_ALARM_UNIX_MILLIS,
         "the fixture time has no later mark"
+    );
+    // The retained mark has already been claimed. A successful re-arm must
+    // choose a later mark, which the upper-edge clock cannot represent.
+    assert!(
+        runtime
+            .runtime()
+            .due_batches()
+            .try_claim(
+                at(start, 5, 0, 0).timestamp_millis(),
+                chrono::Duration::seconds(30)
+            )
+            .unwrap()
     );
     let completed = runtime.runtime().alarm_completion_count();
     fixture.set_utc(from_ms(NO_LATER_MARK_UNIX_MILLIS)).await;
