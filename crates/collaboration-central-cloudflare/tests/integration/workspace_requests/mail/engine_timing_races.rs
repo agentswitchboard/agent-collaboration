@@ -75,7 +75,7 @@ async fn overlapping_publications_keep_the_exact_window_deadline() {
     assert_eq!(
         alarm_ms(&runtime).await,
         ms(at(start, 5, 0, 0)),
-        "A, published last, used B's floor and never 10:05:00"
+        "later publication kept the notice window’s exact deadline"
     );
     assert_eq!(
         window_due(&runtime).await,
@@ -119,8 +119,8 @@ async fn a_request_held_across_a_capped_drain_does_not_rearm_finished_work() {
     );
     assert_eq!(
         alarm_ms(&runtime).await,
-        None,
-        "A did not resurrect completed work"
+        ms(at(start, 20, 0, 0)),
+        "only the competing direct-mail request’s own deadline remains"
     );
     fixture.host.close().await;
 }
@@ -230,7 +230,7 @@ async fn a_wake_due_with_a_window_fires_early_and_the_window_waits_for_its_slot(
     );
     assert_eq!(notices(&runtime).await, 0, "the window is not run early");
     assert_eq!(alarm_ms(&runtime).await, ms(at(start, 15, 0, 0)));
-    set_now(&fixture, at(start, 15, 9, 999));
+    set_now(&fixture, at(start, 14, 59, 999));
     assert!(runtime.dispatch_due_alarm().await.unwrap().is_none());
     set_now(&fixture, at(start, 15, 0, 0));
     assert!(runtime.dispatch_due_alarm().await.unwrap().is_some());

@@ -484,6 +484,9 @@ async fn a_retired_engine_source_is_never_read_until_retry_and_other_kinds_run()
         refused("discardUnsupported")
     );
 
+    let current = engine.runtime().await;
+    let point = "beforeDeferredDueWork";
+    let _: bool = current.control("hold-central", &point).await.unwrap();
     assert_eq!(
         engine.retry(&attempt).await,
         json!({"result":"engineRetried"})
@@ -494,6 +497,7 @@ async fn a_retired_engine_source_is_never_read_until_retry_and_other_kinds_run()
             .await
             .is_empty()
     );
+    let _: bool = current.control("release-central", &point).await.unwrap();
     engine.settle_reply_drains().await;
     assert_eq!(
         engine.record("engine_source", "wake_timer").await[0][..2],

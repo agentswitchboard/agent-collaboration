@@ -20,18 +20,28 @@ pub async fn capped_drain_hands_its_tail_to_the_next_mark<W: DueDrainWitness>(
     due_in_order: &[W::Key],
     fallback_mark: i64,
 ) {
-    assert_eq!(due_in_order.len(), OVERFLOW_POPULATION as usize);
+    assert_eq!(
+        u32::try_from(due_in_order.len()).ok(),
+        Some(OVERFLOW_POPULATION)
+    );
     let started = std::time::Instant::now();
     witness.drive_first_mark().await;
     println!(
         "four-pass local drain: {:.3} ms",
         started.elapsed().as_secs_f64() * 1e3
     );
-    assert_eq!(
-        witness.read_finished_keys().await,
-        due_in_order[..FOUR_BATCH_ITEMS]
+    assert!(
+        witness
+            .read_finished_keys()
+            .await
+            .iter()
+            .eq(due_in_order.iter().take(FOUR_BATCH_ITEMS))
     );
-    assert_eq!(witness.read_effect_count().await, FOUR_BATCH_ITEMS as i64);
+
+    assert_eq!(
+        usize::try_from(witness.read_effect_count().await).ok(),
+        Some(FOUR_BATCH_ITEMS)
+    );
     assert_eq!(witness.read_pending_alarm().await, Some(fallback_mark));
 
     witness.drive_next_mark().await;

@@ -51,11 +51,9 @@ async fn invalid_open_window_is_rejected_before_alarm_changes_queue_or_cursor() 
         assert_eq!(before.rows[0][2], SqlValue::Integer(2.try_into().unwrap()));
         assert_eq!(before.rows[0][3], SqlValue::Integer(0.try_into().unwrap()));
         let prior_alarm: Option<i64> = runtime.control("raw-alarm-time", &()).await.unwrap();
-        assert!(prior_alarm.is_some());
+        let due = prior_alarm.expect("the open windows have a retained alarm");
         execute(&f, sql, vec![text(&actor)]).await;
-        // Embedded setup allowance: the fixture's setup claimed the due batch at T0.
-        let start = f.clock.0.load(Ordering::SeqCst);
-        f.clock.0.store(start + 30_000, Ordering::SeqCst);
+        f.clock.0.store(due, Ordering::SeqCst);
         // Isolation: the window unit fails as a whole with no window, queue or
         // cursor change; the real alarm handler succeeds and re-arms, and the
         // failure is the unit's record.
@@ -71,7 +69,10 @@ async fn invalid_open_window_is_rejected_before_alarm_changes_queue_or_cursor() 
             receipt.result,
             super::super::workerd_host::AlarmReceiptResult::Applied { .. }
         ));
-        assert_eq!(receipt.alarm_after, Some(start + 300_000));
+        assert_eq!(
+            receipt.alarm_after,
+            Some((due.div_euclid(300_000) + 1) * 300_000)
+        );
         let record = runtime.statement_host().read(Statement { sql: "SELECT state,failure_count,last_failure,last_failure_detail FROM engine_work_attempts WHERE machine_kind='legacy_notice_windows' AND subject_key='all'", args: vec![] }).await.unwrap();
         assert_eq!(
             &record.rows[0][..3],

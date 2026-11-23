@@ -496,6 +496,11 @@ async fn a_retired_engine_source_is_never_read_until_retry_and_other_kinds_run()
         refused("discardUnsupported")
     );
 
+    let current = engine.runtime().await;
+    let held = current
+        .runtime()
+        .pause_points()
+        .hold_central(fleet_runtime::PausePoint::BeforeDeferredDueWork);
     assert_eq!(
         engine.retry(&attempt).await,
         json!({"result":"engineRetried"})
@@ -506,6 +511,7 @@ async fn a_retired_engine_source_is_never_read_until_retry_and_other_kinds_run()
             .await
             .is_empty()
     );
+    held.release();
     engine.settle_reply_drains().await;
     assert_eq!(
         engine.record("engine_source", "wake_timer").await[0][..2],

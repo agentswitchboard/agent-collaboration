@@ -440,6 +440,11 @@ async fn system_expiry_failure_updates_projection_through_retirement_and_admin_r
     engine
         .raw("DROP TRIGGER reject_notice_expiry", vec![])
         .await;
+    let current = engine.runtime().await;
+    let held = current
+        .runtime()
+        .pause_points()
+        .hold_central(fleet_runtime::PausePoint::BeforeDeferredDueWork);
     assert_eq!(
         engine.retry(&attempt).await,
         serde_json::json!({"result":"engineRetried"})
@@ -447,6 +452,7 @@ async fn system_expiry_failure_updates_projection_through_retirement_and_admin_r
     assert!(engine.record(KIND, key).await.is_empty());
     assert_expiry_projection(&engine, key, expiry, Some(expiry), expiry).await;
 
+    held.release();
     engine.settle_reply_drains().await;
     assert_eq!(
         engine
