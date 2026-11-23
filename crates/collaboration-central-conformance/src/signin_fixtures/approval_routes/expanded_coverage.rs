@@ -19,6 +19,7 @@ pub enum ExpandedCase {
     Binding(SignedMutation),
     SparseWaitingPage,
     OtherDestinationAnswer,
+    StoredMilliseconds,
     SignedInDecisions,
     Applying(ClockBoundary),
 }
@@ -49,6 +50,7 @@ pub(super) async fn check_expanded(
         ExpandedCase::Binding(mutation) => check_binding(host, &owner, mutation).await,
         ExpandedCase::SparseWaitingPage => check_sparse_page(host, &owner).await,
         ExpandedCase::OtherDestinationAnswer => check_other_destination(host, &owner).await,
+        ExpandedCase::StoredMilliseconds => check_stored_milliseconds(host, &owner).await,
         ExpandedCase::SignedInDecisions => check_signed_in_decisions(host, owner).await,
         ExpandedCase::Applying(boundary) => check_applying_boundary(host, owner, boundary).await,
     }
@@ -364,4 +366,76 @@ async fn check_signed_in_decisions(
     assert_count(host, "SELECT COUNT(*) FROM admin_used_requests", 6).await?;
     assert_count(host, "SELECT COUNT(*) FROM runtime_request_log", 6).await?;
     assert_count(host, "SELECT COUNT(*) FROM actor_persons", 1).await
+}
+
+/// Freeze literal timestamp values in the observed JSON and in the owning rows.
+async fn check_stored_milliseconds(
+    host: &impl PersonApprovalHarness,
+    owner: &Person,
+) -> ConformanceResult<()> {
+    const RAISED_AT: &str = "2030-03-17T17:46:30.123Z";
+    const DEADLINE: &str = "2030-03-17T18:46:30.123Z";
+    const ENDED_AT: &str = "2030-03-17T17:46:40.456Z";
+
+    let class = AnswerClass::HeldEndDecline;
+    let request = seed(
+        host,
+        10,
+        class,
+        InitialApproval::WaitingAt(RAISED_AT.parse()?),
+    )
+    .await?;
+    let answer = class.answer();
+    let decide_now = decide(&request, &id(100), &answer);
+    let headers = decide_now.headers(owner, &fresh_request_id(NOW_SECONDS)?, &|_| {})?;
+
+    // Advance only after the valid signed call reaches the applying hold.
+    let first = host
+        .post_after_verification(decide_now.path, &decide_now.body, headers, 456)
+        .await?;
+    expect(first, 200, saved(&answer))?;
+    let stored = host
+        .read("SELECT first_saved_at, deadline_ms, ended_at FROM approval_requests")
+        .await?;
+    require(
+        stored
+            == vec![vec![
+                SqlValue::Text(RAISED_AT.to_owned()),
+                SqlValue::Integer(1_900_003_590_123_i64.try_into()?),
+                SqlValue::Text(ENDED_AT.to_owned()),
+            ]],
+        &json!({"stored":stored}),
+    )?;
+
+    expect(
+        list("all", None).send(host, owner).await?,
+        200,
+        json!({"kind":"page","items":[{
+            "requestId":request, "kind":"unprovenCall", "state":{"kind":"ended","ending":"decided"},
+            "raisedAt":RAISED_AT, "deadline":DEADLINE
+        }],"next":null}),
+    )?;
+    expect(
+        read(&request).send(host, owner).await?,
+        200,
+        json!({"kind":"request", "view":{
+            "kind":"unprovenCall", "requestId":request,
+            "offer":{"operation":{"kind":"endSessionForGood","sessionId":"019f0000-0000-7000-8000-00000000c304"}},
+            "state":{"kind":"ended", "ending":{"kind":"giver","decision":"decline","personId":owner.id},
+                "endedAt":ENDED_AT, "delivery":{"kind":"owed"}},
+            "window":{"raisedAt":RAISED_AT,"deadline":DEADLINE}
+        }}),
+    )?;
+
+    let losing_decide = decide(&request, &id(101), &answer);
+    let earlier_decision = losing_decide.send(host, owner).await?;
+    expect(
+        earlier_decision.clone(),
+        200,
+        json!({"kind":"alreadyDecided","by":{"kind":"person","personId":owner.id},"at":ENDED_AT}),
+    )?;
+    require(
+        losing_decide.send(host, owner).await? == earlier_decision,
+        &json!({"expected":"byte-identical replay of the stored fractional decision time"}),
+    )
 }

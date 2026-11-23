@@ -124,6 +124,7 @@ impl AnswerClass {
 #[derive(Clone, Copy)]
 pub(super) enum InitialApproval {
     Waiting,
+    WaitingAt(CentralTime),
     Hidden,
     PastDeadline,
     DeadlineInOneSecond,
@@ -151,6 +152,7 @@ pub(super) async fn seed_in_organization(
     let destination_id = id(2000 + serial);
     let raise = class.raise(&request_id)?;
     let raised = match initial {
+        InitialApproval::WaitingAt(at) => at,
         InitialApproval::PastDeadline => time(-3600)?,
         InitialApproval::DeadlineInOneSecond => time(-3599)?,
         InitialApproval::Waiting | InitialApproval::Hidden | InitialApproval::Cancelled => {
@@ -173,6 +175,7 @@ pub(super) async fn seed_in_organization(
             text("closed_without_receipt"),
         ),
         InitialApproval::Waiting
+        | InitialApproval::WaitingAt(_)
         | InitialApproval::Hidden
         | InitialApproval::PastDeadline
         | InitialApproval::DeadlineInOneSecond => {

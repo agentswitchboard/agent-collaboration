@@ -41,7 +41,7 @@ Every row below consumes one fresh DPoP proof marker in the applying transaction
 | Decide `operationConflict` | 200 | Preserve the first result. No actor mint or new approval or operation write. | `operation_conflict` |
 | Exact retained Decide retry with a fresh proof, with or without the grant | 200, original result | Return the retained response for the same person, operation ID and canonical intent within the 24-hour retention window. Validate any claimed decision against the stored ending. The approval, actor and operation record remain intact. Applying token, authority, and proof checks still run. | `exact_replay`, `replay_after_permission_loss` |
 
-List scans 100 records per page in descending request ID order. `next` is required and null at the end. A waiting page can omit settled timeouts and still supply a continuation. Read uses the existing private projection, including the distinction between a person's own answer and another destination's standing. Approval times use RFC 3339.
+List scans 100 records per page in descending request ID order. `next` is required and null at the end. A waiting page can omit settled timeouts and still supply a continuation. Read uses the existing private projection, including the distinction between a person's own answer and another destination's standing. Approval times use UTC RFC 3339 with a `Z` suffix. Live replies emit whole seconds or exactly three fractional digits because approval rows store and check millisecond precision. The byte vectors also exercise six and nine fractional digits supported by the Chrono codec. Those wider values do not come from C3 approval rows.
 
 ## Permission and authorization
 

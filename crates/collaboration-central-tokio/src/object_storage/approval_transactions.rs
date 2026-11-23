@@ -159,6 +159,12 @@ impl OrganizationApprovalTransactions for NativeSessionTransactions {
             if let AlarmPublication::Failed { reason } = publication {
                 match alarm {
                     ApprovalAlarmPublication::WithPersonCommit(receipt) => {
+                        #[cfg(feature = "test-support")]
+                        self.storage
+                            .publication_failures
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner)
+                            .push(reason);
                         let _ = receipt.set(reason);
                     }
                     ApprovalAlarmPublication::WithCommit

@@ -79,6 +79,10 @@ macro_rules! person_approval_cases {
         $case!(decide_cancelled, Case::DecideCancelled);
         $case!(applying_time_floor, Case::ApplyingTimeFloor);
         $case!(already_decided, Case::AlreadyDecided);
+        $case!(
+            stored_milliseconds_round_trip_on_all_routes,
+            Case::Expanded(ExpandedCase::StoredMilliseconds)
+        );
         $case!(invalid_answer, Case::InvalidAnswer);
         $case!(
             operation_conflict,

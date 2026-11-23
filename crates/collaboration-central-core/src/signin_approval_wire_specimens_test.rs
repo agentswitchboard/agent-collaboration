@@ -20,6 +20,7 @@ pub fn approval_wire_requests(name: &str) -> Vec<WireSpecimen> {
             FleetPermission::ViewOrganization,
             FleetPermission::ReadOrganizationAudit,
             FleetPermission::DecideApproval,
+            FleetPermission::RepairWork,
         ]
         .into_iter()
         .map(|permission| json!(permission.as_str()))
@@ -114,19 +115,31 @@ fn signed_approval_intents_and_closed_replies_match_their_fixed_bytes() {
     check_replies::<ApprovalListReply>(&replies["ApprovalListReply"]);
     check_replies::<ApprovalReadReply>(&replies["ApprovalReadReply"]);
     check_replies::<ApprovalDecideReply>(&replies["ApprovalDecideReply"]);
-    let read = serde_json::from_str::<ApprovalReadReply>(
-        replies["ApprovalReadReply"][0].as_str().unwrap(),
-    )
-    .unwrap();
-    let ApprovalReadReply::Request { view } = read else {
-        panic!("expected request view")
-    };
-    let list: Value =
-        serde_json::from_str(replies["ApprovalListReply"][0].as_str().unwrap()).unwrap();
-    assert_eq!(
-        serde_json::to_value(approval_request_protocol::RequestSummary::from(&view)).unwrap(),
-        list["items"][0]
-    );
+    // Match whole-second and fractional fixtures at the same positions.
+    for (read, list) in replies["ApprovalReadReply"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .take(4)
+        .zip(
+            replies["ApprovalListReply"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .take(4),
+        )
+    {
+        let ApprovalReadReply::Request { view } =
+            serde_json::from_str::<ApprovalReadReply>(read.as_str().unwrap()).unwrap()
+        else {
+            panic!("expected request view")
+        };
+        let list: Value = serde_json::from_str(list.as_str().unwrap()).unwrap();
+        assert_eq!(
+            serde_json::to_value(approval_request_protocol::RequestSummary::from(&view)).unwrap(),
+            list["items"][0]
+        );
+    }
 }
 
 fn check_replies<Reply: serde::de::DeserializeOwned + serde::Serialize>(vectors: &Value) {
