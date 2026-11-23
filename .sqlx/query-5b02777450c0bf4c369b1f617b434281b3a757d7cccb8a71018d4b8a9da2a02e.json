@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE actor_sessions SET harness_session_id=?, bound_at=?, updated_at=?, session_state='active'\nWHERE actor_id=? AND session_state='reserved'\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": []
+  },
+  "hash": "5b02777450c0bf4c369b1f617b434281b3a757d7cccb8a71018d4b8a9da2a02e"
+}

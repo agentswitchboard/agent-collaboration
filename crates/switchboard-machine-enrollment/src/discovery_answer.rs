@@ -4,7 +4,7 @@ use url::Url;
 use crate::{DecodeAnswerError, OrganizationId, RouterClientId};
 
 const ORGANIZATION_MARKER: &str = "{organization_id}";
-const TEST_ORGANIZATION: &str = "00000000-0000-7000-8000-000000000000";
+const ENCODED_ORGANIZATION_MARKER: &str = "%7Borganization_id%7D";
 
 /// Sign-in provides the public OAuth client and the central dial template for its deployment.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -20,26 +20,29 @@ pub struct CentralLinkTemplate(String);
 impl CentralLinkTemplate {
     fn new(template: String) -> Result<Self, DecodeAnswerError> {
         let invalid = DecodeAnswerError::Malformed;
-        let (prefix, suffix) = template.split_once(ORGANIZATION_MARKER).ok_or(invalid)?;
-        if !prefix.ends_with('/')
-            || (!suffix.is_empty() && !suffix.starts_with('/'))
-            || suffix.contains(ORGANIZATION_MARKER)
-            || template.contains(TEST_ORGANIZATION)
+        let (scheme, address) = template.split_once("://").ok_or(invalid)?;
+        let (authority, path_and_query) = address.split_once('/').ok_or(invalid)?;
+        let path = path_and_query
+            .split_once('?')
+            .map_or(path_and_query, |(path, _)| path);
+        if !scheme.eq_ignore_ascii_case("https")
+            || authority.is_empty()
+            || authority.contains(['?', '@'])
+            || template.contains(['\\', '#'])
+            || template
+                .chars()
+                .any(|ch| ch.is_whitespace() || ch.is_control() || ch == '\u{feff}')
+            || template.matches(ORGANIZATION_MARKER).count() != 1
+            || !path
+                .split('/')
+                .any(|segment| segment == ORGANIZATION_MARKER)
         {
             return Err(invalid);
         }
-        let probe =
-            Url::parse(&format!("{prefix}{TEST_ORGANIZATION}{suffix}")).map_err(|_| invalid)?;
-        if probe.scheme() != "https"
-            || !probe.has_host()
-            || !probe.username().is_empty()
-            || probe.password().is_some()
-            || probe.query().is_some()
-            || probe.fragment().is_some()
-            || !probe
-                .path_segments()
-                .is_some_and(|mut pieces| pieces.any(|piece| piece == TEST_ORGANIZATION))
-        {
+        let url = Url::parse(&template).map_err(|_| invalid)?;
+        if !url.path_segments().is_some_and(|mut segments| {
+            segments.any(|segment| segment == ENCODED_ORGANIZATION_MARKER)
+        }) {
             return Err(invalid);
         }
         Ok(Self(template))

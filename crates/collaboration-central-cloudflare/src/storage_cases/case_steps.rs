@@ -15,6 +15,7 @@ use sqlx_core::migrate::Migrator;
 pub(crate) enum CaseMigrator {
     Widgets,
     FailingSecondStatement,
+    Sessions,
 }
 
 impl CaseMigrator {
@@ -22,6 +23,7 @@ impl CaseMigrator {
         match self {
             Self::Widgets => conformance::widgets_migrator(),
             Self::FailingSecondStatement => conformance::failing_second_statement_migrator(),
+            Self::Sessions => fleet_storage_schema::workspace_migrations::central_migrator(),
         }
     }
 }

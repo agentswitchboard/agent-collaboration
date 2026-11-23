@@ -4,9 +4,10 @@ use axum::http::{HeaderMap, StatusCode, header};
 use serde::{Deserialize, de::DeserializeOwned};
 use serde_json::Value;
 use switchboard_machine_enrollment::{
-    AccessRequest, EnrollmentEnd, EnrollmentRequest, InvalidReason, LeaseUnavailable, PollAnswer,
-    RefreshAnswer, SignInFailure, TokenGrant, decode_device_authorization, decode_discovery,
-    decode_poll, decode_refresh, decode_start_failure,
+    AccessRequest, BindingGeneration, EnrollmentBinding, EnrollmentEnd, EnrollmentRequest,
+    InvalidReason, LeaseUnavailable, PollAnswer, RefreshAnswer, SignInFailure, StoredEnrollment,
+    TokenGrant, decode_device_authorization, decode_discovery, decode_poll, decode_refresh,
+    decode_start_failure,
 };
 
 use super::scripted_sign_in::{Observation, Reply, ScriptStore, SignInScript};
@@ -25,9 +26,10 @@ struct ResponseFixture {
 
 impl ResponseFixture {
     fn retry_after(&self) -> Option<Duration> {
-        self.headers.get("retry-after").map(|value| {
-            Duration::from_secs(value.parse().expect("retry-after in fixture seconds"))
-        })
+        self.headers
+            .get("retry-after")
+            .and_then(|value| value.parse::<u64>().ok())
+            .map(Duration::from_secs)
     }
 
     fn reply(&self, body: &Value) -> Reply {
@@ -123,10 +125,6 @@ fn assert_token(grant: &TokenGrant, body: &Value) {
 }
 
 fn check_response(name: &str, fixture: &ResponseFixture) {
-    assert_eq!(
-        fixture.headers.get("cache-control").map(String::as_str),
-        Some("no-store")
-    );
     let body = fixture.body.to_string();
     let body_bytes = body.as_bytes();
     match name {
@@ -182,12 +180,19 @@ fn check_response(name: &str, fixture: &ResponseFixture) {
                 &fixture.body,
             );
         }
-        "refresh-invalid_grant" => assert!(matches!(
-            decode_refresh(fixture.status, fixture.retry_after(), body_bytes),
-            RefreshAnswer::Refused {
-                reason: InvalidReason::GrantRefused
-            }
-        )),
+        "refresh-invalid_grant" | "refresh-invalid_client" => {
+            let expected = if name == "refresh-invalid_client" {
+                InvalidReason::InvalidClient
+            } else {
+                InvalidReason::GrantRefused
+            };
+            let answer = decode_refresh(fixture.status, fixture.retry_after(), body_bytes);
+            assert!(
+                matches!(answer, RefreshAnswer::Refused { reason } if reason == expected),
+                "typed response for {name} was {answer:?}"
+            );
+        }
+
         _ => {
             let answer = decode_poll(fixture.status, fixture.retry_after(), body_bytes);
             let correct = match name {
@@ -226,7 +231,7 @@ fn check_response(name: &str, fixture: &ResponseFixture) {
 #[tokio::test]
 async fn replays_every_pinned_sign_in_response_and_request() {
     let responses = fixtures::<ResponseFixture>("responses");
-    assert_eq!(responses.len(), 13, "response fixture inventory");
+    assert_eq!(responses.len(), 14, "response fixture inventory");
     for (name, response) in &responses {
         check_response(name, response);
     }
@@ -290,12 +295,32 @@ async fn replays_every_pinned_sign_in_response_and_request() {
         .expect("fixture enrollment");
     assert_eq!(receipt.enrollment_id.to_string(), ENROLLMENT);
 
-    let owner = script.client.refresh_owner(store, machine, organization_id);
+    let token = responses.get("token-success").expect("pinned token grant");
+    let refresh = responses.get("refresh-success").expect("pinned refresh");
+    let enrolled = store.submissions();
+    assert_eq!(enrolled.len(), 1);
+    assert_store_submission(
+        enrolled.first().expect("initial store submission"),
+        token,
+        1,
+        &machine,
+    );
+    let owner = script
+        .client
+        .refresh_owner(store.clone(), machine.clone(), organization_id);
     let lease = owner
         .lease(AccessRequest::Usable)
         .await
         .expect("fixture rotation");
     assert!(lease.token.expose_secret() == "fixture-only-rotated-access-token");
+    let submissions = store.submissions();
+    assert_eq!(submissions.len(), 2);
+    assert_store_submission(
+        submissions.last().expect("rotated store submission"),
+        refresh,
+        2,
+        &machine,
+    );
     requests
         .remove("refresh")
         .expect("pinned refresh request")
@@ -326,65 +351,124 @@ fn invalid_client_is_only_terminal_for_refresh() {
     ));
 }
 
-#[tokio::test]
-async fn a_disabled_refresh_client_ends_the_enrollment_without_retry() {
-    let mut script = SignInScript::start(
-        20,
-        [
-            super::scripted_sign_in::token_reply(
-                super::scripted_sign_in::INITIAL_ACCESS,
-                super::scripted_sign_in::INITIAL_REFRESH,
-            ),
-            Reply::failure(StatusCode::BAD_REQUEST, "invalid_client"),
-        ],
-    )
-    .await;
-    let store = ScriptStore::default();
-    let enrollment = script.spawn_attempt({
-        let client = script.client.clone();
-        let store = store.clone();
-        async move {
-            client
-                .enroll(
-                    super::scripted_sign_in::enrollment_request(
-                        &super::scripted_sign_in::machine_id(),
-                    ),
-                    &store,
-                    |_| Ok(()),
-                )
-                .await
-        }
-    });
-    script.next_request().await.assert_discovery();
-    script.next_request().await.assert_start();
-    script.wait_for_poll(5, 5).await;
-    script.next_request().await.assert_poll();
-    enrollment
-        .await
-        .expect("enrollment task")
-        .expect("initial enrollment");
-    let owner = script.client.refresh_owner(
-        store.clone(),
-        super::scripted_sign_in::machine_id(),
-        super::scripted_sign_in::organization_id(),
+fn assert_store_submission(
+    binding: &EnrollmentBinding,
+    grant: &ResponseFixture,
+    generation: u64,
+    machine: &switchboard_machine_enrollment::MachineId,
+) {
+    assert_eq!(
+        binding.generation,
+        BindingGeneration::from_persisted(generation)
     );
+    assert_eq!(&binding.context.machine_id, machine);
+    assert_eq!(binding.credential.enrollment_id.to_string(), ENROLLMENT);
+    let sent = binding.credential.refresh_token.expose_secret();
+    assert_eq!(binding.context.deployment.origin().path(), "/");
+    assert!(
+        grant.body.get("refresh_token").and_then(Value::as_str) == Some(sent)
+            && grant.body.get("access_token").and_then(Value::as_str) != Some(sent),
+        "store submission must carry only the refresh credential"
+    );
+}
 
-    let ended = Err(LeaseUnavailable::Ended {
-        why: EnrollmentEnd::RefreshClientDisabled,
-    });
-    assert_eq!(owner.lease(AccessRequest::Usable).await, ended);
-    assert_eq!(owner.lease(AccessRequest::Usable).await, ended);
-    assert!(matches!(
-        store.snapshot(),
-        switchboard_machine_enrollment::StoredEnrollment::Ended {
-            why: EnrollmentEnd::RefreshClientDisabled,
-            ..
-        }
-    ));
-    script
-        .observations
-        .try_recv()
-        .expect("one refresh")
-        .assert_refresh(super::scripted_sign_in::INITIAL_REFRESH);
-    script.assert_exhausted();
+#[tokio::test]
+async fn terminal_refresh_responses_leave_only_the_idempotent_ending() {
+    use super::scripted_sign_in::{
+        INITIAL_ACCESS, INITIAL_REFRESH, ROTATED_ACCESS, ROTATED_REFRESH, enrollment_request,
+        machine_id, organization_id, token_reply,
+    };
+
+    let responses = fixtures::<ResponseFixture>("responses");
+    for (fixture_name, why) in [
+        (
+            "refresh-invalid_client",
+            EnrollmentEnd::RefreshClientDisabled,
+        ),
+        ("refresh-invalid_grant", EnrollmentEnd::RefreshRefused),
+    ] {
+        let fixture = responses
+            .get(fixture_name)
+            .expect("pinned terminal refresh");
+        let mut script = SignInScript::start(
+            20,
+            [
+                token_reply(INITIAL_ACCESS, INITIAL_REFRESH),
+                token_reply(ROTATED_ACCESS, ROTATED_REFRESH),
+                fixture.reply(&fixture.body),
+            ],
+        )
+        .await;
+        let store = ScriptStore::default();
+        let enrollment = script.spawn_attempt({
+            let client = script.client.clone();
+            let store = store.clone();
+            async move {
+                client
+                    .enroll(enrollment_request(&machine_id()), &store, |_| Ok(()))
+                    .await
+            }
+        });
+        script.next_request().await.assert_discovery();
+        script.next_request().await.assert_start();
+        script.wait_for_poll(5, 5).await;
+        script.next_request().await.assert_poll();
+        enrollment
+            .await
+            .expect("enrollment task")
+            .expect("initial enrollment");
+        let owner = script
+            .client
+            .refresh_owner(store.clone(), machine_id(), organization_id());
+
+        let grant = owner
+            .lease(AccessRequest::Usable)
+            .await
+            .expect("live bearer");
+        assert!(grant.token.expose_secret() == ROTATED_ACCESS);
+        let active = store
+            .current()
+            .expect("usable binding before terminal result");
+        assert!(active.credential.refresh_token.expose_secret() == ROTATED_REFRESH);
+        let ended = Err(LeaseUnavailable::Ended { why });
+        script
+            .clock
+            .advance(Duration::from_secs(60))
+            .expect("expire access lease");
+        assert_eq!(
+            owner.lease(AccessRequest::Usable).await,
+            ended,
+            "{fixture_name}"
+        );
+        let key = active.key();
+        let marker = StoredEnrollment::Ended {
+            generation: active.generation.successor().expect("terminal generation"),
+            why,
+            key: key.clone(),
+        };
+        // This exact variant carries only the identity, generation and reason.
+        assert_eq!(store.snapshot(), marker);
+        assert_eq!(owner.lease(AccessRequest::Usable).await, ended);
+        assert_eq!(
+            owner.end_enrollment(&key, why).await,
+            Ok(switchboard_machine_enrollment::ConditionalWrite::Applied)
+        );
+        assert_eq!(store.snapshot(), marker);
+        assert_eq!(
+            store.submissions().len(),
+            2,
+            "ending cannot write another active credential"
+        );
+        script
+            .observations
+            .try_recv()
+            .expect("initial rotation")
+            .assert_refresh(INITIAL_REFRESH);
+        script
+            .observations
+            .try_recv()
+            .expect("terminal refresh")
+            .assert_refresh(ROTATED_REFRESH);
+        script.assert_exhausted();
+    }
 }

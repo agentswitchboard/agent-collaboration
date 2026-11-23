@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO inbox_messages\n                     (message_id, message_json, delivery_state_json, created_at, updated_at)\n                     VALUES (?, ?, ?, ?, ?)",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "76e086c100e9606ba598cb2087b31b0a222f05bcd72da92ae956665c7116277e"
+}
