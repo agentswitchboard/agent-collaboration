@@ -140,9 +140,13 @@ impl ReceiptDelivery {
         if active != &submitted {
             return Ok(ReceiptFrameOutcome::StaleCompletion);
         }
-        // Retain the same frame on a malformed answer or a store failure. A new
-        // connection will prepare a new frame using the pending rows instead.
-        self.flight = ReceiptFlight::WaitingForRetry(submitted.clone());
+        // Keep the same decisions. The socket may have spent this correlation
+        // as soon as the frame started, even if confirmation fails locally.
+        let mut retry = submitted.clone();
+        if !matches!(&disposition, LinkLaneDisposition::NotReached { .. }) {
+            retry.correlation_id = FreshCorrelationId::mint_at(now_ms).wire_id().clone();
+        }
+        self.flight = ReceiptFlight::WaitingForRetry(retry);
         if current_connection != Some(&submitted.connection) {
             return Ok(ReceiptFrameOutcome::StaleCompletion);
         }

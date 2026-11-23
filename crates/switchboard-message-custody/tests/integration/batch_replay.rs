@@ -37,7 +37,7 @@ use switchboard_message_custody::{
     recipient_inbox::RecipientInbox,
     recipient_sessions::{RecipientSessionAnswer, RecipientSessionDirectory},
 };
-use tokio::sync::{Notify, watch};
+use tokio::sync::{Notify, oneshot, watch};
 use workspace_ids::{MachineId, RequestId, SessionId};
 use workspace_model::{
     Caller, ChangePosition, ItemRef, WorkspaceAnswer, WorkspaceReply, WorkspaceResult,
@@ -122,6 +122,8 @@ pub(super) struct ScriptedBatchLane {
     status_answers: Mutex<Vec<(Caller, RequestStatusQuery, RequestStatusAnswer)>>,
     held_status: Mutex<Option<Arc<ScriptedStatusGate>>>,
     held_batch: Mutex<Option<Arc<ScriptedBatchGate>>>,
+    held_receipt_completion: Mutex<Option<oneshot::Receiver<()>>>,
+    receipt_commands: watch::Sender<Vec<(ClockInstant, SubmitReceiptsCommand)>>,
 }
 
 impl ScriptedBatchLane {
@@ -142,6 +144,8 @@ impl ScriptedBatchLane {
             status_answers: Mutex::new(Vec::new()),
             held_status: Mutex::new(None),
             held_batch: Mutex::new(None),
+            held_receipt_completion: Mutex::new(None),
+            receipt_commands: watch::channel(Vec::new()).0,
         }
     }
 
@@ -174,6 +178,24 @@ impl ScriptedBatchLane {
         let gate = Arc::new(ScriptedBatchGate::default());
         *self.held_batch.lock().unwrap() = Some(gate.clone());
         gate
+    }
+
+    pub(super) fn hold_next_receipt_completion(&self) -> oneshot::Sender<()> {
+        let (release, held) = oneshot::channel();
+        assert!(
+            self.held_receipt_completion
+                .lock()
+                .unwrap()
+                .replace(held)
+                .is_none()
+        );
+        release
+    }
+
+    pub(super) fn watch_receipt_commands(
+        &self,
+    ) -> watch::Receiver<Vec<(ClockInstant, SubmitReceiptsCommand)>> {
+        self.receipt_commands.subscribe()
     }
 
     pub(super) fn script_status_answer(
@@ -310,14 +332,20 @@ impl ReadyLinkLane for ScriptedBatchLane {
         command: SubmitReceiptsCommand,
     ) -> Pin<Box<dyn Future<Output = LinkLaneDisposition<CorrelatedReceiptResults>> + Send + '_>>
     {
+        let accepted_at = self.clock.monotonic_now();
+        self.receipt_commands
+            .send_modify(|commands| commands.push((accepted_at, command.clone())));
+        let held = self.held_receipt_completion.lock().unwrap().take();
         let reply = CorrelatedReceiptResults {
             correlation_id: command.correlation_id,
             results: vec![ReceiptResult::Recorded; command.receipts.receipts().len()],
         };
-        Box::pin(std::future::ready(LinkLaneDisposition::Answered {
-            reply,
-            accepted_at: self.clock.monotonic_now(),
-        }))
+        Box::pin(async move {
+            if let Some(held) = held {
+                held.await.unwrap();
+            }
+            LinkLaneDisposition::Answered { reply, accepted_at }
+        })
     }
 
     fn request_status(

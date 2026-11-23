@@ -1,7 +1,10 @@
 use central_link_protocol::{ReplyPayload, RequestPayload, RequestScope, RequestStatusQuery};
 use router_clock::ClockInstant;
 use std::time::Duration;
-use switchboard_machine_core_store::{OutboxCentralRefusal, OutboxQueuedWrite, OutboxRefusal};
+use switchboard_machine_core_store::{
+    InboxStore, MACHINE_LOCAL_DATABASE, MachineLocalStore, OutboxCentralRefusal, OutboxQueuedWrite,
+    OutboxRefusal,
+};
 use switchboard_message_custody::{
     custody_status::CustodyRequestStatus,
     custody_submission::{Submission, SubmissionPayload},
@@ -12,7 +15,7 @@ use super::{batch_limits::limits_fixture, outbox_timing::direct_message};
 
 #[tokio::test]
 async fn local_and_remote_messages_share_the_minute_path_and_central_can_refuse_local() {
-    let (_root, mut custody, lane, clock) = limits_fixture().await;
+    let (root, mut custody, lane, clock) = limits_fixture().await;
     let local = direct_message(1);
     let remote = direct_message(2);
     let OutboxQueuedWrite::SendMessage {
@@ -113,5 +116,10 @@ async fn local_and_remote_messages_share_the_minute_path_and_central_can_refuse_
             .is_empty(),
         "a Central refusal cannot create a same-Mac inbox row"
     );
-    assert!(custody.flush_receipts().await.unwrap().is_none());
+    let mut inbox = InboxStore::new(
+        MachineLocalStore::open(&root.path().join(MACHINE_LOCAL_DATABASE))
+            .await
+            .unwrap(),
+    );
+    assert!(inbox.pending_receipts().await.unwrap().healthy.is_empty());
 }
