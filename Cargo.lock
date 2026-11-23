@@ -5909,17 +5909,23 @@ dependencies = [
 name = "switchboard-central-link-test"
 version = "0.1.158"
 dependencies = [
+ "axum",
  "central-link-client",
  "central-link-protocol",
+ "central-storage",
  "collaboration-central-conformance",
  "collaboration-central-tokio",
+ "fleet-runtime",
  "reqwest 0.12.28",
  "router-clock",
+ "runtime-primitives",
  "serde_json",
  "switchboard-central-link",
  "switchboard-machine-core-store",
  "switchboard-message-custody",
  "tokio",
+ "tungstenite 0.29.0",
+ "turmoil",
  "workspace-ids",
  "workspace-model",
 ]

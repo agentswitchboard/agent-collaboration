@@ -40,7 +40,7 @@ use tower_service::Service;
 
 use crate::{
     link_policy::DialFailure,
-    wire_write_fence::{FencedConnector, WireWriteFence},
+    wire_write_fence::{FencedConnector, LinkConnector, WireWriteFence},
 };
 
 pub(super) type Socket = WebSocketStream<TokioIo<Upgraded>>;
@@ -98,10 +98,11 @@ impl DialAddress {
         Ok(Self(uri))
     }
 
-    pub(super) async fn dial(
+    pub(super) async fn dial<Connector: LinkConnector>(
         &self,
         token: &MachineTokenText,
         clock: Arc<dyn RuntimeClock>,
+        make_connector: &impl Fn() -> Connector,
     ) -> Result<(Socket, Arc<WireWriteFence>), DialFailure> {
         if token.expose().len() > MAX_CREDENTIAL_BYTES {
             return Err(DialFailure::Unauthorized);
@@ -139,7 +140,7 @@ impl DialAddress {
         let fence = Arc::new(WireWriteFence::new(clock));
         let mut connector = connector
             .enable_http1()
-            .wrap_connector(FencedConnector::new(fence.clone()));
+            .wrap_connector(FencedConnector::new(make_connector(), fence.clone()));
         poll_fn(|context| connector.poll_ready(context))
             .await
             .map_err(|_| DialFailure::Transport)?;

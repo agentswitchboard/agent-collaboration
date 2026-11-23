@@ -442,21 +442,34 @@ async fn run_custody(
                 intake_retry_at = None;
                 let _ = retry_offers.try_send(());
             },
-            () = sleep_until(clock.as_ref(), receipt_wake.as_ref().map(|(_, wake)| *wake)) => {
-                receipt_mark = receipt_wake.map(|(mark, _)| mark);
-                if receipts.is_none() {
-                    match custody.prepare_receipt_turn().await {
-                        Ok(Some(frame)) => {
-                            let lane = lane.clone();
-                            let send_before = clock.monotonic_now().after(Duration::from_secs(30));
-                            receipts = Some(Box::pin(async move {
-                                let disposition = lane.submit_receipts(frame.command(send_before)).await;
-                                (frame, disposition)
-                            }));
-                        }
-                        Ok(None) => {}
-                        Err(error) => sink.record_event(CustodyTaskEvent::Failed(error)),
+            () = sleep_until(clock.as_ref(), receipt_wake.as_ref().map(|(_, wake)| *wake)), if receipts.is_none() => {
+                let Some(((connection, mark), _)) = receipt_wake else { continue };
+                let send_before = admission.borrow().as_ref()
+                    .filter(|admitted| admitted.connection == connection)
+                    .map(|admitted| crate::flush_clock::send_fence_for_mark(admitted.clock_anchor, mark));
+                receipt_mark = Some((connection.clone(), mark));
+                let Some(send_before) = send_before else { continue };
+                match custody.prepare_receipt_turn().await {
+                    Ok(Some(frame)) => {
+                        let command = frame.command(send_before);
+                        let untouched = if command.connection != connection {
+                            Some(central_link_client::UntouchedCommand::ConnectionUnavailable)
+                        } else if clock.monotonic_now() >= send_before {
+                            Some(central_link_client::UntouchedCommand::SendWindowElapsed)
+                        } else {
+                            None
+                        };
+                        let lane = lane.clone();
+                        receipts = Some(Box::pin(async move {
+                            let disposition = match untouched {
+                                Some(cause) => LinkLaneDisposition::NotReached { cause },
+                                None => lane.submit_receipts(command).await,
+                            };
+                            (frame, disposition)
+                        }));
                     }
+                    Ok(None) => {}
+                    Err(error) => sink.record_event(CustodyTaskEvent::Failed(error)),
                 }
             },
             _ = tool_requests.join_next(), if !tool_requests.is_empty() => {}
