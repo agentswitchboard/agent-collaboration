@@ -110,9 +110,19 @@ impl Fixture {
         body: &Value,
         headers: &[(&str, String)],
     ) -> (u16, Vec<u8>) {
+        self.request_bytes(reqwest::Method::POST, path, body, headers)
+            .await
+    }
+    pub async fn request_bytes(
+        &self,
+        method: reqwest::Method,
+        path: &str,
+        body: &Value,
+        headers: &[(&str, String)],
+    ) -> (u16, Vec<u8>) {
         let mut request = self
             .client
-            .post(format!("{}{path}", self.host.signin_origin()))
+            .request(method, format!("{}{path}", self.host.signin_origin()))
             .header("content-type", "application/json")
             .body(serde_json::to_vec(body).unwrap());
         for (name, value) in headers {
