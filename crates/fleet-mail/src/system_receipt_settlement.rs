@@ -6,6 +6,7 @@ use crate::{
     message_deadline::EXPIRED_24_HOURS,
 };
 use central_storage::StoreFailure;
+use fleet_engine::{DueItemKey, DueKind, DueTableChange, apply_due_table_change};
 use fleet_lent_transaction::CentralTransaction;
 use fleet_runtime_ports::{stored_values::format_utc_millis, workspace_decode_error::corrupt};
 use sqlx_core::{
@@ -116,6 +117,7 @@ pub(super) async fn settle_system_receipt<T: CentralTransaction>(
 ) -> Result<ApplyReceipt, DirectApplyFailure>
 where
     <T::Database as Database>::Arguments: IntoArguments<T::Database>,
+    i64: Type<T::Database> + for<'q> Encode<'q, T::Database>,
     String: Type<T::Database> + for<'q> Encode<'q, T::Database> + for<'r> Decode<'r, T::Database>,
     Option<String>:
         Type<T::Database> + for<'q> Encode<'q, T::Database> + for<'r> Decode<'r, T::Database>,
@@ -174,6 +176,15 @@ where
     .execute(transaction.executor())
     .await?;
     require_one_affected_row::<T>(written)?;
+    apply_due_table_change(
+        transaction,
+        &DueTableChange::RemoveItem(DueItemKey {
+            kind: DueKind::SystemMessageExpiry,
+            subject: central_engine_model::InstanceKey(message.to_string()),
+        }),
+        now,
+    )
+    .await?;
     // System writers continue to rely on the post-event completion for publication.
     Ok(ApplyReceipt::Applied { ready: None })
 }

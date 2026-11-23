@@ -81,8 +81,8 @@ pub async fn plan_due_windows_held<'store, Host: CentralStore, Stores: Workspace
                 workspace_id: first.workspace_id.clone(),
                 thread_id: first.thread_id.clone(),
             };
-            let (insert, delivery) = mailbox.plan_sourced_notice(target, items, source, now)?;
-            statements.push(insert);
+            let (planned, delivery) = mailbox.plan_sourced_notice(target, items, source, now)?;
+            statements.extend(planned);
             deliveries.push(delivery);
         }
         statements.extend(delete_window(&window.id));
@@ -90,7 +90,10 @@ pub async fn plan_due_windows_held<'store, Host: CentralStore, Stores: Workspace
     match observed {
         ObservedControl::Absent => {}
         ObservedControl::Present(guard) => {
-            statements.push(fleet_engine::plan_observed_attempt_delete(subject, guard))
+            statements.push(fleet_engine::plan_observed_attempt_delete(subject, guard));
+            if let Some(change) = fleet_engine::due_change_for_attempt(subject) {
+                statements.extend(fleet_engine::plan_due_table_change(&change, now)?);
+            }
         }
     }
     Ok(DueWindowPlan {

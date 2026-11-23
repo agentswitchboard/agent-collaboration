@@ -21,8 +21,9 @@ pub(super) enum MigrationCommand {
     SeedMain,
     SeedOldFixture,
     SeedBeforeAllowanceAudit,
+    SeedDueViews,
+    UpgradeDueViews,
     SeedCurrent,
-    Upgrade,
     Inspect,
     Reset,
 }
@@ -38,12 +39,15 @@ pub(super) async fn run(
     connection: &DoConnection,
     command: MigrationCommand,
 ) -> Result<Snapshot, String> {
-    if !matches!(command, MigrationCommand::Inspect | MigrationCommand::Reset) {
-        let maximum_version = match command {
-            MigrationCommand::SeedMain | MigrationCommand::SeedOldFixture => 4,
-            MigrationCommand::SeedBeforeAllowanceAudit => 7,
-            _ => i64::MAX,
-        };
+    let maximum_version = match command {
+        MigrationCommand::SeedMain | MigrationCommand::SeedOldFixture => Some(4),
+        MigrationCommand::SeedBeforeAllowanceAudit
+        | MigrationCommand::SeedDueViews
+        | MigrationCommand::UpgradeDueViews => Some(7),
+        MigrationCommand::SeedCurrent => Some(i64::MAX),
+        MigrationCommand::Inspect | MigrationCommand::Reset => None,
+    };
+    if let Some(maximum_version) = maximum_version {
         let mut migrations: Vec<_> = fleet_storage_schema::workspace_migrations::central_migrator()
             .iter()
             .filter(|migration| {
@@ -64,7 +68,10 @@ pub(super) async fn run(
         statement_store::migrate(connection, Arc::new(Migrator::with_migrations(migrations)))
             .await
             .map_err(|failure| failure.to_string())?;
-        if !matches!(command, MigrationCommand::Upgrade) {
+        if !matches!(
+            command,
+            MigrationCommand::UpgradeDueViews | MigrationCommand::SeedCurrent
+        ) {
             let seed_statements: &[&'static str] = match command {
                 MigrationCommand::SeedBeforeAllowanceAudit => &[LEGACY_AUDIT],
                 _ => &[STAMP, WAKE],
@@ -99,13 +106,24 @@ pub(super) async fn run(
     let alarm = if views.rows.is_empty() {
         None
     } else {
-        let inputs = statement_store::engine_alarm_inputs(connection)
-            .await
-            .map_err(|failure| format!("{failure:?}"))?;
-        Some([
-            inputs.earliest_on_grid_due_unix_millis,
-            inputs.earliest_legacy_due_unix_millis,
-        ])
+        use central_storage::SqlValue;
+        let outcome = read(
+            connection,
+            include_str!("../../fleet-engine/src/queries/read_alarm_inputs.sql"),
+        )
+        .await?;
+        let [row] = outcome.rows.as_slice() else {
+            return Err("expected one historical alarm row".into());
+        };
+        let [grid, legacy] = row.as_slice() else {
+            return Err("expected two historical alarm inputs".into());
+        };
+        let due = |cell: &SqlValue| match cell {
+            SqlValue::Integer(value) => Ok(Some(value.get())),
+            SqlValue::Null => Ok(None),
+            _ => Err("invalid historical alarm input".to_owned()),
+        };
+        Some([due(grid)?, due(legacy)?])
     };
     Ok(Snapshot {
         ledger,

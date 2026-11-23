@@ -391,3 +391,149 @@ async fn derived_window_above_alarm_ceiling_preserves_workspace_write_and_rolls_
     assert_eq!(runtime.runtime().inspect_workspace(&f.workspace, Statement { sql: "SELECT (SELECT COUNT(*) FROM workspace_changes WHERE thread_id=? AND change_kind='posted'),(SELECT COUNT(*) FROM workspace_request_log WHERE request_id=?)", args: vec![text(&thread), text(id::<m::RequestId>(7532))] }).await.unwrap().rows, applied.rows);
     f.host.close().await;
 }
+
+#[tokio::test]
+async fn workspace_drain_preset_validates_the_deadline_before_any_write() {
+    let mut fixture = Fixture::new().await;
+    let area = fixture.area(7540).await;
+    let thread = fixture.thread(7541, area).await;
+    let runtime = fixture
+        .host
+        .central(fixture.caller.organization_id())
+        .await
+        .unwrap();
+    let store = runtime.runtime().statement_host();
+    let workspace = fixture.workspace.clone();
+    let read_preset = || Statement {
+        sql: "SELECT drain_due_at FROM mail_workspace_drains WHERE workspace_id=?",
+        args: vec![text(&workspace)],
+    };
+    assert_eq!(
+        store.read(read_preset()).await.unwrap().rows,
+        [[SqlValue::Null]]
+    );
+
+    let maximum = collaboration_central_core::MAX_ALARM_UNIX_MILLIS;
+    fixture
+        .relocate_authority(m::Timestamp::from_timestamp_millis(maximum - 5_001).unwrap())
+        .await;
+    let mut pause = runtime
+        .runtime()
+        .pause_points()
+        .hold(&fixture.workspace, PausePoint::AfterStoreApplied);
+    let request = |number| m::WorkspaceRequest {
+        request_id: Some(id(number)),
+        workspace_id: Some(fixture.workspace.clone()),
+        operation: post(&thread, vec![]),
+    };
+    let accepted = tokio::spawn({
+        let runtime = runtime.clone();
+        let caller = fixture.caller.clone();
+        let request = request(7542);
+        async move { runtime.request(&caller, request).await }
+    });
+    pause.until_held().await;
+    assert_eq!(
+        store.read(read_preset()).await.unwrap().rows,
+        [[text("2262-04-11T23:47:16.853Z")]],
+    );
+    accepted.abort();
+    assert!(accepted.await.unwrap_err().is_cancelled());
+    drop(pause);
+
+    execute(
+        &fixture,
+        "UPDATE mail_workspace_drains SET drain_due_at=NULL WHERE workspace_id=?",
+        vec![text(&fixture.workspace)],
+    )
+    .await;
+    let refused_request = request(7543);
+    fixture
+        .set_utc(m::Timestamp::from_timestamp_millis(maximum - 1).unwrap())
+        .await;
+    let result = runtime.request(&fixture.caller, refused_request).await;
+    assert!(
+        matches!(result, Err(StoreFailure::Corrupt { reason: CorruptReason::BadValue { column } }) if column == "drain_due_at")
+    );
+    assert_eq!(
+        store.read(read_preset()).await.unwrap().rows,
+        [[SqlValue::Null]]
+    );
+    let retained = runtime
+        .runtime()
+        .inspect_workspace(
+            &fixture.workspace,
+            Statement {
+                sql: "SELECT request_id FROM workspace_request_log WHERE request_id=?",
+                args: vec![text(id::<m::RequestId>(7543))],
+            },
+        )
+        .await
+        .unwrap();
+    assert!(retained.rows.is_empty());
+    fixture.host.close().await;
+}
+
+#[tokio::test]
+async fn cadence_retime_writes_canonical_utc_and_rejects_the_next_mark_above_the_ceiling() {
+    use workspace_model::central_mail::{
+        CentralMailAnswer, CentralMailOperation, CentralMailRequest, CentralMailResult,
+    };
+
+    let mut fixture = Fixture::new().await;
+    let area = fixture.area(7600).await;
+    let thread = fixture.thread(7601, area).await;
+    let (observer, actor) = joined_observer(&fixture, &thread).await;
+    fixture.call(7602, post(&thread, vec![])).await;
+    let runtime = fixture
+        .host
+        .central(fixture.caller.organization_id())
+        .await
+        .unwrap();
+    let store = runtime.runtime().statement_host();
+    let snapshot = || Statement {
+        sql: "SELECT a.notice_cadence,w.due_at,w.updated_at,(SELECT COUNT(*) FROM runtime_request_log WHERE request_id=?1) FROM mail_notification_windows w JOIN access_actor_identities a ON a.actor_identity_id=w.recipient_actor WHERE w.recipient_actor=?2",
+        args: vec![text(id::<m::RequestId>(7604)), text(&actor)],
+    };
+    let operation = |number, cadence| CentralMailRequest {
+        request_id: id(number),
+        operation: CentralMailOperation::SetNoticeCadence { cadence },
+    };
+    let now = fixture.clock.utc_now();
+    assert_eq!(
+        fixture
+            .host
+            .request_central(&observer, operation(7603, m::NoticeCadence::M15))
+            .await
+            .unwrap(),
+        CentralMailResult::Done(CentralMailAnswer::NoticeCadenceSet {
+            cadence: m::NoticeCadence::M15
+        }),
+    );
+    let before = store.read(snapshot()).await.unwrap();
+    let expected = chrono::DateTime::<chrono::Utc>::from_timestamp(
+        (now.timestamp().div_euclid(900) + 1) * 900,
+        0,
+    )
+    .unwrap();
+    assert_eq!(
+        before.rows[0][1],
+        text(expected.to_rfc3339_opts(chrono::SecondsFormat::Millis, true))
+    );
+
+    let edge = m::Timestamp::from_timestamp_millis(
+        collaboration_central_core::MAX_ALARM_UNIX_MILLIS - 30_000,
+    )
+    .unwrap();
+    fixture.relocate_authority(edge).await;
+    let observer = fixture.fresh_caller(&observer).await;
+    let result = fixture
+        .host
+        .request_central(&observer, operation(7604, m::NoticeCadence::M55))
+        .await;
+    assert!(
+        matches!(result, Err(StoreFailure::Corrupt { reason: CorruptReason::BadValue { column } }) if column == "mail_notification_windows.due_at")
+    );
+    assert_eq!(store.read(snapshot()).await.unwrap(), before);
+    fixture.host.close().await;
+}

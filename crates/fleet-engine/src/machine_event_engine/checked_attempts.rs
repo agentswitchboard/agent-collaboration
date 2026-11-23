@@ -267,6 +267,9 @@ where
     if T::rows_affected(result) != 1 {
         return Err(corrupt("engine_work_attempts.failure_update"));
     }
+    if let Some(change) = crate::due_change_for_attempt(subject) {
+        crate::apply_due_table_change(transaction, &change, now).await?;
+    }
     Ok(Some(record))
 }
 
