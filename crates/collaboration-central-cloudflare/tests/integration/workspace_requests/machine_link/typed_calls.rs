@@ -8,9 +8,10 @@ use super::super::workerd_host::workerd_control_http_client;
 use super::fixture::{ConnectedLink, Fixture, MACHINE_ID, receive, send};
 use super::receipt_frames::{EnrollmentAtApply, stored_ending_batch};
 use central_link_protocol::{
-    CentralCallReply, CentralLinkRpc, CorrelationId, DataFrame, LinkCallRefusal, MacCall,
-    MacLinkRpc, MachineLinkCloseCode, TypedCallResult,
-    test_calls::{CentralProbe, MacProbe, ProbeReply, ProbeRequest},
+    CentralCallReply, CorrelationId, DataFrame, LinkCallRefusal, MacCall, MacLinkRpc,
+    MachineLinkCloseCode, TypedCallResult,
+    fixture_central_probe::{ProbeReplyEnvelope, decode_probe_reply, encode_probe_call},
+    test_calls::{MacProbe, ProbeReply, ProbeRequest},
 };
 use central_storage::BatchOutcome;
 use collaboration_central_conformance::ConformanceResult as Result;
@@ -49,10 +50,10 @@ async fn check_inbound_calls(fixture: &Fixture) -> Result<()> {
     assert_eq!(
         central_probe(&mut link.socket, &target, 11).await?,
         TypedCallResult::Answered {
-            reply: CentralProbe::reply(Envelope {
+            reply: Envelope {
                 target,
                 body: ProbeReply { echoed: 11 }
-            }),
+            },
         }
     );
     assert_eq!(
@@ -107,21 +108,28 @@ async fn central_probe(
     socket: &mut WebSocket,
     target: &MachineId,
     sequence: u32,
-) -> Result<TypedCallResult<CentralCallReply>> {
-    let correlation_id: CorrelationId =
-        format!("019f0000-0000-7000-8000-{sequence:012x}").parse()?;
-    send(
-        socket,
-        &DataFrame::CallCentral {
-            correlation_id: correlation_id.clone(),
-            request: Box::new(CentralProbe::request(Envelope {
-                target: target.clone(),
-                body: ProbeRequest { sequence },
-            })),
+) -> Result<TypedCallResult<ProbeReplyEnvelope>> {
+    let correlation: CorrelationId = format!("019f0000-0000-7000-8000-{sequence:012x}").parse()?;
+    let text = encode_probe_call(
+        correlation.clone(),
+        Envelope {
+            target: target.clone(),
+            body: ProbeRequest { sequence },
         },
-    )
-    .await?;
-    central_reply(socket, &correlation_id).await
+    )?;
+    socket.send(Message::Text(text)).await?;
+    let message = socket
+        .next()
+        .await
+        .ok_or("expected fixture probe reply")??;
+    let Message::Text(text) = message else {
+        return Err("expected fixture probe reply".into());
+    };
+    let (observed, reply) = decode_probe_reply(&text)?;
+    if correlation != observed {
+        return Err("fixture probe correlation changed".into());
+    }
+    Ok(reply)
 }
 
 async fn central_reply(

@@ -1,6 +1,6 @@
 pub type EngineTime = chrono::DateTime<chrono::Utc>;
 
-pub trait IdSource {
+pub trait IdSource: Send {
     fn next_id(&mut self) -> uuid::Uuid;
 }
 

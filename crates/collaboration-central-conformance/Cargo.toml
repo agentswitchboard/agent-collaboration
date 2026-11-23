@@ -12,7 +12,16 @@ workspace = true
 [features]
 signin-test-support = ["dep:reqwest", "dep:chrono", "dep:tokio", "dep:sha2", "dep:ring", "dep:base64", "dep:axum", "dep:serde_json"]
 
+session-link-test-support = ["dep:central-link-protocol", "dep:central-storage", "dep:fleet-identity-protocol", "dep:fleet-rpc", "dep:futures-util", "dep:reqwest-websocket", "dep:serde_json", "dep:workspace-ids"]
+
 [dependencies]
+central-link-protocol = { workspace = true, optional = true }
+central-storage = { workspace = true, optional = true }
+fleet-identity-protocol = { path = "../fleet-identity-protocol", version = "0.1.158", optional = true }
+fleet-rpc = { workspace = true, optional = true }
+futures-util = { version = "0.3.34", optional = true }
+reqwest-websocket = { version = "=0.5.1", optional = true }
+workspace-ids = { workspace = true, optional = true }
 reqwest = { workspace = true, features = ["json"], optional = true }
 chrono = { workspace = true, optional = true }
 axum = { workspace = true, optional = true, features = ["http1", "tokio", "json"] }

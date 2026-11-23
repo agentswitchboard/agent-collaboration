@@ -1,13 +1,13 @@
 use super::*;
 use crate::{DataFrame, LinkFrame, ProtocolError, decode_text, encode_text};
 use serde_json::{Value, json};
-use test_calls::{CentralProbe, MacProbe, ProbeReply, ProbeRequest};
+use test_calls::{MacProbe, ProbeReply, ProbeRequest};
 
 const CORRELATION: &str = "019f0000-0000-7000-8000-000000000001";
 const MACHINE: &str = "019f0000-0000-7000-8000-000000000002";
 
 #[test]
-fn typed_calls_and_answers_round_trip_only_in_their_own_direction() {
+fn typed_mac_calls_and_answers_round_trip_only_in_their_own_direction() {
     let correlation_id: CorrelationId = CORRELATION.parse().unwrap();
     let target: workspace_ids::MachineId = MACHINE.parse().unwrap();
     let request = Envelope {
@@ -19,30 +19,6 @@ fn typed_calls_and_answers_round_trip_only_in_their_own_direction() {
         body: ProbeReply { echoed: 7 },
     };
     let frames = [
-        (
-            FrameDirection::ToCentral,
-            DataFrame::CallCentral {
-                correlation_id: correlation_id.clone(),
-                request: Box::new(CentralProbe::request(request.clone())),
-            },
-            json!({
-                "kind":"callCentral","correlationId":CORRELATION,
-                "request":{"call":"centralProbe","envelope":{"target":MACHINE,"body":{"sequence":7}}}
-            }),
-        ),
-        (
-            FrameDirection::ToRouter,
-            DataFrame::CentralCallReply {
-                correlation_id: correlation_id.clone(),
-                result: Box::new(TypedCallResult::Answered {
-                    reply: CentralProbe::reply(reply.clone()),
-                }),
-            },
-            json!({
-                "kind":"centralCallReply","correlationId":CORRELATION,
-                "result":{"kind":"answered","reply":{"call":"centralProbe","envelope":{"target":MACHINE,"body":{"echoed":7}}}}
-            }),
-        ),
         (
             FrameDirection::ToRouter,
             DataFrame::CallMac {
@@ -112,7 +88,7 @@ fn unregistered_call_has_a_correlation_only_if_its_wrapper_is_valid() {
 fn call_wrappers_require_tags_and_envelope_fields_by_name() {
     let call = json!({
         "kind":"callCentral","correlationId":CORRELATION,
-        "request":{"call":"centralProbe","envelope":{"target":MACHINE,"body":{"sequence":7}}}
+        "request":{"call":"registerRun","envelope":{"target":{"organizationId":MACHINE},"body":{"routerRun":CORRELATION}}}
     });
     let mut no_tag = call.clone();
     no_tag.as_object_mut().unwrap().remove("kind");
@@ -125,7 +101,7 @@ fn call_wrappers_require_tags_and_envelope_fields_by_name() {
     let mut bad_envelope = call.clone();
     bad_envelope["request"]["envelope"] = json!([MACHINE, {"sequence":7}]);
     let mut bad_request = call.clone();
-    bad_request["request"] = json!(["centralProbe", {"target":MACHINE,"body":{"sequence":7}}]);
+    bad_request["request"] = json!(["registerRun", {"target":MACHINE,"body":{"sequence":7}}]);
     for invalid in [
         no_tag,
         no_call,
@@ -172,8 +148,8 @@ fn refusal_is_separate_from_a_registered_service_answer() {
 fn typed_reply_wrappers_reject_unknown_fields_tags_and_positional_arrays() {
     let reply = json!({
         "kind":"centralCallReply","correlationId":CORRELATION,
-        "result":{"kind":"answered","reply":{"call":"centralProbe",
-            "envelope":{"target":MACHINE,"body":{"echoed":7}}}},
+        "result":{"kind":"answered","reply":{"call":"registerRun",
+            "envelope":{"target":{"organizationId":MACHINE},"body":{"kind":"registered"}}}},
     });
     let mut missing_kind = reply.clone();
     missing_kind["result"]
@@ -186,7 +162,7 @@ fn typed_reply_wrappers_reject_unknown_fields_tags_and_positional_arrays() {
     extra_result["result"]["extra"] = json!(1);
     let mut positional_reply = reply.clone();
     positional_reply["result"]["reply"] =
-        json!(["centralProbe", {"target":MACHINE,"body":{"echoed":7}}]);
+        json!(["registerRun", {"target":MACHINE,"body":{"echoed":7}}]);
     let mut positional_envelope = reply;
     positional_envelope["result"]["reply"]["envelope"] = json!([MACHINE, {"echoed":7}]);
     for invalid in [
@@ -207,7 +183,7 @@ fn typed_reply_wrappers_reject_unknown_fields_tags_and_positional_arrays() {
 }
 
 #[test]
-fn registered_approval_call_and_reply_frames_keep_closed_concrete_schemas() {
+fn registered_service_call_and_reply_frames_keep_closed_concrete_schemas() {
     let schema = serde_json::to_value(schemars::schema_for!(DataFrame)).unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
     let service = json!({"organizationId": CORRELATION});
@@ -217,6 +193,7 @@ fn registered_approval_call_and_reply_frames_keep_closed_concrete_schemas() {
         "routerRun": "019f0000-0000-7000-8000-000000000004"
     });
     let run = &holder["routerRun"];
+    let session_service = json!(CORRELATION);
     let digest = "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA";
     let specimens = [
         (
@@ -247,6 +224,31 @@ fn registered_approval_call_and_reply_frames_keep_closed_concrete_schemas() {
             json!({"kind":"provider","requestId":CORRELATION,"routerRun":run,
                    "contentsDigest":digest,"cause":"turnStopped"}),
             json!({"kind":"stands","ending":{"kind":"timedOut"}}),
+        ),
+        (
+            FrameDirection::ToCentral,
+            "callCentral",
+            "createFleetSession",
+            &session_service,
+            json!({"operationId":CORRELATION,"attempt":1,"creator":{"kind":"routerOperator"},
+                   "agentProgram":"codex","sessionKind":{"kind":"ordinary"}}),
+            json!({"result":"superseded"}),
+        ),
+        (
+            FrameDirection::ToCentral,
+            "callCentral",
+            "bindFleetSession",
+            &session_service,
+            json!({"sessionId":MACHINE,"harnessSessionId":"harness-session","secret":digest}),
+            json!({"result":"noSuchStart"}),
+        ),
+        (
+            FrameDirection::ToCentral,
+            "callCentral",
+            "endFleetSession",
+            &session_service,
+            json!({"target":{"kind":"centralId","sessionId":MACHINE},"cause":{"kind":"givenUp"}}),
+            json!({"result":"noSuchStart"}),
         ),
         (
             FrameDirection::ToRouter,
@@ -315,11 +317,17 @@ fn assert_rejects_open_envelope(
 }
 
 #[test]
-fn the_link_registers_only_the_four_machine_approval_calls() {
-    use crate::{CentralLinkRpc, MacLinkRpc};
+fn the_link_registers_session_and_approval_calls_in_their_respective_directions() {
+    use crate::{
+        CentralLinkRpc, MacLinkRpc,
+        session_lifecycle_rpc::{BindFleetSessionRpc, CreateFleetSessionRpc, EndFleetSessionRpc},
+    };
     fn to_central<Call: CentralLinkRpc>() {}
     fn to_mac<Call: MacLinkRpc>() {}
 
+    to_central::<CreateFleetSessionRpc>();
+    to_central::<BindFleetSessionRpc>();
+    to_central::<EndFleetSessionRpc>();
     to_central::<RegisterRunRpc>();
     to_central::<RaiseApprovalRpc>();
     to_central::<StopApprovalRpc>();
@@ -334,24 +342,35 @@ fn typed_frame_layers_require_closed_named_records() {
         (
             "callCentral",
             FrameDirection::ToCentral,
-            "centralProbe",
+            "registerRun",
             false,
         ),
         ("callMac", FrameDirection::ToRouter, "macProbe", false),
         (
             "centralCallReply",
             FrameDirection::ToRouter,
-            "centralProbe",
+            "registerRun",
             true,
         ),
         ("macCallReply", FrameDirection::ToCentral, "macProbe", true),
     ] {
-        let body = if is_reply {
+        let body = if call == "registerRun" {
+            if is_reply {
+                json!({"kind":"registered"})
+            } else {
+                json!({"routerRun":CORRELATION})
+            }
+        } else if is_reply {
             json!({"echoed":7})
         } else {
             json!({"sequence":7})
         };
-        let named_call = json!({"call":call,"envelope":{"target":MACHINE,"body":body}});
+        let target = if call == "registerRun" {
+            json!({"organizationId":MACHINE})
+        } else {
+            json!(MACHINE)
+        };
+        let named_call = json!({"call":call,"envelope":{"target":target,"body":body}});
         let content = if is_reply {
             json!({"kind":"answered","reply":named_call})
         } else {
@@ -435,10 +454,10 @@ fn typed_frame_layers_require_closed_named_records() {
 fn direct_typed_readers_and_unit_refusals_are_closed_named_maps() {
     let schema = serde_json::to_value(schemars::schema_for!(DataFrame)).unwrap();
     let validator = jsonschema::validator_for(&schema).unwrap();
-    let call = json!({"call":"centralProbe","envelope":{"target":MACHINE,"body":{"sequence":7}}});
+    let call = json!({"call":"registerRun","envelope":{"target":{"organizationId":MACHINE},"body":{"routerRun":CORRELATION}}});
     assert!(serde_json::from_value::<CentralCall>(call.clone()).is_ok());
     assert!(
-        serde_json::from_value::<CentralCall>(json!(["centralProbe", call["envelope"]])).is_err()
+        serde_json::from_value::<CentralCall>(json!(["registerRun", call["envelope"]])).is_err()
     );
     assert!(serde_json::from_value::<MacCall>(json!(["macProbe", call["envelope"]])).is_err());
     assert!(
@@ -449,7 +468,7 @@ fn direct_typed_readers_and_unit_refusals_are_closed_named_maps() {
         ]))
         .is_err()
     );
-    for kind in ["unknownCall", "wrongTarget"] {
+    for kind in ["unknownCall", "wrongTarget", "centralFault"] {
         let valid = json!({"kind":kind});
         let refusal: LinkCallRefusal = serde_json::from_value(valid.clone()).unwrap();
         assert_eq!(serde_json::to_value(refusal).unwrap(), valid);
@@ -483,4 +502,43 @@ fn direct_typed_readers_and_unit_refusals_are_closed_named_maps() {
             assert!(decode_text(&bad.to_string(), direction).is_err());
         }
     }
+}
+
+#[test]
+fn central_probe_keeps_its_fixture_wire_and_is_unregistered_in_the_production_codec() {
+    use crate::fixture_central_probe::{
+        decode_probe_call, decode_probe_reply, encode_probe_call, encode_probe_reply,
+    };
+    let correlation: CorrelationId = CORRELATION.parse().unwrap();
+    let request = Envelope {
+        target: MACHINE.parse().unwrap(),
+        body: ProbeRequest { sequence: 7 },
+    };
+    let text = encode_probe_call(correlation.clone(), request.clone()).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&text).unwrap(),
+        json!({"kind":"callCentral","correlationId":CORRELATION,
+        "request":{"call":"centralProbe","envelope":{"target":MACHINE,"body":{"sequence":7}}}})
+    );
+    assert_eq!(
+        decode_probe_call(&text).unwrap(),
+        (correlation.clone(), request)
+    );
+    assert!(matches!(
+        decode_text(&text, FrameDirection::ToCentral),
+        Err(ProtocolError::UnknownTypedCall { .. })
+    ));
+    let answer = TypedCallResult::Answered {
+        reply: Envelope {
+            target: MACHINE.parse().unwrap(),
+            body: ProbeReply { echoed: 7 },
+        },
+    };
+    let text = encode_probe_reply(correlation.clone(), answer.clone()).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&text).unwrap(),
+        json!({"kind":"centralCallReply","correlationId":CORRELATION,
+        "result":{"kind":"answered","reply":{"call":"centralProbe","envelope":{"target":MACHINE,"body":{"echoed":7}}}}})
+    );
+    assert_eq!(decode_probe_reply(&text).unwrap(), (correlation, answer));
 }

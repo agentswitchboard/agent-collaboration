@@ -263,6 +263,25 @@ async fn serve_link(
         let frame = match decode_text(&text, FrameDirection::ToCentral) {
             Ok(frame) => frame,
             Err(ProtocolError::UnknownTypedCall { correlation_id }) => {
+                #[cfg(feature = "test-support")]
+                if runtime.fixture_link_calls_enabled()
+                    && let Ok((correlation, request)) =
+                        central_link_protocol::fixture_central_probe::decode_probe_call(&text)
+                {
+                    if !typed_link::reply_to_fixture_probe(
+                        &mut socket,
+                        &writes,
+                        &runtime,
+                        &connection,
+                        correlation,
+                        request,
+                    )
+                    .await
+                    {
+                        return;
+                    }
+                    continue;
+                }
                 if !reply_to_typed_call(
                     &mut socket,
                     &writes,
@@ -740,6 +759,10 @@ impl LinkWrites<'_> {
         let Ok(text) = encode_text(frame, FrameDirection::ToRouter) else {
             return false;
         };
+        self.send_text(socket, text).await
+    }
+
+    async fn send_text(&self, socket: &mut WebSocket, text: String) -> bool {
         let sent = self
             .send_until_stopped(async { socket.send(Message::Text(text.into())).await.is_ok() })
             .await;
