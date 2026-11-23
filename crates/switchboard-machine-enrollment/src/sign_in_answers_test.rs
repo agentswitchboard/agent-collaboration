@@ -20,11 +20,7 @@ const GRANT: &str = r#"{
   "expires_at":1795382400,
   "token_type":"Bearer",
   "scope":"offline_access",
-  "machine_client_id":"019a0000-0000-7000-8000-000000000002",
-  "fleet_central":{
-    "receiver":"019a0000-0000-7000-8000-000000000003",
-    "relay":"019a0000-0000-7000-8000-000000000004"
-  }
+  "machine_client_id":"019a0000-0000-7000-8000-000000000002"
 }"#;
 
 #[test]
@@ -119,14 +115,6 @@ fn token_grant_trusts_the_body_and_keeps_it_closed() {
         grant.credential.enrollment_id.to_string(),
         "019a0000-0000-7000-8000-000000000002"
     );
-    assert_eq!(
-        grant.credential.central.receiver.to_string(),
-        "019a0000-0000-7000-8000-000000000003"
-    );
-    assert_eq!(
-        grant.credential.central.relay.to_string(),
-        "019a0000-0000-7000-8000-000000000004"
-    );
 
     let extra = GRANT.replacen('{', r#"{"extra":"unexpected","#, 1);
     assert!(matches!(
@@ -188,22 +176,10 @@ fn positional_arrays_are_rejected_at_every_response_object() {
         envelope["expires_at"],
         envelope["token_type"],
         envelope["scope"],
-        envelope["machine_client_id"],
-        envelope["fleet_central"]
+        envelope["machine_client_id"]
     ]);
     assert!(matches!(
         decode_poll(200, None, token_array.to_string().as_bytes()),
-        PollAnswer::Invalid {
-            reason: InvalidReason::MalformedAnswer
-        }
-    ));
-    let mut wrong_nested = envelope;
-    wrong_nested["fleet_central"] = serde_json::json!([
-        "019a0000-0000-7000-8000-000000000003",
-        "019a0000-0000-7000-8000-000000000004"
-    ]);
-    assert!(matches!(
-        decode_poll(200, None, wrong_nested.to_string().as_bytes()),
         PollAnswer::Invalid {
             reason: InvalidReason::MalformedAnswer
         }
@@ -250,4 +226,45 @@ fn timestamps_reasons_and_access_lifetime_are_checked_before_use() {
             }
         ));
     }
+}
+
+#[test]
+fn token_responses_refuse_the_removed_fleet_central_field() {
+    let current = br#"{
+        "access_token":"test-access", "refresh_token":"test-refresh",
+        "expires_in":60, "expires_at":60,
+        "token_type":"Bearer", "scope":"offline_access",
+        "machine_client_id":"019a0000-0000-7000-8000-000000000002"
+    }"#;
+    let legacy = br#"{
+        "access_token":"test-access", "refresh_token":"test-refresh",
+        "expires_in":60, "expires_at":60,
+        "token_type":"Bearer", "scope":"offline_access",
+        "machine_client_id":"019a0000-0000-7000-8000-000000000002",
+        "fleet_central":{"receiver":"019a0000-0000-7000-8000-000000000003","relay":"019a0000-0000-7000-8000-000000000004"}
+    }"#;
+
+    let PollAnswer::Enrolled(grant) = decode_poll(200, None, current) else {
+        panic!("the current token response must decode without fleet_central");
+    };
+    assert_eq!(
+        grant.credential.enrollment_id.to_string(),
+        "019a0000-0000-7000-8000-000000000002"
+    );
+    assert!(matches!(
+        decode_refresh(200, None, current),
+        RefreshAnswer::Rotated(_)
+    ));
+    assert!(matches!(
+        decode_poll(200, None, legacy),
+        PollAnswer::Invalid {
+            reason: InvalidReason::MalformedAnswer
+        }
+    ));
+    assert!(matches!(
+        decode_refresh(200, None, legacy),
+        RefreshAnswer::Refused {
+            reason: InvalidReason::MalformedAnswer
+        }
+    ));
 }

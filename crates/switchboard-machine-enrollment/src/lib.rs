@@ -24,8 +24,7 @@ pub use enrollment_binding::{
     InvalidDeployment, SignInDeployment, StoredEnrollment,
 };
 pub use enrollment_identity::{
-    CentralEndpointId, CentralEndpointIds, EnrollmentId, EnrollmentIdentifierError, OrganizationId,
-    RouterClientId,
+    EnrollmentId, EnrollmentIdentifierError, OrganizationId, RouterClientId,
 };
 pub use enrollment_outcome::{DecodeAnswerError, EnrollmentEnd, InvalidReason};
 pub use refresh_owner::{

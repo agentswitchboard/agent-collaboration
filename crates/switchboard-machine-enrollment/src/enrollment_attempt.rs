@@ -158,7 +158,6 @@ async fn install_approved_binding(
                 return Ok(EnrollmentReceipt {
                     generation: binding.generation,
                     enrollment_id: binding.credential.enrollment_id,
-                    central: binding.credential.central,
                 });
             }
             ConditionalWrite::Superseded => {

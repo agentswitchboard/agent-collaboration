@@ -13,10 +13,9 @@ use hegel::generators as gs;
 use router_clock::{ManualClock, RuntimeClock};
 
 use crate::{
-    BindingGeneration, CentralEndpointIds, ConditionalWrite, CredentialStore, CredentialStoreError,
-    EnrollmentBinding, EnrollmentContext, EnrollmentEnd, InvalidReason, RefreshAnswer,
-    RefreshCredential, SecretValue, SignInDeployment, StoreDurability, StoredEnrollment,
-    TokenGrant,
+    BindingGeneration, ConditionalWrite, CredentialStore, CredentialStoreError, EnrollmentBinding,
+    EnrollmentContext, EnrollmentEnd, InvalidReason, RefreshAnswer, RefreshCredential, SecretValue,
+    SignInDeployment, StoreDurability, StoredEnrollment, TokenGrant,
 };
 
 use super::{
@@ -265,14 +264,6 @@ fn wire_credential(revision: usize) -> RefreshCredential {
         enrollment_id: "019a0000-0000-7000-8000-000000000002"
             .parse()
             .expect("enrollment"),
-        central: CentralEndpointIds {
-            receiver: "019a0000-0000-7000-8000-000000000003"
-                .parse()
-                .expect("receiver"),
-            relay: "019a0000-0000-7000-8000-000000000004"
-                .parse()
-                .expect("relay"),
-        },
         refresh_token: refresh_secret(revision),
     }
 }

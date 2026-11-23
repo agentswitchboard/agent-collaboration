@@ -4,8 +4,8 @@ use axum::http::StatusCode;
 use switchboard_machine_enrollment::{EnrollmentEnd, EnrollmentFailure, InvalidReason};
 
 use super::scripted_sign_in::{
-    ENROLLMENT_ID, INITIAL_ACCESS, INITIAL_REFRESH, RECEIVER, RELAY, Reply, ScriptStore,
-    SignInScript, USER_CODE, enrollment_request, machine_id, token_reply,
+    ENROLLMENT_ID, INITIAL_ACCESS, INITIAL_REFRESH, Reply, ScriptStore, SignInScript, USER_CODE,
+    enrollment_request, machine_id, token_reply,
 };
 
 #[tokio::test]
@@ -51,10 +51,7 @@ async fn polling_over_http_obeys_each_wait_and_uses_the_sign_in_body() {
         .expect("approved enrollment");
     let stored = store.current().expect("saved credential");
     assert_eq!(receipt.enrollment_id.to_string(), ENROLLMENT_ID);
-    assert_eq!(receipt.central.receiver.to_string(), RECEIVER);
-    assert_eq!(receipt.central.relay.to_string(), RELAY);
     assert_eq!(stored.credential.enrollment_id, receipt.enrollment_id);
-    assert_eq!(stored.credential.central, receipt.central);
     assert!(stored.credential.refresh_token.expose_secret() == INITIAL_REFRESH);
     script.assert_exhausted();
 }

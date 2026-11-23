@@ -3,10 +3,7 @@ use std::time::Duration;
 use serde::Deserialize;
 use url::Url;
 
-use crate::{
-    CentralEndpointIds, DecodeAnswerError, EnrollmentId, InvalidReason, RefreshCredential,
-    SecretValue,
-};
+use crate::{DecodeAnswerError, EnrollmentId, InvalidReason, RefreshCredential, SecretValue};
 
 /// Sign-in supplies these two human-facing values when a device attempt starts.
 #[derive(Debug)]
@@ -84,8 +81,6 @@ struct TokenBody {
     token_type: BearerTokenType,
     scope: OfflineScope,
     machine_client_id: EnrollmentId,
-    #[serde(deserialize_with = "crate::response_object::deserialize_object")]
-    fleet_central: CentralEndpointIds,
 }
 
 #[derive(Deserialize)]
@@ -158,7 +153,6 @@ fn decode_grant(body: &[u8]) -> Result<TokenGrant, DecodeAnswerError> {
         token_type: BearerTokenType::Bearer,
         scope: OfflineScope::OfflineAccess,
         machine_client_id,
-        fleet_central,
     } = crate::response_object::from_json(body)?;
     let access_token = SecretValue::new(access_token).ok_or(DecodeAnswerError::Malformed)?;
     let refresh_token = SecretValue::new(refresh_token).ok_or(DecodeAnswerError::Malformed)?;
@@ -168,7 +162,6 @@ fn decode_grant(body: &[u8]) -> Result<TokenGrant, DecodeAnswerError> {
     Ok(TokenGrant {
         credential: RefreshCredential {
             enrollment_id: machine_client_id,
-            central: fleet_central,
             refresh_token,
         },
         access_token,

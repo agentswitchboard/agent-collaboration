@@ -61,15 +61,3 @@ enrollment_identifier!(
     /// The enrollment client id sign-in issues for this machine's refreshes.
     EnrollmentId
 );
-enrollment_identifier!(
-    /// A link endpoint id configured and returned by sign-in.
-    CentralEndpointId
-);
-
-/// The two central endpoint ids sign-in supplies in a successful token response.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct CentralEndpointIds {
-    pub receiver: CentralEndpointId,
-    pub relay: CentralEndpointId,
-}

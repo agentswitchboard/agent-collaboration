@@ -1,7 +1,7 @@
 use url::Url;
 use workspace_ids::MachineId;
 
-use crate::{CentralEndpointIds, EnrollmentEnd, EnrollmentId, OrganizationId, RefreshCredential};
+use crate::{EnrollmentEnd, EnrollmentId, OrganizationId, RefreshCredential};
 
 /// The store starts at zero and advances this version on every binding transition.
 #[derive(Clone, Copy, Debug, Default, Eq, Ord, PartialEq, PartialOrd)]
@@ -149,7 +149,6 @@ impl StoredEnrollment {
 pub struct EnrollmentReceipt {
     pub generation: BindingGeneration,
     pub enrollment_id: EnrollmentId,
-    pub central: CentralEndpointIds,
 }
 
 #[cfg(test)]

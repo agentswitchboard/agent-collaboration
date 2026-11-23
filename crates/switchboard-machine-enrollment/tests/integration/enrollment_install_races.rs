@@ -1,15 +1,15 @@
 use std::time::Duration;
 
 use switchboard_machine_enrollment::{
-    BindingGeneration, CentralEndpointIds, ConditionalWrite, CredentialStore, EnrollmentBinding,
-    EnrollmentContext, EnrollmentEnd, EnrollmentFailure, EnrollmentReceipt, RefreshCredential,
-    SecretValue, StoreDurability, StoredEnrollment,
+    BindingGeneration, ConditionalWrite, CredentialStore, EnrollmentBinding, EnrollmentContext,
+    EnrollmentEnd, EnrollmentFailure, EnrollmentReceipt, RefreshCredential, SecretValue,
+    StoreDurability, StoredEnrollment,
 };
 use tokio::{sync::oneshot, task::JoinHandle};
 
 use super::scripted_sign_in::{
-    ENROLLMENT_ID, INITIAL_ACCESS, INITIAL_REFRESH, RECEIVER, RELAY, ScriptStore, SignInScript,
-    enrollment_request, machine_id, organization_id, token_reply,
+    ENROLLMENT_ID, INITIAL_ACCESS, INITIAL_REFRESH, ScriptStore, SignInScript, enrollment_request,
+    machine_id, organization_id, token_reply,
 };
 
 const OLD_ENROLLMENT: &str = "019a0000-0000-7000-8000-000000000007";
@@ -29,10 +29,6 @@ fn previous_binding(script: &SignInScript, version: u64, id: &str) -> Enrollment
         },
         credential: RefreshCredential {
             enrollment_id: id.parse().expect("preexisting enrollment"),
-            central: CentralEndpointIds {
-                receiver: RECEIVER.parse().expect("receiver"),
-                relay: RELAY.parse().expect("relay"),
-            },
             refresh_token: SecretValue::new("test-preexisting-refresh".to_owned())
                 .expect("fictional secret"),
         },

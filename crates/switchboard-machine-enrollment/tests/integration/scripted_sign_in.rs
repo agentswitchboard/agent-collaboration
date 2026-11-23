@@ -30,8 +30,6 @@ use workspace_ids::MachineId;
 
 pub const ROUTER_CLIENT: &str = "019a0000-0000-7000-8000-000000000001";
 pub const ENROLLMENT_ID: &str = "019a0000-0000-7000-8000-000000000002";
-pub const RECEIVER: &str = "019a0000-0000-7000-8000-000000000003";
-pub const RELAY: &str = "019a0000-0000-7000-8000-000000000004";
 const MACHINE: &str = "019a0000-0000-7000-8000-000000000005";
 const ORGANIZATION: &str = "019a0000-0000-7000-8000-000000000006";
 pub const DEVICE_SECRET: &str = "test-secret-device-1154718";
@@ -102,8 +100,7 @@ pub fn token_reply(access: &str, refresh: &str) -> Reply {
             "expires_at": 60,
             "token_type": "Bearer",
             "scope": "offline_access",
-            "machine_client_id": ENROLLMENT_ID,
-            "fleet_central": {"receiver": RECEIVER, "relay": RELAY},
+            "machine_client_id": ENROLLMENT_ID
         })
         .to_string(),
     )
