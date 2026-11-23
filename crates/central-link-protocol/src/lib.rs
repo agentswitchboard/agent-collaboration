@@ -10,10 +10,12 @@ mod link_renewal;
 mod link_request;
 mod link_typed_calls;
 mod mac_call_address;
+mod mac_call_capabilities;
 #[cfg(test)]
 mod parent_session_rpc_test;
 mod request_status;
 pub mod session_lifecycle_rpc;
+mod socket_mac_call_capabilities;
 mod typed_call_correlations;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -40,6 +42,13 @@ pub use link_request::{
     RequestScope,
 };
 pub use mac_call_address::MacCallAddress;
+pub use mac_call_capabilities::{
+    DuplicateMacCallKind, HandledMacCalls, MacCallKind, MacCapabilities,
+};
+pub use socket_mac_call_capabilities::{
+    DuplicateMacCapabilities, MAX_SOCKET_MAC_CALL_ITEMS, MacCallDeliveryKey, MacCallSkip,
+    SocketMacCallState,
+};
 
 /// The receiving end of a machine-link frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

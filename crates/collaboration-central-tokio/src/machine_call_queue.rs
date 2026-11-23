@@ -1,7 +1,9 @@
 //! The admitted socket owns outbound calls, its run binding and the reply correlation table.
 use central_link_protocol::{
-    CorrelationId, DataFrame, FreshCorrelationId, LinkFrame, MAX_PENDING_TYPED_CALLS, MacCall,
-    MacCallAddress, MacCallReply, TypedCallCorrelations, TypedCallResult,
+    CorrelationId, DataFrame, DuplicateMacCapabilities, FreshCorrelationId, LinkFrame,
+    MAX_PENDING_TYPED_CALLS, MacCall, MacCallAddress, MacCallDeliveryKey, MacCallKind,
+    MacCallReply, MacCallSkip, MacCapabilities, SocketMacCallState, TypedCallCorrelations,
+    TypedCallResult,
 };
 use collaboration_central_core::ValidatedMachineConnection;
 use fleet_identity_protocol::{EnrollmentId, OrganizationId};
@@ -18,6 +20,7 @@ type MacAnswer = TypedCallResult<MacCallReply>;
 struct ConnectionCallState {
     pending: TypedCallCorrelations<ReplyWaiter>,
     bound_run: Option<RouterRunId>,
+    delivery: SocketMacCallState,
 }
 
 struct ConnectionCalls {
@@ -88,6 +91,7 @@ pub(crate) struct QueuedMacCall {
     correlation: FreshCorrelationId,
     waiter: ReplyWaiter,
     request: Box<MacCall>,
+    item: Option<MacCallDeliveryKey>,
     write: Arc<AttemptWrite>,
 }
 
@@ -98,6 +102,20 @@ impl QueuedMacCall {
 
     pub(crate) fn prewrite_cancellation(&self) -> CancellationToken {
         self.write.prevented.clone()
+    }
+
+    pub(crate) fn committed_ending(
+        &self,
+    ) -> Option<(
+        &central_link_protocol::approval_rpc::ApprovalHolderTarget,
+        &workspace_ids::ApprovalRequestId,
+    )> {
+        match (&self.item, &*self.request) {
+            (Some(MacCallDeliveryKey::Ending(..)), MacCall::DeliverEnding(ending)) => {
+                Some((&ending.target, ending.body.request_id()))
+            }
+            _ => None,
+        }
     }
 
     #[cfg(feature = "test-support")]
@@ -178,12 +196,61 @@ impl MacCallSender {
             )
     }
 
+    pub(crate) fn claim_approval_item(&self, item: MacCallDeliveryKey) -> Result<(), MacCallSkip> {
+        self.calls.state().delivery.begin(item)
+    }
+
+    pub(crate) fn finish_approval_item(&self, item: &MacCallDeliveryKey) -> bool {
+        self.calls.state().delivery.finish(item)
+    }
+
+    pub(crate) fn reclaim_settled_item(&self, item: &MacCallDeliveryKey) -> bool {
+        self.calls.state().delivery.reclaim_settled(item)
+    }
+
+    pub(crate) fn recovery_kinds(&self) -> (Option<RouterRunId>, bool) {
+        let state = self.calls.state();
+        let holder = state
+            .bound_run
+            .as_ref()
+            .filter(|_| state.delivery.handles(MacCallKind::DeliverEnding))
+            .cloned();
+        (holder, state.delivery.handles(MacCallKind::ApprovalNotice))
+    }
+
     pub(crate) fn enqueue(
         &self,
         correlation: FreshCorrelationId,
         deadline: ClockInstant,
         request: MacCall,
         address: MacCallAddress,
+    ) -> Result<PendingMacCall, CallFailure> {
+        self.calls
+            .state()
+            .delivery
+            .check_request(&request)
+            .map_err(|_| CallFailure::NeverReached)?;
+        self.enqueue_on_socket(correlation, deadline, request, address, None)
+    }
+
+    pub(crate) fn enqueue_claimed_approval(
+        &self,
+        correlation: FreshCorrelationId,
+        deadline: ClockInstant,
+        request: MacCall,
+        address: MacCallAddress,
+        item: MacCallDeliveryKey,
+    ) -> Result<PendingMacCall, CallFailure> {
+        self.enqueue_on_socket(correlation, deadline, request, address, Some(item))
+    }
+
+    fn enqueue_on_socket(
+        &self,
+        correlation: FreshCorrelationId,
+        deadline: ClockInstant,
+        request: MacCall,
+        address: MacCallAddress,
+        item: Option<MacCallDeliveryKey>,
     ) -> Result<PendingMacCall, CallFailure> {
         // The same budget covers calls waiting to get on the wire and awaiting a reply.
         let slot = self
@@ -204,6 +271,7 @@ impl MacCallSender {
                     answer,
                 },
                 request: Box::new(request),
+                item,
                 write: write.clone(),
             })
             .map_err(|_| CallFailure::NeverReached)?;
@@ -227,14 +295,31 @@ impl MacCallReceiver {
         self.calls.state().bound_run.clone()
     }
 
+    pub(crate) fn announce_capabilities(
+        &self,
+        announcement: MacCapabilities,
+    ) -> Result<Option<RouterRunId>, DuplicateMacCapabilities> {
+        let mut state = self.calls.state();
+        state.delivery.announce(announcement)?;
+        Ok(state
+            .bound_run
+            .as_ref()
+            .filter(|_| {
+                !self.calls.ended.is_cancelled()
+                    && state.delivery.handles(MacCallKind::DeliverEnding)
+            })
+            .cloned())
+    }
+
+    pub(crate) fn should_recover_after_registration(&self) -> bool {
+        let state = self.calls.state();
+        state.bound_run.is_none() && state.delivery.handles(MacCallKind::DeliverEnding)
+    }
+
+    /// Bind a successful registration on this physical socket.
     pub(crate) fn bind_run(&self, run: RouterRunId) {
         let mut state = self.calls.state();
-        if !self.calls.ended.is_cancelled()
-            && state
-                .bound_run
-                .as_ref()
-                .is_none_or(|current| current == &run)
-        {
+        if !self.calls.ended.is_cancelled() && state.bound_run.is_none() {
             state.bound_run = Some(run);
         }
     }

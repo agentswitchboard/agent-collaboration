@@ -62,6 +62,13 @@ enum Point {
     BeforeApprovalNoticeWrite,
     AfterApprovalNoticeAttempt,
     AfterApprovalNoticeRecovery,
+    BeforeMacEndingOffer,
+    AfterMacEndingOffer,
+    BeforeMacNoticeOffer,
+    AfterMacNoticeOffer,
+    MacEndingRecoveryStarted,
+    MacEndingRecoveryFinished,
+    MacEndingRegistrationRecoveryScheduled,
     BeforePersonApprovalTurn,
     AfterPersonApprovalCommit,
     AfterIdleExpiryCommit,
@@ -105,6 +112,15 @@ impl From<Point> for PausePoint {
             Point::BeforeApprovalNoticeWrite => Self::BeforeApprovalNoticeWrite,
             Point::AfterApprovalNoticeAttempt => Self::AfterApprovalNoticeAttempt,
             Point::AfterApprovalNoticeRecovery => Self::AfterApprovalNoticeRecovery,
+            Point::BeforeMacEndingOffer => Self::BeforeMacEndingOffer,
+            Point::AfterMacEndingOffer => Self::AfterMacEndingOffer,
+            Point::BeforeMacNoticeOffer => Self::BeforeMacNoticeOffer,
+            Point::AfterMacNoticeOffer => Self::AfterMacNoticeOffer,
+            Point::MacEndingRecoveryStarted => Self::MacEndingRecoveryStarted,
+            Point::MacEndingRecoveryFinished => Self::MacEndingRecoveryFinished,
+            Point::MacEndingRegistrationRecoveryScheduled => {
+                Self::MacEndingRegistrationRecoveryScheduled
+            }
             Point::BeforePersonApprovalTurn => Self::BeforePersonApprovalTurn,
             Point::AfterPersonApprovalCommit => Self::AfterPersonApprovalCommit,
             Point::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
@@ -428,6 +444,20 @@ pub(super) async fn control(
         "/test/fail-issuer-cache" => {
             Response::from_json(&runtime.fail_next_issuer_cache(request.json().await?))
         }
+        "/test/mac-delivery-count" => {
+            let point: Point = request.json().await?;
+            Response::from_json(&runtime.runtime().pause_points().central_count(point.into()))
+        }
+        "/test/until-mac-delivery-count" => {
+            let (point, minimum): (Point, u64) = request.json().await?;
+            runtime
+                .runtime()
+                .pause_points()
+                .until_central_count(point.into(), minimum)
+                .await;
+            Response::from_json(&true)
+        }
+        "/test/mac-call-waits" => Response::from_json(&object.clock.mac_call_waits()),
         "/test/fail-alarm-batch" => {
             let failure = request.json().await?;
             object.controls.faults.arm_alarm_batch(failure);

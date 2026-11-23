@@ -5,19 +5,17 @@ use approval_request_protocol::{
     RegisterRunRequest, RouterRunId, StopReceiptEnding, StopReply, StopRequest,
 };
 use central_link_protocol::{
-    CentralLinkRpc, CorrelationId, DataFrame, FrameDirection, LinkCallRefusal, LinkFrame, MacCall,
-    MacLinkRpc, TokenRenewalResult, TypedCallResult,
+    CentralLinkRpc, CorrelationId, DataFrame, LinkCallRefusal, LinkFrame, MacCall, MacLinkRpc,
+    TokenRenewalResult, TypedCallResult,
     approval_rpc::{
         ApprovalHolderTarget, ApprovalServiceTarget, DeliverEndingRpc, RaiseApprovalRpc,
         RegisterRunRpc, StopApprovalRpc,
     },
-    decode_text, encode_text,
 };
 use central_storage::{ReadOutcome, SqlValue, Statement};
 use fleet_identity_protocol::OrganizationId;
 use fleet_rpc::Envelope;
-use futures_util::{SinkExt, StreamExt};
-use reqwest_websocket::{CloseCode, Message, WebSocket};
+use reqwest_websocket::{CloseCode, WebSocket};
 use serde_json::json;
 use std::future::Future;
 
@@ -40,7 +38,21 @@ pub trait ApprovalLinkFixture {
         async { Ok(()) }
     }
     fn set_wall_seconds(&self, seconds: i64) -> impl Future<Output = Result<()>>;
-    fn connect(&self) -> impl Future<Output = Result<WebSocket>>;
+    fn connect_without_capabilities(&self) -> impl Future<Output = Result<WebSocket>>;
+    fn connect(&self) -> impl Future<Output = Result<WebSocket>> {
+        async {
+            let mut socket = self.connect_without_capabilities().await?;
+            announce_mac_calls(
+                &mut socket,
+                vec![
+                    central_link_protocol::MacCallKind::DeliverEnding,
+                    central_link_protocol::MacCallKind::ApprovalNotice,
+                ],
+            )
+            .await?;
+            Ok(socket)
+        }
+    }
     fn read(&self, statement: Statement) -> impl Future<Output = Result<ReadOutcome>>;
     fn advance(&self, seconds: u64) -> impl Future<Output = Result<()>>;
     fn refresh(&self) -> impl Future<Output = Result<String>>;
@@ -498,23 +510,6 @@ pub(crate) async fn renew(socket: &mut WebSocket, token: String) -> Result<()> {
     Ok(())
 }
 
-pub async fn receive_frame(socket: &mut WebSocket) -> Result<LinkFrame> {
-    let Message::Text(text) = socket.next().await.ok_or("approval socket ended")?? else {
-        return Err("expected application text on approval socket".into());
-    };
-    Ok(decode_text(&text, FrameDirection::ToRouter)?)
-}
-
-pub(crate) async fn send_frame(socket: &mut WebSocket, frame: LinkFrame) -> Result<()> {
-    socket
-        .send(Message::Text(encode_text(
-            &frame,
-            FrameDirection::ToCentral,
-        )?))
-        .await?;
-    Ok(())
-}
-
 pub(crate) async fn central_call<R: CentralLinkRpc<Target = ApprovalServiceTarget>>(
     socket: &mut WebSocket,
     organization: &OrganizationId,
@@ -596,3 +591,15 @@ pub(crate) async fn snapshot(fixture: &impl ApprovalLinkFixture) -> Result<Vec<V
 fn text(value: &str) -> SqlValue {
     SqlValue::Text(value.to_owned())
 }
+
+#[path = "mac_capability_scenarios.rs"]
+mod mac_capability_scenarios;
+pub use mac_capability_scenarios::{
+    HolderRecoveryOrder, announce_mac_calls, capability_ending_recovery, exchange_direct_mail,
+    require_duplicate_capabilities_close,
+};
+
+#[path = "approval_socket_frames.rs"]
+mod approval_socket_frames;
+pub use approval_socket_frames::receive_frame;
+pub(crate) use approval_socket_frames::send_frame;

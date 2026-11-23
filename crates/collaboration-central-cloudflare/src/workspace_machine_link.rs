@@ -26,6 +26,7 @@ enum IncomingRequests {
         correlation_id: CorrelationId,
         request: central_link_protocol::fixture_central_probe::ProbeRequestEnvelope,
     },
+    Capabilities(central_link_protocol::MacCapabilities),
     Single(Box<LinkRequest>),
     Batch(LinkRequestBatch),
     Typed {
@@ -141,10 +142,6 @@ impl CentralObject {
         }
         self.send_welcome_mail(&runtime, &pair.server, &connection.attachment())
             .await?;
-        if let Some(completion) = runtime.recover_approval_notices(connection) {
-            self.pending_mac_calls
-                .run_socket_completion(&self.state, &pair.server, completion);
-        }
         Response::from_websocket(pair.client)
     }
 
@@ -186,6 +183,9 @@ impl CentralObject {
             Err(_) => return self.close_machine_link(&socket, 1008, Some("invalid link frame")),
         };
         let requests = match frame {
+            LinkFrame::Data(DataFrame::MacCapabilities(announcement)) => {
+                IncomingRequests::Capabilities(announcement)
+            }
             LinkFrame::Data(DataFrame::CallCentral {
                 correlation_id,
                 request,
@@ -273,6 +273,10 @@ impl CentralObject {
         requests: IncomingRequests,
     ) -> Result<()> {
         match requests {
+            IncomingRequests::Capabilities(announcement) => {
+                self.announce_mac_capabilities(runtime, &socket, &attachment, announcement)
+                    .await
+            }
             #[cfg(feature = "test-support")]
             IncomingRequests::FixtureProbe {
                 correlation_id,

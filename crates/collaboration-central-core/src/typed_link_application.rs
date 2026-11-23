@@ -54,6 +54,7 @@ pub enum TypedCallCarrier {
     Session,
     Approval {
         registered_run: Option<workspace_ids::RouterRunId>,
+        recover_after_registration: bool,
     },
 }
 
@@ -85,14 +86,26 @@ pub trait CentralLinkDispatcher: Send + Sync {
         Box::pin(async { Err(StoreFailure::Unavailable) })
     }
 
+    fn recover_approval_endings(
+        &self,
+        machine: ValidatedMachineConnection,
+        run: workspace_ids::RouterRunId,
+    ) -> Option<LinkCallCompletion>;
+
     fn end_approval_enrollment(
         &self,
         organization: fleet_identity_protocol::OrganizationId,
         invalidation: fleet_contracts::EnrollmentInvalidation,
         statements: Vec<central_storage::GuardedStatement>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), StoreFailure>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Option<LinkCallCompletion>, StoreFailure>> + Send + '_>>;
 
     fn recover_approval_notices(&self, machine: ValidatedMachineConnection) -> LinkCallCompletion;
+
+    fn approval_ending_is_owed<'call>(
+        &'call self,
+        holder: &'call central_link_protocol::approval_rpc::ApprovalHolderTarget,
+        request: &'call workspace_ids::ApprovalRequestId,
+    ) -> Pin<Box<dyn Future<Output = Result<bool, StoreFailure>> + Send + 'call>>;
 
     fn approval_notice_deadline<'call>(
         &'call self,

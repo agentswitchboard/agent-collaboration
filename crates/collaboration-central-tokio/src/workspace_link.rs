@@ -216,9 +216,6 @@ async fn serve_link(
     if !send_welcome_backlog(&mut socket, &state, &writes, &runtime, &connection).await {
         return;
     }
-    if let Some(completion) = runtime.recover_approval_notices(connection.clone()) {
-        writes.schedule_completion(completion);
-    }
     loop {
         let message = tokio::select! {
             biased;
@@ -311,6 +308,38 @@ async fn serve_link(
             }
         };
         match frame {
+            LinkFrame::Data(DataFrame::MacCapabilities(announcement)) => {
+                let recover_notices = announcement
+                    .handled_calls
+                    .contains(central_link_protocol::MacCallKind::ApprovalNotice);
+                match registration
+                    .outbound_calls
+                    .announce_capabilities(announcement)
+                {
+                    Ok(holder_run) => {
+                        if let Some(run) = holder_run
+                            && let Some(recovery) =
+                                runtime.recover_approval_endings(connection.clone(), run)
+                        {
+                            writes.schedule_completion(recovery);
+                        }
+                        if recover_notices
+                            && let Some(recovery) =
+                                runtime.recover_approval_notices(connection.clone())
+                        {
+                            writes.schedule_completion(recovery);
+                        }
+                    }
+                    Err(_) => {
+                        writes.close(
+                            &mut socket,
+                            close_code::PROTOCOL,
+                            "duplicate Mac capabilities",
+                        );
+                        return;
+                    }
+                }
+            }
             LinkFrame::Data(DataFrame::CallCentral {
                 correlation_id,
                 request,

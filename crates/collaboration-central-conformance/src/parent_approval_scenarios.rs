@@ -36,6 +36,9 @@ pub use cases::{
 };
 #[path = "parent_approval_delivery_cases.rs"]
 mod delivery_cases;
+#[path = "parent_capability_scenarios.rs"]
+mod parent_capability_scenarios;
+pub use parent_capability_scenarios::both_owed_kinds_follow_the_socket_capabilities;
 #[path = "parent_approval_proof_cases.rs"]
 mod proof_cases;
 pub use delivery_cases::{
@@ -353,3 +356,10 @@ async fn seed_delegate_edge(
         args: vec![text(parent.as_str()), text(child.as_str())],
     }).await
 }
+
+#[path = "mac_call_ledger_scenarios.rs"]
+mod mac_call_ledger_scenarios;
+pub use mac_call_ledger_scenarios::{
+    LedgerFixture, MacDeliveryEvent, both_live_and_recovered_items_have_one_attempt,
+    full_mac_call_ledger_recovers_on_committed_read, unsupported_mac_call_registers_no_wait,
+};

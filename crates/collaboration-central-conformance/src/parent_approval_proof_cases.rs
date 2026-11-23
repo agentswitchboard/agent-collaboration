@@ -3,8 +3,8 @@ use approval_request_protocol::{
     Answer, ApprovalDestination, ApprovalNoticeReply, ApprovalRequestId, CallOffer,
     DecideApprovalAsSessionReply, ListApprovalsForSessionReply, ListApprovalsForSessionRequest,
     OptionLifetime, PassOnApprovalReply, PassOnApprovalRequest, ProviderAnswer, QuestionAnswer,
-    QuestionAnswerValue, QuestionFieldAnswer, QuestionFieldId, Raise, RetainedOptionStorage,
-    SessionCallDecision, SessionCallOperation,
+    QuestionAnswerValue, QuestionFieldAnswer, QuestionFieldId, Raise, ReadApprovalForSessionReply,
+    RetainedOptionStorage, SessionCallDecision, SessionCallOperation,
 };
 use central_link_protocol::{
     LinkCallRefusal, TypedCallResult,
@@ -243,6 +243,12 @@ async fn list_continuation(fixture: &impl ApprovalLinkFixture) -> Result<()> {
             ApprovalNoticeReply::Received {},
         )
         .await?;
+        // Read the notice without ending the approval so setup can exceed one
+        // socket ledger while every waiting row still contributes to the page.
+        assert!(matches!(
+            setup.read(id.clone()).await?,
+            ReadApprovalForSessionReply::Request { .. }
+        ));
         ids.push(id);
     }
     ids.sort_by(|left, right| right.cmp(left));

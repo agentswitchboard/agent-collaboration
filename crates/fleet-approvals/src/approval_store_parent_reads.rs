@@ -68,6 +68,12 @@ where
                 if self.transaction.execute_approval_statement(read).await? != 1 {
                     return Err(ApprovalApplyFailure::GuardChanged);
                 }
+                self.settled_mac_calls
+                    .push(crate::SettledApprovalMacCall::Notice {
+                        organization: organization.clone(),
+                        destination: session,
+                        request_id: request_id.clone(),
+                    });
                 changed = true;
             }
             ReadApprovalForSessionReply::Request {

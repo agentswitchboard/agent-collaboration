@@ -76,18 +76,33 @@ impl MachinePushRegistry {
         ),
         CallFailure,
     > {
+        self.select_delivery_socket(
+            &target.organization_id,
+            &MacCallAddress::DeliverEnding(target.clone()),
+        )
+    }
+
+    pub(crate) fn select_delivery_socket(
+        &self,
+        organization: &OrganizationId,
+        address: &MacCallAddress,
+    ) -> Result<
+        (
+            MachineConnectionAttachment,
+            MacCallSender,
+            CancellationToken,
+        ),
+        CallFailure,
+    > {
         let sockets = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let address = MacCallAddress::DeliverEnding(target.clone());
+        let machine = address.machine_id();
         sockets
-            .get(&(target.organization_id.clone(), target.machine_id.clone()))
+            .get(&(organization.clone(), machine.clone()))
             .and_then(|sockets| sockets.last())
             .filter(|socket| {
-                socket.calls.permits(
-                    &address,
-                    &target.organization_id,
-                    &target.machine_id,
-                    &socket.enrollment,
-                )
+                socket
+                    .calls
+                    .permits(address, organization, machine, &socket.enrollment)
             })
             .map(|socket| {
                 (
