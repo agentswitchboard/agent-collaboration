@@ -120,6 +120,16 @@ async fn a_failing_drain_unit_gates_due_batches_and_request_drains_until_its_nex
             stamp(failure + minutes(5))
         ]
     );
+    let source_query = "SELECT effective_due_ms FROM engine_due_entries WHERE work_kind=? AND entry_role='source_control'";
+    assert_eq!(
+        rows(&runtime, source_query, vec![text(DRAINS)]).await,
+        [[SqlValue::Integer(
+            (failure + minutes(5))
+                .timestamp_millis()
+                .try_into()
+                .unwrap()
+        )]],
+    );
     let gated = runtime.runtime().legacy_unit_invocations();
     let backstop = drain_due(&f).await;
 
@@ -182,6 +192,11 @@ async fn a_failing_drain_unit_gates_due_batches_and_request_drains_until_its_nex
     );
     assert_eq!(drain_due(&f).await, SqlValue::Null, "and drains");
     assert!(record(&runtime, DRAINS, "all").await.is_empty());
+    assert!(
+        rows(&runtime, source_query, vec![text(DRAINS)])
+            .await
+            .is_empty()
+    );
     assert_fixture_attempt_ids_are_uuid_v7(
         &f,
         "a_failing_drain_unit_gates_due_batches_and_request_drains_until_its_next_try",

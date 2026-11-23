@@ -59,10 +59,20 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
             ObservedControl::Absent => return Ok(()),
             ObservedControl::Present(guard) => guard,
         };
+        let mut statements = vec![plan_observed_attempt_delete(subject, guard)];
+        if let Some(change) = crate::due_change_for_attempt(subject) {
+            let now = self
+                .current_engine_time()
+                .map_err(BatchApplyFailure::StorageFailed)?;
+            statements.extend(
+                crate::plan_due_table_change(&change, now)
+                    .map_err(BatchApplyFailure::StorageFailed)?,
+            );
+        }
         classify_batch_application(
             self.central_store()
                 .run_batch(StatementBatch {
-                    statements: vec![plan_observed_attempt_delete(subject, guard)],
+                    statements,
                     alarm: AlarmUpdate::Unchanged,
                 })
                 .await,

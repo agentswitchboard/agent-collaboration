@@ -1,0 +1,50 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n    subject_key AS \"subject_key?: String\",\n    occurrence_ms AS \"occurrence_ms!: i64\",\n    effective_due_ms AS \"effective_due_ms!: i64\"\nFROM engine_due_entries\nWHERE work_kind = ?1 AND entry_role = 'item'\n    AND effective_due_ms IS NOT NULL AND effective_due_ms <= ?2\nORDER BY effective_due_ms, subject_key\nLIMIT ?3\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "subject_key?: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "engine_due_entries",
+            "name": "subject_key"
+          }
+        }
+      },
+      {
+        "name": "occurrence_ms!: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "engine_due_entries",
+            "name": "occurrence_ms"
+          }
+        }
+      },
+      {
+        "name": "effective_due_ms!: i64",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "engine_due_entries",
+            "name": "effective_due_ms"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": [
+      false,
+      true,
+      true
+    ]
+  },
+  "hash": "7a11361edbdf2bb44b2236d7a80488e708c00b7010316e89f7093a7d68f8434a"
+}

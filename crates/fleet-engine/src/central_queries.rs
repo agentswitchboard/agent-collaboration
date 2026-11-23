@@ -1,4 +1,5 @@
 //! Checked Central alarm and timed-list rows read on the owning executor.
+use crate::DueKind;
 use central_engine_model::{DueListKind, DueListQuery, DueRow, InstanceKey};
 use central_storage::{CorruptReason, EngineAlarmTimes, SafeInteger, StoreFailure};
 use fleet_lent_transaction::CentralTransaction;
@@ -12,31 +13,150 @@ struct StoredAlarmInputs {
     legacy_due: Option<i64>,
 }
 
+#[derive(Default, sqlx::FromRow)]
+struct StoredIndexedAlarmInputs {
+    #[sqlx(rename = "on_grid_due?: i64")]
+    on_grid_due: Option<i64>,
+    #[sqlx(rename = "notice_window_due?: i64")]
+    notice_window_due: Option<i64>,
+    #[sqlx(rename = "workspace_drain_due?: i64")]
+    workspace_drain_due: Option<i64>,
+}
+
+struct IndexedAlarmSnapshot {
+    times: EngineAlarmTimes,
+    legacy_by_kind: [(DueKind, Option<i64>); 2],
+}
+
+macro_rules! indexed_alarm_query {
+    ($emit:ident, $tags:expr) => {
+        $emit!("src/queries/read_indexed_alarm_inputs.sql", $tags)
+    };
+}
+
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! check_fixture_alarm_query {
+    ($emit:ident) => {
+        $emit!("../collaboration-central-core/src/engine/queries/read_fixture_alarm_inputs.sql")
+    };
+}
+
+#[cfg(feature = "test-support")]
+#[doc(hidden)]
+#[macro_export]
+macro_rules! check_fixture_alarm_presence {
+    ($emit:ident) => {
+        $emit!("../collaboration-central-core/src/engine/queries/read_fixture_alarm_presence.sql")
+    };
+}
+
+#[cfg(feature = "test-support")]
+#[derive(sqlx::FromRow)]
+struct StoredFixturePresence {
+    #[sqlx(rename = "installed!: i64")]
+    installed: i64,
+}
+
+fn grid_tags() -> Result<String, StoreFailure> {
+    serde_json::to_string(&DueKind::GRID.map(DueKind::tag)).map_err(|_| StoreFailure::Unavailable)
+}
+
 pub async fn read_alarm_inputs<CentralTransactionLender: CentralTransaction>(
     transaction: &mut CentralTransactionLender,
 ) -> Result<EngineAlarmTimes, StoreFailure>
 where
     <CentralTransactionLender::Database as Database>::Arguments:
         IntoArguments<CentralTransactionLender::Database>,
+    String: Type<CentralTransactionLender::Database>
+        + for<'q> Encode<'q, CentralTransactionLender::Database>,
     i64: Type<CentralTransactionLender::Database>
         + for<'row> Decode<'row, CentralTransactionLender::Database>,
     for<'row> &'row str: ColumnIndex<<CentralTransactionLender::Database as Database>::Row>,
 {
-    let row = sqlx::query_as::<CentralTransactionLender::Database, StoredAlarmInputs>(
-        include_str!("queries/read_alarm_inputs.sql"),
-    )
-    .fetch_one(transaction.executor())
-    .await
-    .map_err(|error| map_central_query_failure(error, "engine alarm input"))?;
-    Ok(EngineAlarmTimes {
+    Ok(read_alarm_snapshot(transaction).await?.times)
+}
+
+async fn read_alarm_snapshot<CentralTransactionLender: CentralTransaction>(
+    transaction: &mut CentralTransactionLender,
+) -> Result<IndexedAlarmSnapshot, StoreFailure>
+where
+    <CentralTransactionLender::Database as Database>::Arguments:
+        IntoArguments<CentralTransactionLender::Database>,
+    String: Type<CentralTransactionLender::Database>
+        + for<'q> Encode<'q, CentralTransactionLender::Database>,
+    i64: Type<CentralTransactionLender::Database>
+        + for<'row> Decode<'row, CentralTransactionLender::Database>,
+    for<'row> &'row str: ColumnIndex<<CentralTransactionLender::Database as Database>::Row>,
+{
+    macro_rules! bind_indexed_alarm {
+        ($file:literal, $tags:expr) => {
+            sqlx::query_as::<CentralTransactionLender::Database, StoredIndexedAlarmInputs>(
+                include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $file)),
+            )
+            .bind($tags)
+        };
+    }
+    let row = indexed_alarm_query!(bind_indexed_alarm, grid_tags()?)
+        .fetch_optional(transaction.executor())
+        .await
+        .map_err(|error| map_central_query_failure(error, "engine alarm input"))?
+        .unwrap_or_default();
+    let on_grid_due = row.on_grid_due;
+    #[cfg(feature = "test-support")]
+    let on_grid_due = {
+        macro_rules! bind_fixture_alarm {
+            ($file:literal) => {
+                sqlx::query_as::<CentralTransactionLender::Database, StoredAlarmInputs>(
+                    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $file)),
+                )
+            };
+        }
+        macro_rules! bind_presence {
+            ($file:literal) => {
+                sqlx::query_as::<CentralTransactionLender::Database, StoredFixturePresence>(
+                    include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $file)),
+                )
+            };
+        }
+        let installed = crate::check_fixture_alarm_presence!(bind_presence)
+            .fetch_one(transaction.executor())
+            .await
+            .map_err(|error| map_central_query_failure(error, "engine fixture alarm schema"))?;
+        if installed.installed == 1 {
+            let fixture = crate::check_fixture_alarm_query!(bind_fixture_alarm)
+                .fetch_one(transaction.executor())
+                .await
+                .map_err(|error| map_central_query_failure(error, "engine fixture alarm input"))?;
+            [on_grid_due, fixture.on_grid_due]
+                .into_iter()
+                .flatten()
+                .min()
+        } else {
+            on_grid_due
+        }
+    };
+    let legacy_by_kind = [
+        (
+            DueKind::LegacyNoticeWindows,
+            validate_optional_alarm_millis(row.notice_window_due, "notice window alarm input")?,
+        ),
+        (
+            DueKind::LegacyWorkspaceDrains,
+            validate_optional_alarm_millis(row.workspace_drain_due, "workspace drain alarm input")?,
+        ),
+    ];
+    let times = EngineAlarmTimes {
         earliest_on_grid_due_unix_millis: validate_optional_alarm_millis(
-            row.on_grid_due,
+            on_grid_due,
             "engine alarm input",
         )?,
-        earliest_legacy_due_unix_millis: validate_optional_alarm_millis(
-            row.legacy_due,
-            "engine alarm input",
-        )?,
+        earliest_legacy_due_unix_millis: legacy_by_kind.iter().filter_map(|(_, due)| *due).min(),
+    };
+    Ok(IndexedAlarmSnapshot {
+        times,
+        legacy_by_kind,
     })
 }
 
@@ -57,7 +177,7 @@ macro_rules! __declare_timed_due_row {
     };
 }
 
-/// Declares the only kind-to-file mapping used at runtime and by the owning query witnesses.
+/// Declares the reference statements and their owning query witnesses.
 macro_rules! declare_timed_due_lists {
     ($d:tt; $($(#[$feature:meta])* $kind:ident, $witness:ident, $file:literal);+ $(;)?) => {
         $(
@@ -129,7 +249,18 @@ declare_timed_due_lists! {
 
 __declare_timed_due_row!();
 
-/// Reads an owner's due list and validates its storage types before FleetEngine dispatch.
+macro_rules! projected_due_query {
+    ($emit:ident, $kind:expr, $horizon:expr, $cap:expr) => {
+        $emit!(
+            "src/queries/read_projected_due_items.sql",
+            $kind,
+            $horizon,
+            $cap
+        )
+    };
+}
+
+/// Reads due rows in dispatch order from the Engine index.
 pub async fn read_timed_due_rows<CentralTransactionLender: CentralTransaction>(
     transaction: &mut CentralTransactionLender,
     query: DueListQuery,
@@ -141,16 +272,45 @@ where
         + for<'value> Encode<'value, CentralTransactionLender::Database>
         + for<'row> Decode<'row, CentralTransactionLender::Database>,
     String: Type<CentralTransactionLender::Database>
+        + for<'q> Encode<'q, CentralTransactionLender::Database>
         + for<'row> Decode<'row, CentralTransactionLender::Database>,
     for<'row> &'row str: ColumnIndex<<CentralTransactionLender::Database as Database>::Row>,
 {
+    let kind = match query.kind() {
+        DueListKind::Wakes => DueKind::WakeTimer,
+        DueListKind::Schedules => DueKind::AutomationTimer,
+        DueListKind::DirectMessages => DueKind::DirectMessage,
+        DueListKind::SystemExpiries => DueKind::SystemMessageExpiry,
+        #[cfg(feature = "test-support")]
+        DueListKind::Probes => return read_due_list(transaction, query, None).await,
+    };
+    read_due_list(transaction, query, Some(kind)).await
+}
+
+async fn read_due_list<T: CentralTransaction>(
+    transaction: &mut T,
+    query: DueListQuery,
+    projection: Option<DueKind>,
+) -> Result<Vec<DueRow>, StoreFailure>
+where
+    <T::Database as Database>::Arguments: IntoArguments<T::Database>,
+    i64: Type<T::Database> + for<'q> Encode<'q, T::Database> + for<'r> Decode<'r, T::Database>,
+    String: Type<T::Database> + for<'q> Encode<'q, T::Database> + for<'r> Decode<'r, T::Database>,
+    for<'r> &'r str: ColumnIndex<<T::Database as Database>::Row>,
+{
     macro_rules! build_timed_due_query {
         ($file:literal, $($arg:expr),+) => {
-            sqlx::query_as::<CentralTransactionLender::Database, StoredDueRow>(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $file)))
+            sqlx::query_as::<T::Database, StoredDueRow>(include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/", $file)))
                 $(.bind($arg))+
         };
     }
-    let timed_due_query = select_timed_due_list!(build_timed_due_query, query);
+    let timed_due_query = match projection {
+        Some(kind) => {
+            let (horizon, cap) = query.bindings();
+            projected_due_query!(build_timed_due_query, kind.tag().to_owned(), horizon, cap)
+        }
+        None => select_timed_due_list!(build_timed_due_query, query),
+    };
     timed_due_query
         .fetch_all(transaction.executor())
         .await
@@ -226,3 +386,7 @@ fn map_central_query_failure(error: sqlx::Error, column: &str) -> StoreFailure {
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[path = "central_queries_test.rs"]
 mod tests;
+
+#[path = "due_table_comparison.rs"]
+mod comparison;
+pub use comparison::{DueItemTimes, DueTableDifference, InvalidDueEntry, compare_due_table};

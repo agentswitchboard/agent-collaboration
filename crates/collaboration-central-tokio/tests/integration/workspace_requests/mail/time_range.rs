@@ -242,10 +242,8 @@ async fn unconvertible_stored_wake_due_fails_closed_on_actual_alarm() {
         .await
         .unwrap();
     assert!(matches!(outcome, BatchOutcome::Applied { .. }));
-    // Embedded setup allowance: the fixture's setup claimed the due batch at T0.
-    fixture.set_utc(due - chrono::Duration::seconds(270)).await;
-    // Isolation: that wake fails alone as CorruptRow (due_at); the alarm re-arms
-    // on the next mark.
+    // The last projected deadline remains the dispatch mark after a raw edit.
+    fixture.set_utc(due).await;
     runtime.after_event().await.unwrap();
     let record = runtime.runtime().statement_host().read(Statement { sql: "SELECT state,failure_count,last_failure,last_failure_detail FROM engine_work_attempts WHERE machine_kind='wake_timer' AND subject_key=?", args: vec![text(&wake_id)] }).await.unwrap();
     assert_eq!(record.rows.len(), 1);
@@ -282,7 +280,7 @@ async fn unconvertible_stored_wake_due_fails_closed_on_actual_alarm() {
             .statement_host()
             .alarm()
             .map(|time| time.unix_millis()),
-        prior_alarm
+        Some((due + chrono::Duration::minutes(5)).timestamp_millis())
     );
     fixture.host.close().await;
 }

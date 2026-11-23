@@ -206,11 +206,11 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
             } => (operation, actor, statements, cutoff),
         };
         let result = match FleetEngine::new(self)
-            .plan_retired_attempt_retry(&KIND_REGISTRY, request.attempt_id)
+            .plan_retired_attempt_retry(&KIND_REGISTRY, request.attempt_id, now)
             .await?
         {
-            Ok(delete) => {
-                statements.push(delete);
+            Ok(retry) => {
+                statements.extend(retry);
                 OrganizationAdminResult::EngineRetried {}
             }
             Err(reason) => refusal(reason),
