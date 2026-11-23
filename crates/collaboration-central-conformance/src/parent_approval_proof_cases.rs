@@ -243,6 +243,12 @@ async fn list_continuation(fixture: &impl ApprovalLinkFixture) -> Result<()> {
             ApprovalNoticeReply::Received {},
         )
         .await?;
+        // Read the notice without ending the approval so setup can exceed one
+        // socket ledger while every waiting row still contributes to the page.
+        assert!(matches!(
+            setup.read(id.clone()).await?,
+            ReadApprovalForSessionReply::Request { .. }
+        ));
         ids.push(id);
     }
     ids.sort_by(|left, right| right.cmp(left));
