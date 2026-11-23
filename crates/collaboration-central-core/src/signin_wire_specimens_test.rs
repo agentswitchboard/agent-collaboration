@@ -235,6 +235,40 @@ pub(super) fn invalid_specimens() -> Vec<(&'static str, WireSpecimen)> {
             .into_iter()
             .map(|(name, _, invalid)| (name, invalid)),
     )
+    .chain([
+        (
+            "ApprovalListReply",
+            wire_specimen(
+                "C3 list reply without next",
+                Serialize,
+                json!({"kind":"page","items":[]}),
+            ),
+        ),
+        (
+            "ApprovalListReply",
+            wire_specimen(
+                "C3 list reply reader without next",
+                Deserialize,
+                json!({"kind":"page","items":[]}),
+            ),
+        ),
+        (
+            "ApprovalDecideReply",
+            wire_specimen(
+                "C3 factor window as text",
+                Serialize,
+                json!({"kind":"factorRequired","withinSeconds":"900"}),
+            ),
+        ),
+        (
+            "FleetPermission",
+            wire_specimen(
+                "engine repair is not an issued Fleet permission",
+                Deserialize,
+                json!("organization:repairWork"),
+            ),
+        ),
+    ])
     .chain(allowance_record_negatives())
     .collect()
 }

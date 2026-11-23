@@ -32,7 +32,11 @@ fn create() -> VerifiedPersonRequest {
         person_revision: 4,
         organization_revision: 3,
         permission_policy_digest: POLICY.into(),
-        permissions: vec!["workspace:create".into(), "organization:view".into()],
+        permissions: vec![
+            "approval:decide".into(),
+            "workspace:create".into(),
+            "organization:view".into(),
+        ],
         second_factor_at: Some(NOW / 1000 - 60),
         request_id: request_at(NOW - 1_000),
         request_time_ms: NOW - 1_000,

@@ -166,7 +166,17 @@ approval_wire_record! {
     }
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error)]
+#[derive(Clone, Debug, Eq, PartialEq, thiserror::Error, Serialize, Deserialize)]
+#[serde(
+    tag = "kind",
+    content = "reason",
+    rename_all = "camelCase",
+    deny_unknown_fields
+)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum InvalidApprovalEnding {
     #[error(transparent)]
     Digest(#[from] ApprovalDigestError),

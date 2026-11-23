@@ -181,6 +181,7 @@ const LAYER_POLICY: [(&str, &[&str]); 46] = [
     (
         "fleet-signin",
         &[
+            "approval-request-protocol",
             "central-storage",
             "fleet-contracts",
             "fleet-identity-protocol",
