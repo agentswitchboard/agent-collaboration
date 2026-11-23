@@ -245,8 +245,11 @@ fn single_disposition<Reply>(
 ) -> LinkLaneDisposition<Reply> {
     match result {
         LaneResult::Untouched(cause) => LinkLaneDisposition::NotReached { cause },
-        LaneResult::SingleAnswered(answer) => match project(answer) {
-            Some(reply) => LinkLaneDisposition::Answered { reply },
+        LaneResult::SingleAnswered {
+            answer,
+            accepted_at,
+        } => match project(answer) {
+            Some(reply) => LinkLaneDisposition::Answered { reply, accepted_at },
             None => LinkLaneDisposition::AnswerLost,
         },
         LaneResult::Batch(_) | LaneResult::SingleLost => LinkLaneDisposition::AnswerLost,
@@ -298,7 +301,7 @@ impl ReadyLinkLane for LinkLaneHandle {
             match result {
                 LaneResult::Untouched(cause) => WriteBatchDisposition::NotReached { cause },
                 LaneResult::Batch(results) => WriteBatchDisposition::MemberResults(results),
-                LaneResult::SingleAnswered(_) | LaneResult::SingleLost => {
+                LaneResult::SingleAnswered { .. } | LaneResult::SingleLost => {
                     WriteBatchDisposition::MemberResults(uncertain)
                 }
             }

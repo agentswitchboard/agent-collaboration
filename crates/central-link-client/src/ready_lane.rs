@@ -245,14 +245,21 @@ pub struct CorrelatedStatusReply {
 /// The socket owner reports what it learned about an individual write on the batch's connection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WriteBatchMemberDisposition {
-    Answered { reply: CorrelatedRequestReply },
-    AnswerLost { correlation_id: CorrelationId },
+    Answered {
+        reply: CorrelatedRequestReply,
+        /// The socket owner samples the injected elapsed clock when it accepts this answer after
+        /// checking the connection, correlation and operation, independently of caller polling.
+        accepted_at: ClockInstant,
+    },
+    AnswerLost {
+        correlation_id: CorrelationId,
+    },
 }
 
 impl WriteBatchMemberDisposition {
     pub const fn correlation_id(&self) -> &CorrelationId {
         match self {
-            Self::Answered { reply } => &reply.correlation_id,
+            Self::Answered { reply, .. } => &reply.correlation_id,
             Self::AnswerLost { correlation_id } => correlation_id,
         }
     }
@@ -294,7 +301,7 @@ impl CheckedBatchResults {
             if disposition.correlation_id() != request.correlation_id() {
                 return Err(BatchResultsError::WrongMember { index });
             }
-            if let WriteBatchMemberDisposition::Answered { reply } = &disposition
+            if let WriteBatchMemberDisposition::Answered { reply, .. } = &disposition
                 && !ReplyExpectation::from_request(request.payload()).accepts(&reply.result)
             {
                 return Err(BatchResultsError::IncompatibleReply { index });
@@ -345,8 +352,15 @@ pub enum WriteBatchDisposition {
 /// The socket owner settles one single-answer frame using its operation's reply type.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LinkLaneDisposition<Reply> {
-    NotReached { cause: UntouchedCommand },
-    Answered { reply: Reply },
+    NotReached {
+        cause: UntouchedCommand,
+    },
+    Answered {
+        reply: Reply,
+        /// The socket owner samples the injected elapsed clock when it accepts this answer after
+        /// checking the connection, correlation and operation, independently of caller polling.
+        accepted_at: ClockInstant,
+    },
     AnswerLost,
 }
 

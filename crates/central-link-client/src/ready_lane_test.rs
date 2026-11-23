@@ -117,6 +117,7 @@ fn checked_batch_results_require_the_requested_reply_operation_and_values() {
             correlation_id: requests.requests()[0].correlation_id().clone(),
             result: Box::new(ReplyPayload::Mail(CentralMailResult::Done(answer))),
         },
+        accepted_at: ClockInstant::ZERO.after(Duration::from_secs(4)),
     };
     let wrong_cadence = answered(CentralMailAnswer::NoticeCadenceSet {
         cadence: NoticeCadence::M55,

@@ -13,7 +13,7 @@ use central_link_client::{
 };
 use central_link_protocol::CorrelationId;
 use router_clock::{ClockInstant, RuntimeClock};
-use state_machine_core::StateMachine;
+use state_machine_core::{StateMachine, StateMachineResult};
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::{
@@ -79,7 +79,11 @@ impl AdmittedSocketLane {
     }
 
     fn apply(&mut self, input: LaneInput) -> bool {
-        let Ok((state, effects)) = AdmittedLanePolicy::transition(&self.state, input) else {
+        self.apply_transition(AdmittedLanePolicy::transition(&self.state, input))
+    }
+
+    fn apply_transition(&mut self, transition: StateMachineResult<AdmittedLanePolicy>) -> bool {
+        let Ok((state, effects)) = transition else {
             return false;
         };
         self.state = state;
@@ -236,12 +240,17 @@ impl AdmittedSocketLane {
         connection: &ConnectionAttempt,
         reply: SocketReply,
         now: ClockInstant,
+        clock: &dyn RuntimeClock,
     ) {
-        self.apply(LaneInput::Reply {
-            connection: connection.clone(),
-            reply,
-            now,
-        });
+        self.apply_transition(AdmittedLanePolicy::transition_with_reply_clock(
+            &self.state,
+            LaneInput::Reply {
+                connection: connection.clone(),
+                reply,
+                now,
+            },
+            |_| clock.monotonic_now(),
+        ));
     }
 
     pub(super) fn offer(&mut self, request: LaneRequest, now: ClockInstant) -> FrameOffer {
