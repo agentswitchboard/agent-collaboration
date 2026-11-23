@@ -12,8 +12,8 @@ use central_link_client::{
     WriteBatchMemberDisposition,
 };
 use central_link_protocol::{
-    DataFrame, FrameDirection, LinkFrame, ReceiptResult, ReplyPayload, RequestStatusAnswer,
-    decode_text, encode_text,
+    DataFrame, FrameDirection, LinkFrame, ReceiptResult, ReplyPayload, RequestPayload,
+    RequestStatusAnswer, decode_text, encode_text,
 };
 use hegel::{TestCase, generators};
 use router_clock::{ManualClock, RuntimeClock};
@@ -41,7 +41,10 @@ use tokio::sync::watch;
 use workspace_ids::{MachineId, RequestId, SessionId};
 use workspace_model::{
     ChangePosition, ItemRef, WorkspaceAnswer, WorkspaceReply, WorkspaceResult,
-    central_mail::MessageStatus,
+    central_mail::{
+        CentralMailAnswer, CentralMailOperation, CentralMailRefusal, CentralMailResult,
+        MessageStatus,
+    },
 };
 
 use super::outbox_timing::{manual_clock, open_outbox, thread_post, welcome_anchor};
@@ -85,6 +88,7 @@ pub(super) struct ScriptedBatchLane {
     history: Mutex<PeerHistory>,
     calls: Mutex<Vec<ScriptedCommand>>,
     events: Mutex<std::collections::VecDeque<LinkLaneEvent>>,
+    refused_machine: Mutex<Option<MachineId>>,
 }
 
 impl ScriptedBatchLane {
@@ -98,6 +102,7 @@ impl ScriptedBatchLane {
             history: Mutex::new(PeerHistory::default()),
             calls: Mutex::new(Vec::new()),
             events: Mutex::new(std::collections::VecDeque::new()),
+            refused_machine: Mutex::new(None),
         }
     }
 
@@ -111,6 +116,10 @@ impl ScriptedBatchLane {
 
     pub(super) fn push_event(&self, event: LinkLaneEvent) {
         self.events.lock().unwrap().push_back(event);
+    }
+
+    pub(super) fn refuse_messages_to(&self, machine: MachineId) {
+        *self.refused_machine.lock().unwrap() = Some(machine);
     }
 
     fn respond_to_batch(&self, batch: WriteBatchCommand) -> WriteBatchDisposition {
@@ -138,10 +147,10 @@ impl ScriptedBatchLane {
             let id = request.payload().write_request_id().unwrap();
             sent_requests.push(id.clone());
             let position = history.decisions.len() + 1;
-            let answer = history
-                .decisions
-                .entry(id.clone())
-                .or_insert_with(|| post_created(position));
+            let refused_machine = self.refused_machine.lock().unwrap().clone();
+            let answer = history.decisions.entry(id.clone()).or_insert_with(|| {
+                peer_answer(request.payload(), position, refused_machine.as_ref())
+            });
             let correlation_id = request.correlation_id().clone();
             let disposition = if first_batch && self.lost_first_answers.contains(id) {
                 WriteBatchMemberDisposition::AnswerLost { correlation_id }
@@ -243,6 +252,33 @@ fn post_created(position: usize) -> ReplyPayload {
         }),
         actors: Vec::new(),
     })
+}
+
+fn peer_answer(
+    payload: &RequestPayload,
+    position: usize,
+    refused_machine: Option<&MachineId>,
+) -> ReplyPayload {
+    match payload {
+        RequestPayload::Workspace(_) => post_created(position),
+        RequestPayload::Mail(request) => {
+            let CentralMailOperation::SendMessage { to, .. } = &request.operation else {
+                panic!("script expects a direct message");
+            };
+            let result = if refused_machine == Some(&to.machine_id) {
+                CentralMailResult::Refused(CentralMailRefusal::UnknownSession {
+                    target: to.clone(),
+                })
+            } else {
+                CentralMailResult::Done(CentralMailAnswer::Queued {
+                    message_id: format!("019f0000-0000-7000-8000-{position:012x}")
+                        .parse()
+                        .unwrap(),
+                })
+            };
+            ReplyPayload::Mail(result)
+        }
+    }
 }
 
 pub(super) fn new_admission(machine: MachineId, clock: Arc<ManualClock>) -> AdmittedConnection {

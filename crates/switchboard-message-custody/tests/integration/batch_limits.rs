@@ -27,7 +27,7 @@ use super::{
 
 const MARK_MS: i64 = 1_763_380_800_000;
 
-async fn limits_fixture() -> (
+pub(super) async fn limits_fixture() -> (
     tempfile::TempDir,
     CustodyLink,
     Arc<ScriptedBatchLane>,
