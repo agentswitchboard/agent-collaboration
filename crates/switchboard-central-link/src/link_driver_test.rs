@@ -1,9 +1,3 @@
-#![expect(
-    clippy::panic,
-    clippy::unwrap_used,
-    reason = "The controlled driver fixtures fail on an unexpected setup or output."
-)]
-
 use std::{sync::Arc, time::Duration};
 
 use central_link_client::{ClientAction, ConnectionAttempt, EnrollmentEnd, LinkClient};

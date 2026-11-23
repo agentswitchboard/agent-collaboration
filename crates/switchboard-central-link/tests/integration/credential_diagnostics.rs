@@ -45,7 +45,10 @@ pub(super) struct TraceCapture(Arc<Mutex<Vec<u8>>>);
 
 impl io::Write for TraceCapture {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-        self.0.lock().unwrap().write(bytes)
+        self.0
+            .lock()
+            .map_err(|_| io::Error::other("trace capture lock poisoned"))?
+            .write(bytes)
     }
 
     fn flush(&mut self) -> io::Result<()> {

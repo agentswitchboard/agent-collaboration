@@ -30,10 +30,6 @@ async fn masked_write_buffer_accepts_its_exact_limit_and_refuses_one_more_byte()
 }
 
 #[cfg(feature = "test-support")]
-#[expect(
-    clippy::unwrap_used,
-    reason = "The transport fixture must fail on an unexpected setup error."
-)]
 #[tokio::test]
 async fn oversized_bearer_fails_before_the_http_upgrade() {
     use central_link_protocol::MachineTokenText;

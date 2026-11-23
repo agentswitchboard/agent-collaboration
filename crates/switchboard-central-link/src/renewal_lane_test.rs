@@ -89,13 +89,15 @@ impl Sink<Message> for BusySocket<'_> {
 
     fn start_send(mut self: Pin<&mut Self>, message: Message) -> Result<(), Self::Error> {
         let Message::Text(text) = message else {
-            panic!("only link text should reach the sink");
+            return Err(Error::Io(std::io::ErrorKind::InvalidData.into()));
         };
         if matches!(
             decode_text(text.as_str(), FrameDirection::ToCentral),
             Ok(LinkFrame::Data(DataFrame::RenewMachineToken { .. }))
         ) {
-            assert!(self.renewal_sent_at.is_none());
+            if self.renewal_sent_at.is_some() {
+                return Err(Error::Io(std::io::ErrorKind::InvalidData.into()));
+            }
             self.renewal_sent_at = Some(self.clock.monotonic_now());
         }
         Ok(())
