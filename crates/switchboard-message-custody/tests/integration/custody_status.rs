@@ -155,7 +155,7 @@ async fn a_retained_central_notice_recovers_the_senders_original_acceptance() {
     let mut store = open_outbox(&root.path().join("machine_local.sqlite")).await;
     store.insert(&item, created_at).await.unwrap();
     let claim = store
-        .claim_next_batch(item.flush_at_ms, 1, created_at + 1)
+        .claim_next_batch(item.flush_at_ms, 1, created_at + 1, created_at + 1)
         .await
         .unwrap();
     assert_eq!(claim.healthy.writes.len(), 1);

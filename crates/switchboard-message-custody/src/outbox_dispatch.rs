@@ -145,7 +145,7 @@ impl OutboxDispatcher {
                 }
                 let send_before = selected
                     .iter()
-                    .map(|write| work.write_deadline(write.sent_at))
+                    .map(|write| work.write_send_fence(write.sent_at))
                     .fold(send_fence_for_mark(anchor, mark), std::cmp::min);
                 if !work.mark_is_open(anchor, mark) || !work.before_elapsed_fence(send_before) {
                     for write in selected {

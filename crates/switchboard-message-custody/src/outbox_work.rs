@@ -1,6 +1,6 @@
 //! Durable work selected by the minute scheduler and the separate expiry wake.
 
-use central_link_client::WelcomeClockAnchor;
+use central_link_client::{LINK_LANE_SETTLEMENT_LIMIT, WelcomeClockAnchor};
 use central_link_protocol::MAX_LINK_REQUEST_BATCH_SIZE;
 use router_clock::{ClockInstant, RuntimeClock};
 use runtime_primitives::SyncTime;
@@ -31,6 +31,8 @@ pub enum OutboxWorkError {
     Store(#[from] OutboxStoreError),
     #[error("link batch limit does not fit the outbox store")]
     InvalidBatchLimit,
+    #[error("the claim's required settlement deadline is outside the local clock range")]
+    InvalidSettlementHorizon,
 }
 
 /// The custody task owns this store adapter and gives it the shared injected clock.
@@ -112,11 +114,16 @@ impl OutboxWork {
         Ok(deadline.map(|deadline_ms| self.local_wake_at(deadline_ms)))
     }
 
-    pub(crate) fn write_deadline(&self, original_send: Timestamp) -> ClockInstant {
-        self.local_wake_at(
+    pub(crate) fn write_send_fence(&self, original_send: Timestamp) -> ClockInstant {
+        let deadline = self.local_wake_at(
             original_send
                 .timestamp_millis()
                 .saturating_add(ORIGINAL_WRITE_WINDOW_MS),
+        );
+        ClockInstant::ZERO.after(
+            deadline
+                .saturating_duration_since(ClockInstant::ZERO)
+                .saturating_sub(LINK_LANE_SETTLEMENT_LIMIT),
         )
     }
 
@@ -166,9 +173,19 @@ impl OutboxWork {
         let limit = u16::try_from(MAX_LINK_REQUEST_BATCH_SIZE)
             .map_err(|_| OutboxWorkError::InvalidBatchLimit)?;
         let now_ms = self.local_now_ms();
+        let settlement_budget_ms = i64::try_from(LINK_LANE_SETTLEMENT_LIMIT.as_millis())
+            .map_err(|_| OutboxWorkError::InvalidSettlementHorizon)?;
+        let required_deadline_after_ms = now_ms
+            .checked_add(settlement_budget_ms)
+            .ok_or(OutboxWorkError::InvalidSettlementHorizon)?;
         let scanned = self
             .store
-            .claim_next_batch(mark.unix_millis(), limit, now_ms)
+            .claim_next_batch(
+                mark.unix_millis(),
+                limit,
+                now_ms,
+                required_deadline_after_ms,
+            )
             .await?;
         Ok(FlushSelection::Claimed(outbox_scan(
             scanned,

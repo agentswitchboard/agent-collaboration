@@ -3,7 +3,9 @@
     reason = "A bad fixture or missing peer batch must fail its test at the point of observation."
 )]
 
-use central_link_client::{LINK_LANE_FRAME_BYTES, LinkLaneEvent, LinkLocalFault};
+use central_link_client::{
+    LINK_LANE_FRAME_BYTES, LINK_LANE_SETTLEMENT_LIMIT, LinkLaneEvent, LinkLocalFault,
+};
 use central_link_protocol::{DataFrame, FrameDirection, LinkFrame, encode_text};
 use router_clock::{ClockInstant, ManualClock};
 use std::{sync::Arc, time::Duration};
@@ -171,9 +173,10 @@ async fn a_batchs_send_fence_never_outlives_its_earliest_original_deadline() {
     let (root, mut custody, lane, clock) = limits_fixture().await;
     let mut fixture_store = open_outbox(&root.path().join("machine_local.sqlite")).await;
     let aged_write = thread_post(1);
+    let remaining_budget = i64::try_from(LINK_LANE_SETTLEMENT_LIMIT.as_millis()).unwrap();
     assert_eq!(
         fixture_store
-            .insert(&aged_write, MARK_MS - 899_000)
+            .insert(&aged_write, MARK_MS - 899_000 + remaining_budget)
             .await
             .unwrap(),
         OutboxInsert::Stored
@@ -204,7 +207,7 @@ async fn an_orphaned_claim_arms_the_flush_after_the_last_waiting_row_disappears(
         OutboxInsert::Stored
     );
     let claim = write_store
-        .claim_next_batch(MARK_MS, 1, queued_at)
+        .claim_next_batch(MARK_MS, 1, queued_at, queued_at)
         .await
         .unwrap();
     assert!(
