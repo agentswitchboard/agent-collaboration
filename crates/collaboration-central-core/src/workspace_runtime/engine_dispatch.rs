@@ -19,6 +19,7 @@ pub enum DueKind {
     Automation,
     DirectMessage,
     SystemMessageExpiry,
+    ApprovalRequestExpiry,
     #[cfg(feature = "test-support")]
     Probe,
 }
@@ -28,6 +29,7 @@ impl DueKind {
             Self::Wake => MachineKind("wake_timer"),
             Self::Automation => MachineKind("automation_timer"),
             Self::DirectMessage => MachineKind("direct_message"),
+            Self::ApprovalRequestExpiry => MachineKind("approval_request"),
             Self::SystemMessageExpiry => {
                 <SystemMessageExpiry as central_engine_model::Machine>::KIND
             }
@@ -48,6 +50,7 @@ impl<H: CentralStore, S: WorkspaceStores> TimedDueDispatch<WorkspaceRuntime<H, S
             DueKind::Automation,
             DueKind::DirectMessage,
             DueKind::SystemMessageExpiry,
+            DueKind::ApprovalRequestExpiry,
             #[cfg(feature = "test-support")]
             DueKind::Probe,
         ]
@@ -55,7 +58,10 @@ impl<H: CentralStore, S: WorkspaceStores> TimedDueDispatch<WorkspaceRuntime<H, S
     fn timed_source_schedule(&self, kind: DueKind) -> TimedSourceSchedule {
         TimedSourceSchedule {
             machine_kind: kind.kind(),
-            due_cutoff_policy: if matches!(kind, DueKind::SystemMessageExpiry) {
+            due_cutoff_policy: if matches!(
+                kind,
+                DueKind::SystemMessageExpiry | DueKind::ApprovalRequestExpiry
+            ) {
                 DueCutoff::BatchStart
             } else {
                 DueCutoff::LookAheadHorizon
@@ -71,6 +77,15 @@ impl<H: CentralStore, S: WorkspaceStores> TimedDueDispatch<WorkspaceRuntime<H, S
     ) -> Result<Vec<DueRow>, DueDiscoveryError> {
         let store = runtime.execution.statement_host();
         match kind {
+            DueKind::ApprovalRequestExpiry => {
+                fleet_engine::read_due_rows(
+                    store,
+                    central_engine_model::DueListKind::ApprovalExpiries,
+                    cutoff,
+                    limit,
+                )
+                .await
+            }
             DueKind::Wake => fleet_wakes::due_wakes(store, cutoff, limit).await,
             DueKind::Automation => fleet_schedules::due_schedules(store, cutoff, limit).await,
             DueKind::DirectMessage => fleet_mail::due_direct_messages(store, cutoff, limit).await,
@@ -156,6 +171,33 @@ impl<H: CentralStore, S: WorkspaceStores> TimedDueDispatch<WorkspaceRuntime<H, S
                     )
                     .await
             }
+            DueKind::ApprovalRequestExpiry => {
+                let Some(dispatcher) = &runtime.link_call_dispatcher else {
+                    return TimedRowOutcome::CentralStoreFailed;
+                };
+                let subject = fleet_contracts::EngineSubject {
+                    kind: kind.kind(),
+                    key: row.key.clone(),
+                };
+                let organization = runtime.execution.organization().clone();
+                engine
+                    .run_checked_due_machine_instance(
+                        &subject,
+                        async {
+                            let applied = dispatcher
+                                .apply_approval_deadline(organization, row)
+                                .await?;
+                            if let Some(completion) = applied.completion
+                                && let Some(schedule) = &runtime.approval_deadline_completion
+                            {
+                                schedule(completion);
+                            }
+                            Ok(applied.outcome)
+                        },
+                        |impossible, _| async move { match impossible {} },
+                    )
+                    .await
+            }
             DueKind::SystemMessageExpiry => {
                 engine
                     .run_due_machine_instance::<SystemMessageExpiry, _>(
@@ -171,7 +213,9 @@ impl<H: CentralStore, S: WorkspaceStores> TimedDueDispatch<WorkspaceRuntime<H, S
             DueKind::Wake => work.wakes_fired = usize::from(done),
             DueKind::Automation => work.automations_fired = usize::from(done),
             // Cancels are observed through the messages they change.
-            DueKind::DirectMessage | DueKind::SystemMessageExpiry => {}
+            DueKind::DirectMessage
+            | DueKind::SystemMessageExpiry
+            | DueKind::ApprovalRequestExpiry => {}
             #[cfg(feature = "test-support")]
             DueKind::Probe => {}
         }

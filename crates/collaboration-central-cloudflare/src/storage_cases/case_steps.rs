@@ -132,6 +132,9 @@ pub(crate) enum CasePausePoint {
     BeforeTimerCommit,
     BeforeReceiptTransaction,
     BeforeSessionTransaction,
+    BeforeApprovalCommit,
+    ApprovalEndingNeverReached,
+    BeforeApprovalEndingWrite,
     AfterIdleExpiryCommit,
     AfterIdleRenewalPlatformSendError,
     BeforePrivateEnrollmentInvalidation,
@@ -164,6 +167,9 @@ impl From<CasePausePoint> for PausePoint {
             CasePausePoint::BeforeTimerCommit => Self::BeforeTimerCommit,
             CasePausePoint::BeforeReceiptTransaction => Self::BeforeReceiptTransaction,
             CasePausePoint::BeforeSessionTransaction => Self::BeforeSessionTransaction,
+            CasePausePoint::BeforeApprovalCommit => Self::BeforeApprovalCommit,
+            CasePausePoint::ApprovalEndingNeverReached => Self::ApprovalEndingNeverReached,
+            CasePausePoint::BeforeApprovalEndingWrite => Self::BeforeApprovalEndingWrite,
             CasePausePoint::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
             CasePausePoint::AfterIdleRenewalPlatformSendError => {
                 Self::AfterIdleRenewalPlatformSendError
@@ -201,6 +207,9 @@ impl From<PausePoint> for CasePausePoint {
             PausePoint::BeforeTimerCommit => Self::BeforeTimerCommit,
             PausePoint::BeforeReceiptTransaction => Self::BeforeReceiptTransaction,
             PausePoint::BeforeSessionTransaction => Self::BeforeSessionTransaction,
+            PausePoint::BeforeApprovalCommit => Self::BeforeApprovalCommit,
+            PausePoint::ApprovalEndingNeverReached => Self::ApprovalEndingNeverReached,
+            PausePoint::BeforeApprovalEndingWrite => Self::BeforeApprovalEndingWrite,
             PausePoint::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
             PausePoint::AfterIdleRenewalPlatformSendError => {
                 Self::AfterIdleRenewalPlatformSendError

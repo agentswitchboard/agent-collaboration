@@ -1,7 +1,8 @@
 use super::{NativeSessionTransactions, NativeTransaction, ObjectStorage, fill_session_secret};
 use crate::test_support::{MachineLinkFixture, start_session_link_fixture};
 use central_link_call_composition::{
-    OrganizationSessionTransactions, SessionApplyFailure, SessionLinkDispatcher, SessionWiringFault,
+    OrganizationLinkDispatcher, OrganizationSessionTransactions, SessionApplyFailure,
+    SessionWiringFault,
 };
 use central_link_protocol::{CentralLinkRpc, session_lifecycle_rpc::CreateFleetSessionRpc};
 use central_storage::{CorruptReason, StoreFailure};
@@ -118,8 +119,15 @@ async fn reject_foreign_executor(fixture: &MachineLinkFixture) -> Result<()> {
         );
     }
 
-    let dispatcher = SessionLinkDispatcher::new(
+    let dispatcher = OrganizationLinkDispatcher::new(
+        transactions.clone(),
         transactions,
+        Arc::new(
+            crate::workspace_host::workspace_approval_delivery::NativeApprovalDelivery::new(
+                Default::default(),
+                fixture.clock.clone(),
+            ),
+        ),
         Arc::new(clock.clone()),
         Arc::new(ClockIds::new(clock)),
         fill_session_secret,
@@ -137,7 +145,7 @@ async fn reject_foreign_executor(fixture: &MachineLinkFixture) -> Result<()> {
     let result = dispatcher.dispatch(&machine, call).await;
     if !matches!(result, Err(StoreFailure::Corrupt { reason: CorruptReason::BadValue { ref column } }) if column == "signin_organization_identity.id")
     {
-        return Err(format!("the foreign executor produced a session answer: {result:?}").into());
+        return Err("the foreign executor returned an unexpected outcome".into());
     }
     if foreign.read(session_mutation_records()).await?.rows != before.rows
         || foreign.read(session_identity_records()).await?.rows != identities.rows

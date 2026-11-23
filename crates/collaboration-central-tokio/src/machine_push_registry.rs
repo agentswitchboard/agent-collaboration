@@ -1,7 +1,8 @@
 //! The latest welcomed socket owns local routing for an organization machine.
 use crate::machine_call_queue::{self, MacCallReceiver, MacCallSender, PendingMacCall};
 use central_link_protocol::{FreshCorrelationId, MacCall, MacCallAddress, MachineLinkCloseCode};
-use fleet_contracts::EnrollmentInvalidation;
+use collaboration_central_core::ValidatedMachineConnection;
+use fleet_contracts::{EnrollmentInvalidation, MachineConnectionAttachment};
 use fleet_identity_protocol::{EnrollmentId, OrganizationId};
 use fleet_rpc::CallFailure;
 use router_clock::ClockInstant;
@@ -17,6 +18,7 @@ type MachineKey = (OrganizationId, MachineId);
 
 struct PushSocket {
     enrollment: EnrollmentId,
+    authority: MachineConnectionAttachment,
     sender: mpsc::Sender<MessageId>,
     calls: MacCallSender,
     replaced: CancellationToken,
@@ -29,11 +31,12 @@ pub(crate) struct MachinePushRegistry(Arc<Mutex<HashMap<MachineKey, Vec<PushSock
 impl MachinePushRegistry {
     pub(crate) fn register(
         &self,
-        organization: OrganizationId,
-        machine: MachineId,
-        enrollment: EnrollmentId,
+        connection: &ValidatedMachineConnection,
     ) -> MachinePushRegistration {
-        let key = (organization, machine);
+        let key = (
+            connection.organization_id().clone(),
+            connection.machine_id().clone(),
+        );
         let (sender, receiver) = mpsc::channel(fleet_contracts::mail_link::WELCOME_PAGE_SIZE);
         let replaced = CancellationToken::new();
         let (calls, outbound_calls) = machine_call_queue::channel(replaced.clone());
@@ -44,7 +47,8 @@ impl MachinePushRegistry {
             older.calls.end();
         }
         active.push(PushSocket {
-            enrollment,
+            enrollment: connection.enrollment_id().clone(),
+            authority: connection.attachment(),
             sender: sender.clone(),
             calls,
             replaced: replaced.clone(),
@@ -59,6 +63,40 @@ impl MachinePushRegistry {
             receiver,
             outbound_calls,
         }
+    }
+
+    pub(crate) fn select_approval_socket(
+        &self,
+        target: &central_link_protocol::approval_rpc::ApprovalHolderTarget,
+    ) -> Result<
+        (
+            MachineConnectionAttachment,
+            MacCallSender,
+            CancellationToken,
+        ),
+        CallFailure,
+    > {
+        let sockets = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let address = MacCallAddress::DeliverEnding(target.clone());
+        sockets
+            .get(&(target.organization_id.clone(), target.machine_id.clone()))
+            .and_then(|sockets| sockets.last())
+            .filter(|socket| {
+                socket.calls.permits(
+                    &address,
+                    &target.organization_id,
+                    &target.machine_id,
+                    &socket.enrollment,
+                )
+            })
+            .map(|socket| {
+                (
+                    socket.authority.clone(),
+                    socket.calls.clone(),
+                    socket.replaced.clone(),
+                )
+            })
+            .ok_or(CallFailure::NeverReached)
     }
 
     pub(crate) fn queue_call(
@@ -131,6 +169,23 @@ pub(crate) struct MachinePushRegistration {
     pub(crate) authority_close: Arc<OnceLock<MachineLinkCloseCode>>,
     pub(crate) receiver: mpsc::Receiver<MessageId>,
     pub(crate) outbound_calls: MacCallReceiver,
+}
+
+impl MachinePushRegistration {
+    pub(crate) fn update_authority(&self, connection: &ValidatedMachineConnection) {
+        let mut registry = self
+            .registry
+            .0
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(socket) = registry.get_mut(&self.key).and_then(|sockets| {
+            sockets
+                .iter_mut()
+                .find(|socket| socket.sender.same_channel(&self.sender))
+        }) {
+            socket.authority = connection.attachment();
+        }
+    }
 }
 
 impl Drop for MachinePushRegistration {

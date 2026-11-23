@@ -100,6 +100,11 @@ impl QueuedMacCall {
         self.write.prevented.clone()
     }
 
+    #[cfg(feature = "test-support")]
+    pub(crate) fn is_approval_ending(&self) -> bool {
+        matches!(&*self.request, MacCall::DeliverEnding(_))
+    }
+
     pub(crate) fn frame(&self) -> LinkFrame {
         LinkFrame::Data(DataFrame::CallMac {
             correlation_id: self.correlation.wire_id().clone(),
@@ -108,6 +113,7 @@ impl QueuedMacCall {
     }
 }
 
+#[derive(Clone)]
 pub(crate) struct MacCallSender {
     queue: mpsc::Sender<QueuedMacCall>,
     calls: Arc<ConnectionCalls>,

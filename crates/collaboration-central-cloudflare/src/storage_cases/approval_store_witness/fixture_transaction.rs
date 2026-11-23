@@ -7,7 +7,7 @@ use fleet_identity_protocol::{EnrollmentId, OrganizationId};
 use fleet_lent_transaction::{CentralTransaction, OrganizationTransaction};
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use sqlx_durable_object::{Do, DoTransaction};
-use std::{cell::RefCell, rc::Rc};
+use std::sync::{Arc, Mutex, PoisonError};
 use workspace_ids::ActorIdentityId;
 
 use crate::{statement_store, store_wire::OwnedStatement};
@@ -22,7 +22,7 @@ pub(super) struct WorkerApprovalTransaction {
     pub organization_id: OrganizationId,
     pub transaction: DoTransaction,
     pub fail_after_write: Option<usize>,
-    pub evidence: Rc<RefCell<FixtureEvidence>>,
+    pub evidence: Arc<Mutex<FixtureEvidence>>,
 }
 
 impl OrganizationTransaction for WorkerApprovalTransaction {
@@ -79,7 +79,7 @@ impl ApprovalStoreTransaction for WorkerApprovalTransaction {
             .await
             .map_err(sql_failure)?
             .rows_affected();
-        let mut evidence = self.evidence.borrow_mut();
+        let mut evidence = self.evidence.lock().unwrap_or_else(PoisonError::into_inner);
         evidence.write_count += 1;
         evidence.rows_changed += rows;
         if Some(evidence.write_count) == self.fail_after_write {

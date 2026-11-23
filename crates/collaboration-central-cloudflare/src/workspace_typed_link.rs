@@ -1,25 +1,26 @@
 //! Typed Mac calls keep their waiter on the physical socket in the owning object.
 
 use super::workspace_machine_link::send;
+#[path = "workspace_approval_delivery.rs"]
+pub(super) mod approval_delivery;
+#[path = "workspace_pending_mac_calls.rs"]
+mod pending_mac_calls;
 use super::workspace_socket_attachment::SocketAttachment;
 use super::{CentralObject, OrgRuntime, OrganizationId};
 use crate::{cloudflare_transport, object_location::ObjectAddress};
 use central_link_protocol::{
-    CentralCall, CorrelationId, DataFrame, FrameDirection, FreshCorrelationId, LinkFrame, MacCall,
-    MacCallAddress, MacCallReply, MacLinkRpc, TypedCallCorrelations, TypedCallResult, encode_text,
+    CentralCall, CorrelationId, DataFrame, MacCall, MacCallAddress, MacCallReply, MacLinkRpc,
+    TypedCallResult,
 };
 use collaboration_central_core::{MacCallResult, TYPED_LINK_CALL_TIMEOUT, finish_mac_call};
 use fleet_contracts::MachineConnectionAttachment;
 use fleet_rpc::{CallFailure, Envelope};
 use fleet_runtime_ports::{Clock, SyncTime};
-use futures_channel::oneshot;
 use futures_util::future::{Either, select};
+pub(super) use pending_mac_calls::PendingMacCalls;
+use pending_mac_calls::WrittenMacCall;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    pin::pin,
-    sync::{Arc, Mutex, PoisonError},
-};
+use std::pin::pin;
 use worker::{Env, Method, Request, Response, State, WebSocket};
 use workspace_ids::{MachineId, RouterRunId};
 
@@ -125,7 +126,12 @@ impl CentralObject {
                 return result.map(|_| ()).and(closed);
             }
         }
-        self.send_central_call_result(socket, correlation_id, dispatched.result)
+        self.send_central_call_result(socket, correlation_id, dispatched.result)?;
+        if let Some(completion) = dispatched.completion {
+            self.pending_mac_calls
+                .run_socket_completion(&self.state, socket, completion);
+        }
+        Ok(())
     }
 
     #[cfg(feature = "test-support")]
@@ -278,41 +284,18 @@ impl CentralObject {
                 if current.authority != attachment.authority {
                     return Err(CallFailure::NeverReached);
                 }
-                self.begin_mac_call(&socket, socket_tag, invocation.request, address, deadline)
+                self.pending_mac_calls.begin_mac_call(
+                    &self.clock,
+                    &socket,
+                    socket_tag,
+                    invocation.request,
+                    address,
+                    deadline,
+                )
             })
             .await
             .map_err(|_| CallFailure::NeverReached)?
             .map_err(|_| CallFailure::NeverReached)?
-    }
-
-    fn begin_mac_call(
-        &self,
-        socket: &WebSocket,
-        socket_tag: String,
-        request: Box<MacCall>,
-        address: MacCallAddress,
-        deadline: SyncTime,
-    ) -> Result<WrittenMacCall<'_>, CallFailure> {
-        if !socket_open(socket) || self.clock.now() >= deadline {
-            return Err(CallFailure::NeverReached);
-        }
-        let correlation = FreshCorrelationId::mint_at(self.clock.now().unix_millis());
-        let frame = LinkFrame::Data(DataFrame::CallMac {
-            correlation_id: correlation.wire_id().clone(),
-            request,
-        });
-        let text =
-            encode_text(&frame, FrameDirection::ToRouter).map_err(|_| CallFailure::NeverReached)?;
-        let written =
-            self.pending_mac_calls
-                .register(socket_tag, correlation, address, deadline)?;
-        if self.clock.now() >= deadline {
-            return Err(CallFailure::NeverReached);
-        }
-        socket
-            .send_with_str(text)
-            .map_err(|_| CallFailure::AnswerLost)?;
-        Ok(written)
     }
 }
 
@@ -359,117 +342,6 @@ fn bind_registered_run(
     current.registered_run = same_run.then_some(run);
     current.save(socket)?;
     Ok(same_run)
-}
-
-struct WrittenMacCall<'a> {
-    pending: PendingAttempt<'a>,
-    answer: oneshot::Receiver<LinkReply>,
-}
-
-struct Waiter {
-    address: MacCallAddress,
-    deadline: SyncTime,
-    answer: oneshot::Sender<LinkReply>,
-}
-
-type SocketWaiters = BTreeMap<String, TypedCallCorrelations<Waiter>>;
-
-#[derive(Clone, Default)]
-pub(super) struct PendingMacCalls(Arc<Mutex<SocketWaiters>>);
-
-impl PendingMacCalls {
-    fn register(
-        &self,
-        socket_tag: String,
-        correlation: FreshCorrelationId,
-        address: MacCallAddress,
-        deadline: SyncTime,
-    ) -> Result<WrittenMacCall<'_>, CallFailure> {
-        let (answer, receiver) = oneshot::channel();
-        let correlation_id = correlation.wire_id().clone();
-        self.lock()
-            .entry(socket_tag.clone())
-            .or_default()
-            .register(
-                correlation,
-                Waiter {
-                    address,
-                    deadline,
-                    answer,
-                },
-            )
-            .map_err(|_| CallFailure::NeverReached)?;
-        Ok(WrittenMacCall {
-            pending: PendingAttempt {
-                calls: self,
-                socket_tag,
-                correlation_id,
-            },
-            answer: receiver,
-        })
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, SocketWaiters> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn retire(&self, socket_tag: &str, correlation_id: &CorrelationId) -> Option<Waiter> {
-        self.lock().get_mut(socket_tag)?.retire(correlation_id)
-    }
-
-    fn answer(
-        &self,
-        state: &State,
-        socket: &WebSocket,
-        correlation_id: &CorrelationId,
-        result: LinkReply,
-        now: SyncTime,
-    ) {
-        let waiter = socket_tag(state, socket).and_then(|tag| {
-            self.lock()
-                .get_mut(&tag)?
-                .take_if(correlation_id, |waiter| {
-                    now < waiter.deadline && waiter.address.matches_reply(&result)
-                })
-        });
-        if let Some(waiter) = waiter {
-            let _ = waiter.answer.send(result);
-        }
-    }
-
-    pub(super) fn close(
-        &self,
-        state: &State,
-        socket: &WebSocket,
-        code: u16,
-        reason: Option<&str>,
-    ) -> worker::Result<()> {
-        if let Some(socket_tag) = socket_tag(state, socket) {
-            self.lock().remove(&socket_tag);
-        }
-        socket.close(Some(code), reason)
-    }
-
-    #[cfg(feature = "test-support")]
-    pub(super) fn is_waiting(&self, correlation: &CorrelationId) -> bool {
-        self.lock().values().any(|socket| {
-            socket
-                .pending(correlation)
-                .is_some_and(|waiter| !waiter.answer.is_canceled())
-        })
-    }
-}
-
-struct PendingAttempt<'a> {
-    calls: &'a PendingMacCalls,
-    socket_tag: String,
-    correlation_id: CorrelationId,
-}
-
-impl Drop for PendingAttempt<'_> {
-    fn drop(&mut self) {
-        self.calls.retire(&self.socket_tag, &self.correlation_id);
-    }
 }
 
 fn socket_tag(state: &State, socket: &WebSocket) -> Option<String> {

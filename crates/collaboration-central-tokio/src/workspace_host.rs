@@ -16,10 +16,12 @@ use fleet_rpc::{CallFailure, Envelope, Transport, dispatch};
 use fleet_workspace_service::WorkspaceService;
 #[path = "workspace_alarm_owner.rs"]
 mod workspace_alarm_owner;
+#[path = "workspace_approval_delivery.rs"]
+pub(crate) mod workspace_approval_delivery;
 use crate::object_storage::session_transaction_owner::{
     NativeSessionTransactions, fill_session_secret,
 };
-use central_link_call_composition::SessionLinkDispatcher;
+use central_link_call_composition::OrganizationLinkDispatcher;
 use central_link_protocol::{FreshCorrelationId, MacCallAddress, MacLinkRpc};
 use central_storage::{
     BatchOutcome, ReadOutcome, Statement, StatementBatch, StoreCall, StoreFailure, StoreReply,
@@ -157,6 +159,7 @@ pub struct TokioWorkspaceHost {
         Mutex<BTreeMap<OrganizationId, Arc<WorkspaceRuntime<ObjectStorage, TokioWorkspaceStores>>>>,
     alarms: Mutex<Vec<WorkspaceAlarmOwner>>,
     pub(crate) push_registry: MachinePushRegistry,
+    approval_deadline_tasks: workspace_approval_delivery::ApprovalDeadlineTasks,
     #[cfg(feature = "test-support")]
     fixture_link_calls: bool,
 }
@@ -194,6 +197,7 @@ impl TokioWorkspaceHost {
             orgs: Default::default(),
             alarms: Default::default(),
             push_registry: MachinePushRegistry::default(),
+            approval_deadline_tasks: Default::default(),
             #[cfg(feature = "test-support")]
             fixture_link_calls: false,
         };
@@ -265,9 +269,17 @@ impl TokioWorkspaceHost {
             storage.clone(),
             storage.clone(),
         );
+        let ending_transport = Arc::new(workspace_approval_delivery::NativeApprovalDelivery::new(
+            self.push_registry.clone(),
+            self.clock.clone(),
+        ));
         let dispatcher: Arc<dyn collaboration_central_core::CentralLinkDispatcher> =
-            Arc::new(SessionLinkDispatcher::new(
+            Arc::new(OrganizationLinkDispatcher::new(
+                NativeSessionTransactions {
+                    storage: storage.clone(),
+                },
                 NativeSessionTransactions { storage },
+                ending_transport.clone(),
                 clock.clone(),
                 ids,
                 fill_session_secret,
@@ -293,8 +305,12 @@ impl TokioWorkspaceHost {
         let organization_key = organization.clone();
         let revocation_registry = self.push_registry.clone();
         let revocation_org = organization.clone();
+        let deadline_tasks = self.approval_deadline_tasks.clone();
         let central = Arc::new(
             central
+                .with_approval_deadline_completion(Arc::new(move |work| {
+                    deadline_tasks.schedule(work)
+                }))
                 .with_mail_delivery_observer(Arc::new(move |delivery| {
                     registry.offer(&organization_key, &delivery.machine_id, delivery.message_id);
                 }))
@@ -302,6 +318,7 @@ impl TokioWorkspaceHost {
                     revocation_registry.invalidate_enrollment(&revocation_org, &invalidation);
                 })),
         );
+        ending_transport.install_runtime(&central);
         central.recompute_alarm().await?;
         self.alarms.lock().await.push(WorkspaceAlarmOwner::start(
             central.clone(),
@@ -385,11 +402,31 @@ impl TokioWorkspaceHost {
         self.orgs.lock().await.keys().cloned().collect()
     }
 
+    #[cfg(feature = "test-support")]
+    pub async fn fixture_decide_approval(
+        &self,
+        organization: &OrganizationId,
+        decision: collaboration_central_core::FixtureApprovalDecision,
+    ) -> Result<(), StoreFailure> {
+        let runtime = self
+            .orgs
+            .lock()
+            .await
+            .get(organization)
+            .cloned()
+            .ok_or(StoreFailure::Unavailable)?;
+        if let Some(completion) = runtime.fixture_decide_approval(decision).await? {
+            self.approval_deadline_tasks.schedule(completion);
+        }
+        Ok(())
+    }
+
     pub async fn close(&self) {
         let alarms = std::mem::take(&mut *self.alarms.lock().await);
         for alarm in alarms {
             alarm.close().await;
         }
+        self.approval_deadline_tasks.close().await;
         for runtime in self.orgs.lock().await.values() {
             runtime.runtime().statement_host().close().await;
         }

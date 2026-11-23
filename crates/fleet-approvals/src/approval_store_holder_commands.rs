@@ -91,6 +91,68 @@ where
         ))
     }
 
+    /// Stage only a Raise reply. A mismatched receipt rejects the applying loan.
+    pub async fn raise_from_holder(
+        &mut self,
+        holder: &ApprovalHolderAdmission,
+        raise: Box<Raise>,
+    ) -> Result<PendingApprovalReply<RaiseReply>, ApprovalApplyFailure> {
+        let transition = self
+            .apply_holder(holder, ApprovalHolderCommand::Raise(raise))
+            .await?;
+        let ApprovalHolderReply::Raised(ref reply) = transition.reply else {
+            return Err(corrupt("approval_store.holder_raise_reply").into());
+        };
+        let reply = reply.clone();
+        Ok(self.stage_reply(
+            ApprovalReplyAddress::Holder(holder.holder_scope().clone()),
+            transition.replace_reply(reply),
+        ))
+    }
+
+    /// Stage only a Stop reply. A mismatched receipt rejects the applying loan.
+    pub async fn stop_from_holder(
+        &mut self,
+        holder: &ApprovalHolderAdmission,
+        stop: StopRequest,
+    ) -> Result<PendingApprovalReply<StopReply>, ApprovalApplyFailure> {
+        let transition = self
+            .apply_holder(holder, ApprovalHolderCommand::Stop(stop))
+            .await?;
+        let ApprovalHolderReply::Stopped(ref reply) = transition.reply else {
+            return Err(corrupt("approval_store.holder_stop_reply").into());
+        };
+        let reply = reply.clone();
+        Ok(self.stage_reply(
+            ApprovalReplyAddress::Holder(holder.holder_scope().clone()),
+            transition.replace_reply(reply),
+        ))
+    }
+
+    /// Stage only successful application of a correlated holder delivery answer.
+    pub async fn record_holder_delivery(
+        &mut self,
+        holder: &ApprovalHolderAdmission,
+        request: Box<DeliverEndingRequest>,
+        reply: DeliverEndingReply,
+    ) -> Result<PendingApprovalReply<()>, ApprovalApplyFailure> {
+        let transition = self
+            .apply_holder(
+                holder,
+                ApprovalHolderCommand::DeliveryReply { request, reply },
+            )
+            .await?;
+        match transition.reply {
+            ApprovalHolderReply::NoReply => Ok(self.stage_reply(
+                ApprovalReplyAddress::Holder(holder.holder_scope().clone()),
+                transition.replace_reply(()),
+            )),
+            ApprovalHolderReply::Raised(_) | ApprovalHolderReply::Stopped(_) => {
+                Err(corrupt("approval_store.delivery_reply").into())
+            }
+        }
+    }
+
     async fn apply_holder(
         &mut self,
         holder: &ApprovalHolderAdmission,

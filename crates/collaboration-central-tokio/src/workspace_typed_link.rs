@@ -34,7 +34,22 @@ pub(super) async fn reply_to_typed_call(
     if let Some(run) = dispatched.registered_run {
         calls.bind_run(run);
     }
-    send_central_call_result(socket, writes, correlation_id, dispatched.result).await
+    if !send_central_call_result(socket, writes, correlation_id, dispatched.result).await {
+        return false;
+    }
+    if let Some(completion) = dispatched.completion {
+        let stop = writes.stop.clone();
+        let replaced = writes.replaced.clone();
+        writes.tasks.spawn(async move {
+            tokio::select! {
+                biased;
+                () = stop.cancelled() => {}
+                () = replaced.cancelled() => {}
+                () = completion => {}
+            }
+        });
+    }
+    true
 }
 
 #[cfg(feature = "test-support")]
@@ -105,6 +120,14 @@ pub(super) async fn offer_mac_call(
     calls: &MacCallReceiver,
     queued: QueuedMacCall,
 ) -> bool {
+    #[cfg(feature = "test-support")]
+    if queued.is_approval_ending() {
+        runtime
+            .runtime()
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::BeforeApprovalEndingWrite)
+            .await;
+    }
     let deadline = queued.deadline();
     let Ok(text) = encode_text(&queued.frame(), FrameDirection::ToRouter) else {
         return false;

@@ -98,7 +98,7 @@ impl ApprovalHolderAdmission {
         }
     }
 
-    pub(crate) fn holder_scope(&self) -> &ApprovalHolderScope {
+    pub fn holder_scope(&self) -> &ApprovalHolderScope {
         &self.scope
     }
 

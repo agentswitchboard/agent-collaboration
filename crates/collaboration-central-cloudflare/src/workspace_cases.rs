@@ -17,6 +17,7 @@ mod workspace_turn_cases;
 
 #[derive(Default)]
 pub(crate) struct Controls {
+    pub(super) fail_approval_after_write: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub(super) fail_reserved_session_reply: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub(super) fail_typed_refusal_send: std::cell::Cell<bool>,
     pub(super) faults: std::sync::Arc<fleet_runtime::TestFaults>,
@@ -49,6 +50,9 @@ enum Point {
     BeforeTimerCommit,
     BeforeReceiptTransaction,
     BeforeSessionTransaction,
+    BeforeApprovalCommit,
+    ApprovalEndingNeverReached,
+    BeforeApprovalEndingWrite,
     AfterIdleExpiryCommit,
     AfterIdleRenewalPlatformSendError,
     BeforePrivateEnrollmentInvalidation,
@@ -78,6 +82,9 @@ impl From<Point> for PausePoint {
             Point::BeforeTimerCommit => Self::BeforeTimerCommit,
             Point::BeforeReceiptTransaction => Self::BeforeReceiptTransaction,
             Point::BeforeSessionTransaction => Self::BeforeSessionTransaction,
+            Point::BeforeApprovalCommit => Self::BeforeApprovalCommit,
+            Point::ApprovalEndingNeverReached => Self::ApprovalEndingNeverReached,
+            Point::BeforeApprovalEndingWrite => Self::BeforeApprovalEndingWrite,
             Point::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
             Point::AfterIdleRenewalPlatformSendError => Self::AfterIdleRenewalPlatformSendError,
             Point::BeforePrivateEnrollmentInvalidation => Self::BeforePrivateEnrollmentInvalidation,
@@ -179,6 +186,27 @@ pub(super) async fn control(
             .json::<central_link_protocol::CorrelationId>()
             .await?;
         return Response::from_json(&object.pending_mac_calls.is_waiting(&correlation));
+    }
+    if path == "/test/drop-approval-before-write" {
+        return Response::from_json(&object.pending_mac_calls.drop_approval_before_write());
+    }
+    if path == "/test/approval-fixture-decide" {
+        let runtime = object.runtime(organization).await?;
+        let completion = runtime
+            .fixture_decide_approval(request.json().await?)
+            .await
+            .map_err(|error| worker::Error::RustError(error.to_string()))?;
+        if let Some(completion) = completion {
+            object.state.wait_until(completion);
+        }
+        return Response::from_json(&true);
+    }
+    if path == "/test/fail-approval-after-write" {
+        object.controls.fail_approval_after_write.store(
+            request.json::<bool>().await?,
+            std::sync::atomic::Ordering::Release,
+        );
+        return Response::from_json(&true);
     }
     if path == "/test/fail-reserved-session-reply" {
         object.controls.fail_reserved_session_reply.store(

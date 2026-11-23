@@ -1,15 +1,18 @@
 use crate::{
-    OrganizationSessionTransactions, SessionApplyFailure, SessionApplyFault, SessionApplyFuture,
-    SessionApplyResult, apply_failure::SessionApplySuccess,
+    OrganizationApprovalTransactions, OrganizationSessionTransactions, SessionApplyFailure,
+    SessionApplyFault, SessionApplyFuture, SessionApplyResult,
+    apply_failure::SessionApplySuccess,
+    approval_dispatch::{ApprovalLinkApplication, HolderCommand, HolderReply},
 };
 use central_engine_model::{Context, EngineTime};
 use central_link_protocol::{
     CentralCall, CentralLinkRpc, LinkCallRefusal, TypedCallResult,
+    approval_rpc::{RaiseApprovalRpc, RegisterRunRpc, StopApprovalRpc},
     session_lifecycle_rpc::{BindFleetSessionRpc, CreateFleetSessionRpc, EndFleetSessionRpc},
 };
 use central_storage::StoreFailure;
 use collaboration_central_core::{
-    CentralCallDispatch, CentralLinkDispatcher, TargetCheckedCentralCall,
+    CentralCallDispatch, CentralCallWork, CentralLinkDispatcher, TargetCheckedCentralCall,
     ValidatedMachineConnection, dispatch_fallible_central_call,
     dispatch_fallible_correlated_central_call, recheck_lent_link_authority,
 };
@@ -41,20 +44,32 @@ struct ApplyingInputs {
 }
 
 /// The shared dispatch table installed by Central's organization hosts.
-pub struct SessionLinkDispatcher<Transactions> {
+pub struct OrganizationLinkDispatcher<Transactions, Approvals> {
     transactions: Transactions,
     inputs: ApplyingInputs,
+    approvals: ApprovalLinkApplication<Approvals>,
+    ending_transport: Arc<dyn crate::ApprovalEndingTransport>,
 }
 
-impl<Transactions: OrganizationSessionTransactions> SessionLinkDispatcher<Transactions> {
+impl<Transactions: OrganizationSessionTransactions, Approvals>
+    OrganizationLinkDispatcher<Transactions, Approvals>
+{
     pub fn new(
         transactions: Transactions,
+        approval_transactions: Approvals,
+        ending_transport: Arc<dyn crate::ApprovalEndingTransport>,
         clock: Arc<dyn Clock>,
         ids: Arc<dyn IdSource>,
         fill_secret: FillSessionSecret,
     ) -> Self {
         Self {
             transactions,
+            ending_transport,
+            approvals: ApprovalLinkApplication {
+                transactions: Arc::new(approval_transactions),
+                clock: clock.clone(),
+                ids: ids.clone(),
+            },
             inputs: ApplyingInputs {
                 clock,
                 ids,
@@ -64,9 +79,10 @@ impl<Transactions: OrganizationSessionTransactions> SessionLinkDispatcher<Transa
     }
 }
 
-impl<Transactions, Db> SessionLinkDispatcher<Transactions>
+impl<Transactions, Approvals, Db> OrganizationLinkDispatcher<Transactions, Approvals>
 where
     Transactions: OrganizationSessionTransactions,
+    Approvals: Send + Sync,
     for<'loan> Transactions::Transaction<'loan>: CentralTransaction<Database = Db>,
     Db: Database,
     Db::Arguments: IntoArguments<Db>,
@@ -76,9 +92,9 @@ where
     i64: Type<Db> + for<'query> Encode<'query, Db> + for<'row> Decode<'row, Db>,
     for<'row> &'row str: ColumnIndex<Db::Row>,
 {
-    async fn apply<R>(
-        &self,
-        machine: &ValidatedMachineConnection,
+    fn apply<'call, R>(
+        &'call self,
+        machine: &'call ValidatedMachineConnection,
         request: Envelope<R::Target, R::Request>,
         dispatch: impl for<'loan, 'connection> FnOnce(
             TargetCheckedCentralCall<R>,
@@ -89,44 +105,50 @@ where
         ) -> SessionApplyFuture<'loan>
         + Send
         + 'static,
-    ) -> CentralCallDispatch
+    ) -> Pin<Box<dyn Future<Output = CentralCallDispatch> + Send + 'call>>
     where
         R: CentralLinkRpc<Target = OrganizationId> + 'static,
     {
-        let request = match TargetCheckedCentralCall::<R>::check(machine.organization_id(), request)
-        {
-            Ok(request) => request,
-            Err(reason) => return Ok(TypedCallResult::Refused { reason }),
-        };
-        let machine = machine.clone();
-        let inputs = self.inputs.clone();
-        let result = self
-            .transactions
-            .apply(machine.organization_id().clone(), move |loan| {
-                Box::pin(async move {
-                    let (time, lapse) = recheck_lent_link_authority(
-                        loan,
-                        machine.attachment_ref(),
-                        inputs.clock.as_ref(),
-                    )
-                    .await?;
-                    if let Some(cause) = lapse {
-                        return Ok(SessionApplySuccess::AuthorityLapsed(cause));
-                    }
-                    let time = EngineTime::from_timestamp_millis(time.unix_millis()).ok_or(
-                        SessionApplyFailure::Terminal(SessionApplyFault::ApplyingClockOutOfRange),
-                    )?;
-                    dispatch(request, loan, machine, inputs, time).await
-                })
-            })
-            .await;
-        report_application(result)
+        Box::pin(async move {
+            let request =
+                match TargetCheckedCentralCall::<R>::check(machine.organization_id(), request) {
+                    Ok(request) => request,
+                    Err(reason) => return Ok(TypedCallResult::Refused { reason }),
+                };
+            let machine = machine.clone();
+            let inputs = self.inputs.clone();
+            let result =
+                self.transactions
+                    .apply(machine.organization_id().clone(), move |loan| {
+                        Box::pin(async move {
+                            let (time, lapse) = recheck_lent_link_authority(
+                                loan,
+                                machine.attachment_ref(),
+                                inputs.clock.as_ref(),
+                            )
+                            .await?;
+                            if let Some(cause) = lapse {
+                                return Ok(SessionApplySuccess::AuthorityLapsed(cause));
+                            }
+                            let time = EngineTime::from_timestamp_millis(time.unix_millis())
+                                .ok_or(SessionApplyFailure::Terminal(
+                                    SessionApplyFault::ApplyingClockOutOfRange,
+                                ))?;
+                            dispatch(request, loan, machine, inputs, time).await
+                        })
+                    })
+                    .await;
+            report_application(result)
+        })
     }
 }
 
-impl<Transactions, Db> CentralLinkDispatcher for SessionLinkDispatcher<Transactions>
+impl<Transactions, Approvals, Db> CentralLinkDispatcher
+    for OrganizationLinkDispatcher<Transactions, Approvals>
 where
     Transactions: OrganizationSessionTransactions,
+    Approvals: OrganizationApprovalTransactions,
+    for<'loan> Approvals::Transaction<'loan>: CentralTransaction<Database = Db>,
     for<'loan> Transactions::Transaction<'loan>: CentralTransaction<Database = Db>,
     Db: Database,
     Db::Arguments: IntoArguments<Db>,
@@ -136,15 +158,60 @@ where
     i64: Type<Db> + for<'query> Encode<'query, Db> + for<'row> Decode<'row, Db>,
     for<'row> &'row str: ColumnIndex<Db::Row>,
 {
+    #[cfg(feature = "test-support")]
+    fn fixture_decide_approval(
+        &self,
+        organization: OrganizationId,
+        decision: collaboration_central_core::FixtureApprovalDecision,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        Option<collaboration_central_core::LinkCallCompletion>,
+                        StoreFailure,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        crate::approval_delivery::ApprovalDelivery {
+            application: self.approvals.clone(),
+            transport: self.ending_transport.clone(),
+        }
+        .fixture_decide(organization, decision)
+    }
+
+    fn apply_approval_deadline(
+        &self,
+        organization: OrganizationId,
+        deadline: central_engine_model::DueRow,
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        collaboration_central_core::AppliedApprovalDeadline,
+                        fleet_engine::CheckedDueFailure,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        crate::approval_delivery::ApprovalDelivery {
+            application: self.approvals.clone(),
+            transport: self.ending_transport.clone(),
+        }
+        .apply_deadline(organization, deadline)
+    }
+
     fn dispatch<'call>(
         &'call self,
         machine: &'call ValidatedMachineConnection,
         request: CentralCall,
-    ) -> Pin<Box<dyn Future<Output = CentralCallDispatch> + Send + 'call>> {
+    ) -> Pin<Box<dyn Future<Output = Result<CentralCallWork, StoreFailure>> + Send + 'call>> {
         Box::pin(async move {
             match request {
-                CentralCall::CreateFleetSession(request) => {
-                    self.apply::<CreateFleetSessionRpc>(
+                CentralCall::CreateFleetSession(request) => self
+                    .apply::<CreateFleetSessionRpc>(
                         machine,
                         request,
                         |request, loan, machine, inputs, time| {
@@ -173,9 +240,9 @@ where
                         },
                     )
                     .await
-                }
-                CentralCall::BindFleetSession(request) => {
-                    self.apply::<BindFleetSessionRpc>(
+                    .map(CentralCallWork::from),
+                CentralCall::BindFleetSession(request) => self
+                    .apply::<BindFleetSessionRpc>(
                         machine,
                         request,
                         |request, loan, machine, inputs, time| {
@@ -195,9 +262,9 @@ where
                         },
                     )
                     .await
-                }
-                CentralCall::EndFleetSession(request) => {
-                    self.apply::<EndFleetSessionRpc>(
+                    .map(CentralCallWork::from),
+                CentralCall::EndFleetSession(request) => self
+                    .apply::<EndFleetSessionRpc>(
                         machine,
                         request,
                         |request, loan, machine, inputs, time| {
@@ -217,11 +284,67 @@ where
                         },
                     )
                     .await
+                    .map(CentralCallWork::from),
+                CentralCall::RegisterRun(request) => {
+                    let run = request.body.router_run.clone();
+                    self.approvals
+                        .dispatch::<RegisterRunRpc>(
+                            machine,
+                            request,
+                            run,
+                            self.ending_transport.clone(),
+                            |_| HolderCommand::Register,
+                            |target, reply| {
+                                if let HolderReply::Register(body) = reply {
+                                    Some(RegisterRunRpc::reply(Envelope { target, body }))
+                                } else {
+                                    None
+                                }
+                            },
+                        )
+                        .await
                 }
-                CentralCall::RegisterRun(_) | CentralCall::Raise(_) | CentralCall::Stop(_) => {
-                    Ok(TypedCallResult::Refused {
-                        reason: LinkCallRefusal::UnknownCall,
-                    })
+                CentralCall::Raise(request) => {
+                    let run = request.body.router_run().clone();
+                    self.approvals
+                        .dispatch::<RaiseApprovalRpc>(
+                            machine,
+                            request,
+                            run,
+                            self.ending_transport.clone(),
+                            |body| HolderCommand::Raise(Box::new(body)),
+                            |target, reply| {
+                                if let HolderReply::Raise(body) = reply {
+                                    Some(RaiseApprovalRpc::reply(Envelope { target, body }))
+                                } else {
+                                    None
+                                }
+                            },
+                        )
+                        .await
+                }
+                CentralCall::Stop(request) => {
+                    use approval_request_protocol::StopRequest;
+                    let run = match &request.body {
+                        StopRequest::Provider { router_run, .. }
+                        | StopRequest::UnprovenCall { router_run, .. } => router_run.clone(),
+                    };
+                    self.approvals
+                        .dispatch::<StopApprovalRpc>(
+                            machine,
+                            request,
+                            run,
+                            self.ending_transport.clone(),
+                            HolderCommand::Stop,
+                            |target, reply| {
+                                if let HolderReply::Stop(body) = reply {
+                                    Some(StopApprovalRpc::reply(Envelope { target, body }))
+                                } else {
+                                    None
+                                }
+                            },
+                        )
+                        .await
                 }
             }
         })

@@ -183,6 +183,22 @@ where
         })
     }
 
+    /// Recheck the exact due occurrence on the already-lent applying transaction.
+    pub async fn approval_deadline_is_due(
+        transaction: &mut Transaction,
+        subject: &InstanceKey,
+        deadline: CentralTime,
+        now: CentralTime,
+    ) -> Result<bool, StoreFailure> {
+        if deadline > now {
+            return Ok(false);
+        }
+        let row_id = ApprovalRequestRowId::parse(&subject.0)?;
+        let row = read_approval_due_subject(transaction, &row_id).await?;
+        Ok(matches!(row.map(|row| row.state),
+            Some(crate::ApprovalState::Waiting { saved }) if saved.window.deadline() == deadline))
+    }
+
     pub async fn apply_approval_deadline(
         &mut self,
         subject: &InstanceKey,
