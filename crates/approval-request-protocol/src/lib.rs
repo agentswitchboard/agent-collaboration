@@ -26,7 +26,8 @@ pub use approval_endings::{
     InvalidApprovalEnding, ProviderStopCause, RequestState, SessionDecider, WaitingStatus,
 };
 pub use approval_holder_endings::{
-    DeliverEndingRequest, HolderEnding, PrivateEnding, ProviderCancellation,
+    CallCancellation, DeliverEndingRequest, HolderEnding, ParkedCallEnding, PrivateEnding,
+    ProviderCancellation,
 };
 pub use approval_offers::{
     ApprovalOffer, OfferView, OfferedOption, OfferedOptions, OptionEffect, OptionLifetime,
@@ -34,8 +35,8 @@ pub use approval_offers::{
     TransientOptionStorage,
 };
 pub use approval_request_views::{
-    DestinationEnding, EndingView, EndingViewWire, GiverDecision, RequestStateView, RequestView,
-    StandingEnding,
+    DestinationEnding, EndingView, EndingViewWire, GiverDecision, ParkedCallEndingView,
+    ParkedCallStateView, RequestStateView, RequestView, StandingEnding,
 };
 pub use approval_values::{
     ApprovalWindow, CentralTime, DESCRIPTION_MAX_CHARACTERS, Description, InvalidApprovalOrdinal,
@@ -60,8 +61,7 @@ pub use question_fields::{
     MultiChoiceSelection, QuestionField, QuestionFields,
 };
 pub use unproven_session_call::{
-    CallCancellation, CallOffer, CallStopCause, ParkedCallEnding, ParkedCallEndingView,
-    ParkedCallHolder, ParkedCallStateView, SessionCallDecision, SessionCallOperation,
+    CallOffer, CallStopCause, ParkedCallHolder, SessionCallDecision, SessionCallOperation,
     SessionCallProgram,
 };
 pub use workspace_ids::{ApprovalRequestId, CentralSessionId, RouterRunId};

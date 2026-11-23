@@ -1,11 +1,11 @@
 //! Deliverable endings carry only the answer and cancellation of their request kind.
 use crate::approval_wire_codec::{approval_wire_record, approval_wire_union};
-use workspace_ids::ApprovalRequestId;
+use workspace_ids::{ApprovalRequestId, PersonId};
 
 use crate::{
-    Answer, CallCancellation, CallStopCause, CancelReason, DecidedBy, Ending, HolderStopCause,
-    InvalidAnswer, InvalidApprovalEnding, OfferedOptionId, ParkedCallEnding, ProviderStopCause,
-    QuestionAnswer, Raise, RequestContentsDigest, check_answer,
+    Answer, CallStopCause, CancelReason, DecidedBy, Ending, HolderStopCause, InvalidAnswer,
+    InvalidApprovalEnding, OfferedOptionId, ProviderStopCause, QuestionAnswer, Raise,
+    RequestContentsDigest, SessionCallDecision, check_answer,
 };
 
 approval_wire_union! {
@@ -41,6 +41,30 @@ pub enum ProviderCancellation {
 }
 
 approval_wire_union! {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
+pub enum CallCancellation {
+    Stopped { cause: CallStopCause },
+    RequesterGone {},
+    EnrollmentEnded {},
+}
+}
+
+approval_wire_union! {
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
+pub enum ParkedCallEnding {
+    Decided {
+        decision: SessionCallDecision,
+        #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = String))]
+        person_id: PersonId,
+    },
+    Cancelled { reason: CallCancellation },
+    TimedOut {},
+}
+}
+
+approval_wire_union! {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub enum PrivateEnding {
@@ -63,7 +87,7 @@ impl PrivateEnding {
                 ending: project_ending(ending, take_question, ProviderCancellation::try_from)?,
             }),
             Raise::UnprovenCall { .. } => Ok(Self::UnprovenCall {
-                ending: ParkedCallEnding::try_from(ending)?,
+                ending: ParkedCallEnding::from_ending(ending)?,
             }),
         }
     }
@@ -88,7 +112,7 @@ impl PrivateEnding {
                 |answer| Answer::Question { answer },
                 ProviderCancellation::into_reason,
             ),
-            Self::UnprovenCall { ending } => ending.into(),
+            Self::UnprovenCall { ending } => ending.into_ending(),
         }
     }
 }
@@ -221,10 +245,8 @@ impl TryFrom<CancelReason> for ProviderCancellation {
     }
 }
 
-impl TryFrom<Ending> for ParkedCallEnding {
-    type Error = InvalidApprovalEnding;
-
-    fn try_from(ending: Ending) -> Result<Self, Self::Error> {
+impl ParkedCallEnding {
+    fn from_ending(ending: Ending) -> Result<Self, InvalidApprovalEnding> {
         match ending {
             Ending::Decided {
                 answer: Answer::UnprovenCall { decision },
@@ -260,19 +282,17 @@ impl TryFrom<Ending> for ParkedCallEnding {
             Ending::TimedOut {} => Ok(Self::TimedOut {}),
         }
     }
-}
 
-impl From<ParkedCallEnding> for Ending {
-    fn from(ending: ParkedCallEnding) -> Self {
-        match ending {
+    fn into_ending(self) -> Ending {
+        match self {
             ParkedCallEnding::Decided {
                 decision,
                 person_id,
-            } => Self::Decided {
+            } => Ending::Decided {
                 answer: Answer::UnprovenCall { decision },
                 by: DecidedBy::Person { person_id },
             },
-            ParkedCallEnding::Cancelled { reason } => Self::Cancelled {
+            ParkedCallEnding::Cancelled { reason } => Ending::Cancelled {
                 reason: match reason {
                     CallCancellation::Stopped {
                         cause: CallStopCause::CallWithdrawn,
@@ -283,7 +303,7 @@ impl From<ParkedCallEnding> for Ending {
                     CallCancellation::EnrollmentEnded {} => CancelReason::EnrollmentEnded {},
                 },
             },
-            ParkedCallEnding::TimedOut {} => Self::TimedOut {},
+            ParkedCallEnding::TimedOut {} => Ending::TimedOut {},
         }
     }
 }

@@ -1,14 +1,14 @@
 //! A destination sees only the offer and ending for the request's own kind.
 use crate::approval_wire_codec::{approval_wire_record, approval_wire_union};
 use serde::{Deserialize, Serialize};
-use workspace_ids::ApprovalRequestId;
+use workspace_ids::{ApprovalRequestId, PersonId};
 
 use crate::{
-    AdmittedDestination, Answer, ApprovalOffer, ApprovalWindow, CallOffer, CentralTime, DecidedBy,
-    DeliverEndingRequest, Delivery, DestinationProjection, HolderEnding, InvalidApprovalEnding,
-    InvocationDigest, OfferView, OfferedOptionId, ParkedCallEndingView, ParkedCallStateView,
-    PrivateEnding, ProviderCancellation, QuestionAnswer, QuestionOffer, Raise, WaitingStatus,
-    check_answer,
+    AdmittedDestination, Answer, ApprovalOffer, ApprovalWindow, CallCancellation, CallOffer,
+    CentralTime, DecidedBy, DeliverEndingRequest, Delivery, DestinationProjection, HolderEnding,
+    InvalidApprovalEnding, InvocationDigest, OfferView, OfferedOptionId, ParkedCallEnding,
+    PrivateEnding, ProviderCancellation, QuestionAnswer, QuestionOffer, Raise, SessionCallDecision,
+    WaitingStatus, check_answer,
 };
 
 approval_wire_union! {
@@ -57,6 +57,60 @@ impl<AcceptedAnswer, Cancellation> DestinationEnding<AcceptedAnswer, Cancellatio
         };
         Self::Standing { ending: standing }
     }
+}
+
+approval_wire_union! {
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
+pub enum ParkedCallEndingView {
+    Decided {
+        #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = String))]
+        person_id: PersonId,
+    },
+    Giver {
+        decision: SessionCallDecision,
+        #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = String))]
+        person_id: PersonId,
+    },
+    Cancelled { reason: CallCancellation },
+    TimedOut {},
+}
+}
+
+impl ParkedCallEndingView {
+    pub(crate) fn for_reader(ending: ParkedCallEnding, actor: &DecidedBy) -> Self {
+        match ending {
+            ParkedCallEnding::Decided {
+                decision,
+                person_id,
+            } if actor
+                == &(DecidedBy::Person {
+                    person_id: person_id.clone(),
+                }) =>
+            {
+                Self::Giver {
+                    decision,
+                    person_id,
+                }
+            }
+            ParkedCallEnding::Decided { person_id, .. } => Self::Decided { person_id },
+            ParkedCallEnding::Cancelled { reason } => Self::Cancelled { reason },
+            ParkedCallEnding::TimedOut {} => Self::TimedOut {},
+        }
+    }
+}
+
+approval_wire_union! {
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
+pub enum ParkedCallStateView {
+    Waiting {},
+    Ended {
+        ending: ParkedCallEndingView,
+        ended_at: CentralTime,
+        delivery: Delivery,
+    },
+}
 }
 
 approval_wire_union! {
