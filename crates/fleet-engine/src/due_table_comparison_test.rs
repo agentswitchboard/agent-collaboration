@@ -1,7 +1,8 @@
 #![cfg(test)]
 
 use super::{
-    LegacyTime, OwnerItem, ReferenceLegacyInputs, StoredAlarmInputs, StoredProjection, StoredSource,
+    LegacyTime, OwnerItem, ReferenceApprovalAlarmInput, ReferenceLegacyInputs, StoredAlarmInputs,
+    StoredProjection, StoredSource,
 };
 
 #[test]

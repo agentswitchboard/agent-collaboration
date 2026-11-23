@@ -69,7 +69,7 @@ fn constraint_kind(error: &sqlx_core::Error) -> Option<ConstraintKind> {
     }
 }
 
-fn bound(statement: &OwnedStatement) -> Query<'static, Do, DoArguments> {
+pub(crate) fn bound(statement: &OwnedStatement) -> Query<'static, Do, DoArguments> {
     statement.args.iter().fold(
         query(AssertSqlSafe(statement.sql.clone())),
         |query, argument| match argument {
@@ -104,7 +104,7 @@ fn sql_value(value: &Value, column: &str) -> Result<SqlValue, StoreFailure> {
     }
 }
 
-fn read_outcome(rows: &[DoRow]) -> Result<ReadOutcome, StoreFailure> {
+pub(crate) fn read_outcome(rows: &[DoRow]) -> Result<ReadOutcome, StoreFailure> {
     let columns: Vec<String> = rows
         .first()
         .map(|row| {
