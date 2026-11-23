@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT message_id, created_at, message_json, delivery_state_json FROM inbox_messages\n             WHERE message_json IS NOT NULL ORDER BY created_at, message_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "message_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inbox_messages",
+            "name": "message_id"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "inbox_messages",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "message_json",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inbox_messages",
+            "name": "message_json"
+          }
+        }
+      },
+      {
+        "name": "delivery_state_json",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inbox_messages",
+            "name": "delivery_state_json"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "c0f3d49b6cd3981ea942c0a75689b41bef9635b9063852ef6e6b2208278f5615"
+}
