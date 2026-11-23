@@ -249,6 +249,7 @@ impl ConnectedLink {
         let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
             return Err("ordinary client did not start a connection".into());
         };
+        client.dial_started(&attempt)?;
         let mut socket = fixture
             .client
             .get(fixture.link_url(ORGANIZATION))
@@ -265,6 +266,7 @@ impl ConnectedLink {
         ) {
             return Err("ordinary client did not accept Welcome".into());
         }
+        client.ready(&attempt)?;
         Ok(Self {
             socket,
             welcome,

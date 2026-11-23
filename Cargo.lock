@@ -854,6 +854,7 @@ dependencies = [
  "router-clock",
  "serde_json",
  "thiserror 2.0.18",
+ "tokio",
  "uuid",
  "workspace-ids",
  "workspace-model",
@@ -5822,6 +5823,46 @@ dependencies = [
  "approval-request-protocol",
  "thiserror 2.0.18",
  "workspace-ids",
+]
+
+[[package]]
+name = "switchboard-central-link"
+version = "0.1.158"
+dependencies = [
+ "central-link-client",
+ "central-link-protocol",
+ "futures-util",
+ "hegeltest",
+ "http-body-util",
+ "hyper",
+ "hyper-rustls",
+ "hyper-util",
+ "log",
+ "router-clock",
+ "serde_json",
+ "state-machine-core",
+ "tokio",
+ "tokio-tungstenite",
+ "tower-service",
+ "tracing",
+ "tracing-subscriber",
+ "workspace-ids",
+ "workspace-model",
+]
+
+[[package]]
+name = "switchboard-central-link-test"
+version = "0.1.158"
+dependencies = [
+ "central-link-client",
+ "central-link-protocol",
+ "collaboration-central-conformance",
+ "collaboration-central-tokio",
+ "reqwest 0.12.28",
+ "router-clock",
+ "serde_json",
+ "switchboard-central-link",
+ "tokio",
 ]
 
 [[package]]

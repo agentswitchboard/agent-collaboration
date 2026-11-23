@@ -42,6 +42,7 @@ async fn native_batch_keeps_order_and_continues_after_a_middle_semantic_refusal(
     let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
         return Err("client did not start a connection attempt".into());
     };
+    client.dial_started(&attempt)?;
     let mut socket = fixture.connect().await?;
     if !matches!(
         client.receive(&attempt, receive(&mut socket).await?)?,
@@ -49,6 +50,7 @@ async fn native_batch_keeps_order_and_continues_after_a_middle_semantic_refusal(
     ) {
         return Err("normal machine_id did not receive Welcome".into());
     }
+    client.ready(&attempt)?;
     let create = client.begin_request(
         caller.clone(),
         RequestPayload::Workspace(serde_json::from_value(json!({
