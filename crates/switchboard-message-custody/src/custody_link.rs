@@ -93,6 +93,31 @@ pub(crate) struct SenderNoticeProjection {
 pub use crate::offer_taker::CustodyLinkObservation;
 
 /// Custody owns the stores, one minute scheduler and one consumer of the driver's admitted message lane.
+/// The [custody task](crate::custody_task::custody_task) drives outbox writes and recovery.
+///
+/// ```compile_fail,E0599
+/// use switchboard_message_custody::custody_link::CustodyLink;
+///
+/// async fn drain_without_the_worker(custody: &mut CustodyLink) {
+///     let _ = custody.flush_writes().await;
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use switchboard_message_custody::custody_link::CustodyLink;
+///
+/// async fn schedule_without_the_worker(custody: &mut CustodyLink) {
+///     let _ = custody.flush_next().await;
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use switchboard_message_custody::custody_link::CustodyLink;
+///
+/// async fn recover_without_the_worker(custody: &mut CustodyLink) {
+///     let _ = custody.recover_outbox().await;
+/// }
+/// ```
 pub struct CustodyLink {
     pub(crate) lane: Arc<dyn ReadyLinkLane>,
     pub(crate) clock: Arc<dyn RuntimeClock>,

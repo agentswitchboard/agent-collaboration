@@ -27,9 +27,22 @@ use super::{
     batch_replay::{KnownRecipient, NoFlushJitter, ScriptedBatchLane, new_admission},
     custody_task::ObserveTask,
     outbox_timing::{manual_clock, open_outbox, thread_post},
+    worker_turns::{ObservedWorker, WorkerClock},
 };
 
 const MARK_MS: i64 = 1_763_380_800_000;
+
+pub(super) async fn observed_limits_fixture() -> (
+    tempfile::TempDir,
+    CustodyLink,
+    Arc<ScriptedBatchLane>,
+    Arc<WorkerClock>,
+) {
+    let clock = WorkerClock::observing(manual_clock(MARK_MS - 20_000));
+    let (root, custody, lane) =
+        limits_fixture_with_clock(clock.manual.clone(), clock.clone()).await;
+    (root, custody, lane, clock)
+}
 
 pub(super) async fn limits_fixture() -> (
     tempfile::TempDir,
@@ -121,7 +134,7 @@ async fn a_single_overbudget_write_is_refused_before_entering_the_store() {
 
 #[tokio::test]
 async fn the_byte_budget_splits_frames_without_deferring_the_suffix_to_the_next_mark() {
-    let (_root, mut custody, lane, clock) = limits_fixture().await;
+    let (_root, mut custody, lane, clock) = observed_limits_fixture().await;
     for seed in (1..=20).rev() {
         let submitted = queue_post(&mut custody, seed, |request| {
             let WorkspaceOperation::ThreadPost { body, .. } = &mut request.operation else {
@@ -132,8 +145,8 @@ async fn the_byte_budget_splits_frames_without_deferring_the_suffix_to_the_next_
         .await;
         assert!(matches!(submitted, Submission::InOutbox(_)));
     }
-    clock.advance(Duration::from_secs(20)).unwrap();
-    let first = custody.flush_writes().await.unwrap();
+    let mut worker = ObservedWorker::start(custody, clock);
+    let first = worker.advance(Duration::from_secs(20)).await.unwrap();
     assert_eq!(
         first
             .answered
@@ -161,11 +174,12 @@ async fn the_byte_budget_splits_frames_without_deferring_the_suffix_to_the_next_
                 <= LINK_LANE_FRAME_BYTES
         );
     }
+    worker.stop().await;
 }
 
 #[tokio::test]
 async fn a_write_expiring_inside_the_mark_does_not_shorten_the_later_frames_fence() {
-    let (root, mut custody, lane, clock) = limits_fixture().await;
+    let (root, mut custody, lane, clock) = observed_limits_fixture().await;
     let mut fixture_store = open_outbox(&root.path().join("machine_local.sqlite")).await;
     let aged_write = thread_post(1);
     assert_eq!(
@@ -178,8 +192,16 @@ async fn a_write_expiring_inside_the_mark_does_not_shorten_the_later_frames_fenc
     let submitted = queue_post(&mut custody, 2, |_| {}).await;
     assert!(matches!(submitted, Submission::InOutbox(_)));
 
-    clock.advance(Duration::from_secs(20)).unwrap();
-    assert_eq!(custody.flush_writes().await.unwrap().answered.len(), 2);
+    let mut worker = ObservedWorker::start(custody, clock);
+    assert_eq!(
+        worker
+            .advance(Duration::from_secs(20))
+            .await
+            .unwrap()
+            .answered
+            .len(),
+        2
+    );
     let commands = lane.batch_commands();
     assert_eq!(
         commands.len(),
@@ -198,11 +220,12 @@ async fn a_write_expiring_inside_the_mark_does_not_shorten_the_later_frames_fenc
     );
     assert_eq!(early.requests.requests().len(), 1);
     assert_eq!(later.requests.requests().len(), 1);
+    worker.stop().await;
 }
 
 #[tokio::test]
 async fn an_orphaned_claim_arms_the_flush_after_the_last_waiting_row_disappears() {
-    let (root, mut custody, lane, clock) = limits_fixture().await;
+    let (root, custody, lane, clock) = observed_limits_fixture().await;
     let mut write_store = open_outbox(&root.path().join("machine_local.sqlite")).await;
     let original = thread_post(91);
     let queued_at = MARK_MS - 20_000;
@@ -232,7 +255,8 @@ async fn an_orphaned_claim_arms_the_flush_after_the_last_waiting_row_disappears(
             .is_none()
     );
 
-    custody.recover_outbox().await.unwrap();
+    let mut worker = ObservedWorker::start(custody, clock.clone());
+    clock.wait_after(0).await;
     assert!(
         matches!(
             lane.take_calls().as_slice(),
@@ -242,13 +266,20 @@ async fn an_orphaned_claim_arms_the_flush_after_the_last_waiting_row_disappears(
         "Central's scoped miss must precede the orphan's return to waiting"
     );
     assert!(
-        custody.refresh_flush_wake().await.unwrap().is_some(),
+        clock
+            .manual
+            .wait_registrations_since(0)
+            .iter()
+            .filter(|wait| !wait.dropped
+                && wait.deadline == ClockInstant::ZERO.after(Duration::from_secs(20)))
+            .count()
+            >= 2,
         "an orphan must arm a flush even with no waiting rows"
     );
-    clock.advance(Duration::from_secs(20)).unwrap();
-    let flush = custody.flush_writes().await.unwrap();
+    let flush = worker.advance(Duration::from_secs(20)).await.unwrap();
     assert!(matches!(flush.answered.as_slice(), [answer] if answer.request == original.request));
     assert_eq!(lane.batch_commands().len(), 1);
+    worker.stop().await;
 }
 
 #[tokio::test]
@@ -275,7 +306,7 @@ async fn an_offer_consumer_fault_is_visible_on_the_operator_path_only() {
             cause: LinkLocalFault::DeliveryConsumerStalled,
         }]
     );
-    assert!(custody.refresh_flush_wake().await.unwrap().is_none());
+    assert!(lane.admitted.borrow().is_none());
     assert!(lane.take_calls().is_empty());
 }
 

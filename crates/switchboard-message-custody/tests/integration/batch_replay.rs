@@ -47,7 +47,10 @@ use workspace_model::{
     },
 };
 
-use super::outbox_timing::{manual_clock, open_outbox, thread_post, welcome_anchor};
+use super::{
+    outbox_timing::{manual_clock, open_outbox, thread_post, welcome_anchor},
+    worker_turns::{ObservedWorker, WorkerClock},
+};
 
 const SHARED_MARK_MS: i64 = 1_763_380_800_000;
 
@@ -110,15 +113,6 @@ pub(super) struct ScriptedStatusGate {
 pub(super) struct ScriptedBatchGate {
     pub(super) entered: Notify,
     pub(super) release: Notify,
-    poll_requested: Notify,
-    poll_observed: Notify,
-}
-
-impl ScriptedBatchGate {
-    pub(super) async fn observe_pending_poll(&self) {
-        self.poll_requested.notify_one();
-        self.poll_observed.notified().await;
-    }
 }
 
 pub(super) struct ScriptedBatchLane {
@@ -323,12 +317,7 @@ impl ReadyLinkLane for ScriptedBatchLane {
         Box::pin(async move {
             if let Some(gate) = gate {
                 gate.entered.notify_one();
-                loop {
-                    tokio::select! {
-                        () = gate.release.notified() => break,
-                        () = gate.poll_requested.notified() => gate.poll_observed.notify_one(),
-                    }
-                }
+                gate.release.notified().await;
             }
             disposition
         })
@@ -494,6 +483,7 @@ async fn check_partial_replay(answers: &[bool]) {
     let database = root.path().join("machine_local.sqlite");
     let started_at = SHARED_MARK_MS - 20_000;
     let clock = manual_clock(started_at);
+    let observed_clock = WorkerClock::observing(clock.clone());
     let machine: MachineId = "019f0000-0000-7000-8000-000000000011".parse().unwrap();
     let items: Vec<_> = (1..=u16::try_from(answers.len()).unwrap())
         .map(thread_post)
@@ -512,7 +502,7 @@ async fn check_partial_replay(answers: &[bool]) {
     let outbox = open_outbox(&database).await;
     let mut custody = CustodyLink::new(
         lane.clone(),
-        clock.clone(),
+        observed_clock.clone(),
         Arc::new(NoFlushJitter),
         OutboxWork::new(Box::new(outbox), clock.clone()),
         RecipientInbox::new(
@@ -537,13 +527,14 @@ async fn check_partial_replay(answers: &[bool]) {
             if receipt.id == item.request && receipt.flush_at.unix_millis() == SHARED_MARK_MS));
     }
 
-    assert!(custody.flush_writes().await.unwrap().answered.is_empty());
+    let mut worker = ObservedWorker::start(custody, observed_clock.clone());
+    observed_clock.wait_after(0).await;
+    assert!(worker.take_reports().unwrap().answered.is_empty());
     assert!(
         lane.history.lock().unwrap().attempts.is_empty(),
         "no frame before the shared minute"
     );
-    clock.advance(Duration::from_secs(20)).unwrap();
-    let first = custody.flush_writes().await.unwrap();
+    let first = worker.advance(Duration::from_secs(20)).await.unwrap();
     assert!(first.issues.is_empty());
     assert_eq!(
         first.answered.len(),
@@ -568,8 +559,7 @@ async fn check_partial_replay(answers: &[bool]) {
 
     lane.admitted
         .send_replace(Some(new_admission(machine, clock.clone())));
-    clock.advance(Duration::from_secs(60)).unwrap();
-    let replay = custody.flush_writes().await.unwrap();
+    let replay = worker.advance(Duration::from_secs(60)).await.unwrap();
     assert!(replay.issues.is_empty());
     let (sent_again, decisions) = {
         let history = lane.history.lock().unwrap();
@@ -595,6 +585,7 @@ async fn check_partial_replay(answers: &[bool]) {
             })
         ) if &post_id == expected_id && &position == expected_position && &actors == expected_actors));
     }
+    worker.stop().await;
 }
 
 #[hegel::test(test_cases = 64)]

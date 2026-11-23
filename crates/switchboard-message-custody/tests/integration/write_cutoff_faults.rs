@@ -10,8 +10,8 @@ use central_link_protocol::ReplyPayload;
 use router_clock::{ClockInstant, RuntimeClock};
 use std::time::Duration;
 use switchboard_machine_core_store::{
-    OutboxAccepted, OutboxCancellation, OutboxInsert, OutboxQueuedWrite, OutboxRequestKey,
-    OutboxRequestStatus, OutboxStorage, OutgoingOutcome,
+    OutboxAccepted, OutboxCancellation, OutboxInsert, OutboxQueuedWrite, OutboxRequestStatus,
+    OutboxStorage, OutgoingOutcome,
 };
 use switchboard_message_custody::{
     custody_status::CustodyRequestStatus,
@@ -243,12 +243,12 @@ pub(super) async fn check_active_cutoff_fault(gap_ms: u32) {
 }
 
 #[tokio::test]
-async fn the_public_drain_ends_a_later_waiting_write_while_the_frame_is_held() {
-    check_public_waiting_cutoff(1_000).await;
+async fn the_worker_ends_a_later_waiting_write_while_the_frame_is_held() {
+    check_worker_waiting_cutoff(1_000).await;
 }
 
-pub(super) async fn check_public_waiting_cutoff(gap_ms: u32) {
-    let (root, mut custody, peer, clock) = limits_fixture().await;
+pub(super) async fn check_worker_waiting_cutoff(gap_ms: u32) {
+    let (root, custody, peer, clock) = limits_fixture().await;
     let mut store = open_outbox(&root.path().join("machine_local.sqlite")).await;
     let active = thread_post(31);
     let mut waiting = thread_post(32);
@@ -259,60 +259,94 @@ pub(super) async fn check_public_waiting_cutoff(gap_ms: u32) {
                 .insert(write, MARK_MS + cutoff_after_mark - 900_000)
                 .await
                 .unwrap(),
-            OutboxInsert::Stored,
+            OutboxInsert::Stored
         );
     }
-    let active_key = OutboxRequestKey {
-        request_id: active.request.clone(),
-        scope: active.payload.request_scope(),
-    };
-    let waiting_key = OutboxRequestKey {
-        request_id: waiting.request.clone(),
-        scope: waiting.payload.request_scope(),
-    };
     let gate = peer.hold_next_batch();
-    clock.advance(Duration::from_secs(20)).unwrap();
-    let flush = tokio::spawn(async move { custody.flush_writes().await });
-    gate.entered.notified().await;
+    let (calls, stop, mut events, running) = start_worker(custody);
     clock
-        .not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(21)))
+        .not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(20)))
         .await;
-
+    clock.advance(Duration::from_secs(20)).unwrap();
+    gate.entered.notified().await;
+    let active_cutoff = ClockInstant::ZERO.after(Duration::from_secs(21));
+    clock.not_due_check_now(active_cutoff).await;
     clock.advance(Duration::from_secs(1)).unwrap();
-    let active_ending = OutboxRequestStatus::Ended {
-        reason: OutboxCancellation::NotConfirmedWithin15Minutes,
-    };
-    while store
-        .scoped_request_status(&active.caller, &active_key)
-        .await
-        .unwrap()
-        != active_ending
-    {}
-    // The test uses one current-thread executor. This notification comes from
-    // a poll of the pending reply. The same poll examines the deadline branch
-    // before giving control back to the observer.
-    gate.observe_pending_poll().await;
-    let gap = Duration::from_millis(u64::from(gap_ms));
-    let waiting_due = ClockInstant::ZERO.after(Duration::from_secs(21) + gap);
-    assert!(
-        clock.has_not_due_check_now(waiting_due),
-        "the public drain must arm the later waiting cutoff while the reply stays held"
-    );
+    let first = flush_event(&mut events, "the held frame's cutoff").await;
+    assert!(matches!(first.ended.as_slice(), [ending]
+        if ending.request_id == active.request && ending.reason == OutboxCancellation::NotConfirmedWithin15Minutes));
 
+    let gap = Duration::from_millis(u64::from(gap_ms));
+    let waiting_due = active_cutoff.after(gap);
+    clock.not_due_check_now(waiting_due).await;
     clock.advance(gap).unwrap();
-    let waiting_ending = OutboxRequestStatus::Ended {
-        reason: OutboxCancellation::NotSentWithin15Minutes,
-    };
-    while store
-        .scoped_request_status(&waiting.caller, &waiting_key)
+    let second = flush_event(&mut events, "the waiting cutoff while the frame is held").await;
+    assert!(matches!(second.ended.as_slice(), [ending]
+        if ending.request_id == waiting.request && ending.reason == OutboxCancellation::NotSentWithin15Minutes));
+    assert_eq!(
+        store
+            .request_status(&waiting.caller, &waiting.request)
+            .await
+            .unwrap(),
+        OutboxRequestStatus::Ended {
+            reason: OutboxCancellation::NotSentWithin15Minutes
+        }
+    );
+    assert_eq!(
+        calls
+            .request_status(active.caller.clone(), scoped_query(&active))
+            .await,
+        CustodyRequestStatus::Ended {
+            reason: OutboxCancellation::NotConfirmedWithin15Minutes
+        }
+    );
+    assert_eq!(clock.monotonic_now(), waiting_due);
+    assert_eq!(peer.batch_commands().len(), 1);
+    gate.release.notify_one();
+    stop.send_replace(true);
+    running.await.unwrap();
+}
+
+#[tokio::test]
+async fn a_waiting_cutoff_runs_while_startup_orphan_status_is_pending() {
+    check_cutoff_during_orphan_probe(1_000).await;
+}
+
+pub(super) async fn check_cutoff_during_orphan_probe(gap_ms: u32) {
+    let (root, custody, peer, clock) = limits_fixture().await;
+    let mut store = open_outbox(&root.path().join("machine_local.sqlite")).await;
+    let orphan = thread_post(33);
+    let waiting = thread_post(34);
+    let now = MARK_MS - 20_000;
+    store.insert(&orphan, now).await.unwrap();
+    let claimed = store
+        .claim_next_batch(MARK_MS, 1, now, now, &Default::default())
         .await
         .unwrap()
-        != waiting_ending
-    {}
-    assert_eq!(clock.monotonic_now(), waiting_due);
-    gate.release.notify_one();
-    let report = flush.await.unwrap().unwrap();
-    assert!(matches!(report.ended.as_slice(), [first, second]
-        if first.request_id == active.request && second.request_id == waiting.request));
-    assert_eq!(peer.batch_commands().len(), 1);
+        .healthy;
+    assert!(matches!(claimed.writes.as_slice(), [write] if write.request == orphan.request));
+    store
+        .insert(&waiting, now - 900_000 + i64::from(gap_ms))
+        .await
+        .unwrap();
+    let status_gate = peer.hold_next_status();
+    let (_calls, stop, mut events, running) = start_worker(custody);
+    status_gate.entered.notified().await;
+    let gap = Duration::from_millis(u64::from(gap_ms));
+    let cutoff = ClockInstant::ZERO.after(gap);
+    clock.not_due_check_now(cutoff).await;
+    clock.advance(gap).unwrap();
+    let report = flush_event(&mut events, "waiting expiry during a held startup probe").await;
+    assert!(matches!(report.ended.as_slice(), [ending]
+        if ending.request_id == waiting.request && ending.reason == OutboxCancellation::NotSentWithin15Minutes));
+    assert_eq!(
+        store
+            .request_status(&orphan.caller, &orphan.request)
+            .await
+            .unwrap(),
+        OutboxRequestStatus::Sent
+    );
+    assert!(peer.batch_commands().is_empty());
+    stop.send_replace(true);
+    running.await.unwrap();
 }

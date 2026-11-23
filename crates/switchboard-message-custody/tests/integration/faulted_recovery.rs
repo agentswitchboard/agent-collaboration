@@ -15,9 +15,10 @@ use switchboard_message_custody::{
 
 use super::{
     batch_replay::{ScriptedBatch, ScriptedMemberFate, post_created},
-    faulted_overlay::{FaultCampaign, MARK_MS, START_MS},
+    faulted_overlay::{FaultCampaign, MARK_MS, START_MS, WorkerFaultCampaign},
     faulty_outbox::{FaultSite, FaultStage, FaultyOutbox},
-    outbox_timing::{open_outbox, thread_post},
+    outbox_timing::{manual_clock, open_outbox, thread_post},
+    worker_turns::WorkerClock,
 };
 
 #[tokio::test]
@@ -156,11 +157,12 @@ async fn a_failed_next_claim_carries_the_member_settled_before_it() {
 #[tokio::test]
 async fn a_lone_sent_row_at_startup_is_replayed_after_a_restore_fault() {
     for stage in [FaultStage::BeforeCall, FaultStage::AfterSuccess] {
-        let mut campaign = FaultCampaign::start().await;
+        let clock = WorkerClock::observing(manual_clock(START_MS));
+        let fixture = FaultCampaign::start_with_clock(clock.manual.clone(), clock.clone()).await;
         let mut item = thread_post(2_900);
         item.flush_at_ms = MARK_MS - 60_000;
         let created_at_ms = MARK_MS - 90_000;
-        let mut store = open_outbox(&campaign.root.path().join("machine_local.sqlite")).await;
+        let mut store = open_outbox(&fixture.root.path().join("machine_local.sqlite")).await;
         store.insert(&item, created_at_ms).await.unwrap();
         let claim = store
             .claim_next_batch(
@@ -174,15 +176,20 @@ async fn a_lone_sent_row_at_startup_is_replayed_after_a_restore_fault() {
             .unwrap();
         assert_eq!(claim.healthy.writes.len(), 1);
         drop(store);
+        fixture.faults.arm(FaultSite::SentWithoutAnswer, stage);
+        let mut campaign = WorkerFaultCampaign::from_fixture(fixture, clock.clone()).await;
         campaign.accept_seeded(&item, created_at_ms);
-
-        campaign.faults.arm(FaultSite::SentWithoutAnswer, stage);
-        assert!(campaign.custody.recover_outbox().await.is_err());
+        clock.wait_after(0).await;
+        assert!(campaign.worker.take_reports().is_err());
         assert_eq!(
             campaign.faults.fired(),
             [(FaultSite::SentWithoutAnswer, stage)]
         );
-        campaign.custody.recover_outbox().await.unwrap();
+        campaign
+            .worker
+            .advance(Duration::from_secs(1))
+            .await
+            .unwrap();
         campaign.heal_and_drain().await;
         let commands = campaign.peer.batch_commands();
         assert_eq!(
@@ -196,12 +203,13 @@ async fn a_lone_sent_row_at_startup_is_replayed_after_a_restore_fault() {
                 .write_request_id(),
             Some(&item.request)
         );
+        campaign.stop().await;
     }
 }
 
 #[tokio::test]
 async fn an_untouched_first_attempt_remains_unsent() {
-    let mut campaign = FaultCampaign::start().await;
+    let mut campaign = WorkerFaultCampaign::start().await;
     campaign.submit(None).await;
     campaign
         .next_mark(Some(ScriptedBatch::Untouched))
@@ -216,11 +224,12 @@ async fn an_untouched_first_attempt_remains_unsent() {
     );
     assert!(campaign.peer.decisions().is_empty());
     campaign.heal_and_drain().await;
+    campaign.stop().await;
 }
 
 #[tokio::test]
 async fn an_untouched_replay_preserves_the_earlier_possibly_recorded_write() {
-    let mut campaign = FaultCampaign::start().await;
+    let mut campaign = WorkerFaultCampaign::start().await;
     let item = campaign.submit(None).await;
     campaign
         .next_mark(Some(ScriptedBatch::Members(vec![
@@ -253,6 +262,7 @@ async fn an_untouched_replay_preserves_the_earlier_possibly_recorded_write() {
         "the untouched replay must relinquish its claim without erasing earlier uncertainty"
     );
     campaign.heal_and_drain().await;
+    campaign.stop().await;
 }
 
 #[tokio::test]

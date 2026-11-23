@@ -22,7 +22,7 @@ use workspace_ids::RequestId;
 use workspace_model::{Caller, Timestamp};
 
 use super::{
-    batch_limits::{limits_fixture, limits_fixture_with_clock},
+    batch_limits::{limits_fixture, limits_fixture_with_clock, observed_limits_fixture},
     batch_replay::{
         ScriptedBatch, ScriptedBatchLane, ScriptedCommand, ScriptedMemberFate, new_admission,
     },
@@ -31,6 +31,7 @@ use super::{
     mark_waits::NextMarkClock,
     outbox_timing::{manual_clock, open_outbox, thread_post},
     worker_orphans::{flush_event, scoped_query, start_worker},
+    worker_turns::ObservedWorker,
 };
 
 const FIRST_MARK: Duration = Duration::from_secs(20);
@@ -137,12 +138,15 @@ async fn two_hundred_prompt_writes_drain_in_four_ordered_frames_at_one_mark() {
 
 #[tokio::test]
 async fn the_sixty_fifth_write_is_answered_in_the_same_mark() {
-    let (_root, mut custody, lane, clock) = limits_fixture().await;
+    let (_root, mut custody, lane, clock) = observed_limits_fixture().await;
     let queued = queue_posts(&mut custody, 65).await;
-    clock.advance(FIRST_MARK).unwrap();
-
-    assert_eq!(answer_ids(custody.flush_writes().await.unwrap()), queued);
+    let mut worker = ObservedWorker::start(custody, clock);
+    assert_eq!(
+        answer_ids(worker.advance(FIRST_MARK).await.unwrap()),
+        queued
+    );
     assert_eq!(frame_counts(&lane), [64, 1]);
+    worker.stop().await;
 }
 
 #[tokio::test]
@@ -194,22 +198,24 @@ async fn the_exclusive_mark_close_leaves_the_slow_frames_suffix_for_the_next_mar
 
 #[tokio::test]
 async fn a_lost_member_waits_for_the_next_mark_while_later_frames_drain() {
-    let (_root, mut custody, lane, clock) = limits_fixture().await;
+    let (_root, mut custody, lane, clock) = observed_limits_fixture().await;
     let queued = queue_posts(&mut custody, 130).await;
     let (lost, suffix) = queued.split_first().unwrap();
     lane.decide_next_batch(Some(ScriptedBatch::Members(vec![
         ScriptedMemberFate::RecordedAnswerLost,
     ])));
-    clock.advance(FIRST_MARK).unwrap();
-
-    assert_eq!(answer_ids(custody.flush_writes().await.unwrap()), suffix);
-    assert_eq!(frame_counts(&lane), [64, 64, 2]);
-    clock.advance(SECOND_MARK - FIRST_MARK).unwrap();
+    let mut worker = ObservedWorker::start(custody, clock);
     assert_eq!(
-        answer_ids(custody.flush_writes().await.unwrap()),
+        answer_ids(worker.advance(FIRST_MARK).await.unwrap()),
+        suffix
+    );
+    assert_eq!(frame_counts(&lane), [64, 64, 2]);
+    assert_eq!(
+        answer_ids(worker.advance(SECOND_MARK - FIRST_MARK).await.unwrap()),
         std::slice::from_ref(lost)
     );
     assert_eq!(frame_counts(&lane), [64, 64, 2, 1]);
+    worker.stop().await;
 }
 
 #[tokio::test]
@@ -428,7 +434,7 @@ pub(super) async fn check_rebased_admission(old_count: u16) {
 
 #[tokio::test]
 async fn a_near_cutoff_orphan_rejoins_the_waiting_writes_before_three_frames_drain() {
-    let (root, mut custody, lane, clock) = limits_fixture().await;
+    let (root, mut custody, lane, clock) = observed_limits_fixture().await;
     let orphan = thread_post(130);
     let mut store = open_outbox(&root.path().join("machine_local.sqlite")).await;
     let created_at = MARK_MS - 890_000;
@@ -441,10 +447,15 @@ async fn a_near_cutoff_orphan_rejoins_the_waiting_writes_before_three_frames_dra
     let mut queued = queue_posts(&mut custody, 129).await;
     queued.insert(0, orphan.request.clone());
     let query = scoped_query(&orphan);
-    assert!(custody.recover_outbox().await.unwrap().issues.is_empty());
+    let mut worker = ObservedWorker::start(custody, clock.clone());
+    clock.wait_after(0).await;
+    assert!(worker.take_reports().unwrap().issues.is_empty());
     assert!(
         matches!(
-            custody.request_status(orphan.caller, query.clone()).await,
+            worker
+                .calls
+                .request_status(orphan.caller, query.clone())
+                .await,
             CustodyRequestStatus::InOutbox { .. }
         ),
         "the scoped miss returns the orphan with thirty seconds left"
@@ -454,9 +465,12 @@ async fn a_near_cutoff_orphan_rejoins_the_waiting_writes_before_three_frames_dra
         if command.query == query)
     );
 
-    clock.advance(FIRST_MARK).unwrap();
-    assert_eq!(answer_ids(custody.flush_writes().await.unwrap()), queued);
+    assert_eq!(
+        answer_ids(worker.advance(FIRST_MARK).await.unwrap()),
+        queued
+    );
     assert_eq!(frame_counts(&lane), [64, 64, 2]);
+    worker.stop().await;
 }
 
 #[tokio::test]

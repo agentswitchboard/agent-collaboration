@@ -24,7 +24,9 @@ const WRITE_TURN_RETRY: Duration = Duration::from_millis(10);
 
 impl CustodyLink {
     /// A wait for the shared minute selected by the scheduler. `None` means the lane is unavailable or idle.
-    pub async fn refresh_flush_wake(&mut self) -> Result<Option<ClockInstant>, CustodyLinkError> {
+    pub(crate) async fn refresh_flush_wake(
+        &mut self,
+    ) -> Result<Option<ClockInstant>, CustodyLinkError> {
         let Some(admitted) = self.admitted_connection() else {
             self.observe_unavailable()?;
             return Ok(None);
@@ -51,12 +53,6 @@ impl CustodyLink {
         self.write_retry_at = Some(self.clock.monotonic_now().after(WRITE_TURN_RETRY));
     }
 
-    /// The independent deadline for waiting writes and the members still held by the driver.
-    pub async fn next_write_deadline(&mut self) -> Result<Option<ClockInstant>, CustodyLinkError> {
-        let (wake, fault) = self.project_write_cutoff_wake().await;
-        fault.map_or(Ok(wake), |error| Err(error.into()))
-    }
-
     pub(crate) async fn project_write_cutoff_wake(
         &mut self,
     ) -> (Option<ClockInstant>, Option<OutboxWorkError>) {
@@ -68,39 +64,6 @@ impl CustodyLink {
             .chain(self.dispatcher.active_deadline(&self.outbox))
             .min();
         (wake, fault)
-    }
-
-    /// Wait on the injected clock for one scheduled flush, if there is work on an admitted link.
-    pub async fn flush_next(&mut self) -> Result<Option<FlushReport>, CustodyLinkError> {
-        let Some(wake) = self.refresh_flush_wake().await? else {
-            return Ok(None);
-        };
-        self.clock.sleep_until(wake).await;
-        Ok(Some(self.flush_writes().await?))
-    }
-
-    /// Drive an orphan recovery pass without the command worker, using the same scoped status path.
-    pub async fn recover_outbox(&mut self) -> Result<FlushReport, CustodyLinkError> {
-        let mut report = FlushReport::default();
-        let result = self.recover_orphans_into(&mut report).await;
-        finish_flush(report, result)
-    }
-
-    async fn recover_orphans_into(
-        &mut self,
-        report: &mut FlushReport,
-    ) -> Result<(), CustodyLinkError> {
-        let mut checked = BTreeSet::new();
-        loop {
-            let turn = self.prepare_recovery_turn(true, &checked).await?;
-            report.append(turn.report);
-            let Some(probe) = turn.probe else {
-                return Ok(());
-            };
-            checked.insert(probe.claim.key.request_id.clone());
-            let result = self.lane.request_status(probe.command.clone()).await;
-            report.append(self.settle_recovery_probe(probe, result, false).await);
-        }
     }
 
     pub(crate) async fn prepare_recovery_turn(
@@ -151,7 +114,7 @@ impl CustodyLink {
     }
 
     /// Run the local deadline wake and return the exact typed endings for the caller to report.
-    pub async fn end_due_writes(&mut self) -> Result<FlushReport, CustodyLinkError> {
+    pub(crate) async fn end_due_writes(&mut self) -> Result<FlushReport, CustodyLinkError> {
         let mut report = FlushReport::default();
         let result = self.end_due_writes_into(&mut report).await;
         finish_flush(report, result)
@@ -177,63 +140,6 @@ impl CustodyLink {
                 Err(active.into())
             }
         }
-    }
-
-    /// Drain the current minute while it remains open, settling one batch at a time.
-    pub async fn flush_writes(&mut self) -> Result<FlushReport, CustodyLinkError> {
-        let mut report = FlushReport::default();
-        let result = self.flush_writes_into(&mut report).await;
-        finish_flush(report, result)
-    }
-
-    async fn flush_writes_into(
-        &mut self,
-        report: &mut FlushReport,
-    ) -> Result<(), CustodyLinkError> {
-        if self.owes_local_settlement() {
-            report.append(self.retry_local_settlement().await);
-        }
-        self.recover_orphans_into(report).await?;
-        let lane = self.lane.clone();
-        let clock = self.clock.clone();
-        while let Some(batch) = self.prepare_write_turn(report).await? {
-            let current_mark = self.schedule.draining_mark();
-            let mut answering = lane.submit_write_batch(batch.command());
-            let mut cutoff_result = Ok(());
-            let disposition = loop {
-                let (deadline, fault) = self.project_write_cutoff_wake().await;
-                if let Some(error) = fault {
-                    report.issues.push(BatchDispatchError::Work(error));
-                }
-                tokio::select! {
-                    biased;
-                    outcome = &mut answering => break outcome,
-                    () = async {
-                        if let Some(deadline) = deadline {
-                            clock.sleep_until(deadline).await;
-                        } else {
-                            std::future::pending::<()>().await;
-                        }
-                    } => {
-                        let ending = self.end_due_writes_into(report).await;
-                        cutoff_result = cutoff_result.and(ending);
-                    }
-                }
-            };
-            self.settle_write_turn(batch, disposition, report).await?;
-            cutoff_result?;
-            if !self.admitted_connection().is_some_and(|admitted| {
-                current_mark == self.schedule.draining_mark()
-                    && current_mark
-                        == mark_in_window(shared_time_at(
-                            admitted.clock_anchor,
-                            clock.monotonic_now(),
-                        ))
-            }) {
-                break;
-            }
-        }
-        Ok(())
     }
 
     pub(crate) async fn prepare_write_turn(

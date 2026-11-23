@@ -11,6 +11,7 @@ use super::{
     mark_drain::queue_posts,
     outbox_timing::{open_outbox, thread_post},
     worker_orphans::{flush_event, scoped_query, start_worker},
+    worker_turns::{ObservedWorker, WorkerClock},
 };
 
 #[tokio::test]
@@ -71,11 +72,20 @@ pub(super) async fn check_subsequent_claim_recovery(count: u16) {
 
     running.abort();
     assert!(running.await.unwrap_err().is_cancelled());
+    clock.advance(Duration::from_secs(3)).unwrap();
     peer.admitted
         .send_replace(Some(new_admission(owner.machine_id.clone(), clock.clone())));
-    let mut reopened =
-        custody_with_store(&db, peer.clone(), clock.clone(), owner.machine_id.clone()).await;
-    assert!(reopened.recover_outbox().await.unwrap().issues.is_empty());
+    let observed_clock = WorkerClock::observing(clock.clone());
+    let reopened = custody_with_store(
+        &db,
+        peer.clone(),
+        observed_clock.clone(),
+        owner.machine_id.clone(),
+    )
+    .await;
+    let mut worker = ObservedWorker::start(reopened, observed_clock.clone());
+    observed_clock.wait_after(0).await;
+    assert!(worker.take_reports().unwrap().issues.is_empty());
     let probes = peer.take_calls();
     let queried: Vec<_> = probes
         .iter()
@@ -97,8 +107,7 @@ pub(super) async fn check_subsequent_claim_recovery(count: u16) {
                 && matches!(pending.state, PendingWriteState::SentAnswerLost { .. }))
     );
 
-    clock.advance(Duration::from_secs(60)).unwrap();
-    let replayed = reopened.flush_writes().await.unwrap();
+    let replayed = worker.advance(Duration::from_secs(57)).await.unwrap();
     assert!(replayed.ended.is_empty() && replayed.issues.is_empty());
     assert_eq!(
         replayed
@@ -123,4 +132,5 @@ pub(super) async fn check_subsequent_claim_recovery(count: u16) {
             orphan_ids.iter().collect::<Vec<_>>(),
         );
     }
+    worker.stop().await;
 }

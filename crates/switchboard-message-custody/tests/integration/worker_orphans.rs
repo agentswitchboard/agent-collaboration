@@ -322,7 +322,7 @@ pub(super) async fn flush_event(
 #[tokio::test]
 async fn a_failed_startup_orphan_read_retries_offline_and_ends_at_the_original_deadline() {
     let campaign = FaultCampaign::start().await;
-    campaign.disconnect();
+    campaign.peer.admitted.send_replace(None);
     let item = thread_post(601);
     seed_orphan(&campaign, &item, START_MS - 895_000).await;
     campaign

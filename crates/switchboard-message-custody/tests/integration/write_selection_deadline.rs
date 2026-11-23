@@ -31,6 +31,8 @@ use super::{
         KnownRecipient, NoFlushJitter, ScriptedBatch, ScriptedBatchLane, new_admission,
     },
     outbox_timing::{manual_clock, thread_post},
+    worker_orphans::{flush_event, start_worker},
+    worker_turns::{ObservedWorker, WorkerClock},
 };
 
 const LAST_MARK_MS: i64 = 1_763_380_800_000;
@@ -97,10 +99,12 @@ async fn selection_fixture(
     CustodyLink,
     Arc<ElapsedSettlementLane>,
     MachineId,
+    Arc<WorkerClock>,
 ) {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("machine_local.sqlite");
     let clock = manual_clock(start_ms);
+    let observed = WorkerClock::observing(clock.clone());
     let machine: MachineId = "019f0000-0000-7000-8000-000000000011".parse().unwrap();
     let peer = ScriptedBatchLane::new(
         new_admission(machine.clone(), clock.clone()),
@@ -124,8 +128,14 @@ async fn selection_fixture(
         Arc::new(KnownRecipient),
         clock.clone(),
     );
-    let custody = CustodyLink::new(lane.clone(), clock, Arc::new(NoFlushJitter), outbox, inbox);
-    (root, custody, lane, machine)
+    let custody = CustodyLink::new(
+        lane.clone(),
+        observed.clone(),
+        Arc::new(NoFlushJitter),
+        outbox,
+        inbox,
+    );
+    (root, custody, lane, machine, observed)
 }
 
 async fn enqueue_post(custody: &mut CustodyLink, seed: u16) {
@@ -145,7 +155,7 @@ async fn enqueue_post(custody: &mut CustodyLink, seed: u16) {
 async fn the_available_mark_claims_and_sends_a_write_with_ten_seconds_left() {
     let until_mark = AGENT_WINDOW - Duration::from_secs(10);
     let start = LAST_MARK_MS - i64::try_from(until_mark.as_millis()).unwrap();
-    let (_root, mut custody, lane, machine) =
+    let (_root, mut custody, lane, machine, observed) =
         selection_fixture(start, Duration::ZERO, BTreeSet::new()).await;
     let item = thread_post(91);
     enqueue_post(&mut custody, 91).await;
@@ -154,7 +164,9 @@ async fn the_available_mark_claims_and_sends_a_write_with_ten_seconds_left() {
         .admitted
         .send_replace(Some(new_admission(machine, lane.clock.clone())));
 
-    let flush = custody.flush_writes().await.unwrap();
+    let mut worker = ObservedWorker::start(custody, observed.clone());
+    observed.wait_after(0).await;
+    let flush = worker.take_reports().unwrap();
     assert!(
         matches!(flush.answered.as_slice(), [answer] if answer.request == item.request),
         "a write with ten seconds left must be claimed and sent"
@@ -167,6 +179,7 @@ async fn the_available_mark_claims_and_sends_a_write_with_ten_seconds_left() {
         batch.send_before,
         ClockInstant::ZERO.after(until_mark + Duration::from_secs(3))
     );
+    worker.stop().await;
 }
 
 #[tokio::test]
@@ -174,7 +187,7 @@ async fn a_send_at_the_last_eligible_millisecond_ends_unconfirmed_at_its_deadlin
     let until_mark = AGENT_WINDOW - Duration::from_millis(1);
     let start = LAST_MARK_MS - i64::try_from(until_mark.as_millis()).unwrap();
     let item = thread_post(92);
-    let (_root, mut custody, lane, machine) = selection_fixture(
+    let (_root, mut custody, lane, machine, _observed) = selection_fixture(
         start,
         Duration::from_millis(1),
         [item.request.clone()].into(),
@@ -186,7 +199,8 @@ async fn a_send_at_the_last_eligible_millisecond_ends_unconfirmed_at_its_deadlin
         .admitted
         .send_replace(Some(new_admission(machine, lane.clock.clone())));
 
-    let flush = custody.flush_writes().await.unwrap();
+    let (_calls, stop, mut events, running) = start_worker(custody);
+    let flush = flush_event(&mut events, "the first frame's exact cutoff").await;
     let commands = lane.peer.batch_commands();
     assert_eq!(
         commands.len(),
@@ -202,13 +216,15 @@ async fn a_send_at_the_last_eligible_millisecond_ends_unconfirmed_at_its_deadlin
     assert!(
         matches!(flush.ended.as_slice(), [ending] if ending.request_id == item.request && ending.reason == OutboxCancellation::NotConfirmedWithin15Minutes)
     );
+    stop.send_replace(true);
+    running.await.unwrap();
 }
 
 #[tokio::test]
 async fn a_checked_answer_before_the_original_deadline_settles_the_write() {
     let until_mark = AGENT_WINDOW - Duration::from_millis(1);
     let start = LAST_MARK_MS - i64::try_from(until_mark.as_millis()).unwrap();
-    let (_root, mut custody, lane, machine) =
+    let (_root, mut custody, lane, machine, observed) =
         selection_fixture(start, Duration::from_secs(1), BTreeSet::new()).await;
     let item = thread_post(93);
     enqueue_post(&mut custody, 93).await;
@@ -217,17 +233,19 @@ async fn a_checked_answer_before_the_original_deadline_settles_the_write() {
         .admitted
         .send_replace(Some(new_admission(machine, lane.clock.clone())));
 
-    let flush = custody.flush_writes().await.unwrap();
+    let mut worker = ObservedWorker::start(custody, observed.clone());
+    observed.wait_after(0).await;
+    let flush = worker.take_reports().unwrap();
     assert!(matches!(flush.answered.as_slice(), [answer] if answer.request == item.request));
-    assert!(custody.next_write_deadline().await.unwrap().is_none());
-    lane.clock
-        .advance(
-            ClockInstant::ZERO
-                .after(AGENT_WINDOW)
-                .saturating_duration_since(lane.clock.monotonic_now()),
-        )
-        .unwrap();
-    assert!(custody.end_due_writes().await.unwrap().ended.is_empty());
+    assert!(
+        worker
+            .advance(Duration::from_secs(1))
+            .await
+            .unwrap()
+            .ended
+            .is_empty()
+    );
+    worker.stop().await;
 }
 
 #[tokio::test]
@@ -246,7 +264,7 @@ async fn an_untouched_result_ready_at_the_fence_uses_the_members_original_cutoff
     ] {
         let until_mark = AGENT_WINDOW - remaining;
         let start = LAST_MARK_MS - i64::try_from(until_mark.as_millis()).unwrap();
-        let (_root, mut custody, lane, machine) =
+        let (_root, mut custody, lane, machine, observed) =
             selection_fixture(start, closes_in, BTreeSet::new()).await;
         let item = thread_post(94);
         enqueue_post(&mut custody, 94).await;
@@ -257,7 +275,9 @@ async fn an_untouched_result_ready_at_the_fence_uses_the_members_original_cutoff
             .admitted
             .send_replace(Some(new_admission(machine, lane.clock.clone())));
 
-        let flush = custody.flush_writes().await.unwrap();
+        let mut worker = ObservedWorker::start(custody, observed.clone());
+        observed.wait_after(0).await;
+        let flush = worker.take_reports().unwrap();
         assert!(flush.answered.is_empty() && flush.issues.is_empty());
         let endings = if remaining == closes_in {
             flush.ended
@@ -266,13 +286,20 @@ async fn an_untouched_result_ready_at_the_fence_uses_the_members_original_cutoff
                 flush.ended.is_empty(),
                 "the mark close cannot end a still-eligible write"
             );
-            lane.clock.advance(remaining - closes_in).unwrap();
-            custody.end_due_writes().await.unwrap().ended
+            worker.advance(remaining - closes_in).await.unwrap().ended
         };
         assert!(
             matches!(endings.as_slice(), [ended] if ended.request_id == item.request && ended.reason == expected),
             "the driver-held original deadline and earlier mark close must have different endings: {endings:?}"
         );
-        assert!(custody.end_due_writes().await.unwrap().ended.is_empty());
+        assert!(
+            worker
+                .advance(Duration::from_secs(1))
+                .await
+                .unwrap()
+                .ended
+                .is_empty()
+        );
+        worker.stop().await;
     }
 }

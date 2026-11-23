@@ -9,7 +9,8 @@ use super::{
         check_waiting_read_fault,
     },
     write_cutoff_faults::{
-        check_active_cutoff_fault, check_hidden_member_cutoff, check_public_waiting_cutoff,
+        check_active_cutoff_fault, check_cutoff_during_orphan_probe, check_hidden_member_cutoff,
+        check_worker_waiting_cutoff,
     },
 };
 
@@ -19,7 +20,8 @@ enum MarkHistory {
     UntouchedLaneRefusal(u16),
     ResidualReadFault(u16),
     AdmissionAfterRebase(u16),
-    WaitingCutoffDuringPublicDrain(u32),
+    WaitingCutoffDuringHeldFrame(u32),
+    OrphanProbeCrossesWaitingCutoff(u32),
     ClaimCompletesAtClosedMark(u64),
     RestartWithSecondFrameHeld(u16),
 }
@@ -42,7 +44,10 @@ fn generated_mark_histories_preserve_cutoffs_receipts_and_request_identity(case:
         MarkHistory::AdmissionAfterRebase(
             case.draw(generators::integers().min_value(65).max_value(69)),
         ),
-        MarkHistory::WaitingCutoffDuringPublicDrain(
+        MarkHistory::WaitingCutoffDuringHeldFrame(
+            case.draw(generators::integers().min_value(1).max_value(1_000)),
+        ),
+        MarkHistory::OrphanProbeCrossesWaitingCutoff(
             case.draw(generators::integers().min_value(1).max_value(1_000)),
         ),
         MarkHistory::ClaimCompletesAtClosedMark(
@@ -76,8 +81,11 @@ fn generated_mark_histories_preserve_cutoffs_receipts_and_request_identity(case:
                     MarkHistory::AdmissionAfterRebase(count) => {
                         check_rebased_admission(count).await
                     }
-                    MarkHistory::WaitingCutoffDuringPublicDrain(gap) => {
-                        check_public_waiting_cutoff(gap).await
+                    MarkHistory::WaitingCutoffDuringHeldFrame(gap) => {
+                        check_worker_waiting_cutoff(gap).await
+                    }
+                    MarkHistory::OrphanProbeCrossesWaitingCutoff(gap) => {
+                        check_cutoff_during_orphan_probe(gap).await
                     }
                     MarkHistory::ClaimCompletesAtClosedMark(gap) => check_closed_claim(gap).await,
                     MarkHistory::RestartWithSecondFrameHeld(count) => {
