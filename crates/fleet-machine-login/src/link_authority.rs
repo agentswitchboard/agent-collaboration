@@ -214,6 +214,36 @@ where
     Ok((applying_time, cause))
 }
 
+/// Restores a fixture attachment against real enrollment rows on its lending store.
+#[cfg(feature = "test-support")]
+pub async fn restore_fixture_link<T: fleet_lent_transaction::CentralTransaction>(
+    tx: &mut T,
+    attachment: &MachineConnectionAttachment,
+    organization: &OrganizationId,
+    now_ms: i64,
+) -> LiveAdmission
+where
+    <T::Database as sqlx_core::database::Database>::Arguments:
+        sqlx_core::arguments::IntoArguments<T::Database>,
+    String: sqlx_core::types::Type<T::Database>
+        + for<'q> sqlx_core::encode::Encode<'q, T::Database>
+        + for<'r> sqlx_core::decode::Decode<'r, T::Database>,
+    Option<String>:
+        sqlx_core::types::Type<T::Database> + for<'r> sqlx_core::decode::Decode<'r, T::Database>,
+    i64: sqlx_core::types::Type<T::Database> + for<'r> sqlx_core::decode::Decode<'r, T::Database>,
+    for<'r> &'r str:
+        sqlx_core::column::ColumnIndex<<T::Database as sqlx_core::database::Database>::Row>,
+{
+    validate_shape(attachment)?;
+    let authority = crate::enrollment_reads::read_lent_authority(
+        tx,
+        attachment.machine_id(),
+        attachment.enrollment_id(),
+    )
+    .await?;
+    classify_link(attachment, organization, &authority, now_ms)
+}
+
 #[cfg(test)]
 #[path = "link_authority_test.rs"]
 mod tests;

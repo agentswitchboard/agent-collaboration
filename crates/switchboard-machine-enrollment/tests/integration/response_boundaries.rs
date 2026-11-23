@@ -201,3 +201,85 @@ async fn a_delayed_start_clamps_the_first_wait_before_any_poll() {
     assert!(store.current().is_none());
     script.assert_exhausted();
 }
+
+#[tokio::test]
+async fn discovery_reads_each_reply_regardless_of_response_headers() {
+    use axum::http::header::{CACHE_CONTROL, HeaderValue};
+
+    let values = [
+        ("019a0000-0000-7000-8000-000000000001", None),
+        ("019a0000-0000-7000-8000-000000000002", Some("max-age=600")),
+        ("019a0000-0000-7000-8000-000000000003", Some("no-store")),
+        ("019a0000-0000-7000-8000-000000000004", Some("no-store")),
+    ];
+    let replies = values.iter().map(|(id, cache_control)| {
+        let mut headers = axum::http::HeaderMap::new();
+        if let Some(value) = cache_control {
+            headers.insert(CACHE_CONTROL, HeaderValue::from_static(value));
+            headers.insert("x-extra-contract-test", HeaderValue::from_static("ignored"));
+        }
+        Reply::new(
+            StatusCode::OK,
+            serde_json::json!({
+                "client_id": id,
+                "link_url": "https://central.example/{organization_id}/link",
+            })
+            .to_string(),
+        )
+        .with_headers(headers)
+    });
+    let mut script = SignInScript::token_responses(replies).await;
+    for (id, _) in values {
+        let result = script
+            .client
+            .discover()
+            .await
+            .expect("headers do not determine discovery validity");
+        assert_eq!(result.client_id.to_string(), id);
+        script
+            .observations
+            .try_recv()
+            .expect("each discovery hit the server")
+            .assert_discovery();
+    }
+    script.assert_exhausted();
+}
+
+#[tokio::test]
+async fn poll_retry_after_is_optional_and_malformed_values_fall_back_to_cadence() {
+    let unavailable = || Reply::failure(StatusCode::SERVICE_UNAVAILABLE, "temporarily_unavailable");
+    let mut script = SignInScript::start(
+        90,
+        [
+            unavailable(),
+            unavailable().after("not-a-date"),
+            Reply::new(StatusCode::TOO_MANY_REQUESTS, String::new()),
+            Reply::rate_limit("also-invalid"),
+            unavailable().after("3"),
+            Reply::rate_limit("2"),
+            token_reply(INITIAL_ACCESS, INITIAL_REFRESH),
+        ],
+    )
+    .await;
+    let store = ScriptStore::default();
+    let enrollment = script.spawn_attempt({
+        let client = script.client.clone();
+        let store = store.clone();
+        async move {
+            client
+                .enroll(enrollment_request(&machine_id()), &store, |_| Ok(()))
+                .await
+        }
+    });
+    script.next_request().await.assert_discovery();
+    script.next_request().await.assert_start();
+    for (advance, due) in [(5, 5), (5, 10), (5, 15), (5, 20), (5, 25), (3, 28), (2, 30)] {
+        script.wait_for_poll(advance, due).await;
+        let request = script.next_request().await;
+        request.assert_at(due);
+        request.assert_poll();
+    }
+    let result = script.finish_before_more_polling(enrollment).await;
+    assert!(matches!(result, Some(Ok(_))));
+    script.assert_exhausted();
+}

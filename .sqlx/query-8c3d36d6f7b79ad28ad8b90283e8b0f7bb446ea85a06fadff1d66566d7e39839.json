@@ -1,0 +1,118 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT CAST(request_id AS BLOB) AS \"request_id!: Vec<u8>\",\n                  CAST(caller_json AS BLOB) AS \"caller_json!: Vec<u8>\",\n                  CAST(payload_json AS BLOB) AS \"payload_json!: Vec<u8>\",\n                  CAST(item_state AS BLOB) AS \"item_state!: Vec<u8>\", flush_at_ms,\n                  CAST(outcome_json AS BLOB) AS \"outcome_json?: Vec<u8>\",\n                  CAST(created_at AS INTEGER) AS \"created_at!: i64\",\n                  expires_at_ms, updated_at, rowid AS \"row_id!: i64\",\n                  (typeof(request_id) = 'text') AS \"key_is_text!: bool\",\n                  CASE\n                    WHEN typeof(created_at) <> 'integer' THEN 1\n                    WHEN typeof(updated_at) <> 'integer' THEN 2\n                    WHEN typeof(flush_at_ms) <> 'integer' THEN 3\n                    WHEN typeof(expires_at_ms) <> 'integer' THEN 4\n                    ELSE 0 END AS \"integer_fault!: i64\"\n           FROM outbox_items WHERE caller_json = ? AND item_state IN (?, ?)\n               ORDER BY updated_at DESC, request_id DESC LIMIT ?",
+  "describe": {
+    "columns": [
+      {
+        "name": "request_id!: Vec<u8>",
+        "ordinal": 0,
+        "type_info": "Blob",
+        "origin": "Expression"
+      },
+      {
+        "name": "caller_json!: Vec<u8>",
+        "ordinal": 1,
+        "type_info": "Blob",
+        "origin": "Expression"
+      },
+      {
+        "name": "payload_json!: Vec<u8>",
+        "ordinal": 2,
+        "type_info": "Blob",
+        "origin": "Expression"
+      },
+      {
+        "name": "item_state!: Vec<u8>",
+        "ordinal": 3,
+        "type_info": "Blob",
+        "origin": "Expression"
+      },
+      {
+        "name": "flush_at_ms",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "outbox_items",
+            "name": "flush_at_ms"
+          }
+        }
+      },
+      {
+        "name": "outcome_json?: Vec<u8>",
+        "ordinal": 5,
+        "type_info": "Blob",
+        "origin": "Expression"
+      },
+      {
+        "name": "created_at!: i64",
+        "ordinal": 6,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "expires_at_ms",
+        "ordinal": 7,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "outbox_items",
+            "name": "expires_at_ms"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "outbox_items",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "name": "row_id!: i64",
+        "ordinal": 9,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "outbox_items",
+            "name": "rowid"
+          }
+        }
+      },
+      {
+        "name": "key_is_text!: bool",
+        "ordinal": 10,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "integer_fault!: i64",
+        "ordinal": 11,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 4
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false
+    ]
+  },
+  "hash": "8c3d36d6f7b79ad28ad8b90283e8b0f7bb446ea85a06fadff1d66566d7e39839"
+}

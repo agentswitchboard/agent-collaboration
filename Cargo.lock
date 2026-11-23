@@ -1445,16 +1445,20 @@ version = "0.1.158"
 dependencies = [
  "axum",
  "base64 0.22.1",
+ "central-engine-model",
  "central-link-client",
  "central-link-protocol",
  "central-storage",
  "chrono",
  "collaboration-central-conformance",
  "collaboration-central-core",
+ "fleet-actor-identity",
+ "fleet-approvals",
  "fleet-contracts",
  "fleet-engine",
  "fleet-identity-protocol",
  "fleet-lent-transaction",
+ "fleet-machine-login",
  "fleet-mail",
  "fleet-rpc",
  "fleet-runtime",
@@ -2463,12 +2467,45 @@ dependencies = [
 ]
 
 [[package]]
+name = "fleet-actor-identity"
+version = "0.1.158"
+dependencies = [
+ "base64 0.22.1",
+ "central-engine-model",
+ "central-storage",
+ "chrono",
+ "fleet-approvals",
+ "fleet-contracts",
+ "fleet-identity-protocol",
+ "fleet-lent-transaction",
+ "fleet-machine-login",
+ "fleet-runtime-ports",
+ "fleet-storage-schema",
+ "fleet-store-sqlx",
+ "futures-util",
+ "hegeltest",
+ "serde",
+ "sha2 0.10.9",
+ "sqlx",
+ "sqlx-core",
+ "subtle",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+ "workspace-ids",
+ "zeroize",
+]
+
+[[package]]
 name = "fleet-approvals"
 version = "0.1.158"
 dependencies = [
  "approval-request-protocol",
  "central-engine-model",
+ "central-storage",
  "fleet-identity-protocol",
+ "fleet-lent-transaction",
  "hegeltest",
  "serde",
  "serde_json",
@@ -5796,6 +5833,26 @@ dependencies = [
  "switchboard-harness-contracts",
  "tokio",
  "tokio-util",
+]
+
+[[package]]
+name = "switchboard-machine-core-store"
+version = "0.1.158"
+dependencies = [
+ "chrono",
+ "hegeltest",
+ "router-clock",
+ "schemars 1.2.2",
+ "serde",
+ "serde_json",
+ "sqlite-storage-maintenance",
+ "sqlx",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "uuid",
+ "workspace-ids",
+ "workspace-model",
 ]
 
 [[package]]
