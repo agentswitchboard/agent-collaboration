@@ -44,7 +44,22 @@ impl SignInClient {
             deployment: self.deployment().clone(),
             machine_id: request.machine_id.clone(),
         };
-        if matches!(&before, StoredEnrollment::Active(binding) if binding.context != context) {
+        let stored_scope = match &before {
+            StoredEnrollment::Empty => None,
+            StoredEnrollment::Active(binding) => {
+                Some((binding.context.organization_id, &binding.context.deployment))
+            }
+            StoredEnrollment::Ended {
+                key, deployment, ..
+            } => Some((key.organization_id, deployment)),
+        };
+        if stored_scope.is_some_and(|(organization, deployment)| {
+            organization != context.organization_id || deployment != &context.deployment
+        }) {
+            return Err(CredentialStoreError::EnrollmentScopeMismatch.into());
+        }
+        if matches!(&before, StoredEnrollment::Active(binding) if binding.context.machine_id != context.machine_id)
+        {
             return Err(EnrollmentFailure::ReplacementConflict);
         }
         if before.generation().binding_successor().is_none() {

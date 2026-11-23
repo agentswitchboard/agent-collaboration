@@ -149,6 +149,7 @@ async fn adapter_checks_generation_and_phase_and_updates_only_the_enrollment_and
             generation: generation(2),
             why: EnrollmentEnd::EndedByCentral,
             key: binding.key(),
+            deployment: binding.context.deployment.clone(),
         })
     );
     let ended = row_columns(&mut connection).await;
@@ -192,6 +193,7 @@ async fn typed_corruption_is_preserved_while_unreadable_active_bytes_can_be_ende
             generation: generation(2),
             why: EnrollmentEnd::Revoked,
             key: binding.key(),
+            deployment: binding.context.deployment.clone(),
         })
     );
     fixture.keychain.unavailable.store(false, SeqCst);
@@ -322,6 +324,7 @@ async fn active_read_keeps_its_snapshot_while_another_worker_changes_the_row() {
                 generation: generation(2),
                 why: EnrollmentEnd::Inactive,
                 key: first.key(),
+                deployment: first.context.deployment.clone(),
             }
         } else {
             assert_eq!(
@@ -410,6 +413,7 @@ async fn issued_commit_errors_probe_once_without_manufacturing_applied() {
             generation: generation(2),
             why: EnrollmentEnd::EndedByCentral,
             key: binding.key(),
+            deployment: binding.context.deployment.clone(),
         })
     );
 }
@@ -500,6 +504,7 @@ async fn every_ending_reason_round_trips_through_the_adapter() {
                 generation: generation(before + 2),
                 key: active.key(),
                 why,
+                deployment: active.context.deployment.clone(),
             })
         );
     }
@@ -807,6 +812,7 @@ async fn retirement_uses_valid_metadata_even_when_the_sealed_column_is_unusable(
                 key,
                 why: EnrollmentEnd::Revoked,
                 generation: generation(before + 2),
+                deployment: binding.context.deployment.clone(),
             })
         );
     }

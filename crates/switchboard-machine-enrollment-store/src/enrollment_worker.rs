@@ -171,11 +171,12 @@ impl EnrollmentWorker {
                 generation,
                 why,
                 key,
-                deployment: _,
+                deployment,
             } => StoredEnrollment::Ended {
                 generation,
                 why,
                 key,
+                deployment,
             },
             EnrollmentSnapshot::Active {
                 key,
