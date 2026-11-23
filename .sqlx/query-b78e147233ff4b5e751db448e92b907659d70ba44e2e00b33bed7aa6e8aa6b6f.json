@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE actor_sessions SET session_state=?, settled_cause=?, settled_at=?, updated_at=?\nWHERE actor_id=? AND session_state=?\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "b78e147233ff4b5e751db448e92b907659d70ba44e2e00b33bed7aa6e8aa6b6f"
+}

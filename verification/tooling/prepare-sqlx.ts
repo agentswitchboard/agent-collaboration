@@ -32,6 +32,11 @@ export const sqlitePreparationTargets: readonly SqlitePreparationTarget[] = [
     databaseFilename: "provider-operation-schema.sqlite",
   },
   {
+    packageName: "switchboard-machine-core-store",
+    migrationSources: ["crates/switchboard-machine-core-store/migrations"],
+    databaseFilename: "machine-core-schema.sqlite",
+  },
+  {
     packageName: "ui-preference-store",
     migrationSources: ["crates/ui-preference-store/migrations"],
     databaseFilename: "ui-preferences-schema.sqlite",
@@ -93,6 +98,11 @@ export const sqlitePreparationTargets: readonly SqlitePreparationTarget[] = [
     packageName: "fleet-signin",
     migrationSources: [centralMigrationSource],
     databaseFilename: "fleet-central-signin.sqlite",
+  },
+  {
+    packageName: "fleet-actor-identity",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-actor-identity-central-schema.sqlite",
   },
   {
     packageName: "fleet-machine-login",
