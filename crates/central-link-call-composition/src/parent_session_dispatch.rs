@@ -34,11 +34,11 @@ use sqlx_core::{
 use workspace_ids::CentralSessionId;
 
 use crate::{
-    ApprovalAlarmPublication, ApprovalDeliveryTransport, ApprovalTransactionFuture,
-    OrganizationApprovalTransactions,
+    ApprovalAlarmPublication, ApprovalTransactionFuture, OrganizationApprovalTransactions,
+    approval_delivery::ApprovalDelivery,
     approval_dispatch::{
-        ApprovalApplyingClock, ApprovalApplyingIds, ApprovalDispatchFailure,
-        ApprovalLinkApplication, ApprovalStore, report_approval_failure,
+        ApprovalApplyingClock, ApprovalApplyingIds, ApprovalDispatchFailure, ApprovalStore,
+        report_approval_failure,
     },
     approval_transaction::commit_approval,
 };
@@ -113,7 +113,11 @@ impl ParentPendingReply {
     }
 }
 
-impl<Transactions, Db> ApprovalLinkApplication<Transactions>
+pub(crate) async fn dispatch_parent_approval<Transactions, Db>(
+    delivery: &ApprovalDelivery<Transactions>,
+    machine: &ValidatedMachineConnection,
+    call: ParentApprovalCall,
+) -> Result<CentralCallWork, StoreFailure>
 where
     Transactions: OrganizationApprovalTransactions,
     for<'connection> Transactions::Transaction<'connection>: CentralTransaction<Database = Db>,
@@ -125,64 +129,53 @@ where
     i64: Type<Db> + for<'query> Encode<'query, Db> + for<'row> Decode<'row, Db>,
     for<'row> &'row str: ColumnIndex<Db::Row>,
 {
-    pub(crate) async fn dispatch_parent(
-        &self,
-        machine: &ValidatedMachineConnection,
-        call: ParentApprovalCall,
-        transport: Arc<dyn ApprovalDeliveryTransport>,
-    ) -> Result<CentralCallWork, StoreFailure> {
-        let organization = machine.organization_id();
-        if &call.target.organization_id != organization {
-            return Ok(TypedCallResult::Refused {
-                reason: LinkCallRefusal::WrongTarget,
-            }
-            .into());
+    let organization = machine.organization_id();
+    if &call.target.organization_id != organization {
+        return Ok(TypedCallResult::Refused {
+            reason: LinkCallRefusal::WrongTarget,
         }
-        let machine = machine.clone();
-        let clock = self.clock.clone();
-        let ids = self.ids.clone();
-        let target = call.target.clone();
-        match commit_approval(
-            self.transactions.clone(),
-            organization.clone(),
-            ApprovalAlarmPublication::WithCommit,
-            move |loan, scope| apply_parent(loan, scope, machine, call, clock, ids),
-        )
-        .await
-        {
-            Ok((_, ParentPendingApply::Refused(reason))) => {
-                Ok(TypedCallResult::Refused { reason }.into())
-            }
-            Ok((_, ParentPendingApply::PersonRequired)) => Ok(TypedCallResult::Answered {
-                reply: DecideApprovalAsSessionRpc::reply(Envelope {
-                    target,
-                    body: DecideApprovalAsSessionReply::PersonRequired {},
-                }),
-            }
-            .into()),
-            Ok((
-                proof,
-                ParentPendingApply::Answer {
-                    address,
-                    reply,
-                    effects,
-                },
-            )) => {
-                let reply = reply.release(&proof, &address, target)?;
-                let offers = effects
-                    .release(&proof)
-                    .map_err(|_| StoreFailure::AnswerLost)?;
-                let delivery = crate::approval_delivery::ApprovalDelivery {
-                    application: self.clone(),
-                    transport,
-                };
-                Ok(CentralCallWork {
-                    result: TypedCallResult::Answered { reply },
-                    completion: delivery.after_reply(offers, None),
-                })
-            }
-            Err(failure) => report_approval_failure(ApprovalDispatchFailure::Transaction(failure)),
+        .into());
+    }
+    let machine = machine.clone();
+    let clock = delivery.application.clock.clone();
+    let ids = delivery.application.ids.clone();
+    let target = call.target.clone();
+    match commit_approval(
+        delivery.application.transactions.clone(),
+        organization.clone(),
+        ApprovalAlarmPublication::WithCommit,
+        move |loan, scope| apply_parent(loan, scope, machine, call, clock, ids),
+    )
+    .await
+    {
+        Ok((_, ParentPendingApply::Refused(reason))) => {
+            Ok(TypedCallResult::Refused { reason }.into())
         }
+        Ok((_, ParentPendingApply::PersonRequired)) => Ok(TypedCallResult::Answered {
+            reply: DecideApprovalAsSessionRpc::reply(Envelope {
+                target,
+                body: DecideApprovalAsSessionReply::PersonRequired {},
+            }),
+        }
+        .into()),
+        Ok((
+            proof,
+            ParentPendingApply::Answer {
+                address,
+                reply,
+                effects,
+            },
+        )) => {
+            let reply = reply.release(&proof, &address, target)?;
+            let offers = effects
+                .release(&proof)
+                .map_err(|_| StoreFailure::AnswerLost)?;
+            Ok(CentralCallWork {
+                result: TypedCallResult::Answered { reply },
+                completion: delivery.after_reply(offers, None),
+            })
+        }
+        Err(failure) => report_approval_failure(ApprovalDispatchFailure::Transaction(failure)),
     }
 }
 
