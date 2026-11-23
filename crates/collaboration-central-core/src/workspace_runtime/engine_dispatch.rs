@@ -55,7 +55,10 @@ impl<H: CentralStore, S: WorkspaceStores> TimedDueDispatch<WorkspaceRuntime<H, S
     fn timed_source_schedule(&self, kind: DueKind) -> TimedSourceSchedule {
         TimedSourceSchedule {
             machine_kind: kind.kind(),
-            due_cutoff_policy: if matches!(kind, DueKind::SystemMessageExpiry) {
+            due_cutoff_policy: if matches!(
+                kind,
+                DueKind::DirectMessage | DueKind::SystemMessageExpiry
+            ) {
                 DueCutoff::BatchStart
             } else {
                 DueCutoff::LookAheadHorizon

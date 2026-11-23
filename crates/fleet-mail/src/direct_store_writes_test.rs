@@ -31,7 +31,6 @@ fn the_executed_direct_write_files_fit_the_owning_central_schema()
             sender_session: None,
             sender_request_id: request.clone(),
             recipient: target.clone(),
-            cutoff: now,
             mark: now,
         },
         lifecycle: DirectLifecycle::Queued,

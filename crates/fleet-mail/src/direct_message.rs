@@ -15,7 +15,6 @@ pub(crate) struct DirectMessageSubject {
     pub(crate) sender_session: Option<SessionRef>,
     pub(crate) sender_request_id: RequestId,
     pub(crate) recipient: MachineId,
-    pub(crate) cutoff: Timestamp,
     pub(crate) mark: EngineTime,
 }
 
@@ -241,7 +240,7 @@ impl Machine for DirectMessage {
                 (lifecycle, state.deadline_settled_at, outcome)
             }
             DirectMessageEvent::Due { occurrence } => {
-                if Self::next_due(state) != Some(occurrence) || context.now < state.subject.cutoff {
+                if Self::next_due(state) != Some(occurrence) || context.now < occurrence {
                     return Err(TransitionError::Stale);
                 }
                 let outcome = state
@@ -288,6 +287,35 @@ impl Machine for DirectMessage {
             (DirectLifecycle::Queued | DirectLifecycle::Delivered { .. }, Some(_))
             | (DirectLifecycle::Final { .. }, None | Some(_)) => None,
         }
+    }
+}
+
+/// On a receipt at or after the mark, decide the deadline outcome using
+/// the evidence already stored. A capped batch may not have visited it yet.
+pub(super) fn apply_message_event(
+    prior: &DirectReducerState,
+    event: DirectMessageEvent,
+    context: &mut Context<'_>,
+) -> Result<(DirectReducerState, Vec<DirectMessageEffect>), TransitionError<DirectMessageRefusal>> {
+    let Some(occurrence) = DirectMessage::next_due(prior).filter(|mark| *mark <= context.now)
+    else {
+        return DirectMessage::transition(prior, event, context);
+    };
+    if !matches!(event, DirectMessageEvent::Receipt(_)) {
+        return DirectMessage::transition(prior, event, context);
+    }
+    let (settled, effects) =
+        DirectMessage::transition(prior, DirectMessageEvent::Due { occurrence }, context)?;
+    match DirectMessage::transition(&settled, event, context) {
+        Ok((updated, later_effects)) => {
+            let mut committed_effects = effects;
+            committed_effects.extend(later_effects);
+            Ok((updated, committed_effects))
+        }
+        Err(TransitionError::Domain(DirectMessageRefusal::AlreadyRecorded)) => {
+            Ok((settled, effects))
+        }
+        Err(other) => Err(other),
     }
 }
 

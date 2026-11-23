@@ -45,6 +45,50 @@ fn enum_value<T: serde::de::DeserializeOwned>(value: &str, field: &str) -> Resul
     serde_json::from_value(serde_json::Value::String(value.to_owned())).map_err(|_| corrupt(field))
 }
 
+pub(super) struct DirectDeadlineEvidence {
+    pub(super) cutoff: Timestamp,
+    pub(super) mark: Timestamp,
+    pub(super) settled_at: Option<Timestamp>,
+}
+
+pub(super) fn decode_direct_deadline(
+    created_at: Timestamp,
+    stored_cutoff: Option<&str>,
+    stored_mark: Option<&str>,
+    stored_settlement: Option<&str>,
+) -> Result<DirectDeadlineEvidence, StoreFailure> {
+    let cutoff_column = "mail_messages.delivery_window_ends_at";
+    let mark_column = "mail_messages.cancel_due_at";
+    let cutoff: Timestamp = required(stored_cutoff, cutoff_column)?;
+    if cutoff < created_at || stored_cutoff != Some(format_utc_millis(cutoff).as_str()) {
+        return Err(corrupt(cutoff_column));
+    }
+    let mark: Timestamp = required(stored_mark, mark_column)?;
+    if crate::message_deadline::direct_deadline_occurrence(cutoff) != Some(mark)
+        || stored_mark != Some(format_utc_millis(mark).as_str())
+    {
+        return Err(corrupt(mark_column));
+    }
+    let settled_at = stored_settlement
+        .map(|stored_time| {
+            let column = "mail_messages.deadline_settled_at";
+            let settled_at: Timestamp = parse(stored_time, column)?;
+            if settled_at < mark
+                || !central_engine_model::supported_time(settled_at)
+                || format_utc_millis(settled_at) != stored_time
+            {
+                return Err(corrupt(column));
+            }
+            Ok(settled_at)
+        })
+        .transpose()?;
+    Ok(DirectDeadlineEvidence {
+        cutoff,
+        mark,
+        settled_at,
+    })
+}
+
 impl StoredDirectState {
     pub(crate) fn decode_direct_message(&self) -> Result<DirectMessageRow, StoreFailure> {
         if self.message_kind != "direct" {
@@ -57,34 +101,12 @@ impl StoredDirectState {
         };
         let created_at: Timestamp = parse(&self.created_at, "mail_messages.created_at")?;
         let _: Timestamp = parse(&self.updated_at, "mail_messages.updated_at")?;
-        let cutoff: Timestamp = required(
+        let deadline = decode_direct_deadline(
+            created_at,
             self.delivery_window_ends_at.as_deref(),
-            "mail_messages.delivery_window_ends_at",
+            self.cancel_due_at.as_deref(),
+            self.deadline_settled_at.as_deref(),
         )?;
-        let mark: Timestamp =
-            required(self.cancel_due_at.as_deref(), "mail_messages.cancel_due_at")?;
-        if cutoff < created_at
-            || mark < cutoff
-            || !central_engine_model::supported_time(mark)
-            || !central_engine_model::on_five_minute_grid(mark)
-        {
-            return Err(corrupt("mail_messages.cancel_due_at"));
-        }
-        let deadline_settled_at = self
-            .deadline_settled_at
-            .as_deref()
-            .map(|stored_time| {
-                let column = "mail_messages.deadline_settled_at";
-                let settled_at: Timestamp = parse(stored_time, column)?;
-                if settled_at < cutoff
-                    || !central_engine_model::supported_time(settled_at)
-                    || format_utc_millis(settled_at) != stored_time
-                {
-                    return Err(corrupt(column));
-                }
-                Ok(settled_at)
-            })
-            .transpose()?;
         Ok(DirectMessageRow {
             id: parse(&self.message_id, "mail_messages.message_id")?,
             sender,
@@ -93,10 +115,10 @@ impl StoredDirectState {
                 "mail_messages.sender_request_id",
             )?,
             recipient: parse(&self.target_machine_id, "mail_messages.target_machine_id")?,
-            cutoff,
-            mark,
+            cutoff: deadline.cutoff,
+            mark: deadline.mark,
             lifecycle: self.decode_lifecycle()?,
-            deadline_settled_at,
+            deadline_settled_at: deadline.settled_at,
         })
     }
 

@@ -27,7 +27,8 @@ async fn settlement_journey(fixture: &Fixture) -> Result<()> {
     let accepted_at = Timestamp::from_timestamp(signed::NOW_SECONDS, 0).ok_or("fixture UTC")?;
     // This fixture starts 200 seconds before a grid mark, within one admitted link lease.
     let deadline = accepted_at + chrono::Duration::seconds(200);
-    let sent_at = deadline - chrono::Duration::minutes(15);
+    let cutoff = deadline - chrono::Duration::seconds(45);
+    let sent_at = cutoff - chrono::Duration::minutes(15);
     let mut socket = ConnectedLink::open(fixture).await?;
     let mut message_ids = Vec::new();
     for request_number in 200..203 {
@@ -50,7 +51,7 @@ async fn settlement_journey(fixture: &Fixture) -> Result<()> {
         let frame = receive(&mut socket.socket).await?;
         assert!(
             matches!(frame, LinkFrame::Data(DataFrame::Deliver { message, time_left: Some(time_left), .. })
-            if message.message_id() == message_id && u32::from(time_left) == 200_000)
+            if message.message_id() == message_id && u32::from(time_left) == 155_000)
         );
         message_ids.push(message_id.clone());
     }
@@ -82,6 +83,22 @@ async fn settlement_journey(fixture: &Fixture) -> Result<()> {
         211,
     )
     .await?;
+    assert_eq!(
+        store.read(read_evidence(seen)).await?.rows,
+        [[text("seen"), SqlValue::Null]]
+    );
+
+    set_clock(fixture, deadline - chrono::Duration::seconds(40)).await?;
+    let cadence = serde_json::from_value(json!({
+        "requestId":"019f0000-0000-7000-8000-000000000215",
+        "operation":{"kind":"setNoticeCadence","cadence":"m15"},
+    }))?;
+    let (_, replies) = socket.batch(vec![RequestPayload::Mail(cadence)]).await?;
+    assert!(
+        matches!(replies.as_slice(), [DataFrame::Reply { result, .. }]
+        if matches!(result.as_ref(), ReplyPayload::Mail(CentralMailResult::Done(CentralMailAnswer::NoticeCadenceSet { .. }))))
+    );
+    assert!(store.read(read_sender_outcomes()).await?.rows.is_empty());
     record_receipt(
         &mut socket.socket,
         delivered,
@@ -91,15 +108,8 @@ async fn settlement_journey(fixture: &Fixture) -> Result<()> {
         212,
     )
     .await?;
-    assert_eq!(
-        store.read(read_evidence(seen)).await?.rows,
-        [[text("seen"), SqlValue::Null]]
-    );
-    drop(socket);
-
-    set_clock(fixture, deadline - chrono::Duration::seconds(40)).await?;
-    central.after_event().await?;
     assert!(store.read(read_sender_outcomes()).await?.rows.is_empty());
+    drop(socket);
     set_clock(fixture, deadline).await?;
     central.after_event().await?;
     let first_outcomes = store.read(read_sender_outcomes()).await?;
@@ -130,7 +140,7 @@ async fn settlement_journey(fixture: &Fixture) -> Result<()> {
     drop(sender_socket);
 
     // The next reconnect observes the same outcome rows with corrected clock time.
-    set_clock(fixture, deadline - chrono::Duration::seconds(1)).await?;
+    set_clock(fixture, cutoff - chrono::Duration::seconds(1)).await?;
     let mut reopened = ConnectedLink::open(fixture).await?;
     assert_sender_outcomes(&mut reopened.socket, delivered, unreceived, accepted_at).await?;
 
@@ -291,4 +301,54 @@ async fn receive(socket: &mut WebSocket) -> Result<LinkFrame> {
         &encoded,
         FrameDirection::ToRouter,
     )?)
+}
+
+#[tokio::test]
+async fn fractional_wire_cutoff_just_after_the_grid_waits_for_the_next_mark() -> Result<()> {
+    let fixture = Fixture::new().await?;
+    let result = fractional_cutoff_journey(&fixture).await;
+    fixture.close().await?;
+    result
+}
+
+async fn fractional_cutoff_journey(fixture: &Fixture) -> Result<()> {
+    let accepted = Timestamp::from_timestamp(signed::NOW_SECONDS, 0).ok_or("fixture UTC")?;
+    let grid = accepted + chrono::Duration::seconds(200);
+    let sent_at = grid - chrono::Duration::minutes(15) + chrono::Duration::microseconds(500);
+    let Caller::Session(session) = fixture::session_caller()? else {
+        return Err("fixture session absent".into());
+    };
+    let mut socket = ConnectedLink::open(fixture).await?;
+    let operation = json!({
+        "kind":"sendMessage", "to":session, "body":"fractional timestamp witness",
+        "delivery":"queue", "replyTo":null, "sentAt":sent_at,
+    });
+    let request = serde_json::from_value(json!({
+        "requestId":"019f0000-0000-7000-8000-000000000219","operation":operation,
+    }))?;
+    let (_, replies) = socket.batch(vec![RequestPayload::Mail(request)]).await?;
+    let [DataFrame::Reply { result, .. }] = replies.as_slice() else {
+        return Err("missing send reply".into());
+    };
+    let ReplyPayload::Mail(CentralMailResult::Done(CentralMailAnswer::Queued { message_id })) =
+        result.as_ref()
+    else {
+        return Err("send refused".into());
+    };
+    let central = fixture.runtime();
+    let store = central.statement_host();
+    let stored = store.read(Statement {
+        sql: "SELECT delivery_window_ends_at,cancel_due_at FROM mail_messages WHERE message_id=?",
+        args: vec![text(message_id)],
+    }).await?;
+    let stored_time =
+        |time: Timestamp| text(time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+    assert_eq!(
+        stored.rows,
+        [[
+            stored_time(grid + chrono::Duration::milliseconds(1)),
+            stored_time(grid + chrono::Duration::minutes(5)),
+        ]]
+    );
+    Ok(())
 }

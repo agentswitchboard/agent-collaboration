@@ -24,7 +24,8 @@ async fn settlement_journey(fixture: &Fixture) -> Result<()> {
     let accepted_at = Timestamp::from_timestamp(signed::NOW_SECONDS, 0).ok_or("fixture UTC")?;
     // This fixture starts 200 seconds before a grid mark, within one admitted link lease.
     let deadline = accepted_at + chrono::Duration::seconds(200);
-    let sent_at = deadline - chrono::Duration::minutes(15);
+    let cutoff = deadline - chrono::Duration::seconds(45);
+    let sent_at = cutoff - chrono::Duration::minutes(15);
     let mut socket = fixture.connect().await?;
     assert!(matches!(
         receive(&mut socket).await?,
@@ -48,7 +49,7 @@ async fn settlement_journey(fixture: &Fixture) -> Result<()> {
         let frame = receive(&mut socket).await?;
         assert!(
             matches!(frame, LinkFrame::Data(DataFrame::Deliver { message, time_left: Some(time_left), .. })
-            if message.message_id() == &message_id && u32::from(time_left) == 200_000)
+            if message.message_id() == &message_id && u32::from(time_left) == 155_000)
         );
         message_ids.push(message_id);
     }
@@ -83,6 +84,28 @@ async fn settlement_journey(fixture: &Fixture) -> Result<()> {
         211,
     )
     .await?;
+    assert_eq!(
+        store.read(read_evidence(seen)).await?.rows,
+        [[text("seen"), SqlValue::Null]]
+    );
+
+    fixture
+        .clock
+        .set_utc(deadline - chrono::Duration::seconds(40));
+    let reply = mail_reply(
+        &mut socket,
+        &session,
+        215,
+        json!({
+            "kind":"setNoticeCadence","cadence":"m15",
+        }),
+    )
+    .await?;
+    assert!(matches!(
+        reply,
+        CentralMailResult::Done(CentralMailAnswer::NoticeCadenceSet { .. })
+    ));
+    assert!(store.read(read_sender_outcomes()).await?.rows.is_empty());
     record_receipt(
         &mut socket,
         delivered,
@@ -92,17 +115,8 @@ async fn settlement_journey(fixture: &Fixture) -> Result<()> {
         212,
     )
     .await?;
-    assert_eq!(
-        store.read(read_evidence(seen)).await?.rows,
-        [[text("seen"), SqlValue::Null]]
-    );
-    drop(socket);
-
-    fixture
-        .clock
-        .set_utc(deadline - chrono::Duration::seconds(40));
-    central.after_event().await?;
     assert!(store.read(read_sender_outcomes()).await?.rows.is_empty());
+    drop(socket);
     fixture.clock.set_utc(deadline);
     central.after_event().await?;
     let first_outcomes = store.read(read_sender_outcomes()).await?;
@@ -131,9 +145,7 @@ async fn settlement_journey(fixture: &Fixture) -> Result<()> {
     drop(sender_socket);
 
     // The next reconnect observes the same outcome rows with corrected clock time.
-    fixture
-        .clock
-        .set_utc(deadline - chrono::Duration::seconds(1));
+    fixture.clock.set_utc(cutoff - chrono::Duration::seconds(1));
     let mut reopened = fixture.connect().await?;
     assert!(matches!(
         receive(&mut reopened).await?,
@@ -269,4 +281,54 @@ fn read_sender_outcomes() -> Statement {
 
 fn text(value: impl ToString) -> SqlValue {
     SqlValue::Text(value.to_string())
+}
+
+#[tokio::test]
+async fn fractional_wire_cutoff_just_after_the_grid_waits_for_the_next_mark() -> Result<()> {
+    let fixture = start_fixture().await?;
+    let result = fractional_cutoff_journey(&fixture).await;
+    fixture.close().await?;
+    result
+}
+
+async fn fractional_cutoff_journey(fixture: &Fixture) -> Result<()> {
+    let accepted = Timestamp::from_timestamp(signed::NOW_SECONDS, 0).ok_or("fixture UTC")?;
+    let grid = accepted + chrono::Duration::seconds(200);
+    let sent_at = grid - chrono::Duration::minutes(15) + chrono::Duration::microseconds(500);
+    let session = SessionRef {
+        machine_id: INSTALLATION.parse()?,
+        session_id: "fractional-deadline".to_owned().try_into()?,
+    };
+    let mut socket = fixture.connect().await?;
+    assert!(matches!(
+        receive(&mut socket).await?,
+        LinkFrame::Data(DataFrame::Welcome { .. })
+    ));
+    let operation = json!({
+        "kind":"sendMessage", "to":session, "body":"fractional timestamp witness",
+        "delivery":"queue", "replyTo":null, "sentAt":sent_at,
+    });
+    let reply = mail_reply(&mut socket, &session, 219, operation).await?;
+    let CentralMailResult::Done(CentralMailAnswer::Queued { message_id }) = reply else {
+        return Err("send refused".into());
+    };
+    let central = fixture
+        .host
+        .central(&signed::ORGANIZATION.to_owned().try_into()?)
+        .await?;
+    let store = central.runtime().statement_host();
+    let stored = store.read(Statement {
+        sql: "SELECT delivery_window_ends_at,cancel_due_at FROM mail_messages WHERE message_id=?",
+        args: vec![text(message_id)],
+    }).await?;
+    let stored_time =
+        |time: Timestamp| text(time.to_rfc3339_opts(chrono::SecondsFormat::Millis, true));
+    assert_eq!(
+        stored.rows,
+        [[
+            stored_time(grid + chrono::Duration::milliseconds(1)),
+            stored_time(grid + chrono::Duration::minutes(5)),
+        ]]
+    );
+    Ok(())
 }

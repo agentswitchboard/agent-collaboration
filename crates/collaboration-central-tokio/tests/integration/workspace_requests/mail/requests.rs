@@ -58,7 +58,8 @@ async fn direct_send_admits_an_enrolled_machine_without_a_session_actor() {
         due_at: fleet_mail::message_deadline::direct_receipt_mark(
             router_clock::RuntimeClock::utc_now(fixture.clock.as_ref()),
             router_clock::RuntimeClock::utc_now(fixture.clock.as_ref()),
-        ),
+        )
+        .unwrap(),
         text: "still requires a session".to_owned().try_into().unwrap(),
     };
     let schedule = Operation::SetAutomation {
@@ -430,9 +431,7 @@ async fn a_direct_send_cannot_store_a_receipt_mark_beyond_the_portable_clock() {
         now.timestamp(),
     )
     .await;
-    assert!(
-        fleet_mail::message_deadline::direct_receipt_mark(now, now).timestamp_millis() > maximum
-    );
+    assert!(fleet_mail::message_deadline::direct_receipt_mark(now, now).is_none());
     let runtime = fixture
         .host
         .central(fixture.caller.organization_id())

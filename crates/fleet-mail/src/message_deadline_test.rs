@@ -11,7 +11,7 @@ const MINUTE: i64 = 60_000;
 
 #[test]
 fn an_aligned_delivery_cutoff_is_the_deadline_occurrence_without_extra_margin() {
-    assert_eq!(direct_receipt_mark(at(0), at(0)), at(15 * MINUTE));
+    assert_eq!(direct_receipt_mark(at(0), at(0)).unwrap(), at(15 * MINUTE));
 }
 
 #[test]
@@ -28,7 +28,7 @@ fn the_deadline_occurrence_is_the_first_grid_mark_at_or_after_cutoff() {
     ];
     for (sent, accepted, expected) in cases {
         assert_eq!(
-            direct_receipt_mark(at(sent), at(accepted)),
+            direct_receipt_mark(at(sent), at(accepted)).unwrap(),
             at(expected),
             "sent {sent} accepted {accepted}"
         );
@@ -72,7 +72,7 @@ fn the_deadline_occurrence_is_on_grid_within_one_step_of_the_cutoff(tc: TestCase
     );
     let sent = accepted + skew;
 
-    let due = direct_receipt_mark(at(sent), at(accepted));
+    let due = direct_receipt_mark(at(sent), at(accepted)).unwrap();
 
     let clamped = sent.clamp(accepted - 15 * MINUTE, accepted);
     let due_ms = due.timestamp_millis() - BASE;

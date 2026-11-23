@@ -23,7 +23,7 @@ fn the_stored_message_and_its_outcome_follow_the_receipt_sequence(case: hegel::T
 async fn exercise_direct_receipt_sequence(order: u8, reject_mark: bool) {
     let fixture = Fixture::new().await;
     let sent_at = chrono::DateTime::from_timestamp(FIXTURE_NOW, 0).unwrap();
-    let mark = fleet_mail::message_deadline::direct_receipt_mark(sent_at, sent_at);
+    let mark = fleet_mail::message_deadline::direct_receipt_mark(sent_at, sent_at).unwrap();
     let central = fixture.host.central(&fixture.caller.organization_id).await;
     let message_id = queue_direct(&fixture, sent_at, 981001).await;
 
@@ -195,12 +195,12 @@ async fn exercise_direct_receipt_sequence(order: u8, reject_mark: bool) {
             .result;
         let expected = if order & 1 == 0 {
             MessageStatus::Sent {
-                deadline_passed: true,
+                deadline_passed: false,
             }
         } else {
             MessageStatus::Delivered {
                 arrived_at: sent_at,
-                deadline_passed: true,
+                deadline_passed: false,
             }
         };
         assert_eq!(status, status_answer(expected));
@@ -348,58 +348,6 @@ pub(super) async fn queue_direct(
 }
 
 #[tokio::test]
-async fn a_rejected_direct_mark_rolls_back_and_a_superseding_receipt_prevents_the_charge() {
-    let fixture = Fixture::new().await;
-    let central = runtime(&fixture).await;
-    let now = chrono::DateTime::from_timestamp(FIXTURE_NOW, 0).unwrap();
-    let mark = fleet_mail::message_deadline::direct_receipt_mark(now, now);
-    let message_id = queue_direct(&fixture, now, 981002).await;
-    raw(&central, REJECT_OUTCOME, vec![]).await;
-
-    let mut held = central
-        .pause_points()
-        .hold_engine(PausePoint::BeforeEngineFailureWrite, message_id.as_str())
-        .await;
-    fixture
-        .clock
-        .0
-        .store(mark.timestamp_millis(), Ordering::SeqCst);
-    let batch = tokio::spawn({
-        let central = central.clone();
-        async move { central.after_event().await }
-    });
-    held.until_held().await;
-
-    assert_store(&central, &message_id, "queued", None).await;
-    let attempts = || async {
-        central.read(Statement {
-            sql: "SELECT attempt_id FROM engine_work_attempts WHERE machine_kind='direct_message' AND subject_key=?",
-            args: vec![text(&message_id)],
-        }).await.unwrap().rows
-    };
-    assert!(attempts().await.is_empty());
-    assert_eq!(
-        apply_fixture_receipt(
-            &fixture,
-            &central,
-            &message_id,
-            ReceiptKind::Seen { completed_at: now }
-        )
-        .await,
-        MailReceiptSettlement::Applied
-    );
-    held.release().await;
-    batch.await.unwrap().unwrap();
-
-    assert_store(&central, &message_id, "seen", None).await;
-    assert!(
-        attempts().await.is_empty(),
-        "the rolled-back version was superseded"
-    );
-    fixture.host.close().await;
-}
-
-#[tokio::test]
 async fn an_unobserved_direct_mark_commit_never_charges_an_attempt() {
     for (number, kind, expected_state, expected_outcome) in [
         (
@@ -418,7 +366,7 @@ async fn an_unobserved_direct_mark_commit_never_charges_an_attempt() {
         let fixture = Fixture::new().await;
         let central = runtime(&fixture).await;
         let now = chrono::DateTime::from_timestamp(FIXTURE_NOW, 0).unwrap();
-        let mark = fleet_mail::message_deadline::direct_receipt_mark(now, now);
+        let mark = fleet_mail::message_deadline::direct_receipt_mark(now, now).unwrap();
         let message_id = queue_direct(&fixture, now, number).await;
 
         let fault = EngineCommitFault {
@@ -461,7 +409,7 @@ async fn an_eligible_direct_mark_records_a_corrupt_typed_row_without_settling_it
     let fixture = Fixture::new().await;
     let central = runtime(&fixture).await;
     let now = chrono::DateTime::from_timestamp(FIXTURE_NOW, 0).unwrap();
-    let mark = fleet_mail::message_deadline::direct_receipt_mark(now, now);
+    let mark = fleet_mail::message_deadline::direct_receipt_mark(now, now).unwrap();
     let message_id = queue_direct(&fixture, now, 981006).await;
     raw(
         &central,
@@ -503,7 +451,7 @@ pub(super) async fn assert_store(
     outcome: Option<&str>,
 ) {
     let rows = central.read(Statement {
-        sql: "SELECT state,(SELECT json_extract(body,'$.outcome.kind') FROM mail_messages WHERE message_kind='deliveryOutcome') AS outcome,(SELECT COUNT(*) FROM mail_messages WHERE message_kind='deliveryOutcome') AS outcome_count FROM mail_messages WHERE message_id=?",
+        sql: "SELECT state,(SELECT json_extract(body,'$.outcome.kind') FROM mail_messages WHERE message_kind='deliveryOutcome' AND json_extract(body,'$.messageId')=direct.message_id) AS outcome,(SELECT COUNT(*) FROM mail_messages WHERE message_kind='deliveryOutcome' AND json_extract(body,'$.messageId')=direct.message_id) AS outcome_count FROM mail_messages AS direct WHERE message_id=?",
         args: vec![text(message_id)],
     }).await.unwrap();
     assert_eq!(
@@ -536,3 +484,7 @@ fn status_answer(status: MessageStatus) -> workspace_model::WorkspaceResult {
 }
 
 mod notice_receipt_settlement;
+
+mod deadline_atomicity;
+
+mod deadline_precedence;

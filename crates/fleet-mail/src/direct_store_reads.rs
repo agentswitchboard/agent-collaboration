@@ -13,7 +13,7 @@ use sqlx_core::{
 };
 use workspace_ids::MessageId;
 use workspace_model::central_mail::{
-    CentralMailAnswer, CentralMailRefusal, CentralMailResult, MessageSender, MessageStatus,
+    CentralMailAnswer, CentralMailRefusal, CentralMailResult, MessageSender,
 };
 
 impl From<DirectReadFailure> for StoreFailure {
@@ -102,6 +102,8 @@ struct StoredOffer {
     created_at: String,
     updated_at: String,
     delivery_window_ends_at: Option<String>,
+    cancel_due_at: Option<String>,
+    deadline_settled_at: Option<String>,
 }
 
 impl StoredOffer {
@@ -124,6 +126,22 @@ impl StoredOffer {
             || self.failure_reason.is_some()
         {
             return Err(column("mail_messages.state"));
+        }
+        if self.message_kind == "direct" {
+            let created_at = self
+                .created_at
+                .parse()
+                .map_err(|_| column("mail_messages.created_at"))?;
+            let deadline = crate::direct_message_rows::decode_direct_deadline(
+                created_at,
+                self.delivery_window_ends_at.as_deref(),
+                self.cancel_due_at.as_deref(),
+                self.deadline_settled_at.as_deref(),
+            )
+            .map_err(DirectReadFailure::from_store)?;
+            if deadline.settled_at.is_some() {
+                return Err(column("mail_messages.deadline_settled_at"));
+            }
         }
         let target: workspace_ids::SessionRef = serde_json::from_str(&self.target_session)
             .map_err(|_| column("mail_messages.target_session"))?;
@@ -252,10 +270,10 @@ macro_rules! bind_direct_message_read {
     };
 }
 
-pub async fn read_status<T: CentralTransaction>(
+pub(super) async fn read_owned_direct_state<T: CentralTransaction>(
     tx: &mut T,
-    status: OwnedDirectStatus,
-) -> Result<MessageStatus, DirectReadFailure>
+    status: &OwnedDirectStatus,
+) -> Result<Option<StoredDirectState>, DirectReadFailure>
 where
     <T::Database as Database>::Arguments: IntoArguments<T::Database>,
     String: Type<T::Database>
@@ -264,21 +282,12 @@ where
     Option<String>: Type<T::Database> + for<'row> Decode<'row, T::Database>,
     for<'row> &'row str: ColumnIndex<<T::Database as Database>::Row>,
 {
-    let sender = serde_json::to_string(&MessageSender::Actor(status.sender))
+    let sender = serde_json::to_string(&MessageSender::Actor(status.sender.clone()))
         .map_err(|_| DirectReadFailure::from_store(corrupt("mail_messages.sender")))?;
-    let row: Option<StoredDirectState> =
-        status_query!(bind_direct_message_read, status.message_id, sender)
-            .fetch_optional(tx.executor())
-            .await
-            .map_err(classify_direct_read_failure)?;
-    let Some(row) = row else {
-        return Ok(MessageStatus::NotFound {});
-    };
-    let row = row
-        .decode_direct_message()
-        .map_err(DirectReadFailure::from_store)?;
-    let deadline_passed = row.deadline_settled_at.is_some() || status.now >= row.cutoff;
-    Ok(row.lifecycle.project_message_status(deadline_passed))
+    status_query!(bind_direct_message_read, status.message_id, sender)
+        .fetch_optional(tx.executor())
+        .await
+        .map_err(classify_direct_read_failure)
 }
 
 pub async fn read_offer<T: CentralTransaction>(

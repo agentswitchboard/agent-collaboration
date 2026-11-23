@@ -267,3 +267,69 @@ async fn late_outcome_recovers_only_the_expired_request_that_may_have_left() {
         }
     );
 }
+
+#[tokio::test]
+async fn stronger_provisional_outcome_survives_reopen_and_weaker_replay() {
+    let root = tempfile::tempdir().unwrap();
+    let mut database = open(&root).await;
+    let write = direct_write(131);
+    let weaker = StoredSenderOutcome {
+        inbox_message_id: uuid_v7(132).parse().unwrap(),
+        message_id: uuid_v7(133).parse().unwrap(),
+        request_id: write.request.clone(),
+        outcome: MessageOutcome::DeliveryNotConfirmed,
+        reported_at: chrono::DateTime::from_timestamp_millis(MARK + 1).unwrap(),
+    };
+    let stronger = StoredSenderOutcome {
+        inbox_message_id: uuid_v7(134).parse().unwrap(),
+        outcome: MessageOutcome::DeliveredSeenNotConfirmed {
+            arrived_at: chrono::DateTime::from_timestamp_millis(MARK).unwrap(),
+        },
+        reported_at: chrono::DateTime::from_timestamp_millis(MARK + 2).unwrap(),
+        ..weaker.clone()
+    };
+    {
+        let mut outbox = MacOutbox::new(&mut database);
+        outbox.insert(&write, MARK - 1000).await.unwrap();
+        outbox
+            .mark_sent(std::slice::from_ref(&write.request), MARK)
+            .await
+            .unwrap();
+        assert!(
+            outbox
+                .record_sender_delivery(&write.caller, &weaker, MARK + 1)
+                .await
+                .unwrap()
+        );
+        assert!(
+            outbox
+                .record_sender_delivery(&write.caller, &stronger, MARK + 2)
+                .await
+                .unwrap()
+        );
+    }
+    database.close().await.unwrap();
+
+    let mut reopened = open(&root).await;
+    let mut outbox = MacOutbox::new(&mut reopened);
+    assert_eq!(
+        outbox
+            .sender_outcome(&write.caller, &write.request)
+            .await
+            .unwrap(),
+        Some(stronger.clone())
+    );
+    assert!(
+        !outbox
+            .record_sender_delivery(&write.caller, &weaker, MARK + 3)
+            .await
+            .unwrap()
+    );
+    assert_eq!(
+        outbox
+            .sender_outcome(&write.caller, &write.request)
+            .await
+            .unwrap(),
+        Some(stronger)
+    );
+}

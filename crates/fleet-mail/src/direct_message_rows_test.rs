@@ -7,12 +7,12 @@ fn stored() -> StoredDirectState {
         message_kind: "direct".into(),
         state: "queued".into(),
         failure_reason: None,
-        cancel_due_at: Some("2100-01-01T00:20:00Z".into()),
+        cancel_due_at: Some("2100-01-01T00:20:00.000Z".into()),
         sender_request_id: Some("01890f2e-7b4c-7cc0-98c4-0000000000b1".into()),
         created_at: "2100-01-01T00:01:00Z".into(),
         updated_at: "2100-01-01T00:01:00Z".into(),
         target_machine_id: "01890f2e-7b4c-7cc0-98c4-000000000001".into(),
-        delivery_window_ends_at: Some("2100-01-01T00:16:00Z".into()),
+        delivery_window_ends_at: Some("2100-01-01T00:16:00.000Z".into()),
         delivered_arrived_at: None,
         seen_completed_at: None,
         deadline_settled_at: None,
@@ -107,7 +107,7 @@ fn deadline_settlement_is_independent_of_evidence_and_validated_on_read() {
     for invalid in [
         "invalid",
         "2100-01-01T00:15:59.999Z",
-        "2100-01-01T00:16:00Z",
+        "2100-01-01T00:16:00.000Z",
     ] {
         row.deadline_settled_at = Some(invalid.into());
         assert_eq!(

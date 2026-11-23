@@ -13,7 +13,7 @@ async fn one_direct_mark_guard_reads_bounded_rows_as_pending_marks_grow() {
         let fixture = Fixture::new().await;
         let central = runtime(&fixture).await;
         let sent_at = chrono::DateTime::from_timestamp(FIXTURE_NOW, 0).unwrap();
-        let mark = fleet_mail::message_deadline::direct_receipt_mark(sent_at, sent_at);
+        let mark = fleet_mail::message_deadline::direct_receipt_mark(sent_at, sent_at).unwrap();
         let message_id = queue_direct(&fixture, sent_at, 981004).await;
         raw(
             &central,
@@ -102,15 +102,15 @@ async fn the_direct_mark_guard_matches_the_due_view_on_workerd() {
         .unwrap();
     println!("direct mark guard Workerd plan: {:?}", plan.rows);
     let cases = [
-        Some((60_000, 60_000)),
+        Some((300_000, 300_000)),
         None,
-        Some((120_001, 120_001)),
+        Some((600_000, 600_000)),
         Some((0, 0)),
-        Some((60_000, 180_000)),
+        Some((300_000, 600_000)),
         None,
+        Some((0, 0)),
         None,
-        None,
-        Some((60_000, 0)),
+        Some((300_000, 0)),
         None,
     ];
     for (index, expected) in cases.into_iter().enumerate() {

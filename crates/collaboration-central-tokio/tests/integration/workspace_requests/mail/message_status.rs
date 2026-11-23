@@ -376,7 +376,7 @@ async fn an_owning_direct_offer_resolves_a_person_without_a_session_outcome() {
     );
 
     let accepted_at = fixture.clock.utc_now();
-    let mark = fleet_mail::message_deadline::direct_receipt_mark(accepted_at, accepted_at);
+    let mark = fleet_mail::message_deadline::direct_receipt_mark(accepted_at, accepted_at).unwrap();
     let _alarm_driver = central
         .runtime()
         .pause_points()

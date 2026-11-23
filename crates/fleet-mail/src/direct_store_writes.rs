@@ -3,13 +3,16 @@ use crate::{
     direct_message::{
         DirectLifecycle, DirectMessage, DirectMessageEffect, DirectMessageEvent,
         DirectMessageRefusal, DirectMessageSubject, DirectReducerState, FinalReceipt,
+        apply_message_event,
     },
     direct_message_rows::enum_text,
     direct_recipient_admission::admit_enrolled_direct_recipient,
     direct_store_port::{AdmittedDirectSend, AdmittedReceipt, ApplyReceipt, DirectSendResult},
     direct_store_reads::{StoredDirectState, read_stored_direct_message},
     mail_write_failure::require_one_affected_row,
-    message_deadline::{delivery_window_ends_at, direct_receipt_mark, system_message_deadline},
+    message_deadline::{
+        delivery_window_ends_at, direct_deadline_occurrence, system_message_deadline,
+    },
     system_receipt_settlement::{SystemReceiptKind, settle_system_receipt},
 };
 use central_engine_model::{Context, Machine, TransitionError};
@@ -51,7 +54,7 @@ impl<A> DirectWriteOutcome<A> {
             alarm: None,
         }
     }
-    fn with_alarm_recompute(outcome: A) -> Self {
+    pub(super) fn with_alarm_recompute(outcome: A) -> Self {
         Self {
             outcome,
             alarm: Some(EngineAlarmPlan::Recompute),
@@ -138,7 +141,10 @@ where
             created_at: command.accepted_at,
             updated_at: command.accepted_at,
         };
-        let mark = direct_receipt_mark(command.sent_at, command.accepted_at);
+        let cutoff = delivery_window_ends_at(command.sent_at, command.accepted_at)
+            .ok_or_else(|| corrupt("mail_messages.delivery_window_ends_at"))?;
+        let mark = direct_deadline_occurrence(cutoff)
+            .ok_or_else(|| corrupt("mail_messages.cancel_due_at"))?;
         let timing = DueOwnerTiming::at(due_key(DueKind::DirectMessage, &message_id), mark)
             .map_err(|_| corrupt("mail_messages.cancel_due_at"))?;
         let result = insert_send!(
@@ -146,7 +152,7 @@ where
             message,
             mark,
             command.request.request_id,
-            delivery_window_ends_at(command.sent_at, command.accepted_at)
+            cutoff
         )
         .execute(tx.executor())
         .await?;
@@ -390,13 +396,12 @@ where
             },
             sender_request_id: row.sender_request_id,
             recipient: row.recipient,
-            cutoff: row.cutoff,
             mark: row.mark,
         },
         lifecycle: row.lifecycle,
         deadline_settled_at: row.deadline_settled_at,
     };
-    let (next, effects) = match DirectMessage::transition(
+    let (next, effects) = match apply_message_event(
         &state,
         event,
         &mut Context {

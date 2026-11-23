@@ -7,7 +7,7 @@ async fn direct_mark_and_charge_survive_a_rejected_final_alarm_and_retry_once() 
     let fixture = Fixture::new().await;
     let central = runtime(&fixture).await;
     let accepted = fixture.clock.utc_now();
-    let mark = fleet_mail::message_deadline::direct_receipt_mark(accepted, accepted);
+    let mark = fleet_mail::message_deadline::direct_receipt_mark(accepted, accepted).unwrap();
     let retry_mark = mark + chrono::Duration::minutes(5);
     let healthy = queue_direct(&fixture, accepted, 981007).await;
     let rejected = queue_direct(&fixture, accepted, 981008).await;

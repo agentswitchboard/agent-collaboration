@@ -14,7 +14,6 @@ fn initial(tell_sender: bool) -> DirectReducerState {
             }),
             sender_request_id: "01890f2e-7b4c-7cc0-98c4-0000000000b1".parse().unwrap(),
             recipient: machine_id,
-            cutoff: time(15),
             mark: time(15),
         },
         lifecycle: DirectLifecycle::Queued,
@@ -86,7 +85,7 @@ impl Oracle {
             },
             Some((other, _)) => panic!("invalid oracle ending {other}"),
             None => {
-                let deadline_passed = self.marked || now >= time(15);
+                let deadline_passed = now >= time(15);
                 match self.saved_at {
                     Some(arrived_at) => MessageStatus::Delivered {
                         arrived_at,
@@ -175,9 +174,7 @@ fn every_generated_receipt_and_mark_matches_the_independent_oracle(case: hegel::
         }
         for now in [time(0), time(15), time(40)] {
             assert_eq!(
-                state.lifecycle.project_message_status(
-                    state.deadline_settled_at.is_some() || now >= initial.subject.cutoff
-                ),
+                state.lifecycle.project_message_status(now >= time(15)),
                 oracle.expected_message_status(now)
             );
         }
