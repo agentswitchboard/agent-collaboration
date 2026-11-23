@@ -1124,6 +1124,7 @@ dependencies = [
  "serde_json",
  "sha2 0.10.9",
  "sqlx",
+ "switchboard-machine-enrollment",
  "tempfile",
  "thiserror 2.0.18",
  "tokio",
@@ -5789,6 +5790,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchboard-machine-enrollment"
+version = "0.1.158"
+dependencies = [
+ "axum",
+ "chrono",
+ "futures-util",
+ "hegeltest",
+ "httpdate",
+ "reqwest 0.12.28",
+ "router-clock",
+ "serde",
+ "serde_json",
+ "switchboard-machine-enrollment",
+ "thiserror 2.0.18",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "url",
+ "uuid",
+ "workspace-ids",
+ "zeroize",
+]
+
+[[package]]
 name = "switchboard-session-calls"
 version = "0.1.158"
 dependencies = [
@@ -6533,6 +6558,7 @@ dependencies = [
  "idna",
  "percent-encoding",
  "serde",
+ "serde_derive",
 ]
 
 [[package]]
@@ -7025,6 +7051,7 @@ version = "0.1.158"
 dependencies = [
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 2.0.18",
 ]
 
