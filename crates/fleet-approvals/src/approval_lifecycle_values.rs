@@ -1,9 +1,10 @@
 use std::fmt;
 
 use approval_request_protocol::{
-    Answer, ApprovalWindow, CentralTime, DecideRequest, DecidedBy, DeliverEndingReply,
-    DeliverEndingRequest, Delivery, EndingView, HolderStopCause, PassOnReply, Raise, RaiseReply,
-    RequestContentsDigest, RequestView, StopReply, StopRequest, WaitingStatus,
+    Answer, ApprovalWindow, CallStopCause, CentralTime, DecideRequest, DecidedBy,
+    DeliverEndingReply, DeliverEndingRequest, Delivery, EndingView, HolderStopCause, PassOnReply,
+    ProviderStopCause, Raise, RaiseReply, RequestContentsDigest, RequestView, StopReply,
+    StopRequest, WaitingStatus,
 };
 use central_engine_model::{EventTag, RefusalTag, StateTag};
 
@@ -120,13 +121,39 @@ pub struct EndedApproval {
     pub delivery: Delivery,
 }
 
+/// The Stop family and cause retained before Central has a Raise to match.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StopMarkerCause {
+    Provider(ProviderStopCause),
+    UnprovenCall(CallStopCause),
+}
+
+impl StopMarkerCause {
+    #[must_use]
+    pub const fn holder_cause(self) -> HolderStopCause {
+        match self {
+            Self::Provider(cause) => cause.holder_cause(),
+            Self::UnprovenCall(cause) => HolderStopCause::from_call(cause),
+        }
+    }
+}
+
+impl From<&StopRequest> for StopMarkerCause {
+    fn from(stop: &StopRequest) -> Self {
+        match stop {
+            StopRequest::Provider { cause, .. } => Self::Provider(*cause),
+            StopRequest::UnprovenCall { cause, .. } => Self::UnprovenCall(*cause),
+        }
+    }
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum ApprovalState {
     Unraised,
     StoppedBeforeRaise {
         key: ApprovalRequestKey,
         contents_digest: RequestContentsDigest,
-        cause: HolderStopCause,
+        cause: StopMarkerCause,
     },
     Waiting {
         saved: Box<RetainedApproval>,

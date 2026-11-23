@@ -41,7 +41,9 @@ export type CallOffer = {
 	operation: SessionCallOperation,
 };
 
-export type CallStopCause = "callWithdrawn";
+export type CallStopCause = "callWithdrawn" |
+/**  The holder has already given the requester a final local refusal. */
+"holderRefusedLocally";
 
 export type CancelReason = { kind: "stopped"; cause: HolderStopCause } | { kind: "requesterGone" } | { kind: "sessionEnded" } | { kind: "enrollmentEnded" };
 
@@ -98,7 +100,7 @@ export type GiverDecision<AcceptedAnswer> = {
 
 export type HolderEnding<AcceptedAnswer, Cancellation> = { kind: "decided"; answer: AcceptedAnswer; by: DecidedBy } | { kind: "cancelled"; reason: Cancellation } | { kind: "timedOut" };
 
-export type HolderStopCause = "turnStopped" | "askReplaced" | "askWithdrawn" | "sessionClosed" | "providerConnectionLost" | "callWithdrawn";
+export type HolderStopCause = "turnStopped" | "askReplaced" | "askWithdrawn" | "sessionClosed" | "providerConnectionLost" | "callWithdrawn" | "holderRefusedLocally";
 
 /**  An opaque digest of the whole request held by the Router. */
 export type InvocationDigest = string;
@@ -191,7 +193,9 @@ export type ProviderHolder = {
 
 export type ProviderStopCause = "turnStopped" | "askReplaced" |
 /**  The provider agent withdrew this waiting ask. */
-"askWithdrawn" | "sessionClosed" | "providerConnectionLost";
+"askWithdrawn" | "sessionClosed" | "providerConnectionLost" |
+/**  The holder has already given the requester a final local refusal. */
+"holderRefusedLocally";
 
 export type QuestionAnswer = { kind: "answered"; fields: QuestionFieldAnswer[] } | { kind: "declined" };
 
