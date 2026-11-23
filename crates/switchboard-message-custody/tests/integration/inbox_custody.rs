@@ -218,7 +218,7 @@ async fn a_reoffer_after_reconnect_reuses_the_first_durable_decision_and_arrival
     let frame = first.prepare_receipts(&connection).await.unwrap().unwrap();
     let (_, first_receipts) = decode_receipts(&frame);
     assert!(
-        matches!(first_receipts.as_slice(), [Receipt { kind: ReceiptKind::Delivered { arrived_at, waiting: None }, .. }] if arrived_at.timestamp_millis() == START_MS)
+        matches!(first_receipts.as_slice(), [Receipt { kind: ReceiptKind::Delivered { arrived_at }, .. }] if arrived_at.timestamp_millis() == START_MS)
     );
     assert_eq!(
         first
@@ -360,7 +360,7 @@ async fn unknown_ambiguous_and_unavailable_lookup_have_distinct_custody_results(
         [FIRST_MESSAGE, SECOND_MESSAGE, THIRD_MESSAGE]
     );
     assert!(matches!(receipts.as_slice(), [
-        Receipt { kind: ReceiptKind::Delivered { arrived_at, waiting: None }, .. },
+        Receipt { kind: ReceiptKind::Delivered { arrived_at }, .. },
         Receipt { kind: ReceiptKind::Refused { reason: MessageRefusal::UnknownSession }, .. },
         Receipt { kind: ReceiptKind::Refused { reason: MessageRefusal::AmbiguousSession }, .. },
     ] if arrived_at.timestamp_millis() == START_MS));

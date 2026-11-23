@@ -4,7 +4,7 @@ use crate::{
     OutboxStoreError, StoredSenderOutcome,
 };
 use std::collections::BTreeSet;
-use workspace_model::central_mail::{MessageOutcome, MessageRefusal, WaitingReason};
+use workspace_model::central_mail::{MessageOutcome, MessageRefusal};
 
 pub(super) fn direct_write(seed: u16) -> NewOutboxItem {
     NewOutboxItem {
@@ -36,8 +36,8 @@ async fn first_final_outcome_survives_contradictory_and_replayed_notices() {
     };
     let final_outcome = StoredSenderOutcome {
         inbox_message_id: uuid_v7(104).parse().unwrap(),
-        outcome: MessageOutcome::NotSeen {
-            waiting: WaitingReason::SessionNotOpen,
+        outcome: MessageOutcome::Refused {
+            reason: MessageRefusal::AmbiguousSession,
         },
         reported_at: chrono::DateTime::from_timestamp_millis(MARK + 500).unwrap(),
         ..pending.clone()
@@ -53,7 +53,6 @@ async fn first_final_outcome_survives_contradictory_and_replayed_notices() {
         inbox_message_id: uuid_v7(106).parse().unwrap(),
         outcome: MessageOutcome::DeliveredSeenNotConfirmed {
             arrived_at: pending.reported_at,
-            waiting: None,
         },
         reported_at: chrono::DateTime::from_timestamp_millis(MARK + 3_000).unwrap(),
         ..pending.clone()
@@ -206,8 +205,8 @@ async fn late_outcome_recovers_only_the_expired_request_that_may_have_left() {
         inbox_message_id: uuid_v7(127).parse().unwrap(),
         message_id: uuid_v7(128).parse().unwrap(),
         request_id: claimed.request.clone(),
-        outcome: MessageOutcome::NotSeen {
-            waiting: WaitingReason::Busy,
+        outcome: MessageOutcome::Refused {
+            reason: MessageRefusal::UnknownSession,
         },
         reported_at: chrono::DateTime::from_timestamp_millis(DEADLINE + 1).unwrap(),
     };

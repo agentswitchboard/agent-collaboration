@@ -189,10 +189,7 @@ fn receipt_for_decision(stored: InboxReceipt) -> Result<Receipt, ReceiptDelivery
                 Timestamp::from_timestamp_millis(stored.received_at_ms).ok_or_else(|| {
                     ReceiptDeliveryError::InvalidArrivalTime(stored.message_id.clone())
                 })?;
-            ReceiptKind::Delivered {
-                arrived_at,
-                waiting: None,
-            }
+            ReceiptKind::Delivered { arrived_at }
         }
         InboxDecision::Refused { reason } => {
             let reason = match reason {
