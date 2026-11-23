@@ -12,6 +12,7 @@ workspace-ids.workspace = true
 workspace-model.workspace = true
 router-clock.workspace = true
 thiserror.workspace = true
+tokio = { version = "1.53.3", default-features = false, features = ["sync"] }
 uuid.workspace = true
 
 [dev-dependencies]
