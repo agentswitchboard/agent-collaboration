@@ -3,6 +3,7 @@ use std::{sync::Arc, time::Duration};
 use central_link_client::{ClientAction, ConnectionAttempt, EnrollmentEnd, LinkClient};
 use central_link_protocol::{DataFrame, LinkFrame};
 use futures_util::{FutureExt, sink::unfold};
+use hyper_util::client::legacy::connect::HttpConnector;
 use router_clock::{ClockInstant, ManualClock, RuntimeClock};
 use tokio::sync::{oneshot, watch};
 use tokio_tungstenite::tungstenite::Message;
@@ -13,6 +14,7 @@ use crate::{
     AddressError,
     lease_source::{LeaseFailure, LeaseFuture, LeaseSource},
     link_policy::{LeaseVersion, LinkState, LinkStatus},
+    wire_write_fence::default_http_connector,
 };
 
 #[path = "renewal_lane_test.rs"]
@@ -38,6 +40,8 @@ struct HeartbeatFixture {
     status: watch::Sender<LinkStatus>,
 }
 
+type WelcomedDriver<'fixture, Source> = BindingDriver<'fixture, u8, Source, fn() -> HttpConnector>;
+
 impl HeartbeatFixture {
     fn new() -> Self {
         Self {
@@ -50,7 +54,7 @@ impl HeartbeatFixture {
     fn welcomed_driver<'fixture, Source>(
         &'fixture self,
         lease_source: &'fixture Source,
-    ) -> (BindingDriver<'fixture, u8, Source>, ConnectionAttempt) {
+    ) -> (WelcomedDriver<'fixture, Source>, ConnectionAttempt) {
         let mut client = LinkClient::new(self.machine.clone(), self.clock.clone());
         let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
             panic!("first connection should be due");
@@ -69,6 +73,7 @@ impl HeartbeatFixture {
         (
             BindingDriver {
                 lease_source,
+                make_connector: &(default_http_connector as fn() -> HttpConnector),
                 clock: self.clock.clone(),
                 status: &self.status,
                 address: Err(AddressError::InvalidLocation),

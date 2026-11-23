@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT observed_ms FROM approval_applying_time WHERE organization_id=?1\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "observed_ms",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "approval_applying_time",
+            "name": "observed_ms"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "0bd0c978aca21957f5c1e3dc4ee08602585121337790a8c9c6039953e566b145"
+}

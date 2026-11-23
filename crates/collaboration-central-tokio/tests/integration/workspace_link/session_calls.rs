@@ -7,7 +7,7 @@ use collaboration_central_conformance::{
     ConformanceResult as Result,
     session_link_scenarios::{
         SessionLifecycleStage, create_bind_end, expect_create_refusal, expect_lapsed_session_call,
-        prepare_session_call, refuse_lapsed_session_call, refuse_wrong_target_and_unowned_calls,
+        prepare_session_call, refuse_lapsed_session_call, refuse_wrong_session_target,
         send_session_call, session_identity_records, session_mutation_records, session_records,
     },
 };
@@ -20,12 +20,7 @@ async fn production_link_routes_session_lifecycle_to_tokio_organization_store() 
         let mut socket = connect(&fixture).await?;
         let owner = fixture.host.central(&fixture.organization_id).await?;
         let organization_store = owner.runtime().statement_host();
-        refuse_wrong_target_and_unowned_calls(
-            &mut socket,
-            &fixture.organization_id,
-            &OTHER_ORG.to_owned().try_into()?,
-        )
-        .await?;
+        refuse_wrong_session_target(&mut socket, &OTHER_ORG.to_owned().try_into()?).await?;
         if !organization_store
             .read(session_records())
             .await?
