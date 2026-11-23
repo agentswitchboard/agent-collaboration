@@ -20,7 +20,9 @@ use switchboard_approval_holder::{
     },
 };
 
-use super::fixtures::{
+mod fixtures;
+
+use self::fixtures::{
     ObservedReply, closed, key, provider, provider_stop, raise_event, register, reply, routing,
     run_event, setup,
 };
