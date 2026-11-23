@@ -82,7 +82,7 @@ const DRIVER_NORMAL: &[Edge] = &[
             "tokio",
         ],
     ),
-    registry("log", true, &["max_level_debug"]),
+    registry("log", true, &["max_level_info"]),
     registry(
         "tokio",
         true,

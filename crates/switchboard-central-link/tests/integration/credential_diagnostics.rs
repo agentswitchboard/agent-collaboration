@@ -9,13 +9,13 @@ use std::{
 use super::{REFRESHED, TOKEN};
 
 static LOG_CAPTURE: LogCapture = LogCapture {
-    saw_debug: AtomicBool::new(false),
+    saw_info: AtomicBool::new(false),
     saw_token: AtomicBool::new(false),
     saw_refreshed: AtomicBool::new(false),
 };
 
 struct LogCapture {
-    saw_debug: AtomicBool,
+    saw_info: AtomicBool,
     saw_token: AtomicBool,
     saw_refreshed: AtomicBool,
 }
@@ -27,8 +27,8 @@ impl log::Log for LogCapture {
 
     fn log(&self, record: &log::Record<'_>) {
         let message = record.args().to_string();
-        self.saw_debug.fetch_or(
-            record.target() == "credential_diagnostics_probe",
+        self.saw_info.fetch_or(
+            record.level() == log::Level::Info && record.target() == "credential_diagnostics_probe",
             Ordering::Relaxed,
         );
         self.saw_token
@@ -67,7 +67,7 @@ pub(super) fn capture_trace() -> TraceCapture {
         .with_writer(move || writer.clone())
         .finish();
     tracing::subscriber::set_global_default(subscriber).unwrap();
-    log::debug!(target: "credential_diagnostics_probe", "log sink is live");
+    log::info!(target: "credential_diagnostics_probe", "log sink is live");
     tracing::trace!("tracing sink is live");
     capture
 }
@@ -76,14 +76,14 @@ impl TraceCapture {
     pub(super) fn assert_credentials_absent(&self) {
         let bytes = self.0.lock().unwrap();
         let traces = String::from_utf8_lossy(&bytes);
-        assert!(LOG_CAPTURE.saw_debug.load(Ordering::Relaxed));
+        assert!(LOG_CAPTURE.saw_info.load(Ordering::Relaxed));
         assert!(traces.contains("tracing sink is live"));
         assert!(
             !LOG_CAPTURE.saw_token.load(Ordering::Relaxed)
                 && !LOG_CAPTURE.saw_refreshed.load(Ordering::Relaxed)
                 && !traces.contains(TOKEN)
                 && !traces.contains(REFRESHED),
-            "upgrade Authorization and renewal token must both stay out of diagnostics"
+            "upgrade, renewal, and peer Close must keep credentials out of diagnostics"
         );
     }
 }

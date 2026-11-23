@@ -278,13 +278,20 @@ async fn renewal_extends_the_same_socket_without_disclosing_credentials() {
         LinkStatus::Welcomed { .. }
     ));
     assert!(fixture.acquired.try_recv().is_err());
+    socket
+        .send(Message::Close(Some(CloseFrame {
+            code: MachineLinkCloseCode::Inactive.code().into(),
+            reason: REFRESHED.into(),
+        })))
+        .await
+        .unwrap();
+    assert_eq!(
+        fixture.ended.recv().await,
+        Some((1, EnrollmentEnd::Inactive))
+    );
     let emitted = format!("{:?}", fixture.status.borrow());
     assert!(!emitted.contains(TOKEN) && !emitted.contains(REFRESHED));
     fixture.stop().await;
-    assert!(matches!(
-        socket.next().await,
-        None | Some(Ok(Message::Close(_))) | Some(Err(_))
-    ));
     diagnostics.assert_credentials_absent();
 }
 
