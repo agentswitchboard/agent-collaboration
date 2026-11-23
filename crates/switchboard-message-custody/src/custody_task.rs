@@ -219,6 +219,7 @@ async fn run_custody(
     let mut tool_requests = JoinSet::new();
     let mut retry_store_at = None;
     report_flush(&*sink, custody.recover_outbox().await);
+    let mut retry_notices_at = project_sender_notices(&mut custody, &*sink).await;
 
     loop {
         let now = clock.monotonic_now();
@@ -252,8 +253,12 @@ async fn run_custody(
             event = offers.recv(), if offer_stream_open => {
                 match event {
                     Some(Ok(saved)) => {
+                        let sender_notice_saved = saved.sender_notice_saved;
                         if let Err(error) = custody.observe_taken_event(saved).await {
                             sink.record_event(CustodyTaskEvent::Failed(error));
+                        }
+                        if sender_notice_saved {
+                            retry_notices_at = project_sender_notices(&mut custody, &*sink).await;
                         }
                     }
                     Some(Err(error)) => sink.record_event(CustodyTaskEvent::Failed(error.into())),
@@ -275,6 +280,9 @@ async fn run_custody(
                 let ended = custody.end_due_writes().await;
                 if ended.is_err() { retry_store_at = Some(custody.local_retry_mark()); }
                 report_flush(&*sink, ended);
+            },
+            () = sleep_until(clock.as_ref(), retry_notices_at) => {
+                retry_notices_at = project_sender_notices(&mut custody, &*sink).await;
             },
             () = sleep_until(clock.as_ref(), write_wake), if writes.is_none() => {
                 match custody.prepare_write_turn().await {
@@ -387,6 +395,7 @@ fn report_flush(sink: &dyn CustodyEventSink, result: Result<FlushReport, Custody
     match result {
         Ok(report)
             if !report.answered.is_empty()
+                || !report.sender_notices.is_empty()
                 || !report.ended.is_empty()
                 || !report.issues.is_empty() =>
         {
@@ -395,6 +404,19 @@ fn report_flush(sink: &dyn CustodyEventSink, result: Result<FlushReport, Custody
         Ok(_) => {}
         Err(error) => sink.record_event(CustodyTaskEvent::Failed(error)),
     }
+}
+
+async fn project_sender_notices(
+    custody: &mut CustodyLink,
+    sink: &dyn CustodyEventSink,
+) -> Option<ClockInstant> {
+    let (report, errors) = custody.drain_sender_notices().await;
+    report_flush(sink, Ok(report));
+    let retry = (!errors.is_empty()).then(|| custody.local_retry_mark());
+    for error in errors {
+        sink.record_event(CustodyTaskEvent::Failed(error));
+    }
+    retry
 }
 
 async fn poll_job<T>(job: &mut Option<InFlight<T>>) -> T {

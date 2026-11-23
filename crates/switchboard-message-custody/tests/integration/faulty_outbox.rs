@@ -29,6 +29,7 @@ pub(super) enum FaultSite {
     RetentionPrune,
     ClaimBatch,
     RecordOutcome,
+    RecordSenderNotice,
     ReturnNotTransmitted,
     ReturnUnanswered,
 }
@@ -214,7 +215,10 @@ impl OutboxStorage for FaultyOutbox {
         notice: &'call StoredSenderOutcome,
         now: i64,
     ) -> OutboxFuture<'call, bool> {
-        self.inner.record_sender_delivery(caller, notice, now)
+        self.plan.wrap(
+            FaultSite::RecordSenderNotice,
+            self.inner.record_sender_delivery(caller, notice, now),
+        )
     }
 
     fn sender_outcome<'call>(

@@ -9,7 +9,9 @@ use central_link_protocol::{
     CorrelationId, FreshCorrelationId, LinkRequestBatch, ProtocolError, ReplyPayload,
 };
 use runtime_primitives::SyncTime;
-use switchboard_machine_core_store::{EndedWrite, OutboxStoreError, StoredOutboxWrite};
+use switchboard_machine_core_store::{
+    EndedWrite, OutboxStoreError, StoredOutboxWrite, StoredSenderOutcome,
+};
 use workspace_ids::RequestId;
 use workspace_model::Caller;
 
@@ -27,6 +29,13 @@ pub struct FlushedWriteAnswer {
     pub request: RequestId,
     pub caller: Caller,
     pub reply: ReplyPayload,
+}
+
+/// Custody reports the original caller's durably applied Central delivery notice to its sink.
+#[derive(Debug)]
+pub struct AppliedSenderNotice {
+    pub caller: Caller,
+    pub notice: StoredSenderOutcome,
 }
 
 /// A problem custody observed while settling a batch or returning a claim.
@@ -56,6 +65,7 @@ pub enum BatchDispatchError {
 #[derive(Debug, Default)]
 pub struct FlushReport {
     pub answered: Vec<FlushedWriteAnswer>,
+    pub sender_notices: Vec<AppliedSenderNotice>,
     pub ended: Vec<EndedWrite>,
     pub issues: Vec<BatchDispatchError>,
 }
@@ -63,6 +73,7 @@ pub struct FlushReport {
 impl FlushReport {
     pub(crate) fn append(&mut self, other: Self) {
         self.answered.extend(other.answered);
+        self.sender_notices.extend(other.sender_notices);
         self.ended.extend(other.ended);
         self.issues.extend(other.issues);
     }

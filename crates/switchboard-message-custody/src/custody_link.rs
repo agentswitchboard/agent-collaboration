@@ -9,7 +9,9 @@ use central_link_protocol::{FreshCorrelationId, RequestStatusQuery};
 use router_clock::{ClockInstant, RuntimeClock};
 use runtime_primitives::SyncTime;
 use std::{sync::Arc, time::Duration};
-use switchboard_machine_core_store::{OutgoingWrite, PendingWrite, StoredSenderOutcome};
+use switchboard_machine_core_store::{
+    OutboxStoreError, OutgoingWrite, PendingWrite, StoredSenderOutcome,
+};
 use workspace_ids::{MessageId, RequestId, SessionRef};
 use workspace_model::{
     Caller,
@@ -29,7 +31,9 @@ use crate::{
     },
     flush_clock::{FlushJitter, shared_time_at, wake_for_mark},
     offer_taker::{SharedRecipientInbox, TakenEvent, admitted_for, take_event},
-    outbox_dispatch::{BatchDispatchError, FlushReport, OutboxDispatcher, PreparedWriteBatch},
+    outbox_dispatch::{
+        AppliedSenderNotice, BatchDispatchError, FlushReport, OutboxDispatcher, PreparedWriteBatch,
+    },
     outbox_flush::{FlushEffect, FlushEvent, FlushTransitionError, OutboxFlushState, transition},
     outbox_work::{OutboxWork, OutboxWorkError},
     receipt_delivery::{ReceiptDeliveryError, ReceiptFrame, ReceiptFrameOutcome},
@@ -263,7 +267,14 @@ impl CustodyLink {
     pub async fn observe_next_event(&mut self) -> Result<CustodyLinkObservation, CustodyLinkError> {
         let event = self.lane.next_event().await;
         let saved = take_event(&self.inbox, event).await?;
-        self.observe_taken_event(saved).await
+        let sender_notice_saved = saved.sender_notice_saved;
+        let observation = self.observe_taken_event(saved).await?;
+        if sender_notice_saved
+            && let Some(error) = self.drain_sender_notices().await.1.into_iter().next()
+        {
+            return Err(error);
+        }
+        Ok(observation)
     }
 
     pub(crate) async fn observe_taken_event(
@@ -293,32 +304,71 @@ impl CustodyLink {
             CustodyLinkObservation::Delivery { .. }
             | CustodyLinkObservation::LocalRetryCompleted => {}
         }
-        if let Some(notice) = saved.sender_notice {
-            self.record_sender_notice(&notice.target, &notice.message_id)
-                .await?;
-        }
         Ok(saved.observation)
     }
 
-    async fn record_sender_notice(
-        &mut self,
-        session: &SessionRef,
-        notice_id: &MessageId,
-    ) -> Result<(), CustodyLinkError> {
-        let retained = self.inbox.lock().await.waiting_for_session(session).await?;
-        let notice = retained
-            .iter()
-            .find(|notice| &notice.message_id == notice_id)
-            .and_then(retained_delivery_notice);
-        if let Some((caller, notice)) = notice {
-            let now_ms = self.outbox.local_now_ms();
-            self.outbox
-                .outbox_storage()
-                .record_sender_delivery(&caller, &notice, now_ms)
+    pub(crate) async fn drain_sender_notices(&mut self) -> (FlushReport, Vec<CustodyLinkError>) {
+        let mut report = FlushReport::default();
+        let retained = self.inbox.lock().await.pending_sender_notices().await;
+        let records = match retained {
+            Ok(records) => records,
+            Err(error) => return (report, vec![error.into()]),
+        };
+        let mut errors = Vec::new();
+        for record in records {
+            let Some((caller, notice)) = retained_delivery_notice(&record) else {
+                continue;
+            };
+            let applied = match self.apply_sender_notice(&caller, &notice).await {
+                Ok(applied) => applied,
+                Err(
+                    error @ (OutboxStoreError::DeliveryOutcomeMismatch { .. }
+                    | OutboxStoreError::ContradictoryFinalOutcome { .. }),
+                ) => {
+                    report.issues.push(BatchDispatchError::StoreMember {
+                        request: notice.request_id.clone(),
+                        error,
+                    });
+                    false
+                }
+                Err(error) => {
+                    errors.push(OutboxWorkError::Store(error).into());
+                    continue;
+                }
+            };
+            if let Err(error) = self
+                .inbox
+                .lock()
                 .await
-                .map_err(OutboxWorkError::Store)?;
+                .finish_sender_notice(&record.message_id)
+                .await
+            {
+                errors.push(error.into());
+                continue;
+            }
+            if applied {
+                report
+                    .sender_notices
+                    .push(AppliedSenderNotice { caller, notice });
+            }
         }
-        Ok(())
+        (report, errors)
+    }
+
+    async fn apply_sender_notice(
+        &mut self,
+        caller: &Caller,
+        notice: &StoredSenderOutcome,
+    ) -> Result<bool, OutboxStoreError> {
+        let now_ms = self.outbox.local_now_ms();
+        let store = self.outbox.outbox_storage();
+        match store.record_sender_delivery(caller, notice, now_ms).await {
+            Ok(applied) => Ok(applied),
+            Err(error) => match store.sender_outcome(caller, &notice.request_id).await {
+                Ok(Some(stored)) if &stored == notice => Ok(true),
+                _ => Err(error),
+            },
+        }
     }
 
     /// A wait for the shared minute selected by the scheduler. `None` means the lane is unavailable or idle.

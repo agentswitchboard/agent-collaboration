@@ -7,7 +7,6 @@ use central_link_protocol::DeliveryMessage;
 use std::sync::Arc;
 use switchboard_machine_core_store::InboxDecision;
 use tokio::sync::{Mutex, mpsc, watch};
-use workspace_ids::{MessageId, SessionRef};
 use workspace_model::central_mail::MessageBody;
 
 use crate::recipient_inbox::{InboxCustodyError, InboxOfferResult, RecipientInbox};
@@ -30,14 +29,10 @@ pub enum CustodyLinkObservation {
     DriverClosed,
 }
 
-pub(crate) struct StoredNoticeKey {
-    pub(crate) target: SessionRef,
-    pub(crate) message_id: MessageId,
-}
-
+/// The offer consumer sends an observation and a durable-work wake to the command task.
 pub(crate) struct TakenEvent {
     pub(crate) observation: CustodyLinkObservation,
-    pub(crate) sender_notice: Option<StoredNoticeKey>,
+    pub(crate) sender_notice_saved: bool,
 }
 
 pub(crate) fn admitted_for(lane: &dyn ReadyLinkLane) -> Option<AdmittedConnection> {
@@ -63,17 +58,8 @@ pub(crate) async fn take_event(
         }) => {
             // The stamp attests admission when the socket delivered this offer.
             // The current watch is for new commands and can already name its replacement.
-            let notice = match offer.message() {
-                DeliveryMessage::System(record)
-                    if matches!(record.body, MessageBody::DeliveryOutcome { .. }) =>
-                {
-                    Some(StoredNoticeKey {
-                        target: record.target.clone(),
-                        message_id: record.message_id.clone(),
-                    })
-                }
-                DeliveryMessage::System(_) | DeliveryMessage::Direct(_) => None,
-            };
+            let sender_notice = matches!(offer.message(),
+                DeliveryMessage::System(record) if matches!(record.body, MessageBody::DeliveryOutcome { .. }));
             let first_offer = inbox.lock().await.start_offer(offer)?;
             let kept = RecipientInbox::keep_shared_offer(inbox, first_offer).await?;
             let accepted = matches!(
@@ -89,13 +75,13 @@ pub(crate) async fn take_event(
                     connection,
                     result: kept,
                 },
-                sender_notice: notice.filter(|_| accepted),
+                sender_notice_saved: accepted && sender_notice,
             });
         }
     };
     Ok(TakenEvent {
         observation,
-        sender_notice: None,
+        sender_notice_saved: false,
     })
 }
 
@@ -140,11 +126,11 @@ async fn consume_offers(
                 }
                 Ok(TakenEvent {
                     observation: CustodyLinkObservation::LocalRetryCompleted,
-                    sender_notice: None,
+                    sender_notice_saved: true,
                 })
             }
         };
-        if matches!(&taken, Ok(saved) if saved.sender_notice.is_none()
+        if matches!(&taken, Ok(saved) if !saved.sender_notice_saved
             && matches!(saved.observation, CustodyLinkObservation::Delivery { result, .. }
                 if result != InboxOfferResult::LookupDeferred))
         {

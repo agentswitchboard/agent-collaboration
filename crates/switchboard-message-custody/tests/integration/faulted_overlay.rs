@@ -241,7 +241,7 @@ impl FaultCampaign {
                         "store fault must reach the report"
                     );
                 }
-                FaultSite::Insert | FaultSite::ScopedStatus => {
+                FaultSite::Insert | FaultSite::ScopedStatus | FaultSite::RecordSenderNotice => {
                     panic!("phase not used for {site:?}")
                 }
             }

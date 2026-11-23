@@ -272,6 +272,26 @@ impl RecipientInbox {
         Ok(waiting)
     }
 
+    pub(crate) async fn pending_sender_notices(
+        &mut self,
+    ) -> Result<Vec<MessageRecord>, InboxCustodyError> {
+        let scan = self.store.pending_handoffs().await?;
+        Ok(inbox_scan(scan, &mut self.operator_events)
+            .into_iter()
+            .filter(|message| matches!(message.body, MessageBody::DeliveryOutcome { .. }))
+            .collect())
+    }
+
+    pub(crate) async fn finish_sender_notice(
+        &mut self,
+        notice: &MessageId,
+    ) -> Result<(), InboxCustodyError> {
+        self.store
+            .record_handoff(notice, self.clock.now().unix_millis())
+            .await?;
+        Ok(())
+    }
+
     /// Prepare durable decisions for the connection the driver declares ready.
     pub async fn prepare_receipts(
         &mut self,

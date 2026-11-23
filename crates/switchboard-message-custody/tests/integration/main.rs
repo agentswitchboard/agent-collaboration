@@ -9,4 +9,5 @@ mod faulty_outbox;
 mod inbox_custody;
 mod outbox_timing;
 mod same_mac;
+mod sender_notice_recovery;
 mod write_selection_deadline;
