@@ -58,8 +58,8 @@ pub use destination_requests::{
     RetainedSessionDecision,
 };
 pub use holder_requests::{
-    DeliverEndingReply, RaiseReceipt, RaiseReply, RegisterRunReply, RegisterRunRequest, RunRefusal,
-    StopReceiptEnding, StopReply, StopRequest,
+    DeliverEndingReply, ErasedApprovalMarker, RaiseReceipt, RaiseReply, RegisterRunReply,
+    RegisterRunRequest, RunRefusal, StopReceiptEnding, StopReply, StopRequest,
 };
 pub use parent_session_calls::{
     ApprovalDestination, ApprovalNotice, ApprovalNoticeReply, ApprovalSessionCall,

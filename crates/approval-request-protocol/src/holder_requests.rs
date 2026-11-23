@@ -56,6 +56,7 @@ approval_wire_union! {
 pub enum RaiseReply {
     Receipt { receipt: RaiseReceipt },
     AlreadyStopped {},
+    AlreadyEnded { marker: ErasedApprovalMarker },
     SessionEnded {},
     ContentsDiffer {},
     TooManyOutstanding {},
@@ -183,8 +184,20 @@ impl StopRequest {
     }
 }
 
+approval_wire_record! {
+[deny_unknown_fields]
+/// The identity and ending a holder can learn after the retention cutoff.
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
+#[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
+pub struct ErasedApprovalMarker {
+    pub request_id: ApprovalRequestId,
+    pub router_run: RouterRunId,
+    pub ending: StopReceiptEnding,
+}
+}
+
 approval_wire_union! {
-/// Which ending stands after a Stop. The receipt carries no handover or answer.
+/// The ending that stands, with its reason when cancelled.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),

@@ -5,7 +5,7 @@ use std::marker::PhantomData;
 use approval_request_protocol::{
     ApprovalDigestError, CallStopCause, DeliverEndingReply, DeliverEndingRequest, HolderStopCause,
     InvalidApprovalEnding, PrivateEnding, ProviderStopCause, Raise, RaiseReply,
-    RequestContentsDigest, RequestKind, StopReply, StopRequest,
+    RequestContentsDigest, RequestKind, StopReceiptEnding, StopReply, StopRequest,
 };
 use state_machine_core::{
     EventTag, RefusalTag, StateMachine, StateMachineResult, StateTag, Transition, TransitionError,
@@ -62,6 +62,7 @@ pub enum LocalNegative {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum RaiseRefusal {
     AlreadyStopped,
+    AlreadyEnded(StopReceiptEnding),
     SessionEnded,
     ContentsDiffer,
     TooManyOutstanding,
@@ -351,6 +352,7 @@ pub enum WaitEffect<Responder, Connection, Enrollment> {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WaitRefusal {
     ReceiptForDifferentRequest,
+    ErasureMarkerForDifferentRequestOrRun,
     StopCauseForDifferentKind,
     HolderRefusedLocallyRequiresRefusalSelection,
 }
