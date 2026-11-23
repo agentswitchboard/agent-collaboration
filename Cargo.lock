@@ -5847,6 +5847,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchboard-message-custody"
+version = "0.1.158"
+dependencies = [
+ "central-link-protocol",
+ "chrono",
+ "hegeltest",
+ "router-clock",
+ "runtime-primitives",
+ "state-machine-core",
+ "switchboard-machine-core-store",
+ "thiserror 2.0.18",
+ "workspace-ids",
+ "workspace-model",
+]
+
+[[package]]
 name = "switchboard-session-calls"
 version = "0.1.158"
 dependencies = [

@@ -61,6 +61,7 @@ members = [
     "crates/switchboard-session-calls",
     "crates/switchboard-session-store",
     "crates/switchboard-machine-core-store",
+    "crates/switchboard-message-custody",
     "crates/collaboration-protocol",
     "crates/collaboration-central-core",
     "crates/collaboration-central-cloudflare",
