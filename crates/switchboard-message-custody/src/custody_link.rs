@@ -480,7 +480,7 @@ impl CustodyLink {
             };
             checked.insert(probe.claim.key.request_id.clone());
             let result = self.lane.request_status(probe.command.clone()).await;
-            report.append(self.settle_recovery_probe(probe, result).await);
+            report.append(self.settle_recovery_probe(probe, result, false).await);
         }
     }
 
@@ -509,8 +509,16 @@ impl CustodyLink {
         &mut self,
         probe: OrphanProbe,
         result: LinkLaneDisposition<CorrelatedStatusReply>,
+        cutoff_reported: bool,
     ) -> FlushReport {
-        settle_orphan_probe(&mut self.outbox, &mut self.dispatcher, probe, result).await
+        settle_orphan_probe(
+            &mut self.outbox,
+            &mut self.dispatcher,
+            probe,
+            result,
+            cutoff_reported,
+        )
+        .await
     }
 
     pub(crate) fn owes_local_settlement(&self) -> bool {

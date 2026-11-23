@@ -16,7 +16,7 @@ use workspace_model::{WorkspaceReply, WorkspaceResult, central_mail::CentralMail
 
 use crate::{
     flush_report::{BatchDispatchError, FlushReport},
-    local_settlement::MemberReturn,
+    local_settlement::{AnswerAtCutoff, MemberReturn},
     outbox_dispatch::OutboxDispatcher,
     outbox_settlement_map::outcome_from_link_reply,
     outbox_work::{OutboxWork, OutboxWorkError},
@@ -129,20 +129,22 @@ pub(crate) async fn settle_orphan_probe(
     dispatch: &mut OutboxDispatcher,
     probe: OrphanProbe,
     disposition: LinkLaneDisposition<CorrelatedStatusReply>,
+    cutoff_reported: bool,
 ) -> FlushReport {
     let mut report = FlushReport::default();
-    if work.local_now_ms() >= probe.claim.deadline_ms {
-        return report;
-    }
-    let LinkLaneDisposition::Answered { reply, .. } = disposition else {
+    let LinkLaneDisposition::Answered { reply, accepted_at } = disposition else {
         return report;
     };
     if reply.correlation_id != probe.command.correlation_id {
         return report;
     }
+    let deadline = work.local_wake_at(probe.claim.deadline_ms);
     let reply = match *reply.result {
         RequestStatusAnswer::NotFound => {
-            if work.has_settlement_time(probe.claim.deadline_ms) {
+            if !cutoff_reported
+                && accepted_at < deadline
+                && work.has_settlement_time(probe.claim.deadline_ms)
+            {
                 dispatch
                     .return_recovered_claim(
                         work,
@@ -166,8 +168,13 @@ pub(crate) async fn settle_orphan_probe(
         }
     };
     if outcome_from_link_reply(&probe.claim.payload, reply.clone()).is_ok() {
+        let timing = if cutoff_reported {
+            AnswerAtCutoff::StatusOnly
+        } else {
+            AnswerAtCutoff::new(accepted_at, deadline)
+        };
         dispatch
-            .settle_orphan_answer(work, probe.claim, reply, &mut report)
+            .settle_orphan_answer(work, probe.claim, reply, timing, &mut report)
             .await;
     } else {
         report.issues.push(BatchDispatchError::UnsettledReply(

@@ -14,7 +14,7 @@ use workspace_ids::RequestId;
 use crate::{
     custody_operator::CustodyOperatorEvent,
     flush_clock::send_fence_for_mark,
-    local_settlement::{LocalSettlements, MemberReturn},
+    local_settlement::{AnswerAtCutoff, LocalSettlements, MemberReturn},
     outbox_wire::request_for_write,
     outbox_work::{FlushSelection, OutboxWork},
 };
@@ -82,17 +82,11 @@ impl OutboxDispatcher {
         work: &mut OutboxWork,
         claim: UnansweredOutboxClaim,
         reply: ReplyPayload,
+        cutoff: AnswerAtCutoff,
         report: &mut FlushReport,
     ) {
         self.settling
-            .answer(
-                work,
-                claim.key.request_id,
-                claim.caller,
-                claim.payload,
-                reply,
-                report,
-            )
+            .answer(work, claim.into(), reply, cutoff, report)
             .await;
     }
 
@@ -273,16 +267,13 @@ impl OutboxDispatcher {
                 }
                 for (write, member) in active.writes.into_iter().zip(results.into_members()) {
                     match member.disposition {
-                        WriteBatchMemberDisposition::Answered { reply, .. } => {
+                        WriteBatchMemberDisposition::Answered { reply, accepted_at } => {
+                            let cutoff = AnswerAtCutoff::new(
+                                accepted_at,
+                                work.write_deadline(write.sent_at),
+                            );
                             self.settling
-                                .answer(
-                                    work,
-                                    write.request,
-                                    write.caller,
-                                    write.payload,
-                                    *reply.result,
-                                    &mut report,
-                                )
+                                .answer(work, write.into(), *reply.result, cutoff, &mut report)
                                 .await;
                         }
                         WriteBatchMemberDisposition::AnswerLost { .. } => {

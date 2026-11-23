@@ -21,6 +21,71 @@ use super::{
 };
 
 #[tokio::test]
+async fn a_batch_member_accepted_at_its_deadline_reports_only_the_cutoff() {
+    let campaign = FaultCampaign::start().await;
+    let item = thread_post(2_904);
+    let database = campaign.root.path().join("machine_local.sqlite");
+    let mut store = open_outbox(&database).await;
+    store.insert(&item, START_MS - 840_000).await.unwrap();
+    let mut work = OutboxWork::new(Box::new(store), campaign.clock.clone());
+    let admitted = campaign.peer.admitted.borrow().clone().unwrap();
+    let mut dispatcher = OutboxDispatcher::default();
+    campaign.clock.advance(Duration::from_secs(20)).unwrap();
+    let batch = dispatcher
+        .prepare_at_mark(
+            &mut work,
+            admitted.connection,
+            admitted.clock_anchor,
+            SyncTime::from_unix_millis(MARK_MS),
+        )
+        .await
+        .unwrap()
+        .batch
+        .unwrap();
+    let command = batch.command();
+    let first = &command.requests.requests()[0];
+    let central_answer = post_created(119);
+    campaign.clock.advance(Duration::from_secs(40)).unwrap();
+    let results = CheckedBatchResults::new(
+        &command.requests,
+        [WriteBatchMemberDisposition::Answered {
+            reply: CorrelatedRequestReply {
+                correlation_id: first.correlation_id().clone(),
+                result: Box::new(central_answer),
+            },
+            accepted_at: campaign.clock.monotonic_now(),
+        }],
+    )
+    .unwrap();
+    let report = dispatcher
+        .settle_batch(
+            &mut work,
+            batch,
+            WriteBatchDisposition::MemberResults(results),
+        )
+        .await
+        .unwrap();
+    assert!(
+        report.answered.is_empty(),
+        "the batch member's accepted-at stamp must not turn an exact cutoff into a normal answer"
+    );
+    assert!(matches!(report.ended.as_slice(), [ended]
+        if ended.request_id == item.request && ended.reason == switchboard_machine_core_store::OutboxCancellation::NotConfirmedWithin15Minutes));
+    assert!(report.issues.is_empty());
+    let mut reopened = open_outbox(&database).await;
+    assert!(matches!(
+        reopened
+            .request_status(&item.caller, &item.request)
+            .await
+            .unwrap(),
+        switchboard_machine_core_store::OutboxRequestStatus::Answered(
+            switchboard_machine_core_store::OutboxAccepted::ThreadPost { .. }
+        )
+    ));
+    assert!(reopened.earliest_waiting().await.unwrap().healthy.is_none());
+}
+
+#[tokio::test]
 async fn a_failed_next_claim_carries_the_member_settled_before_it() {
     let campaign = FaultCampaign::start().await;
     let first = thread_post(2_902);

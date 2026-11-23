@@ -137,13 +137,18 @@ enum OrphanArrivalOrder {
     HeldAfterEarlyAnswer,
     ExactDeadline,
     CutoffReportedFirst,
+    EarlyStampPublishedAfterCutoff,
 }
 
 #[tokio::test]
-#[ignore = "waiting for the store's late settlement on an unconfirmed row"]
 async fn an_orphan_status_uses_its_accepted_instant_and_never_notifies_twice() {
     use OrphanArrivalOrder::*;
-    for order in [HeldAfterEarlyAnswer, ExactDeadline, CutoffReportedFirst] {
+    for order in [
+        HeldAfterEarlyAnswer,
+        ExactDeadline,
+        CutoffReportedFirst,
+        EarlyStampPublishedAfterCutoff,
+    ] {
         let campaign = FaultCampaign::start().await;
         let item = thread_post(609);
         seed_orphan(&campaign, &item, START_MS - 895_000).await;
@@ -152,11 +157,25 @@ async fn an_orphan_status_uses_its_accepted_instant_and_never_notifies_twice() {
         let faults = campaign.faults.clone();
         let query = scoped_query(&item);
         let central_answer = post_created(109);
-        peer.script_status_answer(
-            item.caller.clone(),
-            query.clone(),
-            RequestStatusAnswer::Answered(central_answer.clone()),
-        );
+        let refusal = RefusalReason::RequestIdReused;
+        let (central_status, expected) = if matches!(order, CutoffReportedFirst) {
+            (
+                RequestStatusAnswer::Refused(central_link_protocol::RequestRefusal::Workspace(
+                    refusal.clone(),
+                )),
+                CustodyRequestStatus::Refused(
+                    switchboard_machine_core_store::OutboxRefusal::Central(
+                        switchboard_machine_core_store::OutboxCentralRefusal::Workspace(refusal),
+                    ),
+                ),
+            )
+        } else {
+            (
+                RequestStatusAnswer::Answered(central_answer.clone()),
+                CustodyRequestStatus::Answered(central_answer.clone()),
+            )
+        };
+        peer.script_status_answer(item.caller.clone(), query.clone(), central_status);
         let status_gate = peer.hold_next_status();
         let (calls, stop, mut events, running) = start_worker(campaign.custody);
         progress(status_gate.entered.notified(), "the genuine orphan's query").await;
@@ -166,7 +185,7 @@ async fn an_orphan_status_uses_its_accepted_instant_and_never_notifies_twice() {
             "the original cutoff while the status is pending",
         )
         .await;
-        if matches!(order, CutoffReportedFirst) {
+        if matches!(order, CutoffReportedFirst | EarlyStampPublishedAfterCutoff) {
             clock.advance(Duration::from_secs(5)).unwrap();
             let ending = flush_event(&mut events, "the cutoff before any answer").await;
             assert!(
@@ -183,9 +202,12 @@ async fn an_orphan_status_uses_its_accepted_instant_and_never_notifies_twice() {
                 }
             );
             clock.advance(Duration::from_millis(1)).unwrap();
-            status_gate
-                .accepted
-                .send_replace(Some(clock.monotonic_now()));
+            let stamp = if matches!(order, EarlyStampPublishedAfterCutoff) {
+                ClockInstant::ZERO.after(Duration::from_secs(4))
+            } else {
+                clock.monotonic_now()
+            };
+            status_gate.accepted.send_replace(Some(stamp));
         } else {
             let local_hold = faults.hold_next_scoped_read();
             let local_lookup = tokio::spawn({
@@ -233,7 +255,6 @@ async fn an_orphan_status_uses_its_accepted_instant_and_never_notifies_twice() {
                 );
             }
         }
-        let expected = CustodyRequestStatus::Answered(central_answer);
         progress(
             async {
                 while calls

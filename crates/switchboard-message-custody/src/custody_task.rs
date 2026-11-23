@@ -17,7 +17,7 @@ use tokio::{
     sync::{mpsc, oneshot, watch},
     task::JoinSet,
 };
-use workspace_ids::{MessageId, SessionRef};
+use workspace_ids::{MessageId, RequestId, SessionRef};
 use workspace_model::{
     Caller,
     central_mail::{MessageRecord, MessageStatus},
@@ -207,6 +207,12 @@ type WriteReply = (PreparedWriteBatch, WriteBatchDisposition);
 type ReceiptReply = (ReceiptFrame, LinkLaneDisposition<CorrelatedReceiptResults>);
 type OrphanReply = (OrphanProbe, LinkLaneDisposition<CorrelatedStatusReply>);
 
+struct OutstandingOrphan {
+    request: RequestId,
+    cutoff_reported: bool,
+    completion: InFlight<OrphanReply>,
+}
+
 enum ReadyOrphanTurn {
     Answer(Box<OrphanReply>),
     Scan,
@@ -215,13 +221,18 @@ enum ReadyOrphanTurn {
 async fn ready_orphan_turn(
     clock: &dyn RuntimeClock,
     scan_at: Option<ClockInstant>,
-    reply: &mut Option<InFlight<OrphanReply>>,
+    reply: &mut Option<OutstandingOrphan>,
 ) -> ReadyOrphanTurn {
     // The lane may already have accepted and published a reply while the
     // worker was held. Inspect it before an equally ready cutoff scan.
     tokio::select! {
         biased;
-        result = poll_job(reply) => ReadyOrphanTurn::Answer(Box::new(result)),
+        result = async {
+            match reply {
+                Some(probe) => probe.completion.as_mut().await,
+                None => pending().await,
+            }
+        } => ReadyOrphanTurn::Answer(Box::new(result)),
         () = sleep_until(clock, scan_at) => ReadyOrphanTurn::Scan,
     }
 }
@@ -247,7 +258,7 @@ async fn run_custody(
     let mut retry_store_at = None;
     let mut admission = lane.watch_admitted();
     let mut admission_open = true;
-    let mut orphan_reply: Option<InFlight<OrphanReply>> = None;
+    let mut orphan_reply: Option<OutstandingOrphan> = None;
     let mut orphan_scan_at = Some(clock.monotonic_now());
     let mut retry_orphans_at = None;
     let mut deferred_orphans = BTreeSet::new();
@@ -347,39 +358,46 @@ async fn run_custody(
             },
             orphan_turn = ready_orphan_turn(clock.as_ref(), orphan_scan_at, &mut orphan_reply) => match orphan_turn {
                 ReadyOrphanTurn::Scan => {
-                match custody.prepare_recovery_turn(orphan_reply.is_none(), &deferred_orphans).await {
-                    Ok(turn) => {
-                        report_flush(&*sink, Ok(turn.report));
-                        orphan_scan_at = turn.next_deadline;
-                        if custody.owes_local_settlement() && retry_settlement_at.is_none() {
-                            retry_settlement_at = Some(clock.monotonic_now().after(LOCAL_RECOVERY_RETRY));
+                    match custody.prepare_recovery_turn(orphan_reply.is_none(), &deferred_orphans).await {
+                        Ok(turn) => {
+                            if let Some(probe) = &mut orphan_reply {
+                                probe.cutoff_reported |= turn.report.ended.iter().any(|ended| ended.request_id == probe.request);
+                            }
+                            report_flush(&*sink, Ok(turn.report));
+                            orphan_scan_at = turn.next_deadline;
+                            if custody.owes_local_settlement() && retry_settlement_at.is_none() {
+                                retry_settlement_at = Some(clock.monotonic_now().after(LOCAL_RECOVERY_RETRY));
+                            }
+                            if let Some(probe) = turn.probe {
+                                let lane = lane.clone();
+                                orphan_reply = Some(OutstandingOrphan {
+                                    request: probe.claim.key.request_id.clone(),
+                                    cutoff_reported: false,
+                                    completion: Box::pin(async move {
+                                        let result = lane.request_status(probe.command.clone()).await;
+                                        (probe, result)
+                                    }),
+                                });
+                            }
                         }
-                        if let Some(probe) = turn.probe {
-                            let lane = lane.clone();
-                            orphan_reply = Some(Box::pin(async move {
-                                let result = lane.request_status(probe.command.clone()).await;
-                                (probe, result)
-                            }));
+                        Err(error) => {
+                            sink.record_event(CustodyTaskEvent::Failed(error.into()));
+                            orphan_scan_at = Some(clock.monotonic_now().after(LOCAL_RECOVERY_RETRY));
                         }
                     }
-                    Err(error) => {
-                        sink.record_event(CustodyTaskEvent::Failed(error.into()));
-                        orphan_scan_at = Some(clock.monotonic_now().after(LOCAL_RECOVERY_RETRY));
-                    }
-                }
                 }
                 ReadyOrphanTurn::Answer(completed) => {
-                let (probe, outcome) = *completed;
-                orphan_reply = None;
-                deferred_orphans.insert(probe.claim.key.request_id.clone());
-                report_flush(&*sink, Ok(custody.settle_recovery_probe(probe, outcome).await));
-                if retry_orphans_at.is_none() {
-                    retry_orphans_at = Some(custody.local_retry_mark());
-                }
-                if custody.owes_local_settlement() && retry_settlement_at.is_none() {
-                    retry_settlement_at = Some(clock.monotonic_now().after(LOCAL_RECOVERY_RETRY));
-                }
-                orphan_scan_at = Some(clock.monotonic_now());
+                    let (probe, outcome) = *completed;
+                    let cutoff_reported = orphan_reply.take().is_some_and(|probe| probe.cutoff_reported);
+                    deferred_orphans.insert(probe.claim.key.request_id.clone());
+                    report_flush(&*sink, Ok(custody.settle_recovery_probe(probe, outcome, cutoff_reported).await));
+                    if retry_orphans_at.is_none() {
+                        retry_orphans_at = Some(custody.local_retry_mark());
+                    }
+                    if custody.owes_local_settlement() && retry_settlement_at.is_none() {
+                        retry_settlement_at = Some(clock.monotonic_now().after(LOCAL_RECOVERY_RETRY));
+                    }
+                    orphan_scan_at = Some(clock.monotonic_now());
                 }
             },
             () = sleep_until(clock.as_ref(), retry_notices_at) => {

@@ -283,6 +283,11 @@ impl FaultCampaign {
                 PendingWriteState::Answered(answer) => {
                     assert_central_post(&answer, accepted.get(&id).unwrap())
                 }
+                PendingWriteState::Refused(reason) => {
+                    panic!(
+                        "the scripted Central must not refuse a generated thread post: {reason:?}"
+                    );
+                }
                 PendingWriteState::Cancelled { reason } => {
                     assert!(
                         self.clock.utc_now().timestamp_millis() >= inserted_at + 900_000,
@@ -342,7 +347,9 @@ impl FaultCampaign {
 fn is_terminal(state: &PendingWriteState) -> bool {
     matches!(
         state,
-        PendingWriteState::Answered(_) | PendingWriteState::Cancelled { .. }
+        PendingWriteState::Answered(_)
+            | PendingWriteState::Refused(_)
+            | PendingWriteState::Cancelled { .. }
     )
 }
 

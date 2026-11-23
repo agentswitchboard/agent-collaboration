@@ -301,6 +301,14 @@ impl OutboxStorage for FaultyOutbox {
         )
     }
 
+    fn record_late_outcome<'call>(
+        &'call mut self,
+        request: &'call RequestId,
+        outcome: &'call OutboxWriteOutcome,
+    ) -> OutboxFuture<'call, ()> {
+        self.inner.record_late_outcome(request, outcome)
+    }
+
     fn return_not_transmitted<'call>(
         &'call mut self,
         request: &'call RequestId,

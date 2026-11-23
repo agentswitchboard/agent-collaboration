@@ -1,10 +1,12 @@
 //! Store effects owed for members whose lane evidence this worker still owns.
 
 use central_link_protocol::ReplyPayload;
+use router_clock::ClockInstant;
 use std::collections::BTreeMap;
 use switchboard_machine_core_store::{
-    EndedWrite, OutboxQueuedWrite, OutboxRequestKey, OutboxRequestStatus, OutboxStoreError,
-    OutboxWriteOutcome, OutboxWriteTarget, UnansweredOutboxClaim,
+    EndedWrite, OutboxCancellation, OutboxQueuedWrite, OutboxRequestKey, OutboxRequestStatus,
+    OutboxStoreError, OutboxWriteOutcome, OutboxWriteTarget, StoredOutboxWrite,
+    UnansweredOutboxClaim,
 };
 use workspace_ids::RequestId;
 use workspace_model::{Caller, WorkspaceOperation};
@@ -26,6 +28,25 @@ enum MemberEvidence {
 struct CheckedMemberAnswer {
     wire_reply: ReplyPayload,
     outcome: OutboxWriteOutcome,
+    cutoff: AnswerAtCutoff,
+}
+
+/// Custody compares the driver's acceptance instant with the original write deadline.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum AnswerAtCutoff {
+    BeforeCutoff,
+    FinishCutoff,
+    StatusOnly,
+}
+
+impl AnswerAtCutoff {
+    pub(crate) fn new(accepted_at: ClockInstant, deadline: ClockInstant) -> Self {
+        if accepted_at < deadline {
+            Self::BeforeCutoff
+        } else {
+            Self::FinishCutoff
+        }
+    }
 }
 
 struct MemberSettlement {
@@ -33,6 +54,33 @@ struct MemberSettlement {
     caller: Caller,
     payload: OutboxQueuedWrite,
     evidence: MemberEvidence,
+}
+
+/// The store's batch or orphan projection supplies the original write and its owner for settlement.
+pub(crate) struct SettlementWrite {
+    request: RequestId,
+    caller: Caller,
+    payload: OutboxQueuedWrite,
+}
+
+impl From<StoredOutboxWrite> for SettlementWrite {
+    fn from(write: StoredOutboxWrite) -> Self {
+        Self {
+            request: write.request,
+            caller: write.caller,
+            payload: write.payload,
+        }
+    }
+}
+
+impl From<UnansweredOutboxClaim> for SettlementWrite {
+    fn from(claim: UnansweredOutboxClaim) -> Self {
+        Self {
+            request: claim.key.request_id,
+            caller: claim.caller,
+            payload: claim.payload,
+        }
+    }
 }
 
 /// Pending store transitions owned by the command task until commit or exact read-back.
@@ -49,30 +97,30 @@ impl LocalSettlements {
     pub(crate) async fn answer(
         &mut self,
         work: &mut OutboxWork,
-        key: RequestId,
-        caller: Caller,
-        payload: OutboxQueuedWrite,
+        write: SettlementWrite,
         reply: ReplyPayload,
+        cutoff: AnswerAtCutoff,
         report: &mut FlushReport,
     ) {
-        let evidence = match outcome_from_link_reply(&payload, reply.clone()) {
+        let evidence = match outcome_from_link_reply(&write.payload, reply.clone()) {
             Ok(outcome) => MemberEvidence::Answered(Box::new(CheckedMemberAnswer {
                 wire_reply: reply,
                 outcome,
+                cutoff,
             })),
             Err(_) => {
                 report
                     .issues
-                    .push(BatchDispatchError::UnsettledReply(key.clone()));
+                    .push(BatchDispatchError::UnsettledReply(write.request.clone()));
                 MemberEvidence::Unanswered
             }
         };
         self.persist(
             work,
             MemberSettlement {
-                key,
-                caller,
-                payload,
+                key: write.request,
+                caller: write.caller,
+                payload: write.payload,
                 evidence,
             },
             report,
@@ -129,24 +177,35 @@ impl LocalSettlements {
     async fn persist(
         &mut self,
         work: &mut OutboxWork,
-        settled: MemberSettlement,
+        mut settled: MemberSettlement,
         report: &mut FlushReport,
     ) {
-        let result = match settled.apply(work).await {
+        let result = match settled.apply(work, report).await {
             Ok(result) => Some(result),
             Err(error) => {
+                let permanent = matches!(
+                    error,
+                    OutboxStoreError::ContradictoryFinalOutcome { .. }
+                        | OutboxStoreError::LateOutcomeForNotSent { .. }
+                        | OutboxStoreError::InvalidOutcome { .. }
+                );
                 work.report_point_read_error(&error);
                 report.issues.push(BatchDispatchError::StoreMember {
                     request: settled.key.clone(),
                     error,
                 });
+                if permanent {
+                    return;
+                }
                 settled.read_back(work).await
             }
         };
         match result {
             Some(ended) => {
                 report.ended.extend(ended);
-                if let MemberEvidence::Answered(answer) = settled.evidence {
+                if let MemberEvidence::Answered(answer) = settled.evidence
+                    && answer.cutoff == AnswerAtCutoff::BeforeCutoff
+                {
                     report.answered.push(FlushedWriteAnswer {
                         request: settled.key,
                         caller: settled.caller,
@@ -177,12 +236,50 @@ impl MemberReturn {
 }
 
 impl MemberSettlement {
-    async fn apply(&self, work: &mut OutboxWork) -> Result<Vec<EndedWrite>, OutboxStoreError> {
+    async fn apply(
+        &mut self,
+        work: &mut OutboxWork,
+        report: &mut FlushReport,
+    ) -> Result<Vec<EndedWrite>, OutboxStoreError> {
         let now_ms = work.local_now_ms();
-        match &self.evidence {
+        match &mut self.evidence {
             MemberEvidence::Answered(answer) => {
+                if answer.cutoff == AnswerAtCutoff::BeforeCutoff {
+                    let recorded = work
+                        .outbox_storage()
+                        .record_outcome(&self.key, &answer.outcome, now_ms)
+                        .await;
+                    match recorded {
+                        Ok(()) => return Ok(Vec::new()),
+                        Err(error @ OutboxStoreError::UnexpectedState { .. }) => {
+                            let key = OutboxRequestKey {
+                                request_id: self.key.clone(),
+                                scope: self.payload.request_scope(),
+                            };
+                            let status = work
+                                .outbox_storage()
+                                .scoped_request_status(&self.caller, &key)
+                                .await?;
+                            if status
+                                != (OutboxRequestStatus::Ended {
+                                    reason: OutboxCancellation::NotConfirmedWithin15Minutes,
+                                })
+                            {
+                                return Err(error);
+                            }
+                            answer.cutoff = AnswerAtCutoff::StatusOnly;
+                        }
+                        Err(error) => return Err(error),
+                    }
+                }
+                if answer.cutoff == AnswerAtCutoff::FinishCutoff {
+                    report
+                        .ended
+                        .extend(work.end_selected_claim(&self.key).await?);
+                    answer.cutoff = AnswerAtCutoff::StatusOnly;
+                }
                 work.outbox_storage()
-                    .record_outcome(&self.key, &answer.outcome, now_ms)
+                    .record_late_outcome(&self.key, &answer.outcome)
                     .await?;
             }
             MemberEvidence::NotTransmitted => {

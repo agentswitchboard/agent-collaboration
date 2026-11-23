@@ -133,15 +133,19 @@ impl OutboxWork {
     }
 
     pub(crate) fn write_send_fence(&self, original_send: Timestamp) -> ClockInstant {
-        let deadline = self.local_wake_at(
-            original_send
-                .timestamp_millis()
-                .saturating_add(ORIGINAL_WRITE_WINDOW_MS),
-        );
+        let deadline = self.write_deadline(original_send);
         ClockInstant::ZERO.after(
             deadline
                 .saturating_duration_since(ClockInstant::ZERO)
                 .saturating_sub(LINK_LANE_SETTLEMENT_LIMIT),
+        )
+    }
+
+    pub(crate) fn write_deadline(&self, original_send: Timestamp) -> ClockInstant {
+        self.local_wake_at(
+            original_send
+                .timestamp_millis()
+                .saturating_add(ORIGINAL_WRITE_WINDOW_MS),
         )
     }
 
@@ -170,6 +174,23 @@ impl OutboxWork {
             .end_overdue_orphans(now_ms, protected_ids)
             .await?;
         Ok(outbox_scan(scanned, &mut self.operator_events))
+    }
+
+    pub(crate) async fn end_selected_claim(
+        &mut self,
+        request: &RequestId,
+    ) -> Result<Vec<EndedWrite>, OutboxStoreError> {
+        let scan = self.store.sent_without_answer().await?;
+        let mut excluded = outbox_scan(scan, &mut self.operator_events)
+            .into_iter()
+            .map(|claim| claim.key.request_id)
+            .collect::<BTreeSet<_>>();
+        if !excluded.remove(request) {
+            return Ok(Vec::new());
+        }
+        let now_ms = self.local_now_ms();
+        let ended = self.store.end_overdue_orphans(now_ms, &excluded).await?;
+        Ok(outbox_scan(ended, &mut self.operator_events))
     }
 
     pub(crate) async fn return_unanswered(
