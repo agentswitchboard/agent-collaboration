@@ -51,6 +51,7 @@ pub struct RowCorruption {
 #[derive(Debug, Eq, PartialEq)]
 pub enum RowCorruptionReason {
     InvalidIdentifier,
+    InvalidStorageType,
     TimestampOutOfRange,
     DeadlineMismatch { expected_ms: i64, stored_ms: i64 },
     InvalidJson,
@@ -59,4 +60,11 @@ pub enum RowCorruptionReason {
     UnsupportedOperation,
     InconsistentState,
     IncompatibleOutcome,
+}
+
+/// Keep invalid UTF-8 keys printable without discarding any of their bytes.
+pub(crate) fn diagnostic_key(raw: &[u8]) -> String {
+    std::str::from_utf8(raw)
+        .map(str::to_owned)
+        .unwrap_or_else(|_| format!("bytes:{raw:02x?}"))
 }

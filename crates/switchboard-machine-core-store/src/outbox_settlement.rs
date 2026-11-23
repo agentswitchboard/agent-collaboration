@@ -1,16 +1,18 @@
 //! Validated permanent outcomes for claimed writes.
 use crate::{
-    LocalOutboxRefusal, OutboxAccepted, OutboxQueuedWrite, OutboxRefusal, OutboxWriteTarget,
+    LocalOutboxRefusal, OutboxAccepted, OutboxCentralRefusal, OutboxQueuedWrite, OutboxRefusal,
+    OutboxScope, OutboxWriteTarget,
 };
-use central_link_protocol::{ReplyPayload, RequestRefusal};
-use workspace_model::{
-    ItemRef, RefusalReason, WorkspaceAnswer, WorkspaceResult,
-    central_mail::{CentralMailAnswer, CentralMailRefusal, CentralMailResult},
-};
+use workspace_ids::RequestId;
+use workspace_model::{ItemRef, RefusalReason, central_mail::CentralMailRefusal};
 
 /// A terminal result the outbox can persist after a claim.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OutboxWriteOutcome(SettledWrite);
+pub struct OutboxWriteOutcome {
+    request_id: RequestId,
+    target: OutboxWriteTarget,
+    settlement: SettledWrite,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SettledWrite {
@@ -23,76 +25,86 @@ pub(crate) enum SettledWrite {
 pub struct InvalidOutboxOutcome;
 
 impl OutboxWriteOutcome {
-    pub fn from_reply(
+    pub fn from_accepted(
         write: &OutboxQueuedWrite,
-        reply: ReplyPayload,
+        accepted: OutboxAccepted,
     ) -> Result<Self, InvalidOutboxOutcome> {
-        let target = write.content().ok_or(InvalidOutboxOutcome)?.target;
-        let refusal = match &reply {
-            ReplyPayload::Workspace(reply) => match &reply.result {
-                WorkspaceResult::Refused(reason) => Some(RequestRefusal::Workspace(reason.clone())),
-                WorkspaceResult::NotFound { item, .. } => {
-                    Some(RequestRefusal::Workspace(RefusalReason::NotFound {
-                        item: item.clone(),
-                    }))
-                }
-                _ => None,
-            },
-            ReplyPayload::Mail(CentralMailResult::Refused(reason)) => {
-                Some(RequestRefusal::Mail(reason.clone()))
-            }
-            ReplyPayload::Mail(_) => None,
-        };
-        match refusal {
-            Some(reason) => Self::from_refusal(write, OutboxRefusal::Central(reason)),
-            None => accepted_reply(&target, reply)
-                .map(|answer| Self(SettledWrite::Answered(answer)))
-                .ok_or(InvalidOutboxOutcome),
-        }
+        Self::bind(write, |target| {
+            is_permanent_answer(target, &accepted)
+                .then_some(SettledWrite::Answered(accepted))
+                .ok_or(InvalidOutboxOutcome)
+        })
     }
 
     pub fn from_refusal(
         write: &OutboxQueuedWrite,
         refusal: OutboxRefusal,
     ) -> Result<Self, InvalidOutboxOutcome> {
-        let target = write.content().ok_or(InvalidOutboxOutcome)?.target;
-        if !is_permanent_refusal(&target, &refusal) {
+        if matches!(
+            refusal,
+            OutboxRefusal::Central(OutboxCentralRefusal::Workspace(
+                RefusalReason::NotFound { .. }
+            ))
+        ) {
             return Err(InvalidOutboxOutcome);
         }
-        Ok(Self(SettledWrite::Refused(refusal)))
+        Self::bind(write, |target| checked_refusal(target, refusal))
     }
 
-    pub(crate) fn for_target(
+    /// Validates the reported scope before retaining the native NotFound reason.
+    pub fn from_workspace_not_found(
+        write: &OutboxQueuedWrite,
+        scope: &OutboxScope,
+        item: ItemRef,
+    ) -> Result<Self, InvalidOutboxOutcome> {
+        Self::bind(write, |target| {
+            if target.request_scope() != *scope {
+                return Err(InvalidOutboxOutcome);
+            }
+            checked_refusal(
+                target,
+                OutboxRefusal::Central(OutboxCentralRefusal::Workspace(RefusalReason::NotFound {
+                    item,
+                })),
+            )
+        })
+    }
+
+    fn bind(
+        write: &OutboxQueuedWrite,
+        settle: impl FnOnce(&OutboxWriteTarget) -> Result<SettledWrite, InvalidOutboxOutcome>,
+    ) -> Result<Self, InvalidOutboxOutcome> {
+        let request_id = write.request_id().ok_or(InvalidOutboxOutcome)?.clone();
+        let target = write.content().ok_or(InvalidOutboxOutcome)?.target;
+        let settlement = settle(&target)?;
+        Ok(Self {
+            request_id,
+            target,
+            settlement,
+        })
+    }
+
+    pub(crate) fn for_claim(
         &self,
+        request_id: &RequestId,
         target: &OutboxWriteTarget,
     ) -> Result<&SettledWrite, InvalidOutboxOutcome> {
-        let matches = match &self.0 {
-            SettledWrite::Answered(reply) => is_permanent_answer(target, reply),
-            SettledWrite::Refused(refusal) => is_permanent_refusal(target, refusal),
-        };
-        matches.then_some(&self.0).ok_or(InvalidOutboxOutcome)
+        // The target encodes the operation and the owning scope.
+        (self.request_id == *request_id && self.target == *target)
+            .then_some(&self.settlement)
+            .ok_or(InvalidOutboxOutcome)
     }
 }
 
-fn accepted_reply(target: &OutboxWriteTarget, reply: ReplyPayload) -> Option<OutboxAccepted> {
-    let answer = match reply {
-        ReplyPayload::Workspace(reply) => match reply.result {
-            WorkspaceResult::Done(WorkspaceAnswer::Created {
-                item: ItemRef::Post(post_id),
-                position,
-            }) => OutboxAccepted::ThreadPost {
-                post_id,
-                position,
-                actors: reply.actors,
-            },
-            _ => return None,
-        },
-        ReplyPayload::Mail(CentralMailResult::Done(CentralMailAnswer::Queued { message_id })) => {
-            OutboxAccepted::SendMessage { message_id }
-        }
-        ReplyPayload::Mail(_) => return None,
-    };
-    is_permanent_answer(target, &answer).then_some(answer)
+fn checked_refusal(
+    target: &OutboxWriteTarget,
+    refusal: OutboxRefusal,
+) -> Result<SettledWrite, InvalidOutboxOutcome> {
+    if is_permanent_refusal(target, &refusal) {
+        Ok(SettledWrite::Refused(refusal))
+    } else {
+        Err(InvalidOutboxOutcome)
+    }
 }
 
 pub(crate) fn is_permanent_answer(target: &OutboxWriteTarget, answer: &OutboxAccepted) -> bool {
@@ -113,7 +125,7 @@ pub(crate) fn is_permanent_refusal(target: &OutboxWriteTarget, refusal: &OutboxR
         (_, OutboxRefusal::Local(LocalOutboxRefusal::RequestIdConflict)) => true,
         (
             OutboxWriteTarget::Thread { thread_id, .. },
-            OutboxRefusal::Central(RequestRefusal::Workspace(reason)),
+            OutboxRefusal::Central(OutboxCentralRefusal::Workspace(reason)),
         ) => match reason {
             RefusalReason::RequestIdReused
             | RefusalReason::WorkspaceNotAllowed
@@ -130,7 +142,7 @@ pub(crate) fn is_permanent_refusal(target: &OutboxWriteTarget, refusal: &OutboxR
         },
         (
             OutboxWriteTarget::Session { to },
-            OutboxRefusal::Central(RequestRefusal::Mail(reason)),
+            OutboxRefusal::Central(OutboxCentralRefusal::Mail(reason)),
         ) => match reason {
             CentralMailRefusal::UnknownSession { target } => to == target,
             CentralMailRefusal::TimeOutOfRange { field } => field == "anchorAt",

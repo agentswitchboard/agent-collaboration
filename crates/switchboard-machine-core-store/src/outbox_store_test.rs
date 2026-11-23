@@ -1,17 +1,15 @@
 use super::{MacOutbox, NewOutboxItem, OutboxInsert, OutboxStoreError, StoredOutboxWrite};
 use crate::{
-    LocalOutboxRefusal, MachineLocalStore, OutboxCancellation, OutboxQueuedWrite, OutboxRefusal,
-    OutboxRequestStatus, OutboxWriteOutcome, PendingWriteState,
+    LocalOutboxRefusal, MachineLocalStore, OutboxCancellation, OutboxCentralRefusal,
+    OutboxQueuedWrite, OutboxRefusal, OutboxRequestStatus, OutboxWriteOutcome, PendingWriteState,
 };
-use central_link_protocol::{ReplyPayload, RequestRefusal};
 use serde_json::json;
-use workspace_model::{
-    Caller, ChangePosition, ItemRef, RefusalReason, WorkspaceAnswer, WorkspaceReply,
-    WorkspaceResult,
-};
+use workspace_model::{Caller, ChangePosition, RefusalReason};
 
 #[path = "outbox_admission_test.rs"]
 mod admission;
+#[path = "outbox_claim_guard_test.rs"]
+mod claim_guards;
 #[path = "outbox_corruption_test.rs"]
 mod corruption;
 #[path = "outbox_store_model_test.rs"]
@@ -19,8 +17,8 @@ mod model;
 #[path = "sender_outcome_store_test.rs"]
 mod sender_outcomes;
 
-fn central_refusal() -> RequestRefusal {
-    RequestRefusal::Workspace(RefusalReason::RequestIdReused)
+fn central_refusal() -> OutboxCentralRefusal {
+    OutboxCentralRefusal::Workspace(RefusalReason::RequestIdReused)
 }
 
 const MARK: i64 = 1_763_380_800_000;
@@ -72,18 +70,8 @@ fn accepted_answer() -> crate::OutboxAccepted {
     }
 }
 
-fn accepted_reply() -> ReplyPayload {
-    ReplyPayload::Workspace(WorkspaceReply {
-        result: WorkspaceResult::Done(WorkspaceAnswer::Created {
-            item: ItemRef::Post(uuid_v7(60_004).parse().unwrap()),
-            position: ChangePosition::ZERO,
-        }),
-        actors: Vec::new(),
-    })
-}
-
 fn accepted(write: &OutboxQueuedWrite) -> OutboxWriteOutcome {
-    OutboxWriteOutcome::from_reply(write, accepted_reply()).unwrap()
+    OutboxWriteOutcome::from_accepted(write, accepted_answer()).unwrap()
 }
 
 async fn open(root: &tempfile::TempDir) -> MachineLocalStore {

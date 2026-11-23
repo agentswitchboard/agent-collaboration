@@ -133,3 +133,72 @@ fn assert_faults(mut faults: Vec<RowCorruption>, messages: &[MessageRecord]) {
     faults.sort_by(|first, second| first.key.cmp(&second.key));
     assert_eq!(faults, expected_faults(messages));
 }
+
+#[tokio::test]
+async fn invalid_utf8_inbox_decision_does_not_hide_healthy_receipts_or_handoffs() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("machine_local.sqlite");
+    let mut database = MachineLocalStore::open(&path).await.unwrap();
+    let mut events = Vec::new();
+    for index in 0..2 {
+        let event = message(index);
+        sqlx::query(
+            "INSERT INTO inbox_messages
+             (message_id, message_json, delivery_state_json, created_at, updated_at)
+             VALUES (?, ?, ?, 0, 0)",
+        )
+        .bind(event.message_id.as_str())
+        .bind(serde_json::to_string(&event).unwrap())
+        .bind(PENDING)
+        .execute(&mut database.connection)
+        .await
+        .unwrap();
+        events.push(event);
+    }
+    sqlx::query("UPDATE inbox_messages SET delivery_state_json = CAST(x'80FF' AS TEXT) WHERE message_id = ?")
+        .bind(events[0].message_id.as_str()).execute(&mut database.connection).await.unwrap();
+    let mut inbox = InboxStore::new(database);
+
+    let handoffs = inbox.pending_handoffs().await.unwrap();
+    assert_eq!(handoffs.healthy, std::slice::from_ref(&events[1]));
+    let diagnostic = || RowCorruption {
+        key: events[0].message_id.to_string(),
+        field: "delivery_state_json",
+        reason: RowCorruptionReason::InvalidJson,
+    };
+    assert_eq!(handoffs.corrupt_rows, [diagnostic()]);
+    let receipts = inbox.pending_receipts().await.unwrap();
+    assert_eq!(receipts.healthy[0].message_id, events[1].message_id);
+    assert_eq!(receipts.corrupt_rows, [diagnostic()]);
+}
+
+#[tokio::test]
+async fn non_integer_receipt_time_does_not_turn_into_a_healthy_delivery() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("machine_local.sqlite");
+    let mut database = MachineLocalStore::open(&path).await.unwrap();
+    let event = message(0);
+    sqlx::query(
+        "INSERT INTO inbox_messages
+         (message_id, message_json, delivery_state_json, created_at, updated_at)
+         VALUES (?, ?, ?, 'invalid', 0)",
+    )
+    .bind(event.message_id.as_str())
+    .bind(serde_json::to_string(&event).unwrap())
+    .bind(PENDING)
+    .execute(&mut database.connection)
+    .await
+    .unwrap();
+
+    let mut inbox = InboxStore::new(database);
+    let receipts = inbox.pending_receipts().await.unwrap();
+    assert!(receipts.healthy.is_empty());
+    assert_eq!(
+        receipts.corrupt_rows,
+        [RowCorruption {
+            key: event.message_id.to_string(),
+            field: "created_at",
+            reason: RowCorruptionReason::InvalidStorageType,
+        }]
+    );
+}

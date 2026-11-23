@@ -2,9 +2,10 @@
 use super::{
     ANSWERED_RETENTION_MILLIS, MacOutbox, OutboxStoreError, StoredOutboxWrite,
     outbox_rows::{
-        DecodedRow, OutboxRow, StoredPayload, corrupt_row, decode_row, expect_one, outbox_content,
-        payload_content_digest, read_row, waiting_page, waiting_rows,
+        DecodedRow, StoredPayload, corrupt_row, decode_row, expect_one, outbox_content,
+        payload_content_digest, read_row, select_outbox_rows, waiting_page, waiting_rows,
     },
+    validate_write_timestamp,
 };
 use crate::{
     EndedWrite, OutboxWriteOutcome, StoreScan, outbox_deadline::DepartureAtDeadline,
@@ -21,17 +22,16 @@ impl MacOutbox<'_> {
         &mut self,
         now_ms: i64,
     ) -> Result<StoreScan<u64>, OutboxStoreError> {
+        validate_write_timestamp(now_ms, "now_ms")?;
         let cutoff = now_ms.saturating_sub(ANSWERED_RETENTION_MILLIS);
         let answered = OutboxItemState::Answered.as_str();
         let refused = OutboxItemState::Refused.as_str();
         let not_sent = OutboxItemState::NotSent.as_str();
         let unconfirmed = OutboxItemState::Unconfirmed.as_str();
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
-        let rows = sqlx::query_as!(
-            OutboxRow,
-            r#"SELECT request_id AS "request_id!", caller_json, payload_json, item_state,
-                      flush_at_ms, outcome_json, created_at, expires_at_ms, updated_at
-               FROM outbox_items WHERE item_state IN (?, ?, ?, ?) AND updated_at <= ?"#,
+        let rows = select_outbox_rows!(
+            r#"WHERE item_state IN (?, ?, ?, ?)
+                    AND (typeof(updated_at) <> 'integer' OR updated_at <= ?)"#,
             answered,
             refused,
             not_sent,
@@ -68,6 +68,7 @@ impl MacOutbox<'_> {
         requests: &[RequestId],
         now_ms: i64,
     ) -> Result<Vec<StoredOutboxWrite>, OutboxStoreError> {
+        validate_write_timestamp(now_ms, "updated_at")?;
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
         let mut writes = Vec::with_capacity(requests.len());
         for request in requests {
@@ -98,6 +99,8 @@ impl MacOutbox<'_> {
         limit: u16,
         now_ms: i64,
     ) -> Result<StoreScan<ClaimedBatch>, OutboxStoreError> {
+        validate_write_timestamp(mark_ms, "mark_ms")?;
+        validate_write_timestamp(now_ms, "updated_at")?;
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
         let mut cursor = None;
         let mut corrupt_rows = Vec::new();
@@ -136,6 +139,7 @@ impl MacOutbox<'_> {
         outcome: &OutboxWriteOutcome,
         now_ms: i64,
     ) -> Result<(), OutboxStoreError> {
+        validate_write_timestamp(now_ms, "updated_at")?;
         let request_id = request.as_str();
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
         let row = read_in_flight(&mut transaction, request).await?;
@@ -143,19 +147,18 @@ impl MacOutbox<'_> {
             return Err(corrupt_row(request_id, "payload_json"));
         };
         let target = outbox_content(request_id, &payload)?.target;
-        let (state, outcome_json) =
-            match outcome
-                .for_target(&target)
-                .map_err(|_| OutboxStoreError::InvalidOutcome {
-                    request: request.clone(),
-                })? {
-                SettledWrite::Answered(reply) => {
-                    (OutboxItemState::Answered, serde_json::to_string(reply)?)
-                }
-                SettledWrite::Refused(reason) => {
-                    (OutboxItemState::Refused, serde_json::to_string(reason)?)
-                }
-            };
+        let (state, outcome_json) = match outcome.for_claim(request, &target).map_err(|_| {
+            OutboxStoreError::InvalidOutcome {
+                request: request.clone(),
+            }
+        })? {
+            SettledWrite::Answered(reply) => {
+                (OutboxItemState::Answered, serde_json::to_string(reply)?)
+            }
+            SettledWrite::Refused(reason) => {
+                (OutboxItemState::Refused, serde_json::to_string(reason)?)
+            }
+        };
         let to = state.as_str();
         let answered = AnsweredWrite {
             delivery_outcome: None,
@@ -191,6 +194,7 @@ impl MacOutbox<'_> {
         request: &RequestId,
         now_ms: i64,
     ) -> Result<(), OutboxStoreError> {
+        validate_write_timestamp(now_ms, "updated_at")?;
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
         let row = read_in_flight(&mut transaction, request).await?;
         let waiting = if row.state == OutboxItemState::Sent {
@@ -211,6 +215,7 @@ impl MacOutbox<'_> {
         requests: &[RequestId],
         now_ms: i64,
     ) -> Result<StoreScan<Vec<EndedWrite>>, OutboxStoreError> {
+        validate_write_timestamp(now_ms, "updated_at")?;
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
         let mut ended = Vec::new();
         let mut corrupt_rows = Vec::new();
@@ -258,6 +263,7 @@ impl MacOutbox<'_> {
         &mut self,
         now_ms: i64,
     ) -> Result<StoreScan<Vec<EndedWrite>>, OutboxStoreError> {
+        validate_write_timestamp(now_ms, "updated_at")?;
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
         let mut ended = Vec::new();
         let StoreScan {

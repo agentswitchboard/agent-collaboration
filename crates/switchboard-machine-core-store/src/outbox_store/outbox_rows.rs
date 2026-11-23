@@ -6,19 +6,23 @@ use crate::{
     outbox_item_state::OutboxItemState,
     outbox_receipt_profile::AnsweredWrite,
     outbox_settlement::{is_permanent_answer, is_permanent_refusal},
+    store_scan::diagnostic_key,
 };
 use workspace_ids::RequestId;
 use workspace_model::{Caller, Timestamp, operation_content_digest};
 pub(super) struct OutboxRow {
-    pub(super) request_id: String,
-    pub(super) caller_json: String,
-    pub(super) payload_json: String,
-    pub(super) item_state: String,
+    pub(super) request_id: Vec<u8>,
+    pub(super) caller_json: Vec<u8>,
+    pub(super) payload_json: Vec<u8>,
+    pub(super) item_state: Vec<u8>,
     pub(super) flush_at_ms: i64,
-    pub(super) outcome_json: Option<String>,
+    pub(super) outcome_json: Option<Vec<u8>>,
     pub(super) created_at: i64,
     pub(super) expires_at_ms: i64,
     pub(super) updated_at: i64,
+    pub(super) row_id: i64,
+    pub(super) key_is_text: bool,
+    pub(super) integer_fault: i64,
 }
 
 /// `payload_json` by row state: the whole write until central answers, then
@@ -40,19 +44,42 @@ pub(super) struct DecodedRow {
     pub(super) status: OutboxRequestStatus,
 }
 
+// Read SQLite TEXT as bytes so malformed UTF-8 reaches the per-row decoder.
+macro_rules! select_outbox_rows {
+    ($clause:literal $(, $argument:expr)* $(,)?) => {
+        sqlx::query_as!(
+            $crate::outbox_store::outbox_rows::OutboxRow,
+            r#"SELECT CAST(request_id AS BLOB) AS "request_id!: Vec<u8>",
+                  CAST(caller_json AS BLOB) AS "caller_json!: Vec<u8>",
+                  CAST(payload_json AS BLOB) AS "payload_json!: Vec<u8>",
+                  CAST(item_state AS BLOB) AS "item_state!: Vec<u8>", flush_at_ms,
+                  CAST(outcome_json AS BLOB) AS "outcome_json?: Vec<u8>",
+                  CAST(created_at AS INTEGER) AS "created_at!: i64",
+                  expires_at_ms, updated_at, rowid AS "row_id!: i64",
+                  (typeof(request_id) = 'text') AS "key_is_text!: bool",
+                  CASE
+                    WHEN typeof(created_at) <> 'integer' THEN 1
+                    WHEN typeof(updated_at) <> 'integer' THEN 2
+                    WHEN typeof(flush_at_ms) <> 'integer' THEN 3
+                    WHEN typeof(expires_at_ms) <> 'integer' THEN 4
+                    ELSE 0 END AS "integer_fault!: i64"
+           FROM outbox_items "# + $clause
+            $(, $argument)*
+        )
+    };
+}
+
+pub(super) use select_outbox_rows;
+
 pub(super) async fn read_row(
     connection: &mut sqlx::SqliteConnection,
     request: &RequestId,
 ) -> Result<Option<OutboxRow>, OutboxStoreError> {
-    Ok(sqlx::query_as!(
-        OutboxRow,
-        r#"SELECT request_id AS "request_id!", caller_json, payload_json, item_state,
-                  flush_at_ms, outcome_json, created_at, expires_at_ms, updated_at
-           FROM outbox_items WHERE request_id = ?"#,
-        request.as_str(),
+    Ok(
+        select_outbox_rows!(r#"WHERE request_id = ?"#, request.as_str(),)
+            .fetch_optional(connection)
+            .await?,
     )
-    .fetch_optional(connection)
-    .await?)
 }
 
 pub(super) async fn read_owned_outbox(
@@ -61,11 +88,8 @@ pub(super) async fn read_owned_outbox(
     request: &RequestId,
 ) -> Result<Option<DecodedRow>, OutboxStoreError> {
     let caller_json = serde_json::to_string(caller)?;
-    sqlx::query_as!(
-        OutboxRow,
-        r#"SELECT request_id AS "request_id!", caller_json, payload_json, item_state,
-                  flush_at_ms, outcome_json, created_at, expires_at_ms, updated_at
-           FROM outbox_items WHERE request_id = ? AND caller_json = ?"#,
+    select_outbox_rows!(
+        r#"WHERE request_id = ? AND caller_json = ?"#,
         request.as_str(),
         caller_json,
     )
@@ -82,11 +106,8 @@ pub(super) async fn read_rows_in_states(
     first: OutboxItemState,
     second: OutboxItemState,
 ) -> Result<StoreScan<Vec<DecodedRow>>, OutboxStoreError> {
-    Ok(sqlx::query_as!(
-        OutboxRow,
-        r#"SELECT request_id AS "request_id!", caller_json, payload_json, item_state,
-                  flush_at_ms, outcome_json, created_at, expires_at_ms, updated_at
-           FROM outbox_items WHERE item_state IN (?, ?) ORDER BY created_at, request_id"#,
+    Ok(select_outbox_rows!(
+        r#"WHERE item_state IN (?, ?) ORDER BY created_at, request_id"#,
         first.as_str(),
         second.as_str(),
     )
@@ -112,7 +133,8 @@ const CLAIM_SCAN_PAGE_SIZE: i64 = 128;
 
 pub(super) struct WaitingScanPosition {
     created_at: i64,
-    request_id: String,
+    request_id: Vec<u8>,
+    row_id: i64,
 }
 
 pub(super) async fn waiting_page(
@@ -120,19 +142,18 @@ pub(super) async fn waiting_page(
     after: Option<&WaitingScanPosition>,
 ) -> Result<(StoreScan<Vec<DecodedRow>>, Option<WaitingScanPosition>), OutboxStoreError> {
     let last_created_at = after.map(|position| position.created_at);
-    let last_request_id = after.map(|position| position.request_id.as_str());
-    let rows = sqlx::query_as!(
-        OutboxRow,
-        r#"SELECT request_id AS "request_id!", caller_json, payload_json, item_state,
-                  flush_at_ms, outcome_json, created_at, expires_at_ms, updated_at
-           FROM outbox_items WHERE item_state IN (?, ?)
-               AND (? IS NULL OR (created_at, request_id) > (?, ?))
-           ORDER BY created_at, request_id LIMIT ?"#,
+    let last_request_id = after.map(|position| position.request_id.as_slice());
+    let last_row_id = after.map(|position| position.row_id);
+    let rows = select_outbox_rows!(
+        r#"WHERE item_state IN (?, ?)
+               AND (? IS NULL OR (CAST(created_at AS INTEGER), CAST(request_id AS BLOB), rowid) > (?, ?, ?))
+           ORDER BY CAST(created_at AS INTEGER), CAST(request_id AS BLOB), rowid LIMIT ?"#,
         OutboxItemState::InOutbox.as_str(),
         OutboxItemState::SentAnswerLost.as_str(),
         last_created_at,
         last_created_at,
         last_request_id,
+        last_row_id,
         CLAIM_SCAN_PAGE_SIZE,
     )
     .fetch_all(connection)
@@ -141,6 +162,7 @@ pub(super) async fn waiting_page(
     let next = rows.last().map(|row| WaitingScanPosition {
         created_at: row.created_at,
         request_id: row.request_id.clone(),
+        row_id: row.row_id,
     });
     Ok((rows.iter().map(decode_row).collect(), next))
 }
@@ -148,17 +170,31 @@ pub(super) async fn waiting_page(
 pub(super) fn decode_row(row: &OutboxRow) -> Result<DecodedRow, RowCorruption> {
     use RowCorruptionReason::{
         DeadlineMismatch, IncompatibleOutcome, InconsistentState, InvalidIdentifier, InvalidJson,
-        KeyMismatch, TimestampOutOfRange, UnknownState, UnsupportedOperation,
+        InvalidStorageType, KeyMismatch, TimestampOutOfRange, UnknownState, UnsupportedOperation,
     };
     let corrupt = |field, reason| RowCorruption {
-        key: row.request_id.clone(),
+        key: diagnostic_key(&row.request_id),
         field,
         reason,
     };
-    let request: RequestId = row
-        .request_id
+    if !row.key_is_text {
+        return Err(corrupt("request_id", InvalidIdentifier));
+    }
+    let key = std::str::from_utf8(&row.request_id)
+        .map_err(|_| corrupt("request_id", InvalidIdentifier))?;
+    let request: RequestId = key
         .parse()
         .map_err(|_| corrupt("request_id", InvalidIdentifier))?;
+    let invalid_integer = match row.integer_fault {
+        1 => Some("created_at"),
+        2 => Some("updated_at"),
+        3 => Some("flush_at_ms"),
+        4 => Some("expires_at_ms"),
+        _ => None,
+    };
+    if let Some(field) = invalid_integer {
+        return Err(corrupt(field, InvalidStorageType));
+    }
     let sent_at = Timestamp::from_timestamp_millis(row.created_at)
         .ok_or_else(|| corrupt("created_at", TimestampOutOfRange))?;
     for (value, field) in [
@@ -178,18 +214,20 @@ pub(super) fn decode_row(row: &OutboxRow) -> Result<DecodedRow, RowCorruption> {
             },
         ));
     }
-    let caller =
-        serde_json::from_str(&row.caller_json).map_err(|_| corrupt("caller_json", InvalidJson))?;
-    let state = OutboxItemState::parse(&row.item_state)
+    let caller = serde_json::from_slice(&row.caller_json)
+        .map_err(|_| corrupt("caller_json", InvalidJson))?;
+    let state = std::str::from_utf8(&row.item_state)
+        .ok()
+        .and_then(OutboxItemState::parse)
         .ok_or_else(|| corrupt("item_state", UnknownState))?;
     let payload = match state {
         OutboxItemState::InOutbox
         | OutboxItemState::SentAnswerLost
         | OutboxItemState::Sent
         | OutboxItemState::Resent => {
-            let payload: OutboxQueuedWrite = serde_json::from_str(&row.payload_json)
+            let payload: OutboxQueuedWrite = serde_json::from_slice(&row.payload_json)
                 .map_err(|_| corrupt("payload_json", InvalidJson))?;
-            if payload.request_id().map(RequestId::as_str) != Some(row.request_id.as_str()) {
+            if payload.request_id().map(RequestId::as_str) != Some(key) {
                 return Err(corrupt("payload_json", KeyMismatch));
             }
             payload
@@ -201,9 +239,9 @@ pub(super) fn decode_row(row: &OutboxRow) -> Result<DecodedRow, RowCorruption> {
         | OutboxItemState::Refused
         | OutboxItemState::NotSent
         | OutboxItemState::Unconfirmed => {
-            let answered: AnsweredWrite = serde_json::from_str(&row.payload_json)
+            let answered: AnsweredWrite = serde_json::from_slice(&row.payload_json)
                 .map_err(|_| corrupt("payload_json", InvalidJson))?;
-            if answered.request_id.as_str() != row.request_id {
+            if answered.request_id != request {
                 return Err(corrupt("payload_json", KeyMismatch));
             }
             StoredPayload::Answered(answered)
@@ -217,10 +255,10 @@ pub(super) fn decode_row(row: &OutboxRow) -> Result<DecodedRow, RowCorruption> {
         }
         (OutboxItemState::Sent | OutboxItemState::Resent, None) => OutboxRequestStatus::Sent,
         (OutboxItemState::Answered, Some(outcome)) => OutboxRequestStatus::Answered(
-            serde_json::from_str(outcome).map_err(|_| corrupt("outcome_json", InvalidJson))?,
+            serde_json::from_slice(outcome).map_err(|_| corrupt("outcome_json", InvalidJson))?,
         ),
         (OutboxItemState::Refused, Some(outcome)) => OutboxRequestStatus::Refused(
-            serde_json::from_str(outcome).map_err(|_| corrupt("outcome_json", InvalidJson))?,
+            serde_json::from_slice(outcome).map_err(|_| corrupt("outcome_json", InvalidJson))?,
         ),
         (ended @ (OutboxItemState::NotSent | OutboxItemState::Unconfirmed), None) => {
             OutboxRequestStatus::Ended {
@@ -278,7 +316,7 @@ pub(super) fn decode_owned_row(
 ) -> Result<DecodedRow, OutboxStoreError> {
     let stored = decode_row(row)?;
     if stored.caller != *caller {
-        return Err(corrupt_row(&row.request_id, "caller_json"));
+        return Err(corrupt_row(stored.request.as_str(), "caller_json"));
     }
     Ok(stored)
 }
@@ -308,13 +346,6 @@ pub(super) fn corrupt_row(request_id: &str, field: &'static str) -> OutboxStoreE
         request_id: request_id.to_owned(),
         field,
     }
-}
-
-pub(super) fn parse_request_id(value: &str) -> Result<RequestId, OutboxStoreError> {
-    value.parse().map_err(|_| OutboxStoreError::CorruptItem {
-        request_id: value.to_owned(),
-        field: "request_id",
-    })
 }
 
 pub(super) fn expect_one(

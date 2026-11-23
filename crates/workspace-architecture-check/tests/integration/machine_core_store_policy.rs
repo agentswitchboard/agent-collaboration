@@ -4,7 +4,6 @@ use std::{path::Path, process::Command};
 
 const CORE_STORE: &str = "switchboard-machine-core-store";
 const STORE_CONTRACTS: &[&str] = &[
-    "central-link-protocol",
     "collaboration-mail-protocol",
     "fleet-mail",
     "router-clock",
@@ -225,11 +224,9 @@ fn check_tree(tree: &str, view: BuildView) -> PolicyResult<()> {
         }
         for feature in features.split(',').filter(|feature| !feature.is_empty()) {
             let forbidden = match name {
-                CORE_STORE
-                | "central-link-protocol"
-                | "workspace-model"
-                | "workspace-ids"
-                | "sqlite-storage-maintenance" => true,
+                CORE_STORE | "workspace-model" | "workspace-ids" | "sqlite-storage-maintenance" => {
+                    true
+                }
                 "router-clock" => match view {
                     BuildView::Production => true,
                     BuildView::Tests => feature != "test-support",
@@ -265,6 +262,7 @@ fn upper_layer(name: &str) -> bool {
                 | "collaboration-runtime"
                 | "collaboration-service"
                 | "central-link-client"
+                | "central-link-protocol"
                 | "switchboard-central-link"
                 | "fleet-engine"
                 | "fleet-runtime"

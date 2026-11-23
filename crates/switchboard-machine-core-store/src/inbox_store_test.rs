@@ -3,6 +3,8 @@ use crate::{MachineLocalStore, RowCorruptionReason};
 
 #[path = "inbox_corruption_test.rs"]
 mod corruption;
+#[path = "inbox_timestamp_test.rs"]
+mod timestamps;
 use chrono::DateTime;
 use hegel::{TestCase, generators as gs};
 use router_clock::{ManualClock, RuntimeClock};

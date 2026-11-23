@@ -376,9 +376,6 @@ async fn corrupt_rows_are_hidden_from_foreign_status_and_sender_outcome_calls() 
 
 #[tokio::test]
 async fn row_decode_rejects_temporary_or_wrong_operation_settlements() {
-    use central_link_protocol::ReplyPayload;
-    use workspace_model::{WorkspaceReply, WorkspaceResult};
-
     let root = tempfile::tempdir().unwrap();
     let mut database = open(&root).await;
     let transient = item(118, "transient", MARK);
@@ -386,11 +383,8 @@ async fn row_decode_rejects_temporary_or_wrong_operation_settlements() {
     for (write, reply) in [
         (
             &transient,
-            serde_json::to_string(&ReplyPayload::Workspace(WorkspaceReply {
-                result: WorkspaceResult::OutcomeUnknown,
-                actors: vec![],
-            }))
-            .unwrap(),
+            r#"{"kind":"workspace","reply":{"result":{"kind":"outcomeUnknown"},"actors":[]}}"#
+                .to_owned(),
         ),
         (
             &wrong_operation,
@@ -468,4 +462,97 @@ async fn claim_advances_past_an_entire_damaged_scan_page() {
     assert_eq!(scan.healthy.writes[0].request, healthy.request);
     assert_eq!(scan.corrupt_rows.len(), 129);
     assert_eq!(scan.corrupt_rows[128].key, behind.request.to_string());
+}
+
+#[tokio::test]
+async fn invalid_utf8_outbox_payload_is_a_row_fault_and_healthy_claims_progress() {
+    let root = tempfile::tempdir().unwrap();
+    let mut database = open(&root).await;
+    let bad = item(450, "damaged bytes", MARK);
+    let good = item(451, "healthy work", MARK);
+    for write in [&bad, &good] {
+        plant_row(
+            &mut database,
+            write,
+            "inOutbox",
+            serde_json::to_string(&write.payload).unwrap(),
+            None,
+            DEADLINE,
+        )
+        .await;
+    }
+    sqlx::query(
+        "UPDATE outbox_items SET payload_json = CAST(x'80FF' AS TEXT) WHERE request_id = ?",
+    )
+    .bind(bad.request.as_str())
+    .execute(&mut database.connection)
+    .await
+    .unwrap();
+
+    let batch = MacOutbox::new(&mut database)
+        .claim_next_batch(MARK, 1, MARK)
+        .await
+        .unwrap();
+    assert_eq!(batch.healthy.writes[0].request, good.request);
+    assert_eq!(
+        batch.corrupt_rows,
+        [RowCorruption {
+            key: bad.request.to_string(),
+            field: "payload_json",
+            reason: RowCorruptionReason::InvalidJson,
+        }]
+    );
+    let bytes: String =
+        sqlx::query_scalar("SELECT hex(payload_json) FROM outbox_items WHERE request_id = ?")
+            .bind(bad.request.as_str())
+            .fetch_one(&mut database.connection)
+            .await
+            .unwrap();
+    assert_eq!(bytes, "80FF");
+}
+
+#[tokio::test]
+async fn non_integer_creation_stamp_does_not_turn_into_a_valid_expiry() {
+    let root = tempfile::tempdir().unwrap();
+    let mut database = open(&root).await;
+    let bad = item(452, "wrong SQLite storage class", MARK);
+    let good = item(453, "healthy work", MARK);
+    for write in [&bad, &good] {
+        plant_row(
+            &mut database,
+            write,
+            "inOutbox",
+            serde_json::to_string(&write.payload).unwrap(),
+            None,
+            DEADLINE,
+        )
+        .await;
+    }
+    // SQLite can read the text as zero. Give that coerced value an otherwise
+    // self-consistent deadline to distinguish the physical validation.
+    sqlx::query("UPDATE outbox_items SET created_at = 'invalid', expires_at_ms = 900000 WHERE request_id = ?")
+        .bind(bad.request.as_str()).execute(&mut database.connection).await.unwrap();
+
+    let batch = MacOutbox::new(&mut database)
+        .claim_next_batch(MARK, 1, MARK)
+        .await
+        .unwrap();
+    assert_eq!(batch.healthy.writes[0].request, good.request);
+    assert!(batch.healthy.ended.is_empty());
+    assert_eq!(
+        batch.corrupt_rows,
+        [RowCorruption {
+            key: bad.request.to_string(),
+            field: "created_at",
+            reason: RowCorruptionReason::InvalidStorageType,
+        }]
+    );
+    let retained: (String, String) = sqlx::query_as(
+        "SELECT item_state, CAST(created_at AS TEXT) FROM outbox_items WHERE request_id = ?",
+    )
+    .bind(bad.request.as_str())
+    .fetch_one(&mut database.connection)
+    .await
+    .unwrap();
+    assert_eq!(retained, ("inOutbox".to_owned(), "invalid".to_owned()));
 }

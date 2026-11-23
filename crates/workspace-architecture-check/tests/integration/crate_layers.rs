@@ -231,10 +231,10 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
     harness_stage_policy::check_declared(&metadata)?;
     harness_stage_policy::check_resolved(&metadata)?;
     central_link_dependency_policy::check(&metadata)?;
-    machine_core_store_policy::check_declared(&metadata)?;
-    machine_core_store_policy::check_resolved(&metadata)?;
     approval_ports_policy::check_declared(&metadata)?;
     approval_ports_policy::check_resolved(&metadata)?;
+    machine_core_store_policy::check_declared(&metadata)?;
+    machine_core_store_policy::check_resolved(&metadata)?;
     let graph = NonDevDependencyGraph::from_metadata(metadata);
     for (source, destinations) in &graph.dev_edges {
         if !graph.workspace_members.contains(source) {
@@ -266,9 +266,9 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
     enrollment_dependency_policy::check_resolved(&enabled_metadata)?;
     harness_stage_policy::check_resolved(&enabled_metadata)?;
     approval_holder_policy::check_resolved(&enabled_metadata)?;
-    machine_core_store_policy::check_resolved(&enabled_metadata)?;
     approval_ports_policy::check_resolved(&enabled_metadata)?;
     approval_ports_policy::check_rooted_features(&root)?;
+    machine_core_store_policy::check_resolved(&enabled_metadata)?;
     workspace_boundaries::check_harness_layers(&NonDevDependencyGraph::from_metadata(
         enabled_metadata,
     ))?;

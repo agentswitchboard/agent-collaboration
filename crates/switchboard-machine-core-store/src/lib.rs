@@ -23,8 +23,8 @@ pub use machine_local_store::{MACHINE_LOCAL_DATABASE, MachineLocalStore, Machine
 pub use outbox_queued_write::OutboxQueuedWrite;
 pub use outbox_settlement::{InvalidOutboxOutcome, OutboxWriteOutcome};
 pub use outbox_status::{
-    LocalOutboxRefusal, OutboxAccepted, OutboxCancellation, OutboxRefusal, OutboxRequestKey,
-    OutboxRequestStatus, OutboxScope,
+    LocalOutboxRefusal, OutboxAccepted, OutboxCancellation, OutboxCentralRefusal, OutboxRefusal,
+    OutboxRequestKey, OutboxRequestStatus, OutboxScope,
 };
 pub use outbox_storage::{MachineLocalOutbox, OutboxFuture, OutboxStorage};
 pub use outbox_store::{
