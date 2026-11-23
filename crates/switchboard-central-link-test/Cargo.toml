@@ -7,11 +7,11 @@ publish = false
 autotests = false
 
 [dev-dependencies]
-central-link-client = { path = "../central-link-client" }
+central-link-client.workspace = true
 central-link-protocol.workspace = true
-switchboard-central-link = { path = "../switchboard-central-link", features = ["test-support"] }
-collaboration-central-tokio = { path = "../collaboration-central-tokio", features = ["test-support"] }
-collaboration-central-conformance = { path = "../collaboration-central-conformance", features = ["signin-test-support"] }
+switchboard-central-link = { workspace = true, features = ["test-support"] }
+collaboration-central-tokio = { workspace = true, features = ["test-support"] }
+collaboration-central-conformance = { workspace = true, features = ["signin-test-support"] }
 router-clock = { workspace = true, features = ["test-support"] }
 reqwest.workspace = true
 serde_json.workspace = true
