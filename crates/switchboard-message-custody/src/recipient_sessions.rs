@@ -42,33 +42,42 @@ pub trait RecipientSessionDirectory: Send + Sync {
     }
 }
 
-/// The number of distinct sessions a source can prove and whether it finished
-/// checking the places it owns.
+/// What one authority established about the addressed session.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub struct SessionInventoryAnswer {
-    pub at_least: usize,
-    pub complete: bool,
+pub enum SessionInventoryAnswer {
+    Complete(usize),
+    /// The authority may be hiding more matches.
+    AtLeast(usize),
+    /// Codex finished reading the catalogue and found no live binding, but its
+    /// opaque relay can still own a Codex thread before persistence.
+    NoneFoundAbsenceUnproven,
 }
 
 impl SessionInventoryAnswer {
+    const fn proved(self) -> usize {
+        match self {
+            Self::Complete(count) | Self::AtLeast(count) => count,
+            Self::NoneFoundAbsenceUnproven => 0,
+        }
+    }
+
     #[must_use]
     pub const fn merge(self, other: Self) -> Self {
-        Self {
-            at_least: self.at_least.saturating_add(other.at_least),
-            complete: self.complete && other.complete,
+        let proved = self.proved().saturating_add(other.proved());
+        match (self, other) {
+            (Self::AtLeast(_), _) | (_, Self::AtLeast(_)) => Self::AtLeast(proved),
+            (Self::NoneFoundAbsenceUnproven, _) | (_, Self::NoneFoundAbsenceUnproven)
+                if proved == 0 =>
+            {
+                Self::NoneFoundAbsenceUnproven
+            }
+            _ => Self::Complete(proved),
         }
     }
 }
 
-const EMPTY_INVENTORY: SessionInventoryAnswer = SessionInventoryAnswer {
-    at_least: 0,
-    complete: true,
-};
-
-const UNAVAILABLE_INVENTORY: SessionInventoryAnswer = SessionInventoryAnswer {
-    at_least: 0,
-    complete: false,
-};
+const EMPTY_INVENTORY: SessionInventoryAnswer = SessionInventoryAnswer::Complete(0);
+const UNAVAILABLE_INVENTORY: SessionInventoryAnswer = SessionInventoryAnswer::AtLeast(0);
 
 pub type InventoryRead<'lookup> =
     Pin<Box<dyn Future<Output = SessionInventoryAnswer> + Send + 'lookup>>;
@@ -110,17 +119,26 @@ impl SessionInventory for UnavailableSessionInventory {
     }
 }
 
+/// Codex, Claude and Cursor mint their own session IDs. An unindexed Codex
+/// thread in the opaque relay can hide a Codex session before its first turn.
+/// It cannot be another holder of an ID minted by Claude or Cursor. A Codex
+/// miss that leaves only the relay unchecked therefore blocks a declaration
+/// of absence when the total is zero. A failed read can hide a second match.
 pub fn combine_inventory_answers(
     answers: impl IntoIterator<Item = SessionInventoryAnswer>,
 ) -> RecipientSessionAnswer {
     let summary = answers
         .into_iter()
         .fold(EMPTY_INVENTORY, SessionInventoryAnswer::merge);
-    match (summary.at_least, summary.complete) {
-        (2.., _) => RecipientSessionAnswer::AmbiguousSession,
-        (_, false) => RecipientSessionAnswer::CouldNotTell,
-        (1, true) => RecipientSessionAnswer::KnownOnce,
-        (0, true) => RecipientSessionAnswer::UnknownSession,
+    match summary {
+        SessionInventoryAnswer::Complete(2..) | SessionInventoryAnswer::AtLeast(2..) => {
+            RecipientSessionAnswer::AmbiguousSession
+        }
+        SessionInventoryAnswer::AtLeast(_) | SessionInventoryAnswer::NoneFoundAbsenceUnproven => {
+            RecipientSessionAnswer::CouldNotTell
+        }
+        SessionInventoryAnswer::Complete(1) => RecipientSessionAnswer::KnownOnce,
+        SessionInventoryAnswer::Complete(0) => RecipientSessionAnswer::UnknownSession,
     }
 }
 

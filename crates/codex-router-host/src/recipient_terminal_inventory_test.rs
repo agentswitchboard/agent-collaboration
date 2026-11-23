@@ -16,14 +16,11 @@ async fn retries_and_other_ids_share_the_scan_and_follow_up_starts_fresh() {
     let other = inventory.query_with(&other, |_| panic!("other ID started a second scan"));
     let running = scan.unwrap();
     tokio::task::spawn_blocking(move || {
-        running.resolve(&registry.scan_recipient_sessions(), clock.as_ref())
+        running.resolve(&PeerSessionCensus::scan(&registry), clock.as_ref())
     })
     .await
     .unwrap();
-    let empty = SessionInventoryAnswer {
-        at_least: 0,
-        complete: true,
-    };
+    let empty = SessionInventoryAnswer::Complete(0);
     assert_eq!(retry.await.unwrap(), empty);
     assert_eq!(other.await.unwrap(), empty);
 

@@ -14,10 +14,7 @@ use switchboard_message_custody::recipient_sessions::{
 use tokio::sync::oneshot;
 
 const PROCESS_START_BUDGET: Duration = Duration::from_secs(5);
-const UNAVAILABLE: SessionInventoryAnswer = SessionInventoryAnswer {
-    at_least: 0,
-    complete: false,
-};
+const UNAVAILABLE: SessionInventoryAnswer = SessionInventoryAnswer::AtLeast(0);
 
 type ScanWaiters = HashMap<PeerSessionId, Vec<oneshot::Sender<SessionInventoryAnswer>>>;
 
@@ -49,13 +46,12 @@ impl InFlightScan {
         while let Some(target) = self.next_target(&answers) {
             let answer =
                 runtime.block_on(census.answer(&target, || clock.sleep_for(PROCESS_START_BUDGET)));
-            answers.insert(
-                target,
-                SessionInventoryAnswer {
-                    at_least: answer.at_least,
-                    complete: answer.complete,
-                },
-            );
+            let answer = if answer.complete {
+                SessionInventoryAnswer::Complete(answer.at_least)
+            } else {
+                SessionInventoryAnswer::AtLeast(answer.at_least)
+            };
+            answers.insert(target, answer);
         }
     }
 
@@ -106,7 +102,7 @@ impl ClaudeTerminalSessionInventory {
             let registry = Arc::clone(&self.registry);
             let clock = Arc::clone(&self.clock);
             tokio::task::spawn_blocking(move || {
-                let census = registry.scan_recipient_sessions();
+                let census = PeerSessionCensus::scan(&registry);
                 scan.resolve(&census, clock.as_ref());
             });
         })

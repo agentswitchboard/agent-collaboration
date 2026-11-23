@@ -18,16 +18,10 @@ use switchboard_message_custody::recipient_sessions::{
 use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
 
-const UNAVAILABLE: SessionInventoryAnswer = SessionInventoryAnswer {
-    at_least: 0,
-    complete: false,
-};
+const UNAVAILABLE: SessionInventoryAnswer = SessionInventoryAnswer::AtLeast(0);
 
 const fn complete(at_least: usize) -> SessionInventoryAnswer {
-    SessionInventoryAnswer {
-        at_least,
-        complete: true,
-    }
+    SessionInventoryAnswer::Complete(at_least)
 }
 
 pub struct CodexSessionInventory {
@@ -49,7 +43,7 @@ impl CodexSessionInventory {
 
     async fn lookup_stored(&self, session_id: &SessionId) -> SessionInventoryAnswer {
         match tokio::fs::try_exists(self.codex_home.join("state_5.sqlite")).await {
-            Ok(false) => return UNAVAILABLE,
+            Ok(false) => return SessionInventoryAnswer::NoneFoundAbsenceUnproven,
             Ok(true) => {}
             Err(_) => return UNAVAILABLE,
         }
@@ -61,7 +55,8 @@ impl CodexSessionInventory {
         match found {
             Ok(true) => complete(1),
             // The opaque native relay does not index its pre-persistence threads.
-            Ok(false) | Err(_) => UNAVAILABLE,
+            Ok(false) => SessionInventoryAnswer::NoneFoundAbsenceUnproven,
+            Err(_) => UNAVAILABLE,
         }
     }
 }
@@ -156,10 +151,7 @@ impl ManagedProviderSessionInventory {
                     SessionLifecycle::Live { .. } | SessionLifecycle::Loading { .. }
                 )
             });
-        let observed = SessionInventoryAnswer {
-            at_least: usize::from(owner_knows),
-            complete: false,
-        };
+        let observed = SessionInventoryAnswer::AtLeast(usize::from(owner_knows));
         SessionInventoryPart {
             observed,
             read: Box::pin(async move {

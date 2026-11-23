@@ -16,7 +16,9 @@ use std::{
 };
 use switchboard_message_custody::recipient_sessions::{
     CombinedRecipientSessionDirectory, RecipientSessionAnswer, RecipientSessionDirectory,
-    RecipientSessionSources, SessionId, SessionInventory, UnavailableSessionInventory,
+    RecipientSessionSources, SessionId, SessionInventory,
+    SessionInventoryAnswer::{AtLeast, NoneFoundAbsenceUnproven},
+    UnavailableSessionInventory,
 };
 use switchboard_session_store::{ProviderOperationStore, ProviderSessionRecord};
 use tokio::sync::Mutex;
@@ -98,11 +100,11 @@ async fn codex_saved_session_counts_across_pages_with_primary_key_uniqueness() {
     );
     assert_eq!(
         inventory.lookup_session(&session_id(ABSENT)).await,
-        UNAVAILABLE
+        NoneFoundAbsenceUnproven
     );
     assert_eq!(
         inventory.lookup_session(&session_id(ARCHIVED)).await,
-        UNAVAILABLE
+        NoneFoundAbsenceUnproven
     );
 }
 
@@ -115,7 +117,10 @@ async fn codex_catalog_cannot_assert_absence_on_missing_or_unreadable_state() {
     );
     let target = session_id(SAVED);
 
-    assert_eq!(inventory.lookup_session(&target).await, UNAVAILABLE);
+    assert_eq!(
+        inventory.lookup_session(&target).await,
+        NoneFoundAbsenceUnproven
+    );
     tokio::fs::write(root.path().join("state_5.sqlite"), b"not a SQLite database")
         .await
         .unwrap();
@@ -304,8 +309,8 @@ mod admission;
 #[path = "recipient_provider_owner_test.rs"]
 mod provider_owner;
 
-#[path = "recipient_terminal_admission_test.rs"]
-mod terminal_admission;
+#[path = "recipient_authority_admission_test.rs"]
+mod authority_admission;
 
 #[tokio::test]
 async fn damaged_endpoint_preserves_other_matches_and_prevents_authoritative_absence() {
@@ -340,13 +345,7 @@ async fn damaged_endpoint_preserves_other_matches_and_prevents_authoritative_abs
             .await
             .is_err()
     );
-    assert_eq!(
-        inventory.lookup_session(&id).await,
-        switchboard_message_custody::recipient_sessions::SessionInventoryAnswer {
-            at_least: 1,
-            complete: false
-        }
-    );
+    assert_eq!(inventory.lookup_session(&id).await, AtLeast(1));
     let directory = CombinedRecipientSessionDirectory::new(RecipientSessionSources {
         codex: Arc::new(CodexSessionInventory::new(
             root.path().to_owned(),

@@ -188,8 +188,7 @@ async fn real_child_is_current_only_for_record_written_after_its_start() {
 
     for (recorded_at, expected) in [(started_at - 1_001, 0), (started_at + 1_000, 1)] {
         identified(root.path(), pid, "target", recorded_at);
-        let answer = registry
-            .scan_recipient_sessions()
+        let answer = PeerSessionCensus::scan(&registry)
             .answer(&session("target"), std::future::pending)
             .await;
         assert_eq!(

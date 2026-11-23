@@ -26,64 +26,81 @@ use workspace_model::{
 };
 
 const fn observation(at_least: usize, complete: bool) -> SessionInventoryAnswer {
-    SessionInventoryAnswer { at_least, complete }
+    if complete {
+        SessionInventoryAnswer::Complete(at_least)
+    } else {
+        SessionInventoryAnswer::AtLeast(at_least)
+    }
+}
+
+fn expected_answer(answers: [(usize, bool, bool); 3]) -> RecipientSessionAnswer {
+    use RecipientSessionAnswer::{AmbiguousSession, CouldNotTell, KnownOnce, UnknownSession};
+    let total = answers
+        .iter()
+        .map(|(count, _, _)| *count)
+        .fold(0_usize, usize::saturating_add);
+    match total {
+        2.. => AmbiguousSession,
+        _ if answers.iter().any(|(_, may_hide_match, _)| *may_hide_match) => CouldNotTell,
+        1 => KnownOnce,
+        _ if answers
+            .iter()
+            .any(|(_, _, absence_unproven)| *absence_unproven) =>
+        {
+            CouldNotTell
+        }
+        _ => UnknownSession,
+    }
 }
 
 #[test]
 fn all_three_source_combinations_obey_the_precedence_table() {
-    use RecipientSessionAnswer::{AmbiguousSession, CouldNotTell, KnownOnce, UnknownSession};
+    use SessionInventoryAnswer::{AtLeast, Complete, NoneFoundAbsenceUnproven};
     let answers = [
-        observation(0, true),
-        observation(1, true),
-        observation(2, true),
-        observation(0, false),
-        observation(1, false),
-        observation(2, false),
+        (Complete(0), (0, false, false)),
+        (Complete(1), (1, false, false)),
+        (Complete(2), (2, false, false)),
+        (AtLeast(0), (0, true, false)),
+        (AtLeast(1), (1, true, false)),
+        (AtLeast(2), (2, true, false)),
+        (NoneFoundAbsenceUnproven, (0, false, true)),
     ];
-    for first in answers {
-        for second in answers {
-            for third in answers {
+    for (first, first_fact) in answers {
+        for (second, second_fact) in answers {
+            for (third, third_fact) in answers {
                 let sources = [first, second, third];
-                let expected = match (
-                    sources.iter().map(|answer| answer.at_least).sum::<usize>(),
-                    sources.iter().all(|answer| answer.complete),
-                ) {
-                    (0, true) => UnknownSession,
-                    (1, true) => KnownOnce,
-                    (0 | 1, false) => CouldNotTell,
-                    _ => AmbiguousSession,
-                };
-                assert_eq!(combine_inventory_answers(sources), expected, "{sources:?}");
+                assert_eq!(
+                    combine_inventory_answers(sources),
+                    expected_answer([first_fact, second_fact, third_fact]),
+                    "{sources:?}",
+                );
             }
         }
     }
-    assert_eq!(combine_inventory_answers([]), UnknownSession);
+    assert_eq!(
+        combine_inventory_answers([]),
+        RecipientSessionAnswer::UnknownSession
+    );
 }
 
 #[hegel::test(test_cases = 160)]
 fn larger_lower_bounds_do_not_overflow_or_hide_duplicates(case: hegel::TestCase) {
-    use RecipientSessionAnswer::{AmbiguousSession, CouldNotTell, KnownOnce, UnknownSession};
-    let answers: [_; 3] = std::array::from_fn(|_| {
-        observation(
-            case.draw(gs::integers::<usize>()),
-            case.draw(gs::booleans()),
-        )
+    use SessionInventoryAnswer::{AtLeast, Complete, NoneFoundAbsenceUnproven};
+    let answers = std::array::from_fn(|_| {
+        let count = case.draw(gs::integers::<usize>());
+        match case.draw(gs::integers::<u8>().max_value(2)) {
+            0 => (Complete(count), (count, false, false)),
+            1 => (AtLeast(count), (count, true, false)),
+            _ => (NoneFoundAbsenceUnproven, (0, false, true)),
+        }
     });
-    let expected = if answers.iter().any(|answer| answer.at_least > 1)
-        || answers.iter().filter(|answer| answer.at_least == 1).count() > 1
-    {
-        AmbiguousSession
-    } else if answers.iter().any(|answer| !answer.complete) {
-        CouldNotTell
-    } else if answers.iter().any(|answer| answer.at_least == 1) {
-        KnownOnce
-    } else {
-        UnknownSession
-    };
-    assert_eq!(combine_inventory_answers(answers), expected);
+    assert_eq!(
+        combine_inventory_answers(answers.map(|(answer, _)| answer)),
+        expected_answer(answers.map(|(_, fact)| fact))
+    );
     assert_eq!(
         combine_inventory_answers([observation(usize::MAX, false), observation(1, true)]),
-        AmbiguousSession
+        RecipientSessionAnswer::AmbiguousSession
     );
 }
 

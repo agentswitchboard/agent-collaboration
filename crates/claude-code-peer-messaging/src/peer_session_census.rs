@@ -35,24 +35,22 @@ enum Incarnation {
     Unverified,
 }
 
-impl ClaudeCodeSessionRegistry {
+impl PeerSessionCensus {
     #[must_use]
-    pub fn scan_recipient_sessions(&self) -> PeerSessionCensus {
-        match fs::read_dir(self.directory()) {
-            Ok(entries) => PeerSessionCensus::read(
+    pub fn scan(registry: &ClaudeCodeSessionRegistry) -> Self {
+        match fs::read_dir(registry.directory()) {
+            Ok(entries) => Self::read(
                 entries.map(|entry| entry.map(|entry| entry.path())),
                 process_is_live,
             ),
-            Err(error) if error.kind() == io::ErrorKind::NotFound => PeerSessionCensus::default(),
-            Err(_) => PeerSessionCensus {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Self::default(),
+            Err(_) => Self {
                 unidentified_record: true,
-                ..PeerSessionCensus::default()
+                ..Self::default()
             },
         }
     }
-}
 
-impl PeerSessionCensus {
     fn read(
         entries: impl IntoIterator<Item = io::Result<PathBuf>>,
         mut probe: impl FnMut(u32) -> Result<bool, PeerRegistryError>,

@@ -2,9 +2,7 @@ use super::{
     ROUTER, SAVED, admission::Admission, complete, create_codex_catalog, seed_codex_thread,
     session_id,
 };
-use crate::recipient_session_inventory::{
-    ClaudeTerminalSessionInventory, CodexSessionInventory, UNAVAILABLE,
-};
+use crate::recipient_session_inventory::{ClaudeTerminalSessionInventory, CodexSessionInventory};
 use claude_code_peer_messaging::ClaudeCodeSessionRegistry;
 use codex_acp_adapter::{
     AcpConnectionInputs, CodexSessionPresence, ConversationOperationRecorder,
@@ -20,7 +18,9 @@ use sqlx::Connection as _;
 use std::{
     collections::BTreeMap, future::ready, io, os::unix::fs::PermissionsExt, path::Path, sync::Arc,
 };
-use switchboard_message_custody::recipient_sessions::{RecipientSessionSources, SessionInventory};
+use switchboard_message_custody::recipient_sessions::{
+    RecipientSessionSources, SessionInventory, SessionInventoryAnswer::NoneFoundAbsenceUnproven,
+};
 use switchboard_session_store::ProviderOperationStore;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream},
@@ -292,7 +292,10 @@ async fn attached_session_new_admits_with_three_real_host_sources_and_no_native_
         .await
         .unwrap();
     catalog.close().await.unwrap();
-    assert_eq!(codex.lookup_session(&session_id(SAVED)).await, UNAVAILABLE);
+    assert_eq!(
+        codex.lookup_session(&session_id(SAVED)).await,
+        NoneFoundAbsenceUnproven
+    );
 }
 
 #[tokio::test]
@@ -320,7 +323,10 @@ async fn ordinary_load_presence_is_fenced_by_generation_before_frontend_drop() {
     assert_eq!(codex.lookup_session(&session_id(SAVED)).await, complete(1));
 
     retirement.cancel();
-    assert_eq!(codex.lookup_session(&session_id(SAVED)).await, UNAVAILABLE);
+    assert_eq!(
+        codex.lookup_session(&session_id(SAVED)).await,
+        NoneFoundAbsenceUnproven
+    );
     frontend.close().await;
 }
 
@@ -374,6 +380,9 @@ async fn materialized_prompt_keeps_presence_through_frontend_eof_and_detached_dr
     assert!(!holder.contains(SAVED));
     assert_eq!(codex.lookup_session(&target).await, complete(1));
     retirement.cancel();
-    assert_eq!(codex.lookup_session(&target).await, UNAVAILABLE);
+    assert_eq!(
+        codex.lookup_session(&target).await,
+        NoneFoundAbsenceUnproven
+    );
     holder.drain_host_tasks().await;
 }
