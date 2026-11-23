@@ -15,15 +15,16 @@ crate-type = ["cdylib"]
 [features]
 link = []
 # The storage boundary's workerd cases (Verification O1); never in a production bundle.
-test-support = ["central-link-call-composition/test-support", "fleet-engine/test-support", "fleet-runtime/test-support", "fleet-storage-schema/test-support", "collaboration-central-core/test-support", "central-link-protocol/test-support", "sqlx-durable-object/test-support", "dep:sqlx", "dep:fleet-actor-identity", "dep:fleet-approvals", "dep:fleet-machine-login", "fleet-machine-login/test-support", "dep:central-engine-model"]
+test-support = ["central-link-call-composition/test-support", "fleet-engine/test-support", "fleet-runtime/test-support", "fleet-storage-schema/test-support", "collaboration-central-core/test-support", "central-link-protocol/test-support", "sqlx-durable-object/test-support", "dep:sqlx", "dep:fleet-actor-identity", "dep:fleet-approvals", "dep:fleet-machine-login", "fleet-machine-login/test-support", "dep:central-engine-model", "dep:approval-request-protocol"]
 
 [dependencies]
 central-link-call-composition.workspace = true
 central-engine-model = { workspace = true, optional = true }
 fleet-actor-identity = { workspace = true, optional = true }
-fleet-approvals = { workspace = true, optional = true }
 fleet-machine-login = { workspace = true, optional = true }
 fleet-lent-transaction.workspace = true
+fleet-approvals = { workspace = true, features = ["test-support"], optional = true }
+approval-request-protocol = { workspace = true, optional = true }
 fleet-signin.workspace = true
 fleet-mail.workspace = true
 fleet-rpc.workspace = true

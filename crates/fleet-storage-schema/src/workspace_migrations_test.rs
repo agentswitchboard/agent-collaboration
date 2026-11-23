@@ -1,7 +1,7 @@
 use super::central_migrator;
 
 /// A non-test-support build returns `migrations/central` unchanged, so that
-/// directory must hold 0001-0009 and 0011. Test-support appends only the probe
+/// directory must hold exactly 0001–0011. test-support appends only the probe
 /// fixture after it, so no probe migration can ship.
 #[test]
 fn production_history_matches_the_approved_catalog_and_test_support_appends_the_probe() {
@@ -14,7 +14,7 @@ fn production_history_matches_the_approved_catalog_and_test_support_appends_the_
             .iter()
             .map(|(version, _)| *version)
             .collect::<Vec<_>>(),
-        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 11],
+        vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11],
         "{production:?}"
     );
     assert!(
@@ -28,7 +28,8 @@ fn production_history_matches_the_approved_catalog_and_test_support_appends_the_
     assert_eq!(production[6].1, "direct message receipts");
     assert_eq!(production[7].1, "machine allowance audit");
     assert_eq!(production[8].1, "engine due entries");
-    assert_eq!(production[9].1, "actor identity");
+    assert_eq!(production[9].1, "approval requests");
+    assert_eq!(production[10].1, "actor identity");
 
     let built = central_migrator()
         .iter()

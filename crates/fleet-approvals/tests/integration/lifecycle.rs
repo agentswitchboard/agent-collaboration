@@ -18,116 +18,6 @@ use super::fixtures::{
 };
 
 #[test]
-fn decide_binds_the_operation_and_keeps_its_original_audience_result() {
-    let (mut book, active_run, requester, _) = setup();
-    let first = key(&active_run, 1);
-    let other = key(&active_run, 2);
-    for key in [&first, &other] {
-        run_event(
-            &mut book,
-            raise_event(
-                &active_run,
-                provider(key, &requester, "Review"),
-                routing(None),
-            ),
-            0,
-        );
-    }
-
-    let winner = person(11, FactorStanding::Fresh);
-    let decide = decide_event(&first, winner.clone(), 101, answer(5));
-    let result = run_event(&mut book, decide.clone(), 1);
-    let ApprovalReceipt::Decide(DecideReply::SavedDecision {
-        answer: saved_answer,
-        by,
-    }) = reply(&result)
-    else {
-        panic!("expected the original saved decision");
-    };
-    assert_eq!(saved_answer, answer(5));
-    assert_eq!(
-        by,
-        DecidedBy::Person {
-            person_id: person_id(11)
-        }
-    );
-    let saved_result = raw_reply(&result).clone();
-
-    let after_loss = run_event(&mut book, decide, 2);
-    assert_eq!(
-        after_loss,
-        [ApprovalCollectionEffect::Request(ApprovalEffect::Reply(
-            saved_result
-        ))]
-    );
-    for conflicting in [
-        decide_event(&first, winner.clone(), 101, answer(2)),
-        decide_event(&first, person(12, FactorStanding::Fresh), 101, answer(5)),
-        decide_event(&other, winner.clone(), 101, answer(5)),
-    ] {
-        assert_eq!(
-            reply(&run_event(&mut book, conflicting, 2)),
-            ApprovalReceipt::Decide(DecideReply::OperationConflict {})
-        );
-    }
-    let mut wrong_target = decide_event(&first, winner, 105, answer(2));
-    let ApprovalCollectionEvent::Decide { key, .. } = &mut wrong_target else {
-        panic!("fixture must Decide");
-    };
-    *key = other.clone();
-    assert_eq!(
-        reply(&run_event(&mut book, wrong_target, 2)),
-        ApprovalReceipt::Decide(DecideReply::NotVisible {})
-    );
-    assert!(matches!(
-        book.requests[&other],
-        ApprovalState::Waiting { .. }
-    ));
-
-    let standing = run_event(
-        &mut book,
-        decide_event(&first, person(12, FactorStanding::Fresh), 106, answer(1)),
-        3,
-    );
-    let ApprovalReceipt::Decide(DecideReply::Standing { ending }) = reply(&standing) else {
-        panic!("expected redacted standing");
-    };
-    assert_eq!(
-        ending.wire_shape(),
-        &EndingViewWire::ProviderApproval {
-            ending: DestinationEnding::Standing {
-                ending: StandingEnding::Decided {
-                    by: DecidedBy::Person {
-                        person_id: person_id(11)
-                    },
-                }
-            },
-        }
-    );
-    let own = run_event(
-        &mut book,
-        decide_event(&first, person(11, FactorStanding::Fresh), 107, answer(1)),
-        4,
-    );
-    let ApprovalReceipt::Decide(DecideReply::Standing { ending }) = reply(&own) else {
-        panic!("expected the giver's standing");
-    };
-    assert_eq!(
-        ending.wire_shape(),
-        &EndingViewWire::ProviderApproval {
-            ending: DestinationEnding::Giver {
-                decision: approval_request_protocol::GiverDecision {
-                    by: DecidedBy::Person {
-                        person_id: person_id(11)
-                    },
-                    answer: fixtures::option(5),
-                }
-            },
-        }
-    );
-}
-
-#[test]
 fn applying_factor_and_offer_are_checked_before_the_deadline() {
     let (mut book, active_run, requester, parent) = setup();
     for slot in 3..=5_u8 {
@@ -411,18 +301,23 @@ fn a_rollback_cannot_override_deadline_and_alarm_tokens_are_exact() {
         deadline: time(at),
     };
     assert!(run_event(&mut book, alarm(HOUR), HOUR - 1).is_empty());
-    assert!(run_event(&mut book, alarm(HOUR + 1), HOUR).is_empty());
+    assert!(run_event(&mut book, alarm(HOUR - 1), HOUR).is_empty());
     assert!(matches!(
         book.requests[&item],
         ApprovalState::Waiting { .. }
     ));
-    assert_eq!(book.high_water, time(HOUR));
+    assert!(
+        run_event(&mut book, alarm(HOUR), HOUR).contains(&ApprovalCollectionEffect::Request(
+            ApprovalEffect::ClearDue { key: item.clone() }
+        ),)
+    );
+    let timed_out = book.clone();
 
     let decision = decide_event(
         &item,
         person(12, FactorStanding::AbsentOrStale),
         101,
-        answer(15),
+        answer(2),
     );
     let effects = run_event(&mut book, decision, HOUR - 1);
     assert_eq!(
@@ -431,10 +326,7 @@ fn a_rollback_cannot_override_deadline_and_alarm_tokens_are_exact() {
     );
     assert_eq!(closed(&book, &item).ended_at, time(HOUR));
     assert_eq!(closed(&book, &item).delivery, Delivery::Owed {});
-    assert!(matches!(
-        reply(&run_event(&mut book, view_event(&item, 12), HOUR)),
-        ApprovalReceipt::Read(Some(_))
-    ));
+    assert_eq!(book, timed_out);
 }
 
 #[test]
@@ -469,7 +361,17 @@ fn a_visible_read_materializes_the_timeout_and_hidden_read_changes_no_row() {
         ApprovalState::Waiting { .. }
     ));
 
-    let effects = run_event(&mut book, view_event(&owner_item, 12), HOUR - 1);
+    let before_deadline = run_event(&mut book, view_event(&owner_item, 12), HOUR - 1);
+    assert!(matches!(
+        reply(&before_deadline),
+        ApprovalReceipt::Read(Some(_))
+    ));
+    assert!(matches!(
+        book.requests[&owner_item],
+        ApprovalState::Waiting { .. }
+    ));
+
+    let effects = run_event(&mut book, view_event(&owner_item, 12), HOUR);
     assert!(matches!(reply(&effects), ApprovalReceipt::Read(Some(_))));
     assert_eq!(
         closed(&book, &owner_item).ending.clone().into_ending(),
@@ -479,111 +381,6 @@ fn a_visible_read_materializes_the_timeout_and_hidden_read_changes_no_row() {
         effect,
         ApprovalCollectionEffect::Request(ApprovalEffect::OfferEnding { .. })
     )));
-}
-
-#[test]
-fn parent_decides_a_delegate_request_as_its_exact_central_session() {
-    let (mut book, run, requester, parent) = setup();
-    let item = key(&run, 1);
-    let raised = run_event(
-        &mut book,
-        raise_event(
-            &run,
-            provider(&item, &requester, "Delegate"),
-            routing(Some(&parent)),
-        ),
-        0,
-    );
-    assert!(raised.iter().any(|effect| matches!(effect,
-        ApprovalCollectionEffect::Request(ApprovalEffect::StoreSessionNotice { session, .. }) if session == &parent
-    )));
-    assert_eq!(
-        reply(&run_event(&mut book, view_event(&item, 10), 0)),
-        ApprovalReceipt::Read(None)
-    );
-    let exact = decide_event(
-        &item,
-        AdmittedDecider::Session(parent.clone()),
-        101,
-        answer(1),
-    );
-    let decided = run_event(&mut book, exact.clone(), 1);
-    assert_eq!(
-        reply(&decided),
-        ApprovalReceipt::Decide(DecideReply::SavedDecision {
-            answer: answer(1),
-            by: DecidedBy::Session {
-                session: parent.session_id
-            },
-        })
-    );
-    assert_eq!(reply(&run_event(&mut book, exact, 2)), reply(&decided));
-}
-
-#[test]
-fn provider_question_uses_its_declared_fields_and_offers_the_exact_answer() {
-    use approval_request_protocol::{
-        Answer, Description, Label, PrivateEnding, ProviderHolder, QuestionAnswer,
-        QuestionAnswerValue, QuestionField, QuestionFieldAnswer, QuestionFieldId, QuestionFields,
-        QuestionOffer, Raise,
-    };
-    let (mut book, run, requester, _) = setup();
-    let item = key(&run, 1);
-    let field_id = QuestionFieldId::new(1).unwrap();
-    let raise = Raise::ProviderQuestion {
-        request_id: item.request_id.clone(),
-        holder: ProviderHolder {
-            session_id: requester.session_id,
-            router_run: run.router_run.clone(),
-        },
-        offer: QuestionOffer {
-            prompt: Description::new("Proceed?").unwrap(),
-            fields: QuestionFields::new(vec![QuestionField::Boolean {
-                field_id: field_id.clone(),
-                label: Label::new("Continue").unwrap(),
-                description: None,
-                required: true,
-            }])
-            .unwrap(),
-        },
-    };
-    run_event(&mut book, raise_event(&run, raise, routing(None)), 0);
-    let decide = |operation, fields| {
-        decide_event(
-            &item,
-            person(10, FactorStanding::Fresh),
-            operation,
-            Answer::Question {
-                answer: QuestionAnswer::Answered { fields },
-            },
-        )
-    };
-    let invalid = run_event(&mut book, decide(101, vec![]), 1);
-    assert_eq!(
-        reply(&invalid),
-        ApprovalReceipt::Decide(DecideReply::Invalid {})
-    );
-    let fields = vec![QuestionFieldAnswer {
-        field_id,
-        value: QuestionAnswerValue::Boolean { value: true },
-    }];
-    let accepted = run_event(&mut book, decide(102, fields.clone()), 2);
-    let frame = fixtures::offered_frame(&accepted);
-    assert!(matches!(
-        frame.ending(),
-        PrivateEnding::ProviderQuestion { .. }
-    ));
-    assert_eq!(
-        frame.into_ending(),
-        Ending::Decided {
-            answer: approval_request_protocol::ProviderAnswer::Question {
-                answer: QuestionAnswer::Answered { fields }
-            },
-            by: DecidedBy::Person {
-                person_id: person_id(10)
-            },
-        }
-    );
 }
 
 #[test]
@@ -607,3 +404,5 @@ fn an_equal_raise_replays_the_first_window_and_changed_contents_leave_the_row_al
     );
     assert_eq!(book.requests[&item], original);
 }
+
+include!("lifecycle_decision_cases.rs");

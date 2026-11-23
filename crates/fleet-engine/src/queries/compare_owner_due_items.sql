@@ -18,6 +18,10 @@ owner_millis AS (
     SELECT kind, subject_key, uses_occurrence,
         unixepoch(owner_time)*1000+CAST(substr(strftime('%f',owner_time),4,3) AS INTEGER) AS raw_ms
     FROM owner_rows
+    UNION ALL
+    SELECT 'approval_request', approval_row_id, 1, deadline_ms
+    FROM approval_requests
+    WHERE record_state = 'waiting'
 ),
 occurrences AS (
     SELECT kind, subject_key, uses_occurrence,

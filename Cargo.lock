@@ -1471,6 +1471,7 @@ dependencies = [
 name = "collaboration-central-cloudflare"
 version = "0.1.158"
 dependencies = [
+ "approval-request-protocol",
  "axum",
  "base64 0.22.1",
  "central-engine-model",
@@ -2511,7 +2512,6 @@ dependencies = [
  "central-engine-model",
  "central-storage",
  "chrono",
- "fleet-approvals",
  "fleet-contracts",
  "fleet-identity-protocol",
  "fleet-lent-transaction",
@@ -2541,11 +2541,21 @@ dependencies = [
  "approval-request-protocol",
  "central-engine-model",
  "central-storage",
+ "fleet-actor-identity",
+ "fleet-approvals",
+ "fleet-engine",
  "fleet-identity-protocol",
  "fleet-lent-transaction",
+ "fleet-machine-login",
+ "fleet-request-log",
+ "fleet-runtime-ports",
+ "fleet-storage-schema",
  "hegeltest",
  "serde",
  "serde_json",
+ "sqlx",
+ "sqlx-core",
+ "tokio",
  "uuid",
  "workspace-ids",
 ]
@@ -2620,6 +2630,7 @@ dependencies = [
 name = "fleet-lent-transaction"
 version = "0.1.158"
 dependencies = [
+ "fleet-identity-protocol",
  "sqlx",
 ]
 

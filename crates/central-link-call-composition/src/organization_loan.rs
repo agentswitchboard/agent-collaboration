@@ -1,7 +1,6 @@
 use crate::{OrganizationLoanFailure, SessionApplyResult, SessionWiringFault};
-use fleet_actor_identity::OrganizationTransaction;
 use fleet_identity_protocol::OrganizationId;
-use fleet_lent_transaction::CentralTransaction;
+use fleet_lent_transaction::{CentralTransaction, OrganizationTransaction};
 use fleet_signin::{organization_authority::StoredStampRead, stamp_store::read_stamp};
 use sqlx_core::{
     arguments::IntoArguments, column::ColumnIndex, database::Database, decode::Decode,

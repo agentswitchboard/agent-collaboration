@@ -196,7 +196,6 @@ const LAYER_POLICY: [(&str, &[&str]); 46] = [
         &[
             "central-engine-model",
             "central-storage",
-            "fleet-approvals",
             "fleet-identity-protocol",
             "fleet-lent-transaction",
             "fleet-machine-login",
@@ -218,7 +217,10 @@ const LAYER_POLICY: [(&str, &[&str]); 46] = [
             "workspace-ids",
         ],
     ),
-    (workspace_boundaries::LENT_TRANSACTION, &[]),
+    (
+        workspace_boundaries::LENT_TRANSACTION,
+        &["fleet-identity-protocol"],
+    ),
     ("fleet-storage-schema", &[]),
     (
         "fleet-store-sqlx",

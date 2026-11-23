@@ -3,6 +3,8 @@
 // Object classes.
 export const testSupportMarkers: readonly string[] = [
   "/test-support/storage/",
+  "/approval-store",
+  "fixture_enrollments",
   "/test-support/workspace/",
   "/test/fail-alarm-batch",
   "/test/lose-provisioning-reply",

@@ -2,20 +2,18 @@
 use std::future::Future;
 
 use central_storage::StoreFailure;
-use fleet_identity_protocol::OrganizationId;
-use fleet_lent_transaction::CentralTransaction;
+use fleet_lent_transaction::OrganizationTransaction;
 
 use crate::{ApprovalRouting, ApprovalSession};
 
 /// Implemented by the owner of the Central session records.
-pub trait ApprovalSessionFacts<Transaction: CentralTransaction> {
+pub trait ApprovalSessionFacts<Transaction: OrganizationTransaction> {
     /// Read the requester's route for its exact organization, machine, enrollment
     /// and Central session ID. Return None when that session does not match the scope.
     /// A delegate route carries the real parent's full session scope.
     fn session_initial_route(
         &self,
         transaction: &mut Transaction,
-        organization: &OrganizationId,
         requester: &ApprovalSession,
     ) -> impl Future<Output = Result<Option<ApprovalRouting>, StoreFailure>>;
 
@@ -23,7 +21,6 @@ pub trait ApprovalSessionFacts<Transaction: CentralTransaction> {
     fn session_is_live(
         &self,
         transaction: &mut Transaction,
-        organization: &OrganizationId,
         session: &ApprovalSession,
     ) -> impl Future<Output = Result<bool, StoreFailure>>;
 }

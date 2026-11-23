@@ -9,17 +9,30 @@ autotests = false
 [lints]
 workspace = true
 
+[features]
+test-support = []
+
 [dependencies]
 approval-request-protocol.workspace = true
 central-engine-model.workspace = true
 central-storage.workspace = true
+fleet-actor-identity.workspace = true
+fleet-engine.workspace = true
 fleet-lent-transaction.workspace = true
+fleet-machine-login.workspace = true
+fleet-request-log.workspace = true
 fleet-identity-protocol = { path = "../fleet-identity-protocol", version = "0.1.156" }
+fleet-runtime-ports.workspace = true
 serde.workspace = true
+serde_json.workspace = true
+sqlx-core.workspace = true
 workspace-ids.workspace = true
 
 [dev-dependencies]
-serde_json.workspace = true
+fleet-approvals = { path = ".", features = ["test-support"] }
+fleet-storage-schema.workspace = true
+sqlx = { workspace = true, features = ["sqlite", "migrate", "macros"] }
+tokio.workspace = true
 
 hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
 uuid.workspace = true

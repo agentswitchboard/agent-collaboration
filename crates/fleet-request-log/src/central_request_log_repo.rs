@@ -5,9 +5,12 @@ use sqlx_core::{
 };
 use workspace_model::{ActorIdentityId, RequestId, Timestamp};
 
-use central_storage::{GuardedStatement, RowExpectation, SqlValue, Statement, StoreFailure};
+use central_storage::{
+    GuardedStatement, ReadOutcome, RowExpectation, SqlValue, Statement, StoreFailure,
+};
 use fleet_lent_transaction::CentralTransaction;
 use fleet_runtime::workspace_request_log::{RetainRequest, RetainedRequest};
+use fleet_runtime_ports::{stored_values::string, workspace_decode_error::corrupt};
 struct StoredRequestRow {
     caller: String,
     content_digest: String,
@@ -86,16 +89,34 @@ where
     .fetch_optional(tx.executor())
     .await
     .map_err(|_| central_storage::StoreFailure::Unavailable)?;
-    row.map(|row| {
-        Ok(RetainedRequest {
-            caller: row.caller.parse().map_err(|_| {
-                fleet_runtime_ports::workspace_decode_error::corrupt("runtime_request_log.caller")
-            })?,
-            content_digest: row.content_digest,
-            answer: row.answer,
-        })
+    row.map(decode_request_row).transpose()
+}
+
+pub fn decode_organization_request(
+    rows: &ReadOutcome,
+) -> Result<Option<RetainedRequest>, StoreFailure> {
+    let row = match rows.rows.as_slice() {
+        [] => return Ok(None),
+        [row] => row,
+        _ => return Err(corrupt("runtime_request_log.request_id")),
+    };
+    decode_request_row(StoredRequestRow {
+        caller: string(rows, row, "caller")?.to_owned(),
+        content_digest: string(rows, row, "content_digest")?.to_owned(),
+        answer: string(rows, row, "answer")?.to_owned(),
     })
-    .transpose()
+    .map(Some)
+}
+
+fn decode_request_row(row: StoredRequestRow) -> Result<RetainedRequest, StoreFailure> {
+    Ok(RetainedRequest {
+        caller: row
+            .caller
+            .parse()
+            .map_err(|_| corrupt("runtime_request_log.caller"))?,
+        content_digest: row.content_digest,
+        answer: row.answer,
+    })
 }
 
 pub async fn upsert_organization_request_answer<T: CentralTransaction>(
