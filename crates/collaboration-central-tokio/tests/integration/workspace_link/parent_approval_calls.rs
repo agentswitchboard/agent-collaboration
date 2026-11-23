@@ -51,7 +51,7 @@ cases! {
     pass_refuses_session_proof => BadPassProof,
     earlier_destination_still_decides => EarlierDestinationStillDecides,
     three_levels => ThreeLevels,
-    ended_parent => EndedParent,
+    ended_parent_retains_request_until_timeout => EndedParentRetainsRequest,
     notice_reconnect_and_read => NoticeReconnect,
     notice_closes_with_request => NoticeEnds,
     notice_not_here_stays_owed => NoticeNotHere,

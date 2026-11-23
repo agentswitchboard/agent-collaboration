@@ -7,10 +7,9 @@ use sqlx_core::{
     arguments::IntoArguments, column::ColumnIndex, database::Database, decode::Decode,
     encode::Encode, types::Type,
 };
-use std::collections::BTreeSet;
 
 use fleet_actor_identity::{
-    ApprovalChainFact, ApprovalChainFailure, ScopedSession, SessionLookupScope, SessionService,
+    ApprovalChainFailure, ScopedSession, SessionLookupScope, SessionService,
 };
 
 /// Reads approval facts in the caller’s organization transaction.
@@ -62,28 +61,14 @@ where
         if approval_session(origin.scope) != *session {
             return Err(corrupt("actor_sessions.approval_chain_scope"));
         }
-        let mut parent = match origin.fact {
-            ApprovalChainFact::Live { parent } | ApprovalChainFact::Ended { parent } => parent,
+        let Some(parent) = origin.parent else {
+            return Ok(None);
         };
-        let mut seen = BTreeSet::from([session.session_id.clone()]);
-        while let Some(parent_session) = parent {
-            if !seen.insert(parent_session.clone()) {
-                return Err(corrupt("actor_delegates.approval_chain_cycle"));
-            }
-            let ancestor = service
-                .approval_chain_fact(&parent_session)
-                .await
-                .map_err(approval_chain_failure)?;
-            // D12's step-over arrives with the session owner's adopted record.
-            // Match the closed facts so that its future arm forces an explicit decision.
-            match ancestor.fact {
-                ApprovalChainFact::Live { .. } => {
-                    return Ok(Some(approval_session(ancestor.scope)));
-                }
-                ApprovalChainFact::Ended { parent: recorded } => parent = recorded,
-            }
-        }
-        Ok(None)
+        let recorded = service
+            .approval_chain_fact(&parent)
+            .await
+            .map_err(approval_chain_failure)?;
+        Ok(Some(approval_session(recorded.scope)))
     }
 
     async fn session_is_live(

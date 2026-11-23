@@ -43,7 +43,7 @@ pub enum Case {
     BadPassProof,
     EarlierDestinationStillDecides,
     ThreeLevels,
-    EndedParent,
+    EndedParentRetainsRequest,
     NoticeReconnect,
     NoticeEnds,
     NoticeNotHere,
@@ -55,7 +55,7 @@ pub async fn observe_case(fixture: &impl ApprovalLinkFixture, case: Case) -> Res
         Case::ThreeLevels | Case::PassToSession | Case::EarlierDestinationStillDecides => {
             Chain::ThreeLevels
         }
-        Case::EndedParent => Chain::EndedParent,
+        Case::EndedParentRetainsRequest => Chain::EndedParent,
         Case::DecidePersonRequired => Chain::KeptOption,
         _ => Chain::Direct,
     };
@@ -305,26 +305,8 @@ pub async fn observe_case(fixture: &impl ApprovalLinkFixture, case: Case) -> Res
                 DecideApprovalAsSessionReply::SavedDecision { .. }
             ));
         }
-        Case::EndedParent => {
-            let call = setup.parent.request(ReadApprovalForSessionRequest {
-                request_id: id.clone(),
-            });
-            assert_eq!(
-                refusal(
-                    super::call::<ReadApprovalForSessionRpc>(
-                        &mut setup.socket,
-                        &setup.target.organization_id,
-                        call
-                    )
-                    .await?
-                )?,
-                LinkCallRefusal::SessionProofNotAccepted
-            );
-            setup.parent = setup.grandparent.take().ok_or("missing grandparent")?;
-            assert!(matches!(
-                setup.read(id).await?,
-                ReadApprovalForSessionReply::Request { .. }
-            ));
+        Case::EndedParentRetainsRequest => {
+            observe_ended_parent_timeout(fixture, &mut setup, &id).await?
         }
         Case::NoticeReconnect | Case::NoticeNotHere | Case::NoticeEnds => {
             observe_notice(fixture, setup, case, id, operation).await?;
@@ -501,4 +483,60 @@ async fn reconnect_without_notice(fixture: &impl ApprovalLinkFixture) -> Result<
         }
     }
     heartbeat(&mut socket).await
+}
+
+async fn observe_ended_parent_timeout(
+    fixture: &impl ApprovalLinkFixture,
+    setup: &mut ParentSetup,
+    id: &approval_request_protocol::ApprovalRequestId,
+) -> Result<()> {
+    let request = setup.parent.request(ReadApprovalForSessionRequest {
+        request_id: id.clone(),
+    });
+    let rejected = call::<ReadApprovalForSessionRpc>(
+        &mut setup.socket,
+        &setup.target.organization_id,
+        request,
+    )
+    .await?;
+    assert_eq!(refusal(rejected)?, LinkCallRefusal::SessionProofNotAccepted);
+
+    let grandparent = setup.grandparent.as_ref().ok_or("missing grandparent")?;
+    let request = grandparent.request(ReadApprovalForSessionRequest {
+        request_id: id.clone(),
+    });
+    assert_eq!(
+        super::answered(
+            call::<ReadApprovalForSessionRpc>(
+                &mut setup.socket,
+                &setup.target.organization_id,
+                request,
+            )
+            .await?
+        )?,
+        ReadApprovalForSessionReply::NotVisible {}
+    );
+
+    let destinations = fixture.read(Statement {
+        sql: "SELECT d.session_id FROM approval_request_destinations d JOIN approval_requests r ON r.approval_row_id=d.approval_row_id WHERE r.request_id=? ORDER BY d.position",
+        args: vec![SqlValue::Text(id.as_str().to_owned())],
+    }).await?;
+    assert_eq!(
+        destinations.rows,
+        [[SqlValue::Text(setup.parent.session_id.as_str().to_owned())]]
+    );
+    reach_hour(fixture, setup).await?;
+    let remaining = u64::try_from((-fixture.now_seconds()).rem_euclid(300))?;
+    if remaining > 0 {
+        fixture.advance(remaining).await?;
+    }
+    fixture.observe_due_alarm().await?;
+    let (_, ending) =
+        crate::approval_link_scenarios::next_ending(&mut setup.socket, &setup.target).await?;
+    assert_eq!(ending.request_id(), id);
+    assert_eq!(
+        ending.into_ending(),
+        approval_request_protocol::Ending::TimedOut {}
+    );
+    Ok(())
 }

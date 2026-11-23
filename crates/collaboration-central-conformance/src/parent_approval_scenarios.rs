@@ -91,7 +91,7 @@ impl ParentSetup {
         if let Some(ancestor) = &grandparent {
             seed_delegate_edge(fixture, &parent.session_id, &ancestor.session_id).await?;
         }
-        let recipient = if matches!(chain, Chain::EndedParent) {
+        if matches!(chain, Chain::EndedParent) {
             use crate::session_link_scenarios::{
                 answer as session_answer, call as session_call, end,
             };
@@ -106,13 +106,7 @@ impl ParentSetup {
                 session_answer::<EndFleetSessionRpc>(ended, organization)?,
                 fleet_identity_protocol::EndFleetSessionReply::Settled { .. }
             ));
-            &grandparent
-                .as_ref()
-                .ok_or("missing grandparent")?
-                .session_id
-        } else {
-            &parent.session_id
-        };
+        }
         let mut approval = provider_raise(&target, &child.session_id, 3, ProviderAsk::Approval)?;
         if matches!(chain, Chain::KeptOption)
             && let Raise::ProviderApproval { offer, .. } = &mut approval
@@ -128,7 +122,7 @@ impl ParentSetup {
         acknowledge_notice(
             &mut socket,
             &target,
-            recipient,
+            &parent.session_id,
             approval.request_id(),
             ApprovalNoticeReply::Received {},
         )

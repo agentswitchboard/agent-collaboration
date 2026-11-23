@@ -8,7 +8,7 @@ mod session_machine;
 mod session_repository;
 mod session_row;
 mod session_service;
-pub use approval_chain_fact::{ApprovalChainFact, ApprovalChainFailure, ApprovalChainSession};
+pub use approval_chain_fact::{ApprovalChainFailure, ApprovalChainSession};
 
 mod session_state;
 

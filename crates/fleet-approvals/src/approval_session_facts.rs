@@ -17,7 +17,7 @@ pub trait ApprovalSessionFacts<Transaction: OrganizationTransaction + Send>: Syn
         requester: &ApprovalSession,
     ) -> impl Future<Output = Result<Option<ApprovalRouting>, StoreFailure>> + Send;
 
-    /// Find the next live ancestor of this session or the top of the chain.
+    /// Read this session's recorded parent or the top of the chain.
     fn next_approval_parent(
         &self,
         transaction: &mut Transaction,
