@@ -342,6 +342,11 @@ impl ParkedCallEnding {
                     } => CallCancellation::Stopped {
                         cause: CallStopCause::CallWithdrawn,
                     },
+                    CancelReason::Stopped {
+                        cause: HolderStopCause::HolderRefusedLocally,
+                    } => CallCancellation::Stopped {
+                        cause: CallStopCause::HolderRefusedLocally,
+                    },
                     CancelReason::RequesterGone {} => CallCancellation::RequesterGone {},
                     CancelReason::EnrollmentEnded {} => CallCancellation::EnrollmentEnded {},
                     CancelReason::Stopped {
@@ -373,10 +378,8 @@ impl ParkedCallEnding {
             },
             ParkedCallEnding::Cancelled { reason } => Ending::Cancelled {
                 reason: match reason {
-                    CallCancellation::Stopped {
-                        cause: CallStopCause::CallWithdrawn,
-                    } => CancelReason::Stopped {
-                        cause: HolderStopCause::CallWithdrawn,
+                    CallCancellation::Stopped { cause } => CancelReason::Stopped {
+                        cause: cause.holder_cause(),
                     },
                     CallCancellation::RequesterGone {} => CancelReason::RequesterGone {},
                     CallCancellation::EnrollmentEnded {} => CancelReason::EnrollmentEnded {},

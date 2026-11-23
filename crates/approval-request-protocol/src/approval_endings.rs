@@ -52,6 +52,7 @@ pub enum HolderStopCause {
     SessionClosed,
     ProviderConnectionLost,
     CallWithdrawn,
+    HolderRefusedLocally,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -67,16 +68,21 @@ pub enum ProviderStopCause {
     AskWithdrawn,
     SessionClosed,
     ProviderConnectionLost,
+    /// The holder has already given the requester a final local refusal.
+    HolderRefusedLocally,
 }
 
 impl ProviderStopCause {
-    pub(crate) const fn holder_cause(self) -> HolderStopCause {
+    /// Returns the cause recorded in a holder ending.
+    #[must_use]
+    pub const fn holder_cause(self) -> HolderStopCause {
         match self {
             Self::TurnStopped => HolderStopCause::TurnStopped,
             Self::AskReplaced => HolderStopCause::AskReplaced,
             Self::AskWithdrawn => HolderStopCause::AskWithdrawn,
             Self::SessionClosed => HolderStopCause::SessionClosed,
             Self::ProviderConnectionLost => HolderStopCause::ProviderConnectionLost,
+            Self::HolderRefusedLocally => HolderStopCause::HolderRefusedLocally,
         }
     }
 }
@@ -91,6 +97,7 @@ impl TryFrom<HolderStopCause> for ProviderStopCause {
             HolderStopCause::AskWithdrawn => Self::AskWithdrawn,
             HolderStopCause::SessionClosed => Self::SessionClosed,
             HolderStopCause::ProviderConnectionLost => Self::ProviderConnectionLost,
+            HolderStopCause::HolderRefusedLocally => Self::HolderRefusedLocally,
             HolderStopCause::CallWithdrawn => return Err(InvalidApprovalEnding::BindingMismatch),
         })
     }

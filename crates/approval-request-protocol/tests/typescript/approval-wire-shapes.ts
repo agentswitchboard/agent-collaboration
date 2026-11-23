@@ -5,6 +5,7 @@ import type {
   PrivateEnding,
   QuestionAnswerValue,
   Raise,
+  StopRequest,
 } from "../../contracts/approval-requests";
 
 const session = "01934a50-1000-7000-8000-000000000003";
@@ -16,6 +17,18 @@ export const cancelledProviderQuestion = {
 } satisfies PrivateEnding;
 export const checkedNumericAnswer = { kind: "number", value: "3" } satisfies QuestionAnswerValue;
 export const received = { kind: "receivedByHolder" } satisfies Delivery;
+
+export const providerLocalRefusalStop = {
+  kind: "provider",
+  requestId: session,
+  routerRun: session,
+  contentsDigest: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+  cause: "holderRefusedLocally",
+} satisfies StopRequest;
+export const parkedLocalRefusalStop = {
+  ...providerLocalRefusalStop,
+  kind: "unprovenCall",
+} satisfies StopRequest;
 
 // @ts-expect-error A verified turn cannot retain a file rule.
 export const invalidTurn: OptionLifetime = { kind: "thisTurn", kept: "agentRulesFile" };
