@@ -39,4 +39,6 @@ pub use sign_in_answers::{
 
 pub use discovery_answer::{CentralLinkTemplate, DiscoveryAnswer, decode_discovery};
 pub use enrollment_attempt::EnrollmentFailure;
+#[cfg(feature = "test-support")]
+pub use sign_in_client::LoopbackRequestEvent;
 pub use sign_in_client::{EnrollmentRequest, SignInClient, SignInClientError};

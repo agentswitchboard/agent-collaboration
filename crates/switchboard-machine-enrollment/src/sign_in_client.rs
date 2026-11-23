@@ -32,9 +32,31 @@ pub struct SignInClient {
     date_anchor: (SystemTime, ClockInstant),
     http: Client,
     pub(crate) clock: Arc<dyn RuntimeClock + Send + Sync>,
+    #[cfg(feature = "test-support")]
+    loopback_observer: Option<Arc<LoopbackObserver>>,
 }
 
 struct HttpRefreshSource(SignInClient);
+
+/// The scripted loopback client reports request progress without exposing wire values.
+#[cfg(feature = "test-support")]
+pub enum LoopbackRequestEvent {
+    Dispatched,
+    Settled,
+}
+
+#[cfg(feature = "test-support")]
+type LoopbackObserver = dyn Fn(LoopbackRequestEvent) + Send + Sync;
+
+#[cfg(feature = "test-support")]
+struct ObserveLoopbackSettlement<'observer>(&'observer LoopbackObserver);
+
+#[cfg(feature = "test-support")]
+impl Drop for ObserveLoopbackSettlement<'_> {
+    fn drop(&mut self) {
+        (self.0)(LoopbackRequestEvent::Settled);
+    }
+}
 
 /// Construction of the sign-in adapter can fail before any request is sent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -95,10 +117,13 @@ impl SignInClient {
     pub fn new_loopback_for_test(
         issuer: Url,
         clock: Arc<dyn RuntimeClock + Send + Sync>,
+        observe: impl Fn(LoopbackRequestEvent) + Send + Sync + 'static,
     ) -> Result<Self, SignInClientError> {
         let deployment = SignInDeployment::loopback_for_test(issuer)
             .map_err(|_| SignInClientError::InvalidIssuer)?;
-        Self::with_deployment(deployment, clock)
+        let mut client = Self::with_deployment(deployment, clock)?;
+        client.loopback_observer = Some(Arc::new(observe));
+        Ok(client)
     }
 
     fn with_deployment(
@@ -117,6 +142,8 @@ impl SignInClient {
             date_anchor,
             http,
             clock,
+            #[cfg(feature = "test-support")]
+            loopback_observer: None,
         })
     }
 
@@ -228,6 +255,11 @@ impl SignInClient {
     }
 
     async fn request(&self, request: RequestBuilder) -> Result<HttpAnswer, SignInFailure> {
+        #[cfg(feature = "test-support")]
+        let _observe_settlement = self.loopback_observer.as_deref().map(|observe| {
+            observe(LoopbackRequestEvent::Dispatched);
+            ObserveLoopbackSettlement(observe)
+        });
         // Only classifications cross this edge. reqwest errors and bodies can contain input bytes.
         let unavailable = || SignInFailure::Unavailable { retry_after: None };
         timeout(self.clock.as_ref(), SIGN_IN_WAIT, async move {

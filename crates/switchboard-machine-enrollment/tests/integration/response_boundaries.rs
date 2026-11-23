@@ -38,8 +38,9 @@ async fn declared_oversized_reply_is_invalid_before_collecting_the_body() {
         .expect("loopback listener");
     let origin = format!("http://{}/", listener.local_addr().expect("bound address"));
     let clock = Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH));
-    let client = SignInClient::new_loopback_for_test(origin.parse().expect("origin"), clock)
-        .expect("script client");
+    let client =
+        SignInClient::new_loopback_for_test(origin.parse().expect("origin"), clock, |_| {})
+            .expect("script client");
     // Emit headers before intentionally truncating the response body. A body-only
     // limit sees the transport failure, while a declared-length guard sees the cap.
     let server = tokio::spawn(async move {

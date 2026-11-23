@@ -3,6 +3,7 @@
     reason = "fixture setup and wire observations must fail at the test site"
 )]
 
+mod attempt_checkpoint;
 mod device_login_journey;
 mod enrollment_install_races;
 mod scripted_sign_in;

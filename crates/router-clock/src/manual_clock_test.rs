@@ -181,3 +181,46 @@ fn correcting_utc_preserves_the_existing_elapsed_deadline() {
         "2000-12-31T23:59:05Z".parse::<DateTime<Utc>>().unwrap()
     );
 }
+
+#[test]
+fn equal_deadlines_get_distinct_monotonic_registration_ids() {
+    let clock = clock();
+    let deadline = ClockInstant::ZERO.after(Duration::from_secs(5));
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    let mut first = clock.sleep_until(deadline);
+    assert!(first.as_mut().poll(&mut context).is_pending());
+    let checkpoint = clock.wait_checkpoint();
+    let mut second = clock.sleep_until(deadline);
+    assert!(second.as_mut().poll(&mut context).is_pending());
+
+    let repeated = clock.wait_registrations_since(checkpoint);
+    assert_eq!(
+        repeated.as_slice(),
+        &[WaitRegistration {
+            id: checkpoint,
+            deadline,
+            first_polled_at: Some(ClockInstant::ZERO),
+            dropped: false,
+        }]
+    );
+    assert_eq!(clock.wait_registrations_since(0).len(), 2);
+}
+
+#[test]
+fn dropping_an_unpolled_wait_never_records_a_first_poll() {
+    let clock = clock();
+    let checkpoint = clock.wait_checkpoint();
+    let deadline = ClockInstant::ZERO.after(Duration::from_secs(5));
+
+    drop(clock.sleep_until(deadline));
+
+    assert_eq!(
+        clock.wait_registrations_since(checkpoint).as_slice(),
+        &[WaitRegistration {
+            id: checkpoint,
+            deadline,
+            first_polled_at: None,
+            dropped: true,
+        }]
+    );
+}

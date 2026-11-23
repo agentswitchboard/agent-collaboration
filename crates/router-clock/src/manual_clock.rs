@@ -2,7 +2,7 @@
 use crate::{ClockInstant, RuntimeClock};
 use chrono::{DateTime, Utc};
 use runtime_primitives::{Clock, SyncTime};
-use std::{collections::BTreeMap, future::Future, pin::Pin, time::Duration};
+use std::{future::Future, pin::Pin, time::Duration};
 use tokio::sync::watch;
 
 #[derive(Clone, Copy)]
@@ -21,10 +21,19 @@ struct SleepCheck {
 #[error("the manual clock advance exceeds its UTC or elapsed range")]
 pub struct ClockAdvanceError;
 
+/// The manual clock distinguishes each wait's construction, first poll and drop.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct WaitRegistration {
+    pub id: usize,
+    pub deadline: ClockInstant,
+    pub first_polled_at: Option<ClockInstant>,
+    pub dropped: bool,
+}
+
 pub struct ManualClock {
     reading: watch::Sender<ClockReading>,
     checks: watch::Sender<Vec<SleepCheck>>,
-    dropped_waits: watch::Sender<BTreeMap<ClockInstant, usize>>,
+    registrations: watch::Sender<Vec<WaitRegistration>>,
 }
 
 impl ManualClock {
@@ -37,7 +46,7 @@ impl ManualClock {
             })
             .0,
             checks: watch::channel(Vec::new()).0,
-            dropped_waits: watch::channel(BTreeMap::new()).0,
+            registrations: watch::channel(Vec::new()).0,
         }
     }
 
@@ -95,52 +104,34 @@ impl ManualClock {
         })
     }
 
-    /// Marks the observed waits at a fixture's external checkpoint.
+    /// Returns the registration index for the next constructed wait.
     #[must_use]
     pub fn wait_checkpoint(&self) -> usize {
-        self.checks.borrow().len()
+        self.registrations.borrow().len()
     }
 
     #[must_use]
-    pub fn first_wait_since(
-        &self,
-        checkpoint: usize,
-        ignored: &[ClockInstant],
-    ) -> Option<ClockInstant> {
-        first_wait(&self.checks.borrow(), checkpoint, ignored)
-    }
-
-    #[must_use]
-    pub fn wait_drops(&self, deadline: ClockInstant) -> usize {
-        self.dropped_waits
+    pub fn wait_registrations_since(&self, checkpoint: usize) -> Vec<WaitRegistration> {
+        self.registrations
             .borrow()
-            .get(&deadline)
+            .iter()
+            .skip(checkpoint)
             .copied()
-            .unwrap_or_default()
+            .collect()
     }
 
-    /// Lets a fixture inspect the client's next decision after a particular timer is dropped.
-    pub async fn wait_for_timer_drop(&self, deadline: ClockInstant, previous: usize) {
-        let mut waits = self.dropped_waits.subscribe();
-        let _ = waits
-            .wait_for(|waits| waits.get(&deadline).is_some_and(|count| *count > previous))
-            .await;
-    }
-
-    /// Observes the next newly armed deadline, including a deadline a fixture did not expect.
-    pub async fn next_wait_after(
-        &self,
-        checkpoint: usize,
-        ignored: &[ClockInstant],
-    ) -> ClockInstant {
-        let mut checks = self.checks.subscribe();
-        loop {
-            if let Some(deadline) = first_wait(&checks.borrow_and_update(), checkpoint, ignored) {
-                return deadline;
-            }
-            // The clock itself owns this sender for the duration of the wait.
-            let _ = checks.changed().await;
-        }
+    fn register_wait(&self, deadline: ClockInstant) -> ObserveWaitDrop<'_> {
+        let mut id = 0;
+        self.registrations.send_modify(|registrations| {
+            id = registrations.len();
+            registrations.push(WaitRegistration {
+                id,
+                deadline,
+                first_polled_at: None,
+                dropped: false,
+            });
+        });
+        ObserveWaitDrop { clock: self, id }
     }
 
     fn record_sleep_check(&self, check: SleepCheck) {
@@ -155,28 +146,28 @@ impl ManualClock {
     }
 }
 
-fn first_wait(
-    checks: &[SleepCheck],
-    checkpoint: usize,
-    ignored: &[ClockInstant],
-) -> Option<ClockInstant> {
-    checks
-        .iter()
-        .skip(checkpoint)
-        .find(|check| !ignored.contains(&check.deadline))
-        .map(|check| check.deadline)
-}
-
 struct ObserveWaitDrop<'clock> {
     clock: &'clock ManualClock,
-    deadline: ClockInstant,
+    id: usize,
+}
+
+impl ObserveWaitDrop<'_> {
+    fn record_first_poll(&self) {
+        let now = self.clock.monotonic_now();
+        self.clock.registrations.send_modify(|registrations| {
+            if let Some(wait) = registrations.get_mut(self.id) {
+                wait.first_polled_at = Some(now);
+            }
+        });
+    }
 }
 
 impl Drop for ObserveWaitDrop<'_> {
     fn drop(&mut self) {
-        self.clock.dropped_waits.send_modify(|waits| {
-            let count = waits.entry(self.deadline).or_default();
-            *count = count.saturating_add(1);
+        self.clock.registrations.send_modify(|registrations| {
+            if let Some(wait) = registrations.get_mut(self.id) {
+                wait.dropped = true;
+            }
         });
     }
 }
@@ -213,12 +204,10 @@ impl RuntimeClock for ManualClock {
     }
 
     fn sleep_until(&self, deadline: ClockInstant) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-        let observe_drop = ObserveWaitDrop {
-            clock: self,
-            deadline,
-        };
+        let observe_drop = self.register_wait(deadline);
         Box::pin(async move {
-            let _observe_drop = observe_drop;
+            let observe_drop = observe_drop;
+            observe_drop.record_first_poll();
             let mut changes = self.reading.subscribe();
             loop {
                 let now = changes.borrow_and_update().elapsed;
