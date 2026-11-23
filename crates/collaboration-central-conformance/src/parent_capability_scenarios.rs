@@ -1,10 +1,11 @@
 //! Keep both owed call kinds durable while the real socket handles ordinary mail.
 
 use super::{
-    ApprovalLinkFixture, ApprovalNoticeReply, ProviderAsk, ReadApprovalForSessionReply,
-    ReadApprovalForSessionRequest, ReadApprovalForSessionRpc, RegisterRunReply, Result,
-    SessionProof, acknowledge_notice, answered, call, create_bound, first_read, heartbeat,
-    provider_raise, raise, register_run, require_receipt,
+    ApprovalLinkFixture, ApprovalNoticeReply, DecideApprovalAsSessionReply,
+    DecideApprovalAsSessionRequest, DecideApprovalAsSessionRpc, ProviderAsk,
+    ReadApprovalForSessionReply, ReadApprovalForSessionRequest, ReadApprovalForSessionRpc,
+    RegisterRunReply, Result, SessionProof, acknowledge_notice, answered, call, create_bound,
+    first_read, heartbeat, option, provider_raise, raise, register_run, require_receipt,
 };
 use crate::approval_link_scenarios::{
     announce_mac_calls, answer_ending, exchange_direct_mail, next_ending, observe_received,
@@ -42,9 +43,22 @@ pub async fn both_owed_kinds_follow_the_socket_capabilities(
     for approval in [&ending_approval, &notice_approval] {
         require_receipt(raise(&mut seed, organization, approval.clone()).await?)?;
     }
-    fixture
-        .decide_provider_approval(ending_approval.request_id())
-        .await?;
+    let decided = answered(
+        call::<DecideApprovalAsSessionRpc>(
+            &mut seed,
+            organization,
+            parent.request(DecideApprovalAsSessionRequest {
+                request_id: ending_approval.request_id().clone(),
+                operation_id: super::typed_id(0x61c5)?,
+                value: option(1)?,
+            }),
+        )
+        .await?,
+    )?;
+    assert!(matches!(
+        decided,
+        DecideApprovalAsSessionReply::SavedDecision { .. }
+    ));
     require_owed(fixture, &ending_approval).await?;
     heartbeat(&mut seed).await?;
     seed.close(CloseCode::Normal, None).await?;
