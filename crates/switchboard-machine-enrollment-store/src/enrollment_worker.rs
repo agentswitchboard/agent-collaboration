@@ -150,6 +150,12 @@ impl EnrollmentWorker {
         let (decision, definite_error) = match mutation {
             EnrollmentMutation::Replace(binding) => {
                 let prepared = self.prepare_replacement(expected, &binding).await;
+                #[cfg(test)]
+                if prepared.is_some()
+                    && let Some(test) = &self.test_dependencies
+                {
+                    test.faults.at_prepared_replacement().await;
+                }
                 (
                     MutationDecision::Replace(prepared),
                     CredentialStoreError::Replace,
@@ -175,7 +181,11 @@ impl EnrollmentWorker {
                     };
                     match decision {
                         MutationDecision::Replace(Some(replacement)) => {
-                            EnrollmentRowChange::Write(replacement)
+                            if snapshot == replacement.witness {
+                                EnrollmentRowChange::Write(replacement.row)
+                            } else {
+                                EnrollmentRowChange::Abort(())
+                            }
                         }
                         MutationDecision::Replace(None) => EnrollmentRowChange::Abort(()),
                         MutationDecision::End(why) => end_row(snapshot, why),
@@ -232,7 +242,7 @@ impl EnrollmentWorker {
         &mut self,
         expected: BindingGeneration,
         binding: &EnrollmentBinding,
-    ) -> Option<StoredEnrollmentRow> {
+    ) -> Option<Box<PreparedReplacement>> {
         let current = self.snapshot().await.ok()?;
         if current.generation() != expected
             || expected.binding_successor() != Some(binding.generation)
@@ -263,10 +273,10 @@ impl EnrollmentWorker {
             deployment,
             generation,
             sealed,
-        } = current
+        } = &current
         {
-            let predecessor = seal_context(&key, &deployment, generation).ok()?;
-            sealer.open(&predecessor, &sealed).ok()?;
+            let predecessor = seal_context(key, deployment, *generation).ok()?;
+            sealer.open(&predecessor, sealed).ok()?;
         }
         let context = seal_context(
             &binding.key(),
@@ -277,13 +287,17 @@ impl EnrollmentWorker {
         let credential =
             EnrollmentRowCredential::copy_from(binding.credential.refresh_token.expose_secret())?;
         let sealed = sealer.seal(&context, &credential).ok()?;
-        Some(StoredEnrollmentRow::Active {
+        let row = StoredEnrollmentRow::Active {
             generation: i64::try_from(binding.generation.get()).ok()?,
             organization_id: binding.context.organization_id.to_string(),
             deployment: binding.context.deployment.origin().as_str().to_owned(),
             enrollment_id: binding.credential.enrollment_id.to_string(),
             sealed,
-        })
+        };
+        Some(Box::new(PreparedReplacement {
+            witness: current,
+            row,
+        }))
     }
 
     async fn snapshot(&mut self) -> Result<EnrollmentSnapshot, ReadFailure> {
@@ -317,8 +331,13 @@ impl EnrollmentWorker {
     }
 }
 
+struct PreparedReplacement {
+    witness: EnrollmentSnapshot,
+    row: StoredEnrollmentRow,
+}
+
 enum MutationDecision {
-    Replace(Option<StoredEnrollmentRow>),
+    Replace(Option<Box<PreparedReplacement>>),
     End(EnrollmentEnd),
 }
 

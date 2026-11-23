@@ -26,6 +26,7 @@ pub(crate) struct TestWriteFaults {
     next: Mutex<Option<TestWriteFault>>,
     pub(crate) probes: AtomicUsize,
     replacement_witness: Mutex<Option<ReplacementWitnessGate>>,
+    prepared_replacement: Mutex<Option<ReplacementWitnessGate>>,
 }
 
 struct ReplacementWitnessGate {
@@ -35,12 +36,19 @@ struct ReplacementWitnessGate {
 
 impl TestWriteFaults {
     pub(crate) fn hold_replacement_witness(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        Self::hold(&self.replacement_witness)
+    }
+
+    pub(crate) fn hold_prepared_replacement(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        Self::hold(&self.prepared_replacement)
+    }
+
+    fn hold(
+        slot: &Mutex<Option<ReplacementWitnessGate>>,
+    ) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
         let (reached, at_witness) = oneshot::channel();
         let (release, continue_after) = oneshot::channel();
-        *self
-            .replacement_witness
-            .lock()
-            .expect("replacement witness gate") = Some(ReplacementWitnessGate {
+        *slot.lock().expect("enrollment test gate") = Some(ReplacementWitnessGate {
             reached,
             continue_after,
         });
@@ -48,11 +56,15 @@ impl TestWriteFaults {
     }
 
     pub(crate) async fn at_replacement_witness(&self) {
-        let gate = self
-            .replacement_witness
-            .lock()
-            .ok()
-            .and_then(|mut gate| gate.take());
+        Self::wait(&self.replacement_witness).await;
+    }
+
+    pub(crate) async fn at_prepared_replacement(&self) {
+        Self::wait(&self.prepared_replacement).await;
+    }
+
+    async fn wait(slot: &Mutex<Option<ReplacementWitnessGate>>) {
+        let gate = slot.lock().ok().and_then(|mut slot| slot.take());
         if let Some(gate) = gate {
             let _ = gate.reached.send(());
             let _ = gate.continue_after.await;

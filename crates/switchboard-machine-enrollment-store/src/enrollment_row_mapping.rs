@@ -9,6 +9,7 @@ use switchboard_machine_enrollment::{
     BindingGeneration, EnrollmentEnd, EnrollmentKey, InvalidReason, MachineId, SignInDeployment,
 };
 
+#[derive(Eq, PartialEq)]
 pub(crate) enum EnrollmentSnapshot {
     Empty,
     Active {

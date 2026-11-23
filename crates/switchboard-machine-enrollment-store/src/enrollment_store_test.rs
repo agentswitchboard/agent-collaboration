@@ -667,3 +667,39 @@ async fn key_deleted_after_final_witness_can_be_recreated_but_preserves_the_unre
         Err(ReadFailure::SealedBytesUnreadable)
     ));
 }
+
+#[tokio::test]
+async fn replacement_preserves_ciphertext_damaged_after_preflight_authentication() {
+    let fixture = Fixture::open().await;
+    fixture.install().await;
+    let next = fixture.binding(2, ALTERNATE_ENROLLMENT, TOKEN);
+    let (at_prepared, release) = fixture.faults.hold_prepared_replacement();
+    let mut replace = Box::pin(fixture.store.replace(generation(1), &next));
+    assert_queued(replace.as_mut());
+    at_prepared.await.unwrap();
+
+    let mut outside = fixture.connection().await;
+    let mut damaged = row_columns(&mut outside).await.2.unwrap();
+    *damaged.last_mut().unwrap() ^= 1;
+    sqlx::query("UPDATE machine_identity SET enrollment_sealed = ?")
+        .bind(damaged)
+        .execute(&mut outside)
+        .await
+        .unwrap();
+    let before = row_columns(&mut outside).await;
+    release.send(()).unwrap();
+
+    assert_eq!(replace.await, Err(CredentialStoreError::Replace));
+    assert_eq!(row_columns(&mut outside).await, before);
+    assert!(matches!(
+        fixture.detail().await,
+        Err(ReadFailure::SealedBytesUnreadable)
+    ));
+    assert_eq!(
+        fixture
+            .store
+            .remove(generation(1), EnrollmentEnd::Revoked)
+            .await,
+        Ok(ConditionalWrite::Applied)
+    );
+}
