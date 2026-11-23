@@ -29,6 +29,9 @@ mod harness_stage_policy;
 #[path = "machine_core_store_policy.rs"]
 mod machine_core_store_policy;
 
+#[path = "message_custody_policy.rs"]
+mod message_custody_policy;
+
 #[path = "test_support_policy.rs"]
 mod test_support_policy;
 
