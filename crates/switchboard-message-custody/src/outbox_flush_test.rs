@@ -72,7 +72,7 @@ impl FlushModel {
     fn claim(&mut self, mark: SyncTime) {
         assert!(self.link_up, "a batch only goes on a connected link");
         assert!(
-            self.now.abs_diff(mark.unix_millis()) <= FLUSH_JITTER_MILLIS.unsigned_abs(),
+            (-FLUSH_JITTER_MILLIS..FLUSH_JITTER_MILLIS).contains(&(self.now - mark.unix_millis())),
             "a batch goes only inside its mark's window"
         );
         assert!(
@@ -94,7 +94,7 @@ impl FlushModel {
 
     fn store_next(&mut self) {
         let flush_at = self.state.receipt_mark(at(self.now));
-        assert!(flush_at.unix_millis() + FLUSH_JITTER_MILLIS >= self.now);
+        assert!(flush_at.unix_millis() + FLUSH_JITTER_MILLIS > self.now);
         self.rows
             .insert(self.next_seed, (flush_at, WriteRow::Waiting));
         self.next_seed += 1;
@@ -153,7 +153,7 @@ impl FlushModel {
         let jitter = tc.draw(
             gs::integers::<i64>()
                 .min_value(-FLUSH_JITTER_MILLIS)
-                .max_value(FLUSH_JITTER_MILLIS),
+                .max_value(FLUSH_JITTER_MILLIS - 1),
         );
         self.wake_as_host(jitter);
     }

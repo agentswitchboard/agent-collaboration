@@ -1,11 +1,14 @@
 //! Wire receipts for decisions the recipient inbox has committed.
 
 use crate::custody_operator::{CustodyOperatorEvent, inbox_scan};
-use central_link_client::{ConnectionAttempt, LinkLaneCommand, LinkLaneDisposition, LinkLaneReply};
+use central_link_client::{
+    ConnectionAttempt, CorrelatedReceiptResults, LinkLaneDisposition, SubmitReceiptsCommand,
+};
 use central_link_protocol::{
     CorrelationId, FreshCorrelationId, MAX_RECEIPTS, ProtocolError, Receipt, ReceiptBatch,
     ReceiptKind, ReceiptResult,
 };
+use router_clock::ClockInstant;
 use std::collections::BTreeSet;
 use switchboard_machine_core_store::{
     InboxDecision, InboxReceipt, InboxRefusalReason, InboxStore, InboxStoreError,
@@ -23,9 +26,10 @@ pub struct ReceiptFrame {
 
 impl ReceiptFrame {
     #[must_use]
-    pub fn command(&self) -> LinkLaneCommand {
-        LinkLaneCommand::SubmitReceipts {
+    pub fn command(&self, send_before: ClockInstant) -> SubmitReceiptsCommand {
+        SubmitReceiptsCommand {
             connection: self.connection.clone(),
+            send_before,
             correlation_id: self.correlation_id.clone(),
             receipts: self.receipts.clone(),
         }
@@ -127,7 +131,7 @@ impl ReceiptDelivery {
         operator_events: &mut Vec<CustodyOperatorEvent>,
         submitted: ReceiptFrame,
         current_connection: Option<&ConnectionAttempt>,
-        disposition: LinkLaneDisposition,
+        disposition: LinkLaneDisposition<CorrelatedReceiptResults>,
         now_ms: i64,
     ) -> Result<ReceiptFrameOutcome, ReceiptDeliveryError> {
         let ReceiptFlight::AwaitingAnswer(active) = &self.flight else {
@@ -144,7 +148,7 @@ impl ReceiptDelivery {
         }
         let LinkLaneDisposition::Answered {
             reply:
-                LinkLaneReply::ReceiptResults {
+                CorrelatedReceiptResults {
                     correlation_id,
                     results,
                 },

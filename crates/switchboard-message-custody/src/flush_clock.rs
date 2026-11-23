@@ -30,7 +30,7 @@ impl MachineFlushJitter {
 impl FlushJitter for MachineFlushJitter {
     fn jitter_millis(&self, mark: SyncTime) -> i64 {
         let mixed = self.seed ^ mark.unix_millis().cast_unsigned();
-        i64::try_from(mixed % 6_001).unwrap_or(0) - 3_000
+        i64::try_from(mixed % 6_000).unwrap_or(0) - 3_000
     }
 }
 
@@ -53,7 +53,18 @@ pub fn wake_for_mark(anchor: WelcomeClockAnchor, mark: SyncTime, jitter_ms: i64)
     let limit = crate::flush_marks::FLUSH_JITTER_MILLIS;
     let send_at_ms = mark
         .unix_millis()
-        .saturating_add(jitter_ms.clamp(-limit, limit));
+        .saturating_add(jitter_ms.clamp(-limit, limit - 1));
+    elapsed_at_shared_time(anchor, send_at_ms)
+}
+
+pub(crate) fn send_fence_for_mark(anchor: WelcomeClockAnchor, mark: SyncTime) -> ClockInstant {
+    let window_end = mark
+        .unix_millis()
+        .saturating_add(crate::flush_marks::FLUSH_JITTER_MILLIS);
+    elapsed_at_shared_time(anchor, window_end)
+}
+
+fn elapsed_at_shared_time(anchor: WelcomeClockAnchor, send_at_ms: i64) -> ClockInstant {
     let delay_ms = send_at_ms.saturating_sub(anchor.central_time.timestamp_millis());
     anchor
         .observed_at

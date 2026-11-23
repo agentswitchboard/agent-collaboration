@@ -23,7 +23,7 @@ pub fn mark_in_window(now: SyncTime) -> Option<SyncTime> {
         .saturating_add(FLUSH_INTERVAL_MILLIS / 2)
         .div_euclid(FLUSH_INTERVAL_MILLIS);
     let nearest = nearest_index.saturating_mul(FLUSH_INTERVAL_MILLIS);
-    (millis.abs_diff(nearest) <= FLUSH_JITTER_MILLIS.unsigned_abs())
+    ((-FLUSH_JITTER_MILLIS..FLUSH_JITTER_MILLIS).contains(&millis.saturating_sub(nearest)))
         .then_some(SyncTime::from_unix_millis(nearest))
 }
 

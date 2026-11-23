@@ -1,24 +1,26 @@
 //! Prepares and settles the one outbox batch custody owns at a time.
 
 use central_link_client::{
-    ConnectionAttempt, WelcomeClockAnchor, WriteBatchCommand, WriteBatchDisposition,
-    WriteBatchMemberDisposition,
+    ConnectionAttempt, LINK_LANE_FRAME_BYTES, LaneFrameSizeError, UntouchedCommand,
+    WRITE_BATCH_ENVELOPE_BYTES, WelcomeClockAnchor, WriteBatchCommand, WriteBatchDisposition,
+    WriteBatchMemberDisposition, encoded_request_size,
 };
 use central_link_protocol::{
-    CorrelationId, FreshCorrelationId, LinkRequest, LinkRequestBatch, ProtocolError, ReplyPayload,
-    RequestPayload,
+    CorrelationId, FreshCorrelationId, LinkRequestBatch, ProtocolError, ReplyPayload,
 };
 use runtime_primitives::SyncTime;
 use switchboard_machine_core_store::{
-    EndedWrite, OutboxQueuedWrite, OutboxStoreError, OutboxWriteOutcome, StoredOutboxWrite,
+    EndedWrite, OutboxStoreError, OutboxWriteOutcome, StoredOutboxWrite,
 };
 use workspace_ids::RequestId;
-use workspace_model::{
-    Caller,
-    central_mail::{CentralMailOperation, CentralMailRequest},
-};
+use workspace_model::Caller;
 
-use crate::outbox_work::{FlushSelection, OutboxWork, OutboxWorkError};
+use crate::{
+    custody_operator::CustodyOperatorEvent,
+    flush_clock::send_fence_for_mark,
+    outbox_wire::request_for_write,
+    outbox_work::{FlushSelection, OutboxWork, OutboxWorkError},
+};
 
 /// A checked answer custody persisted for one member of its own flush.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -35,6 +37,10 @@ pub enum BatchDispatchError {
     Work(#[from] OutboxWorkError),
     #[error("the outbox batch failed wire validation")]
     Wire(#[from] ProtocolError),
+    #[error("the outbox batch could not be measured")]
+    WireSize(#[from] LaneFrameSizeError),
+    #[error("a stored write does not fit alone in a link frame")]
+    OversizeClaim,
     #[error("the lane returned results outside the current batch's order or identity")]
     ResultsMismatch,
     #[error("the lane's reply does not settle request {0}")]
@@ -119,26 +125,47 @@ impl OutboxDispatcher {
         }
 
         let now_ms = work.local_now_ms();
-        let requests = build_wire_batch(&claimed.writes, now_ms);
-        let batch = match requests {
-            Ok(requests) if work.mark_is_open(anchor, mark) => {
+        let batch = match pack_wire_batch(&claimed.writes, now_ms) {
+            Ok(requests) => {
+                let count = requests.requests().len();
+                let mut selected = Vec::with_capacity(count);
+                for (index, write) in claimed.writes.into_iter().enumerate() {
+                    if index < count {
+                        selected.push(write);
+                    } else {
+                        return_not_reached(work, write.request, &mut report).await;
+                    }
+                }
+                let send_before = selected
+                    .iter()
+                    .map(|write| work.write_deadline(write.sent_at))
+                    .fold(send_fence_for_mark(anchor, mark), std::cmp::min);
+                if !work.mark_is_open(anchor, mark) || !work.before_elapsed_fence(send_before) {
+                    for write in selected {
+                        return_not_reached(work, write.request, &mut report).await;
+                    }
+                    collect_due_writes(work, &mut report).await;
+                    return Ok(PreparedFlush {
+                        batch: None,
+                        report,
+                    });
+                }
                 let ticket = PreparedWriteBatch {
                     command: WriteBatchCommand {
                         connection,
+                        send_before,
                         requests,
                     },
                     token: fresh_correlation(now_ms),
                 };
                 self.in_flight = Some(ClaimedWriteBatch {
                     ticket: ticket.clone(),
-                    writes: claimed.writes,
+                    writes: selected,
                 });
                 Some(ticket)
             }
-            checked => {
-                if let Err(error) = checked {
-                    report.issues.push(BatchDispatchError::Wire(error));
-                }
+            Err(error) => {
+                report.issues.push(error);
                 for write in claimed.writes {
                     return_not_reached(work, write.request, &mut report).await;
                 }
@@ -163,20 +190,34 @@ impl OutboxDispatcher {
         let active = self.in_flight.take()?;
         let mut report = FlushReport::default();
         match disposition {
-            WriteBatchDisposition::NotReached => {
+            WriteBatchDisposition::NotReached { cause } => {
+                match cause {
+                    UntouchedCommand::FrameTooLarge
+                    | UntouchedCommand::InvalidFrame
+                    | UntouchedCommand::SinkRejected => {
+                        work.report_operator_event(CustodyOperatorEvent::UntouchedBatchFault(
+                            cause,
+                        ));
+                    }
+                    UntouchedCommand::ConnectionUnavailable
+                    | UntouchedCommand::WriterBusy
+                    | UntouchedCommand::SendWindowElapsed => {}
+                }
                 for write in active.writes {
                     return_not_reached(work, write.request, &mut report).await;
                 }
                 collect_due_writes(work, &mut report).await;
             }
-            WriteBatchDisposition::MemberResults { members } => {
+            WriteBatchDisposition::MemberResults(results) => {
                 let requests = submitted.command.requests.requests();
+                let members = results.members();
                 if requests.len() != members.len()
                     || !requests
                         .iter()
                         .zip(members.iter())
                         .all(|(request, member)| {
-                            request.correlation_id() == member_correlation(member)
+                            request.correlation_id() == member.disposition.correlation_id()
+                                && request.payload().write_request_id() == Some(&member.request_id)
                         })
                 {
                     report.issues.push(BatchDispatchError::ResultsMismatch);
@@ -185,8 +226,8 @@ impl OutboxDispatcher {
                     }
                     return Some(report);
                 }
-                for (write, member) in active.writes.into_iter().zip(members) {
-                    match member {
+                for (write, member) in active.writes.into_iter().zip(results.into_members()) {
+                    match member.disposition {
                         WriteBatchMemberDisposition::Answered { reply } => {
                             settle_answer(work, write, *reply.result, &mut report).await;
                         }
@@ -201,44 +242,31 @@ impl OutboxDispatcher {
     }
 }
 
-fn build_wire_batch(
+fn pack_wire_batch(
     writes: &[StoredOutboxWrite],
     now_ms: i64,
-) -> Result<LinkRequestBatch, ProtocolError> {
-    let requests = writes
-        .iter()
-        .map(|write| {
-            let payload = match &write.payload {
-                OutboxQueuedWrite::Workspace(request) => RequestPayload::Workspace(request.clone()),
-                OutboxQueuedWrite::SendMessage {
-                    request_id,
-                    message,
-                } => RequestPayload::Mail(CentralMailRequest {
-                    request_id: request_id.clone(),
-                    operation: CentralMailOperation::SendMessage {
-                        to: message.to.clone(),
-                        body: message.body.clone(),
-                        delivery: message.delivery,
-                        reply_to: message.reply_to.clone(),
-                        sent_at: write.sent_at,
-                    },
-                }),
-            };
-            LinkRequest::new(fresh_correlation(now_ms), write.caller.clone(), payload)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    LinkRequestBatch::new(requests)
+) -> Result<LinkRequestBatch, BatchDispatchError> {
+    let mut bytes = WRITE_BATCH_ENVELOPE_BYTES;
+    let mut requests = Vec::new();
+    for write in writes {
+        let wire = request_for_write(&write.caller, &write.payload, write.sent_at, now_ms)?;
+        let next = bytes
+            .saturating_add(usize::from(!requests.is_empty()))
+            .saturating_add(encoded_request_size(&wire)?);
+        if next > LINK_LANE_FRAME_BYTES {
+            if requests.is_empty() {
+                return Err(BatchDispatchError::OversizeClaim);
+            }
+            break;
+        }
+        bytes = next;
+        requests.push(wire);
+    }
+    Ok(LinkRequestBatch::new(requests)?)
 }
 
 fn fresh_correlation(now_ms: i64) -> CorrelationId {
     FreshCorrelationId::mint_at(now_ms).wire_id().clone()
-}
-
-fn member_correlation(member: &WriteBatchMemberDisposition) -> &CorrelationId {
-    match member {
-        WriteBatchMemberDisposition::Answered { reply } => &reply.correlation_id,
-        WriteBatchMemberDisposition::AnswerLost { correlation_id } => correlation_id,
-    }
 }
 
 async fn settle_answer(

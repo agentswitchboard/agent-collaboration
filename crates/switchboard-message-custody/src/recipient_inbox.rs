@@ -179,10 +179,10 @@ impl RecipientInbox {
     /// Validate and keep an offer or its permanent refusal, retaining temporary failures for retry.
     pub async fn receive_offer(
         &mut self,
-        message: DeliveryMessage,
-        time_left: Option<TimeLeft>,
+        incoming: central_link_client::ValidatedDeliveryOffer,
     ) -> Result<InboxOfferResult, InboxCustodyError> {
-        let offer = InboxOffer::from_delivery(message, time_left, self.clock.utc_now())?;
+        let (message, time_left) = incoming.into_parts();
+        let offer = InboxOffer::from_delivery(*message, time_left, self.clock.utc_now())?;
         let target = offer.target_session();
         if target.machine_id != self.machine_id {
             return Err(InboxCustodyError::WrongMachine(target.machine_id.clone()));
@@ -245,7 +245,9 @@ impl RecipientInbox {
         &mut self,
         submitted: ReceiptFrame,
         current_connection: Option<&central_link_client::ConnectionAttempt>,
-        disposition: central_link_client::LinkLaneDisposition,
+        disposition: central_link_client::LinkLaneDisposition<
+            central_link_client::CorrelatedReceiptResults,
+        >,
     ) -> Result<ReceiptFrameOutcome, ReceiptDeliveryError> {
         let now_ms = self.clock.now().unix_millis();
         self.receipts

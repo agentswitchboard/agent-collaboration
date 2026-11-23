@@ -1,6 +1,6 @@
 //! Caller-scoped status above the Mac store and the central request replay read.
 
-use central_link_client::{LinkLaneDisposition, LinkLaneReply};
+use central_link_client::{CorrelatedStatusReply, LinkLaneDisposition};
 use central_link_protocol::{
     CorrelationId, ReplyPayload, RequestScope, RequestStatusAnswer, RequestStatusQuery,
 };
@@ -65,14 +65,13 @@ pub(crate) fn local_status(status: OutboxRequestStatus) -> Option<CustodyRequest
 
 pub(crate) fn remote_status(
     correlation: &CorrelationId,
-    disposition: LinkLaneDisposition,
+    disposition: LinkLaneDisposition<CorrelatedStatusReply>,
 ) -> CustodyRequestStatus {
     let LinkLaneDisposition::Answered {
-        reply:
-            LinkLaneReply::RequestStatus {
-                correlation_id,
-                result,
-            },
+        reply: CorrelatedStatusReply {
+            correlation_id,
+            result,
+        },
     } = disposition
     else {
         return CustodyRequestStatus::StatusUnavailable;

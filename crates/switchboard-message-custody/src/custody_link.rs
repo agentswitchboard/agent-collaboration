@@ -1,13 +1,13 @@
 //! Custody's user of the admitted message lane. The driver owns the socket.
 
 use central_link_client::{
-    AdmittedConnection, LinkLaneCommand, LinkLaneEvent, ReadyLinkLane, WelcomeClockAnchor,
-    WriteBatchDisposition,
+    AdmittedConnection, ImmediateRequestCommand, LinkLaneEvent, ReadyLinkLane,
+    RequestStatusCommand, UntouchedCommand, WelcomeClockAnchor, WriteBatchDisposition,
 };
 use central_link_protocol::{DeliveryMessage, FreshCorrelationId, RequestStatusQuery};
 use router_clock::{ClockInstant, RuntimeClock};
 use runtime_primitives::SyncTime;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use switchboard_machine_core_store::{
     InboxDecision, OutgoingWrite, PendingWrite, StoredSenderOutcome,
 };
@@ -34,6 +34,8 @@ use crate::{
     receipt_delivery::{ReceiptDeliveryError, ReceiptFrameOutcome},
     recipient_inbox::{InboxCustodyError, InboxOfferResult, RecipientInbox},
 };
+
+const IMMEDIATE_COMMAND_WINDOW: Duration = Duration::from_secs(30);
 
 /// A failure produced while custody uses a ready link or its durable stores.
 #[derive(Debug, thiserror::Error)]
@@ -134,8 +136,9 @@ impl CustodyLink {
                     };
                 let disposition = self
                     .lane
-                    .submit_command(LinkLaneCommand::ImmediateRequest {
+                    .submit_immediate_request(ImmediateRequestCommand {
                         connection: admitted.connection,
+                        send_before: self.clock.monotonic_now().after(IMMEDIATE_COMMAND_WINDOW),
                         request: Box::new(request.clone()),
                     })
                     .await;
@@ -171,8 +174,9 @@ impl CustodyLink {
             .clone();
         let disposition = self
             .lane
-            .submit_command(LinkLaneCommand::RequestStatus {
+            .request_status(RequestStatusCommand {
                 connection: admitted.connection,
+                send_before: self.clock.monotonic_now().after(IMMEDIATE_COMMAND_WINDOW),
                 correlation_id: correlation_id.clone(),
                 caller,
                 query,
@@ -245,8 +249,7 @@ impl CustodyLink {
             }
             LinkLaneEvent::Deliver {
                 connection,
-                message,
-                time_left,
+                offer,
                 sender: _,
             } => {
                 if !self
@@ -255,7 +258,7 @@ impl CustodyLink {
                 {
                     return Ok(CustodyLinkObservation::StaleDelivery);
                 }
-                let notice_key = match message.as_ref() {
+                let notice_key = match offer.message() {
                     DeliveryMessage::System(record)
                         if matches!(record.body, MessageBody::DeliveryOutcome { .. }) =>
                     {
@@ -263,7 +266,7 @@ impl CustodyLink {
                     }
                     DeliveryMessage::System(_) | DeliveryMessage::Direct(_) => None,
                 };
-                let kept = self.inbox.receive_offer(*message, time_left).await?;
+                let kept = self.inbox.receive_offer(offer).await?;
                 if let Some((target, notice_id)) = notice_key
                     && matches!(
                         kept,
@@ -393,12 +396,17 @@ impl CustodyLink {
         let Some(batch) = prepared.batch else {
             return Ok(prepared.report);
         };
-        let disposition = if self.admitted_connection().as_ref() != Some(admitted)
-            || !self.outbox.mark_is_open(admitted.clock_anchor, mark)
-        {
-            WriteBatchDisposition::NotReached
+        let command = batch.command();
+        let disposition = if self.admitted_connection().as_ref() != Some(admitted) {
+            WriteBatchDisposition::NotReached {
+                cause: UntouchedCommand::ConnectionUnavailable,
+            }
+        } else if !self.outbox.before_elapsed_fence(command.send_before) {
+            WriteBatchDisposition::NotReached {
+                cause: UntouchedCommand::SendWindowElapsed,
+            }
         } else {
-            self.lane.submit_write_batch(batch.command()).await
+            self.lane.submit_write_batch(command).await
         };
         if let Some(settled) = self
             .dispatcher
@@ -422,7 +430,8 @@ impl CustodyLink {
         let Some(frame) = self.inbox.prepare_receipts(&admitted.connection).await? else {
             return Ok(None);
         };
-        let disposition = self.lane.submit_command(frame.command()).await;
+        let send_before = self.clock.monotonic_now().after(IMMEDIATE_COMMAND_WINDOW);
+        let disposition = self.lane.submit_receipts(frame.command(send_before)).await;
         let current = self.admitted_connection();
         Ok(Some(
             self.inbox

@@ -1,3 +1,4 @@
+mod batch_limits;
 mod batch_replay;
 mod custody_status;
 mod inbox_custody;

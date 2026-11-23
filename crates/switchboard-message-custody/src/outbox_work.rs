@@ -7,12 +7,15 @@ use runtime_primitives::SyncTime;
 use std::{sync::Arc, time::Duration};
 use switchboard_machine_core_store::{ClaimedBatch, EndedWrite, OutboxStorage, OutboxStoreError};
 use workspace_ids::RequestId;
+use workspace_model::Timestamp;
 
 use crate::{
     custody_operator::{CustodyOperatorEvent, outbox_scan},
     flush_clock::shared_time_at,
     flush_marks::mark_in_window,
 };
+
+const ORIGINAL_WRITE_WINDOW_MS: i64 = 15 * 60 * 1_000;
 
 /// The result of asking the outbox to claim a batch on the selected shared mark.
 #[derive(Debug)]
@@ -82,6 +85,14 @@ impl OutboxWork {
         std::mem::take(&mut self.operator_events)
     }
 
+    pub(crate) fn report_operator_event(&mut self, event: CustodyOperatorEvent) {
+        self.operator_events.push(event);
+    }
+
+    pub(crate) fn before_elapsed_fence(&self, fence: ClockInstant) -> bool {
+        self.clock.monotonic_now() < fence
+    }
+
     /// Read the first waiting receipt mark for the scheduler, including unanswered replays.
     pub async fn earliest_waiting_mark(&mut self) -> Result<Option<SyncTime>, OutboxWorkError> {
         let scanned = self.store.earliest_waiting().await?;
@@ -91,14 +102,23 @@ impl OutboxWork {
     /// The exact local expiry wake, independent of lane admission and minute jitter.
     pub async fn earliest_deadline(&mut self) -> Result<Option<ClockInstant>, OutboxWorkError> {
         let scanned = self.store.earliest_deadline().await?;
-        Ok(
-            outbox_scan(scanned, &mut self.operator_events).map(|deadline_ms| {
-                let elapsed_ms = deadline_ms.saturating_sub(self.local_epoch.unix_millis);
-                self.local_epoch.sampled_at.after(Duration::from_millis(
-                    u64::try_from(elapsed_ms).unwrap_or(0),
-                ))
-            }),
+        let deadline = outbox_scan(scanned, &mut self.operator_events);
+        Ok(deadline.map(|deadline_ms| self.local_wake_at(deadline_ms)))
+    }
+
+    pub(crate) fn write_deadline(&self, original_send: Timestamp) -> ClockInstant {
+        self.local_wake_at(
+            original_send
+                .timestamp_millis()
+                .saturating_add(ORIGINAL_WRITE_WINDOW_MS),
         )
+    }
+
+    fn local_wake_at(&self, deadline_ms: i64) -> ClockInstant {
+        let elapsed_ms = deadline_ms.saturating_sub(self.local_epoch.unix_millis);
+        self.local_epoch.sampled_at.after(Duration::from_millis(
+            u64::try_from(elapsed_ms).unwrap_or(0),
+        ))
     }
 
     /// End overdue waiting rows and return the typed notices for their senders.

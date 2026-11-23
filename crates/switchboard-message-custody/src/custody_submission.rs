@@ -1,6 +1,6 @@
 //! The tool-facing submission seam above the outbox.
 
-use central_link_client::{LinkLaneDisposition, LinkLaneReply};
+use central_link_client::{CorrelatedRequestReply, LaneFrameSizeError, LinkLaneDisposition};
 use central_link_protocol::{
     FreshCorrelationId, LinkRequest, ProtocolError, ReplyPayload, RequestPayload, RequestScope,
 };
@@ -11,15 +11,18 @@ use switchboard_machine_core_store::{
 };
 use workspace_ids::RequestId;
 use workspace_model::{
-    Caller, ItemRef, WorkspaceAnswer, WorkspaceOperation, WorkspaceReply, WorkspaceRequest,
-    WorkspaceResult,
+    Caller, ItemRef, Timestamp, WorkspaceAnswer, WorkspaceOperation, WorkspaceReply,
+    WorkspaceRequest, WorkspaceResult,
     central_mail::{
         CentralMailAnswer, CentralMailOperation, CentralMailRequest, CentralMailResult,
         SendMessageRequest,
     },
 };
 
-use crate::outbox_work::OutboxWork;
+use crate::{
+    outbox_wire::{fits_one_member, request_for_write},
+    outbox_work::OutboxWork,
+};
 
 /// A tool supplies an unstamped send, a workspace operation or an immediate mail operation.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -59,6 +62,9 @@ pub enum SubmitRefusal {
     OutboxUnavailable,
     RequestIdConflict,
     UnstampedMessageRequired,
+    TooLargeToSend,
+    InvalidSendTime,
+    UnmeasurableWrite(LaneFrameSizeError),
     InvalidRequest(ProtocolError),
 }
 
@@ -116,13 +122,25 @@ pub(crate) async fn submit_to_outbox(
     flush_at: SyncTime,
 ) -> Submission {
     let scope = wire_scope(payload.request_scope());
+    let now_ms = work.local_now_ms();
+    let Some(sent_at) = Timestamp::from_timestamp_millis(now_ms) else {
+        return Submission::Refused(SubmitRefusal::InvalidSendTime);
+    };
+    let wire = match request_for_write(&caller, &payload, sent_at, now_ms) {
+        Ok(wire) => wire,
+        Err(error) => return Submission::Refused(SubmitRefusal::InvalidRequest(error)),
+    };
+    match fits_one_member(&wire) {
+        Ok(true) => {}
+        Ok(false) => return Submission::Refused(SubmitRefusal::TooLargeToSend),
+        Err(error) => return Submission::Refused(SubmitRefusal::UnmeasurableWrite(error)),
+    }
     let item = NewOutboxItem {
         request: request.clone(),
         caller,
         payload,
         flush_at_ms: flush_at.unix_millis(),
     };
-    let now_ms = work.local_now_ms();
     match work.outbox_storage().insert(&item, now_ms).await {
         Ok(OutboxInsert::Stored) => Submission::InOutbox(OutboxReceipt {
             id: request,
@@ -193,14 +211,15 @@ pub(crate) fn prepare_immediate_request(
 
 pub(crate) fn settle_immediate_request(
     request: &LinkRequest,
-    disposition: LinkLaneDisposition,
+    disposition: LinkLaneDisposition<CorrelatedRequestReply>,
 ) -> Submission {
     match disposition {
-        LinkLaneDisposition::NotReached => Submission::Refused(SubmitRefusal::CentralUnavailable),
-        LinkLaneDisposition::Answered {
-            reply: LinkLaneReply::ImmediateRequest { reply },
-        } if reply.correlation_id == *request.correlation_id()
-            && reply.result.matches_request(request.payload()) =>
+        LinkLaneDisposition::NotReached { .. } => {
+            Submission::Refused(SubmitRefusal::CentralUnavailable)
+        }
+        LinkLaneDisposition::Answered { reply }
+            if reply.correlation_id == *request.correlation_id()
+                && reply.result.matches_request(request.payload()) =>
         {
             Submission::Answered(*reply.result)
         }

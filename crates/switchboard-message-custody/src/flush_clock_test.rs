@@ -33,6 +33,6 @@ fn two_machines_spread_the_same_mark_inside_the_allowed_window() {
     let first_offset = MachineFlushJitter::new(&first).jitter_millis(mark);
     let second_offset = MachineFlushJitter::new(&second).jitter_millis(mark);
     assert_ne!(first_offset, second_offset);
-    assert!((-3_000..=3_000).contains(&first_offset));
-    assert!((-3_000..=3_000).contains(&second_offset));
+    assert!((-3_000..3_000).contains(&first_offset));
+    assert!((-3_000..3_000).contains(&second_offset));
 }

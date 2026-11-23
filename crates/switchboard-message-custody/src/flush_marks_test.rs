@@ -37,10 +37,10 @@ fn acceptance_after_the_flush_inside_its_trailing_window_names_the_following_mar
 }
 
 #[test]
-fn acceptance_at_the_closing_edge_can_join_an_unflushed_mark() {
-    assert_eq!(earliest_open_mark(at(MARK + 3_000), None), at(MARK));
+fn acceptance_at_the_exclusive_closing_edge_names_the_next_mark() {
+    assert_eq!(earliest_open_mark(at(MARK + 2_999), None), at(MARK));
     assert_eq!(
-        earliest_open_mark(at(MARK + 3_001), None),
+        earliest_open_mark(at(MARK + 3_000), None),
         at(MARK + 60_000)
     );
 }
@@ -48,7 +48,8 @@ fn acceptance_at_the_closing_edge_can_join_an_unflushed_mark() {
 #[test]
 fn the_window_is_three_seconds_either_side() {
     assert_eq!(mark_in_window(at(MARK - 3_000)), Some(at(MARK)));
-    assert_eq!(mark_in_window(at(MARK + 3_000)), Some(at(MARK)));
+    assert_eq!(mark_in_window(at(MARK + 2_999)), Some(at(MARK)));
+    assert_eq!(mark_in_window(at(MARK + 3_000)), None);
     assert_eq!(mark_in_window(at(MARK - 3_001)), None);
     assert_eq!(mark_in_window(at(MARK + 3_001)), None);
 }
@@ -68,12 +69,12 @@ fn the_open_mark_is_a_future_or_current_window_mark_after_the_last_flush(case: T
     let mark = earliest_open_mark(now, last_flushed);
 
     assert_eq!(mark.unix_millis().rem_euclid(FLUSH_INTERVAL_MILLIS), 0);
-    assert!(mark.unix_millis() + FLUSH_JITTER_MILLIS >= now.unix_millis());
+    assert!(mark.unix_millis() + FLUSH_JITTER_MILLIS > now.unix_millis());
     if let Some(flushed) = last_flushed {
         assert!(mark > flushed);
     }
     let earlier = at(mark.unix_millis() - FLUSH_INTERVAL_MILLIS);
-    let earlier_open = earlier.unix_millis() + FLUSH_JITTER_MILLIS >= now.unix_millis()
+    let earlier_open = earlier.unix_millis() + FLUSH_JITTER_MILLIS > now.unix_millis()
         && last_flushed.is_none_or(|flushed| earlier > flushed);
     assert!(!earlier_open, "an earlier mark was still open");
 }

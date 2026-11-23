@@ -9,6 +9,7 @@ pub mod flush_clock;
 pub mod flush_marks;
 pub mod outbox_dispatch;
 pub mod outbox_flush;
+mod outbox_wire;
 pub mod outbox_work;
 pub mod receipt_delivery;
 pub mod recipient_inbox;

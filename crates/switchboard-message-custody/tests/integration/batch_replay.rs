@@ -5,13 +5,15 @@
 )]
 
 use central_link_client::{
-    AdmittedConnection, ClientAction, CorrelatedRequestReply, LinkClient, LinkLaneCommand,
-    LinkLaneDisposition, LinkLaneEvent, LinkLaneReply, ReadyLinkLane, RegisteredConnection,
-    WriteBatchCommand, WriteBatchDisposition, WriteBatchMemberDisposition,
+    AdmittedConnection, CheckedBatchResults, ClientAction, CorrelatedReceiptResults,
+    CorrelatedRequestReply, CorrelatedStatusReply, ImmediateRequestCommand, LinkClient,
+    LinkLaneDisposition, LinkLaneEvent, ReadyLinkLane, RegisteredConnection, RequestStatusCommand,
+    SubmitReceiptsCommand, UntouchedCommand, WriteBatchCommand, WriteBatchDisposition,
+    WriteBatchMemberDisposition,
 };
 use central_link_protocol::{
-    DataFrame, FrameDirection, LinkFrame, ReplyPayload, RequestStatusAnswer, decode_text,
-    encode_text,
+    DataFrame, FrameDirection, LinkFrame, ReceiptResult, ReplyPayload, RequestStatusAnswer,
+    decode_text, encode_text,
 };
 use hegel::{TestCase, generators};
 use router_clock::{ManualClock, RuntimeClock};
@@ -69,13 +71,19 @@ impl RecipientSessionDirectory for KnownRecipient {
 struct PeerHistory {
     attempts: Vec<Vec<RequestId>>,
     decisions: BTreeMap<RequestId, ReplyPayload>,
+    commands: Vec<WriteBatchCommand>,
+}
+
+pub(super) enum ScriptedCommand {
+    RequestStatus(RequestStatusCommand),
+    ImmediateRequest(ImmediateRequestCommand),
 }
 
 pub(super) struct ScriptedBatchLane {
     pub(super) admitted: watch::Sender<Option<AdmittedConnection>>,
     lost_first_answers: BTreeSet<RequestId>,
     history: Mutex<PeerHistory>,
-    calls: Mutex<Vec<LinkLaneCommand>>,
+    calls: Mutex<Vec<ScriptedCommand>>,
     events: Mutex<std::collections::VecDeque<LinkLaneEvent>>,
 }
 
@@ -93,8 +101,12 @@ impl ScriptedBatchLane {
         }
     }
 
-    pub(super) fn take_calls(&self) -> Vec<LinkLaneCommand> {
+    pub(super) fn take_calls(&self) -> Vec<ScriptedCommand> {
         std::mem::take(&mut *self.calls.lock().unwrap())
+    }
+
+    pub(super) fn batch_commands(&self) -> Vec<WriteBatchCommand> {
+        self.history.lock().unwrap().commands.clone()
     }
 
     pub(super) fn push_event(&self, event: LinkLaneEvent) {
@@ -103,11 +115,13 @@ impl ScriptedBatchLane {
 
     fn respond_to_batch(&self, batch: WriteBatchCommand) -> WriteBatchDisposition {
         let Some(admitted) = self.admitted.borrow().clone() else {
-            return WriteBatchDisposition::NotReached;
+            return WriteBatchDisposition::NotReached {
+                cause: UntouchedCommand::ConnectionUnavailable,
+            };
         };
         assert_eq!(batch.connection, admitted.connection);
         let wire = LinkFrame::Data(DataFrame::Batch {
-            requests: batch.requests,
+            requests: batch.requests.clone(),
         });
         let text = encode_text(&wire, FrameDirection::ToCentral).unwrap();
         let LinkFrame::Data(DataFrame::Batch { requests }) =
@@ -116,6 +130,7 @@ impl ScriptedBatchLane {
             panic!("custody did not send a batch frame");
         };
         let mut history = self.history.lock().unwrap();
+        history.commands.push(batch);
         let first_batch = history.attempts.is_empty();
         let mut sent_requests = Vec::new();
         let mut members = Vec::new();
@@ -141,12 +156,10 @@ impl ScriptedBatchLane {
             members.push(disposition);
         }
         history.attempts.push(sent_requests);
-        if first_batch {
+        if first_batch && !self.lost_first_answers.is_empty() {
             self.admitted.send_replace(None);
         }
-        WriteBatchDisposition::MemberResults {
-            members: members.into_boxed_slice(),
-        }
+        WriteBatchDisposition::MemberResults(CheckedBatchResults::new(&requests, members).unwrap())
     }
 }
 
@@ -166,31 +179,51 @@ impl ReadyLinkLane for ScriptedBatchLane {
         Box::pin(std::future::ready(self.respond_to_batch(batch)))
     }
 
-    fn submit_command(
+    fn submit_receipts(
         &self,
-        command: LinkLaneCommand,
-    ) -> Pin<Box<dyn Future<Output = LinkLaneDisposition> + Send + '_>> {
-        let reply = match &command {
-            LinkLaneCommand::RequestStatus { correlation_id, .. } => LinkLaneReply::RequestStatus {
-                correlation_id: correlation_id.clone(),
-                result: Box::new(RequestStatusAnswer::NotFound),
-            },
-            LinkLaneCommand::ImmediateRequest { request, .. } => LinkLaneReply::ImmediateRequest {
-                reply: CorrelatedRequestReply {
-                    correlation_id: request.correlation_id().clone(),
-                    result: Box::new(ReplyPayload::Workspace(WorkspaceReply {
-                        result: WorkspaceResult::Done(WorkspaceAnswer::MessageStatus {
-                            status: MessageStatus::NotFound {},
-                        }),
-                        actors: Vec::new(),
-                    })),
-                },
-            },
-            LinkLaneCommand::SubmitReceipts { .. } => {
-                panic!("this scripted lane fixture does not settle inbox receipts")
-            }
+        command: SubmitReceiptsCommand,
+    ) -> Pin<Box<dyn Future<Output = LinkLaneDisposition<CorrelatedReceiptResults>> + Send + '_>>
+    {
+        let reply = CorrelatedReceiptResults {
+            correlation_id: command.correlation_id,
+            results: vec![ReceiptResult::Recorded; command.receipts.receipts().len()],
         };
-        self.calls.lock().unwrap().push(command);
+        Box::pin(std::future::ready(LinkLaneDisposition::Answered { reply }))
+    }
+
+    fn request_status(
+        &self,
+        command: RequestStatusCommand,
+    ) -> Pin<Box<dyn Future<Output = LinkLaneDisposition<CorrelatedStatusReply>> + Send + '_>> {
+        let reply = CorrelatedStatusReply {
+            correlation_id: command.correlation_id.clone(),
+            result: Box::new(RequestStatusAnswer::NotFound),
+        };
+        self.calls
+            .lock()
+            .unwrap()
+            .push(ScriptedCommand::RequestStatus(command));
+        Box::pin(std::future::ready(LinkLaneDisposition::Answered { reply }))
+    }
+
+    fn submit_immediate_request(
+        &self,
+        command: ImmediateRequestCommand,
+    ) -> Pin<Box<dyn Future<Output = LinkLaneDisposition<CorrelatedRequestReply>> + Send + '_>>
+    {
+        let reply = CorrelatedRequestReply {
+            correlation_id: command.request.correlation_id().clone(),
+            result: Box::new(ReplyPayload::Workspace(WorkspaceReply {
+                result: WorkspaceResult::Done(WorkspaceAnswer::MessageStatus {
+                    status: MessageStatus::NotFound {},
+                }),
+                actors: Vec::new(),
+            })),
+        };
+        self.calls
+            .lock()
+            .unwrap()
+            .push(ScriptedCommand::ImmediateRequest(command));
         Box::pin(std::future::ready(LinkLaneDisposition::Answered { reply }))
     }
 

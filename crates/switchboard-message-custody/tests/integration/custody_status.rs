@@ -3,7 +3,9 @@
     reason = "The fixture fails directly if the setup or a peer response is unusable."
 )]
 
-use central_link_client::{LinkLaneCommand, LinkLaneEvent};
+use central_link_client::{
+    ImmediateRequestCommand, LinkLaneEvent, RequestStatusCommand, ValidatedDeliveryOffer,
+};
 use central_link_protocol::{
     DeliveryMessage, ReplyPayload, RequestPayload, RequestScope, RequestStatusQuery,
 };
@@ -29,7 +31,9 @@ use workspace_model::{
 };
 
 use super::{
-    batch_replay::{KnownRecipient, NoFlushJitter, ScriptedBatchLane, new_admission},
+    batch_replay::{
+        KnownRecipient, NoFlushJitter, ScriptedBatchLane, ScriptedCommand, new_admission,
+    },
     outbox_timing::{direct_message, manual_clock, open_outbox, thread_post},
 };
 
@@ -108,8 +112,8 @@ async fn request_status_and_unsent_text_are_scoped_to_the_original_caller_and_st
     );
     let calls = lane.take_calls();
     assert!(matches!(calls.as_slice(), [
-        LinkLaneCommand::RequestStatus { caller: first, query: first_query, .. },
-        LinkLaneCommand::RequestStatus { caller: second, query: second_query, .. },
+        ScriptedCommand::RequestStatus(RequestStatusCommand { caller: first, query: first_query, .. }),
+        ScriptedCommand::RequestStatus(RequestStatusCommand { caller: second, query: second_query, .. }),
     ] if first == &item.caller && first_query == &wrong_scope && second == &other && second_query == &query));
 
     lane.admitted.send_replace(None);
@@ -134,7 +138,7 @@ async fn message_status_is_one_immediate_sender_scoped_read() {
 
     let calls = lane.take_calls();
     assert!(
-        matches!(calls.as_slice(), [LinkLaneCommand::ImmediateRequest { request, .. }]
+        matches!(calls.as_slice(), [ScriptedCommand::ImmediateRequest(ImmediateRequestCommand { request, .. })]
         if request.caller() == &caller
         && matches!(request.payload(), RequestPayload::Workspace(payload)
             if payload.request_id.is_none() && payload.workspace_id.is_none()
@@ -194,9 +198,9 @@ async fn a_retained_central_notice_recovers_the_senders_original_acceptance() {
     let admitted = lane.admitted.borrow().clone().unwrap();
     lane.push_event(LinkLaneEvent::Deliver {
         connection: admitted.connection,
-        message: Box::new(DeliveryMessage::System(notice)),
+        offer: ValidatedDeliveryOffer::new(Box::new(DeliveryMessage::System(notice)), None)
+            .unwrap(),
         sender: ResolvedSender::Central {},
-        time_left: None,
     });
     custody.observe_next_event().await.unwrap();
 

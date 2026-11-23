@@ -5,14 +5,14 @@
 )]
 
 use central_link_client::{
-    ClientAction, ConnectionAttempt, LinkClient, LinkLaneCommand, LinkLaneDisposition,
-    LinkLaneReply,
+    ClientAction, ConnectionAttempt, CorrelatedReceiptResults, LinkClient, LinkLaneDisposition,
+    SubmitReceiptsCommand, UntouchedCommand, ValidatedDeliveryOffer,
 };
 use central_link_protocol::{
     CorrelationId, DataFrame, DeliveryMessage, DirectOfferBody, DirectOfferMessage, FrameDirection,
     LinkFrame, Receipt, ReceiptKind, ReceiptResult, TimeLeft, decode_text, encode_text,
 };
-use router_clock::ManualClock;
+use router_clock::{ClockInstant, ManualClock};
 use runtime_primitives::SyncTime;
 use std::{
     future::Future,
@@ -66,8 +66,8 @@ fn recipient_session() -> SessionRef {
     }
 }
 
-fn direct_offer(id: &str, text: &str) -> DeliveryMessage {
-    DeliveryMessage::Direct(DirectOfferMessage {
+fn direct_offer(id: &str, text: &str) -> ValidatedDeliveryOffer {
+    let message = DeliveryMessage::Direct(DirectOfferMessage {
         message_id: id.parse().unwrap(),
         sender: MessageSender::Central,
         target: recipient_session(),
@@ -78,11 +78,12 @@ fn direct_offer(id: &str, text: &str) -> DeliveryMessage {
         },
         state: MessageState::Queued,
         source: None,
-    })
-}
-
-fn offered_duration() -> Option<TimeLeft> {
-    Some(TimeLeft::try_from(123_000).unwrap())
+    });
+    ValidatedDeliveryOffer::new(
+        Box::new(message),
+        Some(TimeLeft::try_from(123_000).unwrap()),
+    )
+    .unwrap()
 }
 
 async fn open_recipient(
@@ -103,14 +104,11 @@ fn new_connection(clock: Arc<ManualClock>) -> ConnectionAttempt {
 }
 
 fn decode_receipts(frame: &ReceiptFrame) -> (CorrelationId, Vec<Receipt>) {
-    let LinkLaneCommand::SubmitReceipts {
+    let SubmitReceiptsCommand {
         correlation_id,
         receipts,
         ..
-    } = frame.command()
-    else {
-        panic!("the inbox prepared the wrong lane command");
-    };
+    } = frame.command(ClockInstant::ZERO.after(Duration::from_secs(30)));
     let request = LinkFrame::Data(DataFrame::Receipts {
         correlation_id,
         receipts,
@@ -129,9 +127,9 @@ fn decode_receipts(frame: &ReceiptFrame) -> (CorrelationId, Vec<Receipt>) {
 fn answer_receipts(
     correlation_id: CorrelationId,
     results: Vec<ReceiptResult>,
-) -> LinkLaneDisposition {
+) -> LinkLaneDisposition<CorrelatedReceiptResults> {
     LinkLaneDisposition::Answered {
-        reply: LinkLaneReply::ReceiptResults {
+        reply: CorrelatedReceiptResults {
             correlation_id,
             results,
         },
@@ -150,10 +148,7 @@ async fn a_reoffer_after_reconnect_reuses_the_first_durable_decision_and_arrival
     let mut first = open_recipient(&path, directory.clone(), clock.clone()).await;
     assert_eq!(
         first
-            .receive_offer(
-                direct_offer(FIRST_MESSAGE, "first delivery"),
-                offered_duration()
-            )
+            .receive_offer(direct_offer(FIRST_MESSAGE, "first delivery"))
             .await
             .unwrap(),
         InboxOfferResult::Recorded {
@@ -185,10 +180,7 @@ async fn a_reoffer_after_reconnect_reuses_the_first_durable_decision_and_arrival
     let replacement = new_connection(clock);
     assert_eq!(
         reopened
-            .receive_offer(
-                direct_offer(FIRST_MESSAGE, "different body on reoffer"),
-                offered_duration()
-            )
+            .receive_offer(direct_offer(FIRST_MESSAGE, "different body on reoffer"))
             .await
             .unwrap(),
         InboxOfferResult::AlreadyDecided {
@@ -251,10 +243,7 @@ async fn unknown_ambiguous_and_unavailable_lookup_have_distinct_custody_results(
 
     assert_eq!(
         inbox
-            .receive_offer(
-                direct_offer(FIRST_MESSAGE, "first arrival"),
-                offered_duration()
-            )
+            .receive_offer(direct_offer(FIRST_MESSAGE, "first arrival"))
             .await
             .unwrap(),
         InboxOfferResult::LookupDeferred
@@ -268,7 +257,7 @@ async fn unknown_ambiguous_and_unavailable_lookup_have_distinct_custody_results(
     directory.set_answer(RecipientSessionAnswer::UnknownSession);
     assert_eq!(
         inbox
-            .receive_offer(direct_offer(SECOND_MESSAGE, "unknown"), offered_duration())
+            .receive_offer(direct_offer(SECOND_MESSAGE, "unknown"))
             .await
             .unwrap(),
         InboxOfferResult::Recorded {
@@ -280,7 +269,7 @@ async fn unknown_ambiguous_and_unavailable_lookup_have_distinct_custody_results(
     directory.set_answer(RecipientSessionAnswer::AmbiguousSession);
     assert_eq!(
         inbox
-            .receive_offer(direct_offer(THIRD_MESSAGE, "ambiguous"), offered_duration())
+            .receive_offer(direct_offer(THIRD_MESSAGE, "ambiguous"))
             .await
             .unwrap(),
         InboxOfferResult::Recorded {
@@ -335,7 +324,7 @@ async fn short_stale_mismatched_and_missing_answers_keep_the_receipt_frame_pendi
     let mut inbox = open_recipient(&path, directory, clock).await;
     for id in [FIRST_MESSAGE, SECOND_MESSAGE] {
         inbox
-            .receive_offer(direct_offer(id, "inbox body"), offered_duration())
+            .receive_offer(direct_offer(id, "inbox body"))
             .await
             .unwrap();
     }
@@ -348,7 +337,9 @@ async fn short_stale_mismatched_and_missing_answers_keep_the_receipt_frame_pendi
         answer_receipts(correlation.clone(), vec![ReceiptResult::Recorded]),
         answer_receipts(wrong_correlation, result_pair.clone()),
         LinkLaneDisposition::AnswerLost,
-        LinkLaneDisposition::NotReached,
+        LinkLaneDisposition::NotReached {
+            cause: UntouchedCommand::WriterBusy,
+        },
     ] {
         let disposition = inbox
             .settle_receipts(first.clone(), Some(&connection), answer)
