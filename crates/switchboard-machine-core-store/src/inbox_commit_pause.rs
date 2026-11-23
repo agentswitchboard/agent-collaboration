@@ -1,3 +1,7 @@
+// Keep the release guard independent of the module's feature gate.
+#[cfg(not(debug_assertions))]
+compile_error!("the inbox commit pause must be excluded from release builds");
+
 use tokio::sync::oneshot;
 
 pub(super) struct InboxCommitPause {
