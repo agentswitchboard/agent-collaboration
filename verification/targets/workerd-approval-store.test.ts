@@ -187,7 +187,7 @@ test("Workerd approvals time out only selected rows and seek the deadline index 
       command: personDecision(firstExpired, uuid(5401), 1),
     });
     assert.deepEqual(typedResult(rollback), { kind: "tooLate" });
-    assert.equal(rollback.writes, 0);
+    assert.equal(rollback.writes, 2);
     const pending = dueSchema.parse(
       await central.dispatchJson(commandPath(database), {
         atMs: hourMs,
@@ -277,7 +277,7 @@ test("Workerd approvals bound retirement and refuse unknown stored kinds, states
           database: corruptDatabase,
           command: personDecision(request.requestId, uuid(5501), 1),
         });
-        assert.equal(decided.writes, 2);
+        assert.equal(decided.writes, 4);
       }
       committedResult(
         await invokeApprovalWitness({
@@ -335,7 +335,7 @@ test("Workerd approval endings and a run replacement roll back after every guard
     const accepted = await assertRollbackAtEachWrite({
       central,
       database,
-      writes: 2,
+      writes: 4,
       command: personDecision(decided.requestId, uuid(5502), 1),
     });
     const offered = appliedSchema.parse(committedResult(accepted)).offers[0];
@@ -419,7 +419,7 @@ async function verifyDelegateDecision(
   assert.deepEqual(results.toSorted(), ["savedDecision", "standing"]);
   assert.equal(
     race.map((reply) => reply.writes).reduce((sum, writes) => sum + writes, 0),
-    2,
+    6,
   );
   const winner = results.indexOf("savedDecision");
   const won = race[winner];
@@ -531,3 +531,72 @@ async function verifyRunReplacement(
   );
   assert.deepEqual(due.rows, []);
 }
+
+test("Workerd Decide replays accepted and refused answers through the shared 24-hour log", async (): Promise<void> => {
+  const central = await WorkerdStorage.start(centralTestBundle());
+  const database = "approval-request-log";
+  try {
+    await initializeApprovals(central, database);
+    const request = raiseRequest(1, "Logged decision");
+    await invokeApprovalWitness({ central, database, command: { kind: "raise", holder, request } });
+    const invalid = personDecision(request.requestId, uuid(5601), 15);
+    const chose = personDecision(request.requestId, uuid(5602), 2);
+    const refusal = await assertRollbackAtEachWrite({
+      central,
+      database,
+      atMs: 1,
+      command: invalid,
+      writes: 2,
+    });
+    assert.deepEqual(typedResult(refusal), { kind: "invalid" });
+    const accepted = await assertRollbackAtEachWrite({
+      central,
+      database,
+      atMs: 1,
+      command: chose,
+      writes: 4,
+    });
+    assert.equal(z.object({ kind: z.string() }).parse(typedResult(accepted)).kind, "savedDecision");
+    const logRows = (await snapshot(central, database))
+      .map((row) => z.array(z.unknown()).parse(JSON.parse(row)))
+      .filter((row) => row[0] === "requestLog");
+    assert.deepEqual(
+      logRows.map((row) => row[1]),
+      [uuid(5601), uuid(5602)],
+    );
+
+    const withinWindow = 24 * hourMs;
+    for (const { command, firstReply } of [
+      { command: invalid, firstReply: refusal },
+      { command: chose, firstReply: accepted },
+    ]) {
+      const replay = await invokeApprovalWitness({
+        central,
+        database,
+        atMs: withinWindow,
+        command,
+      });
+      assert.deepEqual(typedResult(replay), typedResult(firstReply));
+      assert.equal(replay.writes, 0);
+    }
+
+    const conflict = await invokeApprovalWitness({
+      central,
+      database,
+      atMs: withinWindow,
+      command: personDecision(request.requestId, uuid(5602), 1),
+    });
+    assert.deepEqual(typedResult(conflict), { kind: "operationConflict" });
+    assert.equal(conflict.writes, 0);
+    const expired = await invokeApprovalWitness({
+      central,
+      database,
+      atMs: withinWindow + 1,
+      command: chose,
+    });
+    assert.equal(z.object({ kind: z.string() }).parse(typedResult(expired)).kind, "standing");
+    assert.equal(expired.writes, 2);
+  } finally {
+    await central.close();
+  }
+});

@@ -118,6 +118,7 @@ pub struct EndedApproval {
     pub ending: DeliverEndingRequest,
     pub ended_at: CentralTime,
     pub delivery: Delivery,
+    pub decided_operation_id: Option<RequestId>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -248,31 +249,6 @@ pub enum DestinationReplyMismatch {
     Recipient,
 }
 
-#[derive(Clone, Eq, PartialEq)]
-pub struct SavedDecision {
-    pub key: ApprovalRequestKey,
-    pub actor: ApprovalActor,
-    pub operation_id: RequestId,
-    pub(crate) value: Answer,
-}
-
-impl SavedDecision {
-    pub fn value(&self) -> &Answer {
-        &self.value
-    }
-}
-
-impl fmt::Debug for SavedDecision {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("SavedDecision")
-            .field("key", &self.key)
-            .field("actor", &self.actor)
-            .field("operation_id", &self.operation_id)
-            .finish_non_exhaustive()
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProviderSessionAvailability {
     Live,
@@ -316,7 +292,6 @@ pub enum ApprovalEvent {
         key: ApprovalRequestKey,
         actor: AdmittedDecider,
         request: ApprovalDecideInput,
-        prior: Option<Box<SavedDecision>>,
     },
     Read {
         key: ApprovalRequestKey,
@@ -426,7 +401,6 @@ pub enum ApprovalEffect {
         holder: ApprovalRun,
         request: Box<DeliverEndingRequest>,
     },
-    SaveDecision(Box<SavedDecision>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

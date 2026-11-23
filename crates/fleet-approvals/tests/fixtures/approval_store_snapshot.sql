@@ -17,4 +17,7 @@ UNION ALL
 SELECT json_array('due', due_entry_id, work_kind, subject_key, occurrence_ms, effective_due_ms,
                   entry_role, base_due_ms, created_at, updated_at)
 FROM engine_due_entries
+UNION ALL
+SELECT json_array('requestLog', request_id, caller, content_digest, answer, created_at, updated_at)
+FROM runtime_request_log
 ORDER BY 1

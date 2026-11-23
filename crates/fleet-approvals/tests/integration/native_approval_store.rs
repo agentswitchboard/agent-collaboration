@@ -11,9 +11,9 @@ use central_engine_model::{
 };
 use central_storage::{ReadOutcome, SafeInteger, SqlValue, Statement, StoreFailure};
 use fleet_approvals::{
-    ApprovalApplyFailure, ApprovalApplyingStore, ApprovalEnrollment, ApprovalEnrollmentScope,
-    ApprovalEnrollmentStanding, ApprovalHolderScope, ApprovalRouting, ApprovalSession,
-    ApprovalSessionFacts, ApprovalStoreTransaction,
+    ApprovalActor, ApprovalApplyFailure, ApprovalApplyingStore, ApprovalEnrollment,
+    ApprovalEnrollmentScope, ApprovalEnrollmentStanding, ApprovalHolderScope, ApprovalRouting,
+    ApprovalSession, ApprovalSessionFacts, ApprovalStoreTransaction,
 };
 use fleet_identity_protocol::{EnrollmentId, OrganizationId};
 use fleet_lent_transaction::CentralTransaction;
@@ -23,6 +23,7 @@ use sqlx::{
     query::Query,
     sqlite::{SqliteArguments, SqliteConnectOptions, SqlitePoolOptions},
 };
+use workspace_ids::ActorIdentityId;
 
 static NEXT_FIXTURE: AtomicU64 = AtomicU64::new(1);
 
@@ -76,6 +77,21 @@ impl CentralTransaction for NativeApprovalTransaction {
 }
 
 impl ApprovalStoreTransaction for NativeApprovalTransaction {
+    async fn approval_decision_caller(
+        &mut self,
+        _organization: &OrganizationId,
+        actor: &ApprovalActor,
+    ) -> Result<ActorIdentityId, StoreFailure> {
+        // The fixture uses disjoint issued person and session identities.
+        let fixture_id = match actor {
+            ApprovalActor::Person(person) => person.as_str(),
+            ApprovalActor::Session(session) => session.session_id.as_str(),
+        };
+        fixture_id
+            .parse()
+            .map_err(|_| corrupt("fixture_actor_identity"))
+    }
+
     async fn read_approval_statement(
         &mut self,
         statement: Statement,

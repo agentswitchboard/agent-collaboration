@@ -17,6 +17,8 @@ mod scope;
 mod model_ledger;
 
 #[cfg(test)]
+mod approval_decision_log_cases;
+#[cfg(test)]
 mod approval_store_atomicity;
 #[cfg(test)]
 mod approval_store_cases;

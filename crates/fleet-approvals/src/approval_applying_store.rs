@@ -128,7 +128,6 @@ where
         };
 
         let mut output = PendingApprovalApply::with_reply(None);
-        let mut accepted = None;
         let mut due_writes = Vec::new();
         let new_row_id = if prior != &next && row_id.is_none() {
             Some(ApprovalRowId::mint(context.ids)?)
@@ -145,7 +144,6 @@ where
                         .ending_offers
                         .push(PendingApprovalOffer { holder, request });
                 }
-                ApprovalEffect::SaveDecision(decision) => accepted = Some(decision),
                 ApprovalEffect::StoreSessionNotice { key, session } => {
                     // This notice is the initial parent destination's durable notice slot.
                     let retained = next
@@ -178,14 +176,7 @@ where
         }
 
         if let Some(row_id) = row_id {
-            let mut writes = plan_approval_state_change(
-                row_id,
-                scope,
-                prior,
-                &next,
-                accepted.as_deref(),
-                &mut context,
-            )?;
+            let mut writes = plan_approval_state_change(row_id, scope, prior, &next, &mut context)?;
             writes.append(&mut due_writes);
             for write in writes {
                 self.execute_guarded_write(write).await?;

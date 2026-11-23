@@ -9,7 +9,7 @@ use fleet_runtime_ports::{stored_values::format_utc_millis, workspace_decode_err
 
 use crate::{
     ApprovalRequestKey, ApprovalRouting, ApprovalSession, ApprovalState, EndedApproval,
-    RetainedApproval, SavedDecision,
+    RetainedApproval,
     approval_store_scope::{ApprovalHolderScope, ApprovalRowId},
     approval_stored_tags::{
         delivery_state_tag, request_kind_tag, stop_cause_tag, waiting_status_tag,
@@ -58,7 +58,6 @@ pub(crate) fn plan_approval_state_change(
     scope: &ApprovalHolderScope,
     prior: &ApprovalState,
     next: &ApprovalState,
-    accepted: Option<&SavedDecision>,
     context: &mut Context<'_>,
 ) -> Result<Vec<GuardedStatement>, StoreFailure> {
     if prior == next {
@@ -106,9 +105,7 @@ pub(crate) fn plan_approval_state_change(
             ])
         }
         (ApprovalState::Waiting { saved }, ApprovalState::Ended { closed, .. }) => {
-            Ok(vec![plan_first_ending(
-                row_id, scope, saved, closed, accepted,
-            )?])
+            Ok(vec![plan_first_ending(row_id, scope, saved, closed)?])
         }
         (
             ApprovalState::Ended {
@@ -244,7 +241,6 @@ fn plan_first_ending(
     scope: &ApprovalHolderScope,
     saved: &RetainedApproval,
     closed: &EndedApproval,
-    accepted: Option<&SavedDecision>,
 ) -> Result<GuardedStatement, StoreFailure> {
     Ok(expect_one(checked_engine_statement!(
         query_file,
@@ -252,7 +248,10 @@ fn plan_first_ending(
         "src/queries/finish_waiting_approval.sql",
         ended_at = format_utc_millis(closed.ended_at),
         ending = encode_stored_json(&closed.ending, "approval_requests.ending_json")?,
-        operation = accepted.map(|accepted| accepted.operation_id.as_str().to_owned()),
+        operation = closed
+            .decided_operation_id
+            .as_ref()
+            .map(|operation| operation.as_str().to_owned()),
         delivery = delivery_state_tag(closed.delivery).to_owned(),
         row_id = row_id.as_str().to_owned(),
         organization_id = scope.organization_id.as_str().to_owned(),

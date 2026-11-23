@@ -2,6 +2,7 @@
 mod approval_applying_store;
 mod approval_collection;
 mod approval_collection_values;
+mod approval_decision_log;
 mod approval_lifecycle;
 mod approval_lifecycle_admission;
 mod approval_lifecycle_delivery;

@@ -2474,6 +2474,7 @@ dependencies = [
  "fleet-engine",
  "fleet-identity-protocol",
  "fleet-lent-transaction",
+ "fleet-request-log",
  "fleet-runtime-ports",
  "fleet-storage-schema",
  "hegeltest",

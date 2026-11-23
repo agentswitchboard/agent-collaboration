@@ -1,9 +1,11 @@
 use std::future::Future;
 
 use central_storage::{ReadOutcome, Statement, StoreFailure};
+use fleet_identity_protocol::OrganizationId;
 use fleet_lent_transaction::CentralTransaction;
+use workspace_ids::ActorIdentityId;
 
-use crate::approval_store_scope::ApprovalEnrollmentScope;
+use crate::{ApprovalActor, approval_store_scope::ApprovalEnrollmentScope};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ApprovalEnrollmentStanding {
@@ -29,4 +31,11 @@ pub trait ApprovalStoreTransaction: CentralTransaction {
         &mut self,
         scope: &ApprovalEnrollmentScope,
     ) -> impl Future<Output = Result<ApprovalEnrollmentStanding, StoreFailure>>;
+
+    /// Resolve the already admitted destination through Central's actor identity owner.
+    fn approval_decision_caller(
+        &mut self,
+        organization: &OrganizationId,
+        actor: &ApprovalActor,
+    ) -> impl Future<Output = Result<ActorIdentityId, StoreFailure>>;
 }

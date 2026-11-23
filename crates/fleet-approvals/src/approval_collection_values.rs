@@ -5,12 +5,11 @@ use approval_request_protocol::{
     StopRequest,
 };
 use fleet_identity_protocol::EnrollmentId;
-use workspace_ids::{MachineId, PersonId, RequestId, RouterRunId};
+use workspace_ids::{MachineId, PersonId, RouterRunId};
 
 use crate::{
     AdmittedDecider, ApprovalDecideInput, ApprovalEffect, ApprovalEnrollment, ApprovalRequestKey,
     ApprovalRouting, ApprovalRun, ApprovalSession, ApprovalState, ProviderSessionAvailability,
-    SavedDecision,
 };
 
 /// One organization's facts for a guarded apply, including every affected row.
@@ -20,7 +19,6 @@ pub struct ApprovalCollection {
     pub ended_enrollments: BTreeSet<ApprovalEnrollment>,
     pub ended_sessions: BTreeSet<ApprovalSession>,
     pub requests: BTreeMap<ApprovalRequestKey, ApprovalState>,
-    pub decisions: BTreeMap<RequestId, SavedDecision>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

@@ -165,18 +165,12 @@ impl ApprovalCollection {
                 request,
             } => {
                 if self.active_actor(&actor.actor()) {
-                    let prior = self
-                        .decisions
-                        .get(&request.operation_id)
-                        .cloned()
-                        .map(Box::new);
                     self.apply_request(
                         &key,
                         ApprovalEvent::Decide {
                             key: key.clone(),
                             actor,
                             request,
-                            prior,
                         },
                         context,
                         &mut effects,
@@ -286,13 +280,7 @@ impl ApprovalCollection {
         if &next != prior {
             self.requests.insert(key.clone(), next);
         }
-        for effect in effects {
-            if let ApprovalEffect::SaveDecision(saved) = &effect {
-                self.decisions
-                    .insert(saved.operation_id.clone(), (**saved).clone());
-            }
-            collection_effects.push(ApprovalCollectionEffect::Request(effect));
-        }
+        collection_effects.extend(effects.into_iter().map(ApprovalCollectionEffect::Request));
         Ok(())
     }
 

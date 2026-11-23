@@ -7,10 +7,10 @@ use fleet_engine::owner_sql::CheckedStorage;
 use fleet_engine::{checked_engine_statement, checked_subject_projection};
 use fleet_identity_protocol::OrganizationId;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
-use workspace_ids::{ApprovalRequestId, RequestId, RouterRunId};
+use workspace_ids::{ApprovalRequestId, RouterRunId};
 
 use crate::{
-    ApprovalSession, ApprovalState, MAX_OUTSTANDING_PER_RUN, SavedDecision,
+    ApprovalSession, ApprovalState, MAX_OUTSTANDING_PER_RUN,
     approval_store_scope::{ApprovalEnrollmentScope, ApprovalHolderScope, ApprovalRowId},
     approval_store_transaction::ApprovalStoreTransaction,
 };
@@ -91,7 +91,6 @@ pub(crate) struct ApprovalReadRecord {
     pub row_id: ApprovalRowId,
     pub scope: ApprovalHolderScope,
     pub state: ApprovalState,
-    pub accepted: Option<SavedDecision>,
 }
 
 pub(crate) enum ScopedHolderRequest {
@@ -196,29 +195,6 @@ pub(crate) async fn read_approval_due_subject(
         row_id = row_id.as_str().to_owned(),
     );
     read_request_record(transaction, statement).await
-}
-
-pub(crate) async fn read_previous_approval_operation(
-    transaction: &mut impl ApprovalStoreTransaction,
-    organization: &OrganizationId,
-    operation: &RequestId,
-) -> Result<Option<SavedDecision>, StoreFailure> {
-    let statement = checked_engine_statement!(
-        query_file_as,
-        [CheckedApprovalRow],
-        "src/queries/read_previous_approval_operation.sql",
-        organization_id = organization.as_str().to_owned(),
-        operation_id = operation.as_str().to_owned(),
-    );
-    read_request_record(transaction, statement)
-        .await?
-        .map(|record| {
-            record
-                .accepted
-                .filter(|saved| &saved.operation_id == operation)
-                .ok_or_else(|| corrupt("approval_requests.decided_operation_id"))
-        })
-        .transpose()
 }
 
 pub(crate) async fn count_outstanding_approvals(

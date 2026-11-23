@@ -226,7 +226,7 @@ async fn public_raise_installs_the_recorded_parent_and_unknown_session_writes_no
             .iter()
             .map(|(_, count)| count)
             .sum::<u64>(),
-        2
+        3
     );
 }
 
@@ -261,7 +261,7 @@ async fn simultaneous_decisions_commit_once_and_the_accepted_binding_replays_aft
         })
         .await;
     assert_eq!(invalid.0.unwrap().reply, ApprovalDecisionReply::Invalid {});
-    assert!(invalid.1.sql_writes.is_empty());
+    assert_eq!(invalid.1.sql_writes.len(), 2);
 
     let (first, second) = tokio::join!(
         fixture.apply(None, async |store| {
@@ -284,7 +284,7 @@ async fn simultaneous_decisions_commit_once_and_the_accepted_binding_replays_aft
         }),
     );
     let (first_result, second_result) = (first.0.unwrap(), second.0.unwrap());
-    let (winner, saved_input, saved_reply) = if matches!(
+    let (winner, other_actor, saved_input, saved_reply) = if matches!(
         first_result.reply,
         ApprovalDecisionReply::SavedDecision { .. }
     ) {
@@ -292,8 +292,13 @@ async fn simultaneous_decisions_commit_once_and_the_accepted_binding_replays_aft
             second_result.reply,
             ApprovalDecisionReply::Standing { .. }
         ));
-        assert!(second.1.sql_writes.is_empty());
-        (first_actor, first_input, first_result.reply)
+        assert_eq!(second.1.sql_writes.len(), 2);
+        (
+            first_actor.clone(),
+            second_actor,
+            first_input,
+            first_result.reply,
+        )
     } else {
         assert!(matches!(
             first_result.reply,
@@ -303,10 +308,15 @@ async fn simultaneous_decisions_commit_once_and_the_accepted_binding_replays_aft
             second_result.reply,
             ApprovalDecisionReply::SavedDecision { .. }
         ));
-        assert!(first.1.sql_writes.is_empty());
-        (second_actor, second_input, second_result.reply)
+        assert_eq!(first.1.sql_writes.len(), 2);
+        (
+            second_actor,
+            first_actor.clone(),
+            second_input,
+            second_result.reply,
+        )
     };
-    assert_eq!(first.1.sql_writes.len() + second.1.sql_writes.len(), 2);
+    assert_eq!(first.1.sql_writes.len() + second.1.sql_writes.len(), 6);
     assert_eq!(
         fixture.inspect_rows("SELECT decided_operation_id FROM approval_requests WHERE decided_operation_id IS NOT NULL").await,
         [saved_input.operation_id.as_str()],
@@ -322,31 +332,41 @@ async fn simultaneous_decisions_commit_once_and_the_accepted_binding_replays_aft
     assert!(retry.1.sql_writes.is_empty());
     let changed_target = ApprovalDecideInput {
         request_id: another.request_id,
-        ..saved_input
+        ..saved_input.clone()
     };
-    let conflict = fixture
+    let changed_value = ApprovalDecideInput {
+        value: answer(3),
+        ..saved_input.clone()
+    };
+    for (actor, input) in [
+        (winner.clone(), changed_target),
+        (winner, changed_value),
+        (other_actor, saved_input),
+    ] {
+        let conflict = fixture
+            .apply(None, async |store| {
+                store
+                    .decide_approval(&holder.organization_id, actor, input)
+                    .await
+            })
+            .await;
+        assert_eq!(
+            conflict.0.unwrap().reply,
+            ApprovalDecisionReply::OperationConflict {}
+        );
+        assert!(conflict.1.sql_writes.is_empty());
+    }
+    let refused_again = fixture
         .apply(None, async |store| {
             store
-                .decide_approval(&holder.organization_id, winner.clone(), changed_target)
+                .decide_approval(&holder.organization_id, first_actor, invalid_input)
                 .await
         })
         .await;
     assert_eq!(
-        conflict.0.unwrap().reply,
-        ApprovalDecisionReply::OperationConflict {}
-    );
-    assert!(conflict.1.sql_writes.is_empty());
-    let refused_again = fixture
-        .apply(None, async |store| {
-            store
-                .decide_approval(&holder.organization_id, winner.clone(), invalid_input)
-                .await
-        })
-        .await;
-    assert!(matches!(
         refused_again.0.unwrap().reply,
-        ApprovalDecisionReply::Standing { .. }
-    ));
+        ApprovalDecisionReply::Invalid {}
+    );
     assert!(refused_again.1.sql_writes.is_empty());
 }
 
@@ -418,7 +438,13 @@ async fn a_page_times_out_only_its_rows_and_held_alarms_cannot_restore_waiting()
         })
         .await;
     assert_eq!(reply.unwrap().reply, ApprovalDecisionReply::TooLate {});
-    assert!(evidence.sql_writes.is_empty());
+    assert_eq!(evidence.sql_writes.len(), 2);
+    assert!(
+        evidence
+            .sql_writes
+            .iter()
+            .all(|(sql, _)| sql.contains("runtime_request_log"))
+    );
 
     fixture.clock.set_millis(HOUR + 10);
     let (ending, _) = fixture

@@ -7,8 +7,7 @@ use serde_json::json;
 
 use super::super::fixtures::{HOUR, operation_id, time};
 use super::super::model_ledger::{
-    Actor, Decision, Ending, Ledger, OperationEffect, ROWS, RUN_ENROLLMENTS, RaiseResult, Step,
-    StopResult,
+    Actor, Decision, Ledger, OperationEffect, ROWS, RUN_ENROLLMENTS, RaiseResult, Step, StopResult,
 };
 use super::{Scenario, wire_delivery, wire_waiting};
 
@@ -39,9 +38,6 @@ fn assert_decision(
         Decision::NotVisible => assert_eq!(actual, &ApprovalDecisionReply::NotVisible {}),
         Decision::Invalid => assert_eq!(actual, &ApprovalDecisionReply::Invalid {}),
         Decision::TooLate => assert_eq!(actual, &ApprovalDecisionReply::TooLate {}),
-        Decision::OperationConflict => {
-            assert_eq!(actual, &ApprovalDecisionReply::OperationConflict {})
-        }
     }
 }
 
@@ -91,21 +87,6 @@ pub(super) fn assert_effects(
             ) => {
                 assert_eq!(holder, &scenario.runs[ROWS[*row].run]);
                 assert_eq!(request.as_ref(), &scenario.frame(*row, *offer));
-            }
-            (
-                OperationEffect::Save {
-                    row,
-                    actor,
-                    operation,
-                    choice,
-                },
-                Request(ApprovalEffect::SaveDecision(saved)),
-            ) => {
-                let key = scenario.key(*row);
-                assert_eq!(saved.key, key);
-                assert_eq!(saved.actor, scenario.actor(*row, *actor));
-                assert_eq!(saved.operation_id, operation_id(*operation));
-                assert_eq!(saved.value(), &Scenario::choice(*row, *choice));
             }
             (
                 OperationEffect::Raise(row, result),
@@ -181,25 +162,8 @@ pub(super) fn assert_effects(
 }
 
 pub(super) fn assert_state(scenario: &Scenario, ledger: &Ledger, book: &ApprovalCollection) {
-    assert_eq!(
-        book.decisions.len(),
-        ledger
-            .rows
-            .iter()
-            .filter(|row| row.accepted_operation.is_some())
-            .count()
-    );
     for (row, expected) in ledger.rows.iter().enumerate() {
         let key = scenario.key(row);
-        if let Some(operation) = expected.accepted_operation {
-            let Some((Ending::Decided { choice, actor }, ..)) = expected.ending else {
-                panic!("an accepted operation must belong to a decided row");
-            };
-            let accepted = &book.decisions[&operation_id(operation)];
-            assert_eq!(accepted.key, key);
-            assert_eq!(accepted.actor, scenario.actor(row, actor));
-            assert_eq!(accepted.value(), &Scenario::choice(row, choice));
-        }
         match book.requests.get(&key) {
             None => assert!(expected.first_save.is_none() && expected.marker.is_none()),
             Some(ApprovalState::StoppedBeforeRaise {
@@ -237,6 +201,10 @@ pub(super) fn assert_state(scenario: &Scenario, ledger: &Ledger, book: &Approval
                 );
                 assert_eq!(closed.delivery, wire_delivery(delivery));
                 assert_eq!(closed.ended_at, time(ended_at));
+                assert_eq!(
+                    closed.decided_operation_id,
+                    expected.accepted_operation.map(operation_id)
+                );
             }
             Some(ApprovalState::Unraised) => panic!("unraised is not a retained row"),
         }

@@ -50,8 +50,7 @@ impl Machine for ApprovalLifecycle {
                 key,
                 actor,
                 request,
-                prior,
-            } => decide(state, &key, &actor, request, prior.as_deref(), now),
+            } => decide(state, &key, &actor, request, now),
             ApprovalEvent::Read { key, person_id } => {
                 read(state, &key, &ApprovalActor::Person(person_id), now)
             }

@@ -9,11 +9,9 @@ use super::{ApprovalApplyFailure, ApprovalApplyingStore, ApprovalReadPage, Pendi
 use crate::{
     AdmittedDecider, ApprovalActor, ApprovalDecideInput, ApprovalDecisionReply, ApprovalEvent,
     ApprovalReceipt, ApprovalSession, ApprovalSessionFacts,
+    approval_decision_log::ApprovalDecisionLogKey,
     approval_lifecycle_admission::is_destination,
-    approval_store_reads::{
-        ApprovalReadRecord, read_approval_request, read_person_approval_page,
-        read_previous_approval_operation,
-    },
+    approval_store_reads::{ApprovalReadRecord, read_approval_request, read_person_approval_page},
     approval_store_scope::ApprovalRowId,
     approval_store_transaction::ApprovalStoreTransaction,
 };
@@ -52,17 +50,25 @@ where
             return Ok(refused());
         };
         let key = saved.key.clone();
-        let prior =
-            read_previous_approval_operation(self.transaction, organization, &request.operation_id)
-                .await?
-                .map(Box::new);
+        let recipient = actor.identity();
+        let at = self.sample_applying_time()?;
+        let caller = self
+            .transaction
+            .approval_decision_caller(organization, &actor)
+            .await?;
+        let request_log = ApprovalDecisionLogKey::new(organization, caller, &request, at)?;
+        let retained = self
+            .transaction
+            .read_approval_statement(request_log.lookup_statement())
+            .await?;
+        if let Some(reply) = request_log.replay(&retained, &request, &recipient, &record.state)? {
+            return Ok(PendingApprovalApply::with_reply(reply));
+        }
         let event = ApprovalEvent::Decide {
             key: key.clone(),
             actor: decider,
             request,
-            prior,
         };
-        let at = self.sample_applying_time()?;
         let applied = self
             .apply_request_event(
                 Some(&record.row_id),
@@ -76,9 +82,12 @@ where
             return Err(corrupt("approval_store.decide_reply").into());
         };
         let reply = reply
-            .for_recipient(&key, &actor.identity())
+            .for_recipient(&key, &recipient)
             .map_err(|_| corrupt("approval_store.decide_recipient"))?
             .clone();
+        for write in request_log.retain(&reply)? {
+            self.execute_guarded_write(write).await?;
+        }
         Ok(applied.replace_reply(reply))
     }
 

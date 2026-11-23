@@ -208,7 +208,6 @@ fn row_matrix_witnesses_every_declared_edge_and_asserts_typed_refusals() {
             operation_id: id(9).parse().unwrap(),
             value: answer.clone(),
         },
-        prior: None,
     };
     let parent_decide = decide(AdmittedDecider::Session(parent));
     let person_decide = decide(AdmittedDecider::Person {
@@ -226,7 +225,6 @@ fn row_matrix_witnesses_every_declared_edge_and_asserts_typed_refusals() {
             operation_id: id(9).parse().unwrap(),
             value: answer,
         },
-        prior: None,
     };
     let (owed, effects) = apply(&owner_waiting, person_decide.clone(), 1).unwrap();
     let frame = effects

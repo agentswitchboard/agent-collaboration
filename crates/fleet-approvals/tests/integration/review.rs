@@ -135,7 +135,7 @@ fn delegate_starts_with_only_its_exact_parent_and_only_first_raise_notifies() {
 }
 
 #[test]
-fn saved_replayed_standing_and_read_replies_keep_the_request_and_recipient_binding() {
+fn machine_decision_and_read_replies_keep_the_request_and_recipient_binding() {
     let (mut book, run, requester, _) = setup();
     let item = key(&run, 1);
     let other = key(&run, 2);
@@ -156,13 +156,13 @@ fn saved_replayed_standing_and_read_replies_keep_the_request_and_recipient_bindi
     );
     let original = decide_event(&item, person(10, FactorStanding::Fresh), 100, answer(2));
     let won = run_event(&mut book, original.clone(), 1);
-    let replayed = run_event(&mut book, original, 2);
+    let previously_decided = run_event(&mut book, original, 2);
     let standing = run_event(
         &mut book,
         decide_event(&item, person(10, FactorStanding::Fresh), 101, answer(1)),
         3,
     );
-    for effects in [&won, &replayed, &standing] {
+    for effects in [&won, &previously_decided, &standing] {
         let ApprovalReceipt::Decide(bound) = raw_reply(effects) else {
             panic!("expected Decide");
         };

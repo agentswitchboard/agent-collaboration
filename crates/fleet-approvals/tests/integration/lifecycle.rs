@@ -18,7 +18,7 @@ use super::fixtures::{
 };
 
 #[test]
-fn decide_binds_the_operation_and_keeps_its_original_audience_result() {
+fn an_ended_row_projects_its_standing_decision_to_the_current_audience() {
     let (mut book, active_run, requester, _) = setup();
     let first = key(&active_run, 1);
     let other = key(&active_run, 2);
@@ -51,25 +51,15 @@ fn decide_binds_the_operation_and_keeps_its_original_audience_result() {
             person_id: person_id(11)
         }
     );
-    let saved_result = raw_reply(&result).clone();
-
-    let after_loss = run_event(&mut book, decide, 2);
+    let same_input = run_event(&mut book, decide, 2);
+    assert!(matches!(
+        reply(&same_input),
+        ApprovalReceipt::Decide(DecideReply::Standing { .. })
+    ));
     assert_eq!(
-        after_loss,
-        [ApprovalCollectionEffect::Request(ApprovalEffect::Reply(
-            saved_result
-        ))]
+        closed(&book, &first).decided_operation_id,
+        Some(fixtures::operation_id(101))
     );
-    for conflicting in [
-        decide_event(&first, winner.clone(), 101, answer(2)),
-        decide_event(&first, person(12, FactorStanding::Fresh), 101, answer(5)),
-        decide_event(&other, winner.clone(), 101, answer(5)),
-    ] {
-        assert_eq!(
-            reply(&run_event(&mut book, conflicting, 2)),
-            ApprovalReceipt::Decide(DecideReply::OperationConflict {})
-        );
-    }
     let mut wrong_target = decide_event(&first, winner, 105, answer(2));
     let ApprovalCollectionEvent::Decide { key, .. } = &mut wrong_target else {
         panic!("fixture must Decide");
@@ -572,7 +562,14 @@ fn parent_decides_a_delegate_request_as_its_exact_central_session() {
             },
         })
     );
-    assert_eq!(reply(&run_event(&mut book, exact, 2)), reply(&decided));
+    assert!(matches!(
+        reply(&run_event(&mut book, exact, 2)),
+        ApprovalReceipt::Decide(DecideReply::Standing { .. })
+    ));
+    assert_eq!(
+        closed(&book, &item).decided_operation_id,
+        Some(fixtures::operation_id(101))
+    );
 }
 
 #[test]

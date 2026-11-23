@@ -41,10 +41,6 @@ CREATE TABLE approval_requests (
     UNIQUE (organization_id, request_id)
 );
 
-CREATE UNIQUE INDEX approval_requests_accepted_operation
-ON approval_requests (organization_id, decided_operation_id)
-WHERE decided_operation_id IS NOT NULL;
-
 -- Both Waiting and unpaid endings occupy the run's capacity.
 CREATE INDEX approval_requests_outstanding
 ON approval_requests (organization_id, machine_id, enrollment_id, router_run_id, approval_row_id)

@@ -135,7 +135,6 @@ pub(super) enum Decision {
     NotVisible,
     Invalid,
     TooLate,
-    OperationConflict,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -157,12 +156,6 @@ pub(super) enum OperationEffect {
     Due(usize, i64),
     Clear(usize),
     Offer(usize, Offer),
-    Save {
-        row: usize,
-        actor: Actor,
-        operation: u16,
-        choice: u8,
-    },
     Registered(RegisterRunReply),
     Raise(usize, RaiseResult),
     Decide(usize, Actor, Decision),
@@ -428,22 +421,6 @@ impl Ledger {
         if !self.visible(row, actor) {
             return Decision::NotVisible;
         }
-        if let Some((prior_row, record)) = self
-            .rows
-            .iter()
-            .enumerate()
-            .find(|(_, record)| record.accepted_operation == Some(operation))
-        {
-            return if prior_row == row
-                && record
-                    .ending
-                    .is_some_and(|(ending, ..)| ending == (Ending::Decided { choice, actor }))
-            {
-                Decision::Won { choice }
-            } else {
-                Decision::OperationConflict
-            };
-        }
         let answer_fits = if ROWS[row].parked {
             choice <= 2 && actor.person() && fresh_factor
         } else {
@@ -465,12 +442,6 @@ impl Ledger {
                 effects,
             );
             self.rows[row].accepted_operation = Some(operation);
-            effects.push(OperationEffect::Save {
-                row,
-                actor,
-                operation,
-                choice,
-            });
             Decision::Won { choice }
         } else {
             Decision::Invalid

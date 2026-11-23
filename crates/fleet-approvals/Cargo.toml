@@ -15,6 +15,7 @@ central-engine-model.workspace = true
 central-storage.workspace = true
 fleet-engine.workspace = true
 fleet-lent-transaction.workspace = true
+fleet-request-log.workspace = true
 fleet-identity-protocol = { path = "../fleet-identity-protocol", version = "0.1.156" }
 fleet-runtime-ports.workspace = true
 serde.workspace = true

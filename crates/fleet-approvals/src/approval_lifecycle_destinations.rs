@@ -9,7 +9,7 @@ use crate::approval_lifecycle_effects::{ApprovalChange, finish, finish_decided, 
 use crate::{
     AdmittedDecider, ApprovalActor, ApprovalDecideInput, ApprovalDecisionReply, ApprovalEffect,
     ApprovalReceipt, ApprovalRefusal, ApprovalRequestKey, ApprovalSession, ApprovalState,
-    FactorStanding, RetainedApproval, SavedDecision,
+    FactorStanding, RetainedApproval,
 };
 
 fn visible<'a>(
@@ -29,7 +29,6 @@ pub(super) fn decide(
     key: &ApprovalRequestKey,
     decider: &AdmittedDecider,
     request: ApprovalDecideInput,
-    prior: Option<&SavedDecision>,
     now: CentralTime,
 ) -> ApprovalChange {
     let actor = decider.actor();
@@ -41,33 +40,6 @@ pub(super) fn decide(
             ApprovalReceipt::decide_for(key, identity, ApprovalDecisionReply::NotVisible {}),
         );
     };
-    if let Some(prior) = prior {
-        if &prior.key != key
-            || prior.actor != actor
-            || prior.value != request.value
-            || prior.operation_id != request.operation_id
-        {
-            return reply(
-                state,
-                ApprovalReceipt::decide_for(
-                    key,
-                    identity,
-                    ApprovalDecisionReply::OperationConflict {},
-                ),
-            );
-        }
-        return reply(
-            state,
-            ApprovalReceipt::decide_for(
-                key,
-                identity.clone(),
-                ApprovalDecisionReply::SavedDecision {
-                    answer: prior.value.clone(),
-                    by: identity,
-                },
-            ),
-        );
-    }
     let admitted = checked_destination(saved, &identity)?;
     let (next, mut effects, result) = match state {
         ApprovalState::Ended { closed, .. }
@@ -105,7 +77,7 @@ pub(super) fn decide(
                 DecisionFactor::NoFreshPersonFactor
             };
             if let Ok(ending) = admitted.decide(request.value.clone(), factor) {
-                let (next, effects) = finish_decided(saved, ending, now)?;
+                let (next, effects) = finish_decided(saved, ending, request.operation_id, now)?;
                 (
                     next,
                     effects,
@@ -125,14 +97,6 @@ pub(super) fn decide(
             );
         }
     };
-    if matches!(&result, ApprovalDecisionReply::SavedDecision { .. }) {
-        effects.push(ApprovalEffect::SaveDecision(Box::new(SavedDecision {
-            key: key.clone(),
-            actor,
-            operation_id: request.operation_id,
-            value: request.value,
-        })));
-    }
     effects.push(ApprovalEffect::Reply(ApprovalReceipt::decide_for(
         key, identity, result,
     )));

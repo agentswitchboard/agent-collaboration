@@ -54,7 +54,7 @@ async fn first_raise_forward_decide_delivery_and_run_replacement_roll_back_at_ev
         .await;
     assert_eq!(repeat_pass.0.unwrap().reply, PassOnReply::Forwarded {});
     assert!(repeat_pass.1.sql_writes.is_empty());
-    let decided = assert_rollback_each_write(&fixture, 2, async |store| {
+    let decided = assert_rollback_each_write(&fixture, 4, async |store| {
         store
             .decide_approval(
                 &holder.organization_id,
