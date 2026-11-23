@@ -10,17 +10,19 @@ autotests = false
 axum = { workspace = true, features = ["http1", "tokio"] }
 central-link-client.workspace = true
 central-link-protocol.workspace = true
+central-storage.workspace = true
 switchboard-central-link = { workspace = true, features = ["test-support"] }
-switchboard-machine-core-store.workspace = true
+switchboard-machine-core-store = { workspace = true, features = ["test-support"] }
 switchboard-message-custody.workspace = true
 collaboration-central-tokio = { workspace = true, features = ["test-support"] }
 collaboration-central-conformance = { workspace = true, features = ["signin-test-support"] }
 fleet-runtime = { workspace = true, features = ["test-support"] }
 router-clock = { workspace = true, features = ["test-support"] }
+runtime-primitives.workspace = true
 reqwest.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
-tokio-tungstenite.workspace = true
+tungstenite = { version = "0.29", default-features = false }
 turmoil = "=0.7.2"
 workspace-ids.workspace = true
 workspace-model.workspace = true

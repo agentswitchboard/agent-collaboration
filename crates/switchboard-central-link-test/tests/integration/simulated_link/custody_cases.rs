@@ -11,10 +11,14 @@ mod loss_cases;
 #[path = "recovery_cases.rs"]
 mod recovery_cases;
 
+#[path = "window_cases.rs"]
+mod window_cases;
+
 use central_link_protocol::{
     DataFrame, LinkFrame, ReceiptKind, ReceiptResult, ReplyPayload, RequestScope,
     RequestStatusQuery,
 };
+use central_storage::{SqlValue, Statement};
 use collaboration_central_tokio::test_support::MACHINE_LINK_FIXTURE_MACHINE;
 use router_clock::{ClockInstant, RuntimeClock};
 use switchboard_machine_core_store::{InboxStore, MachineLocalOutbox, MachineLocalStore};
@@ -47,11 +51,13 @@ use super::{
     SimulatedLink,
     packet_flight::{FrameKind, InFlightFrame},
     run_link_case,
+    simulation_clock::ObservedClock,
 };
 use crate::custody_journey::{KnownDeliverySession, RecordCustody, next_receipt};
 
 struct NetworkCustody {
     link: SimulatedLink,
+    custody_clock: Arc<ObservedClock>,
     session: SessionRef,
     calls: CustodyTaskHandle,
     events: mpsc::UnboundedReceiver<CustodyTaskEvent>,
@@ -64,6 +70,13 @@ struct NetworkCustody {
 
 impl NetworkCustody {
     async fn start(link: SimulatedLink) -> Self {
+        Self::setup(link, |_| ()).await.0
+    }
+
+    async fn setup<Control>(
+        link: SimulatedLink,
+        configure_inbox: impl FnOnce(&mut InboxStore) -> Control,
+    ) -> (Self, Control) {
         let machine_id = MACHINE_LINK_FIXTURE_MACHINE.parse().unwrap();
         let session = SessionRef {
             machine_id,
@@ -73,16 +86,19 @@ impl NetworkCustody {
         let opened = MachineLocalStore::open(&db_path).await.unwrap();
         let inbox = InboxStore::new(MachineLocalStore::open(&db_path).await.unwrap());
         let jitter = Arc::new(MachineFlushJitter::new(&session.machine_id));
+        let custody_clock = Arc::new(ObservedClock::new(link.clock.clone()));
+        let mut recipient_store = InboxStore::new(MachineLocalStore::open(&db_path).await.unwrap());
+        let inbox_control = configure_inbox(&mut recipient_store);
         let custody = CustodyLink::new(
             Arc::new(link.lane.clone()),
-            link.clock.clone(),
+            custody_clock.clone(),
             jitter.clone(),
             OutboxWork::new(
                 Box::new(MachineLocalOutbox::new(opened)),
                 link.clock.clone(),
             ),
             RecipientInbox::new(
-                InboxStore::new(MachineLocalStore::open(&db_path).await.unwrap()),
+                recipient_store,
                 session.machine_id.clone(),
                 Arc::new(KnownDeliverySession {
                     session_id: session.session_id.clone(),
@@ -96,6 +112,7 @@ impl NetworkCustody {
         let worker = tokio::spawn(worker);
         let case = Self {
             link,
+            custody_clock,
             session,
             calls,
             events,
@@ -126,7 +143,7 @@ impl NetworkCustody {
             ),
             "{answer:?}"
         );
-        case
+        (case, inbox_control)
     }
 
     fn caller(&self) -> Caller {
@@ -273,22 +290,35 @@ impl NetworkCustody {
     }
 
     fn wake_at_next_mark(&self) -> ClockInstant {
-        let shared_time = shared_time_at(
-            self.link.admission.clock_anchor,
-            self.link.clock.monotonic_now(),
-        );
-        let mark = next_mark_after(mark_in_window(shared_time).unwrap_or(shared_time));
-        wake_for_mark(
-            self.link.admission.clock_anchor,
-            mark,
-            self.jitter.jitter_millis(mark),
-        )
+        let now = self.link.clock.monotonic_now();
+        let anchor = self.link.admission.clock_anchor;
+        let shared_time = shared_time_at(anchor, now);
+        let wake = |mark| wake_for_mark(anchor, mark, self.jitter.jitter_millis(mark));
+        let open = mark_in_window(shared_time);
+        if let Some(mark) = open
+            && wake(mark) > now
+        {
+            return wake(mark);
+        }
+        wake(next_mark_after(open.unwrap_or(shared_time)))
     }
 
     async fn advance_to_next_mark(&self) {
         let wake = self.wake_at_next_mark();
-        self.link.clock.not_due_check_now(wake).await;
+        self.custody_clock.wait_until_pending(wake).await;
+        let after = self.custody_clock.checkpoint();
         self.advance_to(wake);
+        self.custody_clock
+            .observe(after, |poll| {
+                poll.elapsed && poll.deadline == wake && poll.sampled_at == wake
+            })
+            .await;
+    }
+
+    async fn wait_until_next_mark_is_armed(&self) {
+        self.custody_clock
+            .wait_until_pending(self.wake_at_next_mark())
+            .await;
     }
 
     async fn confirm_receipt(&mut self, message: &MessageId) {
@@ -375,6 +405,33 @@ impl NetworkCustody {
             .collect()
     }
 
+    async fn direct_message_rows(&self, request: &RequestId) -> Vec<Vec<SqlValue>> {
+        let runtime = self
+            .link
+            .central
+            .host
+            .central(&self.link.central.organization_id)
+            .await
+            .unwrap();
+        runtime
+            .runtime()
+            .statement_host()
+            .read(Statement {
+                sql: "SELECT message_id FROM mail_messages
+                  WHERE sender_request_id = ? AND target_machine_id = ?
+                    AND target_session = ? AND message_kind = 'direct'
+                  ORDER BY message_id",
+                args: vec![
+                    SqlValue::Text(request.to_string()),
+                    SqlValue::Text(self.session.machine_id.to_string()),
+                    SqlValue::Text(serde_json::to_string(&self.session).unwrap()),
+                ],
+            })
+            .await
+            .unwrap()
+            .rows
+    }
+
     fn assert_minute_writes(&self) {
         for InFlightFrame { kind, utc_ms, .. } in self.link.network.frames() {
             if matches!(kind, FrameKind::Batch | FrameKind::Receipt) {
@@ -443,6 +500,14 @@ fn a_write_batch_can_arrive_after_its_minute_mark() {
         case.confirm_receipt(&message).await;
         case.close().await;
     });
+}
+
+async fn send_and_keep(case: &mut NetworkCustody) -> MessageId {
+    let receipt = case.enqueue(1).await;
+    case.first_flush(&receipt).await;
+    let message = case.finish_write(&receipt).await;
+    case.wait_for_kept(&message).await;
+    message
 }
 
 fn queued_message(frame: &InFlightFrame) -> MessageId {

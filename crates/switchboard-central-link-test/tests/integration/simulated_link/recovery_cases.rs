@@ -1,3 +1,4 @@
+use central_link_client::ReadyLinkLane;
 use central_link_protocol::LinkRequestBatch;
 use fleet_runtime::PausePoint;
 use router_clock::RuntimeClock;
@@ -275,7 +276,22 @@ fn a_partition_past_fifteen_minutes_ends_sent_and_unsent_writes() {
         let first_cutoff = sent_at + Duration::from_secs(15 * 60);
         let second_cutoff = unsent_at + Duration::from_secs(15 * 60);
 
-        case.advance_to(sent_at + Duration::from_millis(899_999));
+        let isolated_mark = case.wake_at_next_mark();
+        let mut retry = case.link.next_retry().await;
+        while retry <= isolated_mark {
+            case.link.start_retry(retry);
+            case.link.require_isolated_dial_failure().await;
+            retry = case.link.next_retry().await;
+        }
+        case.advance_to(isolated_mark);
+        assert!(
+            case.link.lane.watch_admitted().borrow().is_none(),
+            "the eligible mark passed with no admitted replacement"
+        );
+        case.link.start_retry(retry);
+        case.link.require_isolated_dial_failure().await;
+
+        advance_isolated(&mut case, sent_at + Duration::from_millis(899_999)).await;
         assert!(matches!(
             case.status(first.id.clone()).await,
             CustodyRequestStatus::InOutbox { .. }
@@ -284,13 +300,18 @@ fn a_partition_past_fifteen_minutes_ends_sent_and_unsent_writes() {
             case.status(second.id.clone()).await,
             CustodyRequestStatus::InOutbox { .. }
         ));
-        case.advance_to(first_cutoff);
+        advance_isolated(&mut case, first_cutoff).await;
         let ended = case.next_write_report().await;
         assert!(
             matches!(ended.ended.as_slice(), [write] if write.request_id == first.id
             && write.reason == OutboxCancellation::NotConfirmedWithin15Minutes)
         );
-        case.advance_to(second_cutoff);
+        advance_isolated(&mut case, unsent_at + Duration::from_millis(899_999)).await;
+        assert!(matches!(
+            case.status(second.id.clone()).await,
+            CustodyRequestStatus::InOutbox { .. }
+        ));
+        advance_isolated(&mut case, second_cutoff).await;
         let ended = case.next_write_report().await;
         assert!(
             matches!(ended.ended.as_slice(), [write] if write.request_id == second.id
@@ -308,9 +329,16 @@ fn a_partition_past_fifteen_minutes_ends_sent_and_unsent_writes() {
                 reason: OutboxCancellation::NotSentWithin15Minutes,
             }
         );
-        case.advance_to(second_cutoff + Duration::from_millis(1));
+        advance_isolated(&mut case, second_cutoff + Duration::from_millis(1)).await;
         case.link.reconnect_after_partition().await;
         case.advance_to_next_mark().await;
+        case.wait_until_next_mark_is_armed().await;
+        // A real request-status round trip on the replacement is the wire
+        // barrier after the completed turn with no sendable local rows.
+        assert_eq!(
+            case.status(super::request_id(3)).await,
+            CustodyRequestStatus::NotFound
+        );
         assert!(case.central_queued_messages().await.is_empty());
         assert!(matches!(
             case.status(first.id).await,
@@ -329,6 +357,46 @@ fn a_partition_past_fifteen_minutes_ends_sent_and_unsent_writes() {
                 .count(),
             1,
             "the closed outbox writes are never submitted after healing"
+        );
+        case.close().await;
+    });
+}
+
+async fn advance_isolated(case: &mut NetworkCustody, deadline: router_clock::ClockInstant) {
+    if case.link.next_retry().await <= deadline {
+        case.link.start_retry(deadline);
+        case.link.require_isolated_dial_failure().await;
+    } else {
+        case.advance_to(deadline);
+    }
+}
+
+#[test]
+fn admission_inside_an_open_window_uses_its_pending_receipt_mark() {
+    run_link_case(|link| async move {
+        let mut case = NetworkCustody::start(link).await;
+        let message = super::send_and_keep(&mut case).await;
+        // The second mark is UTC 17:48:00 and this installation's wake is
+        // 633ms later. Admit after the window opens and before that wake.
+        case.advance_to(router_clock::ClockInstant::ZERO + Duration::from_millis(77_900));
+        case.link.reset_socket().await;
+        case.link.reconnect().await;
+        let admitted_at = case.link.clock.monotonic_now();
+        assert_eq!(
+            admitted_at,
+            router_clock::ClockInstant::ZERO + Duration::from_millis(78_900)
+        );
+        assert_eq!(
+            case.wake_at_next_mark(),
+            router_clock::ClockInstant::ZERO + Duration::from_millis(80_633),
+            "the helper must drive the open mark rather than wait for a later timer"
+        );
+        let after = case.link.network.frames().len();
+        case.confirm_receipt(&message).await;
+        let receipt = case.link.network.seen(after, FrameKind::Receipt).await;
+        assert_eq!(
+            receipt.sent_at,
+            router_clock::ClockInstant::ZERO + Duration::from_millis(80_633)
         );
         case.close().await;
     });

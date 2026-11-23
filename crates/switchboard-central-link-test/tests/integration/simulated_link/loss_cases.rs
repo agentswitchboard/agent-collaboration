@@ -1,8 +1,8 @@
 use super::{
-    CustodyRequestStatus, DataFrame, Duration, FrameKind, LinkFrame, MessageId, MessageStatus,
-    NetworkCustody, ReceiptFrameOutcome, ReceiptResult, assert_kept_receipt,
-    assert_one_offer_per_socket, assert_replayed_member, offered_message, offers_for,
-    queued_message, run_link_case,
+    CustodyRequestStatus, DataFrame, Duration, FrameKind, LinkFrame, MessageStatus, NetworkCustody,
+    ReceiptFrameOutcome, ReceiptResult, assert_kept_receipt, assert_one_offer_per_socket,
+    assert_replayed_member, offered_message, offers_for, queued_message, run_link_case,
+    send_and_keep,
 };
 
 #[test]
@@ -73,6 +73,11 @@ fn lost_write_answer_replays_the_original_central_result() {
         assert_replayed_member(&sent, &replay, &receipt.id);
         assert_eq!(case.finish_write(&receipt).await, canonical);
         case.wait_for_confirmation(&[ReceiptResult::Recorded]).await;
+        assert_eq!(
+            case.direct_message_rows(&receipt.id).await,
+            [vec![central_storage::SqlValue::Text(canonical.to_string())]],
+            "replay must keep exactly the original durable direct-message row"
+        );
         assert_one_offer_per_socket(&case, &canonical);
         case.close().await;
     });
@@ -229,12 +234,4 @@ fn lost_receipt_result_retries_the_durable_decision_without_a_reoffer() {
         );
         case.close().await;
     });
-}
-
-async fn send_and_keep(case: &mut NetworkCustody) -> MessageId {
-    let receipt = case.enqueue(1).await;
-    case.first_flush(&receipt).await;
-    let message = case.finish_write(&receipt).await;
-    case.wait_for_kept(&message).await;
-    message
 }

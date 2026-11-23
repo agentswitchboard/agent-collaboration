@@ -9,17 +9,18 @@ use std::{
 };
 
 use axum::serve::Listener;
-use central_link_client::{AdmittedConnection, ReadyLinkLane};
+use central_link_client::{AdmittedConnection, EnrollmentEnd, ReadyLinkLane};
 use collaboration_central_tokio::{
     WorkspaceLink,
     test_support::{MACHINE_LINK_FIXTURE_MACHINE, MachineLinkFixture, start_session_link_fixture},
 };
-use router_clock::{ManualClock, RuntimeClock};
+use router_clock::{ClockInstant, ManualClock, RuntimeClock};
 use switchboard_central_link::{
     DialAddress,
+    lease_source::{LeaseFailure, LeaseFuture, LeaseSource, LinkLease},
     link_driver::{DriverSettings, LinkDriver},
     link_lane::{LinkLaneHandle, link_lane_channel},
-    link_policy::LinkStatus,
+    link_policy::{LeaseVersion, LeaseWindow, LinkStatus},
 };
 use tokio::{
     io::{AsyncRead, ReadBuf},
@@ -28,11 +29,16 @@ use tokio::{
 };
 use turmoil::net::{TcpListener, TcpStream};
 
-use self::packet_flight::PacketFlight;
-use super::RealLeases;
+use self::{
+    packet_flight::PacketFlight,
+    simulation_clock::ObservedClock,
+    write_readiness::{HeldWriter, WriterGate},
+};
 
 mod custody_cases;
 mod packet_flight;
+mod simulation_clock;
+mod write_readiness;
 
 const CENTRAL: &str = "central";
 const MAC: &str = "mac";
@@ -87,6 +93,7 @@ fn real_central_welcomes_the_mac_over_simulated_tcp() {
 
 struct SimulatedLink {
     clock: Arc<ManualClock>,
+    driver_clock: Arc<ObservedClock>,
     central: Arc<MachineLinkFixture>,
     network: PacketFlight,
     lane: LinkLaneHandle,
@@ -94,6 +101,9 @@ struct SimulatedLink {
     admission: AdmittedConnection,
     break_socket: oneshot::Sender<()>,
     socket_breakers: mpsc::UnboundedReceiver<oneshot::Sender<()>>,
+    dial_results: mpsc::UnboundedReceiver<bool>,
+    lease_token: watch::Sender<String>,
+    writer_gate: WriterGate,
     _settings: watch::Sender<DriverSettings<u8>>,
     shutdown: watch::Sender<bool>,
     driver: JoinHandle<()>,
@@ -116,32 +126,45 @@ impl SimulatedLink {
         let (shutdown, shutdown_rx) = watch::channel(false);
         let (status, link_status) = watch::channel(LinkStatus::NotEnrolled);
         let (lane, owner) = link_lane_channel();
-        let (acquisitions, _) = mpsc::unbounded_channel();
-        let (endings, _) = mpsc::unbounded_channel();
         let (breaker, mut socket_breakers) = mpsc::unbounded_channel();
+        let (dial_finished, mut dial_results) = mpsc::unbounded_channel();
+        let driver_clock = Arc::new(ObservedClock::new(clock.clone()));
+        let (lease_token, token) = watch::channel(central.token.clone());
+        let writer_gate = WriterGate::new();
         let driver = tokio::spawn(
             LinkDriver {
                 machine_id: MACHINE_LINK_FIXTURE_MACHINE.parse().unwrap(),
-                clock: clock.clone(),
-                lease_source: Arc::new(RealLeases {
+                clock: driver_clock.clone(),
+                lease_source: Arc::new(SimulatedLeases {
                     central: central.clone(),
-                    mac_clock: clock.clone(),
-                    acquisitions,
-                    endings,
+                    clock: clock.clone(),
+                    token,
                 }),
                 settings,
                 shutdown: shutdown_rx,
                 status,
                 lane: owner,
             }
-            .run_with_test_transport(move || {
-                let breaker = breaker.clone();
-                async move {
-                    let (reader, writer) =
-                        TcpStream::connect((CENTRAL, LINK_PORT)).await?.into_split();
-                    let (cut, reset) = oneshot::channel();
-                    breaker.send(cut).unwrap();
-                    Ok(tokio::io::join(ResettableRead { reader, reset }, writer))
+            .run_with_test_transport({
+                let writer_gate = writer_gate.clone();
+                move || {
+                    let breaker = breaker.clone();
+                    let dial_finished = dial_finished.clone();
+                    let writer_gate = writer_gate.clone();
+                    async move {
+                        let connected = TcpStream::connect((CENTRAL, LINK_PORT)).await;
+                        dial_finished.send(connected.is_ok()).unwrap();
+                        let (reader, writer) = connected?.into_split();
+                        let (cut, reset) = oneshot::channel();
+                        breaker.send(cut).unwrap();
+                        Ok(tokio::io::join(
+                            ResettableRead { reader, reset },
+                            HeldWriter {
+                                raw: writer,
+                                gate: writer_gate,
+                            },
+                        ))
+                    }
                 }
             }),
         );
@@ -153,8 +176,14 @@ impl SimulatedLink {
             .clone()
             .unwrap();
         let break_socket = socket_breakers.recv().await.unwrap();
+        assert_eq!(
+            dial_results.recv().await,
+            Some(true),
+            "initial simulated TCP dial"
+        );
         Self {
             clock,
+            driver_clock,
             central,
             network,
             lane,
@@ -162,6 +191,9 @@ impl SimulatedLink {
             admission,
             break_socket,
             socket_breakers,
+            dial_results,
+            lease_token,
+            writer_gate,
             _settings: current_settings,
             shutdown,
             driver,
@@ -183,10 +215,37 @@ impl SimulatedLink {
     }
 
     async fn reconnect(&mut self) {
-        let deadline = self.clock.monotonic_now() + Duration::from_secs(1);
-        self.clock.not_due_check_now(deadline).await;
-        self.clock.advance(Duration::from_secs(1)).unwrap();
+        let deadline = self.next_retry().await;
+        self.start_retry(deadline);
+        assert_eq!(
+            self.dial_results.recv().await,
+            Some(true),
+            "replacement TCP dial"
+        );
         self.read_replacement().await;
+    }
+
+    async fn next_retry(&self) -> ClockInstant {
+        assert!(
+            self.lane.watch_admitted().borrow().is_none(),
+            "only a withdrawn driver can retry"
+        );
+        self.driver_clock.next_active_deadline().await
+    }
+
+    fn start_retry(&mut self, deadline: ClockInstant) {
+        self.clock
+            .advance(deadline.saturating_duration_since(self.clock.monotonic_now()))
+            .unwrap();
+    }
+
+    async fn require_isolated_dial_failure(&mut self) {
+        assert_eq!(
+            self.dial_results.recv().await,
+            Some(false),
+            "a real replacement TCP dial must fail while the partition is active"
+        );
+        assert!(self.lane.watch_admitted().borrow().is_none());
     }
 
     async fn read_replacement(&mut self) {
@@ -208,36 +267,67 @@ impl SimulatedLink {
     }
 
     async fn reconnect_after_partition(&mut self) {
-        let after = self.network.frames().len();
-        turmoil::repair(MAC, CENTRAL);
-        for _ in 0..12 {
-            self.clock.advance(Duration::from_secs(10)).unwrap();
-            // Source/host bookkeeping (including authentication) gets a
-            // virtual step before we drive the next dial deadline.
-            for _ in 0..25 {
-                self.network.step().await;
-                if self
-                    .network
-                    .frames()
-                    .iter()
-                    .skip(after)
-                    .any(|frame| frame.kind == packet_flight::FrameKind::Welcome)
-                {
-                    self.read_replacement().await;
-                    return;
-                }
-            }
-        }
-        assert!(
-            self.lane.watch_admitted().borrow().is_some(),
-            "Central must admit the link after the partition heals"
+        let token = self.central.mint_machine_token().await.unwrap();
+        let runtime = self
+            .central
+            .host
+            .central(&self.central.organization_id)
+            .await
+            .unwrap();
+        let fetches = self.central.keys().fetches();
+        // Run the actual verifier at frozen injected time before healthy
+        // TCP is possible. The next dial uses this same credential.
+        let _verified = runtime.admit_machine_link(&token).await.unwrap();
+        assert_eq!(
+            self.central.keys().fetches(),
+            fetches + 1,
+            "the expired issuer cache must refresh before reconnect"
         );
+        self.lease_token.send_replace(token);
+        turmoil::repair(MAC, CENTRAL);
+        turmoil::hold(MAC, CENTRAL);
+        self.reconnect().await;
     }
 
     async fn close(self) {
         self.shutdown.send_replace(true);
         self.driver.await.unwrap();
     }
+}
+
+struct SimulatedLeases {
+    central: Arc<MachineLinkFixture>,
+    clock: Arc<ManualClock>,
+    token: watch::Receiver<String>,
+}
+
+impl LeaseSource<u8> for SimulatedLeases {
+    fn acquire<'lease>(
+        &'lease self,
+        binding: &'lease u8,
+        newer_than: Option<LeaseVersion>,
+    ) -> LeaseFuture<'lease, u8> {
+        Box::pin(async move {
+            let token = match newer_than {
+                Some(_) => self
+                    .central
+                    .mint_machine_token()
+                    .await
+                    .map_err(|_| LeaseFailure::Fault)?,
+                None => self.token.borrow().clone(),
+            };
+            Ok(LinkLease {
+                token: token.try_into().map_err(|_| LeaseFailure::Fault)?,
+                window: LeaseWindow {
+                    binding: *binding,
+                    version: LeaseVersion(newer_than.map_or(1, |old| old.0 + 1)),
+                    usable_until: self.clock.monotonic_now() + Duration::from_secs(500),
+                },
+            })
+        })
+    }
+
+    fn end(&self, _binding: &u8, _cause: EnrollmentEnd) {}
 }
 
 struct ResettableRead<Reader> {

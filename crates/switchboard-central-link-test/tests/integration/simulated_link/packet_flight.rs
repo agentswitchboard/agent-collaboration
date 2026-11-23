@@ -13,7 +13,7 @@ use std::{
 use central_link_protocol::{DataFrame, FrameDirection, LinkFrame, decode_text};
 use router_clock::{ClockInstant, ManualClock, RuntimeClock};
 use tokio::sync::watch;
-use tokio_tungstenite::tungstenite::protocol::frame::{FrameHeader, coding};
+use tungstenite::protocol::frame::{FrameHeader, coding};
 use turmoil::{Protocol, Segment, Sim};
 
 use super::{CENTRAL, LINK_PORT, MAC};
@@ -284,7 +284,7 @@ impl PacketFlight {
     }
 }
 
-fn decode_segment(mut bytes: &[u8], to_central: bool) -> Vec<LinkFrame> {
+pub(super) fn decode_segment(mut bytes: &[u8], to_central: bool) -> Vec<LinkFrame> {
     if bytes.starts_with(b"GET ") || bytes.starts_with(b"HTTP/") {
         let end = bytes.windows(4).position(|bytes| bytes == b"\r\n\r\n");
         bytes = end.and_then(|end| bytes.get(end + 4..)).unwrap_or_default();
