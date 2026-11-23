@@ -138,7 +138,10 @@ const LEASE_NORMAL: &[Edge] = &[
         ],
     ),
 ];
-const LEASE_DEV: &[Edge] = &[workspace("router-clock", &["test-support"])];
+const LEASE_DEV: &[Edge] = &[
+    workspace("router-clock", &["test-support"]),
+    registry("hegeltest", true, &["static-engine"]),
+];
 const REAL_TEST_DEV: &[Edge] = &[
     registry("axum", false, &["http1", "tokio"]),
     registry("tungstenite", false, &[]),

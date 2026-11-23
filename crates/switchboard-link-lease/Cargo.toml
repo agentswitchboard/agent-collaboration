@@ -17,4 +17,5 @@ switchboard-machine-enrollment = { path = "../switchboard-machine-enrollment", v
 tokio.workspace = true
 
 [dev-dependencies]
+hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
 router-clock = { workspace = true, features = ["test-support"] }

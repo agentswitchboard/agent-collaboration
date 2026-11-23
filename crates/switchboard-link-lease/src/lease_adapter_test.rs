@@ -11,6 +11,9 @@ use switchboard_machine_enrollment::{
 
 use super::*;
 
+#[path = "retirement_history_test.rs"]
+mod history;
+
 #[derive(Clone)]
 pub(crate) struct RowStore {
     pub(crate) row: watch::Sender<StoredEnrollment>,
@@ -18,6 +21,9 @@ pub(crate) struct RowStore {
     end_attempts: watch::Sender<u64>,
     pub(crate) fail_metadata: watch::Sender<bool>,
     credential_read: OperationCheckpoint,
+    before_credential_sample: OperationCheckpoint,
+    fail_credential: watch::Sender<bool>,
+    credential_opens: watch::Sender<u64>,
     pub(crate) metadata_read: OperationCheckpoint,
     credential_replace: OperationCheckpoint,
 }
@@ -54,20 +60,43 @@ impl OperationCheckpoint {
     }
 }
 
-impl CredentialStore for RowStore {
-    async fn read(&self) -> Result<StoredEnrollment, CredentialStoreError> {
+impl RowStore {
+    async fn credential_snapshot(&self) -> StoredEnrollment {
+        self.before_credential_sample.pause_if_held().await;
         let snapshot = self.row.borrow().clone();
         self.credential_read.pause_if_held().await;
+        snapshot
+    }
+
+    fn open_credential(
+        &self,
+        snapshot: StoredEnrollment,
+    ) -> Result<StoredEnrollment, CredentialStoreError> {
+        if matches!(snapshot, StoredEnrollment::Active(_)) {
+            self.credential_opens.send_modify(|count| *count += 1);
+            if *self.fail_credential.borrow() {
+                return Err(CredentialStoreError::Read);
+            }
+        }
         Ok(snapshot)
+    }
+}
+
+impl CredentialStore for RowStore {
+    async fn read(&self) -> Result<StoredEnrollment, CredentialStoreError> {
+        self.open_credential(self.credential_snapshot().await)
     }
 
     async fn read_for_key(
         &self,
         requested: &EnrollmentKey,
     ) -> Result<KeyedEnrollment, CredentialStoreError> {
-        self.read()
-            .await
-            .map(|snapshot| KeyedEnrollment::from_snapshot(snapshot, requested))
+        match KeyedEnrollment::from_snapshot(self.credential_snapshot().await, requested) {
+            KeyedEnrollment::DifferentEnrollment => Ok(KeyedEnrollment::DifferentEnrollment),
+            KeyedEnrollment::Snapshot(snapshot) => self
+                .open_credential(snapshot)
+                .map(KeyedEnrollment::Snapshot),
+        }
     }
 
     async fn read_metadata(&self) -> Result<EnrollmentMetadata, CredentialStoreError> {
@@ -167,6 +196,10 @@ pub(crate) struct Fixture {
 
 impl Fixture {
     pub(crate) fn new() -> Self {
+        Self::with_fence(|_, _| {})
+    }
+
+    fn with_fence(prepare: impl FnOnce(&RetirementFence, &EnrollmentKey)) -> Self {
         let deployment =
             SignInDeployment::new("https://sign-in.example/".parse().unwrap()).unwrap();
         let context = EnrollmentContext {
@@ -188,6 +221,9 @@ impl Fixture {
             end_attempts: watch::channel(0).0,
             fail_metadata: watch::channel(false).0,
             credential_read: OperationCheckpoint::default(),
+            before_credential_sample: OperationCheckpoint::default(),
+            fail_credential: watch::channel(false).0,
+            credential_opens: watch::channel(0).0,
             metadata_read: OperationCheckpoint::default(),
             credential_replace: OperationCheckpoint::default(),
         };
@@ -200,6 +236,7 @@ impl Fixture {
             context,
         );
         let retirements = owner.retirement_fence();
+        prepare(&retirements, &binding.key());
         let source = EnrollmentLeaseSource::start(owner, clock.clone());
         Self {
             source,

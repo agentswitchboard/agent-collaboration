@@ -5963,6 +5963,7 @@ name = "switchboard-link-lease"
 version = "0.1.158"
 dependencies = [
  "central-link-client",
+ "hegeltest",
  "router-clock",
  "switchboard-central-link",
  "switchboard-machine-enrollment",
