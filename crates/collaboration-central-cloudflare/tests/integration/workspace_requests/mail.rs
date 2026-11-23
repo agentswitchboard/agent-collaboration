@@ -22,10 +22,12 @@ mod replay;
 
 mod replay_failures;
 
+mod automation_live_cap;
 mod engine_alarm;
 mod engine_alarm_input_parity;
 mod engine_alarm_migration;
 mod engine_alarm_readback;
+mod engine_alarm_retention;
 mod engine_attempts;
 mod engine_cadence_hour;
 pub(super) mod engine_event_support;
@@ -40,6 +42,7 @@ mod engine_request_alarm;
 mod engine_timing;
 mod engine_timing_races;
 mod engine_visit_order;
+mod overdue_wakes;
 mod probe_requests;
 mod timing_contract;
 

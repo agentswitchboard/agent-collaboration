@@ -25,17 +25,22 @@ CREATE TABLE actor_sessions (
     settled_cause TEXT,
     settled_at TEXT,
     created_at TEXT NOT NULL,
-    updated_at TEXT NOT NULL,
-    UNIQUE (machine_id, create_operation_id),
-    UNIQUE (machine_id, harness_session_id)
+    updated_at TEXT NOT NULL
 );
+
+CREATE UNIQUE INDEX actor_sessions_machine_operation
+    ON actor_sessions (machine_id, create_operation_id);
+CREATE UNIQUE INDEX actor_sessions_machine_harness
+    ON actor_sessions (machine_id, harness_session_id);
 
 CREATE TABLE actor_persons (
     actor_id TEXT PRIMARY KEY NOT NULL REFERENCES actor_identities(actor_id),
-    person_id TEXT NOT NULL UNIQUE,
+    person_id TEXT NOT NULL,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+
+CREATE UNIQUE INDEX actor_persons_person ON actor_persons (person_id);
 
 CREATE TABLE actor_delegates (
     actor_id TEXT PRIMARY KEY NOT NULL REFERENCES actor_sessions(actor_id),

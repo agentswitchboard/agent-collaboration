@@ -129,30 +129,34 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             }
             return Ok(answer);
         }
-        if let Some(reason) = crate::central_mail_time::refusal(&request.operation, now) {
-            return Ok(Result::Refused(reason));
-        }
-        let actor = self.access().resolve_identity(&identity).await?;
-        let decision =
-            if let mail::CentralMailOperation::SetNoticeCadence { cadence } = &request.operation {
-                if !matches!(caller.caller(), m::Caller::Session(_)) {
-                    Err(Refusal::NotSession)
-                } else {
-                    let statements = fleet_notices::plan_notice_cadence_held(
-                        self.execution.statement_host(),
-                        &actor,
-                        *cadence,
-                        now,
-                    )
-                    .await?;
-                    Ok((
-                        statements,
-                        mail::CentralMailAnswer::NoticeCadenceSet { cadence: *cadence },
-                    ))
-                }
-            } else {
-                self.plan_timer_request(&request.operation, now).await?
+        let fresh_wake =
+            match crate::central_mail_time::decode_fresh_request(&request.operation, now) {
+                Ok(command) => command,
+                Err(reason) => return Ok(Result::Refused(reason)),
             };
+        let actor = self.access().resolve_identity(&identity).await?;
+        let decision = if let Some(command) = fresh_wake {
+            self.plan_fresh_wake(command).await?
+        } else if let mail::CentralMailOperation::SetNoticeCadence { cadence } = &request.operation
+        {
+            if !matches!(caller.caller(), m::Caller::Session(_)) {
+                Err(Refusal::NotSession)
+            } else {
+                let statements = fleet_notices::plan_notice_cadence_held(
+                    self.execution.statement_host(),
+                    &actor,
+                    *cadence,
+                    now,
+                )
+                .await?;
+                Ok((
+                    statements,
+                    mail::CentralMailAnswer::NoticeCadenceSet { cadence: *cadence },
+                ))
+            }
+        } else {
+            self.plan_timer_request(&request.operation, now).await?
+        };
         let (mut statements, answer) = match decision {
             Ok((statements, answer)) => (statements, Result::Done(answer)),
             Err(reason) => (vec![], Result::Refused(reason)),
@@ -166,6 +170,16 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             &now.to_rfc3339(),
             &cutoff,
         )?);
+        #[cfg(feature = "test-support")]
+        if matches!(
+            &answer,
+            Result::Done(mail::CentralMailAnswer::WakeSet { .. })
+        ) {
+            self.execution
+                .pause_points()
+                .reached_central(fleet_runtime::PausePoint::BeforeWakeRequestCommit)
+                .await;
+        }
         match self
             .execution
             .statement_host()
@@ -182,6 +196,11 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             Err(StoreFailure::AnswerLost) => return Ok(Result::OutcomeUnknown),
             Err(StoreFailure::Unavailable) => return Ok(Result::CentralUnavailable),
             Err(error) => return Err(error.into()),
+        }
+        drop(_turn);
+        if let Result::Done(mail::CentralMailAnswer::WakeSet { wake_id, due_at }) = &answer {
+            // The committed receipt stands even if the guarded due transition needs recovery.
+            let _ = self.fire_committed_overdue_wake(wake_id, *due_at).await;
         }
         #[cfg(feature = "test-support")]
         if self.execution.take_lost_reply(&request.request_id) {

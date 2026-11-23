@@ -18,6 +18,8 @@ use workspace_model::{
     central_mail::{CentralMailRefusal, CentralMailResult, TimingRequirement},
 };
 
+const PAST_WAKE_REQUEST: &str = "019f0000-0000-7000-8000-00000000d403";
+
 fn request_from_client(frame: LinkFrame) -> Result<LinkRequest> {
     let LinkFrame::Data(DataFrame::Request { request }) = frame else {
         return Err("client did not register a Request".into());
@@ -106,7 +108,7 @@ async fn native_batch_keeps_order_and_continues_after_a_middle_semantic_refusal(
     // The timestamp is on the five-minute grid and is earlier than NOW_SECONDS.
     // This must reach the semantic FutureTime refusal, not fail decoding or caller checks.
     let middle = request_from_client(client.begin_request(caller.clone(), RequestPayload::Mail(serde_json::from_value(json!({
-        "requestId":"019f0000-0000-7000-8000-00000000d403",
+        "requestId":PAST_WAKE_REQUEST,
         "operation":{"kind":"setWake","target":target,"dueAt":"2030-03-17T17:45:00Z","text":"Past batch wake"}
     }))?))?)?;
     let last = request_from_client(client.begin_request(
@@ -233,17 +235,19 @@ async fn native_batch_keeps_order_and_continues_after_a_middle_semantic_refusal(
             )],
         ]
     );
-    assert!(
-        runtime
-            .runtime()
-            .statement_host()
-            .read(Statement {
-                sql: "SELECT wake_id FROM automation_wakes",
-                args: vec![]
-            })
-            .await?
-            .rows
-            .is_empty()
+    let past_wake_writes = runtime
+        .runtime()
+        .statement_host()
+        .read(Statement {
+            sql: "SELECT (SELECT COUNT(*) FROM automation_wakes),
+                         (SELECT COUNT(*) FROM engine_due_entries WHERE work_kind='wake_timer'),
+                         (SELECT COUNT(*) FROM runtime_request_log WHERE request_id=?)",
+            args: vec![SqlValue::Text(PAST_WAKE_REQUEST.into())],
+        })
+        .await?;
+    assert_eq!(
+        past_wake_writes.rows,
+        vec![vec![SqlValue::Integer(0.try_into()?); 3]]
     );
     store.close().await;
     socket
