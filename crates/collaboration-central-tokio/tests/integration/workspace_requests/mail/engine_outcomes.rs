@@ -421,13 +421,13 @@ async fn operational_database_codes_are_never_charged_to_the_item() {
             vec![text("waiting"), integer(0), integer(0)],
             "code {code} is an outage, not the item's failure"
         );
-        let next_mark = due + minutes(5);
+        let floor = due + chrono::Duration::seconds(30);
         assert_eq!(
             alarm_ms(&runtime),
-            Some(next_mark.timestamp_millis()),
+            Some(floor.timestamp_millis()),
             "code {code}"
         );
-        fixture.set_utc(next_mark).await;
+        fixture.set_utc(floor).await;
         runtime.after_event().await.unwrap();
         assert_eq!(
             probe_facts(&runtime, item, group).await,
@@ -542,5 +542,65 @@ async fn no_unit_starts_after_central_store_down_and_started_units_settle() {
     fixture.host.close().await;
 }
 
-#[path = "engine_outcomes/held_unit.rs"]
-mod held_unit;
+#[tokio::test]
+async fn one_held_unit_never_delays_the_other_nineteen_or_a_probe_request() {
+    let fixture = Fixture::new().await;
+    witness_fixture_attempt_ids(&fixture).await;
+    let runtime = runtime(&fixture).await;
+    let due = fixture.clock.utc_now() + minutes(5);
+    let group = probe_id(9200);
+    let items: Vec<_> = (0..20).map(|offset| probe_id(9201 + offset)).collect();
+    for (offset, item) in items.iter().enumerate() {
+        seed_probe(&runtime, *item, group, Some(due), &format!("unit{offset}")).await;
+    }
+    let other = probe_id(9230);
+    seed_probe(&runtime, other, group, None, "request").await;
+    // The native alarm driver would also find this work due; park it before its
+    // drive guard so only this case's direct engine calls take the pauses.
+    let _native_driver = runtime
+        .runtime()
+        .pause_points()
+        .hold_engine(PausePoint::BeforeDriveGuard, "driver");
+    let mut held = runtime
+        .runtime()
+        .pause_points()
+        .hold_engine(PausePoint::AfterEngineLoad, &items[0].to_string());
+    fixture.set_utc(due).await;
+    let batch = tokio::spawn({
+        let runtime = runtime.clone();
+        async move { runtime.after_event().await }
+    });
+    held.until_held().await;
+    let mut committed = 0;
+    while committed < 19 {
+        tokio::task::yield_now().await;
+        committed = 0;
+        for item in &items[1..] {
+            if probe_facts(&runtime, *item, group).await[0] == text("fired") {
+                committed += 1;
+            }
+        }
+    }
+    let answer = runtime
+        .request_probe(&fixture.caller, probe_request(9231, other, ProbeEvent::Run))
+        .await
+        .unwrap();
+    assert!(matches!(answer, EngineRequestOutcome::Answer { .. }));
+    assert_eq!(
+        probe_facts(&runtime, items[0], group).await[0],
+        text("waiting")
+    );
+    held.release();
+    batch.await.unwrap().unwrap();
+    assert_eq!(
+        probe_facts(&runtime, items[0], group).await[0],
+        text("fired")
+    );
+    assert_fixture_attempt_ids_are_uuid_v7(
+        &fixture,
+        "one_held_unit_never_delays_the_other_nineteen_or_a_probe_request",
+        &[],
+    )
+    .await;
+    fixture.host.close().await;
+}

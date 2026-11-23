@@ -410,13 +410,13 @@ async fn operational_database_codes_are_never_charged_to_the_item() {
             vec![text("waiting"), integer(0), integer(0)],
             "code {code} is an outage, not the item's failure"
         );
-        let next_mark = due + minutes(5);
+        let floor = due + chrono::Duration::seconds(30);
         assert_eq!(
             alarm_ms(&runtime).await,
-            Some(next_mark.timestamp_millis()),
+            Some(floor.timestamp_millis()),
             "code {code}"
         );
-        set_now(&fixture, next_mark);
+        set_now(&fixture, floor);
         runtime.after_event().await.unwrap();
         assert_eq!(
             probe_facts(&runtime, item, group).await,

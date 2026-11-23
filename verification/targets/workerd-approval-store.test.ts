@@ -213,7 +213,7 @@ test("Workerd approvals time out only selected rows and seek the deadline index 
   }
 });
 
-test("Workerd touches approval after its deadline and before the retained mark", async (): Promise<void> => {
+test("Workerd touches approval after its deadline and before its projected alarm mark", async (): Promise<void> => {
   const central = await ApprovalWorkerdHost.start();
   try {
     const database = "approval-before-alarm";
@@ -243,13 +243,6 @@ test("Workerd touches approval after its deadline and before the retained mark",
         effectiveDueMs,
       })),
       [{ occurrenceMs: deadline, effectiveDueMs: alarmMark }],
-    );
-    assert.deepEqual(
-      await central.dispatchJson(commandPath(database), {
-        atMs: raisedAt,
-        command: { kind: "publishAlarmMark" },
-      }),
-      { alarmMs: alarmMark },
     );
     const touched = await invokeApprovalWitness({
       central,

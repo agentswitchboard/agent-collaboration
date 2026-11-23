@@ -63,10 +63,6 @@ impl<'a, Host: EngineHost> FleetEngine<'a, Host> {
     pub fn new(host: &'a Host) -> Self {
         Self(host)
     }
-    pub async fn complete_alarm(&self) -> Result<EventCompletion, AlarmNotPublished> {
-        self.complete_event_with_observation(fleet_runtime::DueBatchTrigger::Alarm)
-            .await
-    }
     pub(crate) fn central_store(&self) -> &'a Host::CentralStoreBackend {
         self.0.central_store()
     }
@@ -90,7 +86,6 @@ impl<'a, Host: EngineHost> FleetEngine<'a, Host> {
 
 impl<Host: EngineHost> EventCompletionHook for FleetEngine<'_, Host> {
     async fn complete_event(&self) -> Result<EventCompletion, AlarmNotPublished> {
-        self.complete_event_with_observation(fleet_runtime::DueBatchTrigger::Request)
-            .await
+        self.complete_event_with_observation().await
     }
 }

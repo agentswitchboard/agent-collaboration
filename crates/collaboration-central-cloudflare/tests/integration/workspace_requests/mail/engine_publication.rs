@@ -14,12 +14,11 @@ async fn engine_alarm_publication_sets_the_real_retained_deadline() {
     let runtime = fixture.host.central(&fixture.caller.organization_id).await;
     // Embedded setup allowance: the fixture's setup claimed the due batch at T0, so
     // the held clock moves to T0 + 30 s before this publication; the query's own
-    // unaligned deadline then reaches the physical alarm at the next mark.
+    // deadline then lies past the 30 s floor and reaches the real alarm unchanged.
     let now = fixture.clock.0.load(Ordering::SeqCst) + 30_000;
     fixture.clock.0.store(now, Ordering::SeqCst);
     let _: bool = runtime.control("clock", &now).await.unwrap();
     let due = now + 5_000;
-    let mark = (due.div_euclid(300_000) + 1) * 300_000;
     let stamp = chrono::DateTime::from_timestamp_millis(due)
         .unwrap()
         .to_rfc3339();
@@ -47,7 +46,7 @@ async fn engine_alarm_publication_sets_the_real_retained_deadline() {
         result,
         BatchOutcome::Applied {
             rows_affected: vec![1],
-            publication: AlarmPublication::Set { unix_millis: mark }
+            publication: AlarmPublication::Set { unix_millis: due }
         }
     );
     assert_eq!(
@@ -55,7 +54,7 @@ async fn engine_alarm_publication_sets_the_real_retained_deadline() {
             .control::<Option<i64>>("raw-alarm-time", &())
             .await
             .unwrap(),
-        Some(mark)
+        Some(due)
     );
     fixture.host.close().await;
 }
@@ -97,29 +96,13 @@ async fn an_unpublishable_alarm_rolls_back_rows_and_keeps_the_real_deadline() {
 
     let result = runtime
         .run_batch(StatementBatch {
-            statements: vec![
-                GuardedStatement {
-                    statement: Statement {
-                        sql: "UPDATE automation_wakes SET text='must roll back' WHERE wake_id=?",
-                        args: vec![text(&wake_id)],
-                    },
-                    expect: RowExpectation::Exactly(1),
+            statements: vec![GuardedStatement {
+                statement: Statement {
+                    sql: "UPDATE automation_wakes SET text='must roll back' WHERE wake_id=?",
+                    args: vec![text(&wake_id)],
                 },
-                GuardedStatement {
-                    // The pending item moves beyond the previously armed mark;
-                    // holding the old alarm would no longer serve any due work.
-                    statement: Statement {
-                        sql: "UPDATE engine_due_entries SET effective_due_ms=? WHERE work_kind='wake_timer' AND subject_key=?",
-                        args: vec![
-                            central_storage::SqlValue::Integer(
-                                (prior.unwrap() + 300_000).try_into().unwrap(),
-                            ),
-                            text(&wake_id),
-                        ],
-                    },
-                    expect: RowExpectation::Exactly(1),
-                },
-            ],
+                expect: RowExpectation::Exactly(1),
+            }],
             alarm: AlarmUpdate::Engine(EngineAlarmPlan::Recompute),
         })
         .await;

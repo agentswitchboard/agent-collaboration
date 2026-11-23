@@ -394,9 +394,3 @@ pub enum RenewalDuringDelivery {
     BeforeWrite,
     BeforeAnswer,
 }
-
-#[path = "approval_provider_deadline_race.rs"]
-mod deadline_race;
-pub use deadline_race::{
-    ApprovalAlarmRaceFixture, approval_alarm_mark_race, publish_ordinary_alarm_request,
-};

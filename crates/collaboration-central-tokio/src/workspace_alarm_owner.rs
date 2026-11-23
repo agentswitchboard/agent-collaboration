@@ -79,7 +79,7 @@ async fn drive(runtime: Arc<Runtime>, clock: Arc<dyn RuntimeClock>, stop: Cancel
                 };
                 let result = tokio::select! {
                     () = stop.cancelled() => return,
-                    result = runtime.after_alarm() => result,
+                    result = runtime.after_event() => result,
                 };
                 match &result {
                     Ok(_) => {

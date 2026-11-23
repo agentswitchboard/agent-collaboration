@@ -1,6 +1,6 @@
 //! Organization gating and startup re-publication; the engine owns due work.
 use crate::WorkspaceRuntime;
-use central_engine_model::{DueRow, EngineTime, InstanceKey};
+use central_engine_model::{DueBatchPolicy, DueRow, EngineTime, InstanceKey};
 use central_storage::{AlarmPublicationFailure, EngineAlarmPlan, StoreFailure};
 use fleet_engine::{DueDiscoveryError, FleetEngine};
 use fleet_runtime_ports::workspace_decode_error::corrupt;
@@ -49,20 +49,15 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         if self.execution.now()? < due_at || !self.alarm_organization_is_provisioned().await? {
             return Ok(());
         }
-        if self
-            .execution
-            .due_batches()
-            .admit_overdue_wake(due_at, || self.execution.now())
-            .await?
-        {
+        let now = self.execution.now()?;
+        if now >= due_at {
             let row = DueRow {
                 key: InstanceKey(wake_id.to_string()),
                 occurrence_ms: due_at.timestamp_millis(),
                 effective_due_ms: due_at.timestamp_millis(),
             };
-            #[cfg(feature = "test-support")]
-            self.record_overdue_wake_attempt(self.execution.now()?, &row);
-            self.dispatch_due_wake(&FleetEngine::new(self), row).await;
+            self.dispatch_overdue_wake(&FleetEngine::new(self), now, row)
+                .await;
         }
         Ok(())
     }
@@ -73,26 +68,33 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             return self.publish_alarm_plan(EngineAlarmPlan::Clear).await;
         }
         let now = self.execution.now()?;
-        if self.overdue_wake_rows(now, 1).await?.is_empty() {
-            return self.publish_alarm_plan(EngineAlarmPlan::Recompute).await;
+        let rows = self
+            .overdue_wake_rows(now, DueBatchPolicy::DEFAULT.per_kind_cap)
+            .await?;
+        let engine = FleetEngine::new(self);
+        for row in rows {
+            if self.dispatch_overdue_wake(&engine, now, row).await {
+                break;
+            }
         }
-        // A startup event that needs to take due work uses the same full claim
-        // as any other event. It takes responsibility for the retained mark.
-        self.after_event()
-            .await
-            .map(|_| ())
-            .map_err(|error| error.failure)
+        self.publish_alarm_plan(EngineAlarmPlan::Recompute).await
     }
 
-    #[cfg(feature = "test-support")]
-    fn record_overdue_wake_attempt(&self, started_at: EngineTime, row: &DueRow) {
+    async fn dispatch_overdue_wake(
+        &self,
+        engine: &FleetEngine<'_, Self>,
+        _started_at: EngineTime,
+        row: DueRow,
+    ) -> bool {
+        #[cfg(feature = "test-support")]
         self.execution
             .due_batches()
             .record_unit_start(fleet_runtime::DueUnitStart {
-                batch_start_unix_millis: started_at.timestamp_millis(),
+                batch_start_unix_millis: _started_at.timestamp_millis(),
                 machine_kind: "wake_timer".to_owned(),
                 subject_key: row.key.0.clone(),
             });
+        self.dispatch_due_wake(engine, row).await.1
     }
 
     async fn overdue_wake_rows(

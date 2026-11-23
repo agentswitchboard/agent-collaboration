@@ -1,13 +1,8 @@
 //! Shared UTC grid arithmetic for due and cadence choices.
-use crate::EngineTime;
+use crate::{EngineTime, supported_time};
 use chrono::Duration;
 
-pub const MAX_ALARM_UNIX_MILLIS: i64 = 9_223_372_036_854;
 const GRID_SECONDS: u32 = 300;
-
-pub fn supported_time(time: EngineTime) -> bool {
-    (-MAX_ALARM_UNIX_MILLIS..=MAX_ALARM_UNIX_MILLIS).contains(&time.timestamp_millis())
-}
 
 pub fn aligned_at_or_after(time: EngineTime, seconds: u32) -> Option<EngineTime> {
     if seconds == 0 {

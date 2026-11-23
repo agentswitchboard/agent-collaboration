@@ -1,7 +1,7 @@
 //! Raw fixture state and physical alarm receipts for the owning Durable Object.
 use super::{engine_due_migration_fixture, error};
 use crate::workspace_central_object::{
-    AlarmPolicy, CentralObject, OrganizationId, statement_store,
+    AlarmFailure, AlarmPolicy, CentralObject, OrganizationId, statement_store,
 };
 use crate::{store_wire::OwnedStatement, workspace_rpc_fixture};
 use serde::{Deserialize, Serialize};
@@ -225,9 +225,21 @@ pub(in crate::workspace_central_object) async fn alarm_with_receipt(
         object.clock.hold(now);
     }
     let initialized_cold = object.runtime.lock().await.is_none();
-    let drive = object.run_workspace_alarm().await;
+    let mut organization = None;
+    let outcome = async {
+        let Some((org, runtime)) = object.alarm_runtime().await? else {
+            return Ok(None);
+        };
+        organization = Some(org);
+        let result = runtime.after_event().await;
+        object.flush_ready_mail(&runtime).await;
+        result
+            .map(Some)
+            .map_err(|error| AlarmFailure::Store(error.failure))
+    }
+    .await;
     let alarm_after = storage.get_alarm().await?;
-    let result = match &drive.completion {
+    let result = match &outcome {
         Ok(Some(result)) => AlarmReceiptResult::Applied {
             wakes_fired: result.work.wakes_fired,
             automations_fired: result.work.automations_fired,
@@ -235,16 +247,20 @@ pub(in crate::workspace_central_object) async fn alarm_with_receipt(
             workspaces_drained: result.work.workspaces_drained,
         },
         Ok(None) => AlarmReceiptResult::Unprovisioned,
-        Err(failure) => AlarmReceiptResult::Error {
+        Err(AlarmFailure::Store(failure)) => AlarmReceiptResult::Error {
             message: failure.to_string(),
-            failure: failure.store_failure(),
+            failure: Some(failure.clone()),
+        },
+        Err(AlarmFailure::Platform(failure)) => AlarmReceiptResult::Error {
+            message: failure.to_string(),
+            failure: None,
         },
     };
     storage
         .put(
             RECEIPT_KEY,
             &AlarmReceipt {
-                organization: drive.organization.clone(),
+                organization,
                 initialized_cold,
                 alarm_before,
                 alarm_after,
@@ -255,5 +271,10 @@ pub(in crate::workspace_central_object) async fn alarm_with_receipt(
     for waiter in std::mem::take(&mut *object.controls.alarm_waiters.borrow_mut()) {
         let _ = waiter.send(());
     }
-    drive.into_response()
+    match outcome {
+        Ok(_) => {}
+        Err(AlarmFailure::Store(failure)) => return Err(error(failure)),
+        Err(AlarmFailure::Platform(failure)) => return Err(failure),
+    }
+    Response::ok("alarm applied")
 }

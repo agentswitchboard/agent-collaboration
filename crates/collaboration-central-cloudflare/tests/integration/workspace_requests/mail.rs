@@ -1,5 +1,4 @@
 //! Central mail and actual Durable Object alarm journeys on workerd.
-mod automation_live_cap;
 mod automation_occurrences;
 mod automations;
 mod cold_alarm;
@@ -23,6 +22,7 @@ mod replay;
 
 mod replay_failures;
 
+mod automation_live_cap;
 mod engine_alarm;
 mod engine_alarm_input_parity;
 mod engine_alarm_migration;

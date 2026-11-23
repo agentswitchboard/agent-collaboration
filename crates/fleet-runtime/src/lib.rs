@@ -18,7 +18,7 @@ pub use alarm_schedule::{AlarmDeadline, AlarmPublicationStatus, AlarmSchedule};
 pub use clock_ids::ClockIds;
 #[cfg(feature = "test-support")]
 pub use due_batch_state::DueUnitStart;
-pub use due_batch_state::{DueBatchClaim, DueBatchSnapshot, DueBatchState, DueBatchTrigger};
+pub use due_batch_state::{DueBatchSnapshot, DueBatchState};
 pub use fleet_runtime::{FleetRuntime, TurnGuard};
 #[cfg(feature = "test-support")]
 pub use pause_points::{HeldPause, PausePoint, PausePoints};

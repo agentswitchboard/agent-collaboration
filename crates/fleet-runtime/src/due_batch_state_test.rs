@@ -1,4 +1,4 @@
-use super::{DueBatchSnapshot, DueBatchState, DueBatchTrigger};
+use super::{DueBatchSnapshot, DueBatchState};
 use crate::engine_alarm_decider;
 use central_storage::EngineAlarmTimes;
 use std::sync::{Arc, Barrier};
@@ -68,11 +68,11 @@ fn a_late_old_batch_cannot_clear_the_newest_batchs_leftovers() {
 }
 
 #[test]
-fn a_prepared_publisher_uses_the_latest_capped_batch_mark() {
+fn a_prepared_publisher_uses_the_latest_batch_floor() {
     let state = Arc::new(DueBatchState::default());
     let decide = engine_alarm_decider(state.clone());
     let times = EngineAlarmTimes {
-        earliest_on_grid_due_unix_millis: Some(600_000),
+        earliest_on_grid_due_unix_millis: Some(35_000),
         earliest_legacy_due_unix_millis: None,
     };
     assert!(state.try_claim(0, chrono::Duration::seconds(30)).unwrap());
@@ -81,11 +81,7 @@ fn a_prepared_publisher_uses_the_latest_capped_batch_mark() {
             .try_claim(31_000, chrono::Duration::seconds(30))
             .unwrap()
     );
-    assert!(state.finish(31_000, true));
-    assert_eq!(
-        decide(times, 32_000, &|| None, &mut |_| {}),
-        Ok(Some(300_000))
-    );
+    assert_eq!(decide(times, 32_000, &mut |_| {}), Ok(Some(61_000)));
 }
 
 #[cfg(feature = "test-support")]
@@ -95,7 +91,7 @@ async fn a_claim_waits_between_the_decision_and_real_watch_publication() {
     assert!(state.try_claim(0, chrono::Duration::seconds(30)).unwrap());
     let decide = engine_alarm_decider(state.clone());
     let times = EngineAlarmTimes {
-        earliest_on_grid_due_unix_millis: Some(600_000),
+        earliest_on_grid_due_unix_millis: Some(35_000),
         earliest_legacy_due_unix_millis: None,
     };
     let (alarm, retained) = tokio::sync::watch::channel(None::<i64>);
@@ -107,7 +103,7 @@ async fn a_claim_waits_between_the_decision_and_real_watch_publication() {
         let release = release.clone();
         std::thread::spawn(move || {
             let mut ready = Some(ready_send);
-            decide(times, 32_000, &|| None, &mut |time| {
+            decide(times, 32_000, &mut |time| {
                 ready.take().unwrap().send(time).unwrap();
                 release.wait();
                 alarm.send_replace(time);
@@ -115,7 +111,7 @@ async fn a_claim_waits_between_the_decision_and_real_watch_publication() {
             .unwrap()
         })
     };
-    assert_eq!(ready.await.unwrap(), Some(600_000));
+    assert_eq!(ready.await.unwrap(), Some(35_000));
     let (finished_send, mut finished) = tokio::sync::oneshot::channel();
     let claiming = {
         let state = state.clone();
@@ -125,8 +121,7 @@ async fn a_claim_waits_between_the_decision_and_real_watch_publication() {
                     .try_claim(31_000, chrono::Duration::seconds(30))
                     .unwrap()
             );
-            assert!(state.finish(31_000, true));
-            decide(times, 32_000, &|| None, &mut |time| {
+            decide(times, 32_000, &mut |time| {
                 alarm.send_replace(time);
             })
             .unwrap();
@@ -151,93 +146,5 @@ async fn a_claim_waits_between_the_decision_and_real_watch_publication() {
         waited,
         "claim crossed the decision/publication critical section"
     );
-    assert_eq!(*retained.borrow(), Some(300_000));
-}
-
-#[tokio::test]
-async fn overflow_is_protected_during_selection_and_until_the_next_mark() {
-    let state = DueBatchState::default();
-    let spacing = chrono::Duration::seconds(30);
-    let time = |at| central_engine_model::EngineTime::from_timestamp_millis(at).unwrap();
-    let request = |at| state.begin_batch(move || Ok(time(at)), spacing, DueBatchTrigger::Request);
-    let alarm = |at| state.begin_batch(move || Ok(time(at)), spacing, DueBatchTrigger::Alarm);
-    let first = alarm(300_000).await.unwrap().unwrap();
-    assert!(request(331_000).await.unwrap().is_none());
-    first.record_selection(true);
-    assert!(alarm(599_999).await.unwrap().is_none());
-    let mut next_mark = std::pin::pin!(alarm(600_000));
-    tokio::select! {
-        biased;
-        _ = &mut next_mark => panic!("a capped batch was still protected"),
-        () = async {} => {}
-    }
-    drop(first);
-    assert!(request(599_999).await.unwrap().is_none());
-    let next = tokio::select! {
-        biased;
-        result = &mut next_mark => result.unwrap().unwrap(),
-        () = async {} => panic!("releasing the capped batch did not wake the alarm"),
-    };
-    next.record_selection(true);
-    drop(next);
-    assert!(request(631_000).await.unwrap().is_none());
-    assert!(alarm(900_000).await.unwrap().is_some());
-}
-
-#[tokio::test]
-async fn a_due_alarm_waits_for_the_prior_requests_selection_at_the_mark() {
-    let state = DueBatchState::default();
-    let spacing = chrono::Duration::seconds(30);
-    let time = |at| central_engine_model::EngineTime::from_timestamp_millis(at).unwrap();
-    let request = |at| state.begin_batch(move || Ok(time(at)), spacing, DueBatchTrigger::Request);
-    let alarm = |at| state.begin_batch(move || Ok(time(at)), spacing, DueBatchTrigger::Alarm);
-    let ordinary = request(298_000).await.unwrap().unwrap();
-    let mut marked = std::pin::pin!(alarm(300_000));
-    tokio::select! {
-        biased;
-        _ = &mut marked => panic!("the alarm returned while discovery was in flight"),
-        () = async {} => {}
-    }
-    assert!(request(300_000).await.unwrap().is_none());
-    ordinary.record_selection(false);
-    let marked = tokio::select! {
-        biased;
-        result = &mut marked => result.unwrap().unwrap(),
-        () = async {} => panic!("recording the selection did not wake the alarm"),
-    };
-    marked.record_selection(false);
-    drop(marked);
-    drop(ordinary);
-    assert!(alarm(300_001).await.unwrap().is_none());
-}
-
-#[tokio::test]
-async fn overdue_wake_admission_observes_a_cap_discovered_by_the_earlier_claim() {
-    let batches = DueBatchState::default();
-    let time = |millis| central_engine_model::EngineTime::from_timestamp_millis(millis).unwrap();
-    let claim = batches
-        .begin_batch(
-            || Ok(time(300_000)),
-            chrono::Duration::seconds(30),
-            DueBatchTrigger::Alarm,
-        )
-        .await
-        .unwrap()
-        .unwrap();
-    let mut entering =
-        std::pin::pin!(batches.admit_overdue_wake(time(300_001), || Ok(time(331_000))));
-    tokio::select! {
-        biased;
-        _ = &mut entering => panic!("the wake bypassed unfinished discovery"),
-        () = async {} => {},
-    }
-    claim.record_selection(true);
-    drop(claim);
-    assert!(!entering.await.unwrap());
-    assert!(
-        batches
-            .admit_overdue_wake(time(300_001), || Ok(time(600_000)))
-            .await
-            .unwrap()
-    );
+    assert_eq!(*retained.borrow(), Some(61_000));
 }

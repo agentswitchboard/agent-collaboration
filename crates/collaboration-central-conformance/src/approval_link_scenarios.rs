@@ -485,7 +485,7 @@ pub async fn receive_frame(socket: &mut WebSocket) -> Result<LinkFrame> {
     Ok(decode_text(&text, FrameDirection::ToRouter)?)
 }
 
-pub(crate) async fn send_frame(socket: &mut WebSocket, frame: LinkFrame) -> Result<()> {
+async fn send_frame(socket: &mut WebSocket, frame: LinkFrame) -> Result<()> {
     socket
         .send(Message::Text(encode_text(
             &frame,

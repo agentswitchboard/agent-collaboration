@@ -30,6 +30,7 @@ async fn admitted_wake_committed_after_due_fires_inside_request_spacing() {
     let preceding_batch = at(start, 4, 45, 0);
     let due = at(start, 5, 0, 0);
     let committed = at(start, 5, 1, 0);
+    let request_alarm_floor = at(start, 5, 15, 0);
     let next_mark = at(start, 10, 0, 0);
     fixture.set_utc(preceding_batch).await;
     let future = set_wake(&fixture, 45351, next_mark).await;
@@ -49,6 +50,10 @@ async fn admitted_wake_committed_after_due_fires_inside_request_spacing() {
         .runtime()
         .pause_points()
         .hold_central(PausePoint::BeforeWakeRequestCommit);
+    let mut held_transition = central
+        .runtime()
+        .pause_points()
+        .hold_central(PausePoint::BeforeTimerCommit);
     let mut request = std::pin::pin!(set_wake(&fixture, 45352, due));
     tokio::select! {
         wake = &mut request => panic!("wake {wake} answered before its held commit"),
@@ -58,6 +63,13 @@ async fn admitted_wake_committed_after_due_fires_inside_request_spacing() {
     assert_eq!(alarm_ms(&central), ms(next_mark));
     fixture.set_utc(committed).await;
     held.release();
+    tokio::select! {
+        wake = &mut request => panic!("wake {wake} answered before its guarded transition"),
+        () = held_transition.until_held() => {}
+    }
+    assert!(wake_effects(&central).await.is_empty());
+    assert_eq!(alarm_ms(&central), ms(request_alarm_floor));
+    held_transition.release();
     let wake = request.await;
 
     assert_eq!(wake_state(&central, &wake).await, text("done"));
@@ -85,7 +97,7 @@ async fn cold_open_fires_an_overdue_accepted_wake_before_the_next_mark() {
     let opened = runtime(&fixture).await;
     let start = fixture.clock.utc_now();
     let due = at(start, 5, 0, 0);
-    let reopened_at = at(start, 5, 1, 0);
+    let reopened_at = at(start, 9, 31, 0);
     let next_mark = at(start, 10, 0, 0);
     let wake = set_wake(&fixture, 45353, due).await;
     let future = set_wake(&fixture, 45354, next_mark).await;
@@ -106,7 +118,10 @@ async fn cold_open_fires_an_overdue_accepted_wake_before_the_next_mark() {
         vec![vec![text(&wake), stamp(reopened_at)]]
     );
     assert_eq!(wake_state(&reopened, &future).await, text("active"));
+    // The next wake is inside a regular batch's look-ahead. A cold claim
+    // would also floor its alarm at 10:10:01, one second after its due time.
     assert_eq!(alarm_ms(&reopened), ms(next_mark));
+    assert!(reopened.runtime().due_batch_starts().is_empty());
     assert_eq!(reopened.runtime().alarm_completion_count(), 0);
     fixture.host.close().await;
 }

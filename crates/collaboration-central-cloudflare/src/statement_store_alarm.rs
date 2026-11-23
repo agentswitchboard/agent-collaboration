@@ -1,13 +1,13 @@
-//! Apply the engine's alarm choice in the Workerd storage transaction.
+//! Apply the selected alarm within the Workerd storage transaction.
 use super::{AlarmPolicy, BatchStop, WorkerExecutorLender, bound, read_outcome};
 use crate::store_wire::OwnedAlarmUpdate;
-use central_storage::{AlarmPublication, AlarmPublicationFailure, EngineAlarmPlan, StoreFailure};
+use central_storage::{
+    AlarmPublication, AlarmPublicationFailure, CorruptReason, EngineAlarmPlan, ReadOutcome,
+    SqlValue, StoreFailure,
+};
 use fleet_runtime_ports::Clock;
-use sqlx_durable_object::DoTransaction;
-
-use central_storage::{CorruptReason, ReadOutcome, SqlValue};
 use sqlx_core::{column::Column, row::Row};
-use sqlx_durable_object::DoRow;
+use sqlx_durable_object::{DoRow, DoTransaction};
 
 pub(super) async fn apply_alarm(
     transaction: &DoTransaction,
@@ -36,8 +36,8 @@ pub(super) async fn apply_alarm(
             OwnedAlarmUpdate::Engine(plan) => {
                 let mut alarm_executor_lender =
                     WorkerExecutorLender::from_storage_executor(transaction);
-                let (decided, retained) = match plan {
-                    EngineAlarmPlan::Clear => (None, None),
+                let decided = match plan {
+                    EngineAlarmPlan::Clear => None,
                     EngineAlarmPlan::Recompute => {
                         let (clock, decide) =
                             clock.ok_or(BatchStop::Failed(StoreFailure::AlarmUnpublishable {
@@ -47,20 +47,9 @@ pub(super) async fn apply_alarm(
                             fleet_engine::read_alarm_inputs(&mut alarm_executor_lender)
                                 .await
                                 .map_err(BatchStop::Failed)?;
-                        let retained = storage
-                            .get_alarm()
-                            .await
-                            .map_err(|_| BatchStop::Failed(StoreFailure::Unavailable))?;
-                        let decided = decide(
-                            alarm_inputs,
-                            clock.now().unix_millis(),
-                            &|| retained,
-                            &mut |_| {},
-                        )
-                        .map_err(|reason| {
-                            BatchStop::Failed(StoreFailure::AlarmUnpublishable { reason })
-                        })?;
-                        (decided, retained)
+                        decide(alarm_inputs, clock.now().unix_millis(), &mut |_| {}).map_err(
+                            |reason| BatchStop::Failed(StoreFailure::AlarmUnpublishable { reason }),
+                        )?
                     }
                 };
                 #[cfg(feature = "test-support")]
@@ -70,9 +59,6 @@ pub(super) async fn apply_alarm(
                         .read_dispatches
                         .load(std::sync::atomic::Ordering::Relaxed)
                 );
-                if let Some(unix_millis) = decided.filter(|mark| Some(*mark) == retained) {
-                    return Ok(AlarmPublication::Set { unix_millis });
-                }
                 decided
             }
         };

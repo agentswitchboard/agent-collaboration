@@ -1,4 +1,4 @@
-//! Workerd's alarm decider binding and its publication fault fixture.
+//! Workerd alarm decider binding and publication fault injection.
 use super::CentralStatements;
 #[cfg(feature = "test-support")]
 use std::sync::Arc;
@@ -17,8 +17,8 @@ impl CentralStatements {
         {
             // The store calls this after the guarded SQL. Workerd rejects epoch zero at setAlarm.
             let zero_alarm: central_storage::EngineAlarmDecider =
-                Arc::new(move |times, now, read_retained, write| {
-                    decide_alarm(times, now, read_retained, write)?;
+                Arc::new(move |times, now, write| {
+                    decide_alarm(times, now, write)?;
                     Ok(Some(0))
                 });
             zero_alarm

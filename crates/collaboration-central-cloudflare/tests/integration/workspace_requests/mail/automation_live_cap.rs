@@ -16,7 +16,9 @@ async fn live_capped_schedule_queues_each_occurrence_once() {
     let start = now(&fixture);
     set_now(&fixture, at(start, 0, 1, 0));
     let first_mark = at(start, 5, 0, 0);
+    let first_tail = at(start, 5, 30, 0);
     let second_mark = at(start, 10, 0, 0);
+    let second_tail = at(start, 10, 30, 0);
     let third_mark = at(start, 15, 0, 0);
 
     let mut automation_ids = Vec::new();
@@ -50,25 +52,32 @@ async fn live_capped_schedule_queues_each_occurrence_once() {
     }
     let tail = automation_ids.iter().max().unwrap();
 
-    for (mark, total, through, next_due, tail_messages) in [
+    for (alarm, total, through, next_due, tail_messages) in [
         (first_mark, 250, SqlValue::Null, first_mark, vec![]),
         (
+            first_tail,
+            251,
+            stamp(first_tail),
             second_mark,
-            500,
-            stamp(first_mark),
-            second_mark,
-            vec![vec![stamp(second_mark)]],
+            vec![vec![stamp(first_tail)]],
         ),
         (
+            second_mark,
+            501,
+            stamp(first_tail),
+            second_mark,
+            vec![vec![stamp(first_tail)]],
+        ),
+        (
+            second_tail,
+            502,
+            stamp(second_tail),
             third_mark,
-            750,
-            stamp(second_mark),
-            third_mark,
-            vec![vec![stamp(second_mark)], vec![stamp(third_mark)]],
+            vec![vec![stamp(first_tail)], vec![stamp(second_tail)]],
         ),
     ] {
-        assert_eq!(alarm_ms(&runtime).await, ms(mark));
-        set_now(&fixture, mark);
+        assert_eq!(alarm_ms(&runtime).await, ms(alarm));
+        set_now(&fixture, alarm);
         assert!(runtime.dispatch_due_alarm().await.unwrap().is_some());
         assert_eq!(
             count(
@@ -78,7 +87,7 @@ async fn live_capped_schedule_queues_each_occurrence_once() {
             )
             .await,
             total,
-            "each claim applies exactly one capped batch"
+            "each mark applies the first 250 and each continuation applies the tail"
         );
         let schedule = runtime
             .statement_host()
@@ -99,5 +108,6 @@ async fn live_capped_schedule_queues_each_occurrence_once() {
             .unwrap();
         assert_eq!(messages.rows, tail_messages);
     }
+    assert_eq!(alarm_ms(&runtime).await, ms(third_mark));
     fixture.host.close().await;
 }

@@ -261,10 +261,6 @@ async fn a_failing_request_drain_records_against_the_unit_and_keeps_its_committe
     // Healthy again, its next try reached, within 30 s of the last batch: the
     // request drain succeeds for its workspace and leaves the unit's record.
     repair_drain(&f, cursor).await;
-    let mark_driver = runtime
-        .runtime()
-        .pause_points()
-        .hold_engine(fleet_runtime::PausePoint::BeforeDriveGuard, "driver");
     f.set_utc(mark + chrono::Duration::seconds(1)).await;
     let reply = f
         .call(
@@ -301,6 +297,5 @@ async fn a_failing_request_drain_records_against_the_unit_and_keeps_its_committe
         &[],
     )
     .await;
-    drop(mark_driver);
     f.host.close().await;
 }

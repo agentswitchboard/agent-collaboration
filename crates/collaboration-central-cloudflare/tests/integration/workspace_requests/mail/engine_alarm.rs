@@ -171,7 +171,7 @@ async fn an_old_pending_due_publishes_the_next_mark() {
 }
 
 #[tokio::test]
-async fn six_hundred_due_items_drain_in_capped_batches_one_mark_at_a_time() {
+async fn six_hundred_due_items_drain_in_capped_batches_thirty_seconds_apart() {
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
     let start = now(&fixture);
@@ -190,10 +190,10 @@ async fn six_hundred_due_items_drain_in_capped_batches_one_mark_at_a_time() {
     due_batch_at(&fixture, &runtime, at(start, 5, 0)).await;
     assert_eq!(fired_in_group(&runtime, group).await, integer(250));
 
-    retained_alarm_fires_at(&fixture, &runtime, at(start, 10, 0)).await;
+    retained_alarm_fires_at(&fixture, &runtime, at(start, 5, 30)).await;
     assert_eq!(fired_in_group(&runtime, group).await, integer(500));
 
-    retained_alarm_fires_at(&fixture, &runtime, at(start, 15, 0)).await;
+    retained_alarm_fires_at(&fixture, &runtime, at(start, 6, 0)).await;
     assert_eq!(fired_in_group(&runtime, group).await, integer(600));
     assert_eq!(alarm_ms(&runtime).await, None);
     fixture.host.close().await;

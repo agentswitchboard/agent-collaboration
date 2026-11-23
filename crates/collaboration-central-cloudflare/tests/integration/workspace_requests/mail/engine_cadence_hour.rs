@@ -53,28 +53,26 @@ async fn an_hour_without_traffic_wakes_only_when_work_is_due_and_each_time_once(
         vec![],
     )
     .await;
-    // The final setup request arrives inside the ordinary 30-second spacing.
-    // The durable drain deadline remains 10:02:15 and shares the 10:05 wake alarm.
+    // The last setup due batch starts at 10:01:45, so the 10:02:15 backstop
+    // set before the final setup write sits exactly on its 30 s floor.
     set_now(&fixture, at(start, 1, 45, 0));
     fixture.caller = super::super::support::fresh_auth(&fixture.host, &fixture.caller);
     assert!(matches!(
         send_message(&fixture, 33030).await.unwrap(),
         CentralMailResult::Done(_)
     ));
-    let drain_deadline = at(start, 2, 15, 0);
-    let first_mark = at(start, 5, 0, 0);
-    preset_drain(&fixture, &runtime, drain_deadline).await;
+    preset_drain(&fixture, &runtime, at(start, 2, 15, 0)).await;
     set_now(&fixture, at(start, 2, 10, 0));
     fixture.caller = super::super::support::fresh_auth(&fixture.host, &fixture.caller);
     assert!(matches!(
         send_message(&fixture, 33031).await.unwrap(),
         CentralMailResult::Done(_)
     ));
-    assert_eq!(drain_due(&fixture, &runtime).await, stamp(drain_deadline));
-    assert_eq!(alarm_ms(&runtime).await, ms(first_mark));
+    assert_eq!(alarm_ms(&runtime).await, ms(at(start, 2, 15, 0)));
     let before = callbacks(&runtime).await;
     let expected = [
-        first_mark,
+        at(start, 2, 15, 0),
+        at(start, 5, 0, 0),
         at(start, 10, 0, 0),
         at(start, 15, 0, 0),
         at(start, 20, 0, 0),
@@ -98,10 +96,6 @@ async fn an_hour_without_traffic_wakes_only_when_work_is_due_and_each_time_once(
         if expected.contains(&time) {
             assert!(dispatched.is_some(), "a callback is due at {time}");
             fired_at.push(time);
-            if time == first_mark {
-                assert_eq!(wake_state(&runtime, &early).await, text("done"));
-                assert_eq!(drain_due(&fixture, &runtime).await, SqlValue::Null);
-            }
             let next = alarm_ms(&runtime).await;
             assert!(
                 next.is_none_or(|next| next > time.timestamp_millis()),
@@ -119,10 +113,12 @@ async fn an_hour_without_traffic_wakes_only_when_work_is_due_and_each_time_once(
     assert_eq!(fired_at, expected);
     assert_eq!(
         callbacks(&runtime).await,
-        before + 4,
-        "exactly four callbacks"
+        before + 5,
+        "exactly five callbacks"
     );
+    assert_eq!(wake_state(&runtime, &early).await, text("done"));
     assert_eq!(wake_state(&runtime, &late).await, text("done"));
+    assert_eq!(drain_due(&fixture, &runtime).await, SqlValue::Null);
     assert_eq!(notices(&runtime).await, windows, "each window sent once");
     assert_eq!(
         attempt(&runtime, failing).await,

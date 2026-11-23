@@ -2,8 +2,8 @@
 use super::{StoredAlarmInputs, map_central_query_failure, read_alarm_snapshot, read_due_list};
 use crate::{DueKind, DueLane, DueMillis, read_timed_due_rows};
 use central_engine_model::{
-    AlarmDecision, AlarmInputs, DueListKind, DueRow, EngineTime, InstanceKey, due_list_query,
-    next_alarm, supported_time,
+    AlarmDecision, AlarmInputs, DueBatchPolicy, DueListKind, DueRow, EngineTime, InstanceKey,
+    due_list_query, next_alarm, supported_time,
 };
 use central_storage::{EngineAlarmTimes, StoreFailure};
 use fleet_lent_transaction::CentralTransaction;
@@ -360,6 +360,7 @@ pub async fn compare_due_table<T: CentralTransaction>(
     horizon: EngineTime,
     cap: usize,
     alarm_inputs: AlarmInputs,
+    policy: &DueBatchPolicy,
 ) -> Result<Vec<DueTableDifference>, StoreFailure>
 where
     <T::Database as Database>::Arguments: IntoArguments<T::Database>,
@@ -471,8 +472,8 @@ where
                     projected,
                 });
             }
-            let reference = alarm_decision(alarm_inputs, reference);
-            let projected = alarm_decision(alarm_inputs, projected);
+            let reference = alarm_decision(alarm_inputs, reference, policy);
+            let projected = alarm_decision(alarm_inputs, projected, policy);
             if projected != reference {
                 differences.push(DueTableDifference::WrongAlarmDecision {
                     reference,
@@ -505,14 +506,18 @@ where
     Ok(differences)
 }
 
-fn alarm_decision(mut inputs: AlarmInputs, times: EngineAlarmTimes) -> AlarmDecision {
+fn alarm_decision(
+    mut inputs: AlarmInputs,
+    times: EngineAlarmTimes,
+    policy: &DueBatchPolicy,
+) -> AlarmDecision {
     inputs.earliest_on_grid_due = times
         .earliest_on_grid_due_unix_millis
         .and_then(EngineTime::from_timestamp_millis);
     inputs.earliest_legacy_due = times
         .earliest_legacy_due_unix_millis
         .and_then(EngineTime::from_timestamp_millis);
-    next_alarm(&inputs)
+    next_alarm(&inputs, policy)
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]

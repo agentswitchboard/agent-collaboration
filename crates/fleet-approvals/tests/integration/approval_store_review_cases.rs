@@ -18,7 +18,7 @@ use super::{
 
 #[tokio::test]
 async fn native_approval_touch_applies_its_deadline_before_the_projected_alarm() {
-    use central_engine_model::{AlarmDecision, AlarmInputs, next_alarm};
+    use central_engine_model::{AlarmDecision, AlarmInputs, DueBatchPolicy, next_alarm};
 
     let (fixture, holder, requester) = fixture_with_owner().await;
     fixture.clock.set_millis(1);
@@ -43,14 +43,16 @@ async fn native_approval_touch_applies_its_deadline_before_the_projected_alarm()
         Some(alarm_mark)
     );
     assert_eq!(
-        next_alarm(&AlarmInputs {
-            retained_mark: None,
-            now: time(1),
-            last_batch_start: None,
-            leftovers_beyond_cap: false,
-            earliest_on_grid_due: alarm_times.earliest_on_grid_due_unix_millis.map(time),
-            earliest_legacy_due: alarm_times.earliest_legacy_due_unix_millis.map(time),
-        }),
+        next_alarm(
+            &AlarmInputs {
+                now: time(1),
+                last_batch_start: None,
+                leftovers_beyond_cap: false,
+                earliest_on_grid_due: alarm_times.earliest_on_grid_due_unix_millis.map(time),
+                earliest_legacy_due: alarm_times.earliest_legacy_due_unix_millis.map(time),
+            },
+            &DueBatchPolicy::DEFAULT
+        ),
         AlarmDecision::SetAt(time(alarm_mark))
     );
 

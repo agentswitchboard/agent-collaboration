@@ -137,11 +137,10 @@ fn engine_publication_uses_both_pending_columns_and_the_supplied_clock() {
     };
     let mut published = None;
     assert_eq!(
-        decide(inputs, 300_000, &|| None, &mut |time| published =
-            Some(time)),
-        Ok(Some(600_000))
+        decide(inputs, 300_000, &mut |time| published = Some(time)),
+        Ok(Some(330_000))
     );
-    assert_eq!(published, Some(Some(600_000)));
+    assert_eq!(published, Some(Some(330_000)));
 
     let max = collaboration_central_core::MAX_ALARM_UNIX_MILLIS;
     let inputs = EngineAlarmTimes {
@@ -149,7 +148,7 @@ fn engine_publication_uses_both_pending_columns_and_the_supplied_clock() {
         earliest_legacy_due_unix_millis: None,
     };
     assert_eq!(
-        decide(inputs, max, &|| None, &mut |_| panic!(
+        decide(inputs, max, &mut |_| panic!(
             "unpublishable alarm reached the writer"
         )),
         Err(central_storage::AlarmPublicationFailure::NoLaterGridMark)

@@ -105,8 +105,8 @@ async fn assert_due_projection(fixture: &Fixture, stage: &str) {
         assert!(batch_state.finish(batch_start, snapshot.leftovers_pending));
     }
     let decide = fleet_runtime::engine_alarm_decider(std::sync::Arc::new(batch_state));
-    let reference_alarm = decide(reference, now.timestamp_millis(), &|| None, &mut |_| {});
-    let projected_alarm = decide(projected, now.timestamp_millis(), &|| None, &mut |_| {});
+    let reference_alarm = decide(reference, now.timestamp_millis(), &mut |_| {});
+    let projected_alarm = decide(projected, now.timestamp_millis(), &mut |_| {});
     assert_eq!(
         projected_alarm, reference_alarm,
         "{stage}: physical alarm decision"

@@ -226,11 +226,6 @@ impl Transport<WorkspaceServiceProtocol> for WorkspaceTransport {
 }
 
 type OrgRuntime = WorkspaceRuntime<CentralStatements, WorkspaceTransport>;
-
-enum ColdAlarmStart {
-    DriveFollows,
-    RecoverOverdueWakes,
-}
 #[durable_object]
 pub struct CentralObject {
     state: Arc<SendWrapper<State>>,
@@ -597,3 +592,6 @@ mod direct_mail;
 
 #[path = "workspace_alarm_owner.rs"]
 mod workspace_alarm_owner;
+#[cfg(feature = "test-support")]
+use workspace_alarm_owner::AlarmFailure;
+use workspace_alarm_owner::ColdAlarmStart;

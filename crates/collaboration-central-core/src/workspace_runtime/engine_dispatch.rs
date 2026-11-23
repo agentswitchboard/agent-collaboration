@@ -1,8 +1,6 @@
 //! Core's concrete timed jobs and whole-unit execution.
 use crate::WorkspaceRuntime;
-use central_engine_model::{
-    DueBatchPolicy, DueRow, EngineTime, InstanceKey, MachineKind, RetirementThreshold,
-};
+use central_engine_model::{DueRow, EngineTime, InstanceKey, MachineKind, RetirementThreshold};
 use fleet_contracts::{AlarmResult, EngineSubject, LegacyUnitOutcome, ObservedControl};
 use fleet_engine::{
     DueCutoff, DueDiscoveryError, FleetEngine, TimedDueDispatch, TimedRowOutcome,
@@ -115,7 +113,6 @@ impl<H: CentralStore, S: WorkspaceStores> TimedDueDispatch<WorkspaceRuntime<H, S
         runtime: &WorkspaceRuntime<H, S>,
         kind: DueKind,
         row: DueRow,
-        previous_batch_start: Option<EngineTime>,
     ) -> TimedRowOutcome {
         let mut work = AlarmResult::default();
         let (done, down) = match kind {
@@ -132,23 +129,12 @@ impl<H: CentralStore, S: WorkspaceStores> TimedDueDispatch<WorkspaceRuntime<H, S
             }
             DueKind::Wake => runtime.dispatch_due_wake(engine, row).await,
             DueKind::Automation => {
-                // A row already eligible at a prior warm batch can still be
-                // pending after the cap or after a late recurrence is projected.
-                let deferred = previous_batch_start
-                    .and_then(|start| start.checked_add_signed(DueBatchPolicy::DEFAULT.look_ahead))
-                    .is_some_and(|cutoff| row.effective_due_ms <= cutoff.timestamp_millis());
                 engine
                     .run_due_machine_instance::<automation_timer::AutomationTimer, _>(
                         &AutomationStore::new(runtime, insert_message),
                         row,
                         "automation_schedules.next_due_at",
-                        |occurrence| {
-                            if deferred {
-                                automation_timer::Event::DeferredDue { occurrence }
-                            } else {
-                                automation_timer::Event::Due { occurrence }
-                            }
-                        },
+                        |occurrence| automation_timer::Event::Due { occurrence },
                     )
                     .await
             }

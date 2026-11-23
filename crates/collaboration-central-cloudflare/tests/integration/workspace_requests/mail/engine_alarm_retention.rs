@@ -7,8 +7,7 @@ use central_storage::{
 };
 
 use workspace_model::central_mail::{
-    CentralMailAnswer, CentralMailOperation, CentralMailRefusal, CentralMailRequest,
-    CentralMailResult,
+    CentralMailAnswer, CentralMailOperation, CentralMailRequest, CentralMailResult,
 };
 
 async fn request(
@@ -30,88 +29,13 @@ async fn request(
         .unwrap()
 }
 
-async fn submit_ordinary_request(fixture: &Fixture, number: u32) {
-    let wake_id = id::<workspace_ids::WakeId>(47799);
-    assert_eq!(
-        request(
-            fixture,
-            number,
-            CentralMailOperation::CancelWake {
-                wake_id: wake_id.clone()
-            }
-        )
-        .await,
-        CentralMailResult::Refused(CentralMailRefusal::WakeNotFound { wake_id }),
-    );
-}
-
 #[tokio::test]
-async fn an_ordinary_request_at_the_mark_retains_the_unclaimed_alarm() {
-    let fixture = Fixture::new().await;
-    let runtime = runtime(&fixture).await;
-    let start = now(&fixture);
-    let mark = at(start, 15, 0, 0);
-    open_notice_window(&fixture, 47700).await;
-    set_now(&fixture, at(start, 14, 50, 0));
-    submit_ordinary_request(&fixture, 47704).await;
-    assert_eq!(alarm_ms(&runtime).await, ms(mark));
-    assert_eq!(window_due(&runtime).await, vec![vec![stamp(mark)]]);
-    assert_eq!(notices(&runtime).await, 0);
-    let recipients = count(
-        &runtime,
-        "SELECT COUNT(*) FROM mail_notification_windows",
-        vec![],
-    )
-    .await;
-    assert!(recipients > 0);
-
-    let callback_count = callbacks(&runtime).await;
-    set_now(&fixture, mark);
-    submit_ordinary_request(&fixture, 47705).await;
-
-    assert_eq!(window_due(&runtime).await, vec![vec![stamp(mark)]]);
-    assert_eq!(
-        notices(&runtime).await,
-        0,
-        "the request defers the due work"
-    );
-    assert_eq!(
-        alarm_ms(&runtime).await,
-        ms(mark),
-        "the request leaves the due alarm available for its driver"
-    );
-    assert_eq!(callbacks(&runtime).await, callback_count);
-    let completion = runtime
-        .dispatch_due_alarm()
-        .await
-        .unwrap()
-        .expect("the retained mark dispatches the real callback");
-    assert_eq!(
-        completion.windows_fired,
-        usize::try_from(recipients).unwrap()
-    );
-    assert_eq!(callbacks(&runtime).await, callback_count + 1);
-    assert!(window_due(&runtime).await.is_empty());
-    assert_eq!(notices(&runtime).await, recipients);
-    assert_eq!(
-        count(
-            &runtime,
-            "SELECT COUNT(DISTINCT recipient_actor) FROM mail_messages WHERE message_kind='notice'",
-            vec![]
-        )
-        .await,
-        recipients
-    );
-    fixture.host.close().await;
-}
-
-#[tokio::test]
-async fn cancelling_the_last_capped_wake_clears_the_alarm_with_a_live_fence() {
+async fn cancelling_the_last_capped_wake_clears_the_alarm() {
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
     let start = now(&fixture);
     let mark = at(start, 5, 0, 0);
-    let continuation = at(start, 10, 0, 0);
+    let continuation = at(start, 5, 30, 0);
     let mut wakes = Vec::new();
     for number in 47800..48051 {
         wakes.push(set_wake(&fixture, number, mark).await);
@@ -136,11 +60,7 @@ async fn cancelling_the_last_capped_wake_clears_the_alarm_with_a_live_fence() {
     assert_eq!(wake_state(&runtime, &tail).await, text("active"));
     assert_eq!(alarm_ms(&runtime).await, ms(continuation));
 
-    set_now(&fixture, at(start, 5, 31, 0));
-    submit_ordinary_request(&fixture, 48051).await;
-    assert_eq!(wake_state(&runtime, &tail).await, text("active"));
-
-    // Explicit Clear takes effect even while the capped wake and its fence remain.
+    // Explicit Clear takes effect even while the capped wake and its overflow indication remain.
     let clear = runtime
         .statement_host()
         .run_batch(StatementBatch {

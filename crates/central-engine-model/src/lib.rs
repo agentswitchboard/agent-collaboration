@@ -14,10 +14,7 @@ pub use due_batch_policy::*;
 pub use engine_context::*;
 pub use machine::*;
 pub use next_alarm::*;
-pub use time_alignment::{
-    MAX_ALARM_UNIX_MILLIS, aligned_at_or_after, aligned_strictly_after, on_five_minute_grid,
-    supported_time,
-};
+pub use time_alignment::{aligned_at_or_after, aligned_strictly_after, on_five_minute_grid};
 pub use transition_check::*;
 // The shared state-machine vocabulary, under the names central code uses.
 pub use state_machine_core::{

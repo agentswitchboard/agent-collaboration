@@ -168,7 +168,7 @@ fn project_widget(
 }
 
 #[tokio::test]
-async fn a_batch_prepared_before_a_new_claim_publishes_the_latest_backlog_mark() {
+async fn a_batch_prepared_before_a_new_claim_publishes_the_latest_floor() {
     let root = tempfile::tempdir().unwrap();
     let clock = HeldClock::at(32_000);
     let state = Arc::new(fleet_runtime::DueBatchState::default());
@@ -194,11 +194,11 @@ async fn a_batch_prepared_before_a_new_claim_publishes_the_latest_backlog_mark()
                     "floor-owner",
                     SqlValue::Text("floor".to_owned()),
                     SqlValue::Integer(1.try_into().unwrap()),
-                    Some(600_000.try_into().unwrap()),
+                    Some(35_000.try_into().unwrap()),
                 ),
             ],
             "floor-widget",
-            600_000,
+            35_000,
         ),
         alarm: engine_alarm_from_widgets(),
     };
@@ -222,18 +222,17 @@ async fn a_batch_prepared_before_a_new_claim_publishes_the_latest_backlog_mark()
             .try_claim(31_000, chrono::Duration::seconds(30))
             .unwrap()
     );
-    assert!(state.finish(31_000, true));
     held.release();
     assert_eq!(
         pending.await.unwrap(),
         BatchOutcome::Applied {
             rows_affected: vec![1, 1, 1],
             publication: central_storage::AlarmPublication::Set {
-                unix_millis: 300_000
+                unix_millis: 61_000
             }
         }
     );
-    assert_eq!(storage.alarm(), Some(SyncTime::from_unix_millis(300_000)));
+    assert_eq!(storage.alarm(), Some(SyncTime::from_unix_millis(61_000)));
     storage.close().await;
 }
 
@@ -320,7 +319,6 @@ async fn publication_uses_the_shared_clock_after_both_committed_publication_hold
 async fn postcommit_upper_edge_failure_preserves_applied_rows_and_the_previous_alarm() {
     let root = tempfile::tempdir().unwrap();
     let clock = HeldClock::at(0);
-    let due_batches = Arc::new(fleet_runtime::DueBatchState::default());
     let storage = Arc::new(
         ObjectStorage::new(
             root.path().join("publication-failure.sqlite"),
@@ -328,7 +326,7 @@ async fn postcommit_upper_edge_failure_preserves_applied_rows_and_the_previous_a
         )
         .with_engine_publication(
             clock.clone(),
-            fleet_runtime::engine_alarm_decider(due_batches.clone()),
+            fleet_runtime::engine_alarm_decider(Arc::new(fleet_runtime::DueBatchState::default())),
         ),
     );
     assert_eq!(
@@ -364,11 +362,6 @@ async fn postcommit_upper_edge_failure_preserves_applied_rows_and_the_previous_a
     );
     let previous = storage.alarm();
     assert_eq!(previous, Some(SyncTime::from_unix_millis(600_000)));
-    assert!(
-        due_batches
-            .try_claim(600_000, chrono::Duration::seconds(30))
-            .unwrap()
-    );
     let mut held = storage.hold_alarm_publication();
     let applying = storage.clone();
     let batch =

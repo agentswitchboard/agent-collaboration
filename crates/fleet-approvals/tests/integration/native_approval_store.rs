@@ -465,7 +465,6 @@ impl NativeApprovalStoreFixture {
             evidence: ApprovalTransactionEvidence::default(),
         };
         let inputs = AlarmInputs {
-            retained_mark: None,
             now,
             last_batch_start: None,
             leftovers_beyond_cap: false,
@@ -473,10 +472,15 @@ impl NativeApprovalStoreFixture {
             earliest_legacy_due: None,
         };
         let policy = DueBatchPolicy::DEFAULT;
-        let differences =
-            fleet_engine::compare_due_table(&mut transaction, cutoff, policy.per_kind_cap, inputs)
-                .await
-                .unwrap();
+        let differences = fleet_engine::compare_due_table(
+            &mut transaction,
+            cutoff,
+            policy.per_kind_cap,
+            inputs,
+            &policy,
+        )
+        .await
+        .unwrap();
         transaction.transaction.rollback().await.unwrap();
         pool.close().await;
         differences

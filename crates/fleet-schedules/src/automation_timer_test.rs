@@ -24,14 +24,10 @@ fn automation_sequences_never_repeat_an_occurrence_and_catch_up_once(case: hegel
             1 => Event::Due {
                 occurrence: time(case.draw(gs::integers::<i64>().min_value(0).max_value(10_080))),
             },
-            2 => Event::DeferredDue {
-                occurrence: current,
-            },
             _ => Event::Disable,
         };
         let selected = match &event {
-            Event::Due { occurrence } => Some((*occurrence, (*occurrence).max(now))),
-            Event::DeferredDue { occurrence } => Some((*occurrence, *occurrence)),
+            Event::Due { occurrence } => Some(*occurrence),
             Event::Disable => None,
         };
         match central_engine_test_support::checked_step::<AutomationTimer>(
@@ -45,12 +41,13 @@ fn automation_sequences_never_repeat_an_occurrence_and_catch_up_once(case: hegel
                     .iter()
                     .filter(|effect| matches!(effect, Effect::QueueMessage(_)))
                     .count();
-                if let Some((occurrence, through)) = selected {
-                    assert_eq!(messages, 1, "each applied occurrence queues one message");
+                if let Some(occurrence) = selected {
+                    assert_eq!(messages, 1, "one catch-up queues exactly one message");
                     assert!(
                         consumed.insert(occurrence),
                         "an occurrence cannot fire twice"
                     );
+                    let through = occurrence.max(now);
                     match &next {
                         State::Active(row) => {
                             assert_eq!(row.evaluated, Some(through));
@@ -62,12 +59,10 @@ fn automation_sequences_never_repeat_an_occurrence_and_catch_up_once(case: hegel
                             assert_eq!(
                                 row.due,
                                 Some(expected),
-                                "the next interval is strictly after the evaluation watermark"
+                                "overdue interval skips missed occurrences once"
                             );
                         }
-                        State::Done { evaluated } => {
-                            assert_eq!(*evaluated, Some(occurrence.max(now)));
-                        }
+                        State::Done { evaluated } => assert_eq!(*evaluated, Some(through)),
                         State::Disabled { .. } => panic!("Due never disables a timer"),
                     }
                 } else {
@@ -98,9 +93,6 @@ fn every_automation_state_event_pair_matches_the_declared_edges() {
     .flat_map(|state| {
         [
             Event::Due {
-                occurrence: time(5),
-            },
-            Event::DeferredDue {
                 occurrence: time(5),
             },
             Event::Disable,

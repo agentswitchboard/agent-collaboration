@@ -22,8 +22,6 @@ use sqlx_durable_object::DoConnection;
 use uuid::{NoContext, Timestamp, Uuid};
 use worker::{Response, State};
 
-#[path = "approval_store_witness/fixture_alarm.rs"]
-mod fixture_alarm;
 #[path = "approval_store_witness/fixture_commands.rs"]
 mod fixture_commands;
 #[path = "approval_store_witness/fixture_transaction.rs"]
@@ -107,9 +105,6 @@ pub(super) async fn apply_fixture(
     }
     if let ApprovalWitnessCommand::DueRows { cutoff_ms, limit } = input.command {
         return observe_due_rows(state, cutoff_ms, limit).await;
-    }
-    if matches!(input.command, ApprovalWitnessCommand::PublishAlarmMark) {
-        return fixture_alarm::publish_alarm_mark(state, connection, input.at_ms).await;
     }
     let evidence = Arc::new(Mutex::new(FixtureEvidence::default()));
     let outcome = complete_approval_commit(WorkerApprovalCommit {
