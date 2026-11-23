@@ -8,12 +8,13 @@
 //! retries from the store.
 use crate::flush_marks::{earliest_open_mark, mark_in_window, next_mark_after};
 use runtime_primitives::SyncTime;
+use std::collections::BTreeSet;
 
 /// Minute-flush state advanced by custody from link and store observations.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct OutboxFlushState {
     link: LinkAvailability,
-    last_flushed: Option<SyncTime>,
+    consumed_marks: BTreeSet<SyncTime>,
     /// The mark of the batch on the wire, if any.
     in_flight: Option<SyncTime>,
     armed_wake: Option<SyncTime>,
@@ -45,6 +46,7 @@ pub enum FlushEvent {
         earliest_due: Option<SyncTime>,
     },
     LinkConnected {
+        now: SyncTime,
         earliest_due: Option<SyncTime>,
     },
     LinkLost,
@@ -78,7 +80,7 @@ impl OutboxFlushState {
     /// The first eligible mark for a write stored at `now`.
     #[must_use]
     pub fn receipt_mark(&self, now: SyncTime) -> SyncTime {
-        earliest_open_mark(now, self.last_flushed)
+        self.first_unused_mark(earliest_open_mark(now, None))
     }
 
     #[must_use]
@@ -87,13 +89,27 @@ impl OutboxFlushState {
     }
 
     #[must_use]
-    pub const fn last_flushed(&self) -> Option<SyncTime> {
-        self.last_flushed
+    pub fn last_flushed(&self) -> Option<SyncTime> {
+        self.consumed_marks.last().copied()
     }
 
     #[must_use]
     pub(crate) const fn armed_mark(&self) -> Option<SyncTime> {
         self.armed_wake
+    }
+
+    /// A backward Welcome can select older marks the process never used. A mark
+    /// already consumed by this worker is skipped even after clock turnover.
+    /// If all remaining windows were consumed, the independent deadline still ends the write.
+    fn first_unused_mark(&self, mut candidate: SyncTime) -> SyncTime {
+        while self.consumed_marks.contains(&candidate) {
+            let next = next_mark_after(candidate);
+            if next <= candidate {
+                break;
+            }
+            candidate = next;
+        }
+        candidate
     }
 }
 
@@ -101,12 +117,20 @@ pub fn transition(
     mut state: OutboxFlushState,
     event: FlushEvent,
 ) -> Result<(OutboxFlushState, Vec<FlushEffect>), FlushTransitionError> {
+    let effects = advance_schedule(&mut state, event)?;
+    Ok((state, effects))
+}
+
+pub(crate) fn advance_schedule(
+    state: &mut OutboxFlushState,
+    event: FlushEvent,
+) -> Result<Vec<FlushEffect>, FlushTransitionError> {
     let mut effects = Vec::new();
     let mut tick_now = None;
     let earliest_due = match event {
         FlushEvent::LocalDeadlineChanged { deadline } => {
             effects.push(FlushEffect::WakeAtLocalDeadline { deadline });
-            return Ok((state, effects));
+            return Ok(effects);
         }
         FlushEvent::Stored { flush_at } => {
             // Something waits at least this early; keep an earlier armed wake.
@@ -119,13 +143,14 @@ pub fn transition(
         FlushEvent::Tick { now, earliest_due } => {
             tick_now = Some(now);
             state.armed_wake = None;
-            if let Some(mark) = flush_on_mark(&mut state, now, earliest_due) {
+            if let Some(mark) = flush_on_mark(state, now, earliest_due) {
                 effects.push(FlushEffect::SendBatch { mark });
             }
             earliest_due
         }
-        FlushEvent::LinkConnected { earliest_due } => {
+        FlushEvent::LinkConnected { now, earliest_due } => {
             state.link = LinkAvailability::Connected;
+            tick_now = Some(now);
             earliest_due
         }
         FlushEvent::LinkLost => {
@@ -142,10 +167,10 @@ pub fn transition(
             earliest_due
         }
     };
-    if let Some(mark) = rearm(&mut state, earliest_due, tick_now) {
+    if let Some(mark) = rearm(state, earliest_due, tick_now) {
         effects.push(FlushEffect::WakeAt { mark });
     }
-    Ok((state, effects))
+    Ok(effects)
 }
 
 fn flush_on_mark(
@@ -154,13 +179,13 @@ fn flush_on_mark(
     earliest_due: Option<SyncTime>,
 ) -> Option<SyncTime> {
     let mark = mark_in_window(now)?;
-    let open = state.last_flushed.is_none_or(|flushed| flushed < mark);
+    let open = !state.consumed_marks.contains(&mark);
     let ready = state.link == LinkAvailability::Connected && state.in_flight.is_none();
     let has_due = earliest_due.is_some_and(|due| due <= mark);
     if !(open && ready && has_due) {
         return None;
     }
-    state.last_flushed = Some(mark);
+    state.consumed_marks.insert(mark);
     state.in_flight = Some(mark);
     Some(mark)
 }
@@ -175,12 +200,10 @@ fn rearm(
 ) -> Option<SyncTime> {
     let target = match (state.link, state.in_flight, earliest_due) {
         (LinkAvailability::Connected, None, Some(earliest_due)) => {
-            let after_last = state.last_flushed.map(next_mark_after);
-            let still_open = tick_now.map(|now| earliest_open_mark(now, state.last_flushed));
-            [Some(earliest_due), after_last, still_open]
-                .into_iter()
-                .flatten()
-                .max()
+            let candidate = tick_now.map_or(earliest_due, |now| {
+                earliest_due.max(earliest_open_mark(now, None))
+            });
+            Some(state.first_unused_mark(candidate))
         }
         (LinkAvailability::Disconnected, _, _) | (_, Some(_), _) | (_, None, None) => None,
     };

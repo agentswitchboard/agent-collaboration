@@ -6,6 +6,7 @@ mod custody_task;
 mod faulted_overlay;
 mod faulted_recovery;
 mod faulty_outbox;
+mod flush_reanchor;
 mod inbox_custody;
 mod local_store_maintenance;
 mod outbox_timing;

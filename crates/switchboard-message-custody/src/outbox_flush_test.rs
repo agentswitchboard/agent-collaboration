@@ -187,7 +187,10 @@ fn tc_link(model: &mut FlushModel, up: bool) {
     model.link_up = up;
     if up {
         let earliest_due = model.earliest_due();
-        model.apply(FlushEvent::LinkConnected { earliest_due });
+        model.apply(FlushEvent::LinkConnected {
+            now: at(model.now),
+            earliest_due,
+        });
     } else {
         // The Host returns the batch on the wire to the store first.
         for (_, row) in model.rows.values_mut() {
@@ -241,19 +244,27 @@ fn a_write_past_its_mark_goes_on_the_next_open_mark_not_at_once() {
     model.store_next();
     model.now = START + 40_000 + 20_000;
     tc_link(&mut model, true);
-    let armed = model.armed_wake.expect("armed");
-
-    let effects = model.wake_as_host(0);
+    let expected = at(START + 40_000 + 60_000);
+    assert_eq!(
+        model.armed_wake,
+        Some(expected),
+        "readmission must arm the first still-open mark"
+    );
+    let effects = model.apply(FlushEvent::Tick {
+        now: at(model.now),
+        earliest_due: model.earliest_due(),
+    });
 
     assert!(
         effects
             .iter()
             .all(|effect| !matches!(effect, FlushEffect::SendBatch { .. }))
     );
-    assert_eq!(
-        model.armed_wake,
-        Some(at(START + 40_000 + 60_000)),
-        "armed {armed:?} rearmed"
+    assert_eq!(model.armed_wake, Some(expected));
+    assert!(
+        model
+            .wake_as_host(0)
+            .contains(&FlushEffect::SendBatch { mark: expected })
     );
 }
 

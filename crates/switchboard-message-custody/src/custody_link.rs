@@ -35,7 +35,9 @@ use crate::{
     outbox_dispatch::{
         AppliedSenderNotice, BatchDispatchError, FlushReport, OutboxDispatcher, PreparedWriteBatch,
     },
-    outbox_flush::{FlushEffect, FlushEvent, FlushTransitionError, OutboxFlushState, transition},
+    outbox_flush::{
+        FlushEffect, FlushEvent, FlushTransitionError, OutboxFlushState, advance_schedule,
+    },
     outbox_work::{OutboxWork, OutboxWorkError},
     receipt_delivery::{ReceiptDeliveryError, ReceiptFrame, ReceiptFrameOutcome},
     recipient_inbox::{InboxCustodyError, RecipientInbox},
@@ -72,6 +74,7 @@ pub struct CustodyLink {
     dispatcher: OutboxDispatcher,
     schedule: OutboxFlushState,
     last_clock_anchor: Option<WelcomeClockAnchor>,
+    rebased_due_through: Option<SyncTime>,
 }
 
 impl CustodyLink {
@@ -92,6 +95,7 @@ impl CustodyLink {
             dispatcher: OutboxDispatcher::default(),
             schedule: OutboxFlushState::default(),
             last_clock_anchor: None,
+            rebased_due_through: None,
         }
     }
 
@@ -121,15 +125,13 @@ impl CustodyLink {
             Err(refusal) => return PreparedSubmission::Complete(Submission::Refused(refusal)),
         };
         let admitted = self.admitted_connection();
-        if let Some(connection) = admitted.as_ref() {
-            self.last_clock_anchor = Some(connection.clock_anchor);
-        }
         match route {
             SubmissionRoute::Outbox { request, payload } => {
-                let now = self.last_clock_anchor.map_or_else(
-                    || SyncTime::from_unix_millis(self.outbox.local_now_ms()),
-                    |anchor| shared_time_at(anchor, self.clock.monotonic_now()),
-                );
+                let observed_at = self.clock.monotonic_now();
+                let now = match admitted {
+                    Some(ready) => self.observe_shared_clock(ready.clock_anchor, observed_at),
+                    None => self.prior_shared_time(observed_at),
+                };
                 let mark = self.schedule.receipt_mark(now);
                 let submitted =
                     submit_to_outbox(&mut self.outbox, caller, request, payload, mark).await;
@@ -389,9 +391,10 @@ impl CustodyLink {
             self.observe_unavailable()?;
             return Ok(None);
         };
-        self.last_clock_anchor = Some(admitted.clock_anchor);
-        let earliest_due = self.outbox.earliest_waiting_mark().await?;
-        self.apply_flush_event(FlushEvent::LinkConnected { earliest_due })?;
+        let observed_at = self.clock.monotonic_now();
+        let now = self.observe_shared_clock(admitted.clock_anchor, observed_at);
+        let earliest_due = self.earliest_eligible_mark(now).await?;
+        self.apply_flush_event(FlushEvent::LinkConnected { now, earliest_due })?;
         Ok(self.schedule.armed_mark().map(|mark| {
             wake_for_mark(admitted.clock_anchor, mark, self.jitter.jitter_millis(mark))
         }))
@@ -493,21 +496,22 @@ impl CustodyLink {
             self.observe_unavailable()?;
             return Ok((FlushReport::default(), None));
         };
-        self.last_clock_anchor = Some(admitted.clock_anchor);
-        let now = shared_time_at(admitted.clock_anchor, self.clock.monotonic_now());
-        let earliest_due = self.outbox.earliest_waiting_mark().await?;
-        self.apply_flush_event(FlushEvent::LinkConnected { earliest_due })?;
+        let now = self.observe_shared_clock(admitted.clock_anchor, self.clock.monotonic_now());
+        let earliest_due = self.earliest_eligible_mark(now).await?;
+        self.apply_flush_event(FlushEvent::LinkConnected { now, earliest_due })?;
         let Some(mark) = self.apply_flush_event(FlushEvent::Tick { now, earliest_due })? else {
             return Ok((FlushReport::default(), None));
         };
 
+        let eligible_through = self.rebased_due_through.map_or(mark, |old| old.max(mark));
         let prepared = self
             .dispatcher
-            .prepare_at_mark(
+            .prepare_due_through(
                 &mut self.outbox,
                 admitted.connection.clone(),
                 admitted.clock_anchor,
                 mark,
+                eligible_through,
             )
             .await;
         let mut prepared = match prepared {
@@ -562,6 +566,51 @@ impl CustodyLink {
             self.apply_flush_event(FlushEvent::LinkLost)?;
         }
         Ok(())
+    }
+
+    fn prior_shared_time(&self, observed_at: ClockInstant) -> SyncTime {
+        self.last_clock_anchor.map_or_else(
+            || SyncTime::from_unix_millis(self.outbox.local_time_at(observed_at)),
+            |anchor| shared_time_at(anchor, observed_at),
+        )
+    }
+
+    /// When Welcome moves backwards, old receipt marks through the previous
+    /// grid's first eligible mark are due on the next unused open window of
+    /// the new grid. Keep their original durable receipts and deadlines.
+    /// Already-used windows remain consumed for this worker, even if used on
+    /// an earlier connection. If none can be used in time, normal expiry applies.
+    fn observe_shared_clock(
+        &mut self,
+        anchor: WelcomeClockAnchor,
+        observed_at: ClockInstant,
+    ) -> SyncTime {
+        let actual = shared_time_at(anchor, observed_at);
+        if self.last_clock_anchor != Some(anchor) {
+            let previous = self.prior_shared_time(observed_at);
+            if actual < previous {
+                let old_eligible = self.schedule.receipt_mark(previous);
+                self.rebased_due_through = Some(
+                    self.rebased_due_through
+                        .map_or(old_eligible, |older| older.max(old_eligible)),
+                );
+            }
+            self.last_clock_anchor = Some(anchor);
+        }
+        actual
+    }
+
+    async fn earliest_eligible_mark(
+        &mut self,
+        now: SyncTime,
+    ) -> Result<Option<SyncTime>, OutboxWorkError> {
+        let due = self.outbox.earliest_waiting_mark().await?;
+        Ok(due.map(|mark| {
+            if self.rebased_due_through.is_some_and(|old| mark <= old) {
+                return mark.min(self.schedule.receipt_mark(now));
+            }
+            mark
+        }))
     }
 
     async fn release_flush_slot(
@@ -708,8 +757,7 @@ impl CustodyLink {
         &mut self,
         event: FlushEvent,
     ) -> Result<Option<SyncTime>, FlushTransitionError> {
-        let (next, effects) = transition(self.schedule.clone(), event)?;
-        self.schedule = next;
+        let effects = advance_schedule(&mut self.schedule, event)?;
         Ok(effects.into_iter().find_map(|effect| match effect {
             FlushEffect::SendBatch { mark } => Some(mark),
             FlushEffect::WakeAt { .. } | FlushEffect::WakeAtLocalDeadline { .. } => None,

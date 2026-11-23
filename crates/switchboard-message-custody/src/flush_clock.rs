@@ -37,7 +37,9 @@ impl FlushJitter for MachineFlushJitter {
 /// Projects the minute grid using elapsed time since the socket owner observed Welcome.
 #[must_use]
 pub fn shared_time_at(anchor: WelcomeClockAnchor, now: ClockInstant) -> SyncTime {
-    let elapsed = now.saturating_duration_since(anchor.observed_at);
+    let elapsed = now
+        .saturating_duration_since(anchor.observed_at)
+        .saturating_add(anchor_fraction(anchor));
     let elapsed_ms = i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX);
     SyncTime::from_unix_millis(
         anchor
@@ -66,9 +68,15 @@ pub(crate) fn send_fence_for_mark(anchor: WelcomeClockAnchor, mark: SyncTime) ->
 
 fn elapsed_at_shared_time(anchor: WelcomeClockAnchor, send_at_ms: i64) -> ClockInstant {
     let delay_ms = send_at_ms.saturating_sub(anchor.central_time.timestamp_millis());
-    anchor
-        .observed_at
-        .after(Duration::from_millis(u64::try_from(delay_ms).unwrap_or(0)))
+    let delay = Duration::from_millis(u64::try_from(delay_ms).unwrap_or(0))
+        .saturating_sub(anchor_fraction(anchor));
+    anchor.observed_at.after(delay)
+}
+
+fn anchor_fraction(anchor: WelcomeClockAnchor) -> Duration {
+    Duration::from_nanos(u64::from(
+        anchor.central_time.timestamp_subsec_nanos() % 1_000_000,
+    ))
 }
 
 #[cfg(test)]

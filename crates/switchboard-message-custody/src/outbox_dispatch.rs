@@ -113,6 +113,18 @@ impl OutboxDispatcher {
         anchor: WelcomeClockAnchor,
         mark: SyncTime,
     ) -> Result<PreparedFlush, BatchDispatchError> {
+        self.prepare_due_through(work, connection, anchor, mark, mark)
+            .await
+    }
+
+    pub(crate) async fn prepare_due_through(
+        &mut self,
+        work: &mut OutboxWork,
+        connection: ConnectionAttempt,
+        anchor: WelcomeClockAnchor,
+        mark: SyncTime,
+        eligible_through: SyncTime,
+    ) -> Result<PreparedFlush, BatchDispatchError> {
         let mut report = FlushReport::default();
         if self.in_flight.is_some() {
             return Ok(PreparedFlush {
@@ -121,7 +133,10 @@ impl OutboxDispatcher {
             });
         }
         self.settling.retry(work, &mut report).await;
-        let FlushSelection::Claimed(claimed) = work.claim_at_mark(anchor, mark).await? else {
+        let FlushSelection::Claimed(claimed) = work
+            .claim_due_through(anchor, mark, eligible_through)
+            .await?
+        else {
             return Ok(PreparedFlush {
                 batch: None,
                 report,

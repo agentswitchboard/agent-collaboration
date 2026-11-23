@@ -71,10 +71,11 @@ impl OutboxWork {
     /// Current time in the durable store's local Unix-millisecond time domain.
     #[must_use]
     pub fn local_now_ms(&self) -> i64 {
-        let elapsed = self
-            .clock
-            .monotonic_now()
-            .saturating_duration_since(self.local_epoch.sampled_at);
+        self.local_time_at(self.clock.monotonic_now())
+    }
+
+    pub(crate) fn local_time_at(&self, observed_at: ClockInstant) -> i64 {
+        let elapsed = observed_at.saturating_duration_since(self.local_epoch.sampled_at);
         self.local_epoch
             .unix_millis
             .saturating_add(i64::try_from(elapsed.as_millis()).unwrap_or(i64::MAX))
@@ -186,6 +187,15 @@ impl OutboxWork {
         anchor: WelcomeClockAnchor,
         mark: SyncTime,
     ) -> Result<FlushSelection, OutboxWorkError> {
+        self.claim_due_through(anchor, mark, mark).await
+    }
+
+    pub(crate) async fn claim_due_through(
+        &mut self,
+        anchor: WelcomeClockAnchor,
+        mark: SyncTime,
+        eligible_through: SyncTime,
+    ) -> Result<FlushSelection, OutboxWorkError> {
         if !self.mark_is_open(anchor, mark) {
             return Ok(FlushSelection::OutsideWindow);
         }
@@ -200,7 +210,7 @@ impl OutboxWork {
         let scanned = self
             .store
             .claim_next_batch(
-                mark.unix_millis(),
+                eligible_through.unix_millis(),
                 limit,
                 now_ms,
                 required_deadline_after_ms,
