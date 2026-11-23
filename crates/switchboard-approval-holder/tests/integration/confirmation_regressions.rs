@@ -174,7 +174,7 @@ fn draining() -> Mac {
     let mut mac = ready();
     mac.publish();
     let request = ending();
-    let reply = ProviderReply::CentralEnding(request.ending.clone());
+    let reply = ProviderReply::CentralEnding(request.ending().clone());
     assert_eq!(
         mac.offer(1, request),
         [ending_reply(1, DeliverEndingReply::Received {})]

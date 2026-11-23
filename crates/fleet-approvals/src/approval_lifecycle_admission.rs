@@ -1,4 +1,6 @@
-use approval_request_protocol::{CentralTime, RequestContentsDigest, StopRequest, WaitingStatus};
+use approval_request_protocol::{
+    CentralTime, HolderStopCause, Raise, RequestContentsDigest, StopRequest, WaitingStatus,
+};
 use central_engine_model::{TransitionError, supported_time};
 use workspace_ids::{ApprovalRequestId, RouterRunId};
 
@@ -19,7 +21,10 @@ pub(super) fn is_destination(saved: &RetainedApproval, actor: &ApprovalActor) ->
 
 pub(super) fn is_assigned_parent(saved: &RetainedApproval, parent: &ApprovalSession) -> bool {
     matches!(&saved.routing, ApprovalRouting::Delegate { admitted_parent } if admitted_parent == parent)
-        && saved.provider_session().session_id != parent.session_id
+        && saved
+            .raise
+            .requesting_session()
+            .is_some_and(|requester| requester != &parent.session_id)
 }
 
 pub(super) fn applying_time(
@@ -43,7 +48,39 @@ pub(crate) fn stop_binding(
             router_run,
             contents_digest,
             ..
+        }
+        | StopRequest::UnprovenCall {
+            request_id,
+            router_run,
+            contents_digest,
+            ..
         } => (request_id, router_run, contents_digest),
+    }
+}
+
+pub(super) fn stop_cause_matches_raise(cause: HolderStopCause, raise: &Raise) -> bool {
+    let parked = match raise {
+        Raise::UnprovenCall { .. } => true,
+        Raise::ProviderApproval { .. } | Raise::ProviderQuestion { .. } => false,
+    };
+    is_parked_stop_cause(cause) == parked
+}
+
+pub(super) fn stop_marker_matches_cause(
+    stored: HolderStopCause,
+    incoming: HolderStopCause,
+) -> bool {
+    is_parked_stop_cause(stored) == is_parked_stop_cause(incoming)
+}
+
+fn is_parked_stop_cause(cause: HolderStopCause) -> bool {
+    match cause {
+        HolderStopCause::CallWithdrawn => true,
+        HolderStopCause::TurnStopped
+        | HolderStopCause::AskReplaced
+        | HolderStopCause::AskWithdrawn
+        | HolderStopCause::SessionClosed
+        | HolderStopCause::ProviderConnectionLost => false,
     }
 }
 
