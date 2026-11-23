@@ -203,54 +203,7 @@ impl ClaudeCodeSessionRegistry {
             let Some(process_id) = process_id_from_filename(&entry.file_name()) else {
                 continue;
             };
-            let path = entry.path();
-            let Ok(metadata) = fs::symlink_metadata(&path) else {
-                if record_unreadable_live_process(
-                    process_id,
-                    &mut is_process_live,
-                    &mut has_unreadable_live_record,
-                ) {
-                    skipped_records = skipped_records.saturating_add(1);
-                }
-                continue;
-            };
-            if !metadata.file_type().is_file() || metadata.len() > MAX_REGISTRY_RECORD_BYTES {
-                if record_unreadable_live_process(
-                    process_id,
-                    &mut is_process_live,
-                    &mut has_unreadable_live_record,
-                ) {
-                    skipped_records = skipped_records.saturating_add(1);
-                }
-                continue;
-            }
-            let Ok(file) = fs::File::open(&path) else {
-                if record_unreadable_live_process(
-                    process_id,
-                    &mut is_process_live,
-                    &mut has_unreadable_live_record,
-                ) {
-                    skipped_records = skipped_records.saturating_add(1);
-                }
-                continue;
-            };
-            let mut bytes = Vec::new();
-            if file
-                .take(MAX_REGISTRY_RECORD_BYTES + 1)
-                .read_to_end(&mut bytes)
-                .is_err()
-                || bytes.len() as u64 > MAX_REGISTRY_RECORD_BYTES
-            {
-                if record_unreadable_live_process(
-                    process_id,
-                    &mut is_process_live,
-                    &mut has_unreadable_live_record,
-                ) {
-                    skipped_records = skipped_records.saturating_add(1);
-                }
-                continue;
-            }
-            let Ok(envelope) = serde_json::from_slice::<Value>(&bytes) else {
+            let Some(envelope) = read_peer_envelope(&entry.path()) else {
                 if record_unreadable_live_process(
                     process_id,
                     &mut is_process_live,
@@ -377,7 +330,24 @@ fn decode_status(value: Option<&Value>) -> PeerSessionStatus {
     }
 }
 
-fn process_id_from_filename(filename: &std::ffi::OsStr) -> Option<u32> {
+pub(super) fn read_peer_envelope(path: &Path) -> Option<Value> {
+    let metadata = fs::symlink_metadata(path).ok()?;
+    if !metadata.file_type().is_file() || metadata.len() > MAX_REGISTRY_RECORD_BYTES {
+        return None;
+    }
+    let mut bytes = Vec::new();
+    fs::File::open(path)
+        .ok()?
+        .take(MAX_REGISTRY_RECORD_BYTES + 1)
+        .read_to_end(&mut bytes)
+        .ok()?;
+    if bytes.len() as u64 > MAX_REGISTRY_RECORD_BYTES {
+        return None;
+    }
+    serde_json::from_slice(&bytes).ok()
+}
+
+pub(super) fn process_id_from_filename(filename: &std::ffi::OsStr) -> Option<u32> {
     let name = filename.to_str()?;
     let stem = name.strip_suffix(".json")?;
     if stem.is_empty() || !stem.bytes().all(|byte| byte.is_ascii_digit()) || stem.starts_with('0') {
@@ -386,7 +356,7 @@ fn process_id_from_filename(filename: &std::ffi::OsStr) -> Option<u32> {
     stem.parse().ok()
 }
 
-fn process_is_live(process_id: u32) -> Result<bool, PeerRegistryError> {
+pub(super) fn process_is_live(process_id: u32) -> Result<bool, PeerRegistryError> {
     let Some(pid) = i32::try_from(process_id).ok().and_then(Pid::from_raw) else {
         return Ok(false);
     };
