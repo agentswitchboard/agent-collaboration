@@ -1,8 +1,5 @@
 use approval_request_protocol::{PassOnReply, RaiseReply, RegisterRunReply, RunRefusal};
-use fleet_approvals::{
-    AdmittedDecider, ApprovalApplyFailure, ApprovalDecisionReply, ApprovalHolderScope,
-    ApprovalRefusal, ApprovalRun,
-};
+use fleet_approvals::{AdmittedDecider, ApprovalDecisionReply, ApprovalHolderScope, ApprovalRun};
 
 use super::{
     approval_store_cases::{decide_input, first_holder, raise_and_commit, register, snapshot},
@@ -99,7 +96,7 @@ async fn holder_admission_refuses_wrong_or_ended_scope_before_request_and_sessio
 }
 
 #[tokio::test]
-async fn provider_saves_and_parent_actions_require_live_exact_sessions() {
+async fn an_ended_parent_remains_destination_but_cannot_act() {
     let fixture = NativeApprovalStoreFixture::open_fresh().await;
     let holder = first_holder();
     register(&fixture, &holder).await;
@@ -120,34 +117,15 @@ async fn provider_saves_and_parent_actions_require_live_exact_sessions() {
     fixture
         .store_session(&holder.organization_id, &requester, Some(&parent), true)
         .await;
-    let (reply, evidence) = fixture
-        .apply(None, async |store| {
-            store
-                .apply_holder_command(
-                    &fleet_approvals::ApprovalHolderAdmission::for_fixture_scope(&holder),
-                    fleet_approvals::ApprovalHolderCommand::Raise(Box::new(request.clone())),
-                )
-                .await
-        })
-        .await;
-    assert!(matches!(
-        reply,
-        Err(ApprovalApplyFailure::Lifecycle(
-            ApprovalRefusal::InvalidInitialRoute
-        ))
-    ));
-    assert!(evidence.sql_writes.is_empty());
-
-    fixture
-        .store_session(&holder.organization_id, &parent, None, true)
-        .await;
-    assert!(matches!(
-        raise_and_commit(&fixture, &holder, &request).await.0,
-        RaiseReply::Receipt { .. }
-    ));
-    fixture
-        .store_session(&holder.organization_id, &parent, None, false)
-        .await;
+    let (reply, evidence) = raise_and_commit(&fixture, &holder, &request).await;
+    assert!(matches!(reply, RaiseReply::Receipt { .. }));
+    assert_eq!(evidence.session_liveness_reads, [requester]);
+    assert_eq!(
+        fixture
+            .inspect_rows("SELECT session_id FROM approval_request_destinations")
+            .await,
+        [parent.session_id.as_str()]
+    );
     let before = snapshot(&fixture).await;
 
     let pass = fixture
