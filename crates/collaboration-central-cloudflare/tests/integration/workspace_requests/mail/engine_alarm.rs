@@ -457,11 +457,11 @@ async fn applying_recompute_dispatches_one_indexed_select_and_clear_dispatches_n
             .captured_logs()
             .into_iter()
             .skip(seen)
+            .filter(|line| line.contains(selection))
             .filter_map(|line| {
-                line.split_once("Central alarm input SELECTs: ")
-                    .and_then(|(_, receipt)| receipt.split_once("; "))
-                    .filter(|(_, observed)| *observed == selection)
-                    .map(|(reads, _)| reads.to_owned())
+                line.split_once("Central alarm input SELECTs:")
+                    .and_then(|(_, receipt)| receipt.split_once(';'))
+                    .map(|(reads, _)| reads.trim().to_owned())
             })
             .collect::<Vec<_>>()
     };
