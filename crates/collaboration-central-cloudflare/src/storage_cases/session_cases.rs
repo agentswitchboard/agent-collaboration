@@ -3,14 +3,18 @@
 use central_engine_model::{Context, IdSource};
 use chrono::{DateTime, SecondsFormat};
 use fleet_actor_identity::{
-    ActorApprovalSessionFacts, LiveSessionFacts, SessionAvailability, SessionCallOutcome,
-    SessionMachineCaller, SessionSecretSource, SessionService, SessionServiceError,
+    ActorApprovalSessionFacts, LiveSessionFacts, OrganizationTransaction, SessionAvailability,
+    SessionCallOutcome, SessionLookupScope, SessionSecretSource, SessionService,
+    SessionServiceError,
 };
 use fleet_approvals::{ApprovalEnrollment, ApprovalRouting, ApprovalSession, ApprovalSessionFacts};
+use fleet_contracts::{ClientId, MachineConnectionAttachment};
 use fleet_identity_protocol::{
     BindFleetSession, CreateFleetSession, EndFleetSession, EnrollmentId, OrganizationId,
-    SessionSecret,
+    SessionSecret, UnixSeconds,
 };
+use fleet_lent_transaction::CentralTransaction;
+use fleet_machine_login::link_authority::{ValidatedMachineConnection, restore_fixture_link};
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx_core::{query::query, query_scalar::query_scalar};
@@ -64,7 +68,6 @@ enum SessionCommand {
     },
     ApprovalFacts {
         session_id: CentralSessionId,
-        store_organization: OrganizationId,
         requested_organization: OrganizationId,
     },
     Digest {
@@ -113,7 +116,11 @@ struct QueryRowsRead {
     rows_read: u64,
 }
 
-pub(super) async fn apply(storage: Storage, input: SessionCase) -> Result<Response> {
+pub(super) async fn apply(
+    storage: Storage,
+    organization: OrganizationId,
+    input: SessionCase,
+) -> Result<Response> {
     let observed_reads = Arc::new(Mutex::new(Vec::new()));
     let capture_reads = observed_reads.clone();
     let connection = DoConnection::new(storage).with_fetch_observer(move |sql, rows_read| {
@@ -130,7 +137,9 @@ pub(super) async fn apply(storage: Storage, input: SessionCase) -> Result<Respon
             });
     });
     let outcome = connection
-        .transaction(move |transaction| async move { apply_command(&transaction, input).await })
+        .transaction(move |transaction| async move {
+            apply_command(&transaction, &organization, input).await
+        })
         .await;
     let reads = observed_reads
         .lock()
@@ -145,16 +154,19 @@ pub(super) async fn apply(storage: Storage, input: SessionCase) -> Result<Respon
 
 async fn apply_command(
     transaction: &DoTransaction,
+    organization: &OrganizationId,
     input: SessionCase,
 ) -> std::result::Result<Value, SessionCaseError> {
-    let caller = SessionMachineCaller {
+    let caller = SessionLookupScope {
         machine_id: input.machine_id,
         enrollment_id: input.enrollment_id,
     };
     let now =
         DateTime::from_timestamp_millis(input.now_ms).ok_or(SessionCaseError::InvalidFixture)?;
-    let mut lender = WorkerExecutorLender::from_storage_executor(transaction);
-    let mut service = SessionService::in_transaction(&mut lender);
+    let mut lender = OrganizationLender {
+        lender: WorkerExecutorLender::from_storage_executor(transaction),
+        organization,
+    };
     let mut ids = HeldSessionId(uuid::Uuid::nil());
     let mut context = Context { now, ids: &mut ids };
     match input.command {
@@ -174,9 +186,12 @@ async fn apply_command(
         } => {
             let mut ids = HeldSessionId(candidate_id);
             context.ids = &mut ids;
-            let reply = service
+            let Some(admitted) = admit_fixture(&mut lender, &caller, now).await? else {
+                return Ok(json!({ "result": "revoked" }));
+            };
+            let reply = SessionService::in_transaction(&mut lender)
                 .create(
-                    &caller,
+                    &admitted,
                     request,
                     &mut context,
                     &mut HeldSessionSecret(secret_seed),
@@ -184,14 +199,28 @@ async fn apply_command(
                 .await?;
             Ok(call_reply(reply))
         }
-        SessionCommand::Bind { request } => Ok(call_reply(
-            service.bind(&caller, request, &mut context).await?,
-        )),
-        SessionCommand::End { request } => Ok(call_reply(
-            service.end(&caller, request, &mut context).await?,
-        )),
+        SessionCommand::Bind { request } => {
+            let Some(admitted) = admit_fixture(&mut lender, &caller, now).await? else {
+                return Ok(json!({ "result": "revoked" }));
+            };
+            Ok(call_reply(
+                SessionService::in_transaction(&mut lender)
+                    .bind(&admitted, request, &mut context)
+                    .await?,
+            ))
+        }
+        SessionCommand::End { request } => {
+            let Some(admitted) = admit_fixture(&mut lender, &caller, now).await? else {
+                return Ok(json!({ "result": "revoked" }));
+            };
+            Ok(call_reply(
+                SessionService::in_transaction(&mut lender)
+                    .end(&admitted, request, &mut context)
+                    .await?,
+            ))
+        }
         SessionCommand::Facts { session_id } => {
-            let availability = service
+            let availability = SessionService::in_transaction(&mut lender)
                 .session_facts(&caller, &session_id)
                 .await
                 .map_err(SessionServiceError::from)?;
@@ -210,10 +239,9 @@ async fn apply_command(
         }
         SessionCommand::ApprovalFacts {
             session_id,
-            store_organization,
             requested_organization,
         } => {
-            let facts = ActorApprovalSessionFacts::for_organization(store_organization);
+            let facts = ActorApprovalSessionFacts;
             let subject = ApprovalSession {
                 enrollment: ApprovalEnrollment {
                     machine_id: caller.machine_id,
@@ -282,6 +310,53 @@ async fn apply_command(
     }
 }
 
+struct OrganizationLender<'a> {
+    lender: WorkerExecutorLender<'a, DoTransaction>,
+    organization: &'a OrganizationId,
+}
+
+impl CentralTransaction for OrganizationLender<'_> {
+    type Database = <WorkerExecutorLender<'static, DoTransaction> as CentralTransaction>::Database;
+
+    fn executor(&mut self) -> impl sqlx_core::executor::Executor<'_, Database = Self::Database> {
+        self.lender.executor()
+    }
+
+    fn rows_affected(
+        result: <Self::Database as sqlx_core::database::Database>::QueryResult,
+    ) -> u64 {
+        WorkerExecutorLender::<DoTransaction>::rows_affected(result)
+    }
+}
+
+impl OrganizationTransaction for OrganizationLender<'_> {
+    fn organization_id(&self) -> &OrganizationId {
+        self.organization
+    }
+}
+
+async fn admit_fixture(
+    lender: &mut OrganizationLender<'_>,
+    scope: &SessionLookupScope,
+    now: DateTime<chrono::Utc>,
+) -> std::result::Result<Option<ValidatedMachineConnection>, SessionCaseError> {
+    let organization = lender.organization_id().clone();
+    let attachment = MachineConnectionAttachment::from_token_claims(
+        organization.clone(),
+        scope.machine_id.clone(),
+        scope.enrollment_id.clone(),
+        ClientId::try_from(scope.enrollment_id.as_str().to_owned())
+            .map_err(|_| SessionCaseError::InvalidFixture)?,
+        UnixSeconds(now.timestamp() + 60),
+    );
+    Ok(
+        restore_fixture_link(lender, &attachment, &organization, now.timestamp_millis())
+            .await
+            .map_err(SessionServiceError::from)?
+            .ok(),
+    )
+}
+
 fn approval_facts_reply(live: bool, route: Option<ApprovalRouting>) -> Value {
     let route = match route {
         Some(ApprovalRouting::Owner) => json!({ "kind": "owner" }),
@@ -307,7 +382,7 @@ fn call_reply<Reply: Serialize>(outcome: SessionCallOutcome<Reply>) -> Value {
 
 async fn seed(
     transaction: &DoTransaction,
-    caller: &SessionMachineCaller,
+    caller: &SessionLookupScope,
     unrelated_sessions: i64,
 ) -> std::result::Result<(), SessionCaseError> {
     query("INSERT INTO login_machines (machine_id,label,state,enrollment_generation,created_at,updated_at) VALUES (?,'Test machine','enrolled',1,?,?)")
@@ -333,7 +408,7 @@ async fn seed(
 
 async fn replace_idle_enrollment(
     transaction: &DoTransaction,
-    caller: &SessionMachineCaller,
+    caller: &SessionLookupScope,
     replacement_id: &EnrollmentId,
     ended_at: &str,
 ) -> std::result::Result<(), SessionCaseError> {

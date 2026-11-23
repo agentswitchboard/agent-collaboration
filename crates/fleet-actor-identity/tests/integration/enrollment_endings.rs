@@ -10,7 +10,11 @@ use super::fixtures::{
     FIXED_TIME, Operation, Receipt, SessionStoreFixture, create, id, reservation,
 };
 
-async fn replace_enrollment(store: &mut SessionStoreFixture, cause: &str, ended_at: &str) {
+pub(super) async fn replace_enrollment(
+    store: &mut SessionStoreFixture,
+    cause: &str,
+    ended_at: &str,
+) {
     let mut connection = store.open().await;
     let mut transaction = connection.begin().await.unwrap();
     let new_enrollment: EnrollmentId = id(95).try_into().unwrap();

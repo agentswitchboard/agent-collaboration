@@ -10,3 +10,6 @@ mod lifecycle;
 mod query_budgets;
 #[cfg(test)]
 mod storage_guards;
+
+#[cfg(test)]
+mod statement_observer;

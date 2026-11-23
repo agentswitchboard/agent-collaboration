@@ -32,6 +32,9 @@ zeroize.workspace = true
 workspace-ids.workspace = true
 
 [dev-dependencies]
+futures-util = "0.3.34"
+fleet-contracts.workspace = true
+fleet-machine-login = { workspace = true, features = ["test-support"] }
 hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
 uuid.workspace = true
 

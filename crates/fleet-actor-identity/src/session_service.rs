@@ -4,10 +4,13 @@ use central_storage::StoreFailure;
 use fleet_identity_protocol::{
     BindFleetSession, BindFleetSessionReply, CreateFleetSession, CreateFleetSessionReply,
     CreateSessionKind, CreateSessionRefusal, EndFleetSession, EndFleetSessionReply,
-    EndSessionTarget, EnrollmentId, PresentedSessionSecret, SessionCreator, SessionSecret,
+    EndSessionTarget, EnrollmentId, OrganizationId, PresentedSessionSecret, SessionCreator,
+    SessionSecret,
 };
 use fleet_lent_transaction::CentralTransaction;
-use fleet_machine_login::{SessionEnrollmentStatus, read_session_enrollment};
+use fleet_machine_login::{
+    SessionEnrollmentStatus, link_authority::ValidatedMachineConnection, read_session_enrollment,
+};
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use sqlx_core::{
     arguments::IntoArguments, column::ColumnIndex, database::Database, decode::Decode,
@@ -24,8 +27,13 @@ use crate::{
 
 const RESERVATION_DURATION_MILLIS: i64 = 600_000;
 
-/// Machine authority from the authenticated link. The containing transaction selects the organization.
-pub struct SessionMachineCaller {
+/// The physical organization owner lends its transaction with the scope it opened.
+pub trait OrganizationTransaction: CentralTransaction {
+    fn organization_id(&self) -> &OrganizationId;
+}
+
+/// Lookup keys for trusted facts reads.
+pub struct SessionLookupScope {
     pub machine_id: MachineId,
     pub enrollment_id: EnrollmentId,
 }
@@ -82,7 +90,7 @@ pub enum SessionAvailability {
     Live(LiveSessionFacts),
 }
 
-impl<Transaction: CentralTransaction> SessionService<'_, Transaction>
+impl<Transaction: OrganizationTransaction> SessionService<'_, Transaction>
 where
     <Transaction::Database as Database>::Arguments: IntoArguments<Transaction::Database>,
     String: Type<Transaction::Database>
@@ -105,11 +113,18 @@ where
 
     pub async fn create(
         &mut self,
-        caller: &SessionMachineCaller,
+        connection: &ValidatedMachineConnection,
         request: CreateFleetSession,
         context: &mut Context<'_>,
         secrets: &mut impl SessionSecretSource,
     ) -> Result<SessionCallOutcome<CreateFleetSessionReply>, SessionServiceError> {
+        if self.repository.tx.organization_id() != connection.organization_id() {
+            return Ok(SessionCallOutcome::Revoked);
+        }
+        let caller = &SessionLookupScope {
+            machine_id: connection.machine_id().clone(),
+            enrollment_id: connection.enrollment_id().clone(),
+        };
         if !self.is_current(caller).await? {
             return Ok(SessionCallOutcome::Revoked);
         }
@@ -194,12 +209,43 @@ where
         }
     }
 
+    /// Applies Bind using the validated connection from Machine Login.
+    ///
+    /// A lookup scope containing only IDs cannot issue a command.
+    ///
+    /// ```compile_fail,E0308
+    /// use fleet_actor_identity::{OrganizationTransaction, SessionLookupScope, SessionService};
+    /// use fleet_identity_protocol::{BindFleetSession, OrganizationId};
+    /// use central_engine_model::Context;
+    /// use fleet_lent_transaction::CentralTransaction;
+    /// use sqlx::{Sqlite, SqliteConnection};
+    /// struct Lender<'a>(&'a mut SqliteConnection, OrganizationId);
+    /// impl CentralTransaction for Lender<'_> {
+    ///     type Database = Sqlite;
+    ///     fn executor(&mut self) -> impl sqlx::Executor<'_, Database = Sqlite> { &mut *self.0 }
+    ///     fn rows_affected(result: sqlx::sqlite::SqliteQueryResult) -> u64 { result.rows_affected() }
+    /// }
+    /// impl OrganizationTransaction for Lender<'_> {
+    ///     fn organization_id(&self) -> &OrganizationId { &self.1 }
+    /// }
+    /// async fn apply_from_plain_fields(lender: &mut Lender<'_>, scope: &SessionLookupScope,
+    ///                                 request: BindFleetSession, context: &mut Context<'_>) {
+    ///     SessionService::in_transaction(lender).bind(scope, request, context).await;
+    /// }
+    /// ```
     pub async fn bind(
         &mut self,
-        caller: &SessionMachineCaller,
+        connection: &ValidatedMachineConnection,
         request: BindFleetSession,
         context: &mut Context<'_>,
     ) -> Result<SessionCallOutcome<BindFleetSessionReply>, SessionServiceError> {
+        if self.repository.tx.organization_id() != connection.organization_id() {
+            return Ok(SessionCallOutcome::Revoked);
+        }
+        let caller = &SessionLookupScope {
+            machine_id: connection.machine_id().clone(),
+            enrollment_id: connection.enrollment_id().clone(),
+        };
         if !self.is_current(caller).await? {
             return Ok(SessionCallOutcome::Revoked);
         }
@@ -208,10 +254,9 @@ where
             .by_id(&caller.machine_id, &request.session_id)
             .await?;
         let historical = self.historical_end(caller, &prior).await?;
-        let address = if let SessionState::Reserved(reserved) = &prior
+        let address = if let SessionState::Reserved(reserved) =
+            prior.read_at(context.now, historical)
             && reserved.secret_hash.matches(&request.secret)
-            && historical.is_none()
-            && context.now < reserved.reservation.reserved_until
             && self
                 .repository
                 .at_address(&caller.machine_id, &request.harness_session_id)
@@ -244,10 +289,17 @@ where
 
     pub async fn end(
         &mut self,
-        caller: &SessionMachineCaller,
+        connection: &ValidatedMachineConnection,
         request: EndFleetSession,
         context: &mut Context<'_>,
     ) -> Result<SessionCallOutcome<EndFleetSessionReply>, SessionServiceError> {
+        if self.repository.tx.organization_id() != connection.organization_id() {
+            return Ok(SessionCallOutcome::Revoked);
+        }
+        let caller = &SessionLookupScope {
+            machine_id: connection.machine_id().clone(),
+            enrollment_id: connection.enrollment_id().clone(),
+        };
         if !self.is_current(caller).await? {
             return Ok(SessionCallOutcome::Revoked);
         }
@@ -290,7 +342,7 @@ where
 
     pub async fn session_facts(
         &mut self,
-        caller: &SessionMachineCaller,
+        caller: &SessionLookupScope,
         session: &CentralSessionId,
     ) -> Result<SessionAvailability, StoreFailure> {
         let Some(bound) = self.live_session(caller, session).await? else {
@@ -303,11 +355,8 @@ where
             CreateSessionKind::Delegate { parent } => {
                 let (machine_id, enrollment_id) = self
                     .repository
-                    .scope(&parent)
+                    .ordinary_parent(session, &parent, &caller.machine_id, &caller.enrollment_id)
                     .await?
-                    .filter(|(machine_id, enrollment_id)| {
-                        *machine_id == caller.machine_id && *enrollment_id == caller.enrollment_id
-                    })
                     .ok_or_else(|| corrupt("actor_delegates.parent_actor_id"))?;
                 Ok(SessionAvailability::Live(LiveSessionFacts::Delegate {
                     parent: ScopedSession {
@@ -320,9 +369,9 @@ where
         }
     }
 
-    pub(crate) async fn live_session(
+    async fn live_session(
         &mut self,
-        caller: &SessionMachineCaller,
+        caller: &SessionLookupScope,
         session: &CentralSessionId,
     ) -> Result<Option<BoundSession>, StoreFailure> {
         let SessionState::Active(bound) = self
@@ -359,7 +408,7 @@ where
         Ok(receipt)
     }
 
-    async fn is_current(&mut self, caller: &SessionMachineCaller) -> Result<bool, StoreFailure> {
+    async fn is_current(&mut self, caller: &SessionLookupScope) -> Result<bool, StoreFailure> {
         Ok(read_session_enrollment(
             self.repository.tx,
             &caller.machine_id,
@@ -371,7 +420,7 @@ where
 
     async fn historical_end(
         &mut self,
-        caller: &SessionMachineCaller,
+        caller: &SessionLookupScope,
         state: &SessionState,
     ) -> Result<Option<EngineTime>, StoreFailure> {
         let Some(reservation) = state.reservation() else {
@@ -406,7 +455,7 @@ where
 
     async fn admit_creator(
         &mut self,
-        caller: &SessionMachineCaller,
+        caller: &SessionLookupScope,
         source: &SessionCreator,
         now: EngineTime,
     ) -> Result<Creator, StoreFailure> {

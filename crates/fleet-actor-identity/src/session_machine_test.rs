@@ -4,7 +4,6 @@ use fleet_identity_protocol::{
     CreateSessionAttempt, CreateSessionDigest, CreateSessionKind, EndFleetSessionReply,
     EnrollmentId, HarnessKind, RouterEndCause, SessionCreator, SessionSecret, SessionSettlement,
 };
-use hegel::generators as gs;
 
 use crate::{
     AddressAvailability, NewSessionAdmission, RecordedSessionCreator, SessionApply,
@@ -184,133 +183,6 @@ fn samples_witness_each_declared_transition_and_only_declared_transitions() {
     .unwrap();
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-enum ExpectedReply {
-    CreateReserved,
-    CreateSuperseded,
-    CreateActive,
-    CreateSettled,
-    CreateConflict,
-    Bound,
-    BindWrongSecret,
-    BindSettled,
-    EndSettled,
-    EndAlreadySettled,
-    EndNotYours,
-}
-
-#[derive(Clone, Copy)]
-enum Model {
-    Reserved { attempt: u8 },
-    Active { attempt: u8 },
-    Abandoned { attempt: u8 },
-    Ended { attempt: u8 },
-}
-
-impl Model {
-    fn attempt(self) -> u8 {
-        match self {
-            Self::Reserved { attempt }
-            | Self::Active { attempt }
-            | Self::Abandoned { attempt }
-            | Self::Ended { attempt } => attempt,
-        }
-    }
-
-    fn at(self, now: i64, enrollment_ended_at: Option<i64>) -> Self {
-        match self {
-            Self::Reserved { attempt } if now >= 8 || enrollment_ended_at.is_some() => {
-                Self::Abandoned { attempt }
-            }
-            Self::Active { attempt } if enrollment_ended_at.is_some() => Self::Ended { attempt },
-            state => state,
-        }
-    }
-
-    fn apply(
-        self,
-        action: ModelAction,
-        now: i64,
-        enrollment_ended_at: Option<i64>,
-    ) -> (Self, ExpectedReply) {
-        use ExpectedReply as Reply;
-
-        if let ModelAction::Bind(secret) = action
-            && secret != self.attempt()
-        {
-            return (self, Reply::BindWrongSecret);
-        }
-        match (self.at(now, enrollment_ended_at), action) {
-            (_, ModelAction::Conflict) => (self, Reply::CreateConflict),
-            (Self::Reserved { attempt }, ModelAction::Retry(new)) if new > attempt => {
-                (Self::Reserved { attempt: new }, Reply::CreateReserved)
-            }
-            (Self::Reserved { .. }, ModelAction::Retry(_)) => (self, Reply::CreateSuperseded),
-            (Self::Active { .. }, ModelAction::Retry(_)) => (self, Reply::CreateActive),
-            (state @ (Self::Abandoned { .. } | Self::Ended { .. }), ModelAction::Retry(_)) => {
-                (state, Reply::CreateSettled)
-            }
-            (Self::Reserved { attempt }, ModelAction::Bind(_)) => {
-                (Self::Active { attempt }, Reply::Bound)
-            }
-            (Self::Active { .. }, ModelAction::Bind(_)) => (self, Reply::Bound),
-            (state @ (Self::Abandoned { .. } | Self::Ended { .. }), ModelAction::Bind(_)) => {
-                (state, Reply::BindSettled)
-            }
-            (Self::Reserved { attempt }, ModelAction::EndByOperation | ModelAction::EndById) => {
-                (Self::Abandoned { attempt }, Reply::EndSettled)
-            }
-            (Self::Active { .. }, ModelAction::EndByOperation) => (self, Reply::EndNotYours),
-            (Self::Active { attempt }, ModelAction::EndById) => {
-                (Self::Ended { attempt }, Reply::EndSettled)
-            }
-            (
-                state @ (Self::Abandoned { .. } | Self::Ended { .. }),
-                ModelAction::EndByOperation | ModelAction::EndById,
-            ) => (state, Reply::EndAlreadySettled),
-        }
-    }
-
-    fn tag(self) -> &'static str {
-        match self {
-            Self::Reserved { .. } => "reserved",
-            Self::Active { .. } => "active",
-            Self::Abandoned { .. } => "abandoned",
-            Self::Ended { .. } => "ended",
-        }
-    }
-}
-
-#[derive(Clone, Copy)]
-enum ModelAction {
-    Retry(u8),
-    Bind(u8),
-    EndByOperation,
-    EndById,
-    Conflict,
-}
-
-fn observe_reply(receipt: &SessionReceipt) -> Option<ExpectedReply> {
-    use ExpectedReply as Reply;
-
-    Some(match receipt {
-        SessionReceipt::Create(CreateFleetSessionReply::Reserved { .. }) => Reply::CreateReserved,
-        SessionReceipt::Create(CreateFleetSessionReply::Superseded {}) => Reply::CreateSuperseded,
-        SessionReceipt::Create(CreateFleetSessionReply::Active { .. }) => Reply::CreateActive,
-        SessionReceipt::Create(CreateFleetSessionReply::Settled { .. }) => Reply::CreateSettled,
-        SessionReceipt::Create(CreateFleetSessionReply::Conflict {}) => Reply::CreateConflict,
-        SessionReceipt::Bind(BindFleetSessionReply::Active { .. }) => Reply::Bound,
-        SessionReceipt::Bind(BindFleetSessionReply::WrongSecret {}) => Reply::BindWrongSecret,
-        SessionReceipt::Bind(BindFleetSessionReply::Settled { .. }) => Reply::BindSettled,
-        SessionReceipt::End(EndFleetSessionReply::Settled { .. }) => Reply::EndSettled,
-        SessionReceipt::End(EndFleetSessionReply::AlreadySettled { .. }) => {
-            Reply::EndAlreadySettled
-        }
-        SessionReceipt::End(EndFleetSessionReply::NotYoursToEnd {}) => Reply::EndNotYours,
-        _ => return None,
-    })
-}
-
 fn conflicting_digest() -> CreateSessionDigest {
     "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
         .to_owned()
@@ -318,35 +190,5 @@ fn conflicting_digest() -> CreateSessionDigest {
         .unwrap()
 }
 
-#[hegel::test(test_cases = 320)]
-fn histories_match_the_independent_start_ledger(case: hegel::TestCase) {
-    let digest = operation().contents_digest().unwrap();
-    let other = conflicting_digest();
-    let (mut state, first_reply) = step(&SessionState::Missing, candidate(&digest, 1, 8), 0, None);
-    assert_eq!(
-        observe_reply(&first_reply),
-        Some(ExpectedReply::CreateReserved)
-    );
-    let mut ledger = Model::Reserved { attempt: 1 };
-    let mut enrollment_end = None;
-    for _ in 0..case.draw(gs::integers::<u8>().min_value(1).max_value(25)) {
-        let now = i64::from(case.draw(gs::integers::<u8>().max_value(11)));
-        if enrollment_end.is_none() && case.draw(gs::integers::<u8>().max_value(6)) == 0 {
-            enrollment_end = Some(now);
-        }
-        let attempt = case.draw(gs::integers::<u8>().min_value(1).max_value(4));
-        let (action, event) = match case.draw(gs::integers::<u8>().max_value(4)) {
-            0 => (ModelAction::Retry(attempt), candidate(&digest, attempt, 70)),
-            1 => (ModelAction::Bind(attempt), bind(attempt)),
-            2 => (ModelAction::EndByOperation, end(Some(digest.clone()))),
-            3 => (ModelAction::EndById, end(None)),
-            _ => (ModelAction::Conflict, candidate(&other, attempt, 70)),
-        };
-        let (expected_next, expected_reply) = ledger.apply(action, now, enrollment_end);
-        let (next, reply) = step(&state, event, now, enrollment_end);
-        assert_eq!(observe_reply(&reply), Some(expected_reply), "{reply:?}");
-        assert_eq!(next.state_tag(), expected_next.tag());
-        state = next;
-        ledger = expected_next;
-    }
-}
+#[path = "session_ledger_test.rs"]
+mod session_ledger;

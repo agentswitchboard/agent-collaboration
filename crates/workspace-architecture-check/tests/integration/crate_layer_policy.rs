@@ -105,6 +105,7 @@ const LAYER_POLICY: [(&str, &[&str]); 45] = [
             "fleet-engine",
             "fleet-identity-protocol",
             "fleet-lent-transaction",
+            "fleet-machine-login",
             "fleet-mail",
             "fleet-rpc",
             "fleet-runtime-ports",

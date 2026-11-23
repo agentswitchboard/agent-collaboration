@@ -220,27 +220,6 @@ fn bind(
     now: EngineTime,
     enrollment_ended_at: Option<EngineTime>,
 ) -> SessionChange {
-    let secret_hash = match state {
-        SessionState::Missing => {
-            return unchanged(
-                state,
-                SessionReceipt::Bind(BindFleetSessionReply::NoSuchStart {}),
-            );
-        }
-        SessionState::Reserved(reserved) | SessionState::Abandoned { reserved, .. } => {
-            &reserved.secret_hash
-        }
-        SessionState::Active(bound) | SessionState::Ended { bound, .. } => {
-            &bound.reserved.secret_hash
-        }
-    };
-    if !secret_hash.matches(secret) {
-        return unchanged(
-            state,
-            SessionReceipt::Bind(BindFleetSessionReply::WrongSecret {}),
-        );
-    }
-
     let effective = state.read_at(now, enrollment_ended_at);
     if let Some(settlement) = settlement_of(&effective)? {
         return Ok((
@@ -251,6 +230,18 @@ fn bind(
         ));
     }
     match effective {
+        SessionState::Reserved(reserved) if !reserved.secret_hash.matches(secret) => unchanged(
+            state,
+            SessionReceipt::Bind(BindFleetSessionReply::WrongSecret {}),
+        ),
+        SessionState::Active(bound) if !bound.reserved.secret_hash.matches(secret) => unchanged(
+            state,
+            SessionReceipt::Bind(BindFleetSessionReply::WrongSecret {}),
+        ),
+        SessionState::Missing => unchanged(
+            state,
+            SessionReceipt::Bind(BindFleetSessionReply::NoSuchStart {}),
+        ),
         SessionState::Reserved(reserved) => match address {
             AddressAvailability::Taken => unchanged(
                 state,
@@ -281,7 +272,7 @@ fn bind(
             };
             unchanged(state, SessionReceipt::Bind(reply))
         }
-        SessionState::Missing | SessionState::Abandoned { .. } | SessionState::Ended { .. } => Err(
+        SessionState::Abandoned { .. } | SessionState::Ended { .. } => Err(
             TransitionError::Domain(SessionMachineRefusal::ContradictoryReservation),
         ),
     }

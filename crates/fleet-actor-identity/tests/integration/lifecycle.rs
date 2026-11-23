@@ -322,7 +322,22 @@ async fn authenticated_creator_is_checked_before_replay_and_only_that_session_ca
     assert_eq!(facts.machine_id, store.caller.machine_id);
     assert_eq!(facts.enrollment_id, store.caller.enrollment_id);
     let organization = id(700).try_into().unwrap();
-    let another_organization = id(701).try_into().unwrap();
+    let another_organization: fleet_identity_protocol::OrganizationId = id(701).try_into().unwrap();
+    let foreign_store = SessionStoreFixture::for_organization(another_organization.clone()).await;
+    assert_eq!(
+        foreign_store
+            .approval_facts(&child, &organization)
+            .await
+            .unwrap(),
+        (false, None)
+    );
+    assert_eq!(
+        foreign_store
+            .approval_facts(&child, &another_organization)
+            .await
+            .unwrap(),
+        (false, None)
+    );
     let parent_route = ApprovalRouting::Delegate {
         admitted_parent: ApprovalSession {
             enrollment: ApprovalEnrollment {
@@ -333,21 +348,18 @@ async fn authenticated_creator_is_checked_before_replay_and_only_that_session_ca
         },
     };
     assert_eq!(
-        store
-            .approval_facts(&parent, &organization, &organization)
-            .await,
+        store.approval_facts(&parent, &organization).await.unwrap(),
         (true, Some(ApprovalRouting::Owner))
     );
     assert_eq!(
-        store
-            .approval_facts(&child, &organization, &organization)
-            .await,
+        store.approval_facts(&child, &organization).await.unwrap(),
         (true, Some(parent_route.clone()))
     );
     assert_eq!(
         store
-            .approval_facts(&child, &organization, &another_organization)
-            .await,
+            .approval_facts(&child, &another_organization)
+            .await
+            .unwrap(),
         (false, None)
     );
 
@@ -364,15 +376,11 @@ async fn authenticated_creator_is_checked_before_replay_and_only_that_session_ca
         .await
         .unwrap();
     assert_eq!(
-        store
-            .approval_facts(&parent, &organization, &organization)
-            .await,
+        store.approval_facts(&parent, &organization).await.unwrap(),
         (false, None)
     );
     assert_eq!(
-        store
-            .approval_facts(&child, &organization, &organization)
-            .await,
+        store.approval_facts(&child, &organization).await.unwrap(),
         (true, Some(parent_route))
     );
     assert_eq!(
@@ -384,6 +392,18 @@ async fn authenticated_creator_is_checked_before_replay_and_only_that_session_ca
             CreateFleetSessionReply::SessionEnded {}
         ))
     );
+    let mut connection = store.open().await;
+    sqlx::query("UPDATE actor_sessions SET session_state='unrecognized' WHERE actor_id=?")
+        .bind(parent.as_str())
+        .execute(&mut connection)
+        .await
+        .unwrap();
+    assert!(matches!(
+        store.approval_facts(&child, &organization).await,
+        Err(central_storage::StoreFailure::Corrupt {
+            reason: central_storage::CorruptReason::UnknownKind { column },
+        }) if column == "session_state"
+    ));
 }
 
 #[tokio::test]

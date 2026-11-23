@@ -39,6 +39,7 @@ pub(crate) async fn route(
             return Ok(Ok(Response::error("missing case operation", 404)?));
         };
         let headers = Headers::new();
+        headers.set("x-case-object", object)?;
         if let Some(migrator) = request.headers().get("x-case-migrator")? {
             headers.set("x-case-migrator", &migrator)?;
         }

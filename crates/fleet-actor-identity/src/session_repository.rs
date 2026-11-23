@@ -12,7 +12,7 @@ use sqlx_core::{
 use workspace_ids::{CentralSessionId, MachineId, SessionId, SessionOperationId};
 
 use crate::session_row::{
-    AddressRow, ParentScopeRow, StoredSessionRow, abandonment_name, end_name, parse, program_name,
+    AddressRow, StoredSessionRow, abandonment_name, end_name, parse, program_name,
 };
 use crate::{RecordedSessionCreator, ReservedSession, SessionState};
 
@@ -132,25 +132,38 @@ where
         row.map(|row| parse(&row.actor_id, "actor_id")).transpose()
     }
 
-    pub(crate) async fn scope(
+    pub(crate) async fn ordinary_parent(
         &mut self,
-        session: &CentralSessionId,
+        child: &CentralSessionId,
+        parent: &CentralSessionId,
+        machine: &MachineId,
+        enrollment: &EnrollmentId,
     ) -> Result<Option<(MachineId, EnrollmentId)>, StoreFailure> {
-        let row = read_one!(
-            ParentScopeRow,
-            "src/queries/parent_scope.sql",
-            session.as_str().to_owned()
-        )
-        .fetch_optional(self.tx.executor())
-        .await
-        .map_err(store_error)?;
-        row.map(|row| {
-            Ok((
-                parse(&row.machine_id, "machine_id")?,
-                EnrollmentId::try_from(row.enrollment_id).map_err(|_| corrupt("enrollment_id"))?,
-            ))
-        })
-        .transpose()
+        let state = decode_optional(
+            read_one!(
+                StoredSessionRow,
+                "src/queries/parent_scope.sql",
+                child.as_str().to_owned(),
+                parent.as_str().to_owned(),
+                machine.as_str().to_owned(),
+                enrollment.as_str().to_owned()
+            )
+            .fetch_optional(self.tx.executor())
+            .await,
+        )?;
+        match state {
+            SessionState::Active(bound) | SessionState::Ended { bound, .. }
+                if matches!(
+                    bound.reserved.reservation.kind,
+                    CreateSessionKind::Ordinary {}
+                ) =>
+            {
+                let parent = bound.reserved.reservation;
+                Ok(Some((parent.machine_id, parent.enrollment_id)))
+            }
+            SessionState::Missing => Ok(None),
+            _ => Err(corrupt("actor_delegates.parent_actor_id")),
+        }
     }
 
     pub(crate) async fn persist(

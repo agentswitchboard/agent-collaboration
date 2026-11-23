@@ -1,3 +1,4 @@
+use super::statement_observer::{ObservedRead, ObservedReads, StatementObserver};
 use std::{
     ops::ControlFlow,
     path::{Path, PathBuf},
@@ -5,16 +6,18 @@ use std::{
 
 use central_engine_model::{Context, EngineTime, IdSource};
 use fleet_actor_identity::{
-    ActorApprovalSessionFacts, SessionAvailability, SessionCallOutcome, SessionMachineCaller,
-    SessionSecretSource, SessionService, SessionServiceError,
+    ActorApprovalSessionFacts, OrganizationTransaction, SessionAvailability, SessionCallOutcome,
+    SessionLookupScope, SessionSecretSource, SessionService, SessionServiceError,
 };
 use fleet_approvals::{ApprovalEnrollment, ApprovalRouting, ApprovalSession, ApprovalSessionFacts};
+use fleet_contracts::{ClientId, MachineConnectionAttachment};
 use fleet_identity_protocol::{
     BindFleetSession, BindFleetSessionReply, CreateFleetSession, CreateFleetSessionReply,
     CreateSessionKind, EndFleetSession, EndFleetSessionReply, EnrollmentId, HarnessKind,
-    OrganizationId, SessionCreator, SessionSecret,
+    OrganizationId, SessionCreator, SessionSecret, UnixSeconds,
 };
 use fleet_lent_transaction::CentralTransaction;
+use fleet_machine_login::link_authority::restore_fixture_link;
 use fleet_store_sqlx::SqliteObjectStore;
 use sqlx::{Connection, Sqlite, SqliteConnection, sqlite::SqliteConnectOptions};
 
@@ -55,11 +58,24 @@ pub fn time(offset_millis: i64) -> EngineTime {
     EngineTime::from_timestamp_millis(base + offset_millis).unwrap()
 }
 
-struct SqliteTransaction<'a>(&'a mut SqliteConnection);
+struct SqliteTransaction<'a> {
+    connection: &'a mut SqliteConnection,
+    organization: &'a OrganizationId,
+    reads: std::sync::Arc<ObservedReads>,
+}
+
+impl OrganizationTransaction for SqliteTransaction<'_> {
+    fn organization_id(&self) -> &OrganizationId {
+        self.organization
+    }
+}
 impl CentralTransaction for SqliteTransaction<'_> {
     type Database = Sqlite;
     fn executor(&mut self) -> impl sqlx::Executor<'_, Database = Sqlite> {
-        &mut *self.0
+        StatementObserver {
+            connection: self.connection,
+            reads: self.reads.clone(),
+        }
     }
     fn rows_affected(result: <Sqlite as sqlx::Database>::QueryResult) -> u64 {
         result.rows_affected()
@@ -82,21 +98,29 @@ pub enum Receipt {
 pub struct SessionStoreFixture {
     _root: tempfile::TempDir,
     path: PathBuf,
-    pub caller: SessionMachineCaller,
+    organization: OrganizationId,
+    pub caller: SessionLookupScope,
     ids: HeldIds,
     secrets: HeldSecrets,
+    reads: std::sync::Arc<ObservedReads>,
 }
 
 impl SessionStoreFixture {
     pub async fn new() -> Self {
+        Self::for_organization(id(700).try_into().unwrap()).await
+    }
+
+    pub async fn for_organization(organization: OrganizationId) -> Self {
         let root = tempfile::tempdir().unwrap();
-        let path = root.path().join("actor-identity.sqlite");
+        let path = root
+            .path()
+            .join(format!("{}.sqlite", organization.as_str()));
         let mut connection = Self::open_path(&path).await;
         fleet_storage_schema::workspace_migrations::central_migrator()
             .run(&mut connection)
             .await
             .unwrap();
-        let caller = SessionMachineCaller {
+        let caller = SessionLookupScope {
             machine_id: id(1).parse().unwrap(),
             enrollment_id: EnrollmentId::try_from(id(2)).unwrap(),
         };
@@ -111,8 +135,10 @@ impl SessionStoreFixture {
         Self {
             _root: root,
             path,
+            organization,
             caller,
             ids: HeldIds(100),
+            reads: std::sync::Arc::default(),
             secrets: HeldSecrets {
                 seed: 0,
                 available: true,
@@ -135,6 +161,10 @@ impl SessionStoreFixture {
         self.secrets.available = false;
     }
 
+    pub fn dispatched_reads(&self) -> Vec<ObservedRead> {
+        std::mem::take(&mut *self.reads.lock().unwrap())
+    }
+
     pub fn database_path(&self) -> &Path {
         &self.path
     }
@@ -151,7 +181,32 @@ impl SessionStoreFixture {
         let store = self.open_tokio_store().await;
         let result = store
             .run_transaction(async |connection| {
-                let mut lent = SqliteTransaction(connection);
+                let mut lent = SqliteTransaction {
+                    connection,
+                    organization: &self.organization,
+                    reads: self.reads.clone(),
+                };
+                let attachment = MachineConnectionAttachment::from_token_claims(
+                    self.organization.clone(),
+                    self.caller.machine_id.clone(),
+                    self.caller.enrollment_id.clone(),
+                    ClientId::try_from(self.caller.enrollment_id.as_str().to_owned()).unwrap(),
+                    UnixSeconds(time(at).timestamp() + 60),
+                );
+                let admitted = restore_fixture_link(
+                    &mut lent,
+                    &attachment,
+                    &self.organization,
+                    time(at).timestamp_millis(),
+                )
+                .await?;
+                let Ok(admitted) = admitted else {
+                    return Ok(ControlFlow::Continue(match operation {
+                        Operation::Create(_) => Receipt::Create(SessionCallOutcome::Revoked),
+                        Operation::Bind(_) => Receipt::Bind(SessionCallOutcome::Revoked),
+                        Operation::End(_) => Receipt::End(SessionCallOutcome::Revoked),
+                    }));
+                };
                 let mut service = SessionService::in_transaction(&mut lent);
                 let mut context = Context {
                     now: time(at),
@@ -159,15 +214,15 @@ impl SessionStoreFixture {
                 };
                 let result = match operation {
                     Operation::Create(request) => service
-                        .create(&self.caller, request, &mut context, &mut self.secrets)
+                        .create(&admitted, request, &mut context, &mut self.secrets)
                         .await
                         .map(Receipt::Create),
                     Operation::Bind(request) => service
-                        .bind(&self.caller, request, &mut context)
+                        .bind(&admitted, request, &mut context)
                         .await
                         .map(Receipt::Bind),
                     Operation::End(request) => service
-                        .end(&self.caller, request, &mut context)
+                        .end(&admitted, request, &mut context)
                         .await
                         .map(Receipt::End),
                 };
@@ -188,7 +243,11 @@ impl SessionStoreFixture {
         let store = self.open_tokio_store().await;
         let result = store
             .run_transaction(async |connection| {
-                let mut lent = SqliteTransaction(connection);
+                let mut lent = SqliteTransaction {
+                    connection,
+                    organization: &self.organization,
+                    reads: self.reads.clone(),
+                };
                 let facts = SessionService::in_transaction(&mut lent)
                     .session_facts(&self.caller, session_id)
                     .await?;
@@ -205,10 +264,9 @@ impl SessionStoreFixture {
     pub async fn approval_facts(
         &self,
         session_id: &workspace_ids::CentralSessionId,
-        store_organization: &OrganizationId,
         requested_organization: &OrganizationId,
-    ) -> (bool, Option<ApprovalRouting>) {
-        let reader = ActorApprovalSessionFacts::for_organization(store_organization.clone());
+    ) -> Result<(bool, Option<ApprovalRouting>), central_storage::StoreFailure> {
+        let reader = ActorApprovalSessionFacts;
         let subject = ApprovalSession {
             enrollment: ApprovalEnrollment {
                 machine_id: self.caller.machine_id.clone(),
@@ -219,7 +277,11 @@ impl SessionStoreFixture {
         let store = self.open_tokio_store().await;
         let result = store
             .run_transaction(async |connection| {
-                let mut lent = SqliteTransaction(connection);
+                let mut lent = SqliteTransaction {
+                    connection,
+                    organization: &self.organization,
+                    reads: self.reads.clone(),
+                };
                 let live = reader
                     .session_is_live(&mut lent, requested_organization, &subject)
                     .await?;
@@ -232,8 +294,8 @@ impl SessionStoreFixture {
             })
             .await;
         store.close().await;
-        match result.unwrap() {
-            ControlFlow::Continue(facts) => facts,
+        match result? {
+            ControlFlow::Continue(facts) => Ok(facts),
             ControlFlow::Break(never) => match never {},
         }
     }

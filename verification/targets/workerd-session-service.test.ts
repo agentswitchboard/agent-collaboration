@@ -85,6 +85,7 @@ interface CaseOptions {
   readonly now?: number;
   readonly enrollment?: string;
   readonly reopen?: boolean;
+  readonly organization?: string;
 }
 
 async function fetchCase(
@@ -104,7 +105,8 @@ async function command(
   input: JsonValue,
   options: CaseOptions = {},
 ): Promise<SessionResponse> {
-  const response = await fetchCase(object, "sessions", {
+  const scopedObject = [options.organization ?? sessionId(700), object].join(".");
+  const response = await fetchCase(scopedObject, "sessions", {
     machineId,
     enrollmentId: options.enrollment ?? enrollmentId,
     nowMs: options.now ?? fixtureTime,
@@ -112,7 +114,7 @@ async function command(
   });
   assert.equal(response.status, 200, await response.clone().text());
   if (options.reopen ?? true) {
-    const crash = await fetchCase(object, "crash", null);
+    const crash = await fetchCase(scopedObject, "crash", null);
     assert.equal(crash.ok, false);
     await crash.text();
   }
@@ -123,9 +125,10 @@ async function refusedStoreCommand(
   object: string,
   input: JsonValue,
   failurePattern: RegExp,
-  options: Pick<CaseOptions, "now" | "enrollment"> = {},
+  options: Pick<CaseOptions, "now" | "enrollment" | "organization"> = {},
 ): Promise<void> {
-  const response = await fetchCase(object, "sessions", {
+  const scopedObject = [options.organization ?? sessionId(700), object].join(".");
+  const response = await fetchCase(scopedObject, "sessions", {
     machineId,
     enrollmentId: options.enrollment ?? enrollmentId,
     nowMs: options.now ?? fixtureTime,
@@ -134,7 +137,7 @@ async function refusedStoreCommand(
   assert.equal(response.status, 409, await response.clone().text());
   const { failure } = z.strictObject({ failure: z.string() }).parse(await response.json());
   assert.match(failure, failurePattern);
-  const crash = await fetchCase(object, "crash", null);
+  const crash = await fetchCase(scopedObject, "crash", null);
   assert.equal(crash.ok, false);
   await crash.text();
 }
@@ -192,6 +195,11 @@ test("Workerd reopens retries, activates once, and retains the address after End
     settlement: z.object({ settlement: z.json() }).parse(end).settlement,
   });
 
+  assert.deepEqual(
+    (await command(object, bindCommand(rotated.sessionId, harnessId, fixtureSecret(99)))).reply,
+    end,
+  );
+
   const later = reservationSchema.parse(
     (await command(object, createCommand(createRequest(11), 104, 5))).reply,
   );
@@ -235,7 +243,6 @@ test("Workerd orders creator authentication before replay and binds a delegate t
   const routeRequest = {
     kind: "approvalFacts",
     sessionId: delegate.sessionId,
-    storeOrganization,
     requestedOrganization: storeOrganization,
   };
   assert.deepEqual((await command(object, routeRequest)).reply, {
@@ -249,6 +256,17 @@ test("Workerd orders creator authentication before replay and binds a delegate t
     }),
     { reply: { live: false, route: null }, reads: [] },
   );
+
+  const foreignOrganization = sessionId(701);
+  await command(
+    object,
+    { kind: "seed", unrelatedSessions: 0 },
+    { organization: foreignOrganization },
+  );
+  assert.deepEqual(await command(object, routeRequest, { organization: foreignOrganization }), {
+    reply: { live: false, route: null },
+    reads: [],
+  });
 
   const usingNothing = createRequest(11, 1, creator(parent.sessionId, { kind: "nothing" }), child);
   assert.deepEqual((await command(object, createCommand(usingNothing, 102, 3))).reply, {
@@ -268,6 +286,11 @@ test("Workerd orders creator authentication before replay and binds a delegate t
     (await command(object, { ...routeRequest, sessionId: parent.sessionId })).reply,
     { live: false, route: null },
   );
+  assert.deepEqual((await command(object, routeRequest)).reply, {
+    live: true,
+    route: { kind: "delegate", parent: { sessionId: parent.sessionId, machineId, enrollmentId } },
+  });
+
   assert.deepEqual((await command(object, createCommand(childRequest, 102, 3))).reply, {
     result: "sessionEnded",
   });
@@ -279,6 +302,8 @@ test("Workerd orders creator authentication before replay and binds a delegate t
     ).reply,
     { result: "revoked" },
   );
+  await command(object, { kind: "corruptState", sessionId: parent.sessionId });
+  await refusedStoreCommand(object, routeRequest, /session_state/);
 });
 
 test("Workerd checks End by operation contents and rolls back failures at each insert boundary", async () => {
@@ -384,7 +409,7 @@ test("Workerd settles idle-ended sessions at the stored time and can retry a fai
   const oldLinkRead = await command(object, { kind: "facts", sessionId: activated.sessionId });
   assert.deepEqual(oldLinkRead.reply, { state: "unavailable" });
   assert.ok(measuredRows(oldLinkRead) <= 3);
-  const bind = bindCommand(reserved.sessionId, otherHarnessId, reserved.secret);
+  const bind = bindCommand(reserved.sessionId, otherHarnessId, fixtureSecret(254));
   assert.deepEqual((await command(object, bind)).reply, { result: "revoked" });
   await command(object, { kind: "failSessionUpdate" });
   await refusedStoreCommand(object, bind, /^the store is unavailable$/, {
@@ -404,6 +429,31 @@ test("Workerd settles idle-ended sessions at the stored time and can retry a fai
       result: "settled",
       settlement: { state: "ended", cause: { kind: "machineRevoked" }, time: fixtureDeadline },
     },
+  );
+});
+
+test("Workerd settles an expired reservation before checking the Bind secret", async () => {
+  const object = "session-bind-at-deadline";
+  await command(object, { kind: "seed", unrelatedSessions: 0 });
+  const reserved = reservationSchema.parse(
+    (await command(object, createCommand(createRequest(10), 100, 1))).reply,
+  );
+  const first = await command(
+    object,
+    bindCommand(reserved.sessionId, harnessId, fixtureSecret(2)),
+    { now: fixtureTime + 600_000 },
+  );
+  assert.deepEqual(first.reply, {
+    result: "settled",
+    settlement: { state: "abandoned", cause: { kind: "timeRanOut" }, time: fixtureDeadline },
+  });
+  assert.deepEqual(
+    (
+      await command(object, bindCommand(reserved.sessionId, harnessId, reserved.secret), {
+        now: fixtureTime + 599_999,
+      })
+    ).reply,
+    first.reply,
   );
 });
 
@@ -456,6 +506,16 @@ for (const size of [20, 10_000]) {
     const missing = await command(object, { kind: "facts", sessionId: sessionId(999) });
     assert.deepEqual(ended.reply, { state: "unavailable" });
     assert.deepEqual(missing.reply, { state: "unavailable" });
+
+    await command(
+      object,
+      { kind: "replaceIdleEnrollment", replacementId: sessionId(90) },
+      { now: fixtureTime + 2 },
+    );
+    const endedDelegate = await command(object, { kind: "facts", sessionId: second.sessionId });
+    assert.deepEqual(endedDelegate.reply, { state: "unavailable" });
+    assert.ok(measuredRows(endedDelegate) <= 3, JSON.stringify(endedDelegate.reads));
+    context.diagnostic("ended-enrollment delegate admission = " + measuredRows(endedDelegate));
 
     const admission = [measuredRows(live), measuredRows(ended), measuredRows(missing)] as const;
     context.diagnostic(

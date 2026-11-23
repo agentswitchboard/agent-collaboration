@@ -37,12 +37,6 @@ pub(crate) struct StoredSessionRow {
 }
 
 #[derive(sqlx::FromRow)]
-pub(crate) struct ParentScopeRow {
-    pub machine_id: String,
-    pub enrollment_id: String,
-}
-
-#[derive(sqlx::FromRow)]
 pub(crate) struct AddressRow {
     pub actor_id: String,
 }
