@@ -44,6 +44,7 @@ async fn status_fixture() -> (tempfile::TempDir, CustodyLink, Arc<ScriptedBatchL
     let machine: MachineId = "019f0000-0000-7000-8000-000000000011".parse().unwrap();
     let lane = Arc::new(ScriptedBatchLane::new(
         new_admission(machine.clone(), clock.clone()),
+        clock.clone(),
         Default::default(),
     ));
     let outbox = OutboxWork::new(Box::new(open_outbox(&database).await), clock.clone());

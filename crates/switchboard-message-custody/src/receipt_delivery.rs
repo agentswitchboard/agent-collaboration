@@ -152,6 +152,7 @@ impl ReceiptDelivery {
                     correlation_id,
                     results,
                 },
+            ..
         } = disposition
         else {
             return Ok(ReceiptFrameOutcome::RetryPending);

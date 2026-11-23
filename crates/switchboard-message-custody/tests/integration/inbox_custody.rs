@@ -12,7 +12,7 @@ use central_link_protocol::{
     CorrelationId, DataFrame, DeliveryMessage, DirectOfferBody, DirectOfferMessage, FrameDirection,
     LinkFrame, Receipt, ReceiptKind, ReceiptResult, TimeLeft, decode_text, encode_text,
 };
-use router_clock::{ClockInstant, ManualClock};
+use router_clock::{ClockInstant, ManualClock, RuntimeClock};
 use runtime_primitives::SyncTime;
 use std::{
     future::Future,
@@ -178,10 +178,12 @@ fn decode_receipts(frame: &ReceiptFrame) -> (CorrelationId, Vec<Receipt>) {
 }
 
 fn answer_receipts(
+    clock: &ManualClock,
     correlation_id: CorrelationId,
     results: Vec<ReceiptResult>,
 ) -> LinkLaneDisposition<CorrelatedReceiptResults> {
     LinkLaneDisposition::Answered {
+        accepted_at: clock.monotonic_now(),
         reply: CorrelatedReceiptResults {
             correlation_id,
             results,
@@ -230,7 +232,7 @@ async fn a_reoffer_after_reconnect_reuses_the_first_durable_decision_and_arrival
     clock.advance(Duration::from_secs(3)).unwrap();
     directory.set_answer(RecipientSessionAnswer::UnknownSession);
     let mut reopened = open_recipient(&path, directory, clock.clone()).await;
-    let replacement = new_connection(clock);
+    let replacement = new_connection(clock.clone());
     assert_eq!(
         reopened
             .receive_offer(direct_offer(FIRST_MESSAGE, "different body on reoffer"))
@@ -259,7 +261,7 @@ async fn a_reoffer_after_reconnect_reuses_the_first_durable_decision_and_arrival
             .settle_receipts(
                 replay,
                 Some(&replacement),
-                answer_receipts(correlation, vec![ReceiptResult::AlreadySettled])
+                answer_receipts(&clock, correlation, vec![ReceiptResult::AlreadySettled])
             )
             .await
             .unwrap(),
@@ -374,7 +376,7 @@ async fn short_stale_mismatched_and_missing_answers_keep_the_receipt_frame_pendi
     )));
     let connection = new_connection(clock.clone());
     let replacement = new_connection(clock.clone());
-    let mut inbox = open_recipient(&path, directory, clock).await;
+    let mut inbox = open_recipient(&path, directory, clock.clone()).await;
     for id in [FIRST_MESSAGE, SECOND_MESSAGE] {
         inbox
             .receive_offer(direct_offer(id, "inbox body"))
@@ -387,8 +389,8 @@ async fn short_stale_mismatched_and_missing_answers_keep_the_receipt_frame_pendi
     let result_pair = vec![ReceiptResult::Recorded, ReceiptResult::AlreadySettled];
 
     for answer in [
-        answer_receipts(correlation.clone(), vec![ReceiptResult::Recorded]),
-        answer_receipts(wrong_correlation, result_pair.clone()),
+        answer_receipts(&clock, correlation.clone(), vec![ReceiptResult::Recorded]),
+        answer_receipts(&clock, wrong_correlation, result_pair.clone()),
         LinkLaneDisposition::AnswerLost,
         LinkLaneDisposition::NotReached {
             cause: UntouchedCommand::WriterBusy,
@@ -411,7 +413,7 @@ async fn short_stale_mismatched_and_missing_answers_keep_the_receipt_frame_pendi
             .settle_receipts(
                 first,
                 Some(&replacement),
-                answer_receipts(correlation, result_pair.clone())
+                answer_receipts(&clock, correlation, result_pair.clone())
             )
             .await
             .unwrap(),
@@ -428,7 +430,7 @@ async fn short_stale_mismatched_and_missing_answers_keep_the_receipt_frame_pendi
             .settle_receipts(
                 next,
                 Some(&replacement),
-                answer_receipts(next_correlation, result_pair.clone())
+                answer_receipts(&clock, next_correlation, result_pair.clone())
             )
             .await
             .unwrap(),

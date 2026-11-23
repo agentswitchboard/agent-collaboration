@@ -264,6 +264,7 @@ async fn a_reply_after_timeout_cannot_settle_the_replay() {
         assert_eq!(retried.payload(), original.payload());
         assert_ne!(retried.correlation_id(), original.correlation_id());
         let late = WriteBatchMemberDisposition::Answered {
+            accepted_at: campaign.clock.monotonic_now(),
             reply: CorrelatedRequestReply {
                 correlation_id: original.correlation_id().clone(),
                 result: Box::new(post_created(999)),

@@ -200,6 +200,7 @@ async fn an_offline_intake_retry_does_not_delay_receipts_on_a_backwards_welcome(
     let admission = new_admission(session.machine_id.clone(), clock.clone());
     let lane = Arc::new(ScriptedBatchLane::new(
         admission.clone(),
+        clock.clone(),
         Default::default(),
     ));
     lane.admitted.send_replace(None);
@@ -294,6 +295,7 @@ async fn a_held_directory_does_not_block_status_deadlines_or_shutdown() {
     let admission = new_admission(session.machine_id.clone(), clock.clone());
     let lane = Arc::new(ScriptedBatchLane::new(
         admission.clone(),
+        clock.clone(),
         Default::default(),
     ));
     lane.admitted.send_replace(None);
@@ -389,6 +391,7 @@ async fn an_unanswered_lookup_defers_at_its_injected_deadline() {
     let admission = new_admission(session.machine_id.clone(), clock.clone());
     let lane = Arc::new(ScriptedBatchLane::new(
         admission.clone(),
+        clock.clone(),
         Default::default(),
     ));
     let inbox = RecipientInbox::new(
@@ -450,7 +453,7 @@ async fn a_full_offer_queue_is_saved_while_the_senders_status_reply_is_outstandi
     let admission = new_admission(session.machine_id.clone(), clock.clone());
     let (offers, pending_offers) = mpsc::channel(2);
     let lane = Arc::new(HoldStatusLane {
-        peer: ScriptedBatchLane::new(admission.clone(), Default::default()),
+        peer: ScriptedBatchLane::new(admission.clone(), clock.clone(), Default::default()),
         pending_offers: Mutex::new(pending_offers),
         offer_gate: watch::channel(false).0,
         status_gate: watch::channel(false).0,

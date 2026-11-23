@@ -270,7 +270,7 @@ impl OutboxDispatcher {
                 }
                 for (write, member) in active.writes.into_iter().zip(results.into_members()) {
                     match member.disposition {
-                        WriteBatchMemberDisposition::Answered { reply } => {
+                        WriteBatchMemberDisposition::Answered { reply, .. } => {
                             self.settling
                                 .answer(
                                     work,

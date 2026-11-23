@@ -16,7 +16,7 @@ use central_link_protocol::{
     RequestStatusAnswer, RequestStatusQuery, decode_text, encode_text,
 };
 use hegel::{TestCase, generators};
-use router_clock::{ManualClock, RuntimeClock};
+use router_clock::{ClockInstant, ManualClock, RuntimeClock};
 use runtime_primitives::SyncTime;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -37,7 +37,7 @@ use switchboard_message_custody::{
     recipient_inbox::RecipientInbox,
     recipient_sessions::{RecipientSessionAnswer, RecipientSessionDirectory},
 };
-use tokio::sync::watch;
+use tokio::sync::{Notify, watch};
 use workspace_ids::{MachineId, RequestId, SessionId};
 use workspace_model::{
     Caller, ChangePosition, ItemRef, WorkspaceAnswer, WorkspaceReply, WorkspaceResult,
@@ -97,8 +97,22 @@ pub(super) enum ScriptedBatch {
     Members(Vec<ScriptedMemberFate>),
 }
 
+/// A test controls when a status disposition becomes available and supplies the lane's acceptance stamp.
+pub(super) struct ScriptedStatusGate {
+    pub(super) entered: Notify,
+    pub(super) accepted: watch::Sender<Option<ClockInstant>>,
+}
+
+/// A test holds one write disposition after observing the batch command.
+#[derive(Default)]
+pub(super) struct ScriptedBatchGate {
+    pub(super) entered: Notify,
+    pub(super) release: Notify,
+}
+
 pub(super) struct ScriptedBatchLane {
     pub(super) admitted: watch::Sender<Option<AdmittedConnection>>,
+    clock: Arc<ManualClock>,
     lost_first_answers: BTreeSet<RequestId>,
     history: Mutex<PeerHistory>,
     calls: Mutex<Vec<ScriptedCommand>>,
@@ -106,15 +120,19 @@ pub(super) struct ScriptedBatchLane {
     refused_machine: Mutex<Option<MachineId>>,
     next_batch: Mutex<Option<ScriptedBatch>>,
     status_answers: Mutex<Vec<(Caller, RequestStatusQuery, RequestStatusAnswer)>>,
+    held_status: Mutex<Option<Arc<ScriptedStatusGate>>>,
+    held_batch: Mutex<Option<Arc<ScriptedBatchGate>>>,
 }
 
 impl ScriptedBatchLane {
     pub(super) fn new(
         admitted: AdmittedConnection,
+        clock: Arc<ManualClock>,
         lost_first_answers: BTreeSet<RequestId>,
     ) -> Self {
         Self {
             admitted: watch::channel(Some(admitted)).0,
+            clock,
             lost_first_answers,
             history: Mutex::new(PeerHistory::default()),
             calls: Mutex::new(Vec::new()),
@@ -122,6 +140,8 @@ impl ScriptedBatchLane {
             refused_machine: Mutex::new(None),
             next_batch: Mutex::new(None),
             status_answers: Mutex::new(Vec::new()),
+            held_status: Mutex::new(None),
+            held_batch: Mutex::new(None),
         }
     }
 
@@ -139,6 +159,21 @@ impl ScriptedBatchLane {
 
     pub(super) fn decisions(&self) -> BTreeMap<RequestId, ReplyPayload> {
         self.history.lock().unwrap().decisions.clone()
+    }
+
+    pub(super) fn hold_next_status(&self) -> Arc<ScriptedStatusGate> {
+        let gate = Arc::new(ScriptedStatusGate {
+            entered: Notify::new(),
+            accepted: watch::channel(None).0,
+        });
+        *self.held_status.lock().unwrap() = Some(gate.clone());
+        gate
+    }
+
+    pub(super) fn hold_next_batch(&self) -> Arc<ScriptedBatchGate> {
+        let gate = Arc::new(ScriptedBatchGate::default());
+        *self.held_batch.lock().unwrap() = Some(gate.clone());
+        gate
     }
 
     pub(super) fn script_status_answer(
@@ -229,6 +264,7 @@ impl ScriptedBatchLane {
                 WriteBatchMemberDisposition::AnswerLost { correlation_id }
             } else {
                 WriteBatchMemberDisposition::Answered {
+                    accepted_at: self.clock.monotonic_now(),
                     reply: CorrelatedRequestReply {
                         correlation_id,
                         result: Box::new(answer.clone()),
@@ -258,7 +294,15 @@ impl ReadyLinkLane for ScriptedBatchLane {
         &self,
         batch: WriteBatchCommand,
     ) -> Pin<Box<dyn Future<Output = WriteBatchDisposition> + Send + '_>> {
-        Box::pin(std::future::ready(self.respond_to_batch(batch)))
+        let gate = self.held_batch.lock().unwrap().take();
+        let disposition = self.respond_to_batch(batch);
+        Box::pin(async move {
+            if let Some(gate) = gate {
+                gate.entered.notify_one();
+                gate.release.notified().await;
+            }
+            disposition
+        })
     }
 
     fn submit_receipts(
@@ -270,7 +314,10 @@ impl ReadyLinkLane for ScriptedBatchLane {
             correlation_id: command.correlation_id,
             results: vec![ReceiptResult::Recorded; command.receipts.receipts().len()],
         };
-        Box::pin(std::future::ready(LinkLaneDisposition::Answered { reply }))
+        Box::pin(std::future::ready(LinkLaneDisposition::Answered {
+            reply,
+            accepted_at: self.clock.monotonic_now(),
+        }))
     }
 
     fn request_status(
@@ -294,7 +341,20 @@ impl ReadyLinkLane for ScriptedBatchLane {
             .lock()
             .unwrap()
             .push(ScriptedCommand::RequestStatus(command));
-        Box::pin(std::future::ready(LinkLaneDisposition::Answered { reply }))
+        let gate = self.held_status.lock().unwrap().take();
+        Box::pin(async move {
+            let accepted_at = if let Some(gate) = gate {
+                let mut accepted = gate.accepted.subscribe();
+                gate.entered.notify_one();
+                match accepted.wait_for(Option::is_some).await {
+                    Ok(instant) => (*instant).unwrap(),
+                    Err(_) => return LinkLaneDisposition::AnswerLost,
+                }
+            } else {
+                self.clock.monotonic_now()
+            };
+            LinkLaneDisposition::Answered { reply, accepted_at }
+        })
     }
 
     fn submit_immediate_request(
@@ -315,7 +375,10 @@ impl ReadyLinkLane for ScriptedBatchLane {
             .lock()
             .unwrap()
             .push(ScriptedCommand::ImmediateRequest(command));
-        Box::pin(std::future::ready(LinkLaneDisposition::Answered { reply }))
+        Box::pin(std::future::ready(LinkLaneDisposition::Answered {
+            reply,
+            accepted_at: self.clock.monotonic_now(),
+        }))
     }
 
     fn next_event(&self) -> Pin<Box<dyn Future<Output = Option<LinkLaneEvent>> + Send + '_>> {
@@ -391,6 +454,7 @@ async fn check_partial_replay(answers: &[bool]) {
         .collect();
     let lane = Arc::new(ScriptedBatchLane::new(
         new_admission(machine.clone(), clock.clone()),
+        clock.clone(),
         lost.clone(),
     ));
     let outbox = open_outbox(&database).await;

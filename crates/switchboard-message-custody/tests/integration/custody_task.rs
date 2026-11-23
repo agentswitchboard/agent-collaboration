@@ -101,6 +101,7 @@ async fn an_awaiting_batch_does_not_hold_an_immediate_status_read() {
     let machine: MachineId = "019f0000-0000-7000-8000-000000000011".parse().unwrap();
     let peer = Arc::new(ScriptedBatchLane::new(
         new_admission(machine.clone(), clock.clone()),
+        clock.clone(),
         Default::default(),
     ));
     let lane = Arc::new(HoldBatchLane {
@@ -170,6 +171,7 @@ async fn a_caller_gone_before_task_admission_leaves_no_outbox_row() {
     let machine: MachineId = "019f0000-0000-7000-8000-000000000011".parse().unwrap();
     let lane = Arc::new(ScriptedBatchLane::new(
         new_admission(machine.clone(), clock.clone()),
+        clock.clone(),
         Default::default(),
     ));
     let outbox = OutboxWork::new(Box::new(open_outbox(&path).await), clock.clone());

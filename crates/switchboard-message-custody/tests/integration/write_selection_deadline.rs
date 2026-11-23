@@ -103,7 +103,11 @@ async fn selection_fixture(
     let path = root.path().join("machine_local.sqlite");
     let clock = manual_clock(start_ms);
     let machine: MachineId = "019f0000-0000-7000-8000-000000000011".parse().unwrap();
-    let peer = ScriptedBatchLane::new(new_admission(machine.clone(), clock.clone()), lost);
+    let peer = ScriptedBatchLane::new(
+        new_admission(machine.clone(), clock.clone()),
+        clock.clone(),
+        lost,
+    );
     peer.admitted.send_replace(None);
     let outbox_store = MachineLocalStore::open(&path).await.unwrap();
     let lane = Arc::new(ElapsedSettlementLane {

@@ -123,6 +123,7 @@ impl NoticeFixture {
         );
         let lane = Arc::new(ScriptedBatchLane::new(
             new_admission(target.machine_id.clone(), clock.clone()),
+            clock.clone(),
             Default::default(),
         ));
         Self {

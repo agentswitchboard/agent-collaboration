@@ -224,7 +224,7 @@ pub(crate) fn settle_immediate_request(
         LinkLaneDisposition::NotReached { .. } => {
             Submission::Refused(SubmitRefusal::CentralUnavailable)
         }
-        LinkLaneDisposition::Answered { reply }
+        LinkLaneDisposition::Answered { reply, .. }
             if reply.correlation_id == *request.correlation_id()
                 && reply.result.matches_request(request.payload()) =>
         {

@@ -134,7 +134,7 @@ pub(crate) async fn settle_orphan_probe(
     if work.local_now_ms() >= probe.claim.deadline_ms {
         return report;
     }
-    let LinkLaneDisposition::Answered { reply } = disposition else {
+    let LinkLaneDisposition::Answered { reply, .. } = disposition else {
         return report;
     };
     if reply.correlation_id != probe.command.correlation_id {

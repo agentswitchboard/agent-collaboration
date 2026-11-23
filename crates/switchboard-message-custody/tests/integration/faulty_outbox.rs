@@ -47,12 +47,21 @@ struct FaultJournal {
     planned: Vec<(FaultSite, FaultStage)>,
     fired: Vec<(FaultSite, FaultStage)>,
     committed_insert: Option<Arc<CommittedInsertGate>>,
+    scoped_read_gate: Option<Arc<ScopedReadGate>>,
+    scoped_reads_unavailable: bool,
 }
 
 /// A test holds the worker between SQLite's insert commit and its submit reply.
 #[derive(Default)]
 pub(super) struct CommittedInsertGate {
     pub(super) committed: Notify,
+    pub(super) release: Notify,
+}
+
+/// A test stops custody inside one local status lookup until it publishes the competing event.
+#[derive(Default)]
+pub(super) struct ScopedReadGate {
+    pub(super) entered: Notify,
     pub(super) release: Notify,
 }
 
@@ -77,6 +86,16 @@ impl StoreFaultPlan {
         let gate = Arc::new(CommittedInsertGate::default());
         self.0.lock().unwrap().committed_insert = Some(gate.clone());
         gate
+    }
+
+    pub(super) fn hold_next_scoped_read(&self) -> Arc<ScopedReadGate> {
+        let gate = Arc::new(ScopedReadGate::default());
+        self.0.lock().unwrap().scoped_read_gate = Some(gate.clone());
+        gate
+    }
+
+    pub(super) fn fail_scoped_reads(&self, unavailable: bool) {
+        self.0.lock().unwrap().scoped_reads_unavailable = unavailable;
     }
 
     fn wrap<'call, ResultType: Send + 'call>(
@@ -154,10 +173,29 @@ impl OutboxStorage for FaultyOutbox {
         caller: &'call Caller,
         key: &'call OutboxRequestKey,
     ) -> OutboxFuture<'call, OutboxRequestStatus> {
-        self.plan.wrap(
+        let (gate, unavailable) = {
+            let mut journal = self.plan.0.lock().unwrap();
+            (
+                journal.scoped_read_gate.take(),
+                journal.scoped_reads_unavailable,
+            )
+        };
+        let reading = self.plan.wrap(
             FaultSite::ScopedStatus,
             self.inner.scoped_request_status(caller, key),
-        )
+        );
+        Box::pin(async move {
+            if let Some(gate) = gate {
+                gate.entered.notify_one();
+                gate.release.notified().await;
+            }
+            if unavailable {
+                return Err(OutboxStoreError::Database(
+                    io::Error::other("scripted persistent scoped read failure").into(),
+                ));
+            }
+            reading.await
+        })
     }
 
     fn pending_for<'call>(

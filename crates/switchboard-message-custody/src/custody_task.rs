@@ -207,6 +207,25 @@ type WriteReply = (PreparedWriteBatch, WriteBatchDisposition);
 type ReceiptReply = (ReceiptFrame, LinkLaneDisposition<CorrelatedReceiptResults>);
 type OrphanReply = (OrphanProbe, LinkLaneDisposition<CorrelatedStatusReply>);
 
+enum ReadyOrphanTurn {
+    Answer(Box<OrphanReply>),
+    Scan,
+}
+
+async fn ready_orphan_turn(
+    clock: &dyn RuntimeClock,
+    scan_at: Option<ClockInstant>,
+    reply: &mut Option<InFlight<OrphanReply>>,
+) -> ReadyOrphanTurn {
+    // The lane may already have accepted and published a reply while the
+    // worker was held. Inspect it before an equally ready cutoff scan.
+    tokio::select! {
+        biased;
+        result = poll_job(reply) => ReadyOrphanTurn::Answer(Box::new(result)),
+        () = sleep_until(clock, scan_at) => ReadyOrphanTurn::Scan,
+    }
+}
+
 const LOCAL_RECOVERY_RETRY: Duration = Duration::from_secs(1);
 
 async fn run_custody(
@@ -326,7 +345,8 @@ async fn run_custody(
                 retry_orphans_at = None;
                 orphan_scan_at = Some(clock.monotonic_now());
             },
-            () = sleep_until(clock.as_ref(), orphan_scan_at) => {
+            orphan_turn = ready_orphan_turn(clock.as_ref(), orphan_scan_at, &mut orphan_reply) => match orphan_turn {
+                ReadyOrphanTurn::Scan => {
                 match custody.prepare_recovery_turn(orphan_reply.is_none(), &deferred_orphans).await {
                     Ok(turn) => {
                         report_flush(&*sink, Ok(turn.report));
@@ -347,8 +367,9 @@ async fn run_custody(
                         orphan_scan_at = Some(clock.monotonic_now().after(LOCAL_RECOVERY_RETRY));
                     }
                 }
-            },
-            (probe, outcome) = poll_job(&mut orphan_reply) => {
+                }
+                ReadyOrphanTurn::Answer(completed) => {
+                let (probe, outcome) = *completed;
                 orphan_reply = None;
                 deferred_orphans.insert(probe.claim.key.request_id.clone());
                 report_flush(&*sink, Ok(custody.settle_recovery_probe(probe, outcome).await));
@@ -359,6 +380,7 @@ async fn run_custody(
                     retry_settlement_at = Some(clock.monotonic_now().after(LOCAL_RECOVERY_RETRY));
                 }
                 orphan_scan_at = Some(clock.monotonic_now());
+                }
             },
             () = sleep_until(clock.as_ref(), retry_notices_at) => {
                 retry_notices_at = project_sender_notices(&mut custody, &*sink).await;

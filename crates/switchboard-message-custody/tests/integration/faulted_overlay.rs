@@ -71,6 +71,7 @@ impl FaultCampaign {
         let machine: MachineId = "019f0000-0000-7000-8000-000000000011".parse().unwrap();
         let peer = Arc::new(ScriptedBatchLane::new(
             new_admission(machine.clone(), clock.clone()),
+            clock.clone(),
             Default::default(),
         ));
         let faults = StoreFaultPlan::default();

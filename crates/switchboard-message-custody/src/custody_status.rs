@@ -80,6 +80,7 @@ pub(crate) fn remote_status(
             correlation_id,
             result,
         },
+        ..
     } = disposition
     else {
         return CustodyRequestStatus::StatusUnavailable;
