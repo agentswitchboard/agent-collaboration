@@ -8,6 +8,8 @@ use workspace_model::{
     central_mail::{CentralMailAnswer, CentralMailOperation, CentralMailResult, NoticeCadence},
 };
 
+use crate::workspace_miss::WorkspaceMisses;
+
 /// The link client derives the expected reply from the original request.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct ReplyExpectation(ExpectedFamily);
@@ -15,7 +17,10 @@ pub struct ReplyExpectation(ExpectedFamily);
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum ExpectedFamily {
     Mail(MailSuccess),
-    Workspace(WorkspaceSuccess),
+    Workspace {
+        success: WorkspaceSuccess,
+        misses: WorkspaceMisses,
+    },
 }
 
 impl ReplyExpectation {
@@ -24,9 +29,10 @@ impl ReplyExpectation {
             RequestPayload::Mail(request) => {
                 ExpectedFamily::Mail(MailSuccess::for_operation(&request.operation))
             }
-            RequestPayload::Workspace(request) => {
-                ExpectedFamily::Workspace(WorkspaceSuccess::for_request(request))
-            }
+            RequestPayload::Workspace(request) => ExpectedFamily::Workspace {
+                success: WorkspaceSuccess::for_request(request),
+                misses: WorkspaceMisses::for_request(request),
+            },
         })
     }
 
@@ -45,18 +51,20 @@ impl ReplyExpectation {
                     | CentralMailResult::CentralUnavailable,
                 ),
             ) => true,
-            (ExpectedFamily::Workspace(expected), ReplyPayload::Workspace(reply)) => {
+            (ExpectedFamily::Workspace { success, misses }, ReplyPayload::Workspace(reply)) => {
                 match &reply.result {
-                    WorkspaceResult::Done(answer) => expected.accepts(answer),
-                    WorkspaceResult::Refused(_)
-                    | WorkspaceResult::NotFound { .. }
-                    | WorkspaceResult::Conflict
+                    WorkspaceResult::Done(answer) => success.accepts(answer),
+                    WorkspaceResult::Refused(refusal) => misses.accepts_refusal(refusal),
+                    WorkspaceResult::NotFound { workspace_id, item } => {
+                        misses.accepts_miss(workspace_id, item)
+                    }
+                    WorkspaceResult::Conflict
                     | WorkspaceResult::OutcomeUnknown
                     | WorkspaceResult::CentralUnavailable => true,
                 }
             }
             (ExpectedFamily::Mail(_), ReplyPayload::Workspace(_))
-            | (ExpectedFamily::Workspace(_), ReplyPayload::Mail(_)) => false,
+            | (ExpectedFamily::Workspace { .. }, ReplyPayload::Mail(_)) => false,
         }
     }
 }

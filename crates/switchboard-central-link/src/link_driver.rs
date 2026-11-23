@@ -8,31 +8,32 @@ use std::{
 
 use central_link_client::{
     AdmittedConnection, AttemptOutcome, ClientAction, ClientEvent, ConnectionAttempt, LinkClient,
-    WelcomeClockAnchor,
+    LinkLocalFault, WelcomeClockAnchor, link_frame_write_deadline,
 };
 use central_link_protocol::{
     DataFrame, FrameDirection, LinkFrame, MachineLinkCloseCode, TokenRenewalResult, decode_text,
     encode_text,
 };
-use futures_util::{FutureExt, Sink, SinkExt, Stream, StreamExt};
+use futures_util::{FutureExt, Sink, SinkExt, Stream};
 use router_clock::{ClockInstant, RuntimeClock};
 use state_machine_core::StateMachine;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::watch;
 use tokio_tungstenite::tungstenite::{Error as WebSocketError, Message};
 use workspace_ids::MachineId;
 
 use crate::{
     AddressError, DialAddress,
     admitted_lane_policy::SocketReply,
-    admitted_lane_socket::{AdmittedSocketLane, EventPermit, FrameOffer, ReadAdmission},
+    admitted_lane_socket::{AdmittedSocketLane, EventPermit, FrameOffer},
     lane_writer::{FrameWrite, SendFence, write_user_frame},
-    lease_source::{LeaseFailure, LeaseFuture, LeaseSource, LinkLease},
-    link_lane::{LaneRequest, LinkLaneOwner},
+    lease_source::{LeaseFailure, LeaseFuture, LeaseSource},
+    link_lane::LinkLaneOwner,
     link_policy::{DialFailure, LinkEffect, LinkInput, LinkPolicy, LinkState, LinkStatus},
+    socket_input::{SocketInput, SocketPriority, next_socket_input},
     socket_upgrade::{MAX_CREDENTIAL_BYTES, MAX_OUTBOUND_TEXT_BYTES},
+    wire_write_fence::WireWriteFence,
 };
 
-const WRITE_LIMIT: Duration = Duration::from_secs(5);
 const MIN_LEASE_RETRY: Duration = Duration::from_secs(1);
 
 /// The binding and validated address supplied by the enrollment and configuration owners.
@@ -91,7 +92,7 @@ impl<Binding: Clone + Eq> Control<'_, Binding> {
 
 struct BindingDriver<'source, Binding, Source> {
     lease_source: &'source Source,
-    clock: &'source dyn RuntimeClock,
+    clock: Arc<dyn RuntimeClock>,
     status: &'source watch::Sender<LinkStatus>,
     address: Result<DialAddress, AddressError>,
     machine_id: MachineId,
@@ -100,27 +101,17 @@ struct BindingDriver<'source, Binding, Source> {
     lease_retry_at: Option<ClockInstant>,
 }
 
+struct SocketAttemptTiming<'attempt> {
+    started: ClockInstant,
+    writes: &'attempt WireWriteFence,
+}
+
 enum OpenExit<Binding> {
     Resume,
     Final {
         binding: Binding,
         cause: central_link_client::EnrollmentEnd,
     },
-}
-
-enum SocketInput<Binding> {
-    Timer,
-    Frame(Option<Result<Message, WebSocketError>>, Option<EventPermit>),
-    EventSpace,
-    Lease(Result<LinkLease<Binding>, LeaseFailure>),
-    Command(LaneRequest),
-}
-
-#[derive(Clone, Copy)]
-enum SocketPriority {
-    ReadFrame,
-    AcquireLease,
-    AcceptCommand,
 }
 
 enum SocketWriteFailure {
@@ -166,7 +157,7 @@ where
             terminal_binding = None;
             let mut driver = BindingDriver {
                 lease_source: self.lease_source.as_ref(),
-                clock: self.clock.as_ref(),
+                clock: self.clock.clone(),
                 status: &self.status,
                 address: settings.address,
                 machine_id: self.machine_id.clone(),
@@ -347,7 +338,7 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
                     tokio::select! {
                         biased;
                         () = self.clock.sleep_until(deadline) => Err(DialFailure::Transport),
-                        result = Box::pin(address.dial(&lease.token)) => result,
+                        result = Box::pin(address.dial(&lease.token, self.clock.clone())) => result,
                     }
                 })
                 .await;
@@ -356,14 +347,22 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
                 Err(reason) => return self.interrupted_attempt(&attempt, reason),
             };
             match result {
-                Ok(mut socket) => {
+                Ok((mut socket, writes)) => {
                     let done = self
-                        .open_socket(&mut socket, &attempt, binding, started, control, lane_owner)
+                        .open_socket(
+                            &mut socket,
+                            &attempt,
+                            binding,
+                            SocketAttemptTiming {
+                                started,
+                                writes: &writes,
+                            },
+                            control,
+                            lane_owner,
+                        )
                         .await;
                     lane_owner.reject_queued();
-                    // Close is best-effort during cancellation. Dropping the stream
-                    // terminates custody even when a blocked peer cannot take a frame.
-                    let _ = socket.send(Message::Close(None)).now_or_never();
+                    finish_socket(&mut socket, &writes);
                     if let Err(reason) = done {
                         return self.interrupted_attempt(&attempt, reason);
                     }
@@ -407,7 +406,7 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
              ),
         attempt: &ConnectionAttempt,
         binding: &Binding,
-        started: ClockInstant,
+        timing: SocketAttemptTiming<'_>,
         control: &mut Control<'_, Binding>,
         lane_owner: &mut LinkLaneOwner,
     ) -> Result<(), Interrupted> {
@@ -416,6 +415,8 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
         let mut priority = SocketPriority::ReadFrame;
         let mut admitted_lane = AdmittedSocketLane::new(lane_owner);
         let mut read_paused_at = None;
+        let mut delivery_stall_at = None;
+        let clock = self.clock.clone();
         loop {
             let now = self.clock.monotonic_now();
             admitted_lane.expire(now);
@@ -440,6 +441,17 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
                 return Ok(());
             }
             let can_read = admitted_lane.can_read_without_delay();
+            if can_read || !admitted_lane.is_admitted() {
+                delivery_stall_at = None;
+            } else if let Some(authority_until) = self.state.renewal_deadline() {
+                let deadline = delivery_stall_at
+                    .get_or_insert_with(|| delivery_stall_deadline(now, authority_until));
+                if now >= *deadline {
+                    admitted_lane.mark_local_fault(LinkLocalFault::DeliveryConsumerStalled);
+                    self.close(attempt, None);
+                    return Ok(());
+                }
+            }
             let client_action = if can_read {
                 if let Some(paused_at) = read_paused_at.take() {
                     self.client
@@ -452,7 +464,13 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
             };
             match client_action {
                 Some(ClientAction::SendPing) => {
-                    if !self.write_heartbeat(socket, attempt, control).await? {
+                    if !admitted_lane
+                        .keeping_reply_deadline(
+                            clock.as_ref(),
+                            self.write_heartbeat(socket, attempt, control),
+                        )
+                        .await?
+                    {
                         return Ok(());
                     }
                     continue;
@@ -474,12 +492,13 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
                 .into_iter()
                 .chain(self.state.next_deadline())
                 .chain(admitted_lane.reply_deadline())
+                .chain(delivery_stall_at)
                 .min();
             let input = control
                 .during(async {
                     tokio::select! {
                         biased;
-                        () = sleep_if_due(self.clock, deadline) => SocketInput::Timer,
+                        () = sleep_if_due(self.clock.as_ref(), deadline) => SocketInput::Timer,
                         input = next_socket_input(socket, &mut acquiring, &mut lane_owner.commands, admitted_lane.can_offer(), admitted_lane.read_admission(), priority) => input,
                     }
                 })
@@ -519,7 +538,7 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
                     if !self.receive_frame(
                         attempt,
                         frame,
-                        started,
+                        timing.started,
                         renewal_sent_at,
                         &mut admitted_lane,
                         permit,
@@ -545,22 +564,57 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
                                 self.close(attempt, None);
                                 return Ok(());
                             };
+                            let write_began_at = self.clock.monotonic_now();
                             let fence = SendFence {
                                 send_before,
                                 authority_until,
-                                write_until: self.clock.monotonic_now().after(WRITE_LIMIT),
+                                write_until: link_frame_write_deadline(write_began_at),
                             };
-                            match control
-                                .during(write_user_frame(socket, wire, fence, self.clock, || {
+                            let stalled = admitted_lane
+                                .wait_for_delivery_stall(clock.as_ref(), delivery_stall_at);
+                            let writing = control.during(write_user_frame(
+                                socket,
+                                wire,
+                                fence,
+                                clock.as_ref(),
+                                timing.writes,
+                            ));
+                            let outcome = tokio::select! {
+                                biased;
+                                () = stalled => None,
+                                outcome = writing => Some(outcome),
+                            };
+                            let Some(outcome) = outcome else {
+                                if timing.writes.crossed() {
                                     admitted_lane.start_write();
-                                }))
-                                .await?
-                            {
-                                FrameWrite::Flushed => {
-                                    admitted_lane.finish_write(self.clock.monotonic_now())
                                 }
-                                FrameWrite::Untouched(cause) => admitted_lane.reject_write(cause),
-                                FrameWrite::PossiblyWritten => {
+                                admitted_lane
+                                    .mark_local_fault(LinkLocalFault::DeliveryConsumerStalled);
+                                self.close(attempt, None);
+                                return Ok(());
+                            };
+                            match outcome {
+                                Err(reason) => {
+                                    if timing.writes.crossed() {
+                                        admitted_lane.start_write();
+                                    }
+                                    return Err(reason);
+                                }
+                                Ok(FrameWrite::Flushed) => {
+                                    admitted_lane.start_write();
+                                    admitted_lane
+                                        .finish_write(write_began_at, self.clock.monotonic_now())
+                                }
+                                Ok(FrameWrite::Untouched(cause)) => {
+                                    admitted_lane.reject_write(cause)
+                                }
+                                Ok(FrameWrite::DiscardUntouched(cause)) => {
+                                    admitted_lane.reject_write(cause);
+                                    self.close(attempt, None);
+                                    return Ok(());
+                                }
+                                Ok(FrameWrite::PossiblyWritten) => {
+                                    admitted_lane.start_write();
                                     self.close(attempt, None);
                                     return Ok(());
                                 }
@@ -591,7 +645,22 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
                                     correlation_id,
                                     token: lease.token,
                                 });
-                                if self.write(socket, frame, control).await?.is_err() {
+                                let stalled = admitted_lane
+                                    .wait_for_delivery_stall(clock.as_ref(), delivery_stall_at);
+                                let renewal = admitted_lane.keeping_reply_deadline(
+                                    clock.as_ref(),
+                                    self.write(socket, frame, control),
+                                );
+                                let result = tokio::select! {
+                                    biased;
+                                    () = stalled => None,
+                                    result = renewal => Some(result?),
+                                };
+                                if result.is_none() {
+                                    admitted_lane
+                                        .mark_local_fault(LinkLocalFault::DeliveryConsumerStalled);
+                                }
+                                if !matches!(result, Some(Ok(()))) {
                                     self.close(attempt, None);
                                     return Ok(());
                                 }
@@ -797,71 +866,26 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
     }
 
     fn write_deadline(&self) -> ClockInstant {
-        let limit = self.clock.monotonic_now().after(WRITE_LIMIT);
+        let limit = link_frame_write_deadline(self.clock.monotonic_now());
         self.state
             .renewal_deadline()
             .map_or(limit, |deadline| deadline.min(limit))
     }
 }
 
-async fn next_socket_input<Binding>(
-    socket: &mut (impl Stream<Item = Result<Message, WebSocketError>> + Unpin),
-    acquisition: &mut Option<LeaseFuture<'_, Binding>>,
-    commands: &mut mpsc::Receiver<LaneRequest>,
-    can_offer: bool,
-    read_admission: ReadAdmission,
-    priority: SocketPriority,
-) -> SocketInput<Binding> {
-    let reading = read_socket(socket, read_admission);
-    let leasing = acquire_if_pending(acquisition).map(SocketInput::Lease);
-    let command = receive_command(commands, can_offer).map(SocketInput::Command);
-    match priority {
-        SocketPriority::ReadFrame => poll_in_order(reading, leasing, command).await,
-        SocketPriority::AcquireLease => poll_in_order(leasing, command, reading).await,
-        SocketPriority::AcceptCommand => poll_in_order(command, reading, leasing).await,
+pub(super) fn finish_socket(socket: &mut (impl Sink<Message> + Unpin), writes: &WireWriteFence) {
+    // A discarded frame may still live in Tungstenite or TLS. Dropping the
+    // transport is the only teardown that cannot flush that output.
+    if !writes.must_discard() {
+        let _ = socket.send(Message::Close(None)).now_or_never();
     }
 }
 
-async fn read_socket<Binding>(
-    socket: &mut (impl Stream<Item = Result<Message, WebSocketError>> + Unpin),
-    admission: ReadAdmission,
-) -> SocketInput<Binding> {
-    match admission {
-        ReadAdmission::AwaitingWelcome => SocketInput::Frame(socket.next().await, None),
-        ReadAdmission::Admitted(events) => match events.reserve_owned().await {
-            Ok(permit) => SocketInput::Frame(socket.next().await, Some(permit)),
-            Err(_) => SocketInput::Frame(None, None),
-        },
-        ReadAdmission::AwaitingEventSpace { events, slots } => {
-            match events.reserve_many(slots).await {
-                Ok(_) => SocketInput::EventSpace,
-                Err(_) => SocketInput::Frame(None, None),
-            }
-        }
-    }
-}
-
-async fn poll_in_order<Output>(
-    first: impl Future<Output = Output>,
-    second: impl Future<Output = Output>,
-    third: impl Future<Output = Output>,
-) -> Output {
-    tokio::select! {
-        biased;
-        result = first => result,
-        result = second => result,
-        result = third => result,
-    }
-}
-
-async fn receive_command(
-    commands: &mut mpsc::Receiver<LaneRequest>,
-    can_offer: bool,
-) -> LaneRequest {
-    if can_offer && let Some(command) = commands.recv().await {
-        return command;
-    }
-    pending().await
+fn delivery_stall_deadline(now: ClockInstant, authority_until: ClockInstant) -> ClockInstant {
+    // A local durable intake has up to five seconds to catch up, and the
+    // connection retains three quarters of its remaining authority for renewal.
+    let remaining = authority_until.saturating_duration_since(now);
+    now.after(Duration::from_secs(5).min(remaining / 4))
 }
 
 fn bounded_wire_text(frame: &LinkFrame) -> Result<String, SocketWriteFailure> {
@@ -881,15 +905,6 @@ fn bounded_wire_text(frame: &LinkFrame) -> Result<String, SocketWriteFailure> {
 async fn sleep_if_due(clock: &dyn RuntimeClock, deadline: Option<ClockInstant>) {
     match deadline {
         Some(deadline) => clock.sleep_until(deadline).await,
-        None => pending().await,
-    }
-}
-
-async fn acquire_if_pending<Binding>(
-    acquisition: &mut Option<LeaseFuture<'_, Binding>>,
-) -> Result<crate::lease_source::LinkLease<Binding>, LeaseFailure> {
-    match acquisition {
-        Some(future) => future.await,
         None => pending().await,
     }
 }

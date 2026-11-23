@@ -1,11 +1,16 @@
-//! First-byte fence and transport custody for a prepared user frame.
+//! Send custody and the exclusive first-transport-write fence for user frames.
 
-use std::future::poll_fn;
+use std::{
+    future::{pending, poll_fn},
+    pin::pin,
+};
 
 use central_link_client::UntouchedCommand;
 use futures_util::{Sink, SinkExt};
 use router_clock::{ClockInstant, RuntimeClock};
 use tokio_tungstenite::tungstenite::{Error as SocketError, Message};
+
+use crate::wire_write_fence::WireWriteFence;
 
 pub(super) struct SendFence {
     pub(super) send_before: ClockInstant,
@@ -16,6 +21,7 @@ pub(super) struct SendFence {
 pub(super) enum FrameWrite {
     Flushed,
     Untouched(UntouchedCommand),
+    DiscardUntouched(UntouchedCommand),
     PossiblyWritten,
 }
 
@@ -40,44 +46,67 @@ pub(super) async fn write_user_frame(
     wire: String,
     fence: SendFence,
     clock: &dyn RuntimeClock,
-    mark_writing: impl FnOnce(),
+    boundary: &WireWriteFence,
 ) -> FrameWrite {
     let deadline = fence.first_byte_deadline();
     let ready = tokio::select! {
         biased;
         () = clock.sleep_until(deadline) => return FrameWrite::Untouched(fence.untouched_at(clock.monotonic_now())),
-        ready = poll_fn(|context| socket.poll_ready_unpin(context)) => ready,
+        ready = async {
+            poll_fn(|context| socket.poll_ready_unpin(context)).await?;
+            // Earlier control output must be fully flushed before its bytes
+            // could be mistaken for those of this application frame.
+            socket.flush().await
+        } => ready,
     };
     if ready.is_err() {
         return FrameWrite::Untouched(UntouchedCommand::SinkRejected);
     }
-    // Sink readiness can advance elapsed time during the timer-first poll.
     let now = clock.monotonic_now();
     if now >= deadline {
         return FrameWrite::Untouched(fence.untouched_at(now));
     }
-    let started = match socket.start_send_unpin(Message::Text(wire.into())) {
-        // This error proves this frame was never appended. Discard its payload.
+
+    let guard = boundary.watch_first_byte(deadline);
+    match socket.start_send_unpin(Message::Text(wire.into())) {
+        Ok(()) => {}
         Err(SocketError::WriteBufferFull(_)) => {
+            guard.complete();
             return FrameWrite::Untouched(UntouchedCommand::SinkRejected);
         }
-        result => result,
-    };
-    mark_writing();
-    if started.is_err() {
-        return FrameWrite::PossiblyWritten;
-    }
-    let flush_deadline = fence.authority_until.min(fence.write_until);
-    tokio::select! {
-        biased;
-        () = clock.sleep_until(flush_deadline) => FrameWrite::PossiblyWritten,
-        result = socket.flush() => match result {
-            Ok(()) => FrameWrite::Flushed,
-            Err(_) => FrameWrite::PossiblyWritten,
+        Err(_) => {
+            if guard.crossed() {
+                return FrameWrite::PossiblyWritten;
+            }
+            return FrameWrite::DiscardUntouched(fence.untouched_at(clock.monotonic_now()));
         }
+    }
+
+    let flush_deadline = fence.authority_until.min(fence.write_until);
+    let mut flush = pin!(socket.flush());
+    let flush_result = tokio::select! {
+        biased;
+        () = clock.sleep_until(flush_deadline) => None,
+        () = async {
+            clock.sleep_until(deadline).await;
+            if guard.crossed() { pending::<()>().await; }
+        } => None,
+        result = &mut flush => Some(result),
+    };
+    if guard.crossed() {
+        if matches!(flush_result, Some(Ok(()))) {
+            guard.complete();
+            FrameWrite::Flushed
+        } else {
+            FrameWrite::PossiblyWritten
+        }
+    } else {
+        // Dropping the guard leaves the transport quarantined. A later Close
+        // cannot force the staged WebSocket or TLS data across the boundary.
+        FrameWrite::DiscardUntouched(fence.untouched_at(clock.monotonic_now()))
     }
 }
 
 #[cfg(test)]
 #[path = "lane_writer_test.rs"]
-mod tests;
+pub(crate) mod tests;

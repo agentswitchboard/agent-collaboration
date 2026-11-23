@@ -1,13 +1,18 @@
 //! Interpret the admitted-lane policy and own its event permits for one socket.
 
-use std::{collections::BTreeSet, sync::Arc, time::Duration};
+use std::{
+    collections::BTreeSet,
+    future::{Future, pending},
+    pin::pin,
+    sync::Arc,
+};
 
 use central_link_client::{
-    AdmittedConnection, ClientEvent, ConnectionAttempt, LinkLaneEvent, UntouchedCommand,
-    ValidatedDeliveryOffer,
+    AdmittedConnection, ClientEvent, ConnectionAttempt, LinkLaneEvent, LinkLocalFault,
+    UntouchedCommand, ValidatedDeliveryOffer, link_frame_answer_deadline,
 };
 use central_link_protocol::CorrelationId;
-use router_clock::ClockInstant;
+use router_clock::{ClockInstant, RuntimeClock};
 use state_machine_core::StateMachine;
 use tokio::sync::{mpsc, oneshot, watch};
 
@@ -18,7 +23,6 @@ use crate::{
     link_lane::{CommandIntake, LaneRequest, LinkLaneOwner},
 };
 
-const ANSWER_LIMIT: Duration = Duration::from_secs(30);
 const CONNECTION_CORRELATION_LIMIT: usize = 4096;
 
 pub(super) type EventPermit = mpsc::OwnedPermit<LinkLaneEvent>;
@@ -39,6 +43,7 @@ pub(super) struct AdmittedSocketLane {
     events: mpsc::Sender<LinkLaneEvent>,
     pending_admission: Option<AdmittedConnection>,
     withdrawal: Option<EventPermit>,
+    local_fault: Option<LinkLocalFault>,
     operation: Option<PendingOperation>,
     used_correlations: BTreeSet<CorrelationId>,
 }
@@ -67,6 +72,7 @@ impl AdmittedSocketLane {
             events: owner.events.clone(),
             pending_admission: None,
             withdrawal: None,
+            local_fault: None,
             operation: None,
             used_correlations: BTreeSet::new(),
         }
@@ -142,6 +148,27 @@ impl AdmittedSocketLane {
         self.pending_admission.is_none() && (!self.is_admitted() || self.events.capacity() != 0)
     }
 
+    pub(super) fn mark_local_fault(&mut self, cause: LinkLocalFault) {
+        self.local_fault = Some(cause);
+    }
+
+    pub(super) fn wait_for_delivery_stall<'clock>(
+        &self,
+        clock: &'clock dyn RuntimeClock,
+        deadline: Option<ClockInstant>,
+    ) -> impl Future<Output = ()> + use<'clock> {
+        let pressure = deadline.map(|deadline| (self.events.clone(), deadline));
+        async move {
+            if let Some((events, deadline)) = pressure {
+                clock.sleep_until(deadline).await;
+                if events.capacity() == 0 {
+                    return;
+                }
+            }
+            pending::<()>().await;
+        }
+    }
+
     pub(super) fn deliver(&self, event: ClientEvent, permit: Option<EventPermit>) -> bool {
         let (
             Some(admitted),
@@ -185,6 +212,23 @@ impl AdmittedSocketLane {
         {
             self.apply(LaneInput::Elapsed { now });
         }
+    }
+
+    pub(super) async fn keeping_reply_deadline<Output>(
+        &mut self,
+        clock: &dyn RuntimeClock,
+        write: impl Future<Output = Output>,
+    ) -> Output {
+        let Some(deadline) = self.reply_deadline() else {
+            return write.await;
+        };
+        let mut write = pin!(write);
+        tokio::select! {
+            biased;
+            () = clock.sleep_until(deadline) => self.expire(clock.monotonic_now()),
+            output = &mut write => return output,
+        }
+        write.await
     }
 
     pub(super) fn reply(
@@ -278,9 +322,9 @@ impl AdmittedSocketLane {
         self.apply(LaneInput::WriteRejected { cause });
     }
 
-    pub(super) fn finish_write(&mut self, now: ClockInstant) {
+    pub(super) fn finish_write(&mut self, write_began_at: ClockInstant, flushed_at: ClockInstant) {
         self.apply(LaneInput::WriteFlushed {
-            deadline: now.after(ANSWER_LIMIT),
+            deadline: link_frame_answer_deadline(write_began_at, flushed_at),
         });
     }
 }
@@ -297,7 +341,11 @@ impl Drop for AdmittedSocketLane {
                 connection: connection.clone(),
             });
             if let Some(withdrawal) = self.withdrawal.take() {
-                withdrawal.send(LinkLaneEvent::ConnectionNotAdmitted { connection });
+                let event = match self.local_fault {
+                    Some(cause) => LinkLaneEvent::ConnectionFaulted { connection, cause },
+                    None => LinkLaneEvent::ConnectionNotAdmitted { connection },
+                };
+                withdrawal.send(event);
             }
         }
     }

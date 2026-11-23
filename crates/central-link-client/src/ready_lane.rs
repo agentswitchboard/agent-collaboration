@@ -1,6 +1,6 @@
 //! Commands and observations shared by the socket owner and its ready-link users.
 
-use std::{future::Future, io, pin::Pin};
+use std::{future::Future, io, pin::Pin, time::Duration};
 
 use central_link_protocol::{
     CentralCall, CentralCallReply, CorrelationId, DataFrame, DeliveryMessage, LinkFrame,
@@ -17,6 +17,29 @@ use crate::{ConnectionAttempt, ReplyExpectation};
 
 /// The usable UTF-8 payload budget for a client frame after its longest masked header.
 pub const LINK_LANE_FRAME_BYTES: usize = 1024 * 1024 - 14;
+
+const FRAME_WRITE_LIMIT: Duration = Duration::from_secs(5);
+const FRAME_ANSWER_LIMIT: Duration = Duration::from_secs(30);
+
+/// The maximum elapsed time from a command frame's first accepted transport byte
+/// to its lane disposition, including the remaining flush and wait for an answer.
+pub const LINK_LANE_SETTLEMENT_LIMIT: Duration =
+    FRAME_WRITE_LIMIT.saturating_add(FRAME_ANSWER_LIMIT);
+
+/// Calculate the socket writer's elapsed deadline for a frame it is about to write.
+pub fn link_frame_write_deadline(write_began_at: ClockInstant) -> ClockInstant {
+    write_began_at.after(FRAME_WRITE_LIMIT)
+}
+
+/// Calculate the command owner's answer deadline after a completed transport flush.
+pub fn link_frame_answer_deadline(
+    write_began_at: ClockInstant,
+    flushed_at: ClockInstant,
+) -> ClockInstant {
+    flushed_at
+        .after(FRAME_ANSWER_LIMIT)
+        .min(write_began_at.after(LINK_LANE_SETTLEMENT_LIMIT))
+}
 
 /// The write-batch envelope cost in addition to encoded members and their commas.
 pub const WRITE_BATCH_ENVELOPE_BYTES: usize = b"{\"kind\":\"batch\",\"requests\":[]}".len();

@@ -428,7 +428,7 @@ async fn full_delivery_queue_backpressures_reads_without_losing_stamps_or_reconn
         let _ = socket.send(Message::Text(wire.into())).await;
     }
     let paused = tokio::select! {
-        () = fixture.clock.not_due_check_now(tick(60)) => true,
+        () = fixture.clock.not_due_check_now(tick(5)) => true,
         _ = fixture.status.wait_for(|status| !matches!(status, LinkStatus::Welcomed { .. })) => false,
     };
     assert!(
@@ -465,6 +465,41 @@ async fn full_delivery_queue_backpressures_reads_without_losing_stamps_or_reconn
     assert_eq!(lane.watch_admitted().borrow().as_ref(), Some(&admitted));
     assert!(fixture.listener.accept().now_or_never().is_none());
 
+    fixture.clock.advance(Duration::from_secs(58)).unwrap();
+    assert_eq!(text(&mut socket).await, "ping");
+    socket.send(Message::Text("pong".into())).await.unwrap();
+    let renewal = text(&mut socket).await;
+    let LinkFrame::Data(DataFrame::RenewMachineToken { correlation_id, .. }) =
+        decode_text(&renewal, FrameDirection::ToCentral).unwrap()
+    else {
+        panic!("expected the renewal on the original link");
+    };
+    // A delivery can precede the renewal response on this ordered socket.
+    socket
+        .send(Message::Text(DELIVER_FRAME.into()))
+        .await
+        .unwrap();
+    send_answer(
+        &mut socket,
+        DataFrame::MachineTokenRenewal {
+            correlation_id,
+            result: central_link_protocol::TokenRenewalResult::Renewed {
+                central_time: "2030-01-01T00:01:00Z".parse().unwrap(),
+                effective_expires_at: "2030-01-01T00:06:00Z".parse().unwrap(),
+            },
+        },
+    )
+    .await;
+    assert!(
+        matches!(lane.next_event().await, Some(LinkLaneEvent::Deliver { connection, .. }) if connection == admitted.connection)
+    );
+    delivery_barrier(&fixture, &mut socket, &admitted).await;
+    fixture.clock.advance(Duration::from_secs(61)).unwrap();
+    assert!(
+        matches!(socket.next().await, Some(Ok(Message::Text(value))) if value.as_str() == "ping"),
+        "draining custody must let the same-socket renewal extend authority"
+    );
+
     socket.send(Message::Close(None)).await.unwrap();
     assert_eq!(
         lane.next_event().await,
@@ -472,7 +507,7 @@ async fn full_delivery_queue_backpressures_reads_without_losing_stamps_or_reconn
             connection: admitted.connection.clone()
         })
     );
-    fixture.clock.not_due_check_now(tick(3)).await;
+    fixture.clock.not_due_check_now(tick(122)).await;
     fixture.clock.advance(Duration::from_secs(1)).unwrap();
     let mut replacement = fixture.accept().await;
     let replacement = admit(&mut fixture, &mut replacement, &lane).await;
@@ -722,5 +757,151 @@ async fn exact_byte_budget_is_accepted_and_oversize_batch_is_untouched_on_the_sa
     .await;
     assert!(matches!(small.await, LinkLaneDisposition::Answered { .. }));
     assert_eq!(lane.watch_admitted().borrow().as_ref(), Some(&admitted));
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn stalled_delivery_consumer_fault_preserves_held_offers_and_settles_commands() {
+    use central_link_client::LinkLocalFault;
+
+    let mut fixture = Fixture::new().await;
+    let lane = fixture.inbox_events.lane.clone();
+    let mut socket = fixture.accept().await;
+    let admitted = admit(&mut fixture, &mut socket, &lane).await;
+    let ids = (1..=68)
+        .map(|index| format!("01890f2e-7b4c-7cc0-98c4-{index:012x}"))
+        .collect::<Vec<_>>();
+    for id in &ids {
+        let wire = DELIVER_FRAME.replace("01890f2e-7b4c-7cc0-98c4-000000000009", id);
+        socket.send(Message::Text(wire.into())).await.unwrap();
+    }
+    fixture.clock.not_due_check_now(tick(5)).await;
+
+    let mut status = lane.request_status(status_command(&admitted, 70));
+    let outbound = tokio::select! { wire = text(&mut socket) => wire, _ = &mut status => panic!("control write must run during pressure") };
+    assert!(matches!(
+        decode_text(&outbound, FrameDirection::ToCentral),
+        Ok(LinkFrame::Data(DataFrame::RequestStatus { .. }))
+    ));
+    let mut queued = lane.submit_write_batch(WriteBatchCommand {
+        connection: admitted.connection.clone(),
+        send_before: tick(35),
+        requests: LinkRequestBatch::new(vec![mail_write(71)]).unwrap(),
+    });
+    assert!(queued.as_mut().now_or_never().is_none());
+    fixture.clock.advance(Duration::from_secs(4)).unwrap();
+    assert_eq!(
+        lane.watch_admitted().borrow().as_ref(),
+        Some(&admitted),
+        "mere pressure is not a fault"
+    );
+    fixture.clock.advance(Duration::from_secs(1)).unwrap();
+    let (possibly_sent, untouched) = tokio::join!(status, queued);
+    assert_eq!(possibly_sent, LinkLaneDisposition::AnswerLost);
+    assert_eq!(
+        untouched,
+        WriteBatchDisposition::NotReached {
+            cause: UntouchedCommand::ConnectionUnavailable
+        }
+    );
+
+    for id in ids.iter().take(63) {
+        let event = lane.next_event().await;
+        assert!(
+            matches!(event, Some(LinkLaneEvent::Deliver { connection, offer, .. })
+            if connection == admitted.connection && offer.message().message_id().as_str() == id),
+            "the oldest decoded offers remain in custody"
+        );
+    }
+    assert_eq!(
+        lane.next_event().await,
+        Some(LinkLaneEvent::ConnectionFaulted {
+            connection: admitted.connection.clone(),
+            cause: LinkLocalFault::DeliveryConsumerStalled,
+        })
+    );
+    assert!(lane.watch_admitted().borrow().is_none());
+    fixture.clock.not_due_check_now(tick(6)).await;
+    fixture.clock.advance(Duration::from_secs(1)).unwrap();
+    let mut replacement = fixture.accept().await;
+    let recovered = admit(&mut fixture, &mut replacement, &lane).await;
+    assert_ne!(recovered.connection, admitted.connection);
+    fixture.stop().await;
+}
+
+#[tokio::test]
+async fn workspace_misses_settle_only_for_the_requested_workspace_and_allowed_items() {
+    use workspace_model::{ItemRef, RefusalReason, WorkspaceReply, WorkspaceResult};
+
+    let mut fixture = Fixture::new().await;
+    let lane = fixture.inbox_events.lane.clone();
+    let mut socket = fixture.accept().await;
+    let admitted = admit(&mut fixture, &mut socket, &lane).await;
+    let wire = r#"{"kind":"request","request":{"correlationId":"01890f2e-7b4c-7cc0-98c4-000000000091","caller":{"kind":"session","value":{"machineId":"01890f2e-7b4c-7cc0-98c4-000000000002","sessionId":"s"}},"payload":{"kind":"workspace","request":{"requestId":null,"workspaceId":"01890f2e-7b4c-7cc0-98c4-000000000010","operation":{"kind":"show","item":{"kind":"area","id":"01890f2e-7b4c-7cc0-98c4-000000000021"}}}}}}"#;
+    let LinkFrame::Data(DataFrame::Request { request }) =
+        decode_text(wire, FrameDirection::ToCentral).unwrap()
+    else {
+        panic!("expected a workspace request");
+    };
+    let id = request.correlation_id().clone();
+    let mut status = lane.submit_immediate_request(ImmediateRequestCommand {
+        connection: admitted.connection.clone(),
+        send_before: tick(30),
+        request,
+    });
+    let outbound = tokio::select! { wire = text(&mut socket) => wire, _ = &mut status => panic!("fixture must observe the Show request") };
+    assert!(matches!(
+        decode_text(&outbound, FrameDirection::ToCentral),
+        Ok(LinkFrame::Data(DataFrame::Request { .. }))
+    ));
+
+    let workspace = "01890f2e-7b4c-7cc0-98c4-000000000010"
+        .parse::<workspace_ids::WorkspaceId>()
+        .unwrap();
+    let other_workspace = "01890f2e-7b4c-7cc0-98c4-000000000011".parse().unwrap();
+    let item = ItemRef::Area("01890f2e-7b4c-7cc0-98c4-000000000021".parse().unwrap());
+    let other_item = ItemRef::Area("01890f2e-7b4c-7cc0-98c4-000000000022".parse().unwrap());
+    let send_miss = |result| DataFrame::Reply {
+        correlation_id: id.clone(),
+        result: Box::new(ReplyPayload::Workspace(WorkspaceReply {
+            result,
+            actors: Vec::new(),
+        })),
+    };
+    for result in [
+        WorkspaceResult::NotFound {
+            workspace_id: other_workspace,
+            item: item.clone(),
+        },
+        WorkspaceResult::NotFound {
+            workspace_id: workspace.clone(),
+            item: other_item.clone(),
+        },
+        WorkspaceResult::Refused(RefusalReason::NotFound { item: other_item }),
+    ] {
+        send_answer(&mut socket, send_miss(result)).await;
+        delivery_barrier(&fixture, &mut socket, &admitted).await;
+        assert!(
+            status.as_mut().now_or_never().is_none(),
+            "a miss for a different target must leave the waiter pending"
+        );
+    }
+    let expected = WorkspaceResult::NotFound {
+        workspace_id: workspace,
+        item,
+    };
+    send_answer(&mut socket, send_miss(expected.clone())).await;
+    assert_eq!(
+        status.await,
+        LinkLaneDisposition::Answered {
+            reply: CorrelatedRequestReply {
+                correlation_id: id,
+                result: Box::new(ReplyPayload::Workspace(WorkspaceReply {
+                    result: expected,
+                    actors: Vec::new()
+                })),
+            }
+        }
+    );
     fixture.stop().await;
 }
