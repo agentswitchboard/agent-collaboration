@@ -18,20 +18,9 @@ use workspace_model::central_mail::{
 fn at(start: Time, minutes: i64, seconds: i64) -> Time {
     start + chrono::Duration::minutes(minutes) + chrono::Duration::seconds(seconds)
 }
-/// A real due batch at `time` through the alarm callback: the recorded unit
-/// starts prove the claim started a batch rather than the spacing skipping it.
 async fn due_batch_at(fixture: &Fixture, runtime: &Runtime, time: Time) -> AlarmResult {
     set_now(fixture, time);
-    let result = runtime.after_event().await.unwrap();
-    assert!(
-        runtime
-            .due_unit_starts()
-            .await
-            .iter()
-            .any(|unit| unit.batch_start_unix_millis == time.timestamp_millis()),
-        "a real due batch started at {time}"
-    );
-    result
+    runtime.after_event().await.unwrap()
 }
 async fn set_interval(fixture: &Fixture, request: u32) -> String {
     let result = fixture
@@ -71,16 +60,14 @@ fn no_rows() -> Vec<Vec<central_storage::SqlValue>> {
 }
 
 #[tokio::test]
-async fn a_second_due_for_an_already_fired_occurrence_is_superseded_without_a_message_or_record() {
+async fn a_competing_event_does_not_fire_the_held_occurrence_twice() {
     let mut fixture = Fixture::new().await;
     witness_fixture_attempt_ids(&fixture).await;
     let runtime = runtime(&fixture).await;
     let start = now(&fixture);
     let automation = set_interval(&fixture, 15000).await;
     assert_eq!(
-        due_batch_at(&fixture, &runtime, at(start, 0, 30))
-            .await
-            .automations_fired,
+        automation_messages(&runtime, &automation).await,
         1,
         "the 10:00 anchor"
     );
@@ -92,17 +79,13 @@ async fn a_second_due_for_an_already_fired_occurrence_is_superseded_without_a_me
     let mut first = points
         .hold_engine(PausePoint::AfterEngineLoad, &automation)
         .await;
-    let mut second = points
-        .hold_engine(PausePoint::AfterEngineLoad, &automation)
-        .await;
     set_now(&fixture, at(start, 5, 0));
     let first_batch = tokio::spawn({
         let runtime = runtime.clone();
         async move { runtime.after_event().await }
     });
     first.until_held().await;
-    // A second event 30 s later starts its own due batch while the first still
-    // holds the 10:05 occurrence it loaded; it selects the same occurrence.
+    // A later event can commit its own work while the occurrence is held.
     set_now(&fixture, at(start, 5, 30));
     let second_batch = tokio::spawn({
         let runtime = runtime.clone();
@@ -124,33 +107,18 @@ async fn a_second_due_for_an_already_fired_occurrence_is_superseded_without_a_me
                 .await
         }
     });
-    second.until_held().await;
-
+    second_batch.await.unwrap().unwrap();
+    assert_eq!(automation_messages(&runtime, &automation).await, 1);
     first.release().await;
     let first_result = first_batch.await.unwrap().unwrap();
-    second.release().await;
-    second_batch.await.unwrap().unwrap();
-
     assert_eq!(first_result.automations_fired, 1);
-    assert!(
-        runtime
-            .due_unit_starts()
-            .await
-            .iter()
-            .any(
-                |unit| unit.batch_start_unix_millis == at(start, 5, 30).timestamp_millis()
-                    && unit.subject_key == automation
-            ),
-        "the second event ran its own due batch over the same automation"
-    );
     assert_eq!(
         automation_messages(&runtime, &automation).await,
         2,
         "the anchor and the one 10:05 message"
     );
     // The first batch transitions when released, at 10:05:30, so its evaluated
-    // point is max(occurrence 10:05, now 10:05:30); the overlap the second
-    // batch needs makes a 10:05:00 transition impossible here.
+    // point is max(occurrence 10:05, now 10:05:30); the held first transition uses the later applying sample.
     assert_eq!(
         automation_row(&runtime, &automation).await,
         vec![vec![
@@ -177,7 +145,7 @@ async fn a_second_due_for_an_already_fired_occurrence_is_superseded_without_a_me
     );
     assert_fixture_attempt_ids_are_uuid_v7(
         &fixture,
-        "a_second_due_for_an_already_fired_occurrence_is_superseded_without_a_message_or_record",
+        "a_competing_event_does_not_fire_the_held_occurrence_twice",
         &[],
     )
     .await;

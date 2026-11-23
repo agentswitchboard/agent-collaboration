@@ -45,6 +45,8 @@ enum Point {
     BeforeWorkspaceRequestApplying,
     AfterWorkspaceExecute,
     EngineCompletionEntered,
+    BeforeDueContinuation,
+    BeforeDeferredDueWork,
     BeforeDrainCommit,
     AfterDrainCommit,
     BeforeTimerCommit,
@@ -95,6 +97,8 @@ impl From<Point> for PausePoint {
             Point::BeforeWorkspaceRequestApplying => Self::BeforeWorkspaceRequestApplying,
             Point::AfterWorkspaceExecute => Self::AfterWorkspaceExecute,
             Point::EngineCompletionEntered => Self::EngineCompletionEntered,
+            Point::BeforeDueContinuation => Self::BeforeDueContinuation,
+            Point::BeforeDeferredDueWork => Self::BeforeDeferredDueWork,
             Point::BeforeDrainCommit => Self::BeforeDrainCommit,
             Point::AfterDrainCommit => Self::AfterDrainCommit,
             Point::BeforeTimerCommit => Self::BeforeTimerCommit,
@@ -372,6 +376,14 @@ pub(super) async fn control(
         }
         "/test/legacy-unit-invocations" => {
             Response::from_json(&runtime.runtime().legacy_unit_invocations())
+        }
+        "/test/until-reply-drains-settle" => {
+            runtime.runtime().until_reply_drains_settle().await;
+            Response::from_json(&true)
+        }
+        "/test/drop-reply-due-work" => {
+            runtime.runtime().test_faults().arm_deferred_due_work_drop();
+            Response::from_json(&true)
         }
         "/test/due-unit-starts" => Response::from_json(&runtime.runtime().due_unit_starts()),
         "/test/engine-commit-fault-pending" => {

@@ -1,14 +1,9 @@
-//! V9 on workerd: 1,000 due probe instances of one kind complete in four capped
-//! due batches 30 s apart through real alarm callbacks, earliest first and each
-//! once, with at most eight units in flight. Timings print as measurement only.
+//! Bounded due-drain and eight-wide dispatch on the real host.
 use super::super::{Statement, support::*};
 use super::engine_event_support::*;
 use super::engine_probe_support::*;
 use central_storage::SqlValue;
 use fleet_runtime::PausePoint;
-
-const INSTANCES: u32 = 1_000;
-const CAP: usize = 250;
 
 /// Instance `index` is due 40 ms after the one before it, from 10:04:10, so all
 /// are due by the first batch at 10:05:00 and the earliest-first order is known.
@@ -30,16 +25,61 @@ async fn fired_items(runtime: &Runtime, group: uuid::Uuid) -> Vec<SqlValue> {
         .collect()
 }
 
+struct SharedDueDrainWitness<'a> {
+    fixture: &'a Fixture,
+    runtime: &'a Runtime,
+    start: Time,
+    group: uuid::Uuid,
+}
+
+impl collaboration_central_conformance::due_drain_scenarios::DueDrainWitness
+    for SharedDueDrainWitness<'_>
+{
+    type Key = SqlValue;
+
+    async fn drive_first_mark(&self) {
+        due_batch_at(self.fixture, self.runtime, at(self.start, 5, 0, 0)).await;
+    }
+
+    async fn drive_next_mark(&self) {
+        let at = at(self.start, 10, 0, 0);
+        set_now(self.fixture, at);
+        assert!(self.runtime.dispatch_due_alarm().await.unwrap().is_some());
+    }
+
+    async fn read_pending_alarm(&self) -> Option<i64> {
+        alarm_ms(self.runtime).await
+    }
+
+    async fn read_effect_count(&self) -> i64 {
+        count(
+            self.runtime,
+            "SELECT effect_count FROM engine_probe_groups WHERE group_id=?",
+            vec![text(self.group)],
+        )
+        .await
+    }
+
+    async fn read_finished_keys(&self) -> Vec<SqlValue> {
+        fired_items(self.runtime, self.group).await
+    }
+}
+
 #[tokio::test]
-async fn a_thousand_due_instances_complete_in_four_capped_batches_thirty_seconds_apart() {
-    let fixture = Fixture::new().await;
+async fn a_due_drain_processes_four_batches_and_arms_the_next_mark_for_its_tail() {
+    use collaboration_central_conformance::due_drain_scenarios::DueDrainWitness;
+    use collaboration_central_conformance::due_drain_scenarios::{
+        OVERFLOW_POPULATION, capped_drain_hands_its_tail_to_the_next_mark,
+    };
+
+    let fixture = Fixture::new_capturing_logs().await;
     let runtime = runtime(&fixture).await;
     let start = now(&fixture);
     let group = probe_id(40000);
-    let items: Vec<_> = (0..INSTANCES)
+    let items: Vec<_> = (0..OVERFLOW_POPULATION)
         .map(|index| probe_id(41000 + index))
         .collect();
-    for (index, item) in (0..INSTANCES).zip(&items) {
+    for (index, item) in (0..OVERFLOW_POPULATION).zip(&items) {
         seed_probe(
             &runtime,
             *item,
@@ -50,50 +90,48 @@ async fn a_thousand_due_instances_complete_in_four_capped_batches_thirty_seconds
         .await;
     }
     let expected: Vec<_> = items.iter().map(text).collect();
-    let before = callbacks(&runtime).await;
-    let mut measurements = Vec::new();
-
-    for (batch, (minutes, seconds)) in [(5, 0), (5, 30), (6, 0), (6, 30)].into_iter().enumerate() {
-        let time = at(start, minutes, seconds, 0);
-        let started = std::time::Instant::now();
-        if batch == 0 {
-            // Seeding publishes nothing, so the first batch is an armed callback.
-            due_batch_at(&fixture, &runtime, time).await;
-        } else {
-            assert_eq!(
-                alarm_ms(&runtime).await,
-                ms(time),
-                "batch {batch} is the continuation 30 s after the last start"
-            );
-            set_now(&fixture, time - chrono::Duration::milliseconds(1));
-            assert!(runtime.dispatch_due_alarm().await.unwrap().is_none());
-            set_now(&fixture, time);
-            assert!(runtime.dispatch_due_alarm().await.unwrap().is_some());
-        }
-        measurements.push(started.elapsed());
-        assert_eq!(
-            fired_items(&runtime, group).await,
-            expected[..CAP * (batch + 1)],
-            "batch {batch} handled exactly the next 250, earliest first"
-        );
-    }
-
-    assert_eq!(callbacks(&runtime).await, before + 4, "four callbacks");
-    assert_eq!(
-        alarm_ms(&runtime).await,
-        None,
-        "nothing is pending afterwards"
-    );
-    assert_eq!(
-        count(
-            &runtime,
-            "SELECT effect_count FROM engine_probe_groups WHERE group_id=?",
-            vec![text(group)]
+    let witness = SharedDueDrainWitness {
+        fixture: &fixture,
+        runtime: &runtime,
+        start,
+        group,
+    };
+    let proof = async {
+        capped_drain_hands_its_tail_to_the_next_mark(
+            &witness,
+            &expected,
+            at(start, 10, 0, 0).timestamp_millis(),
         )
-        .await,
-        i64::from(INSTANCES),
-        "each instance's effect ran once"
-    );
+        .await;
+    };
+    tokio::pin!(proof);
+    let observe_progress = async {
+        for _ in 0..2048 {
+            let state = runtime.control::<Option<i64>>("raw-alarm-time", &()).await;
+            if let Err(error) = state {
+                panic!(
+                    "Workerd stopped serving after a pass: {error:?}; due logs: {:?}",
+                    fixture
+                        .host
+                        .captured_logs()
+                        .into_iter()
+                        .filter(|line| line.contains("Central due yield")
+                            || line.contains("different request")
+                            || line.contains("workerd/jsg"))
+                        .collect::<Vec<_>>()
+                );
+            }
+            tokio::task::yield_now().await;
+        }
+    };
+    tokio::select! {
+        () = &mut proof => {}
+        () = observe_progress => panic!(
+            "Workerd drain did not return after 2,048 independent reads; first effects: {}; due logs: {:?}",
+            witness.read_effect_count().await,
+            fixture.host.captured_logs().into_iter().filter(|line| line.contains("Central due yield")).collect::<Vec<_>>(),
+        ),
+    };
     assert_eq!(
         count(
             &runtime,
@@ -103,13 +141,6 @@ async fn a_thousand_due_instances_complete_in_four_capped_batches_thirty_seconds
         .await,
         0
     );
-    for (batch, elapsed) in measurements.iter().enumerate() {
-        println!(
-            "V9 measurement workerd batch {batch}: {CAP} units in {:.3} ms, {:.3} ms per unit (includes the test transport)",
-            elapsed.as_secs_f64() * 1e3,
-            elapsed.as_secs_f64() * 1e3 / CAP as f64
-        );
-    }
     fixture.host.close().await;
 }
 

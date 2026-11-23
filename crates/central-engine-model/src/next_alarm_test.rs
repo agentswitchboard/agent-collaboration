@@ -6,50 +6,17 @@ fn time(milliseconds: i64) -> EngineTime {
 fn inputs() -> AlarmInputs {
     AlarmInputs {
         now: time(300_000),
-        last_batch_start: None,
-        leftovers_beyond_cap: false,
         earliest_on_grid_due: None,
         earliest_legacy_due: None,
     }
 }
 fn decide(inputs: AlarmInputs) -> AlarmDecision {
-    next_alarm(&inputs, &DueBatchPolicy::DEFAULT)
+    next_alarm(&inputs)
 }
 
 #[test]
-fn nothing_pending_clears_even_with_a_batch_floor() {
-    assert_eq!(
-        decide(AlarmInputs {
-            last_batch_start: Some(time(300_000)),
-            ..inputs()
-        }),
-        AlarmDecision::Clear
-    );
-}
-
-#[test]
-fn leftovers_continue_at_thirty_seconds_before_a_later_pending_mark() {
-    assert_eq!(
-        decide(AlarmInputs {
-            last_batch_start: Some(time(300_000)),
-            leftovers_beyond_cap: true,
-            earliest_on_grid_due: Some(time(600_000)),
-            ..inputs()
-        }),
-        AlarmDecision::SetAt(time(330_000))
-    );
-}
-
-#[test]
-fn leftovers_do_not_arm_an_idle_object() {
-    assert_eq!(
-        decide(AlarmInputs {
-            last_batch_start: Some(time(300_000)),
-            leftovers_beyond_cap: true,
-            ..inputs()
-        }),
-        AlarmDecision::Clear
-    );
+fn nothing_pending_clears_the_alarm() {
+    assert_eq!(decide(inputs()), AlarmDecision::Clear);
 }
 
 #[test]
@@ -84,33 +51,10 @@ fn legacy_future_offsets_stay_exact_and_legacy_past_moves_to_next_mark() {
 }
 
 #[test]
-fn the_floor_raises_both_kinds_without_moving_later_deadlines() {
-    for (grid, legacy, expected) in [
-        (Some(310_000), None, 330_000),
-        (Some(299_999), None, 330_000),
-        (None, Some(305_000), 330_000),
-        (None, Some(299_999), 330_000),
-        (Some(600_000), Some(340_000), 340_000),
-    ] {
-        assert_eq!(
-            decide(AlarmInputs {
-                last_batch_start: Some(time(300_000)),
-                earliest_on_grid_due: grid.map(time),
-                earliest_legacy_due: legacy.map(time),
-                ..inputs()
-            }),
-            AlarmDecision::SetAt(time(expected))
-        );
-    }
-}
-
-#[test]
-fn delayed_continuation_moves_to_the_next_mark_instead_of_a_past_floor() {
+fn overdue_indexed_work_uses_the_next_strict_mark() {
     assert_eq!(
         decide(AlarmInputs {
             now: time(360_000),
-            last_batch_start: Some(time(300_000)),
-            leftovers_beyond_cap: true,
             earliest_on_grid_due: Some(time(300_000)),
             ..inputs()
         }),
@@ -155,18 +99,10 @@ fn next_mark_handles_negative_times_and_refuses_upper_edge() {
 }
 
 #[test]
-fn unsupported_inputs_and_a_continuation_without_start_are_explicit_errors() {
+fn unsupported_inputs_are_explicit_errors() {
     assert_eq!(
         decide(AlarmInputs {
             earliest_on_grid_due: Some(time(MAX_ALARM_UNIX_MILLIS + 1)),
-            ..inputs()
-        }),
-        AlarmDecision::Unpublishable
-    );
-    assert_eq!(
-        decide(AlarmInputs {
-            leftovers_beyond_cap: true,
-            earliest_on_grid_due: Some(time(600_000)),
             ..inputs()
         }),
         AlarmDecision::Unpublishable

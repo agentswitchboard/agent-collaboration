@@ -103,6 +103,9 @@ impl CentralStore for InMemoryDirectoryStore {
         Err(StoreFailure::Unavailable)
     }
 
+    async fn engine_due_times(&self) -> Result<fleet_runtime_ports::EngineDueTimes, StoreFailure> {
+        Ok(fleet_runtime_ports::EngineDueTimes::default())
+    }
     async fn published_alarm(&self) -> Result<Option<EngineTime>, StoreFailure> {
         Ok(None)
     }

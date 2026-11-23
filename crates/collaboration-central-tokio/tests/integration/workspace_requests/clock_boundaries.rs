@@ -207,13 +207,7 @@ async fn a_failed_alarm_drive_uses_the_fresh_utc_sample_for_its_real_retry() {
         scheduled,
         Some(SyncTime::from_unix_millis(wake_due.timestamp_millis()))
     );
-    assert_eq!(
-        runtime
-            .runtime()
-            .due_batch_snapshot()
-            .last_start_unix_millis,
-        Some(first_alarm.timestamp_millis() - 2),
-    );
+    assert!(runtime.runtime().due_batch_starts().is_empty());
     assert_eq!(
         store.failed_alarm_publication_at(),
         Some(SyncTime::from_unix_millis(

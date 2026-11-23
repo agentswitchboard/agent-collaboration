@@ -51,11 +51,6 @@ async fn held_request_publishes_after_a_newer_batch(
         send_message(fixture, 35002).await.unwrap(),
         CentralMailResult::Done(_)
     ));
-    assert_eq!(
-        alarm_ms(runtime).await,
-        ms(at(start, 5, 28, 0)),
-        "B published its floor"
-    );
     set_now(fixture, at(start, 4, 59, 0));
     held.release().await;
     assert!(matches!(
@@ -65,7 +60,7 @@ async fn held_request_publishes_after_a_newer_batch(
 }
 
 #[tokio::test]
-async fn a_request_held_across_a_newer_due_batch_publishes_the_newer_floor() {
+async fn overlapping_publications_keep_the_exact_window_deadline() {
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
     let start = now(&fixture);
@@ -79,7 +74,7 @@ async fn a_request_held_across_a_newer_due_batch_publishes_the_newer_floor() {
 
     assert_eq!(
         alarm_ms(&runtime).await,
-        ms(at(start, 5, 28, 0)),
+        ms(at(start, 5, 0, 0)),
         "A, published last, used B's floor and never 10:05:00"
     );
     assert_eq!(
@@ -91,7 +86,7 @@ async fn a_request_held_across_a_newer_due_batch_publishes_the_newer_floor() {
 }
 
 #[tokio::test]
-async fn a_request_held_across_a_capped_batch_publishes_the_continuation() {
+async fn a_request_held_across_a_capped_drain_does_not_rearm_finished_work() {
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
     let start = now(&fixture);
@@ -119,13 +114,13 @@ async fn a_request_held_across_a_capped_batch_publishes_the_continuation() {
             vec![text(group)]
         )
         .await,
-        250,
-        "B's batch left one item beyond the cap"
+        251,
+        "the capped drain reached the tail"
     );
     assert_eq!(
         alarm_ms(&runtime).await,
-        ms(at(start, 5, 28, 0)),
-        "A kept the continuation, not the 10:05:00 due"
+        None,
+        "A did not resurrect completed work"
     );
     fixture.host.close().await;
 }
@@ -136,6 +131,14 @@ async fn two_simultaneous_requests_run_exactly_one_due_batch() {
     let runtime = runtime(&fixture).await;
     let start = now(&fixture);
     due_batch_at(&fixture, &runtime, at(start, 4, 0, 0)).await;
+    seed_probe(
+        &runtime,
+        probe_id(35402),
+        probe_id(35403),
+        Some(at(start, 5, 0, 0)),
+        "single due claim",
+    )
+    .await;
     let before = runtime.legacy_unit_invocations().await;
     set_now(&fixture, at(start, 4, 31, 0));
 
@@ -226,10 +229,10 @@ async fn a_wake_due_with_a_window_fires_early_and_the_window_waits_for_its_slot(
         "20 s early"
     );
     assert_eq!(notices(&runtime).await, 0, "the window is not run early");
-    assert_eq!(alarm_ms(&runtime).await, ms(at(start, 15, 10, 0)));
+    assert_eq!(alarm_ms(&runtime).await, ms(at(start, 15, 0, 0)));
     set_now(&fixture, at(start, 15, 9, 999));
     assert!(runtime.dispatch_due_alarm().await.unwrap().is_none());
-    set_now(&fixture, at(start, 15, 10, 0));
+    set_now(&fixture, at(start, 15, 0, 0));
     assert!(runtime.dispatch_due_alarm().await.unwrap().is_some());
     assert_eq!(
         notices(&runtime).await,

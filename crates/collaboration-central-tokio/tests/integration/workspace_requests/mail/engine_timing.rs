@@ -93,7 +93,7 @@ async fn a_probe_request_starts_the_due_batch_without_an_alarm_callback() {
 }
 
 #[tokio::test]
-async fn a_burst_of_forty_requests_runs_only_the_first_events_due_batch() {
+async fn a_burst_runs_each_item_when_its_look_ahead_cutoff_is_reached() {
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
     let start = fixture.clock.utc_now();
@@ -163,13 +163,10 @@ async fn a_burst_of_forty_requests_runs_only_the_first_events_due_batch() {
     );
     assert_eq!(
         probe_facts(&runtime, second_due, second_group).await,
-        vec![text("waiting"), integer(0), integer(0)],
-        "no second due batch ran inside the burst"
+        vec![text("fired"), integer(1), integer(0)],
+        "the first event in the second item’s horizon fired it once"
     );
-    assert_eq!(
-        alarm_ms(&runtime),
-        Some(at(start, 5, 48, 0).timestamp_millis())
-    );
+    assert_eq!(alarm_ms(&runtime), None);
     fixture.host.close().await;
 }
 
@@ -208,32 +205,27 @@ async fn the_look_ahead_includes_fifty_seconds_and_excludes_fifty_one() {
 }
 
 #[tokio::test]
-async fn the_fallback_alarm_waits_for_the_floor_and_then_runs_the_item() {
+async fn a_future_item_arms_its_exact_alarm_and_runs_on_that_callback() {
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
     let start = fixture.clock.utc_now();
-    due_batch_at(&fixture, &runtime, at(start, 4, 58, 0)).await;
     let (item, group) = (probe_id(12400), probe_id(12401));
-    seed_probe(&runtime, item, group, Some(at(start, 5, 10, 0)), "after").await;
+    let cutoff = at(start, 5, 10, 0);
+    seed_probe(&runtime, item, group, Some(cutoff), "after").await;
 
-    // A second event inside the spacing only publishes.
-    runtime.after_event().await.unwrap();
-
-    assert_eq!(
-        alarm_ms(&runtime),
-        Some(at(start, 5, 28, 0).timestamp_millis()),
-        "10:05:10 is raised to the 10:05:28 floor"
-    );
+    due_batch_at(&fixture, &runtime, at(start, 4, 19, 0)).await;
+    assert_eq!(alarm_ms(&runtime), Some(cutoff.timestamp_millis()));
     assert_eq!(
         probe_facts(&runtime, item, group).await,
         vec![text("waiting"), integer(0), integer(0)]
     );
-    due_batch_at(&fixture, &runtime, at(start, 5, 28, 0)).await;
+
+    super::engine_event_support::driver_fires_at(&fixture, &runtime, cutoff).await;
     assert_eq!(
         probe_facts(&runtime, item, group).await,
         vec![text("fired"), integer(1), integer(0)]
     );
-    assert_eq!(alarm_ms(&runtime), None, "nothing is pending afterwards");
+    assert_eq!(alarm_ms(&runtime), None);
     fixture.host.close().await;
 }
 

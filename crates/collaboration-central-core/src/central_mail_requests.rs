@@ -34,7 +34,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         // the organization stamp once for this event before any unit (P3).
         let result = self.execute_central(caller, request).await;
         // Due work and publication cannot replace this event's durable answer.
-        let _ = self.after_event().await;
+        self.after_request_event().await;
         match result {
             Err(ApplyingRequestFailure::Store(
                 StoreFailure::Unavailable | StoreFailure::AnswerLost,

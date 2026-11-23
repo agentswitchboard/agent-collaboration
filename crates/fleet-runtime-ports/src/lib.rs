@@ -11,7 +11,7 @@ mod workspace_stores;
 
 pub use central_engine_model::{DueListKind, DueListQuery, DueRow, EngineTime};
 pub use central_observer::Observer;
-pub use central_store::CentralStore;
+pub use central_store::{CentralStore, EngineDueTimes};
 pub use issuer_key_source::{IssuerKeySource, KeyFetchFailure, RawJwks};
 pub use signature_crypto::{
     Ed25519Verification, Es256Verification, ProofJwk, SignatureValidity, VerifyFailure,

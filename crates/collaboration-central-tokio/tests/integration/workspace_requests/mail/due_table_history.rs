@@ -94,17 +94,7 @@ async fn assert_due_projection(fixture: &Fixture, stage: &str) {
     };
     let projected = store.engine_alarm_inputs().await.unwrap();
     assert_eq!(projected, reference, "{stage}: alarm inputs");
-    let snapshot = runtime.runtime().due_batch_snapshot();
-    let batch_state = fleet_runtime::DueBatchState::default();
-    if let Some(batch_start) = snapshot.last_start_unix_millis {
-        assert!(
-            batch_state
-                .try_claim(batch_start, chrono::Duration::seconds(30))
-                .unwrap()
-        );
-        assert!(batch_state.finish(batch_start, snapshot.leftovers_pending));
-    }
-    let decide = fleet_runtime::engine_alarm_decider(std::sync::Arc::new(batch_state));
+    let decide = fleet_runtime::engine_alarm_decider();
     let reference_alarm = decide(reference, now.timestamp_millis(), &mut |_| {});
     let projected_alarm = decide(projected, now.timestamp_millis(), &mut |_| {});
     assert_eq!(

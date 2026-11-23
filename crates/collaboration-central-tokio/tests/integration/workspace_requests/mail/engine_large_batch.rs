@@ -1,15 +1,10 @@
-//! V9 on the native host: 1,000 due probe instances of one kind complete in four
-//! capped due batches 30 s apart, earliest first and each once, with at most
-//! eight units in flight. Batch timings are printed as measurement only.
+//! Bounded due-drain and eight-wide dispatch on the real host.
 use super::super::{Statement, support::*};
 use super::engine_event_support::*;
 use super::engine_probe_support::*;
 use central_storage::SqlValue;
 use fleet_runtime::PausePoint;
 use router_clock::RuntimeClock;
-
-const INSTANCES: u32 = 1_000;
-const CAP: usize = 250;
 
 /// Instance `index` is due 40 ms after the one before it, from 10:04:10, so all
 /// are due by the first batch at 10:05:00 and the earliest-first order is known.
@@ -31,16 +26,59 @@ async fn fired_items(runtime: &Runtime, group: uuid::Uuid) -> Vec<SqlValue> {
         .collect()
 }
 
+struct SharedDueDrainWitness<'a> {
+    fixture: &'a Fixture,
+    runtime: &'a Runtime,
+    start: Time,
+    group: uuid::Uuid,
+}
+
+impl collaboration_central_conformance::due_drain_scenarios::DueDrainWitness
+    for SharedDueDrainWitness<'_>
+{
+    type Key = SqlValue;
+
+    async fn drive_first_mark(&self) {
+        due_batch_at(self.fixture, self.runtime, at(self.start, 5, 0, 0)).await;
+    }
+
+    async fn drive_next_mark(&self) {
+        let at = at(self.start, 10, 0, 0);
+        driver_fires_at(self.fixture, self.runtime, at).await;
+    }
+
+    async fn read_pending_alarm(&self) -> Option<i64> {
+        alarm_ms(self.runtime)
+    }
+
+    async fn read_effect_count(&self) -> i64 {
+        count(
+            self.runtime,
+            "SELECT effect_count FROM engine_probe_groups WHERE group_id=?",
+            vec![text(self.group)],
+        )
+        .await
+    }
+
+    async fn read_finished_keys(&self) -> Vec<SqlValue> {
+        fired_items(self.runtime, self.group).await
+    }
+}
+
 #[tokio::test]
-async fn a_thousand_due_instances_complete_in_four_capped_batches_thirty_seconds_apart() {
+async fn a_due_drain_processes_four_batches_and_arms_the_next_mark_for_its_tail() {
+    use collaboration_central_conformance::due_drain_scenarios::{
+        OVERFLOW_POPULATION, capped_drain_hands_its_tail_to_the_next_mark,
+    };
+
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
     let start = fixture.clock.utc_now();
     let group = probe_id(40000);
-    let items: Vec<_> = (0..INSTANCES)
+    let items: Vec<_> = (0..OVERFLOW_POPULATION)
         .map(|index| probe_id(41000 + index))
         .collect();
-    for (index, item) in (0..INSTANCES).zip(&items) {
+    for (index, item) in (0..OVERFLOW_POPULATION).zip(&items) {
         seed_probe(
             &runtime,
             *item,
@@ -51,38 +89,18 @@ async fn a_thousand_due_instances_complete_in_four_capped_batches_thirty_seconds
         .await;
     }
     let expected: Vec<_> = items.iter().map(text).collect();
-    let mut measurements = Vec::new();
-
-    for (batch, (minutes, seconds)) in [(5, 0), (5, 30), (6, 0), (6, 30)].into_iter().enumerate() {
-        let time = at(start, minutes, seconds, 0);
-        if batch > 0 {
-            assert_eq!(
-                alarm_ms(&runtime),
-                ms(time),
-                "batch {batch} is the continuation 30 s after the last start"
-            );
-        }
-        let started = std::time::Instant::now();
-        due_batch_at(&fixture, &runtime, time).await;
-        measurements.push(started.elapsed());
-        assert_eq!(
-            fired_items(&runtime, group).await,
-            expected[..CAP * (batch + 1)],
-            "batch {batch} handled exactly the next 250, earliest first"
-        );
-    }
-
-    assert_eq!(alarm_ms(&runtime), None, "nothing is pending afterwards");
-    assert_eq!(
-        count(
-            &runtime,
-            "SELECT effect_count FROM engine_probe_groups WHERE group_id=?",
-            vec![text(group)]
-        )
-        .await,
-        i64::from(INSTANCES),
-        "each instance's effect ran once"
-    );
+    let witness = SharedDueDrainWitness {
+        fixture: &fixture,
+        runtime: &runtime,
+        start,
+        group,
+    };
+    capped_drain_hands_its_tail_to_the_next_mark(
+        &witness,
+        &expected,
+        at(start, 10, 0, 0).timestamp_millis(),
+    )
+    .await;
     assert_eq!(
         count(
             &runtime,
@@ -92,13 +110,6 @@ async fn a_thousand_due_instances_complete_in_four_capped_batches_thirty_seconds
         .await,
         0
     );
-    for (batch, elapsed) in measurements.iter().enumerate() {
-        println!(
-            "V9 measurement native batch {batch}: {CAP} units in {:.3} ms, {:.3} ms per unit",
-            elapsed.as_secs_f64() * 1e3,
-            elapsed.as_secs_f64() * 1e3 / CAP as f64
-        );
-    }
     fixture.host.close().await;
 }
 

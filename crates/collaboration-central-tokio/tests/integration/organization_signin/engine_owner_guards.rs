@@ -447,8 +447,7 @@ async fn system_expiry_failure_updates_projection_through_retirement_and_admin_r
     assert!(engine.record(KIND, key).await.is_empty());
     assert_expiry_projection(&engine, key, expiry, Some(expiry), expiry).await;
 
-    engine.set(next_try + chrono::Duration::seconds(30)).await;
-    engine.after_event().await;
+    engine.settle_reply_drains().await;
     assert_eq!(
         engine
             .rows(

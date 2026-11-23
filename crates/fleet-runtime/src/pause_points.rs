@@ -22,6 +22,8 @@ pub enum PausePoint {
     AfterWorkspaceExecute,
     /// The engine has entered completion and has yet to drive work.
     EngineCompletionEntered,
+    BeforeDueContinuation,
+    BeforeDeferredDueWork,
     /// After the notices committed.
     AfterNoticesCommitted,
     BeforeDrainCommit,
@@ -167,6 +169,8 @@ impl PausePoints {
                 | PausePoint::MacEndingRecoveryStarted
                 | PausePoint::MacEndingRecoveryFinished
                 | PausePoint::MacEndingRegistrationRecoveryScheduled
+                | PausePoint::BeforeDeferredDueWork
+                | PausePoint::BeforeDueContinuation
         ) {
             self.central_counts
                 .lock()

@@ -1,4 +1,4 @@
-use crate::{DueBatchPolicy, EngineTime};
+use crate::EngineTime;
 
 pub const MAX_ALARM_UNIX_MILLIS: i64 = 9_223_372_036_854;
 const FIVE_MINUTE_MILLIS: i64 = 300_000;
@@ -6,8 +6,7 @@ const FIVE_MINUTE_MILLIS: i64 = 300_000;
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub struct AlarmInputs {
     pub now: EngineTime,
-    pub last_batch_start: Option<EngineTime>,
-    pub leftovers_beyond_cap: bool,
+
     pub earliest_on_grid_due: Option<EngineTime>,
     pub earliest_legacy_due: Option<EngineTime>,
 }
@@ -45,7 +44,7 @@ pub fn next_five_minute_mark(now: EngineTime) -> Result<EngineTime, AlarmDecisio
 }
 
 /// Combine pending times after an event; an idle object has no alarm.
-pub fn next_alarm(inputs: &AlarmInputs, policy: &DueBatchPolicy) -> AlarmDecision {
+pub fn next_alarm(inputs: &AlarmInputs) -> AlarmDecision {
     if inputs.earliest_on_grid_due.is_none() && inputs.earliest_legacy_due.is_none() {
         return AlarmDecision::Clear;
     }
@@ -57,30 +56,11 @@ pub fn next_alarm(inputs: &AlarmInputs, policy: &DueBatchPolicy) -> AlarmDecisio
     {
         return AlarmDecision::Unpublishable;
     }
-    let floor = match inputs.last_batch_start {
-        Some(start) => match start
-            .checked_add_signed(policy.spacing)
-            .filter(|time| supported_time(*time))
-        {
-            Some(floor) => Some(floor),
-            None => return AlarmDecision::Unpublishable,
-        },
-        None => None,
+    let wanted = match (inputs.earliest_on_grid_due, inputs.earliest_legacy_due) {
+        (Some(grid), Some(legacy)) => grid.min(legacy),
+        (Some(due), None) | (None, Some(due)) => due,
+        (None, None) => return AlarmDecision::Clear,
     };
-    let wanted = if inputs.leftovers_beyond_cap {
-        match floor {
-            Some(floor) => floor,
-            None => return AlarmDecision::Unpublishable,
-        }
-    } else {
-        // At least one input is present, as established above.
-        match (inputs.earliest_on_grid_due, inputs.earliest_legacy_due) {
-            (Some(grid), Some(legacy)) => grid.min(legacy),
-            (Some(due), None) | (None, Some(due)) => due,
-            (None, None) => return AlarmDecision::Clear,
-        }
-    };
-    let wanted = floor.map_or(wanted, |floor| wanted.max(floor));
     if wanted <= inputs.now {
         next_five_minute_mark(inputs.now).map_or(AlarmDecision::Unpublishable, AlarmDecision::SetAt)
     } else {

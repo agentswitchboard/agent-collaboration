@@ -55,8 +55,8 @@ async fn a_failing_drain_arms_its_next_try_on_a_mark_never_its_past_drain_due() 
     f.area(8400).await;
     let first = next_mark(f.clock.utc_now());
     let past_due = f.clock.utc_now() - chrono::Duration::seconds(7);
-    corrupt_drain(&f, past_due).await;
     let wake = set_wake(&f, 8401, first, "unaffected wake").await;
+    corrupt_drain(&f, past_due).await;
     let runtime = runtime(&f).await;
 
     for pass in 0..3 {
@@ -262,16 +262,21 @@ async fn a_failing_request_drain_records_against_the_unit_and_keeps_its_committe
     // request drain succeeds for its workspace and leaves the unit's record.
     repair_drain(&f, cursor).await;
     f.set_utc(mark + chrono::Duration::seconds(1)).await;
-    let reply = f
-        .call(
-            8422,
-            m::WorkspaceOperation::CreateArea {
-                name: name("Drained"),
-                description: "Test description".to_owned().try_into().unwrap(),
-            },
-        )
-        .await;
-    assert!(matches!(reply.result, m::WorkspaceResult::Done(_)));
+    let mut held = runtime
+        .runtime()
+        .pause_points()
+        .hold_central(fleet_runtime::PausePoint::EngineCompletionEntered);
+    let mut pending = std::pin::pin!(f.call(
+        8422,
+        m::WorkspaceOperation::CreateArea {
+            name: name("Drained"),
+            description: "Test description".to_owned().try_into().unwrap(),
+        },
+    ));
+    tokio::select! {
+        reply = &mut pending => panic!("request left before its per-workspace drain witness: {reply:?}"),
+        () = held.until_held() => {}
+    }
     assert_eq!(
         runtime.runtime().legacy_unit_invocations().request_drains,
         before.request_drains + 2
@@ -290,6 +295,13 @@ async fn a_failing_request_drain_records_against_the_unit_and_keeps_its_committe
         .await,
         whole,
         "one workspace's success leaves the unit's record unchanged"
+    );
+    held.release();
+    let reply = pending.await;
+    assert!(matches!(reply.result, m::WorkspaceResult::Done(_)));
+    assert!(
+        record(&runtime, DRAINS, "all").await.is_empty(),
+        "the separate healthy due pass clears the unit record"
     );
     assert_fixture_attempt_ids_are_uuid_v7(
         &f,

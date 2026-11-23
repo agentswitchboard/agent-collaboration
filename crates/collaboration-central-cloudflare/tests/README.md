@@ -215,13 +215,15 @@ These cases come from the paused reliability branch and mirror the native ones:
 - `workspace_requests::mail::engine_cadence_hour`: V8 and V12.4 on workerd with the held
   clock; an hour without traffic gives exactly the due callbacks, and a request every
   minute needs no callback.
-- `workspace_requests::mail::engine_large_batch`: V9 on workerd; 1,000 due probe
-  instances in four capped real callbacks 30 s apart, earliest first and once each, at
-  most eight in flight; prints batch timings as measurement only.
-- `workspace_requests::mail::engine_timing_races`: V12 races on workerd; a held request
-  publishes the newer floor and backlog, simultaneous requests run one due batch, an
-  eviction repeats nothing, notice units get no look-ahead, and a changed stamp refuses
-  every event.
+- `workspace_requests::mail::engine_large_batch`: shared 1,200-item conformance
+  checks four capped passes in one wake-up and the actual alarm callback for the
+  200-item tail. Separate cases hold eight in-flight units and check that a ninth waits.
+- `workspace_requests::mail::engine_timing_races`: overlapping publications keep
+  the exact durable deadline, one owner runs the due work, and notice units
+  apply at their own cutoff. Stamp mismatches keep the existing refusal.
+- The machine-link reply-due-work cases use the real workspace and mail socket
+  replies and private sign-in HTTP reply. They also cover an independent reply
+  between passes and recovery after dropping a scheduled drain.
 - `workspace_requests::engine_v2_support`: shared workerd V2 helpers (failure record
   reads, mark arithmetic, the held clock, wake and automation requests).
 - `workspace_requests::mail::engine_isolation_v2`: V2 on workerd; a corrupt wake or

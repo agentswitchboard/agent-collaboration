@@ -28,6 +28,7 @@ fleet-runtime.workspace = true
 fleet-storage-schema.workspace = true
 fleet-store-sqlx.workspace = true
 futures-util.workspace = true
+http-body = "1"
 router-clock.workspace = true
 workspace-model.workspace = true
 workspace-ids.workspace = true

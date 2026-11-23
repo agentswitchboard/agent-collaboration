@@ -35,8 +35,8 @@ workspace_drain_minimum(due_at_ms) AS (
 grid_kinds(work_kind) AS (
     SELECT value FROM json_each(?1)
 ),
-grid_minima(due_at_ms) AS (
-    SELECT CASE WHEN EXISTS (
+grid_minima(work_kind, due_at_ms) AS (
+    SELECT k.work_kind, CASE WHEN EXISTS (
         SELECT 1 FROM engine_due_entries d
         WHERE d.work_kind = k.work_kind
             AND d.entry_role = 'source_control' AND d.subject_key = k.work_kind
@@ -55,5 +55,11 @@ grid_minima(due_at_ms) AS (
 SELECT
     (SELECT MIN(due_at_ms) FROM grid_minima) AS "on_grid_due?: i64",
     (SELECT due_at_ms FROM notice_window_minimum) AS "notice_window_due?: i64",
-    (SELECT due_at_ms FROM workspace_drain_minimum) AS "workspace_drain_due?: i64"
+    (SELECT due_at_ms FROM workspace_drain_minimum) AS "workspace_drain_due?: i64",
+    (SELECT MIN(due_at_ms) FROM grid_minima WHERE work_kind IN ('wake_timer', 'automation_timer'))
+        AS "look_ahead_due?: i64",
+    (SELECT MIN(due_at_ms) FROM grid_minima WHERE work_kind IN ('direct_message', 'system_message_expiry'))
+        AS "exact_due?: i64",
+    (SELECT due_at_ms FROM grid_minima WHERE work_kind = 'approval_request')
+        AS "approval_due?: i64"
 WHERE EXISTS (SELECT 1 FROM signin_provisioned_for_engine)

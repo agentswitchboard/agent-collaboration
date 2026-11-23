@@ -19,21 +19,20 @@ async fn wake_effects(runtime: &Runtime) -> Vec<Vec<SqlValue>> {
 }
 
 #[tokio::test]
-async fn admitted_wake_committed_after_due_fires_inside_request_spacing() {
+async fn admitted_wake_committed_after_due_fires_on_its_own_commit() {
     let fixture = Fixture::new().await;
     let central = runtime(&fixture).await;
     let start = now(&fixture);
     let preceding_batch = at(start, 4, 45, 0);
     let due = at(start, 5, 0, 0);
     let committed = at(start, 5, 1, 0);
-    let request_alarm_floor = at(start, 5, 15, 0);
     let next_mark = at(start, 10, 0, 0);
     let before_batch = central.legacy_unit_invocations().await;
     set_now(&fixture, preceding_batch);
     let future = set_wake(&fixture, 45351, next_mark).await;
     let after_batch = central.legacy_unit_invocations().await;
-    assert_eq!(after_batch.windows, before_batch.windows + 1);
-    assert_eq!(after_batch.drains, before_batch.drains + 1);
+    assert_eq!(after_batch.windows, before_batch.windows);
+    assert_eq!(after_batch.drains, before_batch.drains);
     assert_eq!(alarm_ms(&central).await, ms(next_mark));
     let callbacks_before = callbacks(&central).await;
 
@@ -77,7 +76,7 @@ async fn admitted_wake_committed_after_due_fires_inside_request_spacing() {
         held = central.control::<bool>("until-held-central", &transition) => assert!(held.unwrap()),
     }
     assert!(wake_effects(&central).await.is_empty());
-    assert_eq!(alarm_ms(&central).await, ms(request_alarm_floor));
+    assert_eq!(alarm_ms(&central).await, ms(next_mark));
     assert!(
         central
             .control::<bool>("release-central", &transition)
@@ -129,8 +128,7 @@ async fn cold_open_fires_an_overdue_accepted_wake_before_the_next_mark() {
         vec![vec![text(&wake), stamp(reopened_at)]]
     );
     assert_eq!(wake_state(&reopened, &future).await, text("active"));
-    // The next wake is inside a regular batch's look-ahead. A cold claim
-    // would also floor its alarm at 10:10:01, one second after its due time.
+    // Cold recovery targets only the already overdue wake.
     assert_eq!(alarm_ms(&reopened).await, ms(next_mark));
     assert_eq!(callbacks(&reopened).await, callbacks_before);
     fixture.host.close().await;

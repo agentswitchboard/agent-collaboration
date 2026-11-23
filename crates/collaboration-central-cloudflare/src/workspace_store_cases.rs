@@ -20,7 +20,7 @@ pub(super) async fn control(
                 crate::store_wire::OwnedAlarmUpdate::Engine(_) => AlarmPolicy::Engine(
                     object.state.storage(),
                     object.clock.clone(),
-                    fleet_runtime::engine_alarm_decider(object.due_batches.clone()),
+                    fleet_runtime::engine_alarm_decider(),
                 ),
                 crate::store_wire::OwnedAlarmUpdate::Unchanged
                 | crate::store_wire::OwnedAlarmUpdate::SetFromQuery(_) => AlarmPolicy::Ignore,

@@ -218,7 +218,10 @@ impl<H: CentralStore, S: WorkspaceStores> TimedDueDispatch<WorkspaceRuntime<H, S
         if down {
             TimedRowOutcome::CentralStoreFailed
         } else {
-            TimedRowOutcome::Handled(work)
+            TimedRowOutcome::Handled {
+                work,
+                progressed: done,
+            }
         }
     }
 }
@@ -311,7 +314,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
     }
 }
 
-async fn approval_due_cutoff(
+pub(crate) async fn approval_due_cutoff(
     store: &impl CentralStore,
     organization: &fleet_identity_protocol::OrganizationId,
     batch_start: EngineTime,

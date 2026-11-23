@@ -29,10 +29,8 @@ fn catalog(production: bool, include_due_views: bool, include_due_table: bool) -
 }
 
 fn central(path: &Path, migrator: Migrator) -> ObjectStorage {
-    ObjectStorage::new(path.to_path_buf(), Arc::new(migrator)).with_engine_publication(
-        HeldClock::at(0),
-        fleet_runtime::engine_alarm_decider(Arc::new(fleet_runtime::DueBatchState::default())),
-    )
+    ObjectStorage::new(path.to_path_buf(), Arc::new(migrator))
+        .with_engine_publication(HeldClock::at(0), fleet_runtime::engine_alarm_decider())
 }
 
 fn batch(statements: &[&'static str], alarm: AlarmUpdate) -> StatementBatch {

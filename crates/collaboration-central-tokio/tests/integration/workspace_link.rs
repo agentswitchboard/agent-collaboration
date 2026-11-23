@@ -13,6 +13,7 @@ mod private_enrollment_invalidation;
 mod receipt_enrollment_clock;
 mod receipt_frames;
 mod renewal_contract;
+mod reply_due_work;
 mod request_authority;
 mod revocation;
 mod revocation_backpressure;

@@ -35,9 +35,9 @@ async fn cancelling_the_last_capped_wake_clears_the_alarm() {
     let runtime = runtime(&fixture).await;
     let start = fixture.clock.utc_now();
     let mark = at(start, 5, 0, 0);
-    let continuation = at(start, 5, 30, 0);
+    let continuation = at(start, 10, 0, 0);
     let mut wakes = Vec::new();
-    for number in 47800..48051 {
+    for number in 47800..48801 {
         wakes.push(set_wake(&fixture, number, mark).await);
     }
     let tail = wakes
@@ -49,12 +49,12 @@ async fn cancelling_the_last_capped_wake_clears_the_alarm() {
 
     assert_eq!(alarm_ms(&runtime), ms(mark));
     driver_fires_at(&fixture, &runtime, mark).await;
-    assert_eq!(count(&runtime, wake_messages, vec![]).await, 250);
+    assert_eq!(count(&runtime, wake_messages, vec![]).await, 1_000);
     assert_eq!(count(&runtime, wake_due_rows, vec![]).await, 1);
     assert_eq!(wake_state(&runtime, &tail).await, text("active"));
     assert_eq!(alarm_ms(&runtime), ms(continuation));
 
-    // Explicit Clear takes effect even while the capped wake and its overflow indication remain.
+    // Explicit Clear takes effect even while the capped wake and its projected row remain.
     let clear = runtime
         .runtime()
         .statement_host()
@@ -88,7 +88,7 @@ async fn cancelling_the_last_capped_wake_clears_the_alarm() {
     assert_eq!(
         request(
             &fixture,
-            48052,
+            48802,
             CentralMailOperation::CancelWake {
                 wake_id: tail.clone(),
             },
@@ -101,7 +101,7 @@ async fn cancelling_the_last_capped_wake_clears_the_alarm() {
 
     assert_eq!(wake_state(&runtime, &tail).await, text("disabled"));
     assert_eq!(count(&runtime, wake_due_rows, vec![]).await, 0);
-    assert_eq!(count(&runtime, wake_messages, vec![]).await, 250);
+    assert_eq!(count(&runtime, wake_messages, vec![]).await, 1_000);
     assert_eq!(
         (alarm_ms(&runtime), alarm_after_clear, clear),
         (

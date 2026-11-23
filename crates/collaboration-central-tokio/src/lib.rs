@@ -5,6 +5,8 @@ mod native_logging;
 mod object_storage;
 #[cfg(unix)]
 mod organization_signin_link;
+mod workspace_background_tasks;
+mod workspace_reply_due_work;
 #[cfg(unix)]
 pub use organization_signin_link::{OrganizationSignInLink, OrganizationSignInLinkError};
 mod sign_in_crypto;

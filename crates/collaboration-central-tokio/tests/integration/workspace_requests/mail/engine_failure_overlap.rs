@@ -1,15 +1,11 @@
-//! R4 under overlapping due batches on the native host: batch A passes the
-//! attempt check with no record, batch B (31 s later) records the subject's
-//! first failure, then A's corrupt load reports its own failure. A's failure
-//! arrives before B's next try, so it counts for nothing (the pure attempt
-//! transition decides under the record's guard).
+//! A competing event cannot apply a second due batch or count an early failure.
 use super::super::support::*;
 use super::engine_probe_support::*;
 use fleet_runtime::PausePoint;
 use router_clock::RuntimeClock;
 
 #[tokio::test]
-async fn a_failure_from_an_overlapping_batch_never_counts_before_the_next_try() {
+async fn the_active_claim_keeps_a_competing_event_from_charging_the_same_item() {
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
     let due = fixture.clock.utc_now() + chrono::Duration::minutes(5);
@@ -39,15 +35,12 @@ async fn a_failure_from_an_overlapping_batch_never_counts_before_the_next_try() 
     });
     held.until_held().await;
 
-    // Batch B, past the floor, records the first failure.
+    // A later competing event completes its own work while the first batch is held.
     fixture.set_utc_while_a_batch_is_held(due + chrono::Duration::seconds(31));
     runtime.after_event().await.unwrap();
-    assert_eq!(
-        attempt(&runtime, item).await,
-        vec![vec![text("failing"), integer(1), text("corrupt_row")]]
-    );
+    assert!(attempt(&runtime, item).await.is_empty());
 
-    // A's corrupt load now reports its failure, before B's next try.
+    // The claimant alone records the corrupt load.
     held.release();
     batch_a.await.unwrap().unwrap();
 

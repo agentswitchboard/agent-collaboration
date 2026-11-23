@@ -195,9 +195,7 @@ async fn retry_wakes_an_idle_object_and_refuses_missing_failing_and_unadmitted_c
         text("retired")
     );
 
-    // Retried within 30 s of the last due batch's start: P4 places the alarm at
-    // its floor, last start + 30 s. (V13 as ruled: re-published by P4's rule.)
-    let last_start = engine.now();
+    // Retry restores eligibility. The owned pass runs after the reply.
     let answer = engine
         .change_as(RETRY, &operation, &attempt, &engine.repairer())
         .await;
@@ -207,12 +205,7 @@ async fn retry_wakes_an_idle_object_and_refuses_missing_failing_and_unadmitted_c
         engine.record("wake_timer", &wakes[0]).await.is_empty(),
         "record gone"
     );
-    let floor = last_start + chrono::Duration::seconds(30);
-    assert_eq!(
-        engine.alarm_ms().await,
-        Some(floor.timestamp_millis()),
-        "alarm published"
-    );
+    engine.settle_reply_drains().await;
     assert_eq!(
         engine
             .change_as(RETRY, &operation, &attempt, &engine.repairer())
@@ -220,13 +213,10 @@ async fn retry_wakes_an_idle_object_and_refuses_missing_failing_and_unadmitted_c
         answer,
         "a replay with the same operation ID returns the stored answer"
     );
-    assert_eq!(engine.wake_messages(&wakes[0]).await, 0, "not worked yet");
-    engine.set(floor).await;
-    engine.after_event().await;
     assert_eq!(
         engine.wake_messages(&wakes[0]).await,
         1,
-        "worked at the published alarm"
+        "worked by the post-reply drain"
     );
     assert_eq!(
         engine
@@ -243,8 +233,7 @@ async fn retry_wakes_an_idle_object_and_refuses_missing_failing_and_unadmitted_c
         "second retry"
     );
 
-    // Retried more than 30 s after the last batch: P6's after_event on the
-    // admin entry starts a due batch, so the retry request itself works the wake.
+    // A later retry gets the same post-reply drain.
     let third = engine.attempt_id("wake_timer", &wakes[2]).await;
     engine
         .raw(
@@ -259,6 +248,7 @@ async fn retry_wakes_an_idle_object_and_refuses_missing_failing_and_unadmitted_c
         engine.retry(&third).await,
         json!({"result":"engineRetried"})
     );
+    engine.settle_reply_drains().await;
     assert_eq!(engine.wake_messages(&wakes[2]).await, 1);
     assert!(engine.record("wake_timer", &wakes[2]).await.is_empty());
 
@@ -273,6 +263,7 @@ async fn retry_wakes_an_idle_object_and_refuses_missing_failing_and_unadmitted_c
     assert_eq!(count(&json!({"result":"engineRetried"})), 1, "{answers:?}");
     assert_eq!(count(&refused("notFound")), 1, "{answers:?}");
 
+    engine.settle_reply_drains().await;
     // A failing row is not retired.
     let due = next_mark(engine.now());
     let failing = engine.wake(due, "failing").await;
@@ -284,6 +275,7 @@ async fn retry_wakes_an_idle_object_and_refuses_missing_failing_and_unadmitted_c
         .await;
     engine.set(due).await;
     engine.after_event().await;
+    engine.settle_reply_drains().await;
     let failing_attempt = engine.attempt_id("wake_timer", &failing).await;
     assert_eq!(engine.retry(&failing_attempt).await, refused("notRetired"));
     assert_eq!(

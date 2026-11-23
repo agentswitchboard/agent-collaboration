@@ -65,7 +65,12 @@ impl OrganizationSignInLink {
             remove_owned_socket(socket, metadata.dev(), metadata.ino())?;
             return Err(error.into());
         }
-        let router = collaboration_central_core::organization_signin_router(host);
+        let router = collaboration_central_core::organization_signin_router(host.clone()).layer(
+            axum::middleware::from_fn_with_state(
+                host,
+                crate::workspace_reply_due_work::handoff_signin_reply,
+            ),
+        );
         let stop = CancellationToken::new();
         let stopped = stop.clone();
         let task = tokio::spawn(async move {

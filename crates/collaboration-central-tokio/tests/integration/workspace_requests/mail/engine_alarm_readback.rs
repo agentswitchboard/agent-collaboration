@@ -22,25 +22,14 @@ fn bulk_wake_id(number: usize) -> String {
     format!("01890f2e-7b4c-7cc0-98c4-{:012}", 30_599 - number)
 }
 /// Publishes the alarm at `time` without a due batch (the request path's own
-/// recompute), with the last batch start far enough back that its 30 s floor
-/// is already past; the claim snapshot proves no batch started.
+/// recompute). The recorded starts prove that no batch ran.
 async fn publish_without_a_batch_at(fixture: &Fixture, runtime: &Runtime, time: Time) {
-    let before = runtime
-        .runtime()
-        .due_batch_snapshot()
-        .last_start_unix_millis;
-    assert!(
-        before.is_some_and(|start| time.timestamp_millis() - start >= 30_000),
-        "the last batch floor must already be past: {before:?}"
-    );
+    let before = runtime.runtime().due_batch_starts().last().copied();
     driver_settled(fixture, runtime).await;
     fixture.set_utc(time).await;
     runtime.recompute_alarm().await.unwrap();
     assert_eq!(
-        runtime
-            .runtime()
-            .due_batch_snapshot()
-            .last_start_unix_millis,
+        runtime.runtime().due_batch_starts().last().copied(),
         before,
         "no due batch started"
     );
@@ -53,19 +42,8 @@ async fn done_wakes(runtime: &Runtime) -> i64 {
     )
     .await
 }
-/// Done wakes due at or before `through`: equals the done count only when the
-/// batches took the earliest first.
-async fn done_wakes_due_by(runtime: &Runtime, through: Time) -> i64 {
-    count(
-        runtime,
-        "SELECT COUNT(*) FROM automation_wakes WHERE state='done' AND due_at<=?",
-        vec![stamp(through)],
-    )
-    .await
-}
-
 #[tokio::test]
-async fn six_hundred_due_wakes_drain_earliest_first_in_capped_batches_thirty_seconds_apart() {
+async fn six_hundred_due_wakes_drain_in_one_wake_up() {
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
     let start = fixture.clock.utc_now();
@@ -112,24 +90,6 @@ async fn six_hundred_due_wakes_drain_earliest_first_in_capped_batches_thirty_sec
     );
 
     due_batch_at(&fixture, &runtime, at(start, 5, 0)).await;
-    assert_eq!(done_wakes(&runtime).await, 250);
-    assert_eq!(
-        done_wakes_due_by(&runtime, due(249)).await,
-        250,
-        "earliest first"
-    );
-    assert_eq!(alarm_ms(&runtime), ms(at(start, 5, 30)), "continuation");
-
-    due_batch_at(&fixture, &runtime, at(start, 5, 30)).await;
-    assert_eq!(done_wakes(&runtime).await, 500);
-    assert_eq!(
-        done_wakes_due_by(&runtime, due(499)).await,
-        500,
-        "earliest first"
-    );
-    assert_eq!(alarm_ms(&runtime), ms(at(start, 6, 0)));
-
-    due_batch_at(&fixture, &runtime, at(start, 6, 0)).await;
     assert_eq!(done_wakes(&runtime).await, 600);
     assert_eq!(
         count(
@@ -153,13 +113,6 @@ async fn an_out_of_band_due_edit_keeps_the_projected_mark_until_load_detects_cor
     fixture.set_utc(at(start, 1, 30)).await;
     // The request's own due batch starts at 10:01:30.
     let wake = set_wake(&fixture, 14100, at(start, 15, 0), "unreadable").await;
-    assert_eq!(
-        runtime
-            .runtime()
-            .due_batch_snapshot()
-            .last_start_unix_millis,
-        ms(at(start, 1, 30))
-    );
     assert_eq!(alarm_ms(&runtime), ms(at(start, 15, 0)));
     raw(
         &runtime,

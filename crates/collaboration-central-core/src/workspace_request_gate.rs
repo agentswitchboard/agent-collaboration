@@ -382,7 +382,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             .pause_points()
             .reached_central(fleet_runtime::PausePoint::AfterWorkspaceExecute)
             .await;
-        let _ = self.after_event().await;
+        self.after_request_event().await;
         match result {
             Err(ApplyingRequestFailure::Store(
                 StoreFailure::Unavailable | StoreFailure::AnswerLost,

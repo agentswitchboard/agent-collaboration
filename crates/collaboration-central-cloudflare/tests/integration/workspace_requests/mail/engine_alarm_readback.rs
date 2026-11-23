@@ -58,19 +58,8 @@ async fn done_wakes(runtime: &Runtime) -> i64 {
     )
     .await
 }
-/// Done wakes due at or before `through`: equals the done count only when the
-/// batches took the earliest first.
-async fn done_wakes_due_by(runtime: &Runtime, through: Time) -> i64 {
-    count(
-        runtime,
-        "SELECT COUNT(*) FROM automation_wakes WHERE state='done' AND due_at<=?",
-        vec![stamp(through)],
-    )
-    .await
-}
-
 #[tokio::test]
-async fn six_hundred_due_wakes_drain_earliest_first_in_capped_batches_thirty_seconds_apart() {
+async fn six_hundred_due_wakes_drain_in_one_wake_up() {
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
     let start = now(&fixture);
@@ -115,22 +104,6 @@ async fn six_hundred_due_wakes_drain_earliest_first_in_capped_batches_thirty_sec
     );
 
     due_batch_at(&fixture, &runtime, at(start, 5, 0)).await;
-    assert_eq!(done_wakes(&runtime).await, 250);
-    assert_eq!(
-        done_wakes_due_by(&runtime, due(249)).await,
-        250,
-        "earliest first"
-    );
-
-    retained_alarm_fires_at(&fixture, &runtime, at(start, 5, 30)).await;
-    assert_eq!(done_wakes(&runtime).await, 500);
-    assert_eq!(
-        done_wakes_due_by(&runtime, due(499)).await,
-        500,
-        "earliest first"
-    );
-
-    retained_alarm_fires_at(&fixture, &runtime, at(start, 6, 0)).await;
     assert_eq!(done_wakes(&runtime).await, 600);
     assert_eq!(
         count(

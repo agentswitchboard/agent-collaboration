@@ -56,4 +56,4 @@ pub use due_table_planner::{
 
 mod central_queries;
 pub use central_queries::{DueItemTimes, DueTableDifference, InvalidDueEntry, compare_due_table};
-pub use central_queries::{read_alarm_inputs, read_timed_due_rows};
+pub use central_queries::{read_alarm_inputs, read_engine_due_times, read_timed_due_rows};

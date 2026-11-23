@@ -12,6 +12,7 @@ pub mod engine_owed_probe;
 pub mod engine_probe;
 mod engine_wiring;
 pub mod identity_contract;
+mod reply_due_work;
 #[cfg(feature = "test-support")]
 pub mod signin_test_observation;
 #[cfg(feature = "test-support")]

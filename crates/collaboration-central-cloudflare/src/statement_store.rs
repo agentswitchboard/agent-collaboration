@@ -288,6 +288,21 @@ pub(crate) async fn read_timed_due_rows(
     .await
 }
 
+pub(crate) async fn engine_due_times(
+    connection: &DoConnection,
+) -> Result<fleet_runtime_ports::EngineDueTimes, StoreFailure> {
+    let mut engine_reads = WorkerExecutorLender::from_storage_executor(connection);
+    let result = fleet_engine::read_engine_due_times(&mut engine_reads).await;
+    #[cfg(feature = "test-support")]
+    worker::console_log!(
+        "Central due candidate SELECTs: {}",
+        engine_reads
+            .read_dispatches
+            .load(std::sync::atomic::Ordering::Relaxed)
+    );
+    result
+}
+
 pub(crate) async fn engine_alarm_inputs(
     connection: &DoConnection,
 ) -> Result<EngineAlarmTimes, StoreFailure> {

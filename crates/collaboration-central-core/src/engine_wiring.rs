@@ -29,8 +29,19 @@ impl<H: CentralStore, S: WorkspaceStores> EngineHost for WorkspaceRuntime<H, S> 
     fn host_id_source(&self) -> &dyn fleet_runtime_ports::IdSource {
         self.execution.ids()
     }
-    fn due_batch_state(&self) -> &DueBatchState {
+    fn due_batch_state(&self) -> &std::sync::Arc<DueBatchState> {
         self.execution.due_batches()
+    }
+    async fn exact_due_cutoff(&self, now: EngineTime) -> Result<EngineTime, StoreFailure> {
+        crate::workspace_runtime::engine_dispatch::approval_due_cutoff(
+            self.execution.statement_host(),
+            self.execution.organization(),
+            now,
+        )
+        .await
+    }
+    async fn yield_due_batches(&self) -> Result<(), fleet_runtime::DueBatchYieldFailure> {
+        (self.yield_due_batches)().await
     }
     fn emit_central_observation(&self, observation: CentralObservation) {
         self.execution.observe(observation);

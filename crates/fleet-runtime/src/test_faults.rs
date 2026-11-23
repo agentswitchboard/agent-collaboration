@@ -18,9 +18,22 @@ pub struct TestFaults {
     alarm_batch: Mutex<Option<StoreFailure>>,
     alarm_publication: Mutex<Option<AlarmPublicationFailure>>,
     lost_provisioning_reply: AtomicBool,
+    drop_deferred_due_work: AtomicBool,
 }
 
 impl TestFaults {
+    pub fn deferred_due_work_drop_pending(&self) -> bool {
+        self.drop_deferred_due_work.load(Ordering::SeqCst)
+    }
+
+    pub fn arm_deferred_due_work_drop(&self) {
+        self.drop_deferred_due_work.store(true, Ordering::SeqCst);
+    }
+
+    pub fn take_deferred_due_work_drop(&self) -> bool {
+        self.drop_deferred_due_work.swap(false, Ordering::SeqCst)
+    }
+
     pub fn arm_lost_provisioning_reply(&self) {
         self.lost_provisioning_reply.store(true, Ordering::SeqCst);
     }

@@ -4,7 +4,6 @@ use super::super::{
 };
 use super::engine_event_support::{at, count, driver_fires_at, ms, stamp};
 use super::engine_probe_support::{alarm_ms, runtime};
-use central_storage::SqlValue;
 use router_clock::RuntimeClock;
 use workspace_model::central_mail::{
     CentralMailAnswer, CentralMailOperation, CentralMailRequest, CentralMailResult,
@@ -17,9 +16,7 @@ async fn live_capped_schedule_queues_each_occurrence_once() {
     let start = fixture.clock.utc_now();
     fixture.set_utc(at(start, 0, 1, 0)).await;
     let first_mark = at(start, 5, 0, 0);
-    let first_tail = at(start, 5, 30, 0);
     let second_mark = at(start, 10, 0, 0);
-    let second_tail = at(start, 10, 30, 0);
     let third_mark = at(start, 15, 0, 0);
 
     let mut automation_ids = Vec::new();
@@ -54,27 +51,19 @@ async fn live_capped_schedule_queues_each_occurrence_once() {
     let tail = automation_ids.iter().max().unwrap();
 
     for (alarm, total, through, next_due, tail_messages) in [
-        (first_mark, 250, SqlValue::Null, first_mark, vec![]),
         (
-            first_tail,
+            first_mark,
             251,
-            stamp(first_tail),
+            stamp(first_mark),
             second_mark,
-            vec![vec![stamp(first_tail)]],
+            vec![vec![stamp(first_mark)]],
         ),
         (
             second_mark,
-            501,
-            stamp(first_tail),
-            second_mark,
-            vec![vec![stamp(first_tail)]],
-        ),
-        (
-            second_tail,
             502,
-            stamp(second_tail),
+            stamp(second_mark),
             third_mark,
-            vec![vec![stamp(first_tail)], vec![stamp(second_tail)]],
+            vec![vec![stamp(first_mark)], vec![stamp(second_mark)]],
         ),
     ] {
         driver_fires_at(&fixture, &runtime, alarm).await;
@@ -86,7 +75,7 @@ async fn live_capped_schedule_queues_each_occurrence_once() {
             )
             .await,
             total,
-            "each mark applies the first 250 and each continuation applies the tail"
+            "each mark applies the full population, including the capped tail"
         );
         let schedule = runtime
             .runtime().statement_host()
