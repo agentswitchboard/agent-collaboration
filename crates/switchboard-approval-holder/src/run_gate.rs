@@ -50,26 +50,9 @@ pub enum AuthorityEnd {
     EnrollmentEnded,
 }
 
-/// Borrowed authorization for one synchronous use of the current gate snapshot.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ReadyRun<'gate, Connection> {
-    link: &'gate LinkAttempt<Connection>,
-    router_run: &'gate RouterRunId,
-}
-
-impl<'gate, Connection> ReadyRun<'gate, Connection> {
-    pub const fn link(&self) -> &'gate LinkAttempt<Connection> {
-        self.link
-    }
-
-    pub const fn router_run(&self) -> &'gate RouterRunId {
-        self.router_run
-    }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum EndingIngress<'gate, Connection> {
-    Admitted(ReadyRun<'gate, Connection>),
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum LinkAdmission {
+    Ready,
     NotReady,
     Discard,
 }
@@ -116,22 +99,16 @@ impl<Enrollment, Connection> RunGateState<Enrollment, Connection> {
         }
     }
 
-    pub const fn ready_run(&self) -> Option<ReadyRun<'_, Connection>> {
+    /// The ready link's identity, for addressing a candidate.
+    pub const fn ready_link(&self) -> Option<&LinkAttempt<Connection>> {
         match &self.phase {
-            Phase::Ready(link) => Some(ReadyRun {
-                link,
-                router_run: &self.authority.router_run,
-            }),
-            Phase::AwaitingDial
-            | Phase::Dialing(_)
-            | Phase::RegistrationDue(_)
-            | Phase::Registering(_)
-            | Phase::Ended(_) => None,
+            Phase::Ready(link) => Some(link),
+            _ => None,
         }
     }
 
     pub fn ready_connection(&self) -> Option<&Connection> {
-        self.ready_run().map(|ready| &ready.link().connection)
+        self.ready_link().map(|link| &link.connection)
     }
 
     fn current_link(&self) -> Option<&LinkAttempt<Connection>> {
@@ -144,17 +121,18 @@ impl<Enrollment, Connection> RunGateState<Enrollment, Connection> {
 }
 
 impl<Enrollment: Eq, Connection: Eq> RunGateState<Enrollment, Connection> {
-    pub fn ending_ingress(
+    pub(crate) fn admit_link(
         &self,
         authority: &RunAuthority<Enrollment>,
         link: &LinkAttempt<Connection>,
-    ) -> EndingIngress<'_, Connection> {
+    ) -> LinkAdmission {
         if &self.authority != authority || self.current_link() != Some(link) {
-            return EndingIngress::Discard;
+            return LinkAdmission::Discard;
         }
-        match self.ready_run() {
-            Some(admitted) => EndingIngress::Admitted(admitted),
-            None => EndingIngress::NotReady,
+        if self.ready_link().is_some() {
+            LinkAdmission::Ready
+        } else {
+            LinkAdmission::NotReady
         }
     }
 }

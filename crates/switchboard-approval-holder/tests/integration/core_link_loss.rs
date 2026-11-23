@@ -155,7 +155,7 @@ fn lost_registration_and_stop_replies_recover_across_two_reconnects() {
         let published_raise = start
             .into_iter()
             .find_map(|effect| match effect {
-                RequestEffect::Raise { call, request } if call.link.connection == 2 => {
+                RequestEffect::Raise { call, request, .. } if call.link.connection == 2 => {
                     Some(request)
                 }
                 _ => None,
@@ -181,6 +181,7 @@ fn lost_registration_and_stop_replies_recover_across_two_reconnects() {
             mac.publish(),
             [RequestEffect::Raise {
                 call: call(3, 2),
+                authority: authority(),
                 request: published_raise.clone()
             }]
         );
@@ -211,7 +212,9 @@ fn lost_registration_and_stop_replies_recover_across_two_reconnects() {
             .publish()
             .into_iter()
             .find_map(|effect| match effect {
-                RequestEffect::Stop { call, request } if call.link.connection == 3 => Some(request),
+                RequestEffect::Stop { call, request, .. } if call.link.connection == 3 => {
+                    Some(request)
+                }
                 _ => None,
             })
             .unwrap();
@@ -224,7 +227,7 @@ fn lost_registration_and_stop_replies_recover_across_two_reconnects() {
         );
         mac.lose_connection(3);
         assert!(
-            !mac.wait.is_closed(),
+            mac.wait.holds_place(),
             "the owed Stop must survive the simulated lost reply"
         );
         drop(link);
@@ -238,7 +241,9 @@ fn lost_registration_and_stop_replies_recover_across_two_reconnects() {
         let second_stop = effects
             .into_iter()
             .find_map(|effect| match effect {
-                RequestEffect::Stop { call, request } if call.link.connection == 4 => Some(request),
+                RequestEffect::Stop { call, request, .. } if call.link.connection == 4 => {
+                    Some(request)
+                }
                 _ => None,
             })
             .unwrap();
@@ -254,7 +259,7 @@ fn lost_registration_and_stop_replies_recover_across_two_reconnects() {
                 StopReceiptEnding::TimedOut {}
             )]
         );
-        assert!(mac.wait.is_closed());
+        assert!(!mac.wait.holds_place());
         Ok(())
     });
     sim.run().unwrap();

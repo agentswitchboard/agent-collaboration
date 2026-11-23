@@ -9,3 +9,6 @@ gate and wait facts. Turmoil drives typed registration, link refusal and Stop
 loss over simulated TCP with the exact request bytes retained across retries.
 The agent withdrawal cases exercise exact take-back before publication, after a
 possible Raise, after claim or permit, and after the original writer starts.
+The confirmation cases exercise retired inputs against the current gate, queued
+candidate rejection and exact retry, and the four ways a capacity-released wait
+can dispose of its last call.

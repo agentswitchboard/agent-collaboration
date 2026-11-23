@@ -15,11 +15,12 @@ use switchboard_approval_holder::{
     run_gate::{
         AuthorityEnd, CallAttempt, CallKey, DialAttempt, LinkAttempt, RunGate, RunGateState,
     },
-    waiting_request::{LocalNegative, ProviderReply, WaitState, WaitingRequest, WriterOutcome},
+    waiting_request::{LocalNegative, ProviderReply, WaitState, WriterOutcome},
 };
 
 use super::fixtures::{
-    GateEffect, GateEvent, RESPONDER, RequestEffect, RequestEvent, authority, raise,
+    GateEffect, GateEvent, RESPONDER, RequestEffect, RequestEvent, RequestMachine, authority,
+    raise, try_offer, try_publish,
 };
 
 const STOP: ProviderStopCause = ProviderStopCause::TurnStopped {};
@@ -203,6 +204,7 @@ impl HistoryFacts {
             self.stop = Some(key.clone());
             effects.push(Observation::Wait(RequestEffect::Stop {
                 call: key,
+                authority: authority(),
                 request: request.clone(),
             }));
         } else {
@@ -213,6 +215,7 @@ impl HistoryFacts {
             self.raise = Some(key.clone());
             effects.push(Observation::Wait(RequestEffect::Raise {
                 call: key,
+                authority: authority(),
                 request: raise(),
             }));
         }
@@ -254,7 +257,11 @@ impl HistoryFacts {
             self.claim(ProviderReply::CentralEnding(request.ending.clone()));
             DeliverEndingReply::Received {}
         };
-        effects.push(Observation::Wait(RequestEffect::EndingReply(reply)));
+        effects.push(Observation::Wait(RequestEffect::EndingReply {
+            authority: authority(),
+            link: link.clone(),
+            reply,
+        }));
     }
 
     fn stop_locally(
@@ -306,7 +313,12 @@ impl HistoryFacts {
     fn wait(&mut self, action: &WaitInput) -> Option<Vec<Observation>> {
         let mut effects = Vec::new();
         match action {
-            WaitInput::Ending { link, request } => self.arrive(link, request, &mut effects),
+            WaitInput::Ending { link, request } => {
+                if self.closed() && (self.raise.is_some() || self.stop.is_some()) {
+                    return None;
+                }
+                self.arrive(link, request, &mut effects);
+            }
             WaitInput::Raise { key, reply } if self.raise.as_ref() == Some(key) => {
                 self.raise = None;
                 match reply {
@@ -484,8 +496,8 @@ impl Product {
         }
     }
 
-    fn apply_local(&mut self, event: RequestEvent<'static>) -> Option<Vec<RequestEffect>> {
-        match WaitingRequest::transition(&self.wait, event) {
+    fn apply_local(&mut self, event: RequestEvent) -> Option<Vec<RequestEffect>> {
+        match RequestMachine::transition(&self.wait, event) {
             Ok((state, effects)) => {
                 self.wait = state;
                 Some(effects)
@@ -496,45 +508,18 @@ impl Product {
     }
 
     fn wait(&mut self, input: &WaitInput) -> Option<Vec<Observation>> {
-        let event = match input {
-            WaitInput::Publish(attempt) => RequestEvent::Publish {
-                ready: self.gate.ready_run()?,
-                attempt: *attempt,
-            },
-            WaitInput::Raise { key, reply } => RequestEvent::RaiseReply {
-                call: key.clone(),
-                reply: reply.clone(),
-            },
-            WaitInput::Stop { key, reply } => RequestEvent::StopReply {
-                call: key.clone(),
-                reply: reply.clone(),
-            },
-            WaitInput::Lost(key) => RequestEvent::CallEndedWithoutReply { call: key.clone() },
-            WaitInput::Ending { link, request } => RequestEvent::DeliverEnding {
-                request: request.clone(),
-                ingress: self.gate.ending_ingress(&authority(), link),
-            },
-            WaitInput::LocalStop(cause) => RequestEvent::LocalStop { cause: *cause },
-            WaitInput::Permit { responder, reply } => RequestEvent::TakeFinalPermit {
-                responder: *responder,
-                reply: reply.clone(),
-            },
-            WaitInput::Start { responder, reply } => RequestEvent::StartWrite {
-                responder: *responder,
-                reply: reply.clone(),
-            },
-            WaitInput::ProviderWithdrew(responder) => RequestEvent::ProviderWithdrew {
-                responder: *responder,
-            },
-            WaitInput::Withdraw => RequestEvent::CapabilityWithdrawn {
-                responder: RESPONDER,
-            },
-            WaitInput::Finish(outcome) => RequestEvent::WriteFinished {
-                responder: RESPONDER,
-                outcome: *outcome,
-            },
+        let result = match input {
+            WaitInput::Publish(attempt) => try_publish(&self.wait, &self.gate, *attempt),
+            WaitInput::Ending { link, request } => try_offer(
+                &self.wait,
+                &self.gate,
+                authority(),
+                link.clone(),
+                request.clone(),
+            ),
+            other => RequestMachine::transition(&self.wait, Self::local_event(other)?),
         };
-        let (next, effects) = match WaitingRequest::transition(&self.wait, event) {
+        let (next, effects) = match result {
             Ok(result) => result,
             Err(TransitionError::Stale) => return None,
             Err(error) => panic!("Unexpected wait refusal: {error:?}"),
@@ -558,6 +543,40 @@ impl Product {
         }
         Some(observed)
     }
+
+    fn local_event(input: &WaitInput) -> Option<RequestEvent> {
+        Some(match input {
+            WaitInput::Publish(_) | WaitInput::Ending { .. } => return None,
+            WaitInput::Raise { key, reply } => RequestEvent::RaiseReply {
+                call: key.clone(),
+                reply: reply.clone(),
+            },
+            WaitInput::Stop { key, reply } => RequestEvent::StopReply {
+                call: key.clone(),
+                reply: reply.clone(),
+            },
+            WaitInput::Lost(key) => RequestEvent::CallEndedWithoutReply { call: key.clone() },
+            WaitInput::LocalStop(cause) => RequestEvent::LocalStop { cause: *cause },
+            WaitInput::Permit { responder, reply } => RequestEvent::TakeFinalPermit {
+                responder: *responder,
+                reply: reply.clone(),
+            },
+            WaitInput::Start { responder, reply } => RequestEvent::StartWrite {
+                responder: *responder,
+                reply: reply.clone(),
+            },
+            WaitInput::ProviderWithdrew(responder) => RequestEvent::ProviderWithdrew {
+                responder: *responder,
+            },
+            WaitInput::Withdraw => RequestEvent::CapabilityWithdrawn {
+                responder: RESPONDER,
+            },
+            WaitInput::Finish(outcome) => RequestEvent::WriteFinished {
+                responder: RESPONDER,
+                outcome: *outcome,
+            },
+        })
+    }
 }
 
 fn ending(alternate: bool) -> DeliverEndingRequest {
@@ -573,11 +592,12 @@ fn ending(alternate: bool) -> DeliverEndingRequest {
 
 fn assert_observations(actual: &Product, model: &HistoryFacts) {
     let ready = model.dial.as_ref().filter(|_| model.ready);
+    assert_eq!(actual.gate.ready_link(), ready);
+    assert_eq!(actual.wait.holds_place(), !model.closed());
     assert_eq!(
-        actual.gate.ready_run().as_ref().map(|ready| ready.link()),
-        ready
+        actual.wait.may_be_forgotten(),
+        model.closed() && model.raise.is_none() && model.stop.is_none()
     );
-    assert_eq!(actual.wait.is_closed(), model.closed());
     assert_eq!(
         actual.wait.has_pending_calls(),
         model.raise.is_some() || model.stop.is_some()

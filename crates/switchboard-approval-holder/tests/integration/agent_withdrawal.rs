@@ -5,25 +5,28 @@ use approval_request_protocol::{
 use state_machine_core::{StateMachine, TransitionError};
 use switchboard_approval_holder::{
     run_gate::CallAttempt,
-    waiting_request::{ProviderReply, WaitingRequest, WriterOutcome},
+    waiting_request::{ProviderReply, WriterOutcome},
 };
 
-use super::fixtures::{Mac, RESPONDER, RequestEffect, RequestEvent, authority, call, raise};
+use super::fixtures::{
+    Mac, RESPONDER, RequestEffect, RequestEvent, RequestMachine, authority, call, ending_reply,
+    raise, try_publish,
+};
 
-fn withdrawn() -> RequestEvent<'static> {
+fn withdrawn() -> RequestEvent {
     RequestEvent::ProviderWithdrew {
         responder: RESPONDER,
     }
 }
 
-fn take(reply: ProviderReply) -> RequestEvent<'static> {
+fn take(reply: ProviderReply) -> RequestEvent {
     RequestEvent::TakeFinalPermit {
         responder: RESPONDER,
         reply,
     }
 }
 
-fn start(reply: ProviderReply) -> RequestEvent<'static> {
+fn start(reply: ProviderReply) -> RequestEvent {
     RequestEvent::StartWrite {
         responder: RESPONDER,
         reply,
@@ -36,7 +39,7 @@ fn claimed(mac: &mut Mac) -> ProviderReply {
     let reply = ProviderReply::CentralEnding(ending.ending.clone());
     assert_eq!(
         mac.offer(1, ending),
-        [RequestEffect::EndingReply(DeliverEndingReply::Received {})]
+        [ending_reply(1, DeliverEndingReply::Received {})]
     );
     reply
 }
@@ -50,11 +53,11 @@ fn ready() -> Mac {
 
 fn no_second_release(mac: &Mac) {
     assert_eq!(
-        WaitingRequest::transition(&mac.wait, withdrawn()),
+        RequestMachine::transition(&mac.wait, withdrawn()),
         Err(TransitionError::Stale)
     );
     assert_eq!(
-        WaitingRequest::transition(
+        RequestMachine::transition(
             &mac.wait,
             RequestEvent::WriteFinished {
                 responder: RESPONDER,
@@ -69,7 +72,7 @@ fn no_second_release(mac: &Mac) {
 fn agent_take_back_before_raise_releases_without_central_duty() {
     let mut mac = ready();
     assert_eq!(
-        WaitingRequest::transition(&mac.wait, RequestEvent::ProviderWithdrew { responder: 2 }),
+        RequestMachine::transition(&mac.wait, RequestEvent::ProviderWithdrew { responder: 2 }),
         Err(TransitionError::Stale)
     );
     assert_eq!(
@@ -79,16 +82,10 @@ fn agent_take_back_before_raise_releases_without_central_duty() {
         }],
         "unsent take-back must release the available responder"
     );
-    assert!(mac.wait.is_closed());
+    assert!(!mac.wait.holds_place());
     assert!(!mac.wait.has_pending_calls());
     assert_eq!(
-        WaitingRequest::transition(
-            &mac.wait,
-            RequestEvent::Publish {
-                ready: mac.gate.ready_run().unwrap(),
-                attempt: CallAttempt::new(1),
-            }
-        ),
+        try_publish(&mac.wait, &mac.gate, CallAttempt::new(1)),
         Err(TransitionError::Stale)
     );
     no_second_release(&mac);
@@ -106,7 +103,7 @@ fn agent_take_back_after_possible_raise_keeps_an_exact_stop_across_reconnect() {
     );
     assert!(mac.wait.claimed_reply().is_none());
     assert!(
-        !mac.wait.is_closed(),
+        mac.wait.holds_place(),
         "exposed take-back owes a Stop before closure"
     );
     no_second_release(&mac);
@@ -120,6 +117,7 @@ fn agent_take_back_after_possible_raise_keeps_an_exact_stop_across_reconnect() {
         mac.publish(),
         [RequestEffect::Stop {
             call: call(1, 2),
+            authority: authority(),
             request: request.clone()
         }],
         "exposed take-back owes a Stop with the same binding"
@@ -131,6 +129,7 @@ fn agent_take_back_after_possible_raise_keeps_an_exact_stop_across_reconnect() {
         mac.publish(),
         [RequestEffect::Stop {
             call: call(2, 3),
+            authority: authority(),
             request
         }]
     );
@@ -145,7 +144,7 @@ fn agent_take_back_after_possible_raise_keeps_an_exact_stop_across_reconnect() {
             StopReceiptEnding::TimedOut {}
         )]
     );
-    assert!(mac.wait.is_closed());
+    assert!(!mac.wait.holds_place());
 }
 
 #[test]
@@ -164,24 +163,18 @@ fn agent_take_back_of_a_claim_or_permit_revokes_the_reply_without_stop() {
             "claimed take-back revokes the reply before start"
         );
         assert_eq!(
-            WaitingRequest::transition(&mac.wait, take(reply.clone())),
+            RequestMachine::transition(&mac.wait, take(reply.clone())),
             Err(TransitionError::Stale)
         );
         assert_eq!(
-            WaitingRequest::transition(&mac.wait, start(reply)),
+            RequestMachine::transition(&mac.wait, start(reply)),
             Err(TransitionError::Stale)
         );
         assert_eq!(
-            WaitingRequest::transition(
-                &mac.wait,
-                RequestEvent::Publish {
-                    ready: mac.gate.ready_run().unwrap(),
-                    attempt: CallAttempt::new(2),
-                }
-            ),
+            try_publish(&mac.wait, &mac.gate, CallAttempt::new(2)),
             Err(TransitionError::Stale)
         );
-        assert!(mac.wait.is_closed());
+        assert!(!mac.wait.holds_place());
         no_second_release(&mac);
     }
 }
@@ -203,7 +196,7 @@ fn agent_take_back_after_start_leaves_the_original_writer_to_report_once() {
         "take-back after start cannot release the running writer"
     );
     assert_eq!(
-        WaitingRequest::transition(&mac.wait, start(reply)),
+        RequestMachine::transition(&mac.wait, start(reply)),
         Err(TransitionError::Stale)
     );
     assert_eq!(
@@ -221,6 +214,6 @@ fn agent_take_back_after_start_leaves_the_original_writer_to_report_once() {
             },
         ]
     );
-    assert!(mac.wait.is_closed());
+    assert!(!mac.wait.holds_place());
     no_second_release(&mac);
 }

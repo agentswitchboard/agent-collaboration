@@ -4,13 +4,13 @@ use approval_request_protocol::{
 };
 use state_machine_core::{StateMachine, TransitionError};
 use switchboard_approval_holder::{
-    run_gate::{AuthorityEnd, CallAttempt, DialAttempt, EndingIngress, RunGate},
-    waiting_request::{LocalNegative, ProviderReply, WaitState, WaitingRequest, WriterOutcome},
+    run_gate::{AuthorityEnd, CallAttempt, DialAttempt, RunGate},
+    waiting_request::{LocalNegative, ProviderReply, WaitState, WriterOutcome},
 };
 
 use super::fixtures::{
-    GateEffect, GateEvent, Mac, RESPONDER, RequestEffect, RequestEvent, authority, call, link,
-    raise,
+    GateEffect, GateEvent, Mac, RESPONDER, RequestEffect, RequestEvent, RequestMachine, authority,
+    call, ending_reply, link, raise, try_offer, try_publish,
 };
 
 const STOP: ProviderStopCause = ProviderStopCause::TurnStopped {};
@@ -27,14 +27,14 @@ fn timed_out() -> DeliverEndingRequest {
     DeliverEndingRequest::from_raise(&raise(), Ending::TimedOut {}).unwrap()
 }
 
-fn permit(reply: ProviderReply) -> RequestEvent<'static> {
+fn permit(reply: ProviderReply) -> RequestEvent {
     RequestEvent::TakeFinalPermit {
         responder: RESPONDER,
         reply,
     }
 }
 
-fn start(reply: ProviderReply) -> RequestEvent<'static> {
+fn start(reply: ProviderReply) -> RequestEvent {
     RequestEvent::StartWrite {
         responder: RESPONDER,
         reply,
@@ -114,18 +114,13 @@ fn same_carrier_raise_and_stop_retries_ignore_old_replies_and_failures() {
         mac.publish(),
         [RequestEffect::Raise {
             call: call(1, 1),
+            authority: authority(),
             request: raise()
         }]
     );
     // An unobserved dropped wire copy cannot complete the pending call.
     assert_eq!(
-        WaitingRequest::transition(
-            &mac.wait,
-            RequestEvent::Publish {
-                ready: mac.gate.ready_run().unwrap(),
-                attempt: CallAttempt::new(2),
-            }
-        ),
+        try_publish(&mac.wait, &mac.gate, CallAttempt::new(2)),
         Err(TransitionError::Stale),
         "wire loss without completion must leave Raise in flight"
     );
@@ -134,6 +129,7 @@ fn same_carrier_raise_and_stop_retries_ignore_old_replies_and_failures() {
         mac.publish(),
         [RequestEffect::Raise {
             call: call(1, 2),
+            authority: authority(),
             request: raise()
         }]
     );
@@ -147,7 +143,7 @@ fn same_carrier_raise_and_stop_retries_ignore_old_replies_and_failures() {
         RequestEvent::CallEndedWithoutReply { call: call(1, 1) },
     ] {
         assert_eq!(
-            WaitingRequest::transition(&mac.wait, event),
+            RequestMachine::transition(&mac.wait, event),
             Err(TransitionError::Stale),
             "late Raise completion on same carrier"
         );
@@ -163,6 +159,7 @@ fn same_carrier_raise_and_stop_retries_ignore_old_replies_and_failures() {
         mac.publish(),
         [RequestEffect::Stop {
             call: call(1, 4),
+            authority: authority(),
             request
         }]
     );
@@ -176,7 +173,7 @@ fn same_carrier_raise_and_stop_retries_ignore_old_replies_and_failures() {
         RequestEvent::CallEndedWithoutReply { call: call(1, 3) },
     ] {
         assert_eq!(
-            WaitingRequest::transition(&mac.wait, event),
+            RequestMachine::transition(&mac.wait, event),
             Err(TransitionError::Stale),
             "late Stop completion on same carrier"
         );
@@ -192,26 +189,13 @@ fn recoverable_refusal_retires_link_and_preserves_multiple_wait_duties() {
         2u8,
     )
     .unwrap();
-    other = WaitingRequest::transition(
-        &other,
-        RequestEvent::Publish {
-            ready: mac.gate.ready_run().unwrap(),
-            attempt: CallAttempt::new(8),
-        },
-    )
-    .unwrap()
-    .0;
-    other = WaitingRequest::transition(&other, RequestEvent::LocalStop { cause: STOP })
+    other = try_publish(&other, &mac.gate, CallAttempt::new(8))
         .unwrap()
         .0;
-    let (next, effects) = WaitingRequest::transition(
-        &other,
-        RequestEvent::Publish {
-            ready: mac.gate.ready_run().unwrap(),
-            attempt: CallAttempt::new(9),
-        },
-    )
-    .unwrap();
+    other = RequestMachine::transition(&other, RequestEvent::LocalStop { cause: STOP })
+        .unwrap()
+        .0;
+    let (next, effects) = try_publish(&other, &mac.gate, CallAttempt::new(9)).unwrap();
     other = next;
     let [RequestEffect::Stop { request: stop, .. }]: [RequestEffect; 1] =
         effects.try_into().unwrap()
@@ -219,7 +203,7 @@ fn recoverable_refusal_retires_link_and_preserves_multiple_wait_duties() {
         panic!("expected owed Stop");
     };
 
-    let (wait, effects) = WaitingRequest::transition(
+    let (wait, effects) = RequestMachine::transition(
         &mac.wait,
         RequestEvent::RaiseReply {
             call: call(1, 1),
@@ -239,10 +223,10 @@ fn recoverable_refusal_retires_link_and_preserves_multiple_wait_duties() {
         [GateEffect::RetireConnection { link: link(1) }],
         "recoverable refusal retires its exact link"
     );
-    other = WaitingRequest::transition(&other, RequestEvent::ConnectionRetired { link: link(1) })
+    other = RequestMachine::transition(&other, RequestEvent::ConnectionRetired { link: link(1) })
         .unwrap()
         .0;
-    assert!(mac.gate.ready_run().is_none());
+    assert!(mac.gate.ready_link().is_none());
     assert_eq!(
         RunGate::transition(
             &mac.gate,
@@ -256,21 +240,17 @@ fn recoverable_refusal_retires_link_and_preserves_multiple_wait_duties() {
         mac.publish(),
         [RequestEffect::Raise {
             call: call(2, 2),
+            authority: authority(),
             request: raise()
         }]
     );
     assert_eq!(
-        WaitingRequest::transition(
-            &other,
-            RequestEvent::Publish {
-                ready: mac.gate.ready_run().unwrap(),
-                attempt: CallAttempt::new(10),
-            }
-        )
-        .unwrap()
-        .1,
+        try_publish(&other, &mac.gate, CallAttempt::new(10))
+            .unwrap()
+            .1,
         [RequestEffect::Stop {
             call: call(2, 10),
+            authority: authority(),
             request: stop
         }]
     );
@@ -291,7 +271,7 @@ fn displaced_raise_terminal_refusal_fences_the_gate_before_provider_start() {
         let negative = ProviderReply::LocalNegative(LocalNegative::Stopped(STOP));
         mac.wait_event(permit(negative.clone()));
 
-        let result = WaitingRequest::transition(
+        let result = RequestMachine::transition(
             &mac.wait,
             RequestEvent::RaiseReply {
                 call: call(1, 1),
@@ -316,7 +296,7 @@ fn displaced_raise_terminal_refusal_fences_the_gate_before_provider_start() {
             }]
         );
         assert_eq!(
-            WaitingRequest::transition(&mac.wait, start(negative)),
+            RequestMachine::transition(&mac.wait, start(negative)),
             Err(TransitionError::Stale)
         );
     }
@@ -330,9 +310,7 @@ fn ending_admission_discards_old_carriers_and_runs() {
     mac.welcome(2);
     assert_eq!(
         mac.offer(2, timed_out()),
-        [RequestEffect::EndingReply(
-            DeliverEndingReply::HolderNotReady {}
-        )]
+        [ending_reply(2, DeliverEndingReply::HolderNotReady {})]
     );
     mac.registered(2, RegisterRunReply::Registered {});
     assert!(
@@ -341,29 +319,33 @@ fn ending_admission_discards_old_carriers_and_runs() {
     );
     let mut other = authority();
     other.router_run = "01890f2e-7b4c-7cc0-98c4-00000000000c".parse().unwrap();
-    assert_eq!(
-        mac.gate.ending_ingress(&other, &link(2)),
-        EndingIngress::Discard,
+    assert!(
+        try_offer(&mac.wait, &mac.gate, other, link(2), timed_out())
+            .unwrap()
+            .1
+            .is_empty(),
         "stale run cannot receive an ending reply"
     );
     other = authority();
     other.enrollment = 2;
-    assert_eq!(
-        mac.gate.ending_ingress(&other, &link(2)),
-        EndingIngress::Discard
+    assert!(
+        try_offer(&mac.wait, &mac.gate, other, link(2), timed_out())
+            .unwrap()
+            .1
+            .is_empty()
     );
     assert!(mac.wait.claimed_reply().is_none());
     mac.publish();
     assert_eq!(
         mac.offer(2, timed_out()),
-        [RequestEffect::EndingReply(DeliverEndingReply::Received {})]
+        [ending_reply(2, DeliverEndingReply::Received {})]
     );
 }
 
 #[test]
 fn known_provider_disconnect_releases_once_without_submitting_and_keeps_stop() {
     assert_eq!(
-        WaitingRequest::transition(
+        RequestMachine::transition(
             &ready().wait,
             RequestEvent::LocalStop {
                 cause: ProviderStopCause::AskWithdrawn
@@ -419,15 +401,15 @@ fn known_provider_disconnect_releases_once_without_submitting_and_keeps_stop() {
         }
         let dead = ProviderReply::LocalNegative(LocalNegative::Stopped(LOST));
         assert_eq!(
-            WaitingRequest::transition(&mac.wait, permit(dead.clone())),
+            RequestMachine::transition(&mac.wait, permit(dead.clone())),
             Err(TransitionError::Stale)
         );
         assert_eq!(
-            WaitingRequest::transition(&mac.wait, start(dead)),
+            RequestMachine::transition(&mac.wait, start(dead)),
             Err(TransitionError::Stale)
         );
         assert_eq!(
-            WaitingRequest::transition(&mac.wait, start(reply)),
+            RequestMachine::transition(&mac.wait, start(reply)),
             Err(TransitionError::Stale)
         );
         if phase == 1 {
@@ -435,6 +417,7 @@ fn known_provider_disconnect_releases_once_without_submitting_and_keeps_stop() {
                 mac.publish(),
                 [RequestEffect::Stop {
                     call: call(1, 2),
+                    authority: authority(),
                     request: StopRequest::Provider {
                         request_id: raise().request_id().clone(),
                         router_run: authority().router_run,
@@ -444,7 +427,7 @@ fn known_provider_disconnect_releases_once_without_submitting_and_keeps_stop() {
                 }]
             );
         } else {
-            assert!(mac.wait.is_closed());
+            assert!(!mac.wait.holds_place());
         }
     }
 }
@@ -468,13 +451,7 @@ fn stop_digest_conflict_is_reported_as_unresolved_independently_of_writer() {
         "NotVisible cannot be reported as standing"
     );
     assert_eq!(
-        WaitingRequest::transition(
-            &mac.wait,
-            RequestEvent::Publish {
-                ready: mac.gate.ready_run().unwrap(),
-                attempt: CallAttempt::new(3),
-            }
-        ),
+        try_publish(&mac.wait, &mac.gate, CallAttempt::new(3)),
         Err(TransitionError::Stale)
     );
     let reply = ProviderReply::LocalNegative(LocalNegative::Stopped(STOP));
@@ -499,13 +476,7 @@ fn local_capacity_refusal_is_never_raised_and_uses_the_exact_writer_once() {
         "local capacity is distinct from a Central refusal"
     );
     assert_eq!(
-        WaitingRequest::transition(
-            &mac.wait,
-            RequestEvent::Publish {
-                ready: mac.gate.ready_run().unwrap(),
-                attempt: CallAttempt::new(1),
-            }
-        ),
+        try_publish(&mac.wait, &mac.gate, CallAttempt::new(1)),
         Err(TransitionError::Stale)
     );
     mac.wait_event(permit(reply.clone()));
@@ -517,7 +488,7 @@ fn local_capacity_refusal_is_never_raised_and_uses_the_exact_writer_once() {
         }]
     );
     assert_eq!(
-        WaitingRequest::transition(&mac.wait, start(reply)),
+        RequestMachine::transition(&mac.wait, start(reply)),
         Err(TransitionError::Stale)
     );
 }

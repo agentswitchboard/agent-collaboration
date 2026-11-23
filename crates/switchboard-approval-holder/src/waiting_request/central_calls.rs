@@ -1,7 +1,6 @@
 use super::{
-    Call, CallAttempt, CallKey, CentralDuty, Effects, LinkAttempt, LocalNegative,
-    MatchedRunRefusal, ProviderReply, RaiseRefusal, ReadyRun, WaitEffect, WaitError, WaitRefusal,
-    WaitState,
+    Call, CallKey, CentralDuty, Effects, LinkAttempt, LocalNegative, MatchedRunRefusal,
+    ProviderReply, RaiseRefusal, RunAuthority, WaitEffect, WaitError, WaitRefusal, WaitState,
 };
 use approval_request_protocol::{
     ProviderStopCause, RaiseReply, RunRefusal, StopReply, StopRequest,
@@ -9,24 +8,18 @@ use approval_request_protocol::{
 use state_machine_core::TransitionError;
 
 impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connection> {
-    pub(super) fn publish(
+    pub(super) fn publish<Enrollment>(
         &mut self,
-        ready: ReadyRun<'_, Connection>,
-        attempt: CallAttempt,
-    ) -> Result<WaitEffect<Responder, Connection>, WaitError> {
-        if self.router_run.as_ref() != Some(ready.router_run()) {
-            return Err(TransitionError::Stale);
-        }
-        let call = CallKey {
-            link: ready.link().clone(),
-            attempt,
-        };
+        authority: RunAuthority<Enrollment>,
+        call: CallKey<Connection>,
+    ) -> Result<WaitEffect<Responder, Connection, Enrollment>, WaitError> {
         match &mut self.central {
             CentralDuty::Unsent | CentralDuty::Raising(Call::Due) => {
                 let frozen = self.frozen.as_ref().ok_or(TransitionError::Stale)?;
                 self.central = CentralDuty::Raising(Call::InFlight(call.clone()));
                 Ok(WaitEffect::Raise {
                     call,
+                    authority,
                     request: frozen.body.clone(),
                 })
             }
@@ -37,6 +30,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
                 *pending = Call::InFlight(call.clone());
                 Ok(WaitEffect::Stop {
                     call,
+                    authority,
                     request: request.clone(),
                 })
             }
@@ -103,11 +97,11 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
         }
     }
 
-    pub(super) fn receive_raise(
+    pub(super) fn receive_raise<Enrollment>(
         &mut self,
         key: CallKey<Connection>,
         reply: RaiseReply,
-        effects: &mut Effects<Responder, Connection>,
+        effects: &mut Effects<Responder, Connection, Enrollment>,
     ) -> Result<(), WaitError> {
         if self.displaced_raise.as_ref() == Some(&key) {
             self.displaced_raise = None;
@@ -149,11 +143,11 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
         Ok(())
     }
 
-    pub(super) fn receive_stop(
+    pub(super) fn receive_stop<Enrollment>(
         &mut self,
         key: CallKey<Connection>,
         reply: StopReply,
-        effects: &mut Effects<Responder, Connection>,
+        effects: &mut Effects<Responder, Connection, Enrollment>,
     ) -> Result<(), WaitError> {
         let CentralDuty::Stopping {
             request:
@@ -190,11 +184,11 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
         Ok(())
     }
 
-    fn report_refusal(
+    fn report_refusal<Enrollment>(
         &self,
         call: CallKey<Connection>,
         refusal: RunRefusal,
-        effects: &mut Effects<Responder, Connection>,
+        effects: &mut Effects<Responder, Connection, Enrollment>,
     ) -> Result<(), WaitError> {
         let router_run = self.router_run.clone().ok_or(TransitionError::Stale)?;
         effects.push(WaitEffect::RunRefused(MatchedRunRefusal {

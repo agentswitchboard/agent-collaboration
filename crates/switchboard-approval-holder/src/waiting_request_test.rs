@@ -9,18 +9,68 @@ use state_machine_core::{EventTag, StateMachine, StateTag, Transition, Transitio
 use super::{
     LocalNegative, ProviderReply, RaiseRefusal, WaitEffect, WaitEvent, WaitState, WaitingRequest,
     WriterOutcome,
+    gate_access::{GateWaitEvent, step_under_gate},
 };
 use crate::run_gate::{
-    CallAttempt, CallKey, DialAttempt, EndingIngress, LinkAttempt, RunAuthority, RunGate,
-    RunGateEvent, RunGateState,
+    CallAttempt, CallKey, DialAttempt, LinkAttempt, RunAuthority, RunGate, RunGateEvent,
+    RunGateState,
 };
 use approval_request_protocol::RegisterRunReply;
 use std::sync::OnceLock;
 
-type Wait = WaitingRequest<'static, u8, u8>;
+type Wait = WaitingRequest<u8, u8, u8>;
 type State = WaitState<u8, u8>;
-type Event = WaitEvent<'static, u8, u8>;
-type Effect = WaitEffect<u8, u8>;
+type Event = WaitEvent<u8, u8>;
+type Effect = WaitEffect<u8, u8, u8>;
+
+#[derive(Clone)]
+enum Input {
+    Local(Event),
+    UnderGate {
+        gate: &'static RunGateState<u8, u8>,
+        event: GateWaitEvent<u8, u8>,
+    },
+}
+
+impl From<Event> for Input {
+    fn from(event: Event) -> Self {
+        Self::Local(event)
+    }
+}
+
+impl EventTag for Input {
+    fn event_tag(&self) -> &'static str {
+        match self {
+            Self::Local(event) => event.event_tag(),
+            Self::UnderGate { event, .. } => event.event_tag(),
+        }
+    }
+}
+
+fn transition(
+    state: &State,
+    input: impl Into<Input>,
+) -> state_machine_core::StateMachineResult<Wait> {
+    match input.into() {
+        Input::Local(event) => Wait::transition(state, event),
+        Input::UnderGate { gate, event } => step_under_gate(state, gate, event),
+    }
+}
+
+fn authority() -> RunAuthority<u8> {
+    RunAuthority {
+        enrollment: 1,
+        router_run: raise().router_run().clone(),
+    }
+}
+
+fn ending_reply(reply: DeliverEndingReply) -> Effect {
+    Effect::EndingReply {
+        authority: authority(),
+        link: call(1, 0).link,
+        reply,
+    }
+}
 const RESPONDER: u8 = 3;
 const STOP_CAUSE: ProviderStopCause = ProviderStopCause::TurnStopped {};
 
@@ -46,10 +96,15 @@ fn raise() -> Raise {
     }
 }
 
-fn apply(state: &mut State, event: Event) -> Vec<Effect> {
-    let event_tag = event.event_tag();
-    let (next, effects) = Wait::transition(state, event).unwrap();
-    assert!(Wait::transitions().contains(&Transition {
+fn apply(state: &mut State, input: impl Into<Input>) -> Vec<Effect> {
+    let input = input.into();
+    let event_tag = input.event_tag();
+    let declared = match &input {
+        Input::UnderGate { .. } => GateWaitEvent::<u8, u8>::transitions(),
+        Input::Local(_) => Wait::transitions(),
+    };
+    let (next, effects) = transition(state, input).unwrap();
+    assert!(declared.contains(&Transition {
         from: state.state_tag(),
         event: event_tag,
         to: next.state_tag(),
@@ -72,10 +127,7 @@ fn call(connection: u8, attempt: u64) -> CallKey<u8> {
 fn ready_gate(connection: u8) -> &'static RunGateState<u8, u8> {
     static GATES: [OnceLock<RunGateState<u8, u8>>; 2] = [const { OnceLock::new() }; 2];
     GATES[usize::from(connection - 1)].get_or_init(|| {
-        let authority = RunAuthority {
-            enrollment: 1u8,
-            router_run: raise().router_run().clone(),
-        };
+        let authority = authority();
         let key = call(connection, 0);
         let mut gate = RunGateState::new(authority.clone());
         for event in [
@@ -98,17 +150,24 @@ fn ready_gate(connection: u8) -> &'static RunGateState<u8, u8> {
     })
 }
 
-fn publish(connection: u8, attempt: u64) -> Event {
-    Event::Publish {
-        ready: ready_gate(connection).ready_run().unwrap(),
-        attempt: CallAttempt::new(attempt),
+fn publish(connection: u8, attempt: u64) -> Input {
+    Input::UnderGate {
+        gate: ready_gate(connection),
+        event: GateWaitEvent::Publish {
+            authority: authority(),
+            call: call(connection, attempt),
+        },
     }
 }
 
-fn deliver(request: DeliverEndingRequest) -> Event {
-    Event::DeliverEnding {
-        request,
-        ingress: EndingIngress::Admitted(ready_gate(1).ready_run().unwrap()),
+fn deliver(request: DeliverEndingRequest) -> Input {
+    Input::UnderGate {
+        gate: ready_gate(1),
+        event: GateWaitEvent::DeliverEnding {
+            authority: authority(),
+            link: call(1, 0).link,
+            request,
+        },
     }
 }
 
@@ -122,6 +181,7 @@ fn published() -> State {
         apply(&mut state, publish(1, 1)),
         [Effect::Raise {
             call: call(1, 1),
+            authority: authority(),
             request: raise()
         }]
     );
@@ -134,7 +194,7 @@ fn claimed() -> (State, DeliverEndingRequest, ProviderReply) {
     let reply = ProviderReply::CentralEnding(ending.ending.clone());
     assert_eq!(
         apply(&mut state, deliver(ending.clone())),
-        [Effect::EndingReply(DeliverEndingReply::Received {})]
+        [ending_reply(DeliverEndingReply::Received {})]
     );
     assert_eq!(state.claimed_reply(), Some((&RESPONDER, &reply)));
     (state, ending, reply)
@@ -179,11 +239,11 @@ fn finished_and_released_exact_offer_is_not_held_and_never_writes_twice() {
     .unwrap();
     let conflict = apply(&mut state, deliver(different));
     assert!(matches!(conflict.as_slice(),
-        [Effect::EndingConflict { request_id, .. }, Effect::EndingReply(DeliverEndingReply::EndingDiffers {})]
+        [Effect::EndingConflict { request_id, .. }, Effect::EndingReply { reply: DeliverEndingReply::EndingDiffers {}, .. }]
             if request_id == &ending.request_id));
     assert_eq!(
         apply(&mut state, deliver(ending.clone())),
-        [Effect::EndingReply(DeliverEndingReply::Received {})]
+        [ending_reply(DeliverEndingReply::Received {})]
     );
     permit(&mut state, &reply);
     assert_eq!(
@@ -206,10 +266,15 @@ fn finished_and_released_exact_offer_is_not_held_and_never_writes_twice() {
         ]
     );
 
-    assert!(state.is_closed());
+    assert!(!state.holds_place());
+    assert!(!state.may_be_forgotten());
+    apply(
+        &mut state,
+        Event::CallEndedWithoutReply { call: call(1, 1) },
+    );
     assert_eq!(
         apply(&mut state, deliver(ending)),
-        [Effect::EndingReply(DeliverEndingReply::NotHeld {})],
+        [ending_reply(DeliverEndingReply::NotHeld {})],
         "the authoritative identical offer after release has no retained claim"
     );
     assert_eq!(
@@ -322,7 +387,7 @@ fn one_capability_across_ending_local_negative_withdrawal_and_fence(case: hegel:
             );
         }
     }
-    assert!(state.is_closed());
+    assert!(!state.holds_place());
 }
 
 #[test]
@@ -348,7 +413,7 @@ fn a_writer_result_describes_only_the_local_submission() {
             ],
             "only the observed local writer result can be surfaced"
         );
-        assert!(state.is_closed());
+        assert!(!state.holds_place());
     }
 }
 
@@ -378,7 +443,7 @@ fn capacity_and_other_terminal_refusals_use_the_same_one_time_writer() {
             "a capacity refusal must claim the same responder as every terminal refusal"
         );
         assert_eq!(
-            Wait::transition(&state, publish(1, 1)),
+            transition(&state, publish(1, 1)),
             Err(TransitionError::Stale)
         );
         permit(&mut state, &negative);
@@ -390,13 +455,13 @@ fn capacity_and_other_terminal_refusals_use_the_same_one_time_writer() {
             }]
         );
         apply(&mut state, finish(WriterOutcome::WriteReturned));
-        assert!(state.is_closed());
+        assert!(!state.holds_place());
     }
     let mut state = State::unbound(RESPONDER);
     let negative = ProviderReply::LocalNegative(LocalNegative::SessionNotBound);
     assert_eq!(state.claimed_reply(), Some((&RESPONDER, &negative)));
     assert_eq!(
-        Wait::transition(&state, publish(1, 1)),
+        transition(&state, publish(1, 1)),
         Err(TransitionError::Stale)
     );
     permit(&mut state, &negative);
@@ -408,7 +473,7 @@ fn capacity_and_other_terminal_refusals_use_the_same_one_time_writer() {
         }]
     );
     apply(&mut state, finish(WriterOutcome::WriteReturned));
-    assert!(state.is_closed());
+    assert!(!state.holds_place());
 }
 
 #[test]
@@ -425,12 +490,13 @@ fn owed_stop_is_exact_after_local_write_lost_reply_and_reconnect() {
     let offered = DeliverEndingRequest::from_raise(&frozen, Ending::TimedOut {}).unwrap();
     assert_eq!(
         apply(&mut state, deliver(offered)),
-        [Effect::EndingReply(DeliverEndingReply::StopOwed {})]
+        [ending_reply(DeliverEndingReply::StopOwed {})]
     );
     assert_eq!(
         apply(&mut state, publish(1, 2)),
         [Effect::Stop {
             call: call(1, 2),
+            authority: authority(),
             request: stop.clone()
         }]
     );
@@ -439,7 +505,7 @@ fn owed_stop_is_exact_after_local_write_lost_reply_and_reconnect() {
     apply(&mut state, start(&local));
     apply(&mut state, finish(WriterOutcome::WriteReturned));
     assert!(
-        !state.is_closed(),
+        state.holds_place(),
         "provider completion cannot clear the exact Stop debt"
     );
 
@@ -453,6 +519,7 @@ fn owed_stop_is_exact_after_local_write_lost_reply_and_reconnect() {
         apply(&mut state, publish(2, 3)),
         [Effect::Stop {
             call: call(2, 3),
+            authority: authority(),
             request: stop
         }]
     );
@@ -479,37 +546,43 @@ fn owed_stop_is_exact_after_local_write_lost_reply_and_reconnect() {
         ),
         [Effect::StopReconciled(StopReceiptEnding::TimedOut {})]
     );
-    assert!(state.is_closed());
+    assert!(!state.holds_place());
 }
 
 #[test]
 fn wait_transition_matrix_reaches_exactly_its_declared_edges() {
     use approval_request_protocol::{ApprovalWindow, RaiseReceipt, RunRefusal};
-    use state_machine_core::check_state_machine_transitions;
+    use state_machine_core::check_declared_transitions;
 
     let ending = DeliverEndingRequest::from_raise(&raise(), Ending::TimedOut {}).unwrap();
-    let ready = ready_gate(1).ready_run().unwrap();
     let mut events = vec![
         publish(1, 1),
         publish(1, 2),
         publish(2, 3),
         deliver(ending.clone()),
-        Event::DeliverEnding {
-            request: ending.clone(),
-            ingress: EndingIngress::Discard,
+        Input::UnderGate {
+            gate: ready_gate(2),
+            event: GateWaitEvent::DeliverEnding {
+                request: ending.clone(),
+                authority: authority(),
+                link: call(1, 0).link,
+            },
         },
-        Event::LocalStop { cause: STOP_CAUSE },
+        Event::LocalStop { cause: STOP_CAUSE }.into(),
         Event::LocalStop {
             cause: ProviderStopCause::ProviderConnectionLost {},
-        },
+        }
+        .into(),
         Event::ProviderWithdrew {
             responder: RESPONDER,
-        },
+        }
+        .into(),
         Event::CapabilityWithdrawn {
             responder: RESPONDER,
-        },
-        finish(WriterOutcome::WriteReturned),
-        Event::AuthorityEnded,
+        }
+        .into(),
+        finish(WriterOutcome::WriteReturned).into(),
+        Event::AuthorityEnded.into(),
     ];
     for key in [call(1, 1), call(1, 2), call(2, 3)] {
         for reply in [
@@ -527,10 +600,13 @@ fn wait_transition_matrix_reaches_exactly_its_declared_edges() {
                 refusal: RunRefusal::RunRetired {},
             },
         ] {
-            events.push(Event::RaiseReply {
-                call: key.clone(),
-                reply,
-            });
+            events.push(
+                Event::RaiseReply {
+                    call: key.clone(),
+                    reply,
+                }
+                .into(),
+            );
         }
         for reply in [
             StopReply::Stands {
@@ -541,13 +617,16 @@ fn wait_transition_matrix_reaches_exactly_its_declared_edges() {
                 refusal: RunRefusal::RunNotRegistered {},
             },
         ] {
-            events.push(Event::StopReply {
-                call: key.clone(),
-                reply,
-            });
+            events.push(
+                Event::StopReply {
+                    call: key.clone(),
+                    reply,
+                }
+                .into(),
+            );
         }
-        events.push(Event::CallEndedWithoutReply { call: key.clone() });
-        events.push(Event::ConnectionRetired { link: key.link });
+        events.push(Event::CallEndedWithoutReply { call: key.clone() }.into());
+        events.push(Event::ConnectionRetired { link: key.link }.into());
     }
     for reply in [
         ProviderReply::CentralEnding(ending.ending),
@@ -557,19 +636,21 @@ fn wait_transition_matrix_reaches_exactly_its_declared_edges() {
             RaiseRefusal::TooManyOutstanding,
         )),
     ] {
-        events.push(Event::TakeFinalPermit {
-            responder: RESPONDER,
-            reply: reply.clone(),
-        });
-        events.push(start(&reply));
+        events.push(
+            Event::TakeFinalPermit {
+                responder: RESPONDER,
+                reply: reply.clone(),
+            }
+            .into(),
+        );
+        events.push(start(&reply).into());
     }
-    assert_eq!(ready.router_run(), raise().router_run());
 
     let mut states = vec![bound(), State::at_capacity(RESPONDER)];
     let mut index = 0;
     while index < states.len() {
         for event in &events {
-            if let Ok((next, _)) = Wait::transition(&states[index], event.clone())
+            if let Ok((next, _)) = transition(&states[index], event.clone())
                 && !states.contains(&next)
             {
                 states.push(next);
@@ -583,5 +664,9 @@ fn wait_transition_matrix_reaches_exactly_its_declared_edges() {
             .cloned()
             .map(move |event| (state.clone(), event))
     });
-    check_state_machine_transitions::<Wait>(cases).unwrap();
+    let (under_gate, local): (Vec<_>, Vec<_>) =
+        cases.partition(|(_, input)| matches!(input, Input::UnderGate { .. }));
+    let apply = |state: &State, input| transition(state, input).ok().map(|(next, _)| next);
+    check_declared_transitions(local, Wait::transitions(), apply).unwrap();
+    check_declared_transitions(under_gate, GateWaitEvent::<u8, u8>::transitions(), apply).unwrap();
 }

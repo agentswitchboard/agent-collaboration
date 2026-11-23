@@ -4,6 +4,7 @@
 )]
 
 mod agent_withdrawal;
+mod confirmation_regressions;
 mod core_link_loss;
 mod core_model_traces;
 mod fixtures;

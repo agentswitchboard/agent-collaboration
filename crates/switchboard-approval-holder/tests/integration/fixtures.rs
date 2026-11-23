@@ -1,6 +1,7 @@
 use approval_request_protocol::{
-    ApprovalOffer, DeliverEndingRequest, OfferedOption, OfferedOptionId, OfferedOptions,
-    OptionEffect, OptionLifetime, ProviderHolder, Raise, RegisterRunReply, RegisterRunRequest,
+    ApprovalOffer, DeliverEndingReply, DeliverEndingRequest, OfferedOption, OfferedOptionId,
+    OfferedOptions, OptionEffect, OptionLifetime, ProviderHolder, Raise, RegisterRunReply,
+    RegisterRunRequest,
 };
 use state_machine_core::{StateMachine, TransitionError};
 use switchboard_approval_holder::{
@@ -8,14 +9,60 @@ use switchboard_approval_holder::{
         CallAttempt, CallKey, DialAttempt, LinkAttempt, RunAuthority, RunGate, RunGateEffect,
         RunGateEvent, RunGateState,
     },
-    waiting_request::{WaitEffect, WaitEvent, WaitState, WaitingRequest},
+    waiting_request::{
+        WaitEffect, WaitEvent, WaitState, WaitingRequest,
+        gate_access::{GateWaitEvent, step_under_gate},
+    },
 };
 
 pub const RESPONDER: u8 = 1;
 pub type GateEvent = RunGateEvent<u8, u8>;
 pub type GateEffect = RunGateEffect<u8, u8>;
-pub type RequestEvent<'gate> = WaitEvent<'gate, u8, u8>;
-pub type RequestEffect = WaitEffect<u8, u8>;
+pub type RequestEvent = WaitEvent<u8, u8>;
+pub type RequestEffect = WaitEffect<u8, u8, u8>;
+pub type RequestMachine = WaitingRequest<u8, u8, u8>;
+
+pub fn ending_reply(connection: u8, reply: DeliverEndingReply) -> RequestEffect {
+    RequestEffect::EndingReply {
+        authority: authority(),
+        link: link(connection),
+        reply,
+    }
+}
+
+pub fn try_publish(
+    wait: &WaitState<u8, u8>,
+    gate: &RunGateState<u8, u8>,
+    attempt: CallAttempt,
+) -> state_machine_core::StateMachineResult<RequestMachine> {
+    let link = gate.ready_link().ok_or(TransitionError::Stale)?.clone();
+    step_under_gate(
+        wait,
+        gate,
+        GateWaitEvent::Publish {
+            authority: authority(),
+            call: CallKey { link, attempt },
+        },
+    )
+}
+
+pub fn try_offer(
+    wait: &WaitState<u8, u8>,
+    gate: &RunGateState<u8, u8>,
+    authority: RunAuthority<u8>,
+    link: LinkAttempt<u8>,
+    request: DeliverEndingRequest,
+) -> state_machine_core::StateMachineResult<RequestMachine> {
+    step_under_gate(
+        wait,
+        gate,
+        GateWaitEvent::DeliverEnding {
+            authority,
+            link,
+            request,
+        },
+    )
+}
 
 pub fn link(connection: u8) -> LinkAttempt<u8> {
     LinkAttempt {
@@ -136,8 +183,8 @@ impl Mac {
         });
     }
 
-    pub fn wait_event(&mut self, event: RequestEvent<'_>) -> Vec<RequestEffect> {
-        let (next, effects) = WaitingRequest::transition(&self.wait, event).unwrap();
+    pub fn wait_event(&mut self, event: RequestEvent) -> Vec<RequestEffect> {
+        let (next, effects) = RequestMachine::transition(&self.wait, event).unwrap();
         self.wait = next;
         for effect in &effects {
             if let RequestEffect::RunRefused(matched) = effect {
@@ -148,21 +195,20 @@ impl Mac {
     }
 
     pub fn publish(&mut self) -> Vec<RequestEffect> {
-        let ready = self.gate.ready_run().unwrap();
         let attempt = CallAttempt::new(self.next_attempt);
         self.next_attempt += 1;
-        let (next, effects) =
-            WaitingRequest::transition(&self.wait, RequestEvent::Publish { ready, attempt })
-                .unwrap();
+        let (next, effects) = try_publish(&self.wait, &self.gate, attempt).unwrap();
         self.wait = next;
         effects
     }
 
     pub fn offer(&mut self, connection: u8, request: DeliverEndingRequest) -> Vec<RequestEffect> {
-        let ingress = self.gate.ending_ingress(&authority(), &link(connection));
-        let (next, effects) = WaitingRequest::transition(
+        let (next, effects) = try_offer(
             &self.wait,
-            RequestEvent::DeliverEnding { request, ingress },
+            &self.gate,
+            authority(),
+            link(connection),
+            request,
         )
         .unwrap();
         self.wait = next;
@@ -177,7 +223,7 @@ impl Mac {
     }
 
     fn retire_wait_link(&mut self, link: LinkAttempt<u8>) {
-        match WaitingRequest::transition(&self.wait, RequestEvent::ConnectionRetired { link }) {
+        match RequestMachine::transition(&self.wait, RequestEvent::ConnectionRetired { link }) {
             Ok((next, effects)) => {
                 assert!(effects.is_empty());
                 self.wait = next;

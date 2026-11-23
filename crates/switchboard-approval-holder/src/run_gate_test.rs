@@ -3,7 +3,7 @@ use hegel::generators as gs;
 use state_machine_core::{EventTag, StateMachine, StateTag, Transition, TransitionError};
 
 use super::{
-    AuthorityEnd, CallAttempt, CallKey, DialAttempt, EndingIngress, LinkAttempt, MatchedRunRefusal,
+    AuthorityEnd, CallAttempt, CallKey, DialAttempt, LinkAdmission, LinkAttempt, MatchedRunRefusal,
     RunAuthority, RunGate, RunGateEffect, RunGateEvent, RunGateState,
 };
 
@@ -110,8 +110,8 @@ fn only_current_pending_registration_opens_the_run_gate(case: hegel::TestCase) {
             );
         }
         assert_eq!(
-            state.ending_ingress(&authority(), &link(connection)),
-            EndingIngress::NotReady
+            state.admit_link(&authority(), &link(connection)),
+            LinkAdmission::NotReady
         );
 
         let mut attempt = 1;
@@ -141,8 +141,8 @@ fn only_current_pending_registration_opens_the_run_gate(case: hegel::TestCase) {
             apply(&mut state, registered(connection, attempt));
             assert_eq!(state.ready_connection(), Some(&connection));
             assert!(matches!(
-                state.ending_ingress(&authority(), &link(connection)),
-                EndingIngress::Admitted(_)
+                state.admit_link(&authority(), &link(connection)),
+                LinkAdmission::Ready
             ));
         }
     }
@@ -190,8 +190,8 @@ fn current_run_refusal_re_registers_or_fences_the_waits() {
             }],
         );
         assert_eq!(
-            state.ending_ingress(&authority(), &link(2)),
-            EndingIngress::Discard
+            state.admit_link(&authority(), &link(2)),
+            LinkAdmission::Discard
         );
         assert_eq!(
             Gate::transition(&state, registered(1, 1)),
