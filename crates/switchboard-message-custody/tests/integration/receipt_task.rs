@@ -1,9 +1,3 @@
-#![expect(
-    clippy::panic,
-    clippy::unwrap_used,
-    reason = "The task fixture reports the missing scheduler or peer observation."
-)]
-
 use std::{sync::Arc, time::Duration};
 
 use central_link_protocol::ReceiptResult;
