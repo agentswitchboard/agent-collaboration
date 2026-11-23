@@ -1,0 +1,23 @@
+[package]
+name = "switchboard-message-system"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+autotests = false
+
+[lints]
+workspace = true
+
+[dependencies]
+state-machine-core.workspace = true
+thiserror.workspace = true
+url.workspace = true
+uuid = { version = "1.26.0", default-features = false }
+
+[dev-dependencies]
+hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
