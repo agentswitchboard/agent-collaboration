@@ -92,12 +92,14 @@ impl MacOutbox<'_> {
     /// Claims up to `limit` due writes in creation and request ID order.
     /// A live write is eligible only if its deadline exceeds
     /// `required_deadline_after_ms`. Waiting writes expire at `now_ms`.
+    /// Excluded requests are neither claimed nor expired by this call.
     pub async fn claim_next_batch(
         &mut self,
         mark_ms: i64,
         limit: u16,
         now_ms: i64,
         required_deadline_after_ms: i64,
+        excluded_request_ids: &BTreeSet<RequestId>,
     ) -> Result<StoreScan<ClaimedBatch>, OutboxStoreError> {
         validate_write_timestamp(mark_ms, "mark_ms")?;
         validate_write_timestamp(now_ms, "updated_at")?;
@@ -117,6 +119,9 @@ impl MacOutbox<'_> {
             let (page, next) = waiting_page(&mut transaction, cursor.as_ref()).await?;
             corrupt_rows.extend(page.corrupt_rows);
             for row in page.healthy {
+                if excluded_request_ids.contains(&row.request) {
+                    continue;
+                }
                 if row.deadline_ms <= now_ms {
                     let departure = waiting_departure(row.state);
                     ended.push(end_row(&mut transaction, row, departure, now_ms).await?);

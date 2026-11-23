@@ -4,9 +4,12 @@ use crate::{
     OutgoingOutcome, PendingWriteState,
 };
 use serde_json::json;
+use std::collections::BTreeSet;
 use workspace_ids::RequestId;
 use workspace_model::{Caller, ChangePosition};
 
+#[path = "outbox_claim_exclusion_test.rs"]
+mod claim_exclusion_cases;
 #[path = "outbox_claim_threshold_test.rs"]
 mod claim_threshold_cases;
 #[path = "outbox_deadline_contract_test.rs"]
@@ -334,7 +337,7 @@ pub(crate) async fn same_millisecond_writes_order_by_request_id(store: &mut dyn 
 
     let pending = store.pending_for(&higher.caller).await.unwrap();
     let claimed = store
-        .claim_next_batch(MARK, 64, MARK, MARK)
+        .claim_next_batch(MARK, 64, MARK, MARK, &BTreeSet::new())
         .await
         .unwrap()
         .expect_clean()
@@ -372,14 +375,14 @@ pub(crate) async fn claim_takes_due_writes_oldest_first_up_to_the_limit(
     let earliest_before = store.earliest_waiting().await.unwrap().expect_clean();
 
     let claimed = store
-        .claim_next_batch(MARK, 2, MARK, MARK)
+        .claim_next_batch(MARK, 2, MARK, MARK, &BTreeSet::new())
         .await
         .unwrap()
         .expect_clean()
         .writes;
     let earliest_after = store.earliest_waiting().await.unwrap().expect_clean();
     let rest = store
-        .claim_next_batch(MARK, 64, MARK, MARK)
+        .claim_next_batch(MARK, 64, MARK, MARK, &BTreeSet::new())
         .await
         .unwrap()
         .expect_clean()
