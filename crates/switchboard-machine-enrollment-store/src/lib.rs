@@ -2,7 +2,10 @@
 
 use std::{
     path::{Path, PathBuf},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use router_clock::RuntimeClock;
@@ -42,9 +45,13 @@ impl MachineEnrollmentStore {
     }
 
     fn start(worker: EnrollmentWorker) -> Self {
+        Self::spawn_worker(worker).0
+    }
+
+    fn spawn_worker(worker: EnrollmentWorker) -> (Self, tokio::task::JoinHandle<()>) {
         let (requests, pending) = mpsc::unbounded_channel();
-        tokio::spawn(worker.run(pending));
-        Self { requests }
+        let task = tokio::spawn(worker.run(pending));
+        (Self { requests }, task)
     }
 
     async fn mutate(
@@ -54,16 +61,18 @@ impl MachineEnrollmentStore {
         definite_error: CredentialStoreError,
     ) -> WriteResult {
         let (reply, result) = oneshot::channel();
+        let stage = Arc::new(MutationStage::default());
         self.requests
             .send(EnrollmentRequest::Mutate {
                 expected,
                 mutation,
                 reply,
+                stage: Arc::clone(&stage),
             })
             .map_err(|_| definite_error)?;
         result
             .await
-            .unwrap_or(Err(CredentialStoreError::OutcomeNotKnown))
+            .unwrap_or_else(|_| Err(stage.missing_reply(definite_error)))
     }
 }
 
@@ -118,7 +127,27 @@ enum EnrollmentRequest {
         expected: BindingGeneration,
         mutation: EnrollmentMutation,
         reply: oneshot::Sender<WriteResult>,
+        stage: Arc<MutationStage>,
     },
+}
+
+#[derive(Default)]
+struct MutationStage {
+    transaction_started: AtomicBool,
+}
+
+impl MutationStage {
+    fn begin_transaction(&self) {
+        self.transaction_started.store(true, Ordering::Release);
+    }
+
+    fn missing_reply(&self, definite_error: CredentialStoreError) -> CredentialStoreError {
+        if self.transaction_started.load(Ordering::Acquire) {
+            CredentialStoreError::OutcomeNotKnown
+        } else {
+            definite_error
+        }
+    }
 }
 
 enum EnrollmentMutation {

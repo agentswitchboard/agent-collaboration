@@ -18,7 +18,7 @@ use switchboard_machine_enrollment::{
 use tokio::sync::mpsc;
 
 use crate::{
-    EnrollmentMutation, EnrollmentRequest, WriteResult,
+    EnrollmentMutation, EnrollmentRequest, MutationStage, WriteResult,
     enrollment_row_mapping::{EnrollmentSnapshot, seal_context, stored_end},
 };
 
@@ -88,8 +88,9 @@ impl EnrollmentWorker {
                     expected,
                     mutation,
                     reply,
+                    stage,
                 } if !reply.is_closed() => {
-                    let _ = reply.send(self.mutate(expected, mutation).await);
+                    let _ = reply.send(self.mutate(expected, mutation, &stage).await);
                 }
                 _ => {}
             }
@@ -146,6 +147,7 @@ impl EnrollmentWorker {
         &mut self,
         expected: BindingGeneration,
         mutation: EnrollmentMutation,
+        stage: &MutationStage,
     ) -> WriteResult {
         // Keep the boundary live until the immediate write has settled. Holding
         // it before the witness excludes every other publisher of sealed bytes.
@@ -181,21 +183,26 @@ impl EnrollmentWorker {
         let expected_sql = i64::try_from(expected.get()).map_err(|_| definite_error)?;
         let timestamp = self.clock.now().unix_millis();
         let machine_id = &self.machine_id;
-        let write = self
-            .store
-            .write_enrollment_row(machine_id, expected_sql, timestamp, |row| {
-                let snapshot = match EnrollmentSnapshot::from_row(row, machine_id) {
-                    Ok(snapshot) => snapshot,
-                    Err(corrupt) => return EnrollmentRowChange::Corrupt(corrupt),
-                };
-                match decision {
-                    MutationDecision::Replace(Some(replacement)) => {
-                        EnrollmentRowChange::Write(replacement)
+        let write = async {
+            // The caller can distinguish reply loss before the first poll of
+            // this transaction from loss during a possible durable write.
+            stage.begin_transaction();
+            self.store
+                .write_enrollment_row(machine_id, expected_sql, timestamp, |row| {
+                    let snapshot = match EnrollmentSnapshot::from_row(row, machine_id) {
+                        Ok(snapshot) => snapshot,
+                        Err(corrupt) => return EnrollmentRowChange::Corrupt(corrupt),
+                    };
+                    match decision {
+                        MutationDecision::Replace(Some(replacement)) => {
+                            EnrollmentRowChange::Write(replacement)
+                        }
+                        MutationDecision::Replace(None) => EnrollmentRowChange::Abort(()),
+                        MutationDecision::End(why) => end_row(snapshot, why),
                     }
-                    MutationDecision::Replace(None) => EnrollmentRowChange::Abort(()),
-                    MutationDecision::End(why) => end_row(snapshot, why),
-                }
-            });
+                })
+                .await
+        };
         #[cfg(not(test))]
         let outcome = write.await;
         #[cfg(test)]

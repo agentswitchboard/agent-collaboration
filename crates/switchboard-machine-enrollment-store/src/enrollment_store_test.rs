@@ -600,3 +600,34 @@ async fn replace_preserves_active_ciphertext_that_fails_authentication() {
     );
     assert!(row_columns(&mut connection).await.2.is_none());
 }
+
+#[tokio::test]
+async fn lost_worker_replies_are_definite_for_preflight_and_queued_requests() {
+    let fixture = Fixture::open().await;
+    let original = fixture.install().await;
+    let faults = Arc::new(TestWriteFaults::default());
+    let (store, worker) = fixture.another_tracked_worker(faults.clone()).await;
+    let next = fixture.binding(2, ALTERNATE_ENROLLMENT, TOKEN);
+    let (at_witness, release) = faults.hold_replacement_witness();
+    let mut preflight = Box::pin(store.replace(generation(1), &next));
+    assert_queued(preflight.as_mut());
+    at_witness.await.unwrap();
+
+    let mut queued = Box::pin(store.remove(generation(1), EnrollmentEnd::Revoked));
+    assert_queued(queued.as_mut());
+    worker.abort();
+    assert!(worker.await.unwrap_err().is_cancelled());
+    drop(release);
+
+    assert_eq!(
+        (preflight.await, queued.await),
+        (
+            Err(CredentialStoreError::Replace),
+            Err(CredentialStoreError::Remove)
+        )
+    );
+    assert_eq!(
+        fixture.store.read().await,
+        Ok(StoredEnrollment::Active(original))
+    );
+}

@@ -93,13 +93,41 @@ impl Fixture {
         keychain: Arc<dyn KeychainAccess>,
         faults: Arc<TestWriteFaults>,
     ) -> MachineEnrollmentStore {
+        Self::tracked_worker(database, secret_root, machine, clock, keychain, faults)
+            .await
+            .0
+    }
+
+    async fn tracked_worker(
+        database: &std::path::Path,
+        secret_root: PathBuf,
+        machine: MachineId,
+        clock: Arc<ManualClock>,
+        keychain: Arc<dyn KeychainAccess>,
+        faults: Arc<TestWriteFaults>,
+    ) -> (MachineEnrollmentStore, tokio::task::JoinHandle<()>) {
         let core = MachineLocalStore::open(database)
             .await
             .expect("dedicated fixture connection");
         let clock: Arc<dyn RuntimeClock + Send + Sync> = clock;
         let mut worker = EnrollmentWorker::new(core, secret_root, machine, clock);
         worker.inject_test_dependencies(keychain, faults);
-        MachineEnrollmentStore::start(worker)
+        MachineEnrollmentStore::spawn_worker(worker)
+    }
+
+    pub(super) async fn another_tracked_worker(
+        &self,
+        faults: Arc<TestWriteFaults>,
+    ) -> (MachineEnrollmentStore, tokio::task::JoinHandle<()>) {
+        Self::tracked_worker(
+            &self.database,
+            self.secret_root.clone(),
+            self.machine.clone(),
+            self.clock.clone(),
+            self.keychain.clone(),
+            faults,
+        )
+        .await
     }
 
     pub(super) async fn another_worker(&self) -> MachineEnrollmentStore {
