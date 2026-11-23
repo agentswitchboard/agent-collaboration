@@ -89,6 +89,17 @@ fn organization_admin_result_wire_contract() {
 }
 
 #[test]
+fn engine_retired_schema_requires_a_nullable_cursor() {
+    let schema = serde_json::to_value(schemars::schema_for!(OrganizationAdminResult)).unwrap();
+    let validator = schema_validation::contract_validator(&schema).unwrap();
+    assert!(!validator.is_valid(&json!({"result":"engineRetired","items":[]})));
+    assert!(validator.is_valid(&json!({"result":"engineRetired","items":[],"next":null})));
+    assert!(validator.is_valid(&json!({
+        "result":"engineRetired","items":[],"next":"019f0000-0000-7000-8000-000000000101"
+    })));
+}
+
+#[test]
 fn create_workspace_request_wire_contract() {
     let request = json!({
         "organizationId":"019a3dce-2000-7000-8000-000000000001",

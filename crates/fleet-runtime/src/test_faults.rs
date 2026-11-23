@@ -175,6 +175,14 @@ impl EngineCommitFault {
     pub fn matches(&self, batch: &StatementBatch) -> bool {
         batch.statements.iter().any(|statement| {
             let sql = statement.statement.sql;
+            // Admin reads and repairs all reserve the exact signed proof in
+            // the applying batch, even when they have no subject UPDATE.
+            if sql.starts_with("INSERT INTO admin_used_requests\n") {
+                return matches!(
+                    statement.statement.args.first(),
+                    Some(SqlValue::Text(proof_id)) if proof_id == &self.key.0
+                );
+            }
             (sql.starts_with("UPDATE automation_wakes SET")
                 || sql.starts_with("UPDATE automation_schedules SET")
                 || sql.starts_with("UPDATE engine_probe_items SET")
