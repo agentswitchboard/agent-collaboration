@@ -1,7 +1,7 @@
 //! Existing local session sources viewed through the custody inventory port.
 
 use crate::ExternalProviderSupervisor;
-use claude_code_peer_messaging::{ClaudeCodeSessionRegistry, PeerSessionLookup};
+pub use crate::recipient_terminal_inventory::ClaudeTerminalSessionInventory;
 use codex_acp_adapter::CodexSessionPresence;
 use codex_native_integration::{
     StoredThreadCatalog, StoredThreadCursor, StoredThreadProvider, StoredThreadQuery,
@@ -13,7 +13,7 @@ use provider_session_machines::session_lifecycle_machine::SessionLifecycle;
 use sqlx::Row;
 use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
 use switchboard_message_custody::recipient_sessions::{
-    SessionId, SessionInventory, SessionInventoryAnswer,
+    SessionId, SessionInventory, SessionInventoryAnswer, SessionInventoryPart,
 };
 use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
@@ -145,30 +145,44 @@ impl ManagedProviderSessionInventory {
         })
     }
 
-    async fn lookup_endpoint(&self, target: &SessionRef) -> SessionInventoryAnswer {
+    fn lookup_endpoint(&self, target: SessionRef) -> SessionInventoryPart<'_> {
         let owner_knows = self
             .supervisor
             .as_ref()
-            .and_then(|supervisor| supervisor.owner_session_snapshot(target))
+            .and_then(|supervisor| supervisor.owner_session_snapshot(&target))
             .is_some_and(|snapshot| {
                 matches!(
                     snapshot.lifecycle,
                     SessionLifecycle::Live { .. } | SessionLifecycle::Loading { .. }
                 )
             });
-        let Some(store) = &self.store else {
-            return SessionInventoryAnswer {
-                at_least: usize::from(owner_knows),
-                complete: false,
-            };
+        let observed = SessionInventoryAnswer {
+            at_least: usize::from(owner_knows),
+            complete: false,
         };
-        match store.lock().await.session_record(target).await {
-            Ok(record) => complete(usize::from(owner_knows || record.is_some())),
-            Err(_) => SessionInventoryAnswer {
-                at_least: usize::from(owner_knows),
-                complete: false,
-            },
+        SessionInventoryPart {
+            observed,
+            read: Box::pin(async move {
+                let Some(store) = &self.store else {
+                    return observed;
+                };
+                match store.lock().await.session_record(&target).await {
+                    Ok(record) => complete(usize::from(owner_knows || record.is_some())),
+                    Err(_) => observed,
+                }
+            }),
         }
+    }
+
+    fn endpoint_parts(&self, session_id: &SessionId) -> Option<[SessionInventoryPart<'_>; 2]> {
+        let session_id =
+            collaboration_protocol::SessionId::try_from(session_id.as_str().to_owned()).ok()?;
+        Some(self.endpoints.each_ref().map(|endpoint| {
+            self.lookup_endpoint(SessionRef {
+                endpoint: endpoint.clone(),
+                session_id: session_id.clone(),
+            })
+        }))
     }
 }
 
@@ -178,61 +192,25 @@ impl SessionInventory for ManagedProviderSessionInventory {
         session_id: &'lookup SessionId,
     ) -> Pin<Box<dyn Future<Output = SessionInventoryAnswer> + Send + 'lookup>> {
         Box::pin(async move {
-            let Ok(session_id) =
-                collaboration_protocol::SessionId::try_from(session_id.as_str().to_owned())
-            else {
+            let Some([claude, cursor]) = self.endpoint_parts(session_id) else {
                 return UNAVAILABLE;
             };
-            let [claude, cursor] = &self.endpoints;
-            let claude = self
-                .lookup_endpoint(&SessionRef {
-                    endpoint: claude.clone(),
-                    session_id: session_id.clone(),
-                })
-                .await;
-            let cursor = self
-                .lookup_endpoint(&SessionRef {
-                    endpoint: cursor.clone(),
-                    session_id,
-                })
-                .await;
+            let (claude, cursor) = tokio::join!(claude.read, cursor.read);
             claude.merge(cursor)
         })
     }
-}
 
-pub struct ClaudeTerminalSessionInventory {
-    registry: Arc<ClaudeCodeSessionRegistry>,
-}
-
-impl ClaudeTerminalSessionInventory {
-    #[must_use]
-    pub fn new(registry: Arc<ClaudeCodeSessionRegistry>) -> Self {
-        Self { registry }
-    }
-}
-
-impl SessionInventory for ClaudeTerminalSessionInventory {
-    fn lookup_session<'lookup>(
+    fn lookup_parts<'lookup>(
         &'lookup self,
         session_id: &'lookup SessionId,
-    ) -> Pin<Box<dyn Future<Output = SessionInventoryAnswer> + Send + 'lookup>> {
-        Box::pin(async move {
-            let Ok(session_id) =
-                collaboration_protocol::SessionId::try_from(session_id.as_str().to_owned())
-            else {
-                return UNAVAILABLE;
-            };
-            let registry = Arc::clone(&self.registry);
-            match tokio::task::spawn_blocking(move || registry.lookup(&session_id)).await {
-                Ok(Ok(PeerSessionLookup::Absent)) => complete(0),
-                Ok(Ok(
-                    PeerSessionLookup::Writable(_) | PeerSessionLookup::LiveUnsupported { .. },
-                )) => complete(1),
-                Ok(Ok(PeerSessionLookup::Ambiguous { claims })) => complete(claims.len()),
-                Ok(Err(_)) | Err(_) => UNAVAILABLE,
-            }
-        })
+    ) -> Vec<SessionInventoryPart<'lookup>> {
+        match self.endpoint_parts(session_id) {
+            Some(parts) => Vec::from(parts),
+            None => vec![SessionInventoryPart {
+                observed: UNAVAILABLE,
+                read: Box::pin(std::future::ready(UNAVAILABLE)),
+            }],
+        }
     }
 }
 

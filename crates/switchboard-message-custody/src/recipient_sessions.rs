@@ -1,4 +1,10 @@
-use std::{future::Future, pin::Pin, sync::Arc};
+use router_clock::{ClockInstant, RuntimeClock};
+use std::{
+    future::{Future, poll_fn},
+    pin::Pin,
+    sync::Arc,
+    task::Poll,
+};
 pub use workspace_ids::SessionId;
 
 /// The session directory's answer about one addressed session on this Mac.
@@ -17,6 +23,23 @@ pub trait RecipientSessionDirectory: Send + Sync {
         &'lookup self,
         session_id: &'lookup SessionId,
     ) -> Pin<Box<dyn Future<Output = RecipientSessionAnswer> + Send + 'lookup>>;
+
+    /// Check using the offer's deadline. A composite lookup keeps the evidence
+    /// supplied by any authority that answered before the budget ran out.
+    fn query_until<'lookup>(
+        &'lookup self,
+        session_id: &'lookup SessionId,
+        clock: &'lookup dyn RuntimeClock,
+        deadline: ClockInstant,
+    ) -> Pin<Box<dyn Future<Output = RecipientSessionAnswer> + Send + 'lookup>> {
+        Box::pin(async move {
+            tokio::select! {
+                biased;
+                () = clock.sleep_until(deadline) => RecipientSessionAnswer::CouldNotTell,
+                answer = self.query_recipient_session(session_id) => answer,
+            }
+        })
+    }
 }
 
 /// The number of distinct sessions a source can prove and whether it finished
@@ -42,12 +65,49 @@ const EMPTY_INVENTORY: SessionInventoryAnswer = SessionInventoryAnswer {
     complete: true,
 };
 
+const UNAVAILABLE_INVENTORY: SessionInventoryAnswer = SessionInventoryAnswer {
+    at_least: 0,
+    complete: false,
+};
+
+pub type InventoryRead<'lookup> =
+    Pin<Box<dyn Future<Output = SessionInventoryAnswer> + Send + 'lookup>>;
+
+/// A disjoint part of an authority. Its completed answer replaces any evidence
+/// the authority could already prove before starting the read.
+pub struct SessionInventoryPart<'lookup> {
+    pub observed: SessionInventoryAnswer,
+    pub read: InventoryRead<'lookup>,
+}
+
 /// One source of session existence evidence on this Mac.
 pub trait SessionInventory: Send + Sync {
     fn lookup_session<'lookup>(
         &'lookup self,
         session_id: &'lookup SessionId,
-    ) -> Pin<Box<dyn Future<Output = SessionInventoryAnswer> + Send + 'lookup>>;
+    ) -> InventoryRead<'lookup>;
+
+    fn lookup_parts<'lookup>(
+        &'lookup self,
+        session_id: &'lookup SessionId,
+    ) -> Vec<SessionInventoryPart<'lookup>> {
+        vec![SessionInventoryPart {
+            observed: UNAVAILABLE_INVENTORY,
+            read: self.lookup_session(session_id),
+        }]
+    }
+}
+
+/// An authority that has yet to become readable during startup.
+pub struct UnavailableSessionInventory;
+
+impl SessionInventory for UnavailableSessionInventory {
+    fn lookup_session<'lookup>(
+        &'lookup self,
+        _: &'lookup SessionId,
+    ) -> Pin<Box<dyn Future<Output = SessionInventoryAnswer> + Send + 'lookup>> {
+        Box::pin(std::future::ready(UNAVAILABLE_INVENTORY))
+    }
 }
 
 pub fn combine_inventory_answers(
@@ -66,13 +126,60 @@ pub fn combine_inventory_answers(
 
 /// Resolves endpoint-free addresses against the Mac's session sources.
 pub struct CombinedRecipientSessionDirectory {
-    sources: Vec<Arc<dyn SessionInventory>>,
+    sources: RecipientSessionSources,
+}
+
+/// All of the authorities that can hold a recipient on this Mac.
+pub struct RecipientSessionSources {
+    pub codex: Arc<dyn SessionInventory>,
+    pub managed_providers: Arc<dyn SessionInventory>,
+    pub claude_terminal: Arc<dyn SessionInventory>,
 }
 
 impl CombinedRecipientSessionDirectory {
     #[must_use]
-    pub fn new(sources: Vec<Arc<dyn SessionInventory>>) -> Self {
+    pub fn new(sources: RecipientSessionSources) -> Self {
         Self { sources }
+    }
+
+    async fn query(
+        &self,
+        session_id: &SessionId,
+        deadline: impl Future<Output = ()>,
+    ) -> RecipientSessionAnswer {
+        let mut parts: Vec<_> = [
+            &self.sources.codex,
+            &self.sources.managed_providers,
+            &self.sources.claude_terminal,
+        ]
+        .into_iter()
+        .flat_map(|source| source.lookup_parts(session_id))
+        .map(|part| (part.observed, Some(part.read)))
+        .collect();
+        let mut summary = combine_inventory_answers(parts.iter().map(|(answer, _)| *answer));
+        let lookups = poll_fn(|context| {
+            for (answer, pending) in &mut parts {
+                if let Some(read) = pending
+                    && let Poll::Ready(completed) = read.as_mut().poll(context)
+                {
+                    *answer = completed;
+                    *pending = None;
+                }
+            }
+            summary = combine_inventory_answers(parts.iter().map(|(answer, _)| *answer));
+            if summary == RecipientSessionAnswer::AmbiguousSession
+                || parts.iter().all(|(_, pending)| pending.is_none())
+            {
+                Poll::Ready(summary)
+            } else {
+                Poll::Pending
+            }
+        });
+        tokio::select! {
+            biased;
+            answer = lookups => answer,
+            () = deadline => summary,
+        }
     }
 }
 
@@ -81,13 +188,16 @@ impl RecipientSessionDirectory for CombinedRecipientSessionDirectory {
         &'lookup self,
         session_id: &'lookup SessionId,
     ) -> Pin<Box<dyn Future<Output = RecipientSessionAnswer> + Send + 'lookup>> {
-        Box::pin(async move {
-            let mut summary = EMPTY_INVENTORY;
-            for source in &self.sources {
-                summary = summary.merge(source.lookup_session(session_id).await);
-            }
-            combine_inventory_answers([summary])
-        })
+        Box::pin(self.query(session_id, std::future::pending()))
+    }
+
+    fn query_until<'lookup>(
+        &'lookup self,
+        session_id: &'lookup SessionId,
+        clock: &'lookup dyn RuntimeClock,
+        deadline: ClockInstant,
+    ) -> Pin<Box<dyn Future<Output = RecipientSessionAnswer> + Send + 'lookup>> {
+        Box::pin(self.query(session_id, clock.sleep_until(deadline)))
     }
 }
 

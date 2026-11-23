@@ -72,6 +72,10 @@ tracing.workspace = true
 tracing-subscriber.workspace = true
 
 [dev-dependencies]
+central-link-client.workspace = true
+central-link-protocol.workspace = true
+switchboard-machine-core-store.workspace = true
+workspace-model.workspace = true
 switchboard-session-events = { workspace = true, features = ["test-support"] }
 switchboard-session-store = { workspace = true, features = ["test-support"] }
 hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }

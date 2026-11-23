@@ -7,18 +7,22 @@ use collaboration_protocol::{
     ProviderOperationKind, ProviderRuntimeIdentity, ProviderTransport,
 };
 use provider_session_machines::session_lifecycle_machine::{RestoreVia, SessionLifecycle};
-use std::sync::Arc;
-use switchboard_message_custody::recipient_sessions::SessionInventory;
+use router_clock::RuntimeClock;
+use sqlx::{Connection as _, SqliteConnection, sqlite::SqliteConnectOptions};
+use std::{sync::Arc, time::Duration};
+use switchboard_message_custody::recipient_sessions::{
+    CombinedRecipientSessionDirectory, InventoryRead, RecipientSessionAnswer,
+    RecipientSessionDirectory, RecipientSessionSources, SessionId, SessionInventory,
+};
 use switchboard_session_store::{ProviderOperationAdmission, ProviderOperationStore};
 use tokio::sync::Mutex;
 
 #[tokio::test]
 async fn managed_loading_owner_counts_with_or_without_a_saved_record() {
     let root = tempfile::tempdir().unwrap();
+    let database_path = root.path().join("operations.sqlite");
     let store = Arc::new(Mutex::new(
-        ProviderOperationStore::open(&root.path().join("operations.sqlite"))
-            .await
-            .unwrap(),
+        ProviderOperationStore::open(&database_path).await.unwrap(),
     ));
     let mut inventory = managed_inventory(Some(store.clone()));
     let record = provider_record(&inventory, 1, root.path());
@@ -59,7 +63,7 @@ async fn managed_loading_owner_counts_with_or_without_a_saved_record() {
         launch,
         store.clone(),
         Arc::new(acp_provider_adapters::StandardAcpBehavior),
-        clock,
+        clock.clone(),
     )
     .await
     .unwrap();
@@ -111,6 +115,49 @@ async fn managed_loading_owner_counts_with_or_without_a_saved_record() {
         tokio::join!(restore, check);
     let final_lifecycle = owner.snapshots().borrow().lifecycle;
     let live_and_saved = inventory.lookup_session(&session).await;
+    assert!(matches!(final_lifecycle, SessionLifecycle::Live { .. }));
+    let mut writer =
+        SqliteConnection::connect_with(&SqliteConnectOptions::new().filename(&database_path))
+            .await
+            .unwrap();
+    let removed = sqlx::query("DELETE FROM provider_session_records")
+        .execute(&mut writer)
+        .await
+        .unwrap();
+    assert_eq!(removed.rows_affected(), 1);
+    writer.close().await.unwrap();
+    assert!(
+        store
+            .lock()
+            .await
+            .session_record(&target)
+            .await
+            .unwrap()
+            .is_none()
+    );
+    let live_without_saved = inventory.lookup_session(&session).await;
+    assert!(matches!(
+        owner.snapshots().borrow().lifecycle,
+        SessionLifecycle::Live { .. }
+    ));
+
+    let directory = CombinedRecipientSessionDirectory::new(RecipientSessionSources {
+        codex: Arc::new(FixedInventory(1)),
+        managed_providers: Arc::new(inventory),
+        claude_terminal: Arc::new(FixedInventory(0)),
+    });
+    let store_guard = store.lock().await;
+    let deadline = clock.monotonic_now().after(Duration::from_secs(30));
+    tokio::select! {
+        biased;
+        answer = directory.query_until(&session, clock.as_ref(), deadline) => {
+            assert_eq!(answer, RecipientSessionAnswer::AmbiguousSession);
+        }
+        () = clock.not_due_check_now(deadline) => {
+            panic!("a live managed owner must prove its claim while both saved reads are blocked");
+        }
+    }
+    drop(store_guard);
     supervisor.shutdown().await.unwrap();
 
     let _settlement = restored.unwrap();
@@ -118,6 +165,14 @@ async fn managed_loading_owner_counts_with_or_without_a_saved_record() {
     assert!(!saved_before);
     assert_eq!(owner_only, complete(1));
     assert_eq!(owner_and_saved, complete(1));
-    assert!(matches!(final_lifecycle, SessionLifecycle::Live { .. }));
     assert_eq!(live_and_saved, complete(1));
+    assert_eq!(live_without_saved, complete(1));
+}
+
+struct FixedInventory(usize);
+
+impl SessionInventory for FixedInventory {
+    fn lookup_session<'lookup>(&'lookup self, _: &'lookup SessionId) -> InventoryRead<'lookup> {
+        Box::pin(std::future::ready(complete(self.0)))
+    }
 }

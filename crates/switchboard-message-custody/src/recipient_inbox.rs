@@ -44,11 +44,9 @@ struct OfferLookup {
 impl OfferLookup {
     async fn resolve(self) -> RecipientSessionAnswer {
         let deadline = self.clock.monotonic_now().after(RECIPIENT_LOOKUP_BUDGET);
-        tokio::select! {
-            biased;
-            () = self.clock.sleep_until(deadline) => RecipientSessionAnswer::CouldNotTell,
-            answer = self.directory.query_recipient_session(&self.session.session_id) => answer,
-        }
+        self.directory
+            .query_until(&self.session.session_id, self.clock.as_ref(), deadline)
+            .await
     }
 }
 

@@ -1,5 +1,11 @@
-use super::{ROUTER, SAVED, complete, create_codex_catalog, seed_codex_thread, session_id};
-use crate::recipient_session_inventory::{CodexSessionInventory, UNAVAILABLE};
+use super::{
+    ROUTER, SAVED, admission::Admission, complete, create_codex_catalog, seed_codex_thread,
+    session_id,
+};
+use crate::recipient_session_inventory::{
+    ClaudeTerminalSessionInventory, CodexSessionInventory, UNAVAILABLE,
+};
+use claude_code_peer_messaging::ClaudeCodeSessionRegistry;
 use codex_acp_adapter::{
     AcpConnectionInputs, CodexSessionPresence, ConversationOperationRecorder,
     ConversationRecordFuture, HeldBindingCheckout, NativeStoredSessions,
@@ -14,10 +20,12 @@ use sqlx::Connection as _;
 use std::{
     collections::BTreeMap, future::ready, io, os::unix::fs::PermissionsExt, path::Path, sync::Arc,
 };
-use switchboard_message_custody::recipient_sessions::SessionInventory;
+use switchboard_message_custody::recipient_sessions::{RecipientSessionSources, SessionInventory};
+use switchboard_session_store::ProviderOperationStore;
 use tokio::{
     io::{AsyncBufReadExt, AsyncWriteExt, BufReader, DuplexStream},
     net::{UnixListener, UnixStream},
+    sync::Mutex,
     task::JoinHandle,
 };
 use tokio_tungstenite::{WebSocketStream, tungstenite::Message};
@@ -211,7 +219,7 @@ async fn native_setup(
 }
 
 #[tokio::test]
-async fn attached_session_new_stays_visible_during_checkout_and_after_frontend_eof() {
+async fn attached_session_new_admits_with_three_real_host_sources_and_no_native_lookup() {
     let temporary = tempfile::tempdir().unwrap();
     let root = temporary.path();
     let mut catalog = create_codex_catalog(root).await;
@@ -235,11 +243,29 @@ async fn attached_session_new_stays_visible_during_checkout_and_after_frontend_e
     );
 
     let codex = Arc::new(CodexSessionInventory::new(root.to_owned(), holder.clone()));
-    assert_eq!(codex.lookup_session(&session_id(SAVED)).await, complete(1));
-    assert_eq!(
-        codex.lookup_session(&session_id(super::ABSENT)).await,
-        UNAVAILABLE
-    );
+    let clock = Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH));
+    let managed = super::managed_inventory(Some(Arc::new(Mutex::new(
+        ProviderOperationStore::open(&root.join("provider.sqlite"))
+            .await
+            .unwrap(),
+    ))));
+    let mut admission = Admission::new(
+        root,
+        clock.clone(),
+        RecipientSessionSources {
+            codex: codex.clone(),
+            managed_providers: Arc::new(managed),
+            claude_terminal: Arc::new(ClaudeTerminalSessionInventory::new(
+                Arc::new(ClaudeCodeSessionRegistry::new(
+                    root.join("terminal-registry"),
+                )),
+                clock,
+            )),
+        },
+    )
+    .await;
+    admission.expect_accepted(&session_id(SAVED)).await;
+    admission.expect_deferred(&session_id(super::ABSENT)).await;
     assert!(
         native.next().now_or_never().is_none(),
         "custody sent a native frame"

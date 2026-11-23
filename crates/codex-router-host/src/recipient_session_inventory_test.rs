@@ -16,7 +16,7 @@ use std::{
 };
 use switchboard_message_custody::recipient_sessions::{
     CombinedRecipientSessionDirectory, RecipientSessionAnswer, RecipientSessionDirectory,
-    SessionId, SessionInventory,
+    RecipientSessionSources, SessionId, SessionInventory, UnavailableSessionInventory,
 };
 use switchboard_session_store::{ProviderOperationStore, ProviderSessionRecord};
 use tokio::sync::Mutex;
@@ -183,7 +183,7 @@ async fn managed_inventory_counts_saved_unloaded_sessions_once_per_endpoint() {
 }
 
 fn seed_peer(directory: &Path, pid: u32, id: &str, writable: bool) {
-    let mut record = json!({"pid": pid, "sessionId": id});
+    let mut record = json!({"pid": pid, "sessionId": id, "startedAt": 4_102_444_800_000_i64});
     if writable {
         record["peerProtocol"] = json!(1);
         record["messagingSocketPath"] = json!(directory.join("not-open.sock"));
@@ -193,6 +193,13 @@ fn seed_peer(directory: &Path, pid: u32, id: &str, writable: bool) {
         serde_json::to_vec(&record).unwrap(),
     )
     .unwrap();
+}
+
+fn terminal_inventory(directory: &Path) -> ClaudeTerminalSessionInventory {
+    ClaudeTerminalSessionInventory::new(
+        Arc::new(ClaudeCodeSessionRegistry::new(directory.to_owned())),
+        Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+    )
 }
 
 struct LivePeer(Child);
@@ -220,8 +227,7 @@ impl Drop for LivePeer {
 async fn claude_peer_inventory_counts_writable_unsupported_and_multiple_live_claims() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("peers");
-    let inventory =
-        ClaudeTerminalSessionInventory::new(Arc::new(ClaudeCodeSessionRegistry::new(path.clone())));
+    let inventory = terminal_inventory(&path);
     let target = session_id(SAVED);
     assert_eq!(inventory.lookup_session(&target).await, complete(0));
     std::fs::create_dir(&path).unwrap();
@@ -247,16 +253,13 @@ async fn claude_peer_inventory_cannot_assert_absence_on_registry_failures() {
     let root = tempfile::tempdir().unwrap();
     let file_path = root.path().join("not-a-directory");
     std::fs::write(&file_path, []).unwrap();
-    let broken =
-        ClaudeTerminalSessionInventory::new(Arc::new(ClaudeCodeSessionRegistry::new(file_path)));
+    let broken = terminal_inventory(&file_path);
     assert_eq!(
         broken.lookup_session(&session_id(ABSENT)).await,
         UNAVAILABLE
     );
 
-    let inventory = ClaudeTerminalSessionInventory::new(Arc::new(ClaudeCodeSessionRegistry::new(
-        root.path().to_owned(),
-    )));
+    let inventory = terminal_inventory(root.path());
     std::fs::write(
         root.path().join(format!("{}.json", std::process::id())),
         b"invalid JSON",
@@ -280,10 +283,11 @@ async fn managed_and_terminal_claims_share_no_authority_to_deduplicate() {
     let claude = provider_record(&managed, 0, root.path());
     store.lock().await.record_session(&claude).await.unwrap();
     seed_peer(root.path(), std::process::id(), SAVED, true);
-    let peer = ClaudeTerminalSessionInventory::new(Arc::new(ClaudeCodeSessionRegistry::new(
-        root.path().to_owned(),
-    )));
-    let directory = CombinedRecipientSessionDirectory::new(vec![Arc::new(managed), Arc::new(peer)]);
+    let directory = CombinedRecipientSessionDirectory::new(RecipientSessionSources {
+        codex: Arc::new(UnavailableSessionInventory),
+        managed_providers: Arc::new(managed),
+        claude_terminal: Arc::new(terminal_inventory(root.path())),
+    });
 
     assert_eq!(
         directory.query_recipient_session(&session_id(SAVED)).await,
@@ -294,8 +298,14 @@ async fn managed_and_terminal_claims_share_no_authority_to_deduplicate() {
 #[path = "recipient_codex_holder_test.rs"]
 mod codex_holder;
 
+#[path = "recipient_codex_admission_test.rs"]
+mod admission;
+
 #[path = "recipient_provider_owner_test.rs"]
 mod provider_owner;
+
+#[path = "recipient_terminal_admission_test.rs"]
+mod terminal_admission;
 
 #[tokio::test]
 async fn damaged_endpoint_preserves_other_matches_and_prevents_authoritative_absence() {
@@ -337,7 +347,14 @@ async fn damaged_endpoint_preserves_other_matches_and_prevents_authoritative_abs
             complete: false
         }
     );
-    let directory = CombinedRecipientSessionDirectory::new(vec![inventory]);
+    let directory = CombinedRecipientSessionDirectory::new(RecipientSessionSources {
+        codex: Arc::new(CodexSessionInventory::new(
+            root.path().to_owned(),
+            Arc::new(UnmaterializedThreadHolder::new()),
+        )),
+        managed_providers: inventory,
+        claude_terminal: Arc::new(terminal_inventory(root.path())),
+    });
     assert_eq!(
         directory.query_recipient_session(&id).await,
         RecipientSessionAnswer::CouldNotTell
