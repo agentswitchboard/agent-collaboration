@@ -195,10 +195,7 @@ pub(super) async fn exercise_non_utc_and_terminal_rows(f: &Fixture) {
         panic!("queued notice id")
     };
     let notice: workspace_ids::MessageId = notice.parse().unwrap();
-    let receipt = workspace_model::central_mail::ReceiptKind::Delivered {
-        arrived_at: now(f),
-        waiting: None,
-    };
+    let receipt = workspace_model::central_mail::ReceiptKind::Delivered { arrived_at: now(f) };
     assert_eq!(
         super::super::direct_receipt_sequences::apply_fixture_receipt(f, &r, &notice, receipt)
             .await,

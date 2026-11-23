@@ -29,7 +29,7 @@ async fn migrated_store() -> SqliteConnection {
         .unwrap();
     sqlx::query("INSERT INTO login_machines(machine_id,label,state,created_at,updated_at) VALUES ('019f0000-0000-7000-8000-000000000002','fixture','enrolled','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z')")
         .execute(&mut connection).await.unwrap();
-    sqlx::query("INSERT INTO mail_messages(message_id,sender,target_machine_id,target_session,message_kind,body,state,created_at,updated_at,cancel_due_at) VALUES (?,'sender','019f0000-0000-7000-8000-000000000002','session','direct','{}','queued','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z','1970-01-01T00:01:00.000Z')")
+    sqlx::query("INSERT INTO mail_messages(message_id,sender,target_machine_id,target_session,message_kind,body,state,created_at,updated_at,cancel_due_at,delivery_window_ends_at) VALUES (?,'sender','019f0000-0000-7000-8000-000000000002','session','direct','{}','queued','1970-01-01T00:00:00.000Z','1970-01-01T00:00:00.000Z','1970-01-01T00:05:00.000Z','1970-01-01T00:04:30.000Z')")
         .bind(SUBJECT).execute(&mut connection).await.unwrap();
     connection
 }
@@ -68,7 +68,7 @@ async fn guard_steps(connection: &mut SqliteConnection) -> u64 {
         .await
         .unwrap()
         .remove_progress_handler();
-    assert_eq!(rows, [(60_000, 60_000)]);
+    assert_eq!(rows, [(300_000, 300_000)]);
     steps.load(Ordering::Relaxed)
 }
 
@@ -118,15 +118,15 @@ async fn the_direct_mark_guard_matches_the_due_view_for_eligibility_and_attempts
         .await
         .unwrap();
     let cases = [
-        Some((60_000, 60_000)),   // queued
+        Some((300_000, 300_000)), // queued
         None,                     // no longer eligible
-        Some((120_001, 120_001)), // changed occurrence, including fractional time
+        Some((600_000, 600_000)), // fractional cutoff rounds to the next occurrence
         Some((0, 0)),             // malformed stored mark
-        Some((60_000, 180_000)),  // attempt supplies the effective due time only
+        Some((300_000, 600_000)), // attempt supplies the effective due time only
         None,                     // retired
-        None,                     // null mark
+        Some((0, 0)),             // missing mark is corrupt
         None,                     // other mail kind
-        Some((60_000, 0)),        // malformed retry mark
+        Some((300_000, 0)),       // malformed retry mark
         None,                     // missing subject
     ];
     for (index, expected) in cases.into_iter().enumerate() {

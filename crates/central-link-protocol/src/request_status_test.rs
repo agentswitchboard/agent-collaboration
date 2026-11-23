@@ -71,7 +71,6 @@ fn message_status_shapes_refuse_extra_fields_and_open_reasons() {
     for (reason, wire_reason) in [
         (MessageRefusal::UnknownSession, "unknownSession"),
         (MessageRefusal::AmbiguousSession, "ambiguousSession"),
-        (MessageRefusal::SessionClosed, "sessionClosed"),
     ] {
         let failed = MessageStatus::Refused { reason };
         let wire = json!({"kind":"refused","reason":wire_reason});
@@ -93,6 +92,9 @@ fn message_status_shapes_refuse_extra_fields_and_open_reasons() {
         json!({"kind":"queued","reason":"unknownSession"}),
         json!({"kind":"delivered","messageId":REQUEST}),
         json!({"kind":"notFound","messageId":REQUEST}),
+        json!({"kind":"notSeen","waiting":"busy"}),
+        json!({"kind":"delivered","arrivedAt":"2030-01-01T00:00:00Z","deadlinePassed":true,"waiting":null}),
+        json!({"kind":"refused","reason":"sessionClosed"}),
     ] {
         assert!(serde_json::from_value::<MessageStatus>(wire).is_err());
     }

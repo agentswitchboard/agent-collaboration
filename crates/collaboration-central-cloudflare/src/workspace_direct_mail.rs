@@ -2,14 +2,14 @@
 use super::{AlarmPolicy, CentralStatements, SendFuture, statement_store};
 use fleet_engine::{CheckedDueFailure, FailureRecord};
 use fleet_mail::{
-    AdmittedDirectSend, AdmittedReceipt, ApplyMark, ApplyReceipt, DirectMark, DirectMessageStore,
-    DirectOffer, DirectOfferLookup, DirectReadFailure, DirectSendLookup, DirectSendResult,
-    DirectWriteFailure, OfferPageLookup, OwnedDirectStatus, RejectedDirectMark,
-    RetainedDirectSendRead, direct_mark_apply, direct_store_reads, direct_store_writes,
+    AdmittedDirectSend, AdmittedReceipt, AppliedDirectStatus, ApplyMark, ApplyReceipt, DirectMark,
+    DirectMessageStore, DirectOffer, DirectOfferLookup, DirectReadFailure, DirectSendLookup,
+    DirectSendResult, DirectWriteFailure, OfferPageLookup, OwnedDirectStatus, RejectedDirectMark,
+    RetainedDirectSendRead, direct_mark_apply, direct_status_apply, direct_store_reads,
+    direct_store_writes,
 };
 use futures_util::future::BoxFuture;
 use std::ops::ControlFlow;
-use workspace_model::central_mail::MessageStatus;
 
 macro_rules! worker_read {
     ($name:ident, $command:ty, $answer:ty) => {
@@ -74,7 +74,6 @@ impl CentralStatements {
 
 impl DirectMessageStore for CentralStatements {
     worker_read!(read_retained_send, DirectSendLookup, RetainedDirectSendRead);
-    worker_read!(read_status, OwnedDirectStatus, MessageStatus);
     worker_read!(
         read_offer_page,
         OfferPageLookup,
@@ -92,6 +91,12 @@ impl DirectMessageStore for CentralStatements {
         apply_receipt,
         AdmittedReceipt,
         ApplyReceipt
+    );
+    worker_write!(
+        direct_status_apply,
+        settle_and_read_status,
+        OwnedDirectStatus,
+        AppliedDirectStatus
     );
     fn apply_mark(
         &self,

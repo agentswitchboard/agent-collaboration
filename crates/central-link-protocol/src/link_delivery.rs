@@ -69,6 +69,10 @@ impl From<TimeLeft> for u32 {
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct Receipt {
     pub message_id: MessageId,
     pub kind: ReceiptKind,
@@ -77,6 +81,10 @@ pub struct Receipt {
 /// Ordered, with duplicates allowed for idempotent settlement.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(try_from = "Vec<Receipt>", into = "Vec<Receipt>")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub struct ReceiptBatch(Vec<Receipt>);
 
 impl ReceiptBatch {
@@ -187,3 +195,7 @@ impl From<MessageRecord> for DeliveryMessage {
         }
     }
 }
+
+#[cfg(all(test, feature = "wire-export", not(target_arch = "wasm32")))]
+#[path = "message_settlement_typescript_test.rs"]
+mod message_settlement_typescript_test;

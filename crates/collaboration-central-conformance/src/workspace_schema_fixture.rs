@@ -114,3 +114,29 @@ pub fn central_business_uniqueness() -> Vec<Vec<central_storage::SqlValue>> {
     })
     .collect()
 }
+
+pub const MAIL_MESSAGE_COLUMN_NAMES: &str =
+    "SELECT name FROM pragma_table_info('mail_messages') ORDER BY cid";
+
+pub const MAIL_MESSAGE_COLUMNS: &[&str] = &[
+    "message_id",
+    "sender",
+    "target_machine_id",
+    "target_session",
+    "message_kind",
+    "body",
+    "state",
+    "failure_reason",
+    "source_change_id",
+    "recipient_actor",
+    "source_workspace_id",
+    "source_thread_id",
+    "created_at",
+    "updated_at",
+    "cancel_due_at",
+    "sender_request_id",
+    "delivery_window_ends_at",
+    "delivered_arrived_at",
+    "seen_completed_at",
+    "deadline_settled_at",
+];

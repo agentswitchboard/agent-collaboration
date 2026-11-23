@@ -1,5 +1,4 @@
-//! On workerd: a direct message nobody acknowledged is cancelled at its
-//! 5-minute mark by the due batch, which tells the sender (design 2026-11-17).
+//! An unacknowledged direct message settles at its deadline and tells the sender.
 use super::super::{Statement, support::*};
 use central_storage::SqlValue;
 use std::sync::atomic::Ordering;
@@ -42,7 +41,7 @@ async fn an_unconfirmed_direct_message_passes_its_mark_and_the_sender_is_told() 
     let Result::Done(Answer::Queued { message_id }) = answer else {
         panic!("send refused: {answer:?}")
     };
-    let mark = fleet_mail::message_deadline::direct_receipt_mark(sent_at, sent_at);
+    let mark = fleet_mail::message_deadline::direct_receipt_mark(sent_at, sent_at).unwrap();
     let deadline = runtime
         .statement_host()
         .read(Statement {
@@ -86,7 +85,18 @@ async fn an_unconfirmed_direct_message_passes_its_mark_and_the_sender_is_told() 
         .0
         .store(mark.timestamp_millis(), Ordering::SeqCst);
     runtime.after_event().await.unwrap();
-    assert_eq!(state().await, SqlValue::Text("pastTheMark".to_owned()));
+    assert_eq!(state().await, SqlValue::Text("queued".to_owned()));
+    let settlement = Statement {
+        sql: "SELECT deadline_settled_at FROM mail_messages WHERE message_id=?",
+        args: vec![text(&message_id)],
+    };
+    let settlement = runtime.statement_host().read(settlement).await.unwrap();
+    assert_eq!(
+        settlement.rows,
+        [[text(
+            mark.to_rfc3339_opts(chrono::SecondsFormat::Millis, true)
+        )]]
+    );
     let notices = runtime
         .statement_host()
         .read(Statement {
