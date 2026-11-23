@@ -100,22 +100,6 @@ impl ProviderStopCause {
     }
 }
 
-impl TryFrom<HolderStopCause> for ProviderStopCause {
-    type Error = InvalidApprovalEnding;
-
-    fn try_from(cause: HolderStopCause) -> Result<Self, Self::Error> {
-        Ok(match cause {
-            HolderStopCause::TurnStopped => Self::TurnStopped,
-            HolderStopCause::AskReplaced => Self::AskReplaced,
-            HolderStopCause::AskWithdrawn => Self::AskWithdrawn,
-            HolderStopCause::SessionClosed => Self::SessionClosed,
-            HolderStopCause::ProviderConnectionLost => Self::ProviderConnectionLost,
-            HolderStopCause::HolderRefusedLocally => Self::HolderRefusedLocally,
-            HolderStopCause::CallWithdrawn => return Err(InvalidApprovalEnding::BindingMismatch),
-        })
-    }
-}
-
 approval_wire_union! {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[cfg_attr(

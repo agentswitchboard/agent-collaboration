@@ -1,6 +1,7 @@
 use approval_request_protocol::{
-    Answer, CallOffer, CallStopCause, CancelReason, Delivery, Ending, HolderStopCause,
-    InvocationDigest, ParkedCallHolder, PassOnReply, PassOnRequest, ProviderStopCause, Raise,
+    Answer, CallCancellation, CallOffer, CallStopCause, CancelReason, Delivery, Ending,
+    HolderEnding, HolderStopCause, InvocationDigest, ParkedCallEnding, ParkedCallHolder,
+    PassOnReply, PassOnRequest, PrivateEnding, ProviderCancellation, ProviderStopCause, Raise,
     RaiseReply, RequestContentsDigest, SessionCallDecision, SessionCallOperation,
     StopReceiptEnding, StopReply, StopRequest,
 };
@@ -290,9 +291,36 @@ fn local_refusal_stops_both_request_families_before_raise_while_waiting_and_afte
             reply(&run_event(&mut waiting, raise, 0)),
             ObservedReply::Raise(RaiseReply::Receipt { .. })
         ));
+        let (stopped_ending, timed_out_ending) = if parked {
+            (
+                PrivateEnding::UnprovenCall {
+                    ending: ParkedCallEnding::Cancelled {
+                        reason: CallCancellation::Stopped {
+                            cause: CallStopCause::HolderRefusedLocally,
+                        },
+                    },
+                },
+                PrivateEnding::UnprovenCall {
+                    ending: ParkedCallEnding::TimedOut {},
+                },
+            )
+        } else {
+            (
+                PrivateEnding::ProviderApproval {
+                    ending: HolderEnding::Cancelled {
+                        reason: ProviderCancellation::Stopped {
+                            cause: ProviderStopCause::HolderRefusedLocally,
+                        },
+                    },
+                },
+                PrivateEnding::ProviderApproval {
+                    ending: HolderEnding::TimedOut {},
+                },
+            )
+        };
         for (at, receipt, ending) in [
-            (HOUR - 1, cancelled, Ending::Cancelled { reason }),
-            (HOUR, timed_out, Ending::TimedOut {}),
+            (HOUR - 1, cancelled, stopped_ending),
+            (HOUR, timed_out, timed_out_ending),
         ] {
             let mut collection = waiting.clone();
             let effects = run_event(&mut collection, stop.clone(), at);
@@ -301,7 +329,7 @@ fn local_refusal_stops_both_request_families_before_raise_while_waiting_and_afte
                 ObservedReply::Stop(StopReply::Stands { ending: receipt })
             );
             let recorded = closed(&collection, &approval_key);
-            assert_eq!(recorded.ending.clone().into_ending(), ending);
+            assert_eq!(recorded.ending.ending(), &ending);
             assert_eq!(recorded.delivery, Delivery::ClosedWithoutReceipt {});
             assert!(effects.contains(&ApprovalCollectionEffect::Request(
                 ApprovalEffect::ClearDue {

@@ -13,7 +13,7 @@ use crate::approval_lifecycle_admission::{
 use crate::approval_lifecycle_delivery::{receive, reoffer};
 use crate::approval_lifecycle_destinations::{decide, pass_on, read};
 use crate::approval_lifecycle_effects::{
-    ApprovalChange, finish, parent_notice, reply, standing, with_delivery,
+    ApprovalChange, finish, finish_stopped, parent_notice, reply, standing, with_delivery,
 };
 use crate::{
     ApprovalActor, ApprovalApply, ApprovalEffect, ApprovalEvent, ApprovalReceipt, ApprovalRefusal,
@@ -251,19 +251,28 @@ fn apply_stop(
             if &saved.contents_digest == digest
                 && stop_cause_matches_raise(cause, &saved.raise) =>
         {
-            let ending = deadline_ending(
-                saved,
-                Ending::Cancelled {
-                    reason: CancelReason::Stopped {
-                        cause: cause.holder_cause(),
+            let (ending, change) = if now >= saved.window.deadline() {
+                (
+                    StopReceiptEnding::TimedOut {},
+                    finish(
+                        saved,
+                        Ending::TimedOut {},
+                        Delivery::ClosedWithoutReceipt {},
+                        now,
+                    ),
+                )
+            } else {
+                (
+                    StopReceiptEnding::Cancelled {
+                        reason: CancelReason::Stopped {
+                            cause: cause.holder_cause(),
+                        },
                     },
-                },
-                now,
-            );
-            let receipt = response(standing(&ending));
-            let (next, mut effects) =
-                finish(saved, ending, Delivery::ClosedWithoutReceipt {}, now)?;
-            effects.push(ApprovalEffect::Reply(receipt));
+                    finish_stopped(saved, stop, now),
+                )
+            };
+            let (next, mut effects) = change?;
+            effects.push(ApprovalEffect::Reply(response(ending)));
             Ok((next, effects))
         }
         ApprovalState::Ended { saved, closed }

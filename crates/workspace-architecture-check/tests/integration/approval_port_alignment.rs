@@ -213,7 +213,9 @@ fn replyable_stops_exhaust_the_holder_claims() {
             ProviderStopCause::TurnStopped => Some(ReplyableStopCause::TurnStopped),
             ProviderStopCause::SessionClosed => Some(ReplyableStopCause::SessionClosed),
             ProviderStopCause::AskReplaced => Some(ReplyableStopCause::AskReplaced),
-            ProviderStopCause::ProviderConnectionLost | ProviderStopCause::AskWithdrawn => None,
+            ProviderStopCause::ProviderConnectionLost
+            | ProviderStopCause::AskWithdrawn
+            | ProviderStopCause::HolderRefusedLocally => None,
         }
     }
     fn provider_cause(cause: ReplyableStopCause) -> ProviderStopCause {
@@ -248,6 +250,12 @@ fn replyable_stops_exhaust_the_holder_claims() {
             expected.as_ref()
         );
     }
+    let cause = ProviderStopCause::HolderRefusedLocally;
+    assert_eq!(replyable_cause(cause), None);
+    assert_eq!(
+        HolderWait::transition(&bound_wait().unwrap(), WaitEvent::LocalStop { cause }),
+        Err(TransitionError::Stale)
+    );
 }
 
 #[test]
