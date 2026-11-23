@@ -110,7 +110,20 @@ async fn send(f: &Fixture, serial: u32) -> TestResult<MailResult> {
 }
 async fn corrupt_done_history(f: &Fixture, serial: u32) -> TestResult<workspace_ids::WakeId> {
     let wake = set_wake(f, serial, now(f)? + chrono::Duration::seconds(300)).await?;
-    // Direct SQL is legacy/corrupt-history setup, never an admitted product write.
+    if !matches!(
+        request(
+            f,
+            serial + 900,
+            Op::CancelWake {
+                wake_id: wake.clone()
+            }
+        )
+        .await?,
+        MailResult::Done(Answer::WakeCancelled { .. })
+    ) {
+        return Err("fixture wake did not reach a terminal state".into());
+    }
+    // Damage the already-terminal history after the owner removes its deadline.
     execute(f, "UPDATE automation_wakes SET state='done',target='not-json',created_at='not-a-timestamp' WHERE wake_id=?", vec![text(&wake)]).await?;
     Ok(wake)
 }
@@ -222,8 +235,7 @@ async fn malformed_active_due_does_not_rollback_mail_or_healthy_alarm_rearm() ->
         vec![text(malformed)],
     )
     .await?;
-    // Timing allowance: setup claimed a due batch at T0 and the unreadable due
-    // makes this send's event the first due batch, so hold the clock at T0 + 30 s.
+    // Allow the next batch to claim while both projected deadlines are future.
     set_time(&f, due - chrono::Duration::seconds(570));
     assert!(
         matches!(
@@ -233,13 +245,10 @@ async fn malformed_active_due_does_not_rollback_mail_or_healthy_alarm_rearm() ->
         "one invalid active due must not roll back the unrelated request"
     );
     assert_eq!(rows(&f,"SELECT (SELECT COUNT(*) FROM mail_messages WHERE message_kind='direct'),(SELECT COUNT(*) FROM runtime_request_log WHERE request_id=?)",vec![text(id::<m::RequestId>(8422))]).await?.rows,vec![vec![number(1)?,number(1)?]]);
-    // Disposition: the unreadable active due counts as due now, so the healthy
-    // re-arm lands on the next five-minute mark rather than the healthy due.
-    let next_mark = (now(&f)?.timestamp_millis().div_euclid(300_000) + 1) * 300_000;
     assert_eq!(
         alarm(&f).await?,
-        Some(next_mark),
-        "the unreadable active due must re-arm at the next five-minute mark"
+        Some(due.timestamp_millis()),
+        "the out-of-band mutation leaves the earlier healthy projected alarm visible"
     );
     f.host.close().await;
     Ok(())

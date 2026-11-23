@@ -254,7 +254,7 @@ async fn malformed_stored_domains_and_foreign_binding_never_become_complete_obse
 
 async fn machine_store() -> SqliteConnection {
     let mut connection = stamped_store(1).await;
-    query::<Sqlite>("INSERT INTO login_machines VALUES(?,'Observed machine','enrolled',7,?,?)")
+    query::<Sqlite>("INSERT INTO login_machines(machine_id,label,state,enrollment_generation,created_at,updated_at) VALUES(?,'Observed machine','enrolled',7,?,?)")
         .bind(fixture_id(0xe000))
         .bind(TIME)
         .bind(TIME)
@@ -262,7 +262,7 @@ async fn machine_store() -> SqliteConnection {
         .await
         .unwrap();
     query::<Sqlite>(
-        "INSERT INTO login_machines VALUES(?,'Second observed machine','revoked',0,?,?)",
+        "INSERT INTO login_machines(machine_id,label,state,enrollment_generation,created_at,updated_at) VALUES(?,'Second observed machine','revoked',0,?,?)",
     )
     .bind(fixture_id(0xe040))
     .bind(TIME)

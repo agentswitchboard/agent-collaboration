@@ -1,0 +1,28 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n    (SELECT MIN(due_at_ms) FROM notice_window_due_rows WHERE contributes_to_alarm = 1)\n        AS \"notice_window_due?: i64\",\n    (SELECT MIN(due_at_ms) FROM workspace_drain_due_rows WHERE contributes_to_alarm = 1)\n        AS \"workspace_drain_due?: i64\"\nWHERE EXISTS (SELECT 1 FROM signin_provisioned_for_engine)\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "notice_window_due?: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "workspace_drain_due?: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "2524927112b1f1c723f4016302cf3e4c065ec4e0cde2f2cd5a012ba2e81102d6"
+}

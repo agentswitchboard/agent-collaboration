@@ -224,13 +224,11 @@ async fn unconvertible_stored_wake_due_fails_closed_on_actual_alarm() {
         .await
         .unwrap();
     assert!(matches!(outcome, BatchOutcome::Applied { .. }));
-    // Embedded setup allowance: the fixture's setup claimed the due batch at T0.
-    fixture.clock.0.store(
-        (due - chrono::Duration::seconds(270)).timestamp_millis(),
-        std::sync::atomic::Ordering::SeqCst,
-    );
-    // Isolation: that wake fails alone as CorruptRow (due_at); the real alarm
-    // handler succeeds and re-arms on the next mark.
+    // The last projected deadline remains the dispatch mark after a raw edit.
+    fixture
+        .clock
+        .0
+        .store(due.timestamp_millis(), std::sync::atomic::Ordering::SeqCst);
     runtime.after_event().await.unwrap();
     let record = runtime.statement_host().read(Statement { sql: "SELECT state,failure_count,last_failure,last_failure_detail FROM engine_work_attempts WHERE machine_kind='wake_timer' AND subject_key=?", args: vec![text(&wake_id)] }).await.unwrap();
     assert_eq!(record.rows.len(), 1);
@@ -248,7 +246,10 @@ async fn unconvertible_stored_wake_due_fails_closed_on_actual_alarm() {
     let receipt: Option<AlarmReceipt> = runtime.control("raw-alarm-status", &()).await.unwrap();
     let receipt = receipt.expect("actual alarm receipt");
     assert!(matches!(receipt.result, AlarmReceiptResult::Applied { .. }));
-    assert_eq!(receipt.alarm_after, prior_alarm);
+    assert_eq!(
+        receipt.alarm_after,
+        Some((due + chrono::Duration::minutes(5)).timestamp_millis())
+    );
     let rows = runtime
         .statement_host()
         .read(Statement {

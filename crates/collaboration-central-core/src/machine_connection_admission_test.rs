@@ -5,13 +5,13 @@ use super::{
 use serde_json::json;
 
 #[test]
-fn an_inactive_presented_enrollment_leaves_the_connection_open() {
+fn an_expired_presented_token_leaves_the_connection_open() {
     let (reason, termination) =
-        project_renewal_refusal(MachineTokenRenewalRefusal::CandidateNotActive);
+        project_renewal_refusal(MachineTokenRenewalRefusal::PresentedTokenExpired);
 
     assert_eq!(
         serde_json::to_value(reason).unwrap(),
-        json!("presentedEnrollmentNotActive")
+        json!("presentedTokenExpired")
     );
     assert!(termination.is_none());
 }

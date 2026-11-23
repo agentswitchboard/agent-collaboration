@@ -5,7 +5,11 @@ use crate::{
     TokenRenewalResult, TypedCallResult,
     link_typed_calls::{named_map, unregistered_call},
 };
-use serde::{Deserialize, Serialize};
+use serde::{
+    Deserialize, Deserializer, Serialize,
+    de::{MapAccess, Visitor, value::MapAccessDeserializer},
+};
+use std::fmt;
 use workspace_ids::MachineId;
 use workspace_model::{Caller, ResolvedSender, Timestamp};
 
@@ -17,14 +21,33 @@ pub enum LinkFrame {
     Data(DataFrame),
 }
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(
-    tag = "kind",
-    rename_all = "camelCase",
-    rename_all_fields = "camelCase",
-    deny_unknown_fields
-)]
-pub enum DataFrame {
+macro_rules! define_data_frame {
+    ($($variants:tt)*) => {
+        #[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
+        #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
+        pub enum DataFrame { $($variants)* }
+
+        #[derive(Deserialize)]
+        #[serde(remote = "DataFrame", tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase", deny_unknown_fields)]
+        enum DataFrameReader { $($variants)* }
+
+        impl<'de> Deserialize<'de> for DataFrame {
+            fn deserialize<Input: Deserializer<'de>>(input: Input) -> Result<Self, Input::Error> {
+                struct NamedFrame;
+                impl<'de> Visitor<'de> for NamedFrame {
+                    type Value = DataFrame;
+                    fn expecting(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result { formatter.write_str("named frame fields") }
+                    fn visit_map<Fields: MapAccess<'de>>(self, fields: Fields) -> Result<Self::Value, Fields::Error> {
+                        DataFrameReader::deserialize(MapAccessDeserializer::new(fields))
+                    }
+                }
+                input.deserialize_map(NamedFrame)
+            }
+        }
+    };
+}
+
+define_data_frame! {
     Welcome {
         machine_id: MachineId,
         central_time: Timestamp,
@@ -95,6 +118,7 @@ pub enum DataFrame {
         correlation_id: CorrelationId,
         result: TokenRenewalResult,
     },
+
 }
 
 impl LinkFrame {

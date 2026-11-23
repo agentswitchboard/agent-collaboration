@@ -137,11 +137,13 @@ macro_rules! expected_wire_roots {
             json!({"kind":"contentsDiffer"}), json!({"kind":"tooManyOutstanding"}), authority_refused());
         $root!(StopRequest,
             json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"cause":"turnStopped"}),
-            json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"cause":"askReplaced"}));
+            json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"cause":"askReplaced"}),
+            json!({"kind":"provider","requestId":REQUEST_ID,"routerRun":RUN_ID,"contentsDigest":DIGEST,"cause":"askWithdrawn"}));
         $root!(HolderStopCause, json!("turnStopped"), json!("sessionClosed"),
-            json!("providerConnectionLost"), json!("askReplaced"));
+            json!("providerConnectionLost"), json!("askReplaced"), json!("askWithdrawn"));
         $root!(StopReply,
             json!({"kind":"stands","ending":{"kind":"cancelled","reason":{"kind":"stopped","cause":"turnStopped"}}}),
+            json!({"kind":"stands","ending":{"kind":"cancelled","reason":{"kind":"stopped","cause":"askWithdrawn"}}}),
             json!({"kind":"stands","ending":{"kind":"cancelled","reason":{"kind":"sessionEnded"}}}),
             json!({"kind":"stands","ending":{"kind":"cancelled","reason":{"kind":"enrollmentEnded"}}}),
             json!({"kind":"stands","ending":{"kind":"timedOut"}}),
@@ -515,6 +517,7 @@ fn each_concrete_ending_and_request_state_uses_the_named_reader() -> Result<(), 
                 "enrollmentEnded",
                 "sessionEnded",
                 "turnStopped",
+                "askWithdrawn",
             ][..],
         ),
         (
@@ -526,6 +529,7 @@ fn each_concrete_ending_and_request_state_uses_the_named_reader() -> Result<(), 
                 "enrollmentEnded",
                 "sessionEnded",
                 "askReplaced",
+                "askWithdrawn",
             ][..],
         ),
     ] {
@@ -536,7 +540,7 @@ fn each_concrete_ending_and_request_state_uses_the_named_reader() -> Result<(), 
         ];
         endings.extend(reasons.iter().map(|reason| {
             let cancellation = match *reason {
-                "turnStopped" | "askReplaced" | "callWithdrawn" => {
+                "turnStopped" | "askReplaced" | "askWithdrawn" | "callWithdrawn" => {
                     json!({"kind":"stopped","cause":reason})
                 }
                 _ => json!({"kind":reason}),

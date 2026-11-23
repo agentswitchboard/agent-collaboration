@@ -15,7 +15,6 @@ thiserror.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
-central-link-protocol = { workspace = true, features = ["test-support"] }
 router-clock = { workspace = true, features = ["test-support"] }
 serde_json.workspace = true
 

@@ -456,11 +456,33 @@ impl<'host, Host: EngineHost> FleetEngine<'host, Host> {
         &self,
         registry: &AdminMachineKindRegistry<'_, AdminMachineKind>,
         attempt_id: uuid::Uuid,
-    ) -> Result<Result<GuardedStatement, AttemptRefusal>, StoreFailure> {
-        Ok(self
+        at: EngineTime,
+    ) -> Result<Result<Vec<GuardedStatement>, AttemptRefusal>, StoreFailure> {
+        let (_, tag, key) = match self
             .read_retired_attempt_identity(registry, attempt_id)
             .await?
-            .map(|_| plan_retired_attempt_delete(attempt_id)))
+        {
+            Ok(identity) => identity,
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let mut statements = vec![plan_retired_attempt_delete(attempt_id)];
+        let change = if tag == "engine_source" {
+            crate::DueKind::from_tag(&key.0).map(crate::DueEntryKey::SourceControl)
+        } else {
+            crate::DueKind::from_tag(&tag).map(|kind| match kind.lane() {
+                crate::DueLane::OnGrid => {
+                    crate::DueEntryKey::Item(crate::DueItemKey { kind, subject: key })
+                }
+                crate::DueLane::Legacy => crate::DueEntryKey::SourceControl(kind),
+            })
+        };
+        if let Some(key) = change {
+            statements.extend(crate::plan_due_table_change(
+                &crate::DueTableChange::RefreshAttempt(key),
+                at,
+            )?);
+        }
+        Ok(Ok(statements))
     }
 
     /// Resolves a retired attempt and runs its preparing host's registered finisher.

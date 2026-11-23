@@ -1,5 +1,4 @@
 //! Modern machine links share the native HTTP listener and retain core admission.
-use crate::machine_call_queue::{MacCallReceiver, QueuedMacCall};
 use crate::{TokioWorkspaceHost, TokioWorkspaceStores, object_storage::ObjectStorage};
 use axum::{
     Router,
@@ -12,10 +11,9 @@ use axum::{
     routing::get,
 };
 use central_link_protocol::{
-    CentralCall, CorrelationId, DataFrame, FrameDirection, LinkCallRefusal, LinkFrame, LinkRequest,
-    MachineLinkCloseCode, ProtocolError, ReceiptResult, ReplyPayload, RequestPayload,
-    RequestRefusal, RequestStatusAnswer, TimeLeft, TokenRenewalRefusal, TokenRenewalResult,
-    TypedCallResult, decode_text, encode_text,
+    DataFrame, FrameDirection, LinkFrame, LinkRequest, MachineLinkCloseCode, ProtocolError,
+    ReceiptResult, ReplyPayload, RequestPayload, RequestRefusal, RequestStatusAnswer, TimeLeft,
+    TokenRenewalRefusal, TokenRenewalResult, decode_text, encode_text,
 };
 use collaboration_central_core::{
     ApplyingRequestFailure, MachineLinkAdmission, MachineLinkRequestAuthority, RenewalTermination,
@@ -29,9 +27,14 @@ use fleet_contracts::mail_link::{
 use fleet_identity_protocol::OrganizationId;
 use futures_util::FutureExt;
 use router_clock::RuntimeClock;
+use std::future::Future;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
+
+#[path = "workspace_typed_link.rs"]
+mod typed_link;
+use typed_link::{offer_mac_call, reply_to_typed_call};
 
 type Runtime = WorkspaceRuntime<ObjectStorage, TokioWorkspaceStores>;
 
@@ -265,6 +268,7 @@ async fn serve_link(
                     &writes,
                     &runtime,
                     &connection,
+                    &registration.outbound_calls,
                     correlation_id,
                     None,
                 )
@@ -297,6 +301,7 @@ async fn serve_link(
                     &writes,
                     &runtime,
                     &connection,
+                    &registration.outbound_calls,
                     correlation_id,
                     Some(*request),
                 )
@@ -480,80 +485,6 @@ async fn serve_link(
             }
         }
     }
-}
-
-async fn reply_to_typed_call(
-    socket: &mut WebSocket,
-    writes: &LinkWrites<'_>,
-    runtime: &Runtime,
-    connection: &ValidatedMachineConnection,
-    correlation_id: CorrelationId,
-    request: Option<CentralCall>,
-) -> bool {
-    let result = match runtime
-        .dispatch_typed_central_call(&connection.attachment(), request)
-        .await
-    {
-        Ok(result) => result,
-        Err(_) => {
-            writes.close(socket, close_code::ERROR, "central unavailable");
-            return false;
-        }
-    };
-    let lapsed = match &result {
-        TypedCallResult::Refused {
-            reason: LinkCallRefusal::AuthorityLapsed { cause },
-        } => Some(*cause),
-        _ => None,
-    };
-    let reply = LinkFrame::Data(DataFrame::CentralCallReply {
-        correlation_id,
-        result: Box::new(result),
-    });
-    if let Some(cause) = lapsed {
-        writes.attempt_terminal_refusal(socket, &reply).await;
-        writes.close_authority(socket, cause);
-        return false;
-    }
-    writes.send(socket, &reply).await
-}
-
-async fn offer_mac_call(
-    socket: &mut WebSocket,
-    writes: &LinkWrites<'_>,
-    runtime: &Runtime,
-    connection: &ValidatedMachineConnection,
-    calls: &MacCallReceiver,
-    queued: QueuedMacCall,
-) -> bool {
-    let deadline = queued.deadline();
-    let attachment = connection.attachment();
-    let restored = tokio::select! {
-        biased;
-        () = writes.stop.cancelled() => { writes.close_if_authority_cancelled(socket); return false; }
-        () = writes.replaced.cancelled() => { writes.close(socket, close_code::NORMAL, "machine link ended"); return false; }
-        () = writes.clock.sleep_until(deadline) => return true,
-        restored = runtime.restore_machine_link_request(&attachment) => restored,
-    };
-    match restored {
-        Ok(MachineLinkRequestAuthority::Admitted(_)) => {}
-        Ok(MachineLinkRequestAuthority::Refused(cause)) => {
-            queued.refuse_before_dispatch();
-            writes.close_authority(socket, cause);
-            return false;
-        }
-        Ok(MachineLinkRequestAuthority::TemporarilyUnavailable) | Err(_) => {
-            queued.refuse_before_dispatch();
-            writes.close(socket, close_code::ERROR, "central unavailable");
-            return false;
-        }
-    }
-    let Some(frame) = calls.begin_write(queued, writes.clock) else {
-        return true;
-    };
-    router_clock::timeout_at(writes.clock, deadline, writes.send(socket, &frame))
-        .await
-        .unwrap_or(false)
 }
 
 async fn send_welcome_backlog(
@@ -809,16 +740,22 @@ impl LinkWrites<'_> {
         let Ok(text) = encode_text(frame, FrameDirection::ToRouter) else {
             return false;
         };
-        let sent = tokio::select! {
-            biased;
-            () = self.stop.cancelled() => false,
-            () = self.replaced.cancelled() => false,
-            result = socket.send(Message::Text(text.into())) => result.is_ok(),
-        };
+        let sent = self
+            .send_until_stopped(async { socket.send(Message::Text(text.into())).await.is_ok() })
+            .await;
         if !sent {
             self.close_if_authority_cancelled(socket);
         }
         sent
+    }
+
+    async fn send_until_stopped(&self, send: impl Future<Output = bool>) -> bool {
+        tokio::select! {
+            biased;
+            () = self.stop.cancelled() => false,
+            () = self.replaced.cancelled() => false,
+            sent = send => sent,
+        }
     }
 
     fn close_if_authority_cancelled(&self, socket: &mut WebSocket) {

@@ -456,6 +456,9 @@ impl DurableObject for CentralObject {
                 return workspace_cases::raw_control(self, request).await;
             }
         }
+        if request.path() == workspace_typed_link::MACHINE_CALL_PATH {
+            return self.handle_mac_call(request, organization).await;
+        }
         self.migrate()
             .await
             .map_err(|error| worker::Error::RustError(error.to_string()))?;
@@ -473,9 +476,6 @@ impl DurableObject for CentralObject {
         #[cfg(feature = "test-support")]
         if request.path().starts_with("/test/") {
             return workspace_cases::control(self, organization, request).await;
-        }
-        if request.path() == workspace_typed_link::MACHINE_CALL_PATH {
-            return self.handle_mac_call(request, organization).await;
         }
         if crate::organization_signin_link::is_signin_path(&request.path()) {
             let runtime = match self.runtime_checked(organization).await {
@@ -521,16 +521,14 @@ impl DurableObject for CentralObject {
         _reason: String,
         _was_clean: bool,
     ) -> Result<()> {
-        self.pending_mac_calls.close_socket(&self.state, &socket);
-        socket.close(Some(1000), Some("closed"))
+        self.close_machine_link(&socket, 1000, Some("closed"))
     }
     async fn websocket_error(
         &self,
         socket: worker::WebSocket,
         _error: worker::Error,
     ) -> Result<()> {
-        self.pending_mac_calls.close_socket(&self.state, &socket);
-        socket.close(Some(1011), Some("link error"))
+        self.close_machine_link(&socket, 1011, Some("link error"))
     }
 
     async fn alarm(&self) -> Result<Response> {
@@ -564,6 +562,9 @@ mod signin_launcher_controls;
 
 #[path = "workspace_machine_link.rs"]
 mod workspace_machine_link;
+
+#[path = "workspace_socket_attachment.rs"]
+mod workspace_socket_attachment;
 
 #[path = "workspace_typed_link.rs"]
 pub(crate) mod workspace_typed_link;

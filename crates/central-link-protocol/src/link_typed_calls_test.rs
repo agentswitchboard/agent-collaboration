@@ -325,3 +325,162 @@ fn the_link_registers_only_the_four_machine_approval_calls() {
     to_central::<StopApprovalRpc>();
     to_mac::<DeliverEndingRpc>();
 }
+
+#[test]
+fn typed_frame_layers_require_closed_named_records() {
+    let schema = serde_json::to_value(schemars::schema_for!(DataFrame)).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    for (kind, direction, call, is_reply) in [
+        (
+            "callCentral",
+            FrameDirection::ToCentral,
+            "centralProbe",
+            false,
+        ),
+        ("callMac", FrameDirection::ToRouter, "macProbe", false),
+        (
+            "centralCallReply",
+            FrameDirection::ToRouter,
+            "centralProbe",
+            true,
+        ),
+        ("macCallReply", FrameDirection::ToCentral, "macProbe", true),
+    ] {
+        let body = if is_reply {
+            json!({"echoed":7})
+        } else {
+            json!({"sequence":7})
+        };
+        let named_call = json!({"call":call,"envelope":{"target":MACHINE,"body":body}});
+        let content = if is_reply {
+            json!({"kind":"answered","reply":named_call})
+        } else {
+            named_call
+        };
+        let field = if is_reply { "result" } else { "request" };
+        let mut valid = json!({"kind":kind,"correlationId":CORRELATION});
+        valid[field] = content.clone();
+        assert_round_trip(&validator, &valid, direction);
+        let call_path = if is_reply {
+            "/result/reply"
+        } else {
+            "/request"
+        };
+        let envelope_path = format!("{call_path}/envelope");
+        let body_path = format!("{envelope_path}/body");
+        let mut invalids = Vec::new();
+        invalids.push(json!([kind, CORRELATION, content]));
+        let mut bad = valid.clone();
+        bad.as_object_mut().unwrap().remove("kind");
+        invalids.push(bad);
+        let mut bad = valid.clone();
+        bad["kind"] = json!("unregisteredFrame");
+        invalids.push(bad);
+        let mut bad = valid.clone();
+        bad["extra"] = json!(true);
+        invalids.push(bad);
+        for pointer in [call_path, envelope_path.as_str(), body_path.as_str()] {
+            let mut bad = valid.clone();
+            bad.pointer_mut(pointer).unwrap()["extra"] = json!(true);
+            invalids.push(bad);
+        }
+        let mut bad = valid.clone();
+        bad.pointer_mut(call_path)
+            .unwrap()
+            .as_object_mut()
+            .unwrap()
+            .remove("call");
+        invalids.push(bad);
+        let mut bad = valid.clone();
+        bad.pointer_mut(call_path).unwrap()["call"] = json!("unregistered");
+        invalids.push(bad);
+        let mut bad = valid.clone();
+        *bad.pointer_mut(call_path).unwrap() = json!([call,{"target":MACHINE,"body":body}]);
+        invalids.push(bad);
+        let mut bad = valid.clone();
+        *bad.pointer_mut(&envelope_path).unwrap() = json!([MACHINE, body]);
+        invalids.push(bad);
+        let mut bad = valid.clone();
+        *bad.pointer_mut(&body_path).unwrap() = json!([7]);
+        invalids.push(bad);
+        if is_reply {
+            let mut bad = valid.clone();
+            bad["result"].as_object_mut().unwrap().remove("kind");
+            invalids.push(bad);
+            let mut bad = valid.clone();
+            bad["result"]["kind"] = json!("unregistered");
+            invalids.push(bad);
+            let mut bad = valid.clone();
+            bad["result"]["extra"] = json!(true);
+            invalids.push(bad);
+            let mut bad = valid.clone();
+            bad["result"] = json!(["answered", valid.pointer(call_path).unwrap()]);
+            invalids.push(bad);
+        }
+        for invalid in invalids {
+            assert!(!validator.is_valid(&invalid), "schema accepted {invalid}");
+            assert!(
+                serde_json::from_value::<DataFrame>(invalid.clone()).is_err(),
+                "direct reader accepted {invalid}"
+            );
+            assert!(
+                decode_text(&invalid.to_string(), direction).is_err(),
+                "codec accepted {invalid}"
+            );
+        }
+    }
+}
+
+#[test]
+fn direct_typed_readers_and_unit_refusals_are_closed_named_maps() {
+    let schema = serde_json::to_value(schemars::schema_for!(DataFrame)).unwrap();
+    let validator = jsonschema::validator_for(&schema).unwrap();
+    let call = json!({"call":"centralProbe","envelope":{"target":MACHINE,"body":{"sequence":7}}});
+    assert!(serde_json::from_value::<CentralCall>(call.clone()).is_ok());
+    assert!(
+        serde_json::from_value::<CentralCall>(json!(["centralProbe", call["envelope"]])).is_err()
+    );
+    assert!(serde_json::from_value::<MacCall>(json!(["macProbe", call["envelope"]])).is_err());
+    assert!(
+        serde_json::from_value::<DataFrame>(json!([
+            "renewMachineToken",
+            CORRELATION,
+            "header.payload.signature"
+        ]))
+        .is_err()
+    );
+    for kind in ["unknownCall", "wrongTarget"] {
+        let valid = json!({"kind":kind});
+        let refusal: LinkCallRefusal = serde_json::from_value(valid.clone()).unwrap();
+        assert_eq!(serde_json::to_value(refusal).unwrap(), valid);
+        for invalid in [
+            json!({"kind":kind,"unused":true}),
+            json!([kind]),
+            json!({}),
+            json!({"kind":"unknown"}),
+        ] {
+            assert!(serde_json::from_value::<LinkCallRefusal>(invalid).is_err());
+        }
+    }
+    for root in ["macCallReply", "centralCallReply"] {
+        let direction = if root == "macCallReply" {
+            FrameDirection::ToCentral
+        } else {
+            FrameDirection::ToRouter
+        };
+        for kind in ["unknownCall", "wrongTarget", "authorityLapsed"] {
+            let reason = if kind == "authorityLapsed" {
+                json!({"kind":kind,"cause":"expired"})
+            } else {
+                json!({"kind":kind})
+            };
+            let wire = json!({"kind":root,"correlationId":CORRELATION,"result":{"kind":"refused","reason":reason}});
+            assert!(validator.is_valid(&wire));
+            assert!(decode_text(&wire.to_string(), direction).is_ok());
+            let mut bad = wire.clone();
+            bad["result"]["reason"]["extra"] = json!(true);
+            assert!(!validator.is_valid(&bad));
+            assert!(decode_text(&bad.to_string(), direction).is_err());
+        }
+    }
+}

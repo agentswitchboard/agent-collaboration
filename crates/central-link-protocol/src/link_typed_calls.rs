@@ -10,12 +10,29 @@ use serde::{
 };
 use std::{fmt, marker::PhantomData};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 pub enum LinkCallRefusal {
     UnknownCall,
     WrongTarget,
     AuthorityLapsed { cause: MachineLinkCloseCode },
+}
+
+impl<'de> Deserialize<'de> for LinkCallRefusal {
+    fn deserialize<Input: Deserializer<'de>>(input: Input) -> Result<Self, Input::Error> {
+        #[derive(Deserialize)]
+        #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+        enum NamedRefusal {
+            UnknownCall {},
+            WrongTarget {},
+            AuthorityLapsed { cause: MachineLinkCloseCode },
+        }
+        Ok(match named_map(input)? {
+            NamedRefusal::UnknownCall {} => Self::UnknownCall,
+            NamedRefusal::WrongTarget {} => Self::WrongTarget,
+            NamedRefusal::AuthorityLapsed { cause } => Self::AuthorityLapsed { cause },
+        })
+    }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -81,10 +98,10 @@ pub trait MacLinkRpc: Rpc + registration::Mac {
 }
 
 macro_rules! register_calls {
-    ($request:ident, $reply:ident, $protocol:ident; $(
+    ($request:ident, $request_name:literal, $request_reader:ident, $reply:ident, $reply_name:literal, $reply_reader:ident, $protocol:ident; $(
         $(#[$condition:meta])* $name:literal => $variant:ident($marker:path)
     ),* $(,)?) => {
-        #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+        #[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
         #[serde(tag = "call", content = "envelope", deny_unknown_fields)]
         pub enum $request {
             $(
@@ -94,7 +111,7 @@ macro_rules! register_calls {
             )*
         }
 
-        #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+        #[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
         #[serde(tag = "call", content = "envelope", deny_unknown_fields)]
         pub enum $reply {
             $(
@@ -102,6 +119,54 @@ macro_rules! register_calls {
                 #[serde(rename = $name)]
                 $variant(Envelope<<$marker as Rpc>::Target, <$marker as Rpc>::Reply>),
             )*
+        }
+
+        #[derive(Deserialize)]
+        #[serde(remote = $request_name, tag = "call", content = "envelope", deny_unknown_fields)]
+        enum $request_reader {
+            $(
+                $(#[$condition])*
+                #[serde(rename = $name)]
+                $variant(Envelope<<$marker as Rpc>::Target, <$marker as Rpc>::Request>),
+            )*
+        }
+
+        #[derive(Deserialize)]
+        #[serde(remote = $reply_name, tag = "call", content = "envelope", deny_unknown_fields)]
+        enum $reply_reader {
+            $(
+                $(#[$condition])*
+                #[serde(rename = $name)]
+                $variant(Envelope<<$marker as Rpc>::Target, <$marker as Rpc>::Reply>),
+            )*
+        }
+
+        impl<'de> Deserialize<'de> for $request {
+            fn deserialize<Input: Deserializer<'de>>(input: Input) -> Result<Self, Input::Error> {
+                struct NamedCall;
+                impl<'de> Visitor<'de> for NamedCall {
+                    type Value = $request;
+                    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str("named call fields") }
+                    fn visit_map<Fields: MapAccess<'de>>(self, fields: Fields) -> Result<Self::Value, Fields::Error> {
+                        $request_reader::deserialize(MapAccessDeserializer::new(fields))
+                    }
+                }
+                input.deserialize_map(NamedCall)
+            }
+        }
+
+        impl<'de> Deserialize<'de> for $reply {
+            fn deserialize<Input: Deserializer<'de>>(input: Input) -> Result<Self, Input::Error> {
+                struct NamedReply;
+                impl<'de> Visitor<'de> for NamedReply {
+                    type Value = $reply;
+                    fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result { f.write_str("named reply fields") }
+                    fn visit_map<Fields: MapAccess<'de>>(self, fields: Fields) -> Result<Self::Value, Fields::Error> {
+                        $reply_reader::deserialize(MapAccessDeserializer::new(fields))
+                    }
+                }
+                input.deserialize_map(NamedReply)
+            }
         }
 
         impl $request {
@@ -159,7 +224,7 @@ macro_rules! register_calls {
 }
 
 register_calls! {
-    CentralCall, CentralCallReply, CentralLinkRpc;
+    CentralCall, "CentralCall", CentralCallReader, CentralCallReply, "CentralCallReply", CentralCallReplyReader, CentralLinkRpc;
     "registerRun" => RegisterRun(RegisterRunRpc),
     "raise" => Raise(RaiseApprovalRpc),
     "stop" => Stop(StopApprovalRpc),
@@ -167,7 +232,7 @@ register_calls! {
 }
 
 register_calls! {
-    MacCall, MacCallReply, MacLinkRpc;
+    MacCall, "MacCall", MacCallReader, MacCallReply, "MacCallReply", MacCallReplyReader, MacLinkRpc;
     "deliverEnding" => DeliverEnding(DeliverEndingRpc),
     #[cfg(any(test, feature = "test-support"))] "macProbe" => MacProbe(test_calls::MacProbe),
 }
@@ -175,22 +240,50 @@ register_calls! {
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_calls {
     use fleet_rpc::Rpc;
-    use serde::{Deserialize, Serialize};
+    use serde::{Deserialize, Deserializer, Serialize};
     use workspace_ids::MachineId;
 
     pub struct CentralProbe;
     pub struct MacProbe;
 
-    #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
     #[serde(deny_unknown_fields)]
     pub struct ProbeRequest {
         pub sequence: u32,
     }
 
-    #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+    #[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
     #[serde(deny_unknown_fields)]
     pub struct ProbeReply {
         pub echoed: u32,
+    }
+
+    impl<'de> Deserialize<'de> for ProbeRequest {
+        fn deserialize<Input: Deserializer<'de>>(input: Input) -> Result<Self, Input::Error> {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct NamedRequest {
+                sequence: u32,
+            }
+            let request: NamedRequest = super::named_map(input)?;
+            Ok(Self {
+                sequence: request.sequence,
+            })
+        }
+    }
+
+    impl<'de> Deserialize<'de> for ProbeReply {
+        fn deserialize<Input: Deserializer<'de>>(input: Input) -> Result<Self, Input::Error> {
+            #[derive(Deserialize)]
+            #[serde(deny_unknown_fields)]
+            struct NamedReply {
+                echoed: u32,
+            }
+            let reply: NamedReply = super::named_map(input)?;
+            Ok(Self {
+                echoed: reply.echoed,
+            })
+        }
     }
 
     impl Rpc for CentralProbe {

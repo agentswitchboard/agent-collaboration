@@ -24,6 +24,7 @@ pub(super) async fn control(
                     | Point::AfterIdleEnrollmentCleanup
                     | Point::AfterTimerCommit
                     | Point::AfterEngineLoad
+                    | Point::BeforeRenewalApplyingSample
                     | Point::BeforeSignInSample
                     | Point::AfterSignInSample
                     | Point::BeforeWorkspaceRequestApplying

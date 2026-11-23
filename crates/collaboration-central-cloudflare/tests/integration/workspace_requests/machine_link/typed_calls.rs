@@ -1,11 +1,10 @@
 //! Typed exchanges use the real public WebSocket and private object invocation.
 
+mod addressing;
 mod capacity;
+mod lifecycle;
 
-use super::super::workerd_host::{
-    c2_controls::{C2EvictionCause, C2EvictionError},
-    workerd_control_http_client,
-};
+use super::super::workerd_host::workerd_control_http_client;
 use super::fixture::{ConnectedLink, Fixture, MACHINE_ID, receive, send};
 use super::receipt_frames::{EnrollmentAtApply, stored_ending_batch};
 use central_link_protocol::{
@@ -197,14 +196,11 @@ async fn check_outbound_calls(fixture: &Fixture) -> Result<()> {
             reply_to_mac_probe(&mut link.socket, first, 900).await?;
             let receipt = central_probe(&mut link.socket, &MACHINE_ID.parse()?, 92).await?;
             assert!(matches!(receipt, TypedCallResult::Answered { .. }));
-            let eviction = fixture.host.c2_evict(&fixture.organization).await;
-            assert!(
-                matches!(
-                    eviction,
-                    Err(C2EvictionError::Failed(C2EvictionCause::ActiveReferences))
-                ),
-                "{eviction:?}"
-            );
+            let awaiting = fixture
+                .runtime()
+                .control::<bool>("typed-mac-waiting", &correlation)
+                .await?;
+            assert!(awaiting, "the sent call must still own a live waiter");
             super::renewal::advance(fixture, 5).await?;
             Ok::<_, Box<dyn std::error::Error + Send + Sync>>(correlation)
         },

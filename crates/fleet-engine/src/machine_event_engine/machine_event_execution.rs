@@ -227,7 +227,15 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
             };
             match handler
                 .apply_guarded_transition_batch::<SubjectMachine, SubjectStore>(
-                    adapter, &key, &prior, &next, &effects, receipt,
+                    adapter,
+                    &key,
+                    &prior,
+                    &next,
+                    &effects,
+                    super::transition_batch_writes::TransitionReceipt {
+                        statements: receipt,
+                        applied_at: now,
+                    },
                 )
                 .await
             {

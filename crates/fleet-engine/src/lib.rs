@@ -41,5 +41,16 @@ pub use machine_event_engine::request_receipt_store::{EngineReceipt, EngineRefus
 #[doc(hidden)]
 pub mod owner_sql;
 
+mod due_table_contract;
+pub use due_table_contract::{
+    DueEntryKey, DueItemKey, DueKind, DueLane, DueMillis, DueOwnerTiming, DueTableChange,
+};
+
+mod due_table_planner;
+pub use due_table_planner::{
+    apply_due_table_change, due_change_for_attempt, plan_due_table_change,
+};
+
 mod central_queries;
+pub use central_queries::{DueItemTimes, DueTableDifference, InvalidDueEntry, compare_due_table};
 pub use central_queries::{read_alarm_inputs, read_timed_due_rows};
