@@ -15,7 +15,6 @@ fn saturation_and_competing_claims_survive_attachment_round_trip() {
     let mut offers = SocketDirectMailOffers::default();
     let now: Timestamp = "2026-11-23T22:00:00Z".parse().unwrap();
     let cutoff: Timestamp = "2026-11-23T22:15:00Z".parse().unwrap();
-    assert_eq!(offers.observe_time(now), now);
     for ordinal in 0..SOCKET_DIRECT_MAIL_LIMIT {
         assert_eq!(offers.claim(&message(ordinal), cutoff), Ok(()));
     }
@@ -33,9 +32,15 @@ fn saturation_and_competing_claims_survive_attachment_round_trip() {
     assert!(reawakened.take_deferred());
     assert_eq!(reawakened.claim(&waiting, cutoff), Ok(()));
 
-    assert_eq!(reawakened.observe_time(cutoff), cutoff);
-    assert_eq!(reawakened.observe_time(now), cutoff);
-    assert_eq!(reawakened.claimed.len(), 0);
+    assert_eq!(
+        reawakened.elapsed_claims(cutoff).count(),
+        SOCKET_DIRECT_MAIL_LIMIT
+    );
+    assert_eq!(reawakened.elapsed_claims(now).count(), 0);
+    assert_eq!(
+        reawakened.claim(&waiting, cutoff),
+        Err(NotOffered::AlreadyOffered)
+    );
 }
 
 #[test]

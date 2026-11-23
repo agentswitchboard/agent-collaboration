@@ -170,6 +170,41 @@ pub(super) async fn send_welcome_backlog(
     }
 }
 
+pub(super) async fn resume_deferred_mail(
+    socket: &mut WebSocket,
+    writes: &LinkWrites<'_>,
+    runtime: &Runtime,
+    connection: &ValidatedMachineConnection,
+    offers: &mut SocketDirectMailOffers,
+) -> bool {
+    let attachment = connection.attachment();
+    let ready = writes
+        .until_stopped(async {
+            let _turn = runtime.runtime().take_central_turn_for_admission().await;
+            runtime
+                .refill_deferred_mail_in_held_turn(&attachment, offers)
+                .await
+        })
+        .await;
+    match ready {
+        Some(Ok(true)) => {
+            send_welcome_backlog(socket, writes, runtime, connection, offers, true).await
+        }
+        Some(Ok(false)) => true,
+        Some(Err(error)) => {
+            tracing::warn!(?error, "central could not inspect deferred mail");
+            writes
+                .close(socket, close_code::ERROR, "central unavailable")
+                .await;
+            false
+        }
+        None => {
+            writes.close_if_authority_cancelled(socket).await;
+            false
+        }
+    }
+}
+
 pub(super) async fn offer_windowed_delivery(
     socket: &mut WebSocket,
     writes: &LinkWrites<'_>,

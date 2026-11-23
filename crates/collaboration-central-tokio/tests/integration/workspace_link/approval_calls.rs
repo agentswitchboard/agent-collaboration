@@ -338,8 +338,8 @@ async fn tokio_engine_delivers_or_recovers_approval_timeout_and_applies_stop_owe
 }
 
 use collaboration_central_conformance::approval_link_scenarios::{
-    FIXTURE_DECIDER, FIXTURE_DECISION_OPERATION, heartbeat, next_ending, read_request,
-    receive_fixture_decision, register_run, registered_waiting_request, require_owed,
+    FIXTURE_DECIDER, FIXTURE_DECISION_OPERATION, heartbeat, read_request, receive_fixture_decision,
+    register_run, registered_waiting_request, require_owed,
 };
 use collaboration_central_core::FixtureApprovalDecision;
 use fleet_runtime::PausePoint;
@@ -411,20 +411,16 @@ async fn tokio_fixture_decide_offers_only_after_commit_and_records_received() ->
         );
         let observe = async {
             before_commit.until_held().await;
-            let result = heartbeat(&mut socket).await;
+            let observation =
+                collaboration_central_conformance::machine_link_boundary::expect_transport_pong(
+                    &mut socket,
+                )
+                .await;
             before_commit.release();
-            result
+            observation
         };
         let (failed, no_offer) = tokio::join!(decide, observe);
         no_offer?;
-        if failed.is_ok() {
-            let (_, ending) = next_ending(&mut socket, &target).await?;
-            return Err(format!(
-                "uncommitted approval ending reached the holder for request {}",
-                ending.request_id(),
-            )
-            .into());
-        }
         if !matches!(failed, Err(central_storage::StoreFailure::Unavailable)) {
             return Err(format!("expected a known rollback, got {failed:?}").into());
         }

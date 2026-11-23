@@ -238,20 +238,13 @@ async fn serve_link(
         return;
     }
     loop {
-        if runtime.observe_mail_offer_time(&mut offers).is_err() {
-            writes
-                .close(&mut socket, close_code::ERROR, "central unavailable")
-                .await;
-            return;
-        }
-        if offers.take_deferred()
-            && !send_welcome_backlog(
+        if offers.has_deferred()
+            && !link_io::resume_deferred_mail(
                 &mut socket,
                 &writes,
                 &runtime,
                 &connection,
                 &mut offers,
-                true,
             )
             .await
         {

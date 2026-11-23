@@ -174,8 +174,8 @@ async fn semantic_requests_recheck_caller_and_original_grant_expiry() -> Result<
     ));
     // Business time advances only through the host's injected clock.
     fixture.clock.advance(Duration::from_secs(600))?;
-    send(&mut socket, &LinkFrame::Ping).await?;
-    assert_eq!(receive(&mut socket).await?, LinkFrame::Pong);
+    collaboration_central_conformance::machine_link_boundary::expect_transport_pong(&mut socket)
+        .await?;
     let caller = link_support::caller()?;
     send(
         &mut socket,
@@ -209,8 +209,7 @@ async fn semantic_requests_recheck_caller_and_original_grant_expiry() -> Result<
             .rows
             .is_empty()
     );
-    socket
-        .close(reqwest_websocket::CloseCode::Normal, None)
+    collaboration_central_conformance::machine_link_boundary::expect_close(&mut socket, 4102)
         .await?;
     fixture.close().await
 }

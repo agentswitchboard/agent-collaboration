@@ -405,7 +405,13 @@ async fn backlog_page_journey(fixture: &Fixture) -> Result<()> {
     ) {
         return Err("expected Welcome before the backlog".into());
     }
+    use collaboration_central_conformance::machine_link_boundary::{
+        acknowledge_delivered_mail, mail_fixture_correlation,
+    };
+    let arrived_at = sent_at + chrono::TimeDelta::seconds(62);
     let mut offered = std::collections::BTreeSet::new();
+    let mut receipt_ids = Vec::new();
+    let mut receipt_batch = 0x32000_u32;
     for _ in 0..=page_size {
         let Some(Ok(Message::Text(offer_text))) = reopened.next().await else {
             return Err("expected a direct offer as raw socket text".into());
@@ -449,6 +455,17 @@ async fn backlog_page_journey(fixture: &Fixture) -> Result<()> {
         };
         if u32::from(time_left) != 838_000 || !offered.insert(message.message_id().clone()) {
             return Err("a backlog offer had stale time left or repeated a message".into());
+        }
+        receipt_ids.push(message.message_id().clone());
+        if receipt_ids.len() == central_link_protocol::SOCKET_DIRECT_MAIL_LIMIT {
+            acknowledge_delivered_mail(
+                &mut reopened,
+                mail_fixture_correlation(receipt_batch)?,
+                std::mem::take(&mut receipt_ids),
+                arrived_at,
+            )
+            .await?;
+            receipt_batch += 1;
         }
     }
     if !offered.contains(&message_id) {

@@ -143,39 +143,29 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         offers: &mut SocketDirectMailOffers,
     ) -> Result<PreparedMailOffer, StoreFailure> {
         let decision = match self
-            .read_mail_offer_in_held_turn(
-                attachment,
-                message_id,
-                self.observe_mail_offer_time(offers)?,
-            )
+            .read_mail_offer_in_held_turn(attachment, message_id, self.execution.now()?)
             .await
         {
             Err(StoreFailure::Unavailable | StoreFailure::AnswerLost) => {
-                self.read_mail_offer_in_held_turn(
-                    attachment,
-                    message_id,
-                    self.observe_mail_offer_time(offers)?,
-                )
-                .await?
+                self.read_mail_offer_in_held_turn(attachment, message_id, self.execution.now()?)
+                    .await?
             }
             result => result?,
         };
         let delivery = match decision {
             WindowedDeliveryDecision::Ready(delivery) => delivery,
             WindowedDeliveryDecision::Ineligible => {
-                offers.release(message_id);
                 return Ok(PreparedMailOffer::NotOffered(NotOffered::NoLongerQueued));
             }
             WindowedDeliveryDecision::AuthorityLapsed(cause) => {
                 return Ok(PreparedMailOffer::AuthorityLapsed(cause));
             }
         };
-        let now = offers.observe_time(self.execution.now()?);
+        let now = self.execution.now()?;
         let time_left = if matches!(delivery.message.body, MessageBody::Direct { .. }) {
             let Some(time_left) =
                 TimeLeft::at_handoff(delivery.message.created_at, delivery.expires_at, now)
             else {
-                offers.release(message_id);
                 return Ok(PreparedMailOffer::NotOffered(NotOffered::NoLongerQueued));
             };
             Some(time_left)
@@ -204,11 +194,37 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         Ok(PreparedMailOffer::Ready(encoded.text))
     }
 
-    pub fn observe_mail_offer_time(
+    /// A passed wall-clock cutoff can move back into the future. Recheck a
+    /// claim at a timestamp inside its original window, so only durable
+    /// settlement or removal can make the offer lookup absent.
+    pub async fn refill_deferred_mail_in_held_turn(
         &self,
+        attachment: &MachineConnectionAttachment,
         offers: &mut SocketDirectMailOffers,
-    ) -> Result<Timestamp, StoreFailure> {
-        Ok(offers.observe_time(self.execution.now()?))
+    ) -> Result<bool, StoreFailure> {
+        let elapsed = offers
+            .elapsed_claims(self.execution.now()?)
+            .map(|(message, cutoff)| (message.clone(), cutoff))
+            .collect::<Vec<_>>();
+        for (message, cutoff) in elapsed {
+            let Some(inside_window) = cutoff.checked_sub_signed(chrono::TimeDelta::milliseconds(1))
+            else {
+                continue;
+            };
+            let queued = self
+                .direct_messages
+                .read_offer(fleet_mail::DirectOfferLookup {
+                    message_id: message.clone(),
+                    recipient: attachment.machine_id().clone(),
+                    now: inside_window,
+                })
+                .await
+                .map_err(StoreFailure::from)?;
+            if queued.is_none() {
+                offers.release(&message);
+            }
+        }
+        Ok(offers.take_deferred())
     }
 
     /// Re-observe the durable row, including after a page was listed.

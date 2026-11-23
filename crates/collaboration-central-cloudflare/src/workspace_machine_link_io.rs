@@ -202,13 +202,32 @@ impl CentralObject {
             let Some(mut attachment) = SocketAttachment::read(socket)? else {
                 return self.close_machine_link(socket, 1008, Some("connection identity missing"));
             };
-            if let Err(failure) = runtime.observe_mail_offer_time(&mut attachment.mail_offers) {
-                worker::console_warn!("central could not observe mail offer time: {failure}");
-                return self.close_machine_link(socket, 1011, Some("central unavailable"));
+            if !attachment.mail_offers.has_deferred() {
+                return Ok(());
             }
-            let needs_scan = attachment.mail_offers.take_deferred();
+            let checked = runtime
+                .refill_deferred_mail_in_held_turn(
+                    &attachment.authority,
+                    &mut attachment.mail_offers,
+                )
+                .await;
+            let needs_scan = match checked {
+                Ok(needs_scan) => needs_scan,
+                Err(failure) => {
+                    worker::console_warn!("central could not inspect deferred mail: {failure}");
+                    return self.close_machine_link(socket, 1011, Some("central unavailable"));
+                }
+            };
             if needs_scan {
-                attachment.save(socket)?;
+                let Some(mut current) = SocketAttachment::read(socket)? else {
+                    return self.close_machine_link(
+                        socket,
+                        1008,
+                        Some("connection identity missing"),
+                    );
+                };
+                current.mail_offers = attachment.mail_offers;
+                current.save(socket)?;
             }
             needs_scan
         };

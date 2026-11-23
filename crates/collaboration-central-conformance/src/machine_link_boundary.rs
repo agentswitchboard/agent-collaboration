@@ -14,14 +14,33 @@ use crate::{
 
 pub async fn expect_pong(socket: &mut WebSocket) -> Result<()> {
     send_pong_checkpoint(socket).await?;
-    // The RFC control response is produced by each transport behind the text
-    // probe. Seeing it first gives a missing application Pong a wire witness.
-    const MARKER: &[u8] = b"central-link-fixture";
-    socket.send(Message::Ping(MARKER.into())).await?;
+    // A following RFC control response bounds the application observation.
+    send_transport_checkpoint(socket).await?;
     read_pong_checkpoint(socket).await?;
-    assert!(
-        matches!(socket.next().await.transpose()?, Some(Message::Pong(marker)) if marker.as_ref() == MARKER)
-    );
+    read_transport_checkpoint(socket).await
+}
+
+/// Check socket progress while the test holds the organization or store lock.
+pub async fn expect_transport_pong(socket: &mut WebSocket) -> Result<()> {
+    send_transport_checkpoint(socket).await?;
+    read_transport_checkpoint(socket).await
+}
+
+const TRANSPORT_CHECKPOINT: &[u8] = b"central-link-fixture";
+
+async fn send_transport_checkpoint(socket: &mut WebSocket) -> Result<()> {
+    socket
+        .send(Message::Ping(TRANSPORT_CHECKPOINT.into()))
+        .await?;
+    Ok(())
+}
+
+async fn read_transport_checkpoint(socket: &mut WebSocket) -> Result<()> {
+    let observed = socket.next().await.transpose()?;
+    if !matches!(&observed, Some(Message::Pong(marker)) if marker.as_ref() == TRANSPORT_CHECKPOINT)
+    {
+        return Err(format!("expected the transport Pong checkpoint, got {observed:?}").into());
+    }
     Ok(())
 }
 
@@ -279,25 +298,20 @@ pub async fn drain_bounded_backlog(
     on_saturated: impl AsyncFnOnce() -> Result<()>,
     mut checkpoint: impl AsyncFnMut(&CorrelationId, ReceiptCheckpoint) -> Result<()>,
 ) -> Result<()> {
-    use central_link_protocol::{
-        Receipt, ReceiptBatch, ReceiptKind, ReceiptResult, SOCKET_DIRECT_MAIL_LIMIT,
-    };
+    use central_link_protocol::SOCKET_DIRECT_MAIL_LIMIT;
     send_pong_checkpoint(socket).await?;
     assert_welcome(socket).await?;
     let mut on_saturated = Some(on_saturated);
     let mut next_correlation = 0x20000_u32;
     while !queued.is_empty() {
-        let mut receipts = Vec::new();
+        let mut receipt_ids = Vec::new();
         for _ in 0..queued.len().min(SOCKET_DIRECT_MAIL_LIMIT) {
             let message_id = offered_message(socket).await?;
             assert!(
                 queued.remove(&message_id),
                 "duplicate or unknown mail offer {message_id}"
             );
-            receipts.push(Receipt {
-                message_id,
-                kind: ReceiptKind::Delivered { arrived_at: now },
-            });
+            receipt_ids.push(message_id);
         }
         // The Pong follows the Welcome walk or the last completed refill.
         read_pong_checkpoint(socket).await?;
@@ -307,25 +321,44 @@ pub async fn drain_bounded_backlog(
         let correlation_id: CorrelationId =
             format!("019f0000-0000-7000-8000-{next_correlation:012x}").parse()?;
         next_correlation += 1;
-        let count = receipts.len();
         checkpoint(&correlation_id, ReceiptCheckpoint::Arm).await?;
-        crate::approval_link_scenarios::send_frame(
-            socket,
-            LinkFrame::Data(DataFrame::Receipts {
-                correlation_id: correlation_id.clone(),
-                receipts: ReceiptBatch::try_from(receipts)?,
-            }),
-        )
-        .await?;
-        assert_eq!(
-            receive_frame(socket).await?,
-            LinkFrame::Data(DataFrame::ReceiptResults {
-                correlation_id: correlation_id.clone(),
-                results: vec![ReceiptResult::Recorded; count],
-            })
-        );
+        acknowledge_delivered_mail(socket, correlation_id.clone(), receipt_ids, now).await?;
         checkpoint(&correlation_id, ReceiptCheckpoint::Wait).await?;
         send_pong_checkpoint(socket).await?;
     }
     read_pong_checkpoint(socket).await
+}
+
+pub async fn acknowledge_delivered_mail(
+    socket: &mut WebSocket,
+    correlation_id: CorrelationId,
+    message_ids: Vec<workspace_ids::MessageId>,
+    arrived_at: chrono::DateTime<chrono::Utc>,
+) -> Result<()> {
+    use central_link_protocol::{Receipt, ReceiptBatch, ReceiptKind, ReceiptResult};
+    let count = message_ids.len();
+    let receipts = message_ids
+        .into_iter()
+        .map(|message_id| Receipt {
+            message_id,
+            kind: ReceiptKind::Delivered { arrived_at },
+        })
+        .collect::<Vec<_>>();
+    crate::approval_link_scenarios::send_frame(
+        socket,
+        LinkFrame::Data(DataFrame::Receipts {
+            correlation_id: correlation_id.clone(),
+            receipts: ReceiptBatch::try_from(receipts)?,
+        }),
+    )
+    .await?;
+    let expected = LinkFrame::Data(DataFrame::ReceiptResults {
+        correlation_id,
+        results: vec![ReceiptResult::Recorded; count],
+    });
+    let actual = receive_frame(socket).await?;
+    if actual != expected {
+        return Err(format!("expected recorded delivery receipts, got {actual:?}").into());
+    }
+    Ok(())
 }

@@ -13,8 +13,6 @@ pub const SOCKET_DIRECT_MAIL_LIMIT: usize = 64;
 pub struct SocketDirectMailOffers {
     #[serde(rename = "c")]
     claimed: BTreeMap<MessageId, Timestamp>,
-    #[serde(rename = "t")]
-    observed_time: Option<Timestamp>,
     #[serde(rename = "d")]
     deferred: bool,
 }
@@ -46,13 +44,16 @@ impl LiveOfferOutcome {
 }
 
 impl SocketDirectMailOffers {
-    /// A physical connection keeps its highest observed cutoff, including across
-    /// hibernation. A backwards clock sample cannot reopen an expired offer.
-    pub fn observe_time(&mut self, now: Timestamp) -> Timestamp {
-        let now = self.observed_time.map_or(now, |previous| previous.max(now));
-        self.observed_time = Some(now);
-        self.claimed.retain(|_, cutoff| *cutoff > now);
-        now
+    /// Past-cutoff claims are candidates for a durable retirement check. A
+    /// wall-clock sample alone cannot prove that an offer stayed ineligible.
+    pub fn elapsed_claims(&self, now: Timestamp) -> impl Iterator<Item = (&MessageId, Timestamp)> {
+        self.claimed
+            .iter()
+            .filter_map(move |(message, cutoff)| (*cutoff <= now).then_some((message, *cutoff)))
+    }
+
+    pub fn has_deferred(&self) -> bool {
+        self.deferred
     }
 
     /// Called after fallible preparation, in the same turn as the physical write.
