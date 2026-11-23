@@ -241,6 +241,8 @@ fn cargo_output(
         .arg(command)
         .args(["--locked", "--offline"])
         .args(arguments)
+        // The parsed output must not carry terminal styling, whatever the caller's setting.
+        .env("CARGO_TERM_COLOR", "never")
         .current_dir(root)
         .output()?;
     if output.status.success() {
