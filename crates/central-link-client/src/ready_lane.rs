@@ -1,17 +1,53 @@
 //! Commands and observations shared by the socket owner and its ready-link users.
 
-use std::{future::Future, pin::Pin};
+use std::{future::Future, io, pin::Pin};
 
 use central_link_protocol::{
     CorrelationId, DeliveryMessage, LinkRequest, LinkRequestBatch, ReceiptBatch, ReceiptResult,
     ReplyPayload, RequestStatusAnswer, RequestStatusQuery, TimeLeft,
+    approval_rpc::RegisterRunReply,
 };
 use router_clock::ClockInstant;
 use tokio::sync::watch;
-use workspace_ids::RouterRunId;
-use workspace_model::{Caller, ResolvedSender, Timestamp};
+use workspace_ids::{RequestId, RouterRunId};
+use workspace_model::{Caller, ResolvedSender, Timestamp, central_mail::MessageBody};
 
 use crate::ConnectionAttempt;
+
+/// The usable UTF-8 payload budget for a client frame after its longest masked header.
+pub const LINK_LANE_FRAME_BYTES: usize = 1024 * 1024 - 14;
+
+/// The write-batch envelope cost in addition to encoded members and their commas.
+pub const WRITE_BATCH_ENVELOPE_BYTES: usize = b"{\"kind\":\"batch\",\"requests\":[]}".len();
+
+/// A failure the link client reports when measuring an outgoing request with its JSON serializer.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum LaneFrameSizeError {
+    #[error("the link request could not be measured as JSON")]
+    EncodeFailed,
+}
+
+/// Count one request as encoded inside the batch array, without allocating its wire text.
+pub fn encoded_request_size(request: &LinkRequest) -> Result<usize, LaneFrameSizeError> {
+    struct ByteCount(usize);
+    impl io::Write for ByteCount {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0 = self
+                .0
+                .checked_add(bytes.len())
+                .ok_or_else(|| io::Error::other("encoded link size overflow"))?;
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    let mut count = ByteCount(0);
+    serde_json::to_writer(&mut count, request).map_err(|_| LaneFrameSizeError::EncodeFailed)?;
+    Ok(count.0)
+}
 
 /// The socket owner pairs Central's Welcome time with its injected elapsed clock at receipt.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -27,39 +63,73 @@ pub struct AdmittedConnection {
     pub clock_anchor: WelcomeClockAnchor,
 }
 
-/// The run gate publishes this after Central registers the run on the admitted connection.
+/// The run gate derives this from admission and Central's matching registration result.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RegisteredConnection {
-    pub connection: ConnectionAttempt,
-    pub clock_anchor: WelcomeClockAnchor,
-    pub router_run: RouterRunId,
+    admitted: AdmittedConnection,
+    router_run: RouterRunId,
 }
 
-/// A link user prepares a batch of writes for one connection, retaining each supplied request ID.
+impl RegisteredConnection {
+    /// The run gate supplies the run and result already correlated to this admitted connection.
+    pub fn from_registration(
+        admitted: AdmittedConnection,
+        router_run: RouterRunId,
+        result: RegisterRunReply,
+    ) -> Option<Self> {
+        match result {
+            RegisterRunReply::Registered {} => Some(Self {
+                admitted,
+                router_run,
+            }),
+            RegisterRunReply::RunRetired {}
+            | RegisterRunReply::RunNotRegistered {}
+            | RegisterRunReply::EnrollmentEnded {} => None,
+        }
+    }
+
+    pub const fn admitted(&self) -> &AdmittedConnection {
+        &self.admitted
+    }
+
+    pub const fn router_run(&self) -> &RouterRunId {
+        &self.router_run
+    }
+}
+
+/// The outbox owner prepares writes for one connection with the strict upper elapsed send fence.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WriteBatchCommand {
     pub connection: ConnectionAttempt,
+    pub send_before: ClockInstant,
     pub requests: LinkRequestBatch,
 }
 
-/// A link user prepares one single-answer frame for the connection it observed as admitted.
+/// The receipt owner prepares one frame for a named connection and supplies its send fence.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum LinkLaneCommand {
-    SubmitReceipts {
-        connection: ConnectionAttempt,
-        correlation_id: CorrelationId,
-        receipts: ReceiptBatch,
-    },
-    RequestStatus {
-        connection: ConnectionAttempt,
-        correlation_id: CorrelationId,
-        caller: Caller,
-        query: RequestStatusQuery,
-    },
-    ImmediateRequest {
-        connection: ConnectionAttempt,
-        request: Box<LinkRequest>,
-    },
+pub struct SubmitReceiptsCommand {
+    pub connection: ConnectionAttempt,
+    pub send_before: ClockInstant,
+    pub correlation_id: CorrelationId,
+    pub receipts: ReceiptBatch,
+}
+
+/// The request owner prepares one status query for a named connection and supplies its send fence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RequestStatusCommand {
+    pub connection: ConnectionAttempt,
+    pub send_before: ClockInstant,
+    pub correlation_id: CorrelationId,
+    pub caller: Caller,
+    pub query: RequestStatusQuery,
+}
+
+/// The request owner prepares an immediate operation for a named connection and supplies its send fence.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ImmediateRequestCommand {
+    pub connection: ConnectionAttempt,
+    pub send_before: ClockInstant,
+    pub request: Box<LinkRequest>,
 }
 
 /// The socket owner pairs a checked Central reply with its originating request correlation.
@@ -69,6 +139,20 @@ pub struct CorrelatedRequestReply {
     pub result: Box<ReplyPayload>,
 }
 
+/// The socket owner pairs checked positional receipt results with the frame correlation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CorrelatedReceiptResults {
+    pub correlation_id: CorrelationId,
+    pub results: Vec<ReceiptResult>,
+}
+
+/// The socket owner pairs a checked status answer with its query correlation.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CorrelatedStatusReply {
+    pub correlation_id: CorrelationId,
+    pub result: Box<RequestStatusAnswer>,
+}
+
 /// The socket owner reports what it learned about an individual write on the batch's connection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WriteBatchMemberDisposition {
@@ -76,42 +160,140 @@ pub enum WriteBatchMemberDisposition {
     AnswerLost { correlation_id: CorrelationId },
 }
 
-/// The socket owner settles the batch frame and preserves each checked member reply across loss.
+impl WriteBatchMemberDisposition {
+    pub const fn correlation_id(&self) -> &CorrelationId {
+        match self {
+            Self::Answered { reply } => &reply.correlation_id,
+            Self::AnswerLost { correlation_id } => correlation_id,
+        }
+    }
+}
+
+/// The socket owner associates a checked disposition with its original durable write identity.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CheckedBatchMember {
+    pub request_id: RequestId,
+    pub disposition: WriteBatchMemberDisposition,
+}
+
+/// A constructor failure the link client reports for an invalid batch settlement.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+pub enum BatchResultsError {
+    #[error("the result count differs from the write batch")]
+    WrongCount,
+    #[error("the result correlation differs from the write batch member at {index}")]
+    WrongMember { index: usize },
+    #[error("the write batch member at {index} lacks a durable request ID")]
+    MissingWriteId { index: usize },
+}
+
+/// The socket owner builds this checked result against the original, ordered write requests.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CheckedBatchResults(Box<[CheckedBatchMember]>);
+
+impl CheckedBatchResults {
+    pub fn new(
+        requests: &LinkRequestBatch,
+        dispositions: impl IntoIterator<Item = WriteBatchMemberDisposition>,
+    ) -> Result<Self, BatchResultsError> {
+        let mut dispositions = dispositions.into_iter();
+        let mut members = Vec::with_capacity(requests.requests().len());
+        for (index, request) in requests.requests().iter().enumerate() {
+            let disposition = dispositions.next().ok_or(BatchResultsError::WrongCount)?;
+            if disposition.correlation_id() != request.correlation_id() {
+                return Err(BatchResultsError::WrongMember { index });
+            }
+            let request_id = request
+                .payload()
+                .write_request_id()
+                .ok_or(BatchResultsError::MissingWriteId { index })?
+                .clone();
+            members.push(CheckedBatchMember {
+                request_id,
+                disposition,
+            });
+        }
+        if dispositions.next().is_some() {
+            return Err(BatchResultsError::WrongCount);
+        }
+        Ok(Self(members.into_boxed_slice()))
+    }
+
+    pub fn members(&self) -> &[CheckedBatchMember] {
+        &self.0
+    }
+
+    pub fn into_members(self) -> Box<[CheckedBatchMember]> {
+        self.0
+    }
+}
+
+/// The handoff or writer owner states why none of the named frame reached the socket.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UntouchedCommand {
+    ConnectionUnavailable,
+    WriterBusy,
+    SendWindowElapsed,
+    FrameTooLarge,
+    InvalidFrame,
+    SinkRejected,
+}
+
+/// The socket owner settles the frame and preserves checked member replies across loss.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum WriteBatchDisposition {
-    /// The writer proves that no part of the batch frame started on the named connection.
-    NotReached,
-    /// The write started or may have started. There is one result per request, in batch order.
-    MemberResults {
-        members: Box<[WriteBatchMemberDisposition]>,
-    },
+    NotReached { cause: UntouchedCommand },
+    MemberResults(CheckedBatchResults),
 }
 
-/// The socket owner checks the connection, correlation and shape of each single-frame reply.
+/// The socket owner settles one single-answer frame using its operation's reply type.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub enum LinkLaneReply {
-    ReceiptResults {
-        correlation_id: CorrelationId,
-        results: Vec<ReceiptResult>,
-    },
-    RequestStatus {
-        correlation_id: CorrelationId,
-        result: Box<RequestStatusAnswer>,
-    },
-    ImmediateRequest {
-        reply: CorrelatedRequestReply,
-    },
-}
-
-/// The socket owner's knowledge of a single-answer frame when it settles the command.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum LinkLaneDisposition {
-    /// The writer proves that this frame never started on its named connection.
-    NotReached,
-    /// Central returned the complete checked answer on the named connection.
-    Answered { reply: LinkLaneReply },
-    /// The write started or may have started, and the socket supplied no valid complete answer.
+pub enum LinkLaneDisposition<Reply> {
+    NotReached { cause: UntouchedCommand },
+    Answered { reply: Reply },
     AnswerLost,
+}
+
+/// A failure the link client reports for an invalid delivery and time-left combination.
+#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
+#[error("the message kind and delivery time-left do not match")]
+pub struct InvalidDeliveryOffer;
+
+/// The socket owner validates the message kind and its required time-left together.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ValidatedDeliveryOffer {
+    message: Box<DeliveryMessage>,
+    time_left: Option<TimeLeft>,
+}
+
+impl ValidatedDeliveryOffer {
+    pub fn new(
+        message: Box<DeliveryMessage>,
+        time_left: Option<TimeLeft>,
+    ) -> Result<Self, InvalidDeliveryOffer> {
+        match (message.as_ref(), time_left) {
+            (DeliveryMessage::Direct(_), Some(_)) => {}
+            (DeliveryMessage::System(record), None)
+                if matches!(
+                    record.body,
+                    MessageBody::Notice { .. } | MessageBody::DeliveryOutcome { .. }
+                ) => {}
+            _ => return Err(InvalidDeliveryOffer),
+        }
+        Ok(Self { message, time_left })
+    }
+
+    pub fn message(&self) -> &DeliveryMessage {
+        &self.message
+    }
+
+    pub const fn time_left(&self) -> Option<TimeLeft> {
+        self.time_left
+    }
+
+    pub fn into_parts(self) -> (Box<DeliveryMessage>, Option<TimeLeft>) {
+        (self.message, self.time_left)
+    }
 }
 
 /// The socket owner stamps message deliveries and admission changes with their connection.
@@ -123,33 +305,40 @@ pub enum LinkLaneEvent {
     },
     Deliver {
         connection: ConnectionAttempt,
-        message: Box<DeliveryMessage>,
+        offer: ValidatedDeliveryOffer,
         sender: ResolvedSender,
-        time_left: Option<TimeLeft>,
     },
 }
 
-/// The socket owner supplies readiness, a command lane and an event stream to its link users.
+/// The socket owner supplies readiness, typed commands and events to link users.
+///
+/// Once the socket owner accepts a command, it owns settlement. Dropping the waiting future
+/// withdraws the caller's interest in the result and leaves the accepted command in driver custody.
 pub trait ReadyLinkLane: Send + Sync {
-    /// The currently admitted connection for message operations.
     fn watch_admitted(&self) -> watch::Receiver<Option<AdmittedConnection>>;
 
-    /// The current connection for operations requiring a registered Router run.
     fn watch_registered(&self) -> watch::Receiver<Option<RegisteredConnection>>;
 
-    /// Hand over a batch for its named connection and await its writer and per-member facts.
-    /// An unknown, repeated or foreign correlation settles no member.
     fn submit_write_batch(
         &self,
         command: WriteBatchCommand,
     ) -> Pin<Box<dyn Future<Output = WriteBatchDisposition> + Send + '_>>;
 
-    /// Hand over a single-answer frame for its named connection and await its disposition.
-    fn submit_command(
+    fn submit_receipts(
         &self,
-        command: LinkLaneCommand,
-    ) -> Pin<Box<dyn Future<Output = LinkLaneDisposition> + Send + '_>>;
+        command: SubmitReceiptsCommand,
+    ) -> Pin<Box<dyn Future<Output = LinkLaneDisposition<CorrelatedReceiptResults>> + Send + '_>>;
 
-    /// Read the next link event, or `None` when the driver permanently closes the event stream.
+    fn request_status(
+        &self,
+        command: RequestStatusCommand,
+    ) -> Pin<Box<dyn Future<Output = LinkLaneDisposition<CorrelatedStatusReply>> + Send + '_>>;
+
+    fn submit_immediate_request(
+        &self,
+        command: ImmediateRequestCommand,
+    ) -> Pin<Box<dyn Future<Output = LinkLaneDisposition<CorrelatedRequestReply>> + Send + '_>>;
+
+    /// Read the next event, or `None` when the driver permanently closes the stream.
     fn next_event(&self) -> Pin<Box<dyn Future<Output = Option<LinkLaneEvent>> + Send + '_>>;
 }

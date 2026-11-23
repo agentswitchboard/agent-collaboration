@@ -48,6 +48,7 @@ const CLIENT_NORMAL: &[Edge] = &[
     workspace("workspace-ids", &[]),
     workspace("workspace-model", &[]),
     workspace("router-clock", &[]),
+    registry("serde_json", true, &[]),
     registry("thiserror", true, &[]),
     registry("tokio", false, &["sync"]),
     registry("uuid", true, &["v5", "v7"]),
@@ -55,7 +56,6 @@ const CLIENT_NORMAL: &[Edge] = &[
 const CLIENT_DEV: &[Edge] = &[
     workspace("central-link-protocol", &["test-support"]),
     workspace("router-clock", &["test-support"]),
-    registry("serde_json", true, &[]),
 ];
 const DRIVER_NORMAL: &[Edge] = &[
     workspace(CLIENT, &[]),
