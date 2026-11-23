@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE actor_sessions SET create_attempt=?, secret_hash=?, updated_at=?\nWHERE actor_id=? AND session_state='reserved' AND create_attempt<?\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "d2452b3f99e225e410387cccbd3a75bc85533376cf1053565e8c0a9a1ed5cfe8"
+}

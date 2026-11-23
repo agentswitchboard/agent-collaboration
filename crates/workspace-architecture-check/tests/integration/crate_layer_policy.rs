@@ -1,7 +1,7 @@
 //! Allowed normal/build edges between workspace packages.
 use super::workspace_boundaries;
 
-const LAYER_POLICY: [(&str, &[&str]); 44] = [
+const LAYER_POLICY: [(&str, &[&str]); 45] = [
     ("workspace-ids", &[]),
     (
         "workspace-model",
@@ -95,13 +95,17 @@ const LAYER_POLICY: [(&str, &[&str]); 44] = [
     (
         "collaboration-central-cloudflare",
         &[
+            "central-engine-model",
             "central-link-protocol",
             "central-storage",
             "collaboration-central-core",
+            "fleet-actor-identity",
+            "fleet-approvals",
             "fleet-contracts",
             "fleet-engine",
             "fleet-identity-protocol",
             "fleet-lent-transaction",
+            "fleet-machine-login",
             "fleet-mail",
             "fleet-rpc",
             "fleet-runtime-ports",
@@ -160,6 +164,19 @@ const LAYER_POLICY: [(&str, &[&str]); 44] = [
             "fleet-runtime",
             "fleet-runtime-ports",
             "state-machine-core",
+            "workspace-ids",
+        ],
+    ),
+    (
+        "fleet-actor-identity",
+        &[
+            "central-engine-model",
+            "central-storage",
+            "fleet-approvals",
+            "fleet-identity-protocol",
+            "fleet-lent-transaction",
+            "fleet-machine-login",
+            "fleet-runtime-ports",
             "workspace-ids",
         ],
     ),
@@ -317,6 +334,7 @@ pub(super) fn layer_policy() -> impl Iterator<Item = (&'static str, &'static [&'
         .chain(workspace_boundaries::FLEET_PURE_CRATES)
         .chain(workspace_boundaries::TIMER_CRATES)
         .chain([
+            workspace_boundaries::APPROVALS_LAYER,
             workspace_boundaries::MAIL_LAYER,
             workspace_boundaries::NOTICES_LAYER,
             workspace_boundaries::DIRECTORY_LAYER,

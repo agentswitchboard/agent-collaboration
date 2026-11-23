@@ -95,6 +95,11 @@ export const sqlitePreparationTargets: readonly SqlitePreparationTarget[] = [
     databaseFilename: "fleet-central-signin.sqlite",
   },
   {
+    packageName: "fleet-actor-identity",
+    migrationSources: [centralMigrationSource],
+    databaseFilename: "fleet-actor-identity-central-schema.sqlite",
+  },
+  {
     packageName: "fleet-machine-login",
     migrationSources: [centralMigrationSource],
     databaseFilename: "fleet-central-machine-login.sqlite",
