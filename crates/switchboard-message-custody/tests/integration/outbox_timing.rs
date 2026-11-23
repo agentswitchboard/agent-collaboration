@@ -52,7 +52,7 @@ pub(super) fn thread_post(seed: u16) -> NewOutboxItem {
     }
 }
 
-fn direct_message(seed: u16) -> NewOutboxItem {
+pub(super) fn direct_message(seed: u16) -> NewOutboxItem {
     let request = write_id(seed);
     NewOutboxItem {
         caller: Caller::Session(local_session("sender-session")),

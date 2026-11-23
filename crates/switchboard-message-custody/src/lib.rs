@@ -2,6 +2,7 @@
 
 pub mod custody_link;
 pub mod custody_operator;
+pub mod custody_status;
 pub mod custody_submission;
 pub mod delivery_custody;
 pub mod flush_clock;

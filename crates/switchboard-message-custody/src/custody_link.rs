@@ -4,14 +4,25 @@ use central_link_client::{
     AdmittedConnection, LinkLaneCommand, LinkLaneEvent, ReadyLinkLane, WelcomeClockAnchor,
     WriteBatchDisposition,
 };
+use central_link_protocol::{DeliveryMessage, FreshCorrelationId, RequestStatusQuery};
 use router_clock::{ClockInstant, RuntimeClock};
 use runtime_primitives::SyncTime;
 use std::sync::Arc;
-use workspace_ids::SessionRef;
-use workspace_model::{Caller, central_mail::MessageRecord};
+use switchboard_machine_core_store::{
+    InboxDecision, OutgoingWrite, PendingWrite, StoredSenderOutcome,
+};
+use workspace_ids::{MessageId, RequestId, SessionRef};
+use workspace_model::{
+    Caller,
+    central_mail::{MessageBody, MessageRecord, MessageStatus},
+};
 
 use crate::{
     custody_operator::CustodyOperatorEvent,
+    custody_status::{
+        CustodyRequestStatus, MessageStatusError, local_status, message_query,
+        message_status_reply, remote_status, retained_delivery_notice, status_key,
+    },
     custody_submission::{
         Submission, SubmissionPayload, SubmissionRoute, SubmitRefusal, choose_submission_route,
         prepare_immediate_request, settle_immediate_request, submit_to_outbox,
@@ -133,6 +144,94 @@ impl CustodyLink {
         }
     }
 
+    /// Read the caller's original request result, consulting central only on a local miss.
+    pub async fn request_status(
+        &mut self,
+        caller: Caller,
+        query: RequestStatusQuery,
+    ) -> CustodyRequestStatus {
+        let stored = self
+            .outbox
+            .outbox_storage()
+            .scoped_request_status(&caller, &status_key(&query))
+            .await;
+        match stored {
+            Ok(status) => {
+                if let Some(answer) = local_status(status) {
+                    return answer;
+                }
+            }
+            Err(_) => return CustodyRequestStatus::StatusUnavailable,
+        }
+        let Some(admitted) = self.admitted_connection() else {
+            return CustodyRequestStatus::StatusUnavailable;
+        };
+        let correlation_id = FreshCorrelationId::mint_at(self.outbox.local_now_ms())
+            .wire_id()
+            .clone();
+        let disposition = self
+            .lane
+            .submit_command(LinkLaneCommand::RequestStatus {
+                connection: admitted.connection,
+                correlation_id: correlation_id.clone(),
+                caller,
+                query,
+            })
+            .await;
+        remote_status(&correlation_id, disposition)
+    }
+
+    /// Ask central for one sender-scoped message status without placing a write in the outbox.
+    pub async fn message_status(
+        &mut self,
+        caller: Caller,
+        message_id: MessageId,
+    ) -> Result<Option<MessageStatus>, MessageStatusError> {
+        let submission = self.submit(caller, message_query(message_id)?).await;
+        message_status_reply(submission)
+    }
+
+    /// Read the sender's local overlay for their unsent and possibly sent writes.
+    pub async fn pending_writes(
+        &mut self,
+        caller: &Caller,
+    ) -> Result<Vec<PendingWrite>, CustodyLinkError> {
+        Ok(self
+            .outbox
+            .outbox_storage()
+            .pending_for(caller)
+            .await
+            .map_err(OutboxWorkError::Store)?)
+    }
+
+    /// Read the sender's local history, scoped to the caller.
+    pub async fn outgoing_writes(
+        &mut self,
+        caller: &Caller,
+        limit: u16,
+    ) -> Result<Vec<OutgoingWrite>, CustodyLinkError> {
+        Ok(self
+            .outbox
+            .outbox_storage()
+            .outgoing_for(caller, limit)
+            .await
+            .map_err(OutboxWorkError::Store)?)
+    }
+
+    /// Read the retained central delivery notice for the caller's own original request.
+    pub async fn sender_outcome(
+        &mut self,
+        caller: &Caller,
+        request: &RequestId,
+    ) -> Result<Option<StoredSenderOutcome>, CustodyLinkError> {
+        Ok(self
+            .outbox
+            .outbox_storage()
+            .sender_outcome(caller, request)
+            .await
+            .map_err(OutboxWorkError::Store)?)
+    }
+
     /// Drive one link event through the custody-owned inbox.
     pub async fn observe_next_event(&mut self) -> Result<CustodyLinkObservation, CustodyLinkError> {
         let Some(event) = self.lane.next_event().await else {
@@ -156,11 +255,51 @@ impl CustodyLink {
                 {
                     return Ok(CustodyLinkObservation::StaleDelivery);
                 }
-                Ok(CustodyLinkObservation::Delivery(
-                    self.inbox.receive_offer(*message, time_left).await?,
-                ))
+                let notice_key = match message.as_ref() {
+                    DeliveryMessage::System(record)
+                        if matches!(record.body, MessageBody::DeliveryOutcome { .. }) =>
+                    {
+                        Some((record.target.clone(), record.message_id.clone()))
+                    }
+                    DeliveryMessage::System(_) | DeliveryMessage::Direct(_) => None,
+                };
+                let kept = self.inbox.receive_offer(*message, time_left).await?;
+                if let Some((target, notice_id)) = notice_key
+                    && matches!(
+                        kept,
+                        InboxOfferResult::Recorded {
+                            decision: InboxDecision::Accepted
+                        } | InboxOfferResult::AlreadyDecided {
+                            decision: InboxDecision::Accepted
+                        }
+                    )
+                {
+                    self.record_sender_notice(&target, &notice_id).await?;
+                }
+                Ok(CustodyLinkObservation::Delivery(kept))
             }
         }
+    }
+
+    async fn record_sender_notice(
+        &mut self,
+        session: &SessionRef,
+        notice_id: &MessageId,
+    ) -> Result<(), CustodyLinkError> {
+        let retained = self.inbox.waiting_for_session(session).await?;
+        let notice = retained
+            .iter()
+            .find(|notice| &notice.message_id == notice_id)
+            .and_then(retained_delivery_notice);
+        if let Some((caller, notice)) = notice {
+            let now_ms = self.outbox.local_now_ms();
+            self.outbox
+                .outbox_storage()
+                .record_sender_delivery(&caller, &notice, now_ms)
+                .await
+                .map_err(OutboxWorkError::Store)?;
+        }
+        Ok(())
     }
 
     /// A wait for the shared minute selected by the scheduler. `None` means the lane is unavailable or idle.

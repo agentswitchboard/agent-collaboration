@@ -6,11 +6,12 @@
 
 use central_link_client::{
     AdmittedConnection, ClientAction, CorrelatedRequestReply, LinkClient, LinkLaneCommand,
-    LinkLaneDisposition, LinkLaneEvent, ReadyLinkLane, RegisteredConnection, WriteBatchCommand,
-    WriteBatchDisposition, WriteBatchMemberDisposition,
+    LinkLaneDisposition, LinkLaneEvent, LinkLaneReply, ReadyLinkLane, RegisteredConnection,
+    WriteBatchCommand, WriteBatchDisposition, WriteBatchMemberDisposition,
 };
 use central_link_protocol::{
-    DataFrame, FrameDirection, LinkFrame, ReplyPayload, decode_text, encode_text,
+    DataFrame, FrameDirection, LinkFrame, ReplyPayload, RequestStatusAnswer, decode_text,
+    encode_text,
 };
 use hegel::{TestCase, generators};
 use router_clock::{ManualClock, RuntimeClock};
@@ -36,15 +37,18 @@ use switchboard_message_custody::{
 };
 use tokio::sync::watch;
 use workspace_ids::{MachineId, RequestId, SessionId};
-use workspace_model::{ChangePosition, ItemRef, WorkspaceAnswer, WorkspaceReply, WorkspaceResult};
+use workspace_model::{
+    ChangePosition, ItemRef, WorkspaceAnswer, WorkspaceReply, WorkspaceResult,
+    central_mail::MessageStatus,
+};
 
 use super::outbox_timing::{manual_clock, open_outbox, thread_post, welcome_anchor};
 
 const SHARED_MARK_MS: i64 = 1_763_380_800_000;
 
-struct KnownRecipient;
+pub(super) struct KnownRecipient;
 
-struct NoFlushJitter;
+pub(super) struct NoFlushJitter;
 
 impl FlushJitter for NoFlushJitter {
     fn jitter_millis(&self, _: SyncTime) -> i64 {
@@ -67,19 +71,34 @@ struct PeerHistory {
     decisions: BTreeMap<RequestId, ReplyPayload>,
 }
 
-struct ScriptedBatchLane {
-    admitted: watch::Sender<Option<AdmittedConnection>>,
+pub(super) struct ScriptedBatchLane {
+    pub(super) admitted: watch::Sender<Option<AdmittedConnection>>,
     lost_first_answers: BTreeSet<RequestId>,
     history: Mutex<PeerHistory>,
+    calls: Mutex<Vec<LinkLaneCommand>>,
+    events: Mutex<std::collections::VecDeque<LinkLaneEvent>>,
 }
 
 impl ScriptedBatchLane {
-    fn new(admitted: AdmittedConnection, lost_first_answers: BTreeSet<RequestId>) -> Self {
+    pub(super) fn new(
+        admitted: AdmittedConnection,
+        lost_first_answers: BTreeSet<RequestId>,
+    ) -> Self {
         Self {
             admitted: watch::channel(Some(admitted)).0,
             lost_first_answers,
             history: Mutex::new(PeerHistory::default()),
+            calls: Mutex::new(Vec::new()),
+            events: Mutex::new(std::collections::VecDeque::new()),
         }
+    }
+
+    pub(super) fn take_calls(&self) -> Vec<LinkLaneCommand> {
+        std::mem::take(&mut *self.calls.lock().unwrap())
+    }
+
+    pub(super) fn push_event(&self, event: LinkLaneEvent) {
+        self.events.lock().unwrap().push_back(event);
     }
 
     fn respond_to_batch(&self, batch: WriteBatchCommand) -> WriteBatchDisposition {
@@ -149,13 +168,34 @@ impl ReadyLinkLane for ScriptedBatchLane {
 
     fn submit_command(
         &self,
-        _: LinkLaneCommand,
+        command: LinkLaneCommand,
     ) -> Pin<Box<dyn Future<Output = LinkLaneDisposition> + Send + '_>> {
-        panic!("this scenario issues only the batch command")
+        let reply = match &command {
+            LinkLaneCommand::RequestStatus { correlation_id, .. } => LinkLaneReply::RequestStatus {
+                correlation_id: correlation_id.clone(),
+                result: Box::new(RequestStatusAnswer::NotFound),
+            },
+            LinkLaneCommand::ImmediateRequest { request, .. } => LinkLaneReply::ImmediateRequest {
+                reply: CorrelatedRequestReply {
+                    correlation_id: request.correlation_id().clone(),
+                    result: Box::new(ReplyPayload::Workspace(WorkspaceReply {
+                        result: WorkspaceResult::Done(WorkspaceAnswer::MessageStatus {
+                            status: MessageStatus::NotFound {},
+                        }),
+                        actors: Vec::new(),
+                    })),
+                },
+            },
+            LinkLaneCommand::SubmitReceipts { .. } => {
+                panic!("this scripted lane fixture does not settle inbox receipts")
+            }
+        };
+        self.calls.lock().unwrap().push(command);
+        Box::pin(std::future::ready(LinkLaneDisposition::Answered { reply }))
     }
 
     fn next_event(&self) -> Pin<Box<dyn Future<Output = Option<LinkLaneEvent>> + Send + '_>> {
-        Box::pin(std::future::pending())
+        Box::pin(std::future::ready(self.events.lock().unwrap().pop_front()))
     }
 }
 
@@ -172,7 +212,7 @@ fn post_created(position: usize) -> ReplyPayload {
     })
 }
 
-fn new_admission(machine: MachineId, clock: Arc<ManualClock>) -> AdmittedConnection {
+pub(super) fn new_admission(machine: MachineId, clock: Arc<ManualClock>) -> AdmittedConnection {
     let mut client = LinkClient::new(machine, clock.clone());
     let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
         panic!("the scripted socket needs a fresh connection id");
