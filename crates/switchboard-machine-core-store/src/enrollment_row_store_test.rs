@@ -94,6 +94,7 @@ fn ended(generation: i64) -> StoredEnrollmentRow {
     StoredEnrollmentRow::Ended {
         generation,
         organization_id: ORGANIZATION.to_owned(),
+        deployment: DEPLOYMENT.to_owned(),
         enrollment_id: ENROLLMENT.to_owned(),
         why: StoredEnrollmentEnd::Invalid {
             reason: StoredInvalidEnrollmentReason::WrongEnrollment,
@@ -146,6 +147,7 @@ async fn writing_enrollment_keeps_creation_time_and_stores_the_pinned_json() {
         json!({
             "state": "ended",
             "organizationId": ORGANIZATION,
+            "deployment": DEPLOYMENT,
             "enrollmentId": ENROLLMENT,
             "why": {"kind": "invalid", "reason": "wrongEnrollment"},
         })
@@ -219,16 +221,19 @@ async fn corrupt_enrollment_is_preserved_and_refused_before_cas() {
     };
     let unsupported_reason = json!({
         "state": "ended", "organizationId": ORGANIZATION, "enrollmentId": ENROLLMENT,
+        "deployment": DEPLOYMENT,
         "why": {"kind": "invalid", "reason": "novelReason"},
     })
     .to_string();
     let extra_reason_field = json!({
         "state": "ended", "organizationId": ORGANIZATION, "enrollmentId": ENROLLMENT,
+        "deployment": DEPLOYMENT,
         "why": {"kind": "revoked", "extra": true},
     })
     .to_string();
     let ended_json = json!({
         "state": "ended", "organizationId": ORGANIZATION, "enrollmentId": ENROLLMENT,
+        "deployment": DEPLOYMENT,
         "why": {"kind": "revoked"},
     })
     .to_string();
@@ -382,6 +387,7 @@ async fn central_ending_round_trips_as_its_own_kind() {
     let stored = StoredEnrollmentRow::Ended {
         generation: 2,
         organization_id: ORGANIZATION.to_owned(),
+        deployment: DEPLOYMENT.to_owned(),
         enrollment_id: ENROLLMENT.to_owned(),
         why: StoredEnrollmentEnd::EndedByCentral {},
     };

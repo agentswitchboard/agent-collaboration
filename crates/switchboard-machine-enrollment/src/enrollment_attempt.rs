@@ -173,7 +173,13 @@ async fn install_approved_binding(
                 }
                 current
             }
-            Err(error) => return Err(error.into()),
+            Err(
+                error @ (CredentialStoreError::Read
+                | CredentialStoreError::Replace
+                | CredentialStoreError::EnrollmentScopeMismatch
+                | CredentialStoreError::Remove
+                | CredentialStoreError::CleanupTimedOut),
+            ) => return Err(error.into()),
         };
         if current.key() != old_identity || current.generation() <= expected {
             return Err(EnrollmentFailure::ReplacementConflict);

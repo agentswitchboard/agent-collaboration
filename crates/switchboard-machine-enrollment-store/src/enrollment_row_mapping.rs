@@ -6,10 +6,11 @@ use switchboard_machine_core_store::{
     StoredInvalidEnrollmentReason,
 };
 use switchboard_machine_enrollment::{
-    BindingGeneration, EnrollmentEnd, EnrollmentKey, EnrollmentMetadata, InvalidReason, MachineId,
-    SignInDeployment,
+    BindingGeneration, EnrollmentContext, EnrollmentEnd, EnrollmentKey, EnrollmentMetadata,
+    InvalidReason, MachineId, SignInDeployment,
 };
 
+/// The worker decodes a stored row into the witness used by its locked snapshot comparison.
 #[derive(Eq, PartialEq)]
 pub(crate) enum EnrollmentSnapshot {
     Empty,
@@ -21,6 +22,7 @@ pub(crate) enum EnrollmentSnapshot {
     },
     Ended {
         key: EnrollmentKey,
+        deployment: SignInDeployment,
         generation: BindingGeneration,
         why: EnrollmentEnd,
     },
@@ -52,10 +54,12 @@ impl EnrollmentSnapshot {
             StoredEnrollmentRow::Ended {
                 generation,
                 organization_id,
+                deployment,
                 enrollment_id,
                 why,
             } => Ok(Self::Ended {
                 key: enrollment_key(machine_id, &organization_id, &enrollment_id)?,
+                deployment: deployment_origin(&deployment)?,
                 generation: binding_generation(generation)?,
                 why: enrollment_end(why),
             }),
@@ -73,6 +77,20 @@ impl EnrollmentSnapshot {
         match self {
             Self::Empty => BindingGeneration::EMPTY,
             Self::Active { generation, .. } | Self::Ended { generation, .. } => *generation,
+        }
+    }
+
+    pub(crate) fn matches_scope(&self, context: &EnrollmentContext) -> bool {
+        match self {
+            Self::Empty => true,
+            Self::Active {
+                key, deployment, ..
+            }
+            | Self::Ended {
+                key, deployment, ..
+            } => {
+                key.organization_id == context.organization_id && *deployment == context.deployment
+            }
         }
     }
 }
@@ -96,13 +114,17 @@ pub(crate) fn enrollment_metadata(
         StoredEnrollmentRowMetadata::Ended {
             generation,
             organization_id,
+            deployment,
             enrollment_id,
             why,
-        } => Ok(EnrollmentMetadata::Ended {
-            key: enrollment_key(machine_id, &organization_id, &enrollment_id)?,
-            why: enrollment_end(why),
-            generation: binding_generation(generation)?,
-        }),
+        } => {
+            deployment_origin(&deployment)?;
+            Ok(EnrollmentMetadata::Ended {
+                key: enrollment_key(machine_id, &organization_id, &enrollment_id)?,
+                why: enrollment_end(why),
+                generation: binding_generation(generation)?,
+            })
+        }
     }
 }
 

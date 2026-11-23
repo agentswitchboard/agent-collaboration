@@ -171,6 +171,7 @@ impl EnrollmentWorker {
                 generation,
                 why,
                 key,
+                deployment: _,
             } => StoredEnrollment::Ended {
                 generation,
                 why,
@@ -226,7 +227,10 @@ impl EnrollmentWorker {
                     test.faults.at_prepared_replacement().await;
                 }
                 (
-                    MutationDecision::Replace(prepared),
+                    MutationDecision::Replace {
+                        context: binding.context,
+                        prepared,
+                    },
                     CredentialStoreError::Replace,
                 )
             }
@@ -243,18 +247,23 @@ impl EnrollmentWorker {
             // this transaction from loss during a possible durable write.
             stage.begin_transaction();
             match decision {
-                MutationDecision::Replace(prepared) => {
+                MutationDecision::Replace { context, prepared } => {
                     self.store
                         .write_enrollment_row(machine_id, expected_sql, timestamp, |row| {
                             let snapshot = match EnrollmentSnapshot::from_row(row, machine_id) {
                                 Ok(snapshot) => snapshot,
                                 Err(corrupt) => return EnrollmentRowChange::Corrupt(corrupt),
                             };
+                            if !snapshot.matches_scope(&context) {
+                                return EnrollmentRowChange::Abort(
+                                    CredentialStoreError::EnrollmentScopeMismatch,
+                                );
+                            }
                             match prepared {
                                 Some(replacement) if snapshot == replacement.witness => {
                                     EnrollmentRowChange::Write(replacement.row)
                                 }
-                                _ => EnrollmentRowChange::Abort(()),
+                                _ => EnrollmentRowChange::Abort(definite_error),
                             }
                         })
                         .await
@@ -286,13 +295,13 @@ impl EnrollmentWorker {
     async fn finish_mutation(
         &mut self,
         expected: BindingGeneration,
-        outcome: Result<EnrollmentRowWrite<()>, EnrollmentRowStoreError>,
+        outcome: Result<EnrollmentRowWrite<CredentialStoreError>, EnrollmentRowStoreError>,
         definite_error: CredentialStoreError,
     ) -> WriteResult {
         match outcome {
             Ok(EnrollmentRowWrite::Applied) => Ok(ConditionalWrite::Applied),
             Ok(EnrollmentRowWrite::Superseded) => Ok(ConditionalWrite::Superseded),
-            Ok(EnrollmentRowWrite::Aborted(())) => Err(definite_error),
+            Ok(EnrollmentRowWrite::Aborted(error)) => Err(error),
             Err(EnrollmentRowStoreError::Commit(_)) => {
                 #[cfg(test)]
                 if let Some(test) = &self.test_dependencies {
@@ -338,6 +347,7 @@ impl EnrollmentWorker {
         if current.generation() != expected
             || expected.binding_successor() != Some(binding.generation)
             || self.machine_id != binding.context.machine_id
+            || !current.matches_scope(&binding.context)
         {
             return None;
         }
@@ -425,26 +435,35 @@ struct PreparedReplacement {
 }
 
 enum MutationDecision {
-    Replace(Option<Box<PreparedReplacement>>),
+    Replace {
+        context: EnrollmentContext,
+        prepared: Option<Box<PreparedReplacement>>,
+    },
     End(EnrollmentEnd),
 }
 
-fn end_row(metadata: EnrollmentMetadata, why: EnrollmentEnd) -> EnrollmentRowChange<()> {
+fn end_row(
+    metadata: EnrollmentMetadata,
+    why: EnrollmentEnd,
+) -> EnrollmentRowChange<CredentialStoreError> {
     let EnrollmentMetadata::Active {
-        key, generation, ..
+        key,
+        deployment,
+        generation,
     } = metadata
     else {
-        return EnrollmentRowChange::Abort(());
+        return EnrollmentRowChange::Abort(CredentialStoreError::Remove);
     };
     let Some(generation) = generation
         .successor()
         .and_then(|next| i64::try_from(next.get()).ok())
     else {
-        return EnrollmentRowChange::Abort(());
+        return EnrollmentRowChange::Abort(CredentialStoreError::Remove);
     };
     EnrollmentRowChange::Write(StoredEnrollmentRow::Ended {
         generation,
         organization_id: key.organization_id.to_string(),
+        deployment: deployment.origin().as_str().to_owned(),
         enrollment_id: key.enrollment_id.to_string(),
         why: stored_end(why),
     })
