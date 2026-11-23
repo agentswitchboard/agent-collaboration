@@ -170,7 +170,11 @@ async fn overflow_is_protected_during_selection_and_until_the_next_mark() {
     }
     drop(first);
     assert!(request(599_999).await.unwrap().is_none());
-    let next = next_mark.await.unwrap().unwrap();
+    let next = tokio::select! {
+        biased;
+        result = &mut next_mark => result.unwrap().unwrap(),
+        () = async {} => panic!("releasing the capped batch did not wake the alarm"),
+    };
     next.record_selection(true);
     drop(next);
     assert!(request(631_000).await.unwrap().is_none());
@@ -193,7 +197,11 @@ async fn a_due_alarm_waits_for_the_prior_requests_selection_at_the_mark() {
     }
     assert!(request(300_000).await.unwrap().is_none());
     ordinary.record_selection(false);
-    let marked = marked.await.unwrap().unwrap();
+    let marked = tokio::select! {
+        biased;
+        result = &mut marked => result.unwrap().unwrap(),
+        () = async {} => panic!("recording the selection did not wake the alarm"),
+    };
     marked.record_selection(false);
     drop(marked);
     drop(ordinary);

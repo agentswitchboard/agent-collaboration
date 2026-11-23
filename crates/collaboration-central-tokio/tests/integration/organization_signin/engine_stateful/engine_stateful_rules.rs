@@ -372,7 +372,10 @@ impl EngineModel {
             let store = central.runtime().statement_host();
             let reference_alarm = store
                 .read(central_storage::Statement {
-                    sql: include_str!("../../../../fleet-engine/src/queries/read_alarm_inputs.sql"),
+                    sql: include_str!(concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/../fleet-engine/src/queries/read_alarm_inputs.sql"
+                    )),
                     args: vec![],
                 })
                 .await
@@ -391,7 +394,10 @@ impl EngineModel {
             let horizon = now + chrono::Duration::hours(24);
             let reference_list = store
                 .read(central_storage::Statement {
-                    sql: include_str!("../../../../fleet-wakes/src/queries/read_due_wakes.sql"),
+                    sql: include_str!(concat!(
+                        env!("CARGO_MANIFEST_DIR"),
+                        "/../fleet-wakes/src/queries/read_due_wakes.sql"
+                    )),
                     args: vec![integer(horizon.timestamp_millis()), integer(250)],
                 })
                 .await
