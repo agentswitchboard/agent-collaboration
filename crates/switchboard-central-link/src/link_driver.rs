@@ -454,6 +454,7 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
                 SocketInput::Frame(Some(Ok(Message::Close(frame)))) => {
                     let code = frame
                         .and_then(|frame| MachineLinkCloseCode::from_code(u16::from(frame.code)));
+                    log::trace!("Central link received a close classified as {code:?}");
                     self.close(attempt, code);
                     return Ok(());
                 }
