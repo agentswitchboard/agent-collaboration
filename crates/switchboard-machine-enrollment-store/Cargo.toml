@@ -30,3 +30,8 @@ sqlx = { workspace = true, features = ["sqlite"] }
 switchboard-machine-enrollment = { path = "../switchboard-machine-enrollment", version = "0.1.158", features = ["test-support"] }
 tempfile = "3.27.0"
 tokio-rustls = { version = "=0.26.4", default-features = false, features = ["ring", "tls12"] }
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
+required-features = ["test-support"]

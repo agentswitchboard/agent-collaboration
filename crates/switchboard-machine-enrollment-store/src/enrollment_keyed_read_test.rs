@@ -255,6 +255,7 @@ async fn ended_enrollment_refuses_a_noncanonical_stored_deployment() {
 
 #[tokio::test]
 async fn replace_compares_the_organization_in_the_locked_snapshot() {
+    const OTHER_ORGANIZATION: &str = "019a0000-0000-7000-8000-000000000004";
     let fixture = Fixture::open().await;
     fixture.install().await;
     assert_eq!(
