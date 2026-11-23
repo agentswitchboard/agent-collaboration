@@ -44,7 +44,8 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
                 (ResultKind::Revoked {}, Some(invalidation))
             }
         };
-        self.apply_machine_login_statements(statements).await?;
+        self.apply_machine_login_write(statements, invalidation.as_ref())
+            .await?;
         if let Some(invalidation) = invalidation {
             (self.enrollment_invalidated)(invalidation);
         }

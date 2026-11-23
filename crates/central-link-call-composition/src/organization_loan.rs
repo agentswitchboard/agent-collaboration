@@ -33,6 +33,10 @@ pub struct OrganizationLoan<Transaction> {
 }
 
 impl<Transaction: CentralTransaction> OrganizationLoan<Transaction> {
+    pub(crate) fn transaction_mut(&mut self) -> &mut Transaction {
+        &mut self.transaction
+    }
+
     pub async fn verify(
         mut transaction: Transaction,
         admitted_organization: &OrganizationId,

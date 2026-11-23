@@ -14,7 +14,7 @@ use fleet_actor_identity::{
 /// Reads approval facts in the caller’s organization transaction.
 pub struct ActorApprovalSessionFacts;
 
-impl<Transaction: OrganizationTransaction> ApprovalSessionFacts<Transaction>
+impl<Transaction: OrganizationTransaction + Send> ApprovalSessionFacts<Transaction>
     for ActorApprovalSessionFacts
 where
     <Transaction::Database as Database>::Arguments: IntoArguments<Transaction::Database>,

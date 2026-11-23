@@ -1,3 +1,5 @@
+use std::{future::Future, pin::Pin};
+
 use super::*;
 
 #[derive(Debug)]
@@ -18,46 +20,58 @@ pub(super) struct NativeApprovalCommit<'fixture, Command> {
     pub(super) evidence: &'fixture mut ApprovalTransactionEvidence,
 }
 
-impl<Reply, Command>
+impl<'fixture, Reply, Command>
     ApprovalCommitOwner<(PendingApprovalReply<Reply>, PendingApprovalHolderEffects)>
-    for NativeApprovalCommit<'_, Command>
+    for NativeApprovalCommit<'fixture, Command>
 where
-    Command: AsyncFnOnce(
-        &mut ApprovalApplyingStore<'_, NativeApprovalTransaction, StoredSessionFacts>,
-    ) -> Result<PendingApprovalReply<Reply>, ApprovalApplyFailure>,
+    Reply: 'fixture,
+    Command: 'fixture
+        + AsyncFnOnce(
+            &mut ApprovalApplyingStore<'_, NativeApprovalTransaction, StoredSessionFacts>,
+        ) -> Result<PendingApprovalReply<Reply>, ApprovalApplyFailure>,
 {
     type Error = ApprovalApplyFailure;
 
-    async fn apply_and_commit(
-        self,
-        commit: ApprovalCommitScope,
-    ) -> Result<(PendingApprovalReply<Reply>, PendingApprovalHolderEffects), Self::Error> {
-        let pool = self.fixture.reopen_pool().await;
-        let mut transaction = NativeApprovalTransaction {
-            organization_id: fixture_organization(),
+    type Commit = Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        (PendingApprovalReply<Reply>, PendingApprovalHolderEffects),
+                        Self::Error,
+                    >,
+                > + 'fixture,
+        >,
+    >;
 
-            transaction: pool.begin_with("BEGIN IMMEDIATE").await.unwrap(),
-            fail_after_write: self.fail_after_write,
-            evidence: ApprovalTransactionEvidence::default(),
-        };
+    fn apply_and_commit(self, commit: ApprovalCommitScope) -> Self::Commit {
+        Box::pin(async move {
+            let pool = self.fixture.reopen_pool().await;
+            let mut transaction = NativeApprovalTransaction {
+                organization_id: fixture_organization(),
 
-        let mut ids = StoreFixtureIds(&self.fixture.ids);
-        let mut store = ApprovalApplyingStore::new(
-            &commit,
-            &mut transaction,
-            &StoredSessionFacts,
-            &self.fixture.clock,
-            &mut ids,
-        );
-        let result = (self.run_command)(&mut store).await;
-        let holder_effects = store.finish_holder_effects();
-        if result.is_ok() {
-            transaction.transaction.commit().await.unwrap();
-        } else {
-            transaction.transaction.rollback().await.unwrap();
-        }
-        *self.evidence = transaction.evidence;
-        pool.close().await;
-        result.map(|reply| (reply, holder_effects))
+                transaction: pool.begin_with("BEGIN IMMEDIATE").await.unwrap(),
+                fail_after_write: self.fail_after_write,
+                evidence: ApprovalTransactionEvidence::default(),
+            };
+
+            let mut ids = StoreFixtureIds(&self.fixture.ids);
+            let mut store = ApprovalApplyingStore::new(
+                &commit,
+                &mut transaction,
+                &StoredSessionFacts,
+                &self.fixture.clock,
+                &mut ids,
+            );
+            let result = (self.run_command)(&mut store).await;
+            let holder_effects = store.finish_holder_effects();
+            if result.is_ok() {
+                transaction.transaction.commit().await.unwrap();
+            } else {
+                transaction.transaction.rollback().await.unwrap();
+            }
+            *self.evidence = transaction.evidence;
+            pool.close().await;
+            result.map(|reply| (reply, holder_effects))
+        })
     }
 }
