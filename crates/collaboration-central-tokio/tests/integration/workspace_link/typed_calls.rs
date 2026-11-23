@@ -1,4 +1,5 @@
 use super::receipt_frames::{EnrollmentAtApply, stored_ending_batch};
+use super::typed_call_holder::{connect_other_machine, ending_reply, holder_target};
 use super::{Fixture, INSTALLATION, OTHER_MACHINE, receive, send, signed, start_fixture};
 use central_link_protocol::{
     CentralCallReply, CentralLinkRpc, CorrelationId, DataFrame, LinkCallRefusal, LinkFrame,
@@ -32,7 +33,7 @@ async fn central_typed_calls_reply_with_their_correlation_and_refuse_unknown_and
         send(&mut socket, &central_probe(correlation.clone(), target)).await?;
         expect_central_reply(
             &mut socket,
-            correlation.clone(),
+            correlation,
             TypedCallResult::Answered {
                 reply: CentralProbe::reply(Envelope {
                     target: INSTALLATION.parse()?,
@@ -149,6 +150,7 @@ async fn mac_typed_call_waiters_follow_correlations_on_the_open_socket() -> Resu
             .await;
         expect_call_failure(disconnected, CallFailure::NeverReached)?;
         let mut socket = connect(&fixture).await?;
+        let mut other_socket = connect_other_machine(&fixture).await?;
         let first = start_mac_call(&fixture, &mut socket, 11).await?;
         let second = start_mac_call(&fixture, &mut socket, 22).await?;
         if first.correlation == second.correlation {
@@ -165,7 +167,69 @@ async fn mac_typed_call_waiters_follow_correlations_on_the_open_socket() -> Resu
 
         let wrong_target = start_mac_call(&fixture, &mut socket, 33).await?;
         answer_mac_call(&mut socket, &wrong_target.correlation, OTHER_MACHINE, 33).await?;
-        expect_call_failure(wrong_target.result.await?, CallFailure::AnswerLost)
+        socket_barrier(&mut socket).await?;
+        answer_mac_call(&mut socket, &wrong_target.correlation, INSTALLATION, 33).await?;
+        expect_probe_reply(wrong_target, 33).await?;
+
+        let wrong_marker = start_mac_call(&fixture, &mut socket, 44).await?;
+        send(
+            &mut socket,
+            &LinkFrame::Data(DataFrame::MacCallReply {
+                correlation_id: wrong_marker.correlation.clone(),
+                result: Box::new(TypedCallResult::Answered {
+                    reply: ending_reply(holder_target(&fixture)?)?,
+                }),
+            }),
+        )
+        .await?;
+        socket_barrier(&mut socket).await?;
+        answer_mac_call(&mut socket, &wrong_marker.correlation, INSTALLATION, 44).await?;
+        expect_probe_reply(wrong_marker, 44).await?;
+
+        let other_connection = start_mac_call(&fixture, &mut socket, 55).await?;
+        answer_mac_call(
+            &mut other_socket,
+            &other_connection.correlation,
+            INSTALLATION,
+            99,
+        )
+        .await?;
+        socket_barrier(&mut other_socket).await?;
+        answer_mac_call(&mut socket, &other_connection.correlation, INSTALLATION, 55).await?;
+        expect_probe_reply(other_connection, 55).await
+    }
+    .await;
+    fixture.close().await?;
+    observed
+}
+
+#[tokio::test]
+async fn mac_typed_call_preserves_a_real_peer_refusal_as_its_own_result() -> Result<()> {
+    let fixture = start_fixture().await?;
+    let observed = async {
+        let mut socket = connect(&fixture).await?;
+        for reason in [
+            LinkCallRefusal::UnknownCall,
+            LinkCallRefusal::WrongTarget,
+            LinkCallRefusal::AuthorityLapsed {
+                cause: MachineLinkCloseCode::Expired,
+            },
+        ] {
+            let attempt = start_mac_call(&fixture, &mut socket, 42).await?;
+            send(
+                &mut socket,
+                &LinkFrame::Data(DataFrame::MacCallReply {
+                    correlation_id: attempt.correlation,
+                    result: Box::new(TypedCallResult::Refused { reason }),
+                }),
+            )
+            .await?;
+            let result = attempt.result.await?;
+            if result != Ok(TypedCallResult::Refused { reason }) {
+                return Err(format!("peer refusal {reason:?} was changed to {result:?}").into());
+            }
+        }
+        Ok(())
     }
     .await;
     fixture.close().await?;
@@ -243,14 +307,15 @@ async fn verify_outbound_retirement(fixture: &Fixture) -> Result<()> {
     expect_call_failure(closed.result.await?, CallFailure::AnswerLost)
 }
 
-type ProbeResult = std::result::Result<Envelope<MachineId, ProbeReply>, CallFailure>;
+type ProbeResult =
+    std::result::Result<TypedCallResult<Envelope<MachineId, ProbeReply>>, CallFailure>;
 
-struct MacAttempt {
-    correlation: CorrelationId,
-    result: JoinHandle<ProbeResult>,
+pub(super) struct MacAttempt {
+    pub(super) correlation: CorrelationId,
+    pub(super) result: JoinHandle<ProbeResult>,
 }
 
-async fn start_mac_call(
+pub(super) async fn start_mac_call(
     fixture: &Fixture,
     socket: &mut WebSocket,
     sequence: u32,
@@ -282,14 +347,14 @@ async fn start_mac_call(
     }
 }
 
-fn probe_request(target: MachineId, sequence: u32) -> Envelope<MachineId, ProbeRequest> {
+pub(super) fn probe_request(target: MachineId, sequence: u32) -> Envelope<MachineId, ProbeRequest> {
     Envelope {
         target,
         body: ProbeRequest { sequence },
     }
 }
 
-async fn answer_mac_call(
+pub(super) async fn answer_mac_call(
     socket: &mut WebSocket,
     correlation_id: &CorrelationId,
     target: &str,
@@ -310,11 +375,13 @@ async fn answer_mac_call(
     .await
 }
 
-async fn expect_probe_reply(attempt: MacAttempt, echoed: u32) -> Result<()> {
+pub(super) async fn expect_probe_reply(attempt: MacAttempt, echoed: u32) -> Result<()> {
     let actual = attempt.result.await?;
-    let expected = Ok(Envelope {
-        target: INSTALLATION.parse()?,
-        body: ProbeReply { echoed },
+    let expected = Ok(TypedCallResult::Answered {
+        reply: Envelope {
+            target: INSTALLATION.parse()?,
+            body: ProbeReply { echoed },
+        },
     });
     if actual != expected {
         return Err(format!(
@@ -326,8 +393,11 @@ async fn expect_probe_reply(attempt: MacAttempt, echoed: u32) -> Result<()> {
     Ok(())
 }
 
-fn expect_call_failure(result: ProbeResult, expected: CallFailure) -> Result<()> {
-    if result != Err(expected) {
+pub(super) fn expect_call_failure<T: std::fmt::Debug>(
+    result: std::result::Result<T, CallFailure>,
+    expected: CallFailure,
+) -> Result<()> {
+    if !matches!(result, Err(actual) if actual == expected) {
         return Err(format!("expected {expected:?}, got {result:?}").into());
     }
     Ok(())
@@ -348,7 +418,7 @@ async fn send_unknown_probe(socket: &mut WebSocket) -> Result<()> {
     Ok(())
 }
 
-async fn expect_central_reply(
+pub(super) async fn expect_central_reply(
     socket: &mut WebSocket,
     correlation_id: CorrelationId,
     result: TypedCallResult<CentralCallReply>,
@@ -364,7 +434,7 @@ async fn expect_central_reply(
     Ok(())
 }
 
-async fn connect(fixture: &Fixture) -> Result<WebSocket> {
+pub(super) async fn connect(fixture: &Fixture) -> Result<WebSocket> {
     let mut socket = fixture.connect().await?;
     if !matches!(
         receive(&mut socket).await?,
@@ -375,7 +445,7 @@ async fn connect(fixture: &Fixture) -> Result<WebSocket> {
     Ok(socket)
 }
 
-async fn socket_barrier(socket: &mut WebSocket) -> Result<()> {
+pub(super) async fn socket_barrier(socket: &mut WebSocket) -> Result<()> {
     send(socket, &LinkFrame::Ping).await?;
     if receive(socket).await? != LinkFrame::Pong {
         return Err("expected the open socket to answer the heartbeat".into());

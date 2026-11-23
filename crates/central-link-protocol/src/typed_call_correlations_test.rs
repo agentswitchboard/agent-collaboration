@@ -1,53 +1,69 @@
 use super::*;
 
-#[test]
-fn a_connection_ignores_duplicates_and_retired_calls_and_requires_a_fresh_retry() {
-    let first: CorrelationId = "019f0000-0000-7000-8000-000000000001".parse().unwrap();
-    let second: CorrelationId = "019f0000-0000-7000-8000-000000000002".parse().unwrap();
-    let mut connection = TypedCallCorrelations::default();
-    let mut other_connection = TypedCallCorrelations::<i32>::default();
-    assert_eq!(connection.register(first.clone(), 1), Ok(()));
-    assert_eq!(other_connection.retire(&first), None);
-    assert_eq!(connection.retire(&first), Some(1));
-    assert_eq!(connection.retire(&first), None);
-    assert_eq!(connection.register(first, 2), Err(2));
-    assert_eq!(connection.register(second.clone(), 2), Ok(()));
-    assert_eq!(connection.drain_pending().collect::<Vec<_>>(), vec![2]);
-    assert_eq!(connection.retire(&second), None);
+const SAME_MILLISECOND: i64 = 1_795_420_000_000;
+
+fn fresh() -> (FreshCorrelationId, CorrelationId) {
+    let fresh = FreshCorrelationId::mint_at(SAME_MILLISECOND);
+    let wire = fresh.wire_id().clone();
+    (fresh, wire)
 }
 
-fn correlation(ordinal: usize) -> CorrelationId {
-    format!("019f0000-0000-7000-8000-{ordinal:012x}")
-        .parse()
-        .unwrap()
+#[test]
+fn only_a_matching_reply_on_the_owning_connection_can_retire_a_waiter() {
+    let (first, wire) = fresh();
+    let mut connection = TypedCallCorrelations::default();
+    let mut other_connection = TypedCallCorrelations::<i32>::default();
+    assert_eq!(connection.register(first, 1), Ok(()));
+    assert_eq!(other_connection.take_if(&wire, |_| true), None);
+    assert_eq!(connection.take_if(&wire, |expected| *expected == 2), None);
+    assert_eq!(
+        connection.take_if(&wire, |expected| *expected == 1),
+        Some(1)
+    );
+    assert_eq!(connection.take_if(&wire, |_| true), None);
 }
 
 #[test]
 fn pending_correlations_stop_at_capacity_and_a_reply_frees_a_slot() {
     let mut connection = TypedCallCorrelations::default();
+    let mut wires = Vec::new();
     for ordinal in 0..64 {
-        assert_eq!(connection.register(correlation(ordinal), ordinal), Ok(()));
+        let (fresh, wire) = fresh();
+        assert_eq!(connection.register(fresh, ordinal), Ok(()));
+        wires.push(wire);
     }
 
-    assert_eq!(connection.register(correlation(64), 64), Err(64));
-    assert_eq!(connection.retire(&correlation(64)), None);
-    assert_eq!(connection.retire(&correlation(0)), Some(0));
-    assert_eq!(connection.register(correlation(64), 64), Ok(()));
-    assert_eq!(connection.retire(&correlation(64)), Some(64));
+    let (overflow, unused) = fresh();
+    assert_eq!(connection.register(overflow, 64), Err(64));
+    assert_eq!(connection.retire(&unused), None);
+    assert_eq!(connection.retire(&wires[0]), Some(0));
+    let (replacement, replacement_wire) = fresh();
+    assert_eq!(connection.register(replacement, 64), Ok(()));
+    assert_eq!(connection.retire(&replacement_wire), Some(64));
 }
 
 #[test]
-fn resolved_correlations_keep_a_recent_window_and_are_forgotten_on_close() {
+fn an_evicted_wire_id_cannot_capture_a_new_waiter_even_at_the_same_clock_instant() {
+    let (first, old_wire) = fresh();
     let mut connection = TypedCallCorrelations::default();
-    for ordinal in 0..129 {
-        assert_eq!(connection.register(correlation(ordinal), ordinal), Ok(()));
-        assert_eq!(connection.retire(&correlation(ordinal)), Some(ordinal));
+    assert_eq!(connection.register(first, 0), Ok(()));
+    assert_eq!(connection.retire(&old_wire), Some(0));
+    for ordinal in 1..=128 {
+        let (fresh, wire) = fresh();
+        assert_eq!(connection.register(fresh, ordinal), Ok(()));
+        assert_eq!(connection.retire(&wire), Some(ordinal));
     }
 
-    assert_eq!(connection.register(correlation(128), 128), Err(128));
-    assert_eq!(connection.retire(&correlation(0)), None);
-    assert_eq!(connection.register(correlation(0), 0), Ok(()));
-    assert_eq!(connection.drain_pending().collect::<Vec<_>>(), vec![0]);
-    assert_eq!(connection.register(correlation(128), 128), Ok(()));
-    assert_eq!(connection.register(correlation(0), 0), Ok(()));
+    assert_eq!(connection.resolved.len(), 128);
+    assert!(!connection.resolved.contains(&old_wire));
+    let (retry, retry_wire) = fresh();
+    assert_ne!(old_wire, retry_wire);
+    assert_eq!(connection.register(retry, 129), Ok(()));
+    assert_eq!(connection.take_if(&old_wire, |_| true), None);
+    assert_eq!(connection.take_if(&retry_wire, |_| true), Some(129));
+
+    let (in_flight, _) = fresh();
+    assert_eq!(connection.register(in_flight, 130), Ok(()));
+    assert_eq!(connection.drain_pending().collect::<Vec<_>>(), vec![130]);
+    assert!(connection.resolved.is_empty());
 }

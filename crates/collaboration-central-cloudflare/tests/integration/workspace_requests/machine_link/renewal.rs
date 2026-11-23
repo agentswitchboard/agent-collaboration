@@ -330,10 +330,52 @@ async fn refusals_journey(fixture: &Fixture) -> Result<()> {
     ] {
         answers.push(renewal(&mut link, renew(correlation, token)?).await?);
     }
+    // Hold the verified token before its applying sample under the org turn.
+    let runtime = fixture.runtime();
+    let pause = "beforeRenewalApplyingSample";
+    if !runtime.control::<bool>("hold-central", &pause).await? {
+        return Err("could not arm the renewal applying pause".into());
+    }
+    let correlation_id: central_link_protocol::CorrelationId =
+        "019f0000-0000-7000-8000-00000000c327".parse()?;
+    fixture::send(
+        &mut link.socket,
+        &DataFrame::RenewMachineToken {
+            correlation_id: correlation_id.clone(),
+            token: fresh(fixture, 0, 60)?.try_into()?,
+        },
+    )
+    .await?;
+    tokio::select! {
+        arrived = runtime.control::<bool>("until-held-central", &pause) => {
+            if !arrived? {
+                return Err("verified renewal did not reach the applying pause".into());
+            }
+        }
+        early = link.socket.next() => {
+            return Err(format!("renewal settled before its applying sample: {early:?}").into());
+        }
+    }
+    advance(fixture, 60).await?;
+    if !runtime.control::<bool>("release-central", &pause).await? {
+        return Err("could not release the renewal applying pause".into());
+    }
+    match fixture::receive(&mut link.socket).await? {
+        DataFrame::MachineTokenRenewal {
+            correlation_id: received,
+            result,
+        } if received == correlation_id
+            && serde_json::to_value(&result)?
+                == serde_json::json!({"kind":"refused","reason":"presentedTokenExpired"}) => {}
+        other => {
+            return Err(format!("expected correlated presentedTokenExpired: {other:?}").into());
+        }
+    }
+
     fixture.host.c2_evict(&fixture.organization).await?;
     // The restored attachment still carries +600: a write at +599 lands, and
     // at +600 even a valid fresh token cannot renew it.
-    advance(fixture, initial_lifetime - 1).await?;
+    advance(fixture, initial_lifetime - 60 - 1).await?;
     let before = link
         .call_as(
             fixture::session_caller()?,

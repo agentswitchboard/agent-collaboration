@@ -124,6 +124,11 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
             }
         };
         let _turn = self.execution.take_central_turn_for_admission().await;
+        #[cfg(feature = "test-support")]
+        self.execution
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::BeforeRenewalApplyingSample)
+            .await;
         let time = self.machine_login_time(current.organization_id()).await?;
         Ok(
             match self
@@ -281,7 +286,7 @@ pub fn project_renewal_refusal(
         Reason::TokenRejected => (TokenRenewalRefusal::TokenRejected, None),
         Reason::DifferentMachine => (TokenRenewalRefusal::DifferentMachine, None),
         Reason::DifferentEnrollment => (TokenRenewalRefusal::DifferentEnrollment, None),
-        Reason::CandidateNotActive => (TokenRenewalRefusal::PresentedEnrollmentNotActive, None),
+        Reason::PresentedTokenExpired => (TokenRenewalRefusal::PresentedTokenExpired, None),
         Reason::CurrentAuthorityEnded(cause) => (
             match cause {
                 MachineLinkCloseCode::Expired => TokenRenewalRefusal::CentralUnavailable,

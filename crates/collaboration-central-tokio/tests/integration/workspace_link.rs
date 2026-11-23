@@ -15,6 +15,8 @@ mod request_authority;
 mod revocation;
 mod revocation_backpressure;
 mod transport_contract;
+mod typed_call_holder;
+mod typed_call_write_state;
 mod typed_calls;
 use central_link_client::{ClientAction, ClientEvent, LinkClient};
 use central_link_protocol::{DataFrame, LinkFrame, ReplyPayload, RequestPayload};

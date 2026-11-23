@@ -1,45 +1,94 @@
-//! Outbound calls and their answer waiters belong to one admitted socket.
+//! The admitted socket owns outbound calls, its run binding and the reply correlation table.
 use central_link_protocol::{
-    CorrelationId, DataFrame, LinkFrame, MAX_PENDING_TYPED_CALLS, MacCall, MacCallReply,
-    MacLinkRpc, TypedCallCorrelations, TypedCallResult,
+    CorrelationId, DataFrame, FreshCorrelationId, LinkFrame, MAX_PENDING_TYPED_CALLS, MacCall,
+    MacCallAddress, MacCallReply, TypedCallCorrelations, TypedCallResult,
 };
-use fleet_rpc::{CallFailure, Envelope};
+use collaboration_central_core::ValidatedMachineConnection;
+use fleet_identity_protocol::{EnrollmentId, OrganizationId};
+use fleet_rpc::CallFailure;
 use router_clock::{ClockInstant, RuntimeClock};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
+use workspace_ids::{MachineId, RouterRunId};
 
 type MacAnswer = TypedCallResult<MacCallReply>;
-type CallOutcome = Result<MacAnswer, CallFailure>;
+
+#[derive(Default)]
+struct ConnectionCallState {
+    pending: TypedCallCorrelations<ReplyWaiter>,
+    bound_run: Option<RouterRunId>,
+}
 
 struct ConnectionCalls {
-    pending: Mutex<TypedCallCorrelations<ReplyWaiter>>,
+    state: Mutex<ConnectionCallState>,
     ended: CancellationToken,
     capacity: Arc<Semaphore>,
 }
 
 impl ConnectionCalls {
-    fn pending(&self) -> MutexGuard<'_, TypedCallCorrelations<ReplyWaiter>> {
-        self.pending.lock().unwrap_or_else(PoisonError::into_inner)
+    fn state(&self) -> MutexGuard<'_, ConnectionCallState> {
+        self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn end(&self) {
-        // Serialize detachment against answers still arriving on the old socket.
-        let mut pending = self.pending();
+        // Serialize detachment against replies and write starts on the old socket.
+        let mut state = self.state();
         self.ended.cancel();
-        drop(pending.drain_pending());
+        drop(state.pending.drain_pending());
+    }
+}
+
+#[derive(Clone, Copy, Default)]
+enum WritePhase {
+    #[default]
+    Queued,
+    Started,
+    Prevented,
+}
+
+#[derive(Default)]
+struct AttemptWrite {
+    phase: Mutex<WritePhase>,
+    prevented: CancellationToken,
+}
+
+impl AttemptWrite {
+    fn start(&self, clock: &dyn RuntimeClock, deadline: ClockInstant) -> bool {
+        let mut phase = self.phase.lock().unwrap_or_else(PoisonError::into_inner);
+        if !matches!(*phase, WritePhase::Queued) || clock.monotonic_now() >= deadline {
+            return false;
+        }
+        *phase = WritePhase::Started;
+        true
+    }
+
+    fn prevent_or_classify(&self) -> CallFailure {
+        let mut phase = self.phase.lock().unwrap_or_else(PoisonError::into_inner);
+        match *phase {
+            WritePhase::Started => CallFailure::AnswerLost,
+            WritePhase::Queued => {
+                *phase = WritePhase::Prevented;
+                drop(phase);
+                self.prevented.cancel();
+                CallFailure::NeverReached
+            }
+            WritePhase::Prevented => CallFailure::NeverReached,
+        }
     }
 }
 
 struct ReplyWaiter {
+    address: MacCallAddress,
     deadline: ClockInstant,
-    answer: oneshot::Sender<CallOutcome>,
+    answer: oneshot::Sender<MacAnswer>,
 }
 
 pub(crate) struct QueuedMacCall {
-    correlation: CorrelationId,
+    correlation: FreshCorrelationId,
     waiter: ReplyWaiter,
     request: Box<MacCall>,
+    write: Arc<AttemptWrite>,
 }
 
 impl QueuedMacCall {
@@ -47,8 +96,15 @@ impl QueuedMacCall {
         self.waiter.deadline
     }
 
-    pub(crate) fn refuse_before_dispatch(self) {
-        let _ = self.waiter.answer.send(Err(CallFailure::NeverReached));
+    pub(crate) fn prewrite_cancellation(&self) -> CancellationToken {
+        self.write.prevented.clone()
+    }
+
+    pub(crate) fn frame(&self) -> LinkFrame {
+        LinkFrame::Data(DataFrame::CallMac {
+            correlation_id: self.correlation.wire_id().clone(),
+            request: self.request.clone(),
+        })
     }
 }
 
@@ -65,7 +121,7 @@ pub(crate) struct MacCallReceiver {
 pub(crate) fn channel(ended: CancellationToken) -> (MacCallSender, MacCallReceiver) {
     let (sender, receiver) = mpsc::channel(MAX_PENDING_TYPED_CALLS);
     let calls = Arc::new(ConnectionCalls {
-        pending: Mutex::default(),
+        state: Mutex::default(),
         ended,
         capacity: Arc::new(Semaphore::new(MAX_PENDING_TYPED_CALLS)),
     });
@@ -86,11 +142,28 @@ impl MacCallSender {
         self.calls.end();
     }
 
-    pub(crate) fn enqueue<R: MacLinkRpc>(
+    pub(crate) fn permits(
         &self,
-        correlation: CorrelationId,
+        address: &MacCallAddress,
+        organization: &OrganizationId,
+        machine: &MachineId,
+        enrollment: &EnrollmentId,
+    ) -> bool {
+        !self.calls.ended.is_cancelled()
+            && address.permits(
+                organization,
+                machine,
+                enrollment,
+                self.calls.state().bound_run.as_ref(),
+            )
+    }
+
+    pub(crate) fn enqueue(
+        &self,
+        correlation: FreshCorrelationId,
         deadline: ClockInstant,
-        request: Envelope<R::Target, R::Request>,
+        request: MacCall,
+        address: MacCallAddress,
     ) -> Result<PendingMacCall, CallFailure> {
         // The same budget covers calls waiting to get on the wire and awaiting a reply.
         let slot = self
@@ -100,18 +173,26 @@ impl MacCallSender {
             .try_acquire_owned()
             .map_err(|_| CallFailure::NeverReached)?;
         let (answer, receiver) = oneshot::channel();
+        let write = Arc::new(AttemptWrite::default());
+        let wire_id = correlation.wire_id().clone();
         self.queue
             .try_send(QueuedMacCall {
-                correlation: correlation.clone(),
-                waiter: ReplyWaiter { deadline, answer },
-                request: Box::new(R::request(request)),
+                correlation,
+                waiter: ReplyWaiter {
+                    address,
+                    deadline,
+                    answer,
+                },
+                request: Box::new(request),
+                write: write.clone(),
             })
             .map_err(|_| CallFailure::NeverReached)?;
         Ok(PendingMacCall {
-            correlation,
+            correlation: wire_id,
             calls: self.calls.clone(),
             answer: receiver,
             deadline,
+            write,
             _slot: slot,
         })
     }
@@ -122,26 +203,43 @@ impl MacCallReceiver {
         self.queue.recv().await
     }
 
-    pub(crate) fn begin_write(
+    pub(crate) fn bind_run(&self, run: RouterRunId) {
+        let mut state = self.calls.state();
+        if !self.calls.ended.is_cancelled() {
+            state.bound_run = Some(run);
+        }
+    }
+
+    /// Keep detachment and binding changes out of the first WebSocket write poll.
+    pub(crate) fn start_write<WritePoll>(
         &self,
         queued: QueuedMacCall,
         clock: &dyn RuntimeClock,
-    ) -> Option<LinkFrame> {
-        let mut pending = self.calls.pending();
+        connection: &ValidatedMachineConnection,
+        poll_write: impl FnOnce() -> WritePoll,
+    ) -> Option<WritePoll> {
+        let mut state = self.calls.state();
         if self.calls.ended.is_cancelled()
-            || queued.waiter.answer.is_closed()
-            || clock.monotonic_now() >= queued.deadline()
+            || !queued.waiter.address.permits(
+                connection.organization_id(),
+                connection.machine_id(),
+                connection.enrollment_id(),
+                state.bound_run.as_ref(),
+            )
         {
             return None;
         }
-        if let Err(waiter) = pending.register(queued.correlation.clone(), queued.waiter) {
-            let _ = waiter.answer.send(Err(CallFailure::NeverReached));
+        let deadline = queued.deadline();
+        let correlation = queued.correlation.wire_id().clone();
+        state
+            .pending
+            .register(queued.correlation, queued.waiter)
+            .ok()?;
+        if !queued.write.start(clock, deadline) {
+            state.pending.retire(&correlation);
             return None;
         }
-        Some(LinkFrame::Data(DataFrame::CallMac {
-            correlation_id: queued.correlation,
-            request: queued.request,
-        }))
+        Some(poll_write())
     }
 
     pub(crate) fn answer(
@@ -150,11 +248,11 @@ impl MacCallReceiver {
         result: MacAnswer,
         clock: &dyn RuntimeClock,
     ) {
-        let mut pending = self.calls.pending();
-        if let Some(waiter) = pending.retire(correlation)
-            && clock.monotonic_now() < waiter.deadline
-        {
-            let _ = waiter.answer.send(Ok(result));
+        let mut state = self.calls.state();
+        if let Some(waiter) = state.pending.take_if(correlation, |waiter| {
+            clock.monotonic_now() < waiter.deadline && waiter.address.matches_reply(&result)
+        }) {
+            let _ = waiter.answer.send(result);
         }
     }
 }
@@ -168,26 +266,28 @@ impl Drop for MacCallReceiver {
 pub(crate) struct PendingMacCall {
     correlation: CorrelationId,
     calls: Arc<ConnectionCalls>,
-    answer: oneshot::Receiver<CallOutcome>,
+    answer: oneshot::Receiver<MacAnswer>,
     deadline: ClockInstant,
+    write: Arc<AttemptWrite>,
     _slot: OwnedSemaphorePermit,
 }
 
 impl PendingMacCall {
     pub(crate) async fn wait(mut self, clock: &dyn RuntimeClock) -> Result<MacAnswer, CallFailure> {
-        tokio::select! {
+        let answer = tokio::select! {
             biased;
-            answer = &mut self.answer => answer.map_err(|_| CallFailure::AnswerLost)?,
-            () = self.calls.ended.cancelled() => Err(CallFailure::AnswerLost),
-            () = tokio::task::unconstrained(clock.sleep_until(self.deadline)) => Err(CallFailure::AnswerLost),
-        }
+            answer = &mut self.answer => answer.ok(),
+            () = self.calls.ended.cancelled() => None,
+            () = tokio::task::unconstrained(clock.sleep_until(self.deadline)) => None,
+        };
+        answer.ok_or_else(|| self.write.prevent_or_classify())
     }
 }
 
 impl Drop for PendingMacCall {
     fn drop(&mut self) {
-        // Close before taking the lock so a queued call cannot register after cancellation.
+        self.write.prevent_or_classify();
         self.answer.close();
-        self.calls.pending().retire(&self.correlation);
+        self.calls.state().pending.retire(&self.correlation);
     }
 }

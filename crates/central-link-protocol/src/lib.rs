@@ -7,6 +7,7 @@ mod link_delivery;
 mod link_renewal;
 mod link_request;
 mod link_typed_calls;
+mod mac_call_address;
 mod request_status;
 mod typed_call_correlations;
 
@@ -19,7 +20,7 @@ pub use link_typed_calls::{
 pub use request_status::{RequestRefusal, RequestStatusAnswer, RequestStatusQuery};
 pub use typed_call_correlations::{MAX_PENDING_TYPED_CALLS, TypedCallCorrelations};
 
-pub use correlation_id::CorrelationId;
+pub use correlation_id::{CorrelationId, FreshCorrelationId};
 pub use link_close::MachineLinkCloseCode;
 pub use link_codec::{DataFrame, LinkFrame, decode_text, encode_text};
 pub use link_delivery::{
@@ -33,6 +34,7 @@ pub use link_request::{
     LinkRequest, LinkRequestBatch, MAX_LINK_REQUEST_BATCH_SIZE, ReplyPayload, RequestPayload,
     RequestScope,
 };
+pub use mac_call_address::MacCallAddress;
 
 /// The receiving end of a machine-link frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

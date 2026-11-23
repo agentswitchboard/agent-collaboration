@@ -287,6 +287,13 @@ async fn every_refused_renewal_keeps_the_current_deadline() -> Result<()> {
         .await?
         .map_err(|_| "initial admission refused")?;
     let other_machine = fixture.token_for_installation(OTHER_MACHINE)?;
+    let other_enrollment = signed::machine_token(
+        signed::ORGANIZATION,
+        INSTALLATION,
+        "019f0000-0000-7000-8000-00000000c3fe",
+        signed::NOW_SECONDS,
+        signed::NOW_SECONDS + 900,
+    )?;
     let other_client = fresh_token(
         &fixture,
         &connection,
@@ -311,16 +318,49 @@ async fn every_refused_renewal_keeps_the_current_deadline() -> Result<()> {
             other_client.as_str(),
         ),
         ("019f0000-0000-7000-8000-00000000c314", overlong.as_str()),
+        (
+            "019f0000-0000-7000-8000-00000000c315",
+            other_enrollment.as_str(),
+        ),
     ] {
         send(&mut socket, &renew_frame(correlation, token)?).await?;
         answers.push(answer_to(&mut socket, correlation).await?);
     }
+    // This candidate is verified at +0. Central holds the org turn before
+    // sampling, then resumes at the candidate's exact +60 grant deadline.
+    let mut applying = runtime
+        .runtime()
+        .pause_points()
+        .hold_central(fleet_runtime::PausePoint::BeforeRenewalApplyingSample);
+    let candidate = signed::machine_token(
+        signed::ORGANIZATION,
+        INSTALLATION,
+        connection.enrollment_id().as_str(),
+        signed::NOW_SECONDS,
+        signed::NOW_SECONDS + 60,
+    )?;
+    let correlation_id = "019f0000-0000-7000-8000-00000000c316";
+    send(&mut socket, &renew_frame(correlation_id, &candidate)?).await?;
+    tokio::select! {
+        () = applying.until_held() => {}
+        early = socket.next() => {
+            return Err(format!("renewal settled before its applying sample: {early:?}").into());
+        }
+    }
+    fixture.clock.advance(Duration::from_secs(60))?;
+    applying.release();
+    let expired = answer_to(&mut socket, correlation_id).await?;
+    assert_eq!(
+        serde_json::to_value(expired)?,
+        json!({"kind":"refused","reason":"presentedTokenExpired"})
+    );
+
     // The first advertised deadline still decides: a write just before it lands.
     assert_eq!(initial_expiry.timestamp(), signed::NOW_SECONDS + 600);
     let mut writes = Vec::new();
     for (advance, request_id, name) in [
         (
-            u64::try_from(initial_expiry.timestamp() - signed::NOW_SECONDS - 1)?,
+            u64::try_from(initial_expiry.timestamp() - signed::NOW_SECONDS - 60 - 1)?,
             "019f0000-0000-7000-8000-00000000d311",
             "Before the deadline",
         ),
@@ -351,6 +391,9 @@ async fn every_refused_renewal_keeps_the_current_deadline() -> Result<()> {
             },
             TokenRenewalResult::Refused {
                 reason: TokenRenewalRefusal::TokenRejected
+            },
+            TokenRenewalResult::Refused {
+                reason: TokenRenewalRefusal::DifferentEnrollment
             },
         ]
     );
