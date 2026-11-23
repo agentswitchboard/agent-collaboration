@@ -32,6 +32,8 @@ use tokio::{
     task::JoinHandle,
 };
 
+mod custody_journey;
+
 struct RealLeases {
     central: Arc<MachineLinkFixture>,
     mac_clock: Arc<ManualClock>,
@@ -89,12 +91,18 @@ struct Journey {
 impl Journey {
     async fn start() -> Self {
         let signed_clock = "2030-03-17T17:46:40Z".parse().unwrap();
-        let central = Arc::new(
-            start_machine_link_fixture(Arc::new(ManualClock::new(signed_clock)))
-                .await
-                .unwrap(),
-        );
-        let mac_clock = Arc::new(ManualClock::new(signed_clock));
+        Self::start_with_clocks(
+            Arc::new(ManualClock::new(signed_clock)),
+            Arc::new(ManualClock::new(signed_clock)),
+        )
+        .await
+    }
+
+    async fn start_with_clocks(
+        central_clock: Arc<ManualClock>,
+        mac_clock: Arc<ManualClock>,
+    ) -> Self {
+        let central = Arc::new(start_machine_link_fixture(central_clock).await.unwrap());
         let address = format!(
             "ws://{}/v1/organizations/{}/link",
             central.origin().strip_prefix("http://").unwrap(),

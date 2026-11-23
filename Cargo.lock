@@ -5825,7 +5825,11 @@ dependencies = [
  "router-clock",
  "serde_json",
  "switchboard-central-link",
+ "switchboard-machine-core-store",
+ "switchboard-message-custody",
  "tokio",
+ "workspace-ids",
+ "workspace-model",
 ]
 
 [[package]]
