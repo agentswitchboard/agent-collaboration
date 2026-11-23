@@ -2,8 +2,8 @@
 #[cfg(feature = "test-support")]
 use crate::FixtureApprovalDecision;
 use crate::{
-    CentralCallDispatch, CentralCallWork, CentralLinkDispatcher, LinkCallCompletion,
-    MachineLinkRequestAuthority, WorkspaceRuntime,
+    CentralCallWork, CentralLinkDispatcher, LinkCallCompletion, MachineLinkRequestAuthority,
+    WorkspaceRuntime,
 };
 use central_link_protocol::{
     CentralCall, CentralCallReply, CentralLinkRpc, LinkCallRefusal, MacCallReply, MacLinkRpc,
