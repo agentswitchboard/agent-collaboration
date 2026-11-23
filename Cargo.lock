@@ -2578,7 +2578,6 @@ dependencies = [
  "tokio",
  "uuid",
  "workspace-ids",
- "workspace-model",
 ]
 
 [[package]]

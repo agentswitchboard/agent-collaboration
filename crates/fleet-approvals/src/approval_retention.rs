@@ -2,13 +2,12 @@
 use approval_request_protocol::{
     ApprovalRequestId, CentralTime, Ending, ErasedApprovalMarker, StopReceiptEnding,
 };
-use central_engine_model::supported_time;
+use central_engine_model::{CENTRAL_RECORD_RETENTION_MILLIS, supported_time};
 use central_storage::StoreFailure;
 #[cfg(test)]
 use fleet_engine::owner_sql::CheckedStorage;
 use fleet_engine::{checked_engine_statement, checked_subject_projection};
 use fleet_runtime_ports::{stored_values::json, workspace_decode_error::corrupt};
-use workspace_model::INTERACTION_RETENTION_MILLIS;
 
 use crate::{ApprovalHolderScope, ApprovalState, ApprovalStoreTransaction};
 
@@ -80,7 +79,7 @@ pub(crate) async fn read_erased_approval(
 pub(crate) fn cutoff_at(ended_at: CentralTime) -> Result<CentralTime, StoreFailure> {
     ended_at
         .timestamp_millis()
-        .checked_add(INTERACTION_RETENTION_MILLIS)
+        .checked_add(CENTRAL_RECORD_RETENTION_MILLIS)
         .and_then(CentralTime::from_timestamp_millis)
         .filter(|time| supported_time(*time))
         .ok_or_else(|| corrupt("approval_requests.erase_after_ms"))
