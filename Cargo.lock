@@ -6038,6 +6038,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchboard-session-start"
+version = "0.1.158"
+dependencies = [
+ "fleet-identity-protocol",
+ "hegeltest",
+ "serde_json",
+ "state-machine-core",
+ "thiserror 2.0.18",
+ "workspace-ids",
+]
+
+[[package]]
 name = "switchboard-session-store"
 version = "0.1.158"
 dependencies = [
