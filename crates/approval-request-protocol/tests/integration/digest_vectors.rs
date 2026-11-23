@@ -5,7 +5,7 @@ use serde_json::{Value, json};
 fn immutable_raise_bytes_are_fixed_for_each_request_kind() {
     let fixtures: Vec<Value> =
         serde_json::from_str(include_str!("../fixtures/approval-digest-vectors.json")).unwrap();
-    assert_eq!(fixtures.len(), 2);
+    assert_eq!(fixtures.len(), 4);
     for fixture in fixtures {
         let request = &fixture["raise"];
         let raise: Raise = serde_json::from_value(request["body"].clone()).unwrap();

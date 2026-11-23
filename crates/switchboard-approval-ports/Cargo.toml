@@ -1,0 +1,19 @@
+[package]
+name = "switchboard-approval-ports"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+autotests = false
+
+[lints]
+workspace = true
+
+[dependencies]
+approval-request-protocol.workspace = true
+workspace-ids.workspace = true
+thiserror.workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
