@@ -46,6 +46,7 @@ pub(super) async fn connect_client(
     let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
         return Err("client did not start a connection attempt".into());
     };
+    client.dial_started(&attempt)?;
     let mut socket = fixture
         .client()?
         .get(fixture.url(signed::ORGANIZATION))
@@ -62,6 +63,7 @@ pub(super) async fn connect_client(
     else {
         return Err("authenticated link did not Welcome its machine_id".into());
     };
+    client.ready(&attempt)?;
     Ok((client, attempt, socket, effective_expires_at))
 }
 

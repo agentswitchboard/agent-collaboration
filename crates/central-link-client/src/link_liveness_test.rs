@@ -8,6 +8,7 @@ fn call_deadline_preempts_a_healthy_auto_response_heartbeat() {
     let correlation = request(&mut client);
     clock.advance(Duration::from_secs(20)).unwrap();
     assert_eq!(client.poll_time(), Some(ClientAction::SendPing));
+    report_ping(&mut client, &attempt, &clock);
     client.receive(&attempt, LinkFrame::Pong).unwrap();
     assert_eq!(
         client.next_deadline(),
@@ -31,13 +32,21 @@ fn call_deadline_preempts_a_healthy_auto_response_heartbeat() {
 #[test]
 fn missing_welcome_closes_at_ten_seconds_and_retries_after_backoff() {
     let (mut client, clock) = fixture();
-    assert!(matches!(
-        client.poll_time(),
-        Some(ClientAction::Connect { .. })
-    ));
+    let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
+        panic!("connect action required")
+    };
     assert_eq!(
         client.next_deadline(),
-        Some(ClockInstant::ZERO.after(Duration::from_secs(10)))
+        None,
+        "Connect alone cannot arm the Welcome limit"
+    );
+    clock.advance(Duration::from_secs(12)).unwrap();
+    assert_eq!(client.poll_time(), None);
+
+    client.dial_started(&attempt).unwrap();
+    assert_eq!(
+        client.next_deadline(),
+        Some(ClockInstant::ZERO.after(Duration::from_secs(22)))
     );
     clock.advance(Duration::from_secs(9)).unwrap();
     assert_eq!(client.poll_time(), None);
@@ -101,15 +110,17 @@ fn late_reply_after_ambiguous_send_is_an_event_and_does_not_disrupt_another_call
 #[test]
 fn late_poll_waits_for_two_actual_unanswered_probes() {
     let (mut client, clock) = fixture();
-    connect(&mut client);
+    let attempt = connect(&mut client);
     clock.advance(Duration::from_secs(20)).unwrap();
     assert_eq!(client.poll_time(), Some(ClientAction::SendPing));
+    report_ping(&mut client, &attempt, &clock);
     clock.advance(Duration::from_secs(40)).unwrap();
     assert_eq!(
         client.poll_time(),
         Some(ClientAction::SendPing),
         "only one probe was actually emitted"
     );
+    report_ping(&mut client, &attempt, &clock);
     clock.advance(Duration::from_secs(20)).unwrap();
     assert!(matches!(
         client.poll_time(),
@@ -123,6 +134,7 @@ fn frames_before_welcome_are_protocol_errors() {
     let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
         panic!("connect")
     };
+    client.dial_started(&attempt).unwrap();
     let delivery = LinkFrame::Data(DataFrame::Deliver { time_left: Some(central_link_protocol::TimeLeft::try_from(1_u32).unwrap()), sender: workspace_model::ResolvedSender::Central {}, message: Box::new(serde_json::from_value(serde_json::json!({"messageId":"01890f2e-7b4c-7cc0-98c4-000000000009","sender":{"kind":"central"},"target":{"machineId":"01890f2e-7b4c-7cc0-98c4-000000000002","sessionId":"s"},"body":{"kind":"direct","body":"hello","delivery":"auto","replyTo":null},"state":{"kind":"queued"},"source":null})).unwrap())});
     for frame in [
         LinkFrame::Pong,
@@ -145,15 +157,20 @@ fn close_then_refuse_keeps_the_most_recent_attempt_refused() {
     client.closed(&attempt).unwrap();
     assert!(
         client
-            .refused(&attempt, RefusalReason::MachineRevoked)
+            .finish_attempt(
+                &attempt,
+                AttemptOutcome::EnrollmentEnded {
+                    cause: EnrollmentEnd::Revoked
+                }
+            )
             .is_ok()
     );
     clock.advance(Duration::from_secs(100)).unwrap();
     assert_eq!(client.poll_time(), None);
     assert_eq!(
         client.status(),
-        LinkStatus::Refused {
-            reason: RefusalReason::MachineRevoked
+        LinkStatus::EnrollmentEnded {
+            cause: EnrollmentEnd::Revoked
         }
     );
 }
@@ -201,6 +218,7 @@ fn staggered_and_simultaneous_call_deadlines_retire_only_due_calls() {
     let mail = mail_request.correlation_id().clone();
     clock.advance(Duration::from_secs(15)).unwrap();
     assert_eq!(client.poll_time(), Some(ClientAction::SendPing));
+    report_ping(&mut client, &attempt, &clock);
     client.receive(&attempt, LinkFrame::Pong).unwrap();
     clock.advance(Duration::from_secs(10)).unwrap();
     let Some(ClientAction::CallsExpired { failed }) = client.poll_time() else {
@@ -245,6 +263,7 @@ fn a_call_expiry_does_not_consume_a_heartbeat_due_at_the_same_instant() {
     request(&mut client);
     clock.advance(Duration::from_secs(10)).unwrap();
     assert_eq!(client.poll_time(), Some(ClientAction::SendPing));
+    report_ping(&mut client, &attempt, &clock);
     client.receive(&attempt, LinkFrame::Pong).unwrap();
     clock.advance(Duration::from_secs(20)).unwrap();
     assert!(matches!(
@@ -253,6 +272,7 @@ fn a_call_expiry_does_not_consume_a_heartbeat_due_at_the_same_instant() {
     ));
     assert_eq!(client.next_deadline(), Some(clock.monotonic_now()));
     assert_eq!(client.poll_time(), Some(ClientAction::SendPing));
+    report_ping(&mut client, &attempt, &clock);
     assert_eq!(client.poll_time(), None);
 }
 
@@ -263,6 +283,7 @@ fn a_reply_cancels_its_call_deadline_and_reconnect_clears_retired_correlations()
     let completed = request(&mut client);
     clock.advance(Duration::from_secs(20)).unwrap();
     assert_eq!(client.poll_time(), Some(ClientAction::SendPing));
+    report_ping(&mut client, &old, &clock);
     client.receive(&old, LinkFrame::Pong).unwrap();
     clock.advance(Duration::from_secs(9)).unwrap();
     assert!(matches!(
@@ -301,30 +322,102 @@ fn refusal_order_is_idempotent_and_an_old_attempt_cannot_refuse_a_new_one() {
     assert_eq!(client.closed(&old).unwrap().len(), 1);
     assert!(
         client
-            .refused(&old, RefusalReason::MachineRevoked)
+            .finish_attempt(
+                &old,
+                AttemptOutcome::EnrollmentEnded {
+                    cause: EnrollmentEnd::Revoked
+                }
+            )
             .unwrap()
             .is_empty()
     );
     assert!(client.closed(&old).unwrap().is_empty());
     assert_eq!(client.poll_time(), None);
-    client.reenrolled();
+    assert!(!client.retry_after_fault());
+    let mut client = LinkClient::new(client.machine.clone(), clock.clone());
     let current = connect(&mut client);
     assert_eq!(
-        client.refused(&old, RefusalReason::MachineRevoked),
+        client.finish_attempt(
+            &old,
+            AttemptOutcome::EnrollmentEnded {
+                cause: EnrollmentEnd::Revoked
+            }
+        ),
         Err(ClientError::StaleConnection)
     );
     clock.advance(Duration::from_secs(20)).unwrap();
     assert_eq!(client.poll_time(), Some(ClientAction::SendPing));
+    report_ping(&mut client, &current, &clock);
     assert_eq!(
         client.receive(&old, LinkFrame::Pong),
         Err(ClientError::StaleConnection)
     );
     client
-        .refused(&current, RefusalReason::CredentialRefused)
+        .finish_attempt(
+            &current,
+            AttemptOutcome::Fault {
+                kind: LinkFault::FreshCredentialRefused,
+            },
+        )
         .unwrap();
     assert!(client.closed(&current).unwrap().is_empty());
     clock.advance(Duration::from_secs(100)).unwrap();
     assert_eq!(client.poll_time(), None);
+}
+
+#[test]
+fn a_final_close_rejects_a_late_fault_and_cannot_be_retried_as_a_fault() {
+    let (mut client, clock) = fixture();
+    let attempt = connect(&mut client);
+    client
+        .close_received(&attempt, Some(MachineLinkCloseCode::Revoked))
+        .unwrap();
+    assert_eq!(
+        client.finish_attempt(
+            &attempt,
+            AttemptOutcome::Fault {
+                kind: LinkFault::MalformedAddress
+            }
+        ),
+        Err(ClientError::StaleConnection)
+    );
+    assert!(!client.retry_after_fault());
+    clock.advance(Duration::from_secs(100)).unwrap();
+    assert_eq!(client.poll_time(), None);
+    assert_eq!(
+        client.status(),
+        LinkStatus::EnrollmentEnded {
+            cause: EnrollmentEnd::Revoked
+        }
+    );
+}
+
+#[test]
+fn a_final_close_accepts_an_exact_duplicate_and_preserves_its_first_cause() {
+    let (mut client, _) = fixture();
+    let attempt = connect(&mut client);
+    request(&mut client);
+    assert_eq!(
+        client
+            .close_received(&attempt, Some(MachineLinkCloseCode::Inactive))
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        client.close_received(&attempt, Some(MachineLinkCloseCode::Inactive)),
+        Ok(vec![])
+    );
+    assert_eq!(
+        client.close_received(&attempt, Some(MachineLinkCloseCode::Revoked)),
+        Err(ClientError::StaleConnection)
+    );
+    assert_eq!(
+        client.status(),
+        LinkStatus::EnrollmentEnded {
+            cause: EnrollmentEnd::Inactive
+        }
+    );
 }
 
 #[test]
@@ -333,6 +426,7 @@ fn welcome_cancels_its_deadline_and_late_socket_close_does_not_double_backoff() 
     let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
         panic!("connect")
     };
+    client.dial_started(&attempt).unwrap();
     clock.advance(Duration::from_secs(9)).unwrap();
     client
         .receive(
