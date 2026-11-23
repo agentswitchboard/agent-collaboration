@@ -24,6 +24,7 @@ use crate::{
     AddressError, DialAddress,
     lease_source::{LeaseFailure, LeaseFuture, LeaseSource, LinkLease},
     link_policy::{DialFailure, LinkEffect, LinkInput, LinkPolicy, LinkState, LinkStatus},
+    socket_upgrade::{MAX_CREDENTIAL_BYTES, MAX_OUTBOUND_TEXT_BYTES},
 };
 
 const WRITE_LIMIT: Duration = Duration::from_secs(5);
@@ -107,6 +108,13 @@ enum SocketInput<Binding> {
     Timer,
     Frame(Option<Result<Message, WebSocketError>>),
     Lease(Result<LinkLease<Binding>, LeaseFailure>),
+}
+
+enum SocketWriteFailure {
+    InvalidFrame,
+    SizeLimit,
+    DeadlineReached,
+    Transport,
 }
 
 impl<Binding, Source> LinkDriver<Binding, Source>
@@ -490,7 +498,7 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
                                     correlation_id,
                                     token: lease.token,
                                 });
-                                if !self.write(socket, frame, control).await? {
+                                if self.write(socket, frame, control).await?.is_err() {
                                     self.close(attempt, None);
                                     return Ok(());
                                 }
@@ -588,7 +596,7 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
         attempt: &ConnectionAttempt,
         control: &mut Control<'_, Binding>,
     ) -> Result<bool, Interrupted> {
-        if self.write(socket, LinkFrame::Ping, control).await?
+        if self.write(socket, LinkFrame::Ping, control).await?.is_ok()
             && self
                 .client
                 .ping_written(attempt, self.clock.monotonic_now())
@@ -605,10 +613,18 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
         socket: &mut (impl Sink<Message> + Unpin),
         frame: LinkFrame,
         control: &mut Control<'_, Binding>,
-    ) -> Result<bool, Interrupted> {
+    ) -> Result<Result<(), SocketWriteFailure>, Interrupted> {
+        if let LinkFrame::Data(DataFrame::RenewMachineToken { token, .. }) = &frame
+            && token.expose().len() > MAX_CREDENTIAL_BYTES
+        {
+            return Ok(Err(SocketWriteFailure::SizeLimit));
+        }
         let Ok(wire) = encode_text(&frame, FrameDirection::ToCentral) else {
-            return Ok(false);
+            return Ok(Err(SocketWriteFailure::InvalidFrame));
         };
+        if wire.len() > MAX_OUTBOUND_TEXT_BYTES {
+            return Ok(Err(SocketWriteFailure::SizeLimit));
+        }
         let deadline = self
             .state
             .renewal_deadline()
@@ -618,8 +634,8 @@ impl<Binding: Clone + Eq + Send + Sync, Source: LeaseSource<Binding>>
             .during(async {
                 tokio::select! {
                     biased;
-                    () = self.clock.sleep_until(deadline) => false,
-                    result = socket.send(Message::Text(wire.into())) => result.is_ok(),
+                    () = self.clock.sleep_until(deadline) => Err(SocketWriteFailure::DeadlineReached),
+                    result = socket.send(Message::Text(wire.into())) => result.map_err(|_| SocketWriteFailure::Transport),
                 }
             })
             .await

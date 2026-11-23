@@ -14,7 +14,7 @@ use tokio::sync::{mpsc, oneshot, watch};
 use tokio_tungstenite::tungstenite::Message;
 use workspace_ids::MachineId;
 
-use super::{BindingDriver, Control, DriverSettings, Interrupted};
+use super::{BindingDriver, Control, DriverSettings, Interrupted, SocketWriteFailure};
 use crate::{
     AddressError,
     lease_source::{LeaseFailure, LeaseFuture, LeaseSource},
@@ -204,5 +204,32 @@ async fn shutdown_with_a_pending_heartbeat_leaves_no_probe_window() {
         driver.client.next_deadline(),
         None,
         "withdrawn write cannot spend a probe window"
+    );
+}
+
+#[tokio::test]
+async fn oversized_renewal_credential_is_rejected_before_writing_a_frame() {
+    use crate::socket_upgrade::MAX_CREDENTIAL_BYTES;
+
+    let fixture = HeartbeatFixture::new();
+    let (mut driver, _) = fixture.welcomed_driver(&NoLeaseSource);
+    let (_settings_sender, mut settings) = watch::channel(test_settings());
+    let (_shutdown_sender, mut shutdown) = watch::channel(false);
+    let mut control = Control {
+        settings: &mut settings,
+        shutdown: &mut shutdown,
+        observed: test_settings(),
+    };
+    let mut socket = Box::pin(unfold((), |(), _message| async { Ok::<(), ()>(()) }));
+    let frame = LinkFrame::Data(DataFrame::RenewMachineToken {
+        correlation_id: "01890f2e-7b4c-7cc0-98c4-000000000099".parse().unwrap(),
+        token: "a".repeat(MAX_CREDENTIAL_BYTES + 1).try_into().unwrap(),
+    });
+    assert!(
+        matches!(
+            driver.write(&mut socket, frame, &mut control).await,
+            Ok(Err(SocketWriteFailure::SizeLimit))
+        ),
+        "a renewal credential over the bearer bound must fail before the sink"
     );
 }

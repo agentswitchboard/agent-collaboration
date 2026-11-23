@@ -9,7 +9,10 @@ The Mac link uses Hyper for the authenticated HTTP/1.1 upgrade and hands the upg
 Tokio-Tungstenite as a client socket. Its normal dependency on `log` enables `max_level_debug`,
 which compiles out the frame traces in every profile. The response still has to be HTTP 101 with
 the expected WebSocket handshake headers. Hyper limits the inbound header block to 124 headers
-and its HTTP/1 read buffer to 64 KiB. The socket wrapper keeps bytes Hyper read alongside the response.
+and its HTTP/1 read buffer to 64 KiB. Tungstenite's former handshake used 124 headers, a 64 KiB
+packet-size cap, and 512 reads. The socket wrapper keeps bytes Hyper read alongside the response.
+The driver limits the bearer header to 64 KiB and each WebSocket frame, assembled message, and write
+buffer to 1 MiB. The outbound text budget leaves room for the client frame's longest masked header.
 
 ## Recreate and check removal
 

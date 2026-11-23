@@ -20,7 +20,7 @@ use tokio_tungstenite::{
             },
             uri::Scheme,
         },
-        protocol::Role,
+        protocol::{Role, WebSocketConfig},
     },
 };
 
@@ -30,6 +30,12 @@ pub(super) type Socket = WebSocketStream<TokioIo<Upgraded>>;
 
 const UPGRADE_RESPONSE_MAX_HEADERS: usize = 124;
 const UPGRADE_RESPONSE_MAX_BYTES: usize = 64 * 1024;
+const SOCKET_BYTE_LIMIT: usize = 1024 * 1024;
+// The longest client frame header uses a two-byte prefix, eight-byte length and four-byte mask.
+pub(super) const MAX_OUTBOUND_TEXT_BYTES: usize = SOCKET_BYTE_LIMIT - 14;
+// Apply the same 64 KiB envelope to the outbound bearer header, before formatting its value.
+pub(super) const MAX_CREDENTIAL_BYTES: usize =
+    UPGRADE_RESPONSE_MAX_BYTES - "Authorization: Bearer \r\n".len();
 
 /// Invalid address supplied by the trusted link configuration owner.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -75,6 +81,9 @@ impl DialAddress {
     }
 
     pub(super) async fn dial(&self, token: &MachineTokenText) -> Result<Socket, DialFailure> {
+        if token.expose().len() > MAX_CREDENTIAL_BYTES {
+            return Err(DialFailure::Unauthorized);
+        }
         let mut address_parts = self.0.clone().into_parts();
         address_parts.scheme = Some(match self.0.scheme_str() {
             #[cfg(feature = "test-support")]
@@ -123,9 +132,25 @@ impl DialAddress {
         let upgraded = hyper::upgrade::on(&mut response)
             .await
             .map_err(|_| DialFailure::Transport)?;
-        Ok(WebSocketStream::from_raw_socket(TokioIo::new(upgraded), Role::Client, None).await)
+        Ok(WebSocketStream::from_raw_socket(
+            TokioIo::new(upgraded),
+            Role::Client,
+            Some(socket_config()),
+        )
+        .await)
     }
 }
+
+fn socket_config() -> WebSocketConfig {
+    WebSocketConfig::default()
+        .max_frame_size(Some(SOCKET_BYTE_LIMIT))
+        .max_message_size(Some(SOCKET_BYTE_LIMIT))
+        .max_write_buffer_size(SOCKET_BYTE_LIMIT)
+}
+
+#[cfg(test)]
+#[path = "socket_upgrade_test.rs"]
+mod tests;
 
 fn check_upgrade_headers(headers: &HeaderMap, websocket_key: &str) -> Result<(), DialFailure> {
     let upgrades_connection = headers.get_all(CONNECTION).iter().any(|value| {

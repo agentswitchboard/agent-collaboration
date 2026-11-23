@@ -35,6 +35,7 @@ use workspace_ids::MachineId;
 mod credential_diagnostics;
 mod renewal_endings;
 mod settings_replay;
+mod transport_limits;
 
 const TOKEN: &str = "fictional-fixture-access-token.0.signature";
 const REFRESHED: &str = "fictional-fixture-access-token.1.signature";
