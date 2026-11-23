@@ -14,7 +14,10 @@ use switchboard_machine_enrollment::{
     BindingGeneration, ConditionalWrite, CredentialStore, CredentialStoreError, EnrollmentBinding,
     EnrollmentEnd, MachineId, StoreDurability, StoredEnrollment,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::{
+    sync::{Mutex, mpsc, oneshot, watch},
+    task::JoinHandle,
+};
 
 mod enrollment_row_mapping;
 mod enrollment_worker;
@@ -25,6 +28,8 @@ use enrollment_worker::{EnrollmentWorker, ReadFailure};
 #[derive(Clone)]
 pub struct MachineEnrollmentStore {
     requests: mpsc::UnboundedSender<EnrollmentRequest>,
+    shutdown: watch::Sender<bool>,
+    worker: Arc<Mutex<WorkerCompletion>>,
 }
 
 impl MachineEnrollmentStore {
@@ -45,13 +50,40 @@ impl MachineEnrollmentStore {
     }
 
     fn start(worker: EnrollmentWorker) -> Self {
-        Self::spawn_worker(worker).0
+        let (requests, pending) = mpsc::unbounded_channel();
+        let (shutdown, closing) = watch::channel(false);
+        let task = tokio::spawn(worker.run(pending, closing));
+        let worker = Arc::new(Mutex::new(WorkerCompletion::Running(task)));
+        Self {
+            requests,
+            shutdown,
+            worker,
+        }
     }
 
-    fn spawn_worker(worker: EnrollmentWorker) -> (Self, tokio::task::JoinHandle<()>) {
-        let (requests, pending) = mpsc::unbounded_channel();
-        let task = tokio::spawn(worker.run(pending));
-        (Self { requests }, task)
+    #[cfg(test)]
+    fn abort_handle(&self) -> tokio::task::AbortHandle {
+        let worker = self.worker.try_lock().expect("uncontended fixture worker");
+        match &*worker {
+            WorkerCompletion::Running(task) => task.abort_handle(),
+            WorkerCompletion::Closed(_) => panic!("fixture worker already closed"),
+        }
+    }
+
+    /// Stops admission and waits for the active operation and connection to settle.
+    pub async fn close(&self) -> Result<(), EnrollmentStoreCloseError> {
+        self.shutdown.send_replace(true);
+        let mut completion = self.worker.lock().await;
+        let result = match &mut *completion {
+            WorkerCompletion::Running(task) => match task.await {
+                Ok(Ok(())) => Ok(()),
+                Ok(Err(error)) => Err(EnrollmentStoreCloseError::Connection(Arc::new(error))),
+                Err(_) => Err(EnrollmentStoreCloseError::WorkerStopped),
+            },
+            WorkerCompletion::Closed(result) => return result.clone(),
+        };
+        *completion = WorkerCompletion::Closed(result.clone());
+        result
     }
 
     async fn mutate(
@@ -60,6 +92,9 @@ impl MachineEnrollmentStore {
         mutation: EnrollmentMutation,
         definite_error: CredentialStoreError,
     ) -> WriteResult {
+        if *self.shutdown.borrow() {
+            return Err(definite_error);
+        }
         let (reply, result) = oneshot::channel();
         let stage = Arc::new(MutationStage::default());
         self.requests
@@ -82,6 +117,9 @@ impl CredentialStore for MachineEnrollmentStore {
     }
 
     async fn read(&self) -> Result<StoredEnrollment, CredentialStoreError> {
+        if *self.shutdown.borrow() {
+            return Err(CredentialStoreError::Read);
+        }
         let (reply, result) = oneshot::channel();
         self.requests
             .send(EnrollmentRequest::Read(reply))
@@ -117,6 +155,20 @@ impl CredentialStore for MachineEnrollmentStore {
     async fn mark_unusable(&self, expected: BindingGeneration, why: EnrollmentEnd) -> WriteResult {
         self.remove(expected, why).await
     }
+}
+
+/// An enrollment worker or its dedicated database connection could not close.
+#[derive(Clone, Debug, thiserror::Error)]
+pub enum EnrollmentStoreCloseError {
+    #[error("the enrollment worker stopped before closing its connection")]
+    WorkerStopped,
+    #[error("could not close the enrollment database connection")]
+    Connection(#[source] Arc<MachineLocalStoreError>),
+}
+
+enum WorkerCompletion {
+    Running(JoinHandle<Result<(), MachineLocalStoreError>>),
+    Closed(Result<(), EnrollmentStoreCloseError>),
 }
 
 type WriteResult = Result<ConditionalWrite, CredentialStoreError>;

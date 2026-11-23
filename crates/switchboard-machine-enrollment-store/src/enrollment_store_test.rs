@@ -556,7 +556,10 @@ async fn lost_worker_replies_are_definite_for_preflight_and_queued_requests() {
     let mut queued = Box::pin(store.remove(generation(1), EnrollmentEnd::Revoked));
     assert_queued(queued.as_mut());
     worker.abort();
-    assert!(worker.await.unwrap_err().is_cancelled());
+    assert!(matches!(
+        store.close().await,
+        Err(EnrollmentStoreCloseError::WorkerStopped)
+    ));
     drop(release);
 
     assert_eq!(
@@ -701,5 +704,44 @@ async fn replacement_preserves_ciphertext_damaged_after_preflight_authentication
             .remove(generation(1), EnrollmentEnd::Revoked)
             .await,
         Ok(ConditionalWrite::Applied)
+    );
+}
+
+#[tokio::test]
+async fn close_finishes_the_started_write_and_refuses_queued_admission() {
+    let fixture = Fixture::open().await;
+    let original = fixture.install().await;
+    let successor = fixture.binding(2, ALTERNATE_ENROLLMENT, "fictional-close-refresh");
+    let (at_witness, release) = fixture.faults.hold_replacement_witness();
+    let mut started = Box::pin(fixture.store.replace(original.generation, &successor));
+    assert_queued(started.as_mut());
+    at_witness.await.unwrap();
+
+    let mut queued = Box::pin(
+        fixture
+            .store
+            .remove(successor.generation, EnrollmentEnd::Revoked),
+    );
+    assert_queued(queued.as_mut());
+    let mut closing = Box::pin(fixture.store.close());
+    assert_queued(closing.as_mut());
+    assert_eq!(
+        fixture
+            .store
+            .mark_unusable(successor.generation, EnrollmentEnd::Revoked)
+            .await,
+        Err(CredentialStoreError::Remove)
+    );
+    release.send(()).unwrap();
+
+    assert_eq!(started.await, Ok(ConditionalWrite::Applied));
+    assert_eq!(queued.await, Err(CredentialStoreError::Remove));
+    closing.await.unwrap();
+    fixture.store.close().await.unwrap();
+
+    let reopened = fixture.another_worker().await;
+    assert_eq!(
+        reopened.read().await,
+        Ok(StoredEnrollment::Active(successor))
     );
 }

@@ -7,13 +7,13 @@ use codex_router_secret_store::{
 use router_clock::RuntimeClock;
 use switchboard_machine_core_store::{
     EnrollmentRowChange, EnrollmentRowCorruption, EnrollmentRowStoreError, EnrollmentRowWrite,
-    MachineLocalStore, StoredEnrollmentRow,
+    MachineLocalStore, MachineLocalStoreError, StoredEnrollmentRow,
 };
 use switchboard_machine_enrollment::{
     BindingGeneration, ConditionalWrite, CredentialStoreError, EnrollmentBinding,
     EnrollmentContext, EnrollmentEnd, MachineId, RefreshCredential, SecretValue, StoredEnrollment,
 };
-use tokio::sync::mpsc;
+use tokio::sync::{mpsc, watch};
 
 use crate::{
     EnrollmentMutation, EnrollmentRequest, MutationStage, WriteResult,
@@ -76,22 +76,44 @@ impl EnrollmentWorker {
         self.test_dependencies = Some(TestDependencies { keychain, faults });
     }
 
-    pub(crate) async fn run(mut self, mut requests: mpsc::UnboundedReceiver<EnrollmentRequest>) {
-        while let Some(request) = requests.recv().await {
-            match request {
-                EnrollmentRequest::Read(reply) if !reply.is_closed() => {
-                    let _ = reply.send(self.read().await);
-                }
-                EnrollmentRequest::Mutate {
-                    expected,
-                    mutation,
-                    reply,
-                    stage,
-                } if !reply.is_closed() => {
-                    let _ = reply.send(self.mutate(expected, mutation, &stage).await);
-                }
-                _ => {}
+    pub(crate) async fn run(
+        mut self,
+        mut requests: mpsc::UnboundedReceiver<EnrollmentRequest>,
+        mut shutdown: watch::Receiver<bool>,
+    ) -> Result<(), MachineLocalStoreError> {
+        while !*shutdown.borrow_and_update() {
+            let request = tokio::select! {
+                biased;
+                _ = shutdown.changed() => break,
+                request = requests.recv() => request,
+            };
+            let Some(request) = request else {
+                break;
+            };
+            if *shutdown.borrow() {
+                break;
             }
+            self.handle(request).await;
+        }
+        requests.close();
+        drop(requests);
+        self.store.close().await
+    }
+
+    async fn handle(&mut self, request: EnrollmentRequest) {
+        match request {
+            EnrollmentRequest::Read(reply) if !reply.is_closed() => {
+                let _ = reply.send(self.read().await);
+            }
+            EnrollmentRequest::Mutate {
+                expected,
+                mutation,
+                reply,
+                stage,
+            } if !reply.is_closed() => {
+                let _ = reply.send(self.mutate(expected, mutation, &stage).await);
+            }
+            _ => {}
         }
     }
 
