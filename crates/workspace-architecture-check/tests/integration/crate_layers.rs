@@ -8,6 +8,8 @@ use serde::Deserialize;
 
 #[path = "approval_holder_policy.rs"]
 mod approval_holder_policy;
+#[path = "session_start_policy.rs"]
+mod session_start_policy;
 
 #[path = "approval_ports_policy.rs"]
 mod approval_ports_policy;
@@ -221,6 +223,8 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
     workspace_boundaries::check_declared_session_owner_edges(&metadata)?;
     approval_holder_policy::check_declared(&metadata)?;
     approval_holder_policy::check_resolved(&metadata)?;
+    session_start_policy::check_declared(&metadata)?;
+    session_start_policy::check_resolved(&metadata)?;
     workspace_boundaries::check_declared_session_read_edges(&metadata)?;
     enrollment_dependency_policy::check_declared(&metadata)?;
     enrollment_dependency_policy::check_resolved(&metadata)?;
@@ -263,6 +267,7 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
     enrollment_dependency_policy::check_resolved(&enabled_metadata)?;
     harness_stage_policy::check_resolved(&enabled_metadata)?;
     approval_holder_policy::check_resolved(&enabled_metadata)?;
+    session_start_policy::check_resolved(&enabled_metadata)?;
     approval_ports_policy::check_resolved(&enabled_metadata)?;
     approval_ports_policy::check_rooted_features(&root)?;
     machine_core_store_policy::check_resolved(&enabled_metadata)?;
