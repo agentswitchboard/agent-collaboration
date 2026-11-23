@@ -1,6 +1,7 @@
 //! Native composition of org cores over the statement-only SQLite capability.
 use crate::{
-    machine_push_registry::MachinePushRegistry, object_storage::ObjectStorage,
+    machine_push_registry::MachinePushRegistry,
+    object_storage::{ObjectStorage, direct_mail::NativeDirectMessageStore},
     sign_in_trust::NativeSignInTrust,
 };
 use collaboration_central_core::WorkspaceCaller;
@@ -268,7 +269,10 @@ impl TokioWorkspaceHost {
                 Arc::new(crate::native_logging::observe),
             ),
             storage.clone(),
-            storage.clone(),
+            Arc::new(NativeDirectMessageStore::new(
+                storage.clone(),
+                clock.clone(),
+            )),
         );
         let ending_transport = Arc::new(workspace_approval_delivery::NativeApprovalDelivery::new(
             self.push_registry.clone(),

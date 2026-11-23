@@ -9,6 +9,7 @@ mod direct_receipt_sequences;
 mod due_table_history;
 
 mod message_status;
+mod receipt_composition;
 mod requests;
 mod stored_row_use;
 mod wakes;

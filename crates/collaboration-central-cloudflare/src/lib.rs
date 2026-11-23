@@ -14,6 +14,8 @@ mod http_body;
 mod object_location;
 mod object_migrations;
 mod organization_signin_link;
+#[cfg(feature = "test-support")]
+mod receipt_witness;
 mod sign_in_crypto;
 mod sign_in_trust;
 mod signin_observation;
