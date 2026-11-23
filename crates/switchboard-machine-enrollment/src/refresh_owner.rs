@@ -399,6 +399,17 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
         &self,
         requested: Option<&EnrollmentKey>,
     ) -> Result<EnrollmentBinding, LeaseUnavailable> {
+        if let Some(requested) = requested {
+            match self.store.read_metadata().await? {
+                EnrollmentMetadata::Active { key, .. } | EnrollmentMetadata::Ended { key, .. }
+                    if &key != requested =>
+                {
+                    return Err(LeaseUnavailable::DifferentEnrollment);
+                }
+                _ => {}
+            }
+        }
+        // The credential read can observe a replacement after the metadata snapshot.
         let stored = self.store.read().await?;
         if let Some(requested) = requested
             && stored.key().is_some_and(|current| &current != requested)

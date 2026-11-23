@@ -1,16 +1,21 @@
 use super::*;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use switchboard_link_lease::{DiscoverySource, LinkSettingsSource};
 use switchboard_machine_enrollment::{
     DiscoveryAnswer, EnrollmentKey, InvalidReason, SignInFailure, StoredEnrollment,
 };
 
-struct SwitchableKeychain(AtomicBool);
+#[derive(Default)]
+struct SwitchableKeychain {
+    unavailable: AtomicBool,
+    reads: AtomicUsize,
+}
 
 impl KeychainAccess for SwitchableKeychain {
     fn read_secret(&self, _: &str, _: &str) -> Result<Option<Vec<u8>>, KeychainAccessError> {
-        if self.0.load(Ordering::Acquire) {
+        self.reads.fetch_add(1, Ordering::Relaxed);
+        if self.unavailable.load(Ordering::Acquire) {
             return Err(KeychainAccessError::Unavailable);
         }
         Ok(Some(vec![0x6b; 32]))
@@ -61,7 +66,7 @@ impl LocalEnrollment {
         let machine_id = load_or_create_machine_id(root, clock.utc_now().timestamp_millis())
             .await
             .unwrap();
-        let keychain = Arc::new(SwitchableKeychain(AtomicBool::new(false)));
+        let keychain = Arc::new(SwitchableKeychain::default());
         let store = MachineEnrollmentStore::open_with_test_keychain(
             &root.join(MACHINE_LOCAL_DATABASE),
             root.join("secrets"),
@@ -141,9 +146,16 @@ async fn the_real_enrollment_store_obeys_each_acquire_mapping_and_keeps_other_ke
         fresh.acquire(&key, Some(LeaseVersion(42))).await,
         Err(LeaseFailure::Fault)
     );
-    local.keychain.0.store(true, Ordering::Release);
+    local.keychain.unavailable.store(true, Ordering::Release);
     assert_eq!(fresh.acquire(&key, None).await, unavailable(5));
-    local.keychain.0.store(false, Ordering::Release);
+    let reads_before_different_key = local.keychain.reads.load(Ordering::Relaxed);
+    assert_eq!(fresh.acquire(&different, None).await, unavailable(1));
+    assert_eq!(
+        local.keychain.reads.load(Ordering::Relaxed),
+        reads_before_different_key,
+        "classifying a different key must not try to open its credential"
+    );
+    local.keychain.unavailable.store(false, Ordering::Release);
     fresh.close().await.unwrap();
 
     for (script, expected) in [
@@ -260,7 +272,7 @@ async fn real_store_settings_see_foreign_and_ended_rows_without_the_keychain() {
         other.replace(local.binding.generation, &replacement).await,
         Ok(ConditionalWrite::Applied)
     );
-    local.keychain.0.store(true, Ordering::Release);
+    local.keychain.unavailable.store(true, Ordering::Release);
     clock.advance(Duration::from_secs(15)).unwrap();
 
     let published = current
