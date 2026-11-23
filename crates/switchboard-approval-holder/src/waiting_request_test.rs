@@ -446,7 +446,7 @@ fn erasure_marker_must_match_the_in_flight_raise_and_run() {
     for marker in [
         ErasedApprovalMarker {
             request_id: different_id.parse().unwrap(),
-            router_run: router_run.clone(),
+            router_run,
             ending: StopReceiptEnding::TimedOut {},
         },
         ErasedApprovalMarker {
