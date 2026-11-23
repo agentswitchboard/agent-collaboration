@@ -32,6 +32,8 @@ use tokio::{
     task::JoinHandle,
 };
 
+mod custody_journey;
+
 struct RealLeases {
     central: Arc<MachineLinkFixture>,
     mac_clock: Arc<ManualClock>,

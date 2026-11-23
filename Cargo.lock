@@ -5912,7 +5912,11 @@ dependencies = [
  "router-clock",
  "serde_json",
  "switchboard-central-link",
+ "switchboard-machine-core-store",
+ "switchboard-message-custody",
  "tokio",
+ "workspace-ids",
+ "workspace-model",
 ]
 
 [[package]]
@@ -5974,6 +5978,24 @@ dependencies = [
  "uuid",
  "workspace-ids",
  "zeroize",
+]
+
+[[package]]
+name = "switchboard-message-custody"
+version = "0.1.158"
+dependencies = [
+ "central-link-client",
+ "central-link-protocol",
+ "chrono",
+ "hegeltest",
+ "router-clock",
+ "runtime-primitives",
+ "switchboard-machine-core-store",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+ "workspace-ids",
+ "workspace-model",
 ]
 
 [[package]]
