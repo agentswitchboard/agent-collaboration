@@ -191,7 +191,7 @@ fn published() -> State {
 fn claimed() -> (State, DeliverEndingRequest, ProviderReply) {
     let mut state = published();
     let ending = DeliverEndingRequest::from_raise(&raise(), Ending::TimedOut {}).unwrap();
-    let reply = ProviderReply::CentralEnding(ending.ending.clone());
+    let reply = ProviderReply::CentralEnding(ending.ending().clone());
     assert_eq!(
         apply(&mut state, deliver(ending.clone())),
         [ending_reply(DeliverEndingReply::Received {})]
@@ -240,7 +240,7 @@ fn finished_and_released_exact_offer_is_not_held_and_never_writes_twice() {
     let conflict = apply(&mut state, deliver(different));
     assert!(matches!(conflict.as_slice(),
         [Effect::EndingConflict { request_id, .. }, Effect::EndingReply { reply: DeliverEndingReply::EndingDiffers {}, .. }]
-            if request_id == &ending.request_id));
+            if request_id == ending.request_id()));
     assert_eq!(
         apply(&mut state, deliver(ending.clone())),
         [ending_reply(DeliverEndingReply::Received {})]
@@ -629,7 +629,7 @@ fn wait_transition_matrix_reaches_exactly_its_declared_edges() {
         events.push(Event::ConnectionRetired { link: key.link }.into());
     }
     for reply in [
-        ProviderReply::CentralEnding(ending.ending),
+        ProviderReply::CentralEnding(ending.ending().clone()),
         ProviderReply::LocalNegative(LocalNegative::Stopped(STOP_CAUSE)),
         ProviderReply::LocalNegative(LocalNegative::HolderAtCapacity),
         ProviderReply::LocalNegative(LocalNegative::RaiseRefused(

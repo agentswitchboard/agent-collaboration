@@ -1,5 +1,6 @@
 use approval_request_protocol::{
-    CentralTime, DeliverEndingRequest, Delivery, Ending, PrivateEnding, StopReceiptEnding,
+    AcceptedApprovalDecision, CentralTime, DeliverEndingRequest, Delivery, Ending,
+    StopReceiptEnding,
 };
 use central_engine_model::TransitionError;
 
@@ -31,8 +32,27 @@ pub(super) fn finish(
     delivery: Delivery,
     now: CentralTime,
 ) -> ApprovalChange {
-    let ending = PrivateEnding::from_raise(&saved.raise, ending)
+    let ending = DeliverEndingRequest::from_raise(&saved.raise, ending)
         .map_err(|_| TransitionError::Domain(ApprovalRefusal::InvalidRetainedEnding))?;
+    finish_with_frame(saved, ending, delivery, now)
+}
+
+pub(super) fn finish_decided(
+    saved: &RetainedApproval,
+    decision: AcceptedApprovalDecision,
+    now: CentralTime,
+) -> ApprovalChange {
+    let ending = DeliverEndingRequest::from_decision(&saved.raise, decision)
+        .map_err(|_| TransitionError::Domain(ApprovalRefusal::InvalidRetainedEnding))?;
+    finish_with_frame(saved, ending, Delivery::Owed {}, now)
+}
+
+fn finish_with_frame(
+    saved: &RetainedApproval,
+    ending: DeliverEndingRequest,
+    delivery: Delivery,
+    now: CentralTime,
+) -> ApprovalChange {
     let closed = EndedApproval {
         ending,
         ended_at: now,
@@ -56,19 +76,12 @@ pub(super) fn finish(
 pub(super) fn offer_ending(saved: &RetainedApproval, closed: &EndedApproval) -> ApprovalEffect {
     ApprovalEffect::OfferEnding {
         holder: saved.key.run.clone(),
-        request: Box::new(ending_frame(saved, closed)),
+        request: Box::new(ending_frame(closed)),
     }
 }
 
-pub(super) fn ending_frame(
-    saved: &RetainedApproval,
-    closed: &EndedApproval,
-) -> DeliverEndingRequest {
-    DeliverEndingRequest {
-        request_id: saved.key.request_id.clone(),
-        contents_digest: saved.contents_digest.clone(),
-        ending: closed.ending.clone(),
-    }
+pub(super) fn ending_frame(closed: &EndedApproval) -> DeliverEndingRequest {
+    closed.ending.clone()
 }
 
 pub(super) fn with_delivery(
@@ -87,7 +100,9 @@ pub(super) fn with_delivery(
 
 pub(super) fn standing(ending: &Ending) -> StopReceiptEnding {
     match ending {
-        Ending::Decided { .. } => StopReceiptEnding::DecidedEarlier {},
+        Ending::Decided { .. } | Ending::UnprovenCallDecided { .. } => {
+            StopReceiptEnding::DecidedEarlier {}
+        }
         Ending::Cancelled { reason } => StopReceiptEnding::Cancelled { reason: *reason },
         Ending::TimedOut {} => StopReceiptEnding::TimedOut {},
     }
