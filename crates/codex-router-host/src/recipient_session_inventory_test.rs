@@ -139,9 +139,18 @@ fn provider_record(
     endpoint: usize,
     folder: &Path,
 ) -> ProviderSessionRecord {
+    provider_record_for_session(inventory, endpoint, folder, &session_id(SAVED))
+}
+
+fn provider_record_for_session(
+    inventory: &ManagedProviderSessionInventory,
+    endpoint: usize,
+    folder: &Path,
+    session_id: &SessionId,
+) -> ProviderSessionRecord {
     let target = collaboration_protocol::SessionRef {
         endpoint: inventory.endpoints.get(endpoint).unwrap().clone(),
-        session_id: SAVED.to_owned().try_into().unwrap(),
+        session_id: session_id.as_str().to_owned().try_into().unwrap(),
     };
     let actor = ProviderIdentity::Session(target.clone());
     ProviderSessionRecord {

@@ -78,9 +78,17 @@ impl Admission {
     }
 
     pub(super) async fn expect_ambiguous(&mut self, session: &SessionId) {
-        let decision = InboxDecision::Refused {
-            reason: InboxRefusalReason::AmbiguousSession,
-        };
+        self.expect_refused(session, InboxRefusalReason::AmbiguousSession)
+            .await;
+    }
+
+    pub(super) async fn expect_unknown(&mut self, session: &SessionId) {
+        self.expect_refused(session, InboxRefusalReason::UnknownSession)
+            .await;
+    }
+
+    async fn expect_refused(&mut self, session: &SessionId, reason: InboxRefusalReason) {
+        let decision = InboxDecision::Refused { reason };
         assert_eq!(
             self.receive(session, REFUSED).await,
             InboxOfferResult::Recorded { decision }

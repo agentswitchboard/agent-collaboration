@@ -41,14 +41,13 @@ fn expected_answer(answers: [(usize, bool, bool); 3]) -> RecipientSessionAnswer 
         .fold(0_usize, usize::saturating_add);
     match total {
         2.. => AmbiguousSession,
-        _ if answers.iter().any(|(_, may_hide_match, _)| *may_hide_match) => CouldNotTell,
-        1 => KnownOnce,
         _ if answers
             .iter()
-            .any(|(_, _, absence_unproven)| *absence_unproven) =>
+            .any(|(_, may_hide_match, absence_unproven)| *may_hide_match || *absence_unproven) =>
         {
             CouldNotTell
         }
+        1 => KnownOnce,
         _ => UnknownSession,
     }
 }

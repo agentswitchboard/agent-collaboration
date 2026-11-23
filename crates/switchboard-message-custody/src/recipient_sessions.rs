@@ -66,10 +66,12 @@ impl SessionInventoryAnswer {
         let proved = self.proved().saturating_add(other.proved());
         match (self, other) {
             (Self::AtLeast(_), _) | (_, Self::AtLeast(_)) => Self::AtLeast(proved),
-            (Self::NoneFoundAbsenceUnproven, _) | (_, Self::NoneFoundAbsenceUnproven)
-                if proved == 0 =>
-            {
-                Self::NoneFoundAbsenceUnproven
+            (Self::NoneFoundAbsenceUnproven, _) | (_, Self::NoneFoundAbsenceUnproven) => {
+                if proved == 0 {
+                    Self::NoneFoundAbsenceUnproven
+                } else {
+                    Self::AtLeast(proved)
+                }
             }
             _ => Self::Complete(proved),
         }
@@ -119,11 +121,10 @@ impl SessionInventory for UnavailableSessionInventory {
     }
 }
 
-/// Codex, Claude and Cursor mint their own session IDs. An unindexed Codex
-/// thread in the opaque relay can hide a Codex session before its first turn.
-/// It cannot be another holder of an ID minted by Claude or Cursor. A Codex
-/// miss that leaves only the relay unchecked therefore blocks a declaration
-/// of absence when the total is zero. A failed read can hide a second match.
+/// An opaque Codex relay thread can have the same ID as a visible session.
+/// A miss that leaves that path uncovered can therefore hide a claimant.
+/// Defer while fewer than two matches are proved and any authority is
+/// incomplete. Two proved claims already establish ambiguity.
 pub fn combine_inventory_answers(
     answers: impl IntoIterator<Item = SessionInventoryAnswer>,
 ) -> RecipientSessionAnswer {

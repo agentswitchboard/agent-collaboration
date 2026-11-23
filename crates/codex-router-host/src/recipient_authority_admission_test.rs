@@ -1,5 +1,11 @@
 use super::*;
 use admission::Admission;
+use codex_native_integration::NativeProtocolConnection;
+use collaboration_runtime::{NativeGenerationGate, NativeRelayListener};
+use futures_util::{FutureExt, StreamExt};
+use std::os::unix::fs::PermissionsExt;
+use tokio::net::UnixListener;
+use tokio_util::sync::CancellationToken;
 
 #[derive(Clone, Copy)]
 enum CodexCatalogue {
@@ -68,8 +74,8 @@ impl HostAdmission {
         }
     }
 
-    async fn save_managed(&self, endpoint: usize, root: &Path) {
-        let record = provider_record(&self.managed, endpoint, root);
+    async fn save_managed(&self, endpoint: usize, root: &Path, target: &SessionId) {
+        let record = provider_record_for_session(&self.managed, endpoint, root, target);
         self.provider_store
             .lock()
             .await
@@ -80,46 +86,57 @@ impl HostAdmission {
 }
 
 #[tokio::test]
-async fn managed_claude_is_kept_on_a_mac_with_no_codex_state_file() {
+async fn managed_claude_is_kept_only_with_a_conclusive_codex_miss() {
     let root = tempfile::tempdir().unwrap();
     let mut host = HostAdmission::new(root.path(), CodexCatalogue::Missing).await;
-    let target = session_id(SAVED);
-    host.save_managed(0, root.path()).await;
-
-    assert_eq!(
-        host.codex.lookup_session(&target).await,
-        NoneFoundAbsenceUnproven
-    );
-    host.inbox.expect_accepted(&target).await;
+    prove_managed_admission(&mut host, 0, root.path()).await;
 }
 
 #[tokio::test]
-async fn managed_cursor_is_kept_when_the_codex_catalogue_is_empty() {
+async fn managed_cursor_is_kept_only_with_a_conclusive_codex_miss() {
     let root = tempfile::tempdir().unwrap();
     let mut host = HostAdmission::new(root.path(), CodexCatalogue::Empty).await;
-    let target = session_id(SAVED);
-    host.save_managed(1, root.path()).await;
+    prove_managed_admission(&mut host, 1, root.path()).await;
+}
+
+async fn prove_managed_admission(host: &mut HostAdmission, endpoint: usize, root: &Path) {
+    let uuid_target = session_id(SAVED);
+    host.save_managed(endpoint, root, &uuid_target).await;
 
     assert_eq!(
-        host.codex.lookup_session(&target).await,
+        host.codex.lookup_session(&uuid_target).await,
         NoneFoundAbsenceUnproven
     );
+    host.inbox.expect_deferred(&uuid_target).await;
+
+    let target = session_id("managed-provider-only-session");
+    host.save_managed(endpoint, root, &target).await;
+    assert_eq!(host.codex.lookup_session(&target).await, complete(0));
     host.inbox.expect_accepted(&target).await;
 }
 
 #[tokio::test]
-async fn live_terminal_is_kept_when_the_codex_catalogue_is_empty() {
+async fn live_terminal_is_kept_only_with_a_conclusive_codex_miss() {
     let root = tempfile::tempdir().unwrap();
     let path = root.path().join("registry");
     std::fs::create_dir(&path).unwrap();
     seed_peer(&path, std::process::id(), SAVED, true);
     let mut host = HostAdmission::new(root.path(), CodexCatalogue::Empty).await;
-    let target = session_id(SAVED);
+    let uuid_target = session_id(SAVED);
 
     assert_eq!(
-        host.codex.lookup_session(&target).await,
+        host.codex.lookup_session(&uuid_target).await,
         NoneFoundAbsenceUnproven
     );
+    assert_eq!(
+        host.terminal.lookup_session(&uuid_target).await,
+        complete(1)
+    );
+    host.inbox.expect_deferred(&uuid_target).await;
+
+    let target = session_id("terminal-provider-only-session");
+    seed_peer(&path, std::process::id(), target.as_str(), true);
+    assert_eq!(host.codex.lookup_session(&target).await, complete(0));
     assert_eq!(host.terminal.lookup_session(&target).await, complete(1));
     host.inbox.expect_accepted(&target).await;
 }
@@ -140,11 +157,92 @@ async fn uncovered_codex_miss_with_zero_matches_leaves_no_refusal() {
 }
 
 #[tokio::test]
+async fn non_uuid_address_with_no_matches_gets_a_durable_unknown_session_refusal() {
+    for state in [CodexCatalogue::Missing, CodexCatalogue::Empty] {
+        let root = tempfile::tempdir().unwrap();
+        let mut host = HostAdmission::new(root.path(), state).await;
+        let target = session_id("provider-session-without-a-uuid");
+
+        assert_eq!(host.codex.lookup_session(&target).await, complete(0));
+        host.inbox.expect_unknown(&target).await;
+    }
+}
+
+#[tokio::test]
+async fn saved_codex_row_is_evidence_even_with_a_non_uuid_id() {
+    let root = tempfile::tempdir().unwrap();
+    let mut host = HostAdmission::new(root.path(), CodexCatalogue::Empty).await;
+    let target = session_id("historical-catalogue-id");
+    let mut catalog = SqliteConnection::connect_with(
+        &SqliteConnectOptions::new().filename(root.path().join("state_5.sqlite")),
+    )
+    .await
+    .unwrap();
+    seed_codex_thread(&mut catalog, target.as_str(), 1, false)
+        .await
+        .unwrap();
+    catalog.close().await.unwrap();
+
+    assert_eq!(host.codex.lookup_session(&target).await, complete(1));
+    host.inbox.expect_accepted(&target).await;
+}
+
+#[tokio::test]
+async fn same_uuid_opaque_codex_and_visible_claude_defer_without_custody() {
+    let root = tempfile::tempdir().unwrap();
+    let root = root.path();
+    std::fs::set_permissions(root, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let backend_path = root.join("native.sock");
+    let backend = UnixListener::bind(&backend_path).unwrap();
+    let generations = NativeGenerationGate::default();
+    generations
+        .activate(
+            serde_json::from_value(json!({"serviceEpoch": ROUTER, "generation": 1})).unwrap(),
+            backend_path,
+            None,
+        )
+        .unwrap();
+    let relay_path = root.join("relay.sock");
+    let relay = NativeRelayListener::bind(&relay_path, generations).unwrap();
+    let stop = CancellationToken::new();
+    let relay_task = tokio::spawn(relay.run(stop.clone()));
+    let client = async {
+        let mut client = NativeProtocolConnection::connect(&relay_path)
+            .await
+            .unwrap();
+        let created = client.request("thread/start", json!({})).await.unwrap();
+        (client, created)
+    };
+    let ((client, created), mut backend_wire) = tokio::join!(
+        client,
+        super::codex_holder::native_setup(&backend, root, "thread/start")
+    );
+    assert_eq!(created["thread"]["id"], SAVED);
+    let mut host = HostAdmission::new(root, CodexCatalogue::Empty).await;
+    let target = session_id(SAVED);
+    host.save_managed(0, root, &target).await;
+    assert_eq!(host.managed.lookup_session(&target).await, complete(1));
+    assert_eq!(
+        host.codex.lookup_session(&target).await,
+        NoneFoundAbsenceUnproven
+    );
+
+    host.inbox.expect_deferred(&target).await;
+    assert!(
+        backend_wire.next().now_or_never().is_none(),
+        "custody probed the opaque thread"
+    );
+    drop(client);
+    stop.cancel();
+    relay_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
 async fn failed_codex_read_with_a_managed_claude_match_still_defers() {
     let root = tempfile::tempdir().unwrap();
     let mut host = HostAdmission::new(root.path(), CodexCatalogue::Unreadable).await;
-    let target = session_id(SAVED);
-    host.save_managed(0, root.path()).await;
+    let target = session_id("managed-provider-only-session");
+    host.save_managed(0, root.path(), &target).await;
 
     assert_eq!(host.codex.lookup_session(&target).await, AtLeast(0));
     host.inbox.expect_deferred(&target).await;
@@ -155,8 +253,8 @@ async fn two_managed_matches_are_ambiguous_with_an_uncovered_codex_miss() {
     let root = tempfile::tempdir().unwrap();
     let mut host = HostAdmission::new(root.path(), CodexCatalogue::Empty).await;
     let target = session_id(SAVED);
-    host.save_managed(0, root.path()).await;
-    host.save_managed(1, root.path()).await;
+    host.save_managed(0, root.path(), &target).await;
+    host.save_managed(1, root.path(), &target).await;
 
     assert_eq!(
         host.codex.lookup_session(&target).await,
@@ -209,15 +307,14 @@ async fn reused_terminal_pid_cannot_create_a_permanent_custody_refusal() {
     std::fs::create_dir(&path).unwrap();
     let unrelated_process = LivePeer::new();
     let pid = unrelated_process.0.id();
+    let target = session_id("terminal-provider-only-session");
     std::fs::write(
         path.join(format!("{pid}.json")),
-        json!({"pid":pid,"sessionId":SAVED,"startedAt":0}).to_string(),
+        json!({"pid":pid,"sessionId":target,"startedAt":0}).to_string(),
     )
     .unwrap();
-    seed_peer(&path, std::process::id(), SAVED, true);
+    seed_peer(&path, std::process::id(), target.as_str(), true);
     let mut host = HostAdmission::new(root.path(), CodexCatalogue::Empty).await;
-    let target = session_id(SAVED);
-
     assert_eq!(host.terminal.lookup_session(&target).await, complete(1));
     host.inbox.expect_accepted(&target).await;
 }

@@ -202,7 +202,7 @@ fn thread_result(root: &Path) -> Value {
     })
 }
 
-async fn native_setup(
+pub(super) async fn native_setup(
     listener: &UnixListener,
     root: &Path,
     method: &str,

@@ -24,6 +24,15 @@ const fn complete(at_least: usize) -> SessionInventoryAnswer {
     SessionInventoryAnswer::Complete(at_least)
 }
 
+fn completed_codex_miss(session_id: &SessionId) -> SessionInventoryAnswer {
+    // Codex's ThreadId::from_string uses Uuid::parse_str for native thread IDs.
+    if uuid::Uuid::parse_str(session_id.as_str()).is_ok() {
+        SessionInventoryAnswer::NoneFoundAbsenceUnproven
+    } else {
+        complete(0)
+    }
+}
+
 pub struct CodexSessionInventory {
     codex_home: PathBuf,
     session_presence: CodexSessionPresence,
@@ -43,7 +52,7 @@ impl CodexSessionInventory {
 
     async fn lookup_stored(&self, session_id: &SessionId) -> SessionInventoryAnswer {
         match tokio::fs::try_exists(self.codex_home.join("state_5.sqlite")).await {
-            Ok(false) => return SessionInventoryAnswer::NoneFoundAbsenceUnproven,
+            Ok(false) => return completed_codex_miss(session_id),
             Ok(true) => {}
             Err(_) => return UNAVAILABLE,
         }
@@ -55,7 +64,7 @@ impl CodexSessionInventory {
         match found {
             Ok(true) => complete(1),
             // The opaque native relay does not index its pre-persistence threads.
-            Ok(false) => SessionInventoryAnswer::NoneFoundAbsenceUnproven,
+            Ok(false) => completed_codex_miss(session_id),
             Err(_) => UNAVAILABLE,
         }
     }
