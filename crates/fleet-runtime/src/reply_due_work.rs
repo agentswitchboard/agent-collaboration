@@ -42,15 +42,16 @@ tokio::task_local! {
     static REPLY_DUE_WORK: RefCell<Vec<DeferredDueTask>>;
 }
 
-pub async fn collect_reply_due_work<Reply>(
+pub fn collect_reply_due_work<Reply>(
     reply: impl Future<Output = Reply>,
-) -> (Reply, ReplyDueWork) {
-    REPLY_DUE_WORK
-        .scope(RefCell::default(), async {
-            let reply = reply.await;
-            (reply, ReplyDueWork(REPLY_DUE_WORK.with(|work| work.take())))
-        })
-        .await
+) -> impl Future<Output = (Reply, ReplyDueWork)> {
+    // The reply may contain a whole protocol dispatch. Keep the scoped future
+    // small so each transport can retain it while handling independent events.
+    let reply = Box::pin(reply);
+    REPLY_DUE_WORK.scope(RefCell::default(), async move {
+        let reply = reply.await;
+        (reply, ReplyDueWork(REPLY_DUE_WORK.with(|work| work.take())))
+    })
 }
 
 pub fn has_reply_due_scope() -> bool {
