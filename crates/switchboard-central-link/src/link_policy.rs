@@ -208,6 +208,7 @@ pub enum LinkInput<Binding> {
         attempt: ConnectionAttempt,
         correlation_id: CorrelationId,
         reason: TokenRenewalRefusal,
+        now: ClockInstant,
     },
     RenewalUnavailable {
         attempt: ConnectionAttempt,
@@ -587,14 +588,17 @@ impl<Binding: Clone + Eq> StateMachine for LinkPolicy<Binding> {
                 attempt,
                 correlation_id,
                 reason,
+                now,
             } => {
                 next.check_renewal(&attempt, &correlation_id)?;
                 let LinkPhase::Welcomed { renewal, .. } = &mut next.phase else {
                     return Err(TransitionError::Stale);
                 };
                 match reason {
+                    TokenRenewalRefusal::PresentedTokenExpired => {
+                        *renewal = Renewal::Scheduled(now);
+                    }
                     TokenRenewalRefusal::TokenRejected
-                    | TokenRenewalRefusal::PresentedEnrollmentNotActive
                     | TokenRenewalRefusal::ConnectionEnrollmentEnded
                     | TokenRenewalRefusal::DifferentMachine
                     | TokenRenewalRefusal::DifferentEnrollment
