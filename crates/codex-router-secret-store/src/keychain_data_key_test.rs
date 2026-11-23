@@ -78,10 +78,14 @@ use super::ROUTER_KEYCHAIN_SERVICE;
 use super::ensure_router_keychain_service;
 use super::with_platform_keychain_for_production;
 
+type AfterKeyMiss = Box<dyn FnOnce(&MemoryKeychainAccess) + Send>;
+
 #[derive(Default)]
 struct MemoryKeychainAccess {
     items: Mutex<HashMap<(String, String), Vec<u8>>>,
     read_count: Mutex<usize>,
+    add_count: Mutex<usize>,
+    after_key_miss: Mutex<Option<AfterKeyMiss>>,
 }
 
 impl KeychainAccess for MemoryKeychainAccess {
@@ -96,12 +100,19 @@ impl KeychainAccess for MemoryKeychainAccess {
     ) -> Result<Option<Vec<u8>>, KeychainAccessError> {
         ensure_router_keychain_service(service)?;
         *self.read_count.lock().expect("read count lock") += 1;
-        Ok(self
+        let existing = self
             .items
             .lock()
             .expect("items lock")
             .get(&(service.to_owned(), account.to_owned()))
-            .cloned())
+            .cloned();
+        if existing.is_none() {
+            let publish = self.after_key_miss.lock().expect("key miss pause").take();
+            if let Some(publish) = publish {
+                publish(self);
+            }
+        }
+        Ok(existing)
     }
 
     #[expect(
@@ -115,6 +126,7 @@ impl KeychainAccess for MemoryKeychainAccess {
         secret: &[u8],
     ) -> Result<(), KeychainAccessError> {
         ensure_router_keychain_service(service)?;
+        *self.add_count.lock().expect("add count lock") += 1;
         let mut items = self.items.lock().expect("items lock");
         if items.contains_key(&(service.to_owned(), account.to_owned())) {
             return Err(KeychainAccessError::Unavailable);
@@ -337,7 +349,7 @@ fn legacy_store_opener_uses_the_key_for_an_existing_marker() {
 fn legacy_store_opener_refuses_sealed_files_without_a_marker_before_writing() {
     use crate::{
         encrypted_credential_store::encrypt_envelope,
-        file_backend::{FileSecretStore, FileWriteTrace},
+        file_backend::{FileReadTrace, FileSecretStore, FileWriteTrace},
         model::{SecretKey, SecretStoreError},
     };
 
@@ -354,13 +366,20 @@ fn legacy_store_opener_refuses_sealed_files_without_a_marker_before_writing() {
         .write_credential_envelope(&credential, &envelope)
         .expect("write fixture envelope");
     let trace = FileWriteTrace::default();
+    let reads = FileReadTrace::default();
     let store =
-        FileSecretStore::open_with_write_trace(root.path(), trace.clone()).expect("file store");
+        FileSecretStore::open_with_read_and_write_traces(root.path(), reads.clone(), trace.clone())
+            .expect("file store");
     let keychain = MemoryKeychainAccess::default();
 
     let result = super::load_or_create_pooled_credential_data_key(&store, &keychain);
 
     assert!(matches!(result, Err(SecretStoreError::KeyMissing)));
+    assert_eq!(
+        marker_read_count(&reads, root.path()),
+        2,
+        "persistent marker absence is rechecked once"
+    );
     assert_eq!(store.read_store_id_file().expect("no marker write"), None);
     assert_eq!(
         store
@@ -380,6 +399,193 @@ fn legacy_store_opener_refuses_sealed_files_without_a_marker_before_writing() {
     );
     assert_eq!(*keychain.read_count.lock().expect("memory keychain"), 0);
     assert!(keychain.items.lock().expect("memory keychain").is_empty());
+}
+
+const SEEDED_MARKER: &str = "019a0000-0000-7000-8000-000000000033";
+const SEALED_FIXTURE: &str = "synthetic sealed fixture";
+
+fn envelope_key() -> crate::model::SecretKey {
+    crate::model::SecretKey::new("openai_credential_bundle.fixture.1").expect("fixture key")
+}
+
+fn write_winning_envelope(root: &std::path::Path, keychain: &MemoryKeychainAccess) {
+    use crate::{SecretStore, encrypted_credential_store::EncryptedCredentialStore};
+    use codex_router_core::redaction::SecretString;
+
+    let winner = EncryptedCredentialStore::open_for_process_with_keychain(root, keychain)
+        .expect("the pooled winner opens");
+    winner
+        .write_secret(&envelope_key(), &SecretString::new(SEALED_FIXTURE))
+        .expect("the pooled winner seals a real envelope");
+}
+
+fn assert_opened_winning_envelope(
+    store: &crate::file_backend::FileSecretStore,
+    key: &PooledCredentialDataKey,
+) {
+    let credential = envelope_key();
+    let envelope = store
+        .read_credential_envelope(&credential)
+        .expect("winning ciphertext");
+    let plaintext =
+        crate::encrypted_credential_store::decrypt_envelope(key, &credential, &envelope)
+            .expect("use the existing winner's data key");
+    assert!(plaintext.expose_secret() == SEALED_FIXTURE);
+}
+
+fn marker_read_count(trace: &crate::file_backend::FileReadTrace, root: &std::path::Path) -> usize {
+    use crate::file_backend::FileReadTraceEvent;
+
+    let marker = root.join("store-id");
+    trace.events().iter().filter(|event| {
+        matches!(event, FileReadTraceEvent::FileOpenAttempted { path } if path == &marker)
+    }).count()
+}
+
+#[test]
+fn store_id_recheck_adopts_a_marker_published_after_the_first_absent_read() {
+    use crate::file_backend::{FileReadTrace, FileSecretStore, FileWriteTrace};
+    use std::sync::Arc;
+
+    let root = tempfile::tempdir().expect("temporary secret root");
+    let reads = FileReadTrace::default();
+    let writes = FileWriteTrace::default();
+    let keychain = Arc::new(MemoryKeychainAccess::default());
+    let winner_keychain = Arc::clone(&keychain);
+    let winner_root = root.path().to_path_buf();
+    reads.after_store_id_miss(move || write_winning_envelope(&winner_root, &winner_keychain));
+    let waiting = FileSecretStore::open_with_read_and_write_traces(
+        root.path(),
+        reads.clone(),
+        writes.clone(),
+    )
+    .expect("waiting store");
+
+    let key = open_enrollment_key(&waiting, keychain.as_ref())
+        .expect("read the marker published after the first absent read");
+
+    assert_opened_winning_envelope(&waiting, &key);
+    assert_eq!(marker_read_count(&reads, root.path()), 2);
+    assert!(
+        writes.events().is_empty(),
+        "the waiting opener must not publish"
+    );
+    assert_eq!(
+        *keychain.add_count.lock().expect("add count"),
+        1,
+        "only the winner adds"
+    );
+}
+
+#[test]
+fn store_id_recheck_adopts_a_key_published_after_the_first_absent_read() {
+    use crate::file_backend::{FileReadTrace, FileSecretStore, FileWriteTrace};
+
+    for opener in [
+        open_enrollment_key as StoreKeyOpener,
+        super::load_or_create_pooled_credential_data_key,
+    ] {
+        let root = tempfile::tempdir().expect("temporary secret root");
+        let reads = FileReadTrace::default();
+        let writes = FileWriteTrace::default();
+        let waiting = FileSecretStore::open_with_read_and_write_traces(
+            root.path(),
+            reads.clone(),
+            writes.clone(),
+        )
+        .expect("waiting store");
+        std::fs::write(root.path().join("store-id"), SEEDED_MARKER).expect("pre-existing marker");
+        let keychain = MemoryKeychainAccess::default();
+        let winner_root = root.path().to_path_buf();
+        *keychain.after_key_miss.lock().expect("key miss pause") =
+            Some(Box::new(move |keychain| {
+                write_winning_envelope(&winner_root, keychain)
+            }));
+
+        let key = opener(&waiting, &keychain)
+            .expect("read the key published after the first absent read");
+
+        assert_opened_winning_envelope(&waiting, &key);
+        assert_eq!(
+            marker_read_count(&reads, root.path()),
+            1,
+            "reuse the resolved marker"
+        );
+        assert_eq!(
+            *keychain.read_count.lock().expect("read count"),
+            3,
+            "two waiting reads and one winning read"
+        );
+        assert_eq!(
+            *keychain.add_count.lock().expect("add count"),
+            1,
+            "only the winner adds"
+        );
+        assert!(
+            writes.events().is_empty(),
+            "the waiting opener must not publish"
+        );
+    }
+}
+
+#[test]
+fn store_id_recheck_refuses_a_persistently_missing_key_when_an_envelope_exists() {
+    use crate::{
+        encrypted_credential_store::encrypt_envelope,
+        file_backend::{FileSecretStore, FileWriteTrace},
+        model::SecretStoreError,
+    };
+
+    for opener in [
+        open_enrollment_key as StoreKeyOpener,
+        super::load_or_create_pooled_credential_data_key,
+    ] {
+        let root = tempfile::tempdir().expect("temporary secret root");
+        let trace = FileWriteTrace::default();
+        let store = FileSecretStore::open_with_write_trace(root.path(), trace.clone())
+            .expect("waiting store");
+        let fixture = FileSecretStore::open(root.path()).expect("fixture store");
+        fixture
+            .publish_store_id_if_absent(SEEDED_MARKER)
+            .expect("pre-existing marker");
+        let envelope = encrypt_envelope(
+            &PooledCredentialDataKey::from_bytes([0x57; 32]),
+            &envelope_key(),
+            SEALED_FIXTURE.as_bytes(),
+        )
+        .expect("fixture ciphertext");
+        fixture
+            .write_credential_envelope(&envelope_key(), &envelope)
+            .expect("fixture envelope");
+        let keychain = MemoryKeychainAccess::default();
+
+        let result = opener(&store, &keychain);
+
+        assert!(matches!(result, Err(SecretStoreError::KeyMissing)));
+        assert_eq!(
+            *keychain.read_count.lock().expect("read count"),
+            2,
+            "persistent key absence is rechecked once"
+        );
+        assert_eq!(*keychain.add_count.lock().expect("add count"), 0);
+        assert_eq!(
+            store
+                .read_store_id_file()
+                .expect("unchanged marker")
+                .as_deref(),
+            Some(SEEDED_MARKER)
+        );
+        assert_eq!(
+            store
+                .read_credential_envelope(&envelope_key())
+                .expect("unchanged envelope"),
+            envelope
+        );
+        assert!(
+            trace.events().is_empty(),
+            "failed acquisition does not write"
+        );
+    }
 }
 
 #[cfg(target_os = "macos")]

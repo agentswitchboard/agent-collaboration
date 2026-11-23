@@ -215,7 +215,7 @@ pub(crate) fn load_or_create_pooled_credential_data_key(
         return data_key_from_secret(secret);
     }
     if file_store.has_any_v2_files()? {
-        return Err(SecretStoreError::KeyMissing);
+        return read_required_data_key(keychain, &keychain_account);
     }
 
     let generated_key = PooledCredentialDataKey::generate()?;
@@ -244,7 +244,7 @@ pub(crate) fn load_enrollment_row_data_key(
         return data_key_from_secret(secret);
     }
     if sealed_bytes_present || file_store.has_any_v2_files()? {
-        return Err(SecretStoreError::KeyMissing);
+        return read_required_data_key(keychain, &account);
     }
 
     let generated_key = PooledCredentialDataKey::generate()?;
@@ -262,20 +262,29 @@ fn read_or_publish_store_id(
     file_store: &FileSecretStore,
     sealed_bytes_present: bool,
 ) -> Result<PooledCredentialStoreId, SecretStoreError> {
-    match file_store.read_store_id_file()? {
-        Some(value) => PooledCredentialStoreId::parse(&value, file_store),
-        None if sealed_bytes_present || file_store.has_any_v2_files()? => {
-            Err(SecretStoreError::KeyMissing)
-        }
+    let marker = match file_store.read_store_id_file()? {
+        Some(marker) => marker,
         None => {
-            let candidate = PooledCredentialStoreId::new();
-            file_store.publish_store_id_if_absent(&candidate.to_string())?;
-            let winner = file_store
+            if !sealed_bytes_present && !file_store.has_any_v2_files()? {
+                let candidate = PooledCredentialStoreId::new();
+                file_store.publish_store_id_if_absent(&candidate.to_string())?;
+            }
+            // A peer may have published the ID before the sealed data appeared.
+            file_store
                 .read_store_id_file()?
-                .ok_or(SecretStoreError::KeyMissing)?;
-            PooledCredentialStoreId::parse(&winner, file_store)
+                .ok_or(SecretStoreError::KeyMissing)?
         }
-    }
+    };
+    PooledCredentialStoreId::parse(&marker, file_store)
+}
+
+fn read_required_data_key(
+    keychain: &dyn KeychainAccess,
+    account: &str,
+) -> Result<PooledCredentialDataKey, SecretStoreError> {
+    // An opener may have added the key between our first read and the envelope check.
+    let secret = read_keychain_secret(keychain, account)?.ok_or(SecretStoreError::KeyMissing)?;
+    data_key_from_secret(secret)
 }
 
 fn read_keychain_secret(

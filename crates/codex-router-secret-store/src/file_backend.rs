@@ -62,7 +62,10 @@ pub enum FileReadTraceEvent {
 
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Default)]
-pub struct FileReadTrace(Arc<Mutex<Vec<FileReadTraceEvent>>>);
+pub struct FileReadTrace(
+    Arc<Mutex<Vec<FileReadTraceEvent>>>,
+    #[cfg(test)] Arc<Mutex<Option<StoreIdPause>>>,
+);
 
 #[cfg(any(test, feature = "test-support"))]
 impl std::fmt::Debug for FileReadTrace {
@@ -73,6 +76,25 @@ impl std::fmt::Debug for FileReadTrace {
 
 #[cfg(any(test, feature = "test-support"))]
 impl FileReadTrace {
+    #[cfg(test)]
+    pub(crate) fn after_store_id_miss(&self, pause: impl FnOnce() + Send + 'static) {
+        assert!(
+            self.1
+                .lock()
+                .expect("read pause")
+                .replace(Box::new(pause))
+                .is_none()
+        );
+    }
+
+    #[cfg(test)]
+    fn store_id_missed(&self) {
+        let pause = self.1.lock().expect("read pause").take();
+        if let Some(pause) = pause {
+            pause();
+        }
+    }
+
     pub fn events(&self) -> Vec<FileReadTraceEvent> {
         self.0
             .lock()
@@ -103,11 +125,11 @@ impl FileReadTrace {
 #[derive(Clone, Default)]
 pub struct FileWriteTrace(
     Arc<Mutex<Vec<FileWriteTraceEvent>>>,
-    #[cfg(test)] Arc<Mutex<Option<StoreIdPublicationPause>>>,
+    #[cfg(test)] Arc<Mutex<Option<StoreIdPause>>>,
 );
 
 #[cfg(test)]
-type StoreIdPublicationPause = Box<dyn FnOnce() + Send>;
+type StoreIdPause = Box<dyn FnOnce() + Send>;
 
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Eq, PartialEq)]
@@ -328,7 +350,15 @@ impl FileSecretStore {
         }
         match fs::read_to_string(&path) {
             Ok(value) => Ok(Some(value)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                #[cfg(test)]
+                if file_name == "store-id"
+                    && let Some(trace) = &self.read_trace
+                {
+                    trace.store_id_missed();
+                }
+                Ok(None)
+            }
             Err(source) => Err(SecretStoreError::Filesystem { path, source }),
         }
     }
