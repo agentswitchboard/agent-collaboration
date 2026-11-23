@@ -191,7 +191,7 @@ impl ApprovalCollection {
                     &key,
                     ApprovalEvent::Read {
                         key: key.clone(),
-                        person_id,
+                        actor: crate::ApprovalActor::Person(person_id),
                     },
                     context,
                     &mut effects,
@@ -209,6 +209,7 @@ impl ApprovalCollection {
                         ApprovalEvent::PassOn {
                             key: key.clone(),
                             live_parent: parent,
+                            to: crate::ApprovalRouteDestination::People,
                         },
                         context,
                         &mut effects,

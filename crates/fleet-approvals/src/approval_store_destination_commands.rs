@@ -1,9 +1,9 @@
 #[cfg(feature = "test-support")]
 use std::num::NonZeroU16;
 
-#[cfg(feature = "test-support")]
-use approval_request_protocol::{CentralTime, RequestView};
-use approval_request_protocol::{DecideRequest, PassOnReply, PassOnRequest};
+use approval_request_protocol::{
+    CentralTime, DecideRequest, PassOnReply, PassOnRequest, RequestView,
+};
 use fleet_actor_identity::AuthenticatedSession;
 use fleet_identity_protocol::OrganizationId;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
@@ -25,8 +25,7 @@ use crate::{
 };
 #[cfg(feature = "test-support")]
 use crate::{
-    approval_store_reads::{ApprovalReadRecord, read_person_approval_page},
-    approval_store_scope::ApprovalRequestRowId,
+    approval_store_reads::read_person_approval_page, approval_store_scope::ApprovalRequestRowId,
 };
 
 impl<Transaction, Sessions> ApprovalApplyingStore<'_, Transaction, Sessions>
@@ -194,6 +193,7 @@ where
         let event = ApprovalEvent::PassOn {
             key: key.clone(),
             live_parent: parent,
+            to: crate::ApprovalRouteDestination::People,
         };
         let at = self.sample_applying_time()?;
         let applied = self
@@ -231,7 +231,8 @@ where
             return Ok(ApprovalTransitionOutput::with_reply(None));
         };
         let at = self.sample_applying_time()?;
-        self.read_selected_approval(&record, person_id, at).await
+        self.read_selected_approval(&record, &ApprovalActor::Person(person_id.clone()), at)
+            .await
     }
 
     #[cfg(feature = "test-support")]
@@ -261,7 +262,9 @@ where
         let mut requests = Vec::with_capacity(records.len());
         let mut ending_offers = Vec::new();
         for record in &records {
-            let applied = self.read_selected_approval(record, person_id, at).await?;
+            let applied = self
+                .read_selected_approval(record, &ApprovalActor::Person(person_id.clone()), at)
+                .await?;
             let request = applied
                 .reply
                 .ok_or_else(|| corrupt("approval_request_destinations.people_page"))?;
@@ -277,11 +280,10 @@ where
         })
     }
 
-    #[cfg(feature = "test-support")]
-    async fn read_selected_approval(
+    pub(super) async fn read_selected_approval(
         &mut self,
-        record: &ApprovalReadRecord,
-        person: &PersonId,
+        record: &crate::approval_store_reads::ApprovalReadRecord,
+        actor: &ApprovalActor,
         at: CentralTime,
     ) -> Result<ApprovalTransitionOutput<Option<RequestView>>, ApprovalApplyFailure> {
         let Some(key) = record.state.key() else {
@@ -289,7 +291,7 @@ where
         };
         let event = ApprovalEvent::Read {
             key: key.clone(),
-            person_id: person.clone(),
+            actor: actor.clone(),
         };
         let applied = self
             .apply_request_event(
@@ -303,7 +305,7 @@ where
         let Some(ApprovalReceipt::Read(reply)) = &applied.reply else {
             return Err(corrupt("approval_store.read_reply").into());
         };
-        let recipient = ApprovalActor::Person(person.clone()).identity();
+        let recipient = actor.identity();
         let reply = reply
             .for_recipient(key, &recipient)
             .map_err(|_| corrupt("approval_store.read_recipient"))?
@@ -312,7 +314,7 @@ where
     }
 }
 
-fn approval_session_address(
+pub(super) fn approval_session_address(
     admission: &AuthenticatedSession,
 ) -> (&OrganizationId, ApprovalSession, ApprovalReplyAddress) {
     let organization = admission.organization_id();

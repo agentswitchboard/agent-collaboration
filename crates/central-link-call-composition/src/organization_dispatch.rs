@@ -3,6 +3,7 @@ use crate::{
     SessionApplyFault, SessionApplyFuture, SessionApplyResult,
     apply_failure::SessionApplySuccess,
     approval_dispatch::{ApprovalLinkApplication, HolderCommand, HolderReply},
+    parent_session_dispatch::{ParentApprovalCall, ParentApprovalOperation},
 };
 use central_engine_model::{Context, EngineTime};
 use central_link_protocol::{
@@ -284,13 +285,42 @@ where
                     .end_session(machine, request)
                     .await
                 }
-                CentralCall::ListApprovalsForSession(_)
-                | CentralCall::ReadApprovalForSession(_)
-                | CentralCall::DecideApprovalAsSession(_)
-                | CentralCall::PassOnApproval(_) => Ok(TypedCallResult::Refused {
-                    reason: LinkCallRefusal::UnknownCall,
+                CentralCall::ListApprovalsForSession(request) => {
+                    self.approvals
+                        .dispatch_parent(
+                            machine,
+                            ParentApprovalCall::new(request, ParentApprovalOperation::List),
+                            self.ending_transport.clone(),
+                        )
+                        .await
                 }
-                .into()),
+                CentralCall::ReadApprovalForSession(request) => {
+                    self.approvals
+                        .dispatch_parent(
+                            machine,
+                            ParentApprovalCall::new(request, ParentApprovalOperation::Read),
+                            self.ending_transport.clone(),
+                        )
+                        .await
+                }
+                CentralCall::DecideApprovalAsSession(request) => {
+                    self.approvals
+                        .dispatch_parent(
+                            machine,
+                            ParentApprovalCall::new(request, ParentApprovalOperation::Decide),
+                            self.ending_transport.clone(),
+                        )
+                        .await
+                }
+                CentralCall::PassOnApproval(request) => {
+                    self.approvals
+                        .dispatch_parent(
+                            machine,
+                            ParentApprovalCall::new(request, ParentApprovalOperation::PassOn),
+                            self.ending_transport.clone(),
+                        )
+                        .await
+                }
                 CentralCall::RegisterRun(request) => {
                     let run = request.body.router_run.clone();
                     self.approvals

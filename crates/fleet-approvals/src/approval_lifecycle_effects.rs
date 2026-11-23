@@ -6,8 +6,8 @@ use central_engine_model::TransitionError;
 use workspace_ids::RequestId;
 
 use crate::{
-    ApprovalEffect, ApprovalReceipt, ApprovalRefusal, ApprovalRouting, ApprovalState,
-    EndedApproval, RetainedApproval,
+    ApprovalEffect, ApprovalReceipt, ApprovalRefusal, ApprovalState, EndedApproval,
+    RetainedApproval,
 };
 
 pub(super) type ApprovalChange =
@@ -18,13 +18,13 @@ pub(super) fn reply(state: &ApprovalState, receipt: ApprovalReceipt) -> Approval
 }
 
 pub(super) fn parent_notice(saved: &RetainedApproval) -> Option<ApprovalEffect> {
-    match &saved.routing {
-        ApprovalRouting::Owner => None,
-        ApprovalRouting::Delegate { admitted_parent } => Some(ApprovalEffect::StoreSessionNotice {
+    saved
+        .destinations
+        .current_session()
+        .map(|session| ApprovalEffect::StoreSessionNotice {
             key: saved.key.clone(),
-            session: admitted_parent.clone(),
-        }),
-    }
+            session: session.clone(),
+        })
 }
 
 pub(super) fn finish(

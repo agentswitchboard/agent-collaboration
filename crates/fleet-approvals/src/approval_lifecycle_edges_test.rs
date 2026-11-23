@@ -199,6 +199,7 @@ fn row_matrix_witnesses_every_declared_edge_and_asserts_typed_refusals() {
     let pass = ApprovalEvent::PassOn {
         key: key.clone(),
         live_parent: parent.clone(),
+        to: crate::ApprovalRouteDestination::People,
     };
     let passed = apply(&delegated_waiting, pass.clone(), 1).unwrap().0;
     let decide = |actor| ApprovalEvent::Decide {
@@ -315,7 +316,7 @@ fn row_matrix_witnesses_every_declared_edge_and_asserts_typed_refusals() {
         mismatched_decide,
         ApprovalEvent::Read {
             key: key.clone(),
-            person_id,
+            actor: crate::ApprovalActor::Person(person_id),
         },
         ApprovalEvent::RunRetired,
         ApprovalEvent::EnrollmentEnded,

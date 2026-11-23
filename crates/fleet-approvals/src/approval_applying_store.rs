@@ -5,7 +5,7 @@ use fleet_runtime_ports::{Clock, workspace_decode_error::corrupt};
 
 use crate::{
     ApprovalCommitScope, ApprovalEffect, ApprovalEvent, ApprovalLifecycle, ApprovalReceipt,
-    ApprovalRefusal, ApprovalReplyAddress, ApprovalRouting, ApprovalSessionFacts, ApprovalState,
+    ApprovalRefusal, ApprovalReplyAddress, ApprovalSessionFacts, ApprovalState,
     CommittedApprovalOffer, PendingApprovalHolderEffects, PendingApprovalReply,
     approval_store_scope::{ApprovalHolderScope, ApprovalRequestRowId},
     approval_store_transaction::ApprovalStoreTransaction,
@@ -21,6 +21,8 @@ mod destination_commands;
 mod fixture_destinations;
 #[path = "approval_store_holder_commands.rs"]
 mod holder_commands;
+#[path = "approval_store_parent_reads.rs"]
+mod parent_reads;
 #[path = "approval_store_run_commands.rs"]
 mod run_commands;
 
@@ -166,10 +168,7 @@ where
                         .retained()
                         .ok_or_else(|| corrupt("approval_requests.notice"))?;
                     if retained.key != key
-                        || retained.routing
-                            != (ApprovalRouting::Delegate {
-                                admitted_parent: session,
-                            })
+                        || retained.destinations.current_session() != Some(&session)
                     {
                         return Err(corrupt("approval_requests.notice").into());
                     }

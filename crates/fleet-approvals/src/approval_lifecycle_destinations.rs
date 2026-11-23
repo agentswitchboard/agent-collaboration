@@ -1,15 +1,17 @@
 use approval_request_protocol::{
     AdmittedDestination, CentralTime, DecidedBy, DecisionFactor, Delivery, Ending, EndingView,
-    PassOnReply, RequestView, WaitingStatus,
+    PassOnReply, RequestView,
 };
 use central_engine_model::TransitionError;
 
-use crate::approval_lifecycle_admission::{is_assigned_parent, is_destination};
-use crate::approval_lifecycle_effects::{ApprovalChange, finish, finish_decided, reply};
+use crate::approval_lifecycle_admission::is_destination;
+use crate::approval_lifecycle_effects::{
+    ApprovalChange, finish, finish_decided, parent_notice, reply,
+};
 use crate::{
     AdmittedDecider, ApprovalActor, ApprovalDecideInput, ApprovalDecisionReply, ApprovalEffect,
-    ApprovalReceipt, ApprovalRefusal, ApprovalRequestKey, ApprovalSession, ApprovalState,
-    FactorStanding, RetainedApproval,
+    ApprovalReceipt, ApprovalRefusal, ApprovalRequestKey, ApprovalRouteDestination,
+    ApprovalSession, ApprovalState, FactorStanding, RetainedApproval,
 };
 
 fn visible<'a>(
@@ -141,7 +143,7 @@ fn project_view(
     let admitted = checked_destination(saved, &identity)?;
     match state {
         ApprovalState::Waiting { .. } => {
-            RequestView::waiting(&admitted, saved.waiting_status, saved.window)
+            RequestView::waiting(&admitted, saved.waiting_status(), saved.window)
         }
         ApprovalState::Ended { closed, .. } => RequestView::ended(
             &admitted,
@@ -171,15 +173,19 @@ pub(super) fn pass_on(
     state: &ApprovalState,
     key: &ApprovalRequestKey,
     parent: &ApprovalSession,
+    to: &ApprovalRouteDestination,
     now: CentralTime,
 ) -> ApprovalChange {
     let actor = ApprovalActor::Session(parent.clone());
     let for_parent = |payload| ApprovalReceipt::pass_on_for(key, actor.identity(), payload);
-    let Some(saved) = visible(state, key, &actor).filter(|saved| is_assigned_parent(saved, parent))
-    else {
+    let Some(saved) = visible(state, key, &actor) else {
         return reply(state, for_parent(PassOnReply::NotVisible {}));
     };
-    let forwarded = saved.waiting_status == WaitingStatus::PassedOn;
+    let forwarded = saved
+        .destinations
+        .previous()
+        .iter()
+        .any(|previous| previous == parent);
     match state {
         ApprovalState::Waiting { .. } if now >= saved.window.deadline() => {
             let (next, mut effects) = finish(saved, Ending::TimedOut {}, Delivery::Owed {}, now)?;
@@ -192,12 +198,23 @@ pub(super) fn pass_on(
             Ok((next, effects))
         }
         ApprovalState::Waiting { .. } if !forwarded => {
+            let Some(destinations) = saved.destinations.add(parent, to) else {
+                return Err(TransitionError::Domain(
+                    ApprovalRefusal::InvalidInitialRoute,
+                ));
+            };
+            if let ApprovalRouteDestination::Session(next) = to
+                && saved.raise.requesting_session() == Some(&next.session_id)
+            {
+                return Err(TransitionError::Domain(
+                    ApprovalRefusal::InvalidInitialRoute,
+                ));
+            }
             let mut saved = Box::new(saved.clone());
-            saved.waiting_status = WaitingStatus::PassedOn;
-            Ok((
-                ApprovalState::Waiting { saved },
-                vec![ApprovalEffect::Reply(for_parent(PassOnReply::Forwarded {}))],
-            ))
+            saved.destinations = destinations;
+            let mut effects: Vec<_> = parent_notice(&saved).into_iter().collect();
+            effects.push(ApprovalEffect::Reply(for_parent(PassOnReply::Forwarded {})));
+            Ok((ApprovalState::Waiting { saved }, effects))
         }
         ApprovalState::Waiting { .. } | ApprovalState::Ended { .. } => reply(
             state,

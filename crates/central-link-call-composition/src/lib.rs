@@ -12,6 +12,7 @@ mod approval_fixture;
 mod approval_transaction;
 mod organization_dispatch;
 mod organization_loan;
+mod parent_session_dispatch;
 
 pub use apply_failure::{
     OrganizationLoanFailure, SessionApplyFailure, SessionApplyFault, SessionApplyResult,

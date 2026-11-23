@@ -249,6 +249,18 @@ impl ApprovalSessionFacts<NativeApprovalTransaction> for StoredSessionFacts {
         .transpose()
     }
 
+    async fn next_approval_parent(
+        &self,
+        transaction: &mut NativeApprovalTransaction,
+        session: &ApprovalSession,
+    ) -> Result<Option<ApprovalSession>, StoreFailure> {
+        match self.session_initial_route(transaction, session).await? {
+            Some(ApprovalRouting::Owner) => Ok(None),
+            Some(ApprovalRouting::Delegate { admitted_parent }) => Ok(Some(admitted_parent)),
+            None => Err(corrupt("fixture_sessions.parent_route")),
+        }
+    }
+
     async fn session_is_live(
         &self,
         transaction: &mut NativeApprovalTransaction,

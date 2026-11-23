@@ -125,7 +125,7 @@ fn forwarding_checks_the_exact_live_assigned_parent_and_replays_success() {
     assert_eq!(retained.waiting_status(), WaitingStatus::PassedOn);
     assert_eq!(retained.window, before);
     assert_eq!(
-        retained.routing,
+        retained.initial_routing(),
         fleet_approvals::ApprovalRouting::Delegate {
             admitted_parent: parent.clone()
         }

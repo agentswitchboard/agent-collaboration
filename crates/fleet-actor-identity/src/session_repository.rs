@@ -79,6 +79,21 @@ where
         )
     }
 
+    pub(crate) async fn for_approval_chain(
+        &mut self,
+        session: &CentralSessionId,
+    ) -> Result<SessionState, StoreFailure> {
+        decode_optional(
+            read_one!(
+                StoredSessionRow,
+                "src/queries/session_for_approval_chain.sql",
+                session.as_str().to_owned()
+            )
+            .fetch_optional(self.tx.executor())
+            .await,
+        )
+    }
+
     pub(crate) async fn by_operation(
         &mut self,
         machine: &MachineId,
