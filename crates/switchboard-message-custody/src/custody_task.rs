@@ -222,7 +222,8 @@ async fn run_custody(
     let mut offer_stream_open = true;
     let mut writes: Option<InFlight<WriteReply>> = None;
     let mut receipts: Option<InFlight<ReceiptReply>> = None;
-    let mut inbox_mark = None;
+    let mut receipt_mark = None;
+    let mut intake_retry_at = None;
     let mut tool_requests = JoinSet::new();
     let mut retry_store_at = None;
     let mut admission = lane.watch_admitted();
@@ -253,7 +254,10 @@ async fn run_custody(
                 }
             }
         };
-        let inbox_wake = custody.next_inbox_minute(inbox_mark).await;
+        let receipt_wake = custody.next_receipt_minute(receipt_mark.as_ref());
+        if intake_retry_at.is_none() {
+            intake_retry_at = custody.next_intake_retry().await;
+        }
         let can_flush = writes.is_none() && custody.has_startup_claim_inventory();
         for event in custody.take_operator_events().await {
             sink.record_event(CustodyTaskEvent::Operator(event));
@@ -387,9 +391,12 @@ async fn run_custody(
                     }
                 }
             },
-            () = sleep_until(clock.as_ref(), inbox_wake.map(|(_, wake)| wake)) => {
-                inbox_mark = inbox_wake.map(|(mark, _)| mark);
+            () = sleep_until(clock.as_ref(), intake_retry_at) => {
+                intake_retry_at = None;
                 let _ = retry_offers.try_send(());
+            },
+            () = sleep_until(clock.as_ref(), receipt_wake.as_ref().map(|(_, wake)| *wake)) => {
+                receipt_mark = receipt_wake.map(|(mark, _)| mark);
                 if receipts.is_none() {
                     match custody.prepare_receipt_turn().await {
                         Ok(Some(frame)) => {

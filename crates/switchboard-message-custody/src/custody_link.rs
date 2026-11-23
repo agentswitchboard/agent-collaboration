@@ -697,31 +697,34 @@ impl CustodyLink {
         self.inbox.lock().await.prune_completed().await
     }
 
-    pub(crate) async fn next_inbox_minute(
-        &mut self,
-        last_mark: Option<SyncTime>,
-    ) -> Option<(SyncTime, ClockInstant)> {
+    pub(crate) fn next_receipt_minute(
+        &self,
+        last_mark: Option<&(central_link_client::ConnectionAttempt, SyncTime)>,
+    ) -> Option<(
+        (central_link_client::ConnectionAttempt, SyncTime),
+        ClockInstant,
+    )> {
         let now = self.clock.monotonic_now();
-        if let Some(admitted) = self.admitted_connection() {
-            let mark = crate::flush_marks::earliest_open_mark(
-                shared_time_at(admitted.clock_anchor, now),
-                last_mark,
-            );
-            Some((
-                mark,
-                wake_for_mark(admitted.clock_anchor, mark, self.jitter.jitter_millis(mark)),
-            ))
-        } else if self.inbox.lock().await.needs_local_retry() {
-            let local = self.outbox.local_now_ms();
-            let mark = crate::flush_marks::next_mark_after(SyncTime::from_unix_millis(local));
-            let remaining = mark.unix_millis().saturating_sub(local);
-            Some((
-                mark,
-                now.after(Duration::from_millis(u64::try_from(remaining).unwrap_or(0))),
-            ))
-        } else {
-            None
-        }
+        let admitted = self.admitted_connection()?;
+        // A receipt may be retried on a replacement connection. Its minute
+        // belongs to that connection's Welcome, independent of local retries.
+        let previous = last_mark
+            .filter(|(connection, _)| connection == &admitted.connection)
+            .map(|(_, mark)| *mark);
+        let mark = crate::flush_marks::earliest_open_mark(
+            shared_time_at(admitted.clock_anchor, now),
+            previous,
+        );
+        let wake = wake_for_mark(admitted.clock_anchor, mark, self.jitter.jitter_millis(mark));
+        Some(((admitted.connection, mark), wake))
+    }
+
+    pub(crate) async fn next_intake_retry(&mut self) -> Option<ClockInstant> {
+        self.inbox
+            .lock()
+            .await
+            .needs_local_retry()
+            .then(|| self.local_retry_mark())
     }
 
     pub(crate) fn local_retry_mark(&self) -> ClockInstant {

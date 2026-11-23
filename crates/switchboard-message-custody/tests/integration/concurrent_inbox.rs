@@ -4,7 +4,7 @@ use central_link_client::{
     RegisteredConnection, RequestStatusCommand, SubmitReceiptsCommand, WriteBatchCommand,
     WriteBatchDisposition,
 };
-use central_link_protocol::{RequestScope, RequestStatusQuery};
+use central_link_protocol::{ReceiptResult, RequestScope, RequestStatusQuery};
 use router_clock::ClockInstant;
 use std::{
     future::Future,
@@ -24,6 +24,7 @@ use switchboard_message_custody::{
     custody_status::CustodyRequestStatus,
     custody_task::{CustodyEventSink, CustodyTaskEvent, custody_task},
     outbox_work::OutboxWork,
+    receipt_delivery::ReceiptFrameOutcome,
     recipient_inbox::{InboxOfferResult, RecipientInbox},
     recipient_sessions::{RecipientSessionAnswer, RecipientSessionDirectory},
 };
@@ -168,6 +169,119 @@ async fn custody_turns_to_complete<Output>(
             panic!("recipient lookup blocked {observation}");
         }
     }
+}
+
+#[derive(Default)]
+struct RetryDirectory {
+    calls: AtomicUsize,
+}
+
+impl RecipientSessionDirectory for RetryDirectory {
+    fn query_recipient_session<'lookup>(
+        &'lookup self,
+        _: &'lookup SessionId,
+    ) -> Pin<Box<dyn Future<Output = RecipientSessionAnswer> + Send + 'lookup>> {
+        let answer = if self.calls.fetch_add(1, Ordering::SeqCst) == 0 {
+            RecipientSessionAnswer::CouldNotTell
+        } else {
+            RecipientSessionAnswer::KnownOnce
+        };
+        Box::pin(std::future::ready(answer))
+    }
+}
+
+#[tokio::test]
+async fn an_offline_intake_retry_does_not_delay_receipts_on_a_backwards_welcome() {
+    const LOCAL_MARK_MS: i64 = 1_763_380_800_000;
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("machine_local.sqlite");
+    let session = recipient_session();
+    let clock = manual_clock(LOCAL_MARK_MS - 20_000);
+    let admission = new_admission(session.machine_id.clone(), clock.clone());
+    let lane = Arc::new(ScriptedBatchLane::new(
+        admission.clone(),
+        Default::default(),
+    ));
+    lane.admitted.send_replace(None);
+
+    let database = MachineLocalStore::open(&path).await.unwrap();
+    let mut commits = database.subscribe_commits();
+    let mut inbox_store = InboxStore::new(database);
+    let owed = MessageRecord::queued_central(
+        "019f0000-0000-7000-8000-000000000b31".parse().unwrap(),
+        session.clone(),
+        MessageBody::Notice { items: Vec::new() },
+        Timestamp::from_timestamp_millis(LOCAL_MARK_MS - 20_000).unwrap(),
+    );
+    inbox_store
+        .record_delivery(&owed, InboxDecision::Accepted, LOCAL_MARK_MS - 20_000)
+        .await
+        .unwrap();
+    lane.push_event(LinkLaneEvent::Deliver {
+        connection: admission.connection,
+        offer: direct_offer("019f0000-0000-7000-8000-000000000b32", "retry this locally"),
+        sender: ResolvedSender::Central {},
+    });
+    let directory = Arc::new(RetryDirectory::default());
+    let inbox = RecipientInbox::new(
+        inbox_store,
+        session.machine_id.clone(),
+        directory.clone(),
+        clock.clone(),
+    );
+    let outbox = OutboxWork::new(Box::new(open_outbox(&path).await), clock.clone());
+    let custody = CustodyLink::new(
+        lane.clone(),
+        clock.clone(),
+        Arc::new(NoFlushJitter),
+        outbox,
+        inbox,
+    );
+    let (stop, stopped) = watch::channel(false);
+    let (events, mut observations) = mpsc::unbounded_channel();
+    let (_calls, worker) = custody_task(custody, stopped, Arc::new(RecordEvents(events)));
+    let running = tokio::spawn(worker);
+    custody_turns_to_complete(
+        clock.not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(20))),
+        "the local intake retry",
+    )
+    .await;
+    clock.advance(Duration::from_secs(20)).unwrap();
+    drop(
+        custody_turns_to_complete(
+            commits.wait_for(|count| *count == 2),
+            "the offline offer commit",
+        )
+        .await
+        .unwrap(),
+    );
+    assert_eq!(directory.calls.load(Ordering::SeqCst), 2);
+    assert!(observations.try_recv().is_err());
+
+    let mut replacement = new_admission(session.machine_id.clone(), clock.clone());
+    replacement.clock_anchor.central_time =
+        Timestamp::from_timestamp_millis(LOCAL_MARK_MS - 1_800_000).unwrap();
+    lane.admitted.send_replace(Some(replacement));
+    let outcome = custody_turns_to_complete(
+        observations.recv(),
+        "receipt progress on the current Central anchor",
+    )
+    .await;
+    assert!(
+        matches!(outcome, Some(CustodyTaskEvent::Receipt(ReceiptFrameOutcome::Confirmed { results }))
+        if results == [ReceiptResult::Recorded, ReceiptResult::Recorded])
+    );
+    let mut reopened = InboxStore::new(MachineLocalStore::open(&path).await.unwrap());
+    assert!(
+        reopened
+            .pending_receipts()
+            .await
+            .unwrap()
+            .healthy
+            .is_empty()
+    );
+    stop.send_replace(true);
+    running.await.unwrap();
 }
 
 #[tokio::test]
