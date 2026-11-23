@@ -1,7 +1,8 @@
 use std::{path::PathBuf, sync::Arc};
 
 use codex_router_secret_store::{
-    enrollment_row_sealer::EnrollmentRowSealer, model::SecretStoreError,
+    enrollment_row_sealer::{EnrollmentRowCredential, EnrollmentRowSealer},
+    model::SecretStoreError,
 };
 use router_clock::RuntimeClock;
 use switchboard_machine_core_store::{
@@ -10,7 +11,7 @@ use switchboard_machine_core_store::{
 };
 use switchboard_machine_enrollment::{
     BindingGeneration, ConditionalWrite, CredentialStoreError, EnrollmentBinding,
-    EnrollmentContext, EnrollmentEnd, MachineId, RefreshCredential, StoredEnrollment,
+    EnrollmentContext, EnrollmentEnd, MachineId, RefreshCredential, SecretValue, StoredEnrollment,
 };
 use tokio::sync::mpsc;
 
@@ -94,25 +95,31 @@ impl EnrollmentWorker {
                 key,
             }),
             EnrollmentSnapshot::Active {
-                row_context,
+                key,
+                deployment,
+                generation,
                 sealed,
             } => {
-                let key = self
+                let row_context = seal_context(&key, &deployment, generation)
+                    .map_err(|_| ReadFailure::Corrupt(EnrollmentRowCorruption::Deployment))?;
+                let sealer = self
                     .acquire_key(true)
                     .await
                     .map_err(|_| ReadFailure::KeyUnavailable)?;
-                let refresh_token = key
+                let credential = sealer
                     .open(&row_context, &sealed)
                     .map_err(|_| ReadFailure::SealedBytesUnreadable)?;
+                let refresh_token = SecretValue::copy_from_utf8(credential.expose_bytes())
+                    .ok_or(ReadFailure::SealedBytesUnreadable)?;
                 Ok(StoredEnrollment::Active(EnrollmentBinding {
-                    generation: row_context.generation,
+                    generation,
                     context: EnrollmentContext {
-                        machine_id: row_context.machine_id,
-                        organization_id: row_context.organization_id,
-                        deployment: row_context.deployment,
+                        machine_id: key.machine_id,
+                        organization_id: key.organization_id,
+                        deployment,
                     },
                     credential: RefreshCredential {
-                        enrollment_id: row_context.enrollment_id,
+                        enrollment_id: key.enrollment_id,
                         refresh_token,
                     },
                 }))
@@ -202,15 +209,20 @@ impl EnrollmentWorker {
         }
         let sealed_bytes_present = matches!(current, EnrollmentSnapshot::Active { .. });
         let sealer = self.acquire_key(sealed_bytes_present).await.ok()?;
-        let context = seal_context(binding);
-        let sealed = sealer
-            .seal(&context, &binding.credential.refresh_token)
-            .ok()?;
+        let context = seal_context(
+            &binding.key(),
+            &binding.context.deployment,
+            binding.generation,
+        )
+        .ok()?;
+        let credential =
+            EnrollmentRowCredential::copy_from(binding.credential.refresh_token.expose_secret())?;
+        let sealed = sealer.seal(&context, &credential).ok()?;
         Some(StoredEnrollmentRow::Active {
             generation: i64::try_from(binding.generation.get()).ok()?,
-            organization_id: context.organization_id.to_string(),
-            deployment: context.deployment.origin().as_str().to_owned(),
-            enrollment_id: context.enrollment_id.to_string(),
+            organization_id: binding.context.organization_id.to_string(),
+            deployment: binding.context.deployment.origin().as_str().to_owned(),
+            enrollment_id: binding.credential.enrollment_id.to_string(),
             sealed,
         })
     }
@@ -239,11 +251,13 @@ enum MutationDecision {
 }
 
 fn end_row(snapshot: EnrollmentSnapshot, why: EnrollmentEnd) -> EnrollmentRowChange<()> {
-    let EnrollmentSnapshot::Active { row_context, .. } = snapshot else {
+    let EnrollmentSnapshot::Active {
+        key, generation, ..
+    } = snapshot
+    else {
         return EnrollmentRowChange::Abort(());
     };
-    let Some(generation) = row_context
-        .generation
+    let Some(generation) = generation
         .successor()
         .and_then(|next| i64::try_from(next.get()).ok())
     else {
@@ -251,8 +265,8 @@ fn end_row(snapshot: EnrollmentSnapshot, why: EnrollmentEnd) -> EnrollmentRowCha
     };
     EnrollmentRowChange::Write(StoredEnrollmentRow::Ended {
         generation,
-        organization_id: row_context.organization_id.to_string(),
-        enrollment_id: row_context.enrollment_id.to_string(),
+        organization_id: key.organization_id.to_string(),
+        enrollment_id: key.enrollment_id.to_string(),
         why: stored_end(why),
     })
 }

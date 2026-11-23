@@ -79,18 +79,18 @@ impl KeychainAccess for MemoryKeychain {
 }
 
 fn context() -> EnrollmentRowContext {
-    EnrollmentRowContext {
-        machine_id: MACHINE_ID.parse().expect("machine"),
-        organization_id: ORGANIZATION_ID.parse().expect("organization"),
-        enrollment_id: ENROLLMENT_ID.parse().expect("enrollment"),
-        deployment: SignInDeployment::new("https://signin.example/".parse().expect("URL"))
-            .expect("HTTPS origin"),
-        generation: BindingGeneration::from_persisted(0x0102_0304_0506_0708).expect("generation"),
-    }
+    EnrollmentRowContext::new(
+        MACHINE_ID,
+        ORGANIZATION_ID,
+        ENROLLMENT_ID,
+        "https://signin.example/",
+        0x0102_0304_0506_0708,
+    )
+    .expect("canonical fixture metadata")
 }
 
-fn fixture_token() -> SecretValue {
-    SecretValue::new("refresh-fixture-æ".to_owned()).expect("nonempty fixture")
+fn fixture_token() -> EnrollmentRowCredential {
+    EnrollmentRowCredential::copy_from("refresh-fixture-æ").expect("nonempty fixture")
 }
 
 fn fixture_sealer() -> EnrollmentRowSealer {
@@ -134,17 +134,22 @@ fn enrollment_row_authenticates_each_context_field() {
             ..context()
         },
         EnrollmentRowContext {
-            deployment: SignInDeployment::new("https://other.example/".parse().expect("other URL"))
-                .expect("HTTPS origin"),
+            deployment_origin: "https://other.example/".to_owned(),
             ..context()
         },
         EnrollmentRowContext {
-            generation: context().generation.successor().expect("later generation"),
+            generation: context().generation + 1,
             ..context()
         },
     ];
 
-    assert!(sealer.open(&context(), &sealed).expect("open") == fixture_token());
+    assert!(
+        sealer
+            .open(&context(), &sealed)
+            .expect("open")
+            .expose_bytes()
+            == fixture_token().expose_bytes()
+    );
     for variant in variants {
         assert!(matches!(
             sealer.open(&variant, &sealed),
@@ -164,7 +169,7 @@ fn enrollment_row_stores_version_nonce_and_ciphertext_and_rejects_other_shapes()
     assert_eq!(sealed[0], FIRST_FORMAT);
     assert_eq!(
         sealed.len(),
-        1 + 12 + 16 + expected_token.expose_secret().len()
+        1 + 12 + 16 + expected_token.expose_bytes().len()
     );
     assert_ne!(sealed[1..13], second[1..13]);
     let mut wrong_version = sealed.clone();
@@ -182,12 +187,8 @@ fn file_and_enrollment_formats_cannot_authenticate_each_others_ciphertext() {
     let sealer = fixture_sealer();
     let file_key = SecretKey::new("fixture-file-key").expect("file key");
     let active_context = context();
-    let file_envelope = encrypt_envelope(
-        &sealer.0,
-        &file_key,
-        fixture_token().expose_secret().as_bytes(),
-    )
-    .expect("file envelope");
+    let file_envelope = encrypt_envelope(&sealer.0, &file_key, fixture_token().expose_bytes())
+        .expect("file envelope");
     let encoded: serde_json::Value = serde_json::from_slice(&file_envelope).expect("file JSON");
     let mut file_payload_in_row_format = vec![FIRST_FORMAT];
     for field in ["nonce", "ciphertext"] {
@@ -264,7 +265,13 @@ fn first_enrollment_creates_the_shared_key_once_and_reopens_its_token() {
 
     let reopened = EnrollmentRowSealer::acquire_with_keychain(root.path(), true, &keychain)
         .expect("reopen without creating a key");
-    assert!(reopened.open(&context(), &sealed).expect("open token") == fixture_token());
+    assert!(
+        reopened
+            .open(&context(), &sealed)
+            .expect("open token")
+            .expose_bytes()
+            == fixture_token().expose_bytes()
+    );
     assert_eq!(keychain.0.lock().expect("test keychain").add_attempts, 1);
 }
 
@@ -280,7 +287,7 @@ fn enrollment_key_provisioning_reads_back_the_duplicate_add_winner() {
     let decrypted = fixture_sealer()
         .open(&context(), &sealed)
         .expect("winner's key");
-    assert!(decrypted == fixture_token());
+    assert!(decrypted.expose_bytes() == fixture_token().expose_bytes());
     assert_eq!(keychain.0.lock().expect("test keychain").add_attempts, 1);
 }
 
@@ -320,7 +327,13 @@ fn enrollment_retries_key_acquisition_after_the_keychain_unlocks() {
         .temporarily_unavailable = false;
     let available = EnrollmentRowSealer::acquire_with_keychain(root.path(), true, &keychain)
         .expect("retry after unlock");
-    assert!(available.open(&context(), &sealed).expect("open") == fixture_token());
+    assert!(
+        available
+            .open(&context(), &sealed)
+            .expect("open")
+            .expose_bytes()
+            == fixture_token().expose_bytes()
+    );
     assert_eq!(keychain.0.lock().expect("test keychain").add_attempts, 1);
 }
 
@@ -340,4 +353,64 @@ fn host_wiring_must_prevent_the_file_opener_from_rekeying_an_active_enrollment()
         1,
         "the old opener attempts a second add without the Host guard"
     );
+}
+
+#[test]
+fn fixed_enrollment_ciphertext_matches_the_version_one_byte_fixture() {
+    const NONCE: [u8; 12] = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+    const V1_BLOB: &[u8] = b"\x01\x00\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\
+        \xe9\x7d\x08\x27\xe3\x21\x0d\x61\x54\x1e\x21\x23\xd3\xa5\x3a\x91\x2a\x80\
+        \x87\xae\xc1\x74\x20\x1e\x2e\xbd\x16\x7b\x33\x98\x21\x1c\x24\xd9";
+    let context = context();
+    let sealer = fixture_sealer();
+    let credential = fixture_token();
+    let ciphertext = credential_cipher::encrypt_for_fixture(
+        &sealer.0,
+        &associated_data(&context).expect("fixture AAD"),
+        NONCE,
+        credential.expose_bytes(),
+    )
+    .expect("fixture ciphertext");
+
+    assert!(encode_sealed(&NONCE, &ciphertext) == V1_BLOB);
+    assert!(
+        sealer
+            .open(&context, V1_BLOB)
+            .expect("open v1 fixture")
+            .expose_bytes()
+            == credential.expose_bytes()
+    );
+}
+
+#[test]
+fn enrollment_context_refuses_an_empty_field_and_noncanonical_ids() {
+    let invalid_contexts = [
+        (
+            "",
+            ORGANIZATION_ID,
+            ENROLLMENT_ID,
+            "https://signin.example/",
+        ),
+        (MACHINE_ID, "", ENROLLMENT_ID, "https://signin.example/"),
+        (MACHINE_ID, ORGANIZATION_ID, "", "https://signin.example/"),
+        (MACHINE_ID, ORGANIZATION_ID, ENROLLMENT_ID, ""),
+        (
+            "019A0000-0000-7000-8000-000000000011",
+            ORGANIZATION_ID,
+            ENROLLMENT_ID,
+            "https://signin.example/",
+        ),
+    ];
+    for (machine, org, enrollment, deployment) in invalid_contexts {
+        assert!(matches!(
+            EnrollmentRowContext::new(machine, org, enrollment, deployment, 1),
+            Err(SecretStoreError::InvalidEnrollmentRowContext)
+        ));
+    }
+}
+
+#[test]
+fn enrollment_credential_rejects_empty_and_redacts_debug() {
+    assert!(EnrollmentRowCredential::copy_from("").is_none());
+    assert_eq!(format!("{:?}", fixture_token()), "[redacted]");
 }

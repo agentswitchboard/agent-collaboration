@@ -1,17 +1,20 @@
-use codex_router_secret_store::enrollment_row_sealer::EnrollmentRowContext;
+use codex_router_secret_store::{
+    enrollment_row_sealer::EnrollmentRowContext, model::SecretStoreError,
+};
 use switchboard_machine_core_store::{
     EnrollmentRowCorruption, StoredEnrollmentEnd, StoredEnrollmentRow,
     StoredInvalidEnrollmentReason,
 };
 use switchboard_machine_enrollment::{
-    BindingGeneration, EnrollmentBinding, EnrollmentEnd, EnrollmentKey, InvalidReason, MachineId,
-    SignInDeployment,
+    BindingGeneration, EnrollmentEnd, EnrollmentKey, InvalidReason, MachineId, SignInDeployment,
 };
 
 pub(crate) enum EnrollmentSnapshot {
     Empty,
     Active {
-        row_context: EnrollmentRowContext,
+        key: EnrollmentKey,
+        deployment: SignInDeployment,
+        generation: BindingGeneration,
         sealed: Vec<u8>,
     },
     Ended {
@@ -51,15 +54,15 @@ impl EnrollmentSnapshot {
                 let enrollment_id = enrollment_id
                     .parse()
                     .map_err(|_| EnrollmentRowCorruption::EnrollmentId)?;
-                let row_context = EnrollmentRowContext {
+                let key = EnrollmentKey {
                     machine_id: machine_id.clone(),
                     organization_id,
                     enrollment_id,
-                    deployment,
-                    generation: binding_generation(generation)?,
                 };
                 Ok(Self::Active {
-                    row_context,
+                    key,
+                    deployment,
+                    generation: binding_generation(generation)?,
                     sealed,
                 })
             }
@@ -87,8 +90,7 @@ impl EnrollmentSnapshot {
     pub(crate) fn generation(&self) -> BindingGeneration {
         match self {
             Self::Empty => BindingGeneration::EMPTY,
-            Self::Active { row_context, .. } => row_context.generation,
-            Self::Ended { generation, .. } => *generation,
+            Self::Active { generation, .. } | Self::Ended { generation, .. } => *generation,
         }
     }
 }
@@ -100,14 +102,18 @@ fn binding_generation(generation: i64) -> Result<BindingGeneration, EnrollmentRo
         .ok_or(EnrollmentRowCorruption::Generation)
 }
 
-pub(crate) fn seal_context(binding: &EnrollmentBinding) -> EnrollmentRowContext {
-    EnrollmentRowContext {
-        machine_id: binding.context.machine_id.clone(),
-        organization_id: binding.context.organization_id,
-        deployment: binding.context.deployment.clone(),
-        enrollment_id: binding.credential.enrollment_id,
-        generation: binding.generation,
-    }
+pub(crate) fn seal_context(
+    key: &EnrollmentKey,
+    deployment: &SignInDeployment,
+    generation: BindingGeneration,
+) -> Result<EnrollmentRowContext, SecretStoreError> {
+    EnrollmentRowContext::new(
+        key.machine_id.as_str(),
+        &key.organization_id.to_string(),
+        &key.enrollment_id.to_string(),
+        deployment.origin().as_str(),
+        generation.get(),
+    )
 }
 
 pub(crate) const fn stored_end(why: EnrollmentEnd) -> StoredEnrollmentEnd {
