@@ -284,6 +284,7 @@ pub fn organization_id() -> OrganizationId {
 #[derive(Clone)]
 pub struct ScriptStore {
     saved: Arc<Mutex<StoredEnrollment>>,
+    submitted: Arc<Mutex<Vec<EnrollmentBinding>>>,
     durability: StoreDurability,
 }
 
@@ -297,6 +298,7 @@ impl ScriptStore {
     pub fn new(durability: StoreDurability) -> Self {
         Self {
             saved: Arc::new(Mutex::new(StoredEnrollment::Empty)),
+            submitted: Arc::new(Mutex::new(Vec::new())),
             durability,
         }
     }
@@ -310,6 +312,13 @@ impl ScriptStore {
             StoredEnrollment::Active(binding) => Some(binding),
             _ => None,
         }
+    }
+
+    pub fn submissions(&self) -> Vec<EnrollmentBinding> {
+        self.submitted
+            .lock()
+            .expect("fake store submissions")
+            .clone()
     }
 
     fn write(
@@ -341,6 +350,10 @@ impl CredentialStore for ScriptStore {
         expected: BindingGeneration,
         binding: &EnrollmentBinding,
     ) -> impl Future<Output = Result<ConditionalWrite, CredentialStoreError>> + Send {
+        self.submitted
+            .lock()
+            .expect("fake store submissions")
+            .push(binding.clone());
         ready(Ok(
             self.write(expected, StoredEnrollment::Active(binding.clone()))
         ))
