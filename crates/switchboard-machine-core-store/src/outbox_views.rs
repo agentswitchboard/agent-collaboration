@@ -1,5 +1,6 @@
 //! Typed projections of the caller's own stored writes.
-use central_link_protocol::{ReplyPayload, RequestPayload};
+use crate::OutboxScope;
+use central_link_protocol::ReplyPayload;
 use serde::{Deserialize, Serialize};
 use workspace_ids::{RequestId, SessionRef};
 use workspace_model::{
@@ -26,44 +27,27 @@ pub enum OutboxWriteTarget {
 }
 
 impl OutboxWriteTarget {
-    pub fn request_scope(&self) -> central_link_protocol::RequestScope {
-        use central_link_protocol::RequestScope;
+    pub fn request_scope(&self) -> OutboxScope {
         match self {
             Self::Thread {
                 workspace_id: Some(workspace_id),
                 ..
-            } => RequestScope::Workspace(workspace_id.clone()),
+            } => OutboxScope::Workspace(workspace_id.clone()),
             Self::Thread {
                 workspace_id: None, ..
             }
-            | Self::Session { .. } => RequestScope::Organization,
+            | Self::Session { .. } => OutboxScope::Organization,
         }
     }
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OutboxWriteContent {
+pub(crate) struct OutboxWriteContent {
     pub target: OutboxWriteTarget,
     pub body: PostText,
 }
 
 impl OutboxWriteContent {
-    /// The outbox only holds `ThreadPost` and `SendMessage`; any other payload
-    /// answers None and is not an outbox write.
-    #[must_use]
-    pub fn of(payload: &RequestPayload) -> Option<Self> {
-        match payload {
-            RequestPayload::Workspace(request) => Self::workspace(request),
-            RequestPayload::Mail(request) => match &request.operation {
-                CentralMailOperation::SendMessage { to, body, .. } => Some(Self {
-                    target: OutboxWriteTarget::Session { to: to.clone() },
-                    body: body.clone(),
-                }),
-                _ => None,
-            },
-        }
-    }
-
     pub(crate) fn workspace(request: &workspace_model::WorkspaceRequest) -> Option<Self> {
         match &request.operation {
             WorkspaceOperation::ThreadPost {

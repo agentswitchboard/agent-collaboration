@@ -1,6 +1,6 @@
 use super::{MARK, central_refusal, item, open};
 use crate::{MacOutbox, OutboxRefusal, OutboxRequestStatus, OutboxStoreError, OutboxWriteOutcome};
-use central_link_protocol::{RequestScope, RequestStatusQuery};
+use crate::{OutboxRequestKey, OutboxScope};
 
 #[tokio::test]
 async fn insert_failure_distinguishes_before_begin_and_after_begin() {
@@ -58,7 +58,7 @@ async fn central_refusal_uses_the_main_payload_and_preserves_caller_and_scope() 
         .await
         .unwrap();
 
-    let mut query = RequestStatusQuery {
+    let mut query = OutboxRequestKey {
         request_id: write.request.clone(),
         scope: write.payload.request_scope(),
     };
@@ -76,7 +76,7 @@ async fn central_refusal_uses_the_main_payload_and_preserves_caller_and_scope() 
             .unwrap(),
         OutboxRequestStatus::NotFound,
     );
-    query.scope = RequestScope::Organization;
+    query.scope = OutboxScope::Organization;
     assert_eq!(
         store
             .scoped_request_status(&write.caller, &query)

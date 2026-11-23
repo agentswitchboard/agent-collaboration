@@ -3,7 +3,6 @@ use crate::{
     LocalOutboxRefusal, OutboxCancellation, OutboxInsert, OutboxRequestStatus, OutboxStorage,
     OutboxStoreError, PendingWriteState, StoredOutboxWrite,
 };
-use central_link_protocol::RequestPayload;
 use workspace_ids::RequestId;
 
 /// A waiting write is never claimed at or past its deadline; the same claim
@@ -226,16 +225,7 @@ pub(crate) async fn a_direct_message_goes_out_with_its_creation_stamp_as_sent_at
         writes
             .iter()
             .find(|write| write.request == direct.request)
-            .map(|write| match &write.payload {
-                RequestPayload::Mail(request) => match &request.operation {
-                    workspace_model::central_mail::CentralMailOperation::SendMessage {
-                        sent_at,
-                        ..
-                    } => sent_at.timestamp_millis(),
-                    other => panic!("not a direct message: {other:?}"),
-                },
-                RequestPayload::Workspace(_) => panic!("not a direct message"),
-            })
+            .map(|write| write.sent_at.timestamp_millis())
     };
     assert_eq!(
         sent_at(&first),
@@ -252,10 +242,7 @@ pub(crate) async fn a_direct_message_goes_out_with_its_creation_stamp_as_sent_at
             .iter()
             .find(|write| write.request == post.request)
             .unwrap();
-        assert_eq!(
-            sent_post.payload,
-            post.payload.clone().into_wire(chrono::DateTime::UNIX_EPOCH)
-        );
+        assert_eq!(sent_post.payload, post.payload.clone());
     }
 }
 

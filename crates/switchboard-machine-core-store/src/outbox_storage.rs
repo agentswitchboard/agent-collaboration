@@ -1,7 +1,6 @@
 //! The storage the central link driver keeps its outbox in. Production is
 //! machine_local.sqlite through MacOutbox. Contract cases exercise the storage
 //! API independently of link scheduling.
-use crate::MachineLocalStore;
 use crate::outbox_store::{
     ClaimedBatch, MacOutbox, NewOutboxItem, OutboxInsert, OutboxStoreError, StoredOutboxWrite,
 };
@@ -9,6 +8,7 @@ use crate::{
     EndedWrite, OutboxRequestStatus, OutboxWriteOutcome, OutgoingWrite, PendingWrite,
     StoredSenderOutcome,
 };
+use crate::{MachineLocalStore, OutboxRequestKey};
 use std::{future::Future, pin::Pin};
 use workspace_ids::RequestId;
 use workspace_model::Caller;
@@ -31,7 +31,7 @@ pub trait OutboxStorage: Send {
     fn scoped_request_status<'call>(
         &'call mut self,
         caller: &'call Caller,
-        query: &'call central_link_protocol::RequestStatusQuery,
+        key: &'call OutboxRequestKey,
     ) -> OutboxFuture<'call, OutboxRequestStatus>;
     fn pending_for<'call>(
         &'call mut self,
@@ -73,6 +73,7 @@ pub trait OutboxStorage: Send {
         request: &'call RequestId,
     ) -> OutboxFuture<'call, Option<StoredSenderOutcome>>;
     fn sent_without_answer(&mut self) -> OutboxFuture<'_, Vec<RequestId>>;
+    #[cfg(test)]
     fn mark_sent<'call>(
         &'call mut self,
         requests: &'call [RequestId],
@@ -108,22 +109,17 @@ impl MachineLocalOutbox {
     pub fn new(store: MachineLocalStore) -> Self {
         Self { store }
     }
-
-    /// The store underneath, for callers that need MacOutbox directly.
-    pub fn store_mut(&mut self) -> &mut MachineLocalStore {
-        &mut self.store
-    }
 }
 
 impl OutboxStorage for MachineLocalOutbox {
     fn scoped_request_status<'call>(
         &'call mut self,
         caller: &'call Caller,
-        query: &'call central_link_protocol::RequestStatusQuery,
+        key: &'call OutboxRequestKey,
     ) -> OutboxFuture<'call, OutboxRequestStatus> {
         Box::pin(async move {
             MacOutbox::new(&mut self.store)
-                .scoped_request_status(caller, query)
+                .scoped_request_status(caller, key)
                 .await
         })
     }
@@ -219,6 +215,7 @@ impl OutboxStorage for MachineLocalOutbox {
     fn sent_without_answer(&mut self) -> OutboxFuture<'_, Vec<RequestId>> {
         Box::pin(async move { MacOutbox::new(&mut self.store).sent_without_answer().await })
     }
+    #[cfg(test)]
     fn mark_sent<'call>(
         &'call mut self,
         requests: &'call [RequestId],

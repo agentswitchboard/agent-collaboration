@@ -1,9 +1,8 @@
 use super::OutboxQueuedWrite;
-use central_link_protocol::RequestPayload;
-use workspace_model::central_mail::{CentralMailOperation, SendMessageRequest};
+use workspace_model::central_mail::SendMessageRequest;
 
 #[test]
-fn a_tool_cannot_submit_a_timestamp_and_only_the_claim_adds_it() {
+fn queued_direct_message_rejects_a_caller_timestamp() {
     let mut value = serde_json::json!({
         "to": {
             "machineId": "019f0000-0000-7000-8000-00000000c402",
@@ -24,11 +23,4 @@ fn a_tool_cannot_submit_a_timestamp_and_only_the_claim_adds_it() {
         message: input,
     };
     assert!(!serde_json::to_string(&queued).unwrap().contains("sentAt"));
-    let stamp = "2030-01-01T00:02:03Z".parse().unwrap();
-    let RequestPayload::Mail(wire) = queued.into_wire(stamp) else {
-        panic!("the queued message produced a mail request");
-    };
-    assert!(
-        matches!(wire.operation, CentralMailOperation::SendMessage { sent_at, .. } if sent_at == stamp)
-    );
 }

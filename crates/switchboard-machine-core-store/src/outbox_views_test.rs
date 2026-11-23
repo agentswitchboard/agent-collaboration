@@ -1,8 +1,8 @@
-use super::{OutboxWriteContent, OutboxWriteTarget};
-use central_link_protocol::RequestPayload;
+use super::OutboxWriteTarget;
+use crate::OutboxQueuedWrite;
 use serde_json::json;
 
-fn payload(value: serde_json::Value) -> RequestPayload {
+fn payload(value: serde_json::Value) -> OutboxQueuedWrite {
     serde_json::from_value(value).unwrap()
 }
 
@@ -15,19 +15,20 @@ fn a_thread_post_and_a_direct_message_are_outbox_writes_and_commands_are_not() {
     let post = payload(json!({"kind": "workspace", "request": {
         "requestId": ID, "workspaceId": WORKSPACE,
         "operation": {"kind": "threadPost", "threadId": THREAD, "body": "hi", "addressees": []}}}));
-    let message = payload(
-        json!({"kind": "mail", "request": {"requestId": ID, "operation": {
-        "kind": "sendMessage",
-        "to": {"machineId": WORKSPACE, "sessionId": "s1"},
-        "body": "hello", "delivery": "auto", "replyTo": null,
-        "sentAt": "2030-01-01T00:00:00Z"}}}),
-    );
+    let message = OutboxQueuedWrite::SendMessage {
+        request_id: ID.parse().unwrap(),
+        message: serde_json::from_value(json!({
+            "to": {"machineId": WORKSPACE, "sessionId": "s1"},
+            "body": "hello", "delivery": "auto", "replyTo": null,
+        }))
+        .unwrap(),
+    };
     let create_thread = payload(json!({"kind": "workspace", "request": {
         "requestId": ID, "workspaceId": WORKSPACE,
         "operation": {"kind": "createThread", "areaId": THREAD, "title": "t", "body": "opening", "addressees": []}}}));
 
-    let post = OutboxWriteContent::of(&post).unwrap();
-    let message = OutboxWriteContent::of(&message).unwrap();
+    let post = post.content().unwrap();
+    let message = message.content().unwrap();
 
     assert!(matches!(
         post.target,
@@ -36,5 +37,5 @@ fn a_thread_post_and_a_direct_message_are_outbox_writes_and_commands_are_not() {
     assert_eq!(post.body.as_str(), "hi");
     assert!(matches!(message.target, OutboxWriteTarget::Session { .. }));
     assert_eq!(message.body.as_str(), "hello");
-    assert_eq!(OutboxWriteContent::of(&create_thread), None);
+    assert_eq!(create_thread.content(), None);
 }

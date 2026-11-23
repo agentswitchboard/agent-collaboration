@@ -20,14 +20,16 @@ pub use machine_identity_store::{MachineIdentityError, load_or_create_machine_id
 pub use machine_local_store::{MACHINE_LOCAL_DATABASE, MachineLocalStore, MachineLocalStoreError};
 pub use outbox_queued_write::OutboxQueuedWrite;
 pub use outbox_status::{
-    LocalOutboxRefusal, OutboxCancellation, OutboxRefusal, OutboxRequestStatus, OutboxWriteOutcome,
+    LocalOutboxRefusal, OutboxCancellation, OutboxRefusal, OutboxRequestKey, OutboxRequestStatus,
+    OutboxScope, OutboxWriteOutcome,
 };
 pub use outbox_storage::{MachineLocalOutbox, OutboxFuture, OutboxStorage};
 pub use outbox_store::{
     ClaimedBatch, MacOutbox, NewOutboxItem, OutboxInsert, OutboxStoreError, StoredOutboxWrite,
 };
 pub use outbox_views::{
-    EndedWrite, OutboxWriteContent, OutboxWriteTarget, OutgoingOutcome, OutgoingWrite,
-    PendingWrite, PendingWriteState,
+    EndedWrite, OutboxWriteTarget, OutgoingOutcome, OutgoingWrite, PendingWrite, PendingWriteState,
 };
 pub use sender_outcome::StoredSenderOutcome;
+
+pub(crate) use outbox_views::OutboxWriteContent;

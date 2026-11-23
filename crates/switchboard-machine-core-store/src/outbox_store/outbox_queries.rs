@@ -6,11 +6,11 @@ use super::{
         parse_request_id, read_decoded_outbox,
     },
 };
+use crate::OutboxRequestKey;
 use crate::{
     OutboxRequestStatus, OutgoingOutcome, OutgoingWrite, PendingWrite, PendingWriteState,
     outbox_item_state::OutboxItemState,
 };
-use central_link_protocol::RequestStatusQuery;
 use workspace_ids::RequestId;
 use workspace_model::Caller;
 
@@ -18,10 +18,9 @@ impl MacOutbox<'_> {
     pub async fn scoped_request_status(
         &mut self,
         caller: &Caller,
-        query: &RequestStatusQuery,
+        key: &OutboxRequestKey,
     ) -> Result<OutboxRequestStatus, OutboxStoreError> {
-        let Some(stored) =
-            read_decoded_outbox(&mut self.store.connection, &query.request_id).await?
+        let Some(stored) = read_decoded_outbox(&mut self.store.connection, &key.request_id).await?
         else {
             return Ok(OutboxRequestStatus::NotFound);
         };
@@ -32,7 +31,7 @@ impl MacOutbox<'_> {
             StoredPayload::Unanswered(write) => write.request_scope(),
             StoredPayload::Answered(profile) => profile.target.request_scope(),
         };
-        Ok(if scope == query.scope {
+        Ok(if scope == key.scope {
             stored.status
         } else {
             OutboxRequestStatus::NotFound
