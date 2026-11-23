@@ -3,6 +3,7 @@ use approval_request_protocol::{
 };
 use state_machine_core::{StateMachine, TransitionError};
 use switchboard_approval_holder::run_gate::CallAttempt;
+use switchboard_approval_holder::waiting_request::{LinkAttemptDisposition, LinkCallAnswer};
 use switchboard_approval_holder::waiting_request::{ProviderReply, WriterOutcome};
 
 use super::fixtures::{
@@ -116,11 +117,13 @@ fn run_not_registered_holds_the_same_wait_until_registration_recovers() {
     mac.welcome(1);
     mac.registered(1, RegisterRunReply::Registered {});
     let first = mac.publish();
-    mac.wait_event(RequestEvent::RaiseReply {
+    mac.wait_event(RequestEvent::AttemptSettled {
         call: call(1, 1),
-        reply: RaiseReply::AuthorityRefused {
-            refusal: RunRefusal::RunNotRegistered {},
-        },
+        disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Raise(
+            RaiseReply::AuthorityRefused {
+                refusal: RunRefusal::RunNotRegistered {},
+            },
+        )),
     });
     assert_eq!(mac.gate.ready_connection(), None);
     assert_eq!(mac.wait.claimed_reply(), None);
@@ -234,7 +237,10 @@ fn withdrawn_exact_responder_cannot_start_even_after_received() {
         ),
         Err(TransitionError::Stale)
     );
-    mac.wait_event(RequestEvent::CallEndedWithoutReply { call: call(1, 1) });
+    mac.wait_event(RequestEvent::AttemptSettled {
+        call: call(1, 1),
+        disposition: LinkAttemptDisposition::AnswerLost,
+    });
     assert_eq!(
         offer(&mut mac, 1, request),
         [ending_reply(1, DeliverEndingReply::NotHeld {})]
@@ -249,14 +255,14 @@ fn acknowledged_wait_continues_through_loss_until_central_offers_its_ending() {
     mac.registered(1, RegisterRunReply::Registered {});
     mac.publish();
     let saved = "2026-11-22T17:00:00Z".parse().unwrap();
-    mac.wait_event(RequestEvent::RaiseReply {
+    mac.wait_event(RequestEvent::AttemptSettled {
         call: call(1, 1),
-        reply: RaiseReply::Receipt {
+        disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Raise(RaiseReply::Receipt {
             receipt: approval_request_protocol::RaiseReceipt {
                 request_id: raise().request_id().clone(),
                 window: approval_request_protocol::ApprovalWindow::from_first_save(saved).unwrap(),
             },
-        },
+        })),
     });
     mac.lose_connection(1);
     assert!(mac.wait.holds_place());
@@ -285,6 +291,7 @@ fn replaced_ask_keeps_its_stop_while_a_new_wait_raises_on_the_same_gate() {
     mac.welcome(1);
     mac.registered(1, RegisterRunReply::Registered {});
     mac.publish();
+    mac.lose_answer(1, 1);
     mac.wait_event(RequestEvent::LocalStop {
         cause: HolderStopCause::AskReplaced,
     });

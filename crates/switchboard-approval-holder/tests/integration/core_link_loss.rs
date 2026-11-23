@@ -6,10 +6,11 @@ use std::{
     },
     time::Duration,
 };
+use switchboard_approval_holder::waiting_request::{LinkAttemptDisposition, LinkCallAnswer};
 
 use approval_request_protocol::{
-    HolderStopCause, ProviderStopCause, Raise, RaiseReply, RegisterRunReply, RegisterRunRequest,
-    RunRefusal, StopReceiptEnding, StopReply, StopRequest,
+    ApprovalWindow, HolderStopCause, ProviderStopCause, Raise, RaiseReceipt, RaiseReply,
+    RegisterRunReply, RegisterRunRequest, RunRefusal, StopReceiptEnding, StopReply, StopRequest,
 };
 use state_machine_core::{StateMachine, TransitionError};
 use switchboard_approval_holder::{
@@ -77,6 +78,16 @@ async fn central_peer(lost: Arc<AtomicUsize>) -> turmoil::Result {
                 first_raise,
                 "new link keeps the Raise body"
             );
+            let receipt = RaiseReply::Receipt {
+                receipt: RaiseReceipt {
+                    request_id: raise().request_id().clone(),
+                    window: ApprovalWindow::from_first_save(
+                        "2026-11-22T17:00:00Z".parse().unwrap(),
+                    )
+                    .unwrap(),
+                },
+            };
+            send(&mut link, &serde_json::to_vec(&receipt)?).await?;
         }
 
         let stop_bytes = receive(&mut link).await?;
@@ -163,9 +174,9 @@ fn lost_registration_and_stop_replies_recover_across_two_reconnects() {
             .unwrap();
         send(&mut link, &serde_json::to_vec(&published_raise)?).await?;
         let refusal = serde_json::from_slice(&receive(&mut link).await?)?;
-        mac.wait_event(RequestEvent::RaiseReply {
+        mac.wait_event(RequestEvent::AttemptSettled {
             call: call(2, 1),
-            reply: refusal,
+            disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Raise(refusal)),
         });
         assert_eq!(
             mac.gate.ready_connection(),
@@ -186,6 +197,12 @@ fn lost_registration_and_stop_replies_recover_across_two_reconnects() {
             }]
         );
         send(&mut link, &serde_json::to_vec(&published_raise)?).await?;
+        mac.wait_event(RequestEvent::AttemptSettled {
+            call: call(3, 2),
+            disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Raise(
+                serde_json::from_slice(&receive(&mut link).await?)?,
+            )),
+        });
         let cause = ProviderStopCause::TurnStopped;
         mac.wait_event(RequestEvent::LocalStop {
             cause: HolderStopCause::TurnStopped,
@@ -253,9 +270,9 @@ fn lost_registration_and_stop_replies_recover_across_two_reconnects() {
         send(&mut link, &serde_json::to_vec(&second_stop)?).await?;
         let reply: StopReply = serde_json::from_slice(&receive(&mut link).await?)?;
         assert_eq!(
-            mac.wait_event(RequestEvent::StopReply {
+            mac.wait_event(RequestEvent::AttemptSettled {
                 call: call(4, 4),
-                reply
+                disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Stop(reply))
             }),
             [RequestEffect::StopReconciled(
                 StopReceiptEnding::TimedOut {}

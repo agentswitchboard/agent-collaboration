@@ -10,7 +10,7 @@ use switchboard_approval_holder::{
         RunGateEvent, RunGateState,
     },
     waiting_request::{
-        WaitEffect, WaitEvent, WaitState, WaitingRequest,
+        LinkAttemptDisposition, WaitEffect, WaitEvent, WaitState, WaitingRequest,
         gate_access::{GateWaitEvent, step_under_gate},
     },
 };
@@ -239,6 +239,16 @@ impl Mac {
             link: link(connection),
         });
         self.retire_wait_link(link(connection));
+    }
+
+    pub fn lose_answer(&mut self, connection: u8, attempt: u64) {
+        assert!(
+            self.wait_event(RequestEvent::AttemptSettled {
+                call: call(connection, attempt),
+                disposition: LinkAttemptDisposition::AnswerLost,
+            })
+            .is_empty()
+        );
     }
 
     fn retire_wait_link(&mut self, link: LinkAttempt<u8>) {

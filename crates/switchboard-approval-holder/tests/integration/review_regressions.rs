@@ -3,6 +3,9 @@ use approval_request_protocol::{
     RaiseReply, RegisterRunReply, RunRefusal, StopReply, StopRequest,
 };
 use state_machine_core::{StateMachine, TransitionError};
+use switchboard_approval_holder::waiting_request::{
+    LinkAttemptDisposition, LinkCallAnswer, RequestFamily,
+};
 use switchboard_approval_holder::{
     run_gate::{AuthorityEnd, CallAttempt, DialAttempt, RunGate},
     waiting_request::{LocalNegative, ProviderReply, WaitState, WriterOutcome},
@@ -124,7 +127,10 @@ fn same_carrier_raise_and_stop_retries_ignore_old_replies_and_failures() {
         Err(TransitionError::Stale),
         "wire loss without completion must leave Raise in flight"
     );
-    mac.wait_event(RequestEvent::CallEndedWithoutReply { call: call(1, 1) });
+    mac.wait_event(RequestEvent::AttemptSettled {
+        call: call(1, 1),
+        disposition: LinkAttemptDisposition::AnswerLost,
+    });
     assert_eq!(
         mac.publish(),
         [RequestEffect::Raise {
@@ -134,13 +140,18 @@ fn same_carrier_raise_and_stop_retries_ignore_old_replies_and_failures() {
         }]
     );
     for event in [
-        RequestEvent::RaiseReply {
+        RequestEvent::AttemptSettled {
             call: call(1, 1),
-            reply: RaiseReply::AuthorityRefused {
-                refusal: RunRefusal::RunRetired {},
-            },
+            disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Raise(
+                RaiseReply::AuthorityRefused {
+                    refusal: RunRefusal::RunRetired {},
+                },
+            )),
         },
-        RequestEvent::CallEndedWithoutReply { call: call(1, 1) },
+        RequestEvent::AttemptSettled {
+            call: call(1, 1),
+            disposition: LinkAttemptDisposition::AnswerLost,
+        },
     ] {
         assert_eq!(
             RequestMachine::transition(&mac.wait, event),
@@ -156,7 +167,10 @@ fn same_carrier_raise_and_stop_retries_ignore_old_replies_and_failures() {
     else {
         panic!("expected owed Stop");
     };
-    mac.wait_event(RequestEvent::CallEndedWithoutReply { call: call(1, 3) });
+    mac.wait_event(RequestEvent::AttemptSettled {
+        call: call(1, 3),
+        disposition: LinkAttemptDisposition::AnswerLost,
+    });
     assert_eq!(
         mac.publish(),
         [RequestEffect::Stop {
@@ -166,13 +180,18 @@ fn same_carrier_raise_and_stop_retries_ignore_old_replies_and_failures() {
         }]
     );
     for event in [
-        RequestEvent::StopReply {
+        RequestEvent::AttemptSettled {
             call: call(1, 3),
-            reply: StopReply::AuthorityRefused {
-                refusal: RunRefusal::EnrollmentEnded {},
-            },
+            disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Stop(
+                StopReply::AuthorityRefused {
+                    refusal: RunRefusal::EnrollmentEnded {},
+                },
+            )),
         },
-        RequestEvent::CallEndedWithoutReply { call: call(1, 3) },
+        RequestEvent::AttemptSettled {
+            call: call(1, 3),
+            disposition: LinkAttemptDisposition::AnswerLost,
+        },
     ] {
         assert_eq!(
             RequestMachine::transition(&mac.wait, event),
@@ -196,6 +215,15 @@ fn recoverable_refusal_retires_link_and_preserves_multiple_wait_duties() {
         .0;
     other = RequestMachine::transition(
         &other,
+        RequestEvent::AttemptSettled {
+            call: call(1, 8),
+            disposition: LinkAttemptDisposition::AnswerLost,
+        },
+    )
+    .unwrap()
+    .0;
+    other = RequestMachine::transition(
+        &other,
         RequestEvent::LocalStop {
             cause: HolderStopCause::TurnStopped,
         },
@@ -212,11 +240,13 @@ fn recoverable_refusal_retires_link_and_preserves_multiple_wait_duties() {
 
     let (wait, effects) = RequestMachine::transition(
         &mac.wait,
-        RequestEvent::RaiseReply {
+        RequestEvent::AttemptSettled {
             call: call(1, 1),
-            reply: RaiseReply::AuthorityRefused {
-                refusal: RunRefusal::RunNotRegistered {},
-            },
+            disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Raise(
+                RaiseReply::AuthorityRefused {
+                    refusal: RunRefusal::RunNotRegistered {},
+                },
+            )),
         },
     )
     .unwrap();
@@ -274,6 +304,8 @@ fn displaced_raise_terminal_refusal_fences_the_gate_before_provider_start() {
     ] {
         let mut mac = ready();
         mac.publish();
+        mac.lose_answer(1, 1);
+        mac.publish();
         mac.wait_event(RequestEvent::LocalStop {
             cause: HolderStopCause::TurnStopped,
         });
@@ -282,9 +314,11 @@ fn displaced_raise_terminal_refusal_fences_the_gate_before_provider_start() {
 
         let result = RequestMachine::transition(
             &mac.wait,
-            RequestEvent::RaiseReply {
-                call: call(1, 1),
-                reply: RaiseReply::AuthorityRefused { refusal },
+            RequestEvent::AttemptSettled {
+                call: call(1, 2),
+                disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Raise(
+                    RaiseReply::AuthorityRefused { refusal },
+                )),
             },
         );
         assert!(
@@ -315,6 +349,7 @@ fn displaced_raise_terminal_refusal_fences_the_gate_before_provider_start() {
 fn ending_admission_discards_old_carriers_and_runs() {
     let mut mac = ready();
     mac.publish();
+    mac.lose_answer(1, 1);
     mac.lose_connection(1);
     mac.welcome(2);
     assert_eq!(
@@ -424,6 +459,7 @@ fn known_provider_disconnect_releases_once_without_submitting_and_keeps_stop() {
             Err(TransitionError::Stale)
         );
         if phase == 1 {
+            mac.lose_answer(1, 1);
             assert_eq!(
                 mac.publish(),
                 [RequestEffect::Stop {
@@ -447,15 +483,18 @@ fn known_provider_disconnect_releases_once_without_submitting_and_keeps_stop() {
 fn stop_digest_conflict_is_reported_as_unresolved_independently_of_writer() {
     let mut mac = ready();
     mac.publish();
+    mac.lose_answer(1, 1);
     mac.wait_event(RequestEvent::LocalStop {
         cause: HolderStopCause::TurnStopped,
     });
     mac.publish();
     // Central returns NotVisible for a Stop whose digest differs from the incumbent.
     assert_eq!(
-        mac.wait_event(RequestEvent::StopReply {
+        mac.wait_event(RequestEvent::AttemptSettled {
             call: call(1, 2),
-            reply: StopReply::NotVisible {}
+            disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Stop(
+                StopReply::NotVisible {}
+            ))
         }),
         [RequestEffect::StopNotVisible {
             request_id: raise().request_id().clone(),
@@ -481,7 +520,7 @@ fn stop_digest_conflict_is_reported_as_unresolved_independently_of_writer() {
 #[test]
 fn local_capacity_refusal_is_never_raised_and_uses_the_exact_writer_once() {
     let mut mac = ready();
-    mac.wait = WaitState::at_capacity(RESPONDER);
+    mac.wait = WaitState::at_capacity(RequestFamily::ProviderAsk, RESPONDER);
     let reply = ProviderReply::LocalNegative(LocalNegative::HolderAtCapacity);
     assert_eq!(
         mac.wait.claimed_reply(),

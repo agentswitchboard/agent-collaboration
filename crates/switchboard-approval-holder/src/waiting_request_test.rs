@@ -1,3 +1,4 @@
+use super::{LinkAttemptDisposition, LinkCallAnswer, RequestFamily};
 use approval_request_protocol::{
     ApprovalOffer, CancelReason, DeliverEndingReply, DeliverEndingRequest, Ending, HolderStopCause,
     OfferedOption, OfferedOptionId, OfferedOptions, OptionEffect, OptionLifetime, ProviderHolder,
@@ -270,7 +271,10 @@ fn finished_and_released_exact_offer_is_not_held_and_never_writes_twice() {
     assert!(!state.may_be_forgotten());
     apply(
         &mut state,
-        Event::CallEndedWithoutReply { call: call(1, 1) },
+        Event::AttemptSettled {
+            call: call(1, 1),
+            disposition: LinkAttemptDisposition::AnswerLost,
+        },
     );
     assert_eq!(
         apply(&mut state, deliver(ending)),
@@ -445,9 +449,9 @@ fn capacity_and_other_terminal_refusals_use_the_same_one_time_writer() {
         let mut state = published();
         apply(
             &mut state,
-            Event::RaiseReply {
+            Event::AttemptSettled {
                 call: call(1, 1),
-                reply,
+                disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Raise(reply)),
             },
         );
         let negative = ProviderReply::LocalNegative(LocalNegative::RaiseRefused(refusal));
@@ -548,9 +552,11 @@ fn owed_stop_is_exact_after_local_write_lost_reply_and_reconnect() {
     assert_eq!(
         Wait::transition(
             &state,
-            Event::StopReply {
+            Event::AttemptSettled {
                 call: call(1, 2),
-                reply: authoritative.clone()
+                disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Stop(
+                    authoritative.clone()
+                ))
             }
         ),
         Err(TransitionError::Stale)
@@ -558,9 +564,9 @@ fn owed_stop_is_exact_after_local_write_lost_reply_and_reconnect() {
     assert_eq!(
         apply(
             &mut state,
-            Event::StopReply {
+            Event::AttemptSettled {
                 call: call(2, 3),
-                reply: authoritative
+                disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Stop(authoritative))
             }
         ),
         [Effect::StopReconciled(StopReceiptEnding::TimedOut {})]
@@ -644,9 +650,9 @@ fn wait_transition_matrix_reaches_exactly_its_declared_edges() {
             },
         ] {
             events.push(
-                Event::RaiseReply {
+                Event::AttemptSettled {
                     call: key.clone(),
-                    reply,
+                    disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Raise(reply)),
                 }
                 .into(),
             );
@@ -661,14 +667,25 @@ fn wait_transition_matrix_reaches_exactly_its_declared_edges() {
             },
         ] {
             events.push(
-                Event::StopReply {
+                Event::AttemptSettled {
                     call: key.clone(),
-                    reply,
+                    disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Stop(reply)),
                 }
                 .into(),
             );
         }
-        events.push(Event::CallEndedWithoutReply { call: key.clone() }.into());
+        for disposition in [
+            LinkAttemptDisposition::AnswerLost,
+            LinkAttemptDisposition::NotReached,
+        ] {
+            events.push(
+                Event::AttemptSettled {
+                    call: key.clone(),
+                    disposition,
+                }
+                .into(),
+            );
+        }
         events.push(Event::ConnectionRetired { link: key.link }.into());
     }
     for reply in [
@@ -693,7 +710,8 @@ fn wait_transition_matrix_reaches_exactly_its_declared_edges() {
     let mut states = vec![
         bound(),
         State::bound(call_raise, RESPONDER).unwrap(),
-        State::at_capacity(RESPONDER),
+        State::at_capacity(RequestFamily::ProviderAsk, RESPONDER),
+        State::at_capacity(RequestFamily::HeldCall, RESPONDER),
     ];
     let mut index = 0;
     while index < states.len() {

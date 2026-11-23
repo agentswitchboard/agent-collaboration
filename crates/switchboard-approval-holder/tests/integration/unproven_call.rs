@@ -5,6 +5,7 @@ use approval_request_protocol::{
     StopRequest,
 };
 use state_machine_core::{StateMachine, TransitionError};
+use switchboard_approval_holder::waiting_request::{LinkAttemptDisposition, LinkCallAnswer};
 use switchboard_approval_holder::{
     run_gate::CallAttempt,
     waiting_request::{ProviderReply, WaitRefusal, WriterOutcome},
@@ -246,6 +247,7 @@ fn unproven_call_withdrawn_after_raise_replays_one_exact_stop() {
     let request = call_raise();
     let mut mac = ready(request.clone());
     assert_raised(&mut mac, &request);
+    mac.lose_answer(1, 1);
     assert_eq!(
         mac.wait_event(WITHDRAW),
         [RequestEffect::ReleaseBinding {
@@ -286,17 +288,21 @@ fn unproven_call_withdrawn_after_raise_replays_one_exact_stop() {
     assert_eq!(
         RequestMachine::transition(
             &mac.wait,
-            RequestEvent::StopReply {
+            RequestEvent::AttemptSettled {
                 call: call(1, 2),
-                reply: StopReply::NotVisible {},
+                disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Stop(
+                    StopReply::NotVisible {}
+                ))
             }
         ),
         Err(TransitionError::Stale)
     );
     assert_eq!(
-        mac.wait_event(RequestEvent::StopReply {
+        mac.wait_event(RequestEvent::AttemptSettled {
             call: call(2, 3),
-            reply: StopReply::NotVisible {}
+            disposition: LinkAttemptDisposition::Answered(LinkCallAnswer::Stop(
+                StopReply::NotVisible {}
+            ))
         }),
         [RequestEffect::StopNotVisible {
             request_id: request.request_id().clone(),
