@@ -540,13 +540,23 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
                         .monotonic_now()
                         .after(RECONCILIATION_RESERVE)
                         .min(deadline);
-                    match timeout_at(self.clock.as_ref(), read_deadline, self.store.read()).await {
-                        Ok(Ok(StoredEnrollment::Active(stored)))
+                    match timeout_at(
+                        self.clock.as_ref(),
+                        read_deadline,
+                        self.store.read_for_key(&key),
+                    )
+                    .await
+                    {
+                        Ok(Ok(KeyedEnrollment::Snapshot(StoredEnrollment::Active(stored))))
                             if replacement.matches_replacement(&stored) =>
                         {
                             true
                         }
-                        Ok(Ok(stored)) if stored.generation() == previous.generation => false,
+                        Ok(Ok(KeyedEnrollment::Snapshot(stored)))
+                            if stored.generation() == previous.generation =>
+                        {
+                            false
+                        }
                         Ok(Ok(_)) => return RefreshCompletion::Recheck,
                         _ => return RefreshCompletion::OutcomeNotKnown,
                     }
