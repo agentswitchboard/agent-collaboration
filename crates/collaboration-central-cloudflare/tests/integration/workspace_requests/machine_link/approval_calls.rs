@@ -180,6 +180,30 @@ impl ApprovalLinkFixture for Fixture {
         Ok(())
     }
 
+    async fn arm_notice_recovery(&self) -> Result<()> {
+        if !self
+            .runtime()
+            .control::<bool>("hold-central", &"afterApprovalNoticeRecovery")
+            .await?
+        {
+            return Err("notice recovery pause did not arm".into());
+        }
+        Ok(())
+    }
+
+    async fn await_notice_recovery(&self) -> Result<()> {
+        let runtime = self.runtime();
+        let point = "afterApprovalNoticeRecovery";
+        if !runtime
+            .control::<bool>("until-held-central", &point)
+            .await?
+            || !runtime.control::<bool>("release-central", &point).await?
+        {
+            return Err("notice recovery did not finish".into());
+        }
+        Ok(())
+    }
+
     async fn fail_next_applying_write(&self) -> Result<()> {
         if !self
             .runtime()

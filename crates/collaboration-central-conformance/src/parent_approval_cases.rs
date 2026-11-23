@@ -52,7 +52,9 @@ pub enum Case {
 
 pub async fn observe_case(fixture: &impl ApprovalLinkFixture, case: Case) -> Result<()> {
     let chain = match case {
-        Case::ThreeLevels | Case::PassToSession => Chain::ThreeLevels,
+        Case::ThreeLevels | Case::PassToSession | Case::EarlierDestinationStillDecides => {
+            Chain::ThreeLevels
+        }
         Case::EndedParent => Chain::EndedParent,
         Case::DecidePersonRequired => Chain::KeptOption,
         _ => Chain::Direct,
@@ -272,7 +274,28 @@ pub async fn observe_case(fixture: &impl ApprovalLinkFixture, case: Case) -> Res
             );
         }
         Case::EarlierDestinationStillDecides => {
-            setup.pass(id.clone(), operation).await?;
+            let next = setup
+                .grandparent
+                .as_ref()
+                .ok_or("missing grandparent")?
+                .session_id
+                .clone();
+            assert_eq!(
+                setup.pass(id.clone(), operation).await?,
+                PassOnApprovalReply::PassedOn {
+                    to: ApprovalDestination::Session {
+                        session_id: next.clone()
+                    }
+                }
+            );
+            acknowledge_notice(
+                &mut setup.socket,
+                &setup.target,
+                &next,
+                &id,
+                ApprovalNoticeReply::Received {},
+            )
+            .await?;
             assert!(matches!(
                 setup.read(id.clone()).await?,
                 ReadApprovalForSessionReply::Request { .. }
@@ -426,8 +449,7 @@ async fn observe_notice(
         setup.decide(id, operation, option(1)?).await?;
         acknowledge_ending(&mut setup).await?;
         setup.socket.close(CloseCode::Normal, None).await?;
-        let mut socket = fixture.connect().await?;
-        return heartbeat(&mut socket).await;
+        return reconnect_without_notice(fixture).await;
     }
     setup.socket.close(CloseCode::Normal, None).await?;
     setup.socket = fixture.connect().await?;
@@ -462,6 +484,21 @@ async fn observe_notice(
         ReadApprovalForSessionReply::Request { .. }
     ));
     setup.socket.close(CloseCode::Normal, None).await?;
-    setup.socket = fixture.connect().await?;
-    heartbeat(&mut setup.socket).await
+    reconnect_without_notice(fixture).await
+}
+
+async fn reconnect_without_notice(fixture: &impl ApprovalLinkFixture) -> Result<()> {
+    fixture.arm_notice_recovery().await?;
+    let mut socket = fixture.connect().await?;
+    {
+        let recovered = std::pin::pin!(fixture.await_notice_recovery());
+        let received = std::pin::pin!(super::receive_frame(&mut socket));
+        match futures_util::future::select(recovered, received).await {
+            futures_util::future::Either::Left((result, _)) => result?,
+            futures_util::future::Either::Right((frame, _)) => {
+                return Err(format!("closed notice was sent again: {:?}", frame?).into());
+            }
+        }
+    }
+    heartbeat(&mut socket).await
 }

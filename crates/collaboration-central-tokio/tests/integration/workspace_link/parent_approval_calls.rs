@@ -10,6 +10,7 @@ async fn observe(case: Case) -> Result<()> {
         before_alarm: Cell::new(0),
         delivery_answer: RefCell::default(),
         before_write: RefCell::default(),
+        notice_recovery: RefCell::default(),
     };
     let outcome = observe_case(&fixture, case).await;
     fixture.link.close().await?;
@@ -68,6 +69,7 @@ async fn deadline_crosses_while_pass_on_is_pending() -> Result<()> {
         before_alarm: Cell::new(0),
         delivery_answer: RefCell::default(),
         before_write: RefCell::default(),
+        notice_recovery: RefCell::default(),
     };
     let runtime = fixture
         .link
@@ -91,4 +93,32 @@ async fn deadline_crosses_while_pass_on_is_pending() -> Result<()> {
     let result = pass_crosses_deadline(&fixture, arm, cross_deadline).await;
     fixture.link.close().await?;
     result
+}
+
+#[tokio::test]
+async fn fault_rolls_back_session_end_and_approval() -> Result<()> {
+    let fixture = NativeApprovalFixture {
+        link: start_session_link_fixture(signed_clock()?).await?,
+        before_alarm: Cell::new(0),
+        delivery_answer: RefCell::default(),
+        before_write: RefCell::default(),
+        notice_recovery: RefCell::default(),
+    };
+    let outcome = collaboration_central_conformance::parent_approval_scenarios::session_end_and_approval_rollback(&fixture).await;
+    fixture.link.close().await?;
+    outcome
+}
+
+#[tokio::test]
+async fn fault_rolls_back_enrollment_and_approval() -> Result<()> {
+    let fixture = NativeApprovalFixture {
+        link: start_session_link_fixture(signed_clock()?).await?,
+        before_alarm: Cell::new(0),
+        delivery_answer: RefCell::default(),
+        before_write: RefCell::default(),
+        notice_recovery: RefCell::default(),
+    };
+    let outcome = collaboration_central_conformance::parent_approval_scenarios::enrollment_and_approval_rollback(&fixture).await;
+    fixture.link.close().await?;
+    outcome
 }

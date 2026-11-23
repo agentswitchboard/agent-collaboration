@@ -217,9 +217,22 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         &self,
         connection: crate::ValidatedMachineConnection,
     ) -> Option<LinkCallCompletion> {
-        self.link_call_dispatcher
-            .as_deref()
-            .map(|dispatcher| dispatcher.recover_approval_notices(connection))
+        let recovery = self
+            .link_call_dispatcher
+            .as_deref()?
+            .recover_approval_notices(connection);
+        #[cfg(feature = "test-support")]
+        {
+            let pauses = self.execution.pause_points().clone();
+            Some(Box::pin(async move {
+                recovery.await;
+                pauses
+                    .reached_central(fleet_runtime::PausePoint::AfterApprovalNoticeRecovery)
+                    .await;
+            }))
+        }
+        #[cfg(not(feature = "test-support"))]
+        Some(recovery)
     }
 
     /// A missing request is a well-formed but unregistered frame header from the decoder.

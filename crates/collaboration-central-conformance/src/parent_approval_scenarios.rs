@@ -31,6 +31,9 @@ use crate::{
 #[path = "parent_approval_cases.rs"]
 mod cases;
 pub use cases::{Case, observe_case, pass_crosses_deadline};
+#[path = "parent_approval_rollback.rs"]
+mod rollback;
+pub use rollback::{enrollment_and_approval_rollback, session_end_and_approval_rollback};
 
 const CORRELATION: &str = "019f0000-0000-7000-8000-000000007101";
 const ABSENT_REQUEST: &str = "019f0000-0000-7000-8000-000000007102";

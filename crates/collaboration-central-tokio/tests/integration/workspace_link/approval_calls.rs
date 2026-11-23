@@ -75,6 +75,7 @@ struct NativeApprovalFixture {
     before_alarm: Cell<u64>,
     delivery_answer: RefCell<Option<fleet_runtime::HeldPause>>,
     before_write: RefCell<Option<fleet_runtime::HeldPause>>,
+    notice_recovery: RefCell<Option<fleet_runtime::HeldPause>>,
 }
 
 impl ApprovalLinkFixture for NativeApprovalFixture {
@@ -162,6 +163,26 @@ impl ApprovalLinkFixture for NativeApprovalFixture {
             .runtime()
             .until_alarm_completed(self.before_alarm.get() + 1)
             .await;
+        Ok(())
+    }
+
+    async fn arm_notice_recovery(&self) -> Result<()> {
+        let runtime = self.link.host.central(&self.link.organization_id).await?;
+        let hold = runtime
+            .runtime()
+            .pause_points()
+            .hold_central(PausePoint::AfterApprovalNoticeRecovery);
+        self.notice_recovery.replace(Some(hold));
+        Ok(())
+    }
+
+    async fn await_notice_recovery(&self) -> Result<()> {
+        let mut hold = self
+            .notice_recovery
+            .take()
+            .ok_or("notice recovery pause is not armed")?;
+        hold.until_held().await;
+        hold.release();
         Ok(())
     }
 
@@ -268,6 +289,7 @@ async fn tokio_approval_raise_replay_and_stop_use_the_store() -> Result<()> {
         before_alarm: Cell::new(0),
         delivery_answer: RefCell::default(),
         before_write: RefCell::default(),
+        notice_recovery: RefCell::default(),
     };
     let result = registered_stop_and_replay(&fixture).await;
     fixture.link.close().await?;
@@ -281,6 +303,7 @@ async fn tokio_approval_authority_refusals_write_nothing() -> Result<()> {
         before_alarm: Cell::new(0),
         delivery_answer: RefCell::default(),
         before_write: RefCell::default(),
+        notice_recovery: RefCell::default(),
     };
     let result = approval_authority_refusals_leave_store_unchanged(&fixture).await;
     fixture.link.close().await?;
@@ -299,6 +322,7 @@ async fn tokio_engine_delivers_or_recovers_approval_timeout_and_applies_stop_owe
             before_alarm: Cell::new(0),
             delivery_answer: RefCell::default(),
             before_write: RefCell::default(),
+            notice_recovery: RefCell::default(),
         };
         let result = approval_deadline_delivery(&fixture, scenario).await;
         fixture.link.close().await?;
@@ -333,6 +357,7 @@ async fn tokio_fixture_decide_offers_only_after_commit_and_records_received() ->
         before_alarm: Cell::new(0),
         delivery_answer: RefCell::default(),
         before_write: RefCell::default(),
+        notice_recovery: RefCell::default(),
     };
     let observed = async {
         let (target, mut socket, request) = registered_waiting_request(&fixture).await?;
@@ -390,6 +415,7 @@ async fn tokio_queued_approval_ending_never_writes_on_a_replacement() -> Result<
         before_alarm: Cell::new(0),
         delivery_answer: RefCell::default(),
         before_write: RefCell::default(),
+        notice_recovery: RefCell::default(),
     };
     let observed = async {
         let (target, _original, request) = registered_waiting_request(&fixture).await?;
@@ -435,6 +461,7 @@ async fn tokio_provider_session_end_and_routing() -> Result<()> {
         before_alarm: Cell::new(0),
         delivery_answer: RefCell::default(),
         before_write: RefCell::default(),
+        notice_recovery: RefCell::default(),
     };
     let result = collaboration_central_conformance::approval_provider_scenarios::provider_session_end_and_refusals(&fixture).await;
     fixture.link.close().await?;
@@ -456,6 +483,7 @@ async fn tokio_provider_deadline_precedes_actions_and_ends_on_cadence() -> Resul
             before_alarm: Cell::new(0),
             delivery_answer: RefCell::default(),
             before_write: RefCell::default(),
+            notice_recovery: RefCell::default(),
         };
         let result = provider_deadline(&fixture, ask, trigger).await;
         fixture.link.close().await?;
@@ -471,6 +499,7 @@ async fn tokio_approval_calls_are_bound_to_the_registered_carrier() -> Result<()
         before_alarm: Cell::new(0),
         delivery_answer: RefCell::default(),
         before_write: RefCell::default(),
+        notice_recovery: RefCell::default(),
     };
     let result =
         collaboration_central_conformance::approval_authority_scenarios::approval_carrier_binding(
@@ -495,6 +524,7 @@ async fn tokio_enrollment_end_settles_the_approval_run() -> Result<()> {
             before_alarm: Cell::new(0),
             delivery_answer: RefCell::default(),
             before_write: RefCell::default(),
+            notice_recovery: RefCell::default(),
         };
         let result = collaboration_central_conformance::approval_authority_scenarios::enrollment_end_settles_approval_run(&fixture, event, overdue).await;
         fixture.link.close().await?;
@@ -510,6 +540,7 @@ async fn tokio_durable_floor_wins_after_clock_rollback() -> Result<()> {
         before_alarm: Cell::new(0),
         delivery_answer: RefCell::default(),
         before_write: RefCell::default(),
+        notice_recovery: RefCell::default(),
     };
     let result = collaboration_central_conformance::approval_authority_scenarios::durable_floor_wins_after_clock_rollback(&fixture).await;
     fixture.link.close().await?;
@@ -523,6 +554,7 @@ async fn tokio_corrupt_approval_charges_only_its_own_attempt() -> Result<()> {
         before_alarm: Cell::new(0),
         delivery_answer: RefCell::default(),
         before_write: RefCell::default(),
+        notice_recovery: RefCell::default(),
     };
     let result = collaboration_central_conformance::approval_authority_scenarios::corrupt_approval_charges_only_its_own_attempt(&fixture).await;
     fixture.link.close().await?;
@@ -543,6 +575,7 @@ async fn tokio_renewing_the_same_holder_socket_keeps_the_pending_ending() -> Res
             before_alarm: Cell::new(0),
             delivery_answer: RefCell::default(),
             before_write: RefCell::default(),
+            notice_recovery: RefCell::default(),
         };
         let result = same_socket_renewal_keeps_delivery(&fixture, timing).await;
         fixture.link.close().await?;

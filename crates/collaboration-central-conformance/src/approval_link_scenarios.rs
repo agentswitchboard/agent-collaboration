@@ -46,6 +46,8 @@ pub trait ApprovalLinkFixture {
     fn refresh(&self) -> impl Future<Output = Result<String>>;
     fn observe_due_alarm(&self) -> impl Future<Output = Result<()>>;
     fn fail_next_applying_write(&self) -> impl Future<Output = Result<()>>;
+    fn arm_notice_recovery(&self) -> impl Future<Output = Result<()>>;
+    fn await_notice_recovery(&self) -> impl Future<Output = Result<()>>;
     fn fixture_write(&self, statement: Statement) -> impl Future<Output = Result<()>>;
     fn decide_provider_approval(
         &self,

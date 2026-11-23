@@ -82,3 +82,19 @@ async fn deadline_crosses_while_pass_on_is_pending() -> Result<()> {
     fixture.close().await?;
     result
 }
+
+#[tokio::test]
+async fn fault_rolls_back_session_end_and_approval() -> Result<()> {
+    let fixture = Fixture::with_production_dispatcher().await?;
+    let outcome = collaboration_central_conformance::parent_approval_scenarios::session_end_and_approval_rollback(&fixture).await;
+    fixture.close().await?;
+    outcome
+}
+
+#[tokio::test]
+async fn fault_rolls_back_enrollment_and_approval() -> Result<()> {
+    let fixture = Fixture::with_production_dispatcher().await?;
+    let outcome = collaboration_central_conformance::parent_approval_scenarios::enrollment_and_approval_rollback(&fixture).await;
+    fixture.close().await?;
+    outcome
+}
