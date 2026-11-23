@@ -6,8 +6,8 @@ use state_machine_core::{EventTag, RefusalTag};
 use workspace_ids::{CentralSessionId, RequestId, SessionId};
 
 use crate::{
-    EnvelopeRefusal, OpeningCommit, OpeningOutcome, SecretIssue, StartAnswer, StartEnvelope,
-    StartFault, StartRevision, StartSnapshot,
+    CentralStanding, EnvelopeRefusal, OpeningCommit, OpeningOutcome, SecretIssue, StartAnswer,
+    StartEnvelope, StartFault, StartRevision, StartSnapshot,
 };
 
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -40,13 +40,6 @@ impl WaiterSlot {
     pub const fn get(self) -> u64 {
         self.0
     }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum CentralStanding {
-    Ready,
-    LinkNotReady,
-    NotEnrolled,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
