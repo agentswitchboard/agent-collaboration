@@ -27,9 +27,14 @@ use fleet_contracts::mail_link::{
 use fleet_identity_protocol::OrganizationId;
 use futures_util::FutureExt;
 use router_clock::RuntimeClock;
+use std::future::Future;
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tokio_util::{sync::CancellationToken, task::TaskTracker};
+
+#[path = "workspace_typed_link.rs"]
+mod typed_link;
+use typed_link::{offer_mac_call, reply_to_typed_call};
 
 type Runtime = WorkspaceRuntime<ObjectStorage, TokioWorkspaceStores>;
 
@@ -233,6 +238,13 @@ async fn serve_link(
                 }
                 continue;
             }
+            queued = registration.outbound_calls.recv() => {
+                let Some(queued) = queued else { return; };
+                if !offer_mac_call(&mut socket, &writes, &runtime, &connection, &registration.outbound_calls, queued).await {
+                    return;
+                }
+                continue;
+            }
         };
         let Some(Ok(message)) = message else {
             return;
@@ -250,6 +262,22 @@ async fn serve_link(
         };
         let frame = match decode_text(&text, FrameDirection::ToCentral) {
             Ok(frame) => frame,
+            Err(ProtocolError::UnknownTypedCall { correlation_id }) => {
+                if !reply_to_typed_call(
+                    &mut socket,
+                    &writes,
+                    &runtime,
+                    &connection,
+                    &registration.outbound_calls,
+                    correlation_id,
+                    None,
+                )
+                .await
+                {
+                    return;
+                }
+                continue;
+            }
             Err(ProtocolError::WrongDirection) => {
                 writes.close(
                     &mut socket,
@@ -264,6 +292,32 @@ async fn serve_link(
             }
         };
         match frame {
+            LinkFrame::Data(DataFrame::CallCentral {
+                correlation_id,
+                request,
+            }) => {
+                if !reply_to_typed_call(
+                    &mut socket,
+                    &writes,
+                    &runtime,
+                    &connection,
+                    &registration.outbound_calls,
+                    correlation_id,
+                    Some(*request),
+                )
+                .await
+                {
+                    return;
+                }
+            }
+            LinkFrame::Data(DataFrame::MacCallReply {
+                correlation_id,
+                result,
+            }) => {
+                registration
+                    .outbound_calls
+                    .answer(&correlation_id, *result, writes.clock);
+            }
             LinkFrame::Ping => {
                 if !writes.send(&mut socket, &LinkFrame::Pong).await {
                     return;
@@ -686,16 +740,22 @@ impl LinkWrites<'_> {
         let Ok(text) = encode_text(frame, FrameDirection::ToRouter) else {
             return false;
         };
-        let sent = tokio::select! {
-            biased;
-            () = self.stop.cancelled() => false,
-            () = self.replaced.cancelled() => false,
-            result = socket.send(Message::Text(text.into())) => result.is_ok(),
-        };
+        let sent = self
+            .send_until_stopped(async { socket.send(Message::Text(text.into())).await.is_ok() })
+            .await;
         if !sent {
             self.close_if_authority_cancelled(socket);
         }
         sent
+    }
+
+    async fn send_until_stopped(&self, send: impl Future<Output = bool>) -> bool {
+        tokio::select! {
+            biased;
+            () = self.stop.cancelled() => false,
+            () = self.replaced.cancelled() => false,
+            sent = send => sent,
+        }
     }
 
     fn close_if_authority_cancelled(&self, socket: &mut WebSocket) {

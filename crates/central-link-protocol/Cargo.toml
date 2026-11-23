@@ -6,7 +6,13 @@ license.workspace = true
 publish = false
 autotests = false
 
+[features]
+test-support = []
+
 [dependencies]
+approval-request-protocol.workspace = true
+fleet-identity-protocol = { path = "../fleet-identity-protocol", version = "0.1.156" }
+fleet-rpc.workspace = true
 schemars.workspace = true
 workspace-model.workspace = true
 workspace-ids.workspace = true
@@ -14,6 +20,9 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 uuid.workspace = true
+
+[dev-dependencies]
+jsonschema.workspace = true
 
 [lints]
 workspace = true

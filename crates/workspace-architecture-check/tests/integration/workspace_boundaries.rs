@@ -12,6 +12,9 @@ use workspace_package_tree_policy::{
     SERVICE_SUPPORT_PACKAGES, check_package_targets, check_package_tree, check_package_tree_output,
 };
 
+#[path = "link_reachability.rs"]
+mod link_reachability;
+
 #[cfg(test)]
 #[path = "job_layer_tests.rs"]
 mod job_layer_tests;
@@ -199,7 +202,13 @@ const PURE_CRATES: [(&str, &[&str]); 8] = [
     ),
     (
         "central-link-protocol",
-        &["workspace-ids", "workspace-model"],
+        &[
+            "approval-request-protocol",
+            "fleet-identity-protocol",
+            "fleet-rpc",
+            "workspace-ids",
+            "workspace-model",
+        ],
     ),
     ("central-storage", &[]),
     ("state-machine-core", &[]),
@@ -305,6 +314,7 @@ pub(super) fn check_boundaries(
         }
         check_workspace_driver_edges(graph, source)?;
     }
+    link_reachability::check_link_reachability(graph)?;
     check_resolved_session_read_dev_edges(graph)?;
     check_closed_workspace_edges(
         graph,

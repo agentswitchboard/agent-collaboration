@@ -27,7 +27,7 @@ pub trait CorrelatedRpc: Rpc {
     fn into_wire(checked: Self::CheckedReply) -> Self::Reply;
 }
 
-#[derive(Debug, PartialEq, Eq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct Envelope<Target, Body> {
     pub target: Target,

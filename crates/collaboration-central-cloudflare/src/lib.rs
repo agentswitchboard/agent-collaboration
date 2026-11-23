@@ -32,6 +32,7 @@ pub use driver_scenarios::DriverScenarioObject;
 #[cfg(feature = "test-support")]
 pub use storage_cases::StorageCaseObject;
 pub use workspace_central_object::CentralObject;
+pub use workspace_central_object::workspace_typed_link::call_machine;
 pub use workspace_store_object::WorkspaceStoreObject;
 
 /// Carrier-facing ingress for the machine link.

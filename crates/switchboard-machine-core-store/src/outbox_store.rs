@@ -2,8 +2,8 @@
 //! time comes from the caller's injected clock; stored values are decoded
 //! through Rust types and an invalid row is refused, never coerced.
 use crate::{
-    LocalOutboxRefusal, MachineLocalStore, OutboxQueuedWrite, OutboxRequestStatus, RowCorruption,
-    outbox_item_state::OutboxItemState,
+    LocalOutboxRefusal, MachineLocalStore, OutboxQueuedWrite, OutboxRequestKey,
+    OutboxRequestStatus, OutboxWriteTarget, RowCorruption, outbox_item_state::OutboxItemState,
 };
 use sqlite_storage_maintenance::TransactionStart;
 use workspace_ids::RequestId;
@@ -90,6 +90,17 @@ pub struct StoredOutboxWrite {
     pub caller: Caller,
     pub payload: OutboxQueuedWrite,
     pub sent_at: Timestamp,
+}
+
+/// A claimed write awaiting reconciliation by custody.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct UnansweredOutboxClaim {
+    pub key: OutboxRequestKey,
+    pub caller: Caller,
+    pub target: OutboxWriteTarget,
+    pub deadline_ms: i64,
+    /// The original validated write, used to bind the reconciled outcome.
+    pub payload: OutboxQueuedWrite,
 }
 
 /// Answered writes are kept this long after their answer, then deleted.

@@ -56,7 +56,23 @@ pub(crate) async fn workspace_exchange<Body: Serialize, Reply: DeserializeOwned>
     call: &Body,
     fixture: Option<&str>,
 ) -> std::result::Result<Reply, CallFailure> {
-    let address = ObjectAddress::WorkspaceStore(workspace);
+    object_exchange(
+        env,
+        ObjectAddress::WorkspaceStore(workspace),
+        path,
+        call,
+        fixture,
+    )
+    .await
+}
+
+pub(super) async fn object_exchange<Body: Serialize, Reply: DeserializeOwned>(
+    env: &Env,
+    address: ObjectAddress,
+    path: &str,
+    call: &Body,
+    fixture: Option<&str>,
+) -> std::result::Result<Reply, CallFailure> {
     let stub = stub(env, &address).map_err(|_| CallFailure::NeverReached)?;
     let body = serde_json::to_vec(call).map_err(|_| CallFailure::NeverReached)?;
     let headers = Headers::new();

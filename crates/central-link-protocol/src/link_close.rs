@@ -1,6 +1,8 @@
 //! Private WebSocket codes for machine authority loss.
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize, serde::Serialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "camelCase")]
 #[repr(u16)]
 pub enum MachineLinkCloseCode {

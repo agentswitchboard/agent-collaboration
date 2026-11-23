@@ -1,4 +1,4 @@
-use super::fixture::{Fixture, INSTALLATION, receive, send};
+use super::fixture::{Fixture, INSTALLATION, receive, send, start_fixture};
 use super::link_support::{caller, create_workspace};
 use super::receipt_frames::{EnrollmentAtApply, stored_ending_batch};
 use central_link_protocol::{
@@ -34,7 +34,7 @@ async fn check_request_authority(check: AuthorityCheck) -> Result<()> {
         EnrollmentAtApply::OwnerRevoked,
         EnrollmentAtApply::EndedForIdle,
     ] {
-        let fixture = Fixture::new().await?;
+        let fixture = start_fixture().await?;
         let result = check_request_refusal(&fixture, state, check).await;
         fixture.close().await?;
         result?;

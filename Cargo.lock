@@ -441,6 +441,7 @@ dependencies = [
  "base64 0.22.1",
  "chrono",
  "hegeltest",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -862,6 +863,10 @@ dependencies = [
 name = "central-link-protocol"
 version = "0.1.158"
 dependencies = [
+ "approval-request-protocol",
+ "fleet-identity-protocol",
+ "fleet-rpc",
+ "jsonschema",
  "schemars 1.2.2",
  "serde",
  "serde_json",
@@ -2682,6 +2687,7 @@ dependencies = [
 name = "fleet-rpc"
 version = "0.1.158"
 dependencies = [
+ "schemars 1.2.2",
  "serde",
 ]
 
@@ -7127,6 +7133,8 @@ name = "workspace-architecture-check"
 version = "0.1.158"
 dependencies = [
  "approval-request-protocol",
+ "central-engine-model",
+ "fleet-approvals",
  "serde",
  "serde_json",
  "state-machine-core",
@@ -7134,6 +7142,7 @@ dependencies = [
  "switchboard-approval-ports",
  "tempfile",
  "thiserror 2.0.18",
+ "uuid",
 ]
 
 [[package]]

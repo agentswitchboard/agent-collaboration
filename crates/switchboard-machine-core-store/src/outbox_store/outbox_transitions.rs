@@ -2,8 +2,9 @@
 use super::{
     ANSWERED_RETENTION_MILLIS, MacOutbox, OutboxStoreError, StoredOutboxWrite,
     outbox_rows::{
-        DecodedRow, StoredPayload, corrupt_row, decode_row, expect_one, outbox_content,
-        payload_content_digest, read_row, select_outbox_rows, waiting_page, waiting_rows,
+        DecodedRow, StoredPayload, corrupt_row, decode_row, expect_one, in_flight_rows,
+        outbox_content, payload_content_digest, read_row, select_outbox_rows, waiting_page,
+        waiting_rows,
     },
     validate_write_timestamp,
 };
@@ -13,6 +14,7 @@ use crate::{
     outbox_settlement::SettledWrite,
 };
 use sqlite_storage_maintenance::TransactionStart;
+use std::collections::BTreeSet;
 use workspace_ids::RequestId;
 
 impl MacOutbox<'_> {
@@ -281,6 +283,40 @@ impl MacOutbox<'_> {
         for row in healthy.into_iter().filter(|row| row.deadline_ms <= now_ms) {
             let departure = waiting_departure(row.state);
             ended.push(end_row(&mut transaction, row, departure, now_ms).await?);
+        }
+        transaction.commit().await?;
+        Ok(StoreScan {
+            healthy: ended,
+            corrupt_rows,
+        })
+    }
+
+    /// Ends overdue claims that have no live batch ticket as possibly transmitted.
+    pub async fn end_overdue_orphans(
+        &mut self,
+        now_ms: i64,
+        live_request_ids: &BTreeSet<RequestId>,
+    ) -> Result<StoreScan<Vec<EndedWrite>>, OutboxStoreError> {
+        validate_write_timestamp(now_ms, "updated_at")?;
+        let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
+        let StoreScan {
+            healthy,
+            corrupt_rows,
+        } = in_flight_rows(&mut transaction).await?;
+        let mut ended = Vec::new();
+        for row in healthy
+            .into_iter()
+            .filter(|row| row.deadline_ms <= now_ms && !live_request_ids.contains(&row.request))
+        {
+            ended.push(
+                end_row(
+                    &mut transaction,
+                    row,
+                    DepartureAtDeadline::MayHaveArrived,
+                    now_ms,
+                )
+                .await?,
+            );
         }
         transaction.commit().await?;
         Ok(StoreScan {

@@ -25,7 +25,7 @@ pub enum MachineTokenRenewalRefusal {
     TokenRejected,
     DifferentMachine,
     DifferentEnrollment,
-    CandidateNotActive,
+    PresentedTokenExpired,
     CurrentAuthorityEnded(MachineLinkCloseCode),
     IdleEnded(EnrollmentInvalidation),
 }
@@ -123,7 +123,20 @@ impl<Host: CentralStore> MachineLoginService<'_, Host> {
         validate_shape(&candidate)?;
         let renewed = match classify_link(&candidate, self.organization, &authority, time.now_ms)? {
             Ok(connection) => connection,
-            Err(_) => return Ok(PreparedLinkRenewal::Refused(Refusal::CandidateNotActive)),
+            Err(refused) => {
+                return match refused.close {
+                    MachineLinkCloseCode::Expired => {
+                        Ok(PreparedLinkRenewal::Refused(Refusal::PresentedTokenExpired))
+                    }
+                    // Both attachments have the same identity and use the same
+                    // authority snapshot. Only their deadlines can differ.
+                    MachineLinkCloseCode::Inactive | MachineLinkCloseCode::Revoked => {
+                        Err(fleet_runtime_ports::workspace_decode_error::corrupt(
+                            "connection.renewal_authority",
+                        ))
+                    }
+                };
+            }
         };
         if let Some(plan) = self.prepare_link_idle(authority, time).await? {
             return Ok(PreparedLinkRenewal::EndIdle(plan));
