@@ -25,13 +25,17 @@ use switchboard_machine_core_store::{
     InboxDecision, InboxRefusalReason, InboxStore, MachineLocalStore,
 };
 use switchboard_message_custody::{
+    custody_task::{CustodyTaskEvent, custody_task},
     receipt_delivery::{ReceiptFrame, ReceiptFrameOutcome},
     recipient_inbox::{InboxOfferResult, RecipientInbox},
     recipient_sessions::{RecipientSessionAnswer, RecipientSessionDirectory},
 };
+use tokio::sync::{mpsc, watch};
 use workspace_ids::{MachineId, SessionId, SessionRef};
 use workspace_model::central_mail::{MessageDelivery, MessageRefusal, MessageSender, MessageState};
 use workspace_model::{PostText, ResolvedSender};
+
+use super::custody_task::ObserveTask;
 
 const START_MS: i64 = 1_763_380_800_000;
 const FIRST_MESSAGE: &str = "019f0000-0000-7000-8000-000000000091";
@@ -50,7 +54,8 @@ async fn a_queued_admitted_offer_is_kept_after_its_connection_closes() {
             offer: direct_offer(FIRST_MESSAGE, "queued before turnover"),
             sender: ResolvedSender::Central {},
         });
-        let replacement = super::batch_replay::new_admission(session.machine_id.clone(), clock);
+        let replacement =
+            super::batch_replay::new_admission(session.machine_id.clone(), clock.clone());
         assert_ne!(old.connection, replacement.connection);
         lane.admitted
             .send_replace(replacement_already_admitted.then_some(replacement.clone()));
@@ -70,16 +75,39 @@ async fn a_queued_admitted_offer_is_kept_after_its_connection_closes() {
             [FIRST_MESSAGE],
             "the lane's queued offer retains its admission across connection turnover"
         );
-        if !replacement_already_admitted {
-            assert_eq!(custody.flush_receipts().await.unwrap(), None);
-            lane.admitted.send_replace(Some(replacement));
-        }
-        assert_eq!(
-            custody.flush_receipts().await.unwrap(),
-            Some(ReceiptFrameOutcome::Confirmed {
-                results: vec![ReceiptResult::Recorded]
-            })
+        let sent = lane.watch_receipt_commands();
+        let (stop, stopped) = watch::channel(false);
+        let (observed, mut events) = mpsc::unbounded_channel();
+        let (calls, task) = custody_task(custody, stopped, Arc::new(ObserveTask(observed)));
+        let worker = tokio::spawn(task);
+        assert_eq!(calls.waiting_for_session(session).await.unwrap().len(), 1);
+        assert!(sent.borrow().is_empty());
+        lane.admitted.send_replace(Some(replacement.clone()));
+        let wake = ClockInstant::ZERO + Duration::from_secs(20);
+        clock.not_due_check_now(wake).await;
+        assert!(
+            sent.borrow().is_empty(),
+            "an admitted socket must wait for the receipt mark"
         );
+        assert_eq!(reopened.pending_receipts().await.unwrap().healthy, receipts);
+        clock.advance(Duration::from_secs(20)).unwrap();
+        assert_eq!(
+            match events.recv().await.unwrap() {
+                CustodyTaskEvent::Receipt(outcome) => outcome,
+                other => panic!("expected a scheduled receipt completion, got {other:?}"),
+            },
+            ReceiptFrameOutcome::Confirmed {
+                results: vec![ReceiptResult::Recorded]
+            },
+        );
+        {
+            let sent = sent.borrow();
+            let [(at, command)] = sent.as_slice() else {
+                panic!("expected one scheduled receipt, got {sent:?}");
+            };
+            assert_eq!(*at, wake);
+            assert_eq!(command.connection, replacement.connection);
+        }
         assert!(
             reopened
                 .pending_receipts()
@@ -89,6 +117,8 @@ async fn a_queued_admitted_offer_is_kept_after_its_connection_closes() {
                 .is_empty()
         );
         assert_eq!(reopened.pending_handoffs().await.unwrap().healthy.len(), 1);
+        stop.send_replace(true);
+        worker.await.unwrap();
     }
 }
 
@@ -393,8 +423,8 @@ async fn short_stale_mismatched_and_missing_answers_keep_the_receipt_frame_pendi
             .await
             .unwrap();
     }
-    let first = inbox.prepare_receipts(&connection).await.unwrap().unwrap();
-    let (correlation, receipts) = decode_receipts(&first);
+    let mut frame = inbox.prepare_receipts(&connection).await.unwrap().unwrap();
+    let (correlation, receipts) = decode_receipts(&frame);
     let wrong_correlation = "019f0000-0000-7000-8000-000000000099".parse().unwrap();
     let result_pair = vec![ReceiptResult::Recorded, ReceiptResult::AlreadySettled];
 
@@ -406,22 +436,28 @@ async fn short_stale_mismatched_and_missing_answers_keep_the_receipt_frame_pendi
             cause: UntouchedCommand::WriterBusy,
         },
     ] {
+        let stayed_untouched = matches!(&answer, LinkLaneDisposition::NotReached { .. });
+        let (previous_correlation, _) = decode_receipts(&frame);
         let disposition = inbox
-            .settle_receipts(first.clone(), Some(&connection), answer)
+            .settle_receipts(frame, Some(&connection), answer)
             .await
             .unwrap();
         assert_eq!(disposition, ReceiptFrameOutcome::RetryPending);
+        frame = inbox.prepare_receipts(&connection).await.unwrap().unwrap();
+        let (retry_correlation, retried_receipts) = decode_receipts(&frame);
         assert_eq!(
-            inbox.prepare_receipts(&connection).await.unwrap(),
-            Some(first.clone()),
-            "same connection retries the original frame"
+            retry_correlation == previous_correlation,
+            stayed_untouched,
+            "only an untouched attempt can reuse its correlation"
         );
+        assert_eq!(retried_receipts, receipts);
     }
 
+    let (correlation, _) = decode_receipts(&frame);
     assert_eq!(
         inbox
             .settle_receipts(
-                first,
+                frame,
                 Some(&replacement),
                 answer_receipts(&clock, correlation, result_pair.clone())
             )

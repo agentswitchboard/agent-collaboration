@@ -6,7 +6,7 @@ use collaboration_central_conformance::{
     ConformanceResult as Result,
     session_link_scenarios::{
         SessionLifecycleStage, create_bind_end, expect_create_refusal, expect_lapsed_session_call,
-        prepare_session_call, refuse_lapsed_session_call, refuse_wrong_target_and_unowned_calls,
+        prepare_session_call, refuse_lapsed_session_call, refuse_wrong_session_target,
         send_session_call, session_identity_records, session_mutation_records, session_records,
     },
 };
@@ -17,12 +17,8 @@ async fn production_link_routes_session_lifecycle_to_workerd_organization_store(
     let observed: Result<()> = async {
         let mut link = ConnectedLink::open(&fixture).await?;
         let organization_store = fixture.runtime();
-        refuse_wrong_target_and_unowned_calls(
-            &mut link.socket,
-            &fixture.organization,
-            &OTHER_ORGANIZATION.to_owned().try_into()?,
-        )
-        .await?;
+        refuse_wrong_session_target(&mut link.socket, &OTHER_ORGANIZATION.to_owned().try_into()?)
+            .await?;
         if !organization_store
             .read(session_records())
             .await?

@@ -1,5 +1,6 @@
 //! One original socket across real object eviction, live authority and SQLite effects.
 mod alarm_rearm;
+mod approval_calls;
 mod batch;
 mod batch_restore;
 mod caller_authority;

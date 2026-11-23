@@ -184,11 +184,7 @@ async fn serve_link(
     }
     let registration = runtime
         .register_active_machine(&connection.attachment(), || {
-            state.host.push_registry.register(
-                connection.organization_id().clone(),
-                connection.machine_id().clone(),
-                connection.enrollment_id().clone(),
-            )
+            state.host.push_registry.register(&connection)
         })
         .await;
     let mut registration = match registration {
@@ -212,6 +208,7 @@ async fn serve_link(
         replaced: &registration.replaced,
         authority_close: &registration.authority_close,
         clock: state.host.link_clock(),
+        tasks: &state.tasks,
     };
     if !writes.send(&mut socket, &welcome).await {
         return;
@@ -386,6 +383,7 @@ async fn serve_link(
                 token,
             }) => {
                 let (result, termination) = renew(&runtime, &mut connection, token.expose()).await;
+                registration.update_authority(&connection);
                 let answer = LinkFrame::Data(DataFrame::MachineTokenRenewal {
                     correlation_id,
                     result,
@@ -752,6 +750,7 @@ struct LinkWrites<'a> {
     replaced: &'a CancellationToken,
     authority_close: &'a OnceLock<MachineLinkCloseCode>,
     clock: &'a dyn RuntimeClock,
+    tasks: &'a TaskTracker,
 }
 
 impl LinkWrites<'_> {

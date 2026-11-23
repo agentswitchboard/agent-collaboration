@@ -130,7 +130,15 @@ pub(crate) fn plan_register_approval_deadline(
     deadline: CentralTime,
     at: CentralTime,
 ) -> Result<Vec<GuardedStatement>, StoreFailure> {
-    let timing = DueOwnerTiming::at(approval_due_key(row_id), deadline)?;
+    let mark = if central_engine_model::on_five_minute_grid(deadline) {
+        deadline
+    } else {
+        central_engine_model::next_five_minute_mark(deadline)
+            .map_err(|_| corrupt("approval_requests.deadline_mark"))?
+    };
+    let mut timing = DueOwnerTiming::at(approval_due_key(row_id), deadline)?;
+    timing.base_due = fleet_engine::DueMillis::try_from(mark.timestamp_millis())
+        .map_err(|_| corrupt("approval_requests.deadline_mark"))?;
     plan_due_table_change(&DueTableChange::PublishItem(timing), at)
 }
 

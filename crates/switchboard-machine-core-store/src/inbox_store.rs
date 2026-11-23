@@ -319,6 +319,8 @@ impl InboxRow {
 /// The Mac opens this store to keep Central deliveries and their custody state.
 pub struct InboxStore {
     store: MachineLocalStore,
+    #[cfg(all(feature = "test-support", debug_assertions))]
+    held_commit: Option<crate::inbox_commit_pause::InboxCommitPause>,
     // Payloads are immutable. A failed due-row decode must not leave an
     // already elapsed retention wake armed for the lifetime of this store.
     corrupt_retention_payloads: BTreeSet<MessageId>,
@@ -328,8 +330,18 @@ impl InboxStore {
     pub const fn new(store: MachineLocalStore) -> Self {
         Self {
             store,
+            #[cfg(all(feature = "test-support", debug_assertions))]
+            held_commit: None,
             corrupt_retention_payloads: BTreeSet::new(),
         }
+    }
+
+    /// Pause the next new delivery after its insert and immediately before commit.
+    #[cfg(all(feature = "test-support", debug_assertions))]
+    pub fn hold_next_commit(&mut self) -> crate::HeldInboxCommit {
+        let (pause, control) = crate::inbox_commit_pause::InboxCommitPause::new();
+        self.held_commit = Some(pause);
+        control
     }
 
     /// A repeat can use the original decision without looking up the recipient again.
@@ -428,6 +440,12 @@ impl InboxStore {
             }
             Some(_) => RecordDelivery::Duplicate,
         };
+        #[cfg(all(feature = "test-support", debug_assertions))]
+        if recorded == RecordDelivery::Inserted
+            && let Some(pause) = self.held_commit.take()
+        {
+            pause.wait_for_release().await;
+        }
         transaction.commit().await?;
         Ok(recorded)
     }

@@ -14,13 +14,10 @@ use fleet_identity_protocol::{
 use fleet_rpc::Envelope;
 use futures_util::{SinkExt, StreamExt};
 use reqwest_websocket::{Message, WebSocket};
-use serde_json::json;
 use workspace_ids::CentralSessionId;
 
 const CORRELATION: &str = "019f0000-0000-7000-8000-000000005301";
 const OPERATION: &str = "019f0000-0000-7000-8000-000000005302";
-const RUN: &str = "019f0000-0000-7000-8000-000000005303";
-const SESSION: &str = "019f0000-0000-7000-8000-000000005304";
 const HARNESS: &str = "typed-session-test";
 
 pub fn session_records() -> Statement {
@@ -101,46 +98,12 @@ async fn bind(
     Ok(())
 }
 
-pub async fn refuse_wrong_target_and_unowned_calls(
+pub async fn refuse_wrong_session_target(
     socket: &mut WebSocket,
-    organization: &OrganizationId,
     wrong_target: &OrganizationId,
 ) -> Result<()> {
     let wrong = call::<CreateFleetSessionRpc>(socket, wrong_target, create()?).await?;
-    expect_refusal(wrong, LinkCallRefusal::WrongTarget)?;
-
-    let target = json!({"organizationId":organization});
-    for (tag, body) in [
-        ("registerRun", json!({"routerRun": RUN})),
-        (
-            "raise",
-            json!({"kind":"providerQuestion","requestId":CORRELATION,
-            "holder":{"sessionId":SESSION,"routerRun":RUN},
-            "offer":{"prompt":"Choose","fields":[{"kind":"text","fieldId":1,
-                "label":"Choice","description":null,"required":true}]}}),
-        ),
-        (
-            "stop",
-            json!({"kind":"provider","requestId":CORRELATION,"routerRun":RUN,
-            "contentsDigest":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","cause":"turnStopped"}),
-        ),
-    ] {
-        let request = json!({"kind":"callCentral","correlationId":CORRELATION,
-            "request":{"call":tag,"envelope":{"target":target,"body":body}}});
-        // Prove the approval control reached a registered marker and typed body.
-        if !matches!(
-            decode_text(&request.to_string(), FrameDirection::ToCentral)?,
-            LinkFrame::Data(DataFrame::CallCentral { .. })
-        ) {
-            return Err(format!("test request for {tag} was not registered").into());
-        }
-        socket.send(Message::Text(request.to_string())).await?;
-        expect_refusal(
-            read_reply(socket, &CORRELATION.parse()?).await?,
-            LinkCallRefusal::UnknownCall,
-        )?;
-    }
-    Ok(())
+    expect_refusal(wrong, LinkCallRefusal::WrongTarget)
 }
 
 pub enum SessionLinkCall {
@@ -253,14 +216,14 @@ fn create() -> Result<CreateFleetSession> {
     })
 }
 
-fn end(session_id: CentralSessionId) -> EndFleetSession {
+pub(crate) fn end(session_id: CentralSessionId) -> EndFleetSession {
     EndFleetSession {
         target: EndSessionTarget::CentralId { session_id },
         cause: RouterEndCause::EndedForGood {},
     }
 }
 
-async fn call<R: CentralLinkRpc<Target = OrganizationId>>(
+pub(crate) async fn call<R: CentralLinkRpc<Target = OrganizationId>>(
     socket: &mut WebSocket,
     organization: &OrganizationId,
     body: R::Request,
@@ -311,7 +274,7 @@ async fn read_reply(
     Ok(*result)
 }
 
-fn answer<R: CentralLinkRpc<Target = OrganizationId>>(
+pub(crate) fn answer<R: CentralLinkRpc<Target = OrganizationId>>(
     result: TypedCallResult<CentralCallReply>,
     organization: &OrganizationId,
 ) -> Result<R::Reply> {

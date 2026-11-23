@@ -52,6 +52,8 @@ pub struct ObjectStorage {
     fail_reserved_session_reply: std::sync::atomic::AtomicBool,
     #[cfg(feature = "test-support")]
     fail_session_loan: std::sync::atomic::AtomicBool,
+    #[cfg(feature = "test-support")]
+    fail_approval_after_write: std::sync::atomic::AtomicBool,
     /// Kept in memory after commit (Program Design, "the one alarm"; Tokio).
     alarm: watch::Sender<Option<SyncTime>>,
     publication_status: watch::Sender<AlarmPublicationStatus>,
@@ -66,6 +68,7 @@ pub struct ObjectStorage {
     publication_failures: std::sync::Mutex<Vec<AlarmPublicationFailure>>,
 }
 
+mod approval_transactions;
 #[path = "object_storage_direct_mail.rs"]
 mod direct_mail;
 pub(crate) mod session_transaction_owner;
@@ -99,6 +102,8 @@ impl ObjectStorage {
             fail_reserved_session_reply: Default::default(),
             #[cfg(feature = "test-support")]
             fail_session_loan: Default::default(),
+            #[cfg(feature = "test-support")]
+            fail_approval_after_write: Default::default(),
             alarm: watch::Sender::new(None),
             publication_status: watch::Sender::new(AlarmPublicationStatus::Published {
                 deadline: None,

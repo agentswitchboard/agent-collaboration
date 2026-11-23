@@ -541,6 +541,47 @@ pub(super) async fn write_direct_with_engine_alarm<Answer: 'static>(
         })
 }
 
+pub(super) async fn read_lent_approval_statement(
+    transaction: &DoTransaction,
+    statement: central_storage::Statement,
+) -> Result<ReadOutcome, StoreFailure> {
+    let rows = bound(&statement.into())
+        .fetch_all(transaction)
+        .await
+        .map_err(|error| store_failure(&error))?;
+    read_outcome(&rows)
+}
+
+pub(super) async fn execute_lent_approval_statement(
+    transaction: &DoTransaction,
+    statement: central_storage::Statement,
+) -> Result<u64, StoreFailure> {
+    bound(&statement.into())
+        .execute(transaction)
+        .await
+        .map(|result| result.rows_affected())
+        .map_err(|error| store_failure(&error))
+}
+
+pub(super) async fn publish_approval_alarm(
+    transaction: &DoTransaction,
+    policy: AlarmPolicy,
+) -> Result<(), StoreFailure> {
+    apply_alarm(
+        transaction,
+        &OwnedAlarmUpdate::Engine(central_storage::EngineAlarmPlan::Recompute),
+        policy,
+    )
+    .await
+    .map(|_| ())
+    .map_err(|stop| match stop {
+        BatchStop::Failed(failure) => failure,
+        BatchStop::GuardFailed { .. }
+        | BatchStop::ConstraintViolated { .. }
+        | BatchStop::StatementRejected { .. } => StoreFailure::Unavailable,
+    })
+}
+
 /// Runs one read outside any write.
 pub(crate) async fn read(
     connection: &DoConnection,

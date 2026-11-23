@@ -193,6 +193,24 @@ impl SqliteObjectStore {
     }
 }
 
+/// Read through a connection already borrowed by a composing transaction owner.
+pub async fn read_lent_statement(
+    connection: &mut SqliteConnection,
+    statement: Statement,
+) -> Result<ReadOutcome, StoreFailure> {
+    read_rows(connection, statement).await
+}
+
+/// Execute a checked effect through its owning transaction's borrowed connection.
+pub async fn execute_lent_statement(
+    connection: &mut SqliteConnection,
+    statement: Statement,
+) -> Result<u64, StoreFailure> {
+    execute(connection, statement.sql, bind_arguments(statement.args)?)
+        .await
+        .map_err(|_| StoreFailure::Unavailable)
+}
+
 fn bind_arguments(args: Vec<SqlValue>) -> Result<SqliteArguments, StoreFailure> {
     let mut arguments = SqliteArguments::default();
     for value in args {

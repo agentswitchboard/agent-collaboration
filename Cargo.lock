@@ -850,21 +850,28 @@ dependencies = [
 name = "central-link-call-composition"
 version = "0.1.158"
 dependencies = [
+ "approval-request-protocol",
  "central-engine-model",
  "central-link-protocol",
  "central-storage",
  "chrono",
  "collaboration-central-core",
  "fleet-actor-identity",
+ "fleet-approvals",
+ "fleet-contracts",
+ "fleet-engine",
  "fleet-identity-protocol",
  "fleet-lent-transaction",
+ "fleet-machine-login",
  "fleet-rpc",
  "fleet-runtime-ports",
  "fleet-signin",
+ "futures-util",
  "sqlx-core",
  "thiserror 2.0.18",
  "tracing",
  "uuid",
+ "workspace-ids",
  "zeroize",
 ]
 
@@ -1535,6 +1542,7 @@ dependencies = [
 name = "collaboration-central-conformance"
 version = "0.1.158"
 dependencies = [
+ "approval-request-protocol",
  "axum",
  "base64 0.22.1",
  "central-link-protocol",
@@ -5899,17 +5907,23 @@ dependencies = [
 name = "switchboard-central-link-test"
 version = "0.1.158"
 dependencies = [
+ "axum",
  "central-link-client",
  "central-link-protocol",
+ "central-storage",
  "collaboration-central-conformance",
  "collaboration-central-tokio",
+ "fleet-runtime",
  "reqwest 0.12.28",
  "router-clock",
+ "runtime-primitives",
  "serde_json",
  "switchboard-central-link",
  "switchboard-machine-core-store",
  "switchboard-message-custody",
  "tokio",
+ "tungstenite 0.29.0",
+ "turmoil",
  "workspace-ids",
  "workspace-model",
 ]
