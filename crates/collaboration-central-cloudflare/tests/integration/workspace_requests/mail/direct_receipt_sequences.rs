@@ -34,7 +34,6 @@ async fn exercise_direct_receipt_sequence(order: u8, reject_mark: bool) {
     };
     let delivered = ReceiptKind::Delivered {
         arrived_at: sent_at,
-        waiting: Some(WaitingReason::Busy),
     };
     if order & 1 != 0 {
         assert_eq!(
@@ -45,13 +44,13 @@ async fn exercise_direct_receipt_sequence(order: u8, reject_mark: bool) {
     let (final_receipt, terminal, immediate_outcome, expected_status, contradiction) =
         match order / 4 {
             0 => (
-                ReceiptKind::NotSeen {
-                    waiting: WaitingReason::Busy,
+                ReceiptKind::Refused {
+                    reason: MessageRefusal::AmbiguousSession,
                 },
-                "notSeen",
-                Some("notSeen"),
-                MessageStatus::NotSeen {
-                    waiting: WaitingReason::Busy,
+                "refused",
+                Some("refused"),
+                MessageStatus::Refused {
+                    reason: MessageRefusal::AmbiguousSession,
                 },
                 ReceiptKind::Seen {
                     completed_at: sent_at,
@@ -67,7 +66,7 @@ async fn exercise_direct_receipt_sequence(order: u8, reject_mark: bool) {
                     reason: MessageRefusal::UnknownSession,
                 },
                 ReceiptKind::Refused {
-                    reason: MessageRefusal::SessionClosed,
+                    reason: MessageRefusal::AmbiguousSession,
                 },
             ),
             2 => (
@@ -174,8 +173,10 @@ async fn exercise_direct_receipt_sequence(order: u8, reject_mark: bool) {
         &message_id,
         if order & 2 != 0 {
             terminal
+        } else if order & 1 == 0 {
+            "queued"
         } else {
-            "pastTheMark"
+            "delivered"
         },
         outcome,
     )
@@ -199,7 +200,6 @@ async fn exercise_direct_receipt_sequence(order: u8, reject_mark: bool) {
         } else {
             MessageStatus::Delivered {
                 arrived_at: sent_at,
-                waiting: Some(WaitingReason::Busy),
                 deadline_passed: true,
             }
         };
@@ -221,22 +221,21 @@ async fn exercise_direct_receipt_sequence(order: u8, reject_mark: bool) {
         assert_eq!(before.rows.len(), 1);
         let late_delivery = ReceiptKind::Delivered {
             arrived_at: saved_at,
-            waiting: Some(WaitingReason::WaitingOnAPerson),
         };
         assert_eq!(
             apply_fixture_receipt(&fixture, &central, &message_id, late_delivery).await,
             MailReceiptSettlement::Applied
         );
         let row = central.read(Statement {
-            sql: "SELECT state,delivered_arrived_at,delivered_waiting_reason FROM mail_messages WHERE message_id=?",
+            sql: "SELECT state,delivered_arrived_at,deadline_settled_at IS NOT NULL FROM mail_messages WHERE message_id=?",
             args: vec![text(&message_id)],
         }).await.unwrap();
         assert_eq!(
             row.rows,
             [vec![
-                text("pastTheMark"),
+                text("delivered"),
                 text(saved_at.to_rfc3339()),
-                text("waitingOnAPerson")
+                integer(1)
             ]]
         );
         assert_eq!(
@@ -251,7 +250,6 @@ async fn exercise_direct_receipt_sequence(order: u8, reject_mark: bool) {
                 .result,
             status_answer(MessageStatus::Delivered {
                 arrived_at: saved_at,
-                waiting: Some(WaitingReason::WaitingOnAPerson),
                 deadline_passed: true,
             })
         );
@@ -413,7 +411,7 @@ async fn an_unobserved_direct_mark_commit_never_charges_an_attempt() {
         (
             981004,
             EngineCommitFaultKind::AppliedAnswerLost,
-            "pastTheMark",
+            "queued",
             Some("deliveryNotConfirmed"),
         ),
     ] {
@@ -459,7 +457,7 @@ async fn an_unobserved_direct_mark_commit_never_charges_an_attempt() {
 }
 
 #[tokio::test]
-async fn a_seen_receipt_cannot_settle_a_notice_and_session_closed_keeps_its_reason() {
+async fn a_seen_receipt_cannot_settle_a_notice_and_ambiguous_session_keeps_its_reason() {
     let fixture = Fixture::new().await;
     let central = runtime(&fixture).await;
     let now = chrono::DateTime::from_timestamp(FIXTURE_NOW, 0).unwrap();
@@ -504,7 +502,7 @@ async fn a_seen_receipt_cannot_settle_a_notice_and_session_closed_keeps_its_reas
         submit(
             notice_id.clone(),
             ReceiptKind::Refused {
-                reason: MessageRefusal::SessionClosed
+                reason: MessageRefusal::AmbiguousSession
             }
         )
         .await,
@@ -512,13 +510,13 @@ async fn a_seen_receipt_cannot_settle_a_notice_and_session_closed_keeps_its_reas
     );
     assert_eq!(
         stored_state().await,
-        [vec![text("failed"), text("sessionClosed")]]
+        [vec![text("failed"), text("ambiguousSession")]]
     );
     assert_eq!(
         submit(
             notice_id.clone(),
             ReceiptKind::Refused {
-                reason: MessageRefusal::SessionClosed
+                reason: MessageRefusal::AmbiguousSession
             }
         )
         .await,
@@ -527,19 +525,16 @@ async fn a_seen_receipt_cannot_settle_a_notice_and_session_closed_keeps_its_reas
     assert_eq!(
         submit(
             notice_id.clone(),
-            ReceiptKind::Delivered {
-                arrived_at: now,
-                waiting: None
-            }
+            ReceiptKind::Delivered { arrived_at: now }
         )
         .await,
         MailReceiptSettlement::Stop(ReceiptResult::AlreadySettled)
     );
     assert_eq!(
         stored_state().await,
-        [vec![text("failed"), text("sessionClosed")]]
+        [vec![text("failed"), text("ambiguousSession")]]
     );
-    for (tag, reason) in [("failed", ""), ("cancelled", "sessionClosed")] {
+    for (tag, reason) in [("failed", ""), ("cancelled", "ambiguousSession")] {
         raw(
             &central,
             "UPDATE mail_messages SET state=?,failure_reason=? WHERE message_id=?",
@@ -550,10 +545,7 @@ async fn a_seen_receipt_cannot_settle_a_notice_and_session_closed_keeps_its_reas
             submit(notice_id.clone(), ReceiptKind::Seen { completed_at: now }).await,
             MailReceiptSettlement::Stop(ReceiptResult::NotApplicable)
         );
-        let receipt = ReceiptKind::Delivered {
-            arrived_at: now,
-            waiting: None,
-        };
+        let receipt = ReceiptKind::Delivered { arrived_at: now };
         let rejected = submit_receipt(&fixture, &central, &notice_id, receipt).await;
         assert!(
             matches!(rejected, Err(StoreFailure::Corrupt { .. })),

@@ -387,10 +387,10 @@ test("the checked SELECT in a Workerd fixture overlay requires exactly one stamp
 });
 
 const sparseDirectReceiptHistory = [
-  // Finished history uses the new terminal/marked tags. Delivered is unfinished.
+  // Unsettled deliveries still need a mark. The settlement timestamp excludes finished queued rows.
   "UPDATE mail_messages SET state='seen',seen_completed_at='1970-01-01T00:01:00.000Z' WHERE message_kind='direct' AND state='delivered'",
-  "UPDATE mail_messages SET state='pastTheMark' WHERE message_kind='direct' AND state='cancelled'",
-  "UPDATE mail_messages SET state='delivered',delivered_arrived_at='1970-01-01T00:00:01.000Z' WHERE message_kind='direct' AND state='queued'",
+  "UPDATE mail_messages SET state='queued',deadline_settled_at='1970-01-01T00:20:00.000Z' WHERE message_kind='direct' AND state='cancelled'",
+  "UPDATE mail_messages SET state='delivered',delivered_arrived_at='1970-01-01T00:00:01.000Z' WHERE message_kind='direct' AND state='queued' AND deadline_settled_at IS NULL",
 ];
 
 test("the final Central schema keeps delivered direct marks within 330 sparse reads", async (context) => {

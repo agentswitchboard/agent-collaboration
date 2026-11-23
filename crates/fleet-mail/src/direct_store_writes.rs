@@ -344,12 +344,12 @@ macro_rules! lifecycle_update {
             $row.failure,
             format_utc_millis($now),
             $row.arrived,
-            $row.waiting,
             $row.seen,
-            $row.not_seen,
+            $row.deadline_settled_at,
             ($prior).subject.id.to_string(),
             ($prior).subject.recipient.to_string(),
-            ($prior).lifecycle.storage_tag().to_owned()
+            ($prior).lifecycle.storage_tag().to_owned(),
+            ($prior).deadline_settled_at.map(format_utc_millis)
         )
     };
 }
@@ -394,6 +394,7 @@ where
             mark: row.mark,
         },
         lifecycle: row.lifecycle,
+        deadline_settled_at: row.deadline_settled_at,
     };
     let (next, effects) = match DirectMessage::transition(
         &state,
@@ -415,7 +416,7 @@ where
             | TransitionError::Domain(DirectMessageRefusal::InvalidIdentifier),
         ) => return Err(corrupt("mail_messages.transition").into()),
     };
-    let encoding = DirectStateUpdate::new(next.lifecycle)?;
+    let encoding = DirectStateUpdate::new(&next)?;
     let result = lifecycle_update!(bind_direct_mail_write, encoding, &state, now)
         .execute(tx.executor())
         .await?;
@@ -443,13 +444,9 @@ where
         .execute(tx.executor())
         .await?;
     let key = due_key(DueKind::DirectMessage, &state.subject.id);
-    let due = match next.lifecycle {
-        DirectLifecycle::Queued | DirectLifecycle::Delivered(_) => {
-            DueTableChange::PublishItem(DueOwnerTiming::at(key, state.subject.mark)?)
-        }
-        DirectLifecycle::PastTheMark(_) | DirectLifecycle::Final { .. } => {
-            DueTableChange::RemoveItem(key)
-        }
+    let due = match DirectMessage::next_due(&next) {
+        Some(mark) => DueTableChange::PublishItem(DueOwnerTiming::at(key, mark)?),
+        None => DueTableChange::RemoveItem(key),
     };
     apply_due_table_change(tx, &due, now).await?;
     Ok(AppliedTransition::Changed(ready))
@@ -466,34 +463,28 @@ struct DirectStateUpdate {
     tag: &'static str,
     failure: Option<String>,
     arrived: Option<String>,
-    waiting: Option<String>,
     seen: Option<String>,
-    not_seen: Option<String>,
+    deadline_settled_at: Option<String>,
 }
 impl DirectStateUpdate {
-    fn new(lifecycle: DirectLifecycle) -> Result<Self, StoreFailure> {
-        let mut encoded = Self {
-            tag: lifecycle.storage_tag(),
-            failure: None,
-            arrived: None,
-            waiting: None,
-            seen: None,
-            not_seen: None,
+    fn new(next: &DirectReducerState) -> Result<Self, StoreFailure> {
+        let (seen, failure) = match next.lifecycle {
+            DirectLifecycle::Queued | DirectLifecycle::Delivered { .. } => (None, None),
+            DirectLifecycle::Final { receipt, .. } => match receipt {
+                FinalReceipt::Seen { completed_at } => (Some(completed_at.to_rfc3339()), None),
+                FinalReceipt::Refused { reason } => (None, Some(enum_text(reason)?)),
+            },
         };
-        if let Some(saved) = lifecycle.saved_delivery() {
-            encoded.arrived = Some(saved.arrived_at.to_rfc3339());
-            encoded.waiting = saved.waiting.map(enum_text).transpose()?;
-        }
-        if let DirectLifecycle::Final { receipt, .. } = lifecycle {
-            match receipt {
-                FinalReceipt::Seen { completed_at } => {
-                    encoded.seen = Some(completed_at.to_rfc3339())
-                }
-                FinalReceipt::NotSeen { waiting } => encoded.not_seen = Some(enum_text(waiting)?),
-                FinalReceipt::Refused { reason } => encoded.failure = Some(enum_text(reason)?),
-            }
-        }
-        Ok(encoded)
+        Ok(Self {
+            tag: next.lifecycle.storage_tag(),
+            failure,
+            arrived: next
+                .lifecycle
+                .delivered_arrival()
+                .map(|arrived_at| arrived_at.to_rfc3339()),
+            seen,
+            deadline_settled_at: next.deadline_settled_at.map(format_utc_millis),
+        })
     }
 }
 

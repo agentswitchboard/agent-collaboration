@@ -14,9 +14,8 @@ fn stored() -> StoredDirectState {
         target_machine_id: "01890f2e-7b4c-7cc0-98c4-000000000001".into(),
         delivery_window_ends_at: Some("2100-01-01T00:16:00Z".into()),
         delivered_arrived_at: None,
-        delivered_waiting_reason: None,
         seen_completed_at: None,
-        not_seen_waiting_reason: None,
+        deadline_settled_at: None,
     }
 }
 
@@ -32,7 +31,7 @@ fn stored_direct_state_requires_the_evidence_its_tag_claims() {
     row.delivered_arrived_at = Some("2100-01-01T00:01:30Z".into());
     assert!(matches!(
         row.decode_direct_message().unwrap().lifecycle,
-        DirectLifecycle::Delivered(_)
+        DirectLifecycle::Delivered { .. }
     ));
     row.state = "seen".into();
     assert!(row.decode_direct_message().is_err());
@@ -48,11 +47,13 @@ fn stored_direct_state_requires_the_evidence_its_tag_claims() {
     assert!(row.decode_direct_message().is_err());
     row.seen_completed_at = None;
     row.state = "refused".into();
+    assert!(row.decode_direct_message().is_err());
+    row.failure_reason = Some("ambiguousSession".into());
     assert!(matches!(
         row.decode_direct_message().unwrap().lifecycle,
         DirectLifecycle::Final {
             receipt: FinalReceipt::Refused {
-                reason: mail::MessageRefusal::SessionClosed
+                reason: mail::MessageRefusal::AmbiguousSession
             },
             ..
         }
@@ -91,5 +92,35 @@ fn a_stored_direct_message_requires_an_actor_sender() {
     assert_eq!(
         row.decode_direct_message().err(),
         Some(corrupt("mail_messages.sender"))
+    );
+}
+
+#[test]
+fn deadline_settlement_is_independent_of_evidence_and_validated_on_read() {
+    let mut row = stored();
+    row.state = "pastTheMark".into();
+    assert_eq!(
+        row.decode_direct_message().err(),
+        Some(corrupt("mail_messages.state"))
+    );
+    row.state = "queued".into();
+    for invalid in [
+        "invalid",
+        "2100-01-01T00:15:59.999Z",
+        "2100-01-01T00:16:00Z",
+    ] {
+        row.deadline_settled_at = Some(invalid.into());
+        assert_eq!(
+            row.decode_direct_message().err(),
+            Some(corrupt("mail_messages.deadline_settled_at"))
+        );
+    }
+    let settled_at = "2100-01-01T00:20:00.000Z";
+    row.deadline_settled_at = Some(settled_at.into());
+    let decoded = row.decode_direct_message().unwrap();
+    assert_eq!(decoded.lifecycle, DirectLifecycle::Queued);
+    assert_eq!(
+        decoded.deadline_settled_at,
+        Some(settled_at.parse().unwrap())
     );
 }

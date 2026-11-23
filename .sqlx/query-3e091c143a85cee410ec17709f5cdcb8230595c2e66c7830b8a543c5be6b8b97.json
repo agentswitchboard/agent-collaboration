@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT message_id AS \"message_id!: String\", sender, message_kind, state, failure_reason, cancel_due_at,\n       sender_request_id, created_at, updated_at, target_machine_id, delivery_window_ends_at,\n       delivered_arrived_at, delivered_waiting_reason, seen_completed_at, not_seen_waiting_reason\nFROM mail_messages WHERE message_id=?\n",
+  "query": "SELECT message_id AS \"message_id!: String\", sender, message_kind, state, failure_reason, cancel_due_at,\n       sender_request_id, created_at, updated_at, target_machine_id, delivery_window_ends_at,\n       delivered_arrived_at, seen_completed_at, deadline_settled_at\nFROM mail_messages WHERE message_id=?\n",
   "describe": {
     "columns": [
       {
@@ -136,19 +136,8 @@
         }
       },
       {
-        "name": "delivered_waiting_reason",
-        "ordinal": 12,
-        "type_info": "Text",
-        "origin": {
-          "Table": {
-            "table": "mail_messages",
-            "name": "delivered_waiting_reason"
-          }
-        }
-      },
-      {
         "name": "seen_completed_at",
-        "ordinal": 13,
+        "ordinal": 12,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -158,13 +147,13 @@
         }
       },
       {
-        "name": "not_seen_waiting_reason",
-        "ordinal": 14,
+        "name": "deadline_settled_at",
+        "ordinal": 13,
         "type_info": "Text",
         "origin": {
           "Table": {
             "table": "mail_messages",
-            "name": "not_seen_waiting_reason"
+            "name": "deadline_settled_at"
           }
         }
       }
@@ -186,9 +175,8 @@
       true,
       true,
       true,
-      true,
       true
     ]
   },
-  "hash": "5b3107f700c2a75a226961ddd759cb443bd4f2cf8b38292eec5e216b8ee75fd2"
+  "hash": "3e091c143a85cee410ec17709f5cdcb8230595c2e66c7830b8a543c5be6b8b97"
 }

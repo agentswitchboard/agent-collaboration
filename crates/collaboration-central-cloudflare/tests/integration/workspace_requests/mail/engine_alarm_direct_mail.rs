@@ -52,7 +52,7 @@ async fn direct_mark_and_charge_survive_a_rejected_final_alarm_and_retry_once() 
         args: vec![text(message)],
     };
     let state = |message: &workspace_ids::MessageId| Statement {
-        sql: "SELECT state FROM mail_messages WHERE message_id=?",
+        sql: "SELECT state, deadline_settled_at IS NOT NULL FROM mail_messages WHERE message_id=?",
         args: vec![text(message)],
     };
     let original_outcome = central
@@ -69,7 +69,7 @@ async fn direct_mark_and_charge_survive_a_rejected_final_alarm_and_retry_once() 
             .await
             .unwrap()
             .rows,
-        [vec![text("pastTheMark")]]
+        [vec![text("queued"), integer(1)]]
     );
     assert_eq!(
         central
@@ -78,7 +78,7 @@ async fn direct_mark_and_charge_survive_a_rejected_final_alarm_and_retry_once() 
             .await
             .unwrap()
             .rows,
-        [vec![text("queued")]]
+        [vec![text("queued"), integer(0)]]
     );
     assert!(
         central
@@ -144,7 +144,7 @@ async fn direct_mark_and_charge_survive_a_rejected_final_alarm_and_retry_once() 
             .await
             .unwrap()
             .rows,
-        [vec![text("pastTheMark")]]
+        [vec![text("queued"), integer(1)]]
     );
     fixture.host.close().await;
 }

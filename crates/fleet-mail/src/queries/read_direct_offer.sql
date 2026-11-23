@@ -3,4 +3,4 @@ SELECT message_id AS "message_id!: String",sender,target_machine_id,target_sessi
        created_at,updated_at,delivery_window_ends_at
 FROM mail_messages
 WHERE message_id=? AND target_machine_id=? AND state='queued' AND message_kind IN ('direct','notice','deliveryOutcome')
-  AND (message_kind!='direct' OR delivery_window_ends_at > created_at) AND delivery_window_ends_at > ?
+  AND (message_kind!='direct' OR (deadline_settled_at IS NULL AND delivery_window_ends_at > created_at)) AND delivery_window_ends_at > ?

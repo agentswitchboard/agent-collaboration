@@ -54,7 +54,7 @@ async fn one_direct_mark_guard_reads_bounded_rows_as_pending_marks_grow() {
         assert_store(
             &central,
             &message_id,
-            "pastTheMark",
+            "queued",
             Some("deliveryNotConfirmed"),
         )
         .await;

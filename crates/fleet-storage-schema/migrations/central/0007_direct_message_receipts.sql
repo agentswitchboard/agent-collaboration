@@ -1,13 +1,13 @@
 -- The contract switches with an empty mailbox. Reopen retains the applied
 -- migration ledger, and changed receipt fields are validated by the mail owner.
 ALTER TABLE mail_messages ADD COLUMN delivered_arrived_at TEXT;
-ALTER TABLE mail_messages ADD COLUMN delivered_waiting_reason TEXT;
 ALTER TABLE mail_messages ADD COLUMN seen_completed_at TEXT;
-ALTER TABLE mail_messages ADD COLUMN not_seen_waiting_reason TEXT;
+ALTER TABLE mail_messages ADD COLUMN deadline_settled_at TEXT;
 
 DROP INDEX messages_cancel_due;
 CREATE INDEX messages_cancel_due ON mail_messages(cancel_due_at)
-WHERE message_kind='direct' AND state IN ('queued','delivered') AND cancel_due_at IS NOT NULL;
+WHERE message_kind='direct' AND state IN ('queued','delivered')
+  AND deadline_settled_at IS NULL AND cancel_due_at IS NOT NULL;
 
 DROP VIEW direct_message_due_rows;
 CREATE VIEW direct_message_due_rows(due_lane, is_subject, subject_key, occurrence_ms, due_at_ms, contributes_to_alarm) AS
@@ -22,6 +22,6 @@ LEFT JOIN engine_due_attempt_controls a
   ON a.machine_kind='direct_message' AND a.subject_key=s.message_id
 LEFT JOIN source_attempt ON 1
 WHERE s.message_kind='direct' AND s.state IN ('queued','delivered')
-  AND s.cancel_due_at IS NOT NULL AND COALESCE(a.retired,0)=0
+  AND s.deadline_settled_at IS NULL AND s.cancel_due_at IS NOT NULL AND COALESCE(a.retired,0)=0
 UNION ALL
 SELECT 'on_grid', 0, NULL, NULL, due_at_ms, 1 FROM source_attempt;

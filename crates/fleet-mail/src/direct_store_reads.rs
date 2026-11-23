@@ -277,7 +277,8 @@ where
     let row = row
         .decode_direct_message()
         .map_err(DirectReadFailure::from_store)?;
-    Ok(row.lifecycle.project_message_status(row.cutoff, status.now))
+    let deadline_passed = row.deadline_settled_at.is_some() || status.now >= row.cutoff;
+    Ok(row.lifecycle.project_message_status(deadline_passed))
 }
 
 pub async fn read_offer<T: CentralTransaction>(

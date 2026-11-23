@@ -1,15 +1,11 @@
 //! A direct send keeps a 15-minute delivery window, clamped at Central admission.
-//! The receipt mark falls on the five-minute grid at least two minutes after
-//! the cutoff. The margin gives the recipient time to report delivery evidence
-//! before a due batch can select that message.
+//! Deadline settlement is due on the first grid mark at or after cutoff.
 use chrono::{DateTime, Duration, Utc};
 
 /// The one delivery window, from when the agent sent the message.
 pub(crate) const DELIVERY_WINDOW: Duration = Duration::minutes(15);
 const SYSTEM_MESSAGE_DELIVERY_WINDOW: Duration = Duration::hours(24);
 pub(crate) const EXPIRED_24_HOURS: &str = "expired24Hours";
-/// Grace for the recipient to report delivery before the mark.
-pub(crate) const RECEIPT_MARGIN: Duration = Duration::minutes(2);
 /// Due items run on this grid, like wakes.
 const DUE_GRID_SECONDS: u32 = 5 * 60;
 
@@ -22,10 +18,10 @@ pub(crate) fn system_message_deadline(created_at: DateTime<Utc>) -> Option<DateT
 /// Return the stored receipt mark for a direct send.
 /// A sender clock ahead of Central cannot extend the delivery window. A send
 /// already at its cutoff is admitted with zero time left. The mark is the first
-/// grid point at or after cutoff plus the receipt margin.
+/// grid point at or after cutoff.
 #[must_use]
 pub fn direct_receipt_mark(sent_at: DateTime<Utc>, accepted_at: DateTime<Utc>) -> DateTime<Utc> {
-    round_up_to_grid(delivery_window_ends_at(sent_at, accepted_at) + RECEIPT_MARGIN)
+    round_up_to_grid(delivery_window_ends_at(sent_at, accepted_at))
 }
 
 pub(crate) fn delivery_window_ends_at(

@@ -6,7 +6,7 @@ WITH message_mark(occurrence_ms) AS (
   END
   FROM mail_messages
   WHERE message_id=?1 AND message_kind='direct'
-    AND state IN ('queued','delivered') AND cancel_due_at IS NOT NULL
+    AND state IN ('queued','delivered') AND deadline_settled_at IS NULL AND cancel_due_at IS NOT NULL
 )
 SELECT occurrence_ms AS "occurrence_ms!: i64",
        CASE WHEN attempt.uses_subject_attempt=1 THEN attempt.due_at_ms ELSE occurrence_ms END AS "effective_due_ms!: i64"

@@ -325,7 +325,6 @@ async fn receipt_result(
             kind: central_link_protocol::ReceiptKind::Delivered {
                 arrived_at: chrono::DateTime::from_timestamp(signed::NOW_SECONDS, 0)
                     .ok_or("fixture UTC")?,
-                waiting: None,
             },
         }])?,
     };

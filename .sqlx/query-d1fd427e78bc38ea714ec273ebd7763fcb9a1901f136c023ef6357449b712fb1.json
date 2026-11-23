@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT message_id AS \"message_id!: String\",sender,target_machine_id,target_session,message_kind,body,state,\n       failure_reason,source_change_id,recipient_actor,source_workspace_id,source_thread_id,\n       created_at,updated_at,delivery_window_ends_at\nFROM mail_messages\nWHERE message_id=? AND target_machine_id=? AND state='queued' AND message_kind IN ('direct','notice','deliveryOutcome')\n  AND (message_kind!='direct' OR delivery_window_ends_at > created_at) AND delivery_window_ends_at > ?\n",
+  "query": "SELECT message_id AS \"message_id!: String\",sender,target_machine_id,target_session,message_kind,body,state,\n       failure_reason,source_change_id,recipient_actor,source_workspace_id,source_thread_id,\n       created_at,updated_at,delivery_window_ends_at\nFROM mail_messages\nWHERE target_machine_id=?1 AND state='queued' AND message_kind IN ('direct','notice','deliveryOutcome')\n  AND delivery_window_ends_at>?2 AND (message_kind!='direct' OR (deadline_settled_at IS NULL AND delivery_window_ends_at>created_at))\n  AND (?3 IS NULL OR (created_at,message_id)>(?3,?4))\nORDER BY created_at,message_id LIMIT ?5\n",
   "describe": {
     "columns": [
       {
@@ -170,7 +170,7 @@
       }
     ],
     "parameters": {
-      "Right": 3
+      "Right": 5
     },
     "nullable": [
       true,
@@ -190,5 +190,5 @@
       true
     ]
   },
-  "hash": "c9ba35f4d52cdbef29835305a95ade28f18c5e78788a53ae1dff95921963291b"
+  "hash": "d1fd427e78bc38ea714ec273ebd7763fcb9a1901f136c023ef6357449b712fb1"
 }
