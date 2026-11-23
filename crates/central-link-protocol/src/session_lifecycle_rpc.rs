@@ -15,6 +15,13 @@ use fleet_rpc::{CorrelatedRpc, IndependentReplyRpc, Rpc};
 /// fn accepts_independent_reply<Call: IndependentReplyRpc>() {}
 /// accepts_independent_reply::<CreateFleetSessionRpc>();
 /// ```
+/// After a lost Create answer, retry the same operation ID and contents at a
+/// higher attempt. While reserved, it rotates the secret for the same session.
+/// An equal or lower reserved attempt returns Superseded without a write.
+/// After Bind, Create returns Active.
+///
+/// An AuthorityLapsed call refusal is advisory. The typed link close and the
+/// next sign-in refresh determine the enrollment's ending and cause.
 pub struct CreateFleetSessionRpc;
 
 impl Rpc for CreateFleetSessionRpc {
@@ -44,6 +51,11 @@ impl CorrelatedRpc for CreateFleetSessionRpc {
     }
 }
 
+/// Repeat Bind against the same session and harness address. The current
+/// session state determines the reply.
+///
+/// An AuthorityLapsed call refusal is advisory. The typed link close and the
+/// next sign-in refresh determine the enrollment's ending and cause.
 pub struct BindFleetSessionRpc;
 
 impl Rpc for BindFleetSessionRpc {
@@ -61,6 +73,11 @@ impl IndependentReplyRpc for BindFleetSessionRpc {}
 /// fn accepts_independent_reply<Call: IndependentReplyRpc>() {}
 /// accepts_independent_reply::<EndFleetSessionRpc>();
 /// ```
+/// Repeat End with the same target. The current session state determines the
+/// reply, including the retained settlement for an already ended session.
+///
+/// An AuthorityLapsed call refusal is advisory. The typed link close and the
+/// next sign-in refresh determine the enrollment's ending and cause.
 pub struct EndFleetSessionRpc;
 
 impl Rpc for EndFleetSessionRpc {

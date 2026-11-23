@@ -17,6 +17,8 @@ pub struct WorkspaceRuntime<Host: CentralStore, Stores: WorkspaceStores> {
     pub(crate) enrollment_invalidated:
         Arc<dyn Fn(fleet_contracts::EnrollmentInvalidation) + Send + Sync>,
     pub(crate) link_call_dispatcher: Option<Arc<dyn crate::CentralLinkDispatcher>>,
+    #[cfg(feature = "test-support")]
+    pub(crate) fixture_link_calls: bool,
     pub(crate) signin_authority: crate::organization_authority_cache::OrganizationAuthority,
     #[cfg(feature = "test-support")]
     pub(crate) machine_restore_failure:
@@ -35,6 +37,8 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             execution,
             stamp_store,
             link_call_dispatcher: None,
+            #[cfg(feature = "test-support")]
+            fixture_link_calls: false,
             signin_authority: Default::default(),
             mail_delivery_ready: Arc::new(|_| {}),
             enrollment_invalidated: Arc::new(|_| {}),

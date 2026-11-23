@@ -131,6 +131,7 @@ pub(crate) enum CasePausePoint {
     AfterDrainCommit,
     BeforeTimerCommit,
     BeforeReceiptTransaction,
+    BeforeSessionTransaction,
     AfterIdleExpiryCommit,
     AfterIdleRenewalPlatformSendError,
     BeforePrivateEnrollmentInvalidation,
@@ -162,6 +163,7 @@ impl From<CasePausePoint> for PausePoint {
             CasePausePoint::AfterDrainCommit => Self::AfterDrainCommit,
             CasePausePoint::BeforeTimerCommit => Self::BeforeTimerCommit,
             CasePausePoint::BeforeReceiptTransaction => Self::BeforeReceiptTransaction,
+            CasePausePoint::BeforeSessionTransaction => Self::BeforeSessionTransaction,
             CasePausePoint::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
             CasePausePoint::AfterIdleRenewalPlatformSendError => {
                 Self::AfterIdleRenewalPlatformSendError
@@ -198,6 +200,7 @@ impl From<PausePoint> for CasePausePoint {
             PausePoint::AfterDrainCommit => Self::AfterDrainCommit,
             PausePoint::BeforeTimerCommit => Self::BeforeTimerCommit,
             PausePoint::BeforeReceiptTransaction => Self::BeforeReceiptTransaction,
+            PausePoint::BeforeSessionTransaction => Self::BeforeSessionTransaction,
             PausePoint::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
             PausePoint::AfterIdleRenewalPlatformSendError => {
                 Self::AfterIdleRenewalPlatformSendError

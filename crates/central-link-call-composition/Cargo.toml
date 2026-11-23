@@ -8,7 +8,7 @@ publish.workspace = true
 autotests = false
 
 [features]
-test-support = ["central-link-protocol/test-support"]
+test-support = []
 
 [dependencies]
 central-engine-model.workspace = true
@@ -19,6 +19,8 @@ fleet-actor-identity.workspace = true
 fleet-identity-protocol = { path = "../fleet-identity-protocol", version = "0.1.158" }
 fleet-lent-transaction.workspace = true
 fleet-runtime-ports.workspace = true
+fleet-rpc.workspace = true
+tracing.workspace = true
 chrono.workspace = true
 sqlx-core.workspace = true
 uuid.workspace = true

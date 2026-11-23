@@ -1,25 +1,30 @@
-use crate::{OrganizationLoan, OrganizationSessionTransactions, SessionApplyFuture};
+use crate::{
+    OrganizationLoan, OrganizationSessionTransactions, SessionApplyFailure, SessionApplyFault,
+    SessionApplyFuture, SessionApplyResult,
+};
 use central_engine_model::{Context, EngineTime};
 use central_link_protocol::{
-    CentralCall, LinkCallRefusal, MachineLinkCloseCode, TypedCallResult,
+    CentralCall, CentralLinkRpc, LinkCallRefusal, TypedCallResult,
     session_lifecycle_rpc::{BindFleetSessionRpc, CreateFleetSessionRpc, EndFleetSessionRpc},
 };
 use central_storage::StoreFailure;
 use collaboration_central_core::{
-    CentralCallDispatch, CentralLinkDispatcher, ValidatedMachineConnection,
-    dispatch_fallible_central_call, dispatch_fallible_correlated_central_call,
+    CentralCallDispatch, CentralLinkDispatcher, TargetCheckedCentralCall,
+    ValidatedMachineConnection, dispatch_fallible_central_call,
+    dispatch_fallible_correlated_central_call, recheck_lent_link_authority,
 };
 use fleet_actor_identity::{
     SessionCallOutcome, SessionSecretSource, SessionService, SessionServiceError,
 };
-use fleet_identity_protocol::SessionSecret;
+use fleet_identity_protocol::{OrganizationId, SessionSecret};
 use fleet_lent_transaction::CentralTransaction;
+use fleet_rpc::Envelope;
 use fleet_runtime_ports::{Clock, IdSource};
 use sqlx_core::{
     arguments::IntoArguments, column::ColumnIndex, database::Database, decode::Decode,
     encode::Encode, types::Type,
 };
-use std::sync::Arc;
+use std::{future::Future, pin::Pin, sync::Arc};
 use zeroize::Zeroizing;
 
 /// The host could not fill a session secret from secure entropy.
@@ -57,23 +62,67 @@ impl<Transactions: OrganizationSessionTransactions> SessionLinkDispatcher<Transa
             },
         }
     }
+}
 
-    async fn apply(
+impl<Transactions, Db> SessionLinkDispatcher<Transactions>
+where
+    Transactions: OrganizationSessionTransactions,
+    for<'loan> Transactions::Transaction<'loan>: CentralTransaction<Database = Db>,
+    Db: Database,
+    Db::Arguments: IntoArguments<Db>,
+    String: Type<Db> + for<'query> Encode<'query, Db> + for<'row> Decode<'row, Db>,
+    Option<String>: Type<Db> + for<'query> Encode<'query, Db> + for<'row> Decode<'row, Db>,
+    Option<i64>: Type<Db> + for<'row> Decode<'row, Db>,
+    i64: Type<Db> + for<'query> Encode<'query, Db> + for<'row> Decode<'row, Db>,
+    for<'row> &'row str: ColumnIndex<Db::Row>,
+{
+    async fn apply<R>(
         &self,
         machine: &ValidatedMachineConnection,
+        request: Envelope<R::Target, R::Request>,
         dispatch: impl for<'loan> FnOnce(
+            TargetCheckedCentralCall<R>,
             OrganizationLoan<'loan, Transactions::Transaction<'loan>>,
             ValidatedMachineConnection,
             ApplyingInputs,
+            EngineTime,
         ) -> SessionApplyFuture<'loan>
         + Send
         + 'static,
-    ) -> CentralCallDispatch {
+    ) -> CentralCallDispatch
+    where
+        R: CentralLinkRpc<Target = OrganizationId> + 'static,
+    {
+        let request = match TargetCheckedCentralCall::<R>::check(machine.organization_id(), request)
+        {
+            Ok(request) => request,
+            Err(reason) => return Ok(TypedCallResult::Refused { reason }),
+        };
         let machine = machine.clone();
         let inputs = self.inputs.clone();
-        self.transactions
-            .apply(move |loan| dispatch(loan, machine, inputs))
-            .await
+        let result = self
+            .transactions
+            .apply(move |mut loan| {
+                Box::pin(async move {
+                    let (time, lapse) = recheck_lent_link_authority(
+                        &mut loan,
+                        machine.attachment_ref(),
+                        inputs.clock.as_ref(),
+                    )
+                    .await?;
+                    if let Some(cause) = lapse {
+                        return Ok(TypedCallResult::Refused {
+                            reason: LinkCallRefusal::AuthorityLapsed { cause },
+                        });
+                    }
+                    let time = EngineTime::from_timestamp_millis(time.unix_millis()).ok_or(
+                        SessionApplyFailure::Terminal(SessionApplyFault::ApplyingClockOutOfRange),
+                    )?;
+                    dispatch(request, loan, machine, inputs, time).await
+                })
+            })
+            .await;
+        report_application(result)
     }
 }
 
@@ -93,68 +142,88 @@ where
         &'call self,
         machine: &'call ValidatedMachineConnection,
         request: CentralCall,
-    ) -> SessionApplyFuture<'call> {
+    ) -> Pin<Box<dyn Future<Output = CentralCallDispatch> + Send + 'call>> {
         Box::pin(async move {
             match request {
                 CentralCall::CreateFleetSession(request) => {
-                    self.apply(machine, |mut loan, machine, inputs| Box::pin(async move {
-                        dispatch_fallible_correlated_central_call::<CreateFleetSessionRpc, _, _>(
-                            machine.organization_id(),
-                            request,
-                            |body| async {
-                                let mut ids = ApplyingIds(inputs.ids.as_ref());
-                                let mut context = inputs.context(&mut ids)?;
-                                let mut service = SessionService::in_transaction(&mut loan);
-                                session_reply(service.create(&machine, body, &mut context, &mut ApplyingSecrets(inputs.fill_secret)).await)
-                            },
-                        ).await
-                    })).await
+                    self.apply::<CreateFleetSessionRpc>(
+                        machine,
+                        request,
+                        |request, mut loan, machine, inputs, time| {
+                            Box::pin(async move {
+                                dispatch_fallible_correlated_central_call(request, |body| async {
+                                    let mut ids = ApplyingIds(inputs.ids.as_ref());
+                                    let mut context = Context {
+                                        now: time,
+                                        ids: &mut ids,
+                                    };
+                                    let mut service = SessionService::in_transaction(&mut loan);
+                                    session_reply(
+                                        service
+                                            .create(
+                                                &machine,
+                                                body,
+                                                &mut context,
+                                                &mut ApplyingSecrets(inputs.fill_secret),
+                                            )
+                                            .await,
+                                    )
+                                })
+                                .await
+                            })
+                        },
+                    )
+                    .await
                 }
                 CentralCall::BindFleetSession(request) => {
-                    self.apply(machine, |mut loan, machine, inputs| Box::pin(async move {
-                        dispatch_fallible_central_call::<BindFleetSessionRpc, _, _>(
-                            machine.organization_id(),
-                            request,
-                            |body| async {
-                                let mut ids = ApplyingIds(inputs.ids.as_ref());
-                                let mut context = inputs.context(&mut ids)?;
-                                let mut service = SessionService::in_transaction(&mut loan);
-                                session_reply(service.bind(&machine, body, &mut context).await)
-                            },
-                        ).await
-                    })).await
+                    self.apply::<BindFleetSessionRpc>(
+                        machine,
+                        request,
+                        |request, mut loan, machine, inputs, time| {
+                            Box::pin(async move {
+                                dispatch_fallible_central_call(request, |body| async {
+                                    let mut ids = ApplyingIds(inputs.ids.as_ref());
+                                    let mut context = Context {
+                                        now: time,
+                                        ids: &mut ids,
+                                    };
+                                    let mut service = SessionService::in_transaction(&mut loan);
+                                    session_reply(service.bind(&machine, body, &mut context).await)
+                                })
+                                .await
+                            })
+                        },
+                    )
+                    .await
                 }
                 CentralCall::EndFleetSession(request) => {
-                    self.apply(machine, |mut loan, machine, inputs| Box::pin(async move {
-                        dispatch_fallible_correlated_central_call::<EndFleetSessionRpc, _, _>(
-                            machine.organization_id(),
-                            request,
-                            |body| async {
-                                let mut ids = ApplyingIds(inputs.ids.as_ref());
-                                let mut context = inputs.context(&mut ids)?;
-                                let mut service = SessionService::in_transaction(&mut loan);
-                                session_reply(service.end(&machine, body, &mut context).await)
-                            },
-                        ).await
-                    })).await
+                    self.apply::<EndFleetSessionRpc>(
+                        machine,
+                        request,
+                        |request, mut loan, machine, inputs, time| {
+                            Box::pin(async move {
+                                dispatch_fallible_correlated_central_call(request, |body| async {
+                                    let mut ids = ApplyingIds(inputs.ids.as_ref());
+                                    let mut context = Context {
+                                        now: time,
+                                        ids: &mut ids,
+                                    };
+                                    let mut service = SessionService::in_transaction(&mut loan);
+                                    session_reply(service.end(&machine, body, &mut context).await)
+                                })
+                                .await
+                            })
+                        },
+                    )
+                    .await
                 }
                 CentralCall::RegisterRun(_) | CentralCall::Raise(_) | CentralCall::Stop(_) => {
-                    Ok(TypedCallResult::Refused { reason: LinkCallRefusal::UnknownCall })
-                }
-                #[cfg(feature = "test-support")]
-                CentralCall::CentralProbe(_) => {
-                    Ok(TypedCallResult::Refused { reason: LinkCallRefusal::UnknownCall })
+                    Ok(TypedCallResult::Refused {
+                        reason: LinkCallRefusal::UnknownCall,
+                    })
                 }
             }
         })
-    }
-}
-
-impl ApplyingInputs {
-    fn context<'ids>(&self, ids: &'ids mut ApplyingIds<'_>) -> Result<Context<'ids>, StoreFailure> {
-        let now = EngineTime::from_timestamp_millis(self.clock.now().unix_millis())
-            .ok_or(StoreFailure::Unavailable)?;
-        Ok(Context { now, ids })
     }
 }
 
@@ -178,15 +247,28 @@ impl SessionSecretSource for ApplyingSecrets {
 
 fn session_reply<Reply>(
     outcome: Result<SessionCallOutcome<Reply>, SessionServiceError>,
-) -> Result<Result<Reply, LinkCallRefusal>, StoreFailure> {
-    match outcome {
-        Ok(SessionCallOutcome::Answered(reply)) => Ok(Ok(reply)),
-        // Core has already checked the detailed link cause. The session recheck
-        // can observe an enrollment no longer current before the first write.
-        Ok(SessionCallOutcome::Revoked) => Ok(Err(LinkCallRefusal::AuthorityLapsed {
-            cause: MachineLinkCloseCode::Inactive,
-        })),
-        Err(SessionServiceError::Store(failure)) => Err(failure),
-        Err(_) => Err(StoreFailure::Unavailable),
+) -> Result<Reply, SessionApplyFailure> {
+    match outcome? {
+        SessionCallOutcome::Answered(reply) => Ok(reply),
+        SessionCallOutcome::Revoked => Err(SessionApplyFailure::Terminal(
+            SessionApplyFault::InconsistentEnrollment,
+        )),
+    }
+}
+
+fn report_application(result: SessionApplyResult) -> CentralCallDispatch {
+    match result {
+        Ok(result) => Ok(result),
+        Err(SessionApplyFailure::Store(failure)) => Err(failure),
+        Err(failure @ SessionApplyFailure::EntropyUnavailable) => {
+            tracing::warn!(?failure, "session call could not get secure entropy");
+            Err(StoreFailure::Unavailable)
+        }
+        Err(SessionApplyFailure::Terminal(fault)) => {
+            tracing::error!(?fault, "session call rolled back");
+            Ok(TypedCallResult::Refused {
+                reason: LinkCallRefusal::CentralFault,
+            })
+        }
     }
 }

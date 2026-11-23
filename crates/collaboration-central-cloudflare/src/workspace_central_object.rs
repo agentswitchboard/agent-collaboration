@@ -361,6 +361,8 @@ impl CentralObject {
                 WorkerSessionTransactions {
                     organization: organization.clone(),
                     connection: host.connection.clone(),
+                    #[cfg(feature = "test-support")]
+                    fail_reserved_session_reply: self.controls.fail_reserved_session_reply.clone(),
                 },
                 clock.clone(),
                 self.link_ids.clone(),

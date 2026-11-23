@@ -17,7 +17,9 @@ pub mod signin_test_observation;
 #[cfg(feature = "test-support")]
 pub mod storage_conformance;
 
-pub use fleet_machine_login::link_authority::ValidatedMachineConnection;
+pub use fleet_machine_login::link_authority::{
+    ValidatedMachineConnection, recheck_lent_link_authority,
+};
 pub use fleet_machine_login::link_transitions::{
     MachineTokenRenewalRefusal, RenewedMachineConnection,
 };
@@ -26,7 +28,7 @@ mod machine_login_plans;
 mod typed_link_dispatch;
 pub use typed_link_dispatch::{
     CentralCallDispatch, CentralLinkDispatcher, DispatchedCentralCall, MacCallResult,
-    TYPED_LINK_CALL_TIMEOUT, dispatch_fallible_central_call,
+    TYPED_LINK_CALL_TIMEOUT, TargetCheckedCentralCall, dispatch_fallible_central_call,
     dispatch_fallible_correlated_central_call, dispatch_registered_central_call, finish_mac_call,
 };
 #[cfg(feature = "test-support")]

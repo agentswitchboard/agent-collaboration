@@ -3,8 +3,8 @@ use super::{LinkWrites, Runtime};
 use crate::machine_call_queue::{MacCallReceiver, QueuedMacCall};
 use axum::extract::ws::{Message, WebSocket, close_code};
 use central_link_protocol::{
-    CentralCall, CorrelationId, DataFrame, FrameDirection, LinkCallRefusal, LinkFrame,
-    MachineLinkCloseCode, TypedCallResult, encode_text,
+    CentralCall, CorrelationId, DataFrame, FrameDirection, LinkFrame, MachineLinkCloseCode,
+    TypedCallResult, encode_text,
 };
 use collaboration_central_core::ValidatedMachineConnection;
 use std::{
@@ -34,17 +34,60 @@ pub(super) async fn reply_to_typed_call(
     if let Some(run) = dispatched.registered_run {
         calls.bind_run(run);
     }
-    let lapsed = if let TypedCallResult::Refused {
-        reason: LinkCallRefusal::AuthorityLapsed { cause },
-    } = &dispatched.result
+    send_central_call_result(socket, writes, correlation_id, dispatched.result).await
+}
+
+#[cfg(feature = "test-support")]
+pub(super) async fn reply_to_fixture_probe(
+    socket: &mut WebSocket,
+    writes: &LinkWrites<'_>,
+    runtime: &Runtime,
+    connection: &ValidatedMachineConnection,
+    correlation_id: CorrelationId,
+    request: central_link_protocol::fixture_central_probe::ProbeRequestEnvelope,
+) -> bool {
+    match runtime
+        .dispatch_fixture_central_probe(connection.attachment_ref(), request)
+        .await
     {
-        Some(*cause)
-    } else {
-        None
+        Ok(answer @ TypedCallResult::Answered { .. }) => {
+            let Ok(text) = central_link_protocol::fixture_central_probe::encode_probe_reply(
+                correlation_id,
+                answer,
+            ) else {
+                return false;
+            };
+            writes.send_text(socket, text).await
+        }
+        Ok(TypedCallResult::Refused { reason }) => {
+            send_central_call_result(
+                socket,
+                writes,
+                correlation_id,
+                TypedCallResult::Refused { reason },
+            )
+            .await
+        }
+        Err(_) => {
+            writes.close(socket, close_code::ERROR, "central unavailable");
+            false
+        }
+    }
+}
+
+async fn send_central_call_result(
+    socket: &mut WebSocket,
+    writes: &LinkWrites<'_>,
+    correlation_id: CorrelationId,
+    result: TypedCallResult<central_link_protocol::CentralCallReply>,
+) -> bool {
+    let lapsed = match &result {
+        TypedCallResult::Refused { reason } => reason.authority_close(),
+        TypedCallResult::Answered { .. } => None,
     };
     let reply = LinkFrame::Data(DataFrame::CentralCallReply {
         correlation_id,
-        result: Box::new(dispatched.result),
+        result: Box::new(result),
     });
     if let Some(cause) = lapsed {
         writes.attempt_terminal_refusal(socket, &reply).await;

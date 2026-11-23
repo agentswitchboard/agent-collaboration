@@ -186,29 +186,61 @@ pub async fn refuse_lapsed_session_call(
     organization: &OrganizationId,
     lifecycle_call: SessionLinkCall,
 ) -> Result<()> {
-    let actual = match lifecycle_call {
+    let correlation = send_session_call(socket, organization, lifecycle_call).await?;
+    expect_lapsed_session_call(socket, &correlation, MachineLinkCloseCode::Revoked).await
+}
+
+pub async fn send_session_call(
+    socket: &mut WebSocket,
+    organization: &OrganizationId,
+    lifecycle_call: SessionLinkCall,
+) -> Result<CorrelationId> {
+    match lifecycle_call {
         SessionLinkCall::Create => {
-            call::<CreateFleetSessionRpc>(socket, organization, create()?).await?
+            send_call::<CreateFleetSessionRpc>(socket, organization, create()?).await
         }
         SessionLinkCall::Bind(body) => {
-            call::<BindFleetSessionRpc>(socket, organization, body).await?
+            send_call::<BindFleetSessionRpc>(socket, organization, body).await
         }
         SessionLinkCall::End(body) => {
-            call::<EndFleetSessionRpc>(socket, organization, body).await?
+            send_call::<EndFleetSessionRpc>(socket, organization, body).await
         }
-    };
+    }
+}
+
+pub async fn expect_lapsed_session_call(
+    socket: &mut WebSocket,
+    correlation: &CorrelationId,
+    cause: MachineLinkCloseCode,
+) -> Result<()> {
     expect_refusal(
-        actual,
-        LinkCallRefusal::AuthorityLapsed {
-            cause: MachineLinkCloseCode::Revoked,
-        },
+        read_reply(socket, correlation).await?,
+        LinkCallRefusal::AuthorityLapsed { cause },
     )?;
     if !matches!(socket.next().await, Some(Ok(Message::Close { code, .. }))
-        if MachineLinkCloseCode::from_code(code.into()) == Some(MachineLinkCloseCode::Revoked))
+        if MachineLinkCloseCode::from_code(code.into()) == Some(cause))
     {
-        return Err("revoked session call did not close its original socket".into());
+        return Err(format!("expected the original session socket to close with {cause:?}").into());
     }
     Ok(())
+}
+
+pub async fn expect_create_refusal(
+    socket: &mut WebSocket,
+    organization: &OrganizationId,
+    reason: LinkCallRefusal,
+) -> Result<()> {
+    expect_refusal(
+        call::<CreateFleetSessionRpc>(socket, organization, create()?).await?,
+        reason,
+    )
+}
+
+pub fn session_identity_records() -> Statement {
+    Statement {
+        sql: "SELECT * FROM actor_identities ORDER BY actor_id",
+        args: vec![],
+    }
 }
 
 fn create() -> Result<CreateFleetSession> {
@@ -233,6 +265,15 @@ async fn call<R: CentralLinkRpc<Target = OrganizationId>>(
     organization: &OrganizationId,
     body: R::Request,
 ) -> Result<TypedCallResult<CentralCallReply>> {
+    let correlation = send_call::<R>(socket, organization, body).await?;
+    read_reply(socket, &correlation).await
+}
+
+async fn send_call<R: CentralLinkRpc<Target = OrganizationId>>(
+    socket: &mut WebSocket,
+    organization: &OrganizationId,
+    body: R::Request,
+) -> Result<CorrelationId> {
     let correlation: CorrelationId = CORRELATION.parse()?;
     let request = LinkFrame::Data(DataFrame::CallCentral {
         correlation_id: correlation.clone(),
@@ -247,7 +288,7 @@ async fn call<R: CentralLinkRpc<Target = OrganizationId>>(
             FrameDirection::ToCentral,
         )?))
         .await?;
-    read_reply(socket, &correlation).await
+    Ok(correlation)
 }
 
 async fn read_reply(

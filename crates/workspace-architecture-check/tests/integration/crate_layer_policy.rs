@@ -32,6 +32,7 @@ const LAYER_POLICY: [(&str, &[&str]); 46] = [
             "fleet-actor-identity",
             "fleet-identity-protocol",
             "fleet-lent-transaction",
+            "fleet-rpc",
             "fleet-runtime-ports",
         ],
     ),

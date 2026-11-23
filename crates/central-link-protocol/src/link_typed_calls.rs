@@ -16,7 +16,23 @@ use std::{fmt, marker::PhantomData};
 pub enum LinkCallRefusal {
     UnknownCall,
     WrongTarget,
-    AuthorityLapsed { cause: MachineLinkCloseCode },
+    /// The call's cause is advisory. The link close and the next refresh carry enrollment authority.
+    AuthorityLapsed {
+        cause: MachineLinkCloseCode,
+    },
+    /// Central rolled back or declined to apply the call. The link remains open.
+    CentralFault,
+}
+
+impl LinkCallRefusal {
+    /// Only a lapsed link authority ends the physical socket after its refusal.
+    #[must_use]
+    pub const fn authority_close(self) -> Option<MachineLinkCloseCode> {
+        match self {
+            Self::AuthorityLapsed { cause } => Some(cause),
+            Self::UnknownCall | Self::WrongTarget | Self::CentralFault => None,
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for LinkCallRefusal {
@@ -27,10 +43,12 @@ impl<'de> Deserialize<'de> for LinkCallRefusal {
             UnknownCall {},
             WrongTarget {},
             AuthorityLapsed { cause: MachineLinkCloseCode },
+            CentralFault {},
         }
         Ok(match named_map(input)? {
             NamedRefusal::UnknownCall {} => Self::UnknownCall,
             NamedRefusal::WrongTarget {} => Self::WrongTarget,
+            NamedRefusal::CentralFault {} => Self::CentralFault,
             NamedRefusal::AuthorityLapsed { cause } => Self::AuthorityLapsed { cause },
         })
     }
@@ -232,7 +250,6 @@ register_calls! {
     "createFleetSession" => CreateFleetSession(CreateFleetSessionRpc),
     "bindFleetSession" => BindFleetSession(BindFleetSessionRpc),
     "endFleetSession" => EndFleetSession(EndFleetSessionRpc),
-    #[cfg(any(test, feature = "test-support"))] "centralProbe" => CentralProbe(test_calls::CentralProbe),
 }
 
 register_calls! {
@@ -247,10 +264,8 @@ pub mod test_calls {
     use serde::{Deserialize, Deserializer, Serialize};
     use workspace_ids::MachineId;
 
-    pub struct CentralProbe;
     pub struct MacProbe;
 
-    impl IndependentReplyRpc for CentralProbe {}
     impl IndependentReplyRpc for MacProbe {}
 
     #[derive(Clone, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
@@ -291,12 +306,6 @@ pub mod test_calls {
                 echoed: reply.echoed,
             })
         }
-    }
-
-    impl Rpc for CentralProbe {
-        type Target = MachineId;
-        type Request = ProbeRequest;
-        type Reply = ProbeReply;
     }
 
     impl Rpc for MacProbe {

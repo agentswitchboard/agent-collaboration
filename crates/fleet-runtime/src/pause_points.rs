@@ -28,6 +28,7 @@ pub enum PausePoint {
     AfterDrainCommit,
     BeforeTimerCommit,
     BeforeReceiptTransaction,
+    BeforeSessionTransaction,
     AfterIdleExpiryCommit,
     AfterIdleRenewalPlatformSendError,
     BeforePrivateEnrollmentInvalidation,

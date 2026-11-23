@@ -48,6 +48,10 @@ pub struct ObjectStorage {
     store: OnceCell<SqliteObjectStore>,
     // A database commit and its retained alarm are one ordered object write.
     batch_order: Mutex<()>,
+    #[cfg(feature = "test-support")]
+    fail_reserved_session_reply: std::sync::atomic::AtomicBool,
+    #[cfg(feature = "test-support")]
+    fail_session_loan: std::sync::atomic::AtomicBool,
     /// Kept in memory after commit (Program Design, "the one alarm"; Tokio).
     alarm: watch::Sender<Option<SyncTime>>,
     publication_status: watch::Sender<AlarmPublicationStatus>,
@@ -91,6 +95,10 @@ impl ObjectStorage {
             migrator,
             store: OnceCell::new(),
             batch_order: Mutex::new(()),
+            #[cfg(feature = "test-support")]
+            fail_reserved_session_reply: Default::default(),
+            #[cfg(feature = "test-support")]
+            fail_session_loan: Default::default(),
             alarm: watch::Sender::new(None),
             publication_status: watch::Sender::new(AlarmPublicationStatus::Published {
                 deadline: None,

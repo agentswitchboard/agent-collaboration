@@ -1,10 +1,9 @@
 use crate::statement_store::WorkerExecutorLender;
 use central_link_call_composition::{
-    OrganizationLoan, OrganizationSessionTransactions, SessionApplyFuture,
-    SessionEntropyUnavailable,
+    OrganizationLoan, OrganizationSessionTransactions, SessionApplyFailure, SessionApplyFuture,
+    SessionApplyResult, SessionEntropyUnavailable,
 };
 use central_storage::StoreFailure;
-use collaboration_central_core::CentralCallDispatch;
 use fleet_identity_protocol::OrganizationId;
 use sqlx_durable_object::{DoConnection, DoTransaction};
 use std::sync::Arc;
@@ -12,6 +11,8 @@ use worker::{send::SendWrapper, wasm_bindgen::JsCast};
 
 pub(super) struct WorkerSessionTransactions {
     pub(super) organization: OrganizationId,
+    #[cfg(feature = "test-support")]
+    pub(super) fail_reserved_session_reply: Arc<std::sync::atomic::AtomicBool>,
     pub(super) connection: Arc<SendWrapper<DoConnection>>,
 }
 
@@ -25,26 +26,34 @@ impl OrganizationSessionTransactions for WorkerSessionTransactions {
         ) -> SessionApplyFuture<'loan>
         + Send
         + 'static,
-    ) -> CentralCallDispatch {
+    ) -> SessionApplyResult {
         let organization = self.organization.clone();
+        #[cfg(feature = "test-support")]
+        let fail_reserved_session_reply = self.fail_reserved_session_reply.clone();
         self.connection
             .transaction(move |transaction| async move {
                 let loan = OrganizationLoan::new(
                     &organization,
                     WorkerExecutorLender::from_storage_executor(&transaction),
                 );
-                dispatch(loan).await.map_err(SessionTransactionError::Apply)
+                let result = dispatch(loan).await;
+                #[cfg(feature = "test-support")]
+                let result = central_link_call_composition::inject_reserved_reply_fault(
+                    &fail_reserved_session_reply,
+                    result,
+                );
+                result.map_err(SessionTransactionError::Apply)
             })
             .await
             .map_err(|error| match error {
                 SessionTransactionError::Apply(failure) => failure,
-                SessionTransactionError::Commit => StoreFailure::AnswerLost,
+                SessionTransactionError::Commit => StoreFailure::AnswerLost.into(),
             })
     }
 }
 
 enum SessionTransactionError {
-    Apply(StoreFailure),
+    Apply(SessionApplyFailure),
     Commit,
 }
 

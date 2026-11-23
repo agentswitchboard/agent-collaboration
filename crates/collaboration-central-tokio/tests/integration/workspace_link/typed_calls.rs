@@ -2,9 +2,10 @@ use super::receipt_frames::{EnrollmentAtApply, stored_ending_batch};
 use super::typed_call_holder::{connect_other_machine, ending_reply, holder_target};
 use super::{Fixture, INSTALLATION, OTHER_MACHINE, receive, send, signed, start_fixture};
 use central_link_protocol::{
-    CentralCallReply, CentralLinkRpc, CorrelationId, DataFrame, LinkCallRefusal, LinkFrame,
-    MacLinkRpc, MachineLinkCloseCode, TypedCallResult,
-    test_calls::{CentralProbe, MacProbe, ProbeReply, ProbeRequest},
+    CentralCallReply, CorrelationId, DataFrame, LinkCallRefusal, LinkFrame, MacLinkRpc,
+    MachineLinkCloseCode, TypedCallResult,
+    fixture_central_probe::{decode_probe_reply, encode_probe_call},
+    test_calls::{MacProbe, ProbeReply, ProbeRequest},
 };
 use central_storage::BatchOutcome;
 use collaboration_central_conformance::ConformanceResult as Result;
@@ -30,25 +31,27 @@ async fn central_typed_calls_reply_with_their_correlation_and_refuse_unknown_and
         let mut socket = connect(&fixture).await?;
         let correlation: CorrelationId = CENTRAL_CORRELATION.parse()?;
         let target = INSTALLATION.parse()?;
-        send(&mut socket, &central_probe(correlation.clone(), target)).await?;
-        expect_central_reply(
-            &mut socket,
-            correlation,
-            TypedCallResult::Answered {
-                reply: CentralProbe::reply(Envelope {
-                    target: INSTALLATION.parse()?,
-                    body: ProbeReply { echoed: 42 },
-                }),
+        send_central_probe(&mut socket, correlation.clone(), target).await?;
+        let message = socket
+            .next()
+            .await
+            .ok_or("expected a fixture probe reply")??;
+        let Message::Text(text) = message else {
+            return Err("expected a fixture probe reply".into());
+        };
+        let (observed, reply) = decode_probe_reply(&text)?;
+        let expected = TypedCallResult::Answered {
+            reply: Envelope {
+                target: INSTALLATION.parse()?,
+                body: ProbeReply { echoed: 42 },
             },
-        )
-        .await?;
+        };
+        if observed != correlation || reply != expected {
+            return Err("probe reply did not match its request".into());
+        }
 
         let wrong_target: CorrelationId = WRONG_TARGET_CORRELATION.parse()?;
-        send(
-            &mut socket,
-            &central_probe(wrong_target.clone(), OTHER_MACHINE.parse()?),
-        )
-        .await?;
+        send_central_probe(&mut socket, wrong_target.clone(), OTHER_MACHINE.parse()?).await?;
         expect_central_reply(
             &mut socket,
             wrong_target,
@@ -114,11 +117,7 @@ async fn verify_lapsed_authority(fixture: &Fixture, state: EnrollmentAtApply) ->
         UNKNOWN_CORRELATION.parse()?
     } else {
         let correlation: CorrelationId = CENTRAL_CORRELATION.parse()?;
-        send(
-            &mut socket,
-            &central_probe(correlation.clone(), INSTALLATION.parse()?),
-        )
-        .await?;
+        send_central_probe(&mut socket, correlation.clone(), INSTALLATION.parse()?).await?;
         correlation
     };
     let cause = state.expected_close();
@@ -403,11 +402,14 @@ pub(super) fn expect_call_failure<T: std::fmt::Debug>(
     Ok(())
 }
 
-fn central_probe(correlation_id: CorrelationId, target: MachineId) -> LinkFrame {
-    LinkFrame::Data(DataFrame::CallCentral {
-        correlation_id,
-        request: Box::new(CentralProbe::request(probe_request(target, 42))),
-    })
+async fn send_central_probe(
+    socket: &mut WebSocket,
+    correlation_id: CorrelationId,
+    target: MachineId,
+) -> Result<()> {
+    let text = encode_probe_call(correlation_id, probe_request(target, 42))?;
+    socket.send(Message::Text(text)).await?;
+    Ok(())
 }
 
 async fn send_unknown_probe(socket: &mut WebSocket) -> Result<()> {

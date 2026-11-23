@@ -1,4 +1,4 @@
-use collaboration_central_core::CentralCallDispatch;
+use crate::SessionApplyResult;
 use fleet_actor_identity::OrganizationTransaction;
 use fleet_identity_protocol::OrganizationId;
 use fleet_lent_transaction::CentralTransaction;
@@ -6,7 +6,7 @@ use sqlx_core::{database::Database, executor::Executor};
 use std::{future::Future, pin::Pin};
 
 pub type SessionApplyFuture<'loan> =
-    Pin<Box<dyn Future<Output = CentralCallDispatch> + Send + 'loan>>;
+    Pin<Box<dyn Future<Output = SessionApplyResult> + Send + 'loan>>;
 
 /// Each host retains its transaction while the dispatcher borrows its executor.
 pub trait OrganizationSessionTransactions: Send + Sync + 'static {
@@ -19,7 +19,7 @@ pub trait OrganizationSessionTransactions: Send + Sync + 'static {
         ) -> SessionApplyFuture<'loan>
         + Send
         + 'static,
-    ) -> impl Future<Output = CentralCallDispatch> + Send;
+    ) -> impl Future<Output = SessionApplyResult> + Send;
 }
 
 /// Associates an already-open transaction with its storage owner's organization.
