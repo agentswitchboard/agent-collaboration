@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT approval_destination_id, approval_row_id, organization_id, destination_kind,\n       session_machine_id, session_enrollment_id, session_id, raised_notice_at,\n       created_at, updated_at\nFROM approval_request_destinations\nWHERE approval_row_id = ?1\nORDER BY approval_destination_id\nLIMIT 3\n",
+  "query": "SELECT approval_destination_id, approval_row_id, organization_id, destination_kind,\n       session_machine_id, session_enrollment_id, session_id, raised_notice_at,\n       position, first_read_at, created_at, updated_at\nFROM approval_request_destinations\nWHERE approval_row_id = ?1\nORDER BY position\n",
   "describe": {
     "columns": [
       {
@@ -92,8 +92,30 @@
         }
       },
       {
-        "name": "created_at",
+        "name": "position",
         "ordinal": 8,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "approval_request_destinations",
+            "name": "position"
+          }
+        }
+      },
+      {
+        "name": "first_read_at",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_request_destinations",
+            "name": "first_read_at"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 10,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -104,7 +126,7 @@
       },
       {
         "name": "updated_at",
-        "ordinal": 9,
+        "ordinal": 11,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -127,8 +149,10 @@
       true,
       true,
       false,
+      true,
+      false,
       false
     ]
   },
-  "hash": "5dab45c1441164d5c7a55147231c779614426e0a1fb700a9af0da4d30fedb081"
+  "hash": "f9638152d43e31eb85cf9e1b41c8fca7297ba0d571eafe796e0de319489a6a66"
 }

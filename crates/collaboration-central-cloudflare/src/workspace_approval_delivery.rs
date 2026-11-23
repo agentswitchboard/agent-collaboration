@@ -3,8 +3,13 @@ use super::{
     matching_attachment, socket_open, socket_tag,
 };
 use crate::worker_clock::WorkspaceClock;
-use central_link_call_composition::{ApprovalEndingTransport, SelectedApprovalSocket};
-use central_link_protocol::approval_rpc::{ApprovalHolderTarget, DeliverEndingRpc};
+use central_link_call_composition::{ApprovalDeliveryTransport, SelectedApprovalSocket};
+use central_link_protocol::{
+    TypedCallResult,
+    approval_rpc::{
+        ApprovalHolderTarget, ApprovalNoticeRpc, ApprovalNoticeTarget, DeliverEndingRpc,
+    },
+};
 use collaboration_central_core::{TYPED_LINK_CALL_TIMEOUT, finish_mac_call};
 use fleet_rpc::{CallFailure, Envelope};
 use fleet_runtime_ports::Clock;
@@ -45,7 +50,80 @@ impl WorkerApprovalDelivery {
     }
 }
 
-impl ApprovalEndingTransport for WorkerApprovalDelivery {
+impl ApprovalDeliveryTransport for WorkerApprovalDelivery {
+    fn offer_notice(
+        &self,
+        notice: central_link_call_composition::CommittedApprovalNotice,
+    ) -> Pin<Box<dyn Future<Output = Result<(), CallFailure>> + Send>> {
+        let runtime = self.runtime.get().and_then(Weak::upgrade);
+        let state = self.state.clone();
+        let clock = self.clock.clone();
+        let pending_calls = self.pending.clone();
+        Box::pin(SendFuture::new(async move {
+            let runtime = runtime.ok_or(CallFailure::NeverReached)?;
+            let (organization_id, destination, request_id) = notice.into_destination();
+            let target = ApprovalNoticeTarget {
+                organization_id,
+                machine_id: destination.enrollment.machine_id,
+                enrollment_id: destination.enrollment.enrollment_id,
+                session_id: destination.session_id,
+            };
+            let deadline = clock.now().after(TYPED_LINK_CALL_TIMEOUT);
+            let write = async {
+                let _turn = runtime.runtime().take_central_turn_for_admission().await;
+                let socket = state
+                    .get_websockets_with_tag(target.machine_id.as_str())
+                    .into_iter()
+                    .find(socket_open)
+                    .ok_or(CallFailure::NeverReached)?;
+                let request = ApprovalNoticeRpc::request(Envelope {
+                    target: target.clone(),
+                    body: central_link_protocol::approval_rpc::ApprovalNotice { request_id },
+                });
+                let address = MacCallAddress::from(&request);
+                let tag = socket_tag(&state, &socket).ok_or(CallFailure::NeverReached)?;
+                let attachment = matching_attachment(&socket, &address, &target.organization_id)?;
+                if !matches!(
+                    runtime
+                        .restore_machine_in_held_turn(&attachment.authority)
+                        .await,
+                    Ok(Ok(_))
+                ) {
+                    return Err(CallFailure::NeverReached);
+                }
+                pending_calls.begin_mac_call(
+                    &clock,
+                    &socket,
+                    tag,
+                    Box::new(request),
+                    address,
+                    deadline,
+                )
+            };
+            let attempt = match select(pin!(clock.wait_until(deadline)), pin!(write)).await {
+                Either::Left(_) => return Err(CallFailure::NeverReached),
+                Either::Right((attempt, _)) => attempt?,
+            };
+            let answer = match select(attempt.answer, pin!(clock.wait_until(deadline))).await {
+                Either::Left((answer, _)) => answer.map_err(|_| CallFailure::AnswerLost)?,
+                Either::Right(_) => return Err(CallFailure::AnswerLost),
+            };
+            drop(attempt.pending);
+            match finish_mac_call::<ApprovalNoticeRpc>(&target, answer)? {
+                TypedCallResult::Answered {
+                    reply:
+                        Envelope {
+                            body:
+                                central_link_protocol::approval_rpc::ApprovalNoticeReply::Received {}
+                                | central_link_protocol::approval_rpc::ApprovalNoticeReply::NotHere {},
+                            ..
+                        },
+                } => Ok(()),
+                TypedCallResult::Refused { .. } => Err(CallFailure::AnswerLost),
+            }
+        }))
+    }
+
     #[cfg(feature = "test-support")]
     fn fixture_delivery_answer_applied(&self) -> collaboration_central_core::LinkCallCompletion {
         let runtime = self.runtime.get().and_then(Weak::upgrade);

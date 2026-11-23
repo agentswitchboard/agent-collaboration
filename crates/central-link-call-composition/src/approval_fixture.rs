@@ -14,7 +14,7 @@ use fleet_approvals::{
     ActorApprovalSessionFacts, AdmittedDecider, ApprovalActor, ApprovalCommitScope,
     ApprovalDecideInput, ApprovalDecisionReply, ApprovalEnrollmentScope,
     ApprovalEnrollmentStanding, ApprovalReplyAddress, ApprovalStoreTransaction, FactorStanding,
-    PendingApprovalHolderEffects, PendingApprovalReply,
+    PendingApprovalEffects, PendingApprovalReply,
 };
 use fleet_identity_protocol::OrganizationId;
 use fleet_lent_transaction::{CentralTransaction, OrganizationTransaction};
@@ -28,7 +28,7 @@ use workspace_ids::{ActorIdentityId, PersonId};
 
 type PendingFixtureDecision = (
     PendingApprovalReply<ApprovalDecisionReply>,
-    PendingApprovalHolderEffects,
+    PendingApprovalEffects,
 );
 
 impl<Transactions, Db> ApprovalDelivery<Transactions>
@@ -137,7 +137,7 @@ where
                 },
             )
             .await?;
-        Ok((reply, store.finish_holder_effects()))
+        Ok((reply, store.finish_effects()))
     })
 }
 

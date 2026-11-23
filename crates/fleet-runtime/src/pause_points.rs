@@ -35,6 +35,7 @@ pub enum PausePoint {
     BeforeApprovalEndingWrite,
     BeforeApprovalEndingEnqueue,
     BeforeApprovalCarrierTurn,
+    BeforeParentApprovalTransaction,
     AfterIdleExpiryCommit,
     AfterIdleRenewalPlatformSendError,
     BeforePrivateEnrollmentInvalidation,

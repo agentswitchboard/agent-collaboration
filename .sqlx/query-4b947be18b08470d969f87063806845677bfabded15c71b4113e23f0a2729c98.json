@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE approval_request_destinations\nSET first_read_at = ?1, updated_at = MAX(updated_at, ?1)\nWHERE approval_row_id = ?2 AND organization_id = ?3 AND destination_kind = 'parent_session'\n    AND session_machine_id = ?4 AND session_enrollment_id = ?5 AND session_id = ?6\n    AND first_read_at IS NULL\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "4b947be18b08470d969f87063806845677bfabded15c71b4113e23f0a2729c98"
+}

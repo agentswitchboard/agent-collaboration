@@ -1,12 +1,11 @@
 //! Approval RPC markers and addresses carried by the authenticated machine link.
-pub use approval_request_protocol::RegisterRunReply;
+pub use approval_request_protocol::{ApprovalNotice, ApprovalNoticeReply, RegisterRunReply};
 use approval_request_protocol::{
-    ApprovalNotice, ApprovalNoticeReply, ApprovalSessionCall, DecideApprovalAsSessionReply,
-    DecideApprovalAsSessionRequest, DecideReply, DecideRequest, DeliverEndingReply,
-    DeliverEndingRequest, ListApprovalsForSessionReply, ListApprovalsForSessionRequest,
-    PassOnApprovalReply, PassOnApprovalRequest, PassOnReply, PassOnRequest, Raise, RaiseReply,
-    ReadApprovalForSessionReply, ReadApprovalForSessionRequest, RegisterRunRequest, RouterRunId,
-    StopReply, StopRequest, decode_named_map,
+    ApprovalSessionCall, DecideApprovalAsSessionReply, DecideApprovalAsSessionRequest, DecideReply,
+    DecideRequest, DeliverEndingReply, DeliverEndingRequest, ListApprovalsForSessionReply,
+    ListApprovalsForSessionRequest, PassOnApprovalReply, PassOnApprovalRequest, PassOnReply,
+    PassOnRequest, Raise, RaiseReply, ReadApprovalForSessionReply, ReadApprovalForSessionRequest,
+    RegisterRunRequest, RouterRunId, StopReply, StopRequest, decode_named_map,
 };
 use fleet_identity_protocol::{EnrollmentId, OrganizationId, SessionSecret};
 use fleet_rpc::{IndependentReplyRpc, Rpc};

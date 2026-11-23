@@ -23,7 +23,7 @@ use fleet_actor_identity::{SessionCallOutcome, SessionService, SessionServiceErr
 use fleet_approvals::{
     ActorApprovalSessionFacts, ApprovalApplyFailure, ApprovalCommitScope, ApprovalEnrollment,
     ApprovalEnrollmentScope, ApprovalReplyAddress, ApprovalSession, ApprovalStoreTransaction,
-    PendingApprovalHolderEffects,
+    PendingApprovalEffects,
 };
 use fleet_identity_protocol::{EndFleetSession, OrganizationId};
 use fleet_lent_transaction::CentralTransaction;
@@ -40,7 +40,7 @@ enum PendingSessionEnd {
     AuthorityLapsed(MachineLinkCloseCode),
     Answer {
         reply: CentralCallReply,
-        effects: PendingApprovalHolderEffects,
+        effects: PendingApprovalEffects,
     },
 }
 
@@ -175,7 +175,7 @@ where
                 target: organization,
                 body: EndFleetSessionRpc::into_wire(checked),
             }),
-            effects: store.finish_holder_effects(),
+            effects: store.finish_effects(),
         })
     })
 }
@@ -232,7 +232,7 @@ where
                         &mut row_ids,
                     );
                     let reply = store.end_approval_enrollment(&enrollment).await?;
-                    Ok((reply, store.finish_holder_effects()))
+                    Ok((reply, store.finish_effects()))
                 })
             },
         )

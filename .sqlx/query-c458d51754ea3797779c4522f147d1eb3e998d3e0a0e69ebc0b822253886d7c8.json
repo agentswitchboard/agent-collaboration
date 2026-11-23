@@ -1,0 +1,74 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT destination.approval_destination_id, destination.session_id,\n       requests.approval_row_id, requests.request_id, requests.deadline_ms\nFROM approval_request_destinations AS destination\nJOIN approval_requests AS requests ON requests.approval_row_id = destination.approval_row_id\nWHERE destination.organization_id = ?1 AND requests.organization_id = ?1\n  AND destination.destination_kind = 'parent_session' AND destination.session_machine_id = ?2\n  AND destination.session_enrollment_id = ?3 AND destination.first_read_at IS NULL\n  AND requests.record_state = 'waiting'\n  AND (?4 IS NULL OR destination.approval_destination_id > ?4)\nORDER BY destination.approval_destination_id\nLIMIT ?5\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "approval_destination_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_request_destinations",
+            "name": "approval_destination_id"
+          }
+        }
+      },
+      {
+        "name": "session_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_request_destinations",
+            "name": "session_id"
+          }
+        }
+      },
+      {
+        "name": "approval_row_id",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "approval_row_id"
+          }
+        }
+      },
+      {
+        "name": "request_id",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "request_id"
+          }
+        }
+      },
+      {
+        "name": "deadline_ms",
+        "ordinal": 4,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "deadline_ms"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": [
+      false,
+      true,
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "c458d51754ea3797779c4522f147d1eb3e998d3e0a0e69ebc0b822253886d7c8"
+}

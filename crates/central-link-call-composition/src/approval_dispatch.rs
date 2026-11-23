@@ -19,7 +19,7 @@ use collaboration_central_core::{
 use fleet_approvals::{
     ActorApprovalSessionFacts, ApprovalApplyFailure, ApprovalApplyingStore, ApprovalCommitScope,
     ApprovalHolderAdmission, ApprovalRefusal, ApprovalReleaseFailure, ApprovalReplyAddress,
-    CommittedApprovalOffer, PendingApprovalHolderEffects, PendingApprovalReply,
+    CommittedApprovalEffects, PendingApprovalEffects, PendingApprovalReply,
 };
 use fleet_lent_transaction::CentralTransaction;
 use fleet_rpc::Envelope;
@@ -106,7 +106,7 @@ enum PendingHolderApply {
     Applied {
         reply: Box<PendingHolderReply>,
         address: ApprovalReplyAddress,
-        effects: PendingApprovalHolderEffects,
+        effects: PendingApprovalEffects,
     },
     AuthorityLapsed(MachineLinkCloseCode),
 }
@@ -114,7 +114,7 @@ enum PendingHolderApply {
 pub(crate) enum HolderApplied {
     Answer {
         reply: HolderReply,
-        offers: Vec<CommittedApprovalOffer>,
+        offers: CommittedApprovalEffects,
     },
     AuthorityLapsed(MachineLinkCloseCode),
 }
@@ -142,7 +142,7 @@ where
         machine: &'call ValidatedMachineConnection,
         request: Envelope<R::Target, R::Request>,
         (claimed_run, carrier): (RouterRunId, &'call TypedCallCarrier),
-        transport: Arc<dyn crate::ApprovalEndingTransport>,
+        transport: Arc<dyn crate::ApprovalDeliveryTransport>,
         command: impl FnOnce(R::Request) -> HolderCommand + Send + 'static,
         wrap: impl FnOnce(ApprovalServiceTarget, HolderReply) -> Option<CentralCallReply>
         + Send
@@ -313,7 +313,7 @@ where
                 PendingHolderReply::Recover(store.recover_owed_approval_endings(&holder).await?)
             }
         };
-        let effects = store.finish_holder_effects();
+        let effects = store.finish_effects();
         Ok(PendingHolderApply::Applied {
             reply: Box::new(reply),
             address,

@@ -289,7 +289,12 @@ async fn owed_recovery_and_committed_outputs_stay_bound_to_the_exact_loan_and_re
         ),
         Err(ApprovalReleaseFailure::OtherRecipient)
     );
-    let offer = holder_effects.release(&proof).unwrap().pop().unwrap();
+    let offer = holder_effects
+        .release(&proof)
+        .unwrap()
+        .endings
+        .pop()
+        .unwrap();
     assert_eq!(
         offer.take_for_holder(&wrong),
         Err(ApprovalReleaseFailure::OtherRecipient)

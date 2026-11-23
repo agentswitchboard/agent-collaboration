@@ -213,6 +213,15 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         Ok(result)
     }
 
+    pub fn recover_approval_notices(
+        &self,
+        connection: crate::ValidatedMachineConnection,
+    ) -> Option<LinkCallCompletion> {
+        self.link_call_dispatcher
+            .as_deref()
+            .map(|dispatcher| dispatcher.recover_approval_notices(connection))
+    }
+
     /// A missing request is a well-formed but unregistered frame header from the decoder.
     pub async fn dispatch_typed_central_call(
         &self,
@@ -262,6 +271,19 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             self.execution
                 .pause_points()
                 .reached_central(fleet_runtime::PausePoint::BeforeSessionTransaction)
+                .await;
+        }
+        #[cfg(feature = "test-support")]
+        if matches!(
+            &request,
+            CentralCall::ListApprovalsForSession(_)
+                | CentralCall::ReadApprovalForSession(_)
+                | CentralCall::DecideApprovalAsSession(_)
+                | CentralCall::PassOnApproval(_)
+        ) {
+            self.execution
+                .pause_points()
+                .reached_central(fleet_runtime::PausePoint::BeforeParentApprovalTransaction)
                 .await;
         }
         let CentralCallWork { result, completion } =

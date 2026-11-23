@@ -344,7 +344,11 @@ impl TokioWorkspaceHost {
     ) -> MacCallResult<R> {
         let target = request.target.clone();
         let call = R::request(request);
-        if matches!(call, central_link_protocol::MacCall::DeliverEnding(_)) {
+        if matches!(
+            call,
+            central_link_protocol::MacCall::DeliverEnding(_)
+                | central_link_protocol::MacCall::ApprovalNotice(_)
+        ) {
             return Err(CallFailure::NeverReached);
         }
         self.call_raw_machine::<R>(organization, machine, &target, call)

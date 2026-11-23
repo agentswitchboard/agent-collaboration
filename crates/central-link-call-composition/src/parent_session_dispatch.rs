@@ -2,13 +2,16 @@
 use std::sync::Arc;
 
 use approval_request_protocol::{
-    ApprovalSessionCall, DecideApprovalAsSessionRequest, ListApprovalsForSessionReply,
-    ListApprovalsForSessionRequest, PassOnApprovalRequest, ReadApprovalForSessionReply,
-    ReadApprovalForSessionRequest,
+    ApprovalSessionCall, DecideApprovalAsSessionReply, DecideApprovalAsSessionRequest,
+    ListApprovalsForSessionReply, ListApprovalsForSessionRequest, PassOnApprovalReply,
+    PassOnApprovalRequest, ReadApprovalForSessionReply, ReadApprovalForSessionRequest,
 };
 use central_link_protocol::{
     CentralCallReply, CentralLinkRpc, LinkCallRefusal, TypedCallResult,
-    approval_rpc::{ApprovalServiceTarget, ListApprovalsForSessionRpc, ReadApprovalForSessionRpc},
+    approval_rpc::{
+        ApprovalServiceTarget, DecideApprovalAsSessionRpc, ListApprovalsForSessionRpc,
+        PassOnApprovalForSessionRpc, ReadApprovalForSessionRpc,
+    },
 };
 use central_storage::StoreFailure;
 use collaboration_central_core::{
@@ -17,8 +20,8 @@ use collaboration_central_core::{
 use fleet_actor_identity::SessionService;
 use fleet_approvals::{
     ActorApprovalSessionFacts, ApprovalCommitProof, ApprovalCommitScope, ApprovalEnrollment,
-    ApprovalReplyAddress, ApprovalSession, ApprovalStoreTransaction, PendingApprovalHolderEffects,
-    PendingApprovalReply,
+    ApprovalReplyAddress, ApprovalSession, ApprovalStoreTransaction, PendingApprovalEffects,
+    PendingApprovalReply, SessionDecisionApply,
 };
 use fleet_identity_protocol::{PresentedSessionSecret, SessionSecret};
 use fleet_lent_transaction::CentralTransaction;
@@ -31,7 +34,7 @@ use sqlx_core::{
 use workspace_ids::CentralSessionId;
 
 use crate::{
-    ApprovalAlarmPublication, ApprovalEndingTransport, ApprovalTransactionFuture,
+    ApprovalAlarmPublication, ApprovalDeliveryTransport, ApprovalTransactionFuture,
     OrganizationApprovalTransactions,
     approval_dispatch::{
         ApprovalApplyingClock, ApprovalApplyingIds, ApprovalDispatchFailure,
@@ -71,14 +74,17 @@ impl ParentApprovalCall {
 enum ParentPendingReply {
     List(PendingApprovalReply<ListApprovalsForSessionReply>),
     Read(PendingApprovalReply<ReadApprovalForSessionReply>),
+    Decide(PendingApprovalReply<DecideApprovalAsSessionReply>),
+    PassOn(PendingApprovalReply<PassOnApprovalReply>),
 }
 
 enum ParentPendingApply {
     Refused(LinkCallRefusal),
+    PersonRequired,
     Answer {
         address: ApprovalReplyAddress,
-        reply: ParentPendingReply,
-        effects: PendingApprovalHolderEffects,
+        reply: Box<ParentPendingReply>,
+        effects: PendingApprovalEffects,
     },
 }
 
@@ -96,6 +102,12 @@ impl ParentPendingReply {
             Self::Read(reply) => reply
                 .take_for_recipient(proof, address)
                 .map(|body| ReadApprovalForSessionRpc::reply(Envelope { target, body })),
+            Self::Decide(reply) => reply
+                .take_for_recipient(proof, address)
+                .map(|body| DecideApprovalAsSessionRpc::reply(Envelope { target, body })),
+            Self::PassOn(reply) => reply
+                .take_for_recipient(proof, address)
+                .map(|body| PassOnApprovalForSessionRpc::reply(Envelope { target, body })),
         }
         .map_err(|_| StoreFailure::AnswerLost)
     }
@@ -117,7 +129,7 @@ where
         &self,
         machine: &ValidatedMachineConnection,
         call: ParentApprovalCall,
-        transport: Arc<dyn ApprovalEndingTransport>,
+        transport: Arc<dyn ApprovalDeliveryTransport>,
     ) -> Result<CentralCallWork, StoreFailure> {
         let organization = machine.organization_id();
         if &call.target.organization_id != organization {
@@ -141,6 +153,13 @@ where
             Ok((_, ParentPendingApply::Refused(reason))) => {
                 Ok(TypedCallResult::Refused { reason }.into())
             }
+            Ok((_, ParentPendingApply::PersonRequired)) => Ok(TypedCallResult::Answered {
+                reply: DecideApprovalAsSessionRpc::reply(Envelope {
+                    target,
+                    body: DecideApprovalAsSessionReply::PersonRequired {},
+                }),
+            }
+            .into()),
             Ok((
                 proof,
                 ParentPendingApply::Answer {
@@ -215,8 +234,8 @@ where
                 },
             },
         };
-        let observed = crate::approval_applying_time::observe_applying_time(loan, sampled).await?;
-        let clock = ApprovalApplyingClock(observed);
+        let time = crate::approval_applying_time::read_applying_time(loan, sampled).await?;
+        let clock = ApprovalApplyingClock(time.effective());
         let mut row_ids = ApprovalApplyingIds(ids.as_ref());
         let mut store = ApprovalStore::new(
             &scope,
@@ -234,14 +253,24 @@ where
             ParentApprovalOperation::Read(input) => ParentPendingReply::Read(
                 store.read_for_session(&admitted, &input.request_id).await?,
             ),
-            ParentApprovalOperation::Decide(_) | ParentApprovalOperation::PassOn(_) => {
-                return Ok(ParentPendingApply::Refused(LinkCallRefusal::UnknownCall));
+            ParentApprovalOperation::Decide(input) => {
+                match store.decide_as_session(&admitted, input).await? {
+                    SessionDecisionApply::Reply(reply) => ParentPendingReply::Decide(reply),
+                    SessionDecisionApply::PersonRequired => {
+                        return Ok(ParentPendingApply::PersonRequired);
+                    }
+                }
+            }
+            ParentApprovalOperation::PassOn(input) => {
+                ParentPendingReply::PassOn(store.pass_on_as_session(&admitted, input).await?)
             }
         };
+        let effects = store.finish_effects();
+        time.publish(loan).await?;
         Ok(ParentPendingApply::Answer {
             address,
-            reply,
-            effects: store.finish_holder_effects(),
+            reply: Box::new(reply),
+            effects,
         })
     })
 }

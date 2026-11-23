@@ -90,6 +90,8 @@ pub trait CentralLinkDispatcher: Send + Sync {
         statements: Vec<central_storage::GuardedStatement>,
     ) -> Pin<Box<dyn Future<Output = Result<(), StoreFailure>> + Send + '_>>;
 
+    fn recover_approval_notices(&self, machine: ValidatedMachineConnection) -> LinkCallCompletion;
+
     fn apply_approval_deadline(
         &self,
         organization: fleet_identity_protocol::OrganizationId,

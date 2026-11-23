@@ -14,7 +14,7 @@ use fleet_approvals::{
     ApprovalActor, ApprovalApplyFailure, ApprovalApplyingStore, ApprovalCommitOwner,
     ApprovalCommitProof, ApprovalCommitScope, ApprovalEnrollment, ApprovalEnrollmentScope,
     ApprovalEnrollmentStanding, ApprovalHolderAdmission, ApprovalHolderScope, ApprovalRouting,
-    ApprovalSession, ApprovalSessionFacts, ApprovalStoreTransaction, PendingApprovalHolderEffects,
+    ApprovalSession, ApprovalSessionFacts, ApprovalStoreTransaction, PendingApprovalEffects,
     PendingApprovalReply, complete_approval_commit,
 };
 use fleet_identity_protocol::{EnrollmentId, OrganizationId};
@@ -346,6 +346,7 @@ impl NativeApprovalStoreFixture {
             ending_offers: holder_effects
                 .release(&proof)
                 .unwrap()
+                .endings
                 .into_iter()
                 .map(|offer| {
                     let holder = ApprovalHolderAdmission::for_fixture_scope(offer.holder_address());
@@ -369,7 +370,7 @@ impl NativeApprovalStoreFixture {
         Result<
             (
                 ApprovalCommitProof,
-                (PendingApprovalReply<Reply>, PendingApprovalHolderEffects),
+                (PendingApprovalReply<Reply>, PendingApprovalEffects),
             ),
             ApprovalApplyFailure,
         >,

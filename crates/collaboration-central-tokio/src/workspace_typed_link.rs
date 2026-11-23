@@ -61,16 +61,7 @@ pub(super) async fn reply_to_typed_call(
         return false;
     }
     if let Some(completion) = dispatched.completion {
-        let stop = writes.stop.clone();
-        let replaced = writes.replaced.clone();
-        writes.tasks.spawn(async move {
-            tokio::select! {
-                biased;
-                () = stop.cancelled() => {}
-                () = replaced.cancelled() => {}
-                () = completion => {}
-            }
-        });
+        writes.schedule_completion(completion);
     }
     true
 }

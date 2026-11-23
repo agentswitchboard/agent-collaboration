@@ -6,7 +6,7 @@ use fleet_approvals::{
     ApprovalStoreTransaction,
 };
 use fleet_identity_protocol::OrganizationId;
-use fleet_lent_transaction::CentralTransaction;
+use fleet_lent_transaction::{CentralTransaction, OrganizationTransaction};
 use fleet_machine_login::{SessionEnrollmentStatus, read_session_enrollment};
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use sqlx_core::{
@@ -165,22 +165,28 @@ where
         organization: &OrganizationId,
         actor: &ApprovalActor,
     ) -> Result<ActorIdentityId, StoreFailure> {
-        ApprovalAnswerActorsNotAdmitted
-            .resolve(organization, actor)
-            .map(|never| match never {})
+        if self.organization_id() != organization {
+            return Err(corrupt("approval_link.decision_organization"));
+        }
+        match actor {
+            ApprovalActor::Session(session) => session
+                .session_id
+                .as_str()
+                .parse()
+                .map_err(|_| corrupt("approval_link.decision_session")),
+            ApprovalActor::Person(_) => PersonApprovalAnswersNotAdmitted
+                .resolve()
+                .map(|never| match never {}),
+        }
     }
 }
 
-/// The holder/maintenance composition has no constructor for an admitted answer actor.
-struct ApprovalAnswerActorsNotAdmitted;
+/// The link has no person approval admission.
+struct PersonApprovalAnswersNotAdmitted;
 
-impl ApprovalAnswerActorsNotAdmitted {
-    fn resolve(
-        &self,
-        _organization: &OrganizationId,
-        _actor: &ApprovalActor,
-    ) -> Result<Infallible, StoreFailure> {
-        Err(corrupt("approval_link.actor_not_admitted"))
+impl PersonApprovalAnswersNotAdmitted {
+    fn resolve(&self) -> Result<Infallible, StoreFailure> {
+        Err(corrupt("approval_link.person_not_admitted"))
     }
 }
 

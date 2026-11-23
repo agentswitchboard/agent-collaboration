@@ -531,3 +531,6 @@ async fn workerd_renewing_the_same_holder_socket_keeps_the_pending_ending() -> R
 
 #[path = "approval_carrier_replacement.rs"]
 mod approval_carrier_replacement;
+
+#[path = "parent_approval_calls.rs"]
+mod parent_approval_calls;

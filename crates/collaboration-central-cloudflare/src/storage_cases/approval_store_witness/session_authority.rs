@@ -90,7 +90,7 @@ pub(super) async fn apply_authenticated(
             |reply| json!(reply),
         ),
     };
-    Ok((reply, Some(store.finish_holder_effects())))
+    Ok((reply, Some(store.finish_effects())))
 }
 
 async fn fixture_connection(

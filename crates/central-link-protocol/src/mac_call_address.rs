@@ -63,8 +63,11 @@ impl MacCallAddress {
             }
             #[cfg(any(test, feature = "test-support"))]
             Self::MacProbe(target) => target == machine,
-            // Notice delivery becomes eligible alongside the committed notice owner.
-            Self::ApprovalNotice(_) => false,
+            Self::ApprovalNotice(target) => {
+                &target.organization_id == organization
+                    && &target.machine_id == machine
+                    && &target.enrollment_id == enrollment
+            }
         }
     }
 

@@ -49,7 +49,7 @@ pub struct OrganizationLinkDispatcher<Transactions, Approvals> {
     transactions: Transactions,
     inputs: ApplyingInputs,
     approvals: ApprovalLinkApplication<Approvals>,
-    ending_transport: Arc<dyn crate::ApprovalEndingTransport>,
+    ending_transport: Arc<dyn crate::ApprovalDeliveryTransport>,
 }
 
 impl<Transactions: OrganizationSessionTransactions, Approvals>
@@ -58,7 +58,7 @@ impl<Transactions: OrganizationSessionTransactions, Approvals>
     pub fn new(
         transactions: Transactions,
         approval_transactions: Approvals,
-        ending_transport: Arc<dyn crate::ApprovalEndingTransport>,
+        ending_transport: Arc<dyn crate::ApprovalDeliveryTransport>,
         clock: Arc<dyn Clock>,
         ids: Arc<dyn IdSource>,
         fill_secret: FillSessionSecret,
@@ -192,6 +192,17 @@ where
             self.approvals
                 .end_enrollment(organization, invalidation, statements),
         )
+    }
+
+    fn recover_approval_notices(
+        &self,
+        machine: ValidatedMachineConnection,
+    ) -> collaboration_central_core::LinkCallCompletion {
+        crate::approval_delivery::ApprovalDelivery {
+            application: self.approvals.clone(),
+            transport: self.ending_transport.clone(),
+        }
+        .on_welcome(machine)
     }
 
     fn apply_approval_deadline(

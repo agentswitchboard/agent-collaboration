@@ -8,7 +8,10 @@ use central_link_protocol::{
     approval_rpc::{ApprovalHolderTarget, DeliverEndingRpc},
 };
 use collaboration_central_core::{LinkCallCompletion, MacCallResult, ValidatedMachineConnection};
-use fleet_approvals::{ApprovalHolderAdmission, CommittedApprovalOffer};
+use fleet_approvals::{
+    ApprovalHolderAdmission, CommittedApprovalEffects, CommittedApprovalNotice,
+    CommittedApprovalOffer,
+};
 use fleet_lent_transaction::CentralTransaction;
 use fleet_rpc::CallFailure;
 use futures_util::future::select;
@@ -34,7 +37,12 @@ pub struct SelectedApprovalSocket {
 }
 
 /// Select a physical socket once. Its send capability cannot route through a replacement.
-pub trait ApprovalEndingTransport: Send + Sync {
+pub trait ApprovalDeliveryTransport: Send + Sync {
+    fn offer_notice(
+        &self,
+        notice: CommittedApprovalNotice,
+    ) -> EndingFuture<Result<(), CallFailure>>;
+
     #[cfg(feature = "test-support")]
     fn fixture_delivery_answer_applied(&self) -> LinkCallCompletion {
         Box::pin(async {})
@@ -48,7 +56,7 @@ pub trait ApprovalEndingTransport: Send + Sync {
 
 pub(crate) struct ApprovalDelivery<Transactions> {
     pub application: ApprovalLinkApplication<Transactions>,
-    pub transport: Arc<dyn ApprovalEndingTransport>,
+    pub transport: Arc<dyn ApprovalDeliveryTransport>,
 }
 
 impl<Transactions> Clone for ApprovalDelivery<Transactions> {
@@ -74,7 +82,7 @@ where
 {
     pub fn after_reply(
         &self,
-        offers: Vec<CommittedApprovalOffer>,
+        offers: CommittedApprovalEffects,
         registration: Option<(ValidatedMachineConnection, RouterRunId)>,
     ) -> Option<LinkCallCompletion> {
         if offers.is_empty() && registration.is_none() {
@@ -119,11 +127,16 @@ where
 
     pub fn offer_all<'call>(
         &'call self,
-        offers: Vec<CommittedApprovalOffer>,
+        offers: CommittedApprovalEffects,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'call>> {
         Box::pin(async move {
-            for offer in offers {
+            for offer in offers.endings {
                 self.offer_one(offer).await;
+            }
+            for notice in offers.notices {
+                if let Err(failure) = self.transport.offer_notice(notice).await {
+                    tracing::debug!(?failure, "approval notice was not acknowledged");
+                }
             }
         })
     }

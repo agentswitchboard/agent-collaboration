@@ -138,6 +138,7 @@ pub(crate) enum CasePausePoint {
     BeforeApprovalEndingWrite,
     BeforeApprovalEndingEnqueue,
     BeforeApprovalCarrierTurn,
+    BeforeParentApprovalTransaction,
     AfterIdleExpiryCommit,
     AfterIdleRenewalPlatformSendError,
     BeforePrivateEnrollmentInvalidation,
@@ -176,6 +177,9 @@ impl From<CasePausePoint> for PausePoint {
             CasePausePoint::BeforeApprovalEndingWrite => Self::BeforeApprovalEndingWrite,
             CasePausePoint::BeforeApprovalEndingEnqueue => Self::BeforeApprovalEndingEnqueue,
             CasePausePoint::BeforeApprovalCarrierTurn => Self::BeforeApprovalCarrierTurn,
+            CasePausePoint::BeforeParentApprovalTransaction => {
+                Self::BeforeParentApprovalTransaction
+            }
             CasePausePoint::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
             CasePausePoint::AfterIdleRenewalPlatformSendError => {
                 Self::AfterIdleRenewalPlatformSendError
@@ -219,6 +223,7 @@ impl From<PausePoint> for CasePausePoint {
             PausePoint::BeforeApprovalEndingWrite => Self::BeforeApprovalEndingWrite,
             PausePoint::BeforeApprovalEndingEnqueue => Self::BeforeApprovalEndingEnqueue,
             PausePoint::BeforeApprovalCarrierTurn => Self::BeforeApprovalCarrierTurn,
+            PausePoint::BeforeParentApprovalTransaction => Self::BeforeParentApprovalTransaction,
             PausePoint::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
             PausePoint::AfterIdleRenewalPlatformSendError => {
                 Self::AfterIdleRenewalPlatformSendError
