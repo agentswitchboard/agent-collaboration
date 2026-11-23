@@ -85,3 +85,15 @@ fn fixture_alarm_sql_describes_the_rows_executed_by_both_hosts() {
 fn fixture_due_list_describes_the_probe_view() {
     let _ = fleet_engine::check_timed_due_list!(Probes);
 }
+
+#[cfg(feature = "test-support")]
+#[test]
+fn indexed_alarm_adds_only_the_fixture_contributors_in_test_builds() {
+    macro_rules! check_alarm {
+        ($file:literal) => {
+            sqlx::query_file!($file)
+        };
+    }
+    let _ = fleet_engine::check_fixture_alarm_query!(check_alarm);
+    let _ = fleet_engine::check_fixture_alarm_presence!(check_alarm);
+}

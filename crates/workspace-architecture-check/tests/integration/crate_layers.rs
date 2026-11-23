@@ -6,6 +6,9 @@ use std::process::Command;
 
 use serde::Deserialize;
 
+#[path = "approval_holder_policy.rs"]
+mod approval_holder_policy;
+
 #[path = "enrollment_dependency_policy.rs"]
 mod enrollment_dependency_policy;
 
@@ -207,6 +210,8 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
     let metadata = read_metadata(&root, &[])?;
     test_support_policy::check_workspace(&metadata.packages, &metadata.workspace_members)?;
     workspace_boundaries::check_declared_session_owner_edges(&metadata)?;
+    approval_holder_policy::check_declared(&metadata)?;
+    approval_holder_policy::check_resolved(&metadata)?;
     workspace_boundaries::check_declared_session_read_edges(&metadata)?;
     enrollment_dependency_policy::check_declared(&metadata)?;
     enrollment_dependency_policy::check_resolved(&metadata)?;
@@ -243,6 +248,7 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
     let enabled_metadata = read_metadata(&root, &["--all-features"])?;
     enrollment_dependency_policy::check_resolved(&enabled_metadata)?;
     harness_stage_policy::check_resolved(&enabled_metadata)?;
+    approval_holder_policy::check_resolved(&enabled_metadata)?;
     workspace_boundaries::check_harness_layers(&NonDevDependencyGraph::from_metadata(
         enabled_metadata,
     ))?;

@@ -28,7 +28,7 @@ mod engine_alarm_migration;
 mod engine_alarm_readback;
 mod engine_attempts;
 mod engine_cadence_hour;
-mod engine_event_support;
+pub(super) mod engine_event_support;
 mod engine_failure_overlap;
 mod engine_large_batch;
 mod engine_outcomes;

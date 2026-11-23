@@ -16,7 +16,7 @@ use workspace_package_tree_policy::{
 #[path = "job_layer_tests.rs"]
 mod job_layer_tests;
 
-pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 4] = [
+pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 5] = [
     (FLEET_RPC, &[]),
     (APPROVAL_REQUEST_PROTOCOL, &["workspace-ids"]),
     (
@@ -36,6 +36,15 @@ pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 4] = [
             "message-board",
             "workspace-ids",
             "workspace-model",
+        ],
+    ),
+    (
+        "fleet-approvals",
+        &[
+            "approval-request-protocol",
+            "central-engine-model",
+            "fleet-identity-protocol",
+            "workspace-ids",
         ],
     ),
 ];
@@ -160,6 +169,15 @@ pub(super) const SESSION_READ_CRATES: [(&str, &[&str]); 2] = [
     ("switchboard-session-calls", &["workspace-ids"]),
 ];
 
+const APPROVAL_HOLDER: (&str, &[&str]) = (
+    "switchboard-approval-holder",
+    &[
+        "approval-request-protocol",
+        "state-machine-core",
+        "workspace-ids",
+    ],
+);
+
 const PURE_CRATES: [(&str, &[&str]); 8] = [
     ("workspace-ids", &[]),
     (
@@ -258,6 +276,7 @@ pub(super) fn check_boundaries(
         .into_iter()
         .chain(FLEET_PURE_CRATES)
         .chain(SESSION_READ_CRATES)
+        .chain([APPROVAL_HOLDER])
     {
         let Some(source) = graph.workspace_id(name) else {
             continue;
@@ -921,6 +940,10 @@ fn proxy_boundary_rejects_direct_and_transitive_normal_and_build_edges() {
         .is_ok()
     );
 }
+
+#[cfg(test)]
+#[path = "approval_holder_dependency_test.rs"]
+mod approval_holder_dependency_tests;
 
 #[cfg(test)]
 #[path = "session_read_dependency_test.rs"]

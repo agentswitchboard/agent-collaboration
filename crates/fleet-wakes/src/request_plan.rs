@@ -1,4 +1,5 @@
 use central_storage::{GuardedStatement, ReadOutcome, Statement, StoreFailure};
+use fleet_engine::{DueItemKey, DueKind, DueOwnerTiming, DueTableChange, plan_due_table_change};
 use fleet_runtime_ports::stored_values::string;
 use fleet_runtime_ports::stored_values::{encode_json, format_utc_millis};
 use fleet_runtime_ports::{
@@ -24,18 +25,29 @@ pub fn plan_set_wake(
 ) -> WakePlan {
     let at = || text(format_utc_millis(now));
     let id: WakeId = mint()?;
+    let mut statements = vec![exact(
+        "INSERT INTO automation_wakes(wake_id,target,due_at,text,state,created_at,updated_at) VALUES (?,?,?,?,'active',?,?)",
+        vec![
+            text(&id),
+            encode_json(target, "mail JSON")?,
+            text(format_utc_millis(due_at)),
+            text(body.as_str()),
+            at(),
+            at(),
+        ],
+    )];
+    statements.extend(plan_due_table_change(
+        &DueTableChange::PublishItem(DueOwnerTiming::at(
+            DueItemKey {
+                kind: DueKind::WakeTimer,
+                subject: central_engine_model::InstanceKey(id.to_string()),
+            },
+            due_at,
+        )?),
+        now,
+    )?);
     Ok(Ok((
-        vec![exact(
-            "INSERT INTO automation_wakes(wake_id,target,due_at,text,state,created_at,updated_at) VALUES (?,?,?,?,'active',?,?)",
-            vec![
-                text(&id),
-                encode_json(target, "mail JSON")?,
-                text(format_utc_millis(due_at)),
-                text(body.as_str()),
-                at(),
-                at(),
-            ],
-        )],
+        statements,
         Answer::WakeSet {
             wake_id: id,
             due_at,
@@ -80,6 +92,13 @@ pub fn plan_cancel_wake(wake_id: &WakeId, now: Timestamp, rows: &ReadOutcome) ->
             key: central_engine_model::InstanceKey(wake_id.to_string()),
         },
     ));
+    statements.extend(plan_due_table_change(
+        &DueTableChange::RemoveItem(DueItemKey {
+            kind: DueKind::WakeTimer,
+            subject: central_engine_model::InstanceKey(wake_id.to_string()),
+        }),
+        now,
+    )?);
     Ok(Ok((
         statements,
         Answer::WakeCancelled {

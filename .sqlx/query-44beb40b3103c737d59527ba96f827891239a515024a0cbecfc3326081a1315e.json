@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE mail_messages\nSET body = ?1, state = ?2, source_change_id = ?3,\n    source_workspace_id = ?4, source_thread_id = ?5, updated_at = ?6\nWHERE message_id = ?7 AND message_kind = 'notice' AND state = 'queued' AND body = ?8\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 8
+    },
+    "nullable": []
+  },
+  "hash": "44beb40b3103c737d59527ba96f827891239a515024a0cbecfc3326081a1315e"
+}

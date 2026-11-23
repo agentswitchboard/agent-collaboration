@@ -1,0 +1,45 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n    machine_kind AS \"kind!: String\",\n    subject_key AS \"key!: String\",\n    due_at_ms AS \"effective_due_ms?: i64\"\nFROM engine_due_attempt_controls\nWHERE machine_kind IN ('engine_source', 'legacy_notice_windows', 'legacy_workspace_drains')\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "kind!: String",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "engine_work_attempts",
+            "name": "machine_kind"
+          }
+        }
+      },
+      {
+        "name": "key!: String",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "engine_work_attempts",
+            "name": "subject_key"
+          }
+        }
+      },
+      {
+        "name": "effective_due_ms?: i64",
+        "ordinal": 2,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      true
+    ]
+  },
+  "hash": "6795f4b60ff5dbfd02ce0d68cab2805ea9aa2c56897a6025030fcaa841fde0bd"
+}

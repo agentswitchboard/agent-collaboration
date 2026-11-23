@@ -1,0 +1,27 @@
+[package]
+name = "fleet-approvals"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+autotests = false
+
+[lints]
+workspace = true
+
+[dependencies]
+approval-request-protocol.workspace = true
+central-engine-model.workspace = true
+fleet-identity-protocol = { path = "../fleet-identity-protocol", version = "0.1.156" }
+serde.workspace = true
+workspace-ids.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
+uuid.workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"
