@@ -7,7 +7,6 @@ use zeroize::Zeroizing;
 
 use crate::{
     credential_cipher::{self, AES_GCM_NONCE_LENGTH, AES_GCM_TAG_LENGTH},
-    credential_store_lock::{CredentialStoreLock, CredentialStoreLockMode},
     file_backend::FileSecretStore,
     keychain_data_key::{
         KeychainAccess, PooledCredentialDataKey, load_enrollment_row_data_key,
@@ -93,48 +92,13 @@ impl fmt::Debug for EnrollmentRowCredential {
 /// Key capability restricted to sealing and opening enrollment refresh tokens.
 pub struct EnrollmentRowSealer(PooledCredentialDataKey);
 
-/// Holds the shared credential-store boundary for one enrollment replacement.
-pub struct EnrollmentRowReplacement {
-    file_store: FileSecretStore,
-    _credential_lock: CredentialStoreLock,
-}
-
-impl EnrollmentRowReplacement {
-    /// Takes the file lock before the adapter reads its witness or opens a write transaction.
-    pub fn lock(secret_root: &Path) -> Result<Self, SecretStoreError> {
-        let file_store = FileSecretStore::open(secret_root)?;
-        let credential_lock =
-            CredentialStoreLock::acquire(file_store.root(), CredentialStoreLockMode::Exclusive)?;
-        Ok(Self {
-            file_store,
-            _credential_lock: credential_lock,
-        })
-    }
-
-    /// Acquires the key under the held boundary. A missing key may be created only
-    /// with a fresh unsealed witness read by the caller while holding this guard.
-    pub fn acquire_key(
-        &self,
-        sealed_bytes_present: bool,
-    ) -> Result<EnrollmentRowSealer, SecretStoreError> {
-        with_platform_keychain_for_production(|keychain| {
-            self.acquire_key_with_keychain(sealed_bytes_present, keychain)
-        })
-    }
-
-    /// The same locked acquisition through an injected Keychain boundary.
-    pub fn acquire_key_with_keychain(
-        &self,
-        sealed_bytes_present: bool,
-        keychain: &dyn KeychainAccess,
-    ) -> Result<EnrollmentRowSealer, SecretStoreError> {
-        load_enrollment_row_data_key(&self.file_store, keychain, sealed_bytes_present)
-            .map(EnrollmentRowSealer)
-    }
-}
-
 impl EnrollmentRowSealer {
     /// Acquires the key using the current row's sealed-byte presence.
+    ///
+    /// An item removed after an unsealed witness can be recreated even if
+    /// another process has since published an Active row. The lost key made
+    /// that row unreadable, and with the replacement key it fails to decrypt.
+    /// End the unreadable enrollment before enrolling again.
     pub fn acquire(
         secret_root: &Path,
         sealed_bytes_present: bool,
@@ -150,12 +114,19 @@ impl EnrollmentRowSealer {
         sealed_bytes_present: bool,
         keychain: &dyn KeychainAccess,
     ) -> Result<Self, SecretStoreError> {
-        if sealed_bytes_present {
-            let file_store = FileSecretStore::open_read_only(secret_root)?;
-            return load_enrollment_row_data_key(&file_store, keychain, true).map(Self);
-        }
-
-        EnrollmentRowReplacement::lock(secret_root)?.acquire_key_with_keychain(false, keychain)
+        let file_store = if sealed_bytes_present {
+            FileSecretStore::open_read_only(secret_root).map_err(|error| match error {
+                SecretStoreError::Filesystem { source, .. }
+                    if source.kind() == std::io::ErrorKind::NotFound =>
+                {
+                    SecretStoreError::KeyMissing
+                }
+                other => other,
+            })?
+        } else {
+            FileSecretStore::open(secret_root)?
+        };
+        load_enrollment_row_data_key(&file_store, keychain, sealed_bytes_present).map(Self)
     }
 
     /// Seals the refresh token against its exact row identity and generation.

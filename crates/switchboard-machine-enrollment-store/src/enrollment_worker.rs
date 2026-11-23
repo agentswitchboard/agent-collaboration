@@ -1,9 +1,7 @@
 use std::{path::PathBuf, sync::Arc};
 
 use codex_router_secret_store::{
-    enrollment_row_sealer::{
-        EnrollmentRowCredential, EnrollmentRowReplacement, EnrollmentRowSealer,
-    },
+    enrollment_row_sealer::{EnrollmentRowCredential, EnrollmentRowSealer},
     model::SecretStoreError,
 };
 use router_clock::RuntimeClock;
@@ -119,7 +117,7 @@ impl EnrollmentWorker {
                 let row_context = seal_context(&key, &deployment, generation)
                     .map_err(|_| ReadFailure::Corrupt(EnrollmentRowCorruption::Deployment))?;
                 let sealer = self
-                    .acquire_key_for_read()
+                    .acquire_key(true)
                     .await
                     .map_err(|_| ReadFailure::KeyUnavailable)?;
                 let credential = sealer
@@ -149,27 +147,9 @@ impl EnrollmentWorker {
         mutation: EnrollmentMutation,
         stage: &MutationStage,
     ) -> WriteResult {
-        // Keep the boundary live until the immediate write has settled. Holding
-        // it before the witness excludes every other publisher of sealed bytes.
-        let replacement_guard = match &mutation {
-            EnrollmentMutation::Replace(_) => {
-                let root = self.secret_root.clone();
-                let guard =
-                    tokio::task::spawn_blocking(move || EnrollmentRowReplacement::lock(&root))
-                        .await
-                        .ok()
-                        .and_then(Result::ok)
-                        .ok_or(CredentialStoreError::Replace)?;
-                Some(Arc::new(guard))
-            }
-            EnrollmentMutation::End(_) => None,
-        };
         let (decision, definite_error) = match mutation {
             EnrollmentMutation::Replace(binding) => {
-                let guard = replacement_guard
-                    .as_ref()
-                    .ok_or(CredentialStoreError::Replace)?;
-                let prepared = self.prepare_replacement(expected, &binding, guard).await;
+                let prepared = self.prepare_replacement(expected, &binding).await;
                 (
                     MutationDecision::Replace(prepared),
                     CredentialStoreError::Replace,
@@ -211,11 +191,8 @@ impl EnrollmentWorker {
         } else {
             write.await
         };
-        let result = self
-            .finish_mutation(expected, outcome, definite_error)
-            .await;
-        drop(replacement_guard);
-        result
+        self.finish_mutation(expected, outcome, definite_error)
+            .await
     }
 
     async fn finish_mutation(
@@ -255,7 +232,6 @@ impl EnrollmentWorker {
         &mut self,
         expected: BindingGeneration,
         binding: &EnrollmentBinding,
-        guard: &Arc<EnrollmentRowReplacement>,
     ) -> Option<StoredEnrollmentRow> {
         let current = self.snapshot().await.ok()?;
         if current.generation() != expected
@@ -269,7 +245,7 @@ impl EnrollmentWorker {
             test.faults.at_replacement_witness().await;
         }
         let sealed_bytes_present = matches!(current, EnrollmentSnapshot::Active { .. });
-        let sealer = match self.replacement_key(guard, true).await {
+        let sealer = match self.acquire_key(true).await {
             Ok(sealer) => sealer,
             Err(SecretStoreError::KeyMissing) if !sealed_bytes_present => {
                 let fresh = self.snapshot().await.ok()?;
@@ -278,7 +254,7 @@ impl EnrollmentWorker {
                 {
                     return None;
                 }
-                self.replacement_key(guard, false).await.ok()?
+                self.acquire_key(false).await.ok()?
             }
             Err(_) => return None,
         };
@@ -315,7 +291,10 @@ impl EnrollmentWorker {
         Ok(EnrollmentSnapshot::from_row(row, &self.machine_id)?)
     }
 
-    async fn acquire_key_for_read(&self) -> Result<EnrollmentRowSealer, SecretStoreError> {
+    async fn acquire_key(
+        &self,
+        sealed_bytes_present: bool,
+    ) -> Result<EnrollmentRowSealer, SecretStoreError> {
         let root = self.secret_root.clone();
         #[cfg(test)]
         let keychain = self
@@ -325,31 +304,13 @@ impl EnrollmentWorker {
         tokio::task::spawn_blocking(move || {
             #[cfg(test)]
             if let Some(keychain) = keychain {
-                return EnrollmentRowSealer::acquire_with_keychain(&root, true, keychain.as_ref());
+                return EnrollmentRowSealer::acquire_with_keychain(
+                    &root,
+                    sealed_bytes_present,
+                    keychain.as_ref(),
+                );
             }
-            EnrollmentRowSealer::acquire(&root, true)
-        })
-        .await
-        .map_err(|_| SecretStoreError::KeyUnavailable)?
-    }
-
-    async fn replacement_key(
-        &self,
-        guard: &Arc<EnrollmentRowReplacement>,
-        sealed_bytes_present: bool,
-    ) -> Result<EnrollmentRowSealer, SecretStoreError> {
-        let guard = Arc::clone(guard);
-        #[cfg(test)]
-        let keychain = self
-            .test_dependencies
-            .as_ref()
-            .map(|test| Arc::clone(&test.keychain));
-        tokio::task::spawn_blocking(move || {
-            #[cfg(test)]
-            if let Some(keychain) = keychain {
-                return guard.acquire_key_with_keychain(sealed_bytes_present, keychain.as_ref());
-            }
-            guard.acquire_key(sealed_bytes_present)
+            EnrollmentRowSealer::acquire(&root, sealed_bytes_present)
         })
         .await
         .map_err(|_| SecretStoreError::KeyUnavailable)?

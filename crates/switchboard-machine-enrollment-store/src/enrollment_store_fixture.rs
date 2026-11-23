@@ -197,6 +197,7 @@ pub(super) struct FixtureKeychain {
     pub(super) reads: AtomicUsize,
     pub(super) additions: AtomicUsize,
     pause: Mutex<Option<KeychainPause>>,
+    add_pause: Mutex<Option<KeychainPause>>,
 }
 
 impl FixtureKeychain {
@@ -212,15 +213,22 @@ impl FixtureKeychain {
     }
 
     pub(super) fn hold_next_read(&self) -> (oneshot::Receiver<()>, KeychainRelease) {
+        Self::hold(&self.pause)
+    }
+
+    pub(super) fn hold_next_add(&self) -> (oneshot::Receiver<()>, KeychainRelease) {
+        Self::hold(&self.add_pause)
+    }
+
+    fn hold(slot: &Mutex<Option<KeychainPause>>) -> (oneshot::Receiver<()>, KeychainRelease) {
         let (arrived, at_gate) = oneshot::channel();
         let (released, wait) = blocking::channel();
-        *self.pause.lock().expect("key pause") = Some(KeychainPause { arrived, wait });
+        *slot.lock().expect("key pause") = Some(KeychainPause { arrived, wait });
         (at_gate, KeychainRelease(released))
     }
 
-    fn read_gate(&self) -> Result<(), KeychainAccessError> {
-        let pause = self
-            .pause
+    fn wait_at(slot: &Mutex<Option<KeychainPause>>) -> Result<(), KeychainAccessError> {
+        let pause = slot
             .lock()
             .map_err(|_| KeychainAccessError::Unavailable)?
             .take();
@@ -255,7 +263,7 @@ impl KeychainAccess for FixtureKeychain {
             return Err(KeychainAccessError::ServiceRejected);
         }
         self.reads.fetch_add(1, Ordering::SeqCst);
-        self.read_gate()?;
+        Self::wait_at(&self.pause)?;
         if self.unavailable.load(Ordering::SeqCst) {
             return Err(KeychainAccessError::Unavailable);
         }
@@ -275,6 +283,7 @@ impl KeychainAccess for FixtureKeychain {
         if service != ROUTER_KEYCHAIN_SERVICE {
             return Err(KeychainAccessError::ServiceRejected);
         }
+        Self::wait_at(&self.add_pause)?;
         let mut item = self
             .item
             .lock()

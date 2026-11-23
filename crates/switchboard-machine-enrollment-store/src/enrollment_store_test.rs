@@ -503,66 +503,6 @@ async fn every_ending_reason_round_trips_through_the_adapter() {
 }
 
 #[tokio::test]
-async fn unsealed_witness_cannot_rekey_a_concurrently_published_enrollment() {
-    use std::fs::{OpenOptions, TryLockError};
-
-    let fixture = Fixture::open().await;
-    let original = fixture.install().await;
-    assert_eq!(
-        fixture
-            .store
-            .remove(original.generation, EnrollmentEnd::Inactive)
-            .await,
-        Ok(ConditionalWrite::Applied)
-    );
-    let other = fixture.another_worker().await;
-    let attempt = fixture.binding(3, ENROLLMENT, TOKEN);
-    let competitor = fixture.binding(3, ALTERNATE_ENROLLMENT, "fictional-competitor");
-    let (at_witness, release) = fixture.faults.hold_replacement_witness();
-    let mut replacing = Box::pin(fixture.store.replace(generation(2), &attempt));
-    assert_queued(replacing.as_mut());
-    at_witness.await.unwrap();
-
-    let boundary = OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(fixture.secret_root.join(".store.lock"))
-        .unwrap();
-    match boundary.try_lock() {
-        Err(TryLockError::WouldBlock) => {
-            release.send(()).unwrap();
-            assert_eq!(replacing.await, Ok(ConditionalWrite::Applied));
-            assert_eq!(
-                other.replace(generation(2), &competitor).await,
-                Ok(ConditionalWrite::Superseded)
-            );
-        }
-        Ok(()) => {
-            // If the witness was taken without the lock, force the ordering
-            // that leaves a sealed row and no Keychain item.
-            boundary.unlock().unwrap();
-            assert_eq!(
-                other.replace(generation(2), &competitor).await,
-                Ok(ConditionalWrite::Applied)
-            );
-            fixture.keychain.delete_item();
-            release.send(()).unwrap();
-            assert_eq!(replacing.await, Ok(ConditionalWrite::Superseded));
-        }
-        Err(error) => panic!("cannot inspect enrollment coordination lock: {error}"),
-    }
-    assert_eq!(
-        fixture.keychain.additions.load(SeqCst),
-        1,
-        "a stale unsealed witness created a new key"
-    );
-    assert!(matches!(
-        fixture.store.read().await,
-        Ok(StoredEnrollment::Active(_))
-    ));
-}
-
-#[tokio::test]
 async fn replace_preserves_active_ciphertext_that_fails_authentication() {
     let fixture = Fixture::open().await;
     let installed = fixture.install().await;
@@ -630,4 +570,100 @@ async fn lost_worker_replies_are_definite_for_preflight_and_queued_requests() {
         fixture.store.read().await,
         Ok(StoredEnrollment::Active(original))
     );
+}
+
+fn assert_enrollment_publisher_holds_no_file_lock(fixture: &Fixture) {
+    let boundary = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(fixture.secret_root.join(".store.lock"))
+        .unwrap();
+    assert!(
+        boundary.try_lock().is_ok(),
+        "enrollment held the credential-store file lock"
+    );
+}
+
+#[tokio::test]
+async fn missing_key_rechecks_the_row_before_provisioning_from_an_unsealed_witness() {
+    let fixture = Fixture::open().await;
+    let installed = fixture.install().await;
+    assert_eq!(
+        fixture
+            .store
+            .remove(installed.generation, EnrollmentEnd::Inactive)
+            .await,
+        Ok(ConditionalWrite::Applied)
+    );
+    let other = fixture.another_worker().await;
+    let attempt = fixture.binding(3, ENROLLMENT, TOKEN);
+    let competitor = fixture.binding(3, ALTERNATE_ENROLLMENT, "fictional-competitor");
+    let (at_witness, release) = fixture.faults.hold_replacement_witness();
+    let mut replacing = Box::pin(fixture.store.replace(generation(2), &attempt));
+    assert_queued(replacing.as_mut());
+    at_witness.await.unwrap();
+    assert_enrollment_publisher_holds_no_file_lock(&fixture);
+
+    assert_eq!(
+        other.replace(generation(2), &competitor).await,
+        Ok(ConditionalWrite::Applied)
+    );
+    let mut outside = fixture.connection().await;
+    let active = row_columns(&mut outside).await;
+    fixture.keychain.delete_item();
+    release.send(()).unwrap();
+
+    assert_eq!(replacing.await, Ok(ConditionalWrite::Superseded));
+    assert_eq!(fixture.keychain.additions.load(SeqCst), 1);
+    assert_eq!(row_columns(&mut outside).await, active);
+    assert!(matches!(
+        fixture.detail().await,
+        Err(ReadFailure::KeyUnavailable)
+    ));
+}
+
+#[tokio::test]
+async fn key_deleted_after_final_witness_can_be_recreated_but_preserves_the_unreadable_active_row()
+{
+    let fixture = Fixture::open().await;
+    let installed = fixture.install().await;
+    assert_eq!(
+        fixture
+            .store
+            .remove(installed.generation, EnrollmentEnd::Inactive)
+            .await,
+        Ok(ConditionalWrite::Applied)
+    );
+    let other = fixture.another_worker().await;
+    let attempt = fixture.binding(3, ENROLLMENT, TOKEN);
+    let competitor = fixture.binding(3, ALTERNATE_ENROLLMENT, "fictional-competitor");
+    fixture.keychain.delete_item();
+    let (at_add, release) = fixture.keychain.hold_next_add();
+    let mut replacing = Box::pin(fixture.store.replace(generation(2), &attempt));
+    assert_queued(replacing.as_mut());
+    at_add.await.unwrap();
+
+    assert_enrollment_publisher_holds_no_file_lock(&fixture);
+    assert_eq!(
+        other.replace(generation(2), &competitor).await,
+        Ok(ConditionalWrite::Applied)
+    );
+    let mut outside = fixture.connection().await;
+    let active = row_columns(&mut outside).await;
+    fixture.keychain.delete_item();
+    release.release();
+
+    assert_eq!(replacing.await, Ok(ConditionalWrite::Superseded));
+    assert_eq!(
+        fixture.keychain.additions.load(SeqCst),
+        3,
+        "A provisioned a key after B's item was deleted"
+    );
+    assert_eq!(row_columns(&mut outside).await, active);
+    assert!(matches!(
+        fixture.detail().await,
+        Err(ReadFailure::SealedBytesUnreadable)
+    ));
 }
