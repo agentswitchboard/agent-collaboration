@@ -143,8 +143,11 @@ impl OutboxDispatcher {
             return Ok(None);
         }
         self.settling.retry(work, report).await;
+        // A return can be committed while its read-back is still failing.
+        // Protect its request before selection or expiry can touch that row.
+        let excluded = self.protected_request_ids();
         let FlushSelection::Claimed(claimed) = work
-            .claim_due_through(anchor, mark, eligible_through)
+            .claim_due_through(anchor, mark, eligible_through, &excluded)
             .await?
         else {
             return Ok(None);

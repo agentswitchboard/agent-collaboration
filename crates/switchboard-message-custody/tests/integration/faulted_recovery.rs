@@ -98,7 +98,13 @@ async fn a_lone_sent_row_at_startup_is_replayed_after_a_restore_fault() {
         let mut store = open_outbox(&campaign.root.path().join("machine_local.sqlite")).await;
         store.insert(&item, created_at_ms).await.unwrap();
         let claim = store
-            .claim_next_batch(item.flush_at_ms, 1, item.flush_at_ms, item.flush_at_ms)
+            .claim_next_batch(
+                item.flush_at_ms,
+                1,
+                item.flush_at_ms,
+                item.flush_at_ms,
+                &std::collections::BTreeSet::new(),
+            )
             .await
             .unwrap();
         assert_eq!(claim.healthy.writes.len(), 1);

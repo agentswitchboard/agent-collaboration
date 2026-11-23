@@ -211,7 +211,13 @@ async fn an_orphaned_claim_arms_the_flush_after_the_last_waiting_row_disappears(
         OutboxInsert::Stored
     );
     let claim = write_store
-        .claim_next_batch(MARK_MS, 1, queued_at, queued_at)
+        .claim_next_batch(
+            MARK_MS,
+            1,
+            queued_at,
+            queued_at,
+            &std::collections::BTreeSet::new(),
+        )
         .await
         .unwrap();
     assert!(
@@ -289,7 +295,13 @@ async fn a_flush_end_prunes_only_terminal_writes_outside_sixty_days() {
             OutboxInsert::Stored
         );
         let batch = store
-            .claim_next_batch(ended_at, 1, ended_at, ended_at)
+            .claim_next_batch(
+                ended_at,
+                1,
+                ended_at,
+                ended_at,
+                &std::collections::BTreeSet::new(),
+            )
             .await
             .unwrap();
         assert!(

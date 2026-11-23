@@ -104,7 +104,13 @@ impl NoticeFixture {
         store.insert(&item, START_MS - 900_000).await.unwrap();
         assert_eq!(
             store
-                .claim_next_batch(item.flush_at_ms, 1, START_MS - 1, START_MS - 1)
+                .claim_next_batch(
+                    item.flush_at_ms,
+                    1,
+                    START_MS - 1,
+                    START_MS - 1,
+                    &std::collections::BTreeSet::new()
+                )
                 .await
                 .unwrap()
                 .healthy

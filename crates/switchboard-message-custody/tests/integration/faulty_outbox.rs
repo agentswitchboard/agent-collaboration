@@ -229,17 +229,23 @@ impl OutboxStorage for FaultyOutbox {
         self.inner.earliest_deadline()
     }
 
-    fn claim_next_batch(
-        &mut self,
+    fn claim_next_batch<'call>(
+        &'call mut self,
         mark_ms: i64,
         limit: u16,
         now_ms: i64,
         required_deadline_after_ms: i64,
-    ) -> OutboxFuture<'_, StoreScan<ClaimedBatch>> {
+        excluded_request_ids: &'call BTreeSet<RequestId>,
+    ) -> OutboxFuture<'call, StoreScan<ClaimedBatch>> {
         self.plan.wrap(
             FaultSite::ClaimBatch,
-            self.inner
-                .claim_next_batch(mark_ms, limit, now_ms, required_deadline_after_ms),
+            self.inner.claim_next_batch(
+                mark_ms,
+                limit,
+                now_ms,
+                required_deadline_after_ms,
+                excluded_request_ids,
+            ),
         )
     }
 

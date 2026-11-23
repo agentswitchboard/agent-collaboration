@@ -182,7 +182,13 @@ async fn a_corrupt_owned_point_is_reported_without_leaking_it_to_other_callers()
     store.insert(&damaged, NOW_MS).await.unwrap();
     assert_eq!(
         store
-            .claim_next_batch(damaged.flush_at_ms, 1, NOW_MS, NOW_MS)
+            .claim_next_batch(
+                damaged.flush_at_ms,
+                1,
+                NOW_MS,
+                NOW_MS,
+                &std::collections::BTreeSet::new()
+            )
             .await
             .unwrap()
             .healthy

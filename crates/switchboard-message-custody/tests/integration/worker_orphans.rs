@@ -40,7 +40,6 @@ fn start_worker(
 }
 
 #[tokio::test]
-#[ignore = "waiting for the store's selective ordered claim"]
 async fn a_lost_return_ack_excludes_that_request_while_an_unrelated_batch_is_live() {
     for (site, first_disposition) in [
         (FaultSite::ReturnNotTransmitted, ScriptedBatch::Untouched),
@@ -105,13 +104,13 @@ async fn a_lost_return_ack_excludes_that_request_while_an_unrelated_batch_is_liv
             "a pending return must exclude A from the newer claim while B stays eligible"
         );
 
-        faults.fail_scoped_reads(false);
         let retry = ClockInstant::ZERO.after(Duration::from_secs(81));
         progress(
             clock.not_due_check_now(retry),
             "the retained return's independent retry",
         )
         .await;
+        faults.fail_scoped_reads(false);
         clock.advance(Duration::from_secs(1)).unwrap();
         assert_eq!(peer.batch_commands().last(), Some(&sent));
         held.release.notify_one();
@@ -281,7 +280,13 @@ async fn seed_orphan(campaign: &FaultCampaign, item: &NewOutboxItem, created_at:
     let mut store = open_outbox(&campaign.root.path().join("machine_local.sqlite")).await;
     store.insert(item, created_at).await.unwrap();
     let claim = store
-        .claim_next_batch(item.flush_at_ms, 1, created_at, created_at)
+        .claim_next_batch(
+            item.flush_at_ms,
+            1,
+            created_at,
+            created_at,
+            &std::collections::BTreeSet::new(),
+        )
         .await
         .unwrap();
     assert!(

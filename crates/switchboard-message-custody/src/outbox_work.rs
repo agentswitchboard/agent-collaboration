@@ -187,7 +187,8 @@ impl OutboxWork {
         anchor: WelcomeClockAnchor,
         mark: SyncTime,
     ) -> Result<FlushSelection, OutboxWorkError> {
-        self.claim_due_through(anchor, mark, mark).await
+        self.claim_due_through(anchor, mark, mark, &BTreeSet::new())
+            .await
     }
 
     pub(crate) async fn claim_due_through(
@@ -195,6 +196,7 @@ impl OutboxWork {
         anchor: WelcomeClockAnchor,
         mark: SyncTime,
         eligible_through: SyncTime,
+        excluded_request_ids: &BTreeSet<RequestId>,
     ) -> Result<FlushSelection, OutboxWorkError> {
         if !self.mark_is_open(anchor, mark) {
             return Ok(FlushSelection::OutsideWindow);
@@ -214,6 +216,7 @@ impl OutboxWork {
                 limit,
                 now_ms,
                 required_deadline_after_ms,
+                excluded_request_ids,
             )
             .await?;
         Ok(FlushSelection::Claimed(outbox_scan(
