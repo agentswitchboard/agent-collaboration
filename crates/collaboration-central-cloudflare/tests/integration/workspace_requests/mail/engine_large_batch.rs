@@ -147,6 +147,61 @@ async fn a_thousand_due_instances_complete_in_four_capped_batches_on_consecutive
 }
 
 #[tokio::test]
+async fn cold_reopen_can_take_the_capped_tail_on_a_request_and_keeps_alarms_on_grid() {
+    let mut fixture = Fixture::new().await;
+    let opened = runtime(&fixture).await;
+    let start = now(&fixture);
+    let group = probe_id(40004);
+    let items: Vec<_> = (0..=u32::try_from(CAP).unwrap())
+        .map(|index| probe_id(43000 + index))
+        .collect();
+    for (index, item) in items.iter().enumerate() {
+        seed_probe(
+            &opened,
+            *item,
+            group,
+            Some(due_of(start, u32::try_from(index).unwrap())),
+            &format!("cold{index}"),
+        )
+        .await;
+    }
+    seed_probe(
+        &opened,
+        probe_id(44000),
+        group,
+        Some(at(start, 16, 1, 0)),
+        "future off-grid due",
+    )
+    .await;
+
+    set_now(&fixture, at(start, 3, 0, 0));
+    submit_ordinary_request(&fixture, 40005).await;
+    let first_mark = at(start, 5, 0, 0);
+    assert_eq!(alarm_ms(&opened).await, ms(first_mark));
+    set_now(&fixture, first_mark);
+    assert!(opened.dispatch_due_alarm().await.unwrap().is_some());
+    let expected: Vec<_> = items.iter().map(text).collect();
+    assert_eq!(fired_items(&opened, group).await, expected[..CAP]);
+    let next_mark = at(start, 10, 0, 0);
+    assert_eq!(alarm_ms(&opened).await, ms(next_mark));
+
+    let between_marks = at(start, 5, 31, 0);
+    set_now(&fixture, between_marks);
+    assert!(opened.control::<bool>("raw-drop-alarm", &()).await.unwrap());
+    assert_eq!(alarm_ms(&opened).await, None);
+    drop(opened);
+    fixture.reopen().await;
+    let reopened = runtime(&fixture).await;
+    assert_eq!(fired_items(&reopened, group).await, expected[..CAP]);
+    assert_eq!(alarm_ms(&reopened).await, ms(next_mark), "cold publication");
+
+    submit_ordinary_request(&fixture, 40006).await;
+    assert_eq!(fired_items(&reopened, group).await, expected);
+    assert_eq!(alarm_ms(&reopened).await, ms(at(start, 20, 0, 0)));
+    fixture.host.close().await;
+}
+
+#[tokio::test]
 async fn eight_held_units_fill_the_fan_out_and_no_ninth_starts() {
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;

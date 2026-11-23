@@ -62,6 +62,9 @@ pub struct DueUnitStart {
 }
 
 /// The start and flags share one word, so a publisher reads one coherent snapshot.
+///
+/// After a cold reopen between two marks, leftover capped work may be taken by
+/// the next request before the next mark. The alarm itself is never set off the mark.
 pub struct DueBatchState {
     encoded: AtomicI64,
     publication_order: Mutex<()>,

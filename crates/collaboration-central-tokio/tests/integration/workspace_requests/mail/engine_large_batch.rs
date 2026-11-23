@@ -7,9 +7,32 @@ use super::engine_probe_support::*;
 use central_storage::SqlValue;
 use fleet_runtime::PausePoint;
 use router_clock::RuntimeClock;
+use workspace_model::central_mail::{
+    CentralMailAnswer, CentralMailOperation, CentralMailRequest, CentralMailResult, NoticeCadence,
+};
 
 const INSTANCES: u32 = 1_000;
 const CAP: usize = 250;
+
+async fn submit_ordinary_request(fixture: &Fixture, request: u32) {
+    let result = fixture
+        .host
+        .request_central(
+            &fixture.caller,
+            CentralMailRequest {
+                request_id: id(request),
+                operation: CentralMailOperation::SetNoticeCadence {
+                    cadence: NoticeCadence::M15,
+                },
+            },
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        result,
+        CentralMailResult::Done(CentralMailAnswer::NoticeCadenceSet { .. })
+    ));
+}
 
 /// Instance `index` is due 40 ms after the one before it, from 10:04:10, so all
 /// are due by the first batch at 10:05:00 and the earliest-first order is known.
@@ -108,6 +131,57 @@ async fn a_thousand_due_instances_complete_in_four_capped_batches_on_consecutive
             elapsed.as_secs_f64() * 1e3 / CAP as f64
         );
     }
+    fixture.host.close().await;
+}
+
+#[tokio::test]
+async fn cold_reopen_can_take_the_capped_tail_on_a_request_and_keeps_alarms_on_grid() {
+    let mut fixture = Fixture::new().await;
+    let opened = runtime(&fixture).await;
+    let start = fixture.clock.utc_now();
+    let group = probe_id(40004);
+    let items: Vec<_> = (0..=u32::try_from(CAP).unwrap())
+        .map(|index| probe_id(43000 + index))
+        .collect();
+    for (index, item) in items.iter().enumerate() {
+        seed_probe(
+            &opened,
+            *item,
+            group,
+            Some(due_of(start, u32::try_from(index).unwrap())),
+            &format!("cold{index}"),
+        )
+        .await;
+    }
+    seed_probe(
+        &opened,
+        probe_id(44000),
+        group,
+        Some(at(start, 16, 1, 0)),
+        "future off-grid due",
+    )
+    .await;
+
+    fixture.set_utc(at(start, 3, 0, 0)).await;
+    submit_ordinary_request(&fixture, 40005).await;
+    let first_mark = at(start, 5, 0, 0);
+    driver_fires_at(&fixture, &opened, first_mark).await;
+    let expected: Vec<_> = items.iter().map(text).collect();
+    assert_eq!(fired_items(&opened, group).await, expected[..CAP]);
+    let next_mark = at(start, 10, 0, 0);
+    assert_eq!(alarm_ms(&opened), ms(next_mark));
+
+    let between_marks = at(start, 5, 31, 0);
+    fixture.set_utc(between_marks).await;
+    drop(opened);
+    fixture.reopen().await;
+    let reopened = runtime(&fixture).await;
+    assert_eq!(fired_items(&reopened, group).await, expected[..CAP]);
+    assert_eq!(alarm_ms(&reopened), ms(next_mark), "cold publication");
+
+    submit_ordinary_request(&fixture, 40006).await;
+    assert_eq!(fired_items(&reopened, group).await, expected);
+    assert_eq!(alarm_ms(&reopened), ms(at(start, 20, 0, 0)));
     fixture.host.close().await;
 }
 
