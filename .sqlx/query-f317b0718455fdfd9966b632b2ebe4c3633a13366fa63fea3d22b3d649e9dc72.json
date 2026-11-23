@@ -1,0 +1,62 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT message_id, created_at, message_json, delivery_state_json FROM inbox_messages\n             WHERE json_extract(delivery_state_json, '$.receipt.kind') IS NOT 'confirmed'\n             ORDER BY created_at, message_id",
+  "describe": {
+    "columns": [
+      {
+        "name": "message_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inbox_messages",
+            "name": "message_id"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "inbox_messages",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "message_json",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inbox_messages",
+            "name": "message_json"
+          }
+        }
+      },
+      {
+        "name": "delivery_state_json",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "inbox_messages",
+            "name": "delivery_state_json"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false,
+      true,
+      false
+    ]
+  },
+  "hash": "f317b0718455fdfd9966b632b2ebe4c3633a13366fa63fea3d22b3d649e9dc72"
+}

@@ -1,0 +1,28 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT (\n    SELECT MIN(due_at_ms) FROM (\n        SELECT due_at_ms FROM engine_probe_due_rows WHERE contributes_to_alarm = 1\n        UNION ALL\n        SELECT due_at_ms FROM engine_alarm_only_due_rows WHERE contributes_to_alarm = 1\n    )\n    WHERE EXISTS (SELECT 1 FROM signin_provisioned_for_engine)\n) AS \"on_grid_due?: i64\",\nNULL AS \"legacy_due?: i64\"\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "on_grid_due?: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "legacy_due?: i64",
+        "ordinal": 1,
+        "type_info": "Null",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      true,
+      true
+    ]
+  },
+  "hash": "bc2eec3703aaf79df4f4045bd2324ad4545a82771c1ddf109de274c9c5e59c80"
+}

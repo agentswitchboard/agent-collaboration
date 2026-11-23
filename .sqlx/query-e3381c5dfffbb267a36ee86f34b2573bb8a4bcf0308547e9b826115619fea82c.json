@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "DELETE FROM inbox_messages WHERE json_extract(delivery_state_json, '$.ended_at_ms') < ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 1
+    },
+    "nullable": []
+  },
+  "hash": "e3381c5dfffbb267a36ee86f34b2573bb8a4bcf0308547e9b826115619fea82c"
+}

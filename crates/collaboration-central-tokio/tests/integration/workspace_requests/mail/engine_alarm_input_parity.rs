@@ -10,7 +10,7 @@ use collaboration_central_conformance::alarm_input_scenarios::{
 use fleet_runtime_ports::CentralStore as _;
 
 #[tokio::test]
-async fn checked_alarm_inputs_match_main_for_every_job() {
+async fn frozen_view_keeps_its_contract_and_projected_reads_detect_no_raw_grid_writes() {
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
     let store = runtime.runtime().statement_host();
@@ -74,17 +74,11 @@ async fn checked_alarm_inputs_match_main_for_every_job() {
                 )
                 .await
                 .unwrap_or_else(|_| panic!("typed schedule list failed"));
-                let typed: Vec<_> = typed
-                    .into_iter()
-                    .map(|row| {
-                        vec![
-                            SqlValue::Text(row.key.0),
-                            integer(row.occurrence_ms),
-                            integer(row.effective_due_ms),
-                        ]
-                    })
-                    .collect();
-                assert_eq!(typed, expected, "typed list: {}", scenario.name);
+                assert!(
+                    typed.is_empty(),
+                    "unprojected schedule must stay out of dispatch: {}",
+                    scenario.name
+                );
             }
         }
         let main = store
@@ -111,12 +105,7 @@ async fn checked_alarm_inputs_match_main_for_every_job() {
             ]
         };
         assert_eq!(
-            actual,
-            if scenario.name == "delivered direct mail is excluded and queued system mail expires" {
-                [Some(240000), None]
-            } else {
-                scenario.expected
-            },
+            actual, scenario.expected_without_projection,
             "checked projection: {}",
             scenario.name
         );

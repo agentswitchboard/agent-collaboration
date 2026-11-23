@@ -1,7 +1,7 @@
 use approval_request_protocol::{
     CancelReason, DecidedBy, Delivery, DestinationEnding, Ending, EndingViewWire, HolderStopCause,
-    PassOnReply, PassOnRequest, RaiseReply, StandingEnding, StopReceiptEnding, StopReply,
-    WaitingStatus,
+    PassOnReply, PassOnRequest, ProviderStopCause, RaiseReply, StandingEnding, StopReceiptEnding,
+    StopReply, StopRequest, WaitingStatus,
 };
 
 use fleet_approvals::ApprovalDecisionReply as DecideReply;
@@ -338,6 +338,59 @@ fn stop_marker_binds_contents_and_deadline_wins_a_matching_waiting_stop() {
         effect,
         ApprovalCollectionEffect::Request(ApprovalEffect::OfferEnding { .. })
     )));
+}
+
+#[test]
+fn withdrawing_an_ask_closes_delivery_and_preserves_deadline_precedence() {
+    let withdrawal = CancelReason::Stopped {
+        cause: HolderStopCause::AskWithdrawn,
+    };
+    for (stop_at, expected_ending, expected_receipt) in [
+        (
+            HOUR - 1,
+            Ending::Cancelled { reason: withdrawal },
+            StopReceiptEnding::Cancelled { reason: withdrawal },
+        ),
+        (HOUR, Ending::TimedOut {}, StopReceiptEnding::TimedOut {}),
+    ] {
+        let (mut book, active_run, requester, _) = setup();
+        let request_key = key(&active_run, 1);
+        let raise = provider(&request_key, &requester, "Review");
+        run_event(
+            &mut book,
+            raise_event(&active_run, raise.clone(), routing(None)),
+            0,
+        );
+        let effects = run_event(
+            &mut book,
+            ApprovalCollectionEvent::Stop {
+                run: active_run,
+                request: StopRequest::Provider {
+                    request_id: raise.request_id().clone(),
+                    router_run: raise.router_run().clone(),
+                    contents_digest: raise.contents_digest().unwrap(),
+                    cause: ProviderStopCause::AskWithdrawn,
+                },
+            },
+            stop_at,
+        );
+        assert_eq!(
+            reply(&effects),
+            ApprovalReceipt::Stop(StopReply::Stands {
+                ending: expected_receipt
+            })
+        );
+        let recorded = closed(&book, &request_key);
+        assert_eq!(recorded.ending.clone().into_ending(), expected_ending);
+        assert_eq!(recorded.delivery, Delivery::ClosedWithoutReceipt {});
+        assert!(effects.contains(&ApprovalCollectionEffect::Request(
+            ApprovalEffect::ClearDue { key: request_key },
+        )));
+        assert!(!effects.iter().any(|effect| matches!(
+            effect,
+            ApprovalCollectionEffect::Request(ApprovalEffect::OfferEnding { .. })
+        )));
+    }
 }
 
 #[test]

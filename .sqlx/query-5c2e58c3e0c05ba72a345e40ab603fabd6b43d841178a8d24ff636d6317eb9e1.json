@@ -1,0 +1,26 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT machine_id FROM machine_identity LIMIT 2",
+  "describe": {
+    "columns": [
+      {
+        "name": "machine_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "machine_identity",
+            "name": "machine_id"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false
+    ]
+  },
+  "hash": "5c2e58c3e0c05ba72a345e40ab603fabd6b43d841178a8d24ff636d6317eb9e1"
+}

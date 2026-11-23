@@ -87,7 +87,7 @@ export type GiverDecision<AcceptedAnswer> = {
 
 export type HolderEnding<AcceptedAnswer, Cancellation> = { kind: "decided"; answer: AcceptedAnswer; by: DecidedBy } | { kind: "cancelled"; reason: Cancellation } | { kind: "timedOut" };
 
-export type HolderStopCause = "turnStopped" | "askReplaced" | "sessionClosed" | "providerConnectionLost";
+export type HolderStopCause = "turnStopped" | "askReplaced" | "askWithdrawn" | "sessionClosed" | "providerConnectionLost";
 
 export type Label = string;
 
@@ -160,7 +160,9 @@ export type ProviderHolder = {
 	routerRun: RouterRunId,
 };
 
-export type ProviderStopCause = "turnStopped" | "askReplaced" | "sessionClosed" | "providerConnectionLost";
+export type ProviderStopCause = "turnStopped" | "askReplaced" |
+/**  The provider agent withdrew this waiting ask. */
+"askWithdrawn" | "sessionClosed" | "providerConnectionLost";
 
 export type QuestionAnswer = { kind: "answered"; fields: QuestionFieldAnswer[] } | { kind: "declined" };
 

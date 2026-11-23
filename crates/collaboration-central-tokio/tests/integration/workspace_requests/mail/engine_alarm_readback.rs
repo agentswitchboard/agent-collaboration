@@ -76,7 +76,7 @@ async fn six_hundred_due_wakes_drain_earliest_first_in_capped_batches_thirty_sec
     };
     let template = set_wake(&fixture, 14000, due(599), "bulk wake").await;
     let statements = (0..599)
-        .map(|number| GuardedStatement {
+        .flat_map(|number| [GuardedStatement {
             statement: Statement {
                 sql: "INSERT INTO automation_wakes(wake_id,target,due_at,text,state,created_at,updated_at) SELECT ?1,target,?2,text,'active',?3,?3 FROM automation_wakes WHERE wake_id=?4",
                 args: vec![
@@ -87,7 +87,7 @@ async fn six_hundred_due_wakes_drain_earliest_first_in_capped_batches_thirty_sec
                 ],
             },
             expect: RowExpectation::Exactly(1),
-        })
+        }, crate::storage_support::fixture_due_item(fleet_engine::DueKind::WakeTimer, bulk_wake_id(number), due(number), start)])
         .collect();
     assert!(matches!(
         runtime
@@ -146,7 +146,7 @@ async fn six_hundred_due_wakes_drain_earliest_first_in_capped_batches_thirty_sec
 }
 
 #[tokio::test]
-async fn an_only_unreadable_wake_publishes_the_next_mark_before_any_batch_fails_it() {
+async fn an_out_of_band_due_edit_keeps_the_projected_mark_until_load_detects_corruption() {
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
     let start = fixture.clock.utc_now();
@@ -170,7 +170,7 @@ async fn an_only_unreadable_wake_publishes_the_next_mark_before_any_batch_fails_
 
     publish_without_a_batch_at(&fixture, &runtime, at(start, 2, 10)).await;
 
-    assert_eq!(alarm_ms(&runtime), ms(at(start, 5, 0)), "never none");
+    assert_eq!(alarm_ms(&runtime), ms(at(start, 15, 0)), "never none");
     assert_eq!(
         record(&runtime, "wake_timer", &wake).await,
         Vec::<Vec<SqlValue>>::new()
@@ -185,24 +185,24 @@ async fn an_only_unreadable_wake_publishes_the_next_mark_before_any_batch_fails_
         vec![vec![text("active")]]
     );
 
-    due_batch_at(&fixture, &runtime, at(start, 5, 0)).await;
+    due_batch_at(&fixture, &runtime, at(start, 15, 0)).await;
 
     assert_eq!(
         record(&runtime, "wake_timer", &wake).await,
         vec![vec![
             text("failing"),
             integer(1),
-            stamp(at(start, 10, 0)),
+            stamp(at(start, 20, 0)),
             text("corrupt_row"),
             text("automation_wakes.due_at")
         ]]
     );
-    assert_eq!(alarm_ms(&runtime), ms(at(start, 10, 0)));
+    assert_eq!(alarm_ms(&runtime), ms(at(start, 20, 0)));
     fixture.host.close().await;
 }
 
 #[tokio::test]
-async fn a_failing_record_with_an_out_of_range_retry_publishes_the_next_mark_and_is_visited() {
+async fn an_out_of_band_retry_keeps_the_projected_mark_until_its_attempt_is_checked() {
     let fixture = Fixture::new().await;
     let runtime = runtime(&fixture).await;
     let start = fixture.clock.utc_now();
@@ -227,11 +227,11 @@ async fn a_failing_record_with_an_out_of_range_retry_publishes_the_next_mark_and
 
     assert_eq!(
         alarm_ms(&runtime),
-        ms(at(start, 5, 0)),
-        "the next mark, never the 2262 retry"
+        ms(at(start, 15, 0)),
+        "the projected mark stays in place"
     );
 
-    due_batch_at(&fixture, &runtime, at(start, 5, 0)).await;
+    due_batch_at(&fixture, &runtime, at(start, 15, 0)).await;
 
     let visited = (
         rows(
@@ -251,14 +251,14 @@ async fn a_failing_record_with_an_out_of_range_retry_publishes_the_next_mark_and
             vec![vec![
                 text("failing"),
                 integer(1),
-                stamp(at(start, 10, 0)),
+                stamp(at(start, 20, 0)),
                 text("corrupt_row"),
                 text("engine_work_attempts.next_try_at\n2262-04-11T23:47:17.854Z")
             ]]
         ),
-        "the 10:05 batch visited the subject and replaced its unreadable record"
+        "the 10:15 batch visited the subject and replaced its unreadable record"
     );
-    assert_eq!(alarm_ms(&runtime), ms(at(start, 10, 0)));
+    assert_eq!(alarm_ms(&runtime), ms(at(start, 20, 0)));
     fixture.host.close().await;
 }
 
