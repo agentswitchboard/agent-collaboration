@@ -119,6 +119,7 @@ pub struct EndedApproval {
     pub ending: DeliverEndingRequest,
     pub ended_at: CentralTime,
     pub delivery: Delivery,
+    pub decided_operation_id: Option<RequestId>,
 }
 
 /// The Stop family and cause retained before Central has a Raise to match.
@@ -275,26 +276,6 @@ pub enum DestinationReplyMismatch {
     Recipient,
 }
 
-#[derive(Clone, Eq, PartialEq)]
-pub struct SavedDecision {
-    pub key: ApprovalRequestKey,
-    pub actor: ApprovalActor,
-    pub operation_id: RequestId,
-    pub(crate) value: Answer,
-    pub reply: DestinationReply<ApprovalDecisionReply>,
-}
-
-impl fmt::Debug for SavedDecision {
-    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
-        formatter
-            .debug_struct("SavedDecision")
-            .field("key", &self.key)
-            .field("actor", &self.actor)
-            .field("operation_id", &self.operation_id)
-            .finish_non_exhaustive()
-    }
-}
-
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProviderSessionAvailability {
     Live,
@@ -338,7 +319,6 @@ pub enum ApprovalEvent {
         key: ApprovalRequestKey,
         actor: AdmittedDecider,
         request: ApprovalDecideInput,
-        prior: Option<Box<SavedDecision>>,
     },
     Read {
         key: ApprovalRequestKey,
@@ -366,16 +346,9 @@ pub enum ApprovalEvent {
     },
 }
 
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ApprovalApply {
-    /// Durable floor sampled beside the selected request or batch.
-    pub high_water: CentralTime,
-    pub event: ApprovalEvent,
-}
-
-impl EventTag for ApprovalApply {
+impl EventTag for ApprovalEvent {
     fn event_tag(&self) -> &'static str {
-        match self.event {
+        match self {
             ApprovalEvent::Raise { .. } => "raise",
             ApprovalEvent::Decide { .. } => "decide",
             ApprovalEvent::Read { .. } => "read",
@@ -455,7 +428,6 @@ pub enum ApprovalEffect {
         holder: ApprovalRun,
         request: Box<DeliverEndingRequest>,
     },
-    SaveDecision(Box<SavedDecision>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]

@@ -179,7 +179,6 @@ const LAYER_POLICY: [(&str, &[&str]); 45] = [
         &[
             "central-engine-model",
             "central-storage",
-            "fleet-approvals",
             "fleet-identity-protocol",
             "fleet-lent-transaction",
             "fleet-machine-login",

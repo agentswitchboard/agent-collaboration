@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE approval_router_runs\nSET retired_at = MAX(registered_at, ?1), updated_at = MAX(registered_at, ?1)\nWHERE router_run_id = ?2 AND organization_id = ?3\n  AND machine_id = ?4 AND enrollment_id = ?5 AND retired_at IS NULL\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": []
+  },
+  "hash": "f27429909747dc9a16f360f49ed6fa9ad6da2d60a3fcd9b3b3b6e252f099b824"
+}

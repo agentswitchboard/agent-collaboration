@@ -1,15 +1,14 @@
 //! Supplies approval routing from the actor store in the caller's transaction.
+use crate::{ApprovalEnrollment, ApprovalRouting, ApprovalSession, ApprovalSessionFacts};
 use central_storage::StoreFailure;
-use fleet_approvals::{ApprovalEnrollment, ApprovalRouting, ApprovalSession, ApprovalSessionFacts};
-use fleet_identity_protocol::OrganizationId;
+use fleet_lent_transaction::OrganizationTransaction;
 use sqlx_core::{
     arguments::IntoArguments, column::ColumnIndex, database::Database, decode::Decode,
     encode::Encode, types::Type,
 };
 
-use crate::{
-    LiveSessionFacts, OrganizationTransaction, SessionAvailability, SessionLookupScope,
-    SessionService,
+use fleet_actor_identity::{
+    LiveSessionFacts, SessionAvailability, SessionLookupScope, SessionService,
 };
 
 /// Reads approval facts in the caller’s organization transaction.
@@ -34,12 +33,8 @@ where
     async fn session_initial_route(
         &self,
         transaction: &mut Transaction,
-        organization: &OrganizationId,
         requester: &ApprovalSession,
     ) -> Result<Option<ApprovalRouting>, StoreFailure> {
-        if transaction.organization_id() != organization {
-            return Ok(None);
-        }
         let caller = session_caller(requester);
         let availability = SessionService::in_transaction(transaction)
             .session_facts(&caller, &requester.session_id)
@@ -64,17 +59,12 @@ where
     async fn session_is_live(
         &self,
         transaction: &mut Transaction,
-        organization: &OrganizationId,
         session: &ApprovalSession,
     ) -> Result<bool, StoreFailure> {
-        if transaction.organization_id() != organization {
-            return Ok(false);
-        }
         let caller = session_caller(session);
-        Ok(SessionService::in_transaction(transaction)
-            .live_session(&caller, &session.session_id)
-            .await?
-            .is_some())
+        SessionService::in_transaction(transaction)
+            .session_is_live(&caller, &session.session_id)
+            .await
     }
 }
 

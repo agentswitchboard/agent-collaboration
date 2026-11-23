@@ -243,6 +243,7 @@ declare_timed_due_lists! {
     Schedules, schedule_list, "../fleet-schedules/src/queries/read_due_schedules.sql";
     DirectMessages, direct_message_list, "../fleet-mail/src/queries/read_due_direct_messages.sql";
     SystemExpiries, system_expiry_list, "../fleet-mail/src/queries/read_due_system_expiries.sql";
+    ApprovalExpiries, approval_expiry_list, "../fleet-approvals/src/queries/read_approval_deadline_reference.sql";
     #[cfg(feature = "test-support")]
     Probes, probe_list, "../collaboration-central-core/src/engine/queries/read_due_probes.sql";
 }
@@ -281,6 +282,7 @@ where
         DueListKind::Schedules => DueKind::AutomationTimer,
         DueListKind::DirectMessages => DueKind::DirectMessage,
         DueListKind::SystemExpiries => DueKind::SystemMessageExpiry,
+        DueListKind::ApprovalExpiries => DueKind::ApprovalRequestExpiry,
         #[cfg(feature = "test-support")]
         DueListKind::Probes => return read_due_list(transaction, query, None).await,
     };

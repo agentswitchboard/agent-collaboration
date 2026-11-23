@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO approval_router_runs (\n    router_run_id, organization_id, machine_id, enrollment_id,\n    registration_order, registered_at, created_at, updated_at\n) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?6, ?6)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 6
+    },
+    "nullable": []
+  },
+  "hash": "aeb4ea8f030ab70b7e12c7a4d310766b52dd9abba451767e445d4417501d6187"
+}
