@@ -2,8 +2,8 @@ use fleet_identity_protocol::SessionSecret;
 use workspace_ids::SessionRef;
 
 use crate::{
-    ConversationFact, CorruptStartRecord, OpenedSession, PointerFact, SecretIssue, SnapshotFacts,
-    SnapshotPhase, StartEnvelope, StartFacts, StartScope, StartSnapshot,
+    CorruptStartRecord, OpenedSession, SecretIssue, StartEnvelope, StartFacts, StartScope,
+    StartSnapshot,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -31,34 +31,7 @@ impl OpeningCommit {
         facts: &StartFacts,
         address: SessionRef,
     ) -> Result<Self, CorruptStartRecord> {
-        if facts.conversation != ConversationFact::Held {
-            return Err(CorruptStartRecord::OpenedWithoutHeldConversation);
-        }
-        let PointerFact::Committed(issue) = &facts.pointer else {
-            return Err(CorruptStartRecord::OpenedWithoutCommittedPointer);
-        };
-        let reservation = facts
-            .reservation
-            .as_ref()
-            .ok_or(CorruptStartRecord::PointerWithoutReservation)?;
-        let harness_session_id = facts
-            .harness_session_id
-            .as_ref()
-            .ok_or(CorruptStartRecord::AssociationHarnessMismatch)?;
-        let association = OpenedSession {
-            address,
-            session_id: reservation.session_id.clone(),
-            harness_session_id: harness_session_id.clone(),
-            issue: issue.clone(),
-        };
-        let opened = StartSnapshot::checked(
-            Box::new(SnapshotFacts {
-                envelope: envelope.clone(),
-                attempt: reservation.attempt,
-                facts: facts.clone(),
-            }),
-            SnapshotPhase::Opened(association.clone()),
-        )?;
+        let (opened, association) = StartSnapshot::for_opening(envelope, facts, &address)?;
         Ok(Self {
             association,
             opened,

@@ -7,7 +7,6 @@ use super::{
 };
 use crate::{
     CloseResult, ConversationFact, EndLeg, EndNotSent, FailureReason, PointerFact, SaveResult,
-    StartNotification,
 };
 
 impl AcceptedStart {
@@ -134,7 +133,7 @@ impl AcceptedStart {
         if let Stage::Saving(snapshot) = &self.stage {
             intended = snapshot.intended_outcome();
             if let Some((_, issue)) = snapshot.reserved() {
-                outputs.notify(StartNotification::DiscardPendingSecret(issue.clone()));
+                outputs.destroy_pending_secret(issue.clone());
             }
             if while_saving == SnapshotKind::LaunchIntended {
                 let PointerFact::Committed(issue) = &snapshot.start().facts.pointer else {

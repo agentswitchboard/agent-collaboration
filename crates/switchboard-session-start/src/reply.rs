@@ -132,10 +132,14 @@ impl LinkContradiction for EndContradiction {
 /// The outcome of the exactly correlated link call.
 ///
 /// The bridge checks positive reply currency at delivery and stages a Reserved
-/// credential only after that check. It matches Bind Active against both address
+/// credential only after that check. If the reducer refuses that delivery, the
+/// bridge destroys its staged credential and preserves any earlier pending slot.
+/// A successful reservation gives the slot to the start instance. The bridge
+/// moves its credential out at PutSecret take and destroys the slot when the
+/// machine is dropped. The bridge also matches Bind Active against both address
 /// fields. An enrollment-ended result needs a terminal close on the current
 /// connection or a confirmed refresh. An advisory AuthorityLapsed refusal maps
-/// to LinkNotReady. An expired lease allows reconnecting under the same
+/// to RefusedBeforeApply. An expired lease allows reconnecting under the same
 /// enrollment. A close on an older connection gives no evidence about the current one.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LinkResult<Reply, Contradiction: LinkContradiction> {
@@ -143,6 +147,12 @@ pub enum LinkResult<Reply, Contradiction: LinkContradiction> {
     NotTaken(Contradiction::NotTaken),
     AnswerLost,
     ProvenNotWritten,
+    RefusedBeforeApply(CentralRefusalNow),
     Contradicted(Contradiction),
     EnrollmentEnded,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CentralRefusalNow {
+    AuthorityLapsed,
 }

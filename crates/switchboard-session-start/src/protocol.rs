@@ -64,11 +64,17 @@ impl EventTag for StartInput {
     }
 }
 
-#[derive(Debug, Eq, PartialEq)]
-pub enum StartEffect {
-    Directive(Directed),
-    Notification(StartNotification),
+/// The service applies pending secret destruction synchronously before
+/// delivering notifications or taking the directive.
+#[derive(Debug, Default, Eq, PartialEq)]
+pub struct StartOutput {
+    pub directive: Option<Directed>,
+    pub notifications: Vec<StartNotification>,
+    pub pending_secret: Option<DestroyPendingSecret>,
 }
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct DestroyPendingSecret(pub SecretIssue);
 
 #[derive(Debug, Eq, PartialEq)]
 pub struct Directed {
@@ -111,7 +117,6 @@ pub enum StartNotification {
         answer: StartAnswer,
     },
     ReportFault(StartFault),
-    DiscardPendingSecret(SecretIssue),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]

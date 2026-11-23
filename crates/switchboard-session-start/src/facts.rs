@@ -1,7 +1,8 @@
 use fleet_identity_protocol::{
-    CreateSessionAttempt, EnrollmentId, NewEndSettlement, SessionSettlement, SessionTime,
+    AbandonedSessionCause, CreateSessionAttempt, EndedSessionCause, EnrollmentId,
+    NewAbandonmentCause, NewEndSettlement, RouterEndCause, SessionSettlement, SessionTime,
 };
-use workspace_ids::{CentralSessionId, SessionId};
+use workspace_ids::{CentralSessionId, SessionId, SessionRef};
 
 use crate::{CorruptStartRecord, LaunchNotTaken};
 
@@ -77,6 +78,12 @@ pub enum EndNotSent {
     RecordUnavailable,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum EndNotApplied {
+    ProvenNotWritten,
+    AuthorityLapsed,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum EndLeg {
     NotDue(EndNotDue),
@@ -85,9 +92,14 @@ pub enum EndLeg {
     AlreadySettled(SessionSettlement),
     NoSuchStart,
     NotSent(EndNotSent),
-    NotApplied,
+    NotApplied(EndNotApplied),
     NotKnown,
     AuthorityRefused,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CheckedActive {
+    pub address: SessionRef,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -109,6 +121,7 @@ pub struct StoredFacts {
     pub harness_session_id: Option<SessionId>,
     pub conversation: ConversationFact,
     pub bind_exposure: Exposure,
+    pub active_proof: Option<CheckedActive>,
     pub settlement: Option<SessionSettlement>,
     pub end: EndLeg,
 }
@@ -124,6 +137,7 @@ impl Default for StoredFacts {
             harness_session_id: None,
             conversation: ConversationFact::None,
             bind_exposure: Exposure::None,
+            active_proof: None,
             settlement: None,
             end: EndLeg::NotDue(EndNotDue::NothingToEnd),
         }
@@ -152,16 +166,18 @@ impl StartFacts {
             stored: StoredFacts::default(),
         }
     }
+}
 
+impl StoredFacts {
     pub(crate) fn secret_issue(&self) -> Option<&SecretIssue> {
-        match &self.stored.secret {
+        match &self.secret {
             SecretFact::None => None,
             SecretFact::Stored(issue) | SecretFact::PossiblyStored(issue) => Some(issue),
         }
     }
 
     pub(crate) fn pointer_issue(&self) -> Option<&SecretIssue> {
-        match &self.stored.pointer {
+        match &self.pointer {
             PointerFact::None => None,
             PointerFact::Committed(issue) | PointerFact::PossiblyCommitted(issue) => Some(issue),
         }
@@ -170,7 +186,7 @@ impl StartFacts {
     pub(crate) fn validate_issues(&self) -> Result<(), CorruptStartRecord> {
         let secret = self.secret_issue();
         let pointer = self.pointer_issue();
-        let Some(reservation) = &self.stored.reservation else {
+        let Some(reservation) = &self.reservation else {
             if pointer.is_some() {
                 return Err(CorruptStartRecord::PointerWithoutReservation);
             }
@@ -196,5 +212,27 @@ impl std::ops::Deref for StartFacts {
 
     fn deref(&self) -> &Self::Target {
         self.as_stored()
+    }
+}
+
+pub(crate) fn settlement_fact(settlement: &NewEndSettlement) -> SessionSettlement {
+    match settlement {
+        NewEndSettlement::Abandoned {
+            cause: NewAbandonmentCause::GivenUp {},
+            time,
+        } => SessionSettlement::Abandoned {
+            cause: AbandonedSessionCause::GivenUp {},
+            time: time.clone(),
+        },
+        NewEndSettlement::Ended { cause, time } => {
+            let cause = match cause {
+                RouterEndCause::GivenUp {} => EndedSessionCause::GivenUp {},
+                RouterEndCause::EndedForGood {} => EndedSessionCause::EndedForGood {},
+            };
+            SessionSettlement::Ended {
+                cause,
+                time: time.clone(),
+            }
+        }
     }
 }

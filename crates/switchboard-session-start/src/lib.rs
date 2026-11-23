@@ -18,8 +18,9 @@ pub use envelope::{
     StartEnvelope, StartScope,
 };
 pub use facts::{
-    ConversationFact, EndLeg, EndNotDue, EndNotSent, Exposure, LaunchFact, PointerFact, Recording,
-    Reservation, SecretFact, SecretIssue, StartFacts, StoredFacts,
+    CheckedActive, ConversationFact, EndLeg, EndNotApplied, EndNotDue, EndNotSent, Exposure,
+    LaunchFact, PointerFact, Recording, Reservation, SecretFact, SecretIssue, StartFacts,
+    StoredFacts,
 };
 pub use machine::{StartMachine, StartStateKind};
 pub use outcome::{
@@ -30,20 +31,19 @@ pub use ports::{
     SessionSecretStore, StartRecord, StartRecordError, StartRevision, StartSaveRefusal,
 };
 pub use protocol::{
-    CloseResult, Directed, DirectiveId, DirectiveResult, LaunchResult, PutSecretNotTaken,
-    PutSecretResult, SaveResult, SetUpNotTaken, SetUpResult, StartDirective, StartEffect,
-    StartInput, StartInstanceId, StartNotification, StartRefusal, WaiterSlot,
+    CloseResult, DestroyPendingSecret, Directed, DirectiveId, DirectiveResult, LaunchResult,
+    PutSecretNotTaken, PutSecretResult, SaveResult, SetUpNotTaken, SetUpResult, StartDirective,
+    StartInput, StartInstanceId, StartNotification, StartOutput, StartRefusal, WaiterSlot,
 };
 pub use reason::{
-    BindDispute, CleanupCall, CorruptStartRecord, FailureReason, HoldLostDuring, IntendedOutcome,
-    LaunchNotTaken, StopReason, UnknownReason,
+    BindDispute, CleanupCall, CorruptStartRecord, FactName, FailureReason, HoldLostDuring,
+    IntendedOutcome, LaunchNotTaken, SnapshotKind, StopReason, UnknownReason,
 };
 pub use reply::{
-    BindContradiction, BindNotTaken, BindReplyKind, CreateAnswer, CreateContradiction,
-    CreateReplyKind, EndContradiction, EndReplyKind, LinkContradiction, LinkNotTaken, LinkResult,
-    ObservedReservation,
+    BindContradiction, BindNotTaken, BindReplyKind, CentralRefusalNow, CreateAnswer,
+    CreateContradiction, CreateReplyKind, EndContradiction, EndReplyKind, LinkContradiction,
+    LinkNotTaken, LinkResult, ObservedReservation,
 };
 pub use snapshot::{
-    CleanupOutcome, OpenedSession, SnapshotFacts, SnapshotKind, SnapshotPhase, StartSnapshot,
-    StoredSnapshot,
+    CleanupOutcome, OpenedSession, SnapshotFacts, SnapshotPhase, StartSnapshot, StoredSnapshot,
 };

@@ -3,10 +3,10 @@ use workspace_ids::SessionRef;
 
 use super::{OpenedSession, SnapshotFacts, SnapshotPhase, StartSnapshot, StoredSnapshot};
 use crate::{
-    CandidateAsker, ConversationFact, CorruptStartRecord, LaunchFact, LaunchSpecRef,
-    LocalStartDigest, OpeningCommit, PointerFact, Reservation, SecretFact, SecretIssue,
-    StartCandidate, StartEnvelope, StartFacts, StartInstanceId, StartMachine, StartRevision,
-    StartScope, StoredFacts,
+    CandidateAsker, CheckedActive, ConversationFact, CorruptStartRecord, Exposure, LaunchFact,
+    LaunchSpecRef, LocalStartDigest, OpeningCommit, PointerFact, Reservation, SecretFact,
+    SecretIssue, StartCandidate, StartEnvelope, StartFacts, StartInstanceId, StartMachine,
+    StartRevision, StartScope, StoredFacts,
 };
 
 fn specimen() -> StoredSnapshot {
@@ -38,7 +38,7 @@ fn specimen() -> StoredSnapshot {
         session_id: "held".parse().unwrap(),
     };
     let phase = SnapshotPhase::Opened(OpenedSession {
-        address,
+        address: address.clone(),
         session_id: issue.session_id.clone(),
         harness_session_id,
         issue: issue.clone(),
@@ -54,6 +54,8 @@ fn specimen() -> StoredSnapshot {
         launch: LaunchFact::Started,
         harness_session_id: Some("held".parse().unwrap()),
         conversation: ConversationFact::Held,
+        bind_exposure: Exposure::Witnessed,
+        active_proof: Some(CheckedActive { address }),
         ..Default::default()
     };
     StoredSnapshot {
@@ -111,7 +113,11 @@ fn instance() -> StartInstanceId {
 fn rejects(stored: StoredSnapshot, error: CorruptStartRecord) {
     let scope = stored.envelope.scope().clone();
     assert_eq!(restore_with_scope(stored.clone(), &scope), Err(error));
-    assert_eq!(StartSnapshot::from_stored(&scope, stored), Err(error));
+    assert_eq!(
+        StartSnapshot::from_stored(&scope, stored.clone()),
+        Err(error)
+    );
+    assert!(stored.must_be_retained(&scope));
 }
 
 #[test]
@@ -269,4 +275,163 @@ fn opening_constructor_checks_address_and_preserves_checked_facts() {
     let opening = OpeningCommit::new(&stored.envelope, &facts, phase.address.clone()).unwrap();
     assert_eq!(opening.association(), &phase);
     assert_eq!(opening.opened().to_stored(), stored);
+}
+
+#[test]
+fn opened_requires_a_stored_secret_for_its_pointer() {
+    let mut stored = specimen();
+    stored.facts.secret = SecretFact::None;
+    rejects(
+        stored.clone(),
+        CorruptStartRecord::OpenedWithoutStoredSecret,
+    );
+    let address = opened(&mut stored).address.clone();
+    let checked_facts = StartFacts::from_stored(stored.facts.clone()).unwrap();
+    assert_eq!(
+        OpeningCommit::new(&stored.envelope, &checked_facts, address),
+        Err(CorruptStartRecord::OpenedWithoutStoredSecret)
+    );
+}
+
+#[test]
+fn opened_requires_witnessed_bind_exposure() {
+    let mut stored = specimen();
+    stored.facts.bind_exposure = Exposure::None;
+    rejects(
+        stored.clone(),
+        CorruptStartRecord::OpenedWithoutWitnessedBind,
+    );
+    let address = opened(&mut stored).address.clone();
+    let checked_facts = StartFacts::from_stored(stored.facts.clone()).unwrap();
+    assert_eq!(
+        OpeningCommit::new(&stored.envelope, &checked_facts, address),
+        Err(CorruptStartRecord::OpenedWithoutWitnessedBind)
+    );
+}
+
+fn abandoned() -> fleet_identity_protocol::SessionSettlement {
+    use fleet_identity_protocol::{AbandonedSessionCause, SessionSettlement};
+    SessionSettlement::Abandoned {
+        cause: AbandonedSessionCause::GivenUp {},
+        time: String::from("2026-11-23T08:01:00.000Z").try_into().unwrap(),
+    }
+}
+
+#[test]
+fn settled_requires_exact_settlement_before_restore_or_prune() {
+    let mut stored = specimen();
+    stored.phase = SnapshotPhase::Settled;
+    stored.facts = StoredFacts {
+        settlement: Some(abandoned()),
+        ..Default::default()
+    };
+    assert!(!stored.must_be_retained(stored.envelope.scope()));
+    stored.facts.settlement = None;
+    rejects(stored, CorruptStartRecord::SettledWithoutSettlement);
+}
+
+#[test]
+fn opened_requires_a_started_launch_and_its_exact_active_proof() {
+    let mut no_launch = specimen();
+    no_launch.facts.launch = LaunchFact::Intended;
+    rejects(no_launch, CorruptStartRecord::OpenedWithoutLaunch);
+
+    let mut no_proof = specimen();
+    no_proof.facts.active_proof = None;
+    rejects(no_proof, CorruptStartRecord::OpenedWithoutActiveProof);
+
+    let mut wrong_proof = specimen();
+    wrong_proof
+        .facts
+        .active_proof
+        .as_mut()
+        .unwrap()
+        .address
+        .session_id = "different-proof".parse().unwrap();
+    rejects(
+        wrong_proof,
+        CorruptStartRecord::OpenedActiveProofAddressMismatch,
+    );
+}
+
+#[test]
+fn opened_refuses_settlement_and_a_cleanup_end_leg() {
+    let mut settled = specimen();
+    settled.facts.settlement = Some(abandoned());
+    rejects(settled, CorruptStartRecord::OpenedWithSettlement);
+
+    let mut ending = specimen();
+    ending.facts.end = crate::EndLeg::Due;
+    rejects(ending, CorruptStartRecord::OpenedWithEndLeg);
+}
+
+#[test]
+fn an_end_leg_disagreeing_with_the_exact_settlement_is_corrupt_in_each_phase() {
+    use crate::{CleanupOutcome, EndLeg, FailureReason};
+    use fleet_identity_protocol::{NewAbandonmentCause, NewEndSettlement};
+    for phase in [
+        SnapshotPhase::Settled,
+        SnapshotPhase::Fenced,
+        SnapshotPhase::CleaningUp(CleanupOutcome::Failed(FailureReason::SetUpFailed)),
+    ] {
+        let mut stored = specimen();
+        stored.phase = phase;
+        stored.facts.settlement = Some(abandoned());
+        let exact = NewEndSettlement::Abandoned {
+            cause: NewAbandonmentCause::GivenUp {},
+            time: String::from("2026-11-23T08:01:00.000Z").try_into().unwrap(),
+        };
+        stored.facts.end = EndLeg::Settled(exact);
+        assert!(StartSnapshot::from_stored(stored.envelope.scope(), stored.clone()).is_ok());
+        stored.facts.end = EndLeg::Settled(NewEndSettlement::Abandoned {
+            cause: NewAbandonmentCause::GivenUp {},
+            time: String::from("2026-11-23T08:02:00.000Z").try_into().unwrap(),
+        });
+        rejects(stored, CorruptStartRecord::EndSettlementDisagrees);
+    }
+}
+
+#[test]
+fn launch_and_bind_phases_require_their_own_evidence() {
+    use crate::{CleanupOutcome, FactName, SnapshotKind};
+    let mut launch = specimen();
+    launch.phase = SnapshotPhase::LaunchIntended;
+    launch.facts.launch = LaunchFact::Intended;
+    assert!(StartSnapshot::from_stored(launch.envelope.scope(), launch.clone()).is_ok());
+    launch.facts.pointer = PointerFact::None;
+    rejects(
+        launch,
+        CorruptStartRecord::PhaseFactMissing {
+            phase: SnapshotKind::LaunchIntended,
+            fact: FactName::CommittedPointer,
+        },
+    );
+
+    for (phase, kind) in [
+        (SnapshotPhase::Held, SnapshotKind::Held),
+        (SnapshotPhase::BindIntended, SnapshotKind::BindIntended),
+        (SnapshotPhase::BindUnknown, SnapshotKind::BindUnknown),
+    ] {
+        let mut stored = specimen();
+        stored.phase = phase;
+        assert!(StartSnapshot::from_stored(stored.envelope.scope(), stored.clone()).is_ok());
+        stored.facts.harness_session_id = None;
+        rejects(
+            stored,
+            CorruptStartRecord::PhaseFactMissing {
+                phase: kind,
+                fact: FactName::HarnessSessionId,
+            },
+        );
+    }
+
+    let mut cleanup = specimen();
+    cleanup.phase = SnapshotPhase::CleaningUp(CleanupOutcome::Settled);
+    rejects(
+        cleanup,
+        CorruptStartRecord::PhaseFactMissing {
+            phase: SnapshotKind::CleaningUp,
+            fact: FactName::CleanupReason,
+        },
+    );
 }

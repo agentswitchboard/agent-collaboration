@@ -36,7 +36,7 @@ fn ask() -> StartInput {
     }
 }
 
-fn create_unknown() -> StartMachine {
+fn create_sent() -> StartMachine {
     let machine = StartMachine::new(StartInstanceId::new(
         "019c0000-0000-7000-8000-000000000004".parse().unwrap(),
     ));
@@ -49,6 +49,11 @@ fn create_unknown() -> StartMachine {
         },
     )
     .unwrap();
+    machine
+}
+
+fn create_unknown() -> StartMachine {
+    let machine = create_sent();
     let (machine, _) = StartMachine::transition(
         &machine,
         StartInput::DirectiveResult {
@@ -59,6 +64,58 @@ fn create_unknown() -> StartMachine {
     .unwrap();
     assert_eq!(machine.kind(), StartStateKind::CreateUnknown);
     machine
+}
+
+#[test]
+fn exhausted_reserved_delivery_destroys_its_staged_credential() {
+    use std::cell::Cell;
+
+    struct StagedDelivery<'a> {
+        _secret: fleet_identity_protocol::SessionSecret,
+        dropped: &'a Cell<bool>,
+    }
+    impl Drop for StagedDelivery<'_> {
+        fn drop(&mut self) {
+            self.dropped.set(true);
+        }
+    }
+
+    let mut machine = create_sent();
+    machine.sequence = u64::MAX;
+    let prior = machine.clone();
+    let dropped = Cell::new(false);
+    let staged = StagedDelivery {
+        _secret: fleet_identity_protocol::SessionSecret::from_bytes(&[17; 32]),
+        dropped: &dropped,
+    };
+    let result = StartMachine::transition(
+        &machine,
+        StartInput::DirectiveResult {
+            id: machine.outstanding_id().unwrap(),
+            result: DirectiveResult::SendCreate(LinkResult::Answered(
+                crate::CreateAnswer::Reserved {
+                    session_id: "019c0000-0000-7000-8000-000000000005".parse().unwrap(),
+                    reserved_until: String::from("2026-11-23T08:00:00.000Z").try_into().unwrap(),
+                },
+            )),
+        },
+    );
+    let slot = match &result {
+        Ok(_) => Some(staged),
+        Err(_) => {
+            drop(staged);
+            None
+        }
+    };
+    assert_eq!(
+        result,
+        Err(TransitionError::Domain(
+            StartRefusal::DirectiveSequenceExhausted
+        ))
+    );
+    assert!(slot.is_none());
+    assert!(dropped.get());
+    assert_eq!(machine, prior);
 }
 
 #[test]

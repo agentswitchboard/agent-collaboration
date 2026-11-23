@@ -2,12 +2,13 @@ use fleet_identity_protocol::CreateSessionAttempt;
 use state_machine_core::{StateMachine, StateMachineResult, StateTag, Transition, TransitionError};
 
 use crate::{
-    CentralStanding, CleanupOutcome, CorruptStartRecord, Directed, DirectiveId, DirectiveResult,
-    EnvelopeRefusal, FaultContext, FinishedOutcome, IntendedOutcome, NotSentNowReason,
-    OpenedSession, Recording, SecretIssue, SnapshotFacts, SnapshotKind, SnapshotPhase, StartAnswer,
-    StartDirective, StartEffect, StartEnvelope, StartFacts, StartFault, StartInput,
-    StartInstanceId, StartNotification, StartRefusal, StartRevision, StartScope, StartSnapshot,
-    StopReason, UnknownReason, WaiterSlot, transition_table::TRANSITIONS,
+    CentralRefusalNow, CentralStanding, CleanupOutcome, CorruptStartRecord, DestroyPendingSecret,
+    Directed, DirectiveId, DirectiveResult, EnvelopeRefusal, FaultContext, FinishedOutcome,
+    IntendedOutcome, NotSentNowReason, OpenedSession, Recording, SecretIssue, SnapshotFacts,
+    SnapshotKind, SnapshotPhase, StartAnswer, StartDirective, StartEnvelope, StartFacts,
+    StartFault, StartInput, StartInstanceId, StartNotification, StartOutput, StartRefusal,
+    StartRevision, StartScope, StartSnapshot, StopReason, UnknownReason, WaiterSlot,
+    transition_table::TRANSITIONS,
 };
 
 mod central;
@@ -220,7 +221,7 @@ const NOT_EXPECTED: Refused = TransitionError::Domain(StartRefusal::NotExpectedH
 struct Outputs<'a> {
     instance: &'a StartInstanceId,
     sequence: &'a mut u64,
-    effects: Vec<StartEffect>,
+    effect: StartOutput,
 }
 
 impl Outputs<'_> {
@@ -228,18 +229,22 @@ impl Outputs<'_> {
         *self.sequence = self.sequence.checked_add(1).ok_or(TransitionError::Domain(
             StartRefusal::DirectiveSequenceExhausted,
         ))?;
-        self.effects.push(StartEffect::Directive(Directed {
+        self.effect.directive = Some(Directed {
             id: DirectiveId {
                 instance: self.instance.clone(),
                 sequence: *self.sequence,
             },
             directive,
-        }));
+        });
         Ok(())
     }
 
     fn notify(&mut self, notification: StartNotification) {
-        self.effects.push(StartEffect::Notification(notification));
+        self.effect.notifications.push(notification);
+    }
+
+    fn destroy_pending_secret(&mut self, issue: SecretIssue) {
+        self.effect.pending_secret = Some(DestroyPendingSecret(issue));
     }
 
     fn tell(&mut self, slot: WaiterSlot, answer: StartAnswer) {
@@ -353,7 +358,7 @@ impl StateTag for StartMachine {
 impl StateMachine for StartMachine {
     type State = Self;
     type Event = StartInput;
-    type Effect = StartEffect;
+    type Effect = StartOutput;
     type Error = StartRefusal;
 
     fn transition(state: &Self, input: StartInput) -> StateMachineResult<Self> {
@@ -361,7 +366,7 @@ impl StateMachine for StartMachine {
         let mut outputs = Outputs {
             instance: &next.instance,
             sequence: &mut next.sequence,
-            effects: Vec::new(),
+            effect: StartOutput::default(),
         };
         match input {
             StartInput::Ask {
@@ -381,8 +386,8 @@ impl StateMachine for StartMachine {
                 start.complete(result, &mut outputs)?;
             }
         }
-        let effects = outputs.effects;
-        Ok((next, effects))
+        let effect = outputs.effect;
+        Ok((next, vec![effect]))
     }
 
     fn transitions() -> &'static [Transition] {
@@ -520,6 +525,16 @@ impl AcceptedStart {
     fn tell_unknown(&mut self, outputs: &mut Outputs<'_>) {
         self.tell_waiting(
             &StartAnswer::OutcomeNotKnown {
+                facts: Box::new(self.facts.clone()),
+            },
+            outputs,
+        );
+    }
+
+    fn tell_refused_by_central(&mut self, reason: CentralRefusalNow, outputs: &mut Outputs<'_>) {
+        self.tell_waiting(
+            &StartAnswer::RefusedByCentralNow {
+                reason,
                 facts: Box::new(self.facts.clone()),
             },
             outputs,

@@ -83,6 +83,35 @@ pub enum LaunchNotTaken {
     ReservationElapsed,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum SnapshotKind {
+    CreateIntended,
+    CreateUnknown,
+    Reserved,
+    LaunchIntended,
+    Held,
+    BindIntended,
+    BindUnknown,
+    CleaningUp,
+    Opened,
+    Failed,
+    Settled,
+    Fenced,
+    Unknown,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum FactName {
+    Reservation,
+    StoredSecret,
+    CommittedPointer,
+    LaunchIntended,
+    LaunchStarted,
+    HarnessSessionId,
+    HeldConversation,
+    CleanupReason,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum CorruptStartRecord {
     #[error("the start envelope does not match the record scope")]
@@ -115,4 +144,24 @@ pub enum CorruptStartRecord {
     ReservedWithoutReservation,
     #[error("a reserved snapshot must carry the secret write intent")]
     ReservedWithoutSecretIntent,
+    #[error("an opened record must carry the stored secret for its committed issue")]
+    OpenedWithoutStoredSecret,
+    #[error("an opened record must carry evidence of a started launch")]
+    OpenedWithoutLaunch,
+    #[error("an opened record must carry a witnessed bind")]
+    OpenedWithoutWitnessedBind,
+    #[error("an opened record already has a settlement")]
+    OpenedWithSettlement,
+    #[error("a settled record must carry its exact settlement")]
+    SettledWithoutSettlement,
+    #[error("the end leg disagrees with the exact settlement")]
+    EndSettlementDisagrees,
+    #[error("an opened record must carry its exact Active proof")]
+    OpenedWithoutActiveProof,
+    #[error("the Active proof does not name the opened address")]
+    OpenedActiveProofAddressMismatch,
+    #[error("an opened record has an end leg")]
+    OpenedWithEndLeg,
+    #[error("the {phase:?} phase requires {fact:?}")]
+    PhaseFactMissing { phase: SnapshotKind, fact: FactName },
 }

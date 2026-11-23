@@ -1,8 +1,8 @@
 use workspace_ids::{CentralSessionId, SessionRef};
 
 use crate::{
-    BindDispute, CreateReplyKind, EnvelopeRefusal, FailureReason, IntendedOutcome, Recording,
-    SnapshotKind, StartFacts, StartScope, StopReason, UnknownReason,
+    BindDispute, CentralRefusalNow, CreateReplyKind, EnvelopeRefusal, FailureReason,
+    IntendedOutcome, Recording, SnapshotKind, StartFacts, StartScope, StopReason, UnknownReason,
 };
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -43,6 +43,10 @@ pub enum StartAnswer {
     RefusedNoCentral(CentralStanding),
     NotSentNow {
         why: NotSentNowReason,
+        facts: Box<StartFacts>,
+    },
+    RefusedByCentralNow {
+        reason: CentralRefusalNow,
         facts: Box<StartFacts>,
     },
     OutcomeNotKnown {

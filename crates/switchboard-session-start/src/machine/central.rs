@@ -1,16 +1,16 @@
 use fleet_identity_protocol::{
-    AbandonedSessionCause, BindFleetSessionReply, CreateSessionRefusal, EndFleetSessionReply,
-    EndedSessionCause, NewAbandonmentCause, NewEndSettlement, RouterEndCause, SessionSettlement,
+    BindFleetSessionReply, CreateSessionRefusal, EndFleetSessionReply, SessionSettlement,
 };
 
 use super::{AcceptedStart, NOT_EXPECTED, Outputs, Reduced, Stage, WindDown};
+use crate::facts::settlement_fact;
 use crate::{
-    BindContradiction, BindDispute, BindNotTaken, CleanupCall, CleanupOutcome, ConversationFact,
-    CreateAnswer, CreateContradiction, CreateReplyKind, EndContradiction, EndLeg, EndNotDue,
-    EndNotSent, EndReplyKind, Exposure, FailureReason, HoldLostDuring, LinkNotTaken, LinkResult,
-    NotSentNowReason, ObservedReservation, OpeningCommit, PointerFact, Reservation, SecretFact,
-    SecretIssue, SnapshotPhase, StartAsker, StartDirective, StartFault, StartNotification,
-    UnknownReason,
+    BindContradiction, BindDispute, BindNotTaken, CentralRefusalNow, CheckedActive, CleanupCall,
+    CleanupOutcome, ConversationFact, CreateAnswer, CreateContradiction, CreateReplyKind,
+    EndContradiction, EndLeg, EndNotApplied, EndNotDue, EndNotSent, EndReplyKind, Exposure,
+    FailureReason, HoldLostDuring, LinkNotTaken, LinkResult, NotSentNowReason, ObservedReservation,
+    OpeningCommit, PointerFact, Reservation, SecretFact, SecretIssue, SnapshotPhase, StartAsker,
+    StartDirective, StartFault, UnknownReason,
 };
 
 impl AcceptedStart {
@@ -33,6 +33,11 @@ impl AcceptedStart {
                 self.wind_down(WindDown::Fenced, outputs)
             }
             LinkResult::AnswerLost => self.create_unknown(Exposure::MayHaveReached, outputs),
+            LinkResult::RefusedBeforeApply(reason) => {
+                self.stage = Stage::CreateUnknown;
+                self.tell_refused_by_central(reason, outputs);
+                Ok(())
+            }
             LinkResult::ProvenNotWritten => self.fail(
                 FailureReason::CentralFault {
                     call: CleanupCall::Create,
@@ -67,11 +72,11 @@ impl AcceptedStart {
                     session_id: session_id.clone(),
                     reserved_until: reserved_until.clone(),
                 });
-                outputs.notify(StartNotification::DiscardPendingSecret(SecretIssue {
+                outputs.destroy_pending_secret(SecretIssue {
                     enrollment: self.envelope.scope().enrollment.clone(),
                     session_id: session_id.clone(),
                     attempt: self.attempt,
-                }));
+                });
             }
             return self.create_contradicted(Some(CreateReplyKind::from(&reply)), outputs);
         }
@@ -195,6 +200,9 @@ impl AcceptedStart {
             LinkResult::Answered(BindFleetSessionReply::Active { address }) => {
                 let expected = self.revision.ok_or(NOT_EXPECTED)?;
                 self.facts.stored.bind_exposure = Exposure::Witnessed;
+                self.facts.stored.active_proof = Some(CheckedActive {
+                    address: address.clone(),
+                });
                 let opening = OpeningCommit::new(&self.envelope, &self.facts, address)
                     .map_err(|_| NOT_EXPECTED)?;
                 self.stage = Stage::Opening(opening.association().clone());
@@ -206,6 +214,11 @@ impl AcceptedStart {
             LinkResult::AnswerLost => {
                 self.mark_bind_exposure();
                 self.save(SnapshotPhase::BindUnknown, outputs)
+            }
+            LinkResult::RefusedBeforeApply(reason) => {
+                self.stage = Stage::BindUnknown;
+                self.tell_refused_by_central(reason, outputs);
+                Ok(())
             }
             LinkResult::NotTaken(
                 why @ (BindNotTaken::LinkNotReady | BindNotTaken::SecretUnavailable),
@@ -221,7 +234,9 @@ impl AcceptedStart {
             }
             LinkResult::NotTaken(BindNotTaken::HoldLost) => {
                 self.facts.stored.conversation = ConversationFact::NotKnown;
-                let end = if self.facts.stored.bind_exposure == Exposure::None {
+                let end = if self.facts.bind_exposure == Exposure::None
+                    || (self.facts.active_proof.is_some() && self.facts.settlement.is_none())
+                {
                     EndLeg::Due
                 } else {
                     EndLeg::NotDue(EndNotDue::BindMayHaveReached)
@@ -326,7 +341,12 @@ impl AcceptedStart {
                 self.facts.stored.end = EndLeg::NotSent(EndNotSent::LinkNotReady)
             }
             LinkResult::AnswerLost => self.facts.stored.end = EndLeg::NotKnown,
-            LinkResult::ProvenNotWritten => self.facts.stored.end = EndLeg::NotApplied,
+            LinkResult::ProvenNotWritten => {
+                self.facts.stored.end = EndLeg::NotApplied(EndNotApplied::ProvenNotWritten)
+            }
+            LinkResult::RefusedBeforeApply(CentralRefusalNow::AuthorityLapsed) => {
+                self.facts.stored.end = EndLeg::NotApplied(EndNotApplied::AuthorityLapsed);
+            }
             LinkResult::Contradicted(evidence) => {
                 self.facts.stored.end = EndLeg::NotKnown;
                 let context = self.fault_context();
@@ -351,27 +371,5 @@ impl AcceptedStart {
             }
         }
         self.wind_down(destination, outputs)
-    }
-}
-
-fn settlement_fact(settlement: &NewEndSettlement) -> SessionSettlement {
-    match settlement {
-        NewEndSettlement::Abandoned {
-            cause: NewAbandonmentCause::GivenUp {},
-            time,
-        } => SessionSettlement::Abandoned {
-            cause: AbandonedSessionCause::GivenUp {},
-            time: time.clone(),
-        },
-        NewEndSettlement::Ended { cause, time } => {
-            let cause = match cause {
-                RouterEndCause::GivenUp {} => EndedSessionCause::GivenUp {},
-                RouterEndCause::EndedForGood {} => EndedSessionCause::EndedForGood {},
-            };
-            SessionSettlement::Ended {
-                cause,
-                time: time.clone(),
-            }
-        }
     }
 }
