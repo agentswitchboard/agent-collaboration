@@ -1,8 +1,9 @@
 //! Custody's user of the admitted message lane. The driver owns the socket.
 
 use central_link_client::{
-    AdmittedConnection, ImmediateRequestCommand, LinkLaneEvent, ReadyLinkLane,
-    RequestStatusCommand, UntouchedCommand, WelcomeClockAnchor, WriteBatchDisposition,
+    AdmittedConnection, CorrelatedReceiptResults, ImmediateRequestCommand, LinkLaneDisposition,
+    LinkLaneEvent, ReadyLinkLane, RequestStatusCommand, UntouchedCommand, WelcomeClockAnchor,
+    WriteBatchDisposition,
 };
 use central_link_protocol::{DeliveryMessage, FreshCorrelationId, RequestStatusQuery};
 use router_clock::{ClockInstant, RuntimeClock};
@@ -20,18 +21,19 @@ use workspace_model::{
 use crate::{
     custody_operator::CustodyOperatorEvent,
     custody_status::{
-        CustodyRequestStatus, MessageStatusError, local_status, message_query,
-        message_status_reply, remote_status, retained_delivery_notice, status_key,
+        CustodyRequestStatus, MessageStatusError, PreparedRequestStatus, local_status,
+        message_query, message_status_reply, remote_status, retained_delivery_notice, status_key,
     },
     custody_submission::{
-        Submission, SubmissionPayload, SubmissionRoute, SubmitRefusal, choose_submission_route,
-        prepare_immediate_request, settle_immediate_request, submit_to_outbox,
+        PreparedSubmission, Submission, SubmissionPayload, SubmissionRoute, SubmitRefusal,
+        choose_submission_route, prepare_immediate_request, settle_immediate_request,
+        submit_to_outbox,
     },
     flush_clock::{FlushJitter, shared_time_at, wake_for_mark},
-    outbox_dispatch::{BatchDispatchError, FlushReport, OutboxDispatcher},
+    outbox_dispatch::{BatchDispatchError, FlushReport, OutboxDispatcher, PreparedWriteBatch},
     outbox_flush::{FlushEffect, FlushEvent, FlushTransitionError, OutboxFlushState, transition},
     outbox_work::{OutboxWork, OutboxWorkError},
-    receipt_delivery::{ReceiptDeliveryError, ReceiptFrameOutcome},
+    receipt_delivery::{ReceiptDeliveryError, ReceiptFrame, ReceiptFrameOutcome},
     recipient_inbox::{InboxCustodyError, InboxOfferResult, RecipientInbox},
 };
 
@@ -40,6 +42,8 @@ const IMMEDIATE_COMMAND_WINDOW: Duration = Duration::from_secs(30);
 /// A failure produced while custody uses a ready link or its durable stores.
 #[derive(Debug, thiserror::Error)]
 pub enum CustodyLinkError {
+    #[error("the custody task closed before giving an answer")]
+    TaskClosed,
     #[error("the outbox is unavailable")]
     Outbox(#[from] OutboxWorkError),
     #[error("the minute scheduler rejected a transition")]
@@ -63,8 +67,8 @@ pub enum CustodyLinkObservation {
 
 /// Custody owns the stores, one minute scheduler and one consumer of the driver's admitted message lane.
 pub struct CustodyLink {
-    lane: Arc<dyn ReadyLinkLane>,
-    clock: Arc<dyn RuntimeClock>,
+    pub(crate) lane: Arc<dyn ReadyLinkLane>,
+    pub(crate) clock: Arc<dyn RuntimeClock>,
     jitter: Arc<dyn FlushJitter>,
     outbox: OutboxWork,
     inbox: RecipientInbox,
@@ -100,9 +104,24 @@ impl CustodyLink {
 
     /// Submit through the frozen seam. Only a message or thread post enters the outbox.
     pub async fn submit(&mut self, caller: Caller, payload: SubmissionPayload) -> Submission {
+        match self.prepare_submission(caller, payload).await {
+            PreparedSubmission::Complete(submission) => submission,
+            PreparedSubmission::Immediate(command) => {
+                let request = command.request.clone();
+                let disposition = self.lane.submit_immediate_request(command).await;
+                settle_immediate_request(&request, disposition)
+            }
+        }
+    }
+
+    pub(crate) async fn prepare_submission(
+        &mut self,
+        caller: Caller,
+        payload: SubmissionPayload,
+    ) -> PreparedSubmission {
         let route = match choose_submission_route(payload) {
             Ok(route) => route,
-            Err(refusal) => return Submission::Refused(refusal),
+            Err(refusal) => return PreparedSubmission::Complete(Submission::Refused(refusal)),
         };
         let admitted = self.admitted_connection();
         if let Some(connection) = admitted.as_ref() {
@@ -123,26 +142,26 @@ impl CustodyLink {
                         flush_at: receipt.flush_at,
                     });
                 }
-                submitted
+                PreparedSubmission::Complete(submitted)
             }
             SubmissionRoute::Immediate(payload) => {
                 let Some(admitted) = admitted else {
-                    return Submission::Refused(SubmitRefusal::CentralUnavailable);
+                    return PreparedSubmission::Complete(Submission::Refused(
+                        SubmitRefusal::CentralUnavailable,
+                    ));
                 };
                 let request =
                     match prepare_immediate_request(caller, payload, self.outbox.local_now_ms()) {
                         Ok(request) => request,
-                        Err(refusal) => return Submission::Refused(refusal),
+                        Err(refusal) => {
+                            return PreparedSubmission::Complete(Submission::Refused(refusal));
+                        }
                     };
-                let disposition = self
-                    .lane
-                    .submit_immediate_request(ImmediateRequestCommand {
-                        connection: admitted.connection,
-                        send_before: self.clock.monotonic_now().after(IMMEDIATE_COMMAND_WINDOW),
-                        request: Box::new(request.clone()),
-                    })
-                    .await;
-                settle_immediate_request(&request, disposition)
+                PreparedSubmission::Immediate(ImmediateRequestCommand {
+                    connection: admitted.connection,
+                    send_before: self.clock.monotonic_now().after(IMMEDIATE_COMMAND_WINDOW),
+                    request: Box::new(request),
+                })
             }
         }
     }
@@ -153,6 +172,20 @@ impl CustodyLink {
         caller: Caller,
         query: RequestStatusQuery,
     ) -> CustodyRequestStatus {
+        match self.prepare_request_status(caller, query).await {
+            PreparedRequestStatus::Complete(status) => status,
+            PreparedRequestStatus::Remote(command) => {
+                let correlation = command.correlation_id.clone();
+                remote_status(&correlation, self.lane.request_status(command).await)
+            }
+        }
+    }
+
+    pub(crate) async fn prepare_request_status(
+        &mut self,
+        caller: Caller,
+        query: RequestStatusQuery,
+    ) -> PreparedRequestStatus {
         let stored = self
             .outbox
             .outbox_storage()
@@ -161,28 +194,26 @@ impl CustodyLink {
         match stored {
             Ok(status) => {
                 if let Some(answer) = local_status(status) {
-                    return answer;
+                    return PreparedRequestStatus::Complete(answer);
                 }
             }
-            Err(_) => return CustodyRequestStatus::StatusUnavailable,
+            Err(_) => {
+                return PreparedRequestStatus::Complete(CustodyRequestStatus::StatusUnavailable);
+            }
         }
         let Some(admitted) = self.admitted_connection() else {
-            return CustodyRequestStatus::StatusUnavailable;
+            return PreparedRequestStatus::Complete(CustodyRequestStatus::StatusUnavailable);
         };
         let correlation_id = FreshCorrelationId::mint_at(self.outbox.local_now_ms())
             .wire_id()
             .clone();
-        let disposition = self
-            .lane
-            .request_status(RequestStatusCommand {
-                connection: admitted.connection,
-                send_before: self.clock.monotonic_now().after(IMMEDIATE_COMMAND_WINDOW),
-                correlation_id: correlation_id.clone(),
-                caller,
-                query,
-            })
-            .await;
-        remote_status(&correlation_id, disposition)
+        PreparedRequestStatus::Remote(RequestStatusCommand {
+            connection: admitted.connection,
+            send_before: self.clock.monotonic_now().after(IMMEDIATE_COMMAND_WINDOW),
+            correlation_id,
+            caller,
+            query,
+        })
     }
 
     /// Ask central for one sender-scoped message status without placing a write in the outbox.
@@ -238,8 +269,16 @@ impl CustodyLink {
 
     /// Drive one link event through the custody-owned inbox.
     pub async fn observe_next_event(&mut self) -> Result<CustodyLinkObservation, CustodyLinkError> {
-        let Some(event) = self.lane.next_event().await else {
-            self.apply_flush_event(FlushEvent::LinkLost)?;
+        let event = self.lane.next_event().await;
+        self.observe_event(event).await
+    }
+
+    pub(crate) async fn observe_event(
+        &mut self,
+        event: Option<LinkLaneEvent>,
+    ) -> Result<CustodyLinkObservation, CustodyLinkError> {
+        let Some(event) = event else {
+            self.observe_unavailable()?;
             return Ok(CustodyLinkObservation::DriverClosed);
         };
         match event {
@@ -308,7 +347,7 @@ impl CustodyLink {
     /// A wait for the shared minute selected by the scheduler. `None` means the lane is unavailable or idle.
     pub async fn refresh_flush_wake(&mut self) -> Result<Option<ClockInstant>, CustodyLinkError> {
         let Some(admitted) = self.admitted_connection() else {
-            self.apply_flush_event(FlushEvent::LinkLost)?;
+            self.observe_unavailable()?;
             return Ok(None);
         };
         self.last_clock_anchor = Some(admitted.clock_anchor);
@@ -353,38 +392,30 @@ impl CustodyLink {
 
     /// Flush on the current armed minute, with one lane submission and member-by-member settlement.
     pub async fn flush_writes(&mut self) -> Result<FlushReport, CustodyLinkError> {
+        let (mut report, batch) = self.prepare_write_turn().await?;
+        if let Some(batch) = batch {
+            let disposition = self.lane.submit_write_batch(batch.command()).await;
+            report.append(self.settle_write_turn(batch, disposition).await?);
+        }
+        Ok(report)
+    }
+
+    pub(crate) async fn prepare_write_turn(
+        &mut self,
+    ) -> Result<(FlushReport, Option<PreparedWriteBatch>), CustodyLinkError> {
         let Some(admitted) = self.admitted_connection() else {
-            self.apply_flush_event(FlushEvent::LinkLost)?;
-            return Ok(FlushReport::default());
+            self.observe_unavailable()?;
+            return Ok((FlushReport::default(), None));
         };
         self.last_clock_anchor = Some(admitted.clock_anchor);
         let now = shared_time_at(admitted.clock_anchor, self.clock.monotonic_now());
         let earliest_due = self.outbox.earliest_waiting_mark().await?;
         self.apply_flush_event(FlushEvent::LinkConnected { earliest_due })?;
-        let mark = self.apply_flush_event(FlushEvent::Tick { now, earliest_due })?;
-        let Some(mark) = mark else {
-            return Ok(FlushReport::default());
+        let Some(mark) = self.apply_flush_event(FlushEvent::Tick { now, earliest_due })? else {
+            return Ok((FlushReport::default(), None));
         };
 
-        let settled = self.send_mark(&admitted, mark).await;
-        let earliest_due = self.outbox.earliest_waiting_mark().await;
-        // Always release the scheduler slot, including when the store failed or the window closed.
-        self.apply_flush_event(FlushEvent::BatchEnded {
-            earliest_due: earliest_due.as_ref().ok().copied().flatten(),
-        })?;
-        let mut report = settled?;
-        if let Err(error) = earliest_due {
-            report.issues.push(BatchDispatchError::Work(error));
-        }
-        Ok(report)
-    }
-
-    async fn send_mark(
-        &mut self,
-        admitted: &AdmittedConnection,
-        mark: SyncTime,
-    ) -> Result<FlushReport, CustodyLinkError> {
-        let mut prepared = self
+        let prepared = self
             .dispatcher
             .prepare_at_mark(
                 &mut self.outbox,
@@ -392,56 +423,146 @@ impl CustodyLink {
                 admitted.clock_anchor,
                 mark,
             )
-            .await?;
+            .await;
+        let mut prepared = match prepared {
+            Ok(prepared) => prepared,
+            Err(error) => {
+                self.apply_flush_event(FlushEvent::BatchEnded { earliest_due })?;
+                return Err(error.into());
+            }
+        };
         let Some(batch) = prepared.batch else {
-            return Ok(prepared.report);
+            self.release_flush_slot(&mut prepared.report).await?;
+            return Ok((prepared.report, None));
         };
-        let command = batch.command();
-        let disposition = if self.admitted_connection().as_ref() != Some(admitted) {
-            WriteBatchDisposition::NotReached {
-                cause: UntouchedCommand::ConnectionUnavailable,
-            }
-        } else if !self.outbox.before_elapsed_fence(command.send_before) {
-            WriteBatchDisposition::NotReached {
-                cause: UntouchedCommand::SendWindowElapsed,
-            }
+        let cause = if self.admitted_connection().as_ref() != Some(&admitted) {
+            Some(UntouchedCommand::ConnectionUnavailable)
+        } else if !self
+            .outbox
+            .before_elapsed_fence(batch.command().send_before)
+        {
+            Some(UntouchedCommand::SendWindowElapsed)
         } else {
-            self.lane.submit_write_batch(command).await
+            None
         };
-        if let Some(settled) = self
+        if let Some(cause) = cause {
+            let settled = self
+                .settle_write_turn(batch, WriteBatchDisposition::NotReached { cause })
+                .await?;
+            prepared.report.append(settled);
+            return Ok((prepared.report, None));
+        }
+        Ok((prepared.report, Some(batch)))
+    }
+
+    pub(crate) async fn settle_write_turn(
+        &mut self,
+        batch: PreparedWriteBatch,
+        disposition: WriteBatchDisposition,
+    ) -> Result<FlushReport, CustodyLinkError> {
+        let Some(mut report) = self
             .dispatcher
             .settle_batch(&mut self.outbox, batch, disposition)
             .await
-        {
-            prepared.report.answered.extend(settled.answered);
-            prepared.report.ended.extend(settled.ended);
-            prepared.report.issues.extend(settled.issues);
+        else {
+            return Ok(FlushReport::default());
+        };
+        self.release_flush_slot(&mut report).await?;
+        Ok(report)
+    }
+
+    fn observe_unavailable(&mut self) -> Result<(), FlushTransitionError> {
+        if !self.schedule.batch_in_flight() {
+            self.apply_flush_event(FlushEvent::LinkLost)?;
         }
-        Ok(prepared.report)
+        Ok(())
+    }
+
+    async fn release_flush_slot(
+        &mut self,
+        report: &mut FlushReport,
+    ) -> Result<(), FlushTransitionError> {
+        let earliest_due = self.outbox.earliest_waiting_mark().await;
+        self.apply_flush_event(FlushEvent::BatchEnded {
+            earliest_due: earliest_due.as_ref().ok().copied().flatten(),
+        })?;
+        if let Err(error) = earliest_due {
+            report.issues.push(BatchDispatchError::Work(error));
+        }
+        Ok(())
     }
 
     /// Submit a frame of durable inbox receipts for the current connection.
     pub async fn flush_receipts(
         &mut self,
     ) -> Result<Option<ReceiptFrameOutcome>, CustodyLinkError> {
-        let Some(admitted) = self.admitted_connection() else {
-            return Ok(None);
-        };
-        let Some(frame) = self.inbox.prepare_receipts(&admitted.connection).await? else {
+        let Some(frame) = self.prepare_receipt_turn().await? else {
             return Ok(None);
         };
         let send_before = self.clock.monotonic_now().after(IMMEDIATE_COMMAND_WINDOW);
         let disposition = self.lane.submit_receipts(frame.command(send_before)).await;
+        Ok(Some(self.settle_receipt_turn(frame, disposition).await?))
+    }
+
+    pub(crate) async fn prepare_receipt_turn(
+        &mut self,
+    ) -> Result<Option<ReceiptFrame>, CustodyLinkError> {
+        let Some(admitted) = self.admitted_connection() else {
+            return Ok(None);
+        };
+        Ok(self.inbox.prepare_receipts(&admitted.connection).await?)
+    }
+
+    pub(crate) async fn settle_receipt_turn(
+        &mut self,
+        frame: ReceiptFrame,
+        disposition: LinkLaneDisposition<CorrelatedReceiptResults>,
+    ) -> Result<ReceiptFrameOutcome, CustodyLinkError> {
         let current = self.admitted_connection();
-        Ok(Some(
-            self.inbox
-                .settle_receipts(
-                    frame,
-                    current.as_ref().map(|admitted| &admitted.connection),
-                    disposition,
-                )
-                .await?,
-        ))
+        Ok(self
+            .inbox
+            .settle_receipts(
+                frame,
+                current.as_ref().map(|admitted| &admitted.connection),
+                disposition,
+            )
+            .await?)
+    }
+
+    pub(crate) fn next_inbox_minute(
+        &self,
+        last_mark: Option<SyncTime>,
+    ) -> Option<(SyncTime, ClockInstant)> {
+        let now = self.clock.monotonic_now();
+        if let Some(admitted) = self.admitted_connection() {
+            let mark = crate::flush_marks::earliest_open_mark(
+                shared_time_at(admitted.clock_anchor, now),
+                last_mark,
+            );
+            Some((
+                mark,
+                wake_for_mark(admitted.clock_anchor, mark, self.jitter.jitter_millis(mark)),
+            ))
+        } else if self.inbox.needs_local_retry() {
+            let local = self.outbox.local_now_ms();
+            let mark = crate::flush_marks::next_mark_after(SyncTime::from_unix_millis(local));
+            let remaining = mark.unix_millis().saturating_sub(local);
+            Some((
+                mark,
+                now.after(Duration::from_millis(u64::try_from(remaining).unwrap_or(0))),
+            ))
+        } else {
+            None
+        }
+    }
+
+    pub(crate) fn local_retry_mark(&self) -> ClockInstant {
+        let now = self.outbox.local_now_ms();
+        let next = crate::flush_marks::next_mark_after(SyncTime::from_unix_millis(now));
+        let millis = next.unix_millis().saturating_sub(now);
+        self.clock
+            .monotonic_now()
+            .after(Duration::from_millis(u64::try_from(millis).unwrap_or(0)))
     }
 
     /// Retry offers deferred by local lookup or storage at the next minute wake.

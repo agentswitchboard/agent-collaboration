@@ -1,6 +1,8 @@
 //! The tool-facing submission seam above the outbox.
 
-use central_link_client::{CorrelatedRequestReply, LaneFrameSizeError, LinkLaneDisposition};
+use central_link_client::{
+    CorrelatedRequestReply, ImmediateRequestCommand, LaneFrameSizeError, LinkLaneDisposition,
+};
 use central_link_protocol::{
     FreshCorrelationId, LinkRequest, ProtocolError, ReplyPayload, RequestPayload, RequestScope,
 };
@@ -74,6 +76,11 @@ pub(crate) enum SubmissionRoute {
         payload: OutboxQueuedWrite,
     },
     Immediate(RequestPayload),
+}
+
+pub(crate) enum PreparedSubmission {
+    Complete(Submission),
+    Immediate(ImmediateRequestCommand),
 }
 
 pub(crate) fn choose_submission_route(

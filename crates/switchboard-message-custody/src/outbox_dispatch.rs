@@ -61,6 +61,14 @@ pub struct FlushReport {
     pub issues: Vec<BatchDispatchError>,
 }
 
+impl FlushReport {
+    pub(crate) fn append(&mut self, other: Self) {
+        self.answered.extend(other.answered);
+        self.ended.extend(other.ended);
+        self.issues.extend(other.issues);
+    }
+}
+
 /// The command and claim token prepared by the one batch dispatcher.
 #[derive(Clone, Debug)]
 pub struct PreparedWriteBatch {

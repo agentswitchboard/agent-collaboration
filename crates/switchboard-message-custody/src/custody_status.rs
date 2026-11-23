@@ -1,6 +1,6 @@
 //! Caller-scoped status above the Mac store and the central request replay read.
 
-use central_link_client::{CorrelatedStatusReply, LinkLaneDisposition};
+use central_link_client::{CorrelatedStatusReply, LinkLaneDisposition, RequestStatusCommand};
 use central_link_protocol::{
     CorrelationId, ReplyPayload, RequestScope, RequestStatusAnswer, RequestStatusQuery,
 };
@@ -35,6 +35,11 @@ pub enum CustodyRequestStatus {
 pub enum MessageStatusError {
     #[error("message status is unavailable")]
     StatusUnavailable,
+}
+
+pub(crate) enum PreparedRequestStatus {
+    Complete(CustodyRequestStatus),
+    Remote(RequestStatusCommand),
 }
 
 pub(crate) fn status_key(query: &RequestStatusQuery) -> OutboxRequestKey {
