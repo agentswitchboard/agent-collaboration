@@ -3,13 +3,15 @@
 //! API independently of link scheduling.
 #[cfg(test)]
 use crate::outbox_store::StoredOutboxWrite;
-use crate::outbox_store::{ClaimedBatch, MacOutbox, NewOutboxItem, OutboxInsert, OutboxStoreError};
+use crate::outbox_store::{
+    ClaimedBatch, MacOutbox, NewOutboxItem, OutboxInsert, OutboxStoreError, UnansweredOutboxClaim,
+};
 use crate::{
     EndedWrite, OutboxRequestStatus, OutboxWriteOutcome, OutgoingWrite, PendingWrite, StoreScan,
     StoredSenderOutcome,
 };
 use crate::{MachineLocalStore, OutboxRequestKey};
-use std::{future::Future, pin::Pin};
+use std::{collections::BTreeSet, future::Future, pin::Pin};
 use workspace_ids::RequestId;
 use workspace_model::Caller;
 
@@ -60,6 +62,12 @@ pub trait OutboxStorage: Send {
     ) -> OutboxFuture<'_, StoreScan<ClaimedBatch>>;
     /// Ends every waiting write past its deadline.
     fn end_overdue(&mut self, now: i64) -> OutboxFuture<'_, StoreScan<Vec<EndedWrite>>>;
+    /// Ends overdue claims except those with a live batch ticket.
+    fn end_overdue_orphans<'call>(
+        &'call mut self,
+        now_ms: i64,
+        live_request_ids: &'call BTreeSet<RequestId>,
+    ) -> OutboxFuture<'call, StoreScan<Vec<EndedWrite>>>;
     /// Recover the original acceptance and retain the typed late delivery fact.
     /// True means the caller's pending inbox handoff can notify its sink.
     fn record_sender_delivery<'call>(
@@ -73,7 +81,8 @@ pub trait OutboxStorage: Send {
         caller: &'call Caller,
         request: &'call RequestId,
     ) -> OutboxFuture<'call, Option<StoredSenderOutcome>>;
-    fn sent_without_answer(&mut self) -> OutboxFuture<'_, StoreScan<Vec<RequestId>>>;
+    /// Operator read of the durable claims custody must reconcile.
+    fn sent_without_answer(&mut self) -> OutboxFuture<'_, StoreScan<Vec<UnansweredOutboxClaim>>>;
     #[cfg(test)]
     fn mark_sent<'call>(
         &'call mut self,
@@ -192,6 +201,17 @@ impl OutboxStorage for MachineLocalOutbox {
     fn end_overdue(&mut self, now: i64) -> OutboxFuture<'_, StoreScan<Vec<EndedWrite>>> {
         Box::pin(async move { MacOutbox::new(&mut self.store).end_overdue(now).await })
     }
+    fn end_overdue_orphans<'call>(
+        &'call mut self,
+        now_ms: i64,
+        live_request_ids: &'call BTreeSet<RequestId>,
+    ) -> OutboxFuture<'call, StoreScan<Vec<EndedWrite>>> {
+        Box::pin(async move {
+            MacOutbox::new(&mut self.store)
+                .end_overdue_orphans(now_ms, live_request_ids)
+                .await
+        })
+    }
     fn record_sender_delivery<'call>(
         &'call mut self,
         caller: &'call Caller,
@@ -215,7 +235,7 @@ impl OutboxStorage for MachineLocalOutbox {
                 .await
         })
     }
-    fn sent_without_answer(&mut self) -> OutboxFuture<'_, StoreScan<Vec<RequestId>>> {
+    fn sent_without_answer(&mut self) -> OutboxFuture<'_, StoreScan<Vec<UnansweredOutboxClaim>>> {
         Box::pin(async move { MacOutbox::new(&mut self.store).sent_without_answer().await })
     }
     #[cfg(test)]

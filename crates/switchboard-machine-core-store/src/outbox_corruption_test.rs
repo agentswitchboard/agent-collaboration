@@ -200,19 +200,45 @@ async fn scheduling_uses_healthy_marks_and_deadlines_despite_damaged_rows() {
 }
 
 #[tokio::test]
-async fn orphan_recovery_returns_healthy_ids_around_corrupt_claims() {
+async fn orphan_recovery_and_expiry_keep_healthy_claims_around_corrupt_rows() {
     let root = tempfile::tempdir().unwrap();
     let mut database = open(&root).await;
     let writes = plant_interleaved_writes(&mut database, "sent").await;
-    let recovery = MacOutbox::new(&mut database)
-        .sent_without_answer()
+    let damaged = damaged_rows(&mut database).await;
+    let mut outbox = MacOutbox::new(&mut database);
+    let recovery = outbox.sent_without_answer().await.unwrap();
+    assert_eq!(
+        recovery
+            .healthy
+            .iter()
+            .map(|claim| &claim.key.request_id)
+            .collect::<Vec<_>>(),
+        [1, 3, 5].map(|index| &writes[index].request)
+    );
+    for (claim, expected) in recovery
+        .healthy
+        .iter()
+        .zip([1, 3, 5].map(|index| &writes[index]))
+    {
+        assert_eq!(claim.payload, expected.payload);
+        assert_eq!(claim.deadline_ms, DEADLINE);
+    }
+    assert_corrupt_deadlines(recovery.corrupt_rows, &writes);
+
+    let expired = outbox
+        .end_overdue_orphans(DEADLINE, &std::collections::BTreeSet::new())
         .await
         .unwrap();
     assert_eq!(
-        recovery.healthy,
-        [1, 3, 5].map(|index| writes[index].request.clone())
+        expired
+            .healthy
+            .iter()
+            .map(|write| &write.request_id)
+            .collect::<Vec<_>>(),
+        [1, 3, 5].map(|index| &writes[index].request)
     );
-    assert_corrupt_deadlines(recovery.corrupt_rows, &writes);
+    assert_corrupt_deadlines(expired.corrupt_rows, &writes);
+    assert_eq!(damaged_rows(&mut database).await, damaged);
 }
 
 #[tokio::test]
