@@ -208,11 +208,31 @@ where
         organization: OrganizationId,
         invalidation: fleet_contracts::EnrollmentInvalidation,
         statements: Vec<central_storage::GuardedStatement>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), StoreFailure>> + Send + '_>> {
-        Box::pin(
-            self.approvals
-                .end_enrollment(organization, invalidation, statements),
-        )
+    ) -> Pin<
+        Box<
+            dyn Future<
+                    Output = Result<
+                        Option<collaboration_central_core::LinkCallCompletion>,
+                        StoreFailure,
+                    >,
+                > + Send
+                + '_,
+        >,
+    > {
+        let delivery = self.approval_delivery();
+        Box::pin(async move {
+            let settled_mac_calls = self
+                .approvals
+                .end_enrollment(organization, invalidation, statements)
+                .await?;
+            Ok(delivery.after_reply(
+                fleet_approvals::CommittedApprovalEffects {
+                    settled_mac_calls,
+                    ..Default::default()
+                },
+                None,
+            ))
+        })
     }
 
     fn approval_ending_is_owed<'call>(

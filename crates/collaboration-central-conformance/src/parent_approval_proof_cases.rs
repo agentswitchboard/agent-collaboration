@@ -3,8 +3,8 @@ use approval_request_protocol::{
     Answer, ApprovalDestination, ApprovalNoticeReply, ApprovalRequestId, CallOffer,
     DecideApprovalAsSessionReply, ListApprovalsForSessionReply, ListApprovalsForSessionRequest,
     OptionLifetime, PassOnApprovalReply, PassOnApprovalRequest, ProviderAnswer, QuestionAnswer,
-    QuestionAnswerValue, QuestionFieldAnswer, QuestionFieldId, Raise, RetainedOptionStorage,
-    SessionCallDecision, SessionCallOperation,
+    QuestionAnswerValue, QuestionFieldAnswer, QuestionFieldId, Raise, ReadApprovalForSessionReply,
+    RetainedOptionStorage, SessionCallDecision, SessionCallOperation,
 };
 use central_link_protocol::{
     LinkCallRefusal, TypedCallResult,

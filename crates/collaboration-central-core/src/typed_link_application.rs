@@ -97,7 +97,7 @@ pub trait CentralLinkDispatcher: Send + Sync {
         organization: fleet_identity_protocol::OrganizationId,
         invalidation: fleet_contracts::EnrollmentInvalidation,
         statements: Vec<central_storage::GuardedStatement>,
-    ) -> Pin<Box<dyn Future<Output = Result<(), StoreFailure>> + Send + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<Option<LinkCallCompletion>, StoreFailure>> + Send + '_>>;
 
     fn recover_approval_notices(&self, machine: ValidatedMachineConnection) -> LinkCallCompletion;
 
