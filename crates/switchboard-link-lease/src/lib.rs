@@ -8,7 +8,10 @@ use switchboard_central_link::{
     lease_source::{LeaseFailure, LeaseFuture, LeaseSource},
     link_policy::LeaseVersion,
 };
-use switchboard_machine_enrollment::{CredentialStore, EnrollmentKey, RefreshOwner, RefreshSource};
+use switchboard_machine_enrollment::{
+    CredentialStore, EnrollmentEnd as StoredEnding, EnrollmentKey, RefreshOwner, RefreshSource,
+    RetirementFence, RetirementRequest,
+};
 use tokio::{
     sync::{Mutex as AsyncMutex, mpsc, oneshot, watch},
     task::JoinHandle,
@@ -21,15 +24,9 @@ use lease_worker::{LeaseCommand, run};
 /// Lease adapter started and closed by its composition owner.
 pub struct EnrollmentLeaseSource {
     commands: mpsc::UnboundedSender<LeaseCommand>,
-    state: watch::Sender<Admission>,
+    retirements: RetirementFence,
     closing: watch::Sender<bool>,
     completion: AsyncMutex<Completion>,
-}
-
-#[derive(Default)]
-struct Admission {
-    closed: bool,
-    retirements: Vec<EnrollmentKey>,
 }
 
 /// Operations that did not finish on the closing adapter.
@@ -68,11 +65,11 @@ impl EnrollmentLeaseSource {
     {
         let (commands, work) = mpsc::unbounded_channel();
         let (closing, stopped) = watch::channel(false);
-        let (state, _) = watch::channel(Admission::default());
-        let task = tokio::spawn(run(owner, clock, state.clone(), work, stopped));
+        let retirements = owner.retirement_fence();
+        let task = tokio::spawn(run(owner, clock, work, stopped));
         Self {
             commands,
-            state,
+            retirements,
             closing,
             completion: AsyncMutex::new(Completion::Running(task)),
         }
@@ -80,7 +77,6 @@ impl EnrollmentLeaseSource {
 
     /// Stops admission, drains started work within the injected budget and reports any remainder.
     pub async fn close(&self) -> Result<UnfinishedLeaseWork, LeaseWorkerStopped> {
-        self.state.send_modify(|state| state.closed = true);
         self.closing.send_replace(true);
         let mut completion = self.completion.lock().await;
         match &mut *completion {
@@ -103,11 +99,11 @@ impl LeaseSource<EnrollmentKey> for EnrollmentLeaseSource {
         Box::pin(async move {
             let (reply, result) = oneshot::channel();
             {
-                let state = self.state.borrow();
-                if state.retirements.contains(key) {
+                let closing = self.closing.borrow();
+                if self.retirements.is_fenced(key) {
                     return Err(LeaseFailure::EnrollmentEnded);
                 }
-                if state.closed {
+                if *closing {
                     return Err(LeaseFailure::Fault);
                 }
                 self.commands
@@ -119,8 +115,7 @@ impl LeaseSource<EnrollmentKey> for EnrollmentLeaseSource {
                     .map_err(|_| LeaseFailure::Fault)?;
             }
             let result = result.await.map_err(|_| LeaseFailure::Fault)?;
-            let state = self.state.borrow();
-            if state.retirements.contains(key) {
+            if self.retirements.is_fenced(key) {
                 return Err(LeaseFailure::EnrollmentEnded);
             }
             result
@@ -128,23 +123,23 @@ impl LeaseSource<EnrollmentKey> for EnrollmentLeaseSource {
     }
 
     fn end(&self, key: &EnrollmentKey, cause: EnrollmentEnd) {
-        self.state.send_if_modified(|state| {
-            if state.closed || state.retirements.contains(key) {
-                return false;
+        let closing = self.closing.borrow();
+        if *closing {
+            return;
+        }
+        let request = match cause {
+            EnrollmentEnd::LeaseRefused => RetirementRequest::Refusal,
+            EnrollmentEnd::Revoked => RetirementRequest::Definitive(StoredEnding::Revoked),
+            EnrollmentEnd::Inactive => RetirementRequest::Definitive(StoredEnding::Inactive),
+            EnrollmentEnd::ConnectionEnrollmentEnded => {
+                RetirementRequest::Definitive(StoredEnding::EndedByCentral)
             }
-            if self
+        };
+        if self.retirements.request(key, request) {
+            let _ = self
                 .commands
-                .send(LeaseCommand::Retire {
-                    key: key.clone(),
-                    cause,
-                })
-                .is_err()
-            {
-                return false;
-            }
-            state.retirements.push(key.clone());
-            true
-        });
+                .send(LeaseCommand::Retire { key: key.clone() });
+        }
     }
 }
 

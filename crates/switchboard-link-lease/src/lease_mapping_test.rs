@@ -1,5 +1,7 @@
 use super::*;
-use switchboard_machine_enrollment::{CredentialStoreError, LeaseConfigurationFault};
+use switchboard_machine_enrollment::{
+    CredentialStoreError, EnrollmentEnd, LeaseConfigurationFault,
+};
 
 #[test]
 fn lease_failures_project_the_complete_owner_contract() {

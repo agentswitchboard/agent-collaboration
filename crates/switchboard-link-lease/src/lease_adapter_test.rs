@@ -1,4 +1,4 @@
-use std::{future::poll_fn, task::Poll, time::Duration};
+use std::{future::poll_fn, sync::Mutex, task::Poll, time::Duration};
 
 use router_clock::{ClockInstant, ManualClock};
 use switchboard_machine_enrollment::{
@@ -15,18 +15,52 @@ pub(crate) struct RowStore {
     pub(crate) row: watch::Sender<StoredEnrollment>,
     pub(crate) fail_end: watch::Sender<bool>,
     pub(crate) fail_metadata: watch::Sender<bool>,
+    credential_read: ReadCheckpoint,
+    metadata_read: ReadCheckpoint,
+}
+
+type ResumeRead = Box<dyn FnOnce() + Send>;
+
+struct HeldRead {
+    entered: oneshot::Sender<()>,
+    resume: oneshot::Receiver<ResumeRead>,
+}
+
+#[derive(Clone, Default)]
+struct ReadCheckpoint(Arc<Mutex<Option<HeldRead>>>);
+
+impl ReadCheckpoint {
+    fn hold_next(&self) -> (oneshot::Receiver<()>, oneshot::Sender<ResumeRead>) {
+        let (entered, observed) = oneshot::channel();
+        let (release, resume) = oneshot::channel();
+        let previous = self.0.lock().unwrap().replace(HeldRead { entered, resume });
+        assert!(previous.is_none());
+        (observed, release)
+    }
+
+    async fn before_reply(&self) {
+        let held = self.0.lock().unwrap().take();
+        if let Some(held) = held {
+            held.entered.send(()).unwrap();
+            held.resume.await.expect("test resumes the read")();
+        }
+    }
 }
 
 impl CredentialStore for RowStore {
     async fn read(&self) -> Result<StoredEnrollment, CredentialStoreError> {
-        Ok(self.row.borrow().clone())
+        let snapshot = self.row.borrow().clone();
+        self.credential_read.before_reply().await;
+        Ok(snapshot)
     }
 
     async fn read_metadata(&self) -> Result<EnrollmentMetadata, CredentialStoreError> {
         if *self.fail_metadata.borrow() {
             return Err(CredentialStoreError::Read);
         }
-        Ok(self.row.borrow().clone().into())
+        let snapshot = self.row.borrow().clone().into();
+        self.metadata_read.before_reply().await;
+        Ok(snapshot)
     }
 
     fn durability(&self) -> StoreDurability {
@@ -133,6 +167,8 @@ impl Fixture {
             row: watch::channel(StoredEnrollment::Active(binding.clone())).0,
             fail_end: watch::channel(false).0,
             fail_metadata: watch::channel(false).0,
+            credential_read: ReadCheckpoint::default(),
+            metadata_read: ReadCheckpoint::default(),
         };
         let clock = Arc::new(ManualClock::new(Default::default()));
         let (reached, refreshes) = mpsc::unbounded_channel();
@@ -277,7 +313,6 @@ async fn closing_reports_retirements_whose_final_attempt_cannot_write() {
 async fn a_stale_refusal_releases_the_fence_for_the_same_keys_newer_generation() {
     let mut fixture = Fixture::new();
     let key = fixture.binding.key();
-    let mut retirement = fixture.source.state.subscribe();
     fixture.store.fail_end.send_replace(true);
 
     let first = start_acquire(&fixture.source, &key).await;
@@ -303,12 +338,14 @@ async fn a_stale_refusal_releases_the_fence_for_the_same_keys_newer_generation()
     let mut row = fixture.store.row.subscribe();
     tokio::select! {
         biased;
-        changed = retirement.wait_for(|state| state.retirements.is_empty()) => {
-            changed.expect("adapter drops the stale fence");
-        }
         _ = row.wait_for(|saved| matches!(saved, StoredEnrollment::Ended { .. })) => {
             panic!("the stale refusal retired a newer active generation");
         }
+        () = async {
+            while fixture.source.retirements.is_fenced(&key) {
+                tokio::task::yield_now().await;
+            }
+        } => {}
     }
 
     let second = start_acquire(&fixture.source, &key).await;
@@ -361,10 +398,7 @@ async fn a_queued_acquire_does_not_start_refresh_after_the_key_is_fenced() {
             reply,
         })
         .unwrap();
-    fixture
-        .source
-        .state
-        .send_modify(|state| state.retirements.push(key));
+    fixture.source.end(&key, EnrollmentEnd::Revoked);
 
     tokio::select! {
         result = result => assert_eq!(result.unwrap(), Err(LeaseFailure::EnrollmentEnded)),
@@ -373,5 +407,87 @@ async fn a_queued_acquire_does_not_start_refresh_after_the_key_is_fenced() {
     assert_eq!(
         fixture.source.close().await.unwrap(),
         UnfinishedLeaseWork::default()
+    );
+}
+
+#[tokio::test]
+async fn a_dispatched_acquire_cannot_start_sign_in_when_its_held_read_returns_after_end() {
+    let mut fixture = Fixture::new();
+    let key = fixture.binding.key();
+    let source = Arc::new(fixture.source);
+    let (reading, release_read) = fixture.store.credential_read.hold_next();
+    let acquire = start_acquire(&source, &key).await;
+    reading.await.unwrap();
+
+    let source_at_read_return = source.clone();
+    let ending_key = key.clone();
+    assert!(
+        release_read
+            .send(Box::new(move || {
+                source_at_read_return.end(&ending_key, EnrollmentEnd::Revoked);
+            }))
+            .is_ok()
+    );
+
+    tokio::select! {
+        result = acquire => assert_eq!(result, Err(LeaseFailure::EnrollmentEnded)),
+        request = fixture.refreshes.recv() => panic!("sign-in started after end: {}", request.is_some()),
+    }
+    assert_eq!(
+        source.close().await.unwrap(),
+        UnfinishedLeaseWork::default()
+    );
+}
+
+#[tokio::test]
+async fn a_definitive_end_waiting_behind_a_stale_refusal_keeps_the_key_fenced() {
+    let mut fixture = Fixture::new();
+    let key = fixture.binding.key();
+    fixture.store.fail_end.send_replace(true);
+    let first = start_acquire(&fixture.source, &key).await;
+    fixture
+        .refreshes
+        .recv()
+        .await
+        .unwrap()
+        .send(RefreshAnswer::Refused {
+            reason: InvalidReason::GrantRefused,
+        })
+        .unwrap();
+    assert_eq!(first.await, Err(LeaseFailure::EnrollmentEnded));
+
+    let mut successor = fixture.binding.clone();
+    successor.generation = successor.generation.successor().unwrap();
+    fixture
+        .store
+        .row
+        .send_replace(StoredEnrollment::Active(successor));
+    fixture.store.fail_end.send_replace(false);
+
+    let (checking_staleness, release_read) = fixture.store.metadata_read.hold_next();
+    fixture.source.end(&key, EnrollmentEnd::LeaseRefused);
+    checking_staleness.await.unwrap();
+    fixture.source.end(&key, EnrollmentEnd::Revoked);
+    assert_eq!(
+        fixture.source.acquire(&key, None).await,
+        Err(LeaseFailure::EnrollmentEnded)
+    );
+    assert!(release_read.send(Box::new(|| {})).is_ok());
+
+    assert_eq!(
+        fixture.source.close().await.unwrap(),
+        UnfinishedLeaseWork::default()
+    );
+    assert_eq!(
+        fixture.store.row.borrow().clone(),
+        StoredEnrollment::Ended {
+            key: key.clone(),
+            generation: BindingGeneration::from_persisted(3).unwrap(),
+            why: StoredEnding::Revoked,
+        }
+    );
+    assert_eq!(
+        fixture.source.acquire(&key, None).await,
+        Err(LeaseFailure::EnrollmentEnded)
     );
 }

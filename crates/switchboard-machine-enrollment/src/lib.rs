@@ -11,6 +11,7 @@ mod enrollment_identity;
 mod enrollment_outcome;
 mod refresh_owner;
 mod response_object;
+mod retirement_fence;
 mod sign_in_answers;
 mod sign_in_client;
 
@@ -31,6 +32,7 @@ pub use refresh_owner::{
     AccessLease, AccessRequest, LeaseConfigurationFault, LeaseUnavailable, RefreshOwner,
     RefreshSource,
 };
+pub use retirement_fence::{RetirementFence, RetirementRequest};
 pub use sign_in_answers::{
     DeviceAuthorization, DeviceInstructions, PollAnswer, RefreshAnswer, SignInFailure, TokenGrant,
     decode_device_authorization, decode_poll, decode_refresh, decode_start_failure,

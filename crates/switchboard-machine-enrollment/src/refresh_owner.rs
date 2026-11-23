@@ -11,7 +11,8 @@ use tokio::sync::Mutex;
 use crate::{
     BindingGeneration, ConditionalWrite, CredentialStore, CredentialStoreError, EnrollmentBinding,
     EnrollmentContext, EnrollmentEnd, EnrollmentKey, EnrollmentMetadata, InvalidReason,
-    RefreshAnswer, RefreshCredential, SecretValue, StoredEnrollment, TokenGrant,
+    RefreshAnswer, RefreshCredential, RetirementFence, RetirementRequest, SecretValue,
+    StoredEnrollment, TokenGrant, retirement_fence::RetirementAttempt,
 };
 
 const WRITE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
@@ -115,18 +116,12 @@ enum RefreshCompletion {
     Recheck,
 }
 
-struct LocalEnding {
-    key: EnrollmentKey,
-    through_generation: Option<BindingGeneration>,
-    why: EnrollmentEnd,
-}
-
 #[derive(Default)]
 struct RefreshState {
     flight: Option<RefreshFlight>,
     lease: Option<AccessLease>,
     backoff: Option<(BindingGeneration, ClockInstant)>,
-    endings: Vec<LocalEnding>,
+    retirements: RetirementFence,
     newest_observed: BindingGeneration,
     fault: Option<(BindingGeneration, LeaseConfigurationFault)>,
 }
@@ -137,7 +132,7 @@ impl RefreshState {
         binding: &EnrollmentBinding,
         request: AccessRequest,
     ) -> Result<(), LeaseUnavailable> {
-        if let Some(why) = self.ending(&binding.key(), binding.generation) {
+        if let Some(why) = self.retirements.ending(&binding.key()) {
             return Err(LeaseUnavailable::Ended { why });
         }
         if let AccessRequest::NewerThan(rejected) = request
@@ -146,32 +141,6 @@ impl RefreshState {
             return Err(LeaseConfigurationFault::FutureGeneration.into());
         }
         Ok(())
-    }
-
-    fn ending(&self, key: &EnrollmentKey, generation: BindingGeneration) -> Option<EnrollmentEnd> {
-        self.endings
-            .iter()
-            .find(|ending| {
-                &ending.key == key
-                    && ending
-                        .through_generation
-                        .is_none_or(|last| generation <= last)
-            })
-            .map(|ending| ending.why)
-    }
-
-    fn fence(&mut self, key: EnrollmentKey, why: EnrollmentEnd) {
-        if !self
-            .endings
-            .iter()
-            .any(|ending| ending.key == key && ending.through_generation.is_none())
-        {
-            self.endings.push(LocalEnding {
-                key,
-                through_generation: None,
-                why,
-            });
-        }
     }
 
     fn observe(&mut self, generation: BindingGeneration) -> bool {
@@ -188,6 +157,7 @@ struct RefreshInputs<Store, Source> {
     source: Source,
     clock: Arc<dyn RuntimeClock + Send + Sync>,
     context: EnrollmentContext,
+    retirements: RetirementFence,
 }
 
 /// Composition makes one refresh owner per configured enrollment scope.
@@ -207,15 +177,25 @@ where
         clock: Arc<dyn RuntimeClock + Send + Sync>,
         context: EnrollmentContext,
     ) -> Self {
+        let retirements = RetirementFence::default();
         Self {
             inputs: Arc::new(RefreshInputs {
                 store,
                 source,
                 clock,
                 context,
+                retirements: retirements.clone(),
             }),
-            state: Arc::new(Mutex::new(RefreshState::default())),
+            state: Arc::new(Mutex::new(RefreshState {
+                retirements,
+                ..RefreshState::default()
+            })),
         }
+    }
+
+    /// Gives composition synchronous retirement admission without access to refresh work.
+    pub fn retirement_fence(&self) -> RetirementFence {
+        self.inputs.retirements.clone()
     }
 
     /// Requests a lease for one exact enrollment key.
@@ -253,7 +233,7 @@ where
                     && request.accepts(generation)
                     && now < lease.usable_until
                 {
-                    return Ok(lease.clone());
+                    return self.deliver(lease.clone());
                 }
                 if let Some((waiting, until)) = state.backoff
                     && waiting == generation
@@ -336,7 +316,7 @@ where
                     if now < lease.usable_until {
                         state.lease = Some(lease.clone());
                         if request.accepts(lease.binding_generation) {
-                            return Ok(lease);
+                            return self.deliver(lease);
                         }
                     }
                 }
@@ -356,91 +336,43 @@ where
         }
     }
 
+    fn deliver(&self, lease: AccessLease) -> LeaseResult {
+        if let Some(why) = self.inputs.retirements.ending(&lease.key) {
+            return Err(LeaseUnavailable::Ended { why });
+        }
+        Ok(lease)
+    }
+
     pub async fn end_enrollment(
         &self,
         key: &EnrollmentKey,
         why: EnrollmentEnd,
     ) -> Result<ConditionalWrite, CredentialStoreError> {
-        let started = self.inputs.clock.monotonic_now();
-        let deadline = started.after(ENDING_CLEANUP_LIMIT);
-        {
-            let mut state = timeout_at(self.inputs.clock.as_ref(), deadline, self.state.lock())
-                .await
-                .map_err(|_| CredentialStoreError::CleanupTimedOut)?;
-            state.fence(key.clone(), why);
-        }
-        loop {
-            let generation = match self.inputs.read_for_cleanup(deadline).await? {
-                EnrollmentMetadata::Active {
-                    key: active,
-                    generation,
-                    ..
-                } if &active == key => generation,
-                EnrollmentMetadata::Ended {
-                    key: ended,
-                    why: recorded,
-                    ..
-                } if &ended == key && recorded == why => return Ok(ConditionalWrite::Applied),
-                _ => return Ok(ConditionalWrite::Superseded),
-            };
-            {
-                let mut state = timeout_at(self.inputs.clock.as_ref(), deadline, self.state.lock())
-                    .await
-                    .map_err(|_| CredentialStoreError::CleanupTimedOut)?;
-                if !state.observe(generation) {
-                    continue;
-                }
-            }
-            match self
-                .inputs
-                .end_binding(key, generation, why, started)
-                .await?
-            {
-                ConditionalWrite::Applied => return Ok(ConditionalWrite::Applied),
-                // A same-identity rotation may have advanced the version. Re-check within
-                // the original end budget. Never apply an old ending to a new identity.
-                ConditionalWrite::Superseded => {}
-            }
-        }
+        self.inputs
+            .retirements
+            .request(key, RetirementRequest::Definitive(why));
+        self.finish_retirement(key).await
     }
 
-    /// Completes an ending already fenced by a refusal, within that fence's generation.
-    pub async fn finish_fenced_ending(
+    /// Processes the owner's previously admitted retirement for this exact key.
+    pub async fn finish_retirement(
         &self,
         key: &EnrollmentKey,
     ) -> Result<ConditionalWrite, CredentialStoreError> {
-        let started = self.inputs.clock.monotonic_now();
-        let deadline = started.after(ENDING_CLEANUP_LIMIT);
-        loop {
-            let generation = match self.inputs.read_for_cleanup(deadline).await? {
-                EnrollmentMetadata::Ended { key: ended, .. } if &ended == key => {
-                    return Ok(ConditionalWrite::Applied);
-                }
-                EnrollmentMetadata::Active {
-                    key: active,
-                    generation,
-                    ..
-                } if &active == key => generation,
-                _ => return Ok(ConditionalWrite::Superseded),
-            };
-            let why = {
-                let state = timeout_at(self.inputs.clock.as_ref(), deadline, self.state.lock())
-                    .await
-                    .map_err(|_| CredentialStoreError::CleanupTimedOut)?;
-                let Some(why) = state.ending(key, generation) else {
-                    return Ok(ConditionalWrite::Superseded);
-                };
-                why
-            };
-            if self
+        while let Some(attempt) = self.inputs.retirements.attempt(key) {
+            let started = self.inputs.clock.monotonic_now();
+            let result = self
                 .inputs
-                .end_binding(key, generation, why, started)
-                .await?
-                == ConditionalWrite::Applied
+                .finish_retirement_attempt(key, &attempt, started, &self.state)
+                .await?;
+            if let Some(current) = self.inputs.retirements.attempt(key)
+                && !Arc::ptr_eq(&attempt, &current)
             {
-                return Ok(ConditionalWrite::Applied);
+                continue;
             }
+            return Ok(result);
         }
+        Ok(ConditionalWrite::Superseded)
     }
 
     fn new_refresh(&self, binding: EnrollmentBinding, next: BindingGeneration) -> RefreshFuture {
@@ -488,6 +420,10 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
         state: Weak<Mutex<RefreshState>>,
     ) -> RefreshCompletion {
         let dispatched = self.clock.monotonic_now();
+        // Admission here allows an already started request to settle.
+        if self.retirements.is_fenced(&binding.key()) {
+            return RefreshCompletion::Recheck;
+        }
         match self.source.refresh(&binding.credential).await {
             RefreshAnswer::Rotated(grant) => {
                 if grant.credential.enrollment_id != binding.credential.enrollment_id {
@@ -552,9 +488,7 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
                 else {
                     continue;
                 };
-                if owner.ending(&key, previous.generation).is_some()
-                    || !owner.observe(previous.generation)
-                {
+                if self.retirements.is_fenced(&key) || !owner.observe(previous.generation) {
                     return RefreshCompletion::Recheck;
                 }
             }
@@ -617,42 +551,78 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
         state: Weak<Mutex<RefreshState>>,
     ) -> RefreshCompletion {
         let key = binding.key();
-        {
-            let Some(state) = state.upgrade() else {
-                return RefreshCompletion::Recheck;
-            };
-            let mut state = state.lock().await;
-            if !state.observe(binding.generation)
-                || state.ending(&key, binding.generation).is_some()
-            {
+        let Some(state) = state.upgrade() else {
+            return RefreshCompletion::Recheck;
+        };
+        let attempt = {
+            let mut owner = state.lock().await;
+            if !owner.observe(binding.generation) {
                 return RefreshCompletion::Recheck;
             }
-            // This refusal applies to the credential presented to sign-in.
-            // Another process may already have rotated the same enrollment.
-            state.endings.push(LocalEnding {
-                key: key.clone(),
-                through_generation: Some(binding.generation),
-                why,
-            });
-        }
+            let Some(attempt) = self
+                .retirements
+                .record_refusal(&key, binding.generation, why)
+            else {
+                return RefreshCompletion::Recheck;
+            };
+            attempt
+        };
+
         let started = self.clock.monotonic_now();
         let deadline = started.after(ENDING_CLEANUP_LIMIT);
-        match self.read_for_cleanup(deadline).await {
-            Ok(EnrollmentMetadata::Active {
-                key: active,
-                generation,
-                ..
-            }) if generation == binding.generation && active == key => {}
-            Ok(_) => return RefreshCompletion::Recheck,
-            Err(_) => return RefreshCompletion::Ended { why, deadline },
-        }
         match self
-            .end_binding(&key, binding.generation, why, started)
+            .finish_retirement_attempt(&key, &attempt, started, &state)
             .await
         {
             Ok(ConditionalWrite::Superseded) => RefreshCompletion::Recheck,
             Ok(ConditionalWrite::Applied) | Err(_) => RefreshCompletion::Ended { why, deadline },
         }
+    }
+
+    async fn finish_retirement_attempt(
+        &self,
+        key: &EnrollmentKey,
+        attempt: &Arc<RetirementAttempt>,
+        started: ClockInstant,
+        state: &Mutex<RefreshState>,
+    ) -> Result<ConditionalWrite, CredentialStoreError> {
+        let deadline = started.after(ENDING_CLEANUP_LIMIT);
+        let _cleanup = timeout_at(self.clock.as_ref(), deadline, attempt.cleanup.lock())
+            .await
+            .map_err(|_| CredentialStoreError::CleanupTimedOut)?;
+        if !self.retirements.is_current(key, attempt) {
+            return Ok(ConditionalWrite::Superseded);
+        }
+        let result = loop {
+            match self.read_for_cleanup(deadline).await? {
+                EnrollmentMetadata::Ended {
+                    key: ended, why, ..
+                } if &ended == key && attempt.accepts_ending(why) => {
+                    break ConditionalWrite::Applied;
+                }
+                EnrollmentMetadata::Active {
+                    key: active,
+                    generation,
+                    ..
+                } if &active == key && attempt.covers(generation) => {
+                    let observed = timeout_at(self.clock.as_ref(), deadline, state.lock())
+                        .await
+                        .map_err(|_| CredentialStoreError::CleanupTimedOut)?
+                        .observe(generation);
+                    if observed
+                        && self
+                            .end_binding(key, generation, attempt.why, started)
+                            .await?
+                            == ConditionalWrite::Applied
+                    {
+                        break ConditionalWrite::Applied;
+                    }
+                }
+                _ => break ConditionalWrite::Superseded,
+            }
+        };
+        self.retirements.settle(key, attempt, result);
+        Ok(result)
     }
 
     async fn read_for_cleanup(

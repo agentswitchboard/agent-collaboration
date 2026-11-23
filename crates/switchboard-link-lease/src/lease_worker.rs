@@ -1,21 +1,20 @@
 use std::{sync::Arc, time::Duration};
 
-use central_link_client::EnrollmentEnd as LinkEnding;
 use router_clock::{RuntimeClock, timeout_at};
 use switchboard_central_link::{
     lease_source::{LeaseFailure, LinkLease},
     link_policy::{LeaseVersion, LeaseWindow},
 };
 use switchboard_machine_enrollment::{
-    AccessRequest, BindingGeneration, ConditionalWrite, CredentialStore, EnrollmentEnd,
-    EnrollmentKey, LeaseUnavailable, RefreshOwner, RefreshSource,
+    AccessRequest, BindingGeneration, CredentialStore, EnrollmentKey, LeaseUnavailable,
+    RefreshOwner, RefreshSource,
 };
 use tokio::{
     sync::{mpsc, oneshot, watch},
     task::{Id, JoinError, JoinSet},
 };
 
-use crate::{Admission, UnfinishedLeaseWork};
+use crate::UnfinishedLeaseWork;
 
 const RETRY_RETIREMENT: Duration = Duration::from_secs(5);
 const CLOSE_BUDGET: Duration = Duration::from_secs(5);
@@ -30,7 +29,6 @@ pub(crate) enum LeaseCommand {
     },
     Retire {
         key: EnrollmentKey,
-        cause: LinkEnding,
     },
 }
 
@@ -42,14 +40,12 @@ enum StartedWork {
 enum FinishedWork {
     Acquired,
     Retired,
-    StaleRefusal,
     StillPending,
 }
 
 pub(crate) async fn run<Store, Source>(
     owner: Arc<RefreshOwner<Store, Source>>,
     clock: Arc<dyn RuntimeClock + Send + Sync>,
-    admission: watch::Sender<Admission>,
     mut commands: mpsc::UnboundedReceiver<LeaseCommand>,
     mut closing: watch::Receiver<bool>,
 ) -> UnfinishedLeaseWork
@@ -69,11 +65,11 @@ where
             _ = closing.changed() => break,
             result = tasks.join_next_with_id(), if !tasks.is_empty() => {
                 if let Some(result) = result {
-                    settle(result, &mut started, &mut unfinished, &admission);
+                    settle(result, &mut started, &mut unfinished);
                 }
             }
             command = commands.recv() => match command {
-                Some(command) => dispatch(command, &owner, &clock, &admission, &closing, &mut tasks, &mut started),
+                Some(command) => dispatch(command, &owner, &clock, &closing, &mut tasks, &mut started),
                 None => break,
             },
         }
@@ -83,21 +79,13 @@ where
     commands.close();
     while let Some(command) = commands.recv().await {
         if matches!(command, LeaseCommand::Retire { .. }) {
-            dispatch(
-                command,
-                &owner,
-                &clock,
-                &admission,
-                &closing,
-                &mut tasks,
-                &mut started,
-            );
+            dispatch(command, &owner, &clock, &closing, &mut tasks, &mut started);
         }
     }
 
     let drained = timeout_at(clock.as_ref(), deadline, async {
         while let Some(result) = tasks.join_next_with_id().await {
-            settle(result, &mut started, &mut unfinished, &admission);
+            settle(result, &mut started, &mut unfinished);
         }
     })
     .await;
@@ -114,7 +102,6 @@ fn dispatch<Store, Source>(
     command: LeaseCommand,
     owner: &Arc<RefreshOwner<Store, Source>>,
     clock: &Arc<dyn RuntimeClock + Send + Sync>,
-    admission: &watch::Sender<Admission>,
     closing: &watch::Receiver<bool>,
     tasks: &mut JoinSet<FinishedWork>,
     started: &mut Vec<(Id, StartedWork)>,
@@ -128,11 +115,11 @@ fn dispatch<Store, Source>(
             newer_than,
             reply,
         } => {
-            let state = admission.borrow();
-            if state.closed || reply.is_closed() {
+            let closing = closing.borrow();
+            if *closing || reply.is_closed() {
                 return;
             }
-            if state.retirements.contains(&key) {
+            if owner.retirement_fence().is_fenced(&key) {
                 let _ = reply.send(Err(LeaseFailure::EnrollmentEnded));
                 return;
             }
@@ -144,14 +131,13 @@ fn dispatch<Store, Source>(
             });
             started.push((task.id(), StartedWork::Acquire(key)));
         }
-        LeaseCommand::Retire { key, cause } => {
+        LeaseCommand::Retire { key } => {
             let owner = Arc::clone(owner);
             let clock = Arc::clone(clock);
             let closing = closing.clone();
             let task_key = key.clone();
-            let task = tasks.spawn(async move {
-                retire(&owner, clock.as_ref(), &task_key, cause, closing).await
-            });
+            let task = tasks
+                .spawn(async move { retire(&owner, clock.as_ref(), &task_key, closing).await });
             started.push((task.id(), StartedWork::Retire(key)));
         }
     }
@@ -217,7 +203,6 @@ async fn retire<Store, Source>(
     owner: &RefreshOwner<Store, Source>,
     clock: &dyn RuntimeClock,
     key: &EnrollmentKey,
-    cause: LinkEnding,
     mut closing: watch::Receiver<bool>,
 ) -> FinishedWork
 where
@@ -226,20 +211,7 @@ where
 {
     loop {
         let final_attempt = *closing.borrow_and_update() || closing.has_changed().is_err();
-        let result = match cause {
-            LinkEnding::LeaseRefused => owner.finish_fenced_ending(key).await,
-            LinkEnding::Revoked => owner.end_enrollment(key, EnrollmentEnd::Revoked).await,
-            LinkEnding::Inactive => owner.end_enrollment(key, EnrollmentEnd::Inactive).await,
-            LinkEnding::ConnectionEnrollmentEnded => {
-                owner
-                    .end_enrollment(key, EnrollmentEnd::EndedByCentral)
-                    .await
-            }
-        };
-        match result {
-            Ok(ConditionalWrite::Superseded) if cause == LinkEnding::LeaseRefused => {
-                return FinishedWork::StaleRefusal;
-            }
+        match owner.finish_retirement(key).await {
             Ok(_) => return FinishedWork::Retired,
             Err(_) if final_attempt => return FinishedWork::StillPending,
             Err(_) => {}
@@ -256,7 +228,6 @@ fn settle(
     result: Result<(Id, FinishedWork), JoinError>,
     started: &mut Vec<(Id, StartedWork)>,
     unfinished: &mut UnfinishedLeaseWork,
-    admission: &watch::Sender<Admission>,
 ) {
     let (id, result) = match result {
         Ok((id, work)) => (id, Some(work)),
@@ -266,12 +237,8 @@ fn settle(
         return;
     };
     let (_, work) = started.swap_remove(index);
-    match (result, work) {
-        (Some(FinishedWork::StaleRefusal), StartedWork::Retire(key)) => {
-            admission.send_modify(|state| state.retirements.retain(|fenced| fenced != &key));
-        }
-        (None | Some(FinishedWork::StillPending), work) => remember_unfinished(unfinished, work),
-        _ => {}
+    if matches!(result, None | Some(FinishedWork::StillPending)) {
+        remember_unfinished(unfinished, work);
     }
 }
 
