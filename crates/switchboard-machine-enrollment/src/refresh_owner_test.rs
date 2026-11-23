@@ -35,6 +35,7 @@ struct StoreState {
     fail_read: AtomicBool,
     hold_remove: AtomicBool,
     hold_remove_ack: AtomicBool,
+    unknown_remove: AtomicBool,
     hold_marker: AtomicBool,
     hold_marker_ack: AtomicBool,
     fail_write: AtomicBool,
@@ -152,6 +153,9 @@ impl CredentialStore for FakeStore {
         why: EnrollmentEnd,
     ) -> Result<ConditionalWrite, CredentialStoreError> {
         wait_while_held(&self.0.hold_remove).await;
+        if self.0.unknown_remove.load(Ordering::SeqCst) {
+            return Err(CredentialStoreError::OutcomeNotKnown);
+        }
         if self.0.fail_remove.load(Ordering::SeqCst) {
             Err(CredentialStoreError::Remove)
         } else {
@@ -323,6 +327,7 @@ impl Fixture {
             fail_read: AtomicBool::new(false),
             hold_remove: AtomicBool::new(false),
             hold_remove_ack: AtomicBool::new(false),
+            unknown_remove: AtomicBool::new(false),
             hold_marker: AtomicBool::new(false),
             hold_marker_ack: AtomicBool::new(false),
             fail_write: AtomicBool::new(false),

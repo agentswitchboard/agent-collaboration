@@ -617,7 +617,7 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
                         generation: saved,
                         why: recorded,
                         key: ended,
-                    } if Some(saved) == generation.successor() && recorded == why && &ended == key)
+                    } if saved >= generation && recorded == why && &ended == key)
                     {
                         return Ok(ConditionalWrite::Applied);
                     }

@@ -203,3 +203,63 @@ fn a_lease_after_enrollment_replacement_carries_the_new_key() {
             && lease.binding_generation == generation(4)
     ));
 }
+
+#[test]
+fn later_durable_ending_is_confirmed_after_remove_timeout() {
+    exercise_later_durable_ending(false);
+}
+
+#[test]
+fn later_durable_ending_is_confirmed_after_unknown_remove_result() {
+    exercise_later_durable_ending(true);
+}
+
+fn exercise_later_durable_ending(unknown: bool) {
+    for (same_key, same_reason) in [(true, true), (false, true), (true, false)] {
+        let fixture = Fixture::new();
+        let original = fixture.store.snapshot().key().expect("enrolled key");
+        fixture.store.0.hold_remove.store(true, SeqCst);
+        let mut ending = std::pin::pin!(
+            fixture
+                .owner
+                .end_enrollment(&original, EnrollmentEnd::Revoked)
+        );
+        assert!(poll_once(ending.as_mut()).is_pending());
+
+        let mut successor = binding(2, 1);
+        if !same_key {
+            successor.credential.enrollment_id =
+                "019a0000-0000-7000-8000-000000000008".parse().unwrap();
+        }
+        assert_eq!(
+            fixture
+                .store
+                .write(generation(1), StoredEnrollment::Active(successor)),
+            ConditionalWrite::Applied
+        );
+        let recorded = if same_reason {
+            EnrollmentEnd::Revoked
+        } else {
+            EnrollmentEnd::Inactive
+        };
+        assert_eq!(
+            fixture.store.end(generation(2), recorded),
+            ConditionalWrite::Applied
+        );
+        let saved = fixture.store.snapshot();
+        if unknown {
+            fixture.store.0.unknown_remove.store(true, SeqCst);
+            fixture.store.0.hold_remove.store(false, SeqCst);
+        }
+        fixture.advance(1);
+
+        let expected = if same_key && same_reason {
+            Ok(ConditionalWrite::Applied)
+        } else {
+            Err(CredentialStoreError::CleanupTimedOut)
+        };
+        assert_eq!(poll_once(ending.as_mut()), Poll::Ready(expected));
+        assert_eq!(fixture.store.0.marker_calls.load(SeqCst), 0);
+        assert_eq!(fixture.store.snapshot(), saved);
+    }
+}
