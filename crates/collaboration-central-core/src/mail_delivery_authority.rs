@@ -159,15 +159,20 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         let Some(actor) = self.access().existing_caller_actor(caller.caller()).await? else {
             return Ok(Ok(MessageStatus::NotFound {}));
         };
-        Ok(Ok(self
+        let applied = self
             .direct_messages
-            .read_status(fleet_mail::OwnedDirectStatus {
+            .settle_and_read_status(fleet_mail::OwnedDirectStatus {
                 message_id: message_id.clone(),
                 sender: actor,
-                now: self.execution.now()?,
+                clock: self.execution.shared_clock(),
+                ids: self.execution.shared_ids(),
             })
             .await
-            .map_err(StoreFailure::from)?))
+            .map_err(StoreFailure::from)?;
+        if let Some(ready) = applied.ready {
+            (self.mail_delivery_ready)(ready);
+        }
+        Ok(Ok(applied.status))
     }
 
     /// Reads queued messages without consuming them, in stable message-UUIDv7 order.

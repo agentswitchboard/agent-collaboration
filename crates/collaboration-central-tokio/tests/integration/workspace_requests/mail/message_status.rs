@@ -101,7 +101,6 @@ async fn only_the_original_sender_can_read_direct_message_status() {
                 &message_id,
                 ReceiptKind::Delivered {
                     arrived_at: fixture.clock.utc_now(),
-                    waiting: None
                 }
             )
             .await
@@ -116,7 +115,6 @@ async fn only_the_original_sender_can_read_direct_message_status() {
             .result,
         expected(MessageStatus::Delivered {
             arrived_at: fixture.clock.utc_now(),
-            waiting: None,
             deadline_passed: false
         })
     );
@@ -378,7 +376,7 @@ async fn an_owning_direct_offer_resolves_a_person_without_a_session_outcome() {
     );
 
     let accepted_at = fixture.clock.utc_now();
-    let mark = fleet_mail::message_deadline::direct_receipt_mark(accepted_at, accepted_at);
+    let mark = fleet_mail::message_deadline::direct_receipt_mark(accepted_at, accepted_at).unwrap();
     let _alarm_driver = central
         .runtime()
         .pause_points()
@@ -387,9 +385,9 @@ async fn an_owning_direct_offer_resolves_a_person_without_a_session_outcome() {
     central.after_event().await.unwrap();
 
     let stored = central.runtime().statement_host().read(Statement {
-        sql: "SELECT state,(SELECT COUNT(*) FROM mail_messages WHERE message_kind='deliveryOutcome') FROM mail_messages WHERE message_id=?",
+        sql: "SELECT state,deadline_settled_at IS NOT NULL,(SELECT COUNT(*) FROM mail_messages WHERE message_kind='deliveryOutcome') FROM mail_messages WHERE message_id=?",
         args: vec![text(&message)],
     }).await.unwrap();
-    assert_eq!(stored.rows, [vec![text("pastTheMark"), integer(0)]]);
+    assert_eq!(stored.rows, [vec![text("queued"), integer(1), integer(0)]]);
     fixture.host.close().await;
 }

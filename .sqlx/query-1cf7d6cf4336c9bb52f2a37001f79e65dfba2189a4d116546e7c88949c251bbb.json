@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE mail_messages\nSET state=?, failure_reason=?, updated_at=?, delivered_arrived_at=?,\n    seen_completed_at=?, deadline_settled_at=?\nWHERE message_id=? AND message_kind='direct' AND target_machine_id=? AND state=?\n  AND deadline_settled_at IS ?\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 10
+    },
+    "nullable": []
+  },
+  "hash": "1cf7d6cf4336c9bb52f2a37001f79e65dfba2189a4d116546e7c88949c251bbb"
+}

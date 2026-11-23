@@ -21,9 +21,7 @@ pub(crate) fn refusal(
             fleet_schedules::set_automation_refusal(timing, now)
         }
         CentralMailOperation::SendMessage { sent_at, .. }
-            if !supported_time(fleet_mail::message_deadline::direct_receipt_mark(
-                *sent_at, now,
-            )) =>
+            if fleet_mail::message_deadline::direct_receipt_mark(*sent_at, now).is_none() =>
         {
             Some(CentralMailRefusal::TimeOutOfRange {
                 field: "anchorAt".to_owned(),
