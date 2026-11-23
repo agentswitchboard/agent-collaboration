@@ -2,7 +2,7 @@ use approval_request_protocol::{
     DeliverEndingReply, DeliverEndingRequest, Delivery, Ending, StopReceiptEnding, StopReply,
 };
 
-use fleet_approvals::{ApprovalCollectionEvent, ApprovalRun, FactorStanding};
+use fleet_approvals::{ApprovalCollectionEvent, ApprovalRun};
 
 use super::fixtures::{
     ObservedReply as ApprovalReceipt, answer, closed, decide_event, key, offered_frame, person,
@@ -35,7 +35,7 @@ fn holder_delivery_settles_only_on_exact_received_or_authoritative_not_held() {
     }
     let commit = run_event(
         &mut book,
-        decide_event(&item, person(12, FactorStanding::Fresh), 101, answer(1)),
+        decide_event(&item, person(12), 101, answer(1)),
         1,
     );
     let offer = offered_frame(&commit);
@@ -135,12 +135,12 @@ fn a_standing_stop_closes_only_unpaid_delivery_and_keeps_the_original_ending() {
     }
     run_event(
         &mut book,
-        decide_event(&unpaid, person(20, FactorStanding::Fresh), 101, answer(1)),
+        decide_event(&unpaid, person(20), 101, answer(1)),
         1,
     );
     let offer = offered_frame(&run_event(
         &mut book,
-        decide_event(&paid, person(20, FactorStanding::Fresh), 102, answer(1)),
+        decide_event(&paid, person(20), 102, answer(1)),
         1,
     ));
     run_event(

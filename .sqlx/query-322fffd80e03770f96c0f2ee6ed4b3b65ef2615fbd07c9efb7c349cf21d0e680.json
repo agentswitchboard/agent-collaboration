@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT requests.*\nFROM approval_requests AS requests\nWHERE requests.organization_id = ?1 AND requests.request_id = ?2\n  AND EXISTS (\n      SELECT 1 FROM approval_request_destinations AS destination\n      WHERE destination.approval_row_id = requests.approval_row_id\n        AND destination.organization_id = requests.organization_id\n        AND destination.destination_kind = 'people'\n  )\n",
+  "query": "SELECT requests.*\nFROM approval_requests AS requests\nWHERE requests.organization_id = ?1\n  AND (?2 = '' OR requests.request_id < ?2)\n  AND (?3 = 1 OR requests.record_state = 'waiting')\n  AND EXISTS (\n      SELECT 1 FROM approval_request_destinations AS destination\n      WHERE destination.approval_row_id = requests.approval_row_id\n        AND destination.organization_id = requests.organization_id\n        AND destination.destination_kind = 'people'\n  )\nORDER BY requests.request_id DESC\nLIMIT ?4\n",
   "describe": {
     "columns": [
       {
@@ -258,7 +258,7 @@
       }
     ],
     "parameters": {
-      "Right": 2
+      "Right": 4
     },
     "nullable": [
       false,
@@ -286,5 +286,5 @@
       false
     ]
   },
-  "hash": "1dad590861539b6f44630dbfd549e50532606e738436504f058faf9051431259"
+  "hash": "322fffd80e03770f96c0f2ee6ed4b3b65ef2615fbd07c9efb7c349cf21d0e680"
 }

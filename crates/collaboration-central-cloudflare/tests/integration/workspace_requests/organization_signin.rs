@@ -11,6 +11,7 @@ mod linearization;
 mod list_workspaces;
 mod machine_login;
 mod observations;
+mod person_approval_routes;
 mod post_turn;
 mod provisioning;
 mod records;

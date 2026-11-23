@@ -5,7 +5,7 @@ use central_storage::StoreFailure;
 use fleet_approvals::{
     AdmittedDecider, ApprovalApplyFailure, ApprovalDecisionReply, ApprovalHolderAdmission,
     ApprovalHolderCommand, ApprovalHolderScope, ApprovalReleaseFailure, ApprovalReplyAddress,
-    ApprovalRun, FactorStanding,
+    ApprovalRun,
 };
 
 use super::{
@@ -20,7 +20,7 @@ use super::{
 async fn retained_refusals_conflicts_and_holder_reoffers_persist_the_deadline() {
     let (fixture, holder, requester) = fixture_with_owner().await;
     let admission = ApprovalHolderAdmission::for_fixture_scope(&holder);
-    let caller = person(11, FactorStanding::Fresh);
+    let caller = person(11);
     for request_no in [1, 2, 3] {
         let request = provider(
             &key(&holder.run, request_no),
@@ -201,10 +201,7 @@ async fn missing_healthy_and_malformed_hidden_targets_are_indistinguishable() {
         assert!(seen.unwrap().reply.is_none());
         assert!(evidence.sql_writes.is_empty());
         assert_eq!(evidence.sql_reads.len(), 1);
-        for actor in [
-            person(11, FactorStanding::Fresh),
-            AdmittedDecider::Session(other.clone()),
-        ] {
+        for actor in [person(11), AdmittedDecider::Session(other.clone())] {
             let (decision, evidence) = fixture
                 .apply(None, async |store| {
                     store
@@ -270,7 +267,7 @@ async fn owed_recovery_and_committed_outputs_stay_bound_to_the_exact_loan_and_re
             store
                 .fixture_decide_approval(
                     &holder.organization_id,
-                    person(11, FactorStanding::Fresh),
+                    person(11),
                     decide_input(request.request_id(), 101, 1),
                 )
                 .await

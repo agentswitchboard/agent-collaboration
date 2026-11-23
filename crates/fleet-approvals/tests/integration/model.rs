@@ -10,7 +10,7 @@ use approval_request_protocol::{
 use central_engine_model::{Context, TransitionError};
 use fleet_approvals::{
     AdmittedDecider, ApprovalActor, ApprovalCollection, ApprovalCollectionEvent,
-    ApprovalEnrollment, ApprovalRequestKey, ApprovalRun, ApprovalSession, FactorStanding,
+    ApprovalEnrollment, ApprovalRequestKey, ApprovalRun, ApprovalSession,
 };
 use hegel::generators as gs;
 use serde_json::{Value, json};
@@ -180,17 +180,9 @@ impl Scenario {
                 operation,
                 choice,
                 actor,
-                fresh_factor,
             } => {
                 let decider = match self.actor(row, actor) {
-                    ApprovalActor::Person(person_id) => AdmittedDecider::Person {
-                        person_id,
-                        factor: if fresh_factor {
-                            FactorStanding::Fresh
-                        } else {
-                            FactorStanding::AbsentOrStale
-                        },
-                    },
+                    ApprovalActor::Person(person_id) => AdmittedDecider::Person { person_id },
                     ApprovalActor::Session(session) => AdmittedDecider::Session(session),
                 };
                 decide_event(
@@ -451,7 +443,6 @@ fn generated_histories_match_the_separate_smaller_central_ledger(case: hegel::Te
                 row,
                 operation: case.draw(gs::integers::<u16>().min_value(101).max_value(105)),
                 choice: case.draw(gs::integers::<u8>().min_value(1).max_value(6)),
-                fresh_factor: case.draw(gs::booleans()),
                 actor: case.draw(gs::sampled_from(vec![
                     Actor::FirstPerson,
                     Actor::SecondPerson,

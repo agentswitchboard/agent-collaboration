@@ -66,6 +66,7 @@ impl Person {
             organization_revision: 3,
             policy_digest: POLICY.to_owned(),
             permissions: vec![
+                "approval:decide".to_owned(),
                 "organization:readAudit".to_owned(),
                 "organization:view".to_owned(),
                 "workspace:create".to_owned(),

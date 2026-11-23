@@ -45,19 +45,10 @@ pub enum ApprovalRouting {
     Delegate { admitted_parent: ApprovalSession },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FactorStanding {
-    Fresh,
-    AbsentOrStale,
-}
-
 /// The applying caller has already authenticated this actor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdmittedDecider {
-    Person {
-        person_id: PersonId,
-        factor: FactorStanding,
-    },
+    Person { person_id: PersonId },
     Session(ApprovalSession),
 }
 
