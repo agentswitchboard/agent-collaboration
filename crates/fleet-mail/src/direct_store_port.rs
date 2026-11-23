@@ -2,8 +2,9 @@
 use crate::direct_message_rows::StoredDirectState;
 use central_engine_model::{FailureRecord, ItemFailureClass};
 use central_storage::{AlarmPublicationFailure, CorruptReason};
-use fleet_contracts::{MachineConnectionAttachment, MailDeliveryReady};
+use fleet_contracts::MailDeliveryReady;
 use fleet_engine::{CheckedDueFailure, CheckedDueUnit};
+use fleet_machine_login::link_authority::ValidatedMachineConnection;
 use fleet_runtime_ports::{Clock, IdSource};
 use futures_util::future::BoxFuture;
 use std::sync::Arc;
@@ -62,12 +63,85 @@ pub enum DirectSendResult {
     },
 }
 
+/// A single receipt bound to connection authority from Machine Login.
+///
+/// The store still rechecks that authority in the applying transaction.
+///
+/// ```compile_fail,E0451
+/// use fleet_mail::AdmittedReceipt;
+/// use fleet_machine_login::link_authority::ValidatedMachineConnection;
+/// use fleet_runtime_ports::IdSource;
+/// use std::sync::Arc;
+/// use workspace_ids::MessageId;
+/// use workspace_model::central_mail::ReceiptKind;
+///
+/// fn assemble(
+///     authority: ValidatedMachineConnection,
+///     message_id: MessageId,
+///     receipt: ReceiptKind,
+///     ids: Arc<dyn IdSource>,
+/// ) -> AdmittedReceipt {
+///     AdmittedReceipt { authority, message_id, receipt, ids }
+/// }
+/// ```
+///
+/// ```compile_fail,E0308
+/// use fleet_contracts::MachineConnectionAttachment;
+/// use fleet_mail::AdmittedReceipt;
+/// use fleet_runtime_ports::IdSource;
+/// use std::sync::Arc;
+/// use workspace_ids::MessageId;
+/// use workspace_model::central_mail::ReceiptKind;
+///
+/// fn unadmitted(
+///     attachment: MachineConnectionAttachment,
+///     message_id: MessageId,
+///     receipt: ReceiptKind,
+///     ids: Arc<dyn IdSource>,
+/// ) {
+///     let _ = AdmittedReceipt::new(attachment, message_id, receipt, ids);
+/// }
+/// ```
+///
+/// ```compile_fail,E0451
+/// use fleet_contracts::MachineConnectionAttachment;
+/// use fleet_machine_login::link_authority::ValidatedMachineConnection;
+///
+/// fn forge(attachment: MachineConnectionAttachment) {
+///     let _ = ValidatedMachineConnection { attachment };
+/// }
+/// ```
+///
+/// ```compile_fail,E0277
+/// let _: fleet_mail::AdmittedReceipt = serde_json::from_str("{}").unwrap();
+/// ```
+///
+/// ```compile_fail,E0277
+/// use fleet_machine_login::link_authority::ValidatedMachineConnection;
+/// let _: ValidatedMachineConnection = serde_json::from_str("{}").unwrap();
+/// ```
 pub struct AdmittedReceipt {
-    pub authority: MachineConnectionAttachment,
-    pub message_id: MessageId,
-    pub receipt: ReceiptKind,
-    pub clock: Arc<dyn Clock>,
-    pub ids: Arc<dyn IdSource>,
+    pub(super) authority: ValidatedMachineConnection,
+    pub(super) message_id: MessageId,
+    pub(super) receipt: ReceiptKind,
+    pub(super) ids: Arc<dyn IdSource>,
+}
+
+impl AdmittedReceipt {
+    #[must_use]
+    pub fn new(
+        authority: ValidatedMachineConnection,
+        message_id: MessageId,
+        receipt: ReceiptKind,
+        ids: Arc<dyn IdSource>,
+    ) -> Self {
+        Self {
+            authority,
+            message_id,
+            receipt,
+            ids,
+        }
+    }
 }
 
 pub enum ApplyReceipt {

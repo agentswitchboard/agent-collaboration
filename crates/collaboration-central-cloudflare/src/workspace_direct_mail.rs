@@ -86,12 +86,32 @@ impl DirectMessageStore for CentralStatements {
         AdmittedDirectSend,
         DirectSendResult
     );
-    worker_write!(
-        direct_store_writes,
-        apply_receipt,
-        AdmittedReceipt,
-        ApplyReceipt
-    );
+    fn apply_receipt(
+        &self,
+        receipt: AdmittedReceipt,
+    ) -> BoxFuture<'_, Result<ApplyReceipt, DirectWriteFailure>> {
+        Box::pin(SendFuture::new(async move {
+            statement_store::write_direct_with_engine_alarm(
+                &self.connection,
+                AlarmPolicy::Engine(
+                    self.state.storage(),
+                    self.clock.clone(),
+                    self.direct_write_decider(),
+                ),
+                async move |transaction| {
+                    direct_store_writes::apply_receipt(
+                        &mut statement_store::WorkerExecutorLender::from_storage_executor(
+                            transaction,
+                        ),
+                        receipt,
+                        &self.clock,
+                    )
+                    .await
+                },
+            )
+            .await
+        }))
+    }
     worker_write!(
         direct_status_apply,
         settle_and_read_status,

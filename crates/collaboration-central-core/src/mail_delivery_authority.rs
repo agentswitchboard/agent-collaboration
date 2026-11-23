@@ -48,17 +48,17 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         receipt: ReceiptKind,
     ) -> Result<MailReceiptSettlement, StoreFailure> {
         let _turn = self.execution.take_central_turn().await;
-        if let Err(refusal) = self.restore_live_authority_held(connection).await? {
-            return Ok(MailReceiptSettlement::AuthorityLapsed(refusal.close));
-        }
-
-        let admitted_receipt = fleet_mail::AdmittedReceipt {
-            authority: connection.clone(),
-            message_id: message_id.clone(),
-            receipt,
-            clock: self.execution.shared_clock(),
-            ids: self.execution.shared_ids(),
+        let authority = match self.restore_live_authority_held(connection).await? {
+            Ok(authority) => authority,
+            Err(refusal) => return Ok(MailReceiptSettlement::AuthorityLapsed(refusal.close)),
         };
+
+        let admitted_receipt = fleet_mail::AdmittedReceipt::new(
+            authority,
+            message_id.clone(),
+            receipt,
+            self.execution.shared_ids(),
+        );
         #[cfg(feature = "test-support")]
         self.execution
             .pause_points()

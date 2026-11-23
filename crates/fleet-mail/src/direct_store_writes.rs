@@ -24,7 +24,7 @@ use fleet_request_log::{
     RetainRequest, prune_expired_organization_requests, upsert_organization_request_answer,
 };
 use fleet_runtime_ports::{
-    IdSource, stored_values::format_utc_millis, workspace_decode_error::corrupt,
+    Clock, IdSource, stored_values::format_utc_millis, workspace_decode_error::corrupt,
 };
 use sqlx_core::{
     arguments::IntoArguments, column::ColumnIndex, database::Database, decode::Decode,
@@ -226,9 +226,11 @@ macro_rules! clear_attempt {
     };
 }
 
+/// Apply the admitted command with the owning host’s clock.
 pub async fn apply_receipt<T: CentralTransaction>(
     tx: &mut T,
     command: AdmittedReceipt,
+    clock: &dyn Clock,
 ) -> Result<DirectWriteOutcome<ApplyReceipt>, DirectApplyFailure>
 where
     <T::Database as Database>::Arguments: IntoArguments<T::Database>,
@@ -244,8 +246,8 @@ where
     // Sample after the authority reads, while the applying transaction is held.
     let (applying_time, lapse) = fleet_machine_login::link_authority::recheck_lent_link_authority(
         tx,
-        &authority,
-        command.clock.as_ref(),
+        authority.attachment_ref(),
+        clock,
     )
     .await?;
     if let Some(cause) = lapse {

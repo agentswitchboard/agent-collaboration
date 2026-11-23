@@ -59,12 +59,28 @@ impl DirectMessageStore for ObjectStorage {
         AdmittedDirectSend,
         DirectSendResult
     );
-    native_write!(
-        direct_store_writes,
-        apply_receipt,
-        AdmittedReceipt,
-        ApplyReceipt
-    );
+    fn apply_receipt(
+        &self,
+        receipt: AdmittedReceipt,
+    ) -> BoxFuture<'_, Result<ApplyReceipt, DirectWriteFailure>> {
+        Box::pin(async move {
+            self.write_direct_with_engine_alarm(async move |connection| {
+                let engine =
+                    self.engine_publication
+                        .as_ref()
+                        .ok_or(StoreFailure::AlarmUnpublishable {
+                            reason: AlarmPublicationFailure::ClockUnavailable,
+                        })?;
+                direct_store_writes::apply_receipt(
+                    &mut NativeTransaction(connection),
+                    receipt,
+                    engine.clock.as_ref(),
+                )
+                .await
+            })
+            .await
+        })
+    }
     native_write!(
         direct_status_apply,
         settle_and_read_status,
