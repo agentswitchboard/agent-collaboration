@@ -57,7 +57,6 @@ fn central_engine_fixtures_require_a_dev_edge() {
                 features: vec![],
                 uses_default_features: true,
             }],
-            features: Default::default(),
         };
         assert_eq!(
             check_support_dependencies(&package).is_ok(),

@@ -56,10 +56,10 @@ fn workspace_package<'a>(metadata: &'a CargoMetadata, name: &str) -> Option<&'a 
 pub(super) fn check_declared(metadata: &CargoMetadata) -> Result<(), String> {
     let root = workspace_package(metadata, APPROVAL_PORTS)
         .ok_or_else(|| format!("approval ports workspace package missing: {APPROVAL_PORTS}"))?;
-    if !root.features.is_empty() {
+    if !root.package_features.is_empty() {
         return Err(format!(
             "approval ports forbid declared package features: {:?}",
-            root.features
+            root.package_features
         ));
     }
     for dependency in &root.dependencies {

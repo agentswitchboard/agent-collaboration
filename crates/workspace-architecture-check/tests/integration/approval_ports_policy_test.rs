@@ -56,7 +56,7 @@ fn approval_ports_reject_forwarding_with_an_unchanged_package_set() {
         .iter_mut()
         .find(|package| package.name == APPROVAL_PORTS)
         .expect("fixture root");
-    root.features.insert(
+    root.package_features.insert(
         "wire-export".to_owned(),
         vec!["approval-request-protocol/wire-export".to_owned()],
     );

@@ -48,8 +48,6 @@ struct CargoPackage {
     source: Option<String>,
     #[serde(default)]
     dependencies: Vec<ManifestDependency>,
-    #[serde(default)]
-    features: BTreeMap<String, Vec<String>>,
 }
 
 #[derive(Deserialize)]
@@ -313,7 +311,6 @@ fn fixture_metadata(
         package_features: Default::default(),
         source: None,
         dependencies: Vec::new(),
-        features: BTreeMap::new(),
     })
     .collect();
     let workspace_members = packages.iter().map(|package| package.id.clone()).collect();
@@ -380,7 +377,6 @@ fn harness_contracts_reject_workspace_dependencies() {
                     package_features: Default::default(),
                     source: None,
                     dependencies: Vec::new(),
-                    features: BTreeMap::new(),
                 },
                 CargoPackage {
                     id: "events".to_owned(),
@@ -389,7 +385,6 @@ fn harness_contracts_reject_workspace_dependencies() {
                     package_features: Default::default(),
                     source: None,
                     dependencies: Vec::new(),
-                    features: BTreeMap::new(),
                 },
                 CargoPackage {
                     id: "harness".to_owned(),
@@ -406,7 +401,6 @@ fn harness_contracts_reject_workspace_dependencies() {
                         features: Vec::new(),
                         uses_default_features: true,
                     }],
-                    features: BTreeMap::new(),
                 },
                 CargoPackage {
                     id: "deciding-code".to_owned(),
@@ -415,7 +409,6 @@ fn harness_contracts_reject_workspace_dependencies() {
                     package_features: Default::default(),
                     source: None,
                     dependencies: Vec::new(),
-                    features: BTreeMap::new(),
                 },
                 CargoPackage {
                     id: "harness-carrier".to_owned(),
@@ -424,7 +417,6 @@ fn harness_contracts_reject_workspace_dependencies() {
                     package_features: Default::default(),
                     source: None,
                     dependencies: Vec::new(),
-                    features: BTreeMap::new(),
                 },
             ],
             workspace_members: [
