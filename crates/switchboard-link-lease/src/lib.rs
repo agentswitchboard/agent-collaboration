@@ -1,9 +1,9 @@
 //! Adapts one enrollment context to the Central driver's lease and retirement port.
 
-use std::{fmt, sync::Arc};
+use std::{fmt, future::Future, sync::Arc, time::Duration};
 
 use central_link_client::EnrollmentEnd;
-use router_clock::RuntimeClock;
+use router_clock::{ClockInstant, RuntimeClock};
 use switchboard_central_link::{
     lease_source::{LeaseFailure, LeaseFuture, LeaseSource},
     link_policy::LeaseVersion,
@@ -21,11 +21,14 @@ mod lease_worker;
 
 use lease_worker::{LeaseCommand, run};
 
+const CLOSE_BUDGET: Duration = Duration::from_secs(5);
+
 /// Lease adapter started and closed by its composition owner.
 pub struct EnrollmentLeaseSource {
     commands: mpsc::UnboundedSender<LeaseCommand>,
     retirements: RetirementFence,
-    closing: watch::Sender<bool>,
+    closing: watch::Sender<Option<ClockInstant>>,
+    clock: Arc<dyn RuntimeClock + Send + Sync>,
     completion: AsyncMutex<Completion>,
 }
 
@@ -64,28 +67,43 @@ impl EnrollmentLeaseSource {
         Source: RefreshSource + 'static,
     {
         let (commands, work) = mpsc::unbounded_channel();
-        let (closing, stopped) = watch::channel(false);
+        let (closing, stopped) = watch::channel(None);
         let retirements = owner.retirement_fence();
-        let task = tokio::spawn(run(owner, clock, work, stopped));
+        let task = tokio::spawn(run(owner, clock.clone(), work, stopped));
         Self {
             commands,
             retirements,
             closing,
+            clock,
             completion: AsyncMutex::new(Completion::Running(task)),
         }
     }
 
-    /// Stops admission, drains started work within the injected budget and reports any remainder.
-    pub async fn close(&self) -> Result<UnfinishedLeaseWork, LeaseWorkerStopped> {
-        self.closing.send_replace(true);
-        let mut completion = self.completion.lock().await;
-        match &mut *completion {
-            Completion::Running(task) => {
-                let result = task.await.map_err(|_| LeaseWorkerStopped);
-                *completion = Completion::Closed(result.clone());
-                result
+    /// Stops admission immediately and gives all close callers the same deadline.
+    ///
+    /// The five-second bound uses the injected clock. It requires the runtime to
+    /// schedule the supervisor and injected futures to yield promptly. Cancellation
+    /// is cooperative, so a store operation already admitted may still settle.
+    pub fn close(
+        &self,
+    ) -> impl Future<Output = Result<UnfinishedLeaseWork, LeaseWorkerStopped>> + '_ {
+        self.closing.send_if_modified(|deadline| {
+            if deadline.is_some() {
+                return false;
             }
-            Completion::Closed(result) => result.clone(),
+            *deadline = Some(self.clock.monotonic_now().after(CLOSE_BUDGET));
+            true
+        });
+        async {
+            let mut completion = self.completion.lock().await;
+            match &mut *completion {
+                Completion::Running(task) => {
+                    let result = task.await.map_err(|_| LeaseWorkerStopped);
+                    *completion = Completion::Closed(result.clone());
+                    result
+                }
+                Completion::Closed(result) => result.clone(),
+            }
         }
     }
 }
@@ -103,7 +121,7 @@ impl LeaseSource<EnrollmentKey> for EnrollmentLeaseSource {
                 if self.retirements.is_fenced(key) {
                     return Err(LeaseFailure::EnrollmentEnded);
                 }
-                if *closing {
+                if closing.is_some() {
                     return Err(LeaseFailure::Fault);
                 }
                 self.commands
@@ -124,7 +142,7 @@ impl LeaseSource<EnrollmentKey> for EnrollmentLeaseSource {
 
     fn end(&self, key: &EnrollmentKey, cause: EnrollmentEnd) {
         let closing = self.closing.borrow();
-        if *closing {
+        if closing.is_some() {
             return;
         }
         let request = match cause {

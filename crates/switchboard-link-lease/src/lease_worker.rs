@@ -1,6 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
-use router_clock::{RuntimeClock, timeout_at};
+use router_clock::{ClockInstant, RuntimeClock, timeout_at};
 use switchboard_central_link::{
     lease_source::{LeaseFailure, LinkLease},
     link_policy::{LeaseVersion, LeaseWindow},
@@ -14,10 +14,9 @@ use tokio::{
     task::{Id, JoinError, JoinSet},
 };
 
-use crate::UnfinishedLeaseWork;
+use crate::{CLOSE_BUDGET, UnfinishedLeaseWork};
 
 const RETRY_RETIREMENT: Duration = Duration::from_secs(5);
-const CLOSE_BUDGET: Duration = Duration::from_secs(5);
 
 type LeaseAnswer = Result<LinkLease<EnrollmentKey>, LeaseFailure>;
 
@@ -47,7 +46,7 @@ pub(crate) async fn run<Store, Source>(
     owner: RefreshOwner<Store, Source>,
     clock: Arc<dyn RuntimeClock + Send + Sync>,
     mut commands: mpsc::UnboundedReceiver<LeaseCommand>,
-    mut closing: watch::Receiver<bool>,
+    mut closing: watch::Receiver<Option<ClockInstant>>,
 ) -> UnfinishedLeaseWork
 where
     Store: CredentialStore + 'static,
@@ -58,7 +57,7 @@ where
     let mut started = Vec::new();
     let mut unfinished = UnfinishedLeaseWork::default();
     loop {
-        if *closing.borrow_and_update() {
+        if closing.borrow_and_update().is_some() {
             break;
         }
         tokio::select! {
@@ -76,11 +75,24 @@ where
         }
     }
 
-    let deadline = clock.monotonic_now().after(CLOSE_BUDGET);
+    let deadline = closing
+        .borrow()
+        .unwrap_or_else(|| clock.monotonic_now().after(CLOSE_BUDGET));
     commands.close();
     while let Some(command) = commands.recv().await {
-        if matches!(command, LeaseCommand::Retire { .. }) {
-            dispatch(command, &owner, &clock, &closing, &mut tasks, &mut started);
+        if let LeaseCommand::Retire { key } = command {
+            if clock.monotonic_now() >= deadline {
+                remember_unfinished(&mut unfinished, StartedWork::Retire(key));
+            } else {
+                dispatch(
+                    LeaseCommand::Retire { key },
+                    &owner,
+                    &clock,
+                    &closing,
+                    &mut tasks,
+                    &mut started,
+                );
+            }
         }
     }
 
@@ -91,7 +103,10 @@ where
     })
     .await;
     if drained.is_err() {
-        tasks.shutdown().await;
+        tasks.abort_all();
+        while let Some(result) = tasks.try_join_next_with_id() {
+            settle(result, &mut started, &mut unfinished);
+        }
     }
     for (_, work) in started {
         remember_unfinished(&mut unfinished, work);
@@ -103,7 +118,7 @@ fn dispatch<Store, Source>(
     command: LeaseCommand,
     owner: &Arc<RefreshOwner<Store, Source>>,
     clock: &Arc<dyn RuntimeClock + Send + Sync>,
-    closing: &watch::Receiver<bool>,
+    closing: &watch::Receiver<Option<ClockInstant>>,
     tasks: &mut JoinSet<FinishedWork>,
     started: &mut Vec<(Id, StartedWork)>,
 ) where
@@ -117,7 +132,7 @@ fn dispatch<Store, Source>(
             reply,
         } => {
             let closing = closing.borrow();
-            if *closing || reply.is_closed() {
+            if closing.is_some() || reply.is_closed() {
                 return;
             }
             if owner.retirement_fence().is_fenced(&key) {
@@ -204,14 +219,14 @@ async fn retire<Store, Source>(
     owner: &RefreshOwner<Store, Source>,
     clock: &dyn RuntimeClock,
     key: &EnrollmentKey,
-    mut closing: watch::Receiver<bool>,
+    mut closing: watch::Receiver<Option<ClockInstant>>,
 ) -> FinishedWork
 where
     Store: CredentialStore + 'static,
     Source: RefreshSource + 'static,
 {
     loop {
-        let final_attempt = *closing.borrow_and_update() || closing.has_changed().is_err();
+        let final_attempt = closing.borrow_and_update().is_some() || closing.has_changed().is_err();
         match owner.finish_retirement(key).await {
             Ok(_) => return FinishedWork::Retired,
             Err(_) if final_attempt => return FinishedWork::StillPending,

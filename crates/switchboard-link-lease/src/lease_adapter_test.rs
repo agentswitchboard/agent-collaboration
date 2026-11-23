@@ -522,3 +522,35 @@ async fn forced_close_abandons_a_rotated_credential_held_before_storage() {
     assert!(release_write.send(Box::new(|| {})).is_err());
     assert_eq!(fixture.store.row.borrow().generation().get(), 1);
 }
+
+#[tokio::test]
+async fn close_uses_the_first_call_deadline_even_if_the_supervisor_polls_late() {
+    let mut fixture = Fixture::new();
+    let key = fixture.binding.key();
+    let acquire = start_acquire(&fixture.source, &key).await;
+    let held_sign_in = fixture.refreshes.recv().await.unwrap();
+
+    let mut first_close = std::pin::pin!(fixture.source.close());
+    poll_fn(|context| {
+        assert!(first_close.as_mut().poll(context).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    fixture.clock.advance(Duration::from_secs(6)).unwrap();
+    let repeat_close = fixture.source.close();
+
+    let (first, repeated) = tokio::select! {
+        reports = async { tokio::join!(&mut first_close, repeat_close) } => reports,
+        () = fixture.clock.not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(11))) => {
+            panic!("the supervisor gave close another five seconds");
+        }
+    };
+    let expected = UnfinishedLeaseWork {
+        acquisitions: vec![key.clone()],
+        retirements: vec![],
+    };
+    assert_eq!(first, Ok(expected.clone()));
+    assert_eq!(repeated, Ok(expected));
+    assert_eq!(acquire.await, Err(LeaseFailure::Fault));
+    assert!(held_sign_in.is_closed());
+}
