@@ -183,13 +183,15 @@ pub fn custody_task(
     let task = async move {
         let (saved, offers) = mpsc::unbounded_channel();
         let (stop_offers, offers_stopped) = watch::channel(false);
+        let (retry_offers, retries) = mpsc::channel(1);
         let taking = tokio::spawn(run_offer_taker(
             custody.lane.clone(),
             custody.inbox.clone(),
             offers_stopped,
+            retries,
             saved,
         ));
-        run_custody(custody, receiver, offers, stop, sink).await;
+        run_custody(custody, receiver, offers, retry_offers, stop, sink).await;
         stop_offers.send_replace(true);
         let _ = taking.await;
     };
@@ -204,6 +206,7 @@ async fn run_custody(
     mut custody: CustodyLink,
     mut commands: mpsc::Receiver<CustodyCommand>,
     mut offers: mpsc::UnboundedReceiver<Result<TakenEvent, InboxCustodyError>>,
+    retry_offers: mpsc::Sender<()>,
     mut stop: watch::Receiver<bool>,
     sink: Arc<dyn CustodyEventSink>,
 ) {
@@ -293,9 +296,7 @@ async fn run_custody(
             },
             () = sleep_until(clock.as_ref(), inbox_wake.map(|(_, wake)| wake)) => {
                 inbox_mark = inbox_wake.map(|(mark, _)| mark);
-                for error in custody.retry_inbox().await {
-                    sink.record_event(CustodyTaskEvent::Failed(error.into()));
-                }
+                let _ = retry_offers.try_send(());
                 if receipts.is_none() {
                     match custody.prepare_receipt_turn().await {
                         Ok(Some(frame)) => {

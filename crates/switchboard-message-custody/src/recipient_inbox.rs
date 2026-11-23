@@ -3,10 +3,11 @@
 use central_link_protocol::{DeliveryMessage, DirectOfferBody, DirectOfferMessage, TimeLeft};
 use router_clock::RuntimeClock;
 use state_machine_core::StateMachine;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use switchboard_machine_core_store::{
     InboxDecision, InboxRefusalReason, InboxStore, InboxStoreError, RecordDelivery,
 };
+use tokio::sync::Mutex;
 use workspace_ids::{MachineId, MessageId, SessionRef};
 use workspace_model::{
     Timestamp,
@@ -22,8 +23,10 @@ use crate::{
     recipient_sessions::{RecipientSessionAnswer, RecipientSessionDirectory},
 };
 
+const RECIPIENT_LOOKUP_BUDGET: Duration = Duration::from_secs(30);
+
 /// A custody offer assembled from a checked central Deliver frame and the local arrival time.
-enum InboxOffer {
+pub(crate) enum InboxOffer {
     Direct {
         message: Box<DirectOfferMessage>,
         time_left: TimeLeft,
@@ -33,6 +36,23 @@ enum InboxOffer {
         message: Box<MessageRecord>,
         arrived_at: Timestamp,
     },
+}
+
+struct OfferLookup {
+    directory: Arc<dyn RecipientSessionDirectory>,
+    clock: Arc<dyn RuntimeClock>,
+    session: SessionRef,
+}
+
+impl OfferLookup {
+    async fn resolve(self) -> RecipientSessionAnswer {
+        let deadline = self.clock.monotonic_now().after(RECIPIENT_LOOKUP_BUDGET);
+        tokio::select! {
+            biased;
+            () = self.clock.sleep_until(deadline) => RecipientSessionAnswer::CouldNotTell,
+            answer = self.directory.query_recipient_session(&self.session.session_id) => answer,
+        }
+    }
 }
 
 impl InboxOffer {
@@ -181,14 +201,21 @@ impl RecipientInbox {
         &mut self,
         incoming: central_link_client::ValidatedDeliveryOffer,
     ) -> Result<InboxOfferResult, InboxCustodyError> {
+        let offer = self.start_offer(incoming)?;
+        self.keep_or_retain(offer).await
+    }
+
+    pub(crate) fn start_offer(
+        &mut self,
+        incoming: central_link_client::ValidatedDeliveryOffer,
+    ) -> Result<InboxOffer, InboxCustodyError> {
         let (message, time_left) = incoming.into_parts();
         let offer = InboxOffer::from_delivery(*message, time_left, self.clock.utc_now())?;
         let target = offer.target_session();
         if target.machine_id != self.machine_id {
             return Err(InboxCustodyError::WrongMachine(target.machine_id.clone()));
         }
-        let first_offer = self.uncommitted.remove(offer.message_id()).unwrap_or(offer);
-        self.keep_or_retain(first_offer).await
+        Ok(self.uncommitted.remove(offer.message_id()).unwrap_or(offer))
     }
 
     /// The custody task schedules another local attempt at the next minute mark while this is true.
@@ -205,12 +232,39 @@ impl RecipientInbox {
     /// Retry each offered message once, using the first arrival and payload.
     pub async fn retry_uncommitted(&mut self) -> Vec<InboxCustodyError> {
         let mut failures = Vec::new();
-        for offer in std::mem::take(&mut self.uncommitted).into_values() {
+        for offer in self.take_uncommitted().into_values() {
             if let Err(error) = self.keep_or_retain(offer).await {
                 failures.push(error);
             }
         }
         failures
+    }
+
+    pub(crate) fn take_uncommitted(&mut self) -> BTreeMap<MessageId, InboxOffer> {
+        std::mem::take(&mut self.uncommitted)
+    }
+
+    pub(crate) async fn keep_shared_offer(
+        inbox: &Mutex<Self>,
+        offer: InboxOffer,
+    ) -> Result<InboxOfferResult, InboxCustodyError> {
+        let (first_decision, lookup) = {
+            let mut inbox = inbox.lock().await;
+            (
+                inbox.prior_decision(offer.message_id()).await,
+                inbox.offer_lookup(&offer),
+            )
+        };
+        let result = match first_decision {
+            Ok(None) => {
+                let answer = lookup.resolve().await;
+                inbox.lock().await.commit_offer(&offer, answer).await
+            }
+            Ok(Some(decided)) => Ok(decided),
+            Err(error) => Err(error),
+        };
+        inbox.lock().await.retain_on_failure(offer, &result);
+        result
     }
 
     /// Read one session's retained messages in the order supplied by the inbox store.
@@ -266,29 +320,49 @@ impl RecipientInbox {
         &mut self,
         offer: InboxOffer,
     ) -> Result<InboxOfferResult, InboxCustodyError> {
-        let result = self.keep_offer(&offer).await;
+        let result = match self.prior_decision(offer.message_id()).await {
+            Ok(None) => {
+                let answer = self.offer_lookup(&offer).resolve().await;
+                self.commit_offer(&offer, answer).await
+            }
+            Ok(Some(decided)) => Ok(decided),
+            Err(error) => Err(error),
+        };
+        self.retain_on_failure(offer, &result);
+        result
+    }
+
+    fn retain_on_failure(
+        &mut self,
+        offer: InboxOffer,
+        result: &Result<InboxOfferResult, InboxCustodyError>,
+    ) {
         if matches!(
             result,
             Ok(InboxOfferResult::LookupDeferred) | Err(InboxCustodyError::Store(_))
         ) {
             self.uncommitted.insert(offer.message_id().clone(), offer);
         }
-        result
     }
 
-    async fn keep_offer(
+    fn offer_lookup(&self, offer: &InboxOffer) -> OfferLookup {
+        OfferLookup {
+            directory: self.directory.clone(),
+            clock: self.clock.clone(),
+            session: offer.target_session().clone(),
+        }
+    }
+
+    async fn commit_offer(
         &mut self,
         offer: &InboxOffer,
+        answer: RecipientSessionAnswer,
     ) -> Result<InboxOfferResult, InboxCustodyError> {
         let message_id = offer.message_id();
         if let Some(previous) = self.prior_decision(message_id).await? {
             return Ok(previous);
         }
-        let decision = match self
-            .directory
-            .query_recipient_session(&offer.target_session().session_id)
-            .await
-        {
+        let decision = match answer {
             RecipientSessionAnswer::KnownOnce => InboxDecision::Accepted,
             RecipientSessionAnswer::UnknownSession => InboxDecision::Refused {
                 reason: InboxRefusalReason::UnknownSession,

@@ -26,6 +26,7 @@ pub enum CustodyLinkObservation {
         connection: ConnectionAttempt,
         result: InboxOfferResult,
     },
+    LocalRetryCompleted,
     DriverClosed,
 }
 
@@ -73,7 +74,8 @@ pub(crate) async fn take_event(
                 }
                 DeliveryMessage::System(_) | DeliveryMessage::Direct(_) => None,
             };
-            let kept = inbox.lock().await.receive_offer(offer).await?;
+            let first_offer = inbox.lock().await.start_offer(offer)?;
+            let kept = RecipientInbox::keep_shared_offer(inbox, first_offer).await?;
             let accepted = matches!(
                 kept,
                 InboxOfferResult::Recorded {
@@ -101,22 +103,54 @@ pub(crate) async fn run_offer_taker(
     lane: Arc<dyn ReadyLinkLane>,
     inbox: SharedRecipientInbox,
     mut stop: watch::Receiver<bool>,
+    retries: mpsc::Receiver<()>,
     observations: mpsc::UnboundedSender<Result<TakenEvent, InboxCustodyError>>,
 ) {
+    tokio::select! {
+        biased;
+        () = async { let _ = stop.wait_for(|stop| *stop).await; } => {}
+        () = consume_offers(lane, inbox, retries, observations) => {}
+    }
+}
+
+async fn consume_offers(
+    lane: Arc<dyn ReadyLinkLane>,
+    inbox: SharedRecipientInbox,
+    mut retries: mpsc::Receiver<()>,
+    observations: mpsc::UnboundedSender<Result<TakenEvent, InboxCustodyError>>,
+) {
+    let mut lane_open = true;
     loop {
-        let event = tokio::select! {
-            biased;
-            () = async { let _ = stop.wait_for(|stop| *stop).await; } => return,
-            event = lane.next_event() => event,
+        let taken = tokio::select! {
+            event = lane.next_event(), if lane_open => {
+                lane_open = event.is_some();
+                take_event(&inbox, event).await
+            }
+            requested = retries.recv() => {
+                if requested.is_none() {
+                    return;
+                }
+                let offered = inbox.lock().await.take_uncommitted();
+                for offer in offered.into_values() {
+                    if let Err(error) = RecipientInbox::keep_shared_offer(&inbox, offer).await
+                        && observations.send(Err(error)).is_err()
+                    {
+                        return;
+                    }
+                }
+                Ok(TakenEvent {
+                    observation: CustodyLinkObservation::LocalRetryCompleted,
+                    sender_notice: None,
+                })
+            }
         };
-        let stream_closed = event.is_none();
-        let taken = take_event(&inbox, event).await;
         if matches!(&taken, Ok(saved) if saved.sender_notice.is_none()
-            && matches!(saved.observation, CustodyLinkObservation::Delivery { .. }))
+            && matches!(saved.observation, CustodyLinkObservation::Delivery { result, .. }
+                if result != InboxOfferResult::LookupDeferred))
         {
             continue;
         }
-        if observations.send(taken).is_err() || stream_closed {
+        if observations.send(taken).is_err() {
             return;
         }
     }

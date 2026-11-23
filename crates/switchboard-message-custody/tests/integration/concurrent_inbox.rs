@@ -5,6 +5,7 @@ use central_link_client::{
     WriteBatchDisposition,
 };
 use central_link_protocol::{RequestScope, RequestStatusQuery};
+use router_clock::ClockInstant;
 use std::{
     future::Future,
     pin::Pin,
@@ -12,24 +13,31 @@ use std::{
         Arc,
         atomic::{AtomicUsize, Ordering},
     },
+    time::Duration,
 };
-use switchboard_machine_core_store::{InboxStore, MachineLocalStore};
+use switchboard_machine_core_store::{
+    InboxDecision, InboxRefusalReason, InboxStore, MachineLocalStore, OutboxCancellation,
+    OutboxStorage,
+};
 use switchboard_message_custody::{
-    custody_link::CustodyLink,
+    custody_link::{CustodyLink, CustodyLinkObservation},
     custody_status::CustodyRequestStatus,
     custody_task::{CustodyEventSink, CustodyTaskEvent, custody_task},
     outbox_work::OutboxWork,
-    recipient_inbox::RecipientInbox,
+    recipient_inbox::{InboxOfferResult, RecipientInbox},
     recipient_sessions::{RecipientSessionAnswer, RecipientSessionDirectory},
 };
 use tokio::sync::{Mutex, Notify, mpsc, watch};
 use workspace_ids::SessionId;
-use workspace_model::{Caller, ResolvedSender};
+use workspace_model::{
+    Caller, ResolvedSender, Timestamp,
+    central_mail::{MessageBody, MessageRecord},
+};
 
 use super::{
     batch_replay::{NoFlushJitter, ScriptedBatchLane, new_admission},
     inbox_custody::{direct_offer, recipient_session},
-    outbox_timing::{manual_clock, open_outbox},
+    outbox_timing::{manual_clock, open_outbox, thread_post},
 };
 
 struct HoldStatusLane {
@@ -118,6 +126,207 @@ impl CustodyEventSink for RecordEvents {
     }
 }
 
+#[derive(Default)]
+struct HeldDirectory {
+    entered: Notify,
+    cancelled: Notify,
+}
+
+struct LookupLifetime<'directory>(&'directory Notify);
+
+impl Drop for LookupLifetime<'_> {
+    fn drop(&mut self) {
+        self.0.notify_one();
+    }
+}
+
+impl RecipientSessionDirectory for HeldDirectory {
+    fn query_recipient_session<'lookup>(
+        &'lookup self,
+        _: &'lookup SessionId,
+    ) -> Pin<Box<dyn Future<Output = RecipientSessionAnswer> + Send + 'lookup>> {
+        Box::pin(async move {
+            let _lifetime = LookupLifetime(&self.cancelled);
+            self.entered.notify_one();
+            std::future::pending().await
+        })
+    }
+}
+
+#[expect(
+    clippy::panic,
+    reason = "The fixture names the observation that made no progress."
+)]
+async fn custody_turns_to_complete<Output>(
+    operation: impl Future<Output = Output>,
+    observation: &str,
+) -> Output {
+    tokio::select! {
+        biased;
+        output = operation => output,
+        () = async { for _ in 0..50_000 { tokio::task::yield_now().await; } } => {
+            panic!("recipient lookup blocked {observation}");
+        }
+    }
+}
+
+#[tokio::test]
+async fn a_held_directory_does_not_block_status_deadlines_or_shutdown() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("machine_local.sqlite");
+    let session = recipient_session();
+    let start_ms = 1_763_380_780_000;
+    let clock = manual_clock(start_ms);
+    let admission = new_admission(session.machine_id.clone(), clock.clone());
+    let lane = Arc::new(ScriptedBatchLane::new(
+        admission.clone(),
+        Default::default(),
+    ));
+    lane.admitted.send_replace(None);
+    let directory = Arc::new(HeldDirectory::default());
+    let mut inbox_store = InboxStore::new(MachineLocalStore::open(&path).await.unwrap());
+    let owed = MessageRecord::queued_central(
+        "019f0000-0000-7000-8000-000000000b24".parse().unwrap(),
+        session.clone(),
+        MessageBody::Notice { items: Vec::new() },
+        Timestamp::from_timestamp_millis(start_ms).unwrap(),
+    );
+    inbox_store
+        .record_delivery(
+            &owed,
+            InboxDecision::Refused {
+                reason: InboxRefusalReason::UnknownSession,
+            },
+            start_ms,
+        )
+        .await
+        .unwrap();
+    let inbox = RecipientInbox::new(
+        inbox_store,
+        session.machine_id.clone(),
+        directory.clone(),
+        clock.clone(),
+    );
+    let mut store = open_outbox(&path).await;
+    let item = thread_post(63);
+    store.insert(&item, start_ms - 895_000).await.unwrap();
+    let outbox = OutboxWork::new(Box::new(store), clock.clone());
+    let custody = CustodyLink::new(
+        lane.clone(),
+        clock.clone(),
+        Arc::new(NoFlushJitter),
+        outbox,
+        inbox,
+    );
+    let offer = LinkLaneEvent::Deliver {
+        connection: admission.connection,
+        offer: direct_offer("019f0000-0000-7000-8000-000000000b23", "directory is held"),
+        sender: ResolvedSender::Central {},
+    };
+    lane.push_event(offer);
+    let (stop, stopped) = watch::channel(false);
+    let (events, mut observations) = mpsc::unbounded_channel();
+    let (calls, task) = custody_task(custody, stopped, Arc::new(RecordEvents(events)));
+    let running = tokio::spawn(task);
+    custody_turns_to_complete(directory.entered.notified(), "directory entry").await;
+    assert!(
+        custody_turns_to_complete(calls.waiting_for_session(session), "the waiting view")
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let query = RequestStatusQuery {
+        request_id: item.request.clone(),
+        scope: RequestScope::Workspace("019f0000-0000-7000-8000-000000000021".parse().unwrap()),
+    };
+    assert!(matches!(
+        custody_turns_to_complete(calls.request_status(item.caller, query), "sender status").await,
+        CustodyRequestStatus::InOutbox { .. }
+    ));
+    let due = ClockInstant::ZERO.after(Duration::from_secs(5));
+    custody_turns_to_complete(clock.not_due_check_now(due), "deadline registration").await;
+    clock.advance(Duration::from_secs(5)).unwrap();
+    let ending = custody_turns_to_complete(observations.recv(), "the original outbox deadline")
+        .await
+        .unwrap();
+    assert!(matches!(ending, CustodyTaskEvent::Flush(report)
+        if matches!(report.ended.as_slice(), [ended] if ended.request_id == item.request
+            && ended.reason == OutboxCancellation::NotSentWithin15Minutes)));
+    assert!(lane.batch_commands().is_empty());
+    stop.send_replace(true);
+    custody_turns_to_complete(running, "worker shutdown")
+        .await
+        .unwrap();
+    custody_turns_to_complete(directory.cancelled.notified(), "lookup cancellation").await;
+    let mut reopened = InboxStore::new(MachineLocalStore::open(&path).await.unwrap());
+    assert!(matches!(
+        reopened.pending_receipts().await.unwrap().healthy.as_slice(),
+        [receipt] if receipt.message_id == owed.message_id
+    ));
+}
+
+#[tokio::test]
+async fn an_unanswered_lookup_defers_at_its_injected_deadline() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("machine_local.sqlite");
+    let session = recipient_session();
+    let clock = manual_clock(1_763_380_780_000);
+    let directory = Arc::new(HeldDirectory::default());
+    let admission = new_admission(session.machine_id.clone(), clock.clone());
+    let lane = Arc::new(ScriptedBatchLane::new(
+        admission.clone(),
+        Default::default(),
+    ));
+    let inbox = RecipientInbox::new(
+        InboxStore::new(MachineLocalStore::open(&path).await.unwrap()),
+        session.machine_id,
+        directory.clone(),
+        clock.clone(),
+    );
+    let work = OutboxWork::new(Box::new(open_outbox(&path).await), clock.clone());
+    let mut custody = CustodyLink::new(
+        lane.clone(),
+        clock.clone(),
+        Arc::new(NoFlushJitter),
+        work,
+        inbox,
+    );
+    lane.push_event(LinkLaneEvent::Deliver {
+        connection: admission.connection.clone(),
+        offer: direct_offer("019f0000-0000-7000-8000-000000000b25", "unanswered lookup"),
+        sender: ResolvedSender::Central {},
+    });
+    let observing = tokio::spawn(async move { custody.observe_next_event().await });
+    custody_turns_to_complete(directory.entered.notified(), "directory entry").await;
+    clock.advance(Duration::from_secs(29)).unwrap();
+    assert!(!observing.is_finished());
+    clock.advance(Duration::from_secs(1)).unwrap();
+    assert_eq!(
+        custody_turns_to_complete(observing, "its injected timeout")
+            .await
+            .unwrap()
+            .unwrap(),
+        CustodyLinkObservation::Delivery {
+            connection: admission.connection,
+            result: InboxOfferResult::LookupDeferred
+        }
+    );
+    custody_turns_to_complete(
+        directory.cancelled.notified(),
+        "timed-out lookup cancellation",
+    )
+    .await;
+    let mut reopened = InboxStore::new(MachineLocalStore::open(&path).await.unwrap());
+    assert!(
+        reopened
+            .pending_receipts()
+            .await
+            .unwrap()
+            .healthy
+            .is_empty()
+    );
+}
+
 #[tokio::test]
 async fn a_full_offer_queue_is_saved_while_the_senders_status_reply_is_outstanding() {
     let root = tempfile::tempdir().unwrap();
@@ -137,8 +346,10 @@ async fn a_full_offer_queue_is_saved_while_the_senders_status_reply_is_outstandi
     });
     let (lookup, mut lookups) = mpsc::unbounded_channel();
     let outbox = OutboxWork::new(Box::new(open_outbox(&path).await), clock.clone());
+    let database = MachineLocalStore::open(&path).await.unwrap();
+    let mut commits = database.subscribe_commits();
     let inbox = RecipientInbox::new(
-        InboxStore::new(MachineLocalStore::open(&path).await.unwrap()),
+        InboxStore::new(database),
         session.machine_id.clone(),
         Arc::new(RecordLookup(lookup)),
         clock.clone(),
@@ -192,6 +403,14 @@ async fn a_full_offer_queue_is_saved_while_the_senders_status_reply_is_outstandi
         }
     }
 
+    drop(
+        custody_turns_to_complete(
+            commits.wait_for(|count| *count == 2),
+            "the two durable offers",
+        )
+        .await
+        .unwrap(),
+    );
     let saved = calls.waiting_for_session(session).await.unwrap();
     assert_eq!(
         saved

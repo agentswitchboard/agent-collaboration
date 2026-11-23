@@ -290,7 +290,8 @@ impl CustodyLink {
                     self.observe_unavailable()?;
                 }
             }
-            CustodyLinkObservation::Delivery { .. } => {}
+            CustodyLinkObservation::Delivery { .. }
+            | CustodyLinkObservation::LocalRetryCompleted => {}
         }
         if let Some(notice) = saved.sender_notice {
             self.record_sender_notice(&notice.target, &notice.message_id)
@@ -571,7 +572,14 @@ impl CustodyLink {
 
     /// Retry offers deferred by local lookup or storage at the next minute wake.
     pub async fn retry_inbox(&mut self) -> Vec<InboxCustodyError> {
-        self.inbox.lock().await.retry_uncommitted().await
+        let mut failures = Vec::new();
+        let offered = self.inbox.lock().await.take_uncommitted();
+        for offer in offered.into_values() {
+            if let Err(error) = RecipientInbox::keep_shared_offer(&self.inbox, offer).await {
+                failures.push(error);
+            }
+        }
+        failures
     }
 
     /// Read typed corruption events on the operator path, independent of session queries.
