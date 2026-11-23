@@ -151,3 +151,6 @@ impl LeaseSource<EnrollmentKey> for EnrollmentLeaseSource {
 #[cfg(test)]
 #[path = "lease_adapter_test.rs"]
 mod tests;
+
+mod link_settings;
+pub use link_settings::{DiscoverySource, LinkSettingsSource};

@@ -11,9 +11,9 @@ use switchboard_machine_enrollment::{
 use super::*;
 
 #[derive(Clone)]
-struct RowStore {
-    row: watch::Sender<StoredEnrollment>,
-    fail_end: watch::Sender<bool>,
+pub(crate) struct RowStore {
+    pub(crate) row: watch::Sender<StoredEnrollment>,
+    pub(crate) fail_end: watch::Sender<bool>,
 }
 
 impl CredentialStore for RowStore {
@@ -100,16 +100,16 @@ impl RefreshSource for SignInScript {
     }
 }
 
-struct Fixture {
-    source: EnrollmentLeaseSource,
-    store: RowStore,
-    clock: Arc<ManualClock>,
+pub(crate) struct Fixture {
+    pub(crate) source: EnrollmentLeaseSource,
+    pub(crate) store: RowStore,
+    pub(crate) clock: Arc<ManualClock>,
     refreshes: mpsc::UnboundedReceiver<oneshot::Sender<RefreshAnswer>>,
-    binding: EnrollmentBinding,
+    pub(crate) binding: EnrollmentBinding,
 }
 
 impl Fixture {
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let deployment =
             SignInDeployment::new("https://sign-in.example/".parse().unwrap()).unwrap();
         let context = EnrollmentContext {
