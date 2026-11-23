@@ -10,6 +10,8 @@ const RETENTION_MILLIS: i64 = 24 * 60 * 60 * 1_000;
 
 #[derive(Debug, thiserror::Error)]
 pub enum InboxStoreError {
+    #[error("inbox timestamp {field} is out of range")]
+    InvalidTimestamp { field: &'static str },
     #[error("inbox storage unavailable")]
     Database(#[from] sqlx::Error),
     #[error("inbox state could not be encoded")]
@@ -207,6 +209,7 @@ impl InboxStore {
         decision: InboxDecision,
         now_ms: i64,
     ) -> Result<RecordDelivery, InboxStoreError> {
+        validate_write_timestamp(now_ms, "created_at")?;
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
         let recorded = match read_delivery(&mut transaction, &message.message_id).await? {
             None => {
@@ -243,6 +246,7 @@ impl InboxStore {
         message_id: &MessageId,
         now_ms: i64,
     ) -> Result<(), InboxStoreError> {
+        validate_write_timestamp(now_ms, "updated_at")?;
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
         let mut delivery = read_delivery(&mut transaction, message_id)
             .await?
@@ -262,6 +266,7 @@ impl InboxStore {
         message_id: &MessageId,
         now_ms: i64,
     ) -> Result<(), InboxStoreError> {
+        validate_write_timestamp(now_ms, "updated_at")?;
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
         let mut delivery = read_delivery(&mut transaction, message_id)
             .await?
@@ -331,6 +336,7 @@ impl InboxStore {
     }
 
     pub async fn prune_ended(&mut self, now_ms: i64) -> Result<StoreScan<u64>, InboxStoreError> {
+        validate_write_timestamp(now_ms, "now_ms")?;
         let cutoff = now_ms.saturating_sub(RETENTION_MILLIS);
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
         let StoreScan {
@@ -419,6 +425,12 @@ async fn update_delivery(
     .execute(connection)
     .await?;
     Ok(())
+}
+
+fn validate_write_timestamp(value: i64, field: &'static str) -> Result<(), InboxStoreError> {
+    workspace_model::Timestamp::from_timestamp_millis(value)
+        .map(|_| ())
+        .ok_or(InboxStoreError::InvalidTimestamp { field })
 }
 
 fn unexpected(message_id: &MessageId, expected: &'static str) -> InboxStoreError {

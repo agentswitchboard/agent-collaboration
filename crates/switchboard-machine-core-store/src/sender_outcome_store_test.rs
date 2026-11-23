@@ -5,7 +5,7 @@ use crate::{
 };
 use workspace_model::central_mail::{MessageOutcome, MessageRefusal, WaitingReason};
 
-fn direct_write(seed: u16) -> NewOutboxItem {
+pub(super) fn direct_write(seed: u16) -> NewOutboxItem {
     NewOutboxItem {
         request: uuid_v7(seed).parse().unwrap(),
         caller: caller(1),

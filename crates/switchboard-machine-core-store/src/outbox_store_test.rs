@@ -12,6 +12,8 @@ use workspace_model::{
 
 #[path = "outbox_admission_test.rs"]
 mod admission;
+#[path = "outbox_claim_guard_test.rs"]
+mod claim_guards;
 #[path = "outbox_corruption_test.rs"]
 mod corruption;
 #[path = "outbox_store_model_test.rs"]

@@ -107,6 +107,8 @@ impl<'store> MacOutbox<'store> {
         item: &NewOutboxItem,
         now_ms: i64,
     ) -> Result<OutboxInsert, OutboxStoreError> {
+        validate_write_timestamp(now_ms, "created_at")?;
+        validate_write_timestamp(item.flush_at_ms, "flush_at_ms")?;
         if item.payload.request_id() != Some(&item.request) {
             return Err(OutboxStoreError::RequestIdMismatch {
                 request: item.request.clone(),
@@ -145,10 +147,6 @@ impl<'store> MacOutbox<'store> {
         }
         // The creation stamp is the agent's send time (design 2026-11-17).
         outbox_content(request_id, &item.payload)?;
-        for (value, field) in [(now_ms, "created_at"), (flush_at_ms, "flush_at_ms")] {
-            Timestamp::from_timestamp_millis(value)
-                .ok_or(OutboxStoreError::InvalidTimestamp { field })?;
-        }
         let expires_at_ms = crate::outbox_deadline::expires_at_ms(now_ms);
         sqlx::query!(
             "INSERT INTO outbox_items
@@ -183,6 +181,12 @@ impl<'store> MacOutbox<'store> {
         Ok(stored.status)
     }
 }
+fn validate_write_timestamp(value: i64, field: &'static str) -> Result<(), OutboxStoreError> {
+    Timestamp::from_timestamp_millis(value)
+        .map(|_| ())
+        .ok_or(OutboxStoreError::InvalidTimestamp { field })
+}
+
 #[cfg(test)]
 #[path = "outbox_store_test.rs"]
 mod tests;

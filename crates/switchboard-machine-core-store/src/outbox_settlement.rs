@@ -3,6 +3,7 @@ use crate::{
     LocalOutboxRefusal, OutboxAccepted, OutboxQueuedWrite, OutboxRefusal, OutboxWriteTarget,
 };
 use central_link_protocol::{ReplyPayload, RequestRefusal};
+use workspace_ids::RequestId;
 use workspace_model::{
     ItemRef, RefusalReason, WorkspaceAnswer, WorkspaceResult,
     central_mail::{CentralMailAnswer, CentralMailRefusal, CentralMailResult},
@@ -10,7 +11,11 @@ use workspace_model::{
 
 /// A terminal result the outbox can persist after a claim.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct OutboxWriteOutcome(SettledWrite);
+pub struct OutboxWriteOutcome {
+    request_id: RequestId,
+    target: OutboxWriteTarget,
+    settlement: SettledWrite,
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum SettledWrite {
@@ -27,11 +32,18 @@ impl OutboxWriteOutcome {
         write: &OutboxQueuedWrite,
         reply: ReplyPayload,
     ) -> Result<Self, InvalidOutboxOutcome> {
+        let request_id = write.request_id().ok_or(InvalidOutboxOutcome)?.clone();
         let target = write.content().ok_or(InvalidOutboxOutcome)?.target;
         let refusal = match &reply {
             ReplyPayload::Workspace(reply) => match &reply.result {
                 WorkspaceResult::Refused(reason) => Some(RequestRefusal::Workspace(reason.clone())),
-                WorkspaceResult::NotFound { item, .. } => {
+                WorkspaceResult::NotFound { workspace_id, item } => {
+                    if !matches!(&target, OutboxWriteTarget::Thread {
+                        workspace_id: Some(claimed_workspace), ..
+                    } if claimed_workspace == workspace_id)
+                    {
+                        return Err(InvalidOutboxOutcome);
+                    }
                     Some(RequestRefusal::Workspace(RefusalReason::NotFound {
                         item: item.clone(),
                     }))
@@ -43,34 +55,53 @@ impl OutboxWriteOutcome {
             }
             ReplyPayload::Mail(_) => None,
         };
-        match refusal {
-            Some(reason) => Self::from_refusal(write, OutboxRefusal::Central(reason)),
-            None => accepted_reply(&target, reply)
-                .map(|answer| Self(SettledWrite::Answered(answer)))
-                .ok_or(InvalidOutboxOutcome),
-        }
+        let settlement = match refusal {
+            Some(reason) => checked_refusal(&target, OutboxRefusal::Central(reason))?,
+            None => {
+                SettledWrite::Answered(accepted_reply(&target, reply).ok_or(InvalidOutboxOutcome)?)
+            }
+        };
+        Ok(Self {
+            request_id,
+            target,
+            settlement,
+        })
     }
 
     pub fn from_refusal(
         write: &OutboxQueuedWrite,
         refusal: OutboxRefusal,
     ) -> Result<Self, InvalidOutboxOutcome> {
+        let request_id = write.request_id().ok_or(InvalidOutboxOutcome)?.clone();
         let target = write.content().ok_or(InvalidOutboxOutcome)?.target;
-        if !is_permanent_refusal(&target, &refusal) {
-            return Err(InvalidOutboxOutcome);
-        }
-        Ok(Self(SettledWrite::Refused(refusal)))
+        let settlement = checked_refusal(&target, refusal)?;
+        Ok(Self {
+            request_id,
+            target,
+            settlement,
+        })
     }
 
-    pub(crate) fn for_target(
+    pub(crate) fn for_claim(
         &self,
+        request_id: &RequestId,
         target: &OutboxWriteTarget,
     ) -> Result<&SettledWrite, InvalidOutboxOutcome> {
-        let matches = match &self.0 {
-            SettledWrite::Answered(reply) => is_permanent_answer(target, reply),
-            SettledWrite::Refused(refusal) => is_permanent_refusal(target, refusal),
-        };
-        matches.then_some(&self.0).ok_or(InvalidOutboxOutcome)
+        // The target encodes the operation and the owning scope.
+        (self.request_id == *request_id && self.target == *target)
+            .then_some(&self.settlement)
+            .ok_or(InvalidOutboxOutcome)
+    }
+}
+
+fn checked_refusal(
+    target: &OutboxWriteTarget,
+    refusal: OutboxRefusal,
+) -> Result<SettledWrite, InvalidOutboxOutcome> {
+    if is_permanent_refusal(target, &refusal) {
+        Ok(SettledWrite::Refused(refusal))
+    } else {
+        Err(InvalidOutboxOutcome)
     }
 }
 

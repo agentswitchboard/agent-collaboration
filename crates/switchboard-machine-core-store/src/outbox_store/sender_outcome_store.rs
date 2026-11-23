@@ -2,6 +2,7 @@
 use super::{
     MacOutbox, OutboxStoreError,
     outbox_rows::{StoredPayload, outbox_content, payload_content_digest, read_owned_outbox},
+    validate_write_timestamp,
 };
 use crate::{
     OutboxAccepted, OutboxCancellation, OutboxRequestStatus, OutboxWriteTarget,
@@ -19,6 +20,7 @@ impl MacOutbox<'_> {
         notice: &StoredSenderOutcome,
         now_ms: i64,
     ) -> Result<bool, OutboxStoreError> {
+        validate_write_timestamp(now_ms, "updated_at")?;
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
         let Some(row) = read_owned_outbox(&mut transaction, caller, &notice.request_id).await?
         else {
