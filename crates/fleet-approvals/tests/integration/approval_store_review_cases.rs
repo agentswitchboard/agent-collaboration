@@ -29,13 +29,19 @@ async fn native_approval_touch_applies_its_deadline_before_the_projected_alarm()
     ));
     let deadline = HOUR + 1;
     let touched_at = deadline + 1;
-    let due_rows = fixture.due_rows(time(deadline), 1).await;
+    let alarm_mark = HOUR + 300_000;
+    assert!(fixture.due_rows(time(alarm_mark - 1), 1).await.is_empty());
+    let due_rows = fixture.due_rows(time(alarm_mark), 1).await;
     let [approval] = due_rows.as_slice() else {
         panic!("expected one indexed approval deadline: {due_rows:?}");
     };
-    assert_eq!(approval.effective_due_ms, deadline);
+    assert_eq!(approval.occurrence_ms, deadline);
+    assert_eq!(approval.effective_due_ms, alarm_mark);
     let alarm_times = fixture.read_alarm_times().await;
-    assert_eq!(alarm_times.earliest_on_grid_due_unix_millis, Some(deadline));
+    assert_eq!(
+        alarm_times.earliest_on_grid_due_unix_millis,
+        Some(alarm_mark)
+    );
     assert_eq!(
         next_alarm(&AlarmInputs {
             retained_mark: None,
@@ -45,7 +51,7 @@ async fn native_approval_touch_applies_its_deadline_before_the_projected_alarm()
             earliest_on_grid_due: alarm_times.earliest_on_grid_due_unix_millis.map(time),
             earliest_legacy_due: alarm_times.earliest_legacy_due_unix_millis.map(time),
         }),
-        AlarmDecision::SetAt(time(HOUR + 300_000))
+        AlarmDecision::SetAt(time(alarm_mark))
     );
 
     fixture.clock.set_millis(touched_at);
@@ -66,7 +72,7 @@ async fn native_approval_touch_applies_its_deadline_before_the_projected_alarm()
         panic!("the touch did not retain a timeout");
     };
     assert_eq!(offer.request.clone().into_ending(), Ending::TimedOut {});
-    assert!(fixture.due_rows(time(touched_at), 1).await.is_empty());
+    assert!(fixture.due_rows(time(alarm_mark), 1).await.is_empty());
 }
 
 #[tokio::test]

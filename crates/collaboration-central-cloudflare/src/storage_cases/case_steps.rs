@@ -133,6 +133,12 @@ pub(crate) enum CasePausePoint {
     BeforeWakeRequestCommit,
     BeforeReceiptTransaction,
     BeforeSessionTransaction,
+    BeforeApprovalCommit,
+    ApprovalEndingNeverReached,
+    ApprovalEndingAnswerApplied,
+    BeforeApprovalEndingWrite,
+    BeforeApprovalEndingEnqueue,
+    BeforeApprovalCarrierTurn,
     AfterIdleExpiryCommit,
     AfterIdleRenewalPlatformSendError,
     BeforePrivateEnrollmentInvalidation,
@@ -166,6 +172,12 @@ impl From<CasePausePoint> for PausePoint {
             CasePausePoint::BeforeWakeRequestCommit => Self::BeforeWakeRequestCommit,
             CasePausePoint::BeforeReceiptTransaction => Self::BeforeReceiptTransaction,
             CasePausePoint::BeforeSessionTransaction => Self::BeforeSessionTransaction,
+            CasePausePoint::BeforeApprovalCommit => Self::BeforeApprovalCommit,
+            CasePausePoint::ApprovalEndingNeverReached => Self::ApprovalEndingNeverReached,
+            CasePausePoint::ApprovalEndingAnswerApplied => Self::ApprovalEndingAnswerApplied,
+            CasePausePoint::BeforeApprovalEndingWrite => Self::BeforeApprovalEndingWrite,
+            CasePausePoint::BeforeApprovalEndingEnqueue => Self::BeforeApprovalEndingEnqueue,
+            CasePausePoint::BeforeApprovalCarrierTurn => Self::BeforeApprovalCarrierTurn,
             CasePausePoint::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
             CasePausePoint::AfterIdleRenewalPlatformSendError => {
                 Self::AfterIdleRenewalPlatformSendError
@@ -204,6 +216,12 @@ impl From<PausePoint> for CasePausePoint {
             PausePoint::BeforeWakeRequestCommit => Self::BeforeWakeRequestCommit,
             PausePoint::BeforeReceiptTransaction => Self::BeforeReceiptTransaction,
             PausePoint::BeforeSessionTransaction => Self::BeforeSessionTransaction,
+            PausePoint::BeforeApprovalCommit => Self::BeforeApprovalCommit,
+            PausePoint::ApprovalEndingNeverReached => Self::ApprovalEndingNeverReached,
+            PausePoint::ApprovalEndingAnswerApplied => Self::ApprovalEndingAnswerApplied,
+            PausePoint::BeforeApprovalEndingWrite => Self::BeforeApprovalEndingWrite,
+            PausePoint::BeforeApprovalEndingEnqueue => Self::BeforeApprovalEndingEnqueue,
+            PausePoint::BeforeApprovalCarrierTurn => Self::BeforeApprovalCarrierTurn,
             PausePoint::AfterIdleExpiryCommit => Self::AfterIdleExpiryCommit,
             PausePoint::AfterIdleRenewalPlatformSendError => {
                 Self::AfterIdleRenewalPlatformSendError

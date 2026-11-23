@@ -33,6 +33,7 @@ use tokio::{
 };
 
 mod custody_journey;
+mod simulated_link;
 
 struct RealLeases {
     central: Arc<MachineLinkFixture>,

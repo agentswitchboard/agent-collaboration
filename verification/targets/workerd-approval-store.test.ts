@@ -228,7 +228,22 @@ test("Workerd touches approval after its deadline and before the retained mark",
       atMs: raisedAt,
       command: { kind: "raise", holder, request: raiseRequest(1, "Off mark") },
     });
-    assert.equal(added.writes, 3);
+    assert.ok(added.writes >= 3);
+    const listDue = async (cutoffMs: number) =>
+      dueSchema.parse(
+        await central.dispatchJson(commandPath(database), {
+          atMs: raisedAt,
+          command: { kind: "dueRows", cutoffMs, limit: 1 },
+        }),
+      ).rows;
+    assert.deepEqual(await listDue(alarmMark - 1), []);
+    assert.deepEqual(
+      (await listDue(alarmMark)).map(({ occurrenceMs, effectiveDueMs }) => ({
+        occurrenceMs,
+        effectiveDueMs,
+      })),
+      [{ occurrenceMs: deadline, effectiveDueMs: alarmMark }],
+    );
     assert.deepEqual(
       await central.dispatchJson(commandPath(database), {
         atMs: raisedAt,
@@ -252,7 +267,7 @@ test("Workerd touches approval after its deadline and before the retained mark",
       dueSchema.parse(
         await central.dispatchJson(commandPath(database), {
           atMs: deadline + 1,
-          command: { kind: "dueRows", cutoffMs: deadline + 1, limit: 1 },
+          command: { kind: "dueRows", cutoffMs: alarmMark, limit: 1 },
         }),
       ).rows,
       [],

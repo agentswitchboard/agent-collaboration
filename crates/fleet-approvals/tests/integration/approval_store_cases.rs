@@ -471,7 +471,13 @@ async fn a_page_times_out_only_its_rows_and_held_alarms_cannot_restore_waiting()
         offers[0].request.as_ref().clone().into_ending(),
         Ending::TimedOut {}
     );
-    assert_eq!(fixture.due_rows(time(HOUR + 10), 10).await.len(), 1);
+    assert!(fixture.due_rows(time(HOUR + 10), 10).await.is_empty());
+    let next_mark = fixture.due_rows(time(HOUR + 300_000), 10).await;
+    assert_eq!(next_mark.len(), 1);
+    assert_eq!(
+        next_mark.first().map(|row| row.occurrence_ms),
+        Some(HOUR + 1)
+    );
 }
 
 #[tokio::test]

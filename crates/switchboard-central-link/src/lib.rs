@@ -11,3 +11,5 @@ mod socket_upgrade;
 mod wire_write_fence;
 pub use socket_upgrade::{AddressError, DialAddress};
 pub mod link_driver;
+#[cfg(feature = "test-support")]
+mod test_transport;

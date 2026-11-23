@@ -93,6 +93,15 @@ pub(crate) struct SenderNoticeProjection {
 pub use crate::offer_taker::CustodyLinkObservation;
 
 /// Custody owns the stores, one minute scheduler and one consumer of the driver's admitted message lane.
+/// The [custody task](crate::custody_task::custody_task) sends durable receipts on the scheduled turn.
+///
+/// ```compile_fail,E0599
+/// use switchboard_message_custody::custody_link::CustodyLink;
+///
+/// async fn send_without_a_scheduled_turn(custody: &mut CustodyLink) {
+///     let _ = custody.flush_receipts().await;
+/// }
+/// ```
 pub struct CustodyLink {
     pub(crate) lane: Arc<dyn ReadyLinkLane>,
     pub(crate) clock: Arc<dyn RuntimeClock>,
@@ -703,18 +712,6 @@ impl CustodyLink {
             report.issues.push(BatchDispatchError::Work(error));
         }
         Ok(())
-    }
-
-    /// Submit a frame of durable inbox receipts for the current connection.
-    pub async fn flush_receipts(
-        &mut self,
-    ) -> Result<Option<ReceiptFrameOutcome>, CustodyLinkError> {
-        let Some(frame) = self.prepare_receipt_turn().await? else {
-            return Ok(None);
-        };
-        let send_before = self.clock.monotonic_now().after(IMMEDIATE_COMMAND_WINDOW);
-        let disposition = self.lane.submit_receipts(frame.command(send_before)).await;
-        Ok(Some(self.settle_receipt_turn(frame, disposition).await?))
     }
 
     pub(crate) async fn prepare_receipt_turn(

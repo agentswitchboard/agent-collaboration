@@ -102,19 +102,32 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         plan: MachineLoginPlan<Answer>,
     ) -> Result<(Answer, Option<EnrollmentInvalidation>), StoreFailure> {
         let (answer, statements, invalidation) = plan.into_applying();
-        self.apply_machine_login_statements(statements).await?;
+        self.apply_machine_login_write(statements, invalidation.as_ref())
+            .await?;
         Ok((answer, invalidation))
     }
 
-    pub(crate) async fn apply_machine_login_statements(
+    pub(crate) async fn apply_machine_login_write(
         &self,
         statements: Vec<central_storage::GuardedStatement>,
+        invalidation: Option<&EnrollmentInvalidation>,
     ) -> Result<(), StoreFailure> {
         #[cfg(feature = "test-support")]
         self.execution
             .pause_points()
             .reached_central(fleet_runtime::PausePoint::AfterSignInSample)
             .await;
+        if let Some(invalidation) = invalidation
+            && let Some(dispatcher) = &self.link_call_dispatcher
+        {
+            return dispatcher
+                .end_approval_enrollment(
+                    self.execution.organization().clone(),
+                    invalidation.clone(),
+                    statements,
+                )
+                .await;
+        }
         if !statements.is_empty() {
             match self
                 .execution

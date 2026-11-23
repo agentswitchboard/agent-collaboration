@@ -1,9 +1,10 @@
 //! V3 applies the real approvals service in a test-only SQLite Durable Object.
 use std::{
-    cell::{Cell, RefCell},
+    cell::Cell,
+    future::Future,
     num::NonZeroU16,
-    rc::Rc,
-    sync::{Arc, Mutex},
+    pin::Pin,
+    sync::{Arc, Mutex, PoisonError},
 };
 
 use approval_request_protocol::CentralTime;
@@ -21,6 +22,8 @@ use sqlx_durable_object::DoConnection;
 use uuid::{NoContext, Timestamp, Uuid};
 use worker::{Response, State};
 
+#[path = "approval_store_witness/fixture_alarm.rs"]
+mod fixture_alarm;
 #[path = "approval_store_witness/fixture_commands.rs"]
 mod fixture_commands;
 #[path = "approval_store_witness/fixture_transaction.rs"]
@@ -106,13 +109,13 @@ pub(super) async fn apply_fixture(
         return observe_due_rows(state, cutoff_ms, limit).await;
     }
     if matches!(input.command, ApprovalWitnessCommand::PublishAlarmMark) {
-        return publish_alarm_mark(state, connection, input.at_ms).await;
+        return fixture_alarm::publish_alarm_mark(state, connection, input.at_ms).await;
     }
-    let evidence = Rc::new(RefCell::new(FixtureEvidence::default()));
+    let evidence = Arc::new(Mutex::new(FixtureEvidence::default()));
     let outcome = complete_approval_commit(WorkerApprovalCommit {
         connection,
         input,
-        evidence: Rc::clone(&evidence),
+        evidence: Arc::clone(&evidence),
     })
     .await
     .and_then(|(proof, (reply, holder_effects))| {
@@ -131,7 +134,7 @@ pub(super) async fn apply_fixture(
             .collect::<Result<Vec<_>, _>>()?;
         reply(&proof, offers)
     });
-    let evidence = evidence.borrow();
+    let evidence = evidence.lock().unwrap_or_else(PoisonError::into_inner);
     let (reply, error) = match outcome {
         Ok(value) => (Some(value), None),
         Err(WitnessFailure::Apply(failure)) => (None, Some(format!("{failure:?}"))),
@@ -144,51 +147,6 @@ pub(super) async fn apply_fixture(
         "rowsChanged": evidence.rows_changed,
         "committed": error.is_none(),
     }))
-}
-
-async fn publish_alarm_mark(
-    state: &State,
-    connection: &DoConnection,
-    now_ms: i64,
-) -> worker::Result<Response> {
-    use crate::statement_store::{AlarmPolicy, run_batch};
-    use central_storage::{
-        AlarmPublication, AlarmUpdate, BatchOutcome, EngineAlarmPlan, GuardedStatement,
-        RowExpectation, Statement, StatementBatch,
-    };
-
-    let clock = crate::worker_clock::WorkspaceClock::default();
-    clock.hold(now_ms);
-    let decision = fleet_runtime::engine_alarm_decider(Arc::default());
-    let batch = StatementBatch {
-        statements: vec![GuardedStatement {
-            statement: Statement {
-                sql: include_str!(
-                    "../../../fleet-approvals/tests/fixtures/approval_alarm_provisioned.sql"
-                ),
-                args: vec![],
-            },
-            expect: RowExpectation::Any,
-        }],
-        alarm: AlarmUpdate::Engine(EngineAlarmPlan::Recompute),
-    };
-    let outcome = run_batch(
-        connection,
-        batch.into(),
-        AlarmPolicy::Engine(state.storage(), clock, decision),
-    )
-    .await
-    .map_err(witness_error)?;
-    if !matches!(
-        outcome,
-        BatchOutcome::Applied {
-            publication: AlarmPublication::Set { .. },
-            ..
-        }
-    ) {
-        return Err(witness_error("approval fixture alarm did not publish"));
-    }
-    Response::from_json(&json!({ "alarmMs": state.storage().get_alarm().await? }))
 }
 
 async fn observe_due_rows(state: &State, cutoff_ms: i64, limit: usize) -> worker::Result<Response> {
@@ -514,35 +472,37 @@ type PendingWitnessApply = (WitnessReply, Option<PendingApprovalHolderEffects>);
 struct WorkerApprovalCommit<'storage> {
     connection: &'storage DoConnection,
     input: ApprovalWitnessInput,
-    evidence: Rc<RefCell<FixtureEvidence>>,
+    evidence: Arc<Mutex<FixtureEvidence>>,
 }
 
-impl ApprovalCommitOwner<PendingWitnessApply> for WorkerApprovalCommit<'_> {
+impl<'owner> ApprovalCommitOwner<PendingWitnessApply> for WorkerApprovalCommit<'owner> {
     type Error = WitnessFailure;
 
-    async fn apply_and_commit(
-        self,
-        commit: ApprovalCommitScope,
-    ) -> Result<PendingWitnessApply, Self::Error> {
-        let Self {
-            connection,
-            input,
-            evidence,
-        } = self;
-        connection
-            .transaction(move |transaction| async move {
-                let mut transaction = WorkerApprovalTransaction {
-                    organization_id: fleet_identity_protocol::OrganizationId::try_from(
-                        "019ac19f-aa00-7000-8000-0000000013ed".to_owned(),
-                    )
-                    .map_err(|_| WitnessFailure::Storage)?,
-                    transaction,
-                    fail_after_write: input.fail_after_write,
-                    evidence,
-                };
-                apply_command(&mut transaction, input, &commit).await
-            })
-            .await
+    type Commit =
+        Pin<Box<dyn Future<Output = Result<PendingWitnessApply, Self::Error>> + Send + 'owner>>;
+
+    fn apply_and_commit(self, commit: ApprovalCommitScope) -> Self::Commit {
+        Box::pin(async move {
+            let Self {
+                connection,
+                input,
+                evidence,
+            } = self;
+            connection
+                .transaction(move |transaction| async move {
+                    let mut transaction = WorkerApprovalTransaction {
+                        organization_id: fleet_identity_protocol::OrganizationId::try_from(
+                            "019ac19f-aa00-7000-8000-0000000013ed".to_owned(),
+                        )
+                        .map_err(|_| WitnessFailure::Storage)?,
+                        transaction,
+                        fail_after_write: input.fail_after_write,
+                        evidence,
+                    };
+                    apply_command(&mut transaction, input, &commit).await
+                })
+                .await
+        })
     }
 }
 

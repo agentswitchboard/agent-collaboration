@@ -159,20 +159,29 @@ pub(super) fn check_resolved(metadata: &CargoMetadata) -> PolicyResult<()> {
 #[derive(Clone, Copy, Debug)]
 enum BuildView {
     Production,
+    AllStoreFeatures,
     Tests,
 }
 
 impl BuildView {
     const fn edge_kinds(self) -> &'static str {
         match self {
-            Self::Production => "normal,build",
+            Self::Production | Self::AllStoreFeatures => "normal,build",
             Self::Tests => "normal,build,dev",
         }
     }
 }
 
 pub(super) fn check_package_trees(root: &Path) -> PolicyResult<()> {
-    for view in [BuildView::Production, BuildView::Tests] {
+    for view in [
+        BuildView::Production,
+        BuildView::AllStoreFeatures,
+        BuildView::Tests,
+    ] {
+        let features = match view {
+            BuildView::Production => &[][..],
+            BuildView::AllStoreFeatures | BuildView::Tests => &["--all-features"][..],
+        };
         let output = Command::new("cargo")
             .args([
                 "tree",
@@ -180,7 +189,6 @@ pub(super) fn check_package_trees(root: &Path) -> PolicyResult<()> {
                 "--offline",
                 "--color",
                 "never",
-                "--all-features",
                 "--package",
                 CORE_STORE,
                 "--edges",
@@ -190,6 +198,7 @@ pub(super) fn check_package_trees(root: &Path) -> PolicyResult<()> {
                 "--format",
                 "{p}\t{f}\t",
             ])
+            .args(features)
             .current_dir(root)
             .output()?;
         if !output.status.success() {
@@ -217,18 +226,17 @@ fn check_tree(tree: &str, view: BuildView) -> PolicyResult<()> {
             .next()
             .ok_or("machine core tree is missing a feature column")?;
         found_store |= name == CORE_STORE;
-        if upper_layer(name) || matches!(view, BuildView::Production) && name == "hegeltest" {
+        if upper_layer(name) || !matches!(view, BuildView::Tests) && name == "hegeltest" {
             return Err(
                 format!("forbidden reachable {view:?} dependency {CORE_STORE} -> {name}").into(),
             );
         }
         for feature in features.split(',').filter(|feature| !feature.is_empty()) {
             let forbidden = match name {
-                CORE_STORE | "workspace-model" | "workspace-ids" | "sqlite-storage-maintenance" => {
-                    true
-                }
+                CORE_STORE => matches!(view, BuildView::Production) || feature != "test-support",
+                "workspace-model" | "workspace-ids" | "sqlite-storage-maintenance" => true,
                 "router-clock" => match view {
-                    BuildView::Production => true,
+                    BuildView::Production | BuildView::AllStoreFeatures => true,
                     BuildView::Tests => feature != "test-support",
                 },
                 "sqlx" => !SQLITE_RESOLVED_FEATURES.contains(&feature),

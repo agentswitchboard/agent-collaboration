@@ -6,7 +6,9 @@ use central_link_protocol::{
     CentralCall, CorrelationId, DataFrame, FrameDirection, LinkFrame, MachineLinkCloseCode,
     TypedCallResult, encode_text,
 };
-use collaboration_central_core::ValidatedMachineConnection;
+use collaboration_central_core::{
+    TypedCallCarrier, ValidatedMachineConnection, is_approval_holder_call,
+};
 use std::{
     future::{Future, poll_fn},
     task::{Context, Poll},
@@ -21,8 +23,28 @@ pub(super) async fn reply_to_typed_call(
     correlation_id: CorrelationId,
     request: Option<CentralCall>,
 ) -> bool {
+    let (carrier, turn) = if is_approval_holder_call(request.as_ref()) {
+        #[cfg(feature = "test-support")]
+        runtime
+            .runtime()
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::BeforeApprovalCarrierTurn)
+            .await;
+        let turn = runtime.runtime().take_central_turn_for_admission().await;
+        if writes.stop.is_cancelled() || writes.replaced.is_cancelled() {
+            return false;
+        }
+        (
+            TypedCallCarrier::Approval {
+                registered_run: calls.registered_run(),
+            },
+            Some(turn),
+        )
+    } else {
+        (TypedCallCarrier::Session, None)
+    };
     let dispatched = match runtime
-        .dispatch_typed_central_call(&connection.attachment(), request)
+        .dispatch_typed_central_call(connection.attachment_ref(), request, carrier)
         .await
     {
         Ok(dispatched) => dispatched,
@@ -34,7 +56,23 @@ pub(super) async fn reply_to_typed_call(
     if let Some(run) = dispatched.registered_run {
         calls.bind_run(run);
     }
-    send_central_call_result(socket, writes, correlation_id, dispatched.result).await
+    drop(turn);
+    if !send_central_call_result(socket, writes, correlation_id, dispatched.result).await {
+        return false;
+    }
+    if let Some(completion) = dispatched.completion {
+        let stop = writes.stop.clone();
+        let replaced = writes.replaced.clone();
+        writes.tasks.spawn(async move {
+            tokio::select! {
+                biased;
+                () = stop.cancelled() => {}
+                () = replaced.cancelled() => {}
+                () = completion => {}
+            }
+        });
+    }
+    true
 }
 
 #[cfg(feature = "test-support")]
@@ -105,6 +143,14 @@ pub(super) async fn offer_mac_call(
     calls: &MacCallReceiver,
     queued: QueuedMacCall,
 ) -> bool {
+    #[cfg(feature = "test-support")]
+    if queued.is_approval_ending() {
+        runtime
+            .runtime()
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::BeforeApprovalEndingWrite)
+            .await;
+    }
     let deadline = queued.deadline();
     let Ok(text) = encode_text(&queued.frame(), FrameDirection::ToRouter) else {
         return false;

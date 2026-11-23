@@ -5,7 +5,9 @@ use central_storage::{AlarmPublication, AlarmPublicationFailure, EngineAlarmPlan
 use fleet_runtime_ports::Clock;
 use sqlx_durable_object::DoTransaction;
 
-use super::{alarm_out_of_range, alarm_time};
+use central_storage::{CorruptReason, ReadOutcome, SqlValue};
+use sqlx_core::column::Column;
+use sqlx_durable_object::DoRow;
 
 pub(super) async fn apply_alarm(
     transaction: &DoTransaction,
@@ -87,4 +89,33 @@ pub(super) async fn apply_alarm(
         });
     }
     Ok(publication)
+}
+
+/// The alarm `SetFromQuery` asks for: one INTEGER Unix-millisecond value, or NULL.
+pub(super) fn alarm_time(outcome: &ReadOutcome) -> Result<Option<i64>, StoreFailure> {
+    let column = outcome.columns.first().cloned().unwrap_or_default();
+    let bad_value = || StoreFailure::Corrupt {
+        reason: CorruptReason::BadValue {
+            column: column.clone(),
+        },
+    };
+    match outcome.rows.as_slice() {
+        [row] => match row.as_slice() {
+            [SqlValue::Integer(at)] => Ok(Some(at.get())),
+            [SqlValue::Null] => Ok(None),
+            _ => Err(bad_value()),
+        },
+        _ => Err(bad_value()),
+    }
+}
+
+fn alarm_out_of_range(rows: &[DoRow]) -> StoreFailure {
+    let column = rows
+        .first()
+        .and_then(|row| row.columns().first())
+        .map(|column| column.name().to_owned())
+        .unwrap_or_default();
+    StoreFailure::Corrupt {
+        reason: CorruptReason::BadValue { column },
+    }
 }

@@ -134,35 +134,6 @@ pub(crate) fn read_outcome(rows: &[DoRow]) -> Result<ReadOutcome, StoreFailure> 
     Ok(ReadOutcome { columns, rows })
 }
 
-/// The alarm `SetFromQuery` asks for: one INTEGER Unix-millisecond value, or NULL.
-fn alarm_time(outcome: &ReadOutcome) -> Result<Option<i64>, StoreFailure> {
-    let column = outcome.columns.first().cloned().unwrap_or_default();
-    let bad_value = || StoreFailure::Corrupt {
-        reason: CorruptReason::BadValue {
-            column: column.clone(),
-        },
-    };
-    match outcome.rows.as_slice() {
-        [row] => match row.as_slice() {
-            [SqlValue::Integer(at)] => Ok(Some(at.get())),
-            [SqlValue::Null] => Ok(None),
-            _ => Err(bad_value()),
-        },
-        _ => Err(bad_value()),
-    }
-}
-
-fn alarm_out_of_range(rows: &[DoRow]) -> StoreFailure {
-    let column = rows
-        .first()
-        .and_then(|row| row.columns().first())
-        .map(|column| column.name().to_owned())
-        .unwrap_or_default();
-    StoreFailure::Corrupt {
-        reason: CorruptReason::BadValue { column },
-    }
-}
-
 #[cfg(feature = "test-support")]
 #[derive(Debug)]
 struct ReadCountingSqlExecutor<'a, StorageExecutor> {
@@ -462,6 +433,47 @@ pub(super) async fn write_direct_with_engine_alarm<Answer: 'static>(
             MailTransactionAbort::Applying(failure) => failure.into_write_failure(),
             MailTransactionAbort::Commit => fleet_mail::DirectWriteFailure::AnswerLost,
         })
+}
+
+pub(super) async fn read_lent_approval_statement(
+    transaction: &DoTransaction,
+    statement: central_storage::Statement,
+) -> Result<ReadOutcome, StoreFailure> {
+    let rows = bound(&statement.into())
+        .fetch_all(transaction)
+        .await
+        .map_err(|error| store_failure(&error))?;
+    read_outcome(&rows)
+}
+
+pub(super) async fn execute_lent_approval_statement(
+    transaction: &DoTransaction,
+    statement: central_storage::Statement,
+) -> Result<u64, StoreFailure> {
+    bound(&statement.into())
+        .execute(transaction)
+        .await
+        .map(|result| result.rows_affected())
+        .map_err(|error| store_failure(&error))
+}
+
+pub(super) async fn publish_approval_alarm(
+    transaction: &DoTransaction,
+    policy: AlarmPolicy,
+) -> Result<(), StoreFailure> {
+    apply_alarm(
+        transaction,
+        &OwnedAlarmUpdate::Engine(central_storage::EngineAlarmPlan::Recompute),
+        policy,
+    )
+    .await
+    .map(|_| ())
+    .map_err(|stop| match stop {
+        BatchStop::Failed(failure) => failure,
+        BatchStop::GuardFailed { .. }
+        | BatchStop::ConstraintViolated { .. }
+        | BatchStop::StatementRejected { .. } => StoreFailure::Unavailable,
+    })
 }
 
 /// Runs one read outside any write.
