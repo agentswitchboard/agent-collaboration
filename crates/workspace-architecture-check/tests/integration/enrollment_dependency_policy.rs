@@ -101,18 +101,13 @@ fn check_normal_consumers(metadata: &CargoMetadata, target: &CargoPackage) -> Po
             }
             let local_name = dependency.rename.as_deref().unwrap_or(ENROLLMENT);
             let forwarded = consumer.package_features.values().flatten().any(|feature| {
-                feature.split_once('/').is_some_and(|(alias, enabled)| {
-                    alias.trim_end_matches('?') == local_name && enabled == "test-support"
-                })
+                feature
+                    .split_once('/')
+                    .is_some_and(|(alias, _)| alias.trim_end_matches('?') == local_name)
             });
-            if forwarded
-                || dependency
-                    .features
-                    .iter()
-                    .any(|feature| feature == "test-support")
-            {
+            if forwarded || !dependency.features.is_empty() {
                 return Err(format!(
-                    "BD1: {} enables enrollment test-support on a shipping dependency",
+                    "BD1: {} enables an enrollment feature on a shipping dependency",
                     consumer.name
                 )
                 .into());
@@ -124,6 +119,14 @@ fn check_normal_consumers(metadata: &CargoMetadata, target: &CargoPackage) -> Po
 
 pub(super) fn check_declared(metadata: &CargoMetadata) -> PolicyResult {
     let package = enrollment(metadata)?;
+    if package.package_features.len() != 1
+        || !package
+            .package_features
+            .get("test-support")
+            .is_some_and(Vec::is_empty)
+    {
+        return Err("BD1: enrollment declares unapproved feature definitions".into());
+    }
     for dependency in &package.dependencies {
         let kind = dependency.kind.unwrap_or(DependencyKind::Normal);
         let source = match dependency.path.as_deref() {

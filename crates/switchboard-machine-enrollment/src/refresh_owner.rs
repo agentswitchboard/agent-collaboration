@@ -86,6 +86,13 @@ pub enum LeaseConfigurationFault {
 type LeaseResult = Result<AccessLease, LeaseUnavailable>;
 type RefreshFlight = Shared<BoxFuture<'static, (BindingGeneration, RefreshCompletion)>>;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum StaleGrantRetry {
+    Initial,
+    Available,
+    Consumed,
+}
+
 #[derive(Clone)]
 enum RefreshCompletion {
     Committed(AccessLease),
@@ -184,7 +191,7 @@ where
     }
 
     pub async fn lease(&self, request: AccessRequest) -> LeaseResult {
-        let mut followed_stale_access = false;
+        let mut retry = StaleGrantRetry::Initial;
         loop {
             let flight = {
                 let binding = self.inputs.read_binding().await?;
@@ -212,6 +219,12 @@ where
                     && now < until
                 {
                     return Err(unavailable_until(Some(until), now));
+                }
+                if retry == StaleGrantRetry::Consumed {
+                    return Err(LeaseUnavailable::StaleAccessGrant);
+                }
+                if retry == StaleGrantRetry::Available {
+                    retry = StaleGrantRetry::Consumed;
                 }
                 if let Some(flight) = &state.flight {
                     // The shared result records whether it is usable on its own generation.
@@ -261,6 +274,12 @@ where
             }
             state.admit(&binding, request)?;
             let now = self.inputs.clock.monotonic_now();
+            if let RefreshCompletion::Committed(lease) = &result
+                && now >= lease.usable_until
+                && retry == StaleGrantRetry::Initial
+            {
+                retry = StaleGrantRetry::Available;
+            }
             match result {
                 RefreshCompletion::Committed(lease)
                     if binding.generation == lease.binding_generation =>
@@ -270,10 +289,6 @@ where
                         if request.accepts(lease.binding_generation) {
                             return Ok(lease);
                         }
-                    } else if followed_stale_access {
-                        return Err(LeaseUnavailable::StaleAccessGrant);
-                    } else {
-                        followed_stale_access = true;
                     }
                 }
                 RefreshCompletion::Invalid(fault) if binding.generation == origin => {

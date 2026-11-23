@@ -26,6 +26,7 @@ use super::{
 struct StoreState {
     saved: Mutex<StoredEnrollment>,
     hold_write: AtomicBool,
+    hold_write_ack_generation: std::sync::atomic::AtomicU64,
     hold_read: AtomicBool,
     fail_read: AtomicBool,
     hold_remove: AtomicBool,
@@ -112,7 +113,16 @@ impl CredentialStore for FakeStore {
         if self.0.fail_write.load(Ordering::SeqCst) {
             return Err(CredentialStoreError::Replace);
         }
-        Ok(self.write(expected, StoredEnrollment::Active(binding.clone())))
+        let committed = self.write(expected, StoredEnrollment::Active(binding.clone()));
+        poll_fn(|_| {
+            if self.0.hold_write_ack_generation.load(Ordering::SeqCst) == binding.generation.get() {
+                Poll::Pending
+            } else {
+                Poll::Ready(())
+            }
+        })
+        .await;
+        Ok(committed)
     }
 
     async fn remove(
@@ -287,6 +297,7 @@ impl Fixture {
         let store = FakeStore(Arc::new(StoreState {
             saved: Mutex::new(StoredEnrollment::Active(binding(1, 0))),
             hold_write: AtomicBool::new(false),
+            hold_write_ack_generation: std::sync::atomic::AtomicU64::new(0),
             hold_read: AtomicBool::new(false),
             fail_read: AtomicBool::new(false),
             hold_remove: AtomicBool::new(false),

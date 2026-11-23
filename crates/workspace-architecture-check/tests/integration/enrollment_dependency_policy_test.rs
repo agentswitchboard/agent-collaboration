@@ -6,7 +6,7 @@ fn fixture() -> Value {
     json!({
         "packages":[
             {
-                "id":"enrollment-id","name":ENROLLMENT,
+                "id":"enrollment-id","name":ENROLLMENT,"features":{"test-support":[]},
                 "manifest_path":"/workspace/enrollment/Cargo.toml",
                 "dependencies":[
                     {"name":"router-clock","kind":null,"path":"/workspace/clock","source":null,"features":[],"uses_default_features":true},
@@ -158,6 +158,25 @@ fn normal_consumers_cannot_enable_the_plaintext_fixture() {
         if forwarded {
             metadata["packages"][4]["features"] = json!({"debug":["enrollment?/test-support"]});
         }
-        assert_eq!(violation(check_declared(&decode(metadata))), Some("BD1: codex-router-secret-store enables enrollment test-support on a shipping dependency".to_owned()));
+        assert_eq!(violation(check_declared(&decode(metadata))), Some("BD1: codex-router-secret-store enables an enrollment feature on a shipping dependency".to_owned()));
     }
+}
+
+#[test]
+fn enrollment_feature_alias_cannot_reach_the_plaintext_constructor() {
+    let mut input = fixture();
+    input["packages"][0]["features"] = json!({
+        "test-support": [],
+        "fixture-alias": ["test-support"]
+    });
+    input["packages"][4]["dependencies"] = json!([{
+        "name": ENROLLMENT, "kind": null, "path": "/workspace/enrollment",
+        "source": null, "features": ["fixture-alias"], "uses_default_features": true
+    }]);
+
+    let error = violation(check_declared(&decode(input)));
+    assert_eq!(
+        error.as_deref(),
+        Some("BD1: enrollment declares unapproved feature definitions")
+    );
 }

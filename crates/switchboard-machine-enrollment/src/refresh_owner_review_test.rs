@@ -357,3 +357,55 @@ fn explicit_ending_reaches_its_bound_while_a_lease_read_is_held() {
     assert_eq!(fixture.store.snapshot(), old);
     assert!(fixture.server.sent().is_empty());
 }
+
+#[test]
+fn a_superseded_stale_follow_up_cannot_start_a_third_rotation() {
+    let fixture = Fixture::new();
+    fixture.server.stale_answers.store(2, Ordering::SeqCst);
+    fixture
+        .store
+        .0
+        .hold_write_ack_generation
+        .store(3, Ordering::SeqCst);
+    let mut lease = std::pin::pin!(fixture.owner.lease(AccessRequest::Usable));
+    assert!(poll_once(lease.as_mut()).is_pending());
+    assert_eq!(fixture.store.snapshot().generation(), generation(3));
+    assert_eq!(
+        fixture.server.sent(),
+        vec![refresh_secret(0), refresh_secret(1)]
+    );
+
+    let mut successor = binding(4, 2);
+    successor.credential.enrollment_id = "019a0000-0000-7000-8000-000000000008"
+        .parse()
+        .expect("successor");
+    assert_eq!(
+        fixture
+            .store
+            .write(generation(3), StoredEnrollment::Active(successor.clone())),
+        ConditionalWrite::Applied
+    );
+    fixture
+        .store
+        .0
+        .hold_write_ack_generation
+        .store(0, Ordering::SeqCst);
+
+    assert_eq!(
+        poll_once(lease.as_mut()),
+        Poll::Ready(Err(LeaseUnavailable::StaleAccessGrant))
+    );
+    assert_eq!(
+        fixture.server.sent(),
+        vec![refresh_secret(0), refresh_secret(1)]
+    );
+    assert_eq!(
+        fixture.store.snapshot(),
+        StoredEnrollment::Active(successor)
+    );
+    expect_lease(
+        poll_once(std::pin::pin!(fixture.owner.lease(AccessRequest::Usable))),
+        5,
+        3,
+    );
+}
