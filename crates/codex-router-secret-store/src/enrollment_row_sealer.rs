@@ -93,6 +93,46 @@ impl fmt::Debug for EnrollmentRowCredential {
 /// Key capability restricted to sealing and opening enrollment refresh tokens.
 pub struct EnrollmentRowSealer(PooledCredentialDataKey);
 
+/// Holds the shared credential-store boundary for one enrollment replacement.
+pub struct EnrollmentRowReplacement {
+    file_store: FileSecretStore,
+    _credential_lock: CredentialStoreLock,
+}
+
+impl EnrollmentRowReplacement {
+    /// Takes the file lock before the adapter reads its witness or opens a write transaction.
+    pub fn lock(secret_root: &Path) -> Result<Self, SecretStoreError> {
+        let file_store = FileSecretStore::open(secret_root)?;
+        let credential_lock =
+            CredentialStoreLock::acquire(file_store.root(), CredentialStoreLockMode::Exclusive)?;
+        Ok(Self {
+            file_store,
+            _credential_lock: credential_lock,
+        })
+    }
+
+    /// Acquires the key under the held boundary. A missing key may be created only
+    /// with a fresh unsealed witness read by the caller while holding this guard.
+    pub fn acquire_key(
+        &self,
+        sealed_bytes_present: bool,
+    ) -> Result<EnrollmentRowSealer, SecretStoreError> {
+        with_platform_keychain_for_production(|keychain| {
+            self.acquire_key_with_keychain(sealed_bytes_present, keychain)
+        })
+    }
+
+    /// The same locked acquisition through an injected Keychain boundary.
+    pub fn acquire_key_with_keychain(
+        &self,
+        sealed_bytes_present: bool,
+        keychain: &dyn KeychainAccess,
+    ) -> Result<EnrollmentRowSealer, SecretStoreError> {
+        load_enrollment_row_data_key(&self.file_store, keychain, sealed_bytes_present)
+            .map(EnrollmentRowSealer)
+    }
+}
+
 impl EnrollmentRowSealer {
     /// Acquires the key using the current row's sealed-byte presence.
     pub fn acquire(
@@ -115,12 +155,7 @@ impl EnrollmentRowSealer {
             return load_enrollment_row_data_key(&file_store, keychain, true).map(Self);
         }
 
-        let file_store = FileSecretStore::open(secret_root)?;
-        // The store-id marker is shared with the older opener. Serialize its
-        // first creation using the same lock before addressing the Keychain.
-        let _store_lock =
-            CredentialStoreLock::acquire(file_store.root(), CredentialStoreLockMode::Exclusive)?;
-        load_enrollment_row_data_key(&file_store, keychain, false).map(Self)
+        EnrollmentRowReplacement::lock(secret_root)?.acquire_key_with_keychain(false, keychain)
     }
 
     /// Seals the refresh token against its exact row identity and generation.

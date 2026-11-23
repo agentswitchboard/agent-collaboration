@@ -501,3 +501,63 @@ async fn every_ending_reason_round_trips_through_the_adapter() {
         );
     }
 }
+
+#[tokio::test]
+async fn unsealed_witness_cannot_rekey_a_concurrently_published_enrollment() {
+    use std::fs::{OpenOptions, TryLockError};
+
+    let fixture = Fixture::open().await;
+    let original = fixture.install().await;
+    assert_eq!(
+        fixture
+            .store
+            .remove(original.generation, EnrollmentEnd::Inactive)
+            .await,
+        Ok(ConditionalWrite::Applied)
+    );
+    let other = fixture.another_worker().await;
+    let attempt = fixture.binding(3, ENROLLMENT, TOKEN);
+    let competitor = fixture.binding(3, ALTERNATE_ENROLLMENT, "fictional-competitor");
+    let (at_witness, release) = fixture.faults.hold_replacement_witness();
+    let mut replacing = Box::pin(fixture.store.replace(generation(2), &attempt));
+    assert_queued(replacing.as_mut());
+    at_witness.await.unwrap();
+
+    let boundary = OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(fixture.secret_root.join(".store.lock"))
+        .unwrap();
+    match boundary.try_lock() {
+        Err(TryLockError::WouldBlock) => {
+            release.send(()).unwrap();
+            assert_eq!(replacing.await, Ok(ConditionalWrite::Applied));
+            assert_eq!(
+                other.replace(generation(2), &competitor).await,
+                Ok(ConditionalWrite::Superseded)
+            );
+        }
+        Ok(()) => {
+            // If the witness was taken without the lock, force the ordering
+            // that leaves a sealed row and no Keychain item.
+            boundary.unlock().unwrap();
+            assert_eq!(
+                other.replace(generation(2), &competitor).await,
+                Ok(ConditionalWrite::Applied)
+            );
+            fixture.keychain.delete_item();
+            release.send(()).unwrap();
+            assert_eq!(replacing.await, Ok(ConditionalWrite::Superseded));
+        }
+        Err(error) => panic!("cannot inspect enrollment coordination lock: {error}"),
+    }
+    assert_eq!(
+        fixture.keychain.additions.load(SeqCst),
+        1,
+        "a stale unsealed witness created a new key"
+    );
+    assert!(matches!(
+        fixture.store.read().await,
+        Ok(StoredEnrollment::Active(_))
+    ));
+}

@@ -167,10 +167,15 @@ pub(super) struct FixtureKeychain {
     item: Mutex<Option<Vec<u8>>>,
     pub(super) unavailable: AtomicBool,
     pub(super) reads: AtomicUsize,
+    pub(super) additions: AtomicUsize,
     pause: Mutex<Option<KeychainPause>>,
 }
 
 impl FixtureKeychain {
+    pub(super) fn delete_item(&self) {
+        *self.item.lock().expect("fixture Keychain item") = None;
+    }
+
     pub(super) fn fixed(key: [u8; 32]) -> Self {
         Self {
             item: Mutex::new(Some(key.to_vec())),
@@ -250,6 +255,7 @@ impl KeychainAccess for FixtureKeychain {
             return Err(KeychainAccessError::Unavailable);
         }
         *item = Some(secret.to_vec());
+        self.additions.fetch_add(1, Ordering::SeqCst);
         Ok(())
     }
 }

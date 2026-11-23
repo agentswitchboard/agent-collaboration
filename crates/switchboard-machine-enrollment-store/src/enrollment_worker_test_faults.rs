@@ -3,6 +3,8 @@ use std::{
     sync::{Arc, Mutex, atomic::AtomicUsize},
 };
 
+use tokio::sync::oneshot;
+
 use codex_router_secret_store::keychain_data_key::KeychainAccess;
 
 use super::{EnrollmentRowStoreError, EnrollmentRowWrite};
@@ -23,9 +25,40 @@ pub(crate) enum TestWriteFault {
 pub(crate) struct TestWriteFaults {
     next: Mutex<Option<TestWriteFault>>,
     pub(crate) probes: AtomicUsize,
+    replacement_witness: Mutex<Option<ReplacementWitnessGate>>,
+}
+
+struct ReplacementWitnessGate {
+    reached: oneshot::Sender<()>,
+    continue_after: oneshot::Receiver<()>,
 }
 
 impl TestWriteFaults {
+    pub(crate) fn hold_replacement_witness(&self) -> (oneshot::Receiver<()>, oneshot::Sender<()>) {
+        let (reached, at_witness) = oneshot::channel();
+        let (release, continue_after) = oneshot::channel();
+        *self
+            .replacement_witness
+            .lock()
+            .expect("replacement witness gate") = Some(ReplacementWitnessGate {
+            reached,
+            continue_after,
+        });
+        (at_witness, release)
+    }
+
+    pub(crate) async fn at_replacement_witness(&self) {
+        let gate = self
+            .replacement_witness
+            .lock()
+            .ok()
+            .and_then(|mut gate| gate.take());
+        if let Some(gate) = gate {
+            let _ = gate.reached.send(());
+            let _ = gate.continue_after.await;
+        }
+    }
+
     pub(crate) fn arm(&self, fault: TestWriteFault) {
         self.next.lock().expect("test write fault").replace(fault);
     }
