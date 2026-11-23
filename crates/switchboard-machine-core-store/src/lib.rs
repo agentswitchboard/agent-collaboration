@@ -1,5 +1,7 @@
 //! SQLite persistence for the Mac Router's machine identity, outbox and inbox.
 
+#[cfg(all(feature = "test-support", debug_assertions))]
+mod inbox_commit_pause;
 mod inbox_store;
 mod machine_identity_store;
 mod machine_local_store;
@@ -14,6 +16,8 @@ mod outbox_store;
 mod outbox_views;
 mod sender_outcome;
 mod store_scan;
+#[cfg(all(feature = "test-support", debug_assertions))]
+pub use inbox_commit_pause::HeldInboxCommit;
 
 pub use inbox_store::{
     InboxDecision, InboxOfferExpiry, InboxReceipt, InboxRefusalReason, InboxStore, InboxStoreError,

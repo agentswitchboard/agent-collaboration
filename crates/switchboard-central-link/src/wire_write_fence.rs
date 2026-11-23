@@ -12,12 +12,8 @@ use hyper::{
     Uri,
     rt::{Read, ReadBufCursor, Write},
 };
-use hyper_util::{
-    client::legacy::connect::{Connected, Connection, HttpConnector},
-    rt::TokioIo,
-};
+use hyper_util::client::legacy::connect::{Connected, Connection, HttpConnector};
 use router_clock::{ClockInstant, RuntimeClock};
-use tokio::net::TcpStream;
 use tower_service::Service;
 
 pub(super) struct WireWriteFence {
@@ -132,22 +128,46 @@ impl Drop for WireWriteGuard<'_> {
     }
 }
 
-pub(super) struct FencedConnector {
-    connector: HttpConnector,
+pub(super) trait LinkConnector:
+    Service<
+        Uri,
+        Response: Connection + Read + Write + Send + Unpin + 'static,
+        Error: Into<Box<dyn std::error::Error + Send + Sync>> + 'static,
+        Future: Send + 'static,
+    >
+{
+}
+
+impl<Connector> LinkConnector for Connector where
+    Connector: Service<
+            Uri,
+            Response: Connection + Read + Write + Send + Unpin + 'static,
+            Error: Into<Box<dyn std::error::Error + Send + Sync>> + 'static,
+            Future: Send + 'static,
+        >
+{
+}
+
+pub(super) fn default_http_connector() -> HttpConnector {
+    let mut connector = HttpConnector::new();
+    connector.enforce_http(false);
+    connector
+}
+
+pub(super) struct FencedConnector<Connector> {
+    connector: Connector,
     fence: Arc<WireWriteFence>,
 }
 
-impl FencedConnector {
-    pub(super) fn new(fence: Arc<WireWriteFence>) -> Self {
-        let mut connector = HttpConnector::new();
-        connector.enforce_http(false);
+impl<Connector> FencedConnector<Connector> {
+    pub(super) fn new(connector: Connector, fence: Arc<WireWriteFence>) -> Self {
         Self { connector, fence }
     }
 }
 
-impl Service<Uri> for FencedConnector {
-    type Response = FencedTransport<TokioIo<TcpStream>>;
-    type Error = <HttpConnector as Service<Uri>>::Error;
+impl<Connector: LinkConnector> Service<Uri> for FencedConnector<Connector> {
+    type Response = FencedTransport<Connector::Response>;
+    type Error = Connector::Error;
     type Future = Pin<Box<dyn Future<Output = Result<Self::Response, Self::Error>> + Send>>;
 
     fn poll_ready(&mut self, context: &mut Context<'_>) -> Poll<Result<(), Self::Error>> {

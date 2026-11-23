@@ -11,6 +11,7 @@ mod inbox_custody;
 mod inbox_expiry;
 mod local_store_maintenance;
 mod outbox_timing;
+mod receipt_task;
 mod same_mac;
 mod sender_notice_recovery;
 mod worker_orphans;
