@@ -46,7 +46,7 @@ export function raiseRequest(
   ordinal: number,
   title: string,
   sessionId = requestingSession.sessionId,
-): Raise_Serialize {
+): Extract<Raise_Serialize, { kind: "providerApproval" }> {
   return {
     kind: "providerApproval",
     requestId: uuid(ordinal),

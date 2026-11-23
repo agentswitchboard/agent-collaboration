@@ -58,7 +58,6 @@ test("Workerd approvals reopen with exact receipts, real parent routing and one 
       persistenceDirectory,
     });
 
-    const rows = await snapshot(central, database);
     const replay = await invokeApprovalWitness({
       central,
       database,
@@ -107,67 +106,7 @@ test("Workerd approvals reopen with exact receipts, real parent routing and one 
     assert.deepEqual(typedResult(foreign), { kind: "contentsDiffer" });
     assert.equal(foreign.writes, 0);
 
-    const destination = rows
-      .map((row) => z.array(z.unknown()).parse(JSON.parse(row)))
-      .find((row) => row[0] === "destination");
-    assert.equal(destination?.[4], parentSession.sessionId);
-    const parentDecision = (session: typeof parentSession): Record<string, unknown> => ({
-      ...personDecision(request.requestId, uuid(5305), 1),
-      actor: { kind: "session", session },
-    });
-    const wrongParent = await invokeApprovalWitness({
-      central,
-      database,
-      command: parentDecision(unrelatedSession),
-    });
-    assert.deepEqual(typedResult(wrongParent), { kind: "notVisible" });
-    assert.equal(wrongParent.writes, 0);
-
-    const passOn = {
-      kind: "passOn",
-      organization: holder.organization,
-      parent: parentSession,
-      requestId: request.requestId,
-    };
-    assert.deepEqual(
-      typedResult(
-        await assertRollbackAtEachWrite({ central, database, command: passOn, writes: 2 }),
-      ),
-      { kind: "forwarded" },
-    );
-    const chosen = personDecision(request.requestId, uuid(5306), 2);
-    const race = await Promise.all([
-      invokeApprovalWitness({ central, database, atMs: 1, command: parentDecision(parentSession) }),
-      invokeApprovalWitness({ central, database, atMs: 1, command: chosen }),
-    ]);
-    const results = race.map(
-      (reply) => z.object({ kind: z.string() }).parse(typedResult(reply)).kind,
-    );
-    assert.deepEqual(results.toSorted(), ["savedDecision", "standing"]);
-    assert.equal(
-      race.map((reply) => reply.writes).reduce((sum, writes) => sum + writes, 0),
-      2,
-    );
-    const winner = results.indexOf("savedDecision");
-    const won = race[winner];
-    assert.ok(won);
-    const replayDecision = await invokeApprovalWitness({
-      central,
-      database,
-      atMs: 2,
-      command: winner === 0 ? parentDecision(parentSession) : chosen,
-    });
-    assert.deepEqual(typedResult(replayDecision), typedResult(won));
-    assert.equal(replayDecision.writes, 0);
-    const offered = appliedSchema.parse(committedResult(won)).offers[0];
-    assert.ok(offered);
-    const delivery = await assertRollbackAtEachWrite({
-      central,
-      database,
-      command: { kind: "deliver", holder, request: offered, reply: { kind: "received" } },
-      writes: 1,
-    });
-    assert.equal(delivery.rowsChanged, 1);
+    await verifyDelegateDecision(central, database, request.requestId);
 
     const marker = raiseRequest(2, "Stopped before Raise");
     const stop = { kind: "stop", holder, request: stopRequest(marker) };
@@ -277,33 +216,7 @@ test("Workerd approvals time out only selected rows and seek the deadline index 
       { requestId: secondExpired },
     ]);
 
-    const readings: number[][] = [];
-    for (const waiting of [20, 10_000]) {
-      const indexed = `approval-due-${waiting}`;
-      await initializeApprovals(central, indexed);
-      await invokeApprovalWitness({
-        central,
-        database: indexed,
-        command: { kind: "raise", holder, request: raiseRequest(1, "Indexed") },
-      });
-      const seeded = await invokeApprovalWitness({
-        central,
-        database: indexed,
-        command: { kind: "seedDuePopulation", waiting },
-      });
-      assert.equal(committedResult(seeded), waiting);
-      const results = dueSchema.parse(
-        await central.dispatchJson(commandPath(indexed), {
-          atMs: hourMs,
-          command: { kind: "dueRows", cutoffMs: hourMs, limit: 1 },
-        }),
-      );
-      assert.equal(results.rows.length, 1);
-      assert.equal(results.rows[0]?.occurrenceMs, hourMs);
-      console.log(`${waiting} waiting approvals, ${results.rowsRead.join(",")} Workerd rows read`);
-      readings.push(results.rowsRead);
-    }
-    assert.deepEqual(readings, [[1], [1]]);
+    await verifyDeadlineSeek(central);
   } finally {
     await central.close();
   }
@@ -458,59 +371,163 @@ test("Workerd approval endings and a run replacement roll back after every guard
       },
     });
 
-    const replacement = { ...holder, runId: uuid(5503) };
-    await assertRollbackAtEachWrite({
-      central,
-      database,
-      writes: 5,
-      command: { kind: "register", holder: replacement },
-    });
-    const retired = await invokeApprovalWitness({
-      central,
-      database,
-      command: { kind: "stop", holder, request: stopRequest(enrollmentEnded) },
-    });
-    assert.deepEqual(typedResult(retired), {
-      kind: "authorityRefused",
-      refusal: { kind: "runRetired" },
-    });
-    assert.equal(retired.writes, 0);
-
-    const last = {
-      ...raiseRequest(5, "Enrollment", unrelatedSession.sessionId),
-      holder: { routerRun: replacement.runId, sessionId: unrelatedSession.sessionId },
-    } satisfies ReturnType<typeof raiseRequest>;
-    assert.equal(
-      (
-        await invokeApprovalWitness({
-          central,
-          database,
-          command: { kind: "raise", holder: replacement, request: last },
-        })
-      ).writes,
-      3,
-    );
-    committedResult(
-      await invokeApprovalWitness({
-        central,
-        database,
-        command: { kind: "storeEnrollment", holder: replacement, live: false },
-      }),
-    );
-    await assertRollbackAtEachWrite({
-      central,
-      database,
-      writes: 3,
-      command: { kind: "endEnrollment", holder: replacement },
-    });
-    const due = dueSchema.parse(
-      await central.dispatchJson(commandPath(database), {
-        atMs: hourMs,
-        command: { kind: "dueRows", cutoffMs: hourMs, limit: 10 },
-      }),
-    );
-    assert.deepEqual(due.rows, []);
+    await verifyRunReplacement(central, database, stopRequest(enrollmentEnded));
   } finally {
     await central.close();
   }
 });
+
+async function verifyDelegateDecision(
+  central: WorkerdStorage,
+  database: string,
+  requestId: string,
+): Promise<void> {
+  const destination = (await snapshot(central, database))
+    .map((row) => z.array(z.unknown()).parse(JSON.parse(row)))
+    .find((row) => row[0] === "destination");
+  assert.equal(destination?.[4], parentSession.sessionId);
+  const parentDecision = (session: typeof parentSession): Record<string, unknown> => ({
+    ...personDecision(requestId, uuid(5305), 1),
+    actor: { kind: "session", session },
+  });
+  const wrongParent = await invokeApprovalWitness({
+    central,
+    database,
+    command: parentDecision(unrelatedSession),
+  });
+  assert.deepEqual(typedResult(wrongParent), { kind: "notVisible" });
+  assert.equal(wrongParent.writes, 0);
+
+  const passOn = {
+    kind: "passOn",
+    organization: holder.organization,
+    parent: parentSession,
+    requestId: requestId,
+  };
+  assert.deepEqual(
+    typedResult(await assertRollbackAtEachWrite({ central, database, command: passOn, writes: 2 })),
+    { kind: "forwarded" },
+  );
+  const chosen = personDecision(requestId, uuid(5306), 2);
+  const race = await Promise.all([
+    invokeApprovalWitness({ central, database, atMs: 1, command: parentDecision(parentSession) }),
+    invokeApprovalWitness({ central, database, atMs: 1, command: chosen }),
+  ]);
+  const results = race.map(
+    (reply) => z.object({ kind: z.string() }).parse(typedResult(reply)).kind,
+  );
+  assert.deepEqual(results.toSorted(), ["savedDecision", "standing"]);
+  assert.equal(
+    race.map((reply) => reply.writes).reduce((sum, writes) => sum + writes, 0),
+    2,
+  );
+  const winner = results.indexOf("savedDecision");
+  const won = race[winner];
+  assert.ok(won);
+  const replayDecision = await invokeApprovalWitness({
+    central,
+    database,
+    atMs: 2,
+    command: winner === 0 ? parentDecision(parentSession) : chosen,
+  });
+  assert.deepEqual(typedResult(replayDecision), typedResult(won));
+  assert.equal(replayDecision.writes, 0);
+  const offered = appliedSchema.parse(committedResult(won)).offers[0];
+  assert.ok(offered);
+  const delivery = await assertRollbackAtEachWrite({
+    central,
+    database,
+    command: { kind: "deliver", holder, request: offered, reply: { kind: "received" } },
+    writes: 1,
+  });
+  assert.equal(delivery.rowsChanged, 1);
+}
+
+async function verifyDeadlineSeek(central: WorkerdStorage): Promise<void> {
+  const readings: number[][] = [];
+  for (const waiting of [20, 10_000]) {
+    const indexed = `approval-due-${waiting}`;
+    await initializeApprovals(central, indexed);
+    await invokeApprovalWitness({
+      central,
+      database: indexed,
+      command: { kind: "raise", holder, request: raiseRequest(1, "Indexed") },
+    });
+    const seeded = await invokeApprovalWitness({
+      central,
+      database: indexed,
+      command: { kind: "seedDuePopulation", waiting },
+    });
+    assert.equal(committedResult(seeded), waiting);
+    const results = dueSchema.parse(
+      await central.dispatchJson(commandPath(indexed), {
+        atMs: hourMs,
+        command: { kind: "dueRows", cutoffMs: hourMs, limit: 1 },
+      }),
+    );
+    assert.equal(results.rows.length, 1);
+    assert.equal(results.rows[0]?.occurrenceMs, hourMs);
+    console.log(`${waiting} waiting approvals, ${results.rowsRead.join(",")} Workerd rows read`);
+    readings.push(results.rowsRead);
+  }
+  assert.deepEqual(readings, [[1], [1]]);
+}
+
+async function verifyRunReplacement(
+  central: WorkerdStorage,
+  database: string,
+  priorStop: ReturnType<typeof stopRequest>,
+): Promise<void> {
+  const replacement = { ...holder, runId: uuid(5503) };
+  await assertRollbackAtEachWrite({
+    central,
+    database,
+    writes: 5,
+    command: { kind: "register", holder: replacement },
+  });
+  const retired = await invokeApprovalWitness({
+    central,
+    database,
+    command: { kind: "stop", holder, request: priorStop },
+  });
+  assert.deepEqual(typedResult(retired), {
+    kind: "authorityRefused",
+    refusal: { kind: "runRetired" },
+  });
+  assert.equal(retired.writes, 0);
+
+  const last = {
+    ...raiseRequest(5, "Enrollment", unrelatedSession.sessionId),
+    holder: { routerRun: replacement.runId, sessionId: unrelatedSession.sessionId },
+  } satisfies ReturnType<typeof raiseRequest>;
+  assert.equal(
+    (
+      await invokeApprovalWitness({
+        central,
+        database,
+        command: { kind: "raise", holder: replacement, request: last },
+      })
+    ).writes,
+    3,
+  );
+  committedResult(
+    await invokeApprovalWitness({
+      central,
+      database,
+      command: { kind: "storeEnrollment", holder: replacement, live: false },
+    }),
+  );
+  await assertRollbackAtEachWrite({
+    central,
+    database,
+    writes: 3,
+    command: { kind: "endEnrollment", holder: replacement },
+  });
+  const due = dueSchema.parse(
+    await central.dispatchJson(commandPath(database), {
+      atMs: hourMs,
+      command: { kind: "dueRows", cutoffMs: hourMs, limit: 10 },
+    }),
+  );
+  assert.deepEqual(due.rows, []);
+}

@@ -21,4 +21,6 @@ mod approval_store_atomicity;
 #[cfg(test)]
 mod approval_store_cases;
 #[cfg(test)]
+mod approval_store_guards;
+#[cfg(test)]
 mod unproven_call_lifecycle;
