@@ -1,7 +1,10 @@
 use central_link_protocol::{CorrelationId, LinkRequest, ReplyPayload};
 use router_clock::ClockInstant;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, VecDeque};
 use workspace_model::RequestId;
+
+const MAX_PENDING_LINK_REQUESTS: usize = 64;
+const MAX_RECENT_LINK_REPLIES: usize = 128;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CallFailure {
@@ -35,7 +38,7 @@ struct PendingCall {
 #[derive(Default)]
 pub(crate) struct PendingCalls {
     active: BTreeMap<CorrelationId, PendingCall>,
-    resolved: BTreeSet<CorrelationId>,
+    resolved: VecDeque<CorrelationId>,
 }
 
 impl PendingCalls {
@@ -53,20 +56,21 @@ impl PendingCalls {
         request: LinkRequest,
         expires_at: ClockInstant,
     ) -> Result<(), crate::ClientError> {
-        use std::collections::btree_map::Entry;
-        if self.resolved.contains(request.correlation_id()) {
+        let correlation = request.correlation_id();
+        if self.active.contains_key(correlation) || self.resolved.contains(correlation) {
             return Err(crate::ClientError::DuplicateCorrelation);
         }
-        match self.active.entry(request.correlation_id().clone()) {
-            Entry::Occupied(_) => Err(crate::ClientError::DuplicateCorrelation),
-            Entry::Vacant(entry) => {
-                entry.insert(PendingCall {
-                    request,
-                    expires_at,
-                });
-                Ok(())
-            }
+        if self.active.len() == MAX_PENDING_LINK_REQUESTS {
+            return Err(crate::ClientError::NeverReached);
         }
+        self.active.insert(
+            correlation.clone(),
+            PendingCall {
+                request,
+                expires_at,
+            },
+        );
+        Ok(())
     }
 
     pub(crate) fn complete(
@@ -105,26 +109,18 @@ impl PendingCalls {
             .collect();
         due.into_iter()
             .filter_map(|id| {
-                self.active.remove(&id).map(|call| {
-                    self.resolved.insert(id.clone());
-                    failed_call(id, call, SendFailure::MayHaveBeenSent)
-                })
+                let call = self.retire(&id).ok()?;
+                Some(failed_call(id, call, SendFailure::MayHaveBeenSent))
             })
             .collect()
     }
 
-    pub(crate) fn fail_all(&mut self) -> Vec<FailedCall> {
+    pub(crate) fn end_connection(&mut self) -> Vec<FailedCall> {
+        self.resolved.clear();
         std::mem::take(&mut self.active)
             .into_iter()
-            .map(|(id, call)| {
-                self.resolved.insert(id.clone());
-                failed_call(id, call, SendFailure::MayHaveBeenSent)
-            })
+            .map(|(id, call)| failed_call(id, call, SendFailure::MayHaveBeenSent))
             .collect()
-    }
-
-    pub(crate) fn begin_connection(&mut self) {
-        self.resolved.clear();
     }
 
     fn retire(&mut self, correlation: &CorrelationId) -> Result<PendingCall, crate::ClientError> {
@@ -132,7 +128,10 @@ impl PendingCalls {
             .active
             .remove(correlation)
             .ok_or(crate::ClientError::UnknownCorrelation)?;
-        self.resolved.insert(correlation.clone());
+        if self.resolved.len() == MAX_RECENT_LINK_REPLIES {
+            self.resolved.pop_front();
+        }
+        self.resolved.push_back(correlation.clone());
         Ok(call)
     }
 }

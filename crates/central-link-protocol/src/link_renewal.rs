@@ -68,8 +68,11 @@ pub enum TokenRenewalResult {
 pub enum TokenRenewalRefusal {
     /// The token failed sign-in verification.
     TokenRejected,
-    /// The enrollment it names is no longer the machine's active one.
-    EnrollmentNotActive,
+    /// The verified token reached its deadline before renewal applied. The open connection
+    /// retains its attachment, and the Router can fetch a fresh token and send another renewal.
+    PresentedTokenExpired,
+    /// The connection's own enrollment ended. Central attempts a final close.
+    ConnectionEnrollmentEnded,
     /// The token names another machine than this connection's.
     DifferentMachine,
     /// The token names another enrollment or client than this connection's.

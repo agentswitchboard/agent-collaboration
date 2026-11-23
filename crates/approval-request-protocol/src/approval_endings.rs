@@ -8,7 +8,7 @@ use crate::{
 };
 
 approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -41,7 +41,7 @@ pub enum Ending {
 }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
@@ -68,7 +68,7 @@ impl HolderStopCause {
     }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
@@ -101,7 +101,7 @@ impl ProviderStopCause {
 }
 
 approval_wire_union! {
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)

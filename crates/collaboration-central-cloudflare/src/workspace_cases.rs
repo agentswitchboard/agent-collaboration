@@ -17,6 +17,7 @@ mod workspace_turn_cases;
 
 #[derive(Default)]
 pub(crate) struct Controls {
+    pub(super) fail_typed_refusal_send: std::cell::Cell<bool>,
     pub(super) faults: std::sync::Arc<fleet_runtime::TestFaults>,
     pub(super) zero_next_write_alarm: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub(super) lose_read: std::sync::Arc<std::sync::atomic::AtomicBool>,
@@ -58,6 +59,7 @@ enum Point {
     BeforeEngineFailureWrite,
     AfterEngineAbsentLookup,
     BeforeControlClear,
+    BeforeRenewalApplyingSample,
     BeforeSignInSample,
     AfterSignInSample,
 }
@@ -85,6 +87,7 @@ impl From<Point> for PausePoint {
             Point::BeforeEngineFailureWrite => Self::BeforeEngineFailureWrite,
             Point::AfterEngineAbsentLookup => Self::AfterEngineAbsentLookup,
             Point::BeforeControlClear => Self::BeforeControlClear,
+            Point::BeforeRenewalApplyingSample => Self::BeforeRenewalApplyingSample,
             Point::BeforeSignInSample => Self::BeforeSignInSample,
             Point::AfterSignInSample => Self::AfterSignInSample,
         }
@@ -131,7 +134,24 @@ pub(crate) async fn route(
     };
     let organization: OrganizationId =
         serde_json::from_value(serde_json::Value::String(organization.to_owned()))?;
+    if operation == "typed-mac-call" {
+        return Ok(Ok(super::workspace_typed_link::probe(
+            env,
+            organization,
+            request,
+        )
+        .await?));
+    }
+    if operation == "typed-ending-call" {
+        return Ok(Ok(super::workspace_typed_link::probe_ending(
+            env,
+            organization,
+            request,
+        )
+        .await?));
+    }
     let address = ObjectAddress::Central(organization);
+
     let headers = Headers::new();
     crate::cloudflare_transport::address_header(&headers, &address)?;
     let body = request.bytes().await?;
@@ -151,6 +171,19 @@ pub(super) async fn control(
     mut request: Request,
 ) -> Result<Response> {
     let path = request.path();
+    if path == "/test/typed-mac-waiting" {
+        let correlation = request
+            .json::<central_link_protocol::CorrelationId>()
+            .await?;
+        return Response::from_json(&object.pending_mac_calls.is_waiting(&correlation));
+    }
+    if path == "/test/fail-typed-refusal-send" {
+        object
+            .controls
+            .fail_typed_refusal_send
+            .set(request.json::<bool>().await?);
+        return Response::from_json(&true);
+    }
     if path == "/test/machine-login-revoke" {
         let control: collaboration_central_core::MachineLoginControl = request.json().await?;
         let runtime = object.runtime(organization).await?;

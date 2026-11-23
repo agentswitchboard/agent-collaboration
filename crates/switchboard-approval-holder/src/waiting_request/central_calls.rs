@@ -1,9 +1,10 @@
 use super::{
-    Call, CallKey, CentralDuty, Effects, LinkAttempt, LocalNegative, MatchedRunRefusal,
-    ProviderReply, RaiseRefusal, RunAuthority, WaitEffect, WaitError, WaitRefusal, WaitState,
+    Call, CallKey, CentralDuty, Effects, FamilyStopCause, LinkAttempt, LocalNegative,
+    MatchedRunRefusal, ProviderReply, RaiseRefusal, RequestFamily, RunAuthority, WaitEffect,
+    WaitError, WaitRefusal, WaitState,
 };
 use approval_request_protocol::{
-    ProviderStopCause, RaiseReply, RunRefusal, StopReply, StopRequest,
+    CallStopCause, ProviderStopCause, RaiseReply, RunRefusal, StopReply, StopRequest,
 };
 use state_machine_core::TransitionError;
 
@@ -26,8 +27,10 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
             CentralDuty::Stopping {
                 request,
                 call: pending @ Call::Due,
-            } => {
+                published_attempts,
+            } if !published_attempts.contains(&call) => {
                 *pending = Call::InFlight(call.clone());
+                published_attempts.push(call.clone());
                 Ok(WaitEffect::Stop {
                     call,
                     authority,
@@ -36,29 +39,79 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
             }
             CentralDuty::Raising(Call::InFlight(_))
             | CentralDuty::WaitingForEnding
-            | CentralDuty::Stopping {
-                call: Call::InFlight(_),
-                ..
-            }
+            | CentralDuty::AwaitingRaiseDisposition { .. }
+            | CentralDuty::Stopping { .. }
             | CentralDuty::Refusing
             | CentralDuty::Done => Err(TransitionError::Stale),
         }
     }
 
-    pub(super) fn begin_stop(&mut self, cause: ProviderStopCause) -> Result<(), WaitError> {
+    pub(super) fn begin_stop(&mut self, cause: FamilyStopCause) -> Result<(), WaitError> {
+        match &self.central {
+            CentralDuty::Unsent => {
+                self.central = CentralDuty::Refusing;
+                return Ok(());
+            }
+            CentralDuty::Raising(Call::Due) if !self.earlier_raise_may_be_admitted => {
+                self.central = CentralDuty::Refusing;
+                return Ok(());
+            }
+            CentralDuty::Raising(_) | CentralDuty::WaitingForEnding => {}
+            CentralDuty::AwaitingRaiseDisposition { .. }
+            | CentralDuty::Stopping { .. }
+            | CentralDuty::Refusing
+            | CentralDuty::Done => return Err(TransitionError::Stale),
+        }
+        let request = self.stop_request(cause)?;
+        if let CentralDuty::Raising(Call::InFlight(raise)) = &self.central
+            && !self.earlier_raise_may_be_admitted
+        {
+            self.central = CentralDuty::AwaitingRaiseDisposition {
+                raise: raise.clone(),
+                stop: request,
+            };
+        } else {
+            self.preserve_raising_call();
+            self.owe_stop(request);
+        }
+        Ok(())
+    }
+
+    fn stop_request(&self, cause: FamilyStopCause) -> Result<StopRequest, WaitError> {
         let frozen = self.frozen.as_ref().ok_or(TransitionError::Stale)?;
-        let request = StopRequest::Provider {
-            request_id: frozen.body.request_id().clone(),
-            router_run: frozen.body.router_run().clone(),
-            contents_digest: frozen.digest.clone(),
-            cause,
-        };
-        self.preserve_raising_call();
+        let request_id = frozen.body.request_id().clone();
+        let router_run = frozen.body.router_run().clone();
+        let contents_digest = frozen.digest.clone();
+        Ok(match cause {
+            FamilyStopCause::Call(cause) => StopRequest::UnprovenCall {
+                request_id,
+                router_run,
+                contents_digest,
+                cause,
+            },
+            FamilyStopCause::Provider(cause) => StopRequest::Provider {
+                request_id,
+                router_run,
+                contents_digest,
+                cause,
+            },
+        })
+    }
+
+    fn owe_stop(&mut self, request: StopRequest) {
+        self.earlier_raise_may_be_admitted = false;
         self.central = CentralDuty::Stopping {
             request,
             call: Call::Due,
+            published_attempts: Vec::new(),
         };
-        Ok(())
+    }
+
+    pub(super) fn stop_after_raise_proven_by_ending(&mut self) {
+        if let CentralDuty::AwaitingRaiseDisposition { raise, stop } = &self.central {
+            self.displaced_raise = Some(raise.clone());
+            self.owe_stop(stop.clone());
+        }
     }
 
     pub(super) fn preserve_raising_call(&mut self) {
@@ -67,18 +120,37 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
         }
     }
 
-    pub(super) fn end_call(&mut self, key: &CallKey<Connection>) -> Result<(), WaitError> {
-        self.end_matching_calls(|call| call == key)
+    pub(super) fn settle_unanswered(
+        &mut self,
+        key: &CallKey<Connection>,
+        may_have_reached: bool,
+    ) -> Result<(), WaitError> {
+        match &self.central {
+            CentralDuty::Raising(Call::InFlight(raise)) if raise == key => {
+                self.earlier_raise_may_be_admitted |= may_have_reached;
+                self.central = CentralDuty::Raising(Call::Due);
+                Ok(())
+            }
+            CentralDuty::AwaitingRaiseDisposition { raise, stop } if raise == key => {
+                if may_have_reached {
+                    self.owe_stop(stop.clone());
+                } else {
+                    self.central = CentralDuty::Refusing;
+                }
+                Ok(())
+            }
+            _ => self.retry_stop_or_drain_raise(|call| call == key),
+        }
     }
 
     pub(super) fn retire_connection(
         &mut self,
         link: &LinkAttempt<Connection>,
     ) -> Result<(), WaitError> {
-        self.end_matching_calls(|call| &call.link == link)
+        self.retry_stop_or_drain_raise(|call| &call.link == link)
     }
 
-    fn end_matching_calls(
+    fn retry_stop_or_drain_raise(
         &mut self,
         matches_call: impl Fn(&CallKey<Connection>) -> bool,
     ) -> Result<(), WaitError> {
@@ -87,7 +159,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
             self.displaced_raise = None;
         }
         match &mut self.central {
-            CentralDuty::Raising(call) | CentralDuty::Stopping { call, .. } if matches!(&*call, Call::InFlight(key) if matches_call(key)) =>
+            CentralDuty::Stopping { call, .. } if matches!(&*call, Call::InFlight(key) if matches_call(key)) =>
             {
                 *call = Call::Due;
                 Ok(())
@@ -112,23 +184,29 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
             }
             return Ok(());
         }
-        if !matches!(&self.central, CentralDuty::Raising(Call::InFlight(current)) if current == &key)
-        {
-            return Err(TransitionError::Stale);
-        }
+        let pending_stop = match &self.central {
+            CentralDuty::Raising(Call::InFlight(current)) if current == &key => None,
+            CentralDuty::AwaitingRaiseDisposition { raise, stop } if raise == &key => Some(stop),
+            _ => return Err(TransitionError::Stale),
+        };
         let refusal = match reply {
             RaiseReply::Receipt { receipt } => {
-                if self.request_id.as_ref() != Some(&receipt.request_id) {
-                    return Err(TransitionError::Domain(
-                        WaitRefusal::ReceiptForDifferentRequest,
-                    ));
+                self.check_raise_receipt(&receipt)?;
+                if let Some(stop) = pending_stop {
+                    self.owe_stop(stop.clone());
+                } else {
+                    self.earlier_raise_may_be_admitted = false;
+                    self.central = CentralDuty::WaitingForEnding;
                 }
-                self.central = CentralDuty::WaitingForEnding;
                 return Ok(());
             }
             RaiseReply::AuthorityRefused { refusal } => {
                 self.report_refusal(key, refusal, effects)?;
-                self.central = CentralDuty::Raising(Call::Due);
+                self.central = if pending_stop.is_some() {
+                    CentralDuty::Refusing
+                } else {
+                    CentralDuty::Raising(Call::Due)
+                };
                 return Ok(());
             }
             RaiseReply::AlreadyStopped {} => RaiseRefusal::AlreadyStopped,
@@ -136,11 +214,46 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
             RaiseReply::ContentsDiffer {} => RaiseRefusal::ContentsDiffer,
             RaiseReply::TooManyOutstanding {} => RaiseRefusal::TooManyOutstanding,
         };
+        if pending_stop.is_some() {
+            self.central = CentralDuty::Refusing;
+            return Ok(());
+        }
+        self.select_raise_refusal(refusal)
+    }
+
+    /// The final local negative owes cleanup for older exposure as soon as it is
+    /// selected, regardless of whether the requester receives it.
+    fn select_raise_refusal(&mut self, refusal: RaiseRefusal) -> Result<(), WaitError> {
         self.claim_available(ProviderReply::LocalNegative(LocalNegative::RaiseRefused(
             refusal,
         )))?;
-        self.central = CentralDuty::Refusing;
+        if refusal == RaiseRefusal::TooManyOutstanding && self.earlier_raise_may_be_admitted {
+            let cause = match self.family {
+                RequestFamily::ProviderAsk => {
+                    FamilyStopCause::Provider(ProviderStopCause::HolderRefusedLocally)
+                }
+                RequestFamily::HeldCall => {
+                    FamilyStopCause::Call(CallStopCause::HolderRefusedLocally)
+                }
+            };
+            self.owe_stop(self.stop_request(cause)?);
+        } else {
+            self.central = CentralDuty::Refusing;
+        }
         Ok(())
+    }
+
+    fn check_raise_receipt(
+        &self,
+        receipt: &approval_request_protocol::RaiseReceipt,
+    ) -> Result<(), WaitError> {
+        if self.request_id.as_ref() == Some(&receipt.request_id) {
+            Ok(())
+        } else {
+            Err(TransitionError::Domain(
+                WaitRefusal::ReceiptForDifferentRequest,
+            ))
+        }
     }
 
     pub(super) fn receive_stop<Enrollment>(
@@ -155,8 +268,14 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
                     request_id,
                     contents_digest,
                     ..
+                }
+                | StopRequest::UnprovenCall {
+                    request_id,
+                    contents_digest,
+                    ..
                 },
             call: Call::InFlight(current),
+            ..
         } = &self.central
         else {
             return Err(TransitionError::Stale);
@@ -166,7 +285,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
         }
         match reply {
             StopReply::AuthorityRefused { refusal } => {
-                self.end_call(&key)?;
+                self.retry_stop_or_drain_raise(|call| call == &key)?;
                 self.report_refusal(key, refusal, effects)?;
             }
             StopReply::Stands { ending } => {

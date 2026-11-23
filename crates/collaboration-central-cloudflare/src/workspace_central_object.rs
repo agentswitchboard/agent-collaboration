@@ -234,6 +234,8 @@ pub struct CentralObject {
     connection: DoConnection,
     runtime: Mutex<Option<Arc<OrgRuntime>>>,
     clock: WorkspaceClock,
+    link_ids: Arc<ClockIds<WorkspaceClock>>,
+    pending_mac_calls: workspace_typed_link::PendingMacCalls,
     due_batches: Arc<fleet_runtime::DueBatchState>,
     mail_pushes: Arc<std::sync::Mutex<Vec<fleet_contracts::MailDeliveryReady>>>,
     #[cfg(feature = "test-support")]
@@ -345,7 +347,7 @@ impl CentralObject {
                     legacy_workspace_calls: self.controls.legacy_workspace_calls.clone(),
                 },
                 clock.clone(),
-                Arc::new(ClockIds::new(self.clock.clone())),
+                self.link_ids.clone(),
                 self.due_batches.clone(),
                 Arc::new(crate::signin_observation::observe_signin),
             ),
@@ -365,6 +367,7 @@ impl CentralObject {
         };
         let mail_pushes = self.mail_pushes.clone();
         let state_for_revocation = self.state.clone();
+        let calls_for_revocation = self.pending_mac_calls.clone();
         let central = Arc::new(
             central
                 .with_mail_delivery_observer(Arc::new(move |message| {
@@ -376,6 +379,7 @@ impl CentralObject {
                 .with_enrollment_invalidation_observer(Arc::new(move |invalidation| {
                     workspace_machine_link::close_enrollment_sockets(
                         &state_for_revocation,
+                        &calls_for_revocation,
                         &invalidation,
                         None,
                     );
@@ -414,12 +418,15 @@ impl CentralObject {
 }
 impl DurableObject for CentralObject {
     fn new(state: State, env: Env) -> Self {
+        let clock = WorkspaceClock::default();
         Self {
             connection: DoConnection::new(state.storage()),
             state: Arc::new(SendWrapper::new(state)),
             env,
             runtime: Mutex::new(None),
-            clock: WorkspaceClock::default(),
+            link_ids: Arc::new(ClockIds::new(clock.clone())),
+            clock,
+            pending_mac_calls: workspace_typed_link::PendingMacCalls::default(),
             due_batches: Arc::new(fleet_runtime::DueBatchState::default()),
             mail_pushes: Default::default(),
             #[cfg(feature = "test-support")]
@@ -448,6 +455,9 @@ impl DurableObject for CentralObject {
             if request.path().starts_with("/test/raw-") {
                 return workspace_cases::raw_control(self, request).await;
             }
+        }
+        if request.path() == workspace_typed_link::MACHINE_CALL_PATH {
+            return self.handle_mac_call(request, organization).await;
         }
         self.migrate()
             .await
@@ -511,14 +521,14 @@ impl DurableObject for CentralObject {
         _reason: String,
         _was_clean: bool,
     ) -> Result<()> {
-        socket.close(Some(1000), Some("closed"))
+        self.close_machine_link(&socket, 1000, Some("closed"))
     }
     async fn websocket_error(
         &self,
         socket: worker::WebSocket,
         _error: worker::Error,
     ) -> Result<()> {
-        socket.close(Some(1011), Some("link error"))
+        self.close_machine_link(&socket, 1011, Some("link error"))
     }
 
     async fn alarm(&self) -> Result<Response> {
@@ -552,6 +562,12 @@ mod signin_launcher_controls;
 
 #[path = "workspace_machine_link.rs"]
 mod workspace_machine_link;
+
+#[path = "workspace_socket_attachment.rs"]
+mod workspace_socket_attachment;
+
+#[path = "workspace_typed_link.rs"]
+pub(crate) mod workspace_typed_link;
 
 #[cfg(feature = "test-support")]
 #[path = "workspace_link_witness.rs"]

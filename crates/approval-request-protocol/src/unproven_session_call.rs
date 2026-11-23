@@ -16,7 +16,7 @@ use crate::approval_wire_codec::{approval_wire_record, approval_wire_union};
 
 macro_rules! wire_string {
     ($name:ident { $($(#[$attribute:meta])* $variant:ident => $value:literal),+ $(,)? }) => {
-        #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+        #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, schemars::JsonSchema)]
         #[serde(rename_all = "camelCase")]
         #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
         pub enum $name { $($(#[$attribute])* $variant),+ }
@@ -34,7 +34,7 @@ macro_rules! wire_string {
 
 const MAX_SESSION_CALL_WORK_FOLDERS: usize = 16;
 
-#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(
     try_from = "Vec<SessionCallWorkFolder>",
     into = "Vec<SessionCallWorkFolder>"
@@ -75,7 +75,7 @@ impl SessionCallWorkFolders {
 
 approval_wire_record! {
 [deny_unknown_fields]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub struct ParkedCallHolder {
     pub router_run: RouterRunId,
@@ -85,7 +85,7 @@ pub struct ParkedCallHolder {
 wire_string!(SessionCallProgram { Claude => "claude", Cursor => "cursor" });
 
 approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub enum SessionCallOperation {
     StartSession {
@@ -100,7 +100,7 @@ pub enum SessionCallOperation {
 
 approval_wire_record! {
 [deny_unknown_fields]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 /// Offers the fixed choices Allow and Decline for this request only.
 pub struct CallOffer {

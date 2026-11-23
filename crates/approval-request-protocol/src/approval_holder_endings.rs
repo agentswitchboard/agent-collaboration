@@ -9,7 +9,7 @@ use crate::{
 };
 
 approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -27,7 +27,7 @@ pub enum HolderEnding<AcceptedAnswer, Cancellation> {
 }
 
 approval_wire_union! {
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
@@ -41,7 +41,7 @@ pub enum ProviderCancellation {
 }
 
 approval_wire_union! {
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub enum CallCancellation {
     Stopped { cause: CallStopCause },
@@ -51,7 +51,7 @@ pub enum CallCancellation {
 }
 
 approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub enum ParkedCallEnding {
     Decided {
@@ -65,7 +65,7 @@ pub enum ParkedCallEnding {
 }
 
 approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub enum PrivateEnding {
     ProviderApproval { ending: HolderEnding<OfferedOptionId, ProviderCancellation> },
@@ -136,7 +136,7 @@ impl PrivateEnding {
 
 approval_wire_record! {
 [deny_unknown_fields]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub struct DeliverEndingRequest {
     request_id: ApprovalRequestId,

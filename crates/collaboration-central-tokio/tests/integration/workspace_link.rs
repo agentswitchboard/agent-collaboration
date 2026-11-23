@@ -15,10 +15,13 @@ mod request_authority;
 mod revocation;
 mod revocation_backpressure;
 mod transport_contract;
+mod typed_call_holder;
+mod typed_call_write_state;
+mod typed_calls;
 use central_link_client::{ClientAction, ClientEvent, LinkClient};
 use central_link_protocol::{DataFrame, LinkFrame, ReplyPayload, RequestPayload};
 use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
-use fixture::{Fixture, INSTALLATION, OTHER_MACHINE, OTHER_ORG, receive, send};
+use fixture::{Fixture, INSTALLATION, OTHER_MACHINE, OTHER_ORG, receive, send, start_fixture};
 use futures_util::{SinkExt, StreamExt};
 use reqwest_websocket::{Message, RequestBuilderExt};
 use serde_json::json;
@@ -36,7 +39,7 @@ use workspace_model::{
 async fn ordinary_client_uses_installation_and_receives_correlated_workspace_and_mail_replies()
 -> Result<()> {
     // Arrange: the client knows only its machine_id and issued bearer token.
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let mut client = LinkClient::new(INSTALLATION.parse()?, fixture.clock.clone());
     let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
         return Err("client did not connect".into());
@@ -128,7 +131,7 @@ async fn ordinary_client_uses_installation_and_receives_correlated_workspace_and
 )]
 #[tokio::test]
 async fn semantic_requests_recheck_caller_and_original_grant_expiry() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let mut client = LinkClient::new(INSTALLATION.parse()?, fixture.clock.clone());
     let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
         return Err("client did not connect".into());
@@ -210,7 +213,7 @@ async fn semantic_requests_recheck_caller_and_original_grant_expiry() -> Result<
 )]
 #[tokio::test]
 async fn public_route_requires_upgrade_and_header_token_and_matching_organization() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let client = fixture.client()?;
     assert!(
         !client
@@ -265,7 +268,7 @@ async fn public_route_requires_upgrade_and_header_token_and_matching_organizatio
 
 #[tokio::test]
 async fn signed_machine_bearer_with_retired_installation_id_is_refused() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let mut control = fixture.connect().await?;
     if !matches!(
         receive(&mut control).await?,
@@ -343,7 +346,7 @@ async fn receipt_result(
 )]
 #[tokio::test]
 async fn unknown_receipt_keeps_the_link_open_and_shutdown_drains_it() -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let mut socket = fixture.connect().await?;
     receive(&mut socket).await?;
     receipt_result(
@@ -362,7 +365,7 @@ async fn unknown_receipt_keeps_the_link_open_and_shutdown_drains_it() -> Result<
 #[tokio::test]
 async fn real_public_tcp_excludes_all_private_paths_before_and_after_owner_credentials()
 -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = private_route_boundary(&fixture).await;
     fixture.close().await?;
     result
@@ -433,6 +436,69 @@ async fn private_route_boundary(fixture: &Fixture) -> Result<()> {
     }
     if runtime.runtime().statement_host().read(rows()).await? != before {
         return Err("private route refusals changed owning rows".into());
+    }
+    Ok(())
+}
+
+#[tokio::test]
+async fn public_machine_link_fixture_uses_the_supplied_clock_and_mints_fresh_tokens() -> Result<()>
+{
+    use collaboration_central_tokio::test_support::start_machine_link_fixture;
+    use router_clock::ManualClock;
+    use runtime_primitives::SyncTime;
+    use std::sync::Arc;
+
+    let initial_time = signed::NOW_SECONDS + 1200;
+    let clock = Arc::new(ManualClock::starting_at(SyncTime::from_unix_millis(
+        initial_time * 1000,
+    ))?);
+    let fixture = start_machine_link_fixture(clock.clone()).await?;
+    let origin = fixture.origin();
+    let observed = async {
+        let mut first = fixture.connect().await?;
+        require_fixture_welcome(&mut first, initial_time).await?;
+
+        clock.advance(Duration::from_secs(30))?;
+        let renewed_token = fixture.mint_machine_token().await?;
+        let mut current = fixture
+            .client()?
+            .get(format!(
+                "{origin}/v1/organizations/{}/link",
+                fixture.organization_id.as_str()
+            ))
+            .bearer_auth(renewed_token)
+            .upgrade()
+            .send()
+            .await?
+            .into_websocket()
+            .await?;
+        require_fixture_welcome(&mut current, initial_time + 30).await
+    }
+    .await;
+    fixture.close().await?;
+    observed?;
+
+    let address = origin
+        .strip_prefix("http://")
+        .ok_or("HTTP fixture origin")?;
+    if tokio::net::TcpStream::connect(address).await.is_ok() {
+        return Err("the fixture listener survived its shutdown".into());
+    }
+    Ok(())
+}
+
+async fn require_fixture_welcome(
+    socket: &mut reqwest_websocket::WebSocket,
+    now: i64,
+) -> Result<()> {
+    let welcome = receive(socket).await?;
+    if !matches!(welcome,
+        LinkFrame::Data(DataFrame::Welcome { machine_id, central_time, effective_expires_at })
+            if machine_id.as_str() == INSTALLATION
+            && central_time.timestamp() == now
+            && effective_expires_at.timestamp() == now + 600)
+    {
+        return Err("fixture Welcome did not carry the enrolled machine and injected clock".into());
     }
     Ok(())
 }
