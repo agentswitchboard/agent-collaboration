@@ -142,7 +142,7 @@ pub(super) fn setup() -> (
     ApprovalSession,
     ApprovalSession,
 ) {
-    let mut book = ApprovalCollection::new(time(0));
+    let mut book = ApprovalCollection::default();
     let enrollment = enrollment(8000, 8001);
     run_event(
         &mut book,
