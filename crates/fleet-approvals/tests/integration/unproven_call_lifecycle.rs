@@ -50,6 +50,7 @@ fn parked_call_replay_and_settlement_do_not_depend_on_the_target_session() {
     assert_eq!(reply(&replay), reply(&first));
     assert_eq!(replay.len(), 1);
     let pass_on = ApprovalCollectionEvent::PassOn {
+        to: fleet_approvals::ApprovalRouteDestination::People,
         key: approval_key.clone(),
         parent: parent.clone(),
         request: PassOnRequest {

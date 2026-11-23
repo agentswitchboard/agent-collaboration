@@ -1,27 +1,20 @@
-use approval_request_protocol::{Raise, RequestContentsDigest, StopRequest, WaitingStatus};
+use approval_request_protocol::{Raise, RequestContentsDigest, StopRequest};
 use workspace_ids::{ApprovalRequestId, RouterRunId};
 
 use crate::{
-    ApprovalActor, ApprovalRequestKey, ApprovalRouting, ApprovalSession, RetainedApproval,
-    StopMarkerCause,
+    ApprovalActor, ApprovalDestinations, ApprovalRequestKey, RetainedApproval, StopMarkerCause,
 };
 
 pub(super) fn is_destination(saved: &RetainedApproval, actor: &ApprovalActor) -> bool {
     match actor {
         ApprovalActor::Person(_) => {
-            saved.routing == ApprovalRouting::Owner
-                || saved.waiting_status == WaitingStatus::PassedOn
+            matches!(saved.destinations, ApprovalDestinations::People { .. })
         }
-        ApprovalActor::Session(session) => is_assigned_parent(saved, session),
+        ApprovalActor::Session(session) => saved
+            .destinations
+            .sessions()
+            .any(|member| member == session),
     }
-}
-
-pub(super) fn is_assigned_parent(saved: &RetainedApproval, parent: &ApprovalSession) -> bool {
-    matches!(&saved.routing, ApprovalRouting::Delegate { admitted_parent } if admitted_parent == parent)
-        && saved
-            .raise
-            .requesting_session()
-            .is_some_and(|requester| requester != &parent.session_id)
 }
 
 pub(crate) fn stop_binding(

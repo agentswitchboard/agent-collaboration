@@ -12,7 +12,7 @@ use fleet_signin::{
 use super::{ApprovalApplyFailure, ApprovalApplyingStore, person_commands::reply_address};
 use crate::{
     ApprovalApplyingTime, ApprovalCommitScope, ApprovalPersonStoreTransaction,
-    ApprovalReplyAddress, PendingApprovalHolderEffects, PendingApprovalReply,
+    ApprovalReplyAddress, PendingApprovalEffects, PendingApprovalReply,
 };
 
 pub enum PersonApprovalStoreReply {
@@ -24,7 +24,7 @@ pub enum PersonApprovalStoreReply {
 pub struct PersonApprovalStoreOutput {
     pub reply: PersonApprovalStoreReply,
     pub address: ApprovalReplyAddress,
-    pub effects: PendingApprovalHolderEffects,
+    pub effects: PendingApprovalEffects,
 }
 
 enum SignedAction<'loan> {
@@ -116,7 +116,7 @@ pub async fn apply_person_command<Transaction: ApprovalPersonStoreTransaction>(
     };
     store.execute_guarded_write(reservation).await?;
     let settled_approval = !store.holder_offers.is_empty();
-    let effects = store.finish_holder_effects();
+    let effects = store.finish_effects();
     if settled_approval {
         time.persist(transaction).await?;
     }

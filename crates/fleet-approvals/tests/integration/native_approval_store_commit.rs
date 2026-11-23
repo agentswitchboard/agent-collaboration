@@ -21,7 +21,7 @@ pub(super) struct NativeApprovalCommit<'fixture, Command> {
 }
 
 impl<'fixture, Reply, Command>
-    ApprovalCommitOwner<(PendingApprovalReply<Reply>, PendingApprovalHolderEffects)>
+    ApprovalCommitOwner<(PendingApprovalReply<Reply>, PendingApprovalEffects)>
     for NativeApprovalCommit<'fixture, Command>
 where
     Reply: 'fixture,
@@ -36,7 +36,7 @@ where
         Box<
             dyn Future<
                     Output = Result<
-                        (PendingApprovalReply<Reply>, PendingApprovalHolderEffects),
+                        (PendingApprovalReply<Reply>, PendingApprovalEffects),
                         Self::Error,
                     >,
                 > + 'fixture,
@@ -63,7 +63,7 @@ where
                 &mut ids,
             );
             let result = (self.run_command)(&mut store).await;
-            let holder_effects = store.finish_holder_effects();
+            let holder_effects = store.finish_effects();
             if result.is_ok() {
                 transaction.transaction.commit().await.unwrap();
             } else {

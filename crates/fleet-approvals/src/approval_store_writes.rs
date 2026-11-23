@@ -9,8 +9,8 @@ use fleet_runtime_ports::{stored_values::format_utc_millis, workspace_decode_err
 use workspace_ids::ApprovalRequestId;
 
 use crate::{
-    ApprovalRequestKey, ApprovalRouting, ApprovalSession, ApprovalState, EndedApproval,
-    RetainedApproval, StopMarkerCause,
+    ApprovalRequestKey, ApprovalSession, ApprovalState, EndedApproval, RetainedApproval,
+    StopMarkerCause,
     approval_store_scope::{ApprovalDestinationRowId, ApprovalHolderScope, ApprovalRequestRowId},
     approval_stored_tags::{
         delivery_state_tag, request_kind_tag, stop_marker_tags, waiting_status_tag,
@@ -81,10 +81,6 @@ pub(crate) fn plan_approval_state_change(
             context.now,
         )]),
         (ApprovalState::Unraised, ApprovalState::Waiting { saved }) => {
-            let parent = match &saved.routing {
-                ApprovalRouting::Owner => None,
-                ApprovalRouting::Delegate { admitted_parent } => Some(admitted_parent),
-            };
             let destination_id = ApprovalDestinationRowId::mint(context.ids)?;
             Ok(vec![
                 plan_first_save(row_id, scope, saved)?,
@@ -93,12 +89,13 @@ pub(crate) fn plan_approval_state_change(
                     row_id,
                     scope,
                     &saved.key.request_id,
-                    parent,
+                    saved.destinations.current_session(),
+                    portable_integer(0, "approval_request_destinations.position")?,
                     saved.window.raised_at(),
                 ),
             ])
         }
-        (ApprovalState::Waiting { saved }, ApprovalState::Waiting { .. }) => {
+        (ApprovalState::Waiting { saved }, ApprovalState::Waiting { saved: next }) => {
             let destination_id = ApprovalDestinationRowId::mint(context.ids)?;
             let changed_at = context.now.max(saved.window.raised_at());
             Ok(vec![
@@ -108,7 +105,12 @@ pub(crate) fn plan_approval_state_change(
                     row_id,
                     scope,
                     &saved.key.request_id,
-                    None,
+                    next.destinations.current_session(),
+                    portable_integer(
+                        i64::try_from(next.destinations.previous().len())
+                            .map_err(|_| corrupt("approval_request_destinations.position"))?,
+                        "approval_request_destinations.position",
+                    )?,
                     changed_at,
                 ),
             ])
@@ -232,6 +234,7 @@ fn plan_destination(
     scope: &ApprovalHolderScope,
     request_id: &ApprovalRequestId,
     parent: Option<&ApprovalSession>,
+    position: SafeInteger,
     at: CentralTime,
 ) -> GuardedStatement {
     let destination_kind = if parent.is_some() {
@@ -254,6 +257,7 @@ fn plan_destination(
         session_id = parent.map(|session| session.session_id.as_str().to_owned()),
         raised_notice_at = parent.map(|_| timestamp.clone()),
         timestamp = timestamp,
+        position = position,
     ))
 }
 
@@ -277,7 +281,7 @@ fn plan_first_ending(
         row_id = row_id.as_str().to_owned(),
         organization_id = scope.organization_id.as_str().to_owned(),
         contents_digest = saved.contents_digest.as_str().to_owned(),
-        waiting_status = waiting_status_tag(saved.waiting_status).to_owned(),
+        waiting_status = waiting_status_tag(saved.waiting_status()).to_owned(),
         deadline = portable_integer(
             saved.window.deadline().timestamp_millis(),
             "approval_requests.deadline_ms"
@@ -303,6 +307,7 @@ fn plan_forward_waiting(
             saved.window.deadline().timestamp_millis(),
             "approval_requests.deadline_ms"
         )?,
+        previous_status = waiting_status_tag(saved.waiting_status()).to_owned(),
     )))
 }
 

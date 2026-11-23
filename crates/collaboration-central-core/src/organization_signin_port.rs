@@ -220,7 +220,7 @@ impl<H: CentralStore, S: WorkspaceStores> crate::WorkspaceRuntime<H, S> {
             .as_deref()
             .ok_or(StoreFailure::Unavailable)?;
         let schedule = self
-            .approval_deadline_completion
+            .approval_delivery_completion
             .as_ref()
             .ok_or(StoreFailure::Unavailable)?;
         #[cfg(feature = "test-support")]

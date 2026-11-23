@@ -141,6 +141,10 @@ impl CentralObject {
         }
         self.send_welcome_mail(&runtime, &pair.server, &connection.attachment())
             .await?;
+        if let Some(completion) = runtime.recover_approval_notices(connection) {
+            self.pending_mac_calls
+                .run_socket_completion(&self.state, &pair.server, completion);
+        }
         Response::from_websocket(pair.client)
     }
 

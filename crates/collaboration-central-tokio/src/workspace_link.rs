@@ -216,6 +216,9 @@ async fn serve_link(
     if !send_welcome_backlog(&mut socket, &state, &writes, &runtime, &connection).await {
         return;
     }
+    if let Some(completion) = runtime.recover_approval_notices(connection.clone()) {
+        writes.schedule_completion(completion);
+    }
     loop {
         let message = tokio::select! {
             biased;
@@ -754,6 +757,19 @@ struct LinkWrites<'a> {
 }
 
 impl LinkWrites<'_> {
+    fn schedule_completion(&self, completion: collaboration_central_core::LinkCallCompletion) {
+        let stop = self.stop.clone();
+        let replaced = self.replaced.clone();
+        self.tasks.spawn(async move {
+            tokio::select! {
+                biased;
+                () = stop.cancelled() => {}
+                () = replaced.cancelled() => {}
+                () = completion => {}
+            }
+        });
+    }
+
     async fn send(&self, socket: &mut WebSocket, frame: &LinkFrame) -> bool {
         let Ok(text) = encode_text(frame, FrameDirection::ToRouter) else {
             return false;

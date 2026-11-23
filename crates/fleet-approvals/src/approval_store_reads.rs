@@ -13,7 +13,10 @@ use workspace_ids::{ApprovalRequestId, RouterRunId};
 
 use crate::{
     ApprovalSession, ApprovalState, MAX_OUTSTANDING_PER_RUN,
-    approval_store_scope::{ApprovalEnrollmentScope, ApprovalHolderScope, ApprovalRequestRowId},
+    approval_store_scope::{
+        ApprovalDestinationRowId, ApprovalEnrollmentScope, ApprovalHolderScope,
+        ApprovalRequestRowId,
+    },
     approval_store_transaction::ApprovalStoreTransaction,
 };
 
@@ -65,6 +68,8 @@ checked_subject_projection!(StoredDestinationRow {
     session_enrollment_id: Option<String>,
     session_id: Option<String>,
     raised_notice_at: Option<String>,
+    position: i64,
+    first_read_at: Option<String>,
     created_at: String,
     updated_at: String,
 });
@@ -95,6 +100,13 @@ pub(crate) struct ApprovalReadRecord {
     pub row_id: ApprovalRequestRowId,
     pub scope: ApprovalHolderScope,
     pub state: ApprovalState,
+    pub session_destinations: Vec<ApprovalSessionDestination>,
+}
+
+pub(crate) struct ApprovalSessionDestination {
+    pub row_id: ApprovalDestinationRowId,
+    pub session: ApprovalSession,
+    pub first_read_at: Option<EngineTime>,
 }
 
 pub(crate) enum ScopedHolderRequest {
@@ -208,6 +220,32 @@ pub(crate) async fn read_parent_approval_request(
         parent_session = parent.session_id.as_str().to_owned(),
     );
     read_request_record(transaction, statement).await
+}
+
+pub(crate) async fn read_session_approval_page(
+    transaction: &mut impl ApprovalStoreTransaction,
+    organization: &OrganizationId,
+    session: &ApprovalSession,
+    cursor: Option<&ApprovalRequestId>,
+    limit: usize,
+) -> Result<Vec<ApprovalReadRecord>, StoreFailure> {
+    let limit_value = i64::try_from(limit)
+        .map_err(|_| corrupt("approval_request_destinations.session_page_limit"))?;
+    let statement = checked_engine_statement!(
+        query_file_as,
+        [CheckedApprovalRow],
+        "src/queries/read_session_approval_page.sql",
+        organization = organization.as_str().to_owned(),
+        machine = session.enrollment.machine_id.as_str().to_owned(),
+        enrollment = session.enrollment.enrollment_id.as_str().to_owned(),
+        session = session.session_id.as_str().to_owned(),
+        cursor = cursor.map(|request| request.as_str().to_owned()),
+        limit = portable_integer(
+            limit_value,
+            "approval_request_destinations.session_page_limit"
+        )?,
+    );
+    read_request_records(transaction, statement, limit).await
 }
 
 pub(crate) async fn read_approval_due_subject(

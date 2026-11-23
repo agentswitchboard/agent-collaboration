@@ -2,7 +2,7 @@ use collaboration_central_conformance::{
     ConformanceResult as Result,
     signin_fixtures::person_approval_races::{
         DecisionCompetitor, DecisionRaceOrder, PersonApprovalPause, PersonApprovalRaceFixture,
-        RacePauseStep, check_decision_race,
+        RacePauseStep, check_decision_race, check_person_session_race,
     },
 };
 use serde_json::Value;
@@ -102,3 +102,20 @@ race_tests!(
     enrollment_end_before_person_decide,
     person_decide_before_enrollment_end
 );
+
+async fn check_person_session(order: DecisionRaceOrder) -> Result<()> {
+    let fixture = Fixture::with_production_dispatcher().await?;
+    let result = check_person_session_race(&fixture, order).await;
+    fixture.close().await?;
+    result
+}
+
+#[tokio::test]
+async fn session_decide_before_signed_person_decide() -> Result<()> {
+    check_person_session(DecisionRaceOrder::CompetitorFirst).await
+}
+
+#[tokio::test]
+async fn signed_person_decide_before_session_decide() -> Result<()> {
+    check_person_session(DecisionRaceOrder::PersonFirst).await
+}

@@ -23,6 +23,11 @@ pub(super) async fn control(
                     | Point::ApprovalEndingAnswerApplied
                     | Point::BeforeApprovalEndingWrite
                     | Point::BeforeApprovalCarrierTurn
+                    | Point::BeforeParentApprovalTransaction
+                    | Point::BeforeParentApprovalReply
+                    | Point::BeforeApprovalNoticeWrite
+                    | Point::AfterApprovalNoticeAttempt
+                    | Point::AfterApprovalNoticeRecovery
                     | Point::BeforePersonApprovalTurn
                     | Point::AfterPersonApprovalCommit
                     | Point::AfterIdleExpiryCommit

@@ -9,6 +9,8 @@ pub mod approval_link_scenarios;
 pub mod approval_provider_scenarios;
 mod machine_allowance_fixture;
 #[cfg(feature = "session-link-test-support")]
+pub mod parent_approval_scenarios;
+#[cfg(feature = "session-link-test-support")]
 pub mod session_link_scenarios;
 pub use machine_allowance_fixture::REPLACE_FIXTURE_ALLOWANCES_SQL;
 #[cfg(all(feature = "signin-test-support", not(target_arch = "wasm32")))]

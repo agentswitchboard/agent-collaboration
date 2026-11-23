@@ -13,8 +13,7 @@ use fleet_approvals::{
     AdmittedDecider, ApprovalApplyFailure, ApprovalApplyingStore, ApprovalCommitOwner,
     ApprovalCommitProof, ApprovalCommitScope, ApprovalDecideInput, ApprovalDecisionReply,
     ApprovalEnrollmentScope, ApprovalHolderAdmission, ApprovalHolderCommand, ApprovalHolderReply,
-    ApprovalHolderScope, PendingApprovalHolderEffects, PendingApprovalReply,
-    complete_approval_commit,
+    ApprovalHolderScope, PendingApprovalEffects, PendingApprovalReply, complete_approval_commit,
 };
 use fleet_runtime_ports::{Clock, SyncTime};
 use serde_json::{Value, json};
@@ -117,7 +116,12 @@ pub(super) async fn apply_fixture(
         let offers = holder_effects
             .map_or_else(
                 || Ok(Vec::new()),
-                |effects| effects.release(&proof).map_err(|_| WitnessFailure::Release),
+                |effects| {
+                    effects
+                        .release(&proof)
+                        .map(|released| released.endings)
+                        .map_err(|_| WitnessFailure::Release)
+                },
             )?
             .into_iter()
             .map(|offer| {
@@ -359,7 +363,7 @@ async fn apply_command(
         }
         _ => return Err(WitnessFailure::Storage),
     };
-    Ok((reply, Some(applying_store.finish_holder_effects())))
+    Ok((reply, Some(applying_store.finish_effects())))
 }
 
 async fn apply_fixture_sql(
@@ -452,7 +456,7 @@ async fn apply_fixture_sql(
 type WitnessOffers = Vec<Box<approval_request_protocol::DeliverEndingRequest>>;
 type WitnessReply =
     Box<dyn FnOnce(&ApprovalCommitProof, WitnessOffers) -> Result<Value, WitnessFailure>>;
-type PendingWitnessApply = (WitnessReply, Option<PendingApprovalHolderEffects>);
+type PendingWitnessApply = (WitnessReply, Option<PendingApprovalEffects>);
 
 struct WorkerApprovalCommit<'storage> {
     connection: &'storage DoConnection,

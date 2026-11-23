@@ -1,8 +1,8 @@
 use std::str::FromStr;
 
 use approval_request_protocol::{
-    ApprovalWindow, DecidedBy, DeliverEndingRequest, Ending, InvocationDigest, OfferView,
-    ParkedCallHolder, ProviderHolder, Raise, RequestContentsDigest, WaitingStatus,
+    ApprovalWindow, CentralTime, DecidedBy, DeliverEndingRequest, Ending, InvocationDigest,
+    OfferView, ParkedCallHolder, ProviderHolder, Raise, RequestContentsDigest, WaitingStatus,
 };
 use central_engine_model::supported_time;
 use central_storage::{ReadOutcome, SqlValue, StoreFailure};
@@ -10,7 +10,7 @@ use fleet_identity_protocol::{EnrollmentId, OrganizationId};
 use fleet_runtime_ports::{stored_values::json, workspace_decode_error::corrupt};
 
 use crate::{
-    ApprovalActor, ApprovalEnrollment, ApprovalRequestKey, ApprovalRouting, ApprovalRun,
+    ApprovalActor, ApprovalDestinations, ApprovalEnrollment, ApprovalRequestKey, ApprovalRun,
     ApprovalSession, ApprovalState, EndedApproval, RetainedApproval,
     approval_lifecycle_admission::is_destination,
     approval_store_scope::{ApprovalDestinationRowId, ApprovalHolderScope, ApprovalRequestRowId},
@@ -21,7 +21,8 @@ use crate::{
 };
 
 use super::{
-    ApprovalReadRecord, ApprovalRunRecord, StoredApprovalRow, StoredDestinationRow, StoredRunRow,
+    ApprovalReadRecord, ApprovalRunRecord, ApprovalSessionDestination, StoredApprovalRow,
+    StoredDestinationRow, StoredRunRow,
 };
 
 pub(super) fn decode_run_row(stored: StoredRunRow) -> Result<ApprovalRunRecord, StoreFailure> {
@@ -111,7 +112,7 @@ pub(super) fn decode_request_row(
         return Err(corrupt("approval_requests.chronology"));
     }
 
-    let state = match stored.record_state.stored_text()? {
+    let (state, session_destinations) = match stored.record_state.stored_text()? {
         "stopped_before_raise" => {
             require_null(
                 &[
@@ -133,38 +134,52 @@ pub(super) fn decode_request_row(
                 stored.stop_family.stored_text()?,
                 stored.stop_cause.stored_text()?,
             )?;
-            ApprovalState::StoppedBeforeRaise {
-                key,
-                contents_digest,
-                cause,
-            }
+            (
+                ApprovalState::StoppedBeforeRaise {
+                    key,
+                    contents_digest,
+                    cause,
+                },
+                Vec::new(),
+            )
         }
-        "waiting" | "ended" => {
+        state @ ("waiting" | "ended") => {
             require_null(
                 &[stored.stop_family.raw(), stored.stop_cause.raw()],
                 "approval_requests.stop_marker",
             )?;
-            let saved = Box::new(decode_retained_approval(
+            let ended_at = if state == "waiting" {
+                require_unended(&stored)?;
+                None
+            } else {
+                Some(parse_stored_time(
+                    stored.ended_at.stored_text()?,
+                    "approval_requests.ended_at",
+                )?)
+            };
+            let (saved, members) = decode_retained_approval(
                 &stored,
                 key,
                 contents_digest,
-                &row_id,
-                &scope,
+                (&row_id, &scope),
                 destinations,
-            )?);
+                ended_at,
+            )?;
+            let saved = Box::new(saved);
             if created_at != saved.window.raised_at() {
                 return Err(corrupt("approval_requests.first_saved_at"));
             }
-            if stored.record_state.stored_text()? == "waiting" {
-                require_unended(&stored)?;
-                ApprovalState::Waiting { saved }
-            } else {
-                let closed = decode_ending(&stored, &saved)?;
-                if updated_at < closed.ended_at {
-                    return Err(corrupt("approval_requests.ending_chronology"));
+            let state = match ended_at {
+                None => ApprovalState::Waiting { saved },
+                Some(ended_at) => {
+                    let closed = decode_ending(&stored, &saved, ended_at)?;
+                    if updated_at < ended_at {
+                        return Err(corrupt("approval_requests.ending_chronology"));
+                    }
+                    ApprovalState::Ended { saved, closed }
                 }
-                ApprovalState::Ended { saved, closed }
-            }
+            };
+            (state, members)
         }
         _ => return Err(corrupt("approval_requests.record_state")),
     };
@@ -172,6 +187,7 @@ pub(super) fn decode_request_row(
         row_id,
         scope,
         state,
+        session_destinations,
     })
 }
 
@@ -191,10 +207,10 @@ fn decode_retained_approval(
     stored: &StoredApprovalRow,
     key: ApprovalRequestKey,
     contents_digest: RequestContentsDigest,
-    row_id: &ApprovalRequestRowId,
-    scope: &ApprovalHolderScope,
+    (row_id, scope): (&ApprovalRequestRowId, &ApprovalHolderScope),
     destinations: &ReadOutcome,
-) -> Result<RetainedApproval, StoreFailure> {
+    ended_at: Option<CentralTime>,
+) -> Result<(RetainedApproval, Vec<ApprovalSessionDestination>), StoreFailure> {
     let offer: OfferView = json(
         stored.offer_json.stored_text()?,
         "approval_requests.offer_json",
@@ -250,15 +266,25 @@ fn decode_retained_approval(
         return Err(corrupt("approval_requests.deadline_ms"));
     }
     let waiting_status = parse_waiting_status(stored.waiting_status.stored_text()?)?;
-    let routing = decode_route(destinations, row_id, scope, &raise, waiting_status, window)?;
-    Ok(RetainedApproval {
-        key,
-        raise,
-        contents_digest,
-        window,
-        routing,
+    let (route, session_destinations) = decode_route(
+        destinations,
+        row_id,
+        scope,
+        &raise,
         waiting_status,
-    })
+        window,
+        ended_at,
+    )?;
+    Ok((
+        RetainedApproval {
+            key,
+            raise,
+            contents_digest,
+            window,
+            destinations: route,
+        },
+        session_destinations,
+    ))
 }
 
 fn decode_provider_holder(
@@ -285,42 +311,78 @@ fn decode_route(
     raise: &Raise,
     waiting_status: WaitingStatus,
     window: ApprovalWindow,
-) -> Result<ApprovalRouting, StoreFailure> {
-    let mut owner_present = false;
-    let mut parent = None;
-    for cells in &destinations.rows {
+    ended_at: Option<CentralTime>,
+) -> Result<(ApprovalDestinations, Vec<ApprovalSessionDestination>), StoreFailure> {
+    let mut people = false;
+    let mut members = Vec::new();
+    let mut prior_created_at = window.raised_at();
+    let mut session_ids = std::collections::BTreeSet::new();
+    for (position, cells) in destinations.rows.iter().enumerate() {
         let row = StoredDestinationRow::read_named(destinations, cells)?;
-        ApprovalDestinationRowId::parse(row.approval_destination_id.stored_text()?)?;
+        let destination_id =
+            ApprovalDestinationRowId::parse(row.approval_destination_id.stored_text()?)?;
         let created_at = parse_stored_time(row.created_at.stored_text()?, "created_at")?;
         let updated_at = parse_stored_time(row.updated_at.stored_text()?, "updated_at")?;
-        if row.approval_row_id.stored_text()? != row_id.as_str()
+        if people
+            || row.approval_row_id.stored_text()? != row_id.as_str()
             || row.organization_id.stored_text()? != scope.organization_id.as_str()
             || row.request_id.stored_text()? != raise.request_id().as_str()
-            || created_at < window.raised_at()
+            || (position == 0 && created_at != window.raised_at())
+            || created_at < prior_created_at
+            || created_at >= window.deadline()
+            || ended_at.is_some_and(|ending| created_at > ending)
             || updated_at < created_at
         {
             return Err(corrupt("approval_request_destinations.scope"));
         }
+        prior_created_at = created_at;
+        let SqlValue::Integer(stored_position) = row.position.raw() else {
+            return Err(corrupt("approval_request_destinations.position"));
+        };
+        if usize::try_from(stored_position.get()).ok() != Some(position) {
+            return Err(corrupt("approval_request_destinations.position"));
+        }
         match row.destination_kind.stored_text()? {
-            "people" if !owner_present => {
+            "people" => {
                 require_null(
                     &[
                         row.session_machine_id.raw(),
                         row.session_enrollment_id.raw(),
                         row.session_id.raw(),
                         row.raised_notice_at.raw(),
+                        row.first_read_at.raw(),
                     ],
                     "approval_request_destinations.people_fields",
                 )?;
-                owner_present = true;
+                people = true;
             }
-            "parent_session" if parent.is_none() => {
-                if parse_stored_time(row.raised_notice_at.stored_text()?, "raised_notice_at")?
-                    != window.raised_at()
+            "parent_session" => {
+                let raised_at =
+                    parse_stored_time(row.raised_notice_at.stored_text()?, "raised_notice_at")?;
+                let first_read_at = row
+                    .first_read_at
+                    .stored_optional_text()?
+                    .map(|time| parse_stored_time(time, "first_read_at"))
+                    .transpose()?;
+                if raised_at != created_at
+                    || first_read_at.is_some_and(|read| {
+                        read < raised_at
+                            || read > updated_at
+                            || read >= window.deadline()
+                            || ended_at.is_some_and(|ending| read > ending)
+                    })
                 {
-                    return Err(corrupt("approval_request_destinations.raised_notice_at"));
+                    return Err(corrupt("approval_request_destinations.notice_time"));
                 }
-                parent = Some(ApprovalSession {
+                let session_id = parse_identifier(row.session_id.stored_text()?, "session_id")?;
+                if !raise
+                    .requesting_session()
+                    .is_some_and(|requester| requester != &session_id)
+                    || !session_ids.insert(session_id.clone())
+                {
+                    return Err(corrupt("approval_request_destinations.membership"));
+                }
+                let session = ApprovalSession {
                     enrollment: ApprovalEnrollment {
                         machine_id: parse_identifier(
                             row.session_machine_id.stored_text()?,
@@ -331,29 +393,42 @@ fn decode_route(
                         )
                         .map_err(|_| corrupt("session_enrollment_id"))?,
                     },
-                    session_id: parse_identifier(row.session_id.stored_text()?, "session_id")?,
+                    session_id,
+                };
+                members.push(ApprovalSessionDestination {
+                    row_id: destination_id,
+                    session,
+                    first_read_at,
                 });
             }
             _ => return Err(corrupt("approval_request_destinations.destination_kind")),
         }
     }
-    match (owner_present, parent, waiting_status) {
-        (true, None, WaitingStatus::Pending) => Ok(ApprovalRouting::Owner),
-        (owner, Some(admitted_parent), status)
-            if owner == (status == WaitingStatus::PassedOn)
-                && raise
-                    .requesting_session()
-                    .is_some_and(|session| session != &admitted_parent.session_id) =>
-        {
-            Ok(ApprovalRouting::Delegate { admitted_parent })
+    let mut sessions: Vec<_> = members
+        .iter()
+        .map(|member| member.session.clone())
+        .collect();
+    let route = if people {
+        ApprovalDestinations::People { previous: sessions }
+    } else {
+        let current = sessions
+            .pop()
+            .ok_or_else(|| corrupt("approval_request_destinations.membership"))?;
+        ApprovalDestinations::Session {
+            previous: sessions,
+            current,
         }
-        _ => Err(corrupt("approval_request_destinations.membership")),
+    };
+    if route.waiting_status() != waiting_status {
+        return Err(corrupt("approval_request_destinations.membership"));
     }
+    Ok((route, members))
 }
 
 fn decode_ending(
     stored: &StoredApprovalRow,
     saved: &RetainedApproval,
+    ended_at: CentralTime,
 ) -> Result<EndedApproval, StoreFailure> {
     let ending: DeliverEndingRequest = json(
         stored.ending_json.stored_text()?,
@@ -362,7 +437,6 @@ fn decode_ending(
     ending
         .check_bound_raise(&saved.raise)
         .map_err(|_| corrupt("approval_requests.ending_binding"))?;
-    let ended_at = parse_stored_time(stored.ended_at.stored_text()?, "approval_requests.ended_at")?;
     let delivery = parse_delivery_state(stored.delivery_state.stored_text()?)?;
     let ended = ending.clone().into_ending();
     let decided_operation_id = stored
@@ -373,14 +447,14 @@ fn decode_ending(
     let deciding_actor = match &ended {
         Ending::Decided { by, .. } => Some(match by {
             DecidedBy::Person { person_id } => ApprovalActor::Person(person_id.clone()),
-            DecidedBy::Session { session } => match &saved.routing {
-                ApprovalRouting::Delegate { admitted_parent }
-                    if &admitted_parent.session_id == session =>
-                {
-                    ApprovalActor::Session(admitted_parent.clone())
-                }
-                _ => return Err(corrupt("approval_requests.decided_by")),
-            },
+            DecidedBy::Session { session } => ApprovalActor::Session(
+                saved
+                    .destinations
+                    .sessions()
+                    .find(|member| &member.session_id == session)
+                    .cloned()
+                    .ok_or_else(|| corrupt("approval_requests.decided_by"))?,
+            ),
         }),
         Ending::UnprovenCallDecided { person_id, .. } => {
             Some(ApprovalActor::Person(person_id.clone()))

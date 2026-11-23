@@ -183,7 +183,7 @@ impl<H: CentralStore, S: WorkspaceStores> TimedDueDispatch<WorkspaceRuntime<H, S
                                 .apply_approval_deadline(organization, row)
                                 .await?;
                             if let Some(completion) = applied.completion
-                                && let Some(schedule) = &runtime.approval_deadline_completion
+                                && let Some(schedule) = &runtime.approval_delivery_completion
                             {
                                 schedule(completion);
                             }

@@ -10,6 +10,8 @@ mod link_renewal;
 mod link_request;
 mod link_typed_calls;
 mod mac_call_address;
+#[cfg(test)]
+mod parent_session_rpc_test;
 mod request_status;
 pub mod session_lifecycle_rpc;
 mod typed_call_correlations;
