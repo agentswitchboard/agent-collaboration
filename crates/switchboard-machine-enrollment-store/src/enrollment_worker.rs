@@ -11,8 +11,8 @@ use switchboard_machine_core_store::{
 };
 use switchboard_machine_enrollment::{
     BindingGeneration, ConditionalWrite, CredentialStoreError, EnrollmentBinding,
-    EnrollmentContext, EnrollmentEnd, EnrollmentMetadata, MachineId, RefreshCredential,
-    SecretValue, StoredEnrollment,
+    EnrollmentContext, EnrollmentEnd, EnrollmentKey, EnrollmentMetadata, KeyedEnrollment,
+    MachineId, RefreshCredential, SecretValue, StoredEnrollment,
 };
 use tokio::sync::{mpsc, watch};
 
@@ -122,8 +122,8 @@ impl EnrollmentWorker {
         enrollment_changes: &watch::Sender<u64>,
     ) {
         match request {
-            EnrollmentRequest::Read(reply) if !reply.is_closed() => {
-                let _ = reply.send(self.read().await);
+            EnrollmentRequest::Read { key, reply } if !reply.is_closed() => {
+                let _ = reply.send(self.read(key.as_ref()).await);
             }
             EnrollmentRequest::ReadMetadata(reply) if !reply.is_closed() => {
                 let _ = reply.send(self.read_metadata().await);
@@ -155,19 +155,27 @@ impl EnrollmentWorker {
         Ok(enrollment_metadata(row, &self.machine_id)?)
     }
 
-    async fn read(&mut self) -> Result<StoredEnrollment, ReadFailure> {
+    async fn read(
+        &mut self,
+        requested: Option<&EnrollmentKey>,
+    ) -> Result<KeyedEnrollment, ReadFailure> {
         let snapshot = self.snapshot().await?;
-        match snapshot {
-            EnrollmentSnapshot::Empty => Ok(StoredEnrollment::Empty),
+        if let Some(requested) = requested
+            && snapshot.key().is_some_and(|key| key != requested)
+        {
+            return Ok(KeyedEnrollment::DifferentEnrollment);
+        }
+        let stored = match snapshot {
+            EnrollmentSnapshot::Empty => StoredEnrollment::Empty,
             EnrollmentSnapshot::Ended {
                 generation,
                 why,
                 key,
-            } => Ok(StoredEnrollment::Ended {
+            } => StoredEnrollment::Ended {
                 generation,
                 why,
                 key,
-            }),
+            },
             EnrollmentSnapshot::Active {
                 key,
                 deployment,
@@ -185,7 +193,7 @@ impl EnrollmentWorker {
                     .map_err(|_| ReadFailure::SealedBytesUnreadable)?;
                 let refresh_token = SecretValue::copy_from_utf8(credential.expose_bytes())
                     .ok_or(ReadFailure::SealedBytesUnreadable)?;
-                Ok(StoredEnrollment::Active(EnrollmentBinding {
+                StoredEnrollment::Active(EnrollmentBinding {
                     generation,
                     context: EnrollmentContext {
                         machine_id: key.machine_id,
@@ -196,9 +204,10 @@ impl EnrollmentWorker {
                         enrollment_id: key.enrollment_id,
                         refresh_token,
                     },
-                }))
+                })
             }
-        }
+        };
+        Ok(KeyedEnrollment::Snapshot(stored))
     }
 
     async fn mutate(

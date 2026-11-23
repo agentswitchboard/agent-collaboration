@@ -16,7 +16,7 @@ mod sign_in_answers;
 mod sign_in_client;
 
 pub use credential_store::{
-    ConditionalWrite, CredentialStore, CredentialStoreError, StoreDurability,
+    ConditionalWrite, CredentialStore, CredentialStoreError, KeyedEnrollment, StoreDurability,
 };
 pub use credential_value::{RefreshCredential, SecretValue};
 pub use device_state::{DeviceEnrollment, DeviceEnrollmentInput, DevicePollSchedule};

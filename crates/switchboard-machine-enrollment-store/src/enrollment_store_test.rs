@@ -24,6 +24,9 @@ mod tls;
 #[path = "enrollment_process_test.rs"]
 mod process;
 
+#[path = "enrollment_keyed_read_test.rs"]
+mod keyed_read;
+
 fn assert_queued<T>(future: Pin<&mut impl Future<Output = T>>) {
     assert!(
         future

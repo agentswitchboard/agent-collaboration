@@ -12,7 +12,8 @@ use router_clock::RuntimeClock;
 use switchboard_machine_core_store::{MachineLocalStore, MachineLocalStoreError};
 use switchboard_machine_enrollment::{
     BindingGeneration, ConditionalWrite, CredentialStore, CredentialStoreError, EnrollmentBinding,
-    EnrollmentEnd, EnrollmentMetadata, MachineId, StoreDurability, StoredEnrollment,
+    EnrollmentEnd, EnrollmentKey, EnrollmentMetadata, KeyedEnrollment, MachineId, StoreDurability,
+    StoredEnrollment,
 };
 use tokio::{
     sync::{Mutex, mpsc, oneshot, watch},
@@ -113,6 +114,23 @@ impl MachineEnrollmentStore {
         result
     }
 
+    async fn read_enrollment(
+        &self,
+        key: Option<EnrollmentKey>,
+    ) -> Result<KeyedEnrollment, CredentialStoreError> {
+        if *self.shutdown.borrow() {
+            return Err(CredentialStoreError::Read);
+        }
+        let (reply, result) = oneshot::channel();
+        self.requests
+            .send(EnrollmentRequest::Read { key, reply })
+            .map_err(|_| CredentialStoreError::Read)?;
+        result
+            .await
+            .map_err(|_| CredentialStoreError::Read)?
+            .map_err(|_| CredentialStoreError::Read)
+    }
+
     async fn mutate(
         &self,
         expected: BindingGeneration,
@@ -144,17 +162,17 @@ impl CredentialStore for MachineEnrollmentStore {
     }
 
     async fn read(&self) -> Result<StoredEnrollment, CredentialStoreError> {
-        if *self.shutdown.borrow() {
-            return Err(CredentialStoreError::Read);
+        match self.read_enrollment(None).await? {
+            KeyedEnrollment::Snapshot(stored) => Ok(stored),
+            KeyedEnrollment::DifferentEnrollment => Err(CredentialStoreError::Read),
         }
-        let (reply, result) = oneshot::channel();
-        self.requests
-            .send(EnrollmentRequest::Read(reply))
-            .map_err(|_| CredentialStoreError::Read)?;
-        result
-            .await
-            .map_err(|_| CredentialStoreError::Read)?
-            .map_err(|_| CredentialStoreError::Read)
+    }
+
+    async fn read_for_key(
+        &self,
+        requested: &EnrollmentKey,
+    ) -> Result<KeyedEnrollment, CredentialStoreError> {
+        self.read_enrollment(Some(requested.clone())).await
     }
 
     async fn read_metadata(&self) -> Result<EnrollmentMetadata, CredentialStoreError> {
@@ -215,7 +233,10 @@ enum WorkerCompletion {
 type WriteResult = Result<ConditionalWrite, CredentialStoreError>;
 
 enum EnrollmentRequest {
-    Read(oneshot::Sender<Result<StoredEnrollment, ReadFailure>>),
+    Read {
+        key: Option<EnrollmentKey>,
+        reply: oneshot::Sender<Result<KeyedEnrollment, ReadFailure>>,
+    },
     ReadMetadata(oneshot::Sender<Result<EnrollmentMetadata, ReadFailure>>),
     Mutate {
         expected: BindingGeneration,

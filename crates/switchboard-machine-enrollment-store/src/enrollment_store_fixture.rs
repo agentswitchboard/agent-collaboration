@@ -182,9 +182,15 @@ impl Fixture {
         let (reply, result) = oneshot::channel();
         self.store
             .requests
-            .send(EnrollmentRequest::Read(reply))
+            .send(EnrollmentRequest::Read { key: None, reply })
             .unwrap_or_else(|_| panic!("fixture worker closed"));
-        result.await.expect("typed reply")
+        result
+            .await
+            .expect("typed reply")
+            .and_then(|read| match read {
+                KeyedEnrollment::Snapshot(stored) => Ok(stored),
+                KeyedEnrollment::DifferentEnrollment => Err(ReadFailure::StorageUnavailable),
+            })
     }
 }
 

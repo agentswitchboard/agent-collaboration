@@ -62,6 +62,13 @@ impl EnrollmentSnapshot {
         }
     }
 
+    pub(crate) fn key(&self) -> Option<&EnrollmentKey> {
+        match self {
+            Self::Empty => None,
+            Self::Active { key, .. } | Self::Ended { key, .. } => Some(key),
+        }
+    }
+
     pub(crate) fn generation(&self) -> BindingGeneration {
         match self {
             Self::Empty => BindingGeneration::EMPTY,

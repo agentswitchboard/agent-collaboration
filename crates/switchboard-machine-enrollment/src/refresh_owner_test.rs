@@ -1,3 +1,4 @@
+use crate::{EnrollmentKey, KeyedEnrollment};
 use std::{
     future::{Future, poll_fn},
     pin::Pin,
@@ -102,6 +103,15 @@ impl CredentialStore for FakeStore {
             return Err(CredentialStoreError::Read);
         }
         Ok(self.snapshot())
+    }
+
+    async fn read_for_key(
+        &self,
+        requested: &EnrollmentKey,
+    ) -> Result<KeyedEnrollment, CredentialStoreError> {
+        self.read()
+            .await
+            .map(|snapshot| KeyedEnrollment::from_snapshot(snapshot, requested))
     }
 
     async fn read_metadata(&self) -> Result<crate::EnrollmentMetadata, CredentialStoreError> {

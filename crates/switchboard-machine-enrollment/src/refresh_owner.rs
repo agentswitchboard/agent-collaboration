@@ -14,7 +14,8 @@ use tokio::sync::Mutex;
 use crate::{
     BindingGeneration, ConditionalWrite, CredentialStore, CredentialStoreError, EnrollmentBinding,
     EnrollmentContext, EnrollmentEnd, EnrollmentKey, EnrollmentMetadata, InvalidReason,
-    RefreshAnswer, RefreshCredential, RetirementFence, SecretValue, StoredEnrollment, TokenGrant,
+    KeyedEnrollment, RefreshAnswer, RefreshCredential, RetirementFence, SecretValue,
+    StoredEnrollment, TokenGrant,
     retirement_fence::{RetirementAttempt, RetirementOutcome},
 };
 
@@ -424,23 +425,15 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
         &self,
         requested: Option<&EnrollmentKey>,
     ) -> Result<EnrollmentBinding, LeaseUnavailable> {
-        if let Some(requested) = requested {
-            match self.store.read_metadata().await? {
-                EnrollmentMetadata::Active { key, .. } | EnrollmentMetadata::Ended { key, .. }
-                    if &key != requested =>
-                {
+        let stored = match requested {
+            Some(key) => match self.store.read_for_key(key).await? {
+                KeyedEnrollment::Snapshot(stored) => stored,
+                KeyedEnrollment::DifferentEnrollment => {
                     return Err(LeaseUnavailable::DifferentEnrollment);
                 }
-                _ => {}
-            }
-        }
-        // The credential read can observe a replacement after the metadata snapshot.
-        let stored = self.store.read().await?;
-        if let Some(requested) = requested
-            && stored.key().is_some_and(|current| &current != requested)
-        {
-            return Err(LeaseUnavailable::DifferentEnrollment);
-        }
+            },
+            None => self.store.read().await?,
+        };
         match stored {
             StoredEnrollment::Empty => Err(LeaseUnavailable::NotEnrolled),
             StoredEnrollment::Ended { why, .. } => Err(LeaseUnavailable::Ended { why }),

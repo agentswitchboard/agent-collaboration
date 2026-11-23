@@ -203,10 +203,12 @@ async fn the_real_enrollment_store_obeys_each_acquire_mapping_and_keeps_other_ke
     usable.close().await.unwrap();
 
     let refused = local.source(RefreshScript::Refused(InvalidReason::GrantRefused));
+    let mut enrollment_changes = local.store.subscribe_enrollment_changes();
     assert_eq!(
         refused.acquire(&key, None).await,
         Err(LeaseFailure::EnrollmentEnded)
     );
+    enrollment_changes.changed().await.unwrap();
     assert!(matches!(
         local.store.read().await.unwrap(),
         StoredEnrollment::Ended {
@@ -214,7 +216,6 @@ async fn the_real_enrollment_store_obeys_each_acquire_mapping_and_keeps_other_ke
             ..
         }
     ));
-    refused.end(&key, EnrollmentEnd::LeaseRefused);
     assert_eq!(
         refused.close().await.unwrap(),
         UnfinishedLeaseWork::default()

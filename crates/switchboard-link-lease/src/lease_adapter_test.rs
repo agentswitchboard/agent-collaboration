@@ -1,4 +1,5 @@
 use std::{future::poll_fn, sync::Mutex, task::Poll, time::Duration};
+use switchboard_machine_enrollment::{EnrollmentKey, KeyedEnrollment};
 
 use router_clock::{ClockInstant, ManualClock};
 use switchboard_machine_enrollment::{
@@ -58,6 +59,15 @@ impl CredentialStore for RowStore {
         let snapshot = self.row.borrow().clone();
         self.credential_read.pause_if_held().await;
         Ok(snapshot)
+    }
+
+    async fn read_for_key(
+        &self,
+        requested: &EnrollmentKey,
+    ) -> Result<KeyedEnrollment, CredentialStoreError> {
+        self.read()
+            .await
+            .map(|snapshot| KeyedEnrollment::from_snapshot(snapshot, requested))
     }
 
     async fn read_metadata(&self) -> Result<EnrollmentMetadata, CredentialStoreError> {
