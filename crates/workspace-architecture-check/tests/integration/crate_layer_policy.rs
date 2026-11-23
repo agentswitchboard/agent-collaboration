@@ -34,6 +34,7 @@ const LAYER_POLICY: [(&str, &[&str]); 46] = [
             "fleet-lent-transaction",
             "fleet-rpc",
             "fleet-runtime-ports",
+            "fleet-signin",
         ],
     ),
     (

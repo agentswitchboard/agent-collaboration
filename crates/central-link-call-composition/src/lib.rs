@@ -6,7 +6,8 @@ mod organization_loan;
 mod session_dispatch;
 
 pub use apply_failure::{
-    SessionApplyFailure, SessionApplyFault, SessionApplyResult, SessionApplySuccess,
+    OrganizationLoanFailure, SessionApplyFailure, SessionApplyFault, SessionApplyResult,
+    SessionApplySuccess, SessionWiringFault,
 };
 pub use organization_loan::{
     OrganizationLoan, OrganizationSessionTransactions, SessionApplyFuture,

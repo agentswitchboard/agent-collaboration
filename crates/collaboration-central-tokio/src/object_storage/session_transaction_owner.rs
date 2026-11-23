@@ -7,7 +7,6 @@ use fleet_identity_protocol::OrganizationId;
 use std::{ops::ControlFlow, sync::Arc};
 
 pub(crate) struct NativeSessionTransactions {
-    pub(crate) organization: OrganizationId,
     pub(crate) storage: Arc<ObjectStorage>,
 }
 
@@ -25,12 +24,13 @@ impl ObjectStorage {
 }
 
 impl OrganizationSessionTransactions for NativeSessionTransactions {
-    type Transaction<'loan> = NativeTransaction<'loan>;
+    type Transaction<'connection> = OrganizationLoan<NativeTransaction<'connection>>;
 
     async fn apply(
         &self,
-        dispatch: impl for<'loan> FnOnce(
-            OrganizationLoan<'loan, Self::Transaction<'loan>>,
+        admitted_organization: OrganizationId,
+        dispatch: impl for<'loan, 'connection> FnOnce(
+            &'loan mut Self::Transaction<'connection>,
         ) -> SessionApplyFuture<'loan>
         + Send
         + 'static,
@@ -49,11 +49,15 @@ impl OrganizationSessionTransactions for NativeSessionTransactions {
             .opened()
             .await?
             .run_transaction(async |connection| {
-                let result = dispatch(OrganizationLoan::new(
-                    &self.organization,
+                let result = match OrganizationLoan::verify(
                     NativeTransaction(connection),
-                ))
-                .await;
+                    &admitted_organization,
+                )
+                .await
+                {
+                    Ok(mut loan) => dispatch(&mut loan).await,
+                    Err(failure) => Err(failure.into()),
+                };
                 #[cfg(feature = "test-support")]
                 let result = central_link_call_composition::inject_reserved_reply_fault(
                     &self.storage.fail_reserved_session_reply,
@@ -75,3 +79,7 @@ pub(crate) fn fill_session_secret(bytes: &mut [u8; 32]) -> Result<(), SessionEnt
         .fill(bytes)
         .map_err(|_| SessionEntropyUnavailable)
 }
+
+#[cfg(all(test, feature = "test-support"))]
+#[path = "session_transaction_owner_test.rs"]
+mod tests;

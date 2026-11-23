@@ -267,10 +267,7 @@ impl TokioWorkspaceHost {
         );
         let dispatcher: Arc<dyn collaboration_central_core::CentralLinkDispatcher> =
             Arc::new(SessionLinkDispatcher::new(
-                NativeSessionTransactions {
-                    organization: organization.clone(),
-                    storage,
-                },
+                NativeSessionTransactions { storage },
                 clock.clone(),
                 ids,
                 fill_session_secret,

@@ -1,6 +1,6 @@
 use crate::{
-    OrganizationLoan, OrganizationSessionTransactions, SessionApplyFailure, SessionApplyFault,
-    SessionApplyFuture, SessionApplyResult, apply_failure::SessionApplySuccess,
+    OrganizationSessionTransactions, SessionApplyFailure, SessionApplyFault, SessionApplyFuture,
+    SessionApplyResult, apply_failure::SessionApplySuccess,
 };
 use central_engine_model::{Context, EngineTime};
 use central_link_protocol::{
@@ -80,9 +80,9 @@ where
         &self,
         machine: &ValidatedMachineConnection,
         request: Envelope<R::Target, R::Request>,
-        dispatch: impl for<'loan> FnOnce(
+        dispatch: impl for<'loan, 'connection> FnOnce(
             TargetCheckedCentralCall<R>,
-            OrganizationLoan<'loan, Transactions::Transaction<'loan>>,
+            &'loan mut Transactions::Transaction<'connection>,
             ValidatedMachineConnection,
             ApplyingInputs,
             EngineTime,
@@ -102,10 +102,10 @@ where
         let inputs = self.inputs.clone();
         let result = self
             .transactions
-            .apply(move |mut loan| {
+            .apply(machine.organization_id().clone(), move |loan| {
                 Box::pin(async move {
                     let (time, lapse) = recheck_lent_link_authority(
-                        &mut loan,
+                        loan,
                         machine.attachment_ref(),
                         inputs.clock.as_ref(),
                     )
@@ -147,7 +147,7 @@ where
                     self.apply::<CreateFleetSessionRpc>(
                         machine,
                         request,
-                        |request, mut loan, machine, inputs, time| {
+                        |request, loan, machine, inputs, time| {
                             Box::pin(async move {
                                 dispatch_fallible_correlated_central_call(request, |body| async {
                                     let mut ids = ApplyingIds(inputs.ids.as_ref());
@@ -155,7 +155,7 @@ where
                                         now: time,
                                         ids: &mut ids,
                                     };
-                                    let mut service = SessionService::in_transaction(&mut loan);
+                                    let mut service = SessionService::in_transaction(loan);
                                     session_reply(
                                         service
                                             .create(
@@ -178,7 +178,7 @@ where
                     self.apply::<BindFleetSessionRpc>(
                         machine,
                         request,
-                        |request, mut loan, machine, inputs, time| {
+                        |request, loan, machine, inputs, time| {
                             Box::pin(async move {
                                 dispatch_fallible_central_call(request, |body| async {
                                     let mut ids = ApplyingIds(inputs.ids.as_ref());
@@ -186,7 +186,7 @@ where
                                         now: time,
                                         ids: &mut ids,
                                     };
-                                    let mut service = SessionService::in_transaction(&mut loan);
+                                    let mut service = SessionService::in_transaction(loan);
                                     session_reply(service.bind(&machine, body, &mut context).await)
                                 })
                                 .await
@@ -200,7 +200,7 @@ where
                     self.apply::<EndFleetSessionRpc>(
                         machine,
                         request,
-                        |request, mut loan, machine, inputs, time| {
+                        |request, loan, machine, inputs, time| {
                             Box::pin(async move {
                                 dispatch_fallible_correlated_central_call(request, |body| async {
                                     let mut ids = ApplyingIds(inputs.ids.as_ref());
@@ -208,7 +208,7 @@ where
                                         now: time,
                                         ids: &mut ids,
                                     };
-                                    let mut service = SessionService::in_transaction(&mut loan);
+                                    let mut service = SessionService::in_transaction(loan);
                                     session_reply(service.end(&machine, body, &mut context).await)
                                 })
                                 .await
@@ -267,6 +267,12 @@ fn report_application(result: SessionApplyResult) -> CentralCallDispatch {
         Err(failure @ SessionApplyFailure::EntropyUnavailable) => {
             tracing::warn!(?failure, "session call could not get secure entropy");
             Err(StoreFailure::Unavailable)
+        }
+        Err(SessionApplyFailure::Wiring(fault)) => {
+            tracing::error!(?fault, "session transaction owner did not match admission");
+            Err(fleet_runtime_ports::workspace_decode_error::corrupt(
+                "signin_organization_identity.id",
+            ))
         }
         Err(SessionApplyFailure::Terminal(fault)) => {
             tracing::error!(?fault, "session call rolled back");

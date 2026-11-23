@@ -10,33 +10,35 @@ use std::sync::Arc;
 use worker::{send::SendWrapper, wasm_bindgen::JsCast};
 
 pub(super) struct WorkerSessionTransactions {
-    pub(super) organization: OrganizationId,
     #[cfg(feature = "test-support")]
     pub(super) fail_reserved_session_reply: Arc<std::sync::atomic::AtomicBool>,
     pub(super) connection: Arc<SendWrapper<DoConnection>>,
 }
 
 impl OrganizationSessionTransactions for WorkerSessionTransactions {
-    type Transaction<'loan> = WorkerExecutorLender<'loan, DoTransaction>;
+    type Transaction<'connection> =
+        OrganizationLoan<WorkerExecutorLender<'connection, DoTransaction>>;
 
     async fn apply(
         &self,
-        dispatch: impl for<'loan> FnOnce(
-            OrganizationLoan<'loan, Self::Transaction<'loan>>,
+        admitted_organization: OrganizationId,
+        dispatch: impl for<'loan, 'connection> FnOnce(
+            &'loan mut Self::Transaction<'connection>,
         ) -> SessionApplyFuture<'loan>
         + Send
         + 'static,
     ) -> SessionApplyResult {
-        let organization = self.organization.clone();
         #[cfg(feature = "test-support")]
         let fail_reserved_session_reply = self.fail_reserved_session_reply.clone();
         self.connection
             .transaction(move |transaction| async move {
-                let loan = OrganizationLoan::new(
-                    &organization,
+                let mut loan = OrganizationLoan::verify(
                     WorkerExecutorLender::from_storage_executor(&transaction),
-                );
-                let result = dispatch(loan).await;
+                    &admitted_organization,
+                )
+                .await
+                .map_err(|failure| SessionTransactionError::Apply(failure.into()))?;
+                let result = dispatch(&mut loan).await;
                 #[cfg(feature = "test-support")]
                 let result = central_link_call_composition::inject_reserved_reply_fault(
                     &fail_reserved_session_reply,

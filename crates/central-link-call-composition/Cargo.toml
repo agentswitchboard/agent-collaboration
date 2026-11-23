@@ -20,7 +20,9 @@ fleet-identity-protocol = { path = "../fleet-identity-protocol", version = "0.1.
 fleet-lent-transaction.workspace = true
 fleet-runtime-ports.workspace = true
 fleet-rpc.workspace = true
+fleet-signin.workspace = true
 tracing.workspace = true
+thiserror.workspace = true
 chrono.workspace = true
 sqlx-core.workspace = true
 uuid.workspace = true

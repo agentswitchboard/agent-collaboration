@@ -359,7 +359,6 @@ impl CentralObject {
         let dispatcher: Arc<dyn collaboration_central_core::CentralLinkDispatcher> =
             Arc::new(SessionLinkDispatcher::new(
                 WorkerSessionTransactions {
-                    organization: organization.clone(),
                     connection: host.connection.clone(),
                     #[cfg(feature = "test-support")]
                     fail_reserved_session_reply: self.controls.fail_reserved_session_reply.clone(),

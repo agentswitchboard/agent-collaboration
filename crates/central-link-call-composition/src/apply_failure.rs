@@ -9,7 +9,24 @@ use fleet_identity_protocol::SessionReplyMismatch;
 pub enum SessionApplyFailure {
     Store(StoreFailure),
     EntropyUnavailable,
+    Wiring(SessionWiringFault),
     Terminal(SessionApplyFault),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum OrganizationLoanFailure {
+    #[error(transparent)]
+    Store(#[from] StoreFailure),
+    #[error(transparent)]
+    Wiring(#[from] SessionWiringFault),
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum SessionWiringFault {
+    #[error("session transaction owner has no provisioned organization stamp")]
+    UnprovisionedStore,
+    #[error("session transaction owner belongs to a different organization")]
+    ForeignOrganizationStore,
 }
 
 #[derive(Debug)]
@@ -24,12 +41,22 @@ pub enum SessionApplyFault {
 }
 
 /// These outcomes may leave a transaction successfully. Wire faults are projected afterwards.
+#[derive(Debug)]
 pub enum SessionApplySuccess {
     Answered(CentralCallReply),
     AuthorityLapsed(MachineLinkCloseCode),
 }
 
 pub type SessionApplyResult = Result<SessionApplySuccess, SessionApplyFailure>;
+
+impl From<OrganizationLoanFailure> for SessionApplyFailure {
+    fn from(failure: OrganizationLoanFailure) -> Self {
+        match failure {
+            OrganizationLoanFailure::Store(failure) => Self::Store(failure),
+            OrganizationLoanFailure::Wiring(fault) => Self::Wiring(fault),
+        }
+    }
+}
 
 impl From<StoreFailure> for SessionApplyFailure {
     fn from(failure: StoreFailure) -> Self {
