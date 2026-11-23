@@ -20,9 +20,9 @@ impl QuiesceReason {
         match self {
             Self::NotEnrolled => FrontRefusal::NotEnrolled,
             Self::EnrollmentEnded => FrontRefusal::EnrollmentEnded,
-            Self::BuildFailed | Self::PieceExited | Self::DifferentPair { .. } | Self::Closing => {
-                FrontRefusal::Restarting
-            }
+            Self::BuildFailed | Self::PieceExited => FrontRefusal::Restarting,
+            Self::DifferentPair { .. } => FrontRefusal::EnrollmentMismatch,
+            Self::Closing => FrontRefusal::ShuttingDown,
         }
     }
 }

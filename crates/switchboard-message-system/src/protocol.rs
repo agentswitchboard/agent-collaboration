@@ -210,7 +210,10 @@ pub enum FrontRefusal {
     NotEnrolled,
     EnrollmentEnded,
     MetadataUnreadable,
+    Starting,
     Restarting,
+    EnrollmentMismatch,
+    ShuttingDown,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

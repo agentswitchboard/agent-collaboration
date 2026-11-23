@@ -3,11 +3,29 @@ use std::{collections::BTreeSet, num::NonZeroU64};
 use hegel::generators as gs;
 use state_machine_core::{EventTag, StateMachine, StateTag};
 use switchboard_message_system::{
-    Effect, Event, Front, Generation, Metadata, ReadId, State, StopReport, StopResult, StopTarget,
-    Supervisor, UnitPiece,
+    Effect, Event, Front, FrontRefusal, Generation, Metadata, QuiesceReason, ReadId, State,
+    StopReport, StopResult, StopTarget, Supervisor, UnitPiece,
 };
 
 use super::{BUDGETS, FIRST, PIECES, active, enrollment, report, send, target};
+
+fn expected_front(state: &State) -> Front {
+    let refusal = match state {
+        State::Observing { reason } => *reason,
+        State::Opening { .. } => FrontRefusal::Starting,
+        State::Running { generation, .. } => return Front::Forwarding(*generation),
+        State::Quiescing(cleanup) => match cleanup.reason() {
+            QuiesceReason::NotEnrolled => FrontRefusal::NotEnrolled,
+            QuiesceReason::EnrollmentEnded => FrontRefusal::EnrollmentEnded,
+            QuiesceReason::BuildFailed | QuiesceReason::PieceExited => FrontRefusal::Restarting,
+            QuiesceReason::DifferentPair { .. } => FrontRefusal::EnrollmentMismatch,
+            QuiesceReason::Closing => FrontRefusal::ShuttingDown,
+        },
+        State::Faulted { .. } => FrontRefusal::EnrollmentMismatch,
+        State::Closed | State::ClosedWithOutstanding { .. } => FrontRefusal::ShuttingDown,
+    };
+    Front::Refusing(refusal)
+}
 
 struct History {
     supervisor: Supervisor,
@@ -26,7 +44,7 @@ impl History {
         let (supervisor, initial) = Supervisor::new(BUDGETS);
         let mut history = Self {
             supervisor,
-            front: Front::Refusing(switchboard_message_system::FrontRefusal::NotEnrolled),
+            front: Front::Refusing(FrontRefusal::NotEnrolled),
             latest_read: ReadId(NonZeroU64::MIN),
             close_requested: false,
             current_join: None,
@@ -65,7 +83,14 @@ impl History {
         }
 
         let before = self.supervisor.state_tag();
+        let previous_front = self.front;
         let effects = send(&mut self.supervisor, event.clone());
+        let expected = expected_front(self.supervisor.state());
+        let publications = effects.iter().filter_map(|effect| match effect {
+            Effect::PublishFront(front) => Some(*front),
+            _ => None,
+        });
+        assert!(publications.eq((previous_front != expected).then_some(expected)));
         for effect in effects.iter().cloned() {
             self.record(effect, Some(&event));
         }
@@ -80,7 +105,8 @@ impl History {
                         && row.terminal == self.supervisor.is_terminal())
             );
         }
-        assert_eq!(self.front, self.supervisor.state().front());
+        assert_eq!(self.front, expected);
+        assert_eq!(self.supervisor.state().front(), expected);
         if let Front::Forwarding(generation) = self.front {
             assert!(
                 matches!(self.supervisor.state(), State::Running { generation: active, .. } if *active == generation)

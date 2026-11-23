@@ -20,12 +20,17 @@ fn scheduled(supervisor: &Supervisor, effects: &[Effect], delay: u64) {
 
 fn start() -> Supervisor {
     let (mut supervisor, _) = Supervisor::new(BUDGETS);
-    assert!(
-        observe(&mut supervisor, active(1, 1, 1)).contains(&Effect::StartUnit {
-            generation: FIRST,
-            pair: pair(1, 1),
-        })
+    let effects = observe(&mut supervisor, active(1, 1, 1));
+    assert_eq!(
+        effects.first(),
+        Some(&Effect::PublishFront(Front::Refusing(
+            FrontRefusal::Starting
+        )))
     );
+    assert!(effects.contains(&Effect::StartUnit {
+        generation: FIRST,
+        pair: pair(1, 1),
+    }));
     supervisor
 }
 
@@ -128,14 +133,14 @@ fn foreign_organization_or_deployment_stops_and_faults_even_after_unit_turnover(
         assert_eq!(
             effects.first(),
             Some(&Effect::PublishFront(Front::Refusing(
-                FrontRefusal::Restarting
+                FrontRefusal::EnrollmentMismatch
             )))
         );
         assert!(effects.contains(&Effect::ReportFault(Fault::DifferentPair {
             pinned: pair(1, 1),
             observed: pair(organization, deployment),
         })));
-        assert!(stop_unit(&mut supervisor).is_empty());
+        let finished = stop_unit(&mut supervisor);
         assert_eq!(
             supervisor.state(),
             &State::Faulted {
@@ -143,13 +148,21 @@ fn foreign_organization_or_deployment_stops_and_faults_even_after_unit_turnover(
                 observed: pair(organization, deployment),
             }
         );
+        assert_eq!(
+            supervisor.state().front(),
+            Front::Refusing(FrontRefusal::EnrollmentMismatch)
+        );
+        assert!(finished.is_empty());
         assert!(observe(&mut supervisor, active(1, 1, 3)).is_empty());
         assert_eq!(
             send(&mut supervisor, Event::Close),
-            [Effect::StopAndJoin {
-                target: StopTarget::EnrollmentStore,
-                budget: BUDGETS.enrollment_store,
-            }]
+            [
+                Effect::PublishFront(Front::Refusing(FrontRefusal::ShuttingDown)),
+                Effect::StopAndJoin {
+                    target: StopTarget::EnrollmentStore,
+                    budget: BUDGETS.enrollment_store,
+                },
+            ]
         );
         let mut supervisor = running();
         observe(&mut supervisor, Metadata::Empty);
@@ -162,18 +175,27 @@ fn foreign_organization_or_deployment_stops_and_faults_even_after_unit_turnover(
 
 #[test]
 fn failed_and_exited_units_join_every_piece_and_require_a_new_read_after_drain() {
-    for (event, delay) in [
-        (Event::BuildFailed { generation: FIRST }, 5),
+    for (event, setup) in [
+        (
+            Event::BuildFailed { generation: FIRST },
+            start as fn() -> Supervisor,
+        ),
         (
             Event::PieceExited {
                 generation: FIRST,
                 piece: UnitPiece::Custody,
             },
-            0,
+            running,
         ),
     ] {
-        let mut supervisor = if delay == 5 { start() } else { running() };
+        let mut supervisor = setup();
         let mut effects = send(&mut supervisor, event);
+        assert_eq!(
+            effects.first(),
+            Some(&Effect::PublishFront(Front::Refusing(
+                FrontRefusal::Restarting
+            )))
+        );
         let during_drain = supervisor.latest_read();
         assert!(
             !observe(&mut supervisor, active(1, 1, 1))
@@ -186,10 +208,16 @@ fn failed_and_exited_units_join_every_piece_and_require_a_new_read_after_drain()
             effects = stop(&mut supervisor, target(FIRST, piece), StopResult::Joined);
         }
         observing(&supervisor, FrontRefusal::Restarting);
-        scheduled(&supervisor, &effects, delay);
+        scheduled(&supervisor, &effects, 5);
         assert!(read(&mut supervisor, during_drain, active(1, 1, 1)).is_empty());
         assert!(read(&mut supervisor, crossing, active(1, 1, 1)).is_empty());
         let reopened = observe(&mut supervisor, active(1, 1, 1));
+        assert_eq!(
+            reopened.first(),
+            Some(&Effect::PublishFront(Front::Refusing(
+                FrontRefusal::Starting
+            )))
+        );
         assert!(reopened.iter().any(
             |effect| matches!(effect, Effect::StartUnit { generation, .. } if *generation > FIRST)
         ));
@@ -249,7 +277,14 @@ fn normal_drain_waits_for_timed_out_owner_and_fences_unsettled_enrollments() {
 #[test]
 fn close_joins_overtaken_opening_in_order_then_closes_store_and_releases_inputs() {
     let mut supervisor = start();
-    let mut effects = send(&mut supervisor, Event::Close);
+    let closing = send(&mut supervisor, Event::Close);
+    assert_eq!(
+        closing.first(),
+        Some(&Effect::PublishFront(Front::Refusing(
+            FrontRefusal::ShuttingDown
+        )))
+    );
+    let mut effects = closing.into_iter().skip(1).collect::<Vec<_>>();
     assert!(send(&mut supervisor, Event::BuildFinished { generation: FIRST }).is_empty());
     assert!(send(&mut supervisor, Event::Close).is_empty());
     for (piece, budget) in [
@@ -284,6 +319,10 @@ fn close_joins_overtaken_opening_in_order_then_closes_store_and_releases_inputs(
         [Effect::ReleaseInputs]
     );
     assert_eq!(supervisor.state(), &State::Closed);
+    assert_eq!(
+        supervisor.state().front(),
+        Front::Refusing(FrontRefusal::ShuttingDown)
+    );
     assert!(observe(&mut supervisor, active(1, 1, 1)).is_empty());
 }
 
@@ -296,7 +335,7 @@ fn final_timeouts_name_all_live_owners_and_late_joins_settle_without_effects() {
     assert_eq!(
         send(&mut supervisor, Event::Close),
         [Effect::PublishFront(Front::Refusing(
-            FrontRefusal::Restarting
+            FrontRefusal::ShuttingDown
         ))]
     );
     for piece in [
@@ -320,6 +359,10 @@ fn final_timeouts_name_all_live_owners_and_late_joins_settle_without_effects() {
             pieces: [driver, store].into()
         }
     );
+    assert_eq!(
+        supervisor.state().front(),
+        Front::Refusing(FrontRefusal::ShuttingDown)
+    );
     assert!(observe(&mut supervisor, active(1, 1, 1)).is_empty());
     assert!(stop(&mut supervisor, driver, StopResult::Joined).is_empty());
     assert_eq!(
@@ -330,4 +373,8 @@ fn final_timeouts_name_all_live_owners_and_late_joins_settle_without_effects() {
     );
     assert!(stop(&mut supervisor, store, StopResult::Joined).is_empty());
     assert_eq!(supervisor.state(), &State::Closed);
+    assert_eq!(
+        supervisor.state().front(),
+        Front::Refusing(FrontRefusal::ShuttingDown)
+    );
 }

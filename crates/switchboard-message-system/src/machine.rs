@@ -43,10 +43,11 @@ impl State {
             Self::Running { generation, .. } => Front::Forwarding(*generation),
             Self::Observing { reason } => Front::Refusing(*reason),
             Self::Quiescing(cleanup) => Front::Refusing(cleanup.reason.refusal()),
-            Self::Opening { .. }
-            | Self::Faulted { .. }
-            | Self::ClosedWithOutstanding { .. }
-            | Self::Closed => Front::Refusing(FrontRefusal::Restarting),
+            Self::Opening { .. } => Front::Refusing(FrontRefusal::Starting),
+            Self::Faulted { .. } => Front::Refusing(FrontRefusal::EnrollmentMismatch),
+            Self::ClosedWithOutstanding { .. } | Self::Closed => {
+                Front::Refusing(FrontRefusal::ShuttingDown)
+            }
         }
     }
 
@@ -405,7 +406,10 @@ impl Supervisor {
                 | QuiesceReason::PieceExited
                 | QuiesceReason::Closing => {
                     let reason = cleanup.reason.refusal();
-                    let after = if cleanup.reason == QuiesceReason::BuildFailed {
+                    let after = if matches!(
+                        cleanup.reason,
+                        QuiesceReason::BuildFailed | QuiesceReason::PieceExited
+                    ) {
                         RETRY
                     } else {
                         Duration::ZERO
