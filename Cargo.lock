@@ -5956,6 +5956,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "switchboard-link-lease"
+version = "0.1.158"
+dependencies = [
+ "central-link-client",
+ "router-clock",
+ "switchboard-central-link",
+ "switchboard-machine-enrollment",
+ "tokio",
+]
+
+[[package]]
 name = "switchboard-machine-core-store"
 version = "0.1.158"
 dependencies = [

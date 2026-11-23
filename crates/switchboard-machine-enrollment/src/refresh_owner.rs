@@ -393,6 +393,45 @@ where
         }
     }
 
+    /// Completes an ending already fenced by a refusal, within that fence's generation.
+    pub async fn finish_fenced_ending(
+        &self,
+        key: &EnrollmentKey,
+    ) -> Result<ConditionalWrite, CredentialStoreError> {
+        let started = self.inputs.clock.monotonic_now();
+        let deadline = started.after(ENDING_CLEANUP_LIMIT);
+        loop {
+            let generation = match self.inputs.read_for_cleanup(deadline).await? {
+                EnrollmentMetadata::Ended { key: ended, .. } if &ended == key => {
+                    return Ok(ConditionalWrite::Applied);
+                }
+                EnrollmentMetadata::Active {
+                    key: active,
+                    generation,
+                    ..
+                } if &active == key => generation,
+                _ => return Ok(ConditionalWrite::Superseded),
+            };
+            let why = {
+                let state = timeout_at(self.inputs.clock.as_ref(), deadline, self.state.lock())
+                    .await
+                    .map_err(|_| CredentialStoreError::CleanupTimedOut)?;
+                let Some(why) = state.ending(key, generation) else {
+                    return Ok(ConditionalWrite::Superseded);
+                };
+                why
+            };
+            if self
+                .inputs
+                .end_binding(key, generation, why, started)
+                .await?
+                == ConditionalWrite::Applied
+            {
+                return Ok(ConditionalWrite::Applied);
+            }
+        }
+    }
+
     fn new_refresh(&self, binding: EnrollmentBinding, next: BindingGeneration) -> RefreshFlight {
         let inputs = Arc::clone(&self.inputs);
         let state = Arc::downgrade(&self.state);
