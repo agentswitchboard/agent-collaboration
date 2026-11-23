@@ -286,6 +286,7 @@ async fn attached_session_new_admits_with_three_real_host_sources_and_no_native_
                     root.join("terminal-registry"),
                 )),
                 clock,
+                Arc::new(super::IgnoreCustodyEvents),
             )),
         },
     )

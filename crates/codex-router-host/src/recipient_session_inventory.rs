@@ -102,6 +102,7 @@ impl SessionInventory for ManagedProviderSessionInventory {
     fn lookup_parts<'lookup>(
         &'lookup self,
         session_id: &'lookup SessionId,
+        _deadline: Option<router_clock::ClockInstant>,
     ) -> Vec<SessionInventoryPart<'lookup>> {
         match self.endpoint_parts(session_id) {
             Some(parts) => Vec::from(parts),
@@ -115,4 +116,4 @@ impl SessionInventory for ManagedProviderSessionInventory {
 
 #[cfg(test)]
 #[path = "recipient_session_inventory_test.rs"]
-mod tests;
+pub(crate) mod tests;

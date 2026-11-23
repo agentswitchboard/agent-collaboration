@@ -4,8 +4,11 @@ use std::{
     pin::Pin,
     sync::Arc,
     task::Poll,
+    time::Duration,
 };
 pub use workspace_ids::SessionId;
+
+pub const RECIPIENT_LOOKUP_BUDGET: Duration = Duration::from_secs(30);
 
 /// The session directory's answer about one addressed session on this Mac.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -87,9 +90,11 @@ pub trait SessionInventory: Send + Sync {
         session_id: &'lookup SessionId,
     ) -> InventoryRead<'lookup>;
 
+    /// The deadline, when supplied by custody, uses the Host's injected clock.
     fn lookup_parts<'lookup>(
         &'lookup self,
         session_id: &'lookup SessionId,
+        _deadline: Option<ClockInstant>,
     ) -> Vec<SessionInventoryPart<'lookup>> {
         vec![SessionInventoryPart {
             observed: UNAVAILABLE_INVENTORY,
@@ -149,6 +154,7 @@ impl CombinedRecipientSessionDirectory {
     async fn query(
         &self,
         session_id: &SessionId,
+        cutoff: Option<ClockInstant>,
         deadline: impl Future<Output = ()>,
     ) -> RecipientSessionAnswer {
         let mut parts: Vec<_> = [
@@ -157,7 +163,7 @@ impl CombinedRecipientSessionDirectory {
             &self.sources.claude_terminal,
         ]
         .into_iter()
-        .flat_map(|source| source.lookup_parts(session_id))
+        .flat_map(|source| source.lookup_parts(session_id, cutoff))
         .map(|part| (part.observed, Some(part.read)))
         .collect();
         let mut summary = combine_inventory_answers(parts.iter().map(|(answer, _)| *answer));
@@ -192,7 +198,7 @@ impl RecipientSessionDirectory for CombinedRecipientSessionDirectory {
         &'lookup self,
         session_id: &'lookup SessionId,
     ) -> Pin<Box<dyn Future<Output = RecipientSessionAnswer> + Send + 'lookup>> {
-        Box::pin(self.query(session_id, std::future::pending()))
+        Box::pin(self.query(session_id, None, std::future::pending()))
     }
 
     fn query_until<'lookup>(
@@ -201,7 +207,7 @@ impl RecipientSessionDirectory for CombinedRecipientSessionDirectory {
         clock: &'lookup dyn RuntimeClock,
         deadline: ClockInstant,
     ) -> Pin<Box<dyn Future<Output = RecipientSessionAnswer> + Send + 'lookup>> {
-        Box::pin(self.query(session_id, clock.sleep_until(deadline)))
+        Box::pin(self.query(session_id, Some(deadline), clock.sleep_until(deadline)))
     }
 }
 

@@ -8,7 +8,7 @@ pub use native_claude_job_reader::{
     NativeClaudeBackgroundJob, NativeClaudeJobInventory, NativeClaudeJobReadError,
     NativeClaudeJobReader,
 };
-pub use peer_session_census::{PeerCensusAnswer, PeerSessionCensus};
+pub use peer_session_census::{PeerCensusAnswer, PeerCensusOutcome, PeerSessionCensus};
 
 pub use claude_code_peer_socket::{
     ClaudeCodePeerSocket, PeerSocketUnsentCause, PeerSocketWriteOutcome,

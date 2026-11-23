@@ -211,7 +211,14 @@ fn terminal_inventory(directory: &Path) -> ClaudeTerminalSessionInventory {
     ClaudeTerminalSessionInventory::new(
         Arc::new(ClaudeCodeSessionRegistry::new(directory.to_owned())),
         Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH)),
+        Arc::new(IgnoreCustodyEvents),
     )
+}
+
+pub(crate) struct IgnoreCustodyEvents;
+
+impl switchboard_message_custody::custody_task::CustodyEventSink for IgnoreCustodyEvents {
+    fn record_event(&self, _: switchboard_message_custody::custody_task::CustodyTaskEvent) {}
 }
 
 struct LivePeer(Child);
@@ -311,7 +318,7 @@ async fn managed_and_terminal_claims_share_no_authority_to_deduplicate() {
 mod codex_holder;
 
 #[path = "recipient_codex_admission_test.rs"]
-mod admission;
+pub(crate) mod admission;
 
 #[path = "recipient_provider_owner_test.rs"]
 mod provider_owner;

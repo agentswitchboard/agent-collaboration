@@ -5,12 +5,23 @@ use std::{
 };
 use tokio::io::AsyncReadExt;
 
-pub(super) async fn process_started_at(
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum ProcessStartObservation {
+    DisplayedSecond(i64),
+    Unavailable,
+    Interrupted,
+    ReapDeferred,
+}
+
+pub(super) async fn process_started_at<TReap: Future<Output = ()>>(
     process_id: u32,
-    deadline: impl Future<Output = ()>,
-) -> Option<i64> {
-    let mut child = spawn_process_start(Path::new("/bin/ps"), process_id)?;
-    read_process_start(&mut child, deadline).await
+    stop: impl Future<Output = ()>,
+    reap_deadline: impl FnOnce() -> TReap,
+) -> ProcessStartObservation {
+    let Some(mut child) = spawn_process_start(Path::new("/bin/ps"), process_id) else {
+        return ProcessStartObservation::Unavailable;
+    };
+    read_process_start(&mut child, stop, reap_deadline).await
 }
 
 fn spawn_process_start(command_path: &Path, process_id: u32) -> Option<tokio::process::Child> {
@@ -28,30 +39,67 @@ fn spawn_process_start(command_path: &Path, process_id: u32) -> Option<tokio::pr
         .ok()
 }
 
-async fn read_process_start(
+async fn read_process_start<TReap: Future<Output = ()>>(
     child: &mut tokio::process::Child,
-    deadline: impl Future<Output = ()>,
-) -> Option<i64> {
-    let mut stdout = child.stdout.take()?.take(128);
+    stop: impl Future<Output = ()>,
+    reap_deadline: impl FnOnce() -> TReap,
+) -> ProcessStartObservation {
+    let mut stdout = child.stdout.take().map(|stdout| stdout.take(128));
     let mut bytes = Vec::new();
     let finished = async {
-        let (status, _) = tokio::try_join!(child.wait(), stdout.read_to_end(&mut bytes)).ok()?;
-        status.success().then_some(())
+        let read = async {
+            match &mut stdout {
+                Some(stdout) => stdout.read_to_end(&mut bytes).await.is_ok(),
+                None => false,
+            }
+        };
+        tokio::join!(child.wait(), read)
     };
+    let finished = tokio::select! {
+        biased;
+        () = stop => None,
+        result = finished => Some(result),
+    };
+    match finished {
+        Some((Ok(status), true)) if status.success() => std::str::from_utf8(&bytes)
+            .ok()
+            .and_then(parse_ps_start)
+            .map_or(
+                ProcessStartObservation::Unavailable,
+                ProcessStartObservation::DisplayedSecond,
+            ),
+        Some((Ok(_), _)) => ProcessStartObservation::Unavailable,
+        Some((Err(_), _)) => ProcessStartObservation::ReapDeferred,
+        None => reap_interrupted_probe(child, reap_deadline()).await,
+    }
+}
+
+async fn reap_interrupted_probe(
+    child: &mut tokio::process::Child,
+    deadline: impl Future<Output = ()>,
+) -> ProcessStartObservation {
+    if child.start_kill().is_err() {
+        return ProcessStartObservation::ReapDeferred;
+    }
+    wait_for_reap(child.wait(), deadline).await
+}
+
+async fn wait_for_reap(
+    wait: impl Future<Output = std::io::Result<std::process::ExitStatus>>,
+    deadline: impl Future<Output = ()>,
+) -> ProcessStartObservation {
     tokio::select! {
         biased;
-        result = finished => result?,
-        () = deadline => {
-            // Tokio's kill waits for the child after sending the signal.
-            let _ = child.kill().await;
-            return None;
-        }
+        result = wait => match result {
+            Ok(_) => ProcessStartObservation::Interrupted,
+            Err(_) => ProcessStartObservation::ReapDeferred,
+        },
+        () = deadline => ProcessStartObservation::ReapDeferred,
     }
-    parse_ps_start(std::str::from_utf8(&bytes).ok()?)
 }
 
 /// Convert the C locale's `%a %b %e %T %Y` in UTC to Unix milliseconds.
-fn parse_ps_start(output: &str) -> Option<i64> {
+pub(super) fn parse_ps_start(output: &str) -> Option<i64> {
     let fields: Vec<_> = output.trim().split_ascii_whitespace().collect();
     let [weekday, month, day, time, year] = fields.as_slice() else {
         return None;

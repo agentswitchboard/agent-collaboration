@@ -22,14 +22,14 @@ const ACCEPTED: &str = "019f0000-0000-7000-8000-000000000062";
 const DEFERRED: &str = "019f0000-0000-7000-8000-000000000063";
 const REFUSED: &str = "019f0000-0000-7000-8000-000000000064";
 
-pub(super) struct Admission {
+pub(crate) struct Admission {
     inbox: RecipientInbox,
     store: PathBuf,
     clock: Arc<ManualClock>,
 }
 
 impl Admission {
-    pub(super) async fn new(
+    pub(crate) async fn new(
         root: &Path,
         clock: Arc<ManualClock>,
         sources: RecipientSessionSources,
@@ -48,7 +48,7 @@ impl Admission {
         }
     }
 
-    pub(super) async fn expect_accepted(&mut self, session: &SessionId) {
+    pub(crate) async fn expect_accepted(&mut self, session: &SessionId) {
         assert_eq!(
             self.receive(session, ACCEPTED).await,
             InboxOfferResult::Recorded {

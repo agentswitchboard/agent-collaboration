@@ -1,4 +1,6 @@
-use super::{parse_ps_start, read_process_start, spawn_process_start};
+use super::{
+    ProcessStartObservation, parse_ps_start, read_process_start, spawn_process_start, wait_for_reap,
+};
 use std::{fs, os::unix::fs::PermissionsExt};
 
 #[test]
@@ -25,12 +27,36 @@ async fn an_expired_probe_kills_and_reaps_the_owned_child() {
     let mut child = spawn_process_start(&command, 1).expect("test-owned probe");
 
     assert_eq!(
-        read_process_start(&mut child, std::future::ready(())).await,
-        None
+        read_process_start(&mut child, std::future::ready(()), std::future::pending).await,
+        ProcessStartObservation::Interrupted
     );
     let exit = child
         .try_wait()
         .unwrap()
         .expect("probe must be reaped before the answer");
     assert!(!exit.success());
+}
+
+#[tokio::test]
+async fn an_unfinished_reap_hands_off_at_its_injected_deadline() {
+    let (expire, expired) = tokio::sync::oneshot::channel();
+    let mut wait = std::pin::pin!(wait_for_reap(std::future::pending(), async {
+        expired.await.unwrap();
+    }));
+    std::future::poll_fn(|cx| {
+        use std::{future::Future as _, task::Poll};
+        assert!(wait.as_mut().poll(cx).is_pending());
+        Poll::Ready(())
+    })
+    .await;
+    expire.send(()).unwrap();
+    std::future::poll_fn(|cx| {
+        use std::{future::Future as _, task::Poll};
+        let Poll::Ready(answer) = wait.as_mut().poll(cx) else {
+            panic!("reap must hand off when its injected deadline is ready");
+        };
+        assert_eq!(answer, ProcessStartObservation::ReapDeferred);
+        Poll::Ready(())
+    })
+    .await;
 }

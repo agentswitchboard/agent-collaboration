@@ -1,149 +1,207 @@
-//! Shares a single blocking registry census between overlapping custody lookups.
+//! Serializes fresh, target-specific terminal observations for mail custody.
 
-use claude_code_peer_messaging::{ClaudeCodeSessionRegistry, PeerSessionCensus};
+use claude_code_peer_messaging::{
+    ClaudeCodeSessionRegistry, PeerCensusAnswer, PeerCensusOutcome, PeerSessionCensus,
+};
 use collaboration_protocol::SessionId as PeerSessionId;
-use router_clock::RuntimeClock;
+use router_clock::{ClockInstant, RuntimeClock};
 use std::{
-    collections::HashMap,
-    sync::{Arc, Mutex, Weak},
+    future::Future,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
     time::Duration,
 };
-use switchboard_message_custody::recipient_sessions::{
-    InventoryRead, SessionId, SessionInventory, SessionInventoryAnswer,
+use switchboard_message_custody::{
+    custody_operator::CustodyOperatorEvent,
+    custody_task::{CustodyEventSink, CustodyTaskEvent},
+    recipient_sessions::{
+        InventoryRead, RECIPIENT_LOOKUP_BUDGET, SessionId, SessionInventory,
+        SessionInventoryAnswer, SessionInventoryPart,
+    },
 };
-use tokio::sync::oneshot;
+use tokio::sync::{OwnedSemaphorePermit, Semaphore};
+use tokio_util::sync::CancellationToken;
 
-const PROCESS_START_BUDGET: Duration = Duration::from_secs(5);
+const PROBE_REAP_BUDGET: Duration = Duration::from_secs(1);
 const UNAVAILABLE: SessionInventoryAnswer = SessionInventoryAnswer::AtLeast(0);
-
-type ScanWaiters = HashMap<PeerSessionId, Vec<oneshot::Sender<SessionInventoryAnswer>>>;
-
-struct InFlightScan {
-    waiters: Mutex<Option<ScanWaiters>>,
-}
-
-impl InFlightScan {
-    fn subscribe(
-        &self,
-        session_id: &PeerSessionId,
-    ) -> Option<oneshot::Receiver<SessionInventoryAnswer>> {
-        let mut waiters = self
-            .waiters
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let (sender, receiver) = oneshot::channel();
-        waiters
-            .as_mut()?
-            .entry(session_id.clone())
-            .or_default()
-            .push(sender);
-        Some(receiver)
-    }
-
-    fn resolve(&self, census: &PeerSessionCensus, clock: &dyn RuntimeClock) {
-        let runtime = tokio::runtime::Handle::current();
-        let mut answers = HashMap::new();
-        while let Some(target) = self.next_target(&answers) {
-            let answer =
-                runtime.block_on(census.answer(&target, || clock.sleep_for(PROCESS_START_BUDGET)));
-            let answer = if answer.complete {
-                SessionInventoryAnswer::Complete(answer.at_least)
-            } else {
-                SessionInventoryAnswer::AtLeast(answer.at_least)
-            };
-            answers.insert(target, answer);
-        }
-    }
-
-    fn next_target(
-        &self,
-        answers: &HashMap<PeerSessionId, SessionInventoryAnswer>,
-    ) -> Option<PeerSessionId> {
-        let mut waiters = self
-            .waiters
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let pending = waiters.as_mut()?;
-        pending.retain(|_, subscribers| {
-            subscribers.retain(|sender| !sender.is_closed());
-            !subscribers.is_empty()
-        });
-        if let Some(target) = pending.keys().find(|target| !answers.contains_key(*target)) {
-            return Some(target.clone());
-        }
-        for (target, subscribers) in waiters.take()? {
-            let answer = answers.get(&target).copied().unwrap_or(UNAVAILABLE);
-            for subscriber in subscribers {
-                let _ = subscriber.send(answer);
-            }
-        }
-        None
-    }
-}
 
 pub struct ClaudeTerminalSessionInventory {
     registry: Arc<ClaudeCodeSessionRegistry>,
     clock: Arc<dyn RuntimeClock>,
-    in_flight: Mutex<Weak<InFlightScan>>,
+    events: Arc<dyn CustodyEventSink>,
+    permit: Arc<Semaphore>,
 }
 
 impl ClaudeTerminalSessionInventory {
     #[must_use]
-    pub fn new(registry: Arc<ClaudeCodeSessionRegistry>, clock: Arc<dyn RuntimeClock>) -> Self {
+    pub fn new(
+        registry: Arc<ClaudeCodeSessionRegistry>,
+        clock: Arc<dyn RuntimeClock>,
+        events: Arc<dyn CustodyEventSink>,
+    ) -> Self {
         Self {
             registry,
             clock,
-            in_flight: Mutex::default(),
+            events,
+            permit: Arc::new(Semaphore::new(1)),
         }
     }
 
-    fn query(&self, session_id: &PeerSessionId) -> oneshot::Receiver<SessionInventoryAnswer> {
-        self.query_with(session_id, |scan| {
+    fn lookup<'lookup>(
+        &'lookup self,
+        target: &'lookup SessionId,
+        deadline: Option<ClockInstant>,
+    ) -> InventoryRead<'lookup> {
+        Box::pin(async move {
+            let Ok(target) = PeerSessionId::try_from(target.as_str().to_owned()) else {
+                return UNAVAILABLE;
+            };
             let registry = Arc::clone(&self.registry);
-            let clock = Arc::clone(&self.clock);
-            tokio::task::spawn_blocking(move || {
-                let census = PeerSessionCensus::scan(&registry);
-                scan.resolve(&census, clock.as_ref());
-            });
+            self.lookup_with(deadline, move |permit, observation| {
+                run_terminal_census(registry, target, permit, observation)
+            })
+            .await
         })
     }
 
-    fn query_with(
+    async fn lookup_with<TObserve>(
         &self,
-        session_id: &PeerSessionId,
-        spawn: impl FnOnce(Arc<InFlightScan>),
-    ) -> oneshot::Receiver<SessionInventoryAnswer> {
-        let mut in_flight = self
-            .in_flight
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if let Some(receiver) = in_flight
-            .upgrade()
-            .and_then(|scan| scan.subscribe(session_id))
-        {
-            return receiver;
+        cutoff: Option<ClockInstant>,
+        observe: impl FnOnce(OwnedSemaphorePermit, TerminalObservation) -> TObserve,
+    ) -> SessionInventoryAnswer
+    where
+        TObserve: Future<Output = PeerCensusOutcome> + Send + 'static,
+    {
+        let deadline =
+            cutoff.unwrap_or_else(|| self.clock.monotonic_now().after(RECIPIENT_LOOKUP_BUDGET));
+        let budget = self.clock.sleep_until(deadline);
+        tokio::pin!(budget);
+        let permit = tokio::select! {
+            biased;
+            () = &mut budget => return UNAVAILABLE,
+            permit = Arc::clone(&self.permit).acquire_owned() => permit,
+        };
+        let Ok(permit) = permit else {
+            return UNAVAILABLE;
+        };
+        if self.clock.monotonic_now() >= deadline {
+            return UNAVAILABLE;
         }
-        let (sender, receiver) = oneshot::channel();
-        let scan = Arc::new(InFlightScan {
-            waiters: Mutex::new(Some(HashMap::from([(session_id.clone(), vec![sender])]))),
+
+        let stop = CancellationToken::new();
+        let _stop_on_drop = stop.clone().drop_guard();
+        let progress = Arc::new(AtomicUsize::new(0));
+        let observation = TerminalObservation {
+            deadline,
+            clock: Arc::clone(&self.clock),
+            stop,
+            progress: Arc::clone(&progress),
+        };
+        let work = observe(permit, observation);
+        let events = Arc::clone(&self.events);
+        // Cleanup outlives a dropped caller, but the single owned permit
+        // bounds both the blocking filesystem work and the process probe.
+        let mut worker = tokio::spawn(async move {
+            let answer = match work.await {
+                PeerCensusOutcome::Answer(answer) => answer,
+                PeerCensusOutcome::ProbeReapDeferred { process_id, answer } => {
+                    events.record_event(CustodyTaskEvent::Operator(
+                        CustodyOperatorEvent::TerminalProbeReapDeferred { process_id },
+                    ));
+                    answer
+                }
+            };
+            if answer.complete {
+                SessionInventoryAnswer::Complete(answer.at_least)
+            } else {
+                SessionInventoryAnswer::AtLeast(answer.at_least)
+            }
         });
-        *in_flight = Arc::downgrade(&scan);
-        spawn(scan);
-        receiver
+        tokio::select! {
+            biased;
+            answer = &mut worker => answer.unwrap_or_else(|_| SessionInventoryAnswer::AtLeast(progress.load(Ordering::Acquire))),
+            () = &mut budget => SessionInventoryAnswer::AtLeast(progress.load(Ordering::Acquire)),
+        }
     }
+}
+
+#[derive(Clone)]
+struct TerminalObservation {
+    deadline: ClockInstant,
+    clock: Arc<dyn RuntimeClock>,
+    stop: CancellationToken,
+    progress: Arc<AtomicUsize>,
+}
+
+impl TerminalObservation {
+    fn is_active(&self) -> bool {
+        !self.stop.is_cancelled() && self.clock.monotonic_now() < self.deadline
+    }
+
+    async fn stopped(&self) {
+        tokio::select! {
+            () = self.stop.cancelled() => {},
+            () = self.clock.sleep_until(self.deadline) => {},
+        }
+    }
+}
+
+async fn run_terminal_census(
+    registry: Arc<ClaudeCodeSessionRegistry>,
+    target: PeerSessionId,
+    permit: OwnedSemaphorePermit,
+    observation: TerminalObservation,
+) -> PeerCensusOutcome {
+    let scanner = observation.clone();
+    let scanned = tokio::task::spawn_blocking(move || {
+        let census = scanner
+            .is_active()
+            .then(|| PeerSessionCensus::scan(&registry, &target, || scanner.is_active()));
+        (permit, census)
+    })
+    .await;
+    let Ok((_permit, Some(census))) = scanned else {
+        return incomplete_census();
+    };
+    if !observation.is_active() {
+        return incomplete_census();
+    }
+    census
+        .answer(
+            || observation.is_active(),
+            || observation.stopped(),
+            || observation.clock.sleep_for(PROBE_REAP_BUDGET),
+            |count| observation.progress.store(count, Ordering::Release),
+        )
+        .await
+}
+
+const fn incomplete_census() -> PeerCensusOutcome {
+    PeerCensusOutcome::Answer(PeerCensusAnswer {
+        at_least: 0,
+        complete: false,
+    })
 }
 
 impl SessionInventory for ClaudeTerminalSessionInventory {
     fn lookup_session<'lookup>(
         &'lookup self,
-        session_id: &'lookup SessionId,
+        target: &'lookup SessionId,
     ) -> InventoryRead<'lookup> {
-        Box::pin(async move {
-            let Ok(session_id) = PeerSessionId::try_from(session_id.as_str().to_owned()) else {
-                return UNAVAILABLE;
-            };
-            self.query(&session_id).await.unwrap_or(UNAVAILABLE)
-        })
+        self.lookup(target, None)
+    }
+
+    fn lookup_parts<'lookup>(
+        &'lookup self,
+        target: &'lookup SessionId,
+        deadline: Option<ClockInstant>,
+    ) -> Vec<SessionInventoryPart<'lookup>> {
+        vec![SessionInventoryPart {
+            observed: UNAVAILABLE,
+            read: self.lookup(target, deadline),
+        }]
     }
 }
 

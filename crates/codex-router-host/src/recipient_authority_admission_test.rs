@@ -65,6 +65,7 @@ impl HostAdmission {
         let terminal = Arc::new(ClaudeTerminalSessionInventory::new(
             Arc::new(ClaudeCodeSessionRegistry::new(root.join("registry"))),
             clock.clone(),
+            Arc::new(IgnoreCustodyEvents),
         ));
         let inbox = Admission::new(
             root,
