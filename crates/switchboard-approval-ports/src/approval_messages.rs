@@ -1,7 +1,7 @@
 use approval_request_protocol::{OfferView, PrivateEnding, ProviderStopCause};
 use workspace_ids::RequestId;
 
-use crate::{ApprovalScope, LocalSessionBindingId, WaitingRequestId};
+use crate::{ApprovalScope, SessionOwnerApprovalValues, WaitingRequestId};
 
 /// A losslessly translated ask that the harness makes after identifying its exact scope.
 ///
@@ -75,6 +75,10 @@ pub enum UncarriableShape {
 /// Custody's local reason for refusing an ask or ending its wait with a refusal.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
 pub enum LocalApprovalRefusal {
+    /// The binding was never registered or has been retired. This is a composition fault,
+    /// never an ordinary refusal or a result of the central session read.
+    #[error("custody has no live registration for the session binding")]
+    UnregisteredSessionBinding,
     #[error("session is not known to central")]
     UnknownCentralSession,
     #[error("the wait stopped: {0:?}")]
@@ -95,6 +99,7 @@ pub enum LocalApprovalRefusal {
 pub enum ReplyableStopCause {
     TurnStopped,
     SessionClosed,
+    /// Produced only by the session owner when it replaces an ask. No ACP ingress in the first cut.
     AskReplaced,
 }
 
@@ -295,6 +300,20 @@ impl MacWaitEnded {
     }
 }
 
+/// The harness reports that this exact reply handle became unusable before any reply started.
+///
+/// This observation carries only the waiting request. Custody keeps any independently owed
+/// Stop. There is no wire stop cause or writer completion for the loss itself.
+#[derive(Debug, Eq, PartialEq)]
+pub struct ReplyHandleUnavailable(WaitingRequestId);
+
+impl ReplyHandleUnavailable {
+    #[must_use]
+    pub fn into_waiting_request(self) -> WaitingRequestId {
+        self.0
+    }
+}
+
 /// Side-specific constructors the Host gives to the harness at composition.
 ///
 /// ```compile_fail,E0599
@@ -309,12 +328,6 @@ pub struct HarnessApprovalValues {
 }
 
 impl HarnessApprovalValues {
-    /// Wraps the fresh UUIDv7 allocated once for the exact managed session and current owner.
-    #[must_use]
-    pub const fn bind_session_owner(&self, owner_nonce: RequestId) -> LocalSessionBindingId {
-        LocalSessionBindingId::from_owner_nonce(owner_nonce)
-    }
-
     /// Names an admitted ask using a fresh harness-allocated UUIDv7.
     ///
     /// Custody associates the name with its own approval holder run.
@@ -366,6 +379,15 @@ impl HarnessApprovalValues {
             waiting_request,
             cause,
         }
+    }
+
+    /// Reports the exact handle loss the harness proved before a reply started.
+    #[must_use]
+    pub const fn reply_handle_unavailable(
+        &self,
+        waiting_request: WaitingRequestId,
+    ) -> ReplyHandleUnavailable {
+        ReplyHandleUnavailable(waiting_request)
     }
 }
 
@@ -432,15 +454,20 @@ impl CustodyApprovalValues {
     }
 }
 
-/// The Host obtains both constructor sets and gives each component only its own set.
+/// The Host obtains three constructor sets and gives each component only its own set.
 ///
 /// The sets enforce envelope shape and document the Host's composition convention. The single
 /// ordered custody executor enforces live authority. Rust lets any dependent call this factory.
 #[must_use]
-pub const fn approval_value_builders() -> (HarnessApprovalValues, CustodyApprovalValues) {
+pub const fn approval_value_builders() -> (
+    HarnessApprovalValues,
+    CustodyApprovalValues,
+    SessionOwnerApprovalValues,
+) {
     (
         HarnessApprovalValues { _private: () },
         CustodyApprovalValues { _private: () },
+        SessionOwnerApprovalValues::for_composition(),
     )
 }
 
@@ -481,8 +508,17 @@ pub trait ApprovalCustodyPort {
     ///
     /// An unbound or at-capacity ask transfers that right too. Custody sends its local refusal
     /// through the same permit, start and inline submission path.
+    /// An unknown or retired binding is an unregistered-binding composition fault. Custody
+    /// resolves a live binding before attempting the central session read.
     fn admit_ask(&self, ask: ApprovalAsk);
 
     /// Receives a proved terminal fact for the named waiting request.
     fn wait_ended(&self, event: MacWaitEnded);
+
+    /// Under the same ordering authority, routes exact pre-start handle loss to the holder's
+    /// CapabilityWithdrawn for a claimed or permitted responder.
+    ///
+    /// This releases the responder and preserves any independently owed Stop. It produces
+    /// neither a wire stop cause nor a WriteFinished.
+    fn reply_handle_unavailable(&self, observation: ReplyHandleUnavailable);
 }

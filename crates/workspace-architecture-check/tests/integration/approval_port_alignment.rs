@@ -1,13 +1,22 @@
 use approval_request_protocol::{
     ProviderHolder, ProviderStopCause, QuestionField, QuestionFieldId, QuestionFields,
-    QuestionOffer, Raise,
+    QuestionOffer, Raise, RegisterRunReply,
 };
 use state_machine_core::{StateMachine, TransitionError};
+use std::num::NonZeroU64;
+use switchboard_approval_holder::run_gate::{
+    CallAttempt, CallKey, DialAttempt, LinkAttempt, RunAuthority, RunGate, RunGateEvent,
+    RunGateRefusal, RunGateState,
+};
 use switchboard_approval_holder::waiting_request::{
     LocalNegative, ProviderReply, RaiseRefusal, WaitEffect, WaitEvent, WaitState, WaitingRequest,
     WriterOutcome,
+    gate_access::{GateWaitEvent, step_under_gate},
 };
-use switchboard_approval_ports::{ReplyableStopCause, TerminalRaiseRefusal};
+use switchboard_approval_ports::{
+    ApprovalScope, ApprovalTurnId, ReplyableStopCause, TerminalRaiseRefusal, WaitingRequestId,
+    approval_value_builders,
+};
 
 macro_rules! raise_refusal_pairs {
     ($($case:ident),+ $(,)?) => {{
@@ -36,25 +45,157 @@ const RESPONDER: u8 = 1;
 type HolderWait = WaitingRequest<u8, u8, u8>;
 
 fn bound_wait() -> Result<WaitState<u8, u8>, Box<dyn std::error::Error>> {
-    Ok(WaitState::bound(
-        Raise::ProviderQuestion {
-            request_id: "01890f2e-7b4c-7cc0-98c4-000000000001".parse()?,
-            holder: ProviderHolder {
-                session_id: "01890f2e-7b4c-7cc0-98c4-000000000002".parse()?,
-                router_run: "01890f2e-7b4c-7cc0-98c4-000000000003".parse()?,
-            },
-            offer: QuestionOffer {
-                prompt: "Confirm the ask".to_owned().try_into()?,
-                fields: QuestionFields::new(vec![QuestionField::Boolean {
-                    field_id: QuestionFieldId::new(1)?,
-                    label: "Confirm".to_owned().try_into()?,
-                    description: None,
-                    required: true,
-                }])?,
+    Ok(WaitState::bound(question_raise()?, RESPONDER)?)
+}
+
+fn question_raise() -> Result<Raise, Box<dyn std::error::Error>> {
+    Ok(Raise::ProviderQuestion {
+        request_id: "01890f2e-7b4c-7cc0-98c4-000000000001".parse()?,
+        holder: ProviderHolder {
+            session_id: "01890f2e-7b4c-7cc0-98c4-000000000002".parse()?,
+            router_run: "01890f2e-7b4c-7cc0-98c4-000000000003".parse()?,
+        },
+        offer: QuestionOffer {
+            prompt: "Confirm the ask".to_owned().try_into()?,
+            fields: QuestionFields::new(vec![QuestionField::Boolean {
+                field_id: QuestionFieldId::new(1)?,
+                label: "Confirm".to_owned().try_into()?,
+                description: None,
+                required: true,
+            }])?,
+        },
+    })
+}
+
+fn registered_gate(
+    authority: &RunAuthority<u8>,
+    link: &LinkAttempt<u8>,
+) -> Result<RunGateState<u8, u8>, TransitionError<RunGateRefusal>> {
+    let registration = CallKey {
+        link: link.clone(),
+        attempt: CallAttempt::new(0),
+    };
+    let mut gate = RunGateState::new(authority.clone());
+    for event in [
+        RunGateEvent::DialStarted { link: link.clone() },
+        RunGateEvent::Welcome {
+            authority: authority.clone(),
+            link: link.clone(),
+        },
+        RunGateEvent::PublishRegistration {
+            call: registration.clone(),
+        },
+        RunGateEvent::RegistrationReply {
+            call: registration,
+            reply: RegisterRunReply::Registered {},
+        },
+    ] {
+        gate = RunGate::transition(&gate, event)?.0;
+    }
+    Ok(gate)
+}
+
+#[test]
+fn pre_start_handle_loss_releases_the_responder_and_keeps_the_exact_stop_due() {
+    type ExactWait = WaitingRequest<WaitingRequestId, u8, u8>;
+    let (harness, _, owner) = approval_value_builders();
+    let binding =
+        owner.allocate_session_binding("01890f2e-7b4c-7cc0-98c4-000000000011".parse().unwrap());
+    let scope = ApprovalScope::from_admitted_turn(
+        binding,
+        NonZeroU64::MIN,
+        ApprovalTurnId::parse("01890f2e-7b4c-7cc0-98c4-000000000012").unwrap(),
+    );
+    let raise = question_raise().unwrap();
+    let ask = harness.admitted_ask(
+        scope,
+        "01890f2e-7b4c-7cc0-98c4-000000000013".parse().unwrap(),
+        raise.offer_view(),
+    );
+    let responder = ask.waiting_request().clone();
+    let authority = RunAuthority {
+        enrollment: 1,
+        router_run: raise.router_run().clone(),
+    };
+    let link = LinkAttempt {
+        connection: 1,
+        dial: DialAttempt::new(1),
+    };
+    let gate = registered_gate(&authority, &link).unwrap();
+    let wait = WaitState::bound(raise, responder.clone()).unwrap();
+    let (raising, raises) = step_under_gate(
+        &wait,
+        &gate,
+        GateWaitEvent::Publish {
+            authority: authority.clone(),
+            call: CallKey {
+                link: link.clone(),
+                attempt: CallAttempt::new(1),
             },
         },
-        RESPONDER,
-    )?)
+    )
+    .unwrap();
+    assert!(matches!(raises.as_slice(), [WaitEffect::Raise { .. }]));
+    let (stopping, effects) = ExactWait::transition(
+        &raising,
+        WaitEvent::LocalStop {
+            cause: ProviderStopCause::TurnStopped,
+        },
+    )
+    .unwrap();
+    assert!(effects.is_empty());
+    let reply =
+        ProviderReply::LocalNegative(LocalNegative::Stopped(ProviderStopCause::TurnStopped));
+    let permit = || WaitEvent::TakeFinalPermit {
+        responder: responder.clone(),
+        reply: reply.clone(),
+    };
+    let start = || WaitEvent::StartWrite {
+        responder: responder.clone(),
+        reply: reply.clone(),
+    };
+    let publish_stop = || GateWaitEvent::Publish {
+        authority: authority.clone(),
+        call: CallKey {
+            link: link.clone(),
+            attempt: CallAttempt::new(2),
+        },
+    };
+    let (_, expected_stop) = step_under_gate(&stopping, &gate, publish_stop()).unwrap();
+    assert!(
+        matches!(expected_stop.as_slice(), [WaitEffect::Stop { request, .. }]
+        if request.cause() == approval_request_protocol::HolderStopCause::TurnStopped)
+    );
+    let (permitted, effects) = ExactWait::transition(&stopping, permit()).unwrap();
+    assert!(effects.is_empty());
+
+    for before_start in [stopping, permitted] {
+        let loss = harness.reply_handle_unavailable(responder.clone());
+        let (released, effects) = ExactWait::transition(
+            &before_start,
+            WaitEvent::CapabilityWithdrawn {
+                responder: loss.into_waiting_request(),
+            },
+        )
+        .unwrap();
+        assert_eq!(
+            effects,
+            [WaitEffect::ReleaseBinding {
+                responder: responder.clone()
+            }]
+        );
+        assert!(released.claimed_reply().is_none());
+        assert_eq!(
+            ExactWait::transition(&released, permit()),
+            Err(TransitionError::Stale)
+        );
+        assert_eq!(
+            ExactWait::transition(&released, start()),
+            Err(TransitionError::Stale)
+        );
+        let (_, still_owed) = step_under_gate(&released, &gate, publish_stop()).unwrap();
+        assert_eq!(still_owed, expected_stop);
+    }
 }
 
 #[test]

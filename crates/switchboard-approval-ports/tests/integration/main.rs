@@ -1,23 +1,11 @@
 use approval_request_protocol::{OfferView, PrivateEnding, ProviderStopCause};
-use std::num::NonZeroU64;
 use switchboard_approval_ports::{
-    ApprovalScope, ApprovalTurnId, InvalidApprovalTurnId, LocalApprovalRefusal, MacWaitCause,
-    ReplyHandoverKind, ReplyKind, ReplySubmissionKind, ReplyableStopCause, TerminalRaiseRefusal,
-    UncarriableAsk, UncarriableShape, WaitReleaseKind, approval_value_builders,
+    InvalidApprovalTurnId, LocalApprovalRefusal, MacWaitCause, ReplyHandoverKind, ReplyKind,
+    ReplySubmissionKind, ReplyableStopCause, TerminalRaiseRefusal, UncarriableAsk,
+    UncarriableShape, WaitReleaseKind, approval_value_builders,
 };
 
-#[test]
-fn replaced_owner_cannot_share_the_old_approval_scope() {
-    let (harness, _) = approval_value_builders();
-    let old_owner =
-        harness.bind_session_owner("01890f2e-7b4c-7cc0-98c4-000000000011".parse().unwrap());
-    let new_owner =
-        harness.bind_session_owner("01890f2e-7b4c-7cc0-98c4-000000000012".parse().unwrap());
-    let turn = ApprovalTurnId::parse("01890f2e-7b4c-7cc0-98c4-000000000013").unwrap();
-    let old_scope = ApprovalScope::from_admitted_turn(old_owner, NonZeroU64::MIN, turn.clone());
-    let new_scope = ApprovalScope::from_admitted_turn(new_owner, NonZeroU64::MIN, turn);
-    assert_ne!(old_scope, new_scope);
-}
+mod session_binding;
 
 // These reads compile as an external consumer. A new case requires an explicit read.
 fn read_offer(offer: OfferView) {
@@ -33,7 +21,9 @@ fn read_reply(reply: ReplyKind) {
             | PrivateEnding::ProviderQuestion { ending: _ } => {}
         },
         ReplyKind::LocalRefusal(refusal) => match refusal {
-            LocalApprovalRefusal::UnknownCentralSession | LocalApprovalRefusal::NoRoom => {}
+            LocalApprovalRefusal::UnregisteredSessionBinding
+            | LocalApprovalRefusal::UnknownCentralSession
+            | LocalApprovalRefusal::NoRoom => {}
             LocalApprovalRefusal::WaitStopped(cause) => match cause {
                 ReplyableStopCause::TurnStopped
                 | ReplyableStopCause::SessionClosed
@@ -100,7 +90,7 @@ fn public_contract_reads_every_closed_case() {
             | MacWaitCause::AgentAskWithdrawn => {}
         },
     );
-    let (harness_values, _) = approval_value_builders();
+    let (harness_values, _, _) = approval_value_builders();
     let observations = [
         ReplySubmissionKind::Handover(ReplyHandoverKind::NotHandedOver),
         ReplySubmissionKind::Handover(ReplyHandoverKind::HandedToConnection),
