@@ -113,6 +113,7 @@ impl<Store: CredentialStore, Discovery: DiscoverySource> LinkSettingsSource<Stor
         let mut discovery_answer = None;
         let mut read_at = self.clock.monotonic_now();
         let mut read_due = true;
+        let mut metadata_ready = false;
         let mut signal_open = true;
         loop {
             if read_due {
@@ -133,6 +134,7 @@ impl<Store: CredentialStore, Discovery: DiscoverySource> LinkSettingsSource<Stor
                         if *revision != read_revision {
                             continue;
                         }
+                        metadata_ready = true;
                         if let Some(state) = &mut discovery_state
                             && let Some(answer) = discovery_answer.take()
                         {
@@ -148,22 +150,30 @@ impl<Store: CredentialStore, Discovery: DiscoverySource> LinkSettingsSource<Stor
                     }
                     Err(_) => {
                         read_at = self.clock.monotonic_now().after(METADATA_RETRY);
-                        in_flight = None;
-                        discovery_answer = None;
-                        if let Some(state) = &mut discovery_state {
-                            state.refresh_at = Some(read_at);
+                        metadata_ready = false;
+                        if in_flight.take().is_some()
+                            && let Some(state) = &mut discovery_state
+                        {
+                            state.refresh_at = Some(self.clock.monotonic_now());
                         }
                     }
                 }
                 read_due = false;
             }
-            let refresh_at = discovery_state.as_ref().and_then(|state| state.refresh_at);
-            if refresh_at.is_some_and(|at| self.clock.monotonic_now() >= at)
+            if metadata_ready
                 && let Some(state) = &mut discovery_state
+                && state
+                    .refresh_at
+                    .is_some_and(|at| self.clock.monotonic_now() >= at)
             {
                 state.refresh_at = None;
                 in_flight = Some(Box::pin(self.discovery.discover()));
             }
+            let refresh_at = if metadata_ready {
+                discovery_state.as_ref().and_then(|state| state.refresh_at)
+            } else {
+                None
+            };
             tokio::select! {
                 biased;
                 result = self.changes.changed(), if signal_open => {

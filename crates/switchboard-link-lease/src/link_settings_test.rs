@@ -347,3 +347,65 @@ async fn a_replacement_seen_on_final_read_is_used_without_a_second_read() {
     assert!(held_discovery.unwrap().is_closed());
     fixture.source.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_metadata_retry_keeps_the_current_discovery_deadline_but_a_replacement_starts_fresh() {
+    let fixture = Fixture::new();
+    let mut settings = SettingsFixture::start(&fixture);
+    let retry_after = Duration::from_secs(60);
+    let original_due = ClockInstant::ZERO.after(retry_after);
+    settings
+        .requests
+        .recv()
+        .await
+        .unwrap()
+        .send(Err(SignInFailure::Unavailable {
+            retry_after: Some(retry_after),
+        }))
+        .unwrap();
+    fixture.clock.not_due_check_now(original_due).await;
+
+    fixture.store.fail_metadata.send_replace(true);
+    fixture.clock.advance(METADATA_POLL).unwrap();
+    fixture
+        .clock
+        .not_due_check_now(ClockInstant::ZERO.after(METADATA_POLL + METADATA_RETRY))
+        .await;
+    fixture.store.fail_metadata.send_replace(false);
+    fixture.clock.advance(METADATA_RETRY).unwrap();
+
+    tokio::select! {
+        biased;
+        request = settings.requests.recv() => panic!("metadata recovery started discovery early: {}", request.is_some()),
+        () = fixture.clock.not_due_check_now(original_due) => {}
+    }
+    assert!(settings.requests.try_recv().is_err());
+
+    fixture
+        .clock
+        .advance(retry_after - METADATA_POLL - METADATA_RETRY)
+        .unwrap();
+    settings
+        .requests
+        .recv()
+        .await
+        .unwrap()
+        .send(Err(SignInFailure::Unavailable {
+            retry_after: Some(retry_after),
+        }))
+        .unwrap();
+    fixture
+        .clock
+        .not_due_check_now(original_due.after(retry_after))
+        .await;
+
+    let replacement = install_replacement(&fixture);
+    settings.changes.send_replace(1);
+    let replacement_discovery = settings.requests.recv().await.unwrap();
+    assert_eq!(*settings.published.borrow(), unresolved(replacement));
+    assert_eq!(fixture.clock.monotonic_now(), original_due);
+
+    settings.close().await;
+    assert!(replacement_discovery.is_closed());
+    fixture.source.close().await.unwrap();
+}
