@@ -77,6 +77,25 @@ impl CustodyLink {
         (wake, fault)
     }
 
+    pub(crate) fn retire_receipt_protections(&mut self, report: &FlushReport) {
+        if let Some(rebased) = &mut self.rebased_marks {
+            for request in report
+                .answered
+                .iter()
+                .map(|answer| &answer.request)
+                .chain(report.ended.iter().map(|ending| &ending.request_id))
+                .chain(
+                    report
+                        .sender_notices
+                        .iter()
+                        .map(|applied| &applied.notice.request_id),
+                )
+            {
+                rebased.forget_completed(request);
+            }
+        }
+    }
+
     pub(crate) async fn prepare_recovery_turn(
         &mut self,
         can_probe: bool,
@@ -188,7 +207,7 @@ impl CustodyLink {
         };
         self.drain_connection = Some(admitted.connection.clone());
 
-        let (eligible_through, deferred_requests) = self.rebased_marks.as_mut().map_or_else(
+        let (eligible_through, deferred_requests) = self.rebased_marks.as_ref().map_or_else(
             || (mark, BTreeSet::new()),
             |rebased| {
                 (
@@ -325,11 +344,10 @@ impl CustodyLink {
             let previous = self.prior_shared_time(observed_at);
             if actual < previous {
                 let old_eligible = self.schedule.receipt_mark(previous);
-                let frontier = self
+                let rebased = self
                     .rebased_marks
-                    .as_ref()
-                    .map_or(old_eligible, |older| older.due_through.max(old_eligible));
-                self.rebased_marks = Some(RebasedMarks::new(frontier));
+                    .get_or_insert_with(|| RebasedMarks::new(old_eligible));
+                rebased.due_through = rebased.due_through.max(old_eligible);
             }
             self.last_clock_anchor = Some(anchor);
         }

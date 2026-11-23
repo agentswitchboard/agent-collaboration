@@ -16,6 +16,7 @@ mod local_store_maintenance;
 mod mark_drain;
 mod mark_waits;
 mod outbox_timing;
+mod repeated_welcome;
 mod same_mac;
 mod sender_notice_recovery;
 mod worker_orphans;

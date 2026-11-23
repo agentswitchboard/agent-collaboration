@@ -52,14 +52,19 @@ impl RebasedMarks {
     }
 
     pub(crate) fn remember_admission(&mut self, request: RequestId, mark: SyncTime) {
-        if mark <= self.due_through {
-            self.fresh_receipts.entry(request).or_insert(mark);
-        }
+        self.fresh_receipts.entry(request).or_insert(mark);
     }
 
-    pub(crate) fn defer_fresh_receipts(&mut self, mark: SyncTime) -> BTreeSet<RequestId> {
-        self.fresh_receipts.retain(|_, receipt| *receipt > mark);
-        self.fresh_receipts.keys().cloned().collect()
+    pub(crate) fn defer_fresh_receipts(&self, mark: SyncTime) -> BTreeSet<RequestId> {
+        self.fresh_receipts
+            .iter()
+            .filter(|(_, receipt)| **receipt > mark && **receipt <= self.due_through)
+            .map(|(request, _)| request.clone())
+            .collect()
+    }
+
+    pub(crate) fn forget_completed(&mut self, request: &RequestId) {
+        self.fresh_receipts.remove(request);
     }
 }
 
