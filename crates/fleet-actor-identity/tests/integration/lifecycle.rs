@@ -323,7 +323,21 @@ async fn authenticated_creator_is_checked_before_replay_and_only_that_session_ca
     assert_eq!(facts.enrollment_id, store.caller.enrollment_id);
     let organization = id(700).try_into().unwrap();
     let another_organization: fleet_identity_protocol::OrganizationId = id(701).try_into().unwrap();
-    let foreign_store = SessionStoreFixture::for_organization(another_organization.clone()).await;
+    let mut foreign_store =
+        SessionStoreFixture::for_organization(another_organization.clone()).await;
+    let first_connection = store.capture_connection(4).await;
+    assert_eq!(
+        foreign_store
+            .apply_with_connection(
+                Operation::Create(create(478, 1)),
+                4,
+                Some(&first_connection)
+            )
+            .await
+            .unwrap(),
+        Receipt::Create(SessionCallOutcome::Revoked)
+    );
+    assert!(foreign_store.dispatched_reads().is_empty());
     assert_eq!(
         foreign_store
             .approval_facts(&child, &organization)

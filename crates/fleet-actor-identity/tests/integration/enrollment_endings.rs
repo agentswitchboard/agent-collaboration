@@ -56,6 +56,7 @@ async fn all_terminal_enrollment_endings_settle_bound_sessions_at_the_stored_tim
         };
         store.apply(Operation::Bind(bind.clone()), 1).await.unwrap();
         let old_enrollment = store.caller.enrollment_id.clone();
+        let old_connection = store.capture_connection(1).await;
         replace_enrollment(&mut store, cause, ended_at).await;
 
         let current = store.caller.enrollment_id.clone();
@@ -66,7 +67,7 @@ async fn all_terminal_enrollment_endings_settle_bound_sessions_at_the_stored_tim
         );
         assert_eq!(
             store
-                .apply(Operation::Bind(bind.clone()), 2_001)
+                .apply_with_connection(Operation::Bind(bind.clone()), 2_001, Some(&old_connection))
                 .await
                 .unwrap(),
             Receipt::Bind(SessionCallOutcome::Revoked)

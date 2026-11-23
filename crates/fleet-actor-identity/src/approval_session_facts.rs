@@ -71,12 +71,10 @@ where
             return Ok(false);
         }
         let caller = session_caller(session);
-        Ok(matches!(
-            SessionService::in_transaction(transaction)
-                .session_facts(&caller, &session.session_id)
-                .await?,
-            SessionAvailability::Live(_)
-        ))
+        Ok(SessionService::in_transaction(transaction)
+            .live_session(&caller, &session.session_id)
+            .await?
+            .is_some())
     }
 }
 

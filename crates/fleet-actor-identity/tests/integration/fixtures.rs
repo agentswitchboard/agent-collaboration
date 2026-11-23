@@ -17,7 +17,7 @@ use fleet_identity_protocol::{
     OrganizationId, SessionCreator, SessionSecret, UnixSeconds,
 };
 use fleet_lent_transaction::CentralTransaction;
-use fleet_machine_login::link_authority::restore_fixture_link;
+use fleet_machine_login::link_authority::{ValidatedMachineConnection, restore_fixture_link};
 use fleet_store_sqlx::SqliteObjectStore;
 use sqlx::{Connection, Sqlite, SqliteConnection, sqlite::SqliteConnectOptions};
 
@@ -178,6 +178,55 @@ impl SessionStoreFixture {
         operation: Operation,
         at: i64,
     ) -> Result<Receipt, SessionServiceError> {
+        self.apply_with_connection(operation, at, None).await
+    }
+
+    pub async fn capture_connection(&self, at: i64) -> ValidatedMachineConnection {
+        let attachment = self.attachment(at);
+        let store = self.open_tokio_store().await;
+        let result = store
+            .run_transaction(async |connection| {
+                let mut lender = SqliteTransaction {
+                    connection,
+                    organization: &self.organization,
+                    reads: self.reads.clone(),
+                };
+                let authority = restore_fixture_link(
+                    &mut lender,
+                    &attachment,
+                    &self.organization,
+                    time(at).timestamp_millis(),
+                )
+                .await?;
+                Ok(ControlFlow::<std::convert::Infallible, _>::Continue(
+                    authority,
+                ))
+            })
+            .await;
+        store.close().await;
+        match result.unwrap() {
+            ControlFlow::Continue(Ok(authority)) => authority,
+            ControlFlow::Continue(Err(_)) => panic!("fixture link admission was refused"),
+            ControlFlow::Break(never) => match never {},
+        }
+    }
+
+    fn attachment(&self, at: i64) -> MachineConnectionAttachment {
+        MachineConnectionAttachment::from_token_claims(
+            self.organization.clone(),
+            self.caller.machine_id.clone(),
+            self.caller.enrollment_id.clone(),
+            ClientId::try_from(self.caller.enrollment_id.as_str().to_owned()).unwrap(),
+            UnixSeconds(time(at).timestamp() + 60),
+        )
+    }
+
+    pub async fn apply_with_connection(
+        &mut self,
+        operation: Operation,
+        at: i64,
+        admitted: Option<&ValidatedMachineConnection>,
+    ) -> Result<Receipt, SessionServiceError> {
         let store = self.open_tokio_store().await;
         let result = store
             .run_transaction(async |connection| {
@@ -186,20 +235,18 @@ impl SessionStoreFixture {
                     organization: &self.organization,
                     reads: self.reads.clone(),
                 };
-                let attachment = MachineConnectionAttachment::from_token_claims(
-                    self.organization.clone(),
-                    self.caller.machine_id.clone(),
-                    self.caller.enrollment_id.clone(),
-                    ClientId::try_from(self.caller.enrollment_id.as_str().to_owned()).unwrap(),
-                    UnixSeconds(time(at).timestamp() + 60),
-                );
-                let admitted = restore_fixture_link(
-                    &mut lent,
-                    &attachment,
-                    &self.organization,
-                    time(at).timestamp_millis(),
-                )
-                .await?;
+                let admitted = match admitted {
+                    Some(connection) => Ok(connection.clone()),
+                    None => {
+                        restore_fixture_link(
+                            &mut lent,
+                            &self.attachment(at),
+                            &self.organization,
+                            time(at).timestamp_millis(),
+                        )
+                        .await?
+                    }
+                };
                 let Ok(admitted) = admitted else {
                     return Ok(ControlFlow::Continue(match operation {
                         Operation::Create(_) => Receipt::Create(SessionCallOutcome::Revoked),

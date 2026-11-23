@@ -369,7 +369,7 @@ where
         }
     }
 
-    async fn live_session(
+    pub(crate) async fn live_session(
         &mut self,
         caller: &SessionLookupScope,
         session: &CentralSessionId,
