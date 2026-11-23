@@ -1,6 +1,6 @@
 use central_link_client::{LinkLaneEvent, ValidatedDeliveryOffer};
 use central_link_protocol::{DeliveryMessage, ReplyPayload, RequestScope, RequestStatusQuery};
-use router_clock::{ClockInstant, ManualClock};
+use router_clock::{ClockInstant, ManualClock, RuntimeClock};
 use std::{
     future::{Future, ready},
     pin::Pin,
@@ -11,8 +11,8 @@ use std::{
     time::Duration,
 };
 use switchboard_machine_core_store::{
-    InboxDecision, InboxStore, MachineLocalStore, NewOutboxItem, OutboxCancellation, OutboxStorage,
-    RecordDelivery,
+    InboxDecision, InboxOfferExpiry, InboxStore, MachineLocalStore, NewOutboxItem,
+    OutboxCancellation, OutboxStorage, RecordDelivery,
 };
 use switchboard_message_custody::{
     custody_link::CustodyLink,
@@ -164,6 +164,7 @@ impl NoticeFixture {
             ),
         ) {
             self.lane.push_event(LinkLaneEvent::Deliver {
+                arrived_at: self.clock.utc_now(),
                 connection: admitted.connection,
                 offer,
                 sender: ResolvedSender::Central {},
@@ -275,7 +276,12 @@ async fn a_crash_at_the_sender_notice_sink_replays_the_same_owed_notice() {
     fixture.lane.admitted.send_replace(None);
     let mut inbox = fixture.reopen().await;
     inbox
-        .record_delivery(&fixture.notice, InboxDecision::Accepted, START_MS)
+        .record_delivery(
+            &fixture.notice,
+            InboxDecision::Accepted,
+            START_MS,
+            InboxOfferExpiry::SystemWithoutExpiry,
+        )
         .await
         .unwrap();
     inbox
@@ -325,14 +331,24 @@ async fn startup_drains_an_acknowledged_sender_notice_and_reconciles_lost_commit
         let mut prior = fixture.reopen().await;
         assert_eq!(
             prior
-                .record_delivery(&fixture.notice, InboxDecision::Accepted, START_MS)
+                .record_delivery(
+                    &fixture.notice,
+                    InboxDecision::Accepted,
+                    START_MS,
+                    InboxOfferExpiry::SystemWithoutExpiry
+                )
                 .await
                 .unwrap(),
             RecordDelivery::Inserted
         );
         assert_eq!(
             prior
-                .record_delivery(&fixture.notice, InboxDecision::Accepted, START_MS)
+                .record_delivery(
+                    &fixture.notice,
+                    InboxDecision::Accepted,
+                    START_MS,
+                    InboxOfferExpiry::SystemWithoutExpiry
+                )
                 .await
                 .unwrap(),
             RecordDelivery::Duplicate

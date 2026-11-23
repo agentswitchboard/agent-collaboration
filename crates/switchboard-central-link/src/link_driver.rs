@@ -827,7 +827,9 @@ where
                 let _ = self.apply(event);
                 true
             }
-            event @ ClientEvent::Deliver { .. } => admitted_lane.deliver(event, permit),
+            event @ ClientEvent::Deliver { .. } => {
+                admitted_lane.deliver(event, permit, self.clock.as_ref())
+            }
             ClientEvent::Pong => true,
             // Registered calls remain outside the admitted message lane.
             ClientEvent::CallMac { .. }

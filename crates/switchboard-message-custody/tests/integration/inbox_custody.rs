@@ -45,6 +45,7 @@ async fn a_queued_admitted_offer_is_kept_after_its_connection_closes() {
         let session = recipient_session();
         let old = lane.admitted.borrow().clone().unwrap();
         lane.push_event(LinkLaneEvent::Deliver {
+            arrived_at: clock.utc_now(),
             connection: old.connection.clone(),
             offer: direct_offer(FIRST_MESSAGE, "queued before turnover"),
             sender: ResolvedSender::Central {},
@@ -203,7 +204,10 @@ async fn a_reoffer_after_reconnect_reuses_the_first_durable_decision_and_arrival
     let mut first = open_recipient(&path, directory.clone(), clock.clone()).await;
     assert_eq!(
         first
-            .receive_offer(direct_offer(FIRST_MESSAGE, "first delivery"))
+            .receive_offer(
+                direct_offer(FIRST_MESSAGE, "first delivery"),
+                clock.utc_now()
+            )
             .await
             .unwrap(),
         InboxOfferResult::Recorded {
@@ -235,7 +239,10 @@ async fn a_reoffer_after_reconnect_reuses_the_first_durable_decision_and_arrival
     let replacement = new_connection(clock.clone());
     assert_eq!(
         reopened
-            .receive_offer(direct_offer(FIRST_MESSAGE, "different body on reoffer"))
+            .receive_offer(
+                direct_offer(FIRST_MESSAGE, "different body on reoffer"),
+                clock.utc_now()
+            )
             .await
             .unwrap(),
         InboxOfferResult::AlreadyDecided {
@@ -298,7 +305,10 @@ async fn unknown_ambiguous_and_unavailable_lookup_have_distinct_custody_results(
 
     assert_eq!(
         inbox
-            .receive_offer(direct_offer(FIRST_MESSAGE, "first arrival"))
+            .receive_offer(
+                direct_offer(FIRST_MESSAGE, "first arrival"),
+                clock.utc_now()
+            )
             .await
             .unwrap(),
         InboxOfferResult::LookupDeferred
@@ -312,7 +322,7 @@ async fn unknown_ambiguous_and_unavailable_lookup_have_distinct_custody_results(
     directory.set_answer(RecipientSessionAnswer::UnknownSession);
     assert_eq!(
         inbox
-            .receive_offer(direct_offer(SECOND_MESSAGE, "unknown"))
+            .receive_offer(direct_offer(SECOND_MESSAGE, "unknown"), clock.utc_now())
             .await
             .unwrap(),
         InboxOfferResult::Recorded {
@@ -324,7 +334,7 @@ async fn unknown_ambiguous_and_unavailable_lookup_have_distinct_custody_results(
     directory.set_answer(RecipientSessionAnswer::AmbiguousSession);
     assert_eq!(
         inbox
-            .receive_offer(direct_offer(THIRD_MESSAGE, "ambiguous"))
+            .receive_offer(direct_offer(THIRD_MESSAGE, "ambiguous"), clock.utc_now())
             .await
             .unwrap(),
         InboxOfferResult::Recorded {
@@ -379,7 +389,7 @@ async fn short_stale_mismatched_and_missing_answers_keep_the_receipt_frame_pendi
     let mut inbox = open_recipient(&path, directory, clock.clone()).await;
     for id in [FIRST_MESSAGE, SECOND_MESSAGE] {
         inbox
-            .receive_offer(direct_offer(id, "inbox body"))
+            .receive_offer(direct_offer(id, "inbox body"), clock.utc_now())
             .await
             .unwrap();
     }
