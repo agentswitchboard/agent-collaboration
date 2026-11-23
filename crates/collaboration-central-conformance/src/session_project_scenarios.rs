@@ -197,7 +197,7 @@ pub fn record_session_projects() -> Statement {
 
 pub fn session_project_migration() -> Statement {
     Statement {
-        sql: "SELECT description, CAST(success AS TEXT) FROM _sqlx_migrations WHERE version=15",
+        sql: "SELECT description, CAST(success AS TEXT) FROM _sqlx_migrations WHERE version=16",
         args: vec![],
     }
 }
