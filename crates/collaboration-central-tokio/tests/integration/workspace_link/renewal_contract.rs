@@ -1,7 +1,7 @@
 //! RenewMachineToken on the open native link (R40/V32): renewal extends the
 //! connection; a refusal of any reason keeps its deadline; and a renewal is a
 //! frame, refused once the current deadline has passed.
-use super::fixture::{Fixture, INSTALLATION, OTHER_MACHINE, receive, send};
+use super::fixture::{Fixture, INSTALLATION, OTHER_MACHINE, receive, send, start_fixture};
 use super::link_support::{
     caller, connect_client, correlation, create_workspace, created_workspace, renewed_token,
     workspace_reply,
@@ -29,7 +29,7 @@ use workspace_model::WorkspaceResult;
 async fn renew_machine_token_extends_the_open_connection_and_a_refusal_keeps_its_expiry()
 -> Result<()> {
     // Arrange: an ordinary client opens with the actual initial 600-second grant.
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let (mut client, attempt, mut socket, initial_expiry) =
         connect_client(&fixture, &fixture.token).await?;
     let runtime = fixture
@@ -192,9 +192,9 @@ fn retryable_expiry() -> TokenRenewalResult {
     }
 }
 
-fn not_active() -> TokenRenewalResult {
+fn connection_enrollment_ended() -> TokenRenewalResult {
     TokenRenewalResult::Refused {
-        reason: TokenRenewalRefusal::EnrollmentNotActive,
+        reason: TokenRenewalRefusal::ConnectionEnrollmentEnded,
     }
 }
 
@@ -209,7 +209,7 @@ fn at(seconds: i64) -> Result<chrono::DateTime<chrono::Utc>> {
 #[tokio::test]
 async fn a_renewal_at_the_live_deadline_answers_retryably_then_closes() -> Result<()> {
     // Arrange: the connection counts until +600.
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let (_client, _attempt, mut socket, _) = connect_client(&fixture, &fixture.token).await?;
     let runtime = fixture
         .host
@@ -275,7 +275,7 @@ async fn a_renewal_at_the_live_deadline_answers_retryably_then_closes() -> Resul
 #[tokio::test]
 async fn every_refused_renewal_keeps_the_current_deadline() -> Result<()> {
     // Arrange: the connection counts until +600.
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let (mut client, attempt, mut socket, initial_expiry) =
         connect_client(&fixture, &fixture.token).await?;
     let runtime = fixture
@@ -287,6 +287,13 @@ async fn every_refused_renewal_keeps_the_current_deadline() -> Result<()> {
         .await?
         .map_err(|_| "initial admission refused")?;
     let other_machine = fixture.token_for_installation(OTHER_MACHINE)?;
+    let other_enrollment = signed::machine_token(
+        signed::ORGANIZATION,
+        INSTALLATION,
+        "019f0000-0000-7000-8000-00000000c3fe",
+        signed::NOW_SECONDS,
+        signed::NOW_SECONDS + 900,
+    )?;
     let other_client = fresh_token(
         &fixture,
         &connection,
@@ -311,16 +318,49 @@ async fn every_refused_renewal_keeps_the_current_deadline() -> Result<()> {
             other_client.as_str(),
         ),
         ("019f0000-0000-7000-8000-00000000c314", overlong.as_str()),
+        (
+            "019f0000-0000-7000-8000-00000000c315",
+            other_enrollment.as_str(),
+        ),
     ] {
         send(&mut socket, &renew_frame(correlation, token)?).await?;
         answers.push(answer_to(&mut socket, correlation).await?);
     }
+    // This candidate is verified at +0. Central holds the org turn before
+    // sampling, then resumes at the candidate's exact +60 grant deadline.
+    let mut applying = runtime
+        .runtime()
+        .pause_points()
+        .hold_central(fleet_runtime::PausePoint::BeforeRenewalApplyingSample);
+    let candidate = signed::machine_token(
+        signed::ORGANIZATION,
+        INSTALLATION,
+        connection.enrollment_id().as_str(),
+        signed::NOW_SECONDS,
+        signed::NOW_SECONDS + 60,
+    )?;
+    let correlation_id = "019f0000-0000-7000-8000-00000000c316";
+    send(&mut socket, &renew_frame(correlation_id, &candidate)?).await?;
+    tokio::select! {
+        () = applying.until_held() => {}
+        early = socket.next() => {
+            return Err(format!("renewal settled before its applying sample: {early:?}").into());
+        }
+    }
+    fixture.clock.advance(Duration::from_secs(60))?;
+    applying.release();
+    let expired = answer_to(&mut socket, correlation_id).await?;
+    assert_eq!(
+        serde_json::to_value(expired)?,
+        json!({"kind":"refused","reason":"presentedTokenExpired"})
+    );
+
     // The first advertised deadline still decides: a write just before it lands.
     assert_eq!(initial_expiry.timestamp(), signed::NOW_SECONDS + 600);
     let mut writes = Vec::new();
     for (advance, request_id, name) in [
         (
-            u64::try_from(initial_expiry.timestamp() - signed::NOW_SECONDS - 1)?,
+            u64::try_from(initial_expiry.timestamp() - signed::NOW_SECONDS - 60 - 1)?,
             "019f0000-0000-7000-8000-00000000d311",
             "Before the deadline",
         ),
@@ -352,6 +392,9 @@ async fn every_refused_renewal_keeps_the_current_deadline() -> Result<()> {
             TokenRenewalResult::Refused {
                 reason: TokenRenewalRefusal::TokenRejected
             },
+            TokenRenewalResult::Refused {
+                reason: TokenRenewalRefusal::DifferentEnrollment
+            },
         ]
     );
     assert!(matches!(&writes[0], WorkspaceResult::Done(_)));
@@ -379,9 +422,10 @@ async fn every_refused_renewal_keeps_the_current_deadline() -> Result<()> {
     reason = "A live revocation must refuse a renewal that carries a valid fresh token."
 )]
 #[tokio::test]
-async fn a_renewal_after_live_revocation_is_refused_as_enrollment_not_active() -> Result<()> {
+async fn a_renewal_after_live_revocation_is_refused_as_enrollment_connection_enrollment_ended()
+-> Result<()> {
     // Arrange: a valid fresh token, decided before the revocation.
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let (_client, _attempt, mut socket, _) = connect_client(&fixture, &fixture.token).await?;
     let runtime = fixture
         .host
@@ -416,7 +460,7 @@ async fn a_renewal_after_live_revocation_is_refused_as_enrollment_not_active() -
 
     // Assert
     assert!(revoked.is_some());
-    assert_eq!(answer, not_active());
+    assert_eq!(answer, connection_enrollment_ended());
     let close = socket.next().await;
     assert!(
         matches!(
@@ -436,7 +480,7 @@ async fn a_renewal_after_live_revocation_is_refused_as_enrollment_not_active() -
 #[tokio::test]
 async fn a_batch_after_the_deadline_refuses_every_member_and_then_closes() -> Result<()> {
     // Arrange: the connection counts until +600; two writes wait in one batch.
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let (_client, _attempt, mut socket, _) = connect_client(&fixture, &fixture.token).await?;
     let members = [
         (

@@ -77,6 +77,45 @@ fn reply(correlation_id: CorrelationId) -> LinkFrame {
 }
 
 #[test]
+fn typed_inbound_frames_are_forwarded_only_for_the_current_connected_attempt() {
+    use central_link_protocol::{LinkCallRefusal, MacCall, TypedCallResult};
+
+    let (mut client, _) = fixture();
+    let attempt = connect(&mut client);
+    let correlation_id: CorrelationId = "01890f2e-7b4c-7cc0-98c4-000000000012".parse().unwrap();
+    let call = decode_text(
+        r#"{"kind":"callMac","correlationId":"01890f2e-7b4c-7cc0-98c4-000000000012","request":{"call":"deliverEnding","envelope":{"target":{"organizationId":"01890f2e-7b4c-7cc0-98c4-000000000001","machineId":"01890f2e-7b4c-7cc0-98c4-000000000002","enrollmentId":"01890f2e-7b4c-7cc0-98c4-000000000003","routerRun":"01890f2e-7b4c-7cc0-98c4-000000000004"},"body":{"requestId":"01890f2e-7b4c-7cc0-98c4-000000000005","contentsDigest":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA","ending":{"kind":"providerApproval","ending":{"kind":"timedOut"}}}}}}"#,
+        FrameDirection::ToRouter,
+    )
+    .unwrap();
+    let event = client.receive(&attempt, call.clone()).unwrap();
+    assert!(
+        matches!(event, ClientEvent::CallMac { correlation_id: id, request } if id == correlation_id && matches!(&*request, MacCall::DeliverEnding(envelope) if envelope.target.machine_id == client.machine))
+    );
+
+    let reply = LinkFrame::Data(DataFrame::CentralCallReply {
+        correlation_id: correlation_id.clone(),
+        result: Box::new(TypedCallResult::Refused {
+            reason: LinkCallRefusal::WrongTarget,
+        }),
+    });
+    assert_eq!(
+        client.receive(&attempt, reply),
+        Ok(ClientEvent::CentralCallReply {
+            correlation_id,
+            result: Box::new(TypedCallResult::Refused {
+                reason: LinkCallRefusal::WrongTarget,
+            }),
+        })
+    );
+    client.closed(&attempt).unwrap();
+    assert_eq!(
+        client.receive(&attempt, call),
+        Err(ClientError::StaleConnection)
+    );
+}
+
+#[test]
 fn down_pre_welcome_and_refused_calls_fail_without_queueing() {
     let (mut client, clock) = fixture();
     assert_eq!(
@@ -451,5 +490,51 @@ fn only_the_current_connections_exact_receipt_answer_retires_its_positions() {
             correlation_id: current,
             results: vec![ReceiptResult::Recorded]
         },
+    );
+}
+
+#[test]
+fn a_full_request_table_refuses_before_producing_a_frame_and_reuses_a_freed_slot() {
+    let (mut client, _) = fixture();
+    let attempt = connect(&mut client);
+    let pending = (0..64).map(|_| request(&mut client)).collect::<Vec<_>>();
+
+    assert_eq!(
+        client.begin_request(caller(), payload()),
+        Err(ClientError::NeverReached)
+    );
+    assert!(matches!(
+        client.receive(&attempt, reply(pending[0].clone())),
+        Ok(ClientEvent::Reply { .. })
+    ));
+    let replacement = request(&mut client);
+    assert!(!pending.contains(&replacement));
+    assert_eq!(client.closed(&attempt).unwrap().len(), 64);
+}
+
+#[test]
+fn an_open_connection_keeps_only_its_recent_legacy_replies() {
+    let (mut client, _) = fixture();
+    let attempt = connect(&mut client);
+    let completed = (0..129)
+        .map(|_| {
+            let correlation = request(&mut client);
+            assert!(matches!(
+                client.receive(&attempt, reply(correlation.clone())),
+                Ok(ClientEvent::Reply { .. })
+            ));
+            correlation
+        })
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        client.receive(&attempt, reply(completed[128].clone())),
+        Ok(ClientEvent::LateReply {
+            correlation_id: completed[128].clone(),
+        })
+    );
+    assert_eq!(
+        client.receive(&attempt, reply(completed[0].clone())),
+        Err(ClientError::UnknownCorrelation)
     );
 }

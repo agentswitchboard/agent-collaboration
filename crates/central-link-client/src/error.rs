@@ -6,6 +6,9 @@ pub enum ClientError {
     InvalidReceiptResults,
     #[error("central link is unavailable")]
     CentralUnavailable,
+    /// The request table was full before a frame could be produced.
+    #[error("the pending request limit was reached before the request could be sent")]
+    NeverReached,
     #[error("event belongs to an obsolete connection attempt")]
     StaleConnection,
     #[error("request does not follow the write request-id policy")]

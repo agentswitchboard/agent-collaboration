@@ -14,6 +14,7 @@ workspace = true
 wire-export = ["dep:specta", "dep:specta-typescript", "workspace-ids/wire-export"]
 
 [dependencies]
+schemars = { workspace = true, features = ["chrono04"] }
 base64.workspace = true
 serde_json.workspace = true
 sha2.workspace = true

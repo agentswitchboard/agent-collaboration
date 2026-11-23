@@ -1,7 +1,10 @@
-//! The latest welcomed socket locally owns delivery for an organization machine.
-use central_link_protocol::MachineLinkCloseCode;
+//! The latest welcomed socket owns local routing for an organization machine.
+use crate::machine_call_queue::{self, MacCallReceiver, MacCallSender, PendingMacCall};
+use central_link_protocol::{FreshCorrelationId, MacCall, MacCallAddress, MachineLinkCloseCode};
 use fleet_contracts::EnrollmentInvalidation;
 use fleet_identity_protocol::{EnrollmentId, OrganizationId};
+use fleet_rpc::CallFailure;
+use router_clock::ClockInstant;
 use std::{
     collections::HashMap,
     sync::{Arc, Mutex, OnceLock, PoisonError},
@@ -15,6 +18,7 @@ type MachineKey = (OrganizationId, MachineId);
 struct PushSocket {
     enrollment: EnrollmentId,
     sender: mpsc::Sender<MessageId>,
+    calls: MacCallSender,
     replaced: CancellationToken,
     authority_close: Arc<OnceLock<MachineLinkCloseCode>>,
 }
@@ -32,15 +36,17 @@ impl MachinePushRegistry {
         let key = (organization, machine);
         let (sender, receiver) = mpsc::channel(fleet_contracts::mail_link::WELCOME_PAGE_SIZE);
         let replaced = CancellationToken::new();
+        let (calls, outbound_calls) = machine_call_queue::channel(replaced.clone());
         let authority_close = Arc::new(OnceLock::new());
         let mut sockets = self.0.lock().unwrap_or_else(PoisonError::into_inner);
         let active = sockets.entry(key.clone()).or_default();
         if let Some(older) = active.last() {
-            older.replaced.cancel();
+            older.calls.end();
         }
         active.push(PushSocket {
             enrollment,
             sender: sender.clone(),
+            calls,
             replaced: replaced.clone(),
             authority_close: authority_close.clone(),
         });
@@ -51,7 +57,33 @@ impl MachinePushRegistry {
             replaced,
             authority_close,
             receiver,
+            outbound_calls,
         }
+    }
+
+    pub(crate) fn queue_call(
+        &self,
+        organization: &OrganizationId,
+        correlation: FreshCorrelationId,
+        request: MacCall,
+        address: MacCallAddress,
+        deadline: ClockInstant,
+    ) -> Result<PendingMacCall, CallFailure> {
+        let sockets = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        let organization = address.organization_id().unwrap_or(organization);
+        let machine = address.machine_id();
+        let socket = sockets
+            .get(&(organization.clone(), machine.clone()))
+            .and_then(|sockets| sockets.last())
+            .filter(|socket| {
+                socket
+                    .calls
+                    .permits(&address, organization, machine, &socket.enrollment)
+            })
+            .ok_or(CallFailure::NeverReached)?;
+        socket
+            .calls
+            .enqueue(correlation, deadline, request, address)
     }
 
     pub(crate) fn invalidate_enrollment(
@@ -67,7 +99,7 @@ impl MachinePushRegistry {
                 .filter(|socket| socket.enrollment == invalidation.enrollment_id)
             {
                 let _ = socket.authority_close.set(invalidation.cause);
-                socket.replaced.cancel();
+                socket.calls.end();
             }
         }
     }
@@ -86,7 +118,7 @@ impl MachinePushRegistry {
             && let Err(mpsc::error::TrySendError::Full(_)) = socket.sender.try_send(message)
         {
             // Reconnect can recover the durable queued rows after a backed-up socket closes.
-            socket.replaced.cancel();
+            socket.calls.end();
         }
     }
 }
@@ -98,6 +130,7 @@ pub(crate) struct MachinePushRegistration {
     pub(crate) replaced: CancellationToken,
     pub(crate) authority_close: Arc<OnceLock<MachineLinkCloseCode>>,
     pub(crate) receiver: mpsc::Receiver<MessageId>,
+    pub(crate) outbound_calls: MacCallReceiver,
 }
 
 impl Drop for MachinePushRegistration {

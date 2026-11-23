@@ -11,6 +11,7 @@ const central = "path+file:///workspace/central#central-owner@1.0.0";
 const newCentralDependency = "path+file:///workspace/new#fleet-added-later@1.0.0";
 const development = "path+file:///workspace/development#development-only@1.0.0";
 const build = "path+file:///workspace/build#build-only@1.0.0";
+const fixtureOnly = "path+file:///workspace/fixtures#link-fixtures@1.0.0";
 const external = "registry+https://registry.example/index#bridge@1.0.0";
 
 function dependency(
@@ -40,7 +41,87 @@ function compilerArtifact(
   };
 }
 
-async function fixture(context: TestContext): Promise<{
+async function writeWorkspaceMetadata(
+  metadataFile: string,
+  targetDirectory: string,
+  includeWorkspaceFixtureEdge: boolean,
+): Promise<void> {
+  await writeFile(
+    metadataFile,
+    JSON.stringify({
+      target_directory: targetDirectory,
+      workspace_members: [program, central, newCentralDependency, development, build, fixtureOnly],
+      packages: [
+        {
+          id: program,
+          name: "codex-router-cli",
+          version: "1.0.0",
+          manifest_path: "/workspace/cli/Cargo.toml",
+        },
+        {
+          id: central,
+          name: "central-owner",
+          version: "1.0.0",
+          manifest_path: "/workspace/central/Cargo.toml",
+        },
+        {
+          id: newCentralDependency,
+          name: "fleet-added-later",
+          version: "1.0.0",
+          manifest_path: "/workspace/new/Cargo.toml",
+        },
+        {
+          id: development,
+          name: "development-only",
+          version: "1.0.0",
+          manifest_path: "/workspace/development/Cargo.toml",
+        },
+        {
+          id: build,
+          name: "build-only",
+          version: "1.0.0",
+          manifest_path: "/workspace/build/Cargo.toml",
+        },
+        {
+          id: fixtureOnly,
+          name: "link-fixtures",
+          version: "1.0.0",
+          manifest_path: "/workspace/fixtures/Cargo.toml",
+        },
+        {
+          id: external,
+          name: "bridge",
+          version: "1.0.0",
+          manifest_path: "/workspace/registry/Cargo.toml",
+        },
+      ],
+      resolve: {
+        nodes: [
+          {
+            id: program,
+            deps: [dependency(central), dependency(development, "dev"), dependency(build, "build")],
+          },
+          {
+            id: central,
+            deps: includeWorkspaceFixtureEdge
+              ? [dependency(external), dependency(fixtureOnly)]
+              : [dependency(external)],
+          },
+          { id: external, deps: [dependency(newCentralDependency)] },
+          { id: newCentralDependency, deps: [] },
+          { id: development, deps: [] },
+          { id: build, deps: [] },
+          { id: fixtureOnly, deps: [] },
+        ],
+      },
+    }),
+  );
+}
+
+async function fixture(
+  context: TestContext,
+  includeWorkspaceFixtureEdge = false,
+): Promise<{
   check: () => Promise<number>;
   writeBuild: (records: readonly object[]) => Promise<void>;
   records: object[];
@@ -65,34 +146,7 @@ async function fixture(context: TestContext): Promise<{
   for (const filename of [programArchive, ownerArchive, archive, executable, foreignExecutable]) {
     await writeFile(filename, Buffer.alloc(2 * 64 * 1024, 0));
   }
-  await writeFile(
-    metadataFile,
-    JSON.stringify({
-      target_directory: targetDirectory,
-      workspace_members: [program, central, newCentralDependency, development, build],
-      packages: [
-        { id: program, name: "codex-router-cli" },
-        { id: central, name: "central-owner" },
-        { id: newCentralDependency, name: "fleet-added-later" },
-        { id: development, name: "development-only" },
-        { id: build, name: "build-only" },
-        { id: external, name: "bridge" },
-      ],
-      resolve: {
-        nodes: [
-          {
-            id: program,
-            deps: [dependency(central), dependency(development, "dev"), dependency(build, "build")],
-          },
-          { id: central, deps: [dependency(external)] },
-          { id: external, deps: [dependency(newCentralDependency)] },
-          { id: newCentralDependency, deps: [] },
-          { id: development, deps: [] },
-          { id: build, deps: [] },
-        ],
-      },
-    }),
-  );
+  await writeWorkspaceMetadata(metadataFile, targetDirectory, includeWorkspaceFixtureEdge);
   const records = [
     compilerArtifact(program, "codex_router_cli", programArchive),
     compilerArtifact(central, "central_owner", ownerArchive),
@@ -111,8 +165,14 @@ async function fixture(context: TestContext): Promise<{
     );
   };
   await writeBuild(records);
+  const productionTree = [
+    "codex-router-cli v1.0.0 (/workspace/cli)",
+    "central-owner v1.0.0 (/workspace/central)",
+    "bridge v1.0.0",
+    "fleet-added-later v1.0.0 (/workspace/new) (*)",
+  ].join("\n");
   return {
-    check: () => checkCentralNativeArtifacts(metadataFile, messagesFile, host),
+    check: () => checkCentralNativeArtifacts(metadataFile, messagesFile, host, productionTree),
     writeBuild,
     records,
     archive,
@@ -123,6 +183,11 @@ async function fixture(context: TestContext): Promise<{
 
 test("the native guard scans the normal workspace graph and the shipping executable", async (context) => {
   const build = await fixture(context);
+  assert.equal(await build.check(), 3);
+});
+
+test("the native guard excludes fixture dependencies enabled only by workspace-wide resolution", async (context) => {
+  const build = await fixture(context, true);
   assert.equal(await build.check(), 3);
 });
 

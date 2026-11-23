@@ -1,5 +1,5 @@
 //! A private sign-in commit invalidates only sockets for the ended enrollment.
-use super::fixture::{Fixture, INSTALLATION, receive, send};
+use super::fixture::{Fixture, INSTALLATION, receive, send, start_fixture};
 use central_link_protocol::{
     CorrelationId, DataFrame, LinkFrame, MachineLinkCloseCode, TokenRenewalResult,
 };
@@ -17,7 +17,7 @@ use reqwest_websocket::{Message, RequestBuilderExt, WebSocket};
 #[tokio::test]
 async fn private_superseding_grant_closes_the_old_socket_before_a_replacement_dials() -> Result<()>
 {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = superseding_grant(&fixture).await;
     fixture.close().await?;
     result
@@ -57,7 +57,7 @@ async fn supersede_and_require_old_close(fixture: &Fixture, old: &mut WebSocket)
 #[tokio::test]
 async fn private_idle_mint_closes_the_committed_ended_enrollment_without_a_link_request()
 -> Result<()> {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = idle_mint(&fixture).await;
     fixture.close().await?;
     result
@@ -75,7 +75,7 @@ async fn idle_mint(fixture: &Fixture) -> Result<()> {
 #[tokio::test]
 async fn delayed_private_idle_invalidation_spares_a_replacement_on_the_same_machine() -> Result<()>
 {
-    let fixture = Fixture::new().await?;
+    let fixture = start_fixture().await?;
     let result = delayed_invalidation(&fixture).await;
     fixture.close().await?;
     result
