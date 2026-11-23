@@ -22,7 +22,8 @@ use super::{
     custody_task::ObserveTask,
     faulted_overlay::{FaultCampaign, START_MS},
     faulty_outbox::{FaultSite, FaultStage},
-    outbox_timing::{open_outbox, thread_post},
+    mark_waits::NextMarkClock,
+    outbox_timing::{manual_clock, open_outbox, thread_post},
 };
 
 pub(super) fn start_worker(
@@ -457,7 +458,9 @@ async fn a_recovered_orphan_uses_the_scoped_status_answer_without_retransmission
 
 #[tokio::test]
 async fn a_lost_local_claim_ack_is_returned_as_untouched_without_a_status_probe() {
-    let campaign = FaultCampaign::start().await;
+    let next_mark = ClockInstant::ZERO.after(Duration::from_secs(80));
+    let observer = NextMarkClock::watching(manual_clock(START_MS), next_mark);
+    let campaign = FaultCampaign::start_with_clock(observer.source.clone(), observer.clone()).await;
     let item = thread_post(606);
     let OutboxQueuedWrite::Workspace(request) = &item.payload else {
         panic!("fixture requires a thread post");
@@ -465,6 +468,7 @@ async fn a_lost_local_claim_ack_is_returned_as_untouched_without_a_status_probe(
     let clock = campaign.clock.clone();
     let peer = campaign.peer.clone();
     let database = campaign.root.path().join("machine_local.sqlite");
+    let returned = campaign.faults.hold_next_claim_return_commit();
     campaign
         .faults
         .arm(FaultSite::ClaimBatch, FaultStage::AfterSuccess);
@@ -489,37 +493,32 @@ async fn a_lost_local_claim_ack_is_returned_as_untouched_without_a_status_probe(
     let retry = ClockInstant::ZERO.after(Duration::from_secs(21));
     clock.not_due_check_now(retry).await;
     clock.advance(Duration::from_secs(1)).unwrap();
+    returned.committed.notified().await;
     let mut reopened = open_outbox(&database).await;
-    let pending = async {
-        loop {
-            if reopened
-                .sent_without_answer()
-                .await
-                .unwrap()
-                .healthy
-                .is_empty()
-            {
-                break reopened.pending_for(&item.caller).await.unwrap();
-            }
-            tokio::task::yield_now().await;
-        }
-    }
-    .await;
+    let pending = reopened.pending_for(&item.caller).await.unwrap();
     assert!(
         matches!(pending.as_slice(), [one] if one.request_id == item.request &&
         matches!(one.state, switchboard_machine_core_store::PendingWriteState::Unsent { .. })),
-        "a commit acknowledgment lost before the batch existed must leave the first write unsent"
+        "a commit acknowledgment lost before the batch existed must restore the first write as unsent: {pending:?}"
     );
     assert!(
         peer.take_calls().is_empty(),
         "only claims found at startup ask Central for status"
     );
-    let next = ClockInstant::ZERO.after(Duration::from_secs(80));
-    clock.not_due_check_now(next).await;
-    clock.advance(Duration::from_secs(59)).unwrap();
-    let report = flush_event(&mut events, "one healthy fresh settlement").await;
+    assert!(peer.batch_commands().is_empty());
+    returned.release.notify_one();
+    let report = tokio::select! {
+        report = flush_event(&mut events, "one healthy fresh settlement on the same mark") => Some(report),
+        () = observer.suffix_is_deferred() => None,
+    };
+    assert!(
+        report.is_some(),
+        "an unsent return remains eligible on the open mark"
+    );
+    let report = report.unwrap();
     assert!(matches!(report.answered.as_slice(), [one] if one.request == item.request));
     assert_eq!(peer.batch_commands().len(), 1);
+    assert_eq!(peer.command_instants(), [retry]);
     stop.send_replace(true);
     running.await.unwrap();
 }

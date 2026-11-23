@@ -37,7 +37,7 @@ use switchboard_message_custody::{
     recipient_inbox::RecipientInbox,
     recipient_sessions::{RecipientSessionAnswer, RecipientSessionDirectory},
 };
-use tokio::sync::{Notify, watch};
+use tokio::sync::{Mutex as AsyncMutex, Notify, mpsc, watch};
 use workspace_ids::{MachineId, RequestId, SessionId};
 use workspace_model::{
     Caller, ChangePosition, ItemRef, WorkspaceAnswer, WorkspaceReply, WorkspaceResult,
@@ -127,7 +127,8 @@ pub(super) struct ScriptedBatchLane {
     lost_first_answers: BTreeSet<RequestId>,
     history: Mutex<PeerHistory>,
     calls: Mutex<Vec<ScriptedCommand>>,
-    events: Mutex<std::collections::VecDeque<LinkLaneEvent>>,
+    queued_events: mpsc::UnboundedSender<LinkLaneEvent>,
+    events: AsyncMutex<mpsc::UnboundedReceiver<LinkLaneEvent>>,
     refused_machine: Mutex<Option<MachineId>>,
     next_batch: Mutex<Option<ScriptedBatch>>,
     status_answers: Mutex<Vec<(Caller, RequestStatusQuery, RequestStatusAnswer)>>,
@@ -141,13 +142,15 @@ impl ScriptedBatchLane {
         clock: Arc<ManualClock>,
         lost_first_answers: BTreeSet<RequestId>,
     ) -> Self {
+        let (queued_events, events) = mpsc::unbounded_channel();
         Self {
             admitted: watch::channel(Some(admitted)).0,
             clock,
             lost_first_answers,
             history: Mutex::new(PeerHistory::default()),
             calls: Mutex::new(Vec::new()),
-            events: Mutex::new(std::collections::VecDeque::new()),
+            queued_events,
+            events: AsyncMutex::new(events),
             refused_machine: Mutex::new(None),
             next_batch: Mutex::new(None),
             status_answers: Mutex::new(Vec::new()),
@@ -204,7 +207,7 @@ impl ScriptedBatchLane {
     }
 
     pub(super) fn push_event(&self, event: LinkLaneEvent) {
-        self.events.lock().unwrap().push_back(event);
+        self.queued_events.send(event).unwrap();
     }
 
     pub(super) fn refuse_messages_to(&self, machine: MachineId) {
@@ -408,8 +411,31 @@ impl ReadyLinkLane for ScriptedBatchLane {
     }
 
     fn next_event(&self) -> Pin<Box<dyn Future<Output = Option<LinkLaneEvent>> + Send + '_>> {
-        Box::pin(std::future::ready(self.events.lock().unwrap().pop_front()))
+        Box::pin(async { self.events.lock().await.recv().await })
     }
+}
+
+#[tokio::test]
+async fn the_idle_scripted_lane_waits_for_an_event_without_reporting_a_close() {
+    let clock = manual_clock(SHARED_MARK_MS - 20_000);
+    let machine = "019f0000-0000-7000-8000-000000000011".parse().unwrap();
+    let admitted = new_admission(machine, clock.clone());
+    let lane = ScriptedBatchLane::new(admitted.clone(), clock, BTreeSet::new());
+    let mut event = lane.next_event();
+    let prematurely_ready = tokio::select! {
+        biased;
+        actual = &mut event => Some(actual),
+        () = std::future::ready(()) => None,
+    };
+    assert!(
+        prematurely_ready.is_none(),
+        "an empty event queue is still an open driver stream"
+    );
+    lane.push_event(LinkLaneEvent::ConnectionAdmitted(admitted.clone()));
+    assert_eq!(
+        event.await,
+        Some(LinkLaneEvent::ConnectionAdmitted(admitted))
+    );
 }
 
 pub(super) fn post_created(position: usize) -> ReplyPayload {

@@ -6,10 +6,9 @@
     reason = "A malformed fixture or missing result fails the behavior it was set up to prove."
 )]
 
-use chrono::{DateTime, Utc};
-use router_clock::{ClockInstant, ManualClock, RuntimeClock};
-use runtime_primitives::{Clock, SyncTime};
-use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use router_clock::{ClockInstant, RuntimeClock};
+use runtime_primitives::SyncTime;
+use std::{sync::Arc, time::Duration};
 use switchboard_machine_core_store::{OutboxCancellation, OutboxQueuedWrite, OutboxStorage};
 use switchboard_message_custody::{
     custody_link::CustodyLink,
@@ -18,7 +17,7 @@ use switchboard_message_custody::{
     custody_task::CustodyTaskEvent,
     outbox_dispatch::FlushReport,
 };
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use workspace_ids::RequestId;
 use workspace_model::{Caller, Timestamp};
 
@@ -29,6 +28,7 @@ use super::{
     },
     faulted_overlay::FaultCampaign,
     faulty_outbox::{FaultSite, FaultStage},
+    mark_waits::NextMarkClock,
     outbox_timing::{manual_clock, open_outbox, thread_post},
     worker_orphans::{flush_event, scoped_query, start_worker},
 };
@@ -37,62 +37,11 @@ const FIRST_MARK: Duration = Duration::from_secs(20);
 const SECOND_MARK: Duration = Duration::from_secs(80);
 const MARK_MS: i64 = 1_763_380_800_000;
 
-/// These tests observe second-mark sleepers while delegating time to their one manual clock.
-struct NextMarkClock {
-    source: Arc<ManualClock>,
-    pending_wakes: watch::Sender<usize>,
-}
-
-struct MarkWait<'clock>(&'clock watch::Sender<usize>);
-
-impl Drop for MarkWait<'_> {
-    fn drop(&mut self) {
-        self.0.send_modify(|wakes| *wakes -= 1);
-    }
-}
-
-impl Clock for NextMarkClock {
-    fn now(&self) -> SyncTime {
-        self.source.now()
-    }
-}
-
-impl RuntimeClock for NextMarkClock {
-    fn utc_now(&self) -> DateTime<Utc> {
-        self.source.utc_now()
-    }
-
-    fn monotonic_now(&self) -> ClockInstant {
-        self.source.monotonic_now()
-    }
-
-    fn sleep_until(&self, deadline: ClockInstant) -> Pin<Box<dyn Future<Output = ()> + Send + '_>> {
-        let sleeping = self.source.sleep_until(deadline);
-        if deadline != ClockInstant::ZERO.after(SECOND_MARK) {
-            return sleeping;
-        }
-        Box::pin(async move {
-            self.pending_wakes.send_modify(|wakes| *wakes += 1);
-            let _wait = MarkWait(&self.pending_wakes);
-            sleeping.await;
-        })
-    }
-}
-
-impl NextMarkClock {
-    fn observing_next_mark() -> Arc<Self> {
-        Arc::new(Self {
-            source: manual_clock(MARK_MS - 20_000),
-            pending_wakes: watch::channel(0).0,
-        })
-    }
-
-    async fn suffix_is_deferred(&self) {
-        // The receipt wait is always armed for this minute. A second live wait
-        // proves the worker scheduled another outbox frame on that later mark.
-        let mut wakes = self.pending_wakes.subscribe();
-        assert!(wakes.wait_for(|wakes| *wakes == 2).await.is_ok());
-    }
+fn next_mark_clock() -> Arc<NextMarkClock> {
+    NextMarkClock::watching(
+        manual_clock(MARK_MS - 20_000),
+        ClockInstant::ZERO.after(SECOND_MARK),
+    )
 }
 
 async fn observed_mark_fixture() -> (
@@ -101,7 +50,7 @@ async fn observed_mark_fixture() -> (
     Arc<ScriptedBatchLane>,
     Arc<NextMarkClock>,
 ) {
-    let clock = NextMarkClock::observing_next_mark();
+    let clock = next_mark_clock();
     let (root, custody, lane) =
         limits_fixture_with_clock(clock.source.clone(), clock.clone()).await;
     (root, custody, lane, clock)
@@ -303,7 +252,7 @@ async fn a_transient_waiting_read_fault_keeps_the_old_suffix_owed_inside_the_mar
 }
 
 pub(super) async fn check_waiting_read_fault(count: u16) {
-    let clock = NextMarkClock::observing_next_mark();
+    let clock = next_mark_clock();
     let mut campaign = FaultCampaign::start_with_clock(clock.source.clone(), clock.clone()).await;
     let queued = queue_posts(&mut campaign.custody, count).await;
     let (prefix, suffix) = queued.split_at_checked(64).unwrap();
@@ -361,7 +310,7 @@ async fn a_claim_returning_after_the_mark_close_never_reaches_the_lane() {
 }
 
 pub(super) async fn check_closed_claim(after_close_ms: u64) {
-    let clock = NextMarkClock::observing_next_mark();
+    let clock = next_mark_clock();
     let mut campaign = FaultCampaign::start_with_clock(clock.source.clone(), clock.clone()).await;
     let queued = queue_posts(&mut campaign.custody, 1).await;
     let stored_claim = campaign.faults.hold_next_claim_commit();
