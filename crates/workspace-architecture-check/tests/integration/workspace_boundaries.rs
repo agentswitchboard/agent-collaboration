@@ -211,7 +211,7 @@ fn is_collaboration(name: &str) -> bool {
         || name.starts_with("central-")
         || matches!(name, "agent-collaboration" | "agent-automation")
 }
-fn is_effectful(name: &str) -> bool {
+pub(super) fn is_effectful(name: &str) -> bool {
     name.starts_with("tokio")
         || name.starts_with("futures")
         || name.starts_with("async-")

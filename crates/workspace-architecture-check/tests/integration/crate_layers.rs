@@ -6,6 +6,9 @@ use std::process::Command;
 
 use serde::Deserialize;
 
+#[path = "approval_ports_policy.rs"]
+mod approval_ports_policy;
+
 #[path = "harness_stage_policy.rs"]
 mod harness_stage_policy;
 
@@ -188,6 +191,8 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
     workspace_boundaries::check_declared_session_read_edges(&metadata)?;
     harness_stage_policy::check_declared(&metadata)?;
     harness_stage_policy::check_resolved(&metadata)?;
+    approval_ports_policy::check_declared(&metadata)?;
+    approval_ports_policy::check_resolved(&metadata)?;
     let graph = NonDevDependencyGraph::from_metadata(metadata);
     for (source, destinations) in &graph.dev_edges {
         if !graph.workspace_members.contains(source) {
@@ -217,6 +222,7 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
     // Cargo features are additive. This resolution includes selectable optional edges.
     let enabled_metadata = read_metadata(&root, &["--all-features"])?;
     harness_stage_policy::check_resolved(&enabled_metadata)?;
+    approval_ports_policy::check_resolved(&enabled_metadata)?;
     workspace_boundaries::check_harness_layers(&NonDevDependencyGraph::from_metadata(
         enabled_metadata,
     ))?;

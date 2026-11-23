@@ -2,6 +2,7 @@
 resolver = "3"
 members = [
     "crates/approval-request-protocol",
+    "crates/switchboard-approval-ports",
     "crates/central-link-protocol",
     "crates/central-link-client",
     "crates/workspace-ids",

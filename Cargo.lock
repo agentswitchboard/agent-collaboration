@@ -5752,6 +5752,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "13c2bddecc57b384dee18652358fb23172facb8a2c51ccc10d74c157bdea3292"
 
 [[package]]
+name = "switchboard-approval-ports"
+version = "0.1.158"
+dependencies = [
+ "approval-request-protocol",
+ "thiserror 2.0.18",
+ "workspace-ids",
+]
+
+[[package]]
 name = "switchboard-harness-contracts"
 version = "0.1.158"
 dependencies = [
