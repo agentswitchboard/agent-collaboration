@@ -1,5 +1,5 @@
 use std::num::NonZeroU64;
-use workspace_ids::{RequestId, RouterRunId, SessionId};
+use workspace_ids::{RequestId, SessionId};
 
 /// A local turn identity the harness supplies from the turn proved at admission.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
@@ -67,23 +67,17 @@ impl ApprovalScope {
     }
 }
 
-/// The harness's opaque name for one wait, formed from its run and a fresh local UUIDv7.
+/// The harness's opaque name for one wait, made from a fresh harness-allocated UUIDv7.
 ///
 /// ```compile_fail,E0277
 /// use switchboard_approval_ports::WaitingRequestId;
 /// let _: WaitingRequestId = 42_u64.into();
 /// ```
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct WaitingRequestId {
-    router_run: RouterRunId,
-    local_nonce: RequestId,
-}
+pub struct WaitingRequestId(RequestId);
 
 impl WaitingRequestId {
-    pub(crate) const fn from_admission(router_run: RouterRunId, local_nonce: RequestId) -> Self {
-        Self {
-            router_run,
-            local_nonce,
-        }
+    pub(crate) const fn from_admission(local_nonce: RequestId) -> Self {
+        Self(local_nonce)
     }
 }

@@ -1,5 +1,5 @@
 use approval_request_protocol::{OfferView, PrivateEnding, ProviderStopCause};
-use workspace_ids::{RequestId, RouterRunId};
+use workspace_ids::RequestId;
 
 use crate::{ApprovalScope, WaitingRequestId};
 
@@ -79,10 +79,29 @@ pub enum LocalApprovalRefusal {
     UnknownCentralSession,
     #[error("the wait stopped: {0:?}")]
     WaitStopped(MacWaitCause),
-    #[error("central refused the raise")]
-    RaiseRefused,
+    #[error("central refused the raise: {0:?}")]
+    RaiseRefused(TerminalRaiseRefusal),
     #[error("the approval holder has no room")]
     NoRoom,
+}
+
+/// The terminal Raise outcome custody records from central's reply after excluding receipts and run authority.
+///
+/// Keep these cases aligned with the approval holder's RaiseRefusal.
+///
+/// ```compile_fail,E0308
+/// use approval_request_protocol::RaiseReply;
+/// use switchboard_approval_ports::LocalApprovalRefusal;
+/// fn wrong_refusal(reply: RaiseReply) -> LocalApprovalRefusal {
+///     LocalApprovalRefusal::RaiseRefused(reply)
+/// }
+/// ```
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum TerminalRaiseRefusal {
+    AlreadyStopped,
+    SessionEnded,
+    ContentsDiffer,
+    TooManyOutstanding,
 }
 
 /// The reply contents custody selects after claiming an ending or producing a local refusal.
@@ -132,6 +151,35 @@ impl WaitingRequestRelease {
     #[must_use]
     pub const fn waiting_request(&self) -> &WaitingRequestId {
         &self.0
+    }
+}
+
+/// The local result the harness observes when asked to release a wait without a reply.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum WaitReleaseKind {
+    /// The harness released the wait and sent nothing.
+    ReleasedWithoutReply,
+    /// That exact waiting request was already gone.
+    AlreadyGone,
+    /// The harness could not settle the wait silently on the live connection.
+    CannotReleaseSilently,
+    /// The harness cannot establish what happened during release.
+    CannotTell,
+}
+
+/// The release observation the harness reports to custody for the exact wait.
+///
+/// ```compile_fail,E0423
+/// use switchboard_approval_ports::{WaitReleaseKind, WaitReleaseOutcome};
+/// let _ = WaitReleaseOutcome(WaitReleaseKind::ReleasedWithoutReply);
+/// ```
+#[derive(Debug, Eq, PartialEq)]
+pub struct WaitReleaseOutcome(WaitReleaseKind);
+
+impl WaitReleaseOutcome {
+    #[must_use]
+    pub const fn kind(&self) -> WaitReleaseKind {
+        self.0
     }
 }
 
@@ -209,26 +257,27 @@ pub struct HarnessApprovalValues {
 }
 
 impl HarnessApprovalValues {
-    /// Names an admitted ask using a fresh harness-allocated nonce from the current Router run.
+    /// Names an admitted ask using a fresh harness-allocated UUIDv7.
+    ///
+    /// Custody associates the name with its own approval holder run.
     ///
     /// ```compile_fail,E0308
-    /// use approval_request_protocol::{OfferView, RouterRunId};
+    /// use approval_request_protocol::OfferView;
     /// use switchboard_approval_ports::{ApprovalScope, HarnessApprovalValues};
-    /// fn bad(values: &HarnessApprovalValues, scope: ApprovalScope, run: RouterRunId, offer: OfferView) {
-    ///     values.admitted_ask(scope, run, 42_u64, offer);
+    /// fn bad(values: &HarnessApprovalValues, scope: ApprovalScope, offer: OfferView) {
+    ///     values.admitted_ask(scope, 42_u64, offer);
     /// }
     /// ```
     #[must_use]
     pub fn admitted_ask(
         &self,
         scope: ApprovalScope,
-        router_run: RouterRunId,
         fresh_local_nonce: RequestId,
         offer: OfferView,
     ) -> ApprovalAsk {
         ApprovalAsk {
             scope,
-            waiting_request: WaitingRequestId::from_admission(router_run, fresh_local_nonce),
+            waiting_request: WaitingRequestId::from_admission(fresh_local_nonce),
             offer,
         }
     }
@@ -237,6 +286,12 @@ impl HarnessApprovalValues {
     #[must_use]
     pub const fn reply_handover(&self, kind: ReplyHandoverKind) -> ReplyHandover {
         ReplyHandover(kind)
+    }
+
+    /// Records what the harness observed when it tried to release the wait silently.
+    #[must_use]
+    pub const fn wait_release_outcome(&self, kind: WaitReleaseKind) -> WaitReleaseOutcome {
+        WaitReleaseOutcome(kind)
     }
 
     /// Reports a fact the harness can match to this exact still-named wait.
@@ -256,12 +311,19 @@ impl HarnessApprovalValues {
 /// Side-specific constructors the Host gives to the Mac custody service at composition.
 ///
 /// ```compile_fail,E0599
-/// use approval_request_protocol::{OfferView, RouterRunId};
+/// use approval_request_protocol::OfferView;
 /// use switchboard_approval_ports::{ApprovalScope, CustodyApprovalValues};
 /// use workspace_ids::RequestId;
-/// fn forge(custody: &CustodyApprovalValues, scope: ApprovalScope, run: RouterRunId,
-///          nonce: RequestId, offer: OfferView) {
-///     custody.admitted_ask(scope, run, nonce, offer);
+/// fn forge(custody: &CustodyApprovalValues, scope: ApprovalScope, nonce: RequestId,
+///          offer: OfferView) {
+///     custody.admitted_ask(scope, nonce, offer);
+/// }
+/// ```
+///
+/// ```compile_fail,E0599
+/// use switchboard_approval_ports::{CustodyApprovalValues, WaitReleaseKind};
+/// fn forge(custody: &CustodyApprovalValues) {
+///     custody.wait_release_outcome(WaitReleaseKind::ReleasedWithoutReply);
 /// }
 /// ```
 ///
@@ -310,12 +372,19 @@ pub const fn approval_value_builders() -> (HarnessApprovalValues, CustodyApprova
 }
 
 /// The ACP harness implements these two requests from custody and reports its local outcome.
+///
+/// ```compile_fail,E0308
+/// use switchboard_approval_ports::{ApprovalHarnessPort, ReplyHandover, WaitingRequestRelease};
+/// fn wrong_return(port: &impl ApprovalHarnessPort, request: WaitingRequestRelease) -> ReplyHandover {
+///     port.release_wait(request)
+/// }
+/// ```
 pub trait ApprovalHarnessPort {
     /// Applies the final check and reports the exact reply's queue hand-over outcome.
     fn write_reply(&self, instruction: ReplyInstruction) -> ReplyHandover;
 
-    /// Releases the exact wait without a reply and reports the local hand-over outcome.
-    fn release_wait(&self, instruction: WaitingRequestRelease) -> ReplyHandover;
+    /// Tries to release the exact wait without sending a reply and reports the local result.
+    fn release_wait(&self, instruction: WaitingRequestRelease) -> WaitReleaseOutcome;
 }
 
 /// The Mac custody service implements these immediate ingress calls from the harness.
