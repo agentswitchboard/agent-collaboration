@@ -10,6 +10,9 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
+central-link-protocol.workspace = true
+chrono.workspace = true
+schemars.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlite-storage-maintenance = { path = "../sqlite-storage-maintenance", version = "0.1.118" }
@@ -21,7 +24,6 @@ workspace-ids.workspace = true
 workspace-model.workspace = true
 
 [dev-dependencies]
-chrono.workspace = true
 hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
 router-clock = { workspace = true, features = ["test-support"] }
 tempfile = "3.27.0"

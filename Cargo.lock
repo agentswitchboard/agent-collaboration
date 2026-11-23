@@ -5785,9 +5785,11 @@ dependencies = [
 name = "switchboard-machine-core-store"
 version = "0.1.158"
 dependencies = [
+ "central-link-protocol",
  "chrono",
  "hegeltest",
  "router-clock",
+ "schemars 1.2.2",
  "serde",
  "serde_json",
  "sqlite-storage-maintenance",
