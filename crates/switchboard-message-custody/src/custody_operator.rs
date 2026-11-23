@@ -1,4 +1,4 @@
-use central_link_client::UntouchedCommand;
+use central_link_client::{ConnectionAttempt, LinkLocalFault, UntouchedCommand};
 use switchboard_machine_core_store::{RowCorruption, StoreScan};
 
 /// A storage diagnostic custody reports to the operator independently of any session's status.
@@ -7,6 +7,10 @@ pub enum CustodyOperatorEvent {
     CorruptOutboxRow(RowCorruption),
     CorruptInboxRow(RowCorruption),
     UntouchedBatchFault(UntouchedCommand),
+    LinkFaulted {
+        connection: ConnectionAttempt,
+        cause: LinkLocalFault,
+    },
 }
 
 pub(crate) fn outbox_scan<T>(scan: StoreScan<T>, events: &mut Vec<CustodyOperatorEvent>) -> T {

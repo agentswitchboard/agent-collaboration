@@ -270,12 +270,25 @@ impl CustodyLink {
         &mut self,
         saved: TakenEvent,
     ) -> Result<CustodyLinkObservation, CustodyLinkError> {
-        match saved.observation {
+        match &saved.observation {
             CustodyLinkObservation::AdmissionChanged => {
                 self.refresh_flush_wake().await?;
             }
             CustodyLinkObservation::DriverClosed => {
                 self.observe_unavailable()?;
+            }
+            CustodyLinkObservation::ConnectionFaulted { connection, cause } => {
+                self.outbox
+                    .report_operator_event(CustodyOperatorEvent::LinkFaulted {
+                        connection: connection.clone(),
+                        cause: *cause,
+                    });
+                if self
+                    .admitted_connection()
+                    .is_none_or(|ready| ready.connection == *connection)
+                {
+                    self.observe_unavailable()?;
+                }
             }
             CustodyLinkObservation::Delivery(_) | CustodyLinkObservation::StaleDelivery => {}
         }
@@ -314,7 +327,9 @@ impl CustodyLink {
             return Ok(None);
         };
         self.last_clock_anchor = Some(admitted.clock_anchor);
-        let earliest_due = self.outbox.earliest_waiting_mark().await?;
+        let earliest_due = self
+            .earliest_flush_due(!self.schedule.batch_in_flight())
+            .await?;
         self.apply_flush_event(FlushEvent::LinkConnected { earliest_due })?;
         Ok(self.schedule.armed_mark().map(|mark| {
             wake_for_mark(admitted.clock_anchor, mark, self.jitter.jitter_millis(mark))
@@ -372,7 +387,9 @@ impl CustodyLink {
         };
         self.last_clock_anchor = Some(admitted.clock_anchor);
         let now = shared_time_at(admitted.clock_anchor, self.clock.monotonic_now());
-        let earliest_due = self.outbox.earliest_waiting_mark().await?;
+        let earliest_due = self
+            .earliest_flush_due(!self.schedule.batch_in_flight())
+            .await?;
         self.apply_flush_event(FlushEvent::LinkConnected { earliest_due })?;
         let Some(mark) = self.apply_flush_event(FlushEvent::Tick { now, earliest_due })? else {
             return Ok((FlushReport::default(), None));
@@ -445,7 +462,7 @@ impl CustodyLink {
         &mut self,
         report: &mut FlushReport,
     ) -> Result<(), FlushTransitionError> {
-        let earliest_due = self.outbox.earliest_waiting_mark().await;
+        let earliest_due = self.earliest_flush_due(true).await;
         self.apply_flush_event(FlushEvent::BatchEnded {
             earliest_due: earliest_due.as_ref().ok().copied().flatten(),
         })?;
@@ -453,6 +470,20 @@ impl CustodyLink {
             report.issues.push(BatchDispatchError::Work(error));
         }
         Ok(())
+    }
+
+    // A lost claim acknowledgement can leave no waiting row to arm the
+    // scheduler. Only the idle owner may consider those claims for recovery.
+    async fn earliest_flush_due(
+        &mut self,
+        can_recover: bool,
+    ) -> Result<Option<SyncTime>, OutboxWorkError> {
+        let waiting = self.outbox.earliest_waiting_mark().await?;
+        if can_recover && self.outbox.has_unanswered_claims().await? {
+            let due_now = SyncTime::from_unix_millis(0);
+            return Ok(Some(waiting.map_or(due_now, |mark| mark.min(due_now))));
+        }
+        Ok(waiting)
     }
 
     /// Submit a frame of durable inbox receipts for the current connection.

@@ -16,7 +16,10 @@ use workspace_model::{
     central_mail::{MessageBody, MessageRecord, MessageSender, MessageStatus},
 };
 
-use crate::custody_submission::{Submission, SubmissionPayload, accepted_reply};
+use crate::{
+    custody_submission::{Submission, SubmissionPayload, accepted_reply},
+    outbox_settlement_map::central_status_reason,
+};
 
 /// Custody's answer to the original caller's request-status query.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -87,7 +90,7 @@ pub(crate) fn remote_status(
     match *result {
         RequestStatusAnswer::Answered(reply) => CustodyRequestStatus::Answered(reply),
         RequestStatusAnswer::Refused(reason) => {
-            CustodyRequestStatus::Refused(OutboxRefusal::Central(reason))
+            CustodyRequestStatus::Refused(central_status_reason(reason))
         }
         RequestStatusAnswer::NotFound => CustodyRequestStatus::NotFound,
     }

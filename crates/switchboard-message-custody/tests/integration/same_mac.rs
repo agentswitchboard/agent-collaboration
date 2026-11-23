@@ -1,9 +1,7 @@
-use central_link_protocol::{
-    ReplyPayload, RequestPayload, RequestRefusal, RequestScope, RequestStatusQuery,
-};
+use central_link_protocol::{ReplyPayload, RequestPayload, RequestScope, RequestStatusQuery};
 use router_clock::ClockInstant;
 use std::time::Duration;
-use switchboard_machine_core_store::{OutboxQueuedWrite, OutboxRefusal};
+use switchboard_machine_core_store::{OutboxCentralRefusal, OutboxQueuedWrite, OutboxRefusal};
 use switchboard_message_custody::{
     custody_status::CustodyRequestStatus,
     custody_submission::{Submission, SubmissionPayload},
@@ -105,7 +103,7 @@ async fn local_and_remote_messages_share_the_minute_path_and_central_can_refuse_
     };
     assert_eq!(
         custody.request_status(local.caller, query).await,
-        CustodyRequestStatus::Refused(OutboxRefusal::Central(RequestRefusal::Mail(refusal)))
+        CustodyRequestStatus::Refused(OutboxRefusal::Central(OutboxCentralRefusal::Mail(refusal)))
     );
     assert!(
         custody

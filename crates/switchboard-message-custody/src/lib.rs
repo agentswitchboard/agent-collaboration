@@ -11,6 +11,7 @@ pub mod flush_marks;
 mod offer_taker;
 pub mod outbox_dispatch;
 pub mod outbox_flush;
+mod outbox_settlement_map;
 mod outbox_wire;
 pub mod outbox_work;
 pub mod receipt_delivery;

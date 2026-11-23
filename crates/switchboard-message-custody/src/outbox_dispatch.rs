@@ -9,15 +9,14 @@ use central_link_protocol::{
     CorrelationId, FreshCorrelationId, LinkRequestBatch, ProtocolError, ReplyPayload,
 };
 use runtime_primitives::SyncTime;
-use switchboard_machine_core_store::{
-    EndedWrite, OutboxStoreError, OutboxWriteOutcome, StoredOutboxWrite,
-};
+use switchboard_machine_core_store::{EndedWrite, OutboxStoreError, StoredOutboxWrite};
 use workspace_ids::RequestId;
 use workspace_model::Caller;
 
 use crate::{
     custody_operator::CustodyOperatorEvent,
     flush_clock::send_fence_for_mark,
+    outbox_settlement_map::outcome_from_link_reply,
     outbox_wire::request_for_write,
     outbox_work::{FlushSelection, OutboxWork, OutboxWorkError},
 };
@@ -283,7 +282,7 @@ async fn settle_answer(
     reply: ReplyPayload,
     report: &mut FlushReport,
 ) {
-    let outcome = match OutboxWriteOutcome::from_reply(&write.payload, reply.clone()) {
+    let outcome = match outcome_from_link_reply(&write.payload, reply.clone()) {
         Ok(outcome) => outcome,
         Err(_) => {
             report

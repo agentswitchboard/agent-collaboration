@@ -1,6 +1,8 @@
 //! The socket's event consumer. It keeps the delivery locally before reading the next event.
 
-use central_link_client::{AdmittedConnection, LinkLaneEvent, ReadyLinkLane};
+use central_link_client::{
+    AdmittedConnection, ConnectionAttempt, LinkLaneEvent, LinkLocalFault, ReadyLinkLane,
+};
 use central_link_protocol::DeliveryMessage;
 use std::sync::Arc;
 use switchboard_machine_core_store::InboxDecision;
@@ -13,9 +15,13 @@ use crate::recipient_inbox::{InboxCustodyError, InboxOfferResult, RecipientInbox
 pub(crate) type SharedRecipientInbox = Arc<Mutex<RecipientInbox>>;
 
 /// The observation custody makes after reading one event from the admitted lane.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum CustodyLinkObservation {
     AdmissionChanged,
+    ConnectionFaulted {
+        connection: ConnectionAttempt,
+        cause: LinkLocalFault,
+    },
     Delivery(InboxOfferResult),
     StaleDelivery,
     DriverClosed,
@@ -44,6 +50,9 @@ pub(crate) async fn take_event(
         Some(
             LinkLaneEvent::ConnectionAdmitted(_) | LinkLaneEvent::ConnectionNotAdmitted { .. },
         ) => CustodyLinkObservation::AdmissionChanged,
+        Some(LinkLaneEvent::ConnectionFaulted { connection, cause }) => {
+            CustodyLinkObservation::ConnectionFaulted { connection, cause }
+        }
         None => CustodyLinkObservation::DriverClosed,
         Some(LinkLaneEvent::Deliver {
             connection,

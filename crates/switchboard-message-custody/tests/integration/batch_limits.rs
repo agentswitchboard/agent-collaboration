@@ -3,7 +3,7 @@
     reason = "A bad fixture or missing peer batch must fail its test at the point of observation."
 )]
 
-use central_link_client::LINK_LANE_FRAME_BYTES;
+use central_link_client::{LINK_LANE_FRAME_BYTES, LinkLaneEvent, LinkLocalFault};
 use central_link_protocol::{DataFrame, FrameDirection, LinkFrame, encode_text};
 use router_clock::{ClockInstant, ManualClock};
 use std::{sync::Arc, time::Duration};
@@ -12,7 +12,8 @@ use switchboard_machine_core_store::{
     PendingWriteState,
 };
 use switchboard_message_custody::{
-    custody_link::CustodyLink,
+    custody_link::{CustodyLink, CustodyLinkObservation},
+    custody_operator::CustodyOperatorEvent,
     custody_submission::{Submission, SubmissionPayload, SubmitRefusal},
     outbox_work::OutboxWork,
     recipient_inbox::RecipientInbox,
@@ -190,4 +191,68 @@ async fn a_batchs_send_fence_never_outlives_its_earliest_original_deadline() {
         batch.send_before,
         ClockInstant::ZERO.after(Duration::from_secs(21))
     );
+}
+
+#[tokio::test]
+async fn an_orphaned_claim_arms_the_flush_after_the_last_waiting_row_disappears() {
+    let (root, mut custody, lane, clock) = limits_fixture().await;
+    let mut write_store = open_outbox(&root.path().join("machine_local.sqlite")).await;
+    let original = thread_post(91);
+    let queued_at = MARK_MS - 20_000;
+    assert_eq!(
+        write_store.insert(&original, queued_at).await.unwrap(),
+        OutboxInsert::Stored
+    );
+    let claim = write_store
+        .claim_next_batch(MARK_MS, 1, queued_at)
+        .await
+        .unwrap();
+    assert!(
+        matches!(claim.healthy.writes.as_slice(), [write] if write.request == original.request)
+    );
+    assert!(
+        write_store
+            .earliest_waiting()
+            .await
+            .unwrap()
+            .healthy
+            .is_none()
+    );
+
+    assert!(
+        custody.refresh_flush_wake().await.unwrap().is_some(),
+        "an orphan must arm a flush even with no waiting rows"
+    );
+    clock.advance(Duration::from_secs(20)).unwrap();
+    let flush = custody.flush_writes().await.unwrap();
+    assert!(matches!(flush.answered.as_slice(), [answer] if answer.request == original.request));
+    assert_eq!(lane.batch_commands().len(), 1);
+}
+
+#[tokio::test]
+async fn an_offer_consumer_fault_is_visible_on_the_operator_path_only() {
+    let (_root, mut custody, lane, _) = limits_fixture().await;
+    let connection = lane.admitted.borrow().as_ref().unwrap().connection.clone();
+    lane.admitted.send_replace(None);
+    lane.push_event(LinkLaneEvent::ConnectionFaulted {
+        connection: connection.clone(),
+        cause: LinkLocalFault::DeliveryConsumerStalled,
+    });
+
+    assert_eq!(
+        custody.observe_next_event().await.unwrap(),
+        CustodyLinkObservation::ConnectionFaulted {
+            connection: connection.clone(),
+            cause: LinkLocalFault::DeliveryConsumerStalled,
+        }
+    );
+    assert_eq!(
+        custody.take_operator_events().await,
+        [CustodyOperatorEvent::LinkFaulted {
+            connection,
+            cause: LinkLocalFault::DeliveryConsumerStalled,
+        }]
+    );
+    assert!(custody.refresh_flush_wake().await.unwrap().is_none());
+    assert!(lane.take_calls().is_empty());
 }

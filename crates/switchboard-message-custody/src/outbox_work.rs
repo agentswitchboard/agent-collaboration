@@ -99,6 +99,12 @@ impl OutboxWork {
         Ok(outbox_scan(scanned, &mut self.operator_events).map(SyncTime::from_unix_millis))
     }
 
+    /// Check for an orphan without changing its custody until the next flush.
+    pub(crate) async fn has_unanswered_claims(&mut self) -> Result<bool, OutboxWorkError> {
+        let scan = self.store.sent_without_answer().await?;
+        Ok(!outbox_scan(scan, &mut self.operator_events).is_empty())
+    }
+
     /// The exact local expiry wake, independent of lane admission and minute jitter.
     pub async fn earliest_deadline(&mut self) -> Result<Option<ClockInstant>, OutboxWorkError> {
         let scanned = self.store.earliest_deadline().await?;
