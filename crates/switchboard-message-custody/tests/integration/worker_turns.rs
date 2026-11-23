@@ -93,7 +93,9 @@ impl WorkerClock {
     }
 
     async fn observe(&self, worker: impl Future<Output = ()>) {
-        let mut worker = pin!(worker);
+        // Observe a complete select poll even when this test has already
+        // consumed Tokio's cooperative budget. Real SQLite awaits still park.
+        let mut worker = pin!(tokio::task::unconstrained(worker));
         poll_fn(|context| {
             let result = worker.as_mut().poll(context);
             // The select drops its timer futures before entering any selected

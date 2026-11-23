@@ -69,8 +69,15 @@ async fn flush_or_deferral(
 }
 
 pub(super) async fn queue_posts(custody: &mut CustodyLink, count: u16) -> Vec<RequestId> {
+    queue_posts_with_ids(custody, 1..=count).await
+}
+
+pub(super) async fn queue_posts_with_ids(
+    custody: &mut CustodyLink,
+    seeds: std::ops::RangeInclusive<u16>,
+) -> Vec<RequestId> {
     let mut ids = Vec::new();
-    for seed in 1..=count {
+    for seed in seeds {
         let post = thread_post(seed);
         let OutboxQueuedWrite::Workspace(request) = post.payload else {
             panic!("fixture requires a thread post");

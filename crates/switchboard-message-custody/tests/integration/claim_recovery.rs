@@ -8,7 +8,7 @@ use workspace_model::Caller;
 use super::{
     batch_limits::{custody_with_store, limits_fixture},
     batch_replay::{ScriptedBatch, ScriptedCommand, ScriptedMemberFate, new_admission},
-    mark_drain::queue_posts,
+    mark_drain::queue_posts_with_ids,
     outbox_timing::{open_outbox, thread_post},
     worker_orphans::{flush_event, scoped_query, start_worker},
     worker_turns::{ObservedWorker, WorkerClock},
@@ -26,9 +26,9 @@ async fn restart_recovers_the_second_frames_claim_using_its_original_request_id(
 )]
 pub(super) async fn check_subsequent_claim_recovery(count: u16) {
     let (root, mut custody, peer, clock) = limits_fixture().await;
-    let original = queue_posts(&mut custody, count).await;
+    let original = queue_posts_with_ids(&mut custody, 3_001..=3_000 + count).await;
     let (first_ids, orphan_ids) = original.split_at_checked(64).unwrap();
-    let item = thread_post(65);
+    let item = thread_post(3_065);
     let Caller::Session(owner) = &item.caller else {
         panic!("the worker's original caller is a fixture session");
     };
@@ -108,15 +108,6 @@ pub(super) async fn check_subsequent_claim_recovery(count: u16) {
     );
 
     let replayed = worker.advance(Duration::from_secs(57)).await.unwrap();
-    assert!(replayed.ended.is_empty() && replayed.issues.is_empty());
-    assert_eq!(
-        replayed
-            .answered
-            .into_iter()
-            .map(|answer| answer.request)
-            .collect::<Vec<_>>(),
-        orphan_ids
-    );
     let commands = peer.batch_commands();
     let [_, original_claim, replay] = commands.as_slice() else {
         panic!("the first, lost, and replay frames must be distinct");
@@ -130,7 +121,17 @@ pub(super) async fn check_subsequent_claim_recovery(count: u16) {
                 .map(|write| write.payload().write_request_id().unwrap())
                 .collect::<Vec<_>>(),
             orphan_ids.iter().collect::<Vec<_>>(),
+            "every replay must keep its original wire request ID"
         );
     }
+    assert!(replayed.ended.is_empty() && replayed.issues.is_empty());
+    assert_eq!(
+        replayed
+            .answered
+            .into_iter()
+            .map(|answer| answer.request)
+            .collect::<Vec<_>>(),
+        orphan_ids
+    );
     worker.stop().await;
 }
