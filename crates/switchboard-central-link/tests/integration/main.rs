@@ -9,7 +9,7 @@ use std::{
     time::Duration,
 };
 
-use central_link_client::EnrollmentEnd;
+use central_link_client::{EnrollmentEnd, LinkLaneEvent, ReadyLinkLane};
 use central_link_protocol::{
     DataFrame, FrameDirection, LinkFrame, MachineLinkCloseCode, TokenRenewalResult, decode_text,
 };
@@ -19,6 +19,7 @@ use switchboard_central_link::{
     DialAddress,
     lease_source::{LeaseFailure, LeaseFuture, LeaseSource, LinkLease},
     link_driver::{DriverSettings, LinkDriver},
+    link_lane::{LinkLaneHandle, link_lane_channel},
     link_policy::{LeaseVersion, LeaseWindow, LinkStatus},
 };
 use tokio::{
@@ -36,6 +37,7 @@ use tokio_tungstenite::{
 };
 use workspace_ids::MachineId;
 
+mod admitted_commands;
 mod credential_diagnostics;
 mod lease_boundaries;
 mod renewal_endings;
@@ -105,9 +107,24 @@ struct Fixture {
     status: watch::Receiver<LinkStatus>,
     acquired: mpsc::UnboundedReceiver<Option<LeaseVersion>>,
     ended: mpsc::UnboundedReceiver<(u8, EnrollmentEnd)>,
-    inbox_events: mpsc::Receiver<central_link_client::ClientEvent>,
+    inbox_events: FixtureInbox,
     driver_polls: watch::Receiver<u64>,
     task: JoinHandle<()>,
+}
+
+struct FixtureInbox {
+    lane: LinkLaneHandle,
+}
+
+impl FixtureInbox {
+    async fn recv(&self) -> Option<LinkLaneEvent> {
+        while let Some(event) = self.lane.next_event().await {
+            if matches!(event, LinkLaneEvent::Deliver { .. }) {
+                return Some(event);
+            }
+        }
+        None
+    }
 }
 
 impl Fixture {
@@ -130,7 +147,7 @@ impl Fixture {
         let (status_tx, status) = watch::channel(LinkStatus::NotEnrolled);
         let (acquired_tx, acquired) = mpsc::unbounded_channel();
         let (ended_tx, ended) = mpsc::unbounded_channel();
-        let (inbox, inbox_rx) = mpsc::channel(4);
+        let (lane_handle, lane) = link_lane_channel();
         let mut driver = Box::pin(
             LinkDriver {
                 machine_id: machine(),
@@ -143,7 +160,7 @@ impl Fixture {
                 settings: settings_rx,
                 shutdown: shutdown_rx,
                 status: status_tx,
-                inbox,
+                lane,
             }
             .run(),
         );
@@ -161,7 +178,7 @@ impl Fixture {
             status,
             acquired,
             ended,
-            inbox_events: inbox_rx,
+            inbox_events: FixtureInbox { lane: lane_handle },
             driver_polls,
             task,
         }
@@ -262,7 +279,7 @@ async fn renewal_extends_the_same_socket_without_disclosing_credentials() {
         .await
         .unwrap();
     tokio::select! {
-        event = fixture.inbox_events.recv() => assert!(matches!(event, Some(central_link_client::ClientEvent::Deliver { .. }))),
+        event = fixture.inbox_events.recv() => assert!(matches!(event, Some(LinkLaneEvent::Deliver { .. }))),
         status = fixture.status.wait_for(|status| !matches!(status, LinkStatus::Welcomed { .. })) =>
             assert!(status.is_err(), "renewal must keep the original socket open for Deliver"),
     }

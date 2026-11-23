@@ -4,7 +4,7 @@ use central_link_client::{ClientAction, ConnectionAttempt, EnrollmentEnd, LinkCl
 use central_link_protocol::{DataFrame, LinkFrame};
 use futures_util::{FutureExt, sink::unfold};
 use router_clock::{ClockInstant, ManualClock, RuntimeClock};
-use tokio::sync::{mpsc, oneshot, watch};
+use tokio::sync::{oneshot, watch};
 use tokio_tungstenite::tungstenite::Message;
 use workspace_ids::MachineId;
 
@@ -36,7 +36,6 @@ struct HeartbeatFixture {
     machine: MachineId,
     clock: Arc<ManualClock>,
     status: watch::Sender<LinkStatus>,
-    inbox: mpsc::Sender<central_link_client::ClientEvent>,
 }
 
 impl HeartbeatFixture {
@@ -45,7 +44,6 @@ impl HeartbeatFixture {
             machine: "01890f2e-7b4c-7cc0-98c4-000000000002".parse().unwrap(),
             clock: Arc::new(ManualClock::new("2030-01-01T00:00:00Z".parse().unwrap())),
             status: watch::channel(LinkStatus::Connecting).0,
-            inbox: mpsc::channel(4).0,
         }
     }
 
@@ -73,7 +71,6 @@ impl HeartbeatFixture {
                 lease_source,
                 clock: self.clock.as_ref(),
                 status: &self.status,
-                inbox: &self.inbox,
                 address: Err(AddressError::InvalidLocation),
                 machine_id: self.machine.clone(),
                 state: LinkState::new(self.machine.clone()),

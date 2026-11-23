@@ -1,4 +1,4 @@
-use central_link_client::{ClientEvent, EnrollmentEnd};
+use central_link_client::{EnrollmentEnd, LinkLaneEvent};
 use central_link_protocol::{
     DataFrame, FrameDirection, LinkFrame, MachineLinkCloseCode, TokenRenewalRefusal,
     TokenRenewalResult, decode_text, encode_text,
@@ -119,7 +119,7 @@ async fn receive_after_refusal(
     // TCP orders this Deliver after the refusal. Observing it proves the refusal was consumed.
     let _ = socket.send(Message::Text(DELIVER_FRAME.into())).await;
     tokio::select! {
-        event = fixture.inbox_events.recv() => matches!(event, Some(ClientEvent::Deliver { .. })),
+        event = fixture.inbox_events.recv() => matches!(event, Some(LinkLaneEvent::Deliver { .. })),
         _ = fixture.status.wait_for(|status| !matches!(status, LinkStatus::Welcomed { .. })) => false,
     }
 }
