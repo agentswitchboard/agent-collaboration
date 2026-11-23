@@ -56,7 +56,7 @@ impl std::error::Error for LeaseWorkerStopped {}
 impl EnrollmentLeaseSource {
     /// Starts the lease supervisor in the caller's runtime.
     pub fn start<Store, Source>(
-        owner: Arc<RefreshOwner<Store, Source>>,
+        owner: RefreshOwner<Store, Source>,
         clock: Arc<dyn RuntimeClock + Send + Sync>,
     ) -> Self
     where

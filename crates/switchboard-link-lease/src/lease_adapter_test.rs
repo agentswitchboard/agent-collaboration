@@ -15,34 +15,39 @@ pub(crate) struct RowStore {
     pub(crate) row: watch::Sender<StoredEnrollment>,
     pub(crate) fail_end: watch::Sender<bool>,
     pub(crate) fail_metadata: watch::Sender<bool>,
-    credential_read: ReadCheckpoint,
-    metadata_read: ReadCheckpoint,
+    credential_read: OperationCheckpoint,
+    metadata_read: OperationCheckpoint,
+    credential_replace: OperationCheckpoint,
 }
 
-type ResumeRead = Box<dyn FnOnce() + Send>;
+type ResumeOperation = Box<dyn FnOnce() + Send>;
 
-struct HeldRead {
+struct HeldOperation {
     entered: oneshot::Sender<()>,
-    resume: oneshot::Receiver<ResumeRead>,
+    resume: oneshot::Receiver<ResumeOperation>,
 }
 
 #[derive(Clone, Default)]
-struct ReadCheckpoint(Arc<Mutex<Option<HeldRead>>>);
+struct OperationCheckpoint(Arc<Mutex<Option<HeldOperation>>>);
 
-impl ReadCheckpoint {
-    fn hold_next(&self) -> (oneshot::Receiver<()>, oneshot::Sender<ResumeRead>) {
+impl OperationCheckpoint {
+    fn hold_next(&self) -> (oneshot::Receiver<()>, oneshot::Sender<ResumeOperation>) {
         let (entered, observed) = oneshot::channel();
         let (release, resume) = oneshot::channel();
-        let previous = self.0.lock().unwrap().replace(HeldRead { entered, resume });
+        let previous = self
+            .0
+            .lock()
+            .unwrap()
+            .replace(HeldOperation { entered, resume });
         assert!(previous.is_none());
         (observed, release)
     }
 
-    async fn before_reply(&self) {
+    async fn pause_if_held(&self) {
         let held = self.0.lock().unwrap().take();
         if let Some(held) = held {
             held.entered.send(()).unwrap();
-            held.resume.await.expect("test resumes the read")();
+            held.resume.await.expect("test resumes the operation")();
         }
     }
 }
@@ -50,7 +55,7 @@ impl ReadCheckpoint {
 impl CredentialStore for RowStore {
     async fn read(&self) -> Result<StoredEnrollment, CredentialStoreError> {
         let snapshot = self.row.borrow().clone();
-        self.credential_read.before_reply().await;
+        self.credential_read.pause_if_held().await;
         Ok(snapshot)
     }
 
@@ -59,7 +64,7 @@ impl CredentialStore for RowStore {
             return Err(CredentialStoreError::Read);
         }
         let snapshot = self.row.borrow().clone().into();
-        self.metadata_read.before_reply().await;
+        self.metadata_read.pause_if_held().await;
         Ok(snapshot)
     }
 
@@ -72,6 +77,7 @@ impl CredentialStore for RowStore {
         expected: BindingGeneration,
         binding: &EnrollmentBinding,
     ) -> Result<ConditionalWrite, CredentialStoreError> {
+        self.credential_replace.pause_if_held().await;
         let accepted = self.row.send_if_modified(|saved| {
             if saved.generation() != expected {
                 return false;
@@ -167,17 +173,18 @@ impl Fixture {
             row: watch::channel(StoredEnrollment::Active(binding.clone())).0,
             fail_end: watch::channel(false).0,
             fail_metadata: watch::channel(false).0,
-            credential_read: ReadCheckpoint::default(),
-            metadata_read: ReadCheckpoint::default(),
+            credential_read: OperationCheckpoint::default(),
+            metadata_read: OperationCheckpoint::default(),
+            credential_replace: OperationCheckpoint::default(),
         };
         let clock = Arc::new(ManualClock::new(Default::default()));
         let (reached, refreshes) = mpsc::unbounded_channel();
-        let owner = Arc::new(RefreshOwner::new(
+        let owner = RefreshOwner::new(
             store.clone(),
             SignInScript { reached },
             clock.clone(),
             context,
-        ));
+        );
         let source = EnrollmentLeaseSource::start(owner, clock.clone());
         Self {
             source,
@@ -490,4 +497,28 @@ async fn a_definitive_end_waiting_behind_a_stale_refusal_keeps_the_key_fenced() 
         fixture.source.acquire(&key, None).await,
         Err(LeaseFailure::EnrollmentEnded)
     );
+}
+
+#[tokio::test]
+async fn forced_close_abandons_a_rotated_credential_held_before_storage() {
+    let mut fixture = Fixture::new();
+    let key = fixture.binding.key();
+    let (writing, release_write) = fixture.store.credential_replace.hold_next();
+    let acquire = start_acquire(&fixture.source, &key).await;
+    let held_sign_in = fixture.refreshes.recv().await.unwrap();
+
+    let mut close = std::pin::pin!(fixture.source.close());
+    tokio::select! {
+        result = &mut close => panic!("close returned before its deadline: {result:?}"),
+        () = fixture.clock.not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(5))) => {}
+    }
+    fixture.clock.advance(Duration::from_secs(4)).unwrap();
+    held_sign_in.send(fixture.rotated()).unwrap();
+    writing.await.unwrap();
+    fixture.clock.advance(Duration::from_secs(1)).unwrap();
+    assert_eq!(close.await.unwrap().acquisitions, vec![key.clone()]);
+    assert_eq!(acquire.await, Err(LeaseFailure::Fault));
+
+    assert!(release_write.send(Box::new(|| {})).is_err());
+    assert_eq!(fixture.store.row.borrow().generation().get(), 1);
 }

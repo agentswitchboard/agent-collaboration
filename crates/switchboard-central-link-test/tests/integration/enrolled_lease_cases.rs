@@ -102,12 +102,12 @@ impl LocalEnrollment {
     }
 
     fn source(&self, script: RefreshScript) -> EnrollmentLeaseSource {
-        let owner = Arc::new(RefreshOwner::new(
+        let owner = RefreshOwner::new(
             self.store.clone(),
             script,
             self.clock.clone(),
             self.binding.context.clone(),
-        ));
+        );
         EnrollmentLeaseSource::start(owner, self.clock.clone())
     }
 }

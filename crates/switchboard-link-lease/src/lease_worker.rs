@@ -44,7 +44,7 @@ enum FinishedWork {
 }
 
 pub(crate) async fn run<Store, Source>(
-    owner: Arc<RefreshOwner<Store, Source>>,
+    owner: RefreshOwner<Store, Source>,
     clock: Arc<dyn RuntimeClock + Send + Sync>,
     mut commands: mpsc::UnboundedReceiver<LeaseCommand>,
     mut closing: watch::Receiver<bool>,
@@ -53,6 +53,7 @@ where
     Store: CredentialStore + 'static,
     Source: RefreshSource + 'static,
 {
+    let owner = Arc::new(owner);
     let mut tasks = JoinSet::new();
     let mut started = Vec::new();
     let mut unfinished = UnfinishedLeaseWork::default();

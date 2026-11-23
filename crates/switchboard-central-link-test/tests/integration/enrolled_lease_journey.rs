@@ -121,7 +121,7 @@ async fn real_central_revocation_ends_the_sqlite_enrollment_and_never_redials_it
             .unwrap(),
         ConditionalWrite::Applied
     );
-    let owner = Arc::new(RefreshOwner::new(
+    let owner = RefreshOwner::new(
         store.clone(),
         SignedRefresh {
             access: SecretValue::new(token).unwrap(),
@@ -129,7 +129,7 @@ async fn real_central_revocation_ends_the_sqlite_enrollment_and_never_redials_it
         },
         clock.clone(),
         context.clone(),
-    ));
+    );
     let lease = Arc::new(EnrollmentLeaseSource::start(owner, clock.clone()));
     // This harness supplies the address at the settings boundary. Its real
     // Central listens on loopback HTTP, so the test dialer uses the fixture URI.
