@@ -12,6 +12,9 @@ const DRIVER: &str = "switchboard-central-link";
 const REAL_TEST: &str = "switchboard-central-link-test";
 const TOKIO_CENTRAL: &str = "collaboration-central-tokio";
 
+#[path = "central_link_features.rs"]
+mod central_link_features;
+
 type PolicyError = Box<dyn std::error::Error>;
 
 #[derive(Clone, Copy)]

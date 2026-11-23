@@ -123,3 +123,93 @@ fn central_server_is_rejected_on_a_shipped_path_and_allowed_in_the_fixture_dev_g
     );
     assert!(check(&metadata).is_ok());
 }
+
+#[test]
+fn driver_closure_rejects_each_forbidden_transport() {
+    for transport in ["reqwest-websocket", "native-tls", "openssl", "openssl-sys"] {
+        let metadata = fixture(
+            "switchboard-central-link",
+            json!([]),
+            transport,
+            Some(DependencyKind::Normal),
+        );
+        let root = metadata.packages.first().unwrap();
+        let error = check_shipped_closure(&metadata, root)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            error.contains("reaches forbidden transport") && error.contains(transport),
+            "{error}"
+        );
+    }
+}
+
+#[test]
+fn driver_closure_rejects_two_resolved_tungstenite_packages() {
+    let mut metadata = fixture(
+        "switchboard-central-link",
+        json!([]),
+        "tungstenite",
+        Some(DependencyKind::Normal),
+    );
+    let other = "registry+https://github.com/rust-lang/crates.io-index#tungstenite@0.27.0";
+    metadata.packages.push(serde_json::from_value(json!({"id":other, "name":"tungstenite", "manifest_path":"/alternate/Cargo.toml", "source":super::CRATES_IO})).unwrap());
+    metadata.resolve.nodes.first_mut().unwrap().deps.push(
+        serde_json::from_value(json!({"pkg":other,"dep_kinds":[{"kind":"normal"}]})).unwrap(),
+    );
+    metadata
+        .resolve
+        .nodes
+        .push(serde_json::from_value(json!({"id":other,"deps":[]})).unwrap());
+    let root = metadata.packages.first().unwrap();
+    let error = check_shipped_closure(&metadata, root)
+        .unwrap_err()
+        .to_string();
+    assert!(
+        error.contains("resolves multiple tungstenite versions"),
+        "{error}"
+    );
+}
+
+#[test]
+fn driver_transport_edges_require_the_approved_source_identity() {
+    let mut metadata = fixture(
+        "switchboard-central-link",
+        json!([]),
+        "tokio-tungstenite",
+        Some(DependencyKind::Normal),
+    );
+    let package = metadata
+        .packages
+        .iter_mut()
+        .find(|package| package.name == "tokio-tungstenite")
+        .unwrap();
+    package.source = Some(super::CRATES_IO.to_owned());
+    assert!(check(&metadata).is_ok());
+    let package = metadata
+        .packages
+        .iter_mut()
+        .find(|package| package.name == "tokio-tungstenite")
+        .unwrap();
+    package.source = Some("git+https://invalid.example/tokio-tungstenite".to_owned());
+    let error = check(&metadata).unwrap_err().to_string();
+    assert!(
+        error.contains("forbidden link resolved Normal dependency"),
+        "{error}"
+    );
+    let metadata = fixture(
+        "switchboard-central-link",
+        declared(
+            "tokio-tungstenite",
+            None,
+            &["connect", "rustls-tls-webpki-roots"],
+        ),
+        "tokio-tungstenite",
+        None,
+    );
+    let error = check(&metadata).unwrap_err().to_string();
+    assert!(
+        error.contains("forbidden link declared Normal dependency"),
+        "{error}"
+    );
+}
