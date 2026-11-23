@@ -1,5 +1,6 @@
 //! Real public native links: signed admission, ordinary client identity and live frames.
 mod alarm_rearm;
+mod approval_calls;
 mod authority_races;
 mod batch_contract;
 mod batch_restore;

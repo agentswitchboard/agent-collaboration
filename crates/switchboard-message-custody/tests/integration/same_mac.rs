@@ -2,7 +2,8 @@ use central_link_protocol::{ReplyPayload, RequestPayload, RequestScope, RequestS
 use router_clock::ClockInstant;
 use std::time::Duration;
 use switchboard_machine_core_store::{
-    InboxStore, MachineLocalStore, OutboxCentralRefusal, OutboxQueuedWrite, OutboxRefusal,
+    InboxStore, MACHINE_LOCAL_DATABASE, MachineLocalStore, OutboxCentralRefusal, OutboxQueuedWrite,
+    OutboxRefusal,
 };
 use switchboard_message_custody::{
     custody_status::CustodyRequestStatus,
@@ -119,7 +120,7 @@ async fn local_and_remote_messages_share_the_minute_path_and_central_can_refuse_
         "a Central refusal cannot create a same-Mac inbox row"
     );
     let mut inbox = InboxStore::new(
-        MachineLocalStore::open(&root.path().join("machine_local.sqlite"))
+        MachineLocalStore::open(&root.path().join(MACHINE_LOCAL_DATABASE))
             .await
             .unwrap(),
     );

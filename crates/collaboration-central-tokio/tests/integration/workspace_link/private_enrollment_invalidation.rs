@@ -212,7 +212,7 @@ fn require_idle_refusal(decision: MachineTokenDecision) -> Result<()> {
     Ok(())
 }
 
-async fn set_last_grant_at_idle_boundary(fixture: &Fixture) -> Result<()> {
+pub(super) async fn set_last_grant_at_idle_boundary(fixture: &Fixture) -> Result<()> {
     let runtime = fixture
         .host
         .central(&signed::ORGANIZATION.to_owned().try_into()?)
@@ -289,7 +289,7 @@ async fn private_post<Answer: serde::de::DeserializeOwned>(
     Ok(response.json().await?)
 }
 
-async fn approve_replacement(fixture: &Fixture) -> Result<EnrollmentId> {
+pub(super) async fn approve_replacement(fixture: &Fixture) -> Result<EnrollmentId> {
     let decision: DeviceLoginDecision = private_post(
         fixture,
         "/internal/device-login-decisions",
@@ -314,7 +314,7 @@ async fn approve_replacement(fixture: &Fixture) -> Result<EnrollmentId> {
     }
 }
 
-async fn request_token(
+pub(super) async fn request_token(
     fixture: &Fixture,
     enrollment: &EnrollmentId,
 ) -> Result<MachineTokenDecision> {

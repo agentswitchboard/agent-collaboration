@@ -49,6 +49,17 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         }
     }
 
+    /// Restore the current attachment while the caller retains the organization's turn.
+    pub async fn restore_machine_in_held_turn(
+        &self,
+        attachment: &MachineConnectionAttachment,
+    ) -> Result<Result<ValidatedMachineConnection, MachineLinkCloseCode>, StoreFailure> {
+        Ok(self
+            .restore_live_authority_held(attachment)
+            .await?
+            .map_err(|refusal| refusal.close))
+    }
+
     pub async fn admit_machine_connection(&self, token: &str) -> Admission {
         Ok(match self.admit_machine_link(token).await? {
             MachineLinkAdmission::Admitted(connection) => Ok(connection),
