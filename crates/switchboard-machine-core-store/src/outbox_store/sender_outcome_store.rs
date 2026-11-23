@@ -1,11 +1,12 @@
 //! Retains a late outcome and recovers the original direct-message acceptance.
 use super::{
     MacOutbox, OutboxStoreError,
-    outbox_rows::{StoredPayload, outbox_content, payload_content_digest, read_decoded_outbox},
+    outbox_rows::{StoredPayload, outbox_content, payload_content_digest, read_owned_outbox},
 };
 use crate::{
     OutboxCancellation, OutboxRequestStatus, OutboxWriteTarget, StoredSenderOutcome,
     outbox_item_state::OutboxItemState, outbox_receipt_profile::AnsweredWrite,
+    sender_outcome::OutcomePrecedence,
 };
 use central_link_protocol::ReplyPayload;
 use sqlite_storage_maintenance::TransactionStart;
@@ -23,12 +24,10 @@ impl MacOutbox<'_> {
         now_ms: i64,
     ) -> Result<bool, OutboxStoreError> {
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
-        let Some(row) = read_decoded_outbox(&mut transaction, &notice.request_id).await? else {
+        let Some(row) = read_owned_outbox(&mut transaction, caller, &notice.request_id).await?
+        else {
             return Ok(false);
         };
-        if row.caller != *caller {
-            return Ok(false);
-        }
         let may_have_left = matches!(
             row.state,
             OutboxItemState::Sent
@@ -54,10 +53,16 @@ impl MacOutbox<'_> {
             Some(previous) if previous.inbox_message_id == notice.inbox_message_id => {
                 return Err(mismatch(notice));
             }
-            Some(previous) if !notice.supersedes(previous) => {
-                return Ok(false);
-            }
-            Some(_) | None => {}
+            Some(previous) => match notice.precedence_over(previous) {
+                OutcomePrecedence::Keep => return Ok(false),
+                OutcomePrecedence::Replace => {}
+                OutcomePrecedence::ContradictoryFinal => {
+                    return Err(OutboxStoreError::ContradictoryFinalOutcome {
+                        request: notice.request_id.clone(),
+                    });
+                }
+            },
+            None => {}
         }
         profile.delivery_outcome = Some(notice.clone());
         let item_state = OutboxItemState::Answered.as_str();
@@ -84,12 +89,10 @@ impl MacOutbox<'_> {
         caller: &Caller,
         request: &RequestId,
     ) -> Result<Option<StoredSenderOutcome>, OutboxStoreError> {
-        let Some(row) = read_decoded_outbox(&mut self.store.connection, request).await? else {
+        let Some(row) = read_owned_outbox(&mut self.store.connection, caller, request).await?
+        else {
             return Ok(None);
         };
-        if row.caller != *caller {
-            return Ok(None);
-        }
         match row.payload {
             StoredPayload::Answered(profile) => Ok(profile.delivery_outcome),
             StoredPayload::Unanswered(_) => Ok(None),

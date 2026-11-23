@@ -33,13 +33,6 @@ pub enum OutboxCancellation {
     NotConfirmedWithin15Minutes,
 }
 
-/// A terminal result the outbox can persist after a claim.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub enum OutboxWriteOutcome {
-    Answered(ReplyPayload),
-    Refused(OutboxRefusal),
-}
-
 /// An original request's owning store.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OutboxScope {

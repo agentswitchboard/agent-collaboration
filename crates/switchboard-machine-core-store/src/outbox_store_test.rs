@@ -5,10 +5,15 @@ use crate::{
 };
 use central_link_protocol::{ReplyPayload, RequestRefusal};
 use serde_json::json;
-use workspace_model::{Caller, RefusalReason, WorkspaceReply, WorkspaceResult};
+use workspace_model::{
+    Caller, ChangePosition, ItemRef, RefusalReason, WorkspaceAnswer, WorkspaceReply,
+    WorkspaceResult,
+};
 
 #[path = "outbox_admission_test.rs"]
 mod admission;
+#[path = "outbox_corruption_test.rs"]
+mod corruption;
 #[path = "outbox_store_model_test.rs"]
 mod model;
 #[path = "sender_outcome_store_test.rs"]
@@ -61,13 +66,16 @@ fn item(seed: u16, body: &str, flush_at: i64) -> NewOutboxItem {
 
 fn accepted_reply() -> ReplyPayload {
     ReplyPayload::Workspace(WorkspaceReply {
-        result: WorkspaceResult::Conflict,
+        result: WorkspaceResult::Done(WorkspaceAnswer::Created {
+            item: ItemRef::Post(uuid_v7(60_004).parse().unwrap()),
+            position: ChangePosition::ZERO,
+        }),
         actors: Vec::new(),
     })
 }
 
-fn accepted() -> OutboxWriteOutcome {
-    OutboxWriteOutcome::Answered(accepted_reply())
+fn accepted(write: &OutboxQueuedWrite) -> OutboxWriteOutcome {
+    OutboxWriteOutcome::from_reply(write, accepted_reply()).unwrap()
 }
 
 async fn open(root: &tempfile::TempDir) -> MachineLocalStore {
@@ -99,7 +107,7 @@ async fn a_write_moves_in_outbox_sent_accepted_and_survives_a_reopen() {
         .await
         .unwrap();
     MacOutbox::new(&mut store)
-        .record_outcome(&write.request, &accepted(), MARK + 1_000)
+        .record_outcome(&write.request, &accepted(&write.payload), MARK + 1_000)
         .await
         .unwrap();
     store.close().await.unwrap();
@@ -152,13 +160,21 @@ async fn an_answer_or_refusal_drops_the_text_from_the_row_and_every_view() {
         .unwrap();
 
     MacOutbox::new(&mut store)
-        .record_outcome(&answered.request, &accepted(), MARK + 1_000)
+        .record_outcome(
+            &answered.request,
+            &accepted(&answered.payload),
+            MARK + 1_000,
+        )
         .await
         .unwrap();
     MacOutbox::new(&mut store)
         .record_outcome(
             &refused.request,
-            &OutboxWriteOutcome::Refused(OutboxRefusal::Central(central_refusal())),
+            &OutboxWriteOutcome::from_refusal(
+                &refused.payload,
+                OutboxRefusal::Central(central_refusal()),
+            )
+            .unwrap(),
             MARK + 1_000,
         )
         .await
@@ -395,7 +411,11 @@ async fn unanswered_writes_return_with_their_receipt_mark_and_refusals_are_kept(
         .return_unanswered(std::slice::from_ref(&first.request), MARK + 70_000)
         .await
         .unwrap();
-    let refusal = OutboxWriteOutcome::Refused(OutboxRefusal::Central(central_refusal()));
+    let refusal = OutboxWriteOutcome::from_refusal(
+        &second.payload,
+        OutboxRefusal::Central(central_refusal()),
+    )
+    .unwrap();
     MacOutbox::new(&mut store)
         .record_outcome(&second.request, &refusal, MARK + 70_000)
         .await
@@ -432,7 +452,7 @@ async fn out_of_order_transitions_and_mismatched_ids_are_refused() {
     };
 
     let answer_unsent = MacOutbox::new(&mut store)
-        .record_outcome(&write.request, &accepted(), MARK)
+        .record_outcome(&write.request, &accepted(&write.payload), MARK)
         .await;
     let return_unsent = MacOutbox::new(&mut store)
         .return_unanswered(std::slice::from_ref(&write.request), MARK)

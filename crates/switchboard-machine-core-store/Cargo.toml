@@ -27,3 +27,7 @@ workspace-model.workspace = true
 hegel = { package = "hegeltest", version = "=0.52.6", features = ["static-engine"] }
 router-clock = { workspace = true, features = ["test-support"] }
 tempfile = "3.27.0"
+
+[[test]]
+name = "integration"
+path = "tests/integration/main.rs"

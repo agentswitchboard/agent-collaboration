@@ -1,9 +1,9 @@
 //! The storage the central link driver keeps its outbox in. Production is
 //! machine_local.sqlite through MacOutbox. Contract cases exercise the storage
 //! API independently of link scheduling.
-use crate::outbox_store::{
-    ClaimedBatch, MacOutbox, NewOutboxItem, OutboxInsert, OutboxStoreError, StoredOutboxWrite,
-};
+#[cfg(test)]
+use crate::outbox_store::StoredOutboxWrite;
+use crate::outbox_store::{ClaimedBatch, MacOutbox, NewOutboxItem, OutboxInsert, OutboxStoreError};
 use crate::{
     EndedWrite, OutboxRequestStatus, OutboxWriteOutcome, OutgoingWrite, PendingWrite,
     StoredSenderOutcome,

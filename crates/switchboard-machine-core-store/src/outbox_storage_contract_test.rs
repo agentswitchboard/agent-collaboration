@@ -6,7 +6,9 @@ use crate::{
 use central_link_protocol::ReplyPayload;
 use serde_json::json;
 use workspace_ids::RequestId;
-use workspace_model::{Caller, WorkspaceReply, WorkspaceResult};
+use workspace_model::{
+    Caller, ChangePosition, ItemRef, WorkspaceAnswer, WorkspaceReply, WorkspaceResult,
+};
 
 #[path = "outbox_deadline_contract_test.rs"]
 mod deadline_cases;
@@ -61,7 +63,10 @@ fn message(seed: u16, body: &str, flush_at: i64) -> NewOutboxItem {
 const FIFTEEN_MINUTES_MS: i64 = 15 * 60 * 1000;
 fn reply() -> ReplyPayload {
     ReplyPayload::Workspace(WorkspaceReply {
-        result: WorkspaceResult::Conflict,
+        result: WorkspaceResult::Done(WorkspaceAnswer::Created {
+            item: ItemRef::Post(uuid_v7(60_004).parse().unwrap()),
+            position: ChangePosition::ZERO,
+        }),
         actors: Vec::new(),
     })
 }
@@ -102,7 +107,7 @@ pub(crate) async fn lifecycle_and_views(store: &mut dyn OutboxStorage) {
     store
         .record_outcome(
             &first.request,
-            &OutboxWriteOutcome::Answered(reply()),
+            &OutboxWriteOutcome::from_reply(&first.payload, reply()).unwrap(),
             MARK + 1_000,
         )
         .await
@@ -142,7 +147,7 @@ pub(crate) async fn replay_needs_the_same_caller_target_and_content(store: &mut 
     store
         .record_outcome(
             &write.request,
-            &OutboxWriteOutcome::Answered(reply()),
+            &OutboxWriteOutcome::from_reply(&write.payload, reply()).unwrap(),
             MARK + 1_000,
         )
         .await
@@ -196,9 +201,11 @@ pub(crate) async fn returned_writes(store: &mut dyn OutboxStorage) {
     store
         .record_outcome(
             &refused.request,
-            &OutboxWriteOutcome::Refused(OutboxRefusal::Local(
-                LocalOutboxRefusal::RequestIdConflict,
-            )),
+            &OutboxWriteOutcome::from_refusal(
+                &refused.payload,
+                OutboxRefusal::Local(LocalOutboxRefusal::RequestIdConflict),
+            )
+            .unwrap(),
             MARK + 1_000,
         )
         .await
@@ -230,7 +237,11 @@ pub(crate) async fn retention_prune(store: &mut dyn OutboxStorage) {
     store.insert(&waiting, MARK - 1_000).await.unwrap();
     store.mark_sent(&ids(&[&write]), MARK).await.unwrap();
     store
-        .record_outcome(&write.request, &OutboxWriteOutcome::Answered(reply()), MARK)
+        .record_outcome(
+            &write.request,
+            &OutboxWriteOutcome::from_reply(&write.payload, reply()).unwrap(),
+            MARK,
+        )
         .await
         .unwrap();
 
@@ -269,7 +280,11 @@ pub(crate) async fn refusals_and_isolation(store: &mut dyn OutboxStorage) {
     store.insert(&write, MARK - 1_000).await.unwrap();
 
     let early_outcome = store
-        .record_outcome(&write.request, &OutboxWriteOutcome::Answered(reply()), MARK)
+        .record_outcome(
+            &write.request,
+            &OutboxWriteOutcome::from_reply(&write.payload, reply()).unwrap(),
+            MARK,
+        )
         .await;
     store.mark_sent(&ids(&[&write]), MARK).await.unwrap();
     let sent_twice = store.mark_sent(&ids(&[&write]), MARK).await;

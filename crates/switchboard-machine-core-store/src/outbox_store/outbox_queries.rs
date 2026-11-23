@@ -2,8 +2,8 @@
 use super::{
     MacOutbox, OutboxStoreError,
     outbox_rows::{
-        OutboxRow, OutgoingRow, StoredPayload, corrupt_row, decode_owned_row, outbox_content,
-        parse_request_id, read_decoded_outbox,
+        OutboxRow, StoredPayload, corrupt_row, decode_owned_row, outbox_content, parse_request_id,
+        read_owned_outbox, read_rows_in_states, waiting_rows,
     },
 };
 use crate::OutboxRequestKey;
@@ -20,13 +20,11 @@ impl MacOutbox<'_> {
         caller: &Caller,
         key: &OutboxRequestKey,
     ) -> Result<OutboxRequestStatus, OutboxStoreError> {
-        let Some(stored) = read_decoded_outbox(&mut self.store.connection, &key.request_id).await?
+        let Some(stored) =
+            read_owned_outbox(&mut self.store.connection, caller, &key.request_id).await?
         else {
             return Ok(OutboxRequestStatus::NotFound);
         };
-        if stored.caller != *caller {
-            return Ok(OutboxRequestStatus::NotFound);
-        }
         let scope = match &stored.payload {
             StoredPayload::Unanswered(write) => write.request_scope(),
             StoredPayload::Answered(profile) => profile.target.request_scope(),
@@ -40,16 +38,11 @@ impl MacOutbox<'_> {
 
     /// The earliest expiry among waiting writes, even without a connection.
     pub async fn earliest_deadline(&mut self) -> Result<Option<i64>, OutboxStoreError> {
-        let waiting = OutboxItemState::InOutbox.as_str();
-        let answer_lost = OutboxItemState::SentAnswerLost.as_str();
-        Ok(sqlx::query_scalar!(
-            r#"SELECT min(expires_at_ms) AS "deadline?: i64" FROM outbox_items
-               WHERE item_state IN (?, ?)"#,
-            waiting,
-            answer_lost
-        )
-        .fetch_one(&mut self.store.connection)
-        .await?)
+        Ok(waiting_rows(&mut self.store.connection)
+            .await?
+            .iter()
+            .map(|row| row.deadline_ms)
+            .min())
     }
     /// The caller's own writes not yet resolved, oldest first: unsent, sent
     /// with a lost answer (or still in flight), and answered ones the read
@@ -63,7 +56,7 @@ impl MacOutbox<'_> {
         let rows = sqlx::query_as!(
             OutboxRow,
             r#"SELECT request_id AS "request_id!", caller_json, payload_json, item_state,
-                      flush_at_ms, outcome_json
+                      flush_at_ms, outcome_json, created_at, expires_at_ms, updated_at
                FROM outbox_items WHERE caller_json = ? AND item_state <> ?
                ORDER BY created_at, request_id"#,
             caller_json,
@@ -126,9 +119,9 @@ impl MacOutbox<'_> {
         let refused = OutboxItemState::Refused.as_str();
         let limit = i64::from(limit);
         let rows = sqlx::query_as!(
-            OutgoingRow,
+            OutboxRow,
             r#"SELECT request_id AS "request_id!", caller_json, payload_json, item_state,
-                      flush_at_ms, outcome_json, updated_at
+                      flush_at_ms, outcome_json, created_at, expires_at_ms, updated_at
                FROM outbox_items WHERE caller_json = ? AND item_state IN (?, ?)
                ORDER BY updated_at DESC, request_id DESC LIMIT ?"#,
             caller_json,
@@ -141,16 +134,8 @@ impl MacOutbox<'_> {
         let mut outgoing = Vec::with_capacity(rows.len());
         for row in rows {
             let request_id = row.request_id.clone();
-            let answered_at_ms = row.updated_at;
-            let row = OutboxRow {
-                request_id: row.request_id,
-                caller_json: row.caller_json,
-                payload_json: row.payload_json,
-                item_state: row.item_state,
-                flush_at_ms: row.flush_at_ms,
-                outcome_json: row.outcome_json,
-            };
             let stored = decode_owned_row(&row, caller)?;
+            let answered_at_ms = stored.updated_at_ms;
             let StoredPayload::Answered(answered) = stored.payload else {
                 return Err(corrupt_row(&request_id, "payload_json"));
             };
@@ -177,48 +162,35 @@ impl MacOutbox<'_> {
     /// Writes waiting to be sent (never sent, or sent with a lost answer), with
     /// their receipt marks, to load the flush reducer.
     pub async fn waiting(&mut self) -> Result<Vec<(i64, RequestId)>, OutboxStoreError> {
-        let unsent = OutboxItemState::InOutbox.as_str();
-        let answer_lost = OutboxItemState::SentAnswerLost.as_str();
-        let rows = sqlx::query!(
-            r#"SELECT request_id AS "request_id!", flush_at_ms FROM outbox_items
-               WHERE item_state IN (?, ?) ORDER BY flush_at_ms, request_id"#,
-            unsent,
-            answer_lost
-        )
-        .fetch_all(&mut self.store.connection)
-        .await?;
-        rows.into_iter()
-            .map(|row| Ok((row.flush_at_ms, parse_request_id(&row.request_id)?)))
-            .collect()
+        let mut results: Vec<_> = waiting_rows(&mut self.store.connection)
+            .await?
+            .into_iter()
+            .map(|row| (row.flush_at_ms, row.request))
+            .collect();
+        results.sort();
+        Ok(results)
     }
 
-    /// Writes sent whose answer never came, e.g. across a restart; the Host
-    /// returns them to the outbox to resend under the same RequestId.
+    /// Claims without an answer, including ones recovered after reopen.
     pub async fn sent_without_answer(&mut self) -> Result<Vec<RequestId>, OutboxStoreError> {
-        let sent = OutboxItemState::Sent.as_str();
-        let resent = OutboxItemState::Resent.as_str();
-        let rows = sqlx::query_scalar!(
-            r#"SELECT request_id AS "request_id!" FROM outbox_items
-               WHERE item_state IN (?, ?) ORDER BY request_id"#,
-            sent,
-            resent
+        let mut requests: Vec<_> = read_rows_in_states(
+            &mut self.store.connection,
+            OutboxItemState::Sent,
+            OutboxItemState::Resent,
         )
-        .fetch_all(&mut self.store.connection)
-        .await?;
-        rows.iter().map(|id| parse_request_id(id)).collect()
+        .await?
+        .into_iter()
+        .map(|row| row.request)
+        .collect();
+        requests.sort();
+        Ok(requests)
     }
-    /// The earliest receipt mark among waiting writes, for arming the flush.
+
     pub async fn earliest_waiting(&mut self) -> Result<Option<i64>, OutboxStoreError> {
-        let unsent = OutboxItemState::InOutbox.as_str();
-        let answer_lost = OutboxItemState::SentAnswerLost.as_str();
-        let earliest = sqlx::query_scalar!(
-            r#"SELECT MIN(flush_at_ms) AS "earliest: i64" FROM outbox_items
-               WHERE item_state IN (?, ?)"#,
-            unsent,
-            answer_lost
-        )
-        .fetch_one(&mut self.store.connection)
-        .await?;
-        Ok(earliest)
+        Ok(waiting_rows(&mut self.store.connection)
+            .await?
+            .iter()
+            .map(|row| row.flush_at_ms)
+            .min())
     }
 }

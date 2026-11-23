@@ -14,21 +14,40 @@ pub struct StoredSenderOutcome {
     pub reported_at: Timestamp,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum OutcomePrecedence {
+    Keep,
+    Replace,
+    ContradictoryFinal,
+}
+
 impl StoredSenderOutcome {
-    pub(crate) fn supersedes(&self, previous: &Self) -> bool {
-        (!is_final(previous.outcome) || is_final(self.outcome))
-            && (&self.reported_at, &self.inbox_message_id)
-                > (&previous.reported_at, &previous.inbox_message_id)
+    pub(crate) fn precedence_over(&self, previous: &Self) -> OutcomePrecedence {
+        use OutcomePrecedence::{ContradictoryFinal, Keep, Replace};
+        match (is_final(previous.outcome), is_final(self.outcome)) {
+            (true, true) if self.outcome != previous.outcome => ContradictoryFinal,
+            (true, _) => Keep,
+            (false, true) => Replace,
+            (false, false) => {
+                if matches!(previous.outcome, MessageOutcome::DeliveryNotConfirmed)
+                    && matches!(
+                        self.outcome,
+                        MessageOutcome::DeliveredSeenNotConfirmed { .. }
+                    )
+                {
+                    Replace
+                } else {
+                    Keep
+                }
+            }
+        }
     }
 }
 
-// Central's FinalReceipt creates Refused or NotSeen. Its deadline observation
-// lives in PastTheMark and carries either unconfirmed outcome.
+// A final receipt is distinct from the provisional deadline observation.
 fn is_final(outcome: MessageOutcome) -> bool {
-    match outcome {
-        MessageOutcome::Refused { .. } | MessageOutcome::NotSeen { .. } => true,
-        MessageOutcome::DeliveryNotConfirmed | MessageOutcome::DeliveredSeenNotConfirmed { .. } => {
-            false
-        }
-    }
+    matches!(
+        outcome,
+        MessageOutcome::Refused { .. } | MessageOutcome::NotSeen { .. }
+    )
 }

@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT message_id, created_at, message_json, delivery_state_json FROM inbox_messages\n             WHERE message_json IS NOT NULL ORDER BY created_at, message_id",
+  "query": "SELECT message_id, created_at, updated_at, message_json, delivery_state_json FROM inbox_messages\n             WHERE CASE WHEN json_valid(delivery_state_json)\n                        THEN json_extract(delivery_state_json, '$.receipt.kind') IS NOT 'confirmed'\n                        ELSE 1 END\n             ORDER BY created_at, message_id",
   "describe": {
     "columns": [
       {
@@ -26,8 +26,19 @@
         }
       },
       {
-        "name": "message_json",
+        "name": "updated_at",
         "ordinal": 2,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "inbox_messages",
+            "name": "updated_at"
+          }
+        }
+      },
+      {
+        "name": "message_json",
+        "ordinal": 3,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -38,7 +49,7 @@
       },
       {
         "name": "delivery_state_json",
-        "ordinal": 3,
+        "ordinal": 4,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -54,9 +65,10 @@
     "nullable": [
       false,
       false,
+      false,
       true,
       false
     ]
   },
-  "hash": "c0f3d49b6cd3981ea942c0a75689b41bef9635b9063852ef6e6b2208278f5615"
+  "hash": "7e42e90e1a6e9df7b027af84c314626ec168e0ed2f84d1a7be7bb4f8e3df8e3a"
 }

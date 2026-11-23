@@ -80,29 +80,6 @@ impl MachineLocalStore {
     }
 }
 
-/// A single write statement with the same transaction and commit signal as a batch.
-pub(crate) trait MachineLocalWrite {
-    async fn execute_as_transaction(
-        self,
-        store: &mut MachineLocalStore,
-    ) -> Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error>;
-}
-
-impl<'query, TArguments> MachineLocalWrite for sqlx::query::Query<'query, sqlx::Sqlite, TArguments>
-where
-    TArguments: sqlx::IntoArguments<sqlx::Sqlite> + 'query,
-{
-    async fn execute_as_transaction(
-        self,
-        store: &mut MachineLocalStore,
-    ) -> Result<sqlx::sqlite::SqliteQueryResult, sqlx::Error> {
-        let mut transaction = store.transaction(TransactionStart::Immediate).await?;
-        let result = self.execute(&mut *transaction).await?;
-        transaction.commit().await?;
-        Ok(result)
-    }
-}
-
 #[cfg(test)]
 #[path = "machine_local_store_test.rs"]
 mod tests;

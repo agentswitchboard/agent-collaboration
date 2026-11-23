@@ -46,7 +46,9 @@ async fn central_refusal_uses_the_main_payload_and_preserves_caller_and_scope() 
     let mut database = open(&root).await;
     let write = item(97, "a refused post", MARK);
     let reason = central_refusal();
-    let outcome = OutboxWriteOutcome::Refused(OutboxRefusal::Central(reason.clone()));
+    let outcome =
+        OutboxWriteOutcome::from_refusal(&write.payload, OutboxRefusal::Central(reason.clone()))
+            .unwrap();
     let mut store = MacOutbox::new(&mut database);
     store.insert(&write, MARK - 1_000).await.unwrap();
     store
@@ -103,4 +105,83 @@ async fn central_refusal_uses_the_main_payload_and_preserves_caller_and_scope() 
             ..
         }),
     ));
+}
+
+#[tokio::test]
+async fn transient_and_wrong_operation_replies_leave_the_claim_recoverable() {
+    use crate::{NewOutboxItem, OutboxQueuedWrite, PendingWriteState};
+    use central_link_protocol::{MachineLinkCloseCode, ReplyPayload};
+    use workspace_model::central_mail::{CentralMailAnswer, CentralMailRefusal, CentralMailResult};
+
+    let root = tempfile::tempdir().unwrap();
+    let mut database = open(&root).await;
+    let request = super::uuid_v7(120).parse().unwrap();
+    let write = NewOutboxItem {
+        request,
+        caller: super::caller(1),
+        payload: OutboxQueuedWrite::SendMessage {
+            request_id: super::uuid_v7(120).parse().unwrap(),
+            message: serde_json::from_value(serde_json::json!({
+                "to": {"machineId": super::uuid_v7(121), "sessionId": "recipient"},
+                "body": "keep my body", "delivery": "auto", "replyTo": null
+            }))
+            .unwrap(),
+        },
+        flush_at_ms: MARK,
+    };
+    let mut outbox = MacOutbox::new(&mut database);
+    outbox.insert(&write, MARK - 1000).await.unwrap();
+    let claim = outbox
+        .claim_next_batch(MARK, 1, MARK)
+        .await
+        .unwrap()
+        .writes
+        .pop()
+        .unwrap();
+    for reply in [
+        ReplyPayload::Mail(CentralMailResult::CentralUnavailable),
+        ReplyPayload::Mail(CentralMailResult::OutcomeUnknown),
+        ReplyPayload::Mail(ReplyPayload::mail_authority_refused(
+            MachineLinkCloseCode::Revoked,
+        )),
+        ReplyPayload::Mail(CentralMailResult::Done(CentralMailAnswer::WakeSet {
+            wake_id: super::uuid_v7(122).parse().unwrap(),
+            due_at: chrono::DateTime::UNIX_EPOCH,
+        })),
+        ReplyPayload::Mail(CentralMailResult::Refused(
+            CentralMailRefusal::WakeNotFound {
+                wake_id: super::uuid_v7(122).parse().unwrap(),
+            },
+        )),
+        super::accepted_reply(),
+    ] {
+        assert!(OutboxWriteOutcome::from_reply(&claim.payload, reply).is_err());
+    }
+    let wrong_operation = super::accepted(&item(123, "post fixture", MARK).payload);
+    assert!(matches!(
+        outbox
+            .record_outcome(&claim.request, &wrong_operation, MARK)
+            .await,
+        Err(OutboxStoreError::InvalidOutcome { .. })
+    ));
+    assert_eq!(
+        outbox.sent_without_answer().await.unwrap(),
+        std::slice::from_ref(&claim.request)
+    );
+    let waiting = outbox.pending_for(&write.caller).await.unwrap();
+    assert!(matches!(&waiting[0].state,
+        PendingWriteState::SentAnswerLost { body } if body.as_str() == "keep my body"));
+    assert!(
+        outbox
+            .return_unanswered(std::slice::from_ref(&claim.request), MARK + 1)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    let replay = outbox
+        .claim_next_batch(MARK, 1, MARK + 1)
+        .await
+        .unwrap()
+        .writes;
+    assert_eq!(replay, [claim]);
 }

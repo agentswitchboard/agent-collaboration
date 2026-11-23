@@ -3,9 +3,7 @@ use crate::OutboxScope;
 use central_link_protocol::ReplyPayload;
 use serde::{Deserialize, Serialize};
 use workspace_ids::{RequestId, SessionRef};
-use workspace_model::{
-    Caller, PostText, ThreadId, WorkspaceId, WorkspaceOperation, central_mail::CentralMailOperation,
-};
+use workspace_model::{Caller, PostText, ThreadId, WorkspaceId, WorkspaceOperation};
 
 /// Where an outbox write goes: a thread post or a direct message. It holds no
 /// text, so the Mac may keep it after central answers.

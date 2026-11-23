@@ -142,6 +142,7 @@ impl OutboxStoreModel {
         self.now += 1_000;
         let now = self.now;
         let choice = tc.draw(gs::integers::<u8>().max_value(2));
+        let write = super::thread_post(id.as_str(), &body_of(id.as_str()));
         let mut outbox = MacOutbox::new(&mut self.store);
         let next = match choice {
             0 => {
@@ -165,9 +166,11 @@ impl OutboxStoreModel {
                 }
             }
             1 => {
-                let refusal = OutboxWriteOutcome::Refused(OutboxRefusal::Local(
-                    LocalOutboxRefusal::RequestIdConflict,
-                ));
+                let refusal = OutboxWriteOutcome::from_refusal(
+                    &write,
+                    OutboxRefusal::Local(LocalOutboxRefusal::RequestIdConflict),
+                )
+                .unwrap();
                 self.runtime
                     .block_on(outbox.record_outcome(&id, &refusal, now))
                     .unwrap();
@@ -175,7 +178,7 @@ impl OutboxStoreModel {
             }
             _ => {
                 self.runtime
-                    .block_on(outbox.record_outcome(&id, &accepted(), now))
+                    .block_on(outbox.record_outcome(&id, &accepted(&write), now))
                     .unwrap();
                 ModelState::Accepted
             }
