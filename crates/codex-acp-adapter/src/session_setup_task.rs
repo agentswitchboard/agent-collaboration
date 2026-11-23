@@ -19,6 +19,8 @@ pub(crate) struct SetupTaskInputs {
     pub recorder: Arc<dyn ConversationOperationRecorder>,
     pub cancellation_barrier: Option<crate::CancellationBarrier>,
     pub scratch_scopes: Arc<dyn crate::ScratchScopeRegister>,
+    pub generation_retirement: tokio_util::sync::CancellationToken,
+    pub session_presence: Option<crate::CodexSessionPresence>,
 }
 pub(crate) type SetupOutcome = Result<(Vec<Value>, Value), SessionSetupError>;
 
@@ -132,9 +134,14 @@ pub(crate) async fn run_session_setup(inputs: SetupTaskInputs) -> SetupTaskOutpu
             scratch_scopes: inputs.scratch_scopes,
         };
         if inputs.create_new {
-            let session = AcpSessionBinding::create(&mut catalog, setup).await?;
+            let mut session = AcpSessionBinding::create(&mut catalog, setup).await?;
             let session_id = SessionId::try_from(session.session_id().to_owned())
                 .map_err(|_| SessionSetupError::OutcomeUnknown)?;
+            session.admit(
+                session_id.clone(),
+                inputs.generation_retirement,
+                inputs.session_presence.as_ref(),
+            );
             if let Some(operation_id) = operation_id.as_ref() {
                 // The created binding reports its native permission mode.
                 let permission_mode = session
@@ -149,12 +156,19 @@ pub(crate) async fn run_session_setup(inputs: SetupTaskInputs) -> SetupTaskOutpu
             let result = session.new_session_result();
             Ok((session, Vec::new(), result))
         } else {
-            let (session, history) = AcpSessionBinding::load_existing_guarded(
+            let (mut session, history) = AcpSessionBinding::load_existing_guarded(
                 &mut catalog,
                 setup,
                 inputs.cancellation_barrier.as_ref(),
             )
             .await?;
+            let session_id = SessionId::try_from(session.session_id().to_owned())
+                .map_err(|_| SessionSetupError::OutcomeUnknown)?;
+            session.admit(
+                session_id,
+                inputs.generation_retirement,
+                inputs.session_presence.as_ref(),
+            );
             let result = session.setup_result();
             Ok((session, history, result))
         }
@@ -361,6 +375,8 @@ mod tests {
 
         let resumed = run_session_setup(SetupTaskInputs {
             scratch_scopes: Arc::new(IgnoredScratchScopes),
+            generation_retirement: tokio_util::sync::CancellationToken::new(),
+            session_presence: None,
             known_session: Some(binding),
             backend_path: PathBuf::new(),
             schemas: Arc::clone(&schemas),

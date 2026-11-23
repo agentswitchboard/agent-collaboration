@@ -2,7 +2,7 @@
 
 use central_link_protocol::{DeliveryMessage, DirectOfferBody, DirectOfferMessage, TimeLeft};
 use router_clock::RuntimeClock;
-use std::{collections::BTreeMap, sync::Arc, time::Duration};
+use std::{collections::BTreeMap, sync::Arc};
 use switchboard_machine_core_store::{
     InboxDecision, InboxOfferExpiry, InboxRefusalReason, InboxStore, InboxStoreError,
     RecordDelivery,
@@ -17,10 +17,10 @@ use workspace_model::{
 use crate::{
     custody_operator::{CustodyOperatorEvent, inbox_scan},
     receipt_delivery::{ReceiptDelivery, ReceiptDeliveryError, ReceiptFrame, ReceiptFrameOutcome},
-    recipient_sessions::{RecipientSessionAnswer, RecipientSessionDirectory},
+    recipient_sessions::{
+        RECIPIENT_LOOKUP_BUDGET, RecipientSessionAnswer, RecipientSessionDirectory,
+    },
 };
-
-const RECIPIENT_LOOKUP_BUDGET: Duration = Duration::from_secs(30);
 
 /// A custody offer assembled from a checked central Deliver frame and the local arrival time.
 pub(crate) enum InboxOffer {
@@ -44,11 +44,9 @@ struct OfferLookup {
 impl OfferLookup {
     async fn resolve(self) -> RecipientSessionAnswer {
         let deadline = self.clock.monotonic_now().after(RECIPIENT_LOOKUP_BUDGET);
-        tokio::select! {
-            biased;
-            () = self.clock.sleep_until(deadline) => RecipientSessionAnswer::CouldNotTell,
-            answer = self.directory.query_recipient_session(&self.session.session_id) => answer,
-        }
+        self.directory
+            .query_until(&self.session.session_id, self.clock.as_ref(), deadline)
+            .await
     }
 }
 
