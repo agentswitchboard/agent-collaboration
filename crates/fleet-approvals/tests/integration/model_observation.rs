@@ -179,7 +179,7 @@ pub(super) fn assert_state(scenario: &Scenario, ledger: &Ledger, book: &Approval
                         .contents_digest()
                         .unwrap()
                 );
-                assert_eq!(cause, &Scenario::stop_cause(row));
+                assert_eq!(cause.holder_cause(), Scenario::stop_cause(row));
             }
             Some(ApprovalState::Waiting { saved }) => {
                 let (changed, at) = expected.first_save.unwrap();

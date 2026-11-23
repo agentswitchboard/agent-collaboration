@@ -13,12 +13,12 @@ use crate::approval_lifecycle_admission::{
 use crate::approval_lifecycle_delivery::{receive, reoffer};
 use crate::approval_lifecycle_destinations::{decide, pass_on, read};
 use crate::approval_lifecycle_effects::{
-    ApprovalChange, finish, parent_notice, reply, standing, with_delivery,
+    ApprovalChange, finish, finish_stopped, parent_notice, reply, standing, with_delivery,
 };
 use crate::{
     ApprovalActor, ApprovalEffect, ApprovalEvent, ApprovalReceipt, ApprovalRefusal,
     ApprovalRequestKey, ApprovalRouting, ApprovalState, ProviderSessionAvailability,
-    RaiseAdmission, RetainedApproval,
+    RaiseAdmission, RetainedApproval, StopMarkerCause,
 };
 
 pub const MAX_OUTSTANDING_PER_RUN: usize = 256;
@@ -229,7 +229,7 @@ fn apply_stop(
         return reply(state, ApprovalReceipt::Stop(StopReply::NotVisible {}));
     }
     let response = |ending| ApprovalReceipt::Stop(StopReply::Stands { ending });
-    let cause = stop.cause();
+    let cause = StopMarkerCause::from(stop);
     match state {
         ApprovalState::Unraised => Ok((
             ApprovalState::StoppedBeforeRaise {
@@ -239,7 +239,9 @@ fn apply_stop(
             },
             vec![ApprovalEffect::Reply(response(
                 StopReceiptEnding::Cancelled {
-                    reason: CancelReason::Stopped { cause },
+                    reason: CancelReason::Stopped {
+                        cause: cause.holder_cause(),
+                    },
                 },
             ))],
         )),
@@ -251,7 +253,7 @@ fn apply_stop(
             state,
             response(StopReceiptEnding::Cancelled {
                 reason: CancelReason::Stopped {
-                    cause: *stored_cause,
+                    cause: stored_cause.holder_cause(),
                 },
             }),
         ),
@@ -259,17 +261,28 @@ fn apply_stop(
             if &saved.contents_digest == digest
                 && stop_cause_matches_raise(cause, &saved.raise) =>
         {
-            let ending = deadline_ending(
-                saved,
-                Ending::Cancelled {
-                    reason: CancelReason::Stopped { cause },
-                },
-                now,
-            );
-            let receipt = response(standing(&ending));
-            let (next, mut effects) =
-                finish(saved, ending, Delivery::ClosedWithoutReceipt {}, now)?;
-            effects.push(ApprovalEffect::Reply(receipt));
+            let (ending, change) = if now >= saved.window.deadline() {
+                (
+                    StopReceiptEnding::TimedOut {},
+                    finish(
+                        saved,
+                        Ending::TimedOut {},
+                        Delivery::ClosedWithoutReceipt {},
+                        now,
+                    ),
+                )
+            } else {
+                (
+                    StopReceiptEnding::Cancelled {
+                        reason: CancelReason::Stopped {
+                            cause: cause.holder_cause(),
+                        },
+                    },
+                    finish_stopped(saved, stop, now),
+                )
+            };
+            let (next, mut effects) = change?;
+            effects.push(ApprovalEffect::Reply(response(ending)));
             Ok((next, effects))
         }
         ApprovalState::Ended { saved, closed }

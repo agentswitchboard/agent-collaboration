@@ -425,6 +425,12 @@ async fn apply_fixture_sql(
                 StoredCorruption::Ending => {
                     "UPDATE approval_requests SET ending_json=json_set(ending_json,'$.ending.kind','future_ending') WHERE request_id=?1"
                 }
+                StoredCorruption::ProviderMarkerWithCallCause => {
+                    "UPDATE approval_requests SET stop_cause='call_withdrawn' WHERE request_id=?1 AND stop_family='provider'"
+                }
+                StoredCorruption::CallMarkerWithProviderCause => {
+                    "UPDATE approval_requests SET stop_cause='ask_replaced' WHERE request_id=?1 AND stop_family='unproven_call'"
+                }
             };
             sqlx::query(sql)
                 .bind(request_id.as_str())

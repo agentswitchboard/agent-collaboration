@@ -15,7 +15,7 @@ use crate::{
     approval_lifecycle_admission::is_destination,
     approval_store_scope::{ApprovalDestinationRowId, ApprovalHolderScope, ApprovalRequestRowId},
     approval_stored_tags::{
-        parse_delivery_state, parse_stop_cause, parse_stored_time, parse_waiting_status,
+        parse_delivery_state, parse_stop_marker, parse_stored_time, parse_waiting_status,
         request_kind_tag,
     },
 };
@@ -129,7 +129,10 @@ pub(super) fn decode_request_row(
             if !destinations.rows.is_empty() || updated_at != created_at {
                 return Err(corrupt("approval_requests.marker_fields"));
             }
-            let cause = parse_stop_cause(stored.stop_cause.stored_text()?)?;
+            let cause = parse_stop_marker(
+                stored.stop_family.stored_text()?,
+                stored.stop_cause.stored_text()?,
+            )?;
             ApprovalState::StoppedBeforeRaise {
                 key,
                 contents_digest,
@@ -137,7 +140,10 @@ pub(super) fn decode_request_row(
             }
         }
         "waiting" | "ended" => {
-            require_null(&[stored.stop_cause.raw()], "approval_requests.stop_cause")?;
+            require_null(
+                &[stored.stop_family.raw(), stored.stop_cause.raw()],
+                "approval_requests.stop_marker",
+            )?;
             let saved = Box::new(decode_retained_approval(
                 &stored,
                 key,

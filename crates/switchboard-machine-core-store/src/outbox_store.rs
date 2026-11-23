@@ -23,6 +23,11 @@ pub use outbox_transitions::ClaimedBatch;
 pub enum OutboxStoreError {
     #[error("outbox timestamp {field} is out of range")]
     InvalidTimestamp { field: &'static str },
+    #[error("claim deadline threshold {required_deadline_after_ms} precedes current time {now_ms}")]
+    ClaimDeadlineThresholdBeforeNow {
+        required_deadline_after_ms: i64,
+        now_ms: i64,
+    },
     #[error("outbox outcome does not settle the claimed operation for request {request}")]
     InvalidOutcome { request: RequestId },
     #[error("central reported contradictory final outcomes for request {request}")]

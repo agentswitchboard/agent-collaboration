@@ -2,7 +2,7 @@ SELECT json_array('request', approval_row_id, request_id, record_state, waiting_
                   ended_at, ending_json, decided_operation_id, delivery_state, updated_at,
                   organization_id, machine_id, enrollment_id, router_run_id, contents_digest,
                   request_kind, holder_session_id, offer_json, invocation_digest, first_saved_at,
-                  deadline_ms, stop_cause, created_at)
+                  deadline_ms, stop_family, stop_cause, created_at)
 FROM approval_requests
 UNION ALL
 SELECT json_array('destination', approval_destination_id, approval_row_id,

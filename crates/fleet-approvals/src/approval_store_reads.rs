@@ -44,6 +44,7 @@ checked_subject_projection!(StoredApprovalRow {
     waiting_status: Option<String>,
     first_saved_at: Option<String>,
     deadline_ms: Option<i64>,
+    stop_family: Option<String>,
     stop_cause: Option<String>,
     ended_at: Option<String>,
     ending_json: Option<String>,

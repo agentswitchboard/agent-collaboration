@@ -84,6 +84,8 @@ pub(super) enum StoredCorruption {
     RequestKind,
     RecordState,
     Ending,
+    ProviderMarkerWithCallCause,
+    CallMarkerWithProviderCause,
 }
 
 #[derive(Deserialize)]

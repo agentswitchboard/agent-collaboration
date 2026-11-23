@@ -33,6 +33,7 @@ CREATE TABLE approval_requests (
     waiting_status TEXT,
     first_saved_at TEXT,
     deadline_ms INTEGER,
+    stop_family TEXT,
     stop_cause TEXT,
     ended_at TEXT,
     ending_json TEXT,

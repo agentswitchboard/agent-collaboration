@@ -1,6 +1,6 @@
 use approval_request_protocol::{
     AcceptedApprovalDecision, CentralTime, DeliverEndingRequest, Delivery, Ending,
-    StopReceiptEnding,
+    StopReceiptEnding, StopRequest,
 };
 use central_engine_model::TransitionError;
 use workspace_ids::RequestId;
@@ -47,6 +47,16 @@ pub(super) fn finish_decided(
     let ending = DeliverEndingRequest::from_decision(&saved.raise, decision)
         .map_err(|_| TransitionError::Domain(ApprovalRefusal::InvalidRetainedEnding))?;
     finish_with_frame(saved, ending, Delivery::Owed {}, Some(operation_id), now)
+}
+
+pub(super) fn finish_stopped(
+    saved: &RetainedApproval,
+    stop: &StopRequest,
+    now: CentralTime,
+) -> ApprovalChange {
+    let ending = DeliverEndingRequest::from_stop(&saved.raise, stop)
+        .map_err(|_| TransitionError::Domain(ApprovalRefusal::InvalidRetainedEnding))?;
+    finish_with_frame(saved, ending, Delivery::ClosedWithoutReceipt {}, None, now)
 }
 
 fn finish_with_frame(

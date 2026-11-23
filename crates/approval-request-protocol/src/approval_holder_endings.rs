@@ -5,7 +5,7 @@ use workspace_ids::{ApprovalRequestId, PersonId};
 use crate::{
     Answer, CallStopCause, CancelReason, DecidedBy, Ending, HolderStopCause, InvalidAnswer,
     InvalidApprovalEnding, OfferedOptionId, ProviderAnswer, ProviderStopCause, QuestionAnswer,
-    Raise, RequestContentsDigest, SessionCallDecision, check_answer,
+    Raise, RequestContentsDigest, RequestKind, SessionCallDecision, StopRequest, check_answer,
 };
 
 approval_wire_union! {
@@ -93,20 +93,29 @@ impl PrivateEnding {
     }
 
     pub fn check_bound_raise(&self, raise: &Raise) -> Result<(), InvalidApprovalEnding> {
-        if let Self::UnprovenCall { .. } = self {
-            return match raise {
-                Raise::UnprovenCall { .. } => Ok(()),
-                Raise::ProviderApproval { .. } | Raise::ProviderQuestion { .. } => {
-                    Err(InvalidApprovalEnding::BindingMismatch)
-                }
-            };
-        }
-        let expected = Self::from_raise(raise, self.clone().into_ending())?;
-        if *self == expected {
-            Ok(())
-        } else {
-            Err(InvalidApprovalEnding::BindingMismatch)
-        }
+        let kind = match self {
+            Self::ProviderApproval {
+                ending: HolderEnding::Cancelled { .. },
+            } => RequestKind::ProviderApproval,
+            Self::ProviderQuestion {
+                ending: HolderEnding::Cancelled { .. },
+            } => RequestKind::ProviderQuestion,
+            Self::UnprovenCall { .. } => RequestKind::UnprovenCall,
+            Self::ProviderApproval {
+                ending: HolderEnding::Decided { .. } | HolderEnding::TimedOut {},
+            }
+            | Self::ProviderQuestion {
+                ending: HolderEnding::Decided { .. } | HolderEnding::TimedOut {},
+            } => {
+                let expected = Self::from_raise(raise, self.clone().into_ending())?;
+                return (*self == expected)
+                    .then_some(())
+                    .ok_or(InvalidApprovalEnding::BindingMismatch);
+            }
+        };
+        (raise.kind() == kind)
+            .then_some(())
+            .ok_or(InvalidApprovalEnding::BindingMismatch)
     }
 
     #[must_use]
@@ -220,6 +229,67 @@ impl DeliverEndingRequest {
         })
     }
 
+    /// Author a typed cancellation for the exact Raise named by a Stop.
+    pub fn from_stop(raise: &Raise, stop: &StopRequest) -> Result<Self, InvalidApprovalEnding> {
+        let (request_id, router_run, stop_digest) = match stop {
+            StopRequest::Provider {
+                request_id,
+                router_run,
+                contents_digest,
+                ..
+            }
+            | StopRequest::UnprovenCall {
+                request_id,
+                router_run,
+                contents_digest,
+                ..
+            } => (request_id, router_run, contents_digest),
+        };
+        let contents_digest = raise.contents_digest()?;
+        if request_id != raise.request_id()
+            || router_run != raise.router_run()
+            || stop_digest != &contents_digest
+        {
+            return Err(InvalidApprovalEnding::BindingMismatch);
+        }
+
+        let ending = match (raise.kind(), stop) {
+            (RequestKind::ProviderApproval, StopRequest::Provider { cause, .. }) => {
+                PrivateEnding::ProviderApproval {
+                    ending: HolderEnding::Cancelled {
+                        reason: ProviderCancellation::Stopped { cause: *cause },
+                    },
+                }
+            }
+            (RequestKind::ProviderQuestion, StopRequest::Provider { cause, .. }) => {
+                PrivateEnding::ProviderQuestion {
+                    ending: HolderEnding::Cancelled {
+                        reason: ProviderCancellation::Stopped { cause: *cause },
+                    },
+                }
+            }
+            (RequestKind::UnprovenCall, StopRequest::UnprovenCall { cause, .. }) => {
+                PrivateEnding::UnprovenCall {
+                    ending: ParkedCallEnding::Cancelled {
+                        reason: CallCancellation::Stopped { cause: *cause },
+                    },
+                }
+            }
+            (
+                RequestKind::ProviderApproval | RequestKind::ProviderQuestion,
+                StopRequest::UnprovenCall { .. },
+            )
+            | (RequestKind::UnprovenCall, StopRequest::Provider { .. }) => {
+                return Err(InvalidApprovalEnding::BindingMismatch);
+            }
+        };
+        Ok(Self {
+            request_id: request_id.clone(),
+            contents_digest,
+            ending,
+        })
+    }
+
     /// Check the holder's exact frozen Raise and its selected answer before handover.
     pub fn check_bound_raise(&self, raise: &Raise) -> Result<(), InvalidApprovalEnding> {
         if &self.request_id != raise.request_id()
@@ -320,13 +390,28 @@ impl TryFrom<CancelReason> for ProviderCancellation {
     fn try_from(reason: CancelReason) -> Result<Self, Self::Error> {
         Ok(match reason {
             CancelReason::Stopped { cause } => Self::Stopped {
-                cause: cause.try_into()?,
+                cause: provider_exclusive_stop_cause(cause)?,
             },
             CancelReason::RequesterGone {} => Self::RequesterGone {},
             CancelReason::SessionEnded {} => Self::SessionEnded {},
             CancelReason::EnrollmentEnded {} => Self::EnrollmentEnded {},
         })
     }
+}
+
+fn provider_exclusive_stop_cause(
+    cause: HolderStopCause,
+) -> Result<ProviderStopCause, InvalidApprovalEnding> {
+    Ok(match cause {
+        HolderStopCause::TurnStopped => ProviderStopCause::TurnStopped,
+        HolderStopCause::AskReplaced => ProviderStopCause::AskReplaced,
+        HolderStopCause::AskWithdrawn => ProviderStopCause::AskWithdrawn,
+        HolderStopCause::SessionClosed => ProviderStopCause::SessionClosed,
+        HolderStopCause::ProviderConnectionLost => ProviderStopCause::ProviderConnectionLost,
+        HolderStopCause::CallWithdrawn | HolderStopCause::HolderRefusedLocally => {
+            return Err(InvalidApprovalEnding::BindingMismatch);
+        }
+    })
 }
 
 impl ParkedCallEnding {
@@ -350,7 +435,8 @@ impl ParkedCallEnding {
                             | HolderStopCause::AskReplaced
                             | HolderStopCause::AskWithdrawn
                             | HolderStopCause::SessionClosed
-                            | HolderStopCause::ProviderConnectionLost,
+                            | HolderStopCause::ProviderConnectionLost
+                            | HolderStopCause::HolderRefusedLocally,
                     }
                     | CancelReason::SessionEnded {} => {
                         return Err(InvalidApprovalEnding::BindingMismatch);
@@ -373,10 +459,8 @@ impl ParkedCallEnding {
             },
             ParkedCallEnding::Cancelled { reason } => Ending::Cancelled {
                 reason: match reason {
-                    CallCancellation::Stopped {
-                        cause: CallStopCause::CallWithdrawn,
-                    } => CancelReason::Stopped {
-                        cause: HolderStopCause::CallWithdrawn,
+                    CallCancellation::Stopped { cause } => CancelReason::Stopped {
+                        cause: HolderStopCause::from_call(cause),
                     },
                     CallCancellation::RequesterGone {} => CancelReason::RequesterGone {},
                     CallCancellation::EnrollmentEnded {} => CancelReason::EnrollmentEnded {},

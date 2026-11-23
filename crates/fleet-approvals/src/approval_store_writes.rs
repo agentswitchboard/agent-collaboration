@@ -1,4 +1,4 @@
-use approval_request_protocol::{CentralTime, HolderStopCause, Raise, RequestContentsDigest};
+use approval_request_protocol::{CentralTime, Raise, RequestContentsDigest};
 use central_engine_model::{Context, InstanceKey};
 use central_storage::{GuardedStatement, RowExpectation, SafeInteger, Statement, StoreFailure};
 use fleet_engine::{
@@ -9,10 +9,10 @@ use fleet_runtime_ports::{stored_values::format_utc_millis, workspace_decode_err
 
 use crate::{
     ApprovalRequestKey, ApprovalRouting, ApprovalSession, ApprovalState, EndedApproval,
-    RetainedApproval,
+    RetainedApproval, StopMarkerCause,
     approval_store_scope::{ApprovalDestinationRowId, ApprovalHolderScope, ApprovalRequestRowId},
     approval_stored_tags::{
-        delivery_state_tag, request_kind_tag, stop_cause_tag, waiting_status_tag,
+        delivery_state_tag, request_kind_tag, stop_marker_tags, waiting_status_tag,
     },
 };
 
@@ -188,9 +188,10 @@ fn plan_stop_marker(
     scope: &ApprovalHolderScope,
     key: &ApprovalRequestKey,
     contents_digest: &RequestContentsDigest,
-    cause: HolderStopCause,
+    stop_marker: StopMarkerCause,
     at: CentralTime,
 ) -> GuardedStatement {
+    let (stop_family, stop_cause) = stop_marker_tags(stop_marker);
     expect_one(checked_engine_statement!(
         query_file,
         [],
@@ -202,7 +203,8 @@ fn plan_stop_marker(
         run_id = scope.run.router_run.as_str().to_owned(),
         request_id = key.request_id.as_str().to_owned(),
         digest = contents_digest.as_str().to_owned(),
-        cause = stop_cause_tag(cause).to_owned(),
+        family = stop_family.to_owned(),
+        cause = stop_cause.to_owned(),
         timestamp = format_utc_millis(at),
     ))
 }

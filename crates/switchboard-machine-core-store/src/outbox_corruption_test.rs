@@ -123,7 +123,7 @@ async fn claim_fills_its_limit_with_healthy_rows_and_reports_every_damaged_candi
     let damaged = damaged_rows(&mut database).await;
     let mut outbox = MacOutbox::new(&mut database);
 
-    let first = outbox.claim_next_batch(MARK, 2, MARK).await.unwrap();
+    let first = outbox.claim_next_batch(MARK, 2, MARK, MARK).await.unwrap();
     assert!(first.healthy.ended.is_empty());
     assert_eq!(
         first
@@ -135,7 +135,7 @@ async fn claim_fills_its_limit_with_healthy_rows_and_reports_every_damaged_candi
         [&writes[1].request, &writes[3].request]
     );
     assert_corrupt_deadlines(first.corrupt_rows, &writes);
-    let next = outbox.claim_next_batch(MARK, 2, MARK).await.unwrap();
+    let next = outbox.claim_next_batch(MARK, 2, MARK, MARK).await.unwrap();
     assert_eq!(
         next.healthy
             .writes
@@ -455,7 +455,7 @@ async fn claim_advances_past_an_entire_damaged_scan_page() {
     .await;
 
     let scan = MacOutbox::new(&mut database)
-        .claim_next_batch(MARK, 1, MARK)
+        .claim_next_batch(MARK, 1, MARK, MARK)
         .await
         .unwrap();
     assert_eq!(scan.healthy.writes.len(), 1);
@@ -490,7 +490,7 @@ async fn invalid_utf8_outbox_payload_is_a_row_fault_and_healthy_claims_progress(
     .unwrap();
 
     let batch = MacOutbox::new(&mut database)
-        .claim_next_batch(MARK, 1, MARK)
+        .claim_next_batch(MARK, 1, MARK, MARK)
         .await
         .unwrap();
     assert_eq!(batch.healthy.writes[0].request, good.request);
@@ -534,7 +534,7 @@ async fn non_integer_creation_stamp_does_not_turn_into_a_valid_expiry() {
         .bind(bad.request.as_str()).execute(&mut database.connection).await.unwrap();
 
     let batch = MacOutbox::new(&mut database)
-        .claim_next_batch(MARK, 1, MARK)
+        .claim_next_batch(MARK, 1, MARK, MARK)
         .await
         .unwrap();
     assert_eq!(batch.healthy.writes[0].request, good.request);
@@ -555,4 +555,57 @@ async fn non_integer_creation_stamp_does_not_turn_into_a_valid_expiry() {
     .await
     .unwrap();
     assert_eq!(retained, ("inOutbox".to_owned(), "invalid".to_owned()));
+}
+
+#[tokio::test]
+async fn claim_threshold_still_reports_a_damaged_row_before_selecting_healthy_work() {
+    let directory = tempfile::tempdir().unwrap();
+    let mut database = open(&directory).await;
+    let damaged = item(454, "invalid persisted deadline below threshold", MARK);
+    let eligible = item(455, "healthy deadline beyond threshold", MARK);
+    let stored_deadline = DEADLINE - 1;
+    plant_row(
+        &mut database,
+        &damaged,
+        "inOutbox",
+        serde_json::to_string(&damaged.payload).unwrap(),
+        None,
+        stored_deadline,
+    )
+    .await;
+    let mut outbox = MacOutbox::new(&mut database);
+    outbox.insert(&eligible, CREATED + 1).await.unwrap();
+
+    let scan = outbox
+        .claim_next_batch(MARK, 1, MARK, DEADLINE)
+        .await
+        .unwrap();
+
+    assert!(scan.healthy.ended.is_empty());
+    assert_eq!(
+        scan.healthy
+            .writes
+            .into_iter()
+            .map(|write| write.request)
+            .collect::<Vec<_>>(),
+        [eligible.request],
+    );
+    assert_eq!(
+        scan.corrupt_rows,
+        [RowCorruption {
+            key: damaged.request.to_string(),
+            field: "expires_at_ms",
+            reason: RowCorruptionReason::DeadlineMismatch {
+                expected_ms: DEADLINE,
+                stored_ms: stored_deadline,
+            },
+        }]
+    );
+    let retained: (String, i64) =
+        sqlx::query_as("SELECT item_state, expires_at_ms FROM outbox_items WHERE request_id = ?")
+            .bind(damaged.request.as_str())
+            .fetch_one(&mut database.connection)
+            .await
+            .unwrap();
+    assert_eq!(retained, ("inOutbox".to_owned(), stored_deadline));
 }

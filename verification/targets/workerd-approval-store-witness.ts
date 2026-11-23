@@ -113,7 +113,6 @@ export function raiseRequest(
 }
 
 export function stopRequest(request: Raise_Serialize): StopRequest {
-  assert.equal(request.kind, "providerApproval");
   // The fixture uses ASCII keys and ordinary integers. Sort each object's keys
   // by UTF-16 order in independently supplied wire bytes before calculating its digest.
   const canonical = JSON.stringify(request, (_key: string, value: unknown): unknown => {
@@ -122,13 +121,14 @@ export function stopRequest(request: Raise_Serialize): StopRequest {
       Object.entries(value).sort(([left], [right]) => (left < right ? -1 : Number(left > right))),
     );
   });
-  return {
-    kind: "provider",
+  const binding = {
     requestId: request.requestId,
     routerRun: request.holder.routerRun,
     contentsDigest: createHash("sha256").update(canonical).digest("base64url"),
-    cause: "askReplaced",
   };
+  return request.kind === "unprovenCall"
+    ? { ...binding, kind: "unprovenCall", cause: "callWithdrawn" }
+    : { ...binding, kind: "provider", cause: "askReplaced" };
 }
 
 export function commandPath(database: string): string {

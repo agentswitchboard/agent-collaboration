@@ -27,4 +27,6 @@ mod approval_store_guards;
 #[cfg(test)]
 mod approval_store_review_cases;
 #[cfg(test)]
+mod approval_store_stop_markers;
+#[cfg(test)]
 mod unproven_call_lifecycle;
