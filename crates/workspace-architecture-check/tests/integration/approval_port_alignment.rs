@@ -10,7 +10,7 @@ use switchboard_approval_holder::run_gate::{
 };
 use switchboard_approval_holder::waiting_request::{
     LinkAttemptDisposition, LocalNegative, ProviderReply, RaiseRefusal, WaitEffect, WaitEvent,
-    WaitState, WaitingRequest, WriterOutcome,
+    WaitRefusal, WaitState, WaitingRequest, WriterOutcome,
     gate_access::{GateWaitEvent, step_under_gate},
 };
 use switchboard_approval_ports::{
@@ -240,22 +240,14 @@ fn pre_start_handle_loss_releases_the_responder_and_keeps_the_exact_stop_due() {
 
 #[test]
 fn replyable_stops_exhaust_the_holder_claims() {
-    fn holder_cause(cause: ProviderStopCause) -> HolderStopCause {
-        match cause {
-            ProviderStopCause::TurnStopped => HolderStopCause::TurnStopped,
-            ProviderStopCause::SessionClosed => HolderStopCause::SessionClosed,
-            ProviderStopCause::AskReplaced => HolderStopCause::AskReplaced,
-            ProviderStopCause::ProviderConnectionLost => HolderStopCause::ProviderConnectionLost,
-            ProviderStopCause::AskWithdrawn => HolderStopCause::AskWithdrawn,
-        }
-    }
-
     fn replyable_cause(cause: ProviderStopCause) -> Option<ReplyableStopCause> {
         match cause {
             ProviderStopCause::TurnStopped => Some(ReplyableStopCause::TurnStopped),
             ProviderStopCause::SessionClosed => Some(ReplyableStopCause::SessionClosed),
             ProviderStopCause::AskReplaced => Some(ReplyableStopCause::AskReplaced),
-            ProviderStopCause::ProviderConnectionLost | ProviderStopCause::AskWithdrawn => None,
+            ProviderStopCause::ProviderConnectionLost
+            | ProviderStopCause::AskWithdrawn
+            | ProviderStopCause::HolderRefusedLocally => None,
         }
     }
     fn provider_cause(cause: ReplyableStopCause) -> ProviderStopCause {
@@ -279,7 +271,7 @@ fn replyable_stops_exhaust_the_holder_claims() {
             }
         } else {
             WaitEvent::LocalStop {
-                cause: holder_cause(cause),
+                cause: cause.holder_cause(),
             }
         };
         let (stopped, _) = HolderWait::transition(&state, event).unwrap();
@@ -292,6 +284,19 @@ fn replyable_stops_exhaust_the_holder_claims() {
             expected.as_ref()
         );
     }
+    let cause = ProviderStopCause::HolderRefusedLocally;
+    assert_eq!(replyable_cause(cause), None);
+    assert_eq!(
+        HolderWait::transition(
+            &bound_wait().unwrap(),
+            WaitEvent::LocalStop {
+                cause: cause.holder_cause()
+            }
+        ),
+        Err(TransitionError::Domain(
+            WaitRefusal::HolderRefusedLocallyRequiresWriterCompletion
+        ))
+    );
 }
 
 #[test]

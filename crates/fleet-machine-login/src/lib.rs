@@ -13,3 +13,6 @@ pub mod policy;
 pub use machine_login_service::{
     MachineLoginPlan, MachineLoginService, PreparedEnrollmentRevocation,
 };
+
+mod session_enrollment_reads;
+pub use session_enrollment_reads::{SessionEnrollmentStatus, read_session_enrollment};

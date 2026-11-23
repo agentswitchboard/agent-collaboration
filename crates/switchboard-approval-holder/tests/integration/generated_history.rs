@@ -22,6 +22,18 @@ const STOP: HolderStopCause = HolderStopCause::TurnStopped;
 const LOST: HolderStopCause = HolderStopCause::ProviderConnectionLost;
 const CALL_WITHDRAWN: HolderStopCause = HolderStopCause::CallWithdrawn;
 
+fn provider_cause(cause: HolderStopCause) -> Option<ProviderStopCause> {
+    match cause {
+        HolderStopCause::TurnStopped => Some(ProviderStopCause::TurnStopped),
+        HolderStopCause::AskReplaced => Some(ProviderStopCause::AskReplaced),
+        HolderStopCause::AskWithdrawn => Some(ProviderStopCause::AskWithdrawn),
+        HolderStopCause::SessionClosed => Some(ProviderStopCause::SessionClosed),
+        HolderStopCause::ProviderConnectionLost => Some(ProviderStopCause::ProviderConnectionLost),
+        HolderStopCause::HolderRefusedLocally => Some(ProviderStopCause::HolderRefusedLocally),
+        HolderStopCause::CallWithdrawn => None,
+    }
+}
+
 type Key = CallKey<u8>;
 type Link = LinkAttempt<u8>;
 
@@ -328,7 +340,7 @@ impl HistoryFacts {
             self.record_stop(cause);
         }
         self.claim(ProviderReply::LocalNegative(LocalNegative::Stopped(
-            ProviderStopCause::try_from(cause).unwrap(),
+            provider_cause(cause).unwrap(),
         )));
         Some(())
     }
@@ -354,7 +366,7 @@ impl HistoryFacts {
                     request_id,
                     router_run,
                     contents_digest,
-                    cause: ProviderStopCause::try_from(cause).unwrap(),
+                    cause: provider_cause(cause).unwrap(),
                 }
             });
         } else if self.raise.is_some() {

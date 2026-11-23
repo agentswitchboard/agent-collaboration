@@ -384,6 +384,21 @@ jobs:
       - uses: pnpm/action-setup@v4
         with:
           package_json_file: verification/package.json
+      - name: Build the pinned SQLite scan-status shell
+        shell: bash
+        run: |
+          scan_dir="$RUNNER_TEMP/session-sqlite-scan"
+          mkdir -p "$scan_dir"
+          curl --fail --silent --show-error --location --proto '=https' \
+            https://www.sqlite.org/2026/sqlite-amalgamation-3510300.zip \
+            --output "$scan_dir/sqlite.zip"
+          echo "acb1e6f5d832484bf6d32b681e858c38add8b2acdfd42ac5df24b8afb46552b4  $scan_dir/sqlite.zip" | sha256sum --check
+          unzip -q "$scan_dir/sqlite.zip" -d "$scan_dir"
+          cc -O2 -DSQLITE_ENABLE_STMT_SCANSTATUS -DSQLITE_ENABLE_STAT4 \
+            "$scan_dir/sqlite-amalgamation-3510300/shell.c" \
+            "$scan_dir/sqlite-amalgamation-3510300/sqlite3.c" \
+            -lpthread -ldl -lm -o "$scan_dir/sqlite3"
+          echo "SESSION_SQLITE_SCAN_CLI=$scan_dir/sqlite3" >> "$GITHUB_ENV"
       - name: Install TypeScript fixture dependencies
         run: |
           pnpm --dir verification install --frozen-lockfile
@@ -479,6 +494,9 @@ jobs:
       - name: Check approval request TypeScript wire contracts
         if: matrix.shard == 1
         run: cargo nextest run --locked --offline -p approval-request-protocol --features wire-export --test integration --no-tests fail -E "test(=typescript_export::approval_typescript_contains_expected_roots_and_matches_generation)"
+      - name: Check the session command authority type
+        if: matrix.shard == 1
+        run: cargo test --locked -p fleet-actor-identity --doc
       # Compile every test binary once and pack it as a nextest archive, so both
       # shards run the same binaries without contending for Cargo's build lock.
       # Keep each build selection and feature set identical to its run.

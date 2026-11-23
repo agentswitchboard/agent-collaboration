@@ -1,11 +1,9 @@
 use super::{
-    Call, CallKey, CapacityRefusalExposure, CentralDuty, Effects, LinkAttempt, LocalNegative,
-    MatchedRunRefusal, ProviderReply, RaiseRefusal, RunAuthority, WaitEffect, WaitError,
-    WaitRefusal, WaitState,
+    Call, CallKey, CapacityRefusalExposure, CentralDuty, Effects, FamilyStopCause, LinkAttempt,
+    LocalNegative, MatchedRunRefusal, ProviderReply, RaiseRefusal, RunAuthority, WaitEffect,
+    WaitError, WaitRefusal, WaitState,
 };
-use approval_request_protocol::{
-    CallStopCause, HolderStopCause, RaiseReply, RunRefusal, StopReply, StopRequest,
-};
+use approval_request_protocol::{RaiseReply, RunRefusal, StopReply, StopRequest};
 use state_machine_core::TransitionError;
 
 impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connection> {
@@ -48,7 +46,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
         }
     }
 
-    pub(super) fn begin_stop(&mut self, cause: HolderStopCause) -> Result<(), WaitError> {
+    pub(super) fn begin_stop(&mut self, cause: FamilyStopCause) -> Result<(), WaitError> {
         match &self.central {
             CentralDuty::Unsent => {
                 self.central = CentralDuty::Refusing;
@@ -66,30 +64,7 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
             | CentralDuty::Refusing
             | CentralDuty::Done => return Err(TransitionError::Stale),
         }
-        let frozen = self.frozen.as_ref().ok_or(TransitionError::Stale)?;
-        let request_id = frozen.body.request_id().clone();
-        let router_run = frozen.body.router_run().clone();
-        let contents_digest = frozen.digest.clone();
-        let request = match cause {
-            HolderStopCause::CallWithdrawn => StopRequest::UnprovenCall {
-                request_id,
-                router_run,
-                contents_digest,
-                cause: CallStopCause::CallWithdrawn,
-            },
-            HolderStopCause::TurnStopped
-            | HolderStopCause::AskReplaced
-            | HolderStopCause::AskWithdrawn
-            | HolderStopCause::SessionClosed
-            | HolderStopCause::ProviderConnectionLost => StopRequest::Provider {
-                request_id,
-                router_run,
-                contents_digest,
-                cause: cause
-                    .try_into()
-                    .map_err(|_| TransitionError::Domain(WaitRefusal::StopCauseForDifferentKind))?,
-            },
-        };
+        let request = self.stop_request(cause)?;
         if let CentralDuty::Raising(Call::InFlight(raise)) = &self.central
             && self.earlier_unresolved_raises.is_empty()
         {
@@ -102,6 +77,27 @@ impl<Responder: Clone + Eq, Connection: Clone + Eq> WaitState<Responder, Connect
             self.owe_stop(request);
         }
         Ok(())
+    }
+
+    fn stop_request(&self, cause: FamilyStopCause) -> Result<StopRequest, WaitError> {
+        let frozen = self.frozen.as_ref().ok_or(TransitionError::Stale)?;
+        let request_id = frozen.body.request_id().clone();
+        let router_run = frozen.body.router_run().clone();
+        let contents_digest = frozen.digest.clone();
+        Ok(match cause {
+            FamilyStopCause::Call(cause) => StopRequest::UnprovenCall {
+                request_id,
+                router_run,
+                contents_digest,
+                cause,
+            },
+            FamilyStopCause::Provider(cause) => StopRequest::Provider {
+                request_id,
+                router_run,
+                contents_digest,
+                cause,
+            },
+        })
     }
 
     fn owe_stop(&mut self, request: StopRequest) {

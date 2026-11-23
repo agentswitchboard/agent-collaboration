@@ -178,10 +178,7 @@ impl StopRequest {
     pub const fn cause(&self) -> HolderStopCause {
         match self {
             Self::Provider { cause, .. } => cause.holder_cause(),
-            Self::UnprovenCall {
-                cause: crate::CallStopCause::CallWithdrawn,
-                ..
-            } => HolderStopCause::CallWithdrawn,
+            Self::UnprovenCall { cause, .. } => HolderStopCause::from_call(*cause),
         }
     }
 }
