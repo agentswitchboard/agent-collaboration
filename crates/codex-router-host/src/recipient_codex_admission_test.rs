@@ -85,6 +85,14 @@ impl Admission {
     pub(super) async fn expect_unknown(&mut self, session: &SessionId) {
         self.expect_refused(session, InboxRefusalReason::UnknownSession)
             .await;
+        assert_eq!(
+            self.receive(session, REFUSED).await,
+            InboxOfferResult::AlreadyDecided {
+                decision: InboxDecision::Refused {
+                    reason: InboxRefusalReason::UnknownSession
+                },
+            }
+        );
     }
 
     async fn expect_refused(&mut self, session: &SessionId, reason: InboxRefusalReason) {

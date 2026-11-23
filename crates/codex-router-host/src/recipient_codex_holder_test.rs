@@ -11,7 +11,7 @@ use codex_acp_adapter::{
 };
 use codex_native_integration::{NativePayloadSchemas, NativeSchemaBundle};
 use collaboration_protocol::{CodexGeneration, CodexPermissionModeReport, OperationId, SessionId};
-use collaboration_runtime::{OpenScratchScopes, UnmaterializedThreadHolder};
+use collaboration_runtime::{NativeGenerationGate, OpenScratchScopes, UnmaterializedThreadHolder};
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use serde_json::{Value, json};
 use sqlx::Connection as _;
@@ -19,7 +19,7 @@ use std::{
     collections::BTreeMap, future::ready, io, os::unix::fs::PermissionsExt, path::Path, sync::Arc,
 };
 use switchboard_message_custody::recipient_sessions::{
-    RecipientSessionSources, SessionInventory, SessionInventoryAnswer::NoneFoundAbsenceUnproven,
+    RecipientSessionSources, SessionInventory, SessionInventoryAnswer::AtLeast,
 };
 use switchboard_session_store::ProviderOperationStore;
 use tokio::{
@@ -66,7 +66,7 @@ impl ConversationOperationRecorder for ObservingRecorder {
     }
 }
 
-fn native_schemas() -> Arc<NativePayloadSchemas> {
+pub(super) fn native_schemas() -> Arc<NativePayloadSchemas> {
     let mut definitions = serde_json::Map::new();
     for name in [
         "ThreadRead",
@@ -81,6 +81,17 @@ fn native_schemas() -> Arc<NativePayloadSchemas> {
         definitions.insert(format!("{name}Params"), json!({"type": "object"}));
         definitions.insert(format!("{name}Response"), json!({"type": "object"}));
     }
+    definitions.insert(
+        "ThreadLoadedListResponse".to_owned(),
+        json!({
+            "type": "object",
+            "required": ["data"],
+            "properties": {
+                "data": {"type": "array", "items": {"type": "string"}},
+                "nextCursor": {"type": ["string", "null"]}
+            }
+        }),
+    );
     let schemas = json!({"definitions":{
         "v2": definitions,
         "ServerRequest":{"type":"object"},
@@ -180,14 +191,18 @@ impl Frontend {
     }
 }
 
-async fn native_request(wire: &mut WebSocketStream<UnixStream>, method: &str) -> Value {
+pub(super) async fn native_request(wire: &mut WebSocketStream<UnixStream>, method: &str) -> Value {
     let frame = wire.next().await.unwrap().unwrap();
     let received: Value = serde_json::from_str(frame.to_text().unwrap()).unwrap();
     assert_eq!(received["method"], method);
     received
 }
 
-async fn native_reply(wire: &mut WebSocketStream<UnixStream>, request: &Value, result: Value) {
+pub(super) async fn native_reply(
+    wire: &mut WebSocketStream<UnixStream>,
+    request: &Value,
+    result: Value,
+) {
     wire.send(Message::text(
         json!({"id": request["id"], "result": result}).to_string(),
     ))
@@ -207,14 +222,21 @@ pub(super) async fn native_setup(
     root: &Path,
     method: &str,
 ) -> WebSocketStream<UnixStream> {
+    let mut wire = initialize_native_fixture(listener).await;
+    let request = native_request(&mut wire, method).await;
+    native_reply(&mut wire, &request, thread_result(root)).await;
+    wire
+}
+
+pub(super) async fn initialize_native_fixture(
+    listener: &UnixListener,
+) -> WebSocketStream<UnixStream> {
     let mut wire = tokio_tungstenite::accept_async(listener.accept().await.unwrap().0)
         .await
         .unwrap();
     let initialize = native_request(&mut wire, "initialize").await;
     native_reply(&mut wire, &initialize, json!({})).await;
     native_request(&mut wire, "initialized").await;
-    let request = native_request(&mut wire, method).await;
-    native_reply(&mut wire, &request, thread_result(root)).await;
     wire
 }
 
@@ -242,7 +264,11 @@ async fn attached_session_new_admits_with_three_real_host_sources_and_no_native_
         0
     );
 
-    let codex = Arc::new(CodexSessionInventory::new(root.to_owned(), holder.clone()));
+    let codex = Arc::new(CodexSessionInventory::new(
+        root.to_owned(),
+        holder.clone(),
+        NativeGenerationGate::default(),
+    ));
     let clock = Arc::new(router_clock::ManualClock::new(chrono::DateTime::UNIX_EPOCH));
     let managed = super::managed_inventory(Some(Arc::new(Mutex::new(
         ProviderOperationStore::open(&root.join("provider.sqlite"))
@@ -292,10 +318,7 @@ async fn attached_session_new_admits_with_three_real_host_sources_and_no_native_
         .await
         .unwrap();
     catalog.close().await.unwrap();
-    assert_eq!(
-        codex.lookup_session(&session_id(SAVED)).await,
-        NoneFoundAbsenceUnproven
-    );
+    assert_eq!(codex.lookup_session(&session_id(SAVED)).await, AtLeast(0));
 }
 
 #[tokio::test]
@@ -319,14 +342,12 @@ async fn ordinary_load_presence_is_fenced_by_generation_before_frontend_drop() {
     );
     assert!(reply.get("result").is_some(), "{reply}");
     assert!(!holder.contains(SAVED));
-    let codex = CodexSessionInventory::new(root.to_owned(), holder);
+    let codex =
+        CodexSessionInventory::new(root.to_owned(), holder, NativeGenerationGate::default());
     assert_eq!(codex.lookup_session(&session_id(SAVED)).await, complete(1));
 
     retirement.cancel();
-    assert_eq!(
-        codex.lookup_session(&session_id(SAVED)).await,
-        NoneFoundAbsenceUnproven
-    );
+    assert_eq!(codex.lookup_session(&session_id(SAVED)).await, AtLeast(0));
     frontend.close().await;
 }
 
@@ -345,7 +366,11 @@ async fn materialized_prompt_keeps_presence_through_frontend_eof_and_detached_dr
         frontend.receive(2),
     );
     assert_eq!(created["result"]["sessionId"], SAVED, "{created}");
-    let codex = CodexSessionInventory::new(root.to_owned(), holder.clone());
+    let codex = CodexSessionInventory::new(
+        root.to_owned(),
+        holder.clone(),
+        NativeGenerationGate::default(),
+    );
     let target = session_id(SAVED);
 
     frontend
@@ -380,9 +405,6 @@ async fn materialized_prompt_keeps_presence_through_frontend_eof_and_detached_dr
     assert!(!holder.contains(SAVED));
     assert_eq!(codex.lookup_session(&target).await, complete(1));
     retirement.cancel();
-    assert_eq!(
-        codex.lookup_session(&target).await,
-        NoneFoundAbsenceUnproven
-    );
+    assert_eq!(codex.lookup_session(&target).await, AtLeast(0));
     holder.drain_host_tasks().await;
 }

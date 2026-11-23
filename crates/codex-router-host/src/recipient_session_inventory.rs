@@ -1,17 +1,11 @@
 //! Existing local session sources viewed through the custody inventory port.
 
 use crate::ExternalProviderSupervisor;
+pub use crate::recipient_codex_inventory::CodexSessionInventory;
 pub use crate::recipient_terminal_inventory::ClaudeTerminalSessionInventory;
-use codex_acp_adapter::CodexSessionPresence;
-use codex_native_integration::{
-    StoredThreadCatalog, StoredThreadCursor, StoredThreadProvider, StoredThreadQuery,
-    StoredThreadRoot, StoredThreadSort, StoredThreadSource,
-};
 use collaboration_protocol::{EndpointId, EndpointRef, SessionRef, UuidIdentity};
-use collaboration_runtime::UnmaterializedThreadHolder;
 use provider_session_machines::session_lifecycle_machine::SessionLifecycle;
-use sqlx::Row;
-use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
+use std::{future::Future, pin::Pin, sync::Arc};
 use switchboard_message_custody::recipient_sessions::{
     SessionId, SessionInventory, SessionInventoryAnswer, SessionInventoryPart,
 };
@@ -22,102 +16,6 @@ const UNAVAILABLE: SessionInventoryAnswer = SessionInventoryAnswer::AtLeast(0);
 
 const fn complete(at_least: usize) -> SessionInventoryAnswer {
     SessionInventoryAnswer::Complete(at_least)
-}
-
-fn completed_codex_miss(session_id: &SessionId) -> SessionInventoryAnswer {
-    // Codex's ThreadId::from_string uses Uuid::parse_str for native thread IDs.
-    if uuid::Uuid::parse_str(session_id.as_str()).is_ok() {
-        SessionInventoryAnswer::NoneFoundAbsenceUnproven
-    } else {
-        complete(0)
-    }
-}
-
-pub struct CodexSessionInventory {
-    codex_home: PathBuf,
-    session_presence: CodexSessionPresence,
-}
-
-impl CodexSessionInventory {
-    #[must_use]
-    pub fn new(
-        codex_home: PathBuf,
-        unmaterialized_threads: Arc<UnmaterializedThreadHolder>,
-    ) -> Self {
-        Self {
-            codex_home,
-            session_presence: unmaterialized_threads.session_presence(),
-        }
-    }
-
-    async fn lookup_stored(&self, session_id: &SessionId) -> SessionInventoryAnswer {
-        match tokio::fs::try_exists(self.codex_home.join("state_5.sqlite")).await {
-            Ok(false) => return completed_codex_miss(session_id),
-            Ok(true) => {}
-            Err(_) => return UNAVAILABLE,
-        }
-        let Ok(catalog) = StoredThreadCatalog::open(&self.codex_home).await else {
-            return UNAVAILABLE;
-        };
-        let found = contains_stored_thread(&catalog, session_id.as_str()).await;
-        catalog.close().await;
-        match found {
-            Ok(true) => complete(1),
-            // The opaque native relay does not index its pre-persistence threads.
-            Ok(false) => completed_codex_miss(session_id),
-            Err(_) => UNAVAILABLE,
-        }
-    }
-}
-
-impl SessionInventory for CodexSessionInventory {
-    fn lookup_session<'lookup>(
-        &'lookup self,
-        session_id: &'lookup SessionId,
-    ) -> Pin<Box<dyn Future<Output = SessionInventoryAnswer> + Send + 'lookup>> {
-        Box::pin(async move {
-            if let Ok(native_id) =
-                collaboration_protocol::SessionId::try_from(session_id.as_str().to_owned())
-                && self.session_presence.contains(&native_id)
-            {
-                return complete(1);
-            }
-            self.lookup_stored(session_id).await
-        })
-    }
-}
-
-async fn contains_stored_thread(
-    catalog: &StoredThreadCatalog,
-    session_id: &str,
-) -> Result<bool, sqlx::Error> {
-    const PAGE_SIZE: usize = 100;
-    let mut query = StoredThreadQuery {
-        root: StoredThreadRoot::Any,
-        provider: StoredThreadProvider::Any,
-        source: StoredThreadSource::All,
-        sort: StoredThreadSort::Created,
-        page_size: PAGE_SIZE,
-        cursor: None,
-        query: None,
-    };
-    loop {
-        let rows = catalog.read_page(&query).await?;
-        for row in &rows {
-            if row.try_get::<String, _>("id")? == session_id {
-                return Ok(true);
-            }
-        }
-        if rows.len() < PAGE_SIZE {
-            return Ok(false);
-        }
-        if let Some(last) = rows.last() {
-            query.cursor = Some(StoredThreadCursor {
-                sort_value: last.try_get("created_at_ms")?,
-                session_id: last.try_get("id")?,
-            });
-        }
-    }
 }
 
 pub struct ManagedProviderSessionInventory {

@@ -48,16 +48,12 @@ pub enum SessionInventoryAnswer {
     Complete(usize),
     /// The authority may be hiding more matches.
     AtLeast(usize),
-    /// Codex finished reading the catalogue and found no live binding, but its
-    /// opaque relay can still own a Codex thread before persistence.
-    NoneFoundAbsenceUnproven,
 }
 
 impl SessionInventoryAnswer {
     const fn proved(self) -> usize {
         match self {
             Self::Complete(count) | Self::AtLeast(count) => count,
-            Self::NoneFoundAbsenceUnproven => 0,
         }
     }
 
@@ -66,13 +62,6 @@ impl SessionInventoryAnswer {
         let proved = self.proved().saturating_add(other.proved());
         match (self, other) {
             (Self::AtLeast(_), _) | (_, Self::AtLeast(_)) => Self::AtLeast(proved),
-            (Self::NoneFoundAbsenceUnproven, _) | (_, Self::NoneFoundAbsenceUnproven) => {
-                if proved == 0 {
-                    Self::NoneFoundAbsenceUnproven
-                } else {
-                    Self::AtLeast(proved)
-                }
-            }
             _ => Self::Complete(proved),
         }
     }
@@ -121,8 +110,6 @@ impl SessionInventory for UnavailableSessionInventory {
     }
 }
 
-/// An opaque Codex relay thread can have the same ID as a visible session.
-/// A miss that leaves that path uncovered can therefore hide a claimant.
 /// Defer while fewer than two matches are proved and any authority is
 /// incomplete. Two proved claims already establish ambiguity.
 pub fn combine_inventory_answers(
@@ -135,9 +122,7 @@ pub fn combine_inventory_answers(
         SessionInventoryAnswer::Complete(2..) | SessionInventoryAnswer::AtLeast(2..) => {
             RecipientSessionAnswer::AmbiguousSession
         }
-        SessionInventoryAnswer::AtLeast(_) | SessionInventoryAnswer::NoneFoundAbsenceUnproven => {
-            RecipientSessionAnswer::CouldNotTell
-        }
+        SessionInventoryAnswer::AtLeast(_) => RecipientSessionAnswer::CouldNotTell,
         SessionInventoryAnswer::Complete(1) => RecipientSessionAnswer::KnownOnce,
         SessionInventoryAnswer::Complete(0) => RecipientSessionAnswer::UnknownSession,
     }

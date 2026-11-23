@@ -6,7 +6,7 @@ use claude_code_peer_messaging::ClaudeCodeSessionRegistry;
 use collaboration_protocol::{
     ProviderIdentity, ProviderRequestedPolicy, ProviderWorkingDirectory, RouterAccess,
 };
-use collaboration_runtime::UnmaterializedThreadHolder;
+use collaboration_runtime::{NativeGenerationGate, UnmaterializedThreadHolder};
 use serde_json::json;
 use sqlx::{Connection as _, SqliteConnection, sqlite::SqliteConnectOptions};
 use std::{
@@ -16,8 +16,7 @@ use std::{
 };
 use switchboard_message_custody::recipient_sessions::{
     CombinedRecipientSessionDirectory, RecipientSessionAnswer, RecipientSessionDirectory,
-    RecipientSessionSources, SessionId, SessionInventory,
-    SessionInventoryAnswer::{AtLeast, NoneFoundAbsenceUnproven},
+    RecipientSessionSources, SessionId, SessionInventory, SessionInventoryAnswer::AtLeast,
     UnavailableSessionInventory,
 };
 use switchboard_session_store::{ProviderOperationStore, ProviderSessionRecord};
@@ -92,6 +91,7 @@ async fn codex_saved_session_counts_across_pages_with_primary_key_uniqueness() {
     let inventory = CodexSessionInventory::new(
         root.path().to_owned(),
         Arc::new(UnmaterializedThreadHolder::new()),
+        NativeGenerationGate::default(),
     );
 
     assert_eq!(
@@ -100,11 +100,11 @@ async fn codex_saved_session_counts_across_pages_with_primary_key_uniqueness() {
     );
     assert_eq!(
         inventory.lookup_session(&session_id(ABSENT)).await,
-        NoneFoundAbsenceUnproven
+        UNAVAILABLE
     );
     assert_eq!(
         inventory.lookup_session(&session_id(ARCHIVED)).await,
-        NoneFoundAbsenceUnproven
+        UNAVAILABLE
     );
 }
 
@@ -114,13 +114,11 @@ async fn codex_catalog_cannot_assert_absence_on_missing_or_unreadable_state() {
     let inventory = CodexSessionInventory::new(
         root.path().to_owned(),
         Arc::new(UnmaterializedThreadHolder::new()),
+        NativeGenerationGate::default(),
     );
     let target = session_id(SAVED);
 
-    assert_eq!(
-        inventory.lookup_session(&target).await,
-        NoneFoundAbsenceUnproven
-    );
+    assert_eq!(inventory.lookup_session(&target).await, UNAVAILABLE);
     tokio::fs::write(root.path().join("state_5.sqlite"), b"not a SQLite database")
         .await
         .unwrap();
@@ -321,6 +319,9 @@ mod provider_owner;
 #[path = "recipient_authority_admission_test.rs"]
 mod authority_admission;
 
+#[path = "recipient_native_list_fixture_test.rs"]
+mod native_list_fixture;
+
 #[tokio::test]
 async fn damaged_endpoint_preserves_other_matches_and_prevents_authoritative_absence() {
     let root = tempfile::tempdir().unwrap();
@@ -359,6 +360,7 @@ async fn damaged_endpoint_preserves_other_matches_and_prevents_authoritative_abs
         codex: Arc::new(CodexSessionInventory::new(
             root.path().to_owned(),
             Arc::new(UnmaterializedThreadHolder::new()),
+            NativeGenerationGate::default(),
         )),
         managed_providers: inventory,
         claude_terminal: Arc::new(terminal_inventory(root.path())),

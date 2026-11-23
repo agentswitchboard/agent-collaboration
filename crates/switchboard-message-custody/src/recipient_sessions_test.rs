@@ -33,20 +33,15 @@ const fn observation(at_least: usize, complete: bool) -> SessionInventoryAnswer 
     }
 }
 
-fn expected_answer(answers: [(usize, bool, bool); 3]) -> RecipientSessionAnswer {
+fn expected_answer(answers: [(usize, bool); 3]) -> RecipientSessionAnswer {
     use RecipientSessionAnswer::{AmbiguousSession, CouldNotTell, KnownOnce, UnknownSession};
     let total = answers
         .iter()
-        .map(|(count, _, _)| *count)
+        .map(|(count, _)| *count)
         .fold(0_usize, usize::saturating_add);
     match total {
         2.. => AmbiguousSession,
-        _ if answers
-            .iter()
-            .any(|(_, may_hide_match, absence_unproven)| *may_hide_match || *absence_unproven) =>
-        {
-            CouldNotTell
-        }
+        _ if answers.iter().any(|(_, may_hide_match)| *may_hide_match) => CouldNotTell,
         1 => KnownOnce,
         _ => UnknownSession,
     }
@@ -54,15 +49,14 @@ fn expected_answer(answers: [(usize, bool, bool); 3]) -> RecipientSessionAnswer 
 
 #[test]
 fn all_three_source_combinations_obey_the_precedence_table() {
-    use SessionInventoryAnswer::{AtLeast, Complete, NoneFoundAbsenceUnproven};
+    use SessionInventoryAnswer::{AtLeast, Complete};
     let answers = [
-        (Complete(0), (0, false, false)),
-        (Complete(1), (1, false, false)),
-        (Complete(2), (2, false, false)),
-        (AtLeast(0), (0, true, false)),
-        (AtLeast(1), (1, true, false)),
-        (AtLeast(2), (2, true, false)),
-        (NoneFoundAbsenceUnproven, (0, false, true)),
+        (Complete(0), (0, false)),
+        (Complete(1), (1, false)),
+        (Complete(2), (2, false)),
+        (AtLeast(0), (0, true)),
+        (AtLeast(1), (1, true)),
+        (AtLeast(2), (2, true)),
     ];
     for (first, first_fact) in answers {
         for (second, second_fact) in answers {
@@ -84,13 +78,13 @@ fn all_three_source_combinations_obey_the_precedence_table() {
 
 #[hegel::test(test_cases = 160)]
 fn larger_lower_bounds_do_not_overflow_or_hide_duplicates(case: hegel::TestCase) {
-    use SessionInventoryAnswer::{AtLeast, Complete, NoneFoundAbsenceUnproven};
+    use SessionInventoryAnswer::{AtLeast, Complete};
     let answers = std::array::from_fn(|_| {
         let count = case.draw(gs::integers::<usize>());
-        match case.draw(gs::integers::<u8>().max_value(2)) {
-            0 => (Complete(count), (count, false, false)),
-            1 => (AtLeast(count), (count, true, false)),
-            _ => (NoneFoundAbsenceUnproven, (0, false, true)),
+        if case.draw(gs::booleans()) {
+            (Complete(count), (count, false))
+        } else {
+            (AtLeast(count), (count, true))
         }
     });
     assert_eq!(
