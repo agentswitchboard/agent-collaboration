@@ -40,6 +40,8 @@ struct HeartbeatFixture {
     status: watch::Sender<LinkStatus>,
 }
 
+type WelcomedDriver<'fixture, Source> = BindingDriver<'fixture, u8, Source, fn() -> HttpConnector>;
+
 impl HeartbeatFixture {
     fn new() -> Self {
         Self {
@@ -52,10 +54,7 @@ impl HeartbeatFixture {
     fn welcomed_driver<'fixture, Source>(
         &'fixture self,
         lease_source: &'fixture Source,
-    ) -> (
-        BindingDriver<'fixture, u8, Source, fn() -> HttpConnector>,
-        ConnectionAttempt,
-    ) {
+    ) -> (WelcomedDriver<'fixture, Source>, ConnectionAttempt) {
         let mut client = LinkClient::new(self.machine.clone(), self.clock.clone());
         let Some(ClientAction::Connect { attempt }) = client.poll_time() else {
             panic!("first connection should be due");
