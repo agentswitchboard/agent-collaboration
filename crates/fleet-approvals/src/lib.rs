@@ -1,4 +1,5 @@
-//! Pure central request, delivery, and run admission transitions.
+//! Central approvals lifecycle and its applying store.
+mod approval_applying_store;
 mod approval_collection;
 mod approval_collection_values;
 mod approval_lifecycle;
@@ -9,8 +10,19 @@ mod approval_lifecycle_edges;
 mod approval_lifecycle_effects;
 mod approval_lifecycle_values;
 mod approval_session_facts;
+mod approval_store_reads;
+mod approval_store_scope;
+mod approval_store_transaction;
+mod approval_store_writes;
+mod approval_stored_tags;
 
+pub use approval_applying_store::{
+    ApprovalApplyFailure, ApprovalApplyingStore, ApprovalHolderCommand, ApprovalHolderReply,
+    ApprovalReadPage, PendingApprovalApply, PendingApprovalOffer,
+};
 pub use approval_collection_values::*;
 pub use approval_lifecycle::{ApprovalLifecycle, MAX_OUTSTANDING_PER_RUN};
 pub use approval_lifecycle_values::*;
 pub use approval_session_facts::ApprovalSessionFacts;
+pub use approval_store_scope::{ApprovalEnrollmentScope, ApprovalHolderScope, ApprovalRowId};
+pub use approval_store_transaction::{ApprovalEnrollmentStanding, ApprovalStoreTransaction};

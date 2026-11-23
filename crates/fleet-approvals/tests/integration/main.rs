@@ -7,6 +7,8 @@ mod lifecycle;
 #[cfg(test)]
 mod model;
 #[cfg(test)]
+mod native_approval_store;
+#[cfg(test)]
 mod review;
 #[cfg(test)]
 mod scope;
@@ -14,5 +16,9 @@ mod scope;
 #[cfg(test)]
 mod model_ledger;
 
+#[cfg(test)]
+mod approval_store_atomicity;
+#[cfg(test)]
+mod approval_store_cases;
 #[cfg(test)]
 mod unproven_call_lifecycle;

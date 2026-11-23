@@ -63,6 +63,26 @@ CREATE INDEX approval_requests_waiting_deadline
 ON approval_requests (deadline_ms, approval_row_id)
 WHERE record_state = 'waiting';
 
+-- Reference for engine diagnostics. Dispatch and arming use the engine index.
+CREATE VIEW approval_request_expiry_due_rows(
+    due_lane, is_subject, subject_key, occurrence_ms, due_at_ms, contributes_to_alarm
+) AS
+WITH source_attempt AS (
+    SELECT 1 AS control_present, due_at_ms FROM engine_due_attempt_controls
+    WHERE machine_kind = 'engine_source' AND subject_key = 'approval_request'
+)
+SELECT 'on_grid', 1, requests.approval_row_id, requests.deadline_ms,
+       CASE WHEN attempt.uses_subject_attempt = 1 THEN attempt.due_at_ms
+            ELSE requests.deadline_ms END,
+       source_attempt.control_present IS NULL
+FROM approval_requests AS requests
+LEFT JOIN engine_due_attempt_controls AS attempt
+    ON attempt.machine_kind = 'approval_request' AND attempt.subject_key = requests.approval_row_id
+LEFT JOIN source_attempt ON 1
+WHERE requests.record_state = 'waiting' AND COALESCE(attempt.retired, 0) = 0
+UNION ALL
+SELECT 'on_grid', 0, NULL, NULL, due_at_ms, 1 FROM source_attempt;
+
 CREATE TABLE approval_request_destinations (
     approval_destination_id TEXT NOT NULL PRIMARY KEY,
     approval_row_id TEXT NOT NULL REFERENCES approval_requests (approval_row_id),

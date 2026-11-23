@@ -1,0 +1,28 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT\n  MIN(CASE WHEN due_lane = 'on_grid' THEN due_at_ms END) AS \"on_grid_due?: i64\",\n  MIN(CASE WHEN due_lane = 'legacy' THEN due_at_ms END) AS \"legacy_due?: i64\"\nFROM (\n    SELECT due_lane, due_at_ms, contributes_to_alarm FROM engine_due_rows\n    UNION ALL\n    SELECT due_lane, due_at_ms, contributes_to_alarm FROM approval_request_expiry_due_rows\n)\nWHERE contributes_to_alarm = 1\n  AND EXISTS (SELECT 1 FROM signin_provisioned_for_engine);\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "on_grid_due?: i64",
+        "ordinal": 0,
+        "type_info": "Integer",
+        "origin": "Expression"
+      },
+      {
+        "name": "legacy_due?: i64",
+        "ordinal": 1,
+        "type_info": "Integer",
+        "origin": "Expression"
+      }
+    ],
+    "parameters": {
+      "Right": 0
+    },
+    "nullable": [
+      false,
+      false
+    ]
+  },
+  "hash": "bcd0d3d3b01d1c9aa09d3b0994c3f93bea3d3f389ed65ad262cc7be427a0df5e"
+}

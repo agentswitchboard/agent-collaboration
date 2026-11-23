@@ -2,6 +2,8 @@
 //! Built only with the non-default `test-support` feature; the production bundle
 //! check proves these routes absent.
 
+#[path = "storage_cases/approval_store_witness.rs"]
+mod approval_store_witness;
 #[path = "storage_cases/case_object.rs"]
 mod case_object;
 #[path = "storage_cases/case_steps.rs"]

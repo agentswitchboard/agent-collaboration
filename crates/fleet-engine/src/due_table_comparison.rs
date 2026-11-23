@@ -395,6 +395,10 @@ where
         (DueKind::AutomationTimer, DueListKind::Schedules),
         (DueKind::DirectMessage, DueListKind::DirectMessages),
         (DueKind::SystemMessageExpiry, DueListKind::SystemExpiries),
+        (
+            DueKind::ApprovalRequestExpiry,
+            DueListKind::ApprovalExpiries,
+        ),
     ] {
         let query =
             due_list_query(list_kind, horizon, cap).map_err(|_| StoreFailure::Unavailable)?;

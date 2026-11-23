@@ -1,0 +1,278 @@
+{
+  "db_name": "SQLite",
+  "query": "SELECT requests.*\nFROM approval_requests AS requests\nWHERE organization_id = ?1 AND machine_id = ?2 AND enrollment_id = ?3\n  AND router_run_id = ?4\n  AND (record_state = 'waiting' OR (record_state = 'ended' AND delivery_state = 'owed'))\nORDER BY approval_row_id\nLIMIT ?5\n",
+  "describe": {
+    "columns": [
+      {
+        "name": "approval_row_id",
+        "ordinal": 0,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "approval_row_id"
+          }
+        }
+      },
+      {
+        "name": "organization_id",
+        "ordinal": 1,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "organization_id"
+          }
+        }
+      },
+      {
+        "name": "machine_id",
+        "ordinal": 2,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "machine_id"
+          }
+        }
+      },
+      {
+        "name": "enrollment_id",
+        "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "enrollment_id"
+          }
+        }
+      },
+      {
+        "name": "router_run_id",
+        "ordinal": 4,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "router_run_id"
+          }
+        }
+      },
+      {
+        "name": "request_id",
+        "ordinal": 5,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "request_id"
+          }
+        }
+      },
+      {
+        "name": "contents_digest",
+        "ordinal": 6,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "contents_digest"
+          }
+        }
+      },
+      {
+        "name": "record_state",
+        "ordinal": 7,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "record_state"
+          }
+        }
+      },
+      {
+        "name": "request_kind",
+        "ordinal": 8,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "request_kind"
+          }
+        }
+      },
+      {
+        "name": "holder_session_id",
+        "ordinal": 9,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "holder_session_id"
+          }
+        }
+      },
+      {
+        "name": "offer_json",
+        "ordinal": 10,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "offer_json"
+          }
+        }
+      },
+      {
+        "name": "invocation_digest",
+        "ordinal": 11,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "invocation_digest"
+          }
+        }
+      },
+      {
+        "name": "waiting_status",
+        "ordinal": 12,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "waiting_status"
+          }
+        }
+      },
+      {
+        "name": "first_saved_at",
+        "ordinal": 13,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "first_saved_at"
+          }
+        }
+      },
+      {
+        "name": "deadline_ms",
+        "ordinal": 14,
+        "type_info": "Integer",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "deadline_ms"
+          }
+        }
+      },
+      {
+        "name": "stop_cause",
+        "ordinal": 15,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "stop_cause"
+          }
+        }
+      },
+      {
+        "name": "ended_at",
+        "ordinal": 16,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "ended_at"
+          }
+        }
+      },
+      {
+        "name": "ending_json",
+        "ordinal": 17,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "ending_json"
+          }
+        }
+      },
+      {
+        "name": "decided_operation_id",
+        "ordinal": 18,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "decided_operation_id"
+          }
+        }
+      },
+      {
+        "name": "delivery_state",
+        "ordinal": 19,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "delivery_state"
+          }
+        }
+      },
+      {
+        "name": "created_at",
+        "ordinal": 20,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "created_at"
+          }
+        }
+      },
+      {
+        "name": "updated_at",
+        "ordinal": 21,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_requests",
+            "name": "updated_at"
+          }
+        }
+      }
+    ],
+    "parameters": {
+      "Right": 5
+    },
+    "nullable": [
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      false,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      false,
+      false
+    ]
+  },
+  "hash": "44c3f0eba9874bd238d775e0c8b7330d31a15f3822bbe32d18d4b5d6bce0e8f7"
+}
