@@ -3,8 +3,9 @@ use super::{MARK, accepted_answer, caller, central_refusal, item, open, uuid_v7}
 use crate::{
     MacOutbox, MachineLocalOutbox, MachineLocalStore, NewOutboxItem, OutboxAccepted,
     OutboxCancellation, OutboxCentralRefusal, OutboxQueuedWrite, OutboxRefusal, OutboxRequestKey,
-    OutboxRequestStatus, OutboxStorage, OutboxStoreError, OutboxWriteOutcome, PendingWriteState,
-    RowCorruptionReason, StoredSenderOutcome, outbox_receipt_profile::AnsweredWrite,
+    OutboxRequestStatus, OutboxStorage, OutboxStoreError, OutboxWriteOutcome, OutgoingOutcome,
+    PendingWriteState, RowCorruptionReason, StoredSenderOutcome,
+    outbox_receipt_profile::AnsweredWrite,
 };
 use router_clock::{ManualClock, RuntimeClock};
 use std::{collections::BTreeSet, time::Duration};
@@ -94,6 +95,13 @@ async fn late_result_round_trip(
             reason: OutboxCancellation::NotConfirmedWithin15Minutes
         },
     );
+    assert!(
+        store
+            .outgoing_for(&write.caller, 10)
+            .await
+            .unwrap()
+            .is_empty()
+    );
     store
         .record_late_outcome(&write.request, &outcome)
         .await
@@ -133,11 +141,30 @@ async fn late_result_round_trip(
     assert_eq!(pending.len(), 1);
     assert_eq!(pending[0].request_id, write.request);
     assert_eq!(pending[0].state, expected_pending);
+    let outgoing = store.outgoing_for(&write.caller, 10).await.unwrap();
+    assert_eq!(
+        outgoing.len(),
+        1,
+        "a recorded cutoff outcome must appear in outgoing history"
+    );
+    let expected_outgoing = match expected_status {
+        OutboxRequestStatus::Answered(answer) => OutgoingOutcome::Answered(answer),
+        OutboxRequestStatus::Refused(refusal) => OutgoingOutcome::Refused(refusal),
+        _ => panic!("the fixture must provide a settled answer or refusal"),
+    };
+    assert_eq!(outgoing[0].request_id, write.request);
+    assert_eq!(outgoing[0].target, profile.target);
+    assert_eq!(outgoing[0].outcome, expected_outgoing);
+    assert_eq!(
+        outgoing[0].answered_at_ms, None,
+        "the cutoff is not an answer time"
+    );
     assert_eq!(
         store.scoped_request_status(&caller(2), &key).await.unwrap(),
         OutboxRequestStatus::NotFound,
     );
     assert!(store.pending_for(&caller(2)).await.unwrap().is_empty());
+    assert!(store.outgoing_for(&caller(2), 10).await.unwrap().is_empty());
     assert!(
         store
             .end_overdue(cutoff.updated_at)

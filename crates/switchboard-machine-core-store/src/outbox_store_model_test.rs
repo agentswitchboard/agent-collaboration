@@ -304,10 +304,10 @@ impl OutboxStoreModel {
                 .collect::<Vec<_>>(),
             expected_pending
         );
-        let mut expected_outgoing: Vec<(i64, RequestId)> = self
+        let mut expected_outgoing: Vec<(Option<i64>, RequestId)> = self
             .model
             .iter()
-            .filter_map(|(id, write)| write.answered_at.map(|at| (at, id.clone())))
+            .filter_map(|(id, write)| write.answered_at.map(|at| (Some(at), id.clone())))
             .collect();
         expected_outgoing.sort_by(|left, right| right.cmp(left));
         let outgoing = self

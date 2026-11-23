@@ -109,7 +109,7 @@ pub struct OutgoingWrite {
     pub request_id: RequestId,
     pub target: OutboxWriteTarget,
     pub outcome: OutgoingOutcome,
-    pub answered_at_ms: i64,
+    pub answered_at_ms: Option<i64>,
 }
 /// A write the Router stopped trying to send because it passed its deadline;
 /// its text is gone. The agent that wrote it is told.
