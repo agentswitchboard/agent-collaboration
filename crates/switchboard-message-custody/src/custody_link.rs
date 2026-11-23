@@ -30,6 +30,7 @@ use crate::{
         submit_to_outbox,
     },
     flush_clock::{FlushJitter, shared_time_at, wake_for_mark},
+    flush_marks::mark_in_window,
     offer_taker::{SharedRecipientInbox, TakenEvent, admitted_for, take_event},
     orphan_recovery::{OrphanProbe, OrphanTurn, prepare_orphan_turn, settle_orphan_probe},
     outbox_dispatch::{
@@ -452,8 +453,14 @@ impl CustodyLink {
     /// The independent deadline for waiting writes and the members still held by the driver.
     pub async fn next_write_deadline(&mut self) -> Result<Option<ClockInstant>, CustodyLinkError> {
         let waiting = self.outbox.earliest_deadline().await?;
-        let active = self.dispatcher.active_deadline(&self.outbox);
-        Ok(waiting.into_iter().chain(active).min())
+        Ok(waiting
+            .into_iter()
+            .chain(self.active_write_deadline())
+            .min())
+    }
+
+    pub(crate) fn active_write_deadline(&self) -> Option<ClockInstant> {
+        self.dispatcher.active_deadline(&self.outbox)
     }
 
     /// Wait on the injected clock for one scheduled flush, if there is work on an admitted link.
@@ -543,8 +550,13 @@ impl CustodyLink {
         finish_flush(report, result)
     }
 
-    async fn end_due_writes_into(&mut self, report: &mut FlushReport) -> Result<(), CustodyLinkError> {
-        self.dispatcher.end_active_due(&mut self.outbox, report).await?;
+    async fn end_due_writes_into(
+        &mut self,
+        report: &mut FlushReport,
+    ) -> Result<(), CustodyLinkError> {
+        self.dispatcher
+            .end_active_due(&mut self.outbox, report)
+            .await?;
         report.ended.extend(self.outbox.end_due_writes().await?);
         Ok(())
     }
@@ -567,9 +579,12 @@ impl CustodyLink {
         let lane = self.lane.clone();
         let clock = self.clock.clone();
         while let Some(batch) = self.prepare_write_turn(report).await? {
+            let current_mark = self.schedule.draining_mark();
             let mut answering = lane.submit_write_batch(batch.command());
+            let mut retry_cutoff_at = None;
+            let mut cutoff_result = Ok(());
             let disposition = loop {
-                let deadline = self.next_write_deadline().await?;
+                let deadline = retry_cutoff_at.or_else(|| self.active_write_deadline());
                 tokio::select! {
                     biased;
                     outcome = &mut answering => break outcome,
@@ -579,10 +594,24 @@ impl CustodyLink {
                         } else {
                             std::future::pending::<()>().await;
                         }
-                    } => self.end_due_writes_into(report).await?,
+                    } => {
+                        cutoff_result = self.end_due_writes_into(report).await;
+                        retry_cutoff_at = cutoff_result.is_err().then(|| self.local_retry_mark());
+                    }
                 }
             };
             self.settle_write_turn(batch, disposition, report).await?;
+            cutoff_result?;
+            if !self.admitted_connection().is_some_and(|admitted| {
+                current_mark == self.schedule.draining_mark()
+                    && current_mark
+                        == mark_in_window(shared_time_at(
+                            admitted.clock_anchor,
+                            clock.monotonic_now(),
+                        ))
+            }) {
+                break;
+            }
         }
         Ok(())
     }
@@ -619,7 +648,10 @@ impl CustodyLink {
         let prepared = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
-                self.apply_flush_event(FlushEvent::BatchEnded { earliest_due, continue_mark: false })?;
+                self.apply_flush_event(FlushEvent::BatchEnded {
+                    earliest_due,
+                    continue_mark: false,
+                })?;
                 return Err(error.into());
             }
         };
@@ -638,8 +670,15 @@ impl CustodyLink {
             None
         };
         if let Some(cause) = cause {
-            self.settle_write_turn(batch, WriteBatchDisposition::NotReached { cause }, report)
-                .await?;
+            if let Some(settled) = self
+                .dispatcher
+                .return_unsubmitted(&mut self.outbox, batch, cause)
+                .await
+            {
+                report.append(settled);
+                self.release_flush_slot(report, cause == UntouchedCommand::SendWindowElapsed)
+                    .await?;
+            }
             return Ok(None);
         }
         Ok(Some(batch))
@@ -660,14 +699,19 @@ impl CustodyLink {
             return Ok(());
         };
         report.append(settled);
-        let continue_mark = self.admitted_connection()
+        let continue_mark = self
+            .admitted_connection()
             .is_some_and(|current| current.connection == connection);
         self.release_flush_slot(report, continue_mark).await?;
         Ok(())
     }
 
     fn fence_mark_drain(&mut self, admitted: &AdmittedConnection) {
-        if self.drain_connection.as_ref().is_some_and(|connection| connection != &admitted.connection) {
+        if self
+            .drain_connection
+            .as_ref()
+            .is_some_and(|connection| connection != &admitted.connection)
+        {
             self.schedule.stop_draining_mark();
             self.drain_connection = None;
         }

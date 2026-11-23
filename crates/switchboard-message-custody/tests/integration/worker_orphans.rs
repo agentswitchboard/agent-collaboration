@@ -25,7 +25,7 @@ use super::{
     outbox_timing::{open_outbox, thread_post},
 };
 
-fn start_worker(
+pub(super) fn start_worker(
     custody: CustodyLink,
 ) -> (
     CustodyTaskHandle,
@@ -113,6 +113,12 @@ async fn a_lost_return_ack_excludes_that_request_while_an_unrelated_batch_is_liv
         faults.fail_scoped_reads(false);
         clock.advance(Duration::from_secs(1)).unwrap();
         assert_eq!(peer.batch_commands().last(), Some(&sent));
+        assert!(matches!(
+            calls
+                .request_status(first.caller.clone(), scoped_query(&first))
+                .await,
+            CustodyRequestStatus::InOutbox { .. }
+        ));
         held.release.notify_one();
         let answered = loop {
             let report = flush_event(&mut events, "B's checked settlement").await;
@@ -121,12 +127,14 @@ async fn a_lost_return_ack_excludes_that_request_while_an_unrelated_batch_is_liv
             }
         };
         assert!(matches!(answered.as_slice(), [answer] if answer.request == second.request));
-        assert!(matches!(
-            calls
-                .request_status(first.caller.clone(), scoped_query(&first))
-                .await,
-            CustodyRequestStatus::InOutbox { .. }
-        ));
+        let replayed = loop {
+            let report =
+                flush_event(&mut events, "A's replay after B releases the frame slot").await;
+            if !report.answered.is_empty() {
+                break report.answered;
+            }
+        };
+        assert!(matches!(replayed.as_slice(), [answer] if answer.request == first.request));
         stop.send_replace(true);
         running.await.unwrap();
     }
@@ -283,7 +291,7 @@ async fn an_orphan_status_uses_its_accepted_instant_and_never_notifies_twice() {
     clippy::unwrap_used,
     reason = "A malformed test write cannot exercise scoped orphan custody."
 )]
-fn scoped_query(item: &NewOutboxItem) -> RequestStatusQuery {
+pub(super) fn scoped_query(item: &NewOutboxItem) -> RequestStatusQuery {
     let OutboxQueuedWrite::Workspace(request) = &item.payload else {
         panic!("fixture requires a thread post");
     };
@@ -316,24 +324,27 @@ async fn seed_orphan(campaign: &FaultCampaign, item: &NewOutboxItem, created_at:
 }
 
 #[expect(
-    clippy::panic,
+    clippy::unwrap_used,
     reason = "The fixture reports a missing worker observation directly."
 )]
-async fn progress<Value>(watching: impl Future<Output = Value>, indication: &str) -> Value {
-    tokio::select! {
+pub(super) async fn progress<Value>(
+    watching: impl Future<Output = Value>,
+    indication: &str,
+) -> Value {
+    let observed = tokio::select! {
         biased;
-        current = watching => current,
-        () = async { for _ in 0..50_000 { tokio::task::yield_now().await; } } => {
-            panic!("custody did not reach {indication}");
-        }
-    }
+        current = watching => Some(current),
+        () = async { for _ in 0..50_000 { tokio::task::yield_now().await; } } => None,
+    };
+    assert!(observed.is_some(), "custody did not reach {indication}");
+    observed.unwrap()
 }
 
 #[expect(
     clippy::panic,
     reason = "The test asserts the exact next worker outcome."
 )]
-async fn flush_event(
+pub(super) async fn flush_event(
     events: &mut mpsc::UnboundedReceiver<CustodyTaskEvent>,
     indication: &str,
 ) -> FlushReport {

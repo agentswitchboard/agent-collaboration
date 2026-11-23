@@ -112,7 +112,10 @@ impl FlushModel {
             }
         }
         let earliest_due = self.earliest_due();
-        self.apply(FlushEvent::BatchEnded { earliest_due });
+        self.apply(FlushEvent::BatchEnded {
+            earliest_due,
+            continue_mark: answered,
+        });
     }
 
     fn wake_as_host(&mut self, jitter: i64) -> Vec<FlushEffect> {
@@ -214,25 +217,31 @@ fn the_flush_schedule_sends_nothing_early_twice_or_on_a_down_link(tc: TestCase) 
 }
 
 #[test]
-fn a_connected_link_drains_the_store_64_per_mark() {
+fn a_connected_link_drains_all_pending_writes_in_sequential_frames_on_one_mark() {
     let mut model = FlushModel::new();
     tc_link(&mut model, true);
     for _ in 0..150 {
         model.store_next();
     }
 
-    let mut marks = 0;
+    let mut frames = 0;
+    let mark = model.armed_wake.unwrap();
     while model
         .rows
         .values()
         .any(|(_, row)| *row != WriteRow::Answered)
     {
+        assert_eq!(
+            model.armed_wake,
+            Some(mark),
+            "prompt settlements keep the drain on the same mark"
+        );
         model.wake_as_host(0);
         if model.state.batch_in_flight() {
             model.end_batch(true);
         }
-        marks += 1;
-        assert!(marks <= 4, "150 writes drain in 3 marks");
+        frames += 1;
+        assert!(frames <= 3, "150 writes drain in three frames");
     }
 
     assert_eq!(model.sends, 3);

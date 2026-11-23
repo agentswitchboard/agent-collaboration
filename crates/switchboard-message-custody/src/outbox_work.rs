@@ -164,7 +164,8 @@ impl OutboxWork {
         &mut self,
         request: &RequestId,
     ) -> Result<Vec<EndedWrite>, OutboxStoreError> {
-        self.end_selected_claims(&BTreeSet::from([request.clone()])).await
+        self.end_selected_claims(&BTreeSet::from([request.clone()]))
+            .await
     }
 
     pub(crate) async fn end_selected_claims(

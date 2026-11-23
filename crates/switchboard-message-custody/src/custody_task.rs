@@ -274,6 +274,7 @@ async fn run_custody(
     let mut intake_retry_at = None;
     let mut tool_requests = JoinSet::new();
     let mut retry_store_at = None;
+    let mut retry_cutoff_at = None;
     let mut admission = lane.watch_admitted();
     let mut admission_open = true;
     let mut orphan_reply: Option<OutstandingOrphan> = None;
@@ -301,6 +302,16 @@ async fn run_custody(
                     (retry_store_at, None)
                 }
             }
+        };
+        let deadline_wake = if retry_cutoff_at.is_some_and(|retry| now < retry) {
+            retry_cutoff_at
+        } else {
+            retry_cutoff_at = None;
+            // A store read failure cannot hide the deadline of the frame the task already holds.
+            deadline_wake
+                .into_iter()
+                .chain(custody.active_write_deadline())
+                .min()
         };
         let receipt_wake = custody.next_receipt_minute(receipt_mark.as_ref());
         if intake_retry_at.is_none() {
@@ -355,7 +366,7 @@ async fn run_custody(
                 }
                 ReadyWriteTurn::Deadline => {
                     let ended = custody.end_due_writes().await;
-                    if ended.is_err() { retry_store_at = Some(custody.local_retry_mark()); }
+                    if ended.is_err() { retry_cutoff_at = Some(custody.local_retry_mark()); }
                     report_flush(&*sink, ended);
                 }
             },
@@ -562,6 +573,10 @@ async fn handle_tool(
 
 fn report_flush(sink: &dyn CustodyEventSink, result: Result<FlushReport, CustodyLinkError>) {
     match result {
+        Err(CustodyLinkError::InterruptedFlush { completed, error }) => {
+            sink.record_event(CustodyTaskEvent::Flush(*completed));
+            sink.record_event(CustodyTaskEvent::Failed(*error));
+        }
         Ok(report) if !report.is_empty() => {
             sink.record_event(CustodyTaskEvent::Flush(report));
         }

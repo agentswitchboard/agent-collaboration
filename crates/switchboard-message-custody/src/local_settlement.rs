@@ -135,12 +135,23 @@ impl LocalSettlements {
         work: &mut OutboxWork,
         write: &StoredOutboxWrite,
     ) -> Result<Option<EndedWrite>, OutboxStoreError> {
-        let key = OutboxRequestKey { request_id: write.request.clone(), scope: write.payload.request_scope() };
-        match work.outbox_storage().scoped_request_status(&write.caller, &key).await? {
-            OutboxRequestStatus::Ended { reason: OutboxCancellation::NotConfirmedWithin15Minutes } => {
-                let target = queued_write_target(&write.payload).ok_or_else(|| OutboxStoreError::UnexpectedState {
-                    request: write.request.clone(),
-                    expected: "a cutoff with its original write target",
+        let key = OutboxRequestKey {
+            request_id: write.request.clone(),
+            scope: write.payload.request_scope(),
+        };
+        match work
+            .outbox_storage()
+            .scoped_request_status(&write.caller, &key)
+            .await?
+        {
+            OutboxRequestStatus::Ended {
+                reason: OutboxCancellation::NotConfirmedWithin15Minutes,
+            } => {
+                let target = queued_write_target(&write.payload).ok_or_else(|| {
+                    OutboxStoreError::UnexpectedState {
+                        request: write.request.clone(),
+                        expected: "a cutoff with its original write target",
+                    }
                 })?;
                 Ok(Some(EndedWrite {
                     caller: write.caller.clone(),
@@ -253,13 +264,14 @@ impl LocalSettlements {
 pub(crate) enum MemberReturn {
     NotTransmitted,
     MayHaveTransmitted,
+    DriverHeldAtCutoff,
 }
 
 impl MemberReturn {
     fn into_evidence(self) -> MemberEvidence {
         match self {
             Self::NotTransmitted => MemberEvidence::NotTransmitted,
-            Self::MayHaveTransmitted => MemberEvidence::Unanswered,
+            Self::MayHaveTransmitted | Self::DriverHeldAtCutoff => MemberEvidence::Unanswered,
         }
     }
 }

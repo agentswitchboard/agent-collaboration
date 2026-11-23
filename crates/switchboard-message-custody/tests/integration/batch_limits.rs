@@ -3,15 +3,13 @@
     reason = "A bad fixture or missing peer batch must fail its test at the point of observation."
 )]
 
-use central_link_client::{
-    LINK_LANE_FRAME_BYTES, LINK_LANE_SETTLEMENT_LIMIT, LinkLaneEvent, LinkLocalFault,
-};
+use central_link_client::{LINK_LANE_FRAME_BYTES, LinkLaneEvent, LinkLocalFault};
 use central_link_protocol::{DataFrame, FrameDirection, LinkFrame, encode_text};
 use router_clock::{ClockInstant, ManualClock};
 use std::{sync::Arc, time::Duration};
 use switchboard_machine_core_store::{
     InboxStore, MachineLocalStore, OutboxAccepted, OutboxInsert, OutboxQueuedWrite,
-    OutboxRequestStatus, OutboxStorage, OutboxWriteOutcome, PendingWriteState,
+    OutboxRequestStatus, OutboxStorage, OutboxWriteOutcome,
 };
 use switchboard_message_custody::{
     custody_link::{CustodyLink, CustodyLinkObservation},
@@ -111,7 +109,7 @@ async fn a_single_overbudget_write_is_refused_before_entering_the_store() {
 }
 
 #[tokio::test]
-async fn a_full_byte_budget_leaves_the_oldest_unfitted_writes_for_the_next_mark() {
+async fn the_byte_budget_splits_frames_without_deferring_the_suffix_to_the_next_mark() {
     let (_root, mut custody, lane, clock) = limits_fixture().await;
     for seed in (1..=20).rev() {
         let submitted = queue_post(&mut custody, seed, |request| {
@@ -131,35 +129,17 @@ async fn a_full_byte_budget_leaves_the_oldest_unfitted_writes_for_the_next_mark(
             .iter()
             .map(|write| write.request.clone())
             .collect::<Vec<_>>(),
-        (1..=15)
+        (1..=20)
             .map(|seed| thread_post(seed).request)
             .collect::<Vec<_>>()
     );
-    let waiting = custody
-        .pending_writes(&thread_post(1).caller)
-        .await
-        .unwrap();
-    assert_eq!(
-        waiting
-            .iter()
-            .filter(|write| matches!(write.state, PendingWriteState::Unsent { .. }))
-            .count(),
-        5
-    );
-
-    clock.advance(Duration::from_secs(60)).unwrap();
-    let second = custody.flush_writes().await.unwrap();
-    assert_eq!(
-        second
-            .answered
-            .iter()
-            .map(|write| write.request.clone())
-            .collect::<Vec<_>>(),
-        (16..=20)
-            .map(|seed| thread_post(seed).request)
-            .collect::<Vec<_>>()
-    );
-    for command in lane.batch_commands() {
+    let frames = lane.batch_commands();
+    let lengths: Vec<_> = frames
+        .iter()
+        .map(|frame| frame.requests.requests().len())
+        .collect();
+    assert_eq!(lengths, [15, 5]);
+    for command in frames {
         let frame = LinkFrame::Data(DataFrame::Batch {
             requests: command.requests,
         });
@@ -173,14 +153,13 @@ async fn a_full_byte_budget_leaves_the_oldest_unfitted_writes_for_the_next_mark(
 }
 
 #[tokio::test]
-async fn a_batchs_send_fence_never_outlives_its_earliest_original_deadline() {
+async fn a_write_expiring_inside_the_mark_does_not_shorten_the_later_frames_fence() {
     let (root, mut custody, lane, clock) = limits_fixture().await;
     let mut fixture_store = open_outbox(&root.path().join("machine_local.sqlite")).await;
     let aged_write = thread_post(1);
-    let remaining_budget = i64::try_from(LINK_LANE_SETTLEMENT_LIMIT.as_millis()).unwrap();
     assert_eq!(
         fixture_store
-            .insert(&aged_write, MARK_MS - 899_000 + remaining_budget)
+            .insert(&aged_write, MARK_MS - 899_000)
             .await
             .unwrap(),
         OutboxInsert::Stored
@@ -191,13 +170,23 @@ async fn a_batchs_send_fence_never_outlives_its_earliest_original_deadline() {
     clock.advance(Duration::from_secs(20)).unwrap();
     assert_eq!(custody.flush_writes().await.unwrap().answered.len(), 2);
     let commands = lane.batch_commands();
-    let [batch] = commands.as_slice() else {
-        panic!("fixture needs one batch");
-    };
     assert_eq!(
-        batch.send_before,
+        commands.len(),
+        2,
+        "early and later cutoffs must use separate frames"
+    );
+    let early = commands.first().unwrap();
+    let later = commands.last().unwrap();
+    assert_eq!(
+        early.send_before,
         ClockInstant::ZERO.after(Duration::from_secs(21))
     );
+    assert_eq!(
+        later.send_before,
+        ClockInstant::ZERO.after(Duration::from_secs(23))
+    );
+    assert_eq!(early.requests.requests().len(), 1);
+    assert_eq!(later.requests.requests().len(), 1);
 }
 
 #[tokio::test]

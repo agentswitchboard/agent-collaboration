@@ -100,6 +100,10 @@ impl OutboxFlushState {
         self.armed_wake
     }
 
+    pub(crate) const fn draining_mark(&self) -> Option<SyncTime> {
+        self.draining_mark
+    }
+
     pub(crate) fn stop_draining_mark(&mut self) {
         self.draining_mark = None;
     }
@@ -168,7 +172,10 @@ pub(crate) fn advance_schedule(
             state.armed_wake = None;
             None
         }
-        FlushEvent::BatchEnded { earliest_due, continue_mark } => {
+        FlushEvent::BatchEnded {
+            earliest_due,
+            continue_mark,
+        } => {
             state
                 .in_flight
                 .take()
@@ -222,8 +229,8 @@ fn rearm(
             let candidate = tick_now.map_or(earliest_due, |now| {
                 earliest_due.max(earliest_open_mark(now, None))
             });
-            if state.draining_mark == Some(candidate) {
-                Some(candidate)
+            if let Some(mark) = state.draining_mark.filter(|mark| candidate <= *mark) {
+                Some(mark)
             } else {
                 Some(state.first_unused_mark(candidate))
             }

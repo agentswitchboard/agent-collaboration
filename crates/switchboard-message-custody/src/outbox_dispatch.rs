@@ -17,7 +17,7 @@ use crate::{
     flush_clock::send_fence_for_mark,
     local_settlement::{AnswerAtCutoff, LocalSettlements, MemberReturn},
     outbox_wire::request_for_write,
-    outbox_work::{FlushSelection, OutboxWork},
+    outbox_work::{FlushSelection, OutboxWork, OutboxWorkError},
 };
 
 pub use crate::flush_report::{
@@ -87,7 +87,9 @@ impl OutboxDispatcher {
 
     pub(crate) fn active_deadline(&self, work: &OutboxWork) -> Option<ClockInstant> {
         let batch = self.in_flight.as_ref()?;
-        batch.writes.iter()
+        batch
+            .writes
+            .iter()
             .filter(|write| !batch.ended_at_cutoff.contains(&write.request))
             .map(|write| work.write_deadline(write.sent_at))
             .min()
@@ -98,16 +100,25 @@ impl OutboxDispatcher {
         work: &mut OutboxWork,
         report: &mut FlushReport,
     ) -> Result<(), OutboxWorkError> {
-        let Some(batch) = self.in_flight.as_mut() else { return Ok(()); };
-        let due: BTreeSet<_> = batch.writes.iter().filter(|write|
-            !batch.ended_at_cutoff.contains(&write.request)
-                && !work.before_elapsed_fence(work.write_deadline(write.sent_at))
-        ).map(|write| write.request.clone()).collect();
+        let Some(batch) = self.in_flight.as_mut() else {
+            return Ok(());
+        };
+        let due: BTreeSet<_> = batch
+            .writes
+            .iter()
+            .filter(|write| {
+                !batch.ended_at_cutoff.contains(&write.request)
+                    && !work.before_elapsed_fence(work.write_deadline(write.sent_at))
+            })
+            .map(|write| write.request.clone())
+            .collect();
         if due.is_empty() {
             return Ok(());
         }
         let ended = work.end_selected_claims(&due).await?;
-        batch.ended_at_cutoff.extend(ended.iter().map(|write| write.request_id.clone()));
+        batch
+            .ended_at_cutoff
+            .extend(ended.iter().map(|write| write.request_id.clone()));
         report.ended.extend(ended);
         for write in &batch.writes {
             if due.contains(&write.request) && !batch.ended_at_cutoff.contains(&write.request) {
@@ -194,12 +205,22 @@ impl OutboxDispatcher {
         // Retrying a returned member in the same mark would starve later writes.
         let mut excluded = self.protected_request_ids();
         excluded.extend(self.attempted_requests.iter().cloned());
-        let window = FrameWindow { anchor, mark, eligible_through, closes_at: send_fence_for_mark(anchor, mark) };
+        let window = FrameWindow {
+            anchor,
+            mark,
+            eligible_through,
+            closes_at: send_fence_for_mark(anchor, mark),
+        };
         loop {
-            match self.claim_frame(work, &connection, &window, &excluded, report).await? {
+            match self
+                .claim_frame(work, &connection, &window, &excluded, report)
+                .await?
+            {
                 ClaimFrame::Prepared(ticket) => return Ok(Some(ticket)),
                 ClaimFrame::Finished => return Ok(None),
-                ClaimFrame::ExpiredPrefix => excluded.extend(self.settling.protected_ids().cloned()),
+                ClaimFrame::ExpiredPrefix => {
+                    excluded.extend(self.settling.protected_ids().cloned())
+                }
             }
         }
     }
@@ -215,7 +236,12 @@ impl OutboxDispatcher {
         // A return can be committed while its read-back is still failing.
         // Protect its request before selection or expiry can touch that row.
         let FlushSelection::Claimed(claimed) = work
-            .claim_due_through(window.anchor, window.mark, window.eligible_through, excluded)
+            .claim_due_through(
+                window.anchor,
+                window.mark,
+                window.eligible_through,
+                excluded,
+            )
             .await?
         else {
             return Ok(ClaimFrame::Finished);
@@ -227,10 +253,10 @@ impl OutboxDispatcher {
 
         let now_ms = work.local_now_ms();
         let send_before = window.closes_at.min(work.write_deadline(first.sent_at));
-        let eligible_prefix = claimed.writes.partition_point(|write|
+        let eligible_writes = claimed.writes.iter().take_while(|write| {
             window.closes_at.min(work.write_deadline(write.sent_at)) == send_before
-        );
-        let batch = match pack_wire_batch(&claimed.writes[..eligible_prefix], now_ms) {
+        });
+        let batch = match pack_wire_batch(eligible_writes, now_ms) {
             Ok(requests) => {
                 let count = requests.requests().len();
                 let mut selected = Vec::with_capacity(count);
@@ -264,7 +290,8 @@ impl OutboxDispatcher {
                     },
                     token: fresh_correlation(now_ms),
                 };
-                self.attempted_requests.extend(selected.iter().map(|write| write.request.clone()));
+                self.attempted_requests
+                    .extend(selected.iter().map(|write| write.request.clone()));
                 self.in_flight = Some(ClaimedWriteBatch {
                     ticket: ticket.clone(),
                     writes: selected,
@@ -293,6 +320,38 @@ impl OutboxDispatcher {
         submitted: PreparedWriteBatch,
         disposition: WriteBatchDisposition,
     ) -> Option<FlushReport> {
+        let driver_fence = match &disposition {
+            WriteBatchDisposition::NotReached {
+                cause: UntouchedCommand::SendWindowElapsed,
+            } => Some(submitted.command.send_before),
+            _ => None,
+        };
+        self.settle_claim(work, submitted, disposition, driver_fence)
+            .await
+    }
+
+    pub(crate) async fn return_unsubmitted(
+        &mut self,
+        work: &mut OutboxWork,
+        submitted: PreparedWriteBatch,
+        cause: UntouchedCommand,
+    ) -> Option<FlushReport> {
+        self.settle_claim(
+            work,
+            submitted,
+            WriteBatchDisposition::NotReached { cause },
+            None,
+        )
+        .await
+    }
+
+    async fn settle_claim(
+        &mut self,
+        work: &mut OutboxWork,
+        submitted: PreparedWriteBatch,
+        disposition: WriteBatchDisposition,
+        driver_fence: Option<ClockInstant>,
+    ) -> Option<FlushReport> {
         let active = self.in_flight.as_ref()?;
         if active.ticket.token != submitted.token || active.ticket.command != submitted.command {
             return None;
@@ -317,8 +376,16 @@ impl OutboxDispatcher {
                     if active.ended_at_cutoff.contains(&write.request) {
                         continue;
                     }
+                    let departure = if driver_fence
+                        .is_some_and(|fence| work.write_deadline(write.sent_at) <= fence)
+                    {
+                        // A driver-side expired fence proves the ticket was held through this cutoff.
+                        MemberReturn::DriverHeldAtCutoff
+                    } else {
+                        MemberReturn::NotTransmitted
+                    };
                     self.settling
-                        .return_member(work, write, MemberReturn::NotTransmitted, &mut report)
+                        .return_member(work, write, departure, &mut report)
                         .await;
                 }
                 collect_due_writes(work, &mut report).await;
@@ -390,8 +457,8 @@ enum ClaimFrame {
     Finished,
 }
 
-fn pack_wire_batch(
-    writes: &[StoredOutboxWrite],
+fn pack_wire_batch<'write>(
+    writes: impl Iterator<Item = &'write StoredOutboxWrite>,
     now_ms: i64,
 ) -> Result<LinkRequestBatch, BatchDispatchError> {
     let mut bytes = WRITE_BATCH_ENVELOPE_BYTES;

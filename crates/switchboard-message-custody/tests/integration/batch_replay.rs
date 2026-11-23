@@ -75,6 +75,7 @@ struct PeerHistory {
     attempts: Vec<Vec<RequestId>>,
     decisions: BTreeMap<RequestId, ReplyPayload>,
     commands: Vec<WriteBatchCommand>,
+    command_instants: Vec<ClockInstant>,
     recorded_writes: BTreeMap<RequestId, (Caller, RequestPayload)>,
 }
 
@@ -94,6 +95,7 @@ pub(super) enum ScriptedMemberFate {
 /// A test scripts the next lane submission or the fates of its transmitted members.
 pub(super) enum ScriptedBatch {
     Untouched,
+    UntouchedAtFence,
     Members(Vec<ScriptedMemberFate>),
 }
 
@@ -153,6 +155,10 @@ impl ScriptedBatchLane {
         self.history.lock().unwrap().commands.clone()
     }
 
+    pub(super) fn command_instants(&self) -> Vec<ClockInstant> {
+        self.history.lock().unwrap().command_instants.clone()
+    }
+
     pub(super) fn decide_next_batch(&self, batch: Option<ScriptedBatch>) {
         *self.next_batch.lock().unwrap() = batch;
     }
@@ -210,6 +216,11 @@ impl ScriptedBatchLane {
                     cause: UntouchedCommand::WriterBusy,
                 };
             }
+            Some(ScriptedBatch::UntouchedAtFence) => {
+                return WriteBatchDisposition::NotReached {
+                    cause: UntouchedCommand::SendWindowElapsed,
+                };
+            }
             Some(ScriptedBatch::Members(members)) => Some(members),
             None => None,
         };
@@ -224,6 +235,7 @@ impl ScriptedBatchLane {
         };
         let mut history = self.history.lock().unwrap();
         history.commands.push(batch);
+        history.command_instants.push(self.clock.monotonic_now());
         let first_batch = history.attempts.is_empty();
         let mut sent_requests = Vec::new();
         let mut members = Vec::new();
