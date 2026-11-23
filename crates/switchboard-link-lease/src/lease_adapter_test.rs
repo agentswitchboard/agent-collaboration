@@ -320,3 +320,24 @@ async fn a_stale_refusal_releases_the_fence_for_the_same_keys_newer_generation()
         UnfinishedLeaseWork::default()
     );
 }
+
+#[tokio::test]
+async fn central_ended_cause_preserves_the_distinct_stored_reason() {
+    let fixture = Fixture::new();
+    let key = fixture.binding.key();
+    fixture
+        .source
+        .end(&key, EnrollmentEnd::ConnectionEnrollmentEnded);
+    assert_eq!(
+        fixture.source.close().await.unwrap(),
+        UnfinishedLeaseWork::default()
+    );
+    assert_eq!(
+        fixture.store.row.borrow().clone(),
+        StoredEnrollment::Ended {
+            key,
+            generation: BindingGeneration::from_persisted(2).unwrap(),
+            why: StoredEnding::EndedByCentral,
+        }
+    );
+}
