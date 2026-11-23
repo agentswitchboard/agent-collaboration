@@ -70,6 +70,7 @@ pub(super) enum Step {
         operation: u16,
         choice: u8,
         actor: Actor,
+        fresh_factor: bool,
     },
     Stop {
         row: usize,
@@ -403,6 +404,7 @@ impl Ledger {
         actor: Actor,
         operation: u16,
         choice: u8,
+        fresh_factor: bool,
         effects: &mut Vec<OperationEffect>,
     ) -> Decision {
         if !self.visible(row, actor) {
@@ -418,9 +420,9 @@ impl Ledger {
             };
         }
         let answer_fits = if ROWS[row].parked {
-            choice <= 2 && actor.person()
+            choice <= 2 && actor.person() && fresh_factor
         } else {
-            choice <= 2 || (choice <= 5 && actor.person())
+            choice <= 2 || (choice <= 5 && actor.person() && fresh_factor)
         };
         let result = if let Some((ending, ..)) = self.rows[row].ending {
             Decision::Standing(ending)
@@ -507,8 +509,9 @@ impl Ledger {
                 operation,
                 choice,
                 actor,
+                fresh_factor,
             } => {
-                let result = self.decide(row, actor, operation, choice, &mut effects);
+                let result = self.decide(row, actor, operation, choice, fresh_factor, &mut effects);
                 effects.push(OperationEffect::Decide(row, actor, result));
             }
             Step::Stop { row, changed } => {

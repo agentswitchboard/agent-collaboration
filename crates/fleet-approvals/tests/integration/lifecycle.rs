@@ -570,13 +570,13 @@ fn provider_question_uses_its_declared_fields_and_offers_the_exact_answer() {
     let accepted = run_event(&mut book, decide(102, fields.clone()), 2);
     let frame = fixtures::offered_frame(&accepted);
     assert!(matches!(
-        frame.ending,
+        frame.ending(),
         PrivateEnding::ProviderQuestion { .. }
     ));
     assert_eq!(
-        frame.ending.into_ending(),
+        frame.into_ending(),
         Ending::Decided {
-            answer: Answer::Question {
+            answer: approval_request_protocol::ProviderAnswer::Question {
                 answer: QuestionAnswer::Answered { fields }
             },
             by: DecidedBy::Person {

@@ -8,7 +8,7 @@ use central_engine_model::{
 };
 
 use crate::approval_lifecycle_admission::{
-    applying_time, matches_key, stop_binding, stop_cause_matches_raise,
+    applying_time, matches_key, stop_binding, stop_cause_matches_raise, stop_marker_matches_cause,
 };
 use crate::approval_lifecycle_delivery::{receive, reoffer};
 use crate::approval_lifecycle_destinations::{decide, pass_on, read};
@@ -235,12 +235,14 @@ fn apply_stop(
         )),
         ApprovalState::StoppedBeforeRaise {
             contents_digest,
-            cause,
+            cause: stored_cause,
             ..
-        } if contents_digest == digest => reply(
+        } if contents_digest == digest && stop_marker_matches_cause(*stored_cause, cause) => reply(
             state,
             response(StopReceiptEnding::Cancelled {
-                reason: CancelReason::Stopped { cause: *cause },
+                reason: CancelReason::Stopped {
+                    cause: *stored_cause,
+                },
             }),
         ),
         ApprovalState::Waiting { saved }

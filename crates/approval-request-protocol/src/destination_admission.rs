@@ -2,7 +2,7 @@
 use workspace_ids::CentralSessionId;
 
 use crate::{
-    Answer, DecidedBy, Ending, InvalidApprovalEnding, Raise,
+    AcceptedApprovalDecision, Answer, DecidedBy, InvalidApprovalEnding, Raise,
     approval_holder_endings::{check_decision_actor, requires_fresh_factor},
 };
 
@@ -45,16 +45,13 @@ impl<'request> AdmittedDestination<'request> {
         &self,
         answer: Answer,
         factor: DecisionFactor,
-    ) -> Result<Ending, InvalidApprovalEnding> {
+    ) -> Result<AcceptedApprovalDecision, InvalidApprovalEnding> {
         check_decision_actor(self.raise, &answer, self.actor)?;
         if requires_fresh_factor(self.raise, &answer) && factor != DecisionFactor::FreshPersonFactor
         {
             return Err(InvalidApprovalEnding::FreshFactorRequired);
         }
-        Ok(Ending::Decided {
-            answer,
-            by: self.actor.clone(),
-        })
+        AcceptedApprovalDecision::from_admitted(self.raise, answer, self.actor.clone())
     }
 
     #[must_use]

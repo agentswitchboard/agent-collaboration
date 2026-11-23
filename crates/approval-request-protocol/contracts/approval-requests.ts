@@ -3,7 +3,7 @@
 export type Answer = { kind: "approval"; optionId: OfferedOptionId } | { kind: "question"; answer: QuestionAnswer } | { kind: "unprovenCall"; decision: SessionCallDecision };
 
 export type ApprovalDecision = {
-	answer: Answer,
+	answer: ProviderAnswer,
 	by: SessionDecider,
 };
 
@@ -58,12 +58,12 @@ export type ChoiceOptions = ChoiceOption[];
 /**  A parent-session decision reply. Use the checked request builders to publish it. */
 export type DecideReply = DecideReplyWire;
 
-export type DecideReplyWire = { kind: "savedDecision"; decision: ApprovalDecision } | { kind: "standing"; ending: EndingView } | { kind: "notVisible" } | { kind: "invalid" } | { kind: "tooLate" } | { kind: "operationConflict" };
+export type DecideReplyWire = { kind: "savedDecision"; decision: ApprovalDecision } | { kind: "standing"; ending: ProviderEndingView } | { kind: "notVisible" } | { kind: "invalid" } | { kind: "tooLate" } | { kind: "operationConflict" };
 
 export type DecideRequest = {
 	requestId: ApprovalRequestId,
 	operationId: string,
-	value: Answer,
+	value: ProviderAnswer,
 };
 
 export type DecidedBy = { kind: "person"; personId: string } | { kind: "session"; session: CentralSessionId };
@@ -82,7 +82,9 @@ export type Description = string;
 
 export type DestinationEnding<AcceptedAnswer, Cancellation> = { kind: "standing"; ending: StandingEnding<Cancellation> } | { kind: "giver"; decision: GiverDecision<AcceptedAnswer> };
 
-export type Ending = { kind: "decided"; answer: Answer; by: DecidedBy } | { kind: "cancelled"; reason: CancelReason } | { kind: "timedOut" };
+export type Ending = { kind: "decided"; answer: ProviderAnswer; by: DecidedBy } |
+/**  An observed parked decision. The holder frame authoring API requires checked admission. */
+{ kind: "unprovenCallDecided"; decision: SessionCallDecision; personId: string } | { kind: "cancelled"; reason: CancelReason } | { kind: "timedOut" };
 
 /**  Recipient-scoped view of a stored, bound ending. */
 export type EndingView = EndingViewWire;
@@ -125,9 +127,9 @@ export type MultiChoiceSelection_Serialize = MultiChoiceSelectionFields_Serializ
 
 export type OfferView = OfferView_Serialize | OfferView_Deserialize;
 
-export type OfferView_Deserialize = { kind: "providerApproval"; offer: ApprovalOffer_Deserialize } | { kind: "providerQuestion"; offer: QuestionOffer_Deserialize } | { kind: "unprovenCall"; offer: CallOffer; invocation: InvocationDigest };
+export type OfferView_Deserialize = { kind: "providerApproval"; offer: ApprovalOffer_Deserialize } | { kind: "providerQuestion"; offer: QuestionOffer_Deserialize } | { kind: "unprovenCall"; offer: CallOffer };
 
-export type OfferView_Serialize = { kind: "providerApproval"; offer: ApprovalOffer_Serialize } | { kind: "providerQuestion"; offer: QuestionOffer_Serialize } | { kind: "unprovenCall"; offer: CallOffer; invocation: InvocationDigest };
+export type OfferView_Serialize = { kind: "providerApproval"; offer: ApprovalOffer_Serialize } | { kind: "providerQuestion"; offer: QuestionOffer_Serialize } | { kind: "unprovenCall"; offer: CallOffer };
 
 export type OfferedOption = {
 	id: OfferedOptionId,
@@ -175,7 +177,12 @@ export type PassOnRequest = {
 
 export type PrivateEnding = { kind: "providerApproval"; ending: HolderEnding<OfferedOptionId, ProviderCancellation> } | { kind: "providerQuestion"; ending: HolderEnding<QuestionAnswer, ProviderCancellation> } | { kind: "unprovenCall"; ending: ParkedCallEnding };
 
+/**  The two answer kinds a parent session can send or receive. */
+export type ProviderAnswer = { kind: "approval"; optionId: OfferedOptionId } | { kind: "question"; answer: QuestionAnswer };
+
 export type ProviderCancellation = { kind: "stopped"; cause: ProviderStopCause } | { kind: "requesterGone" } | { kind: "sessionEnded" } | { kind: "enrollmentEnded" };
+
+export type ProviderEndingView = { kind: "providerApproval"; ending: DestinationEnding<OfferedOptionId, ProviderCancellation> } | { kind: "providerQuestion"; ending: DestinationEnding<QuestionAnswer, ProviderCancellation> };
 
 export type ProviderHolder = {
 	sessionId: CentralSessionId,
@@ -259,9 +266,9 @@ export type RequestView = RequestView_Serialize | RequestView_Deserialize;
 
 export type RequestViewFields = RequestViewFields_Serialize | RequestViewFields_Deserialize;
 
-export type RequestViewFields_Deserialize = { kind: "providerApproval"; requestId: ApprovalRequestId; offer: ApprovalOffer_Deserialize; state: RequestStateView<OfferedOptionId, ProviderCancellation>; window: ApprovalWindow } | { kind: "providerQuestion"; requestId: ApprovalRequestId; offer: QuestionOffer_Deserialize; state: RequestStateView<QuestionAnswer, ProviderCancellation>; window: ApprovalWindow } | { kind: "unprovenCall"; requestId: ApprovalRequestId; offer: CallOffer; invocation: InvocationDigest; state: ParkedCallStateView; window: ApprovalWindow };
+export type RequestViewFields_Deserialize = { kind: "providerApproval"; requestId: ApprovalRequestId; offer: ApprovalOffer_Deserialize; state: RequestStateView<OfferedOptionId, ProviderCancellation>; window: ApprovalWindow } | { kind: "providerQuestion"; requestId: ApprovalRequestId; offer: QuestionOffer_Deserialize; state: RequestStateView<QuestionAnswer, ProviderCancellation>; window: ApprovalWindow } | { kind: "unprovenCall"; requestId: ApprovalRequestId; offer: CallOffer; state: ParkedCallStateView; window: ApprovalWindow };
 
-export type RequestViewFields_Serialize = { kind: "providerApproval"; requestId: ApprovalRequestId; offer: ApprovalOffer_Serialize; state: RequestStateView<OfferedOptionId, ProviderCancellation>; window: ApprovalWindow } | { kind: "providerQuestion"; requestId: ApprovalRequestId; offer: QuestionOffer_Serialize; state: RequestStateView<QuestionAnswer, ProviderCancellation>; window: ApprovalWindow } | { kind: "unprovenCall"; requestId: ApprovalRequestId; offer: CallOffer; invocation: InvocationDigest; state: ParkedCallStateView; window: ApprovalWindow };
+export type RequestViewFields_Serialize = { kind: "providerApproval"; requestId: ApprovalRequestId; offer: ApprovalOffer_Serialize; state: RequestStateView<OfferedOptionId, ProviderCancellation>; window: ApprovalWindow } | { kind: "providerQuestion"; requestId: ApprovalRequestId; offer: QuestionOffer_Serialize; state: RequestStateView<QuestionAnswer, ProviderCancellation>; window: ApprovalWindow } | { kind: "unprovenCall"; requestId: ApprovalRequestId; offer: CallOffer; state: ParkedCallStateView; window: ApprovalWindow };
 
 /**
  *  Named request-kind arms carry only the matching offer and ending.
@@ -288,9 +295,13 @@ export type SessionCallFolder = string;
 
 export type SessionCallMode = string;
 
-export type SessionCallOperation = { kind: "startSession"; agentProgram: SessionCallProgram; workingFolder: SessionCallFolder; mode: SessionCallMode } | { kind: "endSessionForGood"; sessionId: CentralSessionId };
+export type SessionCallOperation = { kind: "startSession"; agentProgram: SessionCallProgram; workingFolder: SessionCallFolder; mode: SessionCallMode; workFolders: SessionCallWorkFolders } | { kind: "endSessionForGood"; sessionId: CentralSessionId };
 
 export type SessionCallProgram = "claude" | "cursor";
+
+export type SessionCallWorkFolder = string;
+
+export type SessionCallWorkFolders = SessionCallWorkFolder[];
 
 export type SessionDecider = { kind: "session"; session: CentralSessionId };
 

@@ -6,9 +6,9 @@ use workspace_ids::{ApprovalRequestId, PersonId};
 use crate::{
     AdmittedDestination, Answer, ApprovalOffer, ApprovalWindow, CallCancellation, CallOffer,
     CentralTime, DecidedBy, DeliverEndingRequest, Delivery, DestinationProjection, HolderEnding,
-    InvalidApprovalEnding, InvocationDigest, OfferView, OfferedOptionId, ParkedCallEnding,
-    PrivateEnding, ProviderCancellation, QuestionAnswer, QuestionOffer, Raise, SessionCallDecision,
-    WaitingStatus, check_answer,
+    InvalidApprovalEnding, OfferView, OfferedOptionId, ParkedCallEnding, PrivateEnding,
+    ProviderCancellation, QuestionAnswer, QuestionOffer, Raise, SessionCallDecision, WaitingStatus,
+    check_answer,
 };
 
 approval_wire_union! {
@@ -130,6 +130,31 @@ pub enum EndingViewWire {
 }
 }
 
+approval_wire_union! {
+#[derive(Clone, Debug, Eq, PartialEq)]
+#[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
+pub enum ProviderEndingView {
+    ProviderApproval {
+        ending: DestinationEnding<OfferedOptionId, ProviderCancellation>,
+    },
+    ProviderQuestion {
+        ending: DestinationEnding<QuestionAnswer, ProviderCancellation>,
+    },
+}
+}
+
+impl TryFrom<EndingView> for ProviderEndingView {
+    type Error = InvalidApprovalEnding;
+
+    fn try_from(view: EndingView) -> Result<Self, Self::Error> {
+        match view.0 {
+            EndingViewWire::ProviderApproval { ending } => Ok(Self::ProviderApproval { ending }),
+            EndingViewWire::ProviderQuestion { ending } => Ok(Self::ProviderQuestion { ending }),
+            EndingViewWire::UnprovenCall { .. } => Err(InvalidApprovalEnding::BindingMismatch),
+        }
+    }
+}
+
 /// Recipient-scoped view of a stored, bound ending.
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(transparent)]
@@ -147,7 +172,7 @@ impl EndingView {
     ) -> Result<DestinationProjection<'request, Self>, InvalidApprovalEnding> {
         ending.check_bound_raise(admitted.raise())?;
         let actor = admitted.actor();
-        let projected = match ending.ending.clone() {
+        let projected = match ending.ending().clone() {
             PrivateEnding::ProviderApproval { ending } => EndingViewWire::ProviderApproval {
                 ending: DestinationEnding::project(ending, actor),
             },
@@ -240,7 +265,6 @@ enum RequestViewFields {
     UnprovenCall {
         request_id: ApprovalRequestId,
         offer: CallOffer,
-        invocation: InvocationDigest,
         state: ParkedCallStateView,
         window: ApprovalWindow,
     },
@@ -278,13 +302,10 @@ impl RequestView {
                 state: RequestStateView::Waiting { status },
                 window,
             },
-            Raise::UnprovenCall {
-                offer, invocation, ..
-            } => match status {
+            Raise::UnprovenCall { offer, .. } => match status {
                 WaitingStatus::Pending => RequestViewFields::UnprovenCall {
                     request_id,
                     offer: offer.clone(),
-                    invocation: invocation.clone(),
                     state: ParkedCallStateView::Waiting {},
                     window,
                 },
@@ -334,22 +355,18 @@ impl RequestView {
                 },
                 window,
             },
-            (
-                Raise::UnprovenCall {
-                    offer, invocation, ..
-                },
-                EndingViewWire::UnprovenCall { ending },
-            ) => RequestViewFields::UnprovenCall {
-                request_id,
-                offer: offer.clone(),
-                invocation: invocation.clone(),
-                state: ParkedCallStateView::Ended {
-                    ending,
-                    ended_at,
-                    delivery,
-                },
-                window,
-            },
+            (Raise::UnprovenCall { offer, .. }, EndingViewWire::UnprovenCall { ending }) => {
+                RequestViewFields::UnprovenCall {
+                    request_id,
+                    offer: offer.clone(),
+                    state: ParkedCallStateView::Ended {
+                        ending,
+                        ended_at,
+                        delivery,
+                    },
+                    window,
+                }
+            }
             (
                 Raise::ProviderApproval { .. },
                 EndingViewWire::ProviderQuestion { .. } | EndingViewWire::UnprovenCall { .. },

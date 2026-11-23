@@ -40,7 +40,7 @@ export const parkedStart = {
   requestId: session,
   holder: { routerRun: session },
   offer: {
-    operation: { kind: "startSession", agentProgram: "claude", workingFolder: "/project", mode: "plan" },
+    operation: { kind: "startSession", agentProgram: "claude", workingFolder: "/project", mode: "plan", workFolders: ["/project/docs", "/project/src"] },
   },
   invocation: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
 } satisfies Raise;

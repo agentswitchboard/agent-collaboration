@@ -131,11 +131,18 @@ impl Scenario {
     }
 
     fn frame(&self, row: usize, offer: Offer) -> DeliverEndingRequest {
-        DeliverEndingRequest::from_raise(
-            &self.raise(row, offer.changed),
-            self.ending(row, offer.ending),
-        )
-        .unwrap()
+        let raise = self.raise(row, offer.changed);
+        match self.ending(row, offer.ending) {
+            approval_request_protocol::Ending::UnprovenCallDecided { decision, person_id } =>
+                serde_json::from_value(json!({
+                    "requestId":raise.request_id(),"contentsDigest":raise.contents_digest().unwrap(),
+                    "ending":{"kind":"unprovenCall","ending":{"kind":"decided","decision":decision,"personId":person_id}}
+                })).unwrap(),
+            ending @ (approval_request_protocol::Ending::Decided { .. }
+                | approval_request_protocol::Ending::Cancelled { .. }
+                | approval_request_protocol::Ending::TimedOut {}) =>
+                DeliverEndingRequest::from_raise(&raise, ending).unwrap(),
+        }
     }
 
     fn input(&self, step: Step, ledger: &Ledger) -> Option<ApprovalCollectionEvent> {
@@ -173,11 +180,16 @@ impl Scenario {
                 operation,
                 choice,
                 actor,
+                fresh_factor,
             } => {
                 let decider = match self.actor(row, actor) {
                     ApprovalActor::Person(person_id) => AdmittedDecider::Person {
                         person_id,
-                        factor: FactorStanding::Fresh,
+                        factor: if fresh_factor {
+                            FactorStanding::Fresh
+                        } else {
+                            FactorStanding::AbsentOrStale
+                        },
                     },
                     ApprovalActor::Session(session) => AdmittedDecider::Session(session),
                 };
@@ -263,8 +275,25 @@ impl Scenario {
     fn ending(&self, row: usize, ending: Ending) -> approval_request_protocol::Ending {
         use approval_request_protocol::Ending as ProtocolEnding;
         match ending {
+            Ending::Decided { choice, actor } if ROWS[row].parked => {
+                let person_id = if actor == Actor::FirstPerson {
+                    person_id(10)
+                } else {
+                    person_id(11)
+                };
+                ProtocolEnding::UnprovenCallDecided {
+                    decision: if choice == 1 {
+                        SessionCallDecision::Allow
+                    } else {
+                        SessionCallDecision::Decline
+                    },
+                    person_id,
+                }
+            }
             Ending::Decided { choice, actor } => ProtocolEnding::Decided {
-                answer: Self::choice(row, choice),
+                answer: approval_request_protocol::ProviderAnswer::Approval {
+                    option_id: approval_request_protocol::OfferedOptionId::new(choice).unwrap(),
+                },
                 by: self.identity(row, actor),
             },
             Ending::TimedOut => ProtocolEnding::TimedOut {},
@@ -325,10 +354,7 @@ impl Scenario {
 
     fn expected_read(&self, row: usize, actor: Actor, view: View, changed: bool) -> Value {
         let raise = self.raise(row, changed);
-        if let Raise::UnprovenCall {
-            offer, invocation, ..
-        } = &raise
-        {
+        if let Raise::UnprovenCall { offer, .. } = &raise {
             let state = match view.ending {
                 Some((ending, at, delivery)) => {
                     json!({"kind":"ended","ending":self.recipient_ending(row, actor, ending),
@@ -337,7 +363,7 @@ impl Scenario {
                 None => json!({"kind":"waiting"}),
             };
             return json!({"kind":"unprovenCall","requestId":self.key(row).request_id,"offer":offer,
-                "invocation":invocation,"state":state,"window":ApprovalWindow::from_first_save(time(view.raised_at)).unwrap()});
+                "state":state,"window":ApprovalWindow::from_first_save(time(view.raised_at)).unwrap()});
         }
         let Raise::ProviderApproval { offer, .. } = raise else {
             panic!("the model fixture owns an approval offer");
@@ -427,6 +453,7 @@ fn generated_histories_match_the_separate_smaller_central_ledger(case: hegel::Te
                 operation: 101,
                 choice: 2,
                 actor: Actor::FirstPerson,
+                fresh_factor: true,
             },
             2,
         );
@@ -436,6 +463,7 @@ fn generated_histories_match_the_separate_smaller_central_ledger(case: hegel::Te
                 operation: 101,
                 choice: 2,
                 actor: Actor::FirstPerson,
+                fresh_factor: true,
             },
             3,
         );
@@ -527,12 +555,25 @@ fn generated_histories_match_the_separate_smaller_central_ledger(case: hegel::Te
             },
             1,
         );
+        for (operation, choice) in [(112, 1), (113, 2)] {
+            compare(
+                Step::Decide {
+                    row: 4,
+                    operation,
+                    choice,
+                    actor: Actor::FirstPerson,
+                    fresh_factor: false,
+                },
+                1,
+            );
+        }
         compare(
             Step::Decide {
                 row: 4,
-                operation: 101,
-                choice: 1,
+                operation: 114,
+                choice: if case.draw(gs::booleans()) { 1 } else { 2 },
                 actor: Actor::FirstPerson,
+                fresh_factor: true,
             },
             2,
         );
@@ -570,6 +611,7 @@ fn generated_histories_match_the_separate_smaller_central_ledger(case: hegel::Te
                 row,
                 operation: case.draw(gs::integers::<u16>().min_value(101).max_value(105)),
                 choice: case.draw(gs::integers::<u8>().min_value(1).max_value(6)),
+                fresh_factor: case.draw(gs::booleans()),
                 actor: case.draw(gs::sampled_from(vec![
                     Actor::FirstPerson,
                     Actor::SecondPerson,

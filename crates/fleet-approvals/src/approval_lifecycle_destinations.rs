@@ -1,15 +1,15 @@
 use approval_request_protocol::{
-    AdmittedDestination, CentralTime, DecideRequest, DecidedBy, DecisionFactor, Delivery, Ending,
-    EndingView, PassOnReply, RequestView, WaitingStatus,
+    AdmittedDestination, CentralTime, DecidedBy, DecisionFactor, Delivery, Ending, EndingView,
+    PassOnReply, RequestView, WaitingStatus,
 };
 use central_engine_model::TransitionError;
 
 use crate::approval_lifecycle_admission::{is_assigned_parent, is_destination};
-use crate::approval_lifecycle_effects::{ApprovalChange, finish, reply};
+use crate::approval_lifecycle_effects::{ApprovalChange, finish, finish_decided, reply};
 use crate::{
-    AdmittedDecider, ApprovalActor, ApprovalDecisionReply, ApprovalEffect, ApprovalReceipt,
-    ApprovalRefusal, ApprovalRequestKey, ApprovalSession, ApprovalState, DestinationReply,
-    FactorStanding, RetainedApproval, SavedDecision,
+    AdmittedDecider, ApprovalActor, ApprovalDecideInput, ApprovalDecisionReply, ApprovalEffect,
+    ApprovalReceipt, ApprovalRefusal, ApprovalRequestKey, ApprovalSession, ApprovalState,
+    DestinationReply, FactorStanding, RetainedApproval, SavedDecision,
 };
 
 fn visible<'a>(
@@ -28,7 +28,7 @@ pub(super) fn decide(
     state: &ApprovalState,
     key: &ApprovalRequestKey,
     decider: &AdmittedDecider,
-    request: DecideRequest,
+    request: ApprovalDecideInput,
     prior: Option<&SavedDecision>,
     now: CentralTime,
 ) -> ApprovalChange {
@@ -73,7 +73,7 @@ pub(super) fn decide(
             ApprovalDecisionReply::Standing {
                 ending: EndingView::for_destination(
                     &admitted,
-                    &crate::approval_lifecycle_effects::ending_frame(saved, closed),
+                    &crate::approval_lifecycle_effects::ending_frame(closed),
                 )
                 .map_err(|_| TransitionError::Domain(ApprovalRefusal::InvalidRetainedEnding))?
                 .for_recipient(&identity)
@@ -97,7 +97,7 @@ pub(super) fn decide(
                 DecisionFactor::NoFreshPersonFactor
             };
             if let Ok(ending) = admitted.decide(request.value.clone(), factor) {
-                let (next, effects) = finish(saved, ending, Delivery::Owed {}, now)?;
+                let (next, effects) = finish_decided(saved, ending, now)?;
                 (
                     next,
                     effects,
@@ -174,7 +174,7 @@ fn project_view(
         ApprovalState::Ended { closed, .. } => RequestView::ended(
             &admitted,
             saved.window,
-            &crate::approval_lifecycle_effects::ending_frame(saved, closed),
+            &crate::approval_lifecycle_effects::ending_frame(closed),
             closed.ended_at,
             closed.delivery,
         ),

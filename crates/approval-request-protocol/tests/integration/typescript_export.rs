@@ -20,6 +20,8 @@ fn generate_approval_typescript() -> Result<String, specta_typescript::Error> {
         .register::<approval_request_protocol::PassOnRequest>()
         .register::<approval_request_protocol::PassOnReply>()
         .register::<approval_request_protocol::OfferView>()
+        .register::<approval_request_protocol::Answer>()
+        .register::<approval_request_protocol::EndingView>()
         .register::<approval_request_protocol::RequestState>()
         .register::<approval_request_protocol::RequestView>();
     let generated = Typescript::default()

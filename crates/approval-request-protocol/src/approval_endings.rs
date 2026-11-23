@@ -3,7 +3,7 @@ use crate::approval_wire_codec::approval_wire_union;
 use serde::{Deserialize, Serialize};
 use workspace_ids::{CentralSessionId, PersonId};
 
-use crate::{Answer, ApprovalDigestError, InvalidAnswer};
+use crate::{ApprovalDigestError, InvalidAnswer, ProviderAnswer, SessionCallDecision};
 
 approval_wire_union! {
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -27,7 +27,13 @@ approval_wire_union! {
     derive(specta::Type)
 )]
 pub enum Ending {
-    Decided { answer: Answer, by: DecidedBy },
+    Decided { answer: ProviderAnswer, by: DecidedBy },
+    /// An observed parked decision. The holder frame authoring API requires checked admission.
+    UnprovenCallDecided {
+        decision: SessionCallDecision,
+        #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), specta(type = String))]
+        person_id: PersonId,
+    },
     Cancelled { reason: CancelReason },
     TimedOut {},
 }
@@ -150,7 +156,7 @@ approval_wire_record! {
     #[derive(Clone, Debug, Eq, PartialEq)]
     #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
     pub struct ApprovalDecision {
-        pub answer: Answer,
+        pub answer: ProviderAnswer,
         pub by: SessionDecider,
     }
 }

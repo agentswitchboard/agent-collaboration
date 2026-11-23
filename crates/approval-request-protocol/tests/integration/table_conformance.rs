@@ -3,8 +3,8 @@ use std::fmt::Debug;
 
 use approval_request_protocol::{
     CancelReason, DecideReply, DecideReplyWire, DecideRequest, DeliverEndingReply,
-    DeliverEndingRequest, DestinationEnding, EndingViewWire, HolderStopCause, PassOnReply,
-    PassOnRequest, Raise, RaiseReply, RegisterRunReply, RegisterRunRequest, RunRefusal,
+    DeliverEndingRequest, DestinationEnding, HolderStopCause, PassOnReply, PassOnRequest,
+    ProviderEndingView, Raise, RaiseReply, RegisterRunReply, RegisterRunRequest, RunRefusal,
     SessionDecider, StandingEnding, StopReceiptEnding, StopReply, StopRequest,
 };
 use serde::{Serialize, de::DeserializeOwned};
@@ -333,15 +333,12 @@ fn decide_standing_cases_cover_every_request_kind_and_disclosure() -> Result<(),
             let DecideReplyWire::Standing { ending } = reply.wire_shape() else {
                 return Err("Decide standing decoded as another reply".to_owned());
             };
-            let observed = match ending.wire_shape() {
-                EndingViewWire::ProviderApproval { ending } => {
+            let observed = match ending {
+                ProviderEndingView::ProviderApproval { ending } => {
                     ("providerApproval", destination_standing_case(ending))
                 }
-                EndingViewWire::ProviderQuestion { ending } => {
+                ProviderEndingView::ProviderQuestion { ending } => {
                     ("providerQuestion", destination_standing_case(ending))
-                }
-                EndingViewWire::UnprovenCall { .. } => {
-                    return Err("provider fixture decoded as an unproven call".to_owned());
                 }
             };
             if observed != (request_kind, case) {

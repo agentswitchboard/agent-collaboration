@@ -4,8 +4,8 @@ use workspace_ids::{ApprovalRequestId, PersonId};
 
 use crate::{
     Answer, CallStopCause, CancelReason, DecidedBy, Ending, HolderStopCause, InvalidAnswer,
-    InvalidApprovalEnding, OfferedOptionId, ProviderStopCause, QuestionAnswer, Raise,
-    RequestContentsDigest, SessionCallDecision, check_answer,
+    InvalidApprovalEnding, OfferedOptionId, ProviderAnswer, ProviderStopCause, QuestionAnswer,
+    Raise, RequestContentsDigest, SessionCallDecision, check_answer,
 };
 
 approval_wire_union! {
@@ -77,7 +77,7 @@ pub enum PrivateEnding {
 impl PrivateEnding {
     pub fn from_raise(raise: &Raise, ending: Ending) -> Result<Self, InvalidApprovalEnding> {
         if let Ending::Decided { answer, by } = &ending {
-            check_decision_actor(raise, answer, by)?;
+            check_decision_actor(raise, &answer.clone().into(), by)?;
         }
         match raise {
             Raise::ProviderApproval { .. } => Ok(Self::ProviderApproval {
@@ -93,6 +93,14 @@ impl PrivateEnding {
     }
 
     pub fn check_bound_raise(&self, raise: &Raise) -> Result<(), InvalidApprovalEnding> {
+        if let Self::UnprovenCall { .. } = self {
+            return match raise {
+                Raise::UnprovenCall { .. } => Ok(()),
+                Raise::ProviderApproval { .. } | Raise::ProviderQuestion { .. } => {
+                    Err(InvalidApprovalEnding::BindingMismatch)
+                }
+            };
+        }
         let expected = Self::from_raise(raise, self.clone().into_ending())?;
         if *self == expected {
             Ok(())
@@ -105,11 +113,11 @@ impl PrivateEnding {
     pub fn into_ending(self) -> Ending {
         match self {
             Self::ProviderApproval { ending } => ending.into_ending(
-                |option_id| Answer::Approval { option_id },
+                |option_id| ProviderAnswer::Approval { option_id },
                 ProviderCancellation::into_reason,
             ),
             Self::ProviderQuestion { ending } => ending.into_ending(
-                |answer| Answer::Question { answer },
+                |answer| ProviderAnswer::Question { answer },
                 ProviderCancellation::into_reason,
             ),
             Self::UnprovenCall { ending } => ending.into_ending(),
@@ -122,13 +130,88 @@ approval_wire_record! {
 #[derive(Clone, Debug, Eq, PartialEq)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub struct DeliverEndingRequest {
-    pub request_id: ApprovalRequestId,
-    pub contents_digest: RequestContentsDigest,
-    pub ending: PrivateEnding,
+    request_id: ApprovalRequestId,
+    contents_digest: RequestContentsDigest,
+    ending: PrivateEnding,
 }
 }
 
+/// A decision produced by checking an admitted destination and the current factor.
+#[derive(Debug)]
+pub struct AcceptedApprovalDecision(DeliverEndingRequest);
+
+impl AcceptedApprovalDecision {
+    pub(crate) fn from_admitted(
+        raise: &Raise,
+        answer: Answer,
+        actor: DecidedBy,
+    ) -> Result<Self, InvalidApprovalEnding> {
+        let holder_frame = match answer {
+            Answer::Approval { option_id } => DeliverEndingRequest::from_raise(
+                raise,
+                Ending::Decided {
+                    answer: ProviderAnswer::Approval { option_id },
+                    by: actor,
+                },
+            )?,
+            Answer::Question { answer } => DeliverEndingRequest::from_raise(
+                raise,
+                Ending::Decided {
+                    answer: ProviderAnswer::Question { answer },
+                    by: actor,
+                },
+            )?,
+            Answer::UnprovenCall { decision } => {
+                let DecidedBy::Person { person_id } = actor else {
+                    return Err(InvalidApprovalEnding::IneligibleDecider);
+                };
+                DeliverEndingRequest {
+                    request_id: raise.request_id().clone(),
+                    contents_digest: raise.contents_digest()?,
+                    ending: PrivateEnding::UnprovenCall {
+                        ending: ParkedCallEnding::Decided {
+                            decision,
+                            person_id,
+                        },
+                    },
+                }
+            }
+        };
+        Ok(Self(holder_frame))
+    }
+}
+
 impl DeliverEndingRequest {
+    /// Carry a checked decision to the holder for the same immutable Raise.
+    pub fn from_decision(
+        raise: &Raise,
+        decision: AcceptedApprovalDecision,
+    ) -> Result<Self, InvalidApprovalEnding> {
+        let frame = decision.0;
+        frame.check_bound_raise(raise)?;
+        Ok(frame)
+    }
+
+    #[must_use]
+    pub fn request_id(&self) -> &ApprovalRequestId {
+        &self.request_id
+    }
+
+    #[must_use]
+    pub fn contents_digest(&self) -> &RequestContentsDigest {
+        &self.contents_digest
+    }
+
+    #[must_use]
+    pub fn ending(&self) -> &PrivateEnding {
+        &self.ending
+    }
+
+    #[must_use]
+    pub fn into_ending(self) -> Ending {
+        self.ending.into_ending()
+    }
+
     pub fn from_raise(raise: &Raise, ending: Ending) -> Result<Self, InvalidApprovalEnding> {
         Ok(Self {
             request_id: raise.request_id().clone(),
@@ -151,7 +234,7 @@ impl DeliverEndingRequest {
 impl<AcceptedAnswer, Cancellation> HolderEnding<AcceptedAnswer, Cancellation> {
     fn into_ending(
         self,
-        answer_for_kind: impl FnOnce(AcceptedAnswer) -> Answer,
+        answer_for_kind: impl FnOnce(AcceptedAnswer) -> ProviderAnswer,
         cancellation_for_kind: impl FnOnce(Cancellation) -> CancelReason,
     ) -> Ending {
         match self {
@@ -169,7 +252,7 @@ impl<AcceptedAnswer, Cancellation> HolderEnding<AcceptedAnswer, Cancellation> {
 
 fn project_ending<AcceptedAnswer, Cancellation>(
     ending: Ending,
-    answer_for_kind: impl FnOnce(Answer) -> Option<AcceptedAnswer>,
+    answer_for_kind: impl FnOnce(ProviderAnswer) -> Option<AcceptedAnswer>,
     cancellation_for_kind: impl FnOnce(CancelReason) -> Result<Cancellation, InvalidApprovalEnding>,
 ) -> Result<HolderEnding<AcceptedAnswer, Cancellation>, InvalidApprovalEnding> {
     match ending {
@@ -182,6 +265,7 @@ fn project_ending<AcceptedAnswer, Cancellation>(
             reason: cancellation_for_kind(reason)?,
         }),
         Ending::TimedOut {} => Ok(HolderEnding::TimedOut {}),
+        Ending::UnprovenCallDecided { .. } => Err(InvalidApprovalEnding::IneligibleDecider),
     }
 }
 
@@ -217,17 +301,17 @@ pub(crate) fn check_decision_actor(
     Ok(())
 }
 
-fn take_approval(answer: Answer) -> Option<OfferedOptionId> {
+fn take_approval(answer: ProviderAnswer) -> Option<OfferedOptionId> {
     match answer {
-        Answer::Approval { option_id } => Some(option_id),
-        Answer::Question { .. } | Answer::UnprovenCall { .. } => None,
+        ProviderAnswer::Approval { option_id } => Some(option_id),
+        ProviderAnswer::Question { .. } => None,
     }
 }
 
-fn take_question(answer: Answer) -> Option<QuestionAnswer> {
+fn take_question(answer: ProviderAnswer) -> Option<QuestionAnswer> {
     match answer {
-        Answer::Question { answer } => Some(answer),
-        Answer::Approval { .. } | Answer::UnprovenCall { .. } => None,
+        ProviderAnswer::Question { answer } => Some(answer),
+        ProviderAnswer::Approval { .. } => None,
     }
 }
 
@@ -248,14 +332,9 @@ impl TryFrom<CancelReason> for ProviderCancellation {
 impl ParkedCallEnding {
     fn from_ending(ending: Ending) -> Result<Self, InvalidApprovalEnding> {
         match ending {
-            Ending::Decided {
-                answer: Answer::UnprovenCall { decision },
-                by: DecidedBy::Person { person_id },
-            } => Ok(Self::Decided {
-                decision,
-                person_id,
-            }),
-            Ending::Decided { .. } => Err(InvalidApprovalEnding::IneligibleDecider),
+            Ending::Decided { .. } | Ending::UnprovenCallDecided { .. } => {
+                Err(InvalidApprovalEnding::IneligibleDecider)
+            }
             Ending::Cancelled { reason } => {
                 let reason = match reason {
                     CancelReason::Stopped {
@@ -288,9 +367,9 @@ impl ParkedCallEnding {
             ParkedCallEnding::Decided {
                 decision,
                 person_id,
-            } => Ending::Decided {
-                answer: Answer::UnprovenCall { decision },
-                by: DecidedBy::Person { person_id },
+            } => Ending::UnprovenCallDecided {
+                decision,
+                person_id,
             },
             ParkedCallEnding::Cancelled { reason } => Ending::Cancelled {
                 reason: match reason {

@@ -59,18 +59,28 @@ pub(crate) fn stop_binding(
 }
 
 pub(super) fn stop_cause_matches_raise(cause: HolderStopCause, raise: &Raise) -> bool {
+    let parked = match raise {
+        Raise::UnprovenCall { .. } => true,
+        Raise::ProviderApproval { .. } | Raise::ProviderQuestion { .. } => false,
+    };
+    is_parked_stop_cause(cause) == parked
+}
+
+pub(super) fn stop_marker_matches_cause(
+    stored: HolderStopCause,
+    incoming: HolderStopCause,
+) -> bool {
+    is_parked_stop_cause(stored) == is_parked_stop_cause(incoming)
+}
+
+fn is_parked_stop_cause(cause: HolderStopCause) -> bool {
     match cause {
-        HolderStopCause::CallWithdrawn => matches!(raise, Raise::UnprovenCall { .. }),
+        HolderStopCause::CallWithdrawn => true,
         HolderStopCause::TurnStopped
         | HolderStopCause::AskReplaced
         | HolderStopCause::AskWithdrawn
         | HolderStopCause::SessionClosed
-        | HolderStopCause::ProviderConnectionLost => {
-            matches!(
-                raise,
-                Raise::ProviderApproval { .. } | Raise::ProviderQuestion { .. }
-            )
-        }
+        | HolderStopCause::ProviderConnectionLost => false,
     }
 }
 
