@@ -37,3 +37,6 @@ pub use approval_store_scope::{
     ApprovalEnrollmentScope, ApprovalHolderAdmission, ApprovalHolderScope, ApprovalRequestRowId,
 };
 pub use approval_store_transaction::{ApprovalEnrollmentStanding, ApprovalStoreTransaction};
+
+mod approval_time_statement;
+pub use approval_time_statement::advance_approval_time_statement;

@@ -9,8 +9,10 @@ use super::{
 
 const CLIENT: &str = "central-link-client";
 const DRIVER: &str = "switchboard-central-link";
+const MAC_STORE: &str = "switchboard-machine-core-store";
 const REAL_TEST: &str = "switchboard-central-link-test";
 const TOKIO_CENTRAL: &str = "collaboration-central-tokio";
+const CLOCK_SOURCE: &str = "git+https://github.com/agent-collaboration/agent-fleet-sync.git?rev=b75d072c116afa46cfa82facd34db6317f380687";
 
 #[path = "central_link_features.rs"]
 mod central_link_features;
@@ -20,7 +22,7 @@ type PolicyError = Box<dyn std::error::Error>;
 #[derive(Clone, Copy)]
 struct Edge {
     name: &'static str,
-    workspace: bool,
+    external_source: Option<&'static str>,
     features: &'static [&'static str],
     defaults: bool,
 }
@@ -28,7 +30,7 @@ struct Edge {
 const fn workspace(name: &'static str, features: &'static [&'static str]) -> Edge {
     Edge {
         name,
-        workspace: true,
+        external_source: None,
         features,
         defaults: true,
     }
@@ -37,7 +39,7 @@ const fn workspace(name: &'static str, features: &'static [&'static str]) -> Edg
 const fn registry(name: &'static str, defaults: bool, features: &'static [&'static str]) -> Edge {
     Edge {
         name,
-        workspace: false,
+        external_source: Some(CRATES_IO),
         features,
         defaults,
     }
@@ -114,12 +116,22 @@ const DRIVER_DEV: &[Edge] = &[
     registry("tracing-subscriber", true, &["env-filter", "fmt", "json"]),
 ];
 const REAL_TEST_DEV: &[Edge] = &[
+    registry("axum", false, &["http1", "tokio"]),
+    registry("tungstenite", false, &[]),
     workspace(DRIVER, &["test-support"]),
     workspace(CLIENT, &[]),
     workspace("central-link-protocol", &[]),
+    workspace("central-storage", &[]),
     workspace("router-clock", &["test-support"]),
     workspace(TOKIO_CENTRAL, &["test-support"]),
-    workspace("switchboard-machine-core-store", &[]),
+    Edge {
+        name: "runtime-primitives",
+        external_source: Some(CLOCK_SOURCE),
+        features: &[],
+        defaults: false,
+    },
+    workspace("fleet-runtime", &["test-support"]),
+    workspace(MAC_STORE, &["test-support"]),
     workspace("switchboard-message-custody", &[]),
     workspace("workspace-ids", &[]),
     workspace("workspace-model", &[]),
@@ -139,6 +151,7 @@ const REAL_TEST_DEV: &[Edge] = &[
     ),
     registry("reqwest", false, &["blocking", "rustls-tls"]),
     registry("serde_json", true, &[]),
+    registry("turmoil", true, &[]),
     workspace(
         "collaboration-central-conformance",
         &["signin-test-support"],
@@ -165,7 +178,14 @@ fn declared_source_is_exact(
     dependency: &ManifestDependency,
     edge: Edge,
 ) -> bool {
-    if edge.workspace {
+    if let Some(source) = edge.external_source {
+        dependency.path.is_none()
+            && dependency
+                .source
+                .as_deref()
+                .and_then(|value| value.split('#').next())
+                == Some(source)
+    } else {
         dependency.source.is_none()
             && dependency.path.as_deref().is_some_and(|path| {
                 metadata.packages.iter().any(|package| {
@@ -174,8 +194,6 @@ fn declared_source_is_exact(
                         && package.manifest_path.parent() == Some(path)
                 })
             })
-    } else {
-        dependency.path.is_none() && dependency.source.as_deref() == Some(CRATES_IO)
     }
 }
 
@@ -210,18 +228,18 @@ fn check_declaration(
 
 fn test_constructor_scope(package: &CargoPackage) -> Result<(), PolicyError> {
     for dependency in &package.dependencies {
-        if dependency.name == DRIVER
-            && dependency
-                .features
-                .iter()
-                .any(|feature| feature == "test-support")
+        let test_api = match dependency.name.as_str() {
+            DRIVER => "the link's loopback test constructor",
+            MAC_STORE => "the inbox commit pause",
+            _ => continue,
+        };
+        if dependency
+            .features
+            .iter()
+            .any(|feature| feature == "test-support")
             && (package.name != REAL_TEST || dependency.kind != Some(DependencyKind::Dev))
         {
-            return Err(format!(
-                "BD1: {} enables the link's loopback test constructor",
-                package.name
-            )
-            .into());
+            return Err(format!("BD1: {} enables {test_api}", package.name,).into());
         }
     }
     Ok(())
@@ -244,10 +262,14 @@ fn check_resolved(metadata: &CargoMetadata, package: &CargoPackage) -> Result<()
             let kind = resolved.kind.unwrap_or(DependencyKind::Normal);
             if !edges(&package.name, kind).iter().any(|edge| {
                 target.name == edge.name
-                    && if edge.workspace {
-                        workspace_package(metadata, target)
+                    && if let Some(source) = edge.external_source {
+                        target
+                            .source
+                            .as_deref()
+                            .and_then(|value| value.split('#').next())
+                            == Some(source)
                     } else {
-                        target.source.as_deref() == Some(CRATES_IO)
+                        workspace_package(metadata, target)
                     }
             }) {
                 return Err(format!(

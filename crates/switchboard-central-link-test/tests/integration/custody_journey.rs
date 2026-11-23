@@ -132,8 +132,8 @@ impl CustodyJourney {
     }
 }
 
-struct KnownDeliverySession {
-    session_id: SessionId,
+pub(super) struct KnownDeliverySession {
+    pub(super) session_id: SessionId,
 }
 
 impl RecipientSessionDirectory for KnownDeliverySession {
@@ -150,7 +150,7 @@ impl RecipientSessionDirectory for KnownDeliverySession {
     }
 }
 
-struct RecordCustody(mpsc::UnboundedSender<CustodyTaskEvent>);
+pub(super) struct RecordCustody(pub(super) mpsc::UnboundedSender<CustodyTaskEvent>);
 
 impl CustodyEventSink for RecordCustody {
     fn record_event(&self, event: CustodyTaskEvent) {
@@ -170,7 +170,7 @@ async fn next_flush(events: &mut mpsc::UnboundedReceiver<CustodyTaskEvent>) -> F
     }
 }
 
-async fn next_receipt(
+pub(super) async fn next_receipt(
     events: &mut mpsc::UnboundedReceiver<CustodyTaskEvent>,
 ) -> ReceiptFrameOutcome {
     loop {

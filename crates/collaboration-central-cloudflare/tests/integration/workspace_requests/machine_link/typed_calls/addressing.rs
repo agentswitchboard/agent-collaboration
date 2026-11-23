@@ -78,9 +78,17 @@ async fn register_run(
 }
 
 async fn invoke_ending(fixture: &Fixture, target: &ApprovalHolderTarget) -> Result<Response> {
+    invoke_ending_on(fixture, target, "typed-ending-call").await
+}
+
+async fn invoke_ending_on(
+    fixture: &Fixture,
+    target: &ApprovalHolderTarget,
+    operation: &str,
+) -> Result<Response> {
     Ok(workerd_control_http_client()
         .post(format!(
-            "{}/test-support/workspace/{}/typed-ending-call",
+            "{}/test-support/workspace/{}/{operation}",
             fixture.host.public_origin(),
             fixture.organization.as_str(),
         ))
@@ -221,6 +229,14 @@ async fn exercise_run_binding(fixture: &Fixture) -> Result<()> {
         )
         .await?;
     }
+    assert_mac_failure(
+        invoke_ending_on(fixture, &target, "typed-ending-production-ingress").await?,
+        StatusCode::CONFLICT,
+        "neverReached",
+    )
+    .await?;
+    collaboration_central_conformance::approval_link_scenarios::heartbeat(&mut owner.socket)
+        .await?;
     require_ending(fixture, &mut owner.socket, &target).await?;
 
     renewal::advance(fixture, 300).await?;

@@ -1,30 +1,44 @@
 //! Typed Mac calls keep their waiter on the physical socket in the owning object.
 
 use super::workspace_machine_link::send;
+#[path = "workspace_approval_delivery.rs"]
+pub(super) mod approval_delivery;
+#[path = "workspace_pending_mac_calls.rs"]
+mod pending_mac_calls;
 use super::workspace_socket_attachment::SocketAttachment;
 use super::{CentralObject, OrgRuntime, OrganizationId};
 use crate::{cloudflare_transport, object_location::ObjectAddress};
 use central_link_protocol::{
-    CentralCall, CorrelationId, DataFrame, FrameDirection, FreshCorrelationId, LinkFrame, MacCall,
-    MacCallAddress, MacCallReply, MacLinkRpc, TypedCallCorrelations, TypedCallResult, encode_text,
+    CentralCall, CorrelationId, DataFrame, MacCall, MacCallAddress, MacCallReply, MacLinkRpc,
+    TypedCallResult,
 };
-use collaboration_central_core::{MacCallResult, TYPED_LINK_CALL_TIMEOUT, finish_mac_call};
+use collaboration_central_core::{
+    MacCallResult, TYPED_LINK_CALL_TIMEOUT, TypedCallCarrier, finish_mac_call,
+    is_approval_holder_call,
+};
 use fleet_contracts::MachineConnectionAttachment;
 use fleet_rpc::{CallFailure, Envelope};
 use fleet_runtime_ports::{Clock, SyncTime};
-use futures_channel::oneshot;
 use futures_util::future::{Either, select};
+pub(super) use pending_mac_calls::PendingMacCalls;
+use pending_mac_calls::WrittenMacCall;
 use serde::{Deserialize, Serialize};
-use std::{
-    collections::BTreeMap,
-    pin::pin,
-    sync::{Arc, Mutex, PoisonError},
-};
+use std::pin::pin;
 use worker::{Env, Method, Request, Response, State, WebSocket};
 use workspace_ids::{MachineId, RouterRunId};
 
 pub(super) const SOCKET_TAG_PREFIX: &str = "typed-link:";
 pub(super) const MACHINE_CALL_PATH: &str = "/internal/machine-link/call";
+#[cfg(feature = "test-support")]
+pub(super) const FIXTURE_ENDING_CALL_PATH: &str = "/test/fixture-mac-ending-transport";
+
+pub(super) fn is_mac_call_path(path: &str) -> bool {
+    #[cfg(feature = "test-support")]
+    if path == FIXTURE_ENDING_CALL_PATH {
+        return true;
+    }
+    path == MACHINE_CALL_PATH
+}
 
 type LinkReply = TypedCallResult<MacCallReply>;
 
@@ -55,21 +69,32 @@ pub async fn call_machine<R: MacLinkRpc>(
     request: Envelope<R::Target, R::Request>,
 ) -> MacCallResult<R> {
     let target = request.target.clone();
-    let answer = invoke_mac_call::<R>(env, organization, machine_id, request).await?;
+    let call = R::request(request);
+    if matches!(call, MacCall::DeliverEnding(_)) {
+        return Err(CallFailure::NeverReached);
+    }
+    let answer = invoke_mac_call(env, organization, machine_id, call, MACHINE_CALL_PATH).await?;
+    project_mac_call_answer::<R>(&target, answer)
+}
+
+fn project_mac_call_answer<R: MacLinkRpc>(
+    target: &R::Target,
+    answer: MacCallAnswer,
+) -> MacCallResult<R> {
     match answer {
-        MacCallAnswer::Replied { result } => finish_mac_call::<R>(&target, result),
+        MacCallAnswer::Replied { result } => finish_mac_call::<R>(target, result),
         MacCallAnswer::NeverReached => Err(CallFailure::NeverReached),
         MacCallAnswer::AnswerLost => Err(CallFailure::AnswerLost),
     }
 }
 
-async fn invoke_mac_call<R: MacLinkRpc>(
+async fn invoke_mac_call(
     env: &Env,
     organization: OrganizationId,
     machine_id: MachineId,
-    request: Envelope<R::Target, R::Request>,
+    request: MacCall,
+    path: &str,
 ) -> Result<MacCallAnswer, CallFailure> {
-    let request = R::request(request);
     let address = MacCallAddress::from(&request);
     if !address_agrees(&address, &organization, &machine_id) {
         return Err(CallFailure::NeverReached);
@@ -78,7 +103,7 @@ async fn invoke_mac_call<R: MacLinkRpc>(
     cloudflare_transport::object_exchange(
         env,
         ObjectAddress::Central(organization),
-        MACHINE_CALL_PATH,
+        path,
         &MacCallInvocation {
             machine_id,
             request: Box::new(request),
@@ -108,8 +133,32 @@ impl CentralObject {
         correlation_id: CorrelationId,
         request: Option<CentralCall>,
     ) -> worker::Result<()> {
+        let (carrier, current_authority, turn) = if is_approval_holder_call(request.as_ref()) {
+            #[cfg(feature = "test-support")]
+            runtime
+                .runtime()
+                .pause_points()
+                .reached_central(fleet_runtime::PausePoint::BeforeApprovalCarrierTurn)
+                .await;
+            let turn = runtime.runtime().take_central_turn_for_admission().await;
+            if !is_current_socket(&self.state, socket, authority.machine_id()) {
+                return Ok(());
+            }
+            let Some(current) = SocketAttachment::read(socket)? else {
+                return self.close_machine_link(socket, 1008, Some("connection identity missing"));
+            };
+            (
+                TypedCallCarrier::Approval {
+                    registered_run: current.registered_run,
+                },
+                current.authority,
+                Some(turn),
+            )
+        } else {
+            (TypedCallCarrier::Session, authority.clone(), None)
+        };
         let Ok(dispatched) = runtime
-            .dispatch_typed_central_call(authority, request)
+            .dispatch_typed_central_call(&current_authority, request, carrier)
             .await
         else {
             return self.close_machine_link(socket, 1011, Some("central unavailable"));
@@ -118,14 +167,20 @@ impl CentralObject {
             if !socket_open(socket) {
                 return Ok(());
             }
-            let result = bind_registered_run(socket, authority, run);
+            let result = bind_registered_run(socket, &current_authority, run);
             if !matches!(result, Ok(true)) {
                 let closed =
                     self.close_machine_link(socket, 1008, Some("socket registration changed"));
                 return result.map(|_| ()).and(closed);
             }
         }
-        self.send_central_call_result(socket, correlation_id, dispatched.result)
+        drop(turn);
+        self.send_central_call_result(socket, correlation_id, dispatched.result)?;
+        if let Some(completion) = dispatched.completion {
+            self.pending_mac_calls
+                .run_socket_completion(&self.state, socket, completion);
+        }
+        Ok(())
     }
 
     #[cfg(feature = "test-support")]
@@ -211,7 +266,16 @@ impl CentralObject {
         let Ok(invocation) = request.json::<MacCallInvocation>().await else {
             return Response::error("invalid call", 400);
         };
-        let result = self.send_mac_call(organization, invocation, deadline).await;
+        let is_raw_ending = matches!(&*invocation.request, MacCall::DeliverEnding(_));
+        #[cfg(not(feature = "test-support"))]
+        let fixture_ending = false;
+        #[cfg(feature = "test-support")]
+        let fixture_ending = request.path() == FIXTURE_ENDING_CALL_PATH;
+        let result = if is_raw_ending && !fixture_ending {
+            Err(CallFailure::NeverReached)
+        } else {
+            self.send_mac_call(organization, invocation, deadline).await
+        };
         Response::from_json(&match result {
             Ok(result) => MacCallAnswer::Replied { result },
             Err(CallFailure::NeverReached) => MacCallAnswer::NeverReached,
@@ -278,41 +342,18 @@ impl CentralObject {
                 if current.authority != attachment.authority {
                     return Err(CallFailure::NeverReached);
                 }
-                self.begin_mac_call(&socket, socket_tag, invocation.request, address, deadline)
+                self.pending_mac_calls.begin_mac_call(
+                    &self.clock,
+                    &socket,
+                    socket_tag,
+                    invocation.request,
+                    address,
+                    deadline,
+                )
             })
             .await
             .map_err(|_| CallFailure::NeverReached)?
             .map_err(|_| CallFailure::NeverReached)?
-    }
-
-    fn begin_mac_call(
-        &self,
-        socket: &WebSocket,
-        socket_tag: String,
-        request: Box<MacCall>,
-        address: MacCallAddress,
-        deadline: SyncTime,
-    ) -> Result<WrittenMacCall<'_>, CallFailure> {
-        if !socket_open(socket) || self.clock.now() >= deadline {
-            return Err(CallFailure::NeverReached);
-        }
-        let correlation = FreshCorrelationId::mint_at(self.clock.now().unix_millis());
-        let frame = LinkFrame::Data(DataFrame::CallMac {
-            correlation_id: correlation.wire_id().clone(),
-            request,
-        });
-        let text =
-            encode_text(&frame, FrameDirection::ToRouter).map_err(|_| CallFailure::NeverReached)?;
-        let written =
-            self.pending_mac_calls
-                .register(socket_tag, correlation, address, deadline)?;
-        if self.clock.now() >= deadline {
-            return Err(CallFailure::NeverReached);
-        }
-        socket
-            .send_with_str(text)
-            .map_err(|_| CallFailure::AnswerLost)?;
-        Ok(written)
     }
 }
 
@@ -356,120 +397,23 @@ fn bind_registered_run(
         .registered_run
         .as_ref()
         .is_none_or(|previous| previous == &run);
-    current.registered_run = same_run.then_some(run);
-    current.save(socket)?;
+    if same_run {
+        current.registered_run = Some(run);
+        current.save(socket)?;
+    }
     Ok(same_run)
 }
 
-struct WrittenMacCall<'a> {
-    pending: PendingAttempt<'a>,
-    answer: oneshot::Receiver<LinkReply>,
-}
-
-struct Waiter {
-    address: MacCallAddress,
-    deadline: SyncTime,
-    answer: oneshot::Sender<LinkReply>,
-}
-
-type SocketWaiters = BTreeMap<String, TypedCallCorrelations<Waiter>>;
-
-#[derive(Clone, Default)]
-pub(super) struct PendingMacCalls(Arc<Mutex<SocketWaiters>>);
-
-impl PendingMacCalls {
-    fn register(
-        &self,
-        socket_tag: String,
-        correlation: FreshCorrelationId,
-        address: MacCallAddress,
-        deadline: SyncTime,
-    ) -> Result<WrittenMacCall<'_>, CallFailure> {
-        let (answer, receiver) = oneshot::channel();
-        let correlation_id = correlation.wire_id().clone();
-        self.lock()
-            .entry(socket_tag.clone())
-            .or_default()
-            .register(
-                correlation,
-                Waiter {
-                    address,
-                    deadline,
-                    answer,
-                },
-            )
-            .map_err(|_| CallFailure::NeverReached)?;
-        Ok(WrittenMacCall {
-            pending: PendingAttempt {
-                calls: self,
-                socket_tag,
-                correlation_id,
-            },
-            answer: receiver,
-        })
-    }
-
-    fn lock(&self) -> std::sync::MutexGuard<'_, SocketWaiters> {
-        self.0.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn retire(&self, socket_tag: &str, correlation_id: &CorrelationId) -> Option<Waiter> {
-        self.lock().get_mut(socket_tag)?.retire(correlation_id)
-    }
-
-    fn answer(
-        &self,
-        state: &State,
-        socket: &WebSocket,
-        correlation_id: &CorrelationId,
-        result: LinkReply,
-        now: SyncTime,
-    ) {
-        let waiter = socket_tag(state, socket).and_then(|tag| {
-            self.lock()
-                .get_mut(&tag)?
-                .take_if(correlation_id, |waiter| {
-                    now < waiter.deadline && waiter.address.matches_reply(&result)
-                })
-        });
-        if let Some(waiter) = waiter {
-            let _ = waiter.answer.send(result);
-        }
-    }
-
-    pub(super) fn close(
-        &self,
-        state: &State,
-        socket: &WebSocket,
-        code: u16,
-        reason: Option<&str>,
-    ) -> worker::Result<()> {
-        if let Some(socket_tag) = socket_tag(state, socket) {
-            self.lock().remove(&socket_tag);
-        }
-        socket.close(Some(code), reason)
-    }
-
-    #[cfg(feature = "test-support")]
-    pub(super) fn is_waiting(&self, correlation: &CorrelationId) -> bool {
-        self.lock().values().any(|socket| {
-            socket
-                .pending(correlation)
-                .is_some_and(|waiter| !waiter.answer.is_canceled())
-        })
-    }
-}
-
-struct PendingAttempt<'a> {
-    calls: &'a PendingMacCalls,
-    socket_tag: String,
-    correlation_id: CorrelationId,
-}
-
-impl Drop for PendingAttempt<'_> {
-    fn drop(&mut self) {
-        self.calls.retire(&self.socket_tag, &self.correlation_id);
-    }
+fn is_current_socket(state: &State, socket: &WebSocket, machine: &MachineId) -> bool {
+    let Some(physical_tag) = socket_tag(state, socket) else {
+        return false;
+    };
+    state
+        .get_websockets_with_tag(machine.as_str())
+        .into_iter()
+        .find(socket_open)
+        .and_then(|current| socket_tag(state, &current))
+        .is_some_and(|tag| tag == physical_tag)
 }
 
 fn socket_tag(state: &State, socket: &WebSocket) -> Option<String> {
@@ -503,6 +447,7 @@ pub(super) async fn probe_ending(
     env: &Env,
     organization: OrganizationId,
     mut request: Request,
+    path: &str,
 ) -> worker::Result<Response> {
     use central_link_protocol::approval_rpc::DeliverEndingRpc;
     use fleet_rpc::Rpc;
@@ -513,8 +458,12 @@ pub(super) async fn probe_ending(
         request: Envelope<<DeliverEndingRpc as Rpc>::Target, <DeliverEndingRpc as Rpc>::Request>,
     }
     let probe = request.json::<EndingProbe>().await?;
+    let target = probe.request.target.clone();
+    let call = DeliverEndingRpc::request(probe.request);
     fixture_response(
-        call_machine::<DeliverEndingRpc>(env, organization, probe.machine_id, probe.request).await,
+        invoke_mac_call(env, organization, probe.machine_id, call, path)
+            .await
+            .and_then(|answer| project_mac_call_answer::<DeliverEndingRpc>(&target, answer)),
     )
 }
 

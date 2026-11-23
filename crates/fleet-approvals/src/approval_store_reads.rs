@@ -208,23 +208,6 @@ pub(crate) async fn read_parent_approval_request(
     read_request_record(transaction, statement).await
 }
 
-pub(crate) async fn read_owed_approval_endings(
-    transaction: &mut impl ApprovalStoreTransaction,
-    scope: &ApprovalHolderScope,
-) -> Result<Vec<ApprovalReadRecord>, StoreFailure> {
-    let statement = checked_engine_statement!(
-        query_file_as,
-        [CheckedApprovalRow],
-        "src/queries/read_owed_approval_endings.sql",
-        organization_id = scope.organization_id.as_str().to_owned(),
-        machine_id = scope.run.enrollment.machine_id.as_str().to_owned(),
-        enrollment_id = scope.run.enrollment.enrollment_id.as_str().to_owned(),
-        router_run_id = scope.run.router_run.as_str().to_owned(),
-        limit = outstanding_limit()?,
-    );
-    read_request_records(transaction, statement, MAX_OUTSTANDING_PER_RUN).await
-}
-
 pub(crate) async fn read_approval_due_subject(
     transaction: &mut impl ApprovalStoreTransaction,
     row_id: &ApprovalRequestRowId,
@@ -278,6 +261,25 @@ pub(crate) async fn read_outstanding_approval_rows(
         machine_id = scope.run.enrollment.machine_id.as_str().to_owned(),
         enrollment_id = scope.run.enrollment.enrollment_id.as_str().to_owned(),
         router_run_id = scope.run.router_run.as_str().to_owned(),
+        limit = outstanding_limit()?,
+    );
+    read_request_records(transaction, statement, MAX_OUTSTANDING_PER_RUN).await
+}
+
+pub(crate) async fn read_recoverable_approval_rows(
+    transaction: &mut impl ApprovalStoreTransaction,
+    scope: &ApprovalHolderScope,
+    at: EngineTime,
+) -> Result<Vec<ApprovalReadRecord>, StoreFailure> {
+    let statement = checked_engine_statement!(
+        query_file_as,
+        [CheckedApprovalRow],
+        "src/queries/read_recoverable_approval_rows.sql",
+        organization_id = scope.organization_id.as_str().to_owned(),
+        machine_id = scope.run.enrollment.machine_id.as_str().to_owned(),
+        enrollment_id = scope.run.enrollment.enrollment_id.as_str().to_owned(),
+        router_run_id = scope.run.router_run.as_str().to_owned(),
+        at = portable_integer(at.timestamp_millis(), "approval_requests.deadline_ms")?,
         limit = outstanding_limit()?,
     );
     read_request_records(transaction, statement, MAX_OUTSTANDING_PER_RUN).await

@@ -13,11 +13,9 @@ pub struct ApprovalCommitScope(Arc<()>);
 /// The host's transaction owner returns Ok only after the actual transaction commits.
 pub trait ApprovalCommitOwner<Output> {
     type Error;
+    type Commit: Future<Output = Result<Output, Self::Error>>;
 
-    fn apply_and_commit(
-        self,
-        scope: ApprovalCommitScope,
-    ) -> impl Future<Output = Result<Output, Self::Error>>;
+    fn apply_and_commit(self, scope: ApprovalCommitScope) -> Self::Commit;
 }
 
 pub struct ApprovalCommitProof(Arc<()>);

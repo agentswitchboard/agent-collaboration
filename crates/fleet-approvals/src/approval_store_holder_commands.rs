@@ -7,12 +7,12 @@ use workspace_ids::ApprovalRequestId;
 use super::{ApprovalApplyFailure, ApprovalApplyingStore, ApprovalTransitionOutput};
 use crate::{
     ApprovalEvent, ApprovalReceipt, ApprovalRefusal, ApprovalReplyAddress, ApprovalRequestKey,
-    ApprovalRouting, ApprovalSession, ApprovalSessionFacts, ApprovalState, CommittedApprovalOffer,
-    PendingApprovalReply, ProviderSessionAvailability, RaiseAdmission,
+    ApprovalRouting, ApprovalSession, ApprovalSessionFacts, ApprovalState, PendingApprovalReply,
+    ProviderSessionAvailability, RaiseAdmission,
     approval_lifecycle_admission::stop_binding,
     approval_store_reads::{
         ScopedHolderRequest, count_outstanding_approvals, read_holder_request,
-        read_owed_approval_endings,
+        read_recoverable_approval_rows,
     },
     approval_store_scope::{ApprovalHolderAdmission, ApprovalHolderScope},
     approval_store_transaction::ApprovalStoreTransaction,
@@ -89,6 +89,68 @@ where
             ApprovalReplyAddress::Holder(holder.holder_scope().clone()),
             applied,
         ))
+    }
+
+    /// Stage only a Raise reply. A mismatched receipt rejects the applying loan.
+    pub async fn raise_from_holder(
+        &mut self,
+        holder: &ApprovalHolderAdmission,
+        raise: Box<Raise>,
+    ) -> Result<PendingApprovalReply<RaiseReply>, ApprovalApplyFailure> {
+        let transition = self
+            .apply_holder(holder, ApprovalHolderCommand::Raise(raise))
+            .await?;
+        let ApprovalHolderReply::Raised(ref reply) = transition.reply else {
+            return Err(corrupt("approval_store.holder_raise_reply").into());
+        };
+        let reply = reply.clone();
+        Ok(self.stage_reply(
+            ApprovalReplyAddress::Holder(holder.holder_scope().clone()),
+            transition.replace_reply(reply),
+        ))
+    }
+
+    /// Stage only a Stop reply. A mismatched receipt rejects the applying loan.
+    pub async fn stop_from_holder(
+        &mut self,
+        holder: &ApprovalHolderAdmission,
+        stop: StopRequest,
+    ) -> Result<PendingApprovalReply<StopReply>, ApprovalApplyFailure> {
+        let transition = self
+            .apply_holder(holder, ApprovalHolderCommand::Stop(stop))
+            .await?;
+        let ApprovalHolderReply::Stopped(ref reply) = transition.reply else {
+            return Err(corrupt("approval_store.holder_stop_reply").into());
+        };
+        let reply = reply.clone();
+        Ok(self.stage_reply(
+            ApprovalReplyAddress::Holder(holder.holder_scope().clone()),
+            transition.replace_reply(reply),
+        ))
+    }
+
+    /// Stage only successful application of a correlated holder delivery answer.
+    pub async fn record_holder_delivery(
+        &mut self,
+        holder: &ApprovalHolderAdmission,
+        request: Box<DeliverEndingRequest>,
+        reply: DeliverEndingReply,
+    ) -> Result<PendingApprovalReply<()>, ApprovalApplyFailure> {
+        let transition = self
+            .apply_holder(
+                holder,
+                ApprovalHolderCommand::DeliveryReply { request, reply },
+            )
+            .await?;
+        match transition.reply {
+            ApprovalHolderReply::NoReply => Ok(self.stage_reply(
+                ApprovalReplyAddress::Holder(holder.holder_scope().clone()),
+                transition.replace_reply(()),
+            )),
+            ApprovalHolderReply::Raised(_) | ApprovalHolderReply::Stopped(_) => {
+                Err(corrupt("approval_store.delivery_reply").into())
+            }
+        }
     }
 
     async fn apply_holder(
@@ -192,21 +254,32 @@ where
         if let Err(refusal) = self.check_holder_fence(scope, true).await? {
             return Ok(ApprovalTransitionOutput::with_reply(Err(refusal)));
         }
-        let records = read_owed_approval_endings(self.transaction, scope).await?;
+        let at = self.sample_applying_time()?;
+        let records = read_recoverable_approval_rows(self.transaction, scope, at).await?;
         let mut pending = ApprovalTransitionOutput::with_reply(Ok(()));
         for record in records {
-            let ApprovalState::Ended { closed, .. } = record.state else {
-                return Err(corrupt("approval_requests.owed_selection").into());
-            };
-            if record.scope != *scope
-                || closed.delivery != (approval_request_protocol::Delivery::Owed {})
-            {
-                return Err(corrupt("approval_requests.owed_selection").into());
+            if record.scope != *scope {
+                return Err(corrupt("approval_requests.recover_holder").into());
             }
-            pending.ending_offers.push(CommittedApprovalOffer::new(
-                record.scope,
-                Box::new(closed.ending),
-            ));
+            let due_or_owed = match &record.state {
+                ApprovalState::Waiting { saved } => at >= saved.window.deadline(),
+                ApprovalState::Ended { closed, .. } => {
+                    closed.delivery == (approval_request_protocol::Delivery::Owed {})
+                }
+                ApprovalState::Unraised | ApprovalState::StoppedBeforeRaise { .. } => false,
+            };
+            if due_or_owed {
+                let recovered = self
+                    .apply_request_event(
+                        Some(&record.row_id),
+                        scope,
+                        &record.state,
+                        ApprovalEvent::Reoffer,
+                        at,
+                    )
+                    .await?;
+                pending.ending_offers.extend(recovered.ending_offers);
+            }
         }
         Ok(pending)
     }

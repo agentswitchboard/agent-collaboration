@@ -55,8 +55,10 @@ pub async fn machine_login_control<H: CentralStore, S: WorkspaceStores>(
                 PreparedEnrollmentRevocation::Revoked(revocation)
                     if revocation.ended_machine() == &machine_id =>
                 {
-                    let (ended, _, statements) = revocation.into_applying();
-                    runtime.apply_machine_login_statements(statements).await?;
+                    let (ended, invalidation, statements) = revocation.into_applying();
+                    runtime
+                        .apply_machine_login_write(statements, Some(&invalidation))
+                        .await?;
                     Ok(Some(ended))
                 }
                 PreparedEnrollmentRevocation::Revoked(_)

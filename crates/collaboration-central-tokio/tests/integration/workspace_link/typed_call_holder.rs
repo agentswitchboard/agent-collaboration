@@ -72,6 +72,16 @@ async fn verify_bound_holder(fixture: &Fixture) -> Result<()> {
     ] {
         expect_not_written(fixture, &mut first, wrong_target).await?;
     }
+    let raw = fixture.host.call_machine::<DeliverEndingRpc>(
+        &fixture.organization_id,
+        &holder.machine_id,
+        ending_request(holder.clone())?,
+    );
+    tokio::select! {
+        result = raw => expect_call_failure(result, CallFailure::NeverReached)?,
+        frame = receive(&mut first) => return Err(format!("raw ending reached the registered holder: {:?}", frame?).into()),
+    }
+    socket_barrier(&mut first).await?;
     expect_delivery(fixture, &mut first, holder.clone()).await?;
 
     let mut replacement = connect(fixture).await?;
@@ -122,10 +132,11 @@ async fn expect_not_written(
 ) -> Result<()> {
     let machine = INSTALLATION.parse()?;
     let request = ending_request(target)?;
-    let call =
-        fixture
-            .host
-            .call_machine::<DeliverEndingRpc>(&fixture.organization_id, &machine, request);
+    let call = fixture.host.fixture_call_machine::<DeliverEndingRpc>(
+        &fixture.organization_id,
+        &machine,
+        request,
+    );
     tokio::select! {
         result = call => expect_call_failure(result, CallFailure::NeverReached)?,
         frame = receive(peer) => return Err(format!("denied holder received a frame: {:?}", frame?).into()),
@@ -141,10 +152,11 @@ async fn expect_delivery(
     let request = ending_request(holder.clone())?;
     let expected = DeliverEndingRpc::request(request.clone());
     let machine = holder.machine_id.clone();
-    let call =
-        fixture
-            .host
-            .call_machine::<DeliverEndingRpc>(&fixture.organization_id, &machine, request);
+    let call = fixture.host.fixture_call_machine::<DeliverEndingRpc>(
+        &fixture.organization_id,
+        &machine,
+        request,
+    );
     let mut call = std::pin::pin!(call);
     let frame = tokio::select! {
         result = &mut call => return Err(format!("delivery ended before a socket frame: {result:?}").into()),
