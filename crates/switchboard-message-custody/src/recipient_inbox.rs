@@ -2,7 +2,6 @@
 
 use central_link_protocol::{DeliveryMessage, DirectOfferBody, DirectOfferMessage, TimeLeft};
 use router_clock::RuntimeClock;
-use state_machine_core::StateMachine;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use switchboard_machine_core_store::{
     InboxDecision, InboxRefusalReason, InboxStore, InboxStoreError, RecordDelivery,
@@ -16,9 +15,6 @@ use workspace_model::{
 
 use crate::{
     custody_operator::{CustodyOperatorEvent, inbox_scan},
-    delivery_custody::{
-        DeliveryCustodyEffect, DeliveryCustodyEvent, DeliveryCustodyMachine, DeliveryCustodyState,
-    },
     receipt_delivery::{ReceiptDelivery, ReceiptDeliveryError, ReceiptFrame, ReceiptFrameOutcome},
     recipient_sessions::{RecipientSessionAnswer, RecipientSessionDirectory},
 };
@@ -162,8 +158,6 @@ pub enum InboxCustodyError {
     Store(#[from] InboxStoreError),
     #[error("the inbox could not read the earlier decision for message {0}")]
     MissingDecision(MessageId),
-    #[error("the delivery policy did not queue a receipt after a committed decision")]
-    MissingReceiptEffect,
 }
 
 /// Custody constructs this from the Part A inbox, the local identity and the Host's session lookup.
@@ -381,19 +375,8 @@ impl RecipientInbox {
             .record_delivery(&message, decision, arrival_ms)
             .await?
         {
-            RecordDelivery::Inserted => {
-                let (_, effects) = DeliveryCustodyMachine::transition(
-                    &DeliveryCustodyState::AwaitingDecision,
-                    DeliveryCustodyEvent::DecisionCommitted(decision),
-                )
-                .map_err(|_| InboxCustodyError::MissingReceiptEffect)?;
-                let [DeliveryCustodyEffect::ReceiptPending(decision)] = effects.as_slice() else {
-                    return Err(InboxCustodyError::MissingReceiptEffect);
-                };
-                Ok(InboxOfferResult::Recorded {
-                    decision: *decision,
-                })
-            }
+            // The store commits the first decision and its pending receipt together.
+            RecordDelivery::Inserted => Ok(InboxOfferResult::Recorded { decision }),
             RecordDelivery::Duplicate => self
                 .prior_decision(message_id)
                 .await?
