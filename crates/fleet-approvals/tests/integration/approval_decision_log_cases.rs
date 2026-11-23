@@ -1,6 +1,6 @@
 use approval_request_protocol::RaiseReply;
 use central_storage::StoreFailure;
-use fleet_approvals::{ApprovalApplyFailure, ApprovalDecisionReply, FactorStanding};
+use fleet_approvals::{ApprovalApplyFailure, ApprovalDecisionReply};
 
 use super::{
     approval_store_cases::{decide_input, fixture_with_owner, raise_and_commit, snapshot},
@@ -18,45 +18,36 @@ async fn admitted_refusal_and_acceptance_replay_their_first_answers_until_the_st
         RaiseReply::Receipt { .. }
     ));
     fixture.clock.set_millis(1);
-    let retry = decide_input(request.request_id(), 101, 3);
+    let retry = decide_input(request.request_id(), 101, 6);
     let allowed = decide_input(request.request_id(), 102, 2);
-    let stale_actor = person(11, FactorStanding::AbsentOrStale);
-    let live_actor = person(11, FactorStanding::Fresh);
+    let actor = person(11);
 
     let invalid = fixture
         .apply(None, async |store| {
             store
-                .fixture_decide_approval(
-                    &holder.organization_id,
-                    stale_actor.clone(),
-                    retry.clone(),
-                )
+                .fixture_decide_approval(&holder.organization_id, actor.clone(), retry.clone())
                 .await
         })
         .await;
     assert_eq!(invalid.0.unwrap().reply, ApprovalDecisionReply::Invalid {});
     assert_eq!(invalid.1.sql_writes.len(), 2);
-    let fresh_retry = fixture
+    let replayed_refusal = fixture
         .apply(None, async |store| {
             store
-                .fixture_decide_approval(&holder.organization_id, live_actor.clone(), retry.clone())
+                .fixture_decide_approval(&holder.organization_id, actor.clone(), retry.clone())
                 .await
         })
         .await;
     assert_eq!(
-        fresh_retry.0.unwrap().reply,
+        replayed_refusal.0.unwrap().reply,
         ApprovalDecisionReply::Invalid {}
     );
-    assert!(fresh_retry.1.sql_writes.is_empty());
+    assert!(replayed_refusal.1.sql_writes.is_empty());
 
     let accepted = fixture
         .apply(None, async |store| {
             store
-                .fixture_decide_approval(
-                    &holder.organization_id,
-                    live_actor.clone(),
-                    allowed.clone(),
-                )
+                .fixture_decide_approval(&holder.organization_id, actor.clone(), allowed.clone())
                 .await
         })
         .await;
@@ -75,7 +66,7 @@ async fn admitted_refusal_and_acceptance_replay_their_first_answers_until_the_st
         let (answer, evidence) = fixture
             .apply(None, async |store| {
                 store
-                    .fixture_decide_approval(&holder.organization_id, live_actor.clone(), input)
+                    .fixture_decide_approval(&holder.organization_id, actor.clone(), input)
                     .await
             })
             .await;
@@ -88,7 +79,7 @@ async fn admitted_refusal_and_acceptance_replay_their_first_answers_until_the_st
     let (first_at_cutoff, evidence) = fixture
         .apply(None, async |store| {
             store
-                .fixture_decide_approval(&holder.organization_id, live_actor.clone(), retry.clone())
+                .fixture_decide_approval(&holder.organization_id, actor.clone(), retry.clone())
                 .await
         })
         .await;
@@ -101,7 +92,7 @@ async fn admitted_refusal_and_acceptance_replay_their_first_answers_until_the_st
     let retained_standing = fixture
         .apply(None, async |store| {
             store
-                .fixture_decide_approval(&holder.organization_id, live_actor.clone(), retry)
+                .fixture_decide_approval(&holder.organization_id, actor.clone(), retry)
                 .await
         })
         .await;
@@ -111,7 +102,7 @@ async fn admitted_refusal_and_acceptance_replay_their_first_answers_until_the_st
     let (expired_acceptance, evidence) = fixture
         .apply(None, async |store| {
             store
-                .fixture_decide_approval(&holder.organization_id, live_actor.clone(), allowed)
+                .fixture_decide_approval(&holder.organization_id, actor.clone(), allowed)
                 .await
         })
         .await;
@@ -133,7 +124,7 @@ async fn shared_request_log_conflicts_and_expired_operation_id_can_be_new_proven
     let (fixture, holder, requester) = fixture_with_owner().await;
     let first = provider(&key(&holder.run, 1), &requester, "First");
     raise_and_commit(&fixture, &holder, &first).await;
-    let actor = person(11, FactorStanding::Fresh);
+    let actor = person(11);
     fixture
         .alter_fixture(
             "INSERT INTO runtime_request_log VALUES (
@@ -214,7 +205,7 @@ async fn a_tampered_retained_answer_cannot_release_a_different_giver() {
     let (fixture, holder, requester) = fixture_with_owner().await;
     let request = provider(&key(&holder.run, 1), &requester, "Bound retained answer");
     raise_and_commit(&fixture, &holder, &request).await;
-    let actor = person(11, FactorStanding::Fresh);
+    let actor = person(11);
     let command = decide_input(request.request_id(), 101, 1);
     let accepted = fixture
         .apply(None, async |store| {

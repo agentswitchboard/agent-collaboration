@@ -3,15 +3,8 @@ use workspace_ids::CentralSessionId;
 
 use crate::{
     AcceptedApprovalDecision, Answer, DecidedBy, InvalidApprovalEnding, Raise,
-    approval_holder_endings::{check_decision_actor, requires_fresh_factor},
+    approval_holder_endings::check_decision_actor,
 };
-
-/// The person factor status supplied by Central's applying admission path.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum DecisionFactor {
-    FreshPersonFactor,
-    NoFreshPersonFactor,
-}
 
 /// Central supplies the current members of this exact request after admission.
 /// This binding is neither sent over the wire nor decoded from it.
@@ -44,13 +37,8 @@ impl<'request> AdmittedDestination<'request> {
     pub fn decide(
         &self,
         answer: Answer,
-        factor: DecisionFactor,
     ) -> Result<AcceptedApprovalDecision, InvalidApprovalEnding> {
         check_decision_actor(self.raise, &answer, self.actor)?;
-        if requires_fresh_factor(self.raise, &answer) && factor != DecisionFactor::FreshPersonFactor
-        {
-            return Err(InvalidApprovalEnding::FreshFactorRequired);
-        }
         AcceptedApprovalDecision::from_admitted(self.raise, answer, self.actor.clone())
     }
 

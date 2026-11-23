@@ -7,7 +7,7 @@ use approval_request_protocol::{
 };
 use fleet_approvals::{
     AdmittedDecider, ApprovalCollectionEffect, ApprovalCollectionEvent, ApprovalDecisionReply,
-    ApprovalEffect, FactorStanding,
+    ApprovalEffect,
 };
 
 use super::fixtures::{
@@ -60,26 +60,18 @@ fn parked_call_replay_and_settlement_do_not_depend_on_the_target_session() {
         reply(&run_event(&mut collection, pass_on, 3)),
         ObservedReply::PassOn(PassOnReply::NotVisible {}),
     );
-    for (actor, suffix, result) in [
+    for (actor, suffix, answer, result) in [
         (
             AdmittedDecider::Session(parent),
             11,
-            ApprovalDecisionReply::NotVisible {},
-        ),
-        (
-            person(12, FactorStanding::AbsentOrStale),
-            12,
-            ApprovalDecisionReply::Invalid {},
-        ),
-    ] {
-        let action = decide_event(
-            &approval_key,
-            actor,
-            suffix,
             Answer::UnprovenCall {
                 decision: SessionCallDecision::Allow,
             },
-        );
+            ApprovalDecisionReply::NotVisible {},
+        ),
+        (person(12), 12, answer(1), ApprovalDecisionReply::Invalid {}),
+    ] {
+        let action = decide_event(&approval_key, actor, suffix, answer);
         assert_eq!(
             reply(&run_event(&mut collection, action, 4)),
             ObservedReply::Decide(result),
@@ -87,7 +79,7 @@ fn parked_call_replay_and_settlement_do_not_depend_on_the_target_session() {
     }
     let approve = decide_event(
         &approval_key,
-        person(12, FactorStanding::Fresh),
+        person(12),
         13,
         Answer::UnprovenCall {
             decision: SessionCallDecision::Allow,
@@ -350,12 +342,7 @@ fn local_refusal_stops_both_request_families_before_raise_while_waiting_and_afte
         } else {
             answer(1)
         };
-        let decide = decide_event(
-            &approval_key,
-            person(12, FactorStanding::Fresh),
-            13,
-            decision,
-        );
+        let decide = decide_event(&approval_key, person(12), 13, decision);
         assert!(matches!(
             reply(&run_event(&mut ended, decide, 1)),
             ObservedReply::Decide(ApprovalDecisionReply::SavedDecision { .. })

@@ -339,20 +339,22 @@ fn project_ending<AcceptedAnswer, Cancellation>(
     }
 }
 
-pub(crate) fn requires_fresh_factor(raise: &Raise, answer: &Answer) -> bool {
+fn admits_session_answer(raise: &Raise, answer: &Answer) -> bool {
     match (raise, answer) {
         (Raise::ProviderApproval { offer, .. }, Answer::Approval { option_id }) => offer
             .options
             .as_slice()
             .iter()
-            .any(|option| &option.id == option_id && option.needs_person_with_fresh_factor()),
-        (Raise::UnprovenCall { .. }, Answer::UnprovenCall { .. }) => true,
-        (Raise::ProviderApproval { .. }, Answer::Question { .. } | Answer::UnprovenCall { .. })
-        | (
-            Raise::ProviderQuestion { .. },
+            .any(|option| &option.id == option_id && option.admits_session_answer()),
+        (Raise::ProviderQuestion { .. }, Answer::Question { .. }) => true,
+        (
+            Raise::UnprovenCall { .. },
             Answer::Approval { .. } | Answer::Question { .. } | Answer::UnprovenCall { .. },
         )
-        | (Raise::UnprovenCall { .. }, Answer::Approval { .. } | Answer::Question { .. }) => false,
+        | (Raise::ProviderApproval { .. }, Answer::Question { .. } | Answer::UnprovenCall { .. })
+        | (Raise::ProviderQuestion { .. }, Answer::Approval { .. } | Answer::UnprovenCall { .. }) => {
+            false
+        }
     }
 }
 
@@ -364,7 +366,7 @@ pub(crate) fn check_decision_actor(
     let offer = raise.offer_view();
     check_answer(&offer, answer).map_err(InvalidApprovalEnding::Answer)?;
     if let DecidedBy::Session { session } = actor
-        && (raise.requesting_session() == Some(session) || requires_fresh_factor(raise, answer))
+        && (raise.requesting_session() == Some(session) || !admits_session_answer(raise, answer))
     {
         return Err(InvalidApprovalEnding::IneligibleDecider);
     }

@@ -1,5 +1,5 @@
 //! Strict authorization-floor decoding and snapshot guards for modern central.
-use crate::person_request::{
+use crate::person_proof::{
     FloorRevision, OrganizationFloor, OrganizationFloorState, PersonFloor, PersonFloorState,
 };
 use central_storage::{
@@ -39,7 +39,7 @@ macro_rules! checked_proof_statement {
 }
 pub(super) use checked_proof_statement;
 
-pub(crate) fn integer(value: i64, field: &str) -> Result<SqlValue, StoreFailure> {
+pub fn integer(value: i64, field: &str) -> Result<SqlValue, StoreFailure> {
     SafeInteger::new(value)
         .map(SqlValue::Integer)
         .map_err(|_| corrupt(field))
@@ -114,7 +114,7 @@ impl PersonFloorRow {
     }
 }
 
-pub(crate) fn decode_organization_floor(
+pub fn decode_organization_floor(
     rows: &ReadOutcome,
     organization: &str,
 ) -> Result<Option<OrganizationFloor>, StoreFailure> {
@@ -134,7 +134,7 @@ pub(crate) fn decode_organization_floor(
     .map(Some)
 }
 
-pub(crate) fn decode_person_floor(
+pub fn decode_person_floor(
     rows: &ReadOutcome,
     organization: &str,
     person: &str,
@@ -155,36 +155,44 @@ pub(crate) fn decode_person_floor(
     .map(Some)
 }
 
-pub(crate) async fn read_organization_floor(
+pub fn organization_floor_statement(organization: &str) -> Statement {
+    checked_proof_statement!(
+        read OrganizationFloorRow,
+        "src/person_proof_queries/read_organization_floor.sql",
+        [text(organization)]
+    )
+}
+
+pub fn person_floor_statement(organization: &str, person: &str) -> Statement {
+    checked_proof_statement!(
+        read PersonFloorRow,
+        "src/person_proof_queries/read_person_floor.sql",
+        [text(organization), text(person)]
+    )
+}
+
+pub async fn read_organization_floor(
     host: &impl CentralStore,
     organization: &str,
 ) -> Result<Option<OrganizationFloor>, StoreFailure> {
     let rows = host
-        .read(checked_proof_statement!(
-            read OrganizationFloorRow,
-            "src/person_proof_queries/read_organization_floor.sql",
-            [text(organization)]
-        ))
+        .read(organization_floor_statement(organization))
         .await?;
     decode_organization_floor(&rows, organization)
 }
 
-pub(crate) async fn read_person_floor(
+pub async fn read_person_floor(
     host: &impl CentralStore,
     organization: &str,
     person: &str,
 ) -> Result<Option<PersonFloor>, StoreFailure> {
     let rows = host
-        .read(checked_proof_statement!(
-            read PersonFloorRow,
-            "src/person_proof_queries/read_person_floor.sql",
-            [text(organization), text(person)]
-        ))
+        .read(person_floor_statement(organization, person))
         .await?;
     decode_person_floor(&rows, organization, person)
 }
 
-pub(crate) fn organization_state(state: OrganizationFloorState) -> &'static str {
+pub fn organization_state(state: OrganizationFloorState) -> &'static str {
     match state {
         OrganizationFloorState::Active => "active",
         OrganizationFloorState::Stopped => "stopped",
@@ -192,7 +200,7 @@ pub(crate) fn organization_state(state: OrganizationFloorState) -> &'static str 
     }
 }
 
-pub(crate) fn person_state(state: PersonFloorState) -> &'static str {
+pub fn person_state(state: PersonFloorState) -> &'static str {
     match state {
         PersonFloorState::Active => "active",
         PersonFloorState::Inactive => "inactive",
@@ -200,7 +208,7 @@ pub(crate) fn person_state(state: PersonFloorState) -> &'static str {
 }
 
 /// A zero-row guard means the read snapshot changed; the caller retries admission.
-pub(crate) fn organization_guard(
+pub fn organization_guard(
     organization: &str,
     floor: &OrganizationFloor,
 ) -> Result<GuardedStatement, StoreFailure> {
@@ -216,7 +224,7 @@ pub(crate) fn organization_guard(
     ))
 }
 
-pub(crate) fn person_guard(
+pub fn person_guard(
     organization: &str,
     person: &str,
     floor: &PersonFloor,

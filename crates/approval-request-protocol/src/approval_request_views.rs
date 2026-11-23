@@ -249,7 +249,7 @@ approval_wire_union! {
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)
 )]
-enum RequestViewFields {
+pub(crate) enum RequestViewFields {
     ProviderApproval {
         request_id: ApprovalRequestId,
         offer: ApprovalOffer,
@@ -282,6 +282,10 @@ enum RequestViewFields {
 pub struct RequestView(RequestViewFields);
 
 impl RequestView {
+    pub(crate) const fn fields(&self) -> &RequestViewFields {
+        &self.0
+    }
+
     pub fn waiting<'request>(
         admitted: &AdmittedDestination<'request>,
         status: WaitingStatus,

@@ -5,7 +5,7 @@ use approval_request_protocol::{
 
 use fleet_approvals::{
     ApprovalCollection, ApprovalCollectionEffect, ApprovalCollectionEvent, ApprovalRun,
-    ApprovalState, FactorStanding, ProviderSessionAvailability,
+    ApprovalState, ProviderSessionAvailability,
 };
 
 use super::fixtures::{
@@ -110,7 +110,7 @@ fn capacity_counts_waiting_plus_unpaid_and_never_rejects_an_exact_replay() {
     );
     let offer = offered_frame(&run_event(
         &mut book,
-        decide_event(&first, person(12, FactorStanding::Fresh), 2000, answer(1)),
+        decide_event(&first, person(12), 2000, answer(1)),
         1,
     ));
     for ordinal in 2..=256 {
@@ -174,7 +174,7 @@ fn restart_fences_old_authority_and_same_organization_id_reuse_reports_only_coll
     }
     let old_offer = offered_frame(&run_event(
         &mut book,
-        decide_event(&owed, person(12, FactorStanding::Fresh), 101, answer(1)),
+        decide_event(&owed, person(12), 101, answer(1)),
         1,
     ));
     let incoming = ApprovalRun {

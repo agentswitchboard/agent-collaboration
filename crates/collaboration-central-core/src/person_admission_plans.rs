@@ -1,8 +1,5 @@
 //! Prepare fresh-proof reservation; the caller appends its effect to the same batch.
 use crate::{
-    authorization_floor_rows::{
-        organization_guard, person_guard, read_organization_floor, read_person_floor,
-    },
     person_proof_repository::{ObservedProof, observe_proof},
     person_request::{
         AdmissionRefusal, VerifiedPersonRequest,
@@ -12,6 +9,9 @@ use crate::{
 use central_storage::{GuardedStatement, StoreFailure};
 use fleet_runtime_ports::CentralStore;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
+use fleet_signin::authorization_floor_store::{
+    organization_guard, person_guard, read_organization_floor, read_person_floor,
+};
 use workspace_model::Timestamp;
 
 pub(crate) struct PersonAdmissionPlan {

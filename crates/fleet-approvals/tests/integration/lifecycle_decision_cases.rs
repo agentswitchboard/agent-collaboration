@@ -16,7 +16,7 @@ fn an_ended_row_projects_its_standing_decision_to_the_current_audience() {
         );
     }
 
-    let winner = person(11, FactorStanding::Fresh);
+    let winner = person(11);
     let decide = decide_event(&first, winner.clone(), 101, answer(5));
     let result = run_event(&mut book, decide.clone(), 1);
     let ApprovalReceipt::Decide(DecideReply::SavedDecision {
@@ -58,7 +58,7 @@ fn an_ended_row_projects_its_standing_decision_to_the_current_audience() {
 
     let standing = run_event(
         &mut book,
-        decide_event(&first, person(12, FactorStanding::Fresh), 106, answer(1)),
+        decide_event(&first, person(12), 106, answer(1)),
         3,
     );
     let ApprovalReceipt::Decide(DecideReply::Standing { ending }) = reply(&standing) else {
@@ -78,7 +78,7 @@ fn an_ended_row_projects_its_standing_decision_to_the_current_audience() {
     );
     let own = run_event(
         &mut book,
-        decide_event(&first, person(11, FactorStanding::Fresh), 107, answer(1)),
+        decide_event(&first, person(11), 107, answer(1)),
         4,
     );
     let ApprovalReceipt::Decide(DecideReply::Standing { ending }) = reply(&own) else {
@@ -116,27 +116,22 @@ fn an_invalid_decision_leaves_its_operation_free_and_reevaluates_after_the_endin
         );
     }
 
-    let stale = decide_event(
-        &item,
-        person(12, FactorStanding::AbsentOrStale),
-        101,
-        answer(3),
-    );
+    let invalid = decide_event(&item, person(12), 101, answer(6));
     let waiting = book.clone();
     assert_eq!(
-        reply(&run_event(&mut book, stale.clone(), 1)),
+        reply(&run_event(&mut book, invalid.clone(), 1)),
         ApprovalReceipt::Decide(DecideReply::Invalid {})
     );
     assert_eq!(book, waiting);
-    let accepted = decide_event(&item, person(12, FactorStanding::Fresh), 102, answer(3));
+    let accepted = decide_event(&item, person(12), 102, answer(3));
     run_event(&mut book, accepted, 2);
     let ended = book.clone();
     assert!(matches!(
-        reply(&run_event(&mut book, stale, 3)),
+        reply(&run_event(&mut book, invalid, 3)),
         ApprovalReceipt::Decide(DecideReply::Standing { .. })
     ));
     assert_eq!(book, ended);
-    let reused = decide_event(&other, person(12, FactorStanding::Fresh), 101, answer(2));
+    let reused = decide_event(&other, person(12), 101, answer(2));
     assert!(matches!(
         reply(&run_event(&mut book, reused, 4)),
         ApprovalReceipt::Decide(DecideReply::SavedDecision { .. })
@@ -220,7 +215,7 @@ fn provider_question_uses_its_declared_fields_and_offers_the_exact_answer() {
     let decide = |operation, fields| {
         decide_event(
             &item,
-            person(10, FactorStanding::Fresh),
+            person(10),
             operation,
             Answer::Question {
                 answer: QuestionAnswer::Answered { fields },

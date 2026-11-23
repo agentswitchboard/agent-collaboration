@@ -14,11 +14,15 @@ wire-export = [
     "dep:specta",
     "dep:specta-typescript",
     "fleet-contracts/wire-export",
+    "fleet-runtime-ports/wire-export",
+    "approval-request-protocol/wire-export",
     "fleet-identity-protocol/wire-export",
 ]
 test-support = ["fleet-runtime/test-support"]
 
 [dependencies]
+approval-request-protocol.workspace = true
+url.workspace = true
 fleet-lent-transaction.workspace = true
 base64 = "0.22.1"
 central-storage.workspace = true

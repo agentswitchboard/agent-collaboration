@@ -4,7 +4,6 @@ use super::{
     AdminOperation, AdminRoute, Deserialize, OrganizationAdminResult, Serialize, WireSpecimen,
     contract_directory, read_contract_json,
 };
-use fleet_signin::FleetPermission;
 use serde_json::Value;
 
 #[derive(serde::Deserialize)]
@@ -48,21 +47,6 @@ pub(super) fn engine_reply_specimens() -> impl Iterator<Item = WireSpecimen> {
             value: value.clone(),
         })
     })
-}
-
-pub(super) fn fleet_permission_specimens(_: &str) -> Vec<WireSpecimen> {
-    let permission = FleetPermission::RepairWork;
-    let value = serde_json::json!("organization:repairWork");
-    assert_eq!(serde_json::to_value(permission).unwrap(), value);
-    assert_eq!(
-        serde_json::from_value::<FleetPermission>(value.clone()).unwrap(),
-        permission
-    );
-    vec![WireSpecimen {
-        label: "repairWork Fleet permission".into(),
-        phase: Deserialize,
-        value,
-    }]
 }
 
 #[test]

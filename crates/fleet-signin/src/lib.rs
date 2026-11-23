@@ -1,8 +1,22 @@
 //! The organization's stamp and configured issuer trust.
 #![forbid(unsafe_code)]
 
+mod approval_person_admission;
+pub mod approval_person_wire;
+pub mod authorization_floor_store;
 mod fleet_permission;
+pub mod person_proof_store;
+
+pub use approval_person_admission::{
+    AdmittedApprovalCommand, AdmittedApprovalFacts, AdmittedApprovalPersonOperation,
+    ApprovalPersonAdmission, ApprovalPersonTransaction, ApprovalPersonVerificationInput,
+    RetainedDecisionRequest, VerifiedApprovalDecideRetry, VerifiedApprovalPersonRequest,
+};
 pub use fleet_permission::FleetPermission;
+
+mod fence_revision;
+pub use fence_revision::{FenceRevision, FenceRevisionError};
+pub mod person_proof;
 
 mod issuer_key_cache;
 mod issuer_key_resolution;
