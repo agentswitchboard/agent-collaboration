@@ -225,6 +225,15 @@ async fn an_orphaned_claim_arms_the_flush_after_the_last_waiting_row_disappears(
             .is_none()
     );
 
+    custody.recover_outbox().await.unwrap();
+    assert!(
+        matches!(
+            lane.take_calls().as_slice(),
+            [super::batch_replay::ScriptedCommand::RequestStatus(command)]
+                if command.caller == original.caller && command.query.request_id == original.request
+        ),
+        "Central's scoped miss must precede the orphan's return to waiting"
+    );
     assert!(
         custody.refresh_flush_wake().await.unwrap().is_some(),
         "an orphan must arm a flush even with no waiting rows"

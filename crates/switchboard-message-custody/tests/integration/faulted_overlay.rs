@@ -204,8 +204,11 @@ impl FaultCampaign {
             }
             self.faults.arm(site, stage);
             match site {
-                FaultSite::EarliestWaiting | FaultSite::SentWithoutAnswer => {
+                FaultSite::EarliestWaiting => {
                     assert!(self.custody.refresh_flush_wake().await.is_err());
+                }
+                FaultSite::SentWithoutAnswer => {
+                    assert!(self.custody.recover_outbox().await.is_err());
                 }
                 FaultSite::EndOverdue => {
                     assert!(self.custody.end_due_writes().await.is_err());

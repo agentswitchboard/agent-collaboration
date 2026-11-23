@@ -13,7 +13,7 @@ use central_link_client::{
 };
 use central_link_protocol::{
     DataFrame, FrameDirection, LinkFrame, ReceiptResult, ReplyPayload, RequestPayload,
-    RequestStatusAnswer, decode_text, encode_text,
+    RequestStatusAnswer, RequestStatusQuery, decode_text, encode_text,
 };
 use hegel::{TestCase, generators};
 use router_clock::{ManualClock, RuntimeClock};
@@ -105,6 +105,7 @@ pub(super) struct ScriptedBatchLane {
     events: Mutex<std::collections::VecDeque<LinkLaneEvent>>,
     refused_machine: Mutex<Option<MachineId>>,
     next_batch: Mutex<Option<ScriptedBatch>>,
+    status_answers: Mutex<Vec<(Caller, RequestStatusQuery, RequestStatusAnswer)>>,
 }
 
 impl ScriptedBatchLane {
@@ -120,6 +121,7 @@ impl ScriptedBatchLane {
             events: Mutex::new(std::collections::VecDeque::new()),
             refused_machine: Mutex::new(None),
             next_batch: Mutex::new(None),
+            status_answers: Mutex::new(Vec::new()),
         }
     }
 
@@ -137,6 +139,18 @@ impl ScriptedBatchLane {
 
     pub(super) fn decisions(&self) -> BTreeMap<RequestId, ReplyPayload> {
         self.history.lock().unwrap().decisions.clone()
+    }
+
+    pub(super) fn script_status_answer(
+        &self,
+        caller: Caller,
+        query: RequestStatusQuery,
+        answer: RequestStatusAnswer,
+    ) {
+        self.status_answers
+            .lock()
+            .unwrap()
+            .push((caller, query, answer));
     }
 
     pub(super) fn push_event(&self, event: LinkLaneEvent) {
@@ -263,9 +277,18 @@ impl ReadyLinkLane for ScriptedBatchLane {
         &self,
         command: RequestStatusCommand,
     ) -> Pin<Box<dyn Future<Output = LinkLaneDisposition<CorrelatedStatusReply>> + Send + '_>> {
+        let answer = self
+            .status_answers
+            .lock()
+            .unwrap()
+            .iter()
+            .find(|(owner, query, _)| owner == &command.caller && query == &command.query)
+            .map_or(RequestStatusAnswer::NotFound, |(_, _, answer)| {
+                answer.clone()
+            });
         let reply = CorrelatedStatusReply {
             correlation_id: command.correlation_id.clone(),
-            result: Box::new(RequestStatusAnswer::NotFound),
+            result: Box::new(answer),
         };
         self.calls
             .lock()

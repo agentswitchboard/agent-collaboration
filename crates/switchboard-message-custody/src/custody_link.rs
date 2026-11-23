@@ -1,14 +1,14 @@
 //! Custody's user of the admitted message lane. The driver owns the socket.
 
 use central_link_client::{
-    AdmittedConnection, CorrelatedReceiptResults, ImmediateRequestCommand, LinkLaneDisposition,
-    ReadyLinkLane, RequestStatusCommand, UntouchedCommand, WelcomeClockAnchor,
+    AdmittedConnection, CorrelatedReceiptResults, CorrelatedStatusReply, ImmediateRequestCommand,
+    LinkLaneDisposition, ReadyLinkLane, RequestStatusCommand, UntouchedCommand, WelcomeClockAnchor,
     WriteBatchDisposition,
 };
 use central_link_protocol::{FreshCorrelationId, RequestStatusQuery};
 use router_clock::{ClockInstant, RuntimeClock};
 use runtime_primitives::SyncTime;
-use std::{sync::Arc, time::Duration};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 use switchboard_machine_core_store::{
     OutboxStoreError, OutgoingWrite, PendingWrite, StoredSenderOutcome,
 };
@@ -31,6 +31,7 @@ use crate::{
     },
     flush_clock::{FlushJitter, shared_time_at, wake_for_mark},
     offer_taker::{SharedRecipientInbox, TakenEvent, admitted_for, take_event},
+    orphan_recovery::{OrphanProbe, OrphanTurn, prepare_orphan_turn, settle_orphan_probe},
     outbox_dispatch::{
         AppliedSenderNotice, BatchDispatchError, FlushReport, OutboxDispatcher, PreparedWriteBatch,
     },
@@ -389,9 +390,7 @@ impl CustodyLink {
             return Ok(None);
         };
         self.last_clock_anchor = Some(admitted.clock_anchor);
-        let earliest_due = self
-            .earliest_flush_due(!self.schedule.batch_in_flight())
-            .await?;
+        let earliest_due = self.outbox.earliest_waiting_mark().await?;
         self.apply_flush_event(FlushEvent::LinkConnected { earliest_due })?;
         Ok(self.schedule.armed_mark().map(|mark| {
             wake_for_mark(admitted.clock_anchor, mark, self.jitter.jitter_millis(mark))
@@ -412,13 +411,54 @@ impl CustodyLink {
         Ok(Some(self.flush_writes().await?))
     }
 
-    /// Recover claims after reopen, before any worker for this instance starts a batch.
+    /// Drive an orphan recovery pass without the command worker, using the same scoped status path.
     pub async fn recover_outbox(&mut self) -> Result<FlushReport, CustodyLinkError> {
-        let ended = self.outbox.recover_orphaned_claims().await?;
-        Ok(FlushReport {
-            ended,
-            ..FlushReport::default()
-        })
+        let mut report = FlushReport::default();
+        let mut checked = BTreeSet::new();
+        loop {
+            let turn = self.prepare_recovery_turn(true, &checked).await?;
+            report.append(turn.report);
+            let Some(probe) = turn.probe else {
+                return Ok(report);
+            };
+            checked.insert(probe.claim.key.request_id.clone());
+            let result = self.lane.request_status(probe.command.clone()).await;
+            report.append(self.settle_recovery_probe(probe, result).await);
+        }
+    }
+
+    pub(crate) async fn prepare_recovery_turn(
+        &mut self,
+        can_probe: bool,
+        deferred: &BTreeSet<RequestId>,
+    ) -> Result<OrphanTurn, OutboxWorkError> {
+        let ready = can_probe.then(|| self.admitted_connection()).flatten();
+        prepare_orphan_turn(
+            &mut self.outbox,
+            &self.dispatcher,
+            ready,
+            self.clock.monotonic_now(),
+            deferred,
+        )
+        .await
+    }
+
+    pub(crate) async fn settle_recovery_probe(
+        &mut self,
+        probe: OrphanProbe,
+        result: LinkLaneDisposition<CorrelatedStatusReply>,
+    ) -> FlushReport {
+        settle_orphan_probe(&mut self.outbox, &mut self.dispatcher, probe, result).await
+    }
+
+    pub(crate) fn owes_local_settlement(&self) -> bool {
+        self.dispatcher.owes_local_settlement()
+    }
+
+    pub(crate) async fn retry_local_settlement(&mut self) -> FlushReport {
+        self.dispatcher
+            .retry_local_settlements(&mut self.outbox)
+            .await
     }
 
     /// Run the local deadline wake and return the exact typed endings for the caller to report.
@@ -432,7 +472,13 @@ impl CustodyLink {
 
     /// Flush on the current armed minute, with one lane submission and member-by-member settlement.
     pub async fn flush_writes(&mut self) -> Result<FlushReport, CustodyLinkError> {
-        let (mut report, batch) = self.prepare_write_turn().await?;
+        let mut report = FlushReport::default();
+        if self.owes_local_settlement() {
+            report.append(self.retry_local_settlement().await);
+        }
+        report.append(self.recover_outbox().await?);
+        let (prepared, batch) = self.prepare_write_turn().await?;
+        report.append(prepared);
         if let Some(batch) = batch {
             let disposition = self.lane.submit_write_batch(batch.command()).await;
             report.append(self.settle_write_turn(batch, disposition).await?);
@@ -449,9 +495,7 @@ impl CustodyLink {
         };
         self.last_clock_anchor = Some(admitted.clock_anchor);
         let now = shared_time_at(admitted.clock_anchor, self.clock.monotonic_now());
-        let earliest_due = self
-            .earliest_flush_due(!self.schedule.batch_in_flight())
-            .await?;
+        let earliest_due = self.outbox.earliest_waiting_mark().await?;
         self.apply_flush_event(FlushEvent::LinkConnected { earliest_due })?;
         let Some(mark) = self.apply_flush_event(FlushEvent::Tick { now, earliest_due })? else {
             return Ok((FlushReport::default(), None));
@@ -524,7 +568,7 @@ impl CustodyLink {
         &mut self,
         report: &mut FlushReport,
     ) -> Result<(), FlushTransitionError> {
-        let earliest_due = self.earliest_flush_due(true).await;
+        let earliest_due = self.outbox.earliest_waiting_mark().await;
         self.apply_flush_event(FlushEvent::BatchEnded {
             earliest_due: earliest_due.as_ref().ok().copied().flatten(),
         })?;
@@ -535,20 +579,6 @@ impl CustodyLink {
             report.issues.push(BatchDispatchError::Work(error));
         }
         Ok(())
-    }
-
-    // A lost claim acknowledgement can leave no waiting row to arm the
-    // scheduler. Only the idle owner may consider those claims for recovery.
-    async fn earliest_flush_due(
-        &mut self,
-        can_recover: bool,
-    ) -> Result<Option<SyncTime>, OutboxWorkError> {
-        let waiting = self.outbox.earliest_waiting_mark().await?;
-        if can_recover && self.outbox.has_unanswered_claims().await? {
-            let due_now = SyncTime::from_unix_millis(0);
-            return Ok(Some(waiting.map_or(due_now, |mark| mark.min(due_now))));
-        }
-        Ok(waiting)
     }
 
     /// Submit a frame of durable inbox receipts for the current connection.

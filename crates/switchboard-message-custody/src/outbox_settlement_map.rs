@@ -69,6 +69,18 @@ pub(crate) fn central_status_reason(reason: RequestRefusal) -> OutboxRefusal {
     })
 }
 
+pub(crate) fn outcome_from_stored_refusal(
+    write: &OutboxQueuedWrite,
+    reason: OutboxRefusal,
+) -> Result<OutboxWriteOutcome, InvalidOutboxOutcome> {
+    match reason {
+        OutboxRefusal::Central(OutboxCentralRefusal::Workspace(RefusalReason::NotFound {
+            item,
+        })) => OutboxWriteOutcome::from_workspace_not_found(write, &write.request_scope(), item),
+        reason => OutboxWriteOutcome::from_refusal(write, reason),
+    }
+}
+
 #[cfg(test)]
 #[path = "outbox_settlement_map_test.rs"]
 mod tests;

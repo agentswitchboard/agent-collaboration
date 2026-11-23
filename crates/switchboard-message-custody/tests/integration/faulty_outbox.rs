@@ -6,13 +6,14 @@
 )]
 
 use std::{
+    collections::BTreeSet,
     io,
     sync::{Arc, Mutex},
 };
 use switchboard_machine_core_store::{
     ClaimedBatch, EndedWrite, NewOutboxItem, OutboxFuture, OutboxInsert, OutboxRequestKey,
     OutboxRequestStatus, OutboxStorage, OutboxStoreError, OutboxWriteOutcome, OutgoingWrite,
-    PendingWrite, StoreScan, StoredSenderOutcome,
+    PendingWrite, StoreScan, StoredSenderOutcome, UnansweredOutboxClaim,
 };
 use tokio::sync::Notify;
 use workspace_ids::RequestId;
@@ -229,11 +230,19 @@ impl OutboxStorage for FaultyOutbox {
         self.inner.sender_outcome(caller, request)
     }
 
-    fn sent_without_answer(&mut self) -> OutboxFuture<'_, StoreScan<Vec<RequestId>>> {
+    fn sent_without_answer(&mut self) -> OutboxFuture<'_, StoreScan<Vec<UnansweredOutboxClaim>>> {
         self.plan.wrap(
             FaultSite::SentWithoutAnswer,
             self.inner.sent_without_answer(),
         )
+    }
+
+    fn end_overdue_orphans<'call>(
+        &'call mut self,
+        now_ms: i64,
+        live_request_ids: &'call BTreeSet<RequestId>,
+    ) -> OutboxFuture<'call, StoreScan<Vec<EndedWrite>>> {
+        self.inner.end_overdue_orphans(now_ms, live_request_ids)
     }
 
     fn record_outcome<'call>(

@@ -1,83 +1,27 @@
 //! Prepares and settles the one outbox batch custody owns at a time.
 
 use central_link_client::{
-    ConnectionAttempt, LINK_LANE_FRAME_BYTES, LaneFrameSizeError, UntouchedCommand,
-    WRITE_BATCH_ENVELOPE_BYTES, WelcomeClockAnchor, WriteBatchCommand, WriteBatchDisposition,
-    WriteBatchMemberDisposition, encoded_request_size,
+    ConnectionAttempt, LINK_LANE_FRAME_BYTES, UntouchedCommand, WRITE_BATCH_ENVELOPE_BYTES,
+    WelcomeClockAnchor, WriteBatchCommand, WriteBatchDisposition, WriteBatchMemberDisposition,
+    encoded_request_size,
 };
-use central_link_protocol::{
-    CorrelationId, FreshCorrelationId, LinkRequestBatch, ProtocolError, ReplyPayload,
-};
+use central_link_protocol::{CorrelationId, FreshCorrelationId, LinkRequestBatch, ReplyPayload};
 use runtime_primitives::SyncTime;
-use switchboard_machine_core_store::{
-    EndedWrite, OutboxStoreError, StoredOutboxWrite, StoredSenderOutcome,
-};
+use std::collections::BTreeSet;
+use switchboard_machine_core_store::{StoredOutboxWrite, UnansweredOutboxClaim};
 use workspace_ids::RequestId;
-use workspace_model::Caller;
 
 use crate::{
     custody_operator::CustodyOperatorEvent,
     flush_clock::send_fence_for_mark,
-    outbox_settlement_map::outcome_from_link_reply,
+    local_settlement::{LocalSettlements, MemberReturn},
     outbox_wire::request_for_write,
-    outbox_work::{FlushSelection, OutboxWork, OutboxWorkError},
+    outbox_work::{FlushSelection, OutboxWork},
 };
 
-/// A checked answer custody persisted for one member of its own flush.
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FlushedWriteAnswer {
-    pub request: RequestId,
-    pub caller: Caller,
-    pub reply: ReplyPayload,
-}
-
-/// Custody reports the original caller's durably applied Central delivery notice to its sink.
-#[derive(Debug)]
-pub struct AppliedSenderNotice {
-    pub caller: Caller,
-    pub notice: StoredSenderOutcome,
-}
-
-/// A problem custody observed while settling a batch or returning a claim.
-#[derive(Debug, thiserror::Error)]
-pub enum BatchDispatchError {
-    #[error("the outbox batch could not be prepared")]
-    Work(#[from] OutboxWorkError),
-    #[error("the outbox batch failed wire validation")]
-    Wire(#[from] ProtocolError),
-    #[error("the outbox batch could not be measured")]
-    WireSize(#[from] LaneFrameSizeError),
-    #[error("a stored write does not fit alone in a link frame")]
-    OversizeClaim,
-    #[error("the lane returned results outside the current batch's order or identity")]
-    ResultsMismatch,
-    #[error("the lane's reply does not settle request {0}")]
-    UnsettledReply(RequestId),
-    #[error("the store did not update request {request}")]
-    StoreMember {
-        request: RequestId,
-        #[source]
-        error: OutboxStoreError,
-    },
-}
-
-/// One batch's results, kept by custody for the outcome sink.
-#[derive(Debug, Default)]
-pub struct FlushReport {
-    pub answered: Vec<FlushedWriteAnswer>,
-    pub sender_notices: Vec<AppliedSenderNotice>,
-    pub ended: Vec<EndedWrite>,
-    pub issues: Vec<BatchDispatchError>,
-}
-
-impl FlushReport {
-    pub(crate) fn append(&mut self, other: Self) {
-        self.answered.extend(other.answered);
-        self.sender_notices.extend(other.sender_notices);
-        self.ended.extend(other.ended);
-        self.issues.extend(other.issues);
-    }
-}
+pub use crate::flush_report::{
+    AppliedSenderNotice, BatchDispatchError, FlushReport, FlushedWriteAnswer,
+};
 
 /// The command and claim token prepared by the one batch dispatcher.
 #[derive(Clone, Debug)]
@@ -109,9 +53,58 @@ struct ClaimedWriteBatch {
 #[derive(Default)]
 pub struct OutboxDispatcher {
     in_flight: Option<ClaimedWriteBatch>,
+    settling: LocalSettlements,
 }
 
 impl OutboxDispatcher {
+    pub(crate) fn protected_request_ids(&self) -> BTreeSet<RequestId> {
+        self.in_flight
+            .iter()
+            .flat_map(|batch| batch.writes.iter().map(|write| &write.request))
+            .chain(self.settling.protected_ids())
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn owes_local_settlement(&self) -> bool {
+        self.settling.protected_ids().next().is_some()
+    }
+
+    pub(crate) async fn retry_local_settlements(&mut self, work: &mut OutboxWork) -> FlushReport {
+        let mut report = FlushReport::default();
+        self.settling.retry(work, &mut report).await;
+        collect_due_writes(work, &mut report).await;
+        report
+    }
+
+    pub(crate) async fn settle_orphan_answer(
+        &mut self,
+        work: &mut OutboxWork,
+        claim: UnansweredOutboxClaim,
+        reply: ReplyPayload,
+        report: &mut FlushReport,
+    ) {
+        self.settling
+            .answer(
+                work,
+                claim.key.request_id,
+                claim.caller,
+                claim.payload,
+                reply,
+                report,
+            )
+            .await;
+    }
+
+    pub(crate) async fn return_orphan(
+        &mut self,
+        work: &mut OutboxWork,
+        claim: UnansweredOutboxClaim,
+        report: &mut FlushReport,
+    ) {
+        self.settling.return_orphan(work, claim, report).await;
+    }
+
     /// Select an ordered claim for the caller's armed mark, then recheck the window before sending.
     pub async fn prepare_at_mark(
         &mut self,
@@ -127,7 +120,7 @@ impl OutboxDispatcher {
                 report,
             });
         }
-        report.ended.extend(work.recover_orphaned_claims().await?);
+        self.settling.retry(work, &mut report).await;
         let FlushSelection::Claimed(claimed) = work.claim_at_mark(anchor, mark).await? else {
             return Ok(PreparedFlush {
                 batch: None,
@@ -151,7 +144,9 @@ impl OutboxDispatcher {
                     if index < count {
                         selected.push(write);
                     } else {
-                        return_not_reached(work, write.request, &mut report).await;
+                        self.settling
+                            .return_member(work, write, MemberReturn::NotTransmitted, &mut report)
+                            .await;
                     }
                 }
                 let send_before = selected
@@ -160,7 +155,9 @@ impl OutboxDispatcher {
                     .fold(send_fence_for_mark(anchor, mark), std::cmp::min);
                 if !work.mark_is_open(anchor, mark) || !work.before_elapsed_fence(send_before) {
                     for write in selected {
-                        return_not_reached(work, write.request, &mut report).await;
+                        self.settling
+                            .return_member(work, write, MemberReturn::NotTransmitted, &mut report)
+                            .await;
                     }
                     collect_due_writes(work, &mut report).await;
                     return Ok(PreparedFlush {
@@ -185,7 +182,9 @@ impl OutboxDispatcher {
             Err(error) => {
                 report.issues.push(error);
                 for write in claimed.writes {
-                    return_not_reached(work, write.request, &mut report).await;
+                    self.settling
+                        .return_member(work, write, MemberReturn::NotTransmitted, &mut report)
+                        .await;
                 }
                 collect_due_writes(work, &mut report).await;
                 None
@@ -222,7 +221,9 @@ impl OutboxDispatcher {
                     | UntouchedCommand::SendWindowElapsed => {}
                 }
                 for write in active.writes {
-                    return_not_reached(work, write.request, &mut report).await;
+                    self.settling
+                        .return_member(work, write, MemberReturn::NotTransmitted, &mut report)
+                        .await;
                 }
                 collect_due_writes(work, &mut report).await;
             }
@@ -240,17 +241,40 @@ impl OutboxDispatcher {
                 {
                     report.issues.push(BatchDispatchError::ResultsMismatch);
                     for write in active.writes {
-                        return_answer_lost(work, write.request, &mut report).await;
+                        self.settling
+                            .return_member(
+                                work,
+                                write,
+                                MemberReturn::MayHaveTransmitted,
+                                &mut report,
+                            )
+                            .await;
                     }
                     return Some(report);
                 }
                 for (write, member) in active.writes.into_iter().zip(results.into_members()) {
                     match member.disposition {
                         WriteBatchMemberDisposition::Answered { reply } => {
-                            settle_answer(work, write, *reply.result, &mut report).await;
+                            self.settling
+                                .answer(
+                                    work,
+                                    write.request,
+                                    write.caller,
+                                    write.payload,
+                                    *reply.result,
+                                    &mut report,
+                                )
+                                .await;
                         }
                         WriteBatchMemberDisposition::AnswerLost { .. } => {
-                            return_answer_lost(work, write.request, &mut report).await;
+                            self.settling
+                                .return_member(
+                                    work,
+                                    write,
+                                    MemberReturn::MayHaveTransmitted,
+                                    &mut report,
+                                )
+                                .await;
                         }
                     }
                 }
@@ -285,62 +309,6 @@ fn pack_wire_batch(
 
 fn fresh_correlation(now_ms: i64) -> CorrelationId {
     FreshCorrelationId::mint_at(now_ms).wire_id().clone()
-}
-
-async fn settle_answer(
-    work: &mut OutboxWork,
-    write: StoredOutboxWrite,
-    reply: ReplyPayload,
-    report: &mut FlushReport,
-) {
-    let outcome = match outcome_from_link_reply(&write.payload, reply.clone()) {
-        Ok(outcome) => outcome,
-        Err(_) => {
-            report
-                .issues
-                .push(BatchDispatchError::UnsettledReply(write.request.clone()));
-            return_answer_lost(work, write.request, report).await;
-            return;
-        }
-    };
-    let now_ms = work.local_now_ms();
-    match work
-        .outbox_storage()
-        .record_outcome(&write.request, &outcome, now_ms)
-        .await
-    {
-        Ok(()) => report.answered.push(FlushedWriteAnswer {
-            request: write.request,
-            caller: write.caller,
-            reply,
-        }),
-        Err(error) => report.issues.push(BatchDispatchError::StoreMember {
-            request: write.request,
-            error,
-        }),
-    }
-}
-
-async fn return_not_reached(work: &mut OutboxWork, request: RequestId, report: &mut FlushReport) {
-    let now_ms = work.local_now_ms();
-    if let Err(error) = work
-        .outbox_storage()
-        .return_not_transmitted(&request, now_ms)
-        .await
-    {
-        report
-            .issues
-            .push(BatchDispatchError::StoreMember { request, error });
-    }
-}
-
-async fn return_answer_lost(work: &mut OutboxWork, request: RequestId, report: &mut FlushReport) {
-    match work.return_unanswered(std::slice::from_ref(&request)).await {
-        Ok(ended) => report.ended.extend(ended),
-        Err(error) => report
-            .issues
-            .push(BatchDispatchError::StoreMember { request, error }),
-    }
 }
 
 async fn collect_due_writes(work: &mut OutboxWork, report: &mut FlushReport) {

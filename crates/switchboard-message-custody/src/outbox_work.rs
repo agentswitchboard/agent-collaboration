@@ -4,8 +4,10 @@ use central_link_client::{LINK_LANE_SETTLEMENT_LIMIT, WelcomeClockAnchor};
 use central_link_protocol::MAX_LINK_REQUEST_BATCH_SIZE;
 use router_clock::{ClockInstant, RuntimeClock};
 use runtime_primitives::SyncTime;
-use std::{sync::Arc, time::Duration};
-use switchboard_machine_core_store::{ClaimedBatch, EndedWrite, OutboxStorage, OutboxStoreError};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
+use switchboard_machine_core_store::{
+    ClaimedBatch, EndedWrite, OutboxStorage, OutboxStoreError, UnansweredOutboxClaim,
+};
 use workspace_ids::RequestId;
 use workspace_model::Timestamp;
 
@@ -104,16 +106,22 @@ impl OutboxWork {
         self.clock.monotonic_now() < fence
     }
 
+    pub(crate) fn has_settlement_time(&self, deadline_ms: i64) -> bool {
+        self.clock.monotonic_now().after(LINK_LANE_SETTLEMENT_LIMIT)
+            < self.local_wake_at(deadline_ms)
+    }
+
     /// Read the first waiting receipt mark for the scheduler, including unanswered replays.
     pub async fn earliest_waiting_mark(&mut self) -> Result<Option<SyncTime>, OutboxWorkError> {
         let scanned = self.store.earliest_waiting().await?;
         Ok(outbox_scan(scanned, &mut self.operator_events).map(SyncTime::from_unix_millis))
     }
 
-    /// Check for an orphan without changing its custody until the next flush.
-    pub(crate) async fn has_unanswered_claims(&mut self) -> Result<bool, OutboxWorkError> {
+    pub(crate) async fn orphan_claims(
+        &mut self,
+    ) -> Result<Vec<UnansweredOutboxClaim>, OutboxWorkError> {
         let scan = self.store.sent_without_answer().await?;
-        Ok(!outbox_scan(scan, &mut self.operator_events).is_empty())
+        Ok(outbox_scan(scan, &mut self.operator_events))
     }
 
     /// The exact local expiry wake, independent of lane admission and minute jitter.
@@ -136,7 +144,7 @@ impl OutboxWork {
         )
     }
 
-    fn local_wake_at(&self, deadline_ms: i64) -> ClockInstant {
+    pub(crate) fn local_wake_at(&self, deadline_ms: i64) -> ClockInstant {
         let elapsed_ms = deadline_ms.saturating_sub(self.local_epoch.unix_millis);
         self.local_epoch.sampled_at.after(Duration::from_millis(
             u64::try_from(elapsed_ms).unwrap_or(0),
@@ -150,15 +158,17 @@ impl OutboxWork {
         Ok(outbox_scan(scanned, &mut self.operator_events))
     }
 
-    /// Recover orphaned claims when no batch owned by this task is in flight.
-    /// The store retains the original request id and deadline across the return.
-    pub async fn recover_orphaned_claims(&mut self) -> Result<Vec<EndedWrite>, OutboxWorkError> {
-        let scanned = self.store.sent_without_answer().await?;
-        let unanswered = outbox_scan(scanned, &mut self.operator_events);
-        if unanswered.is_empty() {
-            return Ok(Vec::new());
-        }
-        Ok(self.return_unanswered(&unanswered).await?)
+    /// End only due genuine orphans, preserving claims with evidence still held by the worker.
+    pub async fn end_due_orphans(
+        &mut self,
+        protected_ids: &BTreeSet<RequestId>,
+    ) -> Result<Vec<EndedWrite>, OutboxWorkError> {
+        let now_ms = self.local_now_ms();
+        let scanned = self
+            .store
+            .end_overdue_orphans(now_ms, protected_ids)
+            .await?;
+        Ok(outbox_scan(scanned, &mut self.operator_events))
     }
 
     pub(crate) async fn return_unanswered(

@@ -6,6 +6,7 @@
 use central_link_client::WelcomeClockAnchor;
 use router_clock::{ClockInstant, ManualClock, RuntimeClock};
 use runtime_primitives::SyncTime;
+use std::collections::BTreeSet;
 use std::{path::Path, sync::Arc, time::Duration};
 use switchboard_machine_core_store::{
     MachineLocalOutbox, MachineLocalStore, NewOutboxItem, OutboxCancellation, OutboxInsert,
@@ -190,11 +191,17 @@ async fn reopening_after_the_original_deadline_ends_a_claim_with_no_answer() {
         .advance(WRITE_WINDOW - Duration::from_secs(1))
         .unwrap();
     let mut reopened = OutboxWork::new(Box::new(open_outbox(&path).await), clock);
-    let ended = reopened.recover_orphaned_claims().await.unwrap();
+    let ended = reopened.end_due_orphans(&BTreeSet::new()).await.unwrap();
     assert!(
         matches!(ended.as_slice(), [outcome] if outcome.request_id == message.request
         && outcome.caller == message.caller && outcome.reason == OutboxCancellation::NotConfirmedWithin15Minutes)
     );
     assert!(reopened.earliest_waiting_mark().await.unwrap().is_none());
-    assert!(reopened.recover_orphaned_claims().await.unwrap().is_empty());
+    assert!(
+        reopened
+            .end_due_orphans(&BTreeSet::new())
+            .await
+            .unwrap()
+            .is_empty()
+    );
 }
