@@ -1,72 +1,59 @@
-//! Connect the admitted-lane policy to one socket owner's channels.
+//! Interpret the admitted-lane policy and own its event permits for one socket.
 
-use std::{collections::BTreeSet, time::Duration};
+use std::{collections::BTreeSet, sync::Arc, time::Duration};
 
 use central_link_client::{
-    AdmittedConnection, ClientEvent, ConnectionAttempt, LinkLaneCommand, LinkLaneDisposition,
-    LinkLaneEvent, WriteBatchDisposition,
+    AdmittedConnection, ClientEvent, ConnectionAttempt, LinkLaneEvent, UntouchedCommand,
+    ValidatedDeliveryOffer,
 };
-use central_link_protocol::{CorrelationId, DataFrame, LinkFrame};
+use central_link_protocol::CorrelationId;
 use router_clock::ClockInstant;
 use state_machine_core::StateMachine;
 use tokio::sync::{mpsc, oneshot, watch};
 
 use crate::{
     admitted_lane_policy::{
-        AdmittedLanePolicy, ExpectedReply, LaneEffect, LaneInput, LaneResult, LaneState,
-        SocketReply,
+        AdmittedLanePolicy, LaneEffect, LaneInput, LaneResult, LaneState, SocketReply,
     },
-    link_lane::{LaneRequest, LinkLaneOwner},
+    link_lane::{CommandIntake, LaneRequest, LinkLaneOwner},
 };
 
 const ANSWER_LIMIT: Duration = Duration::from_secs(30);
 const CONNECTION_CORRELATION_LIMIT: usize = 4096;
 
+pub(super) type EventPermit = mpsc::OwnedPermit<LinkLaneEvent>;
+
+pub(super) enum ReadAdmission {
+    AwaitingWelcome,
+    AwaitingEventSpace {
+        events: mpsc::Sender<LinkLaneEvent>,
+        slots: usize,
+    },
+    Admitted(mpsc::Sender<LinkLaneEvent>),
+}
+
 pub(super) struct AdmittedSocketLane {
     state: LaneState,
     admitted: watch::Sender<Option<AdmittedConnection>>,
+    intake: Arc<CommandIntake>,
     events: mpsc::Sender<LinkLaneEvent>,
+    pending_admission: Option<AdmittedConnection>,
+    withdrawal: Option<EventPermit>,
     operation: Option<PendingOperation>,
     used_correlations: BTreeSet<CorrelationId>,
 }
 
 struct PendingOperation {
+    connection: ConnectionAttempt,
     correlations: Vec<CorrelationId>,
-    responder: OperationResponder,
-}
-
-enum OperationResponder {
-    Batch(oneshot::Sender<WriteBatchDisposition>),
-    Single(oneshot::Sender<LinkLaneDisposition>),
-}
-
-impl OperationResponder {
-    fn not_reached(self) {
-        match self {
-            Self::Batch(sender) => {
-                let _ = sender.send(WriteBatchDisposition::NotReached);
-            }
-            Self::Single(sender) => {
-                let _ = sender.send(LinkLaneDisposition::NotReached);
-            }
-        }
-    }
-
-    fn settle(self, result: LaneResult) {
-        match (self, result) {
-            (Self::Batch(sender), LaneResult::Batch(result)) => {
-                let _ = sender.send(result);
-            }
-            (Self::Single(sender), LaneResult::Single(result)) => {
-                let _ = sender.send(result);
-            }
-            (Self::Batch(_), LaneResult::Single(_)) | (Self::Single(_), LaneResult::Batch(_)) => {}
-        }
-    }
+    settled: oneshot::Sender<LaneResult>,
 }
 
 pub(super) enum FrameOffer {
-    Queued(LinkFrame),
+    Queued {
+        wire: String,
+        send_before: ClockInstant,
+    },
     Declined,
     Reconnect,
 }
@@ -76,7 +63,10 @@ impl AdmittedSocketLane {
         Self {
             state: LaneState::WaitingForAdmission,
             admitted: owner.admitted.clone(),
+            intake: owner.intake.clone(),
             events: owner.events.clone(),
+            pending_admission: None,
+            withdrawal: None,
             operation: None,
             used_correlations: BTreeSet::new(),
         }
@@ -89,48 +79,91 @@ impl AdmittedSocketLane {
         self.state = state;
         for LaneEffect::Settle(result) in effects {
             if let Some(operation) = self.operation.take() {
-                operation.responder.settle(result);
+                self.intake.settle(&operation.connection);
+                let _ = operation.settled.send(result);
             }
         }
         true
     }
 
     pub(super) fn admit(&mut self, admitted: AdmittedConnection) -> bool {
-        // Set aside one channel slot for withdrawal before publishing admission.
-        if self.events.capacity() < 2
-            || self.events.is_closed()
-            || !self.apply(LaneInput::Admit(admitted.clone()))
-        {
-            return false;
-        }
-        self.admitted.send_replace(Some(admitted.clone()));
-        self.events
-            .try_send(LinkLaneEvent::ConnectionAdmitted(admitted))
-            .is_ok()
+        self.pending_admission = Some(admitted);
+        self.publish_admission()
     }
 
-    pub(super) fn deliver(&self, event: ClientEvent) -> bool {
+    pub(super) fn publish_admission(&mut self) -> bool {
+        if self.events.is_closed() {
+            return false;
+        }
+        if self.pending_admission.is_none() || self.events.capacity() < 2 {
+            return true;
+        }
+        let Ok(withdrawal) = self.events.clone().try_reserve_owned() else {
+            return true;
+        };
+        let Ok(admission) = self.events.clone().try_reserve_owned() else {
+            return true;
+        };
+        let Some(admitted) = self.pending_admission.take() else {
+            return false;
+        };
+        if !self.apply(LaneInput::Admit(admitted.clone())) {
+            return false;
+        }
+
+        // Only this socket publishes. Holding the withdrawal permit makes
+        // termination lossless even with a full delivery queue.
+        self.withdrawal = Some(withdrawal);
+        self.intake.open(admitted.connection.clone());
+        self.admitted.send_replace(Some(admitted.clone()));
+        admission.send(LinkLaneEvent::ConnectionAdmitted(admitted));
+        true
+    }
+
+    pub(super) fn read_admission(&self) -> ReadAdmission {
+        if self.pending_admission.is_some() {
+            ReadAdmission::AwaitingEventSpace {
+                events: self.events.clone(),
+                slots: 2,
+            }
+        } else if self.is_admitted() && self.events.capacity() == 0 {
+            ReadAdmission::AwaitingEventSpace {
+                events: self.events.clone(),
+                slots: 1,
+            }
+        } else if self.is_admitted() {
+            ReadAdmission::Admitted(self.events.clone())
+        } else {
+            ReadAdmission::AwaitingWelcome
+        }
+    }
+
+    pub(super) fn can_read_without_delay(&self) -> bool {
+        self.pending_admission.is_none() && (!self.is_admitted() || self.events.capacity() != 0)
+    }
+
+    pub(super) fn deliver(&self, event: ClientEvent, permit: Option<EventPermit>) -> bool {
         let (
             Some(admitted),
+            Some(permit),
             ClientEvent::Deliver {
                 message,
                 sender,
                 time_left,
             },
-        ) = (self.state.admitted(), event)
+        ) = (self.state.admitted(), permit, event)
         else {
             return false;
         };
-        self.events.capacity() > 1
-            && self
-                .events
-                .try_send(LinkLaneEvent::Deliver {
-                    connection: admitted.connection.clone(),
-                    message,
-                    sender,
-                    time_left,
-                })
-                .is_ok()
+        let Ok(offer) = ValidatedDeliveryOffer::new(message, time_left) else {
+            return false;
+        };
+        permit.send(LinkLaneEvent::Deliver {
+            connection: admitted.connection.clone(),
+            offer,
+            sender,
+        });
+        true
     }
 
     pub(super) fn can_offer(&self) -> bool {
@@ -167,39 +200,67 @@ impl AdmittedSocketLane {
         });
     }
 
-    pub(super) fn offer(&mut self, request: LaneRequest) -> FrameOffer {
-        let (connection, frame, expected, responder) = prepare_frame(request);
+    pub(super) fn offer(&mut self, request: LaneRequest, now: ClockInstant) -> FrameOffer {
+        let LaneRequest {
+            connection,
+            send_before,
+            wire,
+            expected,
+            settled,
+        } = request;
         if !self.state.can_offer()
             || !self
                 .state
                 .admitted()
                 .is_some_and(|admitted| admitted.connection == connection)
         {
-            responder.not_reached();
+            self.reject_offer(
+                &connection,
+                settled,
+                UntouchedCommand::ConnectionUnavailable,
+            );
+            return FrameOffer::Declined;
+        }
+        if now >= send_before {
+            self.reject_offer(&connection, settled, UntouchedCommand::SendWindowElapsed);
             return FrameOffer::Declined;
         }
         let correlations = expected.correlations();
         if self.used_correlations.len() + correlations.len() > CONNECTION_CORRELATION_LIMIT {
-            responder.not_reached();
-            // A fresh connection bounds the ledger without making old IDs reusable on this socket.
+            self.reject_offer(
+                &connection,
+                settled,
+                UntouchedCommand::ConnectionUnavailable,
+            );
             return FrameOffer::Reconnect;
         }
         if correlations
             .iter()
             .any(|id| self.used_correlations.contains(id))
             || !self.apply(LaneInput::Offer {
-                connection,
+                connection: connection.clone(),
                 expected,
             })
         {
-            responder.not_reached();
+            self.reject_offer(&connection, settled, UntouchedCommand::InvalidFrame);
             return FrameOffer::Declined;
         }
         self.operation = Some(PendingOperation {
+            connection,
             correlations,
-            responder,
+            settled,
         });
-        FrameOffer::Queued(LinkFrame::Data(frame))
+        FrameOffer::Queued { wire, send_before }
+    }
+
+    fn reject_offer(
+        &self,
+        connection: &ConnectionAttempt,
+        settled: oneshot::Sender<LaneResult>,
+        cause: UntouchedCommand,
+    ) {
+        self.intake.settle(connection);
+        let _ = settled.send(LaneResult::Untouched(cause));
     }
 
     pub(super) fn start_write(&mut self) -> bool {
@@ -213,6 +274,10 @@ impl AdmittedSocketLane {
         true
     }
 
+    pub(super) fn reject_write(&mut self, cause: UntouchedCommand) {
+        self.apply(LaneInput::WriteRejected { cause });
+    }
+
     pub(super) fn finish_write(&mut self, now: ClockInstant) {
         self.apply(LaneInput::WriteFlushed {
             deadline: now.after(ANSWER_LIMIT),
@@ -222,90 +287,18 @@ impl AdmittedSocketLane {
 
 impl Drop for AdmittedSocketLane {
     fn drop(&mut self) {
+        // This is the fence that linearizes retirement against enqueue. The
+        // owner drains the receiver after the socket scope returns.
+        self.intake.close();
         if let Some(admitted) = self.state.admitted() {
             let connection = admitted.connection.clone();
             self.admitted.send_replace(None);
             self.apply(LaneInput::Close {
                 connection: connection.clone(),
             });
-            let _ = self
-                .events
-                .try_send(LinkLaneEvent::ConnectionNotAdmitted { connection });
-        }
-    }
-}
-
-fn prepare_frame(
-    request: LaneRequest,
-) -> (
-    ConnectionAttempt,
-    DataFrame,
-    ExpectedReply,
-    OperationResponder,
-) {
-    match request {
-        LaneRequest::WriteBatch(command, settled) => {
-            let expected = ExpectedReply::batch(&command.requests);
-            (
-                command.connection,
-                DataFrame::Batch {
-                    requests: command.requests,
-                },
-                expected,
-                OperationResponder::Batch(settled),
-            )
-        }
-        LaneRequest::SingleCommand(command, settled) => {
-            let (connection, frame, expected) = match command {
-                LinkLaneCommand::SubmitReceipts {
-                    connection,
-                    correlation_id,
-                    receipts,
-                } => {
-                    let expected = ExpectedReply::ReceiptResults {
-                        correlation_id: correlation_id.clone(),
-                        length: receipts.receipts().len(),
-                    };
-                    (
-                        connection,
-                        DataFrame::Receipts {
-                            correlation_id,
-                            receipts,
-                        },
-                        expected,
-                    )
-                }
-                LinkLaneCommand::RequestStatus {
-                    connection,
-                    correlation_id,
-                    caller,
-                    query,
-                } => {
-                    let expected = ExpectedReply::RequestStatus(correlation_id.clone());
-                    (
-                        connection,
-                        DataFrame::RequestStatus {
-                            correlation_id,
-                            caller,
-                            query,
-                        },
-                        expected,
-                    )
-                }
-                LinkLaneCommand::ImmediateRequest {
-                    connection,
-                    request,
-                } => {
-                    let expected = ExpectedReply::immediate(&request);
-                    (connection, DataFrame::Request { request }, expected)
-                }
-            };
-            (
-                connection,
-                frame,
-                expected,
-                OperationResponder::Single(settled),
-            )
+            if let Some(withdrawal) = self.withdrawal.take() {
+                withdrawal.send(LinkLaneEvent::ConnectionNotAdmitted { connection });
+            }
         }
     }
 }

@@ -256,8 +256,10 @@ pub enum LinkLaneDisposition<Reply> {
 
 /// A failure the link client reports for an invalid delivery and time-left combination.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("the message kind and delivery time-left do not match")]
-pub struct InvalidDeliveryOffer;
+pub enum InvalidDeliveryOffer {
+    #[error("the message kind and delivery time-left do not match")]
+    WrongKindOrTime,
+}
 
 /// The socket owner validates the message kind and its required time-left together.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -278,7 +280,7 @@ impl ValidatedDeliveryOffer {
                     record.body,
                     MessageBody::Notice { .. } | MessageBody::DeliveryOutcome { .. }
                 ) => {}
-            _ => return Err(InvalidDeliveryOffer),
+            _ => return Err(InvalidDeliveryOffer::WrongKindOrTime),
         }
         Ok(Self { message, time_left })
     }
@@ -324,6 +326,14 @@ pub trait ReadyLinkLane: Send + Sync {
         command: WriteBatchCommand,
     ) -> Pin<Box<dyn Future<Output = WriteBatchDisposition> + Send + '_>>;
 
+    /// Receipt commands settle with receipt results.
+    ///
+    /// ```compile_fail,E0308
+    /// use central_link_client::{CorrelatedStatusReply, LinkLaneDisposition, ReadyLinkLane, SubmitReceiptsCommand};
+    /// async fn wrong_family(lane: &dyn ReadyLinkLane, command: SubmitReceiptsCommand) {
+    ///     let _: LinkLaneDisposition<CorrelatedStatusReply> = lane.submit_receipts(command).await;
+    /// }
+    /// ```
     fn submit_receipts(
         &self,
         command: SubmitReceiptsCommand,
@@ -342,3 +352,7 @@ pub trait ReadyLinkLane: Send + Sync {
     /// Read the next event, or `None` when the driver permanently closes the stream.
     fn next_event(&self) -> Pin<Box<dyn Future<Output = Option<LinkLaneEvent>> + Send + '_>>;
 }
+
+#[cfg(test)]
+#[path = "ready_lane_test.rs"]
+mod tests;

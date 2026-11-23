@@ -46,7 +46,7 @@ const UPGRADE_RESPONSE_MAX_BYTES: usize = 64 * 1024;
 const UPGRADE_RESPONSE_MAX_READS: usize = 512;
 const SOCKET_BYTE_LIMIT: usize = 1024 * 1024;
 // The longest client frame header uses a two-byte prefix, eight-byte length and four-byte mask.
-pub(super) const MAX_OUTBOUND_TEXT_BYTES: usize = SOCKET_BYTE_LIMIT - 14;
+pub(super) const MAX_OUTBOUND_TEXT_BYTES: usize = central_link_client::LINK_LANE_FRAME_BYTES;
 // Apply the same 64 KiB envelope to the outbound bearer header, before formatting its value.
 pub(super) const MAX_CREDENTIAL_BYTES: usize =
     UPGRADE_RESPONSE_MAX_BYTES - "Authorization: Bearer \r\n".len();

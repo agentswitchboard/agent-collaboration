@@ -343,6 +343,27 @@ impl LinkClient {
         Ok(())
     }
 
+    /// Preserve the probe's remaining window while the owner pauses socket reads for backpressure.
+    pub fn defer_heartbeat(&mut self, attempt: &ConnectionAttempt, paused_for: Duration) {
+        let ConnectionState::Welcomed {
+            attempt: current,
+            heartbeat,
+            ..
+        } = &mut self.state
+        else {
+            return;
+        };
+        if current != attempt {
+            return;
+        }
+        match heartbeat {
+            Heartbeat::IdleUntil(at)
+            | Heartbeat::FirstResponseDue(at)
+            | Heartbeat::SecondResponseDue(at) => *at += paused_for,
+            Heartbeat::FirstWritePending | Heartbeat::SecondWritePending => {}
+        }
+    }
+
     pub fn begin_request(
         &mut self,
         caller: Caller,

@@ -1,19 +1,20 @@
-//! Admitted command custody and correlation on one socket.
+//! Command custody and correlation on one admitted socket.
 
 use std::sync::Arc;
 
 use central_link_client::{
-    AdmittedConnection, ConnectionAttempt, CorrelatedRequestReply, LinkLaneDisposition,
-    LinkLaneReply, WriteBatchDisposition, WriteBatchMemberDisposition,
+    AdmittedConnection, CheckedBatchResults, ConnectionAttempt, CorrelatedReceiptResults,
+    CorrelatedRequestReply, CorrelatedStatusReply, UntouchedCommand, WriteBatchMemberDisposition,
 };
 use central_link_protocol::{
-    CorrelationId, LinkRequest, LinkRequestBatch, ReceiptResult, ReplyPayload, RequestPayload,
-    RequestStatusAnswer,
+    CorrelationId, LinkRequest, LinkRequestBatch, ReceiptResult, ReplyPayload, RequestStatusAnswer,
 };
 use router_clock::ClockInstant;
 use state_machine_core::{
     EventTag, RefusalTag, StateMachine, StateMachineResult, StateTag, Transition, TransitionError,
 };
+
+use crate::reply_matcher::ReplyExpectation;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum LaneState {
@@ -59,6 +60,7 @@ impl LaneState {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum ExpectedReply {
     WriteBatch {
+        requests: Arc<LinkRequestBatch>,
         members: Vec<RequestMember>,
     },
     ImmediateRequest(RequestMember),
@@ -72,24 +74,15 @@ pub(super) enum ExpectedReply {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct RequestMember {
     correlation_id: CorrelationId,
-    family: RequestFamily,
+    expectation: ReplyExpectation,
     result: Option<Arc<ReplyPayload>>,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-enum RequestFamily {
-    Workspace,
-    Mail,
 }
 
 impl RequestMember {
     fn from_request(request: &LinkRequest) -> Self {
         Self {
             correlation_id: request.correlation_id().clone(),
-            family: match request.payload() {
-                RequestPayload::Workspace(_) => RequestFamily::Workspace,
-                RequestPayload::Mail(_) => RequestFamily::Mail,
-            },
+            expectation: ReplyExpectation::from_request(request.payload()),
             result: None,
         }
     }
@@ -97,11 +90,7 @@ impl RequestMember {
     fn accepts(&self, correlation_id: &CorrelationId, result: &ReplyPayload) -> bool {
         self.result.is_none()
             && &self.correlation_id == correlation_id
-            && matches!(
-                (self.family, result),
-                (RequestFamily::Workspace, ReplyPayload::Workspace(_))
-                    | (RequestFamily::Mail, ReplyPayload::Mail(_))
-            )
+            && self.expectation.accepts(result)
     }
 
     fn disposition(&self) -> WriteBatchMemberDisposition {
@@ -137,13 +126,23 @@ pub(super) enum SocketReply {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) enum LaneResult {
-    Batch(WriteBatchDisposition),
-    Single(LinkLaneDisposition),
+    Untouched(UntouchedCommand),
+    Batch(CheckedBatchResults),
+    SingleAnswered(LaneAnswer),
+    SingleLost,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum LaneAnswer {
+    ImmediateRequest(CorrelatedRequestReply),
+    RequestStatus(CorrelatedStatusReply),
+    ReceiptResults(CorrelatedReceiptResults),
 }
 
 impl ExpectedReply {
     pub(super) fn batch(requests: &LinkRequestBatch) -> Self {
         Self::WriteBatch {
+            requests: Arc::new(requests.clone()),
             members: requests
                 .requests()
                 .iter()
@@ -158,7 +157,7 @@ impl ExpectedReply {
 
     pub(super) fn correlations(&self) -> Vec<CorrelationId> {
         match self {
-            Self::WriteBatch { members } => members
+            Self::WriteBatch { members, .. } => members
                 .iter()
                 .map(|member| member.correlation_id.clone())
                 .collect(),
@@ -169,24 +168,24 @@ impl ExpectedReply {
         }
     }
 
-    fn batch_result(members: &[RequestMember]) -> LaneResult {
-        LaneResult::Batch(WriteBatchDisposition::MemberResults {
-            members: members.iter().map(RequestMember::disposition).collect(),
-        })
+    fn batch_result(requests: &LinkRequestBatch, members: &[RequestMember]) -> LaneResult {
+        match CheckedBatchResults::new(requests, members.iter().map(RequestMember::disposition)) {
+            Ok(results) => LaneResult::Batch(results),
+            Err(_) => LaneResult::SingleLost,
+        }
     }
 
     fn unanswered(&self, custody: &WriteCustody) -> LaneResult {
         match (self, custody) {
-            (Self::WriteBatch { .. }, WriteCustody::Queued) => {
-                LaneResult::Batch(WriteBatchDisposition::NotReached)
+            (_, WriteCustody::Queued) => {
+                LaneResult::Untouched(UntouchedCommand::ConnectionUnavailable)
             }
             (
-                Self::WriteBatch { members },
+                Self::WriteBatch { requests, members },
                 WriteCustody::Writing | WriteCustody::AwaitingReply { .. },
-            ) => Self::batch_result(members),
-            (_, WriteCustody::Queued) => LaneResult::Single(LinkLaneDisposition::NotReached),
+            ) => Self::batch_result(requests, members),
             (_, WriteCustody::Writing | WriteCustody::AwaitingReply { .. }) => {
-                LaneResult::Single(LinkLaneDisposition::AnswerLost)
+                LaneResult::SingleLost
             }
         }
     }
@@ -195,9 +194,9 @@ impl ExpectedReply {
         &mut self,
         reply: SocketReply,
     ) -> Result<Option<LaneResult>, TransitionError<LaneRefusal>> {
-        let answered = match (self, reply) {
+        let answer = match (self, reply) {
             (
-                Self::WriteBatch { members },
+                Self::WriteBatch { requests, members },
                 SocketReply::Request {
                     correlation_id,
                     result,
@@ -213,7 +212,7 @@ impl ExpectedReply {
                 return Ok(members
                     .iter()
                     .all(|member| member.result.is_some())
-                    .then(|| Self::batch_result(members)));
+                    .then(|| Self::batch_result(requests, members)));
             }
             (
                 Self::ImmediateRequest(member),
@@ -221,22 +220,22 @@ impl ExpectedReply {
                     correlation_id,
                     result,
                 },
-            ) if member.accepts(&correlation_id, &result) => LinkLaneReply::ImmediateRequest {
-                reply: CorrelatedRequestReply {
+            ) if member.accepts(&correlation_id, &result) => {
+                LaneAnswer::ImmediateRequest(CorrelatedRequestReply {
                     correlation_id,
                     result,
-                },
-            },
+                })
+            }
             (
                 Self::RequestStatus(expected),
                 SocketReply::RequestStatus {
                     correlation_id,
                     result,
                 },
-            ) if *expected == correlation_id => LinkLaneReply::RequestStatus {
+            ) if *expected == correlation_id => LaneAnswer::RequestStatus(CorrelatedStatusReply {
                 correlation_id,
                 result,
-            },
+            }),
             (
                 Self::ReceiptResults {
                     correlation_id: expected,
@@ -247,16 +246,14 @@ impl ExpectedReply {
                     results,
                 },
             ) if *expected == correlation_id && results.len() == *length => {
-                LinkLaneReply::ReceiptResults {
+                LaneAnswer::ReceiptResults(CorrelatedReceiptResults {
                     correlation_id,
                     results,
-                }
+                })
             }
             _ => return Err(TransitionError::Stale),
         };
-        Ok(Some(LaneResult::Single(LinkLaneDisposition::Answered {
-            reply: answered,
-        })))
+        Ok(Some(LaneResult::SingleAnswered(answer)))
     }
 }
 
@@ -270,6 +267,9 @@ pub(super) enum LaneInput {
     WriteStarted,
     WriteFlushed {
         deadline: ClockInstant,
+    },
+    WriteRejected {
+        cause: UntouchedCommand,
     },
     Reply {
         connection: ConnectionAttempt,
@@ -332,6 +332,7 @@ impl EventTag for LaneInput {
             Self::Offer { .. } => "offer",
             Self::WriteStarted => "write_started",
             Self::WriteFlushed { .. } => "write_flushed",
+            Self::WriteRejected { .. } => "write_rejected",
             Self::Reply { .. } => "reply",
             Self::Elapsed { .. } => "elapsed",
             Self::Close { .. } => "close",
@@ -359,7 +360,7 @@ impl StateMachine for AdmittedLanePolicy {
                 expected,
             } => {
                 let LaneState::AdmittedIdle(admitted) = state else {
-                    return Err(TransitionError::Domain(LaneRefusal::WrongPhase));
+                    return Err(wrong_phase());
                 };
                 if admitted.connection != connection {
                     return Err(TransitionError::Stale);
@@ -376,7 +377,7 @@ impl StateMachine for AdmittedLanePolicy {
                     ..
                 } = &mut next
                 else {
-                    return Err(TransitionError::Domain(LaneRefusal::WrongPhase));
+                    return Err(wrong_phase());
                 };
                 *custody = WriteCustody::Writing;
             }
@@ -386,9 +387,21 @@ impl StateMachine for AdmittedLanePolicy {
                     ..
                 } = &mut next
                 else {
-                    return Err(TransitionError::Domain(LaneRefusal::WrongPhase));
+                    return Err(wrong_phase());
                 };
                 *custody = WriteCustody::AwaitingReply { deadline };
+            }
+            LaneInput::WriteRejected { cause } => {
+                let LaneState::AdmittedBusy {
+                    admitted,
+                    custody: WriteCustody::Queued,
+                    ..
+                } = state
+                else {
+                    return Err(wrong_phase());
+                };
+                effects.push(LaneEffect::Settle(LaneResult::Untouched(cause)));
+                next = LaneState::AdmittedIdle(admitted.clone());
             }
             LaneInput::Reply {
                 connection,
@@ -441,7 +454,7 @@ impl StateMachine for AdmittedLanePolicy {
                 }
                 next = LaneState::WaitingForAdmission;
             }
-            LaneInput::Admit(_) => return Err(TransitionError::Domain(LaneRefusal::WrongPhase)),
+            LaneInput::Admit(_) => return Err(wrong_phase()),
         }
         Ok((next, effects))
     }
@@ -452,6 +465,7 @@ impl StateMachine for AdmittedLanePolicy {
             transition("admitted_idle", "offer", "queued"),
             transition("queued", "write_started", "writing"),
             transition("writing", "write_flushed", "awaiting_reply"),
+            transition("queued", "write_rejected", "admitted_idle"),
             transition("awaiting_reply", "reply", "awaiting_reply"),
             transition("awaiting_reply", "reply", "admitted_idle"),
             transition("awaiting_reply", "elapsed", "admitted_idle"),
@@ -462,6 +476,10 @@ impl StateMachine for AdmittedLanePolicy {
         ];
         STEPS
     }
+}
+
+const fn wrong_phase() -> TransitionError<LaneRefusal> {
+    TransitionError::Domain(LaneRefusal::WrongPhase)
 }
 
 const fn transition(from: &'static str, event: &'static str, to: &'static str) -> Transition {
