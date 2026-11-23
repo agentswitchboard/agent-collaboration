@@ -762,7 +762,7 @@ impl CustodyLink {
     }
 
     pub(crate) async fn prune_inbox(&mut self) -> Result<(), InboxCustodyError> {
-        self.inbox.lock().await.prune_completed().await
+        self.inbox.lock().await.prune_past_retention().await
     }
 
     pub(crate) fn next_receipt_minute(

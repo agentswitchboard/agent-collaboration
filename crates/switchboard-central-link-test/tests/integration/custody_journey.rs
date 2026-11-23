@@ -47,6 +47,9 @@ use workspace_model::{
     },
 };
 
+#[path = "custody_arrival.rs"]
+mod custody_arrival;
+
 struct CustodyJourney {
     central: Arc<MachineLinkFixture>,
     shutdown: watch::Sender<bool>,
