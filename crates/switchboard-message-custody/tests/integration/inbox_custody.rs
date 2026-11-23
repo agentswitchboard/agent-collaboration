@@ -6,7 +6,7 @@
 
 use central_link_client::{
     ClientAction, ConnectionAttempt, CorrelatedReceiptResults, LinkClient, LinkLaneDisposition,
-    SubmitReceiptsCommand, UntouchedCommand, ValidatedDeliveryOffer,
+    LinkLaneEvent, SubmitReceiptsCommand, UntouchedCommand, ValidatedDeliveryOffer,
 };
 use central_link_protocol::{
     CorrelationId, DataFrame, DeliveryMessage, DirectOfferBody, DirectOfferMessage, FrameDirection,
@@ -30,13 +30,66 @@ use switchboard_message_custody::{
     recipient_sessions::{RecipientSessionAnswer, RecipientSessionDirectory},
 };
 use workspace_ids::{MachineId, SessionId, SessionRef};
-use workspace_model::PostText;
 use workspace_model::central_mail::{MessageDelivery, MessageRefusal, MessageSender, MessageState};
+use workspace_model::{PostText, ResolvedSender};
 
 const START_MS: i64 = 1_763_380_800_000;
 const FIRST_MESSAGE: &str = "019f0000-0000-7000-8000-000000000091";
 const SECOND_MESSAGE: &str = "019f0000-0000-7000-8000-000000000092";
 const THIRD_MESSAGE: &str = "019f0000-0000-7000-8000-000000000093";
+
+#[tokio::test]
+async fn a_queued_admitted_offer_is_kept_after_its_connection_closes() {
+    for replacement_already_admitted in [false, true] {
+        let (root, mut custody, lane, clock) = super::batch_limits::limits_fixture().await;
+        let session = recipient_session();
+        let old = lane.admitted.borrow().clone().unwrap();
+        lane.push_event(LinkLaneEvent::Deliver {
+            connection: old.connection.clone(),
+            offer: direct_offer(FIRST_MESSAGE, "queued before turnover"),
+            sender: ResolvedSender::Central {},
+        });
+        let replacement = super::batch_replay::new_admission(session.machine_id.clone(), clock);
+        assert_ne!(old.connection, replacement.connection);
+        lane.admitted
+            .send_replace(replacement_already_admitted.then_some(replacement.clone()));
+
+        custody.observe_next_event().await.unwrap();
+        let mut reopened = InboxStore::new(
+            MachineLocalStore::open(&root.path().join("machine_local.sqlite"))
+                .await
+                .unwrap(),
+        );
+        let receipts = reopened.pending_receipts().await.unwrap().healthy;
+        assert_eq!(
+            receipts
+                .iter()
+                .map(|receipt| receipt.message_id.as_str())
+                .collect::<Vec<_>>(),
+            [FIRST_MESSAGE],
+            "the lane's queued offer retains its admission across connection turnover"
+        );
+        if !replacement_already_admitted {
+            assert_eq!(custody.flush_receipts().await.unwrap(), None);
+            lane.admitted.send_replace(Some(replacement));
+        }
+        assert_eq!(
+            custody.flush_receipts().await.unwrap(),
+            Some(ReceiptFrameOutcome::Confirmed {
+                results: vec![ReceiptResult::Recorded]
+            })
+        );
+        assert!(
+            reopened
+                .pending_receipts()
+                .await
+                .unwrap()
+                .healthy
+                .is_empty()
+        );
+        assert_eq!(reopened.pending_handoffs().await.unwrap().healthy.len(), 1);
+    }
+}
 
 struct ScriptedDirectory(Mutex<RecipientSessionAnswer>);
 

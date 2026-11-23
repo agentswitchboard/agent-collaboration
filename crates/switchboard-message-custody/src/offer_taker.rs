@@ -22,8 +22,10 @@ pub enum CustodyLinkObservation {
         connection: ConnectionAttempt,
         cause: LinkLocalFault,
     },
-    Delivery(InboxOfferResult),
-    StaleDelivery,
+    Delivery {
+        connection: ConnectionAttempt,
+        result: InboxOfferResult,
+    },
     DriverClosed,
 }
 
@@ -42,7 +44,6 @@ pub(crate) fn admitted_for(lane: &dyn ReadyLinkLane) -> Option<AdmittedConnectio
 }
 
 pub(crate) async fn take_event(
-    lane: &dyn ReadyLinkLane,
     inbox: &SharedRecipientInbox,
     event: Option<LinkLaneEvent>,
 ) -> Result<TakenEvent, InboxCustodyError> {
@@ -59,12 +60,8 @@ pub(crate) async fn take_event(
             offer,
             sender: _,
         }) => {
-            if !admitted_for(lane).is_some_and(|admitted| admitted.connection == connection) {
-                return Ok(TakenEvent {
-                    observation: CustodyLinkObservation::StaleDelivery,
-                    sender_notice: None,
-                });
-            }
+            // The stamp attests admission when the socket delivered this offer.
+            // The current watch is for new commands and can already name its replacement.
             let notice = match offer.message() {
                 DeliveryMessage::System(record)
                     if matches!(record.body, MessageBody::DeliveryOutcome { .. }) =>
@@ -86,7 +83,10 @@ pub(crate) async fn take_event(
                 }
             );
             return Ok(TakenEvent {
-                observation: CustodyLinkObservation::Delivery(kept),
+                observation: CustodyLinkObservation::Delivery {
+                    connection,
+                    result: kept,
+                },
                 sender_notice: notice.filter(|_| accepted),
             });
         }
@@ -110,9 +110,9 @@ pub(crate) async fn run_offer_taker(
             event = lane.next_event() => event,
         };
         let stream_closed = event.is_none();
-        let taken = take_event(lane.as_ref(), &inbox, event).await;
+        let taken = take_event(&inbox, event).await;
         if matches!(&taken, Ok(saved) if saved.sender_notice.is_none()
-            && matches!(saved.observation, CustodyLinkObservation::Delivery(_) | CustodyLinkObservation::StaleDelivery))
+            && matches!(saved.observation, CustodyLinkObservation::Delivery { .. }))
         {
             continue;
         }

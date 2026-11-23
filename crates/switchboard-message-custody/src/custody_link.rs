@@ -262,7 +262,7 @@ impl CustodyLink {
     /// Drive one delivery using the same save-only path as the offer task.
     pub async fn observe_next_event(&mut self) -> Result<CustodyLinkObservation, CustodyLinkError> {
         let event = self.lane.next_event().await;
-        let saved = take_event(self.lane.as_ref(), &self.inbox, event).await?;
+        let saved = take_event(&self.inbox, event).await?;
         self.observe_taken_event(saved).await
     }
 
@@ -290,7 +290,7 @@ impl CustodyLink {
                     self.observe_unavailable()?;
                 }
             }
-            CustodyLinkObservation::Delivery(_) | CustodyLinkObservation::StaleDelivery => {}
+            CustodyLinkObservation::Delivery { .. } => {}
         }
         if let Some(notice) = saved.sender_notice {
             self.record_sender_notice(&notice.target, &notice.message_id)
