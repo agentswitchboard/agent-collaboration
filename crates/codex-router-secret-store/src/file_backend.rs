@@ -62,7 +62,10 @@ pub enum FileReadTraceEvent {
 
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Default)]
-pub struct FileReadTrace(Arc<Mutex<Vec<FileReadTraceEvent>>>);
+pub struct FileReadTrace(
+    Arc<Mutex<Vec<FileReadTraceEvent>>>,
+    #[cfg(test)] Arc<Mutex<Option<StoreIdPause>>>,
+);
 
 #[cfg(any(test, feature = "test-support"))]
 impl std::fmt::Debug for FileReadTrace {
@@ -73,6 +76,25 @@ impl std::fmt::Debug for FileReadTrace {
 
 #[cfg(any(test, feature = "test-support"))]
 impl FileReadTrace {
+    #[cfg(test)]
+    pub(crate) fn after_store_id_miss(&self, pause: impl FnOnce() + Send + 'static) {
+        assert!(
+            self.1
+                .lock()
+                .expect("read pause")
+                .replace(Box::new(pause))
+                .is_none()
+        );
+    }
+
+    #[cfg(test)]
+    fn store_id_missed(&self) {
+        let pause = self.1.lock().expect("read pause").take();
+        if let Some(pause) = pause {
+            pause();
+        }
+    }
+
     pub fn events(&self) -> Vec<FileReadTraceEvent> {
         self.0
             .lock()
@@ -101,7 +123,13 @@ impl FileReadTrace {
 
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Default)]
-pub struct FileWriteTrace(Arc<Mutex<Vec<FileWriteTraceEvent>>>);
+pub struct FileWriteTrace(
+    Arc<Mutex<Vec<FileWriteTraceEvent>>>,
+    #[cfg(test)] Arc<Mutex<Option<StoreIdPause>>>,
+);
+
+#[cfg(test)]
+type StoreIdPause = Box<dyn FnOnce() + Send>;
 
 #[cfg(any(test, feature = "test-support"))]
 #[derive(Clone, Eq, PartialEq)]
@@ -142,6 +170,17 @@ impl std::fmt::Debug for FileWriteTrace {
 
 #[cfg(any(test, feature = "test-support"))]
 impl FileWriteTrace {
+    #[cfg(test)]
+    pub(crate) fn before_store_id_publication(&self, pause: impl FnOnce() + Send + 'static) {
+        assert!(
+            self.1
+                .lock()
+                .expect("publication pause")
+                .replace(Box::new(pause))
+                .is_none()
+        );
+    }
+
     pub fn events(&self) -> Vec<FileWriteTraceEvent> {
         self.0
             .lock()
@@ -163,6 +202,17 @@ impl FileWriteObserver for FileWriteTrace {
             path: path.to_path_buf(),
             contents: contents.to_vec(),
         });
+        #[cfg(test)]
+        if path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.starts_with(".store-id.tmp."))
+        {
+            let pause = self.1.lock().expect("publication pause").take();
+            if let Some(pause) = pause {
+                pause();
+            }
+        }
     }
 
     fn file_renamed(&self, from: &Path, to: &Path) {
@@ -300,7 +350,15 @@ impl FileSecretStore {
         }
         match fs::read_to_string(&path) {
             Ok(value) => Ok(Some(value)),
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                #[cfg(test)]
+                if file_name == "store-id"
+                    && let Some(trace) = &self.read_trace
+                {
+                    trace.store_id_missed();
+                }
+                Ok(None)
+            }
             Err(source) => Err(SecretStoreError::Filesystem { path, source }),
         }
     }
@@ -326,20 +384,21 @@ impl FileSecretStore {
         self.read_optional_metadata("store-id")
     }
 
-    /// Publishes the non-secret identifier through a private temporary file and rename.
-    pub(crate) fn write_store_id_file(&self, store_id: &str) -> Result<(), SecretStoreError> {
-        let path = self.root.join("store-id");
-        self.write_atomically(&path, "store-id", store_id.as_bytes())
-    }
-
-    /// Publishes a complete private identity only if no other enrollment opener won.
-    pub(crate) fn publish_enrollment_store_id(
+    /// Publishes a complete private identity only if no other opener won.
+    pub(crate) fn publish_store_id_if_absent(
         &self,
         store_id: &str,
     ) -> Result<(), SecretStoreError> {
         let target = self.root.join("store-id");
         reject_symlink_path(&target)?;
-        let temporary = stage_atomic_file(&self.root, "store-id", store_id.as_bytes(), None)?;
+        #[cfg(test)]
+        let observer = self
+            .write_trace
+            .as_ref()
+            .map(|trace| trace as &dyn FileWriteObserver);
+        #[cfg(not(test))]
+        let observer = None;
+        let temporary = stage_atomic_file(&self.root, "store-id", store_id.as_bytes(), observer)?;
         let publication = fs::hard_link(&temporary, &target);
         let cleanup = fs::remove_file(&temporary);
         match publication {

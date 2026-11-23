@@ -29,7 +29,7 @@ fn store_identity_child() {
     std::io::stdin().read_exact(&mut byte).unwrap();
     assert_eq!(byte, [1]);
 
-    store.publish_enrollment_store_id(&candidate).unwrap();
+    store.publish_store_id_if_absent(&candidate).unwrap();
 
     println!(
         "ENROLLMENT_MARKER_SEEN={}",
