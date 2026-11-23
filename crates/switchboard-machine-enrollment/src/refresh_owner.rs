@@ -108,12 +108,18 @@ enum RefreshCompletion {
     Recheck,
 }
 
+struct LocalEnding {
+    key: EnrollmentKey,
+    through_generation: Option<BindingGeneration>,
+    why: EnrollmentEnd,
+}
+
 #[derive(Default)]
 struct RefreshState {
     flight: Option<RefreshFlight>,
     lease: Option<AccessLease>,
     backoff: Option<(BindingGeneration, ClockInstant)>,
-    endings: Vec<(EnrollmentKey, EnrollmentEnd)>,
+    endings: Vec<LocalEnding>,
     newest_observed: BindingGeneration,
     fault: Option<(BindingGeneration, LeaseConfigurationFault)>,
 }
@@ -124,7 +130,7 @@ impl RefreshState {
         binding: &EnrollmentBinding,
         request: AccessRequest,
     ) -> Result<(), LeaseUnavailable> {
-        if let Some(why) = self.ending(&binding.key()) {
+        if let Some(why) = self.ending(&binding.key(), binding.generation) {
             return Err(LeaseUnavailable::Ended { why });
         }
         if let AccessRequest::NewerThan(rejected) = request
@@ -135,16 +141,29 @@ impl RefreshState {
         Ok(())
     }
 
-    fn ending(&self, key: &EnrollmentKey) -> Option<EnrollmentEnd> {
+    fn ending(&self, key: &EnrollmentKey, generation: BindingGeneration) -> Option<EnrollmentEnd> {
         self.endings
             .iter()
-            .find(|(ended, _)| ended == key)
-            .map(|(_, why)| *why)
+            .find(|ending| {
+                &ending.key == key
+                    && ending
+                        .through_generation
+                        .is_none_or(|last| generation <= last)
+            })
+            .map(|ending| ending.why)
     }
 
     fn fence(&mut self, key: EnrollmentKey, why: EnrollmentEnd) {
-        if self.ending(&key).is_none() {
-            self.endings.push((key, why));
+        if !self
+            .endings
+            .iter()
+            .any(|ending| ending.key == key && ending.through_generation.is_none())
+        {
+            self.endings.push(LocalEnding {
+                key,
+                through_generation: None,
+                why,
+            });
         }
     }
 
@@ -249,9 +268,7 @@ where
                     self.inputs.read_binding(),
                 )
                 .await;
-                let state = timeout_at(self.inputs.clock.as_ref(), deadline, self.state.lock())
-                    .await
-                    .map_err(|_| LeaseUnavailable::Ended { why })?;
+                let state = self.state.lock().await;
                 let snapshot = match snapshot {
                     Ok(Ok(binding)) => Ok(binding),
                     Ok(Err(error)) if !matches!(error, LeaseUnavailable::Store(_)) => Err(error),
@@ -457,7 +474,9 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
                 else {
                     continue;
                 };
-                if owner.ending(&key).is_some() || !owner.observe(previous.generation) {
+                if owner.ending(&key, previous.generation).is_some()
+                    || !owner.observe(previous.generation)
+                {
                     return RefreshCompletion::Recheck;
                 }
             }
@@ -519,31 +538,32 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
         why: EnrollmentEnd,
         state: Weak<Mutex<RefreshState>>,
     ) -> RefreshCompletion {
-        let started = self.clock.monotonic_now();
-        let deadline = started.after(ENDING_CLEANUP_LIMIT);
         let key = binding.key();
-        let snapshot = self.read_for_cleanup(deadline).await;
-        let (generation, must_write) = match snapshot {
-            Ok(StoredEnrollment::Active(current))
-                if current.generation == binding.generation && current.key() == key =>
-            {
-                (current.generation, true)
-            }
-            Ok(_) => return RefreshCompletion::Recheck,
-            Err(_) => (binding.generation, false),
-        };
-        if let Some(state) = state.upgrade() {
-            let Ok(mut state) = timeout_at(self.clock.as_ref(), deadline, state.lock()).await
-            else {
-                return RefreshCompletion::Ended { why, deadline };
+        {
+            let Some(state) = state.upgrade() else {
+                return RefreshCompletion::Recheck;
             };
-            if !state.observe(generation) || state.ending(&key).is_some() {
+            let mut state = state.lock().await;
+            if !state.observe(binding.generation)
+                || state.ending(&key, binding.generation).is_some()
+            {
                 return RefreshCompletion::Recheck;
             }
-            state.fence(key.clone(), why);
+            // This refusal applies to the credential presented to sign-in.
+            // Another process may already have rotated the same enrollment.
+            state.endings.push(LocalEnding {
+                key: key.clone(),
+                through_generation: Some(binding.generation),
+                why,
+            });
         }
-        if !must_write {
-            return RefreshCompletion::Ended { why, deadline };
+        let started = self.clock.monotonic_now();
+        let deadline = started.after(ENDING_CLEANUP_LIMIT);
+        match self.read_for_cleanup(deadline).await {
+            Ok(StoredEnrollment::Active(current))
+                if current.generation == binding.generation && current.key() == key => {}
+            Ok(_) => return RefreshCompletion::Recheck,
+            Err(_) => return RefreshCompletion::Ended { why, deadline },
         }
         match self
             .end_binding(&key, binding.generation, why, started)
