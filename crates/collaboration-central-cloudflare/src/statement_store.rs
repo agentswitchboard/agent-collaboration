@@ -6,10 +6,9 @@
 
 use crate::store_wire::{OwnedAlarmUpdate, OwnedBatch, OwnedStatement};
 use central_storage::{
-    AlarmPublication, AlarmPublicationFailure, BatchOutcome, ConstraintKind, CorruptReason,
-    EngineAlarmDecider, EngineAlarmTimes, ReadOutcome, SafeInteger, SqlValue, StoreFailure,
+    AlarmPublication, BatchOutcome, ConstraintKind, CorruptReason, EngineAlarmDecider,
+    EngineAlarmTimes, ReadOutcome, SafeInteger, SqlValue, StoreFailure,
 };
-use fleet_runtime_ports::Clock;
 use sqlx_core::column::Column;
 use sqlx_core::error::ErrorKind;
 use sqlx_core::migrate::Migrator;
@@ -19,6 +18,12 @@ use sqlx_core::sql_str::AssertSqlSafe;
 use sqlx_durable_object::{Do, DoArguments, DoConnection, DoRow, DoTransaction};
 use sqlx_durable_object_core::{AsValue, Value};
 use std::sync::Arc;
+
+#[path = "statement_store_alarm.rs"]
+mod alarm_publication;
+#[cfg(test)]
+use alarm_publication::alarm_time;
+use alarm_publication::apply_alarm;
 
 /// Whether a batch's `AlarmUpdate` reaches the object's alarm.
 pub(crate) enum AlarmPolicy {

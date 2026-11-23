@@ -553,3 +553,6 @@ async fn tokio_renewing_the_same_holder_socket_keeps_the_pending_ending() -> Res
 
 #[path = "approval_carrier_replacement.rs"]
 mod approval_carrier_replacement;
+
+#[path = "approval_calls/alarm_mark_race.rs"]
+mod alarm_mark_race;

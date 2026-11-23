@@ -6,7 +6,7 @@ use fleet_runtime_ports::Clock;
 use sqlx_durable_object::DoTransaction;
 
 use central_storage::{CorruptReason, ReadOutcome, SqlValue};
-use sqlx_core::column::Column;
+use sqlx_core::{column::Column, row::Row};
 use sqlx_durable_object::DoRow;
 
 pub(super) async fn apply_alarm(

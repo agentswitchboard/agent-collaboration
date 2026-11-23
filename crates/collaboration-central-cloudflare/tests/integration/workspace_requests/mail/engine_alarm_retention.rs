@@ -7,7 +7,8 @@ use central_storage::{
 };
 
 use workspace_model::central_mail::{
-    CentralMailAnswer, CentralMailOperation, CentralMailRequest, CentralMailResult, NoticeCadence,
+    CentralMailAnswer, CentralMailOperation, CentralMailRefusal, CentralMailRequest,
+    CentralMailResult,
 };
 
 async fn request(
@@ -30,18 +31,17 @@ async fn request(
 }
 
 async fn submit_ordinary_request(fixture: &Fixture, number: u32) {
+    let wake_id = id::<workspace_ids::WakeId>(47799);
     assert_eq!(
         request(
             fixture,
             number,
-            CentralMailOperation::SetNoticeCadence {
-                cadence: NoticeCadence::M15,
-            },
+            CentralMailOperation::CancelWake {
+                wake_id: wake_id.clone()
+            }
         )
         .await,
-        CentralMailResult::Done(CentralMailAnswer::NoticeCadenceSet {
-            cadence: NoticeCadence::M15,
-        })
+        CentralMailResult::Refused(CentralMailRefusal::WakeNotFound { wake_id }),
     );
 }
 
