@@ -451,16 +451,17 @@ async fn applying_recompute_dispatches_one_indexed_select_and_clear_dispatches_n
     let runtime = runtime(&fixture).await;
     let due = at(now(&fixture), 5, 0);
     let store = runtime.statement_host();
-    let prefix = "Central alarm input SELECTs:";
-    let observe = |seen: usize| {
+    let witness = |seen: usize, selection: &str| {
         fixture
             .host
             .captured_logs()
             .into_iter()
             .skip(seen)
             .filter_map(|line| {
-                line.split_once(prefix)
-                    .map(|(_, count)| count.trim().to_owned())
+                line.split_once("Central alarm input SELECTs: ")
+                    .and_then(|(_, receipt)| receipt.split_once("; "))
+                    .filter(|(_, observed)| *observed == selection)
+                    .map(|(reads, _)| reads.to_owned())
             })
             .collect::<Vec<_>>()
     };
@@ -509,8 +510,12 @@ async fn applying_recompute_dispatches_one_indexed_select_and_clear_dispatches_n
                 },
             }
         );
-        fixture.host.until_log_after(before, prefix).await;
-        assert_eq!(observe(before), [if production { "2" } else { "3" }]);
+        let recompute = format!("plan=Recompute; at=Some({})", due.timestamp_millis());
+        fixture.host.until_log_after(before, &recompute).await;
+        assert_eq!(
+            witness(before, &recompute),
+            [if production { "2" } else { "3" }]
+        );
 
         let before = fixture.host.captured_logs().len();
         use collaboration_central_core::engine_probe::InstanceKey;
@@ -546,8 +551,9 @@ async fn applying_recompute_dispatches_one_indexed_select_and_clear_dispatches_n
                 publication: AlarmPublication::Cleared
             },
         );
-        fixture.host.until_log_after(before, prefix).await;
-        assert_eq!(observe(before), ["0"]);
+        let clear = "plan=Clear; at=None";
+        fixture.host.until_log_after(before, clear).await;
+        assert_eq!(witness(before, clear), ["0"]);
     }
     fixture.host.close().await;
 }

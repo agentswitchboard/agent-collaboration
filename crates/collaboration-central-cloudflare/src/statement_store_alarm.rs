@@ -54,7 +54,7 @@ pub(super) async fn apply_alarm(
                 };
                 #[cfg(feature = "test-support")]
                 worker::console_log!(
-                    "Central alarm input SELECTs: {}",
+                    "Central alarm input SELECTs: {}; plan={plan:?}; at={decided:?}",
                     alarm_executor_lender
                         .read_dispatches
                         .load(std::sync::atomic::Ordering::Relaxed)
