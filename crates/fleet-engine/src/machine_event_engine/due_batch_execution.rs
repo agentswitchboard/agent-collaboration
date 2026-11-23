@@ -138,13 +138,15 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
     }
 
     async fn complete_due_work_and_alarm(&self) -> Result<EventCompletion, AlarmNotPublished> {
-        let due_batch_start = self
-            .due_batch_state()
-            .claim_at_current_time(
-                || self.current_engine_time(),
-                DueBatchPolicy::DEFAULT.spacing,
-            )
+        let now = self
+            .current_engine_time()
             .map_err(|failure| AlarmNotPublished { failure })?;
+        let due_batch_claimed = self
+            .due_batch_state()
+            .try_claim(now.timestamp_millis(), DueBatchPolicy::DEFAULT.spacing)
+            .map_err(|reason| AlarmNotPublished {
+                failure: StoreFailure::AlarmUnpublishable { reason },
+            })?;
         let provisioned = self
             .0
             .organization_is_provisioned()
@@ -158,7 +160,7 @@ impl<Host: EngineHost> FleetEngine<'_, Host> {
             });
         }
         let mut due_work_result = AlarmResult::default();
-        if let Some(now) = due_batch_start {
+        if due_batch_claimed {
             due_work_result = self.run_due_batch(now).await;
         }
         let publication = self

@@ -1,5 +1,4 @@
-use central_engine_model::EngineTime;
-use central_storage::{AlarmPublicationFailure, StoreFailure};
+use central_storage::AlarmPublicationFailure;
 use std::sync::{
     Mutex, MutexGuard, PoisonError,
     atomic::{AtomicI64, Ordering},
@@ -77,36 +76,13 @@ impl DueBatchState {
         snapshot(self.encoded.load(Ordering::Acquire))
     }
 
-    /// Sample the injected clock after taking the publication guard.
-    /// The returned sample is the start recorded for the claimed batch.
-    pub fn claim_at_current_time(
-        &self,
-        sample_clock: impl FnOnce() -> Result<EngineTime, StoreFailure>,
-        spacing: chrono::Duration,
-    ) -> Result<Option<EngineTime>, StoreFailure> {
-        let _publication = self.claim_lock();
-        let now = sample_clock()?;
-        self.claim_at(now.timestamp_millis(), spacing)
-            .map(|claimed| claimed.then_some(now))
-            .map_err(|reason| StoreFailure::AlarmUnpublishable { reason })
-    }
-
-    #[cfg(any(test, feature = "test-support"))]
-    /// A fixture can specify the claimed time directly.
+    /// The spacing check and new start claim happen before any caller awaits.
     pub fn try_claim(
         &self,
         now_unix_millis: i64,
         spacing: chrono::Duration,
     ) -> Result<bool, AlarmPublicationFailure> {
         let _publication = self.claim_lock();
-        self.claim_at(now_unix_millis, spacing)
-    }
-
-    fn claim_at(
-        &self,
-        now_unix_millis: i64,
-        spacing: chrono::Duration,
-    ) -> Result<bool, AlarmPublicationFailure> {
         if !(-central_engine_model::MAX_ALARM_UNIX_MILLIS
             ..=central_engine_model::MAX_ALARM_UNIX_MILLIS)
             .contains(&now_unix_millis)

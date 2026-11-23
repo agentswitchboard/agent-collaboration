@@ -193,23 +193,13 @@ struct DecisionGate {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_claim_samples_selection_time_after_the_publication_lock_releases() {
+async fn a_claim_waits_for_a_publication_between_its_decision_and_its_write() {
     let fixture = Fixture::new().await;
     let start = fixture.clock.utc_now();
-    let probe = probe_id(32310);
-    let group = probe_id(32311);
     {
         let central_service = runtime(&fixture).await;
         open_notice_window(&fixture, 32300).await;
         window_due_at(&central_service, at(start, 5, 0, 0)).await;
-        seed_probe(
-            &central_service,
-            probe,
-            group,
-            Some(at(start, 5, 49, 0)),
-            "claim sample",
-        )
-        .await;
     }
     fixture.host.close().await;
     let due_batches = Arc::new(fleet_runtime::DueBatchState::default());
@@ -299,7 +289,6 @@ async fn a_claim_samples_selection_time_after_the_publication_lock_releases() {
         () = claim_landed => false,
     };
     let start_while_a_held = due_batches.snapshot().last_start_unix_millis;
-    fixture.set_utc(at(start, 4, 59, 0)).await;
     release.send(()).unwrap();
 
     assert!(waited, "B's claim crossed A's decision and publication");
@@ -310,25 +299,14 @@ async fn a_claim_samples_selection_time_after_the_publication_lock_releases() {
     );
     assert_eq!(
         event_b.await.unwrap().unwrap().publication,
-        set(at(start, 5, 29, 0)),
+        set(at(start, 5, 28, 0)),
         "B claimed after A published and published its own floor"
     );
     assert_eq!(
         due_batches.snapshot().last_start_unix_millis,
-        ms(at(start, 4, 59, 0))
+        ms(at(start, 4, 58, 0))
     );
-    assert_eq!(central.alarm(), Some(sync(at(start, 5, 29, 0))));
-    assert_eq!(
-        central
-            .read(central_storage::Statement {
-                sql: "SELECT state FROM engine_probe_items WHERE item_id=?",
-                args: vec![text(probe)],
-            })
-            .await
-            .unwrap()
-            .rows,
-        [vec![text("fired")]]
-    );
+    assert_eq!(central.alarm(), Some(sync(at(start, 5, 28, 0))));
     central.close().await;
     workspace.close().await;
 }
