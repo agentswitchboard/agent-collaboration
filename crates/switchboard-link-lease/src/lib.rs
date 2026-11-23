@@ -10,7 +10,7 @@ use switchboard_central_link::{
 };
 use switchboard_machine_enrollment::{
     CredentialStore, EnrollmentEnd as StoredEnding, EnrollmentKey, RefreshOwner, RefreshSource,
-    RetirementFence, RetirementRequest,
+    RetirementFence,
 };
 use tokio::{
     sync::{Mutex as AsyncMutex, mpsc, oneshot, watch},
@@ -68,6 +68,7 @@ impl EnrollmentLeaseSource {
     {
         let (commands, work) = mpsc::unbounded_channel();
         let (closing, stopped) = watch::channel(None);
+        owner.supervise_retirement();
         let retirements = owner.retirement_fence();
         let task = tokio::spawn(run(owner, clock.clone(), work, stopped));
         Self {
@@ -125,7 +126,7 @@ impl LeaseSource<EnrollmentKey> for EnrollmentLeaseSource {
                     return Err(LeaseFailure::Fault);
                 }
                 self.commands
-                    .send(LeaseCommand::Acquire {
+                    .send(LeaseCommand {
                         key: key.clone(),
                         newer_than,
                         reply,
@@ -145,19 +146,13 @@ impl LeaseSource<EnrollmentKey> for EnrollmentLeaseSource {
         if closing.is_some() {
             return;
         }
-        let request = match cause {
-            EnrollmentEnd::LeaseRefused => RetirementRequest::Refusal,
-            EnrollmentEnd::Revoked => RetirementRequest::Definitive(StoredEnding::Revoked),
-            EnrollmentEnd::Inactive => RetirementRequest::Definitive(StoredEnding::Inactive),
-            EnrollmentEnd::ConnectionEnrollmentEnded => {
-                RetirementRequest::Definitive(StoredEnding::EndedByCentral)
-            }
+        let why = match cause {
+            EnrollmentEnd::LeaseRefused => return,
+            EnrollmentEnd::Revoked => StoredEnding::Revoked,
+            EnrollmentEnd::Inactive => StoredEnding::Inactive,
+            EnrollmentEnd::ConnectionEnrollmentEnded => StoredEnding::EndedByCentral,
         };
-        if self.retirements.request(key, request) {
-            let _ = self
-                .commands
-                .send(LeaseCommand::Retire { key: key.clone() });
-        }
+        self.retirements.request_definitive(key, why);
     }
 }
 

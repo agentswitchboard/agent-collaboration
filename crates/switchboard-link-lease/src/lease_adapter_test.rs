@@ -14,6 +14,7 @@ use super::*;
 pub(crate) struct RowStore {
     pub(crate) row: watch::Sender<StoredEnrollment>,
     pub(crate) fail_end: watch::Sender<bool>,
+    end_attempts: watch::Sender<u64>,
     pub(crate) fail_metadata: watch::Sender<bool>,
     credential_read: OperationCheckpoint,
     pub(crate) metadata_read: OperationCheckpoint,
@@ -97,6 +98,7 @@ impl CredentialStore for RowStore {
         expected: BindingGeneration,
         why: StoredEnding,
     ) -> Result<ConditionalWrite, CredentialStoreError> {
+        self.end_attempts.send_modify(|attempts| *attempts += 1);
         if *self.fail_end.borrow() {
             return Err(CredentialStoreError::Remove);
         }
@@ -150,6 +152,7 @@ pub(crate) struct Fixture {
     pub(crate) clock: Arc<ManualClock>,
     refreshes: mpsc::UnboundedReceiver<oneshot::Sender<RefreshAnswer>>,
     pub(crate) binding: EnrollmentBinding,
+    retirements: RetirementFence,
 }
 
 impl Fixture {
@@ -172,6 +175,7 @@ impl Fixture {
         let store = RowStore {
             row: watch::channel(StoredEnrollment::Active(binding.clone())).0,
             fail_end: watch::channel(false).0,
+            end_attempts: watch::channel(0).0,
             fail_metadata: watch::channel(false).0,
             credential_read: OperationCheckpoint::default(),
             metadata_read: OperationCheckpoint::default(),
@@ -185,6 +189,7 @@ impl Fixture {
             clock.clone(),
             context,
         );
+        let retirements = owner.retirement_fence();
         let source = EnrollmentLeaseSource::start(owner, clock.clone());
         Self {
             source,
@@ -192,6 +197,7 @@ impl Fixture {
             clock,
             refreshes,
             binding,
+            retirements,
         }
     }
 
@@ -334,6 +340,10 @@ async fn a_stale_refusal_releases_the_fence_for_the_same_keys_newer_generation()
         .unwrap();
     assert_eq!(first.await, Err(LeaseFailure::EnrollmentEnded));
 
+    fixture
+        .clock
+        .not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(5)))
+        .await;
     let mut successor = fixture.binding.clone();
     successor.generation = successor.generation.successor().unwrap();
     fixture
@@ -341,7 +351,7 @@ async fn a_stale_refusal_releases_the_fence_for_the_same_keys_newer_generation()
         .row
         .send_replace(StoredEnrollment::Active(successor));
     fixture.store.fail_end.send_replace(false);
-    fixture.source.end(&key, EnrollmentEnd::LeaseRefused);
+    fixture.clock.advance(Duration::from_secs(5)).unwrap();
     let mut row = fixture.store.row.subscribe();
     tokio::select! {
         biased;
@@ -399,7 +409,7 @@ async fn a_queued_acquire_does_not_start_refresh_after_the_key_is_fenced() {
     fixture
         .source
         .commands
-        .send(LeaseCommand::Acquire {
+        .send(LeaseCommand {
             key: key.clone(),
             newer_than: None,
             reply,
@@ -463,6 +473,10 @@ async fn a_definitive_end_waiting_behind_a_stale_refusal_keeps_the_key_fenced() 
         .unwrap();
     assert_eq!(first.await, Err(LeaseFailure::EnrollmentEnded));
 
+    fixture
+        .clock
+        .not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(5)))
+        .await;
     let mut successor = fixture.binding.clone();
     successor.generation = successor.generation.successor().unwrap();
     fixture
@@ -472,7 +486,7 @@ async fn a_definitive_end_waiting_behind_a_stale_refusal_keeps_the_key_fenced() 
     fixture.store.fail_end.send_replace(false);
 
     let (checking_staleness, release_read) = fixture.store.metadata_read.hold_next();
-    fixture.source.end(&key, EnrollmentEnd::LeaseRefused);
+    fixture.clock.advance(Duration::from_secs(5)).unwrap();
     checking_staleness.await.unwrap();
     fixture.source.end(&key, EnrollmentEnd::Revoked);
     assert_eq!(
@@ -553,4 +567,103 @@ async fn close_uses_the_first_call_deadline_even_if_the_supervisor_polls_late() 
     assert_eq!(repeated, Ok(expected));
     assert_eq!(acquire.await, Err(LeaseFailure::Fault));
     assert!(held_sign_in.is_closed());
+}
+
+fn refresh_refused() -> RefreshAnswer {
+    RefreshAnswer::Refused {
+        reason: InvalidReason::GrantRefused,
+    }
+}
+
+#[tokio::test]
+async fn an_owner_refusal_survives_a_dropped_acquire_and_appears_in_the_close_report() {
+    let mut fixture = Fixture::new();
+    let key = fixture.binding.key();
+    fixture.store.fail_end.send_replace(true);
+    let mut attempts = fixture.store.end_attempts.subscribe();
+    let acquired = start_acquire(&fixture.source, &key).await;
+    let reply = fixture.refreshes.recv().await.unwrap();
+    drop(acquired);
+    reply.send(refresh_refused()).unwrap();
+    attempts.wait_for(|count| *count >= 2).await.unwrap();
+
+    assert_eq!(
+        fixture.source.close().await.unwrap(),
+        UnfinishedLeaseWork {
+            acquisitions: vec![],
+            retirements: vec![key],
+        }
+    );
+}
+
+#[tokio::test]
+async fn a_delayed_lease_refused_callback_cannot_erase_a_new_owner_refusal() {
+    let mut fixture = Fixture::new();
+    let key = fixture.binding.key();
+    fixture.store.fail_end.send_replace(true);
+    let original = start_acquire(&fixture.source, &key).await;
+    fixture
+        .refreshes
+        .recv()
+        .await
+        .unwrap()
+        .send(refresh_refused())
+        .unwrap();
+    assert_eq!(original.await, Err(LeaseFailure::EnrollmentEnded));
+    fixture.source.end(&key, EnrollmentEnd::LeaseRefused);
+    fixture
+        .clock
+        .not_due_check_now(ClockInstant::ZERO.after(Duration::from_secs(5)))
+        .await;
+
+    let mut successor = fixture.binding.clone();
+    successor.generation = successor.generation.successor().unwrap();
+    fixture
+        .store
+        .row
+        .send_replace(StoredEnrollment::Active(successor));
+    fixture.store.fail_end.send_replace(false);
+    fixture.clock.advance(Duration::from_secs(5)).unwrap();
+    while fixture.retirements.is_fenced(&key) {
+        tokio::task::yield_now().await;
+    }
+    let second = start_acquire(&fixture.source, &key).await;
+    let second_answer = fixture.refreshes.recv().await.unwrap();
+
+    fixture.source.end(&key, EnrollmentEnd::LeaseRefused);
+    assert!(!fixture.retirements.is_fenced(&key));
+    second_answer.send(refresh_refused()).unwrap();
+    assert_eq!(second.await, Err(LeaseFailure::EnrollmentEnded));
+    assert_eq!(
+        fixture.source.close().await.unwrap(),
+        UnfinishedLeaseWork::default()
+    );
+    assert_eq!(
+        fixture.store.row.borrow().clone(),
+        StoredEnrollment::Ended {
+            key,
+            generation: BindingGeneration::from_persisted(3).unwrap(),
+            why: StoredEnding::RefreshRefused,
+        }
+    );
+    assert!(fixture.refreshes.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn close_finds_pending_retirements_admitted_by_a_retained_owner_handle() {
+    let fixture = Fixture::new();
+    let key = fixture.binding.key();
+    fixture.store.fail_metadata.send_replace(true);
+    fixture
+        .retirements
+        .request_definitive(&key, StoredEnding::Revoked);
+    fixture.source.end(&key, EnrollmentEnd::Revoked);
+
+    assert_eq!(
+        fixture.source.close().await.unwrap(),
+        UnfinishedLeaseWork {
+            acquisitions: vec![],
+            retirements: vec![key],
+        }
+    );
 }

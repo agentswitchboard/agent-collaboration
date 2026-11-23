@@ -1,115 +1,108 @@
 use std::sync::{Arc, Mutex, PoisonError};
 
-use crate::{BindingGeneration, ConditionalWrite, EnrollmentEnd, EnrollmentKey};
+use tokio::sync::watch;
 
-/// The reason reported to the owner by a link.
-#[derive(Clone, Copy)]
-pub enum RetirementRequest {
-    Refusal,
-    Definitive(EnrollmentEnd),
-}
+use crate::{BindingGeneration, EnrollmentEnd, EnrollmentKey};
 
-/// Synchronous retirement admission for one owner. It cannot refresh a credential.
+/// Synchronous retirement admission and observation for one owner.
 #[derive(Clone, Default)]
-pub struct RetirementFence(Arc<Mutex<Vec<FencedEnrollment>>>);
+pub struct RetirementFence(Arc<RetirementEntries>);
 
-struct FencedEnrollment {
-    key: EnrollmentKey,
-    state: FenceState,
+struct RetirementEntries {
+    entries: Mutex<Vec<FencedEnrollment>>,
+    changes: watch::Sender<()>,
 }
 
-enum FenceState {
-    Provisional {
-        attempt: Arc<RetirementAttempt>,
-        waiting: Option<EnrollmentEnd>,
-        cleanup_requested: bool,
-    },
-    Terminal(Arc<RetirementAttempt>),
-}
-
-impl FenceState {
-    fn attempt(&self) -> &Arc<RetirementAttempt> {
-        match self {
-            Self::Provisional { attempt, .. } | Self::Terminal(attempt) => attempt,
+impl Default for RetirementEntries {
+    fn default() -> Self {
+        Self {
+            entries: Mutex::default(),
+            changes: watch::channel(()).0,
         }
     }
 }
 
+struct FencedEnrollment {
+    key: EnrollmentKey,
+    attempt: Arc<RetirementAttempt>,
+    waiting: Option<EnrollmentEnd>,
+    status: RetirementStatus,
+}
+
+#[derive(Clone, Copy, Eq, PartialEq)]
+enum RetirementStatus {
+    Pending,
+    Durable,
+    Superseded,
+}
+
 #[derive(Clone, Copy)]
-enum Coverage {
-    UnverifiedRefusal,
-    Through(BindingGeneration),
-    ExactKey,
+pub(crate) enum RetirementOutcome {
+    Durable,
+    Superseded,
+    StaleOwnerEnding,
 }
 
 pub(crate) struct RetirementAttempt {
     pub(crate) why: EnrollmentEnd,
+    pub(crate) through: Option<BindingGeneration>,
     pub(crate) cleanup: tokio::sync::Mutex<()>,
-    coverage: Coverage,
 }
 
 impl RetirementAttempt {
-    fn new(why: EnrollmentEnd, coverage: Coverage) -> Arc<Self> {
+    fn new(why: EnrollmentEnd, through: Option<BindingGeneration>) -> Arc<Self> {
         Arc::new(Self {
             why,
-            coverage,
+            through,
             cleanup: tokio::sync::Mutex::new(()),
         })
-    }
-
-    fn definitive(why: EnrollmentEnd) -> Arc<Self> {
-        Self::new(why, Coverage::ExactKey)
-    }
-
-    pub(crate) fn covers(&self, generation: BindingGeneration) -> bool {
-        match self.coverage {
-            Coverage::UnverifiedRefusal => false,
-            Coverage::Through(ceiling) => generation <= ceiling,
-            Coverage::ExactKey => true,
-        }
-    }
-
-    pub(crate) fn accepts_ending(&self, recorded: EnrollmentEnd) -> bool {
-        !matches!(self.coverage, Coverage::ExactKey) || recorded == self.why
     }
 }
 
 impl RetirementFence {
-    /// Reports an ending immediately. The first caller to request cleanup must queue it.
-    pub fn request(&self, key: &EnrollmentKey, request: RetirementRequest) -> bool {
-        let mut fences = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if let Some(existing) = fences.iter_mut().find(|entry| &entry.key == key) {
-            let FenceState::Provisional {
-                waiting,
-                cleanup_requested,
-                ..
-            } = &mut existing.state
-            else {
-                return false;
-            };
-            if let RetirementRequest::Definitive(why) = request {
-                waiting.get_or_insert(why);
+    /// Records the definitive report immediately, behind an earlier owner ending if pending.
+    pub fn request_definitive(&self, key: &EnrollmentKey, why: EnrollmentEnd) {
+        let mut entries = self
+            .0
+            .entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if let Some(existing) = entries.iter_mut().find(|entry| &entry.key == key) {
+            if existing.status == RetirementStatus::Pending
+                && existing.attempt.through.is_some()
+                && existing.waiting.is_none()
+            {
+                existing.waiting = Some(why);
+                drop(entries);
+                self.0.changes.send_replace(());
             }
-            return !std::mem::replace(cleanup_requested, true);
+            return;
         }
-        let state = match request {
-            RetirementRequest::Refusal => FenceState::Provisional {
-                attempt: RetirementAttempt::new(
-                    EnrollmentEnd::RefreshRefused,
-                    Coverage::UnverifiedRefusal,
-                ),
-                waiting: None,
-                cleanup_requested: true,
-            },
-            RetirementRequest::Definitive(why) => {
-                FenceState::Terminal(RetirementAttempt::definitive(why))
-            }
-        };
-        fences.push(FencedEnrollment {
+        entries.push(FencedEnrollment {
             key: key.clone(),
-            state,
+            attempt: RetirementAttempt::new(why, None),
+            waiting: None,
+            status: RetirementStatus::Pending,
         });
-        true
+        drop(entries);
+        self.0.changes.send_replace(());
+    }
+
+    /// Wakes a reconciler when the fence changes. Pending entries can also predate this receiver.
+    pub fn subscribe(&self) -> watch::Receiver<()> {
+        self.0.changes.subscribe()
+    }
+
+    /// Returns all keys with unsettled retirement work, independently of any lease caller.
+    pub fn pending_keys(&self) -> Vec<EnrollmentKey> {
+        self.0
+            .entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .filter(|entry| entry.status == RetirementStatus::Pending)
+            .map(|entry| entry.key.clone())
+            .collect()
     }
 
     /// Returns whether the owner has fenced this exact enrollment.
@@ -118,71 +111,82 @@ impl RetirementFence {
     }
 
     pub(crate) fn ending(&self, key: &EnrollmentKey) -> Option<EnrollmentEnd> {
-        self.attempt(key).map(|attempt| attempt.why)
+        self.0
+            .entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .iter()
+            .find(|entry| &entry.key == key)
+            .map(|entry| entry.attempt.why)
     }
 
-    pub(crate) fn attempt(&self, key: &EnrollmentKey) -> Option<Arc<RetirementAttempt>> {
-        let fences = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let entry = fences.iter().find(|entry| &entry.key == key)?;
-        Some(entry.state.attempt().clone())
+    pub(crate) fn pending_attempt(&self, key: &EnrollmentKey) -> Option<Arc<RetirementAttempt>> {
+        let entries = self
+            .0
+            .entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let entry = entries
+            .iter()
+            .find(|entry| &entry.key == key && entry.status == RetirementStatus::Pending)?;
+        Some(entry.attempt.clone())
     }
 
-    pub(crate) fn is_current(&self, key: &EnrollmentKey, attempt: &Arc<RetirementAttempt>) -> bool {
-        self.attempt(key)
-            .is_some_and(|current| Arc::ptr_eq(&current, attempt))
-    }
-
-    pub(crate) fn record_refusal(
+    pub(crate) fn record_owner_ending(
         &self,
         key: &EnrollmentKey,
         generation: BindingGeneration,
         why: EnrollmentEnd,
     ) -> Option<Arc<RetirementAttempt>> {
-        let mut fences = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        if fences.iter().any(|entry| &entry.key == key) {
+        let mut entries = self
+            .0
+            .entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if entries.iter().any(|entry| &entry.key == key) {
             return None;
         }
-        let attempt = RetirementAttempt::new(why, Coverage::Through(generation));
-        fences.push(FencedEnrollment {
+        let attempt = RetirementAttempt::new(why, Some(generation));
+        entries.push(FencedEnrollment {
             key: key.clone(),
-            state: FenceState::Provisional {
-                attempt: attempt.clone(),
-                waiting: None,
-                cleanup_requested: false,
-            },
+            attempt: attempt.clone(),
+            waiting: None,
+            status: RetirementStatus::Pending,
         });
+        drop(entries);
+        self.0.changes.send_replace(());
         Some(attempt)
     }
 
     pub(crate) fn settle(
         &self,
         key: &EnrollmentKey,
-        completed: &Arc<RetirementAttempt>,
-        result: ConditionalWrite,
+        attempt: &Arc<RetirementAttempt>,
+        outcome: RetirementOutcome,
     ) {
-        let mut fences = self.0.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(entry) = fences.iter_mut().find(|entry| &entry.key == key) else {
-            return;
-        };
-        let FenceState::Provisional {
-            attempt, waiting, ..
-        } = &entry.state
+        let mut entries = self
+            .0
+            .entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let Some(entry) = entries
+            .iter_mut()
+            .find(|entry| &entry.key == key && entry.status == RetirementStatus::Pending)
         else {
             return;
         };
-        if !Arc::ptr_eq(attempt, completed) {
+        if !Arc::ptr_eq(&entry.attempt, attempt) {
             return;
         }
-        match (result, waiting) {
-            (ConditionalWrite::Applied, _) => {
-                entry.state = FenceState::Terminal(attempt.clone());
-            }
-            (ConditionalWrite::Superseded, Some(why)) => {
-                entry.state = FenceState::Terminal(RetirementAttempt::definitive(*why));
-            }
-            (ConditionalWrite::Superseded, None) => {
-                fences.retain(|entry| &entry.key != key);
-            }
+        match outcome {
+            RetirementOutcome::Durable => entry.status = RetirementStatus::Durable,
+            RetirementOutcome::Superseded => entry.status = RetirementStatus::Superseded,
+            RetirementOutcome::StaleOwnerEnding => match entry.waiting.take() {
+                Some(why) => entry.attempt = RetirementAttempt::new(why, None),
+                None => entries.retain(|entry| &entry.key != key),
+            },
         }
+        drop(entries);
+        self.0.changes.send_replace(());
     }
 }

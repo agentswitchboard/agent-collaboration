@@ -1,6 +1,9 @@
 use std::{
     future::Future,
-    sync::{Arc, Weak},
+    sync::{
+        Arc, Weak,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
 
@@ -11,8 +14,8 @@ use tokio::sync::Mutex;
 use crate::{
     BindingGeneration, ConditionalWrite, CredentialStore, CredentialStoreError, EnrollmentBinding,
     EnrollmentContext, EnrollmentEnd, EnrollmentKey, EnrollmentMetadata, InvalidReason,
-    RefreshAnswer, RefreshCredential, RetirementFence, RetirementRequest, SecretValue,
-    StoredEnrollment, TokenGrant, retirement_fence::RetirementAttempt,
+    RefreshAnswer, RefreshCredential, RetirementFence, SecretValue, StoredEnrollment, TokenGrant,
+    retirement_fence::{RetirementAttempt, RetirementOutcome},
 };
 
 const WRITE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
@@ -158,6 +161,7 @@ struct RefreshInputs<Store, Source> {
     clock: Arc<dyn RuntimeClock + Send + Sync>,
     context: EnrollmentContext,
     retirements: RetirementFence,
+    supervised_retirement: AtomicBool,
 }
 
 /// Composition makes one refresh owner per configured enrollment scope.
@@ -185,6 +189,7 @@ where
                 clock,
                 context,
                 retirements: retirements.clone(),
+                supervised_retirement: AtomicBool::new(false),
             }),
             state: Arc::new(Mutex::new(RefreshState {
                 retirements,
@@ -196,6 +201,13 @@ where
     /// Gives composition synchronous retirement admission without access to refresh work.
     pub fn retirement_fence(&self) -> RetirementFence {
         self.inputs.retirements.clone()
+    }
+
+    /// Transfers responsibility for attempting pending entries to the adapter supervisor.
+    pub fn supervise_retirement(&self) {
+        self.inputs
+            .supervised_retirement
+            .store(true, Ordering::Release);
     }
 
     /// Requests a lease for one exact enrollment key.
@@ -348,10 +360,23 @@ where
         key: &EnrollmentKey,
         why: EnrollmentEnd,
     ) -> Result<ConditionalWrite, CredentialStoreError> {
-        self.inputs
-            .retirements
-            .request(key, RetirementRequest::Definitive(why));
-        self.finish_retirement(key).await
+        self.inputs.retirements.request_definitive(key, why);
+        if self.inputs.retirements.pending_attempt(key).is_some() {
+            return self.finish_retirement(key).await;
+        }
+        let deadline = self
+            .inputs
+            .clock
+            .monotonic_now()
+            .after(ENDING_CLEANUP_LIMIT);
+        match self.inputs.read_for_cleanup(deadline).await? {
+            EnrollmentMetadata::Ended {
+                key: ended,
+                why: recorded,
+                ..
+            } if &ended == key && recorded == why => Ok(ConditionalWrite::Applied),
+            _ => Ok(ConditionalWrite::Superseded),
+        }
     }
 
     /// Processes the owner's previously admitted retirement for this exact key.
@@ -359,13 +384,13 @@ where
         &self,
         key: &EnrollmentKey,
     ) -> Result<ConditionalWrite, CredentialStoreError> {
-        while let Some(attempt) = self.inputs.retirements.attempt(key) {
+        while let Some(attempt) = self.inputs.retirements.pending_attempt(key) {
             let started = self.inputs.clock.monotonic_now();
             let result = self
                 .inputs
                 .finish_retirement_attempt(key, &attempt, started, &self.state)
                 .await?;
-            if let Some(current) = self.inputs.retirements.attempt(key)
+            if let Some(current) = self.inputs.retirements.pending_attempt(key)
                 && !Arc::ptr_eq(&attempt, &current)
             {
                 continue;
@@ -572,7 +597,7 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
             }
             let Some(attempt) = self
                 .retirements
-                .record_refusal(&key, binding.generation, why)
+                .record_owner_ending(&key, binding.generation, why)
             else {
                 return RefreshCompletion::Recheck;
             };
@@ -581,6 +606,9 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
 
         let started = self.clock.monotonic_now();
         let deadline = started.after(ENDING_CLEANUP_LIMIT);
+        if self.supervised_retirement.load(Ordering::Acquire) {
+            return RefreshCompletion::Ended { why, deadline };
+        }
         match self
             .finish_retirement_attempt(&key, &attempt, started, &state)
             .await
@@ -601,21 +629,26 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
         let _cleanup = timeout_at(self.clock.as_ref(), deadline, attempt.cleanup.lock())
             .await
             .map_err(|_| CredentialStoreError::CleanupTimedOut)?;
-        if !self.retirements.is_current(key, attempt) {
+        if !self
+            .retirements
+            .pending_attempt(key)
+            .is_some_and(|current| Arc::ptr_eq(&current, attempt))
+        {
             return Ok(ConditionalWrite::Superseded);
         }
-        let result = loop {
+        let outcome = loop {
             match self.read_for_cleanup(deadline).await? {
-                EnrollmentMetadata::Ended {
-                    key: ended, why, ..
-                } if &ended == key && attempt.accepts_ending(why) => {
-                    break ConditionalWrite::Applied;
+                EnrollmentMetadata::Ended { key: ended, .. } if &ended == key => {
+                    break RetirementOutcome::Durable;
                 }
                 EnrollmentMetadata::Active {
                     key: active,
                     generation,
                     ..
-                } if &active == key && attempt.covers(generation) => {
+                } if &active == key => {
+                    if attempt.through.is_some_and(|ceiling| generation > ceiling) {
+                        break RetirementOutcome::StaleOwnerEnding;
+                    }
                     let observed = timeout_at(self.clock.as_ref(), deadline, state.lock())
                         .await
                         .map_err(|_| CredentialStoreError::CleanupTimedOut)?
@@ -626,14 +659,19 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
                             .await?
                             == ConditionalWrite::Applied
                     {
-                        break ConditionalWrite::Applied;
+                        break RetirementOutcome::Durable;
                     }
                 }
-                _ => break ConditionalWrite::Superseded,
+                _ => break RetirementOutcome::Superseded,
             }
         };
-        self.retirements.settle(key, attempt, result);
-        Ok(result)
+        self.retirements.settle(key, attempt, outcome);
+        Ok(match outcome {
+            RetirementOutcome::Durable => ConditionalWrite::Applied,
+            RetirementOutcome::Superseded | RetirementOutcome::StaleOwnerEnding => {
+                ConditionalWrite::Superseded
+            }
+        })
     }
 
     async fn read_for_cleanup(

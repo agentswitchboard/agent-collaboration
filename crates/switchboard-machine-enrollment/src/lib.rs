@@ -32,7 +32,7 @@ pub use refresh_owner::{
     AccessLease, AccessRequest, LeaseConfigurationFault, LeaseUnavailable, RefreshOwner,
     RefreshSource,
 };
-pub use retirement_fence::{RetirementFence, RetirementRequest};
+pub use retirement_fence::RetirementFence;
 pub use sign_in_answers::{
     DeviceAuthorization, DeviceInstructions, PollAnswer, RefreshAnswer, SignInFailure, TokenGrant,
     decode_device_authorization, decode_poll, decode_refresh, decode_start_failure,
