@@ -61,6 +61,8 @@ pub use prompt_content_translation::{
 };
 pub use prompt_settlement::{NativeInterruptionState, NativePromptTerminal, PromptSettlement};
 pub use session_creation::{AcpSessionBinding, SessionSetupError, SessionSetupInputs};
+mod session_presence;
+pub use session_presence::CodexSessionPresence;
 pub use tool_progress_projection::{ToolProjectionError, project_tool_progress};
 
 mod session_setup_task;
