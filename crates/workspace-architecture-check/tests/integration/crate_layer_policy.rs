@@ -331,6 +331,7 @@ pub(super) fn layer_policy() -> impl Iterator<Item = (&'static str, &'static [&'
         .chain(workspace_boundaries::FLEET_PURE_CRATES)
         .chain(workspace_boundaries::TIMER_CRATES)
         .chain([
+            workspace_boundaries::APPROVALS_LAYER,
             workspace_boundaries::MAIL_LAYER,
             workspace_boundaries::NOTICES_LAYER,
             workspace_boundaries::DIRECTORY_LAYER,

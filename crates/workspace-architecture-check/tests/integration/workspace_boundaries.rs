@@ -16,7 +16,7 @@ use workspace_package_tree_policy::{
 #[path = "job_layer_tests.rs"]
 mod job_layer_tests;
 
-pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 5] = [
+pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 4] = [
     (FLEET_RPC, &[]),
     (APPROVAL_REQUEST_PROTOCOL, &["workspace-ids"]),
     (
@@ -38,16 +38,18 @@ pub(super) const FLEET_PURE_CRATES: [(&str, &[&str]); 5] = [
             "workspace-model",
         ],
     ),
-    (
-        "fleet-approvals",
-        &[
-            "approval-request-protocol",
-            "central-engine-model",
-            "fleet-identity-protocol",
-            "workspace-ids",
-        ],
-    ),
 ];
+pub(super) const APPROVALS_LAYER: (&str, &[&str]) = (
+    "fleet-approvals",
+    &[
+        APPROVAL_REQUEST_PROTOCOL,
+        "central-engine-model",
+        "central-storage",
+        "fleet-identity-protocol",
+        LENT_TRANSACTION,
+        "workspace-ids",
+    ],
+);
 pub(super) const LENT_TRANSACTION: &str = "fleet-lent-transaction";
 const FLEET_RPC: &str = "fleet-rpc";
 pub(super) const APPROVAL_REQUEST_PROTOCOL: &str = "approval-request-protocol";
@@ -300,6 +302,7 @@ pub(super) fn check_boundaries(
     for (name, allowed) in TIMER_CRATES {
         check_closed_workspace_edges(graph, name, allowed)?;
     }
+    check_closed_workspace_edges(graph, APPROVALS_LAYER.0, APPROVALS_LAYER.1)?;
     check_closed_workspace_edges(graph, MAIL_LAYER.0, MAIL_LAYER.1)?;
     check_closed_workspace_edges(graph, NOTICES_LAYER.0, NOTICES_LAYER.1)?;
     check_closed_workspace_edges(graph, DIRECTORY_LAYER.0, DIRECTORY_LAYER.1)?;
