@@ -96,13 +96,16 @@ impl OutboxDispatcher {
             .await;
     }
 
-    pub(crate) async fn return_orphan(
+    pub(crate) async fn return_recovered_claim(
         &mut self,
         work: &mut OutboxWork,
         claim: UnansweredOutboxClaim,
+        departure: MemberReturn,
         report: &mut FlushReport,
     ) {
-        self.settling.return_orphan(work, claim, report).await;
+        self.settling
+            .return_recovered_claim(work, claim, departure, report)
+            .await;
     }
 
     /// Select an ordered claim for the caller's armed mark, then recheck the window before sending.

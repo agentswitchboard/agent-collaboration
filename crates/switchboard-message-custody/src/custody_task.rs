@@ -254,6 +254,7 @@ async fn run_custody(
             }
         };
         let inbox_wake = custody.next_inbox_minute(inbox_mark).await;
+        let can_flush = writes.is_none() && custody.has_startup_claim_inventory();
         for event in custody.take_operator_events().await {
             sink.record_event(CustodyTaskEvent::Operator(event));
         }
@@ -321,6 +322,9 @@ async fn run_custody(
                     Ok(turn) => {
                         report_flush(&*sink, Ok(turn.report));
                         orphan_scan_at = turn.next_deadline;
+                        if custody.owes_local_settlement() && retry_settlement_at.is_none() {
+                            retry_settlement_at = Some(clock.monotonic_now().after(LOCAL_RECOVERY_RETRY));
+                        }
                         if let Some(probe) = turn.probe {
                             let lane = lane.clone();
                             orphan_reply = Some(Box::pin(async move {
@@ -360,7 +364,7 @@ async fn run_custody(
                     }
                 };
             },
-            () = sleep_until(clock.as_ref(), write_wake), if writes.is_none() => {
+            () = sleep_until(clock.as_ref(), write_wake), if can_flush => {
                 match custody.prepare_write_turn().await {
                     Ok((report, ticket)) => {
                         report_flush(&*sink, Ok(report));

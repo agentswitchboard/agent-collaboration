@@ -75,6 +75,7 @@ pub struct CustodyLink {
     schedule: OutboxFlushState,
     last_clock_anchor: Option<WelcomeClockAnchor>,
     rebased_due_through: Option<SyncTime>,
+    startup_orphan_claims: Option<BTreeSet<RequestId>>,
 }
 
 impl CustodyLink {
@@ -96,6 +97,7 @@ impl CustodyLink {
             schedule: OutboxFlushState::default(),
             last_clock_anchor: None,
             rebased_due_through: None,
+            startup_orphan_claims: None,
         }
     }
 
@@ -438,12 +440,17 @@ impl CustodyLink {
         let ready = can_probe.then(|| self.admitted_connection()).flatten();
         prepare_orphan_turn(
             &mut self.outbox,
-            &self.dispatcher,
+            &mut self.dispatcher,
+            &mut self.startup_orphan_claims,
             ready,
             self.clock.monotonic_now(),
             deferred,
         )
         .await
+    }
+
+    pub(crate) fn has_startup_claim_inventory(&self) -> bool {
+        self.startup_orphan_claims.is_some()
     }
 
     pub(crate) async fn settle_recovery_probe(

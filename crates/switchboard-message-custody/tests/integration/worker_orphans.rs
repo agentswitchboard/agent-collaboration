@@ -252,6 +252,86 @@ async fn a_recovered_orphan_uses_the_scoped_status_answer_without_retransmission
 }
 
 #[tokio::test]
+async fn a_lost_local_claim_ack_is_returned_as_untouched_without_a_status_probe() {
+    let campaign = FaultCampaign::start().await;
+    let item = thread_post(606);
+    let OutboxQueuedWrite::Workspace(request) = &item.payload else {
+        panic!("fixture requires a thread post");
+    };
+    let clock = campaign.clock.clone();
+    let peer = campaign.peer.clone();
+    let database = campaign.root.path().join("machine_local.sqlite");
+    campaign
+        .faults
+        .arm(FaultSite::ClaimBatch, FaultStage::AfterSuccess);
+    let (calls, stop, mut events, running) = start_worker(campaign.custody);
+    assert!(matches!(
+        calls
+            .submit(
+                item.caller.clone(),
+                SubmissionPayload::Workspace(request.clone())
+            )
+            .await,
+        Submission::InOutbox(_)
+    ));
+    let mark = ClockInstant::ZERO.after(Duration::from_secs(20));
+    progress(clock.not_due_check_now(mark), "the first local claim").await;
+    clock.advance(Duration::from_secs(20)).unwrap();
+    assert!(matches!(
+        progress(events.recv(), "the lost local claim acknowledgment").await,
+        Some(CustodyTaskEvent::Failed(_))
+    ));
+    assert!(peer.batch_commands().is_empty());
+    let retry = ClockInstant::ZERO.after(Duration::from_secs(21));
+    progress(
+        clock.not_due_check_now(retry),
+        "the offline-capable claim recovery",
+    )
+    .await;
+    clock.advance(Duration::from_secs(1)).unwrap();
+    let mut reopened = open_outbox(&database).await;
+    let pending = progress(
+        async {
+            loop {
+                if reopened
+                    .sent_without_answer()
+                    .await
+                    .unwrap()
+                    .healthy
+                    .is_empty()
+                {
+                    break reopened.pending_for(&item.caller).await.unwrap();
+                }
+                tokio::task::yield_now().await;
+            }
+        },
+        "the untouched local claim return",
+    )
+    .await;
+    assert!(
+        matches!(pending.as_slice(), [one] if one.request_id == item.request &&
+        matches!(one.state, switchboard_machine_core_store::PendingWriteState::Unsent { .. })),
+        "a commit acknowledgment lost before the batch existed must leave the first write unsent"
+    );
+    assert!(
+        peer.take_calls().is_empty(),
+        "only claims found at startup ask Central for status"
+    );
+    let next = ClockInstant::ZERO.after(Duration::from_secs(80));
+    progress(
+        clock.not_due_check_now(next),
+        "the fresh attempt on the next minute",
+    )
+    .await;
+    clock.advance(Duration::from_secs(59)).unwrap();
+    let report = flush_event(&mut events, "one healthy fresh settlement").await;
+    assert!(matches!(report.answered.as_slice(), [one] if one.request == item.request));
+    assert_eq!(peer.batch_commands().len(), 1);
+    stop.send_replace(true);
+    running.await.unwrap();
+}
+
+#[tokio::test]
 async fn a_known_member_settles_locally_while_the_other_member_replays() {
     for stage in [FaultStage::BeforeCall, FaultStage::AfterSuccess] {
         let campaign = FaultCampaign::start().await;

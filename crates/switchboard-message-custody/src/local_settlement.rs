@@ -87,17 +87,13 @@ impl LocalSettlements {
         departure: MemberReturn,
         report: &mut FlushReport,
     ) {
-        let evidence = match departure {
-            MemberReturn::NotTransmitted => MemberEvidence::NotTransmitted,
-            MemberReturn::MayHaveTransmitted => MemberEvidence::Unanswered,
-        };
         self.persist(
             work,
             MemberSettlement {
                 key: write.request,
                 caller: write.caller,
                 payload: write.payload,
-                evidence,
+                evidence: departure.into_evidence(),
             },
             report,
         )
@@ -110,10 +106,11 @@ impl LocalSettlements {
         }
     }
 
-    pub(crate) async fn return_orphan(
+    pub(crate) async fn return_recovered_claim(
         &mut self,
         work: &mut OutboxWork,
         claim: UnansweredOutboxClaim,
+        departure: MemberReturn,
         report: &mut FlushReport,
     ) {
         self.persist(
@@ -122,7 +119,7 @@ impl LocalSettlements {
                 key: claim.key.request_id,
                 caller: claim.caller,
                 payload: claim.payload,
-                evidence: MemberEvidence::Unanswered,
+                evidence: departure.into_evidence(),
             },
             report,
         )
@@ -168,6 +165,15 @@ impl LocalSettlements {
 pub(crate) enum MemberReturn {
     NotTransmitted,
     MayHaveTransmitted,
+}
+
+impl MemberReturn {
+    fn into_evidence(self) -> MemberEvidence {
+        match self {
+            Self::NotTransmitted => MemberEvidence::NotTransmitted,
+            Self::MayHaveTransmitted => MemberEvidence::Unanswered,
+        }
+    }
 }
 
 impl MemberSettlement {
