@@ -900,6 +900,9 @@ dependencies = [
  "schemars 1.2.2",
  "serde",
  "serde_json",
+ "specta",
+ "specta-serde",
+ "specta-typescript",
  "thiserror 2.0.18",
  "uuid",
  "workspace-ids",
@@ -7291,6 +7294,7 @@ dependencies = [
  "serde_json",
  "serde_json_canonicalizer",
  "sha2 0.10.9",
+ "specta",
  "thiserror 2.0.18",
  "workspace-ids",
 ]

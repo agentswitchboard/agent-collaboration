@@ -165,7 +165,6 @@ fn real_writes_and_dispatch_keep_the_due_projection_in_step(tc: TestCase) {
             if initial_receipt {
                 let received = ReceiptKind::Delivered {
                     arrived_at: start,
-                    waiting: None,
                 };
                 assert_eq!(
                     central
@@ -209,7 +208,7 @@ fn real_writes_and_dispatch_keep_the_due_projection_in_step(tc: TestCase) {
                     assert_eq!(central.apply_delivery_receipt(
                         &caller.connection().attachment(),
                         &notice.parse().unwrap(),
-                        ReceiptKind::Delivered { arrived_at: fixture.clock.utc_now(), waiting: None },
+                        ReceiptKind::Delivered { arrived_at: fixture.clock.utc_now() },
                     ).await.unwrap(), MailReceiptSettlement::Applied);
                     assert_due_projection(&fixture, "notice delivered").await;
                 }

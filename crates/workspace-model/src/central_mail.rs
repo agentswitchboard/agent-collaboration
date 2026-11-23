@@ -235,40 +235,28 @@ pub enum MessageBody {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum MessageOutcome {
-    Refused {
-        reason: MessageRefusal,
-    },
-    NotSeen {
-        waiting: WaitingReason,
-    },
+    Refused { reason: MessageRefusal },
     DeliveryNotConfirmed,
-    DeliveredSeenNotConfirmed {
-        arrived_at: Timestamp,
-        waiting: Option<WaitingReason>,
-    },
+    DeliveredSeenNotConfirmed { arrived_at: Timestamp },
 }
 
 /// Why the recipient refused a message.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum MessageRefusal {
     /// The receiving Router has no harness that owns this session.
     UnknownSession,
     /// More than one local harness claims the same provider session id.
     AmbiguousSession,
-    SessionClosed,
-}
-
-/// The Router's observation when the message was saved or expired.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "camelCase")]
-pub enum WaitingReason {
-    SessionNotOpen,
-    WaitingOnAPerson,
-    NeedsSignIn,
-    Busy,
-    NotKnown,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
@@ -278,24 +266,22 @@ pub enum WaitingReason {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum ReceiptKind {
-    Delivered {
-        arrived_at: Timestamp,
-        waiting: Option<WaitingReason>,
-    },
-    Seen {
-        completed_at: Timestamp,
-    },
-    Refused {
-        reason: MessageRefusal,
-    },
-    NotSeen {
-        waiting: WaitingReason,
-    },
+    Delivered { arrived_at: Timestamp },
+    Seen { completed_at: Timestamp },
+    Refused { reason: MessageRefusal },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase")]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum ReceiptResult {
     Recorded,
     AlreadySettled,
@@ -311,20 +297,20 @@ pub enum ReceiptResult {
     rename_all_fields = "camelCase",
     deny_unknown_fields
 )]
+#[cfg_attr(
+    all(feature = "wire-export", not(target_arch = "wasm32")),
+    derive(specta::Type)
+)]
 pub enum MessageStatus {
     Sent {
         deadline_passed: bool,
     },
     Delivered {
         arrived_at: Timestamp,
-        waiting: Option<WaitingReason>,
         deadline_passed: bool,
     },
     Seen {
         completed_at: Timestamp,
-    },
-    NotSeen {
-        waiting: WaitingReason,
     },
     Refused {
         reason: MessageRefusal,

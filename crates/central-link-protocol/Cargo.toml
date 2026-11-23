@@ -8,6 +8,7 @@ autotests = false
 
 [features]
 test-support = []
+wire-export = ["dep:specta", "dep:specta-serde", "dep:specta-typescript", "workspace-model/wire-export", "workspace-ids/wire-export"]
 
 [dependencies]
 approval-request-protocol.workspace = true
@@ -26,3 +27,8 @@ jsonschema.workspace = true
 
 [lints]
 workspace = true
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+specta = { workspace = true, features = ["derive"], optional = true }
+specta-serde = { workspace = true, optional = true }
+specta-typescript = { workspace = true, optional = true }
