@@ -375,6 +375,12 @@ impl CredentialStore for ScriptStore {
         ready(Ok(self.snapshot()))
     }
 
+    async fn read_metadata(
+        &self,
+    ) -> Result<switchboard_machine_enrollment::EnrollmentMetadata, CredentialStoreError> {
+        self.read().await.map(Into::into)
+    }
+
     fn replace(
         &self,
         expected: BindingGeneration,

@@ -20,8 +20,8 @@ pub use credential_store::{
 pub use credential_value::{RefreshCredential, SecretValue};
 pub use device_state::{DeviceEnrollment, DeviceEnrollmentInput, DevicePollSchedule};
 pub use enrollment_binding::{
-    BindingGeneration, EnrollmentBinding, EnrollmentContext, EnrollmentKey, EnrollmentReceipt,
-    InvalidDeployment, SignInDeployment, StoredEnrollment,
+    BindingGeneration, EnrollmentBinding, EnrollmentContext, EnrollmentKey, EnrollmentMetadata,
+    EnrollmentReceipt, InvalidDeployment, SignInDeployment, StoredEnrollment,
 };
 pub use enrollment_identity::{
     EnrollmentId, EnrollmentIdentifierError, OrganizationId, RouterClientId,

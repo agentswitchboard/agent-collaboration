@@ -104,6 +104,10 @@ impl CredentialStore for FakeStore {
         Ok(self.snapshot())
     }
 
+    async fn read_metadata(&self) -> Result<crate::EnrollmentMetadata, CredentialStoreError> {
+        self.read().await.map(Into::into)
+    }
+
     async fn replace(
         &self,
         expected: BindingGeneration,

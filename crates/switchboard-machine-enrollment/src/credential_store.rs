@@ -1,6 +1,8 @@
 use std::future::Future;
 
-use crate::{BindingGeneration, EnrollmentBinding, EnrollmentEnd, StoredEnrollment};
+use crate::{
+    BindingGeneration, EnrollmentBinding, EnrollmentEnd, EnrollmentMetadata, StoredEnrollment,
+};
 
 /// A credential store adapter reports failed operations without carrying secret-bearing errors.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
@@ -43,6 +45,11 @@ pub trait CredentialStore: Send + Sync {
     fn durability(&self) -> StoreDurability;
 
     fn read(&self) -> impl Future<Output = Result<StoredEnrollment, CredentialStoreError>> + Send;
+
+    /// Reads enrollment identity and phase without accessing a refresh credential.
+    fn read_metadata(
+        &self,
+    ) -> impl Future<Output = Result<EnrollmentMetadata, CredentialStoreError>> + Send;
 
     /// Atomically commits the complete binding at expected + 1 if expected is current.
     fn replace(

@@ -745,3 +745,66 @@ async fn close_finishes_the_started_write_and_refuses_queued_admission() {
         Ok(StoredEnrollment::Active(successor))
     );
 }
+
+#[tokio::test]
+async fn retirement_uses_valid_metadata_even_when_the_sealed_column_is_unusable() {
+    use switchboard_machine_enrollment::{
+        RefreshAnswer, RefreshCredential, RefreshOwner, RefreshSource,
+    };
+
+    struct UnusedSignIn;
+    impl RefreshSource for UnusedSignIn {
+        async fn refresh(&self, _: &RefreshCredential) -> RefreshAnswer {
+            panic!("retirement must not refresh")
+        }
+    }
+
+    let fixture = Fixture::open().await;
+    let mut connection = fixture.connection().await;
+    for (index, sealed_expression) in [
+        "UPDATE machine_identity SET enrollment_sealed = NULL",
+        "UPDATE machine_identity SET enrollment_sealed = 'not a blob'",
+        "UPDATE machine_identity SET enrollment_sealed = X'01'",
+        "UPDATE machine_identity SET enrollment_sealed = zeroblob(30)",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let before = u64::try_from(index).unwrap() * 2;
+        let binding = fixture.binding(before + 1, ENROLLMENT, TOKEN);
+        fixture.keychain.unavailable.store(false, SeqCst);
+        assert_eq!(
+            fixture.store.replace(generation(before), &binding).await,
+            Ok(ConditionalWrite::Applied)
+        );
+        sqlx::query(sealed_expression)
+            .execute(&mut connection)
+            .await
+            .unwrap();
+        fixture.keychain.unavailable.store(true, SeqCst);
+        let reads = fixture.keychain.reads.load(SeqCst);
+        assert_eq!(fixture.store.read().await, Err(CredentialStoreError::Read));
+
+        let owner = RefreshOwner::new(
+            fixture.store.clone(),
+            UnusedSignIn,
+            fixture.clock.clone(),
+            binding.context.clone(),
+        );
+        let key = binding.key();
+        assert_eq!(
+            owner.end_enrollment(&key, EnrollmentEnd::Revoked).await,
+            Ok(ConditionalWrite::Applied)
+        );
+        assert_eq!(fixture.keychain.reads.load(SeqCst), reads);
+        assert!(row_columns(&mut connection).await.2.is_none());
+        assert_eq!(
+            fixture.store.read().await,
+            Ok(StoredEnrollment::Ended {
+                key,
+                why: EnrollmentEnd::Revoked,
+                generation: generation(before + 2),
+            })
+        );
+    }
+}

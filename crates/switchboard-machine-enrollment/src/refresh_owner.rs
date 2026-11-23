@@ -10,8 +10,8 @@ use tokio::sync::Mutex;
 
 use crate::{
     BindingGeneration, ConditionalWrite, CredentialStore, CredentialStoreError, EnrollmentBinding,
-    EnrollmentContext, EnrollmentEnd, EnrollmentKey, InvalidReason, RefreshAnswer,
-    RefreshCredential, SecretValue, StoredEnrollment, TokenGrant,
+    EnrollmentContext, EnrollmentEnd, EnrollmentKey, EnrollmentMetadata, InvalidReason,
+    RefreshAnswer, RefreshCredential, SecretValue, StoredEnrollment, TokenGrant,
 };
 
 const WRITE_RETRY_INTERVAL: Duration = Duration::from_secs(1);
@@ -345,8 +345,12 @@ where
         }
         loop {
             let generation = match self.inputs.read_for_cleanup(deadline).await? {
-                StoredEnrollment::Active(binding) if &binding.key() == key => binding.generation,
-                StoredEnrollment::Ended {
+                EnrollmentMetadata::Active {
+                    key: active,
+                    generation,
+                    ..
+                } if &active == key => generation,
+                EnrollmentMetadata::Ended {
                     key: ended,
                     why: recorded,
                     ..
@@ -560,8 +564,11 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
         let started = self.clock.monotonic_now();
         let deadline = started.after(ENDING_CLEANUP_LIMIT);
         match self.read_for_cleanup(deadline).await {
-            Ok(StoredEnrollment::Active(current))
-                if current.generation == binding.generation && current.key() == key => {}
+            Ok(EnrollmentMetadata::Active {
+                key: active,
+                generation,
+                ..
+            }) if generation == binding.generation && active == key => {}
             Ok(_) => return RefreshCompletion::Recheck,
             Err(_) => return RefreshCompletion::Ended { why, deadline },
         }
@@ -577,11 +584,11 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
     async fn read_for_cleanup(
         &self,
         deadline: ClockInstant,
-    ) -> Result<StoredEnrollment, CredentialStoreError> {
+    ) -> Result<EnrollmentMetadata, CredentialStoreError> {
         if self.clock.monotonic_now() >= deadline {
             return Err(CredentialStoreError::CleanupTimedOut);
         }
-        timeout_at(self.clock.as_ref(), deadline, self.store.read())
+        timeout_at(self.clock.as_ref(), deadline, self.store.read_metadata())
             .await
             .map_err(|_| CredentialStoreError::CleanupTimedOut)?
     }
@@ -608,12 +615,13 @@ impl<Store: CredentialStore, Source: RefreshSource> RefreshInputs<Store, Source>
             match attempt {
                 Ok(Ok(ending)) => return Ok(ending),
                 Err(_) | Ok(Err(CredentialStoreError::OutcomeNotKnown)) => {
-                    let observed = timeout_at(self.clock.as_ref(), deadline, self.store.read())
-                        .await
-                        .ok()
-                        .and_then(Result::ok)
-                        .ok_or(CredentialStoreError::CleanupTimedOut)?;
-                    if matches!(observed, StoredEnrollment::Ended {
+                    let observed =
+                        timeout_at(self.clock.as_ref(), deadline, self.store.read_metadata())
+                            .await
+                            .ok()
+                            .and_then(Result::ok)
+                            .ok_or(CredentialStoreError::CleanupTimedOut)?;
+                    if matches!(observed, EnrollmentMetadata::Ended {
                         generation: saved,
                         why: recorded,
                         key: ended,

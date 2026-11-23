@@ -11,13 +11,14 @@ use switchboard_machine_core_store::{
 };
 use switchboard_machine_enrollment::{
     BindingGeneration, ConditionalWrite, CredentialStoreError, EnrollmentBinding,
-    EnrollmentContext, EnrollmentEnd, MachineId, RefreshCredential, SecretValue, StoredEnrollment,
+    EnrollmentContext, EnrollmentEnd, EnrollmentMetadata, MachineId, RefreshCredential,
+    SecretValue, StoredEnrollment,
 };
 use tokio::sync::{mpsc, watch};
 
 use crate::{
     EnrollmentMutation, EnrollmentRequest, MutationStage, WriteResult,
-    enrollment_row_mapping::{EnrollmentSnapshot, seal_context, stored_end},
+    enrollment_row_mapping::{EnrollmentSnapshot, enrollment_metadata, seal_context, stored_end},
 };
 
 pub(crate) struct EnrollmentWorker {
@@ -105,6 +106,9 @@ impl EnrollmentWorker {
             EnrollmentRequest::Read(reply) if !reply.is_closed() => {
                 let _ = reply.send(self.read().await);
             }
+            EnrollmentRequest::ReadMetadata(reply) if !reply.is_closed() => {
+                let _ = reply.send(self.read_metadata().await);
+            }
             EnrollmentRequest::Mutate {
                 expected,
                 mutation,
@@ -115,6 +119,14 @@ impl EnrollmentWorker {
             }
             _ => {}
         }
+    }
+
+    async fn read_metadata(&mut self) -> Result<EnrollmentMetadata, ReadFailure> {
+        let row = self
+            .store
+            .read_enrollment_metadata(&self.machine_id)
+            .await?;
+        Ok(enrollment_metadata(row, &self.machine_id)?)
     }
 
     async fn read(&mut self) -> Result<StoredEnrollment, ReadFailure> {
@@ -195,25 +207,34 @@ impl EnrollmentWorker {
             // The caller can distinguish reply loss before the first poll of
             // this transaction from loss during a possible durable write.
             stage.begin_transaction();
-            self.store
-                .write_enrollment_row(machine_id, expected_sql, timestamp, |row| {
-                    let snapshot = match EnrollmentSnapshot::from_row(row, machine_id) {
-                        Ok(snapshot) => snapshot,
-                        Err(corrupt) => return EnrollmentRowChange::Corrupt(corrupt),
-                    };
-                    match decision {
-                        MutationDecision::Replace(Some(replacement)) => {
-                            if snapshot == replacement.witness {
-                                EnrollmentRowChange::Write(replacement.row)
-                            } else {
-                                EnrollmentRowChange::Abort(())
+            match decision {
+                MutationDecision::Replace(prepared) => {
+                    self.store
+                        .write_enrollment_row(machine_id, expected_sql, timestamp, |row| {
+                            let snapshot = match EnrollmentSnapshot::from_row(row, machine_id) {
+                                Ok(snapshot) => snapshot,
+                                Err(corrupt) => return EnrollmentRowChange::Corrupt(corrupt),
+                            };
+                            match prepared {
+                                Some(replacement) if snapshot == replacement.witness => {
+                                    EnrollmentRowChange::Write(replacement.row)
+                                }
+                                _ => EnrollmentRowChange::Abort(()),
                             }
-                        }
-                        MutationDecision::Replace(None) => EnrollmentRowChange::Abort(()),
-                        MutationDecision::End(why) => end_row(snapshot, why),
-                    }
-                })
-                .await
+                        })
+                        .await
+                }
+                MutationDecision::End(why) => {
+                    self.store
+                        .write_enrollment_ending(machine_id, expected_sql, timestamp, |row| {
+                            match enrollment_metadata(row, machine_id) {
+                                Ok(metadata) => end_row(metadata, why),
+                                Err(corrupt) => EnrollmentRowChange::Corrupt(corrupt),
+                            }
+                        })
+                        .await
+                }
+            }
         };
         #[cfg(not(test))]
         let outcome = write.await;
@@ -244,13 +265,26 @@ impl EnrollmentWorker {
                         .probes
                         .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
                 }
-                let observed = self
-                    .store
-                    .probe_enrollment_commit(&self.machine_id)
-                    .await
-                    .ok()
-                    .and_then(|row| EnrollmentSnapshot::from_row(row, &self.machine_id).ok());
-                if observed.is_some_and(|snapshot| snapshot.generation() == expected) {
+                let observed = if definite_error == CredentialStoreError::Remove {
+                    self.store
+                        .probe_enrollment_ending(&self.machine_id)
+                        .await
+                        .ok()
+                        .and_then(|row| enrollment_metadata(row, &self.machine_id).ok())
+                        .map(|metadata| match metadata {
+                            EnrollmentMetadata::Empty => BindingGeneration::EMPTY,
+                            EnrollmentMetadata::Active { generation, .. }
+                            | EnrollmentMetadata::Ended { generation, .. } => generation,
+                        })
+                } else {
+                    self.store
+                        .probe_enrollment_commit(&self.machine_id)
+                        .await
+                        .ok()
+                        .and_then(|row| EnrollmentSnapshot::from_row(row, &self.machine_id).ok())
+                        .map(|snapshot| snapshot.generation())
+                };
+                if observed == Some(expected) {
                     Err(definite_error)
                 } else {
                     Err(CredentialStoreError::OutcomeNotKnown)
@@ -363,10 +397,10 @@ enum MutationDecision {
     End(EnrollmentEnd),
 }
 
-fn end_row(snapshot: EnrollmentSnapshot, why: EnrollmentEnd) -> EnrollmentRowChange<()> {
-    let EnrollmentSnapshot::Active {
+fn end_row(metadata: EnrollmentMetadata, why: EnrollmentEnd) -> EnrollmentRowChange<()> {
+    let EnrollmentMetadata::Active {
         key, generation, ..
-    } = snapshot
+    } = metadata
     else {
         return EnrollmentRowChange::Abort(());
     };

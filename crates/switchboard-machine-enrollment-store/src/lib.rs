@@ -12,7 +12,7 @@ use router_clock::RuntimeClock;
 use switchboard_machine_core_store::{MachineLocalStore, MachineLocalStoreError};
 use switchboard_machine_enrollment::{
     BindingGeneration, ConditionalWrite, CredentialStore, CredentialStoreError, EnrollmentBinding,
-    EnrollmentEnd, MachineId, StoreDurability, StoredEnrollment,
+    EnrollmentEnd, EnrollmentMetadata, MachineId, StoreDurability, StoredEnrollment,
 };
 use tokio::{
     sync::{Mutex, mpsc, oneshot, watch},
@@ -130,6 +130,20 @@ impl CredentialStore for MachineEnrollmentStore {
             .map_err(|_| CredentialStoreError::Read)
     }
 
+    async fn read_metadata(&self) -> Result<EnrollmentMetadata, CredentialStoreError> {
+        if *self.shutdown.borrow() {
+            return Err(CredentialStoreError::Read);
+        }
+        let (reply, result) = oneshot::channel();
+        self.requests
+            .send(EnrollmentRequest::ReadMetadata(reply))
+            .map_err(|_| CredentialStoreError::Read)?;
+        result
+            .await
+            .map_err(|_| CredentialStoreError::Read)?
+            .map_err(|_| CredentialStoreError::Read)
+    }
+
     async fn replace(
         &self,
         expected: BindingGeneration,
@@ -175,6 +189,7 @@ type WriteResult = Result<ConditionalWrite, CredentialStoreError>;
 
 enum EnrollmentRequest {
     Read(oneshot::Sender<Result<StoredEnrollment, ReadFailure>>),
+    ReadMetadata(oneshot::Sender<Result<EnrollmentMetadata, ReadFailure>>),
     Mutate {
         expected: BindingGeneration,
         mutation: EnrollmentMutation,
