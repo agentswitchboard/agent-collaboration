@@ -107,6 +107,16 @@ impl QueuedMacCall {
         matches!(&*self.request, MacCall::DeliverEnding(_))
     }
 
+    pub(crate) fn approval_notice(
+        &self,
+    ) -> Option<&central_link_protocol::approval_rpc::ApprovalNoticeEnvelope> {
+        if let MacCall::ApprovalNotice(notice) = &*self.request {
+            Some(notice)
+        } else {
+            None
+        }
+    }
+
     pub(crate) fn frame(&self) -> LinkFrame {
         LinkFrame::Data(DataFrame::CallMac {
             correlation_id: self.correlation.wire_id().clone(),

@@ -247,6 +247,23 @@ pub(crate) fn check_expected_typescript_roots(typescript: &str) {
     // These exported dependencies are exercised inside the standalone roots and
     // concrete generic instantiations. This inventory also detects added exports.
     let dependencies = [
+        "ApprovalDestination",
+        "ApprovalNotice",
+        "ApprovalNoticeReply",
+        "ApprovalSessionCall",
+        "ApprovalSummaryEnding",
+        "ApprovalSummaryState",
+        "DecideApprovalAsSessionReply",
+        "DecideApprovalAsSessionRequest",
+        "InvalidAnswer",
+        "ListApprovalsForSessionReply",
+        "ListApprovalsForSessionRequest",
+        "PassOnApprovalReply",
+        "PassOnApprovalRequest",
+        "ReadApprovalForSessionReply",
+        "ReadApprovalForSessionRequest",
+        "RequestKind",
+        "RequestSummary",
         "ApprovalOffer",
         "ApprovalRequestId",
         "ApprovalWindowFields",

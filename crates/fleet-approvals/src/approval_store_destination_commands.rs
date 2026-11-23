@@ -1,13 +1,13 @@
 #[cfg(feature = "test-support")]
 use std::num::NonZeroU16;
 
+#[cfg(feature = "test-support")]
+use approval_request_protocol::PassOnReply;
 use approval_request_protocol::{CentralTime, RequestView};
-use approval_request_protocol::{DecideRequest, PassOnReply, PassOnRequest};
 use fleet_actor_identity::AuthenticatedSession;
 use fleet_identity_protocol::OrganizationId;
 use fleet_runtime_ports::workspace_decode_error::corrupt;
-use workspace_ids::ApprovalRequestId;
-use workspace_ids::PersonId;
+use workspace_ids::{ApprovalRequestId, PersonId};
 
 #[cfg(feature = "test-support")]
 use super::ApprovalReadPage;
@@ -15,17 +15,15 @@ use super::{ApprovalApplyFailure, ApprovalApplyingStore, ApprovalTransitionOutpu
 use crate::{
     AdmittedDecider, ApprovalActor, ApprovalDecideInput, ApprovalDecisionReply, ApprovalEnrollment,
     ApprovalEvent, ApprovalReceipt, ApprovalReplyAddress, ApprovalSession, ApprovalSessionFacts,
-    PendingApprovalReply,
     approval_decision_log::ApprovalDecisionLogKey,
     approval_lifecycle_admission::is_destination,
-    approval_store_reads::{
-        ApprovalReadRecord, read_parent_approval_request, read_people_approval_request,
-    },
+    approval_store_reads::{ApprovalReadRecord, read_people_approval_request},
     approval_store_transaction::ApprovalStoreTransaction,
 };
 #[cfg(feature = "test-support")]
 use crate::{
-    approval_store_reads::read_person_approval_page, approval_store_scope::ApprovalRequestRowId,
+    approval_store_reads::{read_parent_approval_request, read_person_approval_page},
+    approval_store_scope::ApprovalRequestRowId,
 };
 
 impl<Transaction, Sessions> ApprovalApplyingStore<'_, Transaction, Sessions>
@@ -33,34 +31,7 @@ where
     Transaction: ApprovalStoreTransaction,
     Sessions: ApprovalSessionFacts<Transaction>,
 {
-    pub async fn decide_session_approval(
-        &mut self,
-        admission: &AuthenticatedSession,
-        request: DecideRequest,
-    ) -> Result<PendingApprovalReply<ApprovalDecisionReply>, ApprovalApplyFailure> {
-        let (organization, session, address) = approval_session_address(admission);
-        let applied = self
-            .decide_approval(
-                organization,
-                AdmittedDecider::Session(session),
-                request.into(),
-            )
-            .await?;
-        Ok(self.stage_reply(address, applied))
-    }
-
-    pub async fn pass_on_session_approval(
-        &mut self,
-        admission: &AuthenticatedSession,
-        request: PassOnRequest,
-    ) -> Result<PendingApprovalReply<PassOnReply>, ApprovalApplyFailure> {
-        let (organization, session, address) = approval_session_address(admission);
-        let applied = self
-            .pass_on_approval(organization, session, &request.request_id)
-            .await?;
-        Ok(self.stage_reply(address, applied))
-    }
-
+    #[cfg(feature = "test-support")]
     pub(super) async fn decide_approval(
         &mut self,
         organization: &OrganizationId,
@@ -98,6 +69,19 @@ where
         let Some(record) = record else {
             return Ok(refused());
         };
+        self.decide_selected_approval(organization, decider, request, &record)
+            .await
+    }
+
+    pub(super) async fn decide_selected_approval(
+        &mut self,
+        organization: &OrganizationId,
+        decider: AdmittedDecider,
+        request: ApprovalDecideInput,
+        record: &ApprovalReadRecord,
+    ) -> Result<ApprovalTransitionOutput<ApprovalDecisionReply>, ApprovalApplyFailure> {
+        let actor = decider.actor();
+        let refused = || ApprovalTransitionOutput::with_reply(ApprovalDecisionReply::NotVisible {});
         let Some(saved) = record
             .state
             .retained()
@@ -163,6 +147,8 @@ where
         Ok(applied.replace_reply(reply))
     }
 
+    // The model witness supplies its known parent facts and uses the lifecycle projection.
+    #[cfg(feature = "test-support")]
     pub(super) async fn pass_on_approval(
         &mut self,
         organization: &OrganizationId,
@@ -192,7 +178,15 @@ where
         let identity = ApprovalActor::Session(parent.clone()).identity();
         let event = ApprovalEvent::PassOn {
             key: key.clone(),
-            live_parent: parent,
+            live_parent: parent.clone(),
+            to: self
+                .sessions
+                .next_approval_parent(self.transaction, &parent)
+                .await?
+                .map_or(
+                    crate::ApprovalRouteDestination::People,
+                    crate::ApprovalRouteDestination::Session,
+                ),
         };
         let at = self.sample_applying_time()?;
         let applied = self
@@ -214,6 +208,7 @@ where
         Ok(applied.replace_reply(reply))
     }
 
+    #[cfg(feature = "test-support")]
     #[cfg(feature = "test-support")]
     pub(super) async fn list_person_approvals(
         &mut self,
@@ -241,7 +236,9 @@ where
         let mut requests = Vec::with_capacity(records.len());
         let mut ending_offers = Vec::new();
         for record in &records {
-            let applied = self.read_selected_approval(record, person_id, at).await?;
+            let applied = self
+                .read_selected_approval(record, &ApprovalActor::Person(person_id.clone()), at)
+                .await?;
             let request = applied
                 .reply
                 .ok_or_else(|| corrupt("approval_request_destinations.people_page"))?;
@@ -277,13 +274,14 @@ where
             return Ok(ApprovalTransitionOutput::with_reply(None));
         };
         let at = self.sample_applying_time()?;
-        self.read_selected_approval(&record, person_id, at).await
+        self.read_selected_approval(&record, &ApprovalActor::Person(person_id.clone()), at)
+            .await
     }
 
     pub(super) async fn read_selected_approval(
         &mut self,
         record: &ApprovalReadRecord,
-        person: &PersonId,
+        actor: &ApprovalActor,
         at: CentralTime,
     ) -> Result<ApprovalTransitionOutput<Option<RequestView>>, ApprovalApplyFailure> {
         let Some(key) = record.state.key() else {
@@ -291,7 +289,7 @@ where
         };
         let event = ApprovalEvent::Read {
             key: key.clone(),
-            person_id: person.clone(),
+            actor: actor.clone(),
         };
         let applied = self
             .apply_request_event(
@@ -305,7 +303,7 @@ where
         let Some(ApprovalReceipt::Read(reply)) = &applied.reply else {
             return Err(corrupt("approval_store.read_reply").into());
         };
-        let recipient = ApprovalActor::Person(person.clone()).identity();
+        let recipient = actor.identity();
         let reply = reply
             .for_recipient(key, &recipient)
             .map_err(|_| corrupt("approval_store.read_recipient"))?
@@ -314,7 +312,7 @@ where
     }
 }
 
-fn approval_session_address(
+pub(super) fn approval_session_address(
     admission: &AuthenticatedSession,
 ) -> (&OrganizationId, ApprovalSession, ApprovalReplyAddress) {
     let organization = admission.organization_id();

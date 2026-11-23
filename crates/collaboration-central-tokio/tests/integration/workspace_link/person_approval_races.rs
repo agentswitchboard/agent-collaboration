@@ -4,7 +4,7 @@ use collaboration_central_conformance::{
     ConformanceResult as Result,
     signin_fixtures::person_approval_races::{
         DecisionCompetitor, DecisionRaceOrder, PersonApprovalPause, PersonApprovalRaceFixture,
-        RacePauseStep, check_decision_race,
+        RacePauseStep, check_decision_race, check_person_session_race,
     },
 };
 use fleet_runtime::{HeldPause, PausePoint};
@@ -83,6 +83,7 @@ async fn check(competitor: DecisionCompetitor, order: DecisionRaceOrder) -> Resu
         before_alarm: Cell::new(0),
         delivery_answer: RefCell::default(),
         before_write: RefCell::default(),
+        notice_recovery: RefCell::default(),
     };
     let observed = async {
         let client = reqwest::Client::builder()
@@ -95,6 +96,31 @@ async fn check(competitor: DecisionCompetitor, order: DecisionRaceOrder) -> Resu
             pause: RefCell::default(),
         };
         check_decision_race(&fixture, competitor, order).await
+    }
+    .await;
+    link.link.close().await?;
+    observed
+}
+
+async fn check_person_session(order: DecisionRaceOrder) -> Result<()> {
+    let link = NativeApprovalFixture {
+        link: start_session_link_fixture(signed_clock()?).await?,
+        before_alarm: Cell::new(0),
+        delivery_answer: RefCell::default(),
+        before_write: RefCell::default(),
+        notice_recovery: RefCell::default(),
+    };
+    let observed = async {
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .unix_socket(link.link.signin_socket.clone())
+            .build()?;
+        let fixture = RaceFixture {
+            link: &link,
+            client,
+            pause: RefCell::default(),
+        };
+        check_person_session_race(&fixture, order).await
     }
     .await;
     link.link.close().await?;
@@ -134,3 +160,13 @@ race_tests!(
     enrollment_end_before_person_decide,
     person_decide_before_enrollment_end
 );
+
+#[tokio::test]
+async fn session_decide_before_signed_person_decide() -> Result<()> {
+    check_person_session(DecisionRaceOrder::CompetitorFirst).await
+}
+
+#[tokio::test]
+async fn signed_person_decide_before_session_decide() -> Result<()> {
+    check_person_session(DecisionRaceOrder::PersonFirst).await
+}

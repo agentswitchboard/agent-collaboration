@@ -2,7 +2,11 @@ use crate::{
     OrganizationApprovalTransactions, OrganizationSessionTransactions, SessionApplyFailure,
     SessionApplyFault, SessionApplyFuture, SessionApplyResult,
     apply_failure::SessionApplySuccess,
+    approval_delivery::ApprovalDelivery,
     approval_dispatch::{ApprovalLinkApplication, HolderCommand, HolderReply},
+    parent_session_dispatch::{
+        ParentApprovalCall, ParentApprovalOperation, dispatch_parent_approval,
+    },
 };
 use central_engine_model::{Context, EngineTime};
 use central_link_protocol::{
@@ -51,7 +55,7 @@ pub struct OrganizationLinkDispatcher<Transactions, Approvals> {
     transactions: Transactions,
     inputs: ApplyingInputs,
     approvals: ApprovalLinkApplication<Approvals>,
-    ending_transport: Arc<dyn crate::ApprovalEndingTransport>,
+    ending_transport: Arc<dyn crate::ApprovalDeliveryTransport>,
 }
 
 impl<Transactions: OrganizationSessionTransactions, Approvals>
@@ -60,7 +64,7 @@ impl<Transactions: OrganizationSessionTransactions, Approvals>
     pub fn new(
         transactions: Transactions,
         approval_transactions: Approvals,
-        ending_transport: Arc<dyn crate::ApprovalEndingTransport>,
+        ending_transport: Arc<dyn crate::ApprovalDeliveryTransport>,
         clock: Arc<dyn Clock>,
         ids: Arc<dyn IdSource>,
         fill_secret: FillSessionSecret,
@@ -78,6 +82,13 @@ impl<Transactions: OrganizationSessionTransactions, Approvals>
                 ids,
                 fill_secret,
             },
+        }
+    }
+
+    fn approval_delivery(&self) -> ApprovalDelivery<Approvals> {
+        ApprovalDelivery {
+            application: self.approvals.clone(),
+            transport: self.ending_transport.clone(),
         }
     }
 }
@@ -177,11 +188,8 @@ where
                 + '_,
         >,
     > {
-        crate::approval_delivery::ApprovalDelivery {
-            application: self.approvals.clone(),
-            transport: self.ending_transport.clone(),
-        }
-        .fixture_decide(organization, decision)
+        self.approval_delivery()
+            .fixture_decide(organization, decision)
     }
 
     fn recover_approval_endings(
@@ -189,11 +197,10 @@ where
         machine: ValidatedMachineConnection,
         run: workspace_ids::RouterRunId,
     ) -> Option<collaboration_central_core::LinkCallCompletion> {
-        crate::approval_delivery::ApprovalDelivery {
-            application: self.approvals.clone(),
-            transport: self.ending_transport.clone(),
-        }
-        .after_reply(vec![], Some((machine, run)))
+        self.approval_delivery().after_reply(
+            fleet_approvals::CommittedApprovalEffects::default(),
+            Some((machine, run)),
+        )
     }
 
     fn end_approval_enrollment(
@@ -206,6 +213,23 @@ where
             self.approvals
                 .end_enrollment(organization, invalidation, statements),
         )
+    }
+
+    fn approval_notice_deadline<'call>(
+        &'call self,
+        notice: &'call central_link_protocol::approval_rpc::ApprovalNoticeEnvelope,
+    ) -> Pin<Box<dyn Future<Output = Result<Option<EngineTime>, StoreFailure>> + Send + 'call>>
+    {
+        let delivery = self.approval_delivery();
+        Box::pin(async move { delivery.notice_deadline(notice).await })
+    }
+
+    fn recover_approval_notices(
+        &self,
+        machine: ValidatedMachineConnection,
+    ) -> collaboration_central_core::LinkCallCompletion {
+        self.approval_delivery()
+            .recover_notices_after_announcement(machine)
     }
 
     fn apply_approval_deadline(
@@ -223,11 +247,8 @@ where
                 + '_,
         >,
     > {
-        crate::approval_delivery::ApprovalDelivery {
-            application: self.approvals.clone(),
-            transport: self.ending_transport.clone(),
-        }
-        .apply_deadline(organization, deadline)
+        self.approval_delivery()
+            .apply_deadline(organization, deadline)
     }
 
     fn dispatch<'call>(
@@ -292,21 +313,47 @@ where
                     .await
                     .map(CentralCallWork::from),
                 CentralCall::EndFleetSession(request) => {
-                    crate::approval_delivery::ApprovalDelivery {
-                        application: self.approvals.clone(),
-                        transport: self.ending_transport.clone(),
-                    }
-                    .end_session(machine, request)
+                    self.approval_delivery().end_session(machine, request).await
+                }
+                CentralCall::ListApprovalsForSession(request) => {
+                    dispatch_parent_approval(
+                        &self.approval_delivery(),
+                        machine,
+                        ParentApprovalCall::new(request, ParentApprovalOperation::List),
+                    )
+                    .await
+                }
+                CentralCall::ReadApprovalForSession(request) => {
+                    dispatch_parent_approval(
+                        &self.approval_delivery(),
+                        machine,
+                        ParentApprovalCall::new(request, ParentApprovalOperation::Read),
+                    )
+                    .await
+                }
+                CentralCall::DecideApprovalAsSession(request) => {
+                    dispatch_parent_approval(
+                        &self.approval_delivery(),
+                        machine,
+                        ParentApprovalCall::new(request, ParentApprovalOperation::Decide),
+                    )
+                    .await
+                }
+                CentralCall::PassOnApproval(request) => {
+                    dispatch_parent_approval(
+                        &self.approval_delivery(),
+                        machine,
+                        ParentApprovalCall::new(request, ParentApprovalOperation::PassOn),
+                    )
                     .await
                 }
                 CentralCall::RegisterRun(request) => {
                     let run = request.body.router_run.clone();
-                    self.approvals
-                        .dispatch::<RegisterRunRpc>(
+                    self.approval_delivery()
+                        .dispatch_holder::<RegisterRunRpc>(
                             machine,
                             request,
                             (run, &carrier),
-                            self.ending_transport.clone(),
                             |_| HolderCommand::Register,
                             |target, reply| {
                                 if let HolderReply::Register(body) = reply {
@@ -320,12 +367,11 @@ where
                 }
                 CentralCall::Raise(request) => {
                     let run = request.body.router_run().clone();
-                    self.approvals
-                        .dispatch::<RaiseApprovalRpc>(
+                    self.approval_delivery()
+                        .dispatch_holder::<RaiseApprovalRpc>(
                             machine,
                             request,
                             (run, &carrier),
-                            self.ending_transport.clone(),
                             |body| HolderCommand::Raise(Box::new(body)),
                             |target, reply| {
                                 if let HolderReply::Raise(body) = reply {
@@ -343,12 +389,11 @@ where
                         StopRequest::Provider { router_run, .. }
                         | StopRequest::UnprovenCall { router_run, .. } => router_run.clone(),
                     };
-                    self.approvals
-                        .dispatch::<StopApprovalRpc>(
+                    self.approval_delivery()
+                        .dispatch_holder::<StopApprovalRpc>(
                             machine,
                             request,
                             (run, &carrier),
-                            self.ending_transport.clone(),
                             HolderCommand::Stop,
                             |target, reply| {
                                 if let HolderReply::Stop(body) = reply {

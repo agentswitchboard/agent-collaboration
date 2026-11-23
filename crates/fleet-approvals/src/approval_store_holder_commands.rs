@@ -314,11 +314,7 @@ where
                     return Ok(unavailable_requester());
                 }
                 if let ApprovalRouting::Delegate { admitted_parent } = &route
-                    && (admitted_parent.session_id == requester.session_id
-                        || !self
-                            .sessions
-                            .session_is_live(self.transaction, admitted_parent)
-                            .await?)
+                    && admitted_parent.session_id == requester.session_id
                 {
                     return Err(ApprovalApplyFailure::Lifecycle(
                         ApprovalRefusal::InvalidInitialRoute,

@@ -70,7 +70,7 @@ pub async fn call_machine<R: MacLinkRpc>(
 ) -> MacCallResult<R> {
     let target = request.target.clone();
     let call = R::request(request);
-    if matches!(call, MacCall::DeliverEnding(_)) {
+    if matches!(call, MacCall::DeliverEnding(_) | MacCall::ApprovalNotice(_)) {
         return Err(CallFailure::NeverReached);
     }
     let answer = invoke_mac_call(env, organization, machine_id, call, MACHINE_CALL_PATH).await?;
@@ -143,32 +143,35 @@ impl CentralObject {
             return self.close_machine_link(socket, 1008, Some("duplicate Mac capabilities"));
         }
         current.save(socket)?;
-        drop(turn);
-        if current
+        let recover_notices = current
             .mac_capabilities
-            .handles(central_link_protocol::MacCallKind::DeliverEnding)
-            && let Some(run) = current.registered_run
+            .handles(central_link_protocol::MacCallKind::ApprovalNotice);
+        let holder_run = current.registered_run.filter(|_| {
+            current
+                .mac_capabilities
+                .handles(central_link_protocol::MacCallKind::DeliverEnding)
+        });
+        if !recover_notices && holder_run.is_none() {
+            return Ok(());
+        }
+        let machine = match runtime
+            .restore_machine_in_held_turn(&current.authority)
+            .await
         {
-            match runtime
-                .restore_machine_link_request(&current.authority)
-                .await
-            {
-                Ok(collaboration_central_core::MachineLinkRequestAuthority::Admitted(machine)) => {
-                    if let Some(recovery) = runtime.recover_approval_endings(machine, run) {
-                        self.pending_mac_calls
-                            .run_socket_completion(&self.state, socket, recovery);
-                    }
-                }
-                Ok(collaboration_central_core::MachineLinkRequestAuthority::Refused(cause)) => {
-                    return self.close_machine_authority(socket, cause);
-                }
-                Ok(
-                    collaboration_central_core::MachineLinkRequestAuthority::TemporarilyUnavailable,
-                )
-                | Err(_) => {
-                    return self.close_machine_link(socket, 1011, Some("central unavailable"));
-                }
-            }
+            Ok(Ok(machine)) => machine,
+            Ok(Err(cause)) => return self.close_machine_authority(socket, cause),
+            Err(_) => return self.close_machine_link(socket, 1011, Some("central unavailable")),
+        };
+        drop(turn);
+        if let Some(run) = holder_run
+            && let Some(recovery) = runtime.recover_approval_endings(machine.clone(), run)
+        {
+            self.pending_mac_calls
+                .run_socket_completion(&self.state, socket, recovery);
+        }
+        if recover_notices && let Some(recovery) = runtime.recover_approval_notices(machine) {
+            self.pending_mac_calls
+                .run_socket_completion(&self.state, socket, recovery);
         }
         Ok(())
     }
@@ -324,7 +327,8 @@ impl CentralObject {
         let fixture_ending = false;
         #[cfg(feature = "test-support")]
         let fixture_ending = request.path() == FIXTURE_ENDING_CALL_PATH;
-        let result = if is_raw_ending && !fixture_ending {
+        let is_raw_notice = matches!(&*invocation.request, MacCall::ApprovalNotice(_));
+        let result = if is_raw_notice || is_raw_ending && !fixture_ending {
             Err(CallFailure::NeverReached)
         } else {
             self.send_mac_call(organization, invocation, deadline).await

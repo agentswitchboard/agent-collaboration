@@ -9,7 +9,7 @@ use crate::{
     ApprovalDigestError, CallOffer, InvocationDigest, ParkedCallHolder, RequestContentsDigest,
 };
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),

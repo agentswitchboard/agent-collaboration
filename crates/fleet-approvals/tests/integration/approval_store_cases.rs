@@ -184,7 +184,7 @@ async fn public_raise_installs_the_recorded_parent_and_unknown_session_writes_no
     let (reply, evidence) = raise_and_commit(&fixture, &holder, &real).await;
     assert!(matches!(reply, RaiseReply::Receipt { .. }));
     assert_eq!(evidence.session_route_reads, std::slice::from_ref(&child));
-    assert_eq!(evidence.session_liveness_reads, [child, parent.clone()]);
+    assert_eq!(evidence.session_liveness_reads, [child]);
     assert_eq!(
         fixture.inspect_rows("SELECT session_id FROM approval_request_destinations WHERE raised_notice_at IS NOT NULL").await,
         [parent.session_id.as_str()],

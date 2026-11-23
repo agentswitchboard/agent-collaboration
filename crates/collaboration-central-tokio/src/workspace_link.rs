@@ -309,18 +309,27 @@ async fn serve_link(
         };
         match frame {
             LinkFrame::Data(DataFrame::MacCapabilities(announcement)) => {
+                let recover_notices = announcement
+                    .handled_calls
+                    .contains(central_link_protocol::MacCallKind::ApprovalNotice);
                 match registration
                     .outbound_calls
                     .announce_capabilities(announcement)
                 {
-                    Ok(Some(run)) => {
-                        if let Some(recovery) =
-                            runtime.recover_approval_endings(connection.clone(), run)
+                    Ok(holder_run) => {
+                        if let Some(run) = holder_run
+                            && let Some(recovery) =
+                                runtime.recover_approval_endings(connection.clone(), run)
+                        {
+                            writes.schedule_completion(recovery);
+                        }
+                        if recover_notices
+                            && let Some(recovery) =
+                                runtime.recover_approval_notices(connection.clone())
                         {
                             writes.schedule_completion(recovery);
                         }
                     }
-                    Ok(None) => {}
                     Err(_) => {
                         writes.close(
                             &mut socket,

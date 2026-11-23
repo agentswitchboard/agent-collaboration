@@ -44,7 +44,10 @@ pub trait ApprovalLinkFixture {
             let mut socket = self.connect_without_capabilities().await?;
             announce_mac_calls(
                 &mut socket,
-                vec![central_link_protocol::MacCallKind::DeliverEnding],
+                vec![
+                    central_link_protocol::MacCallKind::DeliverEnding,
+                    central_link_protocol::MacCallKind::ApprovalNotice,
+                ],
             )
             .await?;
             Ok(socket)
@@ -55,6 +58,8 @@ pub trait ApprovalLinkFixture {
     fn refresh(&self) -> impl Future<Output = Result<String>>;
     fn observe_due_alarm(&self) -> impl Future<Output = Result<()>>;
     fn fail_next_applying_write(&self) -> impl Future<Output = Result<()>>;
+    fn arm_notice_recovery(&self) -> impl Future<Output = Result<()>>;
+    fn await_notice_recovery(&self) -> impl Future<Output = Result<()>>;
     fn fixture_write(&self, statement: Statement) -> impl Future<Output = Result<()>>;
     fn decide_provider_approval(
         &self,
@@ -453,6 +458,9 @@ pub async fn next_ending(
             Ok((correlation_id, envelope.body))
         }
         MacCall::DeliverEnding(_) => Err("ending did not target the admitted run".into()),
+        MacCall::ApprovalNotice(_) => {
+            Err("received a notice while expecting a holder ending".into())
+        }
         MacCall::MacProbe(_) => Err("received a link probe while expecting a holder ending".into()),
     }
 }
@@ -587,7 +595,7 @@ fn text(value: &str) -> SqlValue {
 #[path = "mac_capability_scenarios.rs"]
 mod mac_capability_scenarios;
 pub use mac_capability_scenarios::{
-    HolderRecoveryOrder, announce_mac_calls, capability_ending_recovery,
+    HolderRecoveryOrder, announce_mac_calls, capability_ending_recovery, exchange_direct_mail,
     require_duplicate_capabilities_close,
 };
 

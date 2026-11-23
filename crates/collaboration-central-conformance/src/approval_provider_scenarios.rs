@@ -52,6 +52,16 @@ pub async fn provider_session_end_and_refusals(fixture: &impl ApprovalLinkFixtur
     let waiting = provider_raise(&target, &delegate, 5, ProviderAsk::Approval)?;
     for request in stopped.iter().chain([&question, &waiting]) {
         require_receipt(raise(&mut socket, organization, request.clone()).await?)?;
+        if request.requesting_session() == Some(&delegate) {
+            crate::parent_approval_scenarios::acknowledge_notice(
+                &mut socket,
+                &target,
+                &parent,
+                request.request_id(),
+                approval_request_protocol::ApprovalNoticeReply::Received {},
+            )
+            .await?;
+        }
         assert_eq!(
             read_request(fixture, request).await?,
             [text("waiting"), SqlValue::Null]

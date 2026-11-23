@@ -11,6 +11,8 @@ mod link_request;
 mod link_typed_calls;
 mod mac_call_address;
 mod mac_call_capabilities;
+#[cfg(test)]
+mod parent_session_rpc_test;
 mod request_status;
 pub mod session_lifecycle_rpc;
 mod socket_mac_call_capabilities;

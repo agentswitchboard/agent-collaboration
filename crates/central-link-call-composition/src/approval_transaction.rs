@@ -6,7 +6,7 @@ use fleet_approvals::{
     ApprovalStoreTransaction,
 };
 use fleet_identity_protocol::OrganizationId;
-use fleet_lent_transaction::CentralTransaction;
+use fleet_lent_transaction::{CentralTransaction, OrganizationTransaction};
 use fleet_machine_login::{SessionEnrollmentStatus, read_session_enrollment};
 use fleet_runtime_ports::{SyncTime, workspace_decode_error::corrupt};
 use fleet_signin::ApprovalPersonTransaction;
@@ -20,16 +20,13 @@ use workspace_ids::ActorIdentityId;
 #[derive(Clone, Debug)]
 pub enum ApprovalAlarmPublication {
     WithCommit,
-    /// Native publication is after commit. Preserve the committed person output
-    /// for its holder before reporting publication failure to the HTTP caller.
-    WithPersonCommit(std::sync::Arc<std::sync::OnceLock<AlarmPublicationFailure>>),
     AtDueBatchEnd,
 }
 
 impl ApprovalAlarmPublication {
     pub const fn publishes_with_commit(&self) -> bool {
         match self {
-            Self::WithCommit | Self::WithPersonCommit(_) => true,
+            Self::WithCommit => true,
             Self::AtDueBatchEnd => false,
         }
     }
@@ -72,6 +69,12 @@ pub trait ApprovalStatementLoan: CentralTransaction + Send {
     ) -> impl Future<Output = Result<u64, StoreFailure>> + Send;
 }
 
+/// A committed apply can still fail to publish the native platform alarm.
+pub struct CommittedApprovalApply<Output> {
+    pub output: Output,
+    pub publication_failure: Option<AlarmPublicationFailure>,
+}
+
 /// The socket and the engine share the same stamped approving loan on each host.
 pub trait OrganizationApprovalTransactions: Send + Sync + 'static {
     type Transaction<'connection>: ApprovalStoreTransaction;
@@ -85,7 +88,7 @@ pub trait OrganizationApprovalTransactions: Send + Sync + 'static {
         ) -> ApprovalTransactionFuture<'loan, Output>
         + Send
         + 'static,
-    ) -> impl Future<Output = Result<Output, ApprovalTransactionFailure>> + Send;
+    ) -> impl Future<Output = Result<CommittedApprovalApply<Output>, ApprovalTransactionFailure>> + Send;
 }
 
 type ApprovalCommitFuture<T> =
@@ -106,13 +109,40 @@ where
     Owner: OrganizationApprovalTransactions,
     Output: Send + 'static,
 {
-    let owner = ApprovalCommit(move |scope| -> ApprovalCommitFuture<Output> {
-        Box::pin(async move {
-            transactions
-                .apply_approval(organization, alarm, move |loan| apply(loan, scope))
-                .await
-        })
-    });
+    Box::pin(async move {
+        let (proof, committed) =
+            commit_approval_with_publication(transactions, organization, alarm, apply).await?;
+        match committed.publication_failure {
+            None => Ok((proof, committed.output)),
+            Some(reason) => Err(StoreFailure::AlarmUnpublishable { reason }.into()),
+        }
+    })
+}
+
+pub(crate) fn commit_approval_with_publication<Owner, Output>(
+    transactions: std::sync::Arc<Owner>,
+    organization: OrganizationId,
+    alarm: ApprovalAlarmPublication,
+    apply: impl for<'loan, 'connection> FnOnce(
+        &'loan mut Owner::Transaction<'connection>,
+        ApprovalCommitScope,
+    ) -> ApprovalTransactionFuture<'loan, Output>
+    + Send
+    + 'static,
+) -> ApprovalCommitFuture<(ApprovalCommitProof, CommittedApprovalApply<Output>)>
+where
+    Owner: OrganizationApprovalTransactions,
+    Output: Send + 'static,
+{
+    let owner = ApprovalCommit(
+        move |scope| -> ApprovalCommitFuture<CommittedApprovalApply<Output>> {
+            Box::pin(async move {
+                transactions
+                    .apply_approval(organization, alarm, move |loan| apply(loan, scope))
+                    .await
+            })
+        },
+    );
     Box::pin(fleet_approvals::complete_approval_commit(owner))
 }
 
@@ -180,22 +210,28 @@ where
         organization: &OrganizationId,
         actor: &ApprovalActor,
     ) -> Result<ActorIdentityId, StoreFailure> {
-        ApprovalAnswerActorsNotAdmitted
-            .resolve(organization, actor)
-            .map(|never| match never {})
+        if self.organization_id() != organization {
+            return Err(corrupt("approval_link.decision_organization"));
+        }
+        match actor {
+            ApprovalActor::Session(session) => session
+                .session_id
+                .as_str()
+                .parse()
+                .map_err(|_| corrupt("approval_link.decision_session")),
+            ApprovalActor::Person(_) => PersonApprovalAnswersNotAdmitted
+                .resolve()
+                .map(|never| match never {}),
+        }
     }
 }
 
-/// The holder/maintenance composition has no constructor for an admitted answer actor.
-struct ApprovalAnswerActorsNotAdmitted;
+/// The link has no person approval admission.
+struct PersonApprovalAnswersNotAdmitted;
 
-impl ApprovalAnswerActorsNotAdmitted {
-    fn resolve(
-        &self,
-        _organization: &OrganizationId,
-        _actor: &ApprovalActor,
-    ) -> Result<Infallible, StoreFailure> {
-        Err(corrupt("approval_link.actor_not_admitted"))
+impl PersonApprovalAnswersNotAdmitted {
+    fn resolve(&self) -> Result<Infallible, StoreFailure> {
+        Err(corrupt("approval_link.person_not_admitted"))
     }
 }
 

@@ -45,6 +45,92 @@ pub enum ApprovalRouting {
     Delegate { admitted_parent: ApprovalSession },
 }
 
+/// A forward can add another parent or reach the people destination.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum ApprovalRouteDestination {
+    Session(ApprovalSession),
+    People,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(crate) enum ApprovalDestinations {
+    Session {
+        previous: Vec<ApprovalSession>,
+        current: ApprovalSession,
+    },
+    People {
+        previous: Vec<ApprovalSession>,
+    },
+}
+
+impl ApprovalDestinations {
+    pub(crate) fn initial(route: ApprovalRouting) -> Self {
+        match route {
+            ApprovalRouting::Owner => Self::People {
+                previous: Vec::new(),
+            },
+            ApprovalRouting::Delegate { admitted_parent } => Self::Session {
+                previous: Vec::new(),
+                current: admitted_parent,
+            },
+        }
+    }
+
+    pub(crate) fn current_session(&self) -> Option<&ApprovalSession> {
+        match self {
+            Self::Session { current, .. } => Some(current),
+            Self::People { .. } => None,
+        }
+    }
+
+    pub(crate) fn previous(&self) -> &[ApprovalSession] {
+        match self {
+            Self::Session { previous, .. } | Self::People { previous } => previous,
+        }
+    }
+
+    pub(crate) fn sessions(&self) -> impl Iterator<Item = &ApprovalSession> {
+        self.previous().iter().chain(self.current_session())
+    }
+
+    pub(crate) fn waiting_status(&self) -> WaitingStatus {
+        if self.previous().is_empty() {
+            WaitingStatus::Pending
+        } else {
+            WaitingStatus::PassedOn
+        }
+    }
+
+    pub(crate) fn add(
+        &self,
+        from: &ApprovalSession,
+        to: &ApprovalRouteDestination,
+    ) -> Option<Self> {
+        let Self::Session { previous, current } = self else {
+            return None;
+        };
+        if current != from {
+            return None;
+        }
+        let mut previous = previous.clone();
+        previous.push(current.clone());
+        match to {
+            ApprovalRouteDestination::Session(session)
+                if !previous
+                    .iter()
+                    .any(|scope| scope.session_id == session.session_id) =>
+            {
+                Some(Self::Session {
+                    previous,
+                    current: session.clone(),
+                })
+            }
+            ApprovalRouteDestination::Session(_) => None,
+            ApprovalRouteDestination::People => Some(Self::People { previous }),
+        }
+    }
+}
+
 /// The applying caller has already authenticated this actor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdmittedDecider {
@@ -86,13 +172,21 @@ pub struct RetainedApproval {
     pub raise: Raise,
     pub contents_digest: RequestContentsDigest,
     pub window: ApprovalWindow,
-    pub routing: ApprovalRouting,
-    pub(crate) waiting_status: WaitingStatus,
+    pub(crate) destinations: ApprovalDestinations,
 }
 
 impl RetainedApproval {
     pub fn waiting_status(&self) -> WaitingStatus {
-        self.waiting_status
+        self.destinations.waiting_status()
+    }
+
+    pub fn initial_routing(&self) -> ApprovalRouting {
+        self.destinations
+            .sessions()
+            .next()
+            .map_or(ApprovalRouting::Owner, |parent| ApprovalRouting::Delegate {
+                admitted_parent: parent.clone(),
+            })
     }
 
     pub fn provider_session(&self) -> Option<ApprovalSession> {
@@ -186,7 +280,7 @@ impl StateTag for ApprovalState {
         match self {
             Self::Unraised => "unraised",
             Self::StoppedBeforeRaise { .. } => "stoppedBeforeRaise",
-            Self::Waiting { saved } => match saved.waiting_status {
+            Self::Waiting { saved } => match saved.waiting_status() {
                 WaitingStatus::Pending => "pending",
                 WaitingStatus::PassedOn => "passedOn",
             },
@@ -313,11 +407,12 @@ pub enum ApprovalEvent {
     },
     Read {
         key: ApprovalRequestKey,
-        person_id: PersonId,
+        actor: ApprovalActor,
     },
     PassOn {
         key: ApprovalRequestKey,
         live_parent: ApprovalSession,
+        to: ApprovalRouteDestination,
     },
     Stop {
         key: ApprovalRequestKey,

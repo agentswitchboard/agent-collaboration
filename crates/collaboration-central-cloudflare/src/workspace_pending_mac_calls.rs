@@ -132,7 +132,7 @@ impl PendingMacCalls {
         }
     }
 
-    pub(super) fn run_socket_completion(
+    pub(in super::super) fn run_socket_completion(
         &self,
         state: &State,
         socket: &WebSocket,

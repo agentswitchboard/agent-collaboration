@@ -1,7 +1,7 @@
 //! Outputs are released with proof from the same owning transaction's commit path.
 use std::{future::Future, sync::Arc};
 
-use approval_request_protocol::DeliverEndingRequest;
+use approval_request_protocol::{ApprovalRequestId, DeliverEndingRequest};
 use fleet_identity_protocol::OrganizationId;
 use workspace_ids::PersonId;
 
@@ -86,25 +86,61 @@ impl<Reply> PendingApprovalReply<Reply> {
     }
 }
 
-/// Kept by the transaction owner for the holder, separately from the caller reply.
+/// Sealed delivery obligations are released after the owning transaction commits.
 ///
 /// ```compile_fail,E0616
-/// fn inspect(value: fleet_approvals::PendingApprovalHolderEffects) { let _ = value.offers; }
+/// fn inspect(value: fleet_approvals::PendingApprovalEffects) { let _ = value.offers; }
 /// ```
-pub struct PendingApprovalHolderEffects {
+pub struct PendingApprovalEffects {
     transaction: Arc<()>,
-    offers: Vec<CommittedApprovalOffer>,
+    effects: CommittedApprovalEffects,
 }
 
-impl PendingApprovalHolderEffects {
+impl PendingApprovalEffects {
     pub fn release(
         self,
         proof: &ApprovalCommitProof,
-    ) -> Result<Vec<CommittedApprovalOffer>, ApprovalReleaseFailure> {
+    ) -> Result<CommittedApprovalEffects, ApprovalReleaseFailure> {
         if !Arc::ptr_eq(&self.transaction, &proof.0) {
             return Err(ApprovalReleaseFailure::OtherCommit);
         }
-        Ok(self.offers)
+        Ok(self.effects)
+    }
+}
+
+#[derive(Default)]
+pub struct CommittedApprovalEffects {
+    pub endings: Vec<CommittedApprovalOffer>,
+    pub notices: Vec<CommittedApprovalNotice>,
+}
+
+impl CommittedApprovalEffects {
+    pub fn is_empty(&self) -> bool {
+        self.endings.is_empty() && self.notices.is_empty()
+    }
+}
+
+pub struct CommittedApprovalNotice {
+    organization: OrganizationId,
+    destination: ApprovalSession,
+    request_id: ApprovalRequestId,
+}
+
+impl CommittedApprovalNotice {
+    pub(crate) fn new(
+        organization: OrganizationId,
+        destination: ApprovalSession,
+        request_id: ApprovalRequestId,
+    ) -> Self {
+        Self {
+            organization,
+            destination,
+            request_id,
+        }
+    }
+
+    pub fn into_destination(self) -> (OrganizationId, ApprovalSession, ApprovalRequestId) {
+        (self.organization, self.destination, self.request_id)
     }
 }
 
@@ -146,13 +182,13 @@ impl ApprovalCommitScope {
         }
     }
 
-    pub(crate) fn pending_holder_effects(
+    pub(crate) fn pending_effects(
         &self,
-        offers: Vec<CommittedApprovalOffer>,
-    ) -> PendingApprovalHolderEffects {
-        PendingApprovalHolderEffects {
+        effects: CommittedApprovalEffects,
+    ) -> PendingApprovalEffects {
+        PendingApprovalEffects {
             transaction: self.0.clone(),
-            offers,
+            effects,
         }
     }
 }

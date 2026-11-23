@@ -14,6 +14,7 @@ mod approval_wire_codec;
 mod destination_admission;
 mod destination_requests;
 mod holder_requests;
+mod parent_session_calls;
 mod question_fields;
 mod unproven_session_call;
 
@@ -59,6 +60,12 @@ pub use destination_requests::{
 pub use holder_requests::{
     DeliverEndingReply, RaiseReceipt, RaiseReply, RegisterRunReply, RegisterRunRequest, RunRefusal,
     StopReceiptEnding, StopReply, StopRequest,
+};
+pub use parent_session_calls::{
+    ApprovalDestination, ApprovalNotice, ApprovalNoticeReply, ApprovalSessionCall,
+    DecideApprovalAsSessionReply, DecideApprovalAsSessionRequest, ListApprovalsForSessionReply,
+    ListApprovalsForSessionRequest, PassOnApprovalReply, PassOnApprovalRequest,
+    ReadApprovalForSessionReply, ReadApprovalForSessionRequest,
 };
 pub use question_fields::{
     ChoiceOption, ChoiceOptions, InvalidChoiceRange, InvalidOfferedOptions, InvalidQuestionFields,

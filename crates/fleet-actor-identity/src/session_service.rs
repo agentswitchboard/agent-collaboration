@@ -331,6 +331,16 @@ where
         Ok(self.live_session(caller, session_id).await?.is_some())
     }
 
+    /// One stored fact from the organization loan, without the creation-path depth rule.
+    pub async fn approval_chain_fact(
+        &mut self,
+        session_id: &CentralSessionId,
+    ) -> Result<crate::ApprovalChainSession, crate::ApprovalChainFailure> {
+        crate::ApprovalChainSession::from_state(
+            self.repository.for_approval_chain(session_id).await?,
+        )
+    }
+
     /// Check the presented secret in the same organization and live enrollment.
     pub async fn authenticate_live_session(
         &mut self,

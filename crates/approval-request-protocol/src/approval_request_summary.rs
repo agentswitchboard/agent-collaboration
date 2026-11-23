@@ -9,7 +9,7 @@ use crate::{
 
 approval_wire_record! {
 [deny_unknown_fields]
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub struct RequestSummary {
     pub request_id: ApprovalRequestId,
@@ -23,7 +23,7 @@ pub struct RequestSummary {
 }
 
 approval_wire_union! {
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub enum ApprovalSummaryState {
     Waiting {},
@@ -31,7 +31,9 @@ pub enum ApprovalSummaryState {
 }
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
+#[derive(
+    Clone, Copy, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "camelCase")]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),

@@ -210,6 +210,7 @@ impl Scenario {
                     request_id: key.request_id.clone(),
                 };
                 ApprovalCollectionEvent::PassOn {
+                    to: fleet_approvals::ApprovalRouteDestination::People,
                     key,
                     parent,
                     request,

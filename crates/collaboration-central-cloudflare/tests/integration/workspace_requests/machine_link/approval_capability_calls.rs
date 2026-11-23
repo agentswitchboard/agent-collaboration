@@ -16,3 +16,11 @@ async fn workerd_ending_recovery_waits_for_both_capability_and_run_orders() -> R
     }
     Ok(())
 }
+
+#[tokio::test]
+async fn workerd_both_owed_kinds_follow_the_socket_capabilities() -> Result<()> {
+    let fixture = Fixture::with_production_dispatcher().await?;
+    let result = collaboration_central_conformance::parent_approval_scenarios::both_owed_kinds_follow_the_socket_capabilities(&fixture).await;
+    fixture.close().await?;
+    result
+}

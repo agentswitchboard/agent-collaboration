@@ -1,16 +1,29 @@
 use crate::{
     OrganizationApprovalTransactions,
-    approval_dispatch::{ApprovalLinkApplication, HolderApplied, HolderCommand, HolderReply},
+    approval_dispatch::{
+        ApprovalLinkApplication, HolderApplied, HolderCommand, HolderReply, refused,
+        report_approval_failure,
+    },
 };
-use approval_request_protocol::{DeliverEndingRequest, RegisterRunReply, RouterRunId};
+use approval_request_protocol::{
+    DeliverEndingRequest, RaiseReply, RegisterRunReply, RouterRunId, RunRefusal, StopReply,
+};
 use central_link_protocol::{
-    LinkCallRefusal, TypedCallResult,
-    approval_rpc::{ApprovalHolderTarget, DeliverEndingRpc},
+    CentralCallReply, CentralLinkRpc, LinkCallRefusal, TypedCallResult,
+    approval_rpc::{ApprovalHolderTarget, ApprovalServiceTarget, DeliverEndingRpc},
 };
-use collaboration_central_core::{LinkCallCompletion, MacCallResult, ValidatedMachineConnection};
-use fleet_approvals::{ApprovalHolderAdmission, CommittedApprovalOffer};
+use central_storage::StoreFailure;
+use collaboration_central_core::{
+    CentralCallWork, LinkCallCompletion, MacCallResult, TargetCheckedCentralCall, TypedCallCarrier,
+    ValidatedMachineConnection,
+};
+use fleet_approvals::{
+    ApprovalHolderAdmission, CommittedApprovalEffects, CommittedApprovalNotice,
+    CommittedApprovalOffer,
+};
 use fleet_lent_transaction::CentralTransaction;
-use fleet_rpc::CallFailure;
+use fleet_rpc::{CallFailure, Envelope};
+use fleet_runtime_ports::workspace_decode_error::corrupt;
 use futures_util::future::select;
 use sqlx_core::{
     arguments::IntoArguments, column::ColumnIndex, database::Database, decode::Decode,
@@ -34,7 +47,12 @@ pub struct SelectedApprovalSocket {
 }
 
 /// Select a physical socket once. Its send capability cannot route through a replacement.
-pub trait ApprovalEndingTransport: Send + Sync {
+pub trait ApprovalDeliveryTransport: Send + Sync {
+    fn offer_notice(
+        &self,
+        notice: CommittedApprovalNotice,
+    ) -> EndingFuture<Result<(), CallFailure>>;
+
     #[cfg(feature = "test-support")]
     fn fixture_delivery_answer_applied(&self) -> LinkCallCompletion {
         Box::pin(async {})
@@ -48,7 +66,7 @@ pub trait ApprovalEndingTransport: Send + Sync {
 
 pub(crate) struct ApprovalDelivery<Transactions> {
     pub application: ApprovalLinkApplication<Transactions>,
-    pub transport: Arc<dyn ApprovalEndingTransport>,
+    pub transport: Arc<dyn ApprovalDeliveryTransport>,
 }
 
 impl<Transactions> Clone for ApprovalDelivery<Transactions> {
@@ -72,9 +90,101 @@ where
     i64: Type<Db> + for<'query> Encode<'query, Db> + for<'row> Decode<'row, Db>,
     for<'row> &'row str: ColumnIndex<Db::Row>,
 {
+    pub(crate) fn dispatch_holder<
+        'call,
+        R: CentralLinkRpc<Target = ApprovalServiceTarget> + 'static,
+    >(
+        &'call self,
+        machine: &'call ValidatedMachineConnection,
+        request: Envelope<R::Target, R::Request>,
+        (claimed_run, carrier): (RouterRunId, &'call TypedCallCarrier),
+        command: impl FnOnce(R::Request) -> HolderCommand + Send + 'static,
+        wrap: impl FnOnce(ApprovalServiceTarget, HolderReply) -> Option<CentralCallReply>
+        + Send
+        + 'static,
+    ) -> Pin<Box<dyn Future<Output = Result<CentralCallWork, StoreFailure>> + Send + 'call>> {
+        Box::pin(async move {
+            let target = ApprovalServiceTarget {
+                organization_id: machine.organization_id().clone(),
+            };
+            let body = match TargetCheckedCentralCall::<R>::check(&target, request) {
+                Ok(checked) => checked.into_body(),
+                Err(reason) => return Ok(refused(reason)),
+            };
+            let command = command(body);
+            let TypedCallCarrier::Approval {
+                registered_run,
+                recover_after_registration: recover_endings,
+            } = carrier
+            else {
+                return Err(corrupt("typed_approval_call.physical_carrier"));
+            };
+            let run = match (&command, registered_run) {
+                (HolderCommand::Register, None) => claimed_run,
+                (_, Some(bound)) if *bound == claimed_run => bound.clone(),
+                (HolderCommand::Register | HolderCommand::Raise(_) | HolderCommand::Stop(_), _) => {
+                    let reply = match command {
+                        HolderCommand::Register => {
+                            HolderReply::Register(RegisterRunReply::RunNotRegistered {})
+                        }
+                        HolderCommand::Raise(_) => {
+                            HolderReply::Raise(RaiseReply::AuthorityRefused {
+                                refusal: RunRefusal::RunNotRegistered {},
+                            })
+                        }
+                        HolderCommand::Stop(_) => HolderReply::Stop(StopReply::AuthorityRefused {
+                            refusal: RunRefusal::RunNotRegistered {},
+                        }),
+                        HolderCommand::Recover | HolderCommand::DeliveryAnswer { .. } => {
+                            return Err(corrupt("typed_approval_call.direction"));
+                        }
+                    };
+                    return Ok(TypedCallResult::Answered {
+                        reply: wrap(target, reply).ok_or(StoreFailure::Unavailable)?,
+                    }
+                    .into());
+                }
+                (HolderCommand::Recover | HolderCommand::DeliveryAnswer { .. }, _) => {
+                    return Err(corrupt("typed_approval_call.direction"));
+                }
+            };
+            let applied = self
+                .application
+                .apply_holder(machine.clone(), run.clone(), command)
+                .await;
+            match applied {
+                Ok(HolderApplied::Answer {
+                    reply,
+                    offers,
+                    publication_failure,
+                }) => {
+                    let reply = wrap(target, reply).ok_or(StoreFailure::AnswerLost)?;
+                    let registration = if *recover_endings {
+                        recover_after_registration(&reply, machine, run)
+                    } else {
+                        None
+                    };
+                    Ok(CentralCallWork {
+                        result: match publication_failure {
+                            None => Ok(TypedCallResult::Answered { reply }),
+                            Some(reason) => Err(StoreFailure::AlarmUnpublishable { reason }),
+                        },
+                        committed_delivery: self.after_reply(offers, None),
+                        completion: self
+                            .after_reply(CommittedApprovalEffects::default(), registration),
+                    })
+                }
+                Ok(HolderApplied::AuthorityLapsed(cause)) => {
+                    Ok(refused(LinkCallRefusal::AuthorityLapsed { cause }))
+                }
+                Err(failure) => report_approval_failure(failure),
+            }
+        })
+    }
+
     pub fn after_reply(
         &self,
-        offers: Vec<CommittedApprovalOffer>,
+        offers: CommittedApprovalEffects,
         registration: Option<(ValidatedMachineConnection, RouterRunId)>,
     ) -> Option<LinkCallCompletion> {
         if offers.is_empty() && registration.is_none() {
@@ -92,10 +202,11 @@ where
                     Ok(HolderApplied::Answer {
                         reply: HolderReply::Recover(Ok(())),
                         offers,
+                        ..
                     }) => delivery.offer_all(offers).await,
                     Ok(HolderApplied::Answer {
                         reply: HolderReply::Recover(Err(refusal)),
-                        offers: _,
+                        ..
                     }) => tracing::debug!(
                         ?refusal,
                         "registered holder no longer has approval authority"
@@ -119,11 +230,16 @@ where
 
     pub fn offer_all<'call>(
         &'call self,
-        offers: Vec<CommittedApprovalOffer>,
+        offers: CommittedApprovalEffects,
     ) -> Pin<Box<dyn Future<Output = ()> + Send + 'call>> {
         Box::pin(async move {
-            for offer in offers {
+            for offer in offers.endings {
                 self.offer_one(offer).await;
+            }
+            for notice in offers.notices {
+                if let Err(failure) = self.transport.offer_notice(notice).await {
+                    tracing::debug!(?failure, "approval notice was not acknowledged");
+                }
             }
         })
     }
@@ -158,6 +274,7 @@ where
                 reason:
                     reason @ (LinkCallRefusal::UnknownCall
                     | LinkCallRefusal::WrongTarget
+                    | LinkCallRefusal::SessionProofNotAccepted
                     | LinkCallRefusal::CentralFault
                     | LinkCallRefusal::AuthorityLapsed { .. }),
             }) => {

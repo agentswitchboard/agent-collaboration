@@ -5,7 +5,7 @@ use crate::approval_values::{OfferedOptionId, QuestionFieldId, QuestionNumber};
 
 approval_wire_union! {
 /// The two answer kinds a parent session can send or receive.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(all(feature = "wire-export", not(target_arch = "wasm32")), derive(specta::Type))]
 pub enum ProviderAnswer {
     Approval { option_id: OfferedOptionId },
@@ -23,7 +23,7 @@ impl From<ProviderAnswer> for Answer {
 }
 
 approval_wire_union! {
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, schemars::JsonSchema)]
 #[cfg_attr(
     all(feature = "wire-export", not(target_arch = "wasm32")),
     derive(specta::Type)

@@ -75,7 +75,11 @@ where
         let mut ending_offers = Vec::new();
         for record in &records {
             let applied = self
-                .read_selected_approval(record, admission.person(), at)
+                .read_selected_approval(
+                    record,
+                    &crate::ApprovalActor::Person(admission.person().clone()),
+                    at,
+                )
                 .await?;
             let view = applied
                 .reply

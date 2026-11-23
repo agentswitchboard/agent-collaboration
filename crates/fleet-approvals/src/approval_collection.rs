@@ -11,8 +11,7 @@ use crate::{
     ActiveApprovalEnrollment, ApprovalActor, ApprovalCollection, ApprovalCollectionEffect,
     ApprovalCollectionEvent, ApprovalDecisionReply, ApprovalEffect, ApprovalEnrollment,
     ApprovalEvent, ApprovalLifecycle, ApprovalReceipt, ApprovalRefusal, ApprovalRequestKey,
-    ApprovalRouting, ApprovalRun, ApprovalSession, ApprovalState, ProviderSessionAvailability,
-    RaiseAdmission,
+    ApprovalRun, ApprovalSession, ApprovalState, ProviderSessionAvailability, RaiseAdmission,
 };
 
 type CollectionChange =
@@ -71,15 +70,6 @@ impl ApprovalCollection {
                         return Ok((self, effects));
                     }
                     let provider_session = self.provider_session(&key, &raise, provider_session);
-                    if !self.requests.contains_key(&key)
-                        && provider_session == ProviderSessionAvailability::Live
-                        && let ApprovalRouting::Delegate { admitted_parent } = &routing
-                        && !self.active_actor(&ApprovalActor::Session(admitted_parent.clone()))
-                    {
-                        return Err(TransitionError::Domain(
-                            ApprovalRefusal::InvalidInitialRoute,
-                        ));
-                    }
                     let outstanding = if self.requests.contains_key(&key) {
                         0
                     } else {
@@ -191,7 +181,7 @@ impl ApprovalCollection {
                     &key,
                     ApprovalEvent::Read {
                         key: key.clone(),
-                        person_id,
+                        actor: crate::ApprovalActor::Person(person_id),
                     },
                     context,
                     &mut effects,
@@ -201,6 +191,7 @@ impl ApprovalCollection {
                 key,
                 parent,
                 request,
+                to,
             } => {
                 let actor = ApprovalActor::Session(parent.clone());
                 if self.active_actor(&actor) && key.request_id == request.request_id {
@@ -209,6 +200,7 @@ impl ApprovalCollection {
                         ApprovalEvent::PassOn {
                             key: key.clone(),
                             live_parent: parent,
+                            to,
                         },
                         context,
                         &mut effects,

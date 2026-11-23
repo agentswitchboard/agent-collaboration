@@ -1,9 +1,11 @@
 use super::TokioWorkspaceStores;
 use crate::{machine_push_registry::MachinePushRegistry, object_storage::ObjectStorage};
-use central_link_call_composition::{ApprovalEndingTransport, SelectedApprovalSocket};
+use central_link_call_composition::{ApprovalDeliveryTransport, SelectedApprovalSocket};
 use central_link_protocol::{
-    FreshCorrelationId, MacCallAddress, MacLinkRpc,
-    approval_rpc::{ApprovalHolderTarget, DeliverEndingRpc},
+    FreshCorrelationId, MacCallAddress, MacLinkRpc, TypedCallResult,
+    approval_rpc::{
+        ApprovalHolderTarget, ApprovalNoticeRpc, ApprovalNoticeTarget, DeliverEndingRpc,
+    },
 };
 use collaboration_central_core::{
     MachineLinkRequestAuthority, TYPED_LINK_CALL_TIMEOUT, WorkspaceRuntime, finish_mac_call,
@@ -63,7 +65,48 @@ impl NativeApprovalDelivery {
     }
 }
 
-impl ApprovalEndingTransport for NativeApprovalDelivery {
+impl ApprovalDeliveryTransport for NativeApprovalDelivery {
+    fn offer_notice(
+        &self,
+        notice: central_link_call_composition::CommittedApprovalNotice,
+    ) -> Pin<Box<dyn Future<Output = Result<(), CallFailure>> + Send>> {
+        let (organization_id, destination, request_id) = notice.into_destination();
+        let target = ApprovalNoticeTarget {
+            organization_id,
+            machine_id: destination.enrollment.machine_id,
+            enrollment_id: destination.enrollment.enrollment_id,
+            session_id: destination.session_id,
+        };
+        let request = ApprovalNoticeRpc::request(Envelope {
+            target: target.clone(),
+            body: central_link_protocol::approval_rpc::ApprovalNotice { request_id },
+        });
+        let address = MacCallAddress::from(&request);
+        let clock = self.clock.clone();
+        let pending = self.registry.queue_call(
+            &target.organization_id,
+            FreshCorrelationId::mint_at(clock.now().unix_millis()),
+            request,
+            address,
+            clock.monotonic_now().after(TYPED_LINK_CALL_TIMEOUT),
+        );
+        Box::pin(async move {
+            let reply = pending?.wait(clock.as_ref()).await?;
+            match finish_mac_call::<ApprovalNoticeRpc>(&target, reply)? {
+                TypedCallResult::Answered {
+                    reply:
+                        Envelope {
+                            body:
+                                central_link_protocol::approval_rpc::ApprovalNoticeReply::Received {}
+                                | central_link_protocol::approval_rpc::ApprovalNoticeReply::NotHere {},
+                            ..
+                        },
+                } => Ok(()),
+                TypedCallResult::Refused { .. } => Err(CallFailure::AnswerLost),
+            }
+        })
+    }
+
     #[cfg(feature = "test-support")]
     fn fixture_delivery_answer_applied(&self) -> collaboration_central_core::LinkCallCompletion {
         let runtime = self.runtime.get().and_then(Weak::upgrade);
