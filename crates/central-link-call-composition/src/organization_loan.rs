@@ -33,6 +33,10 @@ pub struct OrganizationLoan<Transaction> {
 }
 
 impl<Transaction: CentralTransaction> OrganizationLoan<Transaction> {
+    pub(crate) fn transaction(&self) -> &Transaction {
+        &self.transaction
+    }
+
     pub(crate) fn transaction_mut(&mut self) -> &mut Transaction {
         &mut self.transaction
     }

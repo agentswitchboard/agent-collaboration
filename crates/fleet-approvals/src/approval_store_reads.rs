@@ -59,6 +59,7 @@ checked_subject_projection!(StoredDestinationRow {
     approval_destination_id: String,
     approval_row_id: String,
     organization_id: String,
+    request_id: String,
     destination_kind: String,
     session_machine_id: Option<String>,
     session_enrollment_id: Option<String>,

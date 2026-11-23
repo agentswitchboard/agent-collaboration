@@ -111,6 +111,8 @@ mod private_entry {
     use super::is_signin_path;
     use crate::object_location::ObjectAddress;
     use crate::{cloudflare_transport, http_body};
+    use axum::response::IntoResponse;
+    use collaboration_central_core::person_approval_preflight;
     use fleet_identity_protocol::OrganizationId;
     use serde::Deserialize;
     use worker::{Context, Env, Request, Response, Result, event};
@@ -149,19 +151,20 @@ mod private_entry {
         let bytes = axum::body::to_bytes(body, usize::MAX)
             .await
             .map_err(|_| worker::Error::RustError("sign-in body unavailable".into()))?;
-        let organization =
+        let organization_id =
             if fleet_signin::approval_person_wire::ApprovalPersonRoute::from_path(parts.uri.path())
                 .is_some()
             {
-                collaboration_central_core::person_approval_organization(&bytes)
+                match person_approval_preflight(&parts.method, &parts.headers, &bytes) {
+                    Ok(preflight) => preflight.organization().clone(),
+                    Err(refusal) => return refusal.into_response().try_into(),
+                }
             } else {
-                serde_json::from_slice::<Addressed>(&bytes)
-                    .ok()
-                    .map(|address| address.organization_id)
+                let Ok(Addressed { organization_id }) = serde_json::from_slice(&bytes) else {
+                    return Response::empty().map(|response| response.with_status(400));
+                };
+                organization_id
             };
-        let Some(organization_id) = organization else {
-            return Response::empty().map(|response| response.with_status(400));
-        };
         let address = ObjectAddress::Central(organization_id);
         let stub = match cloudflare_transport::stub(env, &address) {
             Ok(stub) => stub,

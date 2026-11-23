@@ -215,7 +215,7 @@ export function personDecision(
   return {
     kind: "decide",
     organization: holder.organization,
-    actor: { kind: "person", personId, freshFactor: true },
+    actor: { kind: "person", personId },
     requestId,
     operationId,
     value: { kind: "approval", optionId },

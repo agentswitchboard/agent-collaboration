@@ -1,6 +1,6 @@
 use approval_request_protocol::{
     AdmittedDestination, Answer, ApprovalWindow, CallStopCause, DecideReply, DecideRequest,
-    DecidedBy, DecisionFactor, DeliverEndingRequest, Delivery, Ending, EndingView, HolderStopCause,
+    DecidedBy, DeliverEndingRequest, Delivery, Ending, EndingView, HolderStopCause,
     InvalidApprovalEnding, InvocationDigest, PrivateEnding, Raise, RequestView,
     SessionCallDecision, StopRequest, WaitingStatus,
 };
@@ -213,13 +213,7 @@ fn parked_choices_require_a_fresh_person_and_the_ending_contains_no_invocation()
 
     for decision in [SessionCallDecision::Allow, SessionCallDecision::Decline] {
         let answer = Answer::UnprovenCall { decision };
-        assert!(matches!(
-            admitted.decide(answer.clone(), DecisionFactor::NoFreshPersonFactor),
-            Err(InvalidApprovalEnding::FreshFactorRequired)
-        ));
-        let ending = admitted
-            .decide(answer, DecisionFactor::FreshPersonFactor)
-            .unwrap();
+        let ending = admitted.decide(answer).unwrap();
         let frame = DeliverEndingRequest::from_decision(&raise, ending).unwrap();
         let wire = serde_json::to_value(&frame).unwrap();
         assert_eq!(
@@ -235,12 +229,7 @@ fn parked_choices_require_a_fresh_person_and_the_ending_contains_no_invocation()
         assert!(serde_json::from_value::<DeliverEndingRequest>(injected).is_err());
         let different: Raise = serde_json::from_value(raise_specimen(end_summary())).unwrap();
         assert!(frame.check_bound_raise(&different).is_err());
-        let accepted = admitted
-            .decide(
-                Answer::UnprovenCall { decision },
-                DecisionFactor::FreshPersonFactor,
-            )
-            .unwrap();
+        let accepted = admitted.decide(Answer::UnprovenCall { decision }).unwrap();
         assert!(DeliverEndingRequest::from_decision(&different, accepted).is_err());
         let raw = Ending::UnprovenCallDecided {
             decision,

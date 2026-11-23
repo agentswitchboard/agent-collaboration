@@ -82,7 +82,6 @@ pub mod organization_authority;
 pub mod person_request;
 mod sign_in_trust_settings;
 pub use sign_in_trust_settings::SignInTrustSettings;
-mod authorization_floor_rows;
 mod authorization_revision_plans;
 mod organization_admin_contract;
 mod organization_admin_plans;
@@ -97,7 +96,9 @@ pub use person_approval_application::{
     AppliedPersonApproval, PersonApprovalAnswer, PersonApprovalApplication,
     PersonApprovalTransactions,
 };
-pub use person_approval_http::person_approval_organization;
+pub use person_approval_http::{
+    PersonApprovalPreflight, PersonApprovalPreflightRefusal, person_approval_preflight,
+};
 mod person_admission_plans;
 mod person_proof_repository;
 mod private_machine_revocation;

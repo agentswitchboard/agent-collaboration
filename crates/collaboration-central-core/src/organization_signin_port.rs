@@ -198,10 +198,15 @@ impl<H: CentralStore, S: WorkspaceStores> crate::WorkspaceRuntime<H, S> {
                 | PersonRequestRefusal::OrganizationMismatch,
             ) => return Ok(PersonApprovalAnswer::Unauthenticated),
         };
-        if &verified.proof().organization_id != organization {
+        if verified.organization() != organization {
             return Ok(PersonApprovalAnswer::Unauthenticated);
         }
 
+        #[cfg(feature = "test-support")]
+        self.execution
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::BeforePersonApprovalTurn)
+            .await;
         let turn = self.execution.take_central_turn().await;
         self.prepare_signin_authority().await?;
         let time = SyncTime::from_unix_millis(self.execution.now()?.timestamp_millis());
@@ -218,15 +223,29 @@ impl<H: CentralStore, S: WorkspaceStores> crate::WorkspaceRuntime<H, S> {
             .approval_deadline_completion
             .as_ref()
             .ok_or(StoreFailure::Unavailable)?;
-        let application = PersonApprovalApplication::new(organization, verified, time);
+        #[cfg(feature = "test-support")]
+        self.execution
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::BeforeSignInSample)
+            .await;
+        let application = PersonApprovalApplication::new(organization, verified);
         let (proof, applied) = application.commit(transactions).await?;
         #[cfg(feature = "test-support")]
         let reply_was_admitted = applied.is_admitted();
+        let publication_failure = applied.publication_failure();
         let (answer, offers) = applied.publish(&proof)?;
         drop(turn);
         if let Some(completion) = transactions.delivery_after_commit(offers) {
             schedule(completion);
         }
+        if let Some(reason) = publication_failure {
+            return Err(StoreFailure::AlarmUnpublishable { reason });
+        }
+        #[cfg(feature = "test-support")]
+        self.execution
+            .pause_points()
+            .reached_central(fleet_runtime::PausePoint::AfterPersonApprovalCommit)
+            .await;
         #[cfg(feature = "test-support")]
         if reply_was_admitted
             && operation_id

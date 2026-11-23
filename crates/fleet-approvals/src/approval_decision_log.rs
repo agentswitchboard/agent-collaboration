@@ -158,7 +158,7 @@ impl ApprovalDecisionLogKey {
     }
 }
 
-fn retained_answer_matches(
+pub(crate) fn retained_answer_matches(
     state: &ApprovalState,
     expected_answer: &Answer,
     recipient: &DecidedBy,

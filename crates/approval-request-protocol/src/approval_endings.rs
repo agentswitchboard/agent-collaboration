@@ -188,8 +188,6 @@ pub enum InvalidApprovalEnding {
     Answer(InvalidAnswer),
     #[error("this actor cannot give the selected approval decision")]
     IneligibleDecider,
-    #[error("the decision requires a fresh person factor")]
-    FreshFactorRequired,
     #[error("the destination is not a current member of this request")]
     DestinationNotAdmitted,
     #[error("the retained decision does not match the admitted decision operation")]

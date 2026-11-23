@@ -1,8 +1,7 @@
 use approval_request_protocol::{
-    AdmittedDestination, Answer, CallCancellation, CallStopCause, DecidedBy, DecisionFactor,
-    DeliverEndingReply, DeliverEndingRequest, Ending, HolderStopCause, InvalidApprovalEnding,
-    ParkedCallEnding, PrivateEnding, Raise, RegisterRunReply, SessionCallDecision, StopReply,
-    StopRequest,
+    AdmittedDestination, Answer, CallCancellation, CallStopCause, DecidedBy, DeliverEndingReply,
+    DeliverEndingRequest, Ending, HolderStopCause, InvalidApprovalEnding, ParkedCallEnding,
+    PrivateEnding, Raise, RegisterRunReply, SessionCallDecision, StopReply, StopRequest,
 };
 use state_machine_core::{StateMachine, TransitionError};
 use switchboard_approval_holder::waiting_request::{LinkAttemptDisposition, LinkCallAnswer};
@@ -49,12 +48,7 @@ fn decision_frame(
     };
     let admitted =
         AdmittedDestination::for_request(raise, &person, std::slice::from_ref(&person)).unwrap();
-    let decision_proof = admitted
-        .decide(
-            Answer::UnprovenCall { decision },
-            DecisionFactor::FreshPersonFactor,
-        )
-        .unwrap();
+    let decision_proof = admitted.decide(Answer::UnprovenCall { decision }).unwrap();
     let frame = DeliverEndingRequest::from_decision(raise, decision_proof).unwrap();
     (
         frame,

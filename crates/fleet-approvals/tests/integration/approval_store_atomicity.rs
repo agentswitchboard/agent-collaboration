@@ -4,7 +4,7 @@ use approval_request_protocol::{
 use central_storage::StoreFailure;
 use fleet_approvals::{
     ApprovalApplyFailure, ApprovalHolderCommand, ApprovalHolderReply, ApprovalHolderScope,
-    ApprovalRun, FactorStanding, MAX_OUTSTANDING_PER_RUN,
+    ApprovalRun, MAX_OUTSTANDING_PER_RUN,
 };
 
 use super::{
@@ -62,7 +62,7 @@ async fn first_raise_forward_decide_delivery_and_run_replacement_roll_back_at_ev
         store
             .fixture_decide_approval(
                 &holder.organization_id,
-                person(11, FactorStanding::Fresh),
+                person(11),
                 decide_input(&request.request_id, 101, 1),
             )
             .await

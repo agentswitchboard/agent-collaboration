@@ -9,9 +9,9 @@ use axum::{
     Json, Router,
     body::Bytes,
     extract::{State, rejection::JsonRejection},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, Method, StatusCode},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::{any, post},
 };
 use fleet_contracts::AuthorizationRevisionFailure;
 use fleet_contracts::{
@@ -67,10 +67,17 @@ pub fn organization_signin_router<Port: OrganizationSignInPort>(port: Arc<Port>)
         let port = port.clone();
         router = router.route(
             route.path(),
-            post(move |headers: HeaderMap, body: Bytes| {
+            any(move |method: Method, headers: HeaderMap, body: Bytes| {
                 let port = port.clone();
                 async move {
-                    crate::person_approval_http::forward(port.as_ref(), route, headers, body).await
+                    crate::person_approval_http::forward(
+                        port.as_ref(),
+                        route,
+                        method,
+                        headers,
+                        body,
+                    )
+                    .await
                 }
             }),
         );

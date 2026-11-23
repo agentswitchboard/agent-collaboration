@@ -1,6 +1,6 @@
 {
   "db_name": "SQLite",
-  "query": "SELECT approval_destination_id, approval_row_id, organization_id, destination_kind,\n       session_machine_id, session_enrollment_id, session_id, raised_notice_at,\n       created_at, updated_at\nFROM approval_request_destinations\nWHERE approval_row_id = ?1\nORDER BY approval_destination_id\nLIMIT 3\n",
+  "query": "SELECT approval_destination_id, approval_row_id, organization_id, request_id, destination_kind,\n       session_machine_id, session_enrollment_id, session_id, raised_notice_at,\n       created_at, updated_at\nFROM approval_request_destinations\nWHERE approval_row_id = ?1\nORDER BY approval_destination_id\nLIMIT 3\n",
   "describe": {
     "columns": [
       {
@@ -37,8 +37,19 @@
         }
       },
       {
-        "name": "destination_kind",
+        "name": "request_id",
         "ordinal": 3,
+        "type_info": "Text",
+        "origin": {
+          "Table": {
+            "table": "approval_request_destinations",
+            "name": "request_id"
+          }
+        }
+      },
+      {
+        "name": "destination_kind",
+        "ordinal": 4,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -49,7 +60,7 @@
       },
       {
         "name": "session_machine_id",
-        "ordinal": 4,
+        "ordinal": 5,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -60,7 +71,7 @@
       },
       {
         "name": "session_enrollment_id",
-        "ordinal": 5,
+        "ordinal": 6,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -71,7 +82,7 @@
       },
       {
         "name": "session_id",
-        "ordinal": 6,
+        "ordinal": 7,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -82,7 +93,7 @@
       },
       {
         "name": "raised_notice_at",
-        "ordinal": 7,
+        "ordinal": 8,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -93,7 +104,7 @@
       },
       {
         "name": "created_at",
-        "ordinal": 8,
+        "ordinal": 9,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -104,7 +115,7 @@
       },
       {
         "name": "updated_at",
-        "ordinal": 9,
+        "ordinal": 10,
         "type_info": "Text",
         "origin": {
           "Table": {
@@ -122,6 +133,7 @@
       false,
       false,
       false,
+      false,
       true,
       true,
       true,
@@ -130,5 +142,5 @@
       false
     ]
   },
-  "hash": "5dab45c1441164d5c7a55147231c779614426e0a1fb700a9af0da4d30fedb081"
+  "hash": "a7121618d5ca63ad4a536b47da4f55dd747ff7da0e14b8f88d401cc39383bc41"
 }

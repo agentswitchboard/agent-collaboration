@@ -25,6 +25,11 @@ mod holder_commands;
 mod person_commands;
 #[path = "approval_store_person_decide.rs"]
 mod person_decide;
+#[path = "approval_store_signed_person.rs"]
+mod signed_person;
+pub use signed_person::{
+    PersonApprovalStoreOutput, PersonApprovalStoreReply, apply_person_command,
+};
 #[path = "approval_store_run_commands.rs"]
 mod run_commands;
 

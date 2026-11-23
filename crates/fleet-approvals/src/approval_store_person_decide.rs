@@ -11,10 +11,9 @@ use fleet_request_log::{
 };
 use fleet_runtime_ports::{stored_values::json, workspace_decode_error::corrupt};
 use fleet_signin::{
-    ApprovalPersonAdmission, FactorStanding as PersonFactorStanding, VerifiedApprovalDecideRetry,
+    ApprovalPersonAdmission, VerifiedApprovalDecideRetry,
     approval_person_wire::{
-        ApprovalDecideReply, ApprovalDecideRequest, ApprovalFactorWindow, ApprovalInvalidReason,
-        ApprovalPersonOperation,
+        ApprovalDecideReply, ApprovalDecideRequest, ApprovalInvalidReason, ApprovalPersonOperation,
     },
 };
 use workspace_ids::RequestId;
@@ -26,15 +25,17 @@ use super::{
 use crate::{
     AdmittedDecider, ApprovalDecideInput, ApprovalDecisionReply, ApprovalEvent,
     ApprovalPersonStoreTransaction, ApprovalReceipt, ApprovalReplyAddress, ApprovalState,
-    EndedApproval, FactorStanding, PendingApprovalReply,
+    EndedApproval, PendingApprovalReply,
+    approval_decision_log::retained_answer_matches,
     approval_store_reads::{ApprovalReadRecord, read_people_approval_request},
+    approval_store_transaction::ApprovalStoreTransaction,
 };
 
 impl<Transaction, Sessions> ApprovalApplyingStore<'_, Transaction, Sessions>
 where
     Transaction: ApprovalPersonStoreTransaction,
 {
-    pub async fn replay_person_decision(
+    pub(super) async fn replay_person_decision(
         &mut self,
         retry: &VerifiedApprovalDecideRetry<'_>,
         retained_at: CentralTime,
@@ -54,7 +55,8 @@ where
         {
             return Ok(None);
         }
-        let reply = decode_retained_decision(&stored, request, retry.person())?;
+        let reply =
+            decode_retained_decision(self.transaction, &stored, request, retry.person()).await?;
         let address = ApprovalReplyAddress::Person {
             organization: request.organization.clone(),
             person: retry.person().clone(),
@@ -65,7 +67,7 @@ where
         )))
     }
 
-    pub async fn decide_person_request(
+    pub(super) async fn decide_person_request(
         &mut self,
         admission: &ApprovalPersonAdmission,
         request: ApprovalDecideRequest,
@@ -91,7 +93,8 @@ where
                 .await?;
             let reply = if actor.as_ref() == Some(&stored.caller) && digest == stored.content_digest
             {
-                decode_retained_decision(&stored, &request, admission.person())?
+                decode_retained_decision(self.transaction, &stored, &request, admission.person())
+                    .await?
             } else {
                 ApprovalDecideReply::OperationConflict {}
             };
@@ -100,20 +103,29 @@ where
 
         let at = self.sample_applying_time()?;
         let applied = self.apply_person_decision(admission, &request, at).await?;
-        if !matches!(applied.reply, ApprovalDecideReply::FactorRequired { .. }) {
-            let caller = self
-                .transaction
-                .resolve_person_actor(admission, at, self.row_ids)
-                .await?;
-            for write in retain_organization_request(
-                &request.operation_id,
-                &caller,
-                &digest,
-                &applied.reply,
-                &retained_at.to_rfc3339(),
-                &strict_cutoff(retained_at).to_rfc3339(),
-            )? {
-                self.execute_guarded_write(write).await?;
+        match &applied.reply {
+            ApprovalDecideReply::SavedDecision { .. }
+            | ApprovalDecideReply::AlreadyDecided { .. }
+            | ApprovalDecideReply::TooLate {}
+            | ApprovalDecideReply::Invalid { .. }
+            | ApprovalDecideReply::NotVisible {} => {
+                let caller = self
+                    .transaction
+                    .resolve_person_actor(admission, at, self.row_ids)
+                    .await?;
+                for write in retain_organization_request(
+                    &request.operation_id,
+                    &caller,
+                    &digest,
+                    &applied.reply,
+                    &retained_at.to_rfc3339(),
+                    &strict_cutoff(retained_at).to_rfc3339(),
+                )? {
+                    self.execute_guarded_write(write).await?;
+                }
+            }
+            ApprovalDecideReply::OperationConflict {} => {
+                return Err(corrupt("approval_store.fresh_decide_conflict").into());
             }
         }
         Ok(self.stage_reply(address, applied))
@@ -195,10 +207,6 @@ where
             .ok_or_else(|| corrupt("approval_store.waiting"))?;
         let decider = AdmittedDecider::Person {
             person_id: admission.person().clone(),
-            factor: match admission.factor() {
-                PersonFactorStanding::FreshWithin15Minutes { .. } => FactorStanding::Fresh,
-                PersonFactorStanding::NotFresh => FactorStanding::AbsentOrStale,
-            },
         };
         let recipient = decider.actor().identity();
         let destination = AdmittedDestination::for_request(
@@ -207,7 +215,7 @@ where
             std::slice::from_ref(&recipient),
         )
         .map_err(|_| corrupt("approval_store.person_destination"))?;
-        if let Err(reason) = destination.decide(request.answer.clone(), decider.decision_factor()) {
+        if let Err(reason) = destination.decide(request.answer.clone()) {
             return Ok(ApprovalTransitionOutput::with_reply(invalid_reply(reason)));
         }
 
@@ -228,18 +236,41 @@ where
                 at,
             )
             .await?;
-        let Some(ApprovalReceipt::Decide(reply)) = &applied.reply else {
-            return Err(corrupt("approval_store.person_decide_reply").into());
+        let reply = match &applied.reply {
+            Some(ApprovalReceipt::Decide(reply)) => reply,
+            None
+            | Some(
+                ApprovalReceipt::Raise(_)
+                | ApprovalReceipt::Read(_)
+                | ApprovalReceipt::PassOn(_)
+                | ApprovalReceipt::Stop(_),
+            ) => return Err(corrupt("approval_store.person_decide_receipt").into()),
         };
         let reply = reply
             .for_recipient(&saved.key, &recipient)
             .map_err(|_| corrupt("approval_store.person_decide_recipient"))?;
-        let ApprovalDecisionReply::SavedDecision { answer, by } = reply else {
-            return Err(corrupt("approval_store.person_decide_reply").into());
-        };
-        let decision = GiverDecision {
-            answer: answer.clone(),
-            by: by.clone(),
+        // The request is visible and waiting, its deadline has not passed,
+        // and the answer has passed validation.
+        let decision = match reply {
+            ApprovalDecisionReply::SavedDecision { answer, by } => GiverDecision {
+                answer: answer.clone(),
+                by: by.clone(),
+            },
+            ApprovalDecisionReply::Standing { .. } => {
+                return Err(corrupt("approval_store.person_decide_standing").into());
+            }
+            ApprovalDecisionReply::NotVisible {} => {
+                return Err(corrupt("approval_store.person_decide_visibility").into());
+            }
+            ApprovalDecisionReply::Invalid {} => {
+                return Err(corrupt("approval_store.person_decide_admitted_answer").into());
+            }
+            ApprovalDecisionReply::TooLate {} => {
+                return Err(corrupt("approval_store.person_decide_deadline").into());
+            }
+            ApprovalDecisionReply::OperationConflict {} => {
+                return Err(corrupt("approval_store.person_decide_reducer_conflict").into());
+            }
         };
         Ok(applied.replace_reply(ApprovalDecideReply::SavedDecision { decision }))
     }
@@ -247,9 +278,6 @@ where
 
 fn invalid_reply(reason: InvalidApprovalEnding) -> ApprovalDecideReply {
     match reason {
-        InvalidApprovalEnding::FreshFactorRequired => ApprovalDecideReply::FactorRequired {
-            within_seconds: ApprovalFactorWindow,
-        },
         InvalidApprovalEnding::Answer(reason) => ApprovalDecideReply::Invalid {
             reason: ApprovalInvalidReason::InvalidAnswer { reason },
         },
@@ -277,7 +305,8 @@ fn ended_reply(closed: &EndedApproval) -> ApprovalDecideReply {
     }
 }
 
-fn decode_retained_decision(
+async fn decode_retained_decision(
+    transaction: &mut impl ApprovalStoreTransaction,
     stored: &RetainedRequest,
     request: &ApprovalDecideRequest,
     person: &workspace_ids::PersonId,
@@ -288,16 +317,45 @@ fn decode_retained_decision(
             if decision.answer != request.answer
                 || !matches!(&decision.by, DecidedBy::Person { person_id } if person_id == person)
             {
-                return Err(corrupt("runtime_request_log.answer"));
+                return Err(invalid_retained_decision());
+            }
+            let record = retained_person_approval(transaction, request).await?;
+            let ApprovalState::Ended { closed, .. } = &record.state else {
+                return Err(invalid_retained_decision());
+            };
+            if closed.decided_operation_id.as_ref() != Some(&request.operation_id)
+                || !retained_answer_matches(&record.state, &decision.answer, &decision.by)
+            {
+                return Err(invalid_retained_decision());
             }
         }
-        ApprovalDecideReply::AlreadyDecided { .. }
-        | ApprovalDecideReply::TooLate {}
-        | ApprovalDecideReply::Invalid { .. }
-        | ApprovalDecideReply::NotVisible {} => {}
-        ApprovalDecideReply::FactorRequired { .. } | ApprovalDecideReply::OperationConflict {} => {
-            return Err(corrupt("runtime_request_log.answer"));
+        ApprovalDecideReply::AlreadyDecided { .. } | ApprovalDecideReply::TooLate {} => {
+            let record = retained_person_approval(transaction, request).await?;
+            let ApprovalState::Ended { closed, .. } = &record.state else {
+                return Err(invalid_retained_decision());
+            };
+            if ended_reply(closed) != reply {
+                return Err(invalid_retained_decision());
+            }
+        }
+        // Historical refusals are replayed even if later operations change the request.
+        ApprovalDecideReply::Invalid { .. } | ApprovalDecideReply::NotVisible {} => {}
+        ApprovalDecideReply::OperationConflict {} => {
+            return Err(invalid_retained_decision());
         }
     }
     Ok(reply)
+}
+
+async fn retained_person_approval(
+    transaction: &mut impl ApprovalStoreTransaction,
+    request: &ApprovalDecideRequest,
+) -> Result<ApprovalReadRecord, StoreFailure> {
+    read_people_approval_request(transaction, &request.organization, &request.request_id)
+        .await?
+        .ok_or_else(invalid_retained_decision)
+}
+
+fn invalid_retained_decision() -> StoreFailure {
+    corrupt("runtime_request_log.answer")
 }

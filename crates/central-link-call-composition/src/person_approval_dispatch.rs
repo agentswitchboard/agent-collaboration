@@ -25,7 +25,8 @@ impl<Transactions, Approvals, Db> PersonApprovalTransactions
 where
     Transactions: OrganizationSessionTransactions,
     Approvals: OrganizationApprovalTransactions,
-    for<'connection> Approvals::Transaction<'connection>: CentralTransaction<Database = Db>,
+    for<'connection> Approvals::Transaction<'connection>:
+        CentralTransaction<Database = Db> + fleet_signin::ApprovalPersonTransaction,
     Db: Database,
     Db::Arguments: IntoArguments<Db>,
     String: Type<Db> + for<'query> Encode<'query, Db> + for<'row> Decode<'row, Db>,
@@ -43,11 +44,13 @@ where
         let organization = application.organization().clone();
 
         Box::pin(async move {
-            self.approvals
+            let publication = std::sync::Arc::new(std::sync::OnceLock::new());
+            let applied = self
+                .approvals
                 .transactions
                 .apply_approval(
                     organization,
-                    ApprovalAlarmPublication::WithCommit,
+                    ApprovalAlarmPublication::WithPersonCommit(publication.clone()),
                     move |loan| {
                         Box::pin(async move {
                             application
@@ -58,7 +61,8 @@ where
                     },
                 )
                 .await
-                .map_err(person_approval_transaction_failure)
+                .map_err(person_approval_transaction_failure)?;
+            Ok(applied.with_publication_failure(publication.get().copied()))
         })
     }
 

@@ -250,13 +250,6 @@ impl ObjectStorage {
             ..
         } = &mut outcome
         {
-            #[cfg(feature = "test-support")]
-            if let AlarmPublication::Failed { reason } = &publication {
-                self.publication_failures
-                    .lock()
-                    .unwrap_or_else(std::sync::PoisonError::into_inner)
-                    .push(*reason);
-            }
             *receipt = publication;
         }
         #[cfg(feature = "test-support")]
@@ -298,7 +291,14 @@ impl ObjectStorage {
         match decide() {
             Ok(None) => AlarmPublication::Cleared,
             Ok(Some(unix_millis)) => AlarmPublication::Set { unix_millis },
-            Err(reason) => AlarmPublication::Failed { reason },
+            Err(reason) => {
+                #[cfg(feature = "test-support")]
+                self.publication_failures
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .push(reason);
+                AlarmPublication::Failed { reason }
+            }
         }
     }
 

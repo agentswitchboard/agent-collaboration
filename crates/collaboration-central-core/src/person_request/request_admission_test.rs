@@ -286,8 +286,8 @@ fn corrupt_floor_domain_values_are_rejected() {
 
 #[test]
 fn persisted_floor_rows_fail_closed_on_wrong_storage_types_and_pair_binding() {
-    use crate::authorization_floor_rows::{decode_organization_floor, decode_person_floor};
     use central_storage::{ReadOutcome, SafeInteger, SqlValue};
+    use fleet_signin::authorization_floor_store::{decode_organization_floor, decode_person_floor};
     let number = |value| SqlValue::Integer(SafeInteger::new(value).unwrap());
     let text = |value: &str| SqlValue::Text(value.to_owned());
     let organization = ReadOutcome {

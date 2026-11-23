@@ -253,19 +253,11 @@ pub(super) fn invalid_specimens() -> Vec<(&'static str, WireSpecimen)> {
             ),
         ),
         (
-            "ApprovalDecideReply",
-            wire_specimen(
-                "C3 factor window as text",
-                Serialize,
-                json!({"kind":"factorRequired","withinSeconds":"900"}),
-            ),
-        ),
-        (
             "FleetPermission",
             wire_specimen(
-                "engine repair is not an issued Fleet permission",
+                "unknown organization permission",
                 Deserialize,
-                json!("organization:repairWork"),
+                json!("organization:unknown"),
             ),
         ),
     ])

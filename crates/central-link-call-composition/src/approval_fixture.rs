@@ -13,7 +13,7 @@ use collaboration_central_core::{
 use fleet_approvals::{
     ActorApprovalSessionFacts, AdmittedDecider, ApprovalActor, ApprovalCommitScope,
     ApprovalDecideInput, ApprovalDecisionReply, ApprovalEnrollmentScope,
-    ApprovalEnrollmentStanding, ApprovalReplyAddress, ApprovalStoreTransaction, FactorStanding,
+    ApprovalEnrollmentStanding, ApprovalReplyAddress, ApprovalStoreTransaction,
     PendingApprovalHolderEffects, PendingApprovalReply,
 };
 use fleet_identity_protocol::OrganizationId;
@@ -120,7 +120,6 @@ where
                 &organization,
                 AdmittedDecider::Person {
                     person_id: decision.person_id,
-                    factor: FactorStanding::Fresh,
                 },
                 ApprovalDecideInput {
                     request_id: decision.request_id,

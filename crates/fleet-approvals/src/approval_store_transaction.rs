@@ -4,7 +4,7 @@ use central_engine_model::{EngineTime, IdSource};
 use central_storage::{ReadOutcome, Statement, StoreFailure};
 use fleet_identity_protocol::OrganizationId;
 use fleet_lent_transaction::OrganizationTransaction;
-use fleet_signin::ApprovalPersonAdmission;
+use fleet_signin::{ApprovalPersonAdmission, ApprovalPersonTransaction};
 use sqlx_core::{
     arguments::IntoArguments, column::ColumnIndex, database::Database, decode::Decode,
     encode::Encode, types::Type,
@@ -47,7 +47,9 @@ pub trait ApprovalStoreTransaction: OrganizationTransaction + Send {
 }
 
 /// A C3 applying transaction can reach the actor owner's existing person mapping.
-pub trait ApprovalPersonStoreTransaction: ApprovalStoreTransaction {
+pub trait ApprovalPersonStoreTransaction:
+    ApprovalStoreTransaction + ApprovalPersonTransaction
+{
     fn find_person_actor(
         &mut self,
         person: &PersonId,
@@ -63,7 +65,7 @@ pub trait ApprovalPersonStoreTransaction: ApprovalStoreTransaction {
 
 impl<Transaction> ApprovalPersonStoreTransaction for Transaction
 where
-    Transaction: ApprovalStoreTransaction + Send,
+    Transaction: ApprovalStoreTransaction + ApprovalPersonTransaction,
     <Transaction::Database as Database>::Arguments: IntoArguments<Transaction::Database>,
     String: Type<Transaction::Database>
         + for<'query> Encode<'query, Transaction::Database>

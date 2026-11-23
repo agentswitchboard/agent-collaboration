@@ -38,43 +38,29 @@ pub(super) fn text(value: impl ToString) -> SqlValue {
 #[derive(Clone, Copy)]
 pub enum AnswerClass {
     Once,
-    Turn,
-    Session,
     Question,
     KeptUntilChanged,
+    LastingDecline,
+    LastingAbort,
     UnverifiedLifetime,
     HeldStartAllow,
-    HeldStartDecline,
-    HeldEndAllow,
     HeldEndDecline,
 }
 
 impl AnswerClass {
-    pub(super) const fn requires_factor(self) -> bool {
-        match self {
-            Self::Once | Self::Turn | Self::Session | Self::Question => false,
-            Self::KeptUntilChanged
-            | Self::UnverifiedLifetime
-            | Self::HeldStartAllow
-            | Self::HeldStartDecline
-            | Self::HeldEndAllow
-            | Self::HeldEndDecline => true,
-        }
-    }
-
     pub(super) fn answer(self) -> Value {
         match self {
             Self::Once => json!({"kind":"approval","optionId":1}),
-            Self::Turn => json!({"kind":"approval","optionId":3}),
-            Self::Session => json!({"kind":"approval","optionId":4}),
             Self::KeptUntilChanged => json!({"kind":"approval","optionId":5}),
             Self::UnverifiedLifetime => json!({"kind":"approval","optionId":6}),
+            Self::LastingDecline => json!({"kind":"approval","optionId":8}),
+            Self::LastingAbort => json!({"kind":"approval","optionId":9}),
             Self::Question => json!({"kind":"question","answer":{"kind":"answered",
                 "fields":[{"fieldId":1,"value":{"kind":"boolean","value":true}}]}}),
-            Self::HeldStartAllow | Self::HeldEndAllow => {
+            Self::HeldStartAllow => {
                 json!({"kind":"unprovenCall","decision":"allow"})
             }
-            Self::HeldStartDecline | Self::HeldEndDecline => {
+            Self::HeldEndDecline => {
                 json!({"kind":"unprovenCall","decision":"decline"})
             }
         }
@@ -84,9 +70,9 @@ impl AnswerClass {
         let provider = json!({"routerRun":ROUTER_RUN, "sessionId":HOLDER});
         let shape = match self {
             Self::Once
-            | Self::Turn
-            | Self::Session
             | Self::KeptUntilChanged
+            | Self::LastingDecline
+            | Self::LastingAbort
             | Self::UnverifiedLifetime => {
                 json!({"kind":"providerApproval","requestId":request_id,"holder":provider,"offer":{
                     "title":"Read the plan","description":"Private offer details","subject":null,
@@ -96,7 +82,9 @@ impl AnswerClass {
                         {"id":3,"label":"This turn","effect":"allow","lasts":{"kind":"thisTurn","kept":"agentMemory"}},
                         {"id":4,"label":"This session","effect":"allow","lasts":{"kind":"thisSession","kept":"agentMemory"}},
                         {"id":5,"label":"Always","effect":"allow","lasts":{"kind":"keptUntilChanged","kept":"agentRulesFile"}},
-                        {"id":6,"label":"Provider default","effect":"allow","lasts":{"kind":"notVerified"}}
+                        {"id":6,"label":"Provider default","effect":"allow","lasts":{"kind":"notVerified"}},
+                        {"id":8,"label":"Remember decline","effect":"decline","lasts":{"kind":"keptUntilChanged","kept":"agentRulesFile"}},
+                        {"id":9,"label":"Remember abort","effect":"abort","lasts":{"kind":"keptUntilChanged","kept":"agentRulesFile"}}
                     ]
                 }})
             }
@@ -105,23 +93,20 @@ impl AnswerClass {
                 "offer":{"prompt":"Private question","fields":[{"kind":"boolean","fieldId":1,
                     "label":"Continue","description":null,"required":true}]}})
             }
-            Self::HeldStartAllow
-            | Self::HeldStartDecline
-            | Self::HeldEndAllow
-            | Self::HeldEndDecline => {
+            Self::HeldStartAllow | Self::HeldEndDecline => {
                 let operation = match self {
-                    Self::HeldStartAllow | Self::HeldStartDecline => json!({
+                    Self::HeldStartAllow => json!({
                         "kind":"startSession","agentProgram":"claude","workingFolder":"/workspace",
                         "mode":"default","workFolders":[]
                     }),
-                    Self::HeldEndAllow | Self::HeldEndDecline => {
+                    Self::HeldEndDecline => {
                         json!({"kind":"endSessionForGood","sessionId":HOLDER})
                     }
                     Self::Once
-                    | Self::Turn
-                    | Self::Session
                     | Self::Question
                     | Self::KeptUntilChanged
+                    | Self::LastingDecline
+                    | Self::LastingAbort
                     | Self::UnverifiedLifetime => {
                         return Err("expected a held call".into());
                     }
@@ -141,6 +126,7 @@ pub(super) enum InitialApproval {
     Waiting,
     Hidden,
     PastDeadline,
+    DeadlineInOneSecond,
     Cancelled,
 }
 
@@ -150,15 +136,27 @@ pub(super) async fn seed(
     class: AnswerClass,
     initial: InitialApproval,
 ) -> ConformanceResult<String> {
+    seed_in_organization(host, ORGANIZATION, serial, class, initial).await
+}
+
+pub(super) async fn seed_in_organization(
+    host: &impl PersonApprovalHarness,
+    organization: &str,
+    serial: u32,
+    class: AnswerClass,
+    initial: InitialApproval,
+) -> ConformanceResult<String> {
     let request_id = id(serial);
     let row_id = id(1000 + serial);
     let destination_id = id(2000 + serial);
     let raise = class.raise(&request_id)?;
-    let raised = time(if matches!(initial, InitialApproval::PastDeadline) {
-        -3600
-    } else {
-        -10
-    })?;
+    let raised = match initial {
+        InitialApproval::PastDeadline => time(-3600)?,
+        InitialApproval::DeadlineInOneSecond => time(-3599)?,
+        InitialApproval::Waiting | InitialApproval::Hidden | InitialApproval::Cancelled => {
+            time(-10)?
+        }
+    };
     let window = ApprovalWindow::from_first_save(raised)?;
     let (state, ended_at, ending, delivery) = match initial {
         InitialApproval::Cancelled => (
@@ -174,7 +172,10 @@ pub(super) async fn seed(
             )?)?),
             text("closed_without_receipt"),
         ),
-        InitialApproval::Waiting | InitialApproval::Hidden | InitialApproval::PastDeadline => {
+        InitialApproval::Waiting
+        | InitialApproval::Hidden
+        | InitialApproval::PastDeadline
+        | InitialApproval::DeadlineInOneSecond => {
             ("waiting", SqlValue::Null, SqlValue::Null, SqlValue::Null)
         }
     };
@@ -193,7 +194,7 @@ pub(super) async fn seed(
           record_state,request_kind,holder_session_id,offer_json,invocation_digest,waiting_status,
           first_saved_at,deadline_ms,ended_at,ending_json,delivery_state,created_at,updated_at)
          VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,'pending',?13,?14,?15,?16,?17,?13,COALESCE(?15,?13))",
-        vec![text(&row_id), text(ORGANIZATION), text(MACHINE), text(ENROLLMENT), text(ROUTER_RUN),
+        vec![text(&row_id), text(organization), text(MACHINE), text(ENROLLMENT), text(ROUTER_RUN),
             text(&request_id), text(raise.contents_digest()?.as_str()), text(state), text(kind),
             raise.requesting_session().map_or(SqlValue::Null, |id|text(id.as_str())),
             text(serde_json::to_string(&raise.offer_view())?), invocation,
@@ -203,18 +204,18 @@ pub(super) async fn seed(
     if matches!(initial, InitialApproval::Hidden) {
         host.write(
             "INSERT INTO approval_request_destinations
-             (approval_destination_id,approval_row_id,organization_id,destination_kind,session_machine_id,
+             (approval_destination_id,approval_row_id,organization_id,request_id,destination_kind,session_machine_id,
               session_enrollment_id,session_id,raised_notice_at,created_at,updated_at)
-             VALUES (?1,?2,?3,'parent_session',?4,?5,?6,?7,?7,?7)",
-            vec![text(destination_id),text(row_id),text(ORGANIZATION),text(MACHINE),text(ENROLLMENT),
+             VALUES (?1,?2,?3,?4,'parent_session',?5,?6,?7,?8,?8,?8)",
+            vec![text(destination_id),text(row_id),text(organization),text(&request_id),text(MACHINE),text(ENROLLMENT),
                  text(PARENT),text(stored_time(raised))],
         ).await?;
     } else {
         host.write(
             "INSERT INTO approval_request_destinations
-             (approval_destination_id,approval_row_id,organization_id,destination_kind,created_at,updated_at)
-             VALUES (?1,?2,?3,'people',?4,?4)",
-            vec![text(destination_id),text(row_id),text(ORGANIZATION),text(stored_time(raised))],
+             (approval_destination_id,approval_row_id,organization_id,request_id,destination_kind,created_at,updated_at)
+             VALUES (?1,?2,?3,?4,'people',?5,?5)",
+            vec![text(destination_id),text(row_id),text(organization),text(&request_id),text(stored_time(raised))],
         ).await?;
     }
     Ok(request_id)

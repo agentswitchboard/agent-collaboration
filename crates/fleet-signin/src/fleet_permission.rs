@@ -28,4 +28,5 @@ fleet_permissions! {
     ViewOrganization => "organization:view",
     ReadOrganizationAudit => "organization:readAudit",
     DecideApproval => "approval:decide",
+    RepairWork => "organization:repairWork",
 }

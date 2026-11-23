@@ -11,7 +11,6 @@
     "{\"decision\":{\"answer\":{\"decision\":\"allow\",\"kind\":\"unprovenCall\"},\"by\":{\"kind\":\"person\",\"personId\":\"019a3dce-2000-7000-8000-000000000005\"}},\"kind\":\"savedDecision\"}",
     "{\"at\":\"2026-11-23T12:15:00Z\",\"by\":{\"kind\":\"person\",\"personId\":\"019a3dce-2000-7000-8000-000000000005\"},\"kind\":\"alreadyDecided\"}",
     "{\"kind\":\"tooLate\"}",
-    "{\"kind\":\"factorRequired\",\"withinSeconds\":900}",
     "{\"kind\":\"invalid\",\"reason\":{\"kind\":\"invalidAnswer\",\"reason\":{\"kind\":\"wrongKind\"}}}",
     "{\"kind\":\"invalid\",\"reason\":{\"kind\":\"invalidApprovalEnding\",\"reason\":{\"kind\":\"bindingMismatch\"}}}",
     "{\"kind\":\"notVisible\"}",

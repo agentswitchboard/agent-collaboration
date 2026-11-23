@@ -295,6 +295,7 @@ fn decode_route(
         let updated_at = parse_stored_time(row.updated_at.stored_text()?, "updated_at")?;
         if row.approval_row_id.stored_text()? != row_id.as_str()
             || row.organization_id.stored_text()? != scope.organization_id.as_str()
+            || row.request_id.stored_text()? != raise.request_id().as_str()
             || created_at < window.raised_at()
             || updated_at < created_at
         {

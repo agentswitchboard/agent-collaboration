@@ -1,7 +1,7 @@
 use std::fmt;
 
 use approval_request_protocol::{
-    Answer, ApprovalWindow, CallStopCause, CentralTime, DecideRequest, DecidedBy, DecisionFactor,
+    Answer, ApprovalWindow, CallStopCause, CentralTime, DecideRequest, DecidedBy,
     DeliverEndingReply, DeliverEndingRequest, Delivery, EndingView, HolderStopCause, PassOnReply,
     ProviderStopCause, Raise, RaiseReply, RequestContentsDigest, RequestView, StopReply,
     StopRequest, WaitingStatus,
@@ -45,19 +45,10 @@ pub enum ApprovalRouting {
     Delegate { admitted_parent: ApprovalSession },
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FactorStanding {
-    Fresh,
-    AbsentOrStale,
-}
-
 /// The applying caller has already authenticated this actor.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AdmittedDecider {
-    Person {
-        person_id: PersonId,
-        factor: FactorStanding,
-    },
+    Person { person_id: PersonId },
     Session(ApprovalSession),
 }
 
@@ -68,20 +59,6 @@ pub enum ApprovalActor {
 }
 
 impl AdmittedDecider {
-    pub(crate) fn decision_factor(&self) -> DecisionFactor {
-        match self {
-            Self::Person {
-                factor: FactorStanding::Fresh,
-                ..
-            } => DecisionFactor::FreshPersonFactor,
-            Self::Person {
-                factor: FactorStanding::AbsentOrStale,
-                ..
-            }
-            | Self::Session(_) => DecisionFactor::NoFreshPersonFactor,
-        }
-    }
-
     pub(crate) fn actor(&self) -> ApprovalActor {
         match self {
             Self::Person { person_id, .. } => ApprovalActor::Person(person_id.clone()),

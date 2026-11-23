@@ -176,11 +176,7 @@ fn check_person_admission(
     {
         return Ok(Err(AdmissionRefusal::NotPermitted));
     }
-    if require_fresh_factor
-        && matches!(
-            FactorStanding::at(request.second_factor_at, now_ms),
-            FactorStanding::NotFresh
-        )
+    if require_fresh_factor && fresh_admin_second_factor(request.second_factor_at, now_ms).is_none()
     {
         return Ok(Err(AdmissionRefusal::SecondFactorRequired));
     }
@@ -243,30 +239,16 @@ pub fn admission_before_person(
     Ok(Ok(()))
 }
 
-/// Central's applying-time standing of the second factor carried by Sign-in.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub enum FactorStanding {
-    FreshWithin15Minutes { at: UnixSeconds },
-    NotFresh,
-}
-
-impl FactorStanding {
-    pub(crate) fn at(second_factor_at: Option<i64>, now_ms: i64) -> Self {
-        let Some(at) = second_factor_at.and_then(|seconds| UnixSeconds::try_from(seconds).ok())
-        else {
-            return Self::NotFresh;
-        };
-        let Some(age_ms) =
-            at.0.checked_mul(1000)
-                .and_then(|factor_ms| now_ms.checked_sub(factor_ms))
-        else {
-            return Self::NotFresh;
-        };
-        if (0..=SECOND_FACTOR_WINDOW_SECONDS * 1000).contains(&age_ms) {
-            Self::FreshWithin15Minutes { at }
-        } else {
-            Self::NotFresh
-        }
+// Existing admin step-up check. Person approval commands never require it.
+fn fresh_admin_second_factor(second_factor_at: Option<i64>, now_ms: i64) -> Option<UnixSeconds> {
+    let at = second_factor_at.and_then(|seconds| UnixSeconds::try_from(seconds).ok())?;
+    let age_ms =
+        at.0.checked_mul(1000)
+            .and_then(|factor_ms| now_ms.checked_sub(factor_ms))?;
+    if (0..=SECOND_FACTOR_WINDOW_SECONDS * 1000).contains(&age_ms) {
+        Some(at)
+    } else {
+        None
     }
 }
 

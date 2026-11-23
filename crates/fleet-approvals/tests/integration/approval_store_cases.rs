@@ -5,7 +5,6 @@ use central_storage::StoreFailure;
 use fleet_approvals::{
     AdmittedDecider, ApprovalApplyFailure, ApprovalDecideInput, ApprovalDecisionReply,
     ApprovalHolderCommand, ApprovalHolderReply, ApprovalHolderScope, ApprovalRun, ApprovalSession,
-    FactorStanding,
 };
 use fleet_identity_protocol::OrganizationId;
 use workspace_ids::ApprovalRequestId;
@@ -248,8 +247,8 @@ async fn simultaneous_decisions_commit_once_and_the_accepted_binding_replays_aft
     }
 
     fixture.clock.set_millis(1);
-    let first_actor = person(11, FactorStanding::Fresh);
-    let second_actor = person(12, FactorStanding::Fresh);
+    let first_actor = person(11);
+    let second_actor = person(12);
     let first_input = decide_input(&request.request_id, 101, 1);
     let second_input = decide_input(&request.request_id, 102, 2);
     let invalid_input = decide_input(&request.request_id, 103, 15);
@@ -439,7 +438,7 @@ async fn a_page_times_out_only_its_rows_and_held_alarms_cannot_restore_waiting()
             store
                 .fixture_decide_approval(
                     &holder.organization_id,
-                    person(11, FactorStanding::Fresh),
+                    person(11),
                     decide_input(&expired_first.request_id, 101, 1),
                 )
                 .await
@@ -505,7 +504,7 @@ async fn stored_kind_state_and_ending_are_rejected_by_the_public_read() {
             store
                 .fixture_decide_approval(
                     &holder.organization_id,
-                    person(11, FactorStanding::Fresh),
+                    person(11),
                     decide_input(&request.request_id, 101, 2),
                 )
                 .await

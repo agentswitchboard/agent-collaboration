@@ -8,7 +8,7 @@ use fleet_identity_protocol::OrganizationId;
 use serde::{Deserialize, Deserializer, Serialize};
 use workspace_ids::RequestId;
 
-use crate::person_proof::{PersonRequestRefusal, SECOND_FACTOR_WINDOW_SECONDS, sha256_url};
+use crate::person_proof::{PersonRequestRefusal, sha256_url};
 
 macro_rules! named_record {
     (struct $name:ident [$($serde_rules:tt)*] {
@@ -144,7 +144,6 @@ reply_union! {
         AlreadyDecided { by: DecidedBy, at: CentralTime },
         /// The request ended before this answer, through expiry or holder/provider closure.
         TooLate {},
-        FactorRequired { within_seconds: ApprovalFactorWindow },
         Invalid { reason: ApprovalInvalidReason },
         NotVisible {},
         OperationConflict {},
@@ -157,46 +156,6 @@ reply_union! {
         InvalidApprovalEnding { reason: InvalidApprovalEnding },
     }
 }
-
-/// The only factor window advertised by C3, measured in seconds.
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
-#[serde(try_from = "u16", into = "u16")]
-pub struct ApprovalFactorWindow;
-
-impl ApprovalFactorWindow {
-    const SECONDS: u16 = 900;
-}
-
-const _: () = assert!(ApprovalFactorWindow::SECONDS as i64 == SECOND_FACTOR_WINDOW_SECONDS);
-
-#[cfg(all(feature = "wire-export", not(target_arch = "wasm32")))]
-impl specta::Type for ApprovalFactorWindow {
-    fn definition(_: &mut specta::Types) -> specta::datatype::DataType {
-        specta_typescript::define(SECOND_FACTOR_WINDOW_SECONDS.to_string()).into()
-    }
-}
-
-impl TryFrom<u16> for ApprovalFactorWindow {
-    type Error = InvalidApprovalFactorWindow;
-
-    fn try_from(seconds: u16) -> Result<Self, Self::Error> {
-        if seconds == Self::SECONDS {
-            Ok(Self)
-        } else {
-            Err(InvalidApprovalFactorWindow)
-        }
-    }
-}
-
-impl From<ApprovalFactorWindow> for u16 {
-    fn from(_: ApprovalFactorWindow) -> Self {
-        ApprovalFactorWindow::SECONDS
-    }
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq, thiserror::Error)]
-#[error("invalid approval factor window")]
-pub struct InvalidApprovalFactorWindow;
 
 /// Selected by the private HTTP route before any request body is interpreted.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

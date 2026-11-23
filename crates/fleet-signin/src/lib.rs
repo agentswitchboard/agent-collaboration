@@ -3,14 +3,16 @@
 
 mod approval_person_admission;
 pub mod approval_person_wire;
+pub mod authorization_floor_store;
 mod fleet_permission;
+pub mod person_proof_store;
 
 pub use approval_person_admission::{
-    AdmittedApprovalPersonOperation, ApprovalApplyingContext, ApprovalPersonAdmission,
-    ApprovalPersonVerificationInput, VerifiedApprovalDecideRetry, VerifiedApprovalPersonRequest,
+    AdmittedApprovalCommand, AdmittedApprovalFacts, AdmittedApprovalPersonOperation,
+    ApprovalPersonAdmission, ApprovalPersonTransaction, ApprovalPersonVerificationInput,
+    RetainedDecisionRequest, VerifiedApprovalDecideRetry, VerifiedApprovalPersonRequest,
 };
 pub use fleet_permission::FleetPermission;
-pub use person_proof::FactorStanding;
 
 mod fence_revision;
 pub use fence_revision::{FenceRevision, FenceRevisionError};

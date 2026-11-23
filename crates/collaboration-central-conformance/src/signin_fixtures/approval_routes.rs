@@ -8,15 +8,21 @@ use crate::ConformanceResult;
 
 pub use super::{approval_harness::PersonApprovalHarness, approval_rows::AnswerClass};
 
+mod expanded_coverage;
 #[cfg(feature = "session-link-test-support")]
 mod holder_delivery;
 mod request;
+mod retained_cases;
+pub use expanded_coverage::{ClockBoundary, ExpandedCase, SignedMutation};
 #[cfg(feature = "session-link-test-support")]
 use request::decide_in_organization;
 use request::{READ, decide, list, read};
+pub use retained_cases::RetainedCase;
 
 #[cfg(feature = "session-link-test-support")]
-pub use holder_delivery::check_signed_holder_delivery;
+pub use holder_delivery::{
+    check_signed_holder_delivery, check_signed_holder_delivery_after_publication_failure,
+};
 
 const REVISIONS: &str = "/internal/organization-authorization-revisions";
 
@@ -33,11 +39,12 @@ pub enum Case {
     AlreadyDecided,
     InvalidAnswer,
     Replay(ReplayCase),
+    Expanded(ExpandedCase),
+    Retained(RetainedCase),
     BadAddress,
     Authentication(AuthenticationCase),
     ReplayedProof,
     Admission(AdmissionCase),
-    Factor { answer: AnswerClass, fresh: bool },
 }
 
 pub enum ReplayCase {
@@ -363,53 +370,10 @@ pub async fn check(host: &impl PersonApprovalHarness, case: Case) -> Conformance
             )?;
             assert_count(host, "SELECT COUNT(*) FROM admin_used_requests", 0).await?;
         }
-        Case::Factor { answer, fresh } => check_factor(host, owner, answer, fresh).await?,
+        Case::Expanded(case) => expanded_coverage::check_expanded(host, owner, case).await?,
+        Case::Retained(case) => retained_cases::run_retained_case(host, &owner, case).await?,
     }
     Ok(())
-}
-
-async fn check_factor(
-    host: &impl PersonApprovalHarness,
-    mut owner: Person,
-    class: AnswerClass,
-    fresh: bool,
-) -> ConformanceResult<()> {
-    let request = seed(host, 10, class, InitialApproval::Waiting).await?;
-    let operation = id(100);
-    owner.second_factor_at = Some(NOW_SECONDS - if fresh { 900 } else { 901 });
-    let answer = class.answer();
-    let call = decide(&request, &operation, &answer);
-    let reply = call.send(host, &owner).await?;
-    if class.requires_factor() && !fresh {
-        expect(
-            reply,
-            200,
-            json!({"kind":"factorRequired","withinSeconds":900}),
-        )?;
-        assert_count(
-            host,
-            "SELECT COUNT(*) FROM approval_requests WHERE record_state='waiting'",
-            1,
-        )
-        .await?;
-        assert_count(host, "SELECT COUNT(*) FROM runtime_request_log", 0).await?;
-        assert_count(host, "SELECT COUNT(*) FROM actor_persons", 0).await?;
-        assert_count(host, "SELECT COUNT(*) FROM admin_used_requests", 1).await?;
-        assert_count(host, "SELECT COUNT(*) FROM approval_applying_time", 0).await?;
-        owner.second_factor_at = Some(NOW_SECONDS);
-        expect(call.send(host, &owner).await?, 200, saved(&answer))?;
-    } else {
-        expect(reply, 200, saved(&answer))?;
-    }
-    assert_count(host, "SELECT COUNT(*) FROM actor_persons", 1).await?;
-    assert_count(host, "SELECT COUNT(*) FROM approval_applying_time", 1).await?;
-    assert_count(
-        host,
-        "SELECT COUNT(*) FROM approval_requests WHERE delivery_state='owed'",
-        1,
-    )
-    .await?;
-    assert_count(host, "SELECT COUNT(*) FROM runtime_request_log", 1).await
 }
 
 async fn check_replay(
@@ -561,8 +525,4 @@ fn expect(reply: (u16, Vec<u8>), status: u16, expected: Value) -> ConformanceRes
         actual == expected,
         &json!({"expected":expected,"actual":actual}),
     )
-}
-
-pub const fn factor(answer: AnswerClass, fresh: bool) -> Case {
-    Case::Factor { answer, fresh }
 }

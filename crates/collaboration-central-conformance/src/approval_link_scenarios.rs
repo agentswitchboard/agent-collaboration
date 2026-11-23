@@ -443,7 +443,8 @@ pub async fn next_ending(
         MacCall::DeliverEnding(envelope) if &envelope.target == expected => {
             Ok((correlation_id, envelope.body))
         }
-        _ => Err("ending did not target the admitted run".into()),
+        MacCall::DeliverEnding(_) => Err("ending did not target the admitted run".into()),
+        MacCall::MacProbe(_) => Err("received a link probe while expecting a holder ending".into()),
     }
 }
 

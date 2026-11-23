@@ -1,39 +1,60 @@
-//! Only the verified C3 request can carry person authority into an applying turn.
+//! Person approval authority is minted and consumed in one owning transaction.
 
-use central_storage::StoreFailure;
+use crate::FleetPermission;
+use central_storage::{GuardedStatement, ReadOutcome, Statement, StoreFailure};
 use fleet_identity_protocol::OrganizationId;
-use fleet_runtime_ports::{Ed25519Verification, Es256Verification, IssuerKeySource};
+use fleet_lent_transaction::OrganizationTransaction;
+use fleet_runtime_ports::{Ed25519Verification, Es256Verification, IssuerKeySource, SyncTime};
+use std::marker::PhantomData;
 use workspace_ids::PersonId;
 
 use crate::{
-    FleetPermission,
-    approval_person_wire::{ApprovalDecideRequest, ApprovalPersonOperation, ApprovalPersonRoute},
-    person_proof::{
-        AdmissionRefusal, FactorStanding, OrganizationFloor, PersonFloor, PersonProofFacts,
-        PersonProofVerifier, PersonRequestRefusal, decide_admission,
-        decide_retained_approval_admission,
+    approval_person_wire::{
+        ApprovalDecideRequest, ApprovalListRequest, ApprovalPersonOperation, ApprovalPersonRoute,
+        ApprovalReadRequest,
     },
+    authorization_floor_store::{
+        decode_organization_floor, decode_person_floor, organization_floor_statement,
+        person_floor_statement,
+    },
+    person_proof::{
+        AdmissionRefusal, PersonProofFacts, PersonProofVerifier, PersonRequestRefusal,
+        admission_before_person, decide_admission, decide_retained_approval_admission,
+        request_time_refusal,
+    },
+    person_proof_store::{proof_was_used, reserve_approval_proof, used_proof_statement},
 };
 
-/// Person authority from the signed C3 request and its organization applying checks.
+/// The stamped organization transaction can run the Sign-in owner's checked reads.
+/// It supplies an executor, never decoded authorization facts.
+pub trait ApprovalPersonTransaction: OrganizationTransaction + Send {
+    fn sample_person_authorization_time(&self) -> Result<SyncTime, StoreFailure>;
+
+    fn read_person_authorization(
+        &mut self,
+        statement: Statement,
+    ) -> impl std::future::Future<Output = Result<ReadOutcome, StoreFailure>> + Send;
+}
+
+/// Read-only actor facts, minted by Sign-in. Store commands require the whole bound operation.
 ///
-/// ```compile_fail,E0451
-/// use fleet_signin::{ApprovalPersonAdmission, FactorStanding};
-/// let _ = ApprovalPersonAdmission {
-///     person: "019a3dce-2000-7000-8000-000000000001".parse().unwrap(),
-///     organization: "019a3dce-2000-7000-8000-000000000002".to_owned().try_into().unwrap(),
-///     factor: FactorStanding::NotFresh,
-/// };
+/// ```compile_fail
+/// use fleet_signin::ApprovalPersonAdmission;
+/// fn build() -> ApprovalPersonAdmission {
+///     ApprovalPersonAdmission {
+///         person: "019a3dce-2000-7000-8000-000000000001".parse().unwrap(),
+///         organization: "019a3dce-2000-7000-8000-000000000002".to_owned().try_into().unwrap(),
+///     }
+/// }
 /// ```
 ///
-/// ```compile_fail,E0277
+/// ```compile_fail
 /// let _: fleet_signin::ApprovalPersonAdmission = serde_json::from_str("{}").unwrap();
 /// ```
 #[derive(Debug)]
 pub struct ApprovalPersonAdmission {
     person: PersonId,
     organization: OrganizationId,
-    factor: FactorStanding,
 }
 
 impl ApprovalPersonAdmission {
@@ -46,11 +67,6 @@ impl ApprovalPersonAdmission {
     pub const fn organization(&self) -> &OrganizationId {
         &self.organization
     }
-
-    #[must_use]
-    pub const fn factor(&self) -> FactorStanding {
-        self.factor
-    }
 }
 
 /// The checked proof, paired with precisely the signed approval operation.
@@ -61,20 +77,10 @@ pub struct VerifiedApprovalPersonRequest {
     person: PersonId,
 }
 
-/// Values read in the applying organization turn. They carry no authority by themselves.
-#[derive(Clone, Copy)]
-pub struct ApprovalApplyingContext<'turn> {
-    pub organization: &'turn OrganizationId,
-    pub now_ms: i64,
-    pub organization_floor: Option<&'turn OrganizationFloor>,
-    pub person_floor: Option<&'turn PersonFloor>,
-    pub proof_used: bool,
-}
-
 impl VerifiedApprovalPersonRequest {
     #[must_use]
-    pub const fn proof(&self) -> &PersonProofFacts {
-        &self.proof
+    pub const fn organization(&self) -> &OrganizationId {
+        &self.proof.organization_id
     }
 
     #[must_use]
@@ -82,65 +88,253 @@ impl VerifiedApprovalPersonRequest {
         &self.operation
     }
 
-    /// Authenticate a retry without granting permission to apply a new decision.
-    pub fn authorize_retained_decision(
-        &self,
-        applying: ApprovalApplyingContext<'_>,
-    ) -> Result<Option<VerifiedApprovalDecideRetry<'_>>, StoreFailure> {
-        let ApprovalPersonOperation::Decide(request) = &self.operation else {
-            return Ok(None);
-        };
-        if applying.organization != &self.proof.organization_id
-            || decide_retained_approval_admission(
-                &(&self.proof).into(),
-                applying.now_ms,
-                applying.organization_floor,
-                applying.person_floor,
-                applying.proof_used,
-            )?
-            .is_err()
-        {
-            return Ok(None);
-        }
-        Ok(Some(VerifiedApprovalDecideRetry {
-            person: &self.person,
-            request,
-            intent_digest: &self.proof.intent_digest,
-        }))
-    }
-
-    /// The caller still has to reserve the proof and commit it with any effect.
-    pub fn admit(
+    pub async fn admit<'loan, Transaction: ApprovalPersonTransaction>(
         self,
-        applying: ApprovalApplyingContext<'_>,
-    ) -> Result<Result<AdmittedApprovalPersonOperation, AdmissionRefusal>, StoreFailure> {
-        if applying.organization != &self.proof.organization_id {
+        transaction: &'loan mut Transaction,
+    ) -> Result<
+        Result<AdmittedApprovalPersonOperation<'loan, Transaction>, AdmissionRefusal>,
+        StoreFailure,
+    > {
+        let sampled = transaction.sample_person_authorization_time()?;
+        let now_ms = sampled.unix_millis();
+        let proof = &self.proof;
+        let organization = &proof.organization_id;
+        if transaction.organization_id() != organization {
             return Ok(Err(AdmissionRefusal::NotPermitted));
         }
-        if let Err(refusal) = decide_admission(
-            &(&self.proof).into(),
-            applying.now_ms,
-            applying.organization_floor,
-            applying.person_floor,
-            FleetPermission::DecideApproval.as_str(),
-            false,
-            applying.proof_used,
-        )? {
+
+        let claims = proof.into();
+        if let Some(refusal) = request_time_refusal(&claims, now_ms) {
             return Ok(Err(refusal));
         }
-        Ok(Ok(AdmittedApprovalPersonOperation {
-            approval: ApprovalPersonAdmission {
-                person: self.person,
-                organization: self.proof.organization_id.clone(),
-                factor: FactorStanding::at(self.proof.second_factor_at, applying.now_ms),
-            },
-            operation: self.operation,
-            proof: self.proof,
-        }))
+        let organization_rows = transaction
+            .read_person_authorization(organization_floor_statement(organization.as_str()))
+            .await?;
+        let organization_floor =
+            decode_organization_floor(&organization_rows, organization.as_str())?;
+        if let Err(refusal) = admission_before_person(&claims, now_ms, organization_floor.as_ref())?
+        {
+            return Ok(Err(refusal));
+        }
+        let person_rows = transaction
+            .read_person_authorization(person_floor_statement(
+                organization.as_str(),
+                &proof.person_id,
+            ))
+            .await?;
+        let person_floor =
+            decode_person_floor(&person_rows, organization.as_str(), &proof.person_id)?;
+        let proof_id = proof.request_id.to_string();
+        let proof_rows = transaction
+            .read_person_authorization(used_proof_statement(&proof_id))
+            .await?;
+        let proof_used = proof_was_used(&proof_rows, &proof_id)?;
+        // The owner's grant decision is enforced by the Sign-in issuer.
+        // Every C3 route checks this typed permission in the signed claims.
+        let permission = FleetPermission::DecideApproval.as_str();
+        let admission = decide_admission(
+            &claims,
+            now_ms,
+            organization_floor.as_ref(),
+            person_floor.as_ref(),
+            permission,
+            false,
+            proof_used,
+        )?;
+        let access = match admission {
+            Ok(_) => ApprovalPersonAccess::Granted,
+            Err(AdmissionRefusal::NotPermitted)
+                if matches!(&self.operation, ApprovalPersonOperation::Decide(_))
+                    && !proof.permissions.iter().any(|grant| grant == permission)
+                    && decide_retained_approval_admission(
+                        &claims,
+                        now_ms,
+                        organization_floor.as_ref(),
+                        person_floor.as_ref(),
+                        proof_used,
+                    )?
+                    .is_ok() =>
+            {
+                ApprovalPersonAccess::RetainedOnly
+            }
+            Err(refusal) => return Ok(Err(refusal)),
+        };
+        let operation_id = match &self.operation {
+            ApprovalPersonOperation::Decide(request) => Some(&request.operation_id),
+            ApprovalPersonOperation::List(_) | ApprovalPersonOperation::Read(_) => None,
+        };
+        let reservation = reserve_approval_proof(proof, operation_id, now_ms)?;
+        let identity = ApprovalPersonAdmission {
+            person: self.person,
+            organization: organization.clone(),
+        };
+        let approval = match (access, self.operation) {
+            (ApprovalPersonAccess::Granted, ApprovalPersonOperation::List(request)) => {
+                AdmittedApprovalPersonOperation::List(AdmittedApprovalCommand::new(
+                    transaction,
+                    identity,
+                    self.proof,
+                    reservation,
+                    sampled,
+                    request,
+                ))
+            }
+            (ApprovalPersonAccess::Granted, ApprovalPersonOperation::Read(request)) => {
+                AdmittedApprovalPersonOperation::Read(AdmittedApprovalCommand::new(
+                    transaction,
+                    identity,
+                    self.proof,
+                    reservation,
+                    sampled,
+                    request,
+                ))
+            }
+            (ApprovalPersonAccess::Granted, ApprovalPersonOperation::Decide(request)) => {
+                AdmittedApprovalPersonOperation::Decide(AdmittedApprovalCommand::new(
+                    transaction,
+                    identity,
+                    self.proof,
+                    reservation,
+                    sampled,
+                    request,
+                ))
+            }
+            (ApprovalPersonAccess::RetainedOnly, ApprovalPersonOperation::Decide(request)) => {
+                AdmittedApprovalPersonOperation::Retry(AdmittedApprovalCommand::new(
+                    transaction,
+                    identity,
+                    self.proof,
+                    reservation,
+                    sampled,
+                    RetainedDecisionRequest(request),
+                ))
+            }
+            (
+                ApprovalPersonAccess::RetainedOnly,
+                ApprovalPersonOperation::List(_) | ApprovalPersonOperation::Read(_),
+            ) => return Ok(Err(AdmissionRefusal::NotPermitted)),
+        };
+        Ok(Ok(approval))
     }
 }
 
-/// This checked identity may retrieve its own exact retained decision.
+enum ApprovalPersonAccess {
+    Granted,
+    RetainedOnly,
+}
+
+pub enum AdmittedApprovalPersonOperation<'loan, Transaction> {
+    List(AdmittedApprovalCommand<'loan, Transaction, ApprovalListRequest>),
+    Read(AdmittedApprovalCommand<'loan, Transaction, ApprovalReadRequest>),
+    Decide(AdmittedApprovalCommand<'loan, Transaction, ApprovalDecideRequest>),
+    Retry(AdmittedApprovalCommand<'loan, Transaction, RetainedDecisionRequest>),
+}
+
+/// An exact retry can read the retained result, without authority to apply a decision.
+pub struct RetainedDecisionRequest(ApprovalDecideRequest);
+
+/// The signed operation, verified proof and applying loan are consumed together.
+///
+/// ```compile_fail,E0382
+/// use fleet_signin::AdmittedApprovalCommand;
+/// fn replay<T, R>(command: AdmittedApprovalCommand<'_, T, R>) {
+///     let _ = command.into_application();
+///     let _ = command.into_application();
+/// }
+/// ```
+///
+/// ```compile_fail
+/// use fleet_signin::AdmittedApprovalCommand;
+/// fn escape<'loan, T: 'static, R>(command: AdmittedApprovalCommand<'loan, T, R>)
+///     -> AdmittedApprovalCommand<'static, T, R> { command }
+/// ```
+///
+/// ```compile_fail
+/// use fleet_signin::{AdmittedApprovalCommand, approval_person_wire::{ApprovalReadRequest, ApprovalDecideRequest}};
+/// fn substitute<T>(command: AdmittedApprovalCommand<'_, T, ApprovalReadRequest>)
+///     -> AdmittedApprovalCommand<'_, T, ApprovalDecideRequest> { command }
+/// ```
+pub struct AdmittedApprovalCommand<'loan, Transaction, Request> {
+    transaction: &'loan mut Transaction,
+    signed: AdmittedApprovalFacts<'loan, Request>,
+}
+
+impl<'loan, Transaction, Request> AdmittedApprovalCommand<'loan, Transaction, Request> {
+    fn new(
+        transaction: &'loan mut Transaction,
+        identity: ApprovalPersonAdmission,
+        proof: PersonProofFacts,
+        reservation: GuardedStatement,
+        sampled: SyncTime,
+        request: Request,
+    ) -> Self {
+        Self {
+            transaction,
+            signed: AdmittedApprovalFacts {
+                identity,
+                proof,
+                reservation,
+                sampled,
+                request,
+                loan: PhantomData,
+            },
+        }
+    }
+
+    /// The store can unpack the verified facts once it owns the command. The
+    /// facts alone cannot start another store command or swap its loan.
+    #[must_use]
+    pub fn into_application(
+        self,
+    ) -> (
+        &'loan mut Transaction,
+        AdmittedApprovalFacts<'loan, Request>,
+    ) {
+        (self.transaction, self.signed)
+    }
+}
+
+pub struct AdmittedApprovalFacts<'loan, Request> {
+    identity: ApprovalPersonAdmission,
+    proof: PersonProofFacts,
+    reservation: GuardedStatement,
+    sampled: SyncTime,
+    request: Request,
+    loan: PhantomData<&'loan mut ()>,
+}
+
+impl<Request> AdmittedApprovalFacts<'_, Request> {
+    #[must_use]
+    pub const fn identity(&self) -> &ApprovalPersonAdmission {
+        &self.identity
+    }
+
+    #[must_use]
+    pub const fn request(&self) -> &Request {
+        &self.request
+    }
+
+    #[must_use]
+    pub const fn sampled(&self) -> SyncTime {
+        self.sampled
+    }
+
+    pub fn into_reservation(self) -> GuardedStatement {
+        self.reservation
+    }
+}
+
+impl AdmittedApprovalFacts<'_, RetainedDecisionRequest> {
+    #[must_use]
+    pub const fn retained_decision(&self) -> VerifiedApprovalDecideRetry<'_> {
+        VerifiedApprovalDecideRetry {
+            person: self.identity.person(),
+            request: &self.request.0,
+            intent_digest: self.proof.intent_digest.as_str(),
+        }
+    }
+}
+
 pub struct VerifiedApprovalDecideRetry<'request> {
     person: &'request PersonId,
     request: &'request ApprovalDecideRequest,
@@ -152,36 +346,13 @@ impl<'request> VerifiedApprovalDecideRetry<'request> {
     pub const fn person(&self) -> &'request PersonId {
         self.person
     }
-
     #[must_use]
     pub const fn request(&self) -> &'request ApprovalDecideRequest {
         self.request
     }
-
     #[must_use]
     pub const fn intent_digest(&self) -> &'request str {
         self.intent_digest
-    }
-}
-
-/// The matched operation and proof accompany the admission until the applying batch is prepared.
-#[derive(Debug)]
-pub struct AdmittedApprovalPersonOperation {
-    approval: ApprovalPersonAdmission,
-    operation: ApprovalPersonOperation,
-    proof: PersonProofFacts,
-}
-
-impl AdmittedApprovalPersonOperation {
-    #[must_use]
-    pub fn into_parts(
-        self,
-    ) -> (
-        ApprovalPersonAdmission,
-        ApprovalPersonOperation,
-        PersonProofFacts,
-    ) {
-        (self.approval, self.operation, self.proof)
     }
 }
 

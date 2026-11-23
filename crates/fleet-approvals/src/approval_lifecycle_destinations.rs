@@ -65,7 +65,7 @@ pub(super) fn decide(
             (next, effects, ApprovalDecisionReply::TooLate {})
         }
         ApprovalState::Waiting { .. } => {
-            if let Ok(ending) = admitted.decide(request.value.clone(), decider.decision_factor()) {
+            if let Ok(ending) = admitted.decide(request.value.clone()) {
                 let (next, effects) = finish_decided(saved, ending, request.operation_id, now)?;
                 (
                     next,

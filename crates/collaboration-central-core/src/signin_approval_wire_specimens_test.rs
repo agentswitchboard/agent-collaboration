@@ -143,9 +143,7 @@ fn check_replies<Reply: serde::de::DeserializeOwned + serde::Serialize>(vectors:
 
 #[test]
 fn approval_people_list_requires_its_nullable_continuation() {
-    use fleet_signin::approval_person_wire::{
-        ApprovalDecideReply, ApprovalListReply, ApprovalListRequest,
-    };
+    use fleet_signin::approval_person_wire::{ApprovalListReply, ApprovalListRequest};
     let last: ApprovalListReply =
         serde_json::from_str(r#"{"kind":"page","items":[],"next":null}"#).unwrap();
     assert_eq!(
@@ -162,18 +160,6 @@ fn approval_people_list_requires_its_nullable_continuation() {
             "{malformed}"
         );
     }
-    assert!(
-        serde_json::from_str::<ApprovalDecideReply>(
-            r#"{"kind":"factorRequired","withinSeconds":901}"#
-        )
-        .is_err()
-    );
-    assert!(
-        serde_json::from_str::<ApprovalDecideReply>(
-            r#"{"kind":"factorRequired","withinSeconds":"900"}"#
-        )
-        .is_err()
-    );
     assert!(
         serde_json::from_str::<ApprovalListRequest>(
             r#"["019a3dce-2000-7000-8000-000000000001","waiting",null]"#,

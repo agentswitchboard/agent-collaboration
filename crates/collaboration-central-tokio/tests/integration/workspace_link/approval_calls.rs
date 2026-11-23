@@ -1,3 +1,6 @@
+#[path = "approval_publication_failure.rs"]
+mod approval_publication_failure;
+
 #[path = "approval_login_settlement.rs"]
 mod approval_login_settlement;
 
@@ -586,3 +589,6 @@ async fn tokio_renewing_the_same_holder_socket_keeps_the_pending_ending() -> Res
 
 #[path = "approval_carrier_replacement.rs"]
 mod approval_carrier_replacement;
+
+#[path = "person_approval_races.rs"]
+mod person_approval_races;

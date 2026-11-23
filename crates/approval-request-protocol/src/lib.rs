@@ -51,7 +51,7 @@ pub use approval_values::{
 };
 #[doc(hidden)]
 pub use approval_wire_codec::decode_named_map;
-pub use destination_admission::{AdmittedDestination, DecisionFactor, DestinationProjection};
+pub use destination_admission::{AdmittedDestination, DestinationProjection};
 pub use destination_requests::{
     DecideReply, DecideReplyWire, DecideRequest, PassOnReply, PassOnRequest,
     RetainedSessionDecision,
