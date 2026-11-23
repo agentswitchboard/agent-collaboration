@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "INSERT INTO actor_sessions (\n    actor_id, machine_id, enrollment_id, create_operation_id, create_contents_digest,\n    create_attempt, agent_program, session_kind, creator_kind, creator_actor_id, secret_hash,\n    session_state, reserved_until, created_at, updated_at, project_id, workspace_id\n) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'reserved', ?, ?, ?, ?, ?)\n",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 16
+    },
+    "nullable": []
+  },
+  "hash": "3a2dcbb98290e88040606c41e6e5b0aacb0a027d27fcd7abd4edb5e45f00cf61"
+}

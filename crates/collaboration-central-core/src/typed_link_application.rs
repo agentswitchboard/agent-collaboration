@@ -135,5 +135,6 @@ pub trait CentralLinkDispatcher: Send + Sync {
         machine: &'call ValidatedMachineConnection,
         request: CentralCall,
         carrier: TypedCallCarrier,
+        project_lookup: fleet_runtime_ports::SessionProjectLookup,
     ) -> Pin<Box<dyn Future<Output = Result<CentralCallWork, StoreFailure>> + Send + 'call>>;
 }

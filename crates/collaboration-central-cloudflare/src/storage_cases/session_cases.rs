@@ -4,8 +4,8 @@ use central_engine_model::{Context, IdSource};
 use central_link_call_composition::{OrganizationLoan, OrganizationLoanFailure};
 use chrono::{DateTime, SecondsFormat};
 use fleet_actor_identity::{
-    LiveSessionFacts, SessionAvailability, SessionCallOutcome, SessionCreateApplication,
-    SessionLookupScope, SessionSecretSource, SessionService, SessionServiceError,
+    LiveSessionFacts, SessionAvailability, SessionCallOutcome, SessionLookupScope,
+    SessionSecretSource, SessionService, SessionServiceError,
 };
 use fleet_approvals::{
     ActorApprovalSessionFacts, ApprovalEnrollment, ApprovalRouting, ApprovalSession,
@@ -217,28 +217,28 @@ async fn apply_command(
             let Some(admitted) = admit_fixture(&mut lender, &caller, now).await? else {
                 return Ok(json!({ "result": "revoked" }));
             };
+            let project_lookup = match &request.project {
+                fleet_identity_protocol::StartProject::Named { project_ref } => {
+                    fleet_runtime_ports::SessionProjectLookup::Named {
+                        workspace: project_ref.workspace.clone(),
+                        project: project_ref.project.clone(),
+                        result: Ok(true),
+                    }
+                }
+                fleet_identity_protocol::StartProject::SameAsParent {} => {
+                    fleet_runtime_ports::SessionProjectLookup::NotRead
+                }
+            };
             let reply = SessionService::in_transaction(&mut lender)
                 .create(
                     &admitted,
                     request,
+                    project_lookup,
                     &mut context,
                     &mut HeldSessionSecret(secret_seed),
                 )
                 .await?;
-            Ok(match reply {
-                SessionCallOutcome::Answered(SessionCreateApplication::Reserved {
-                    session_id,
-                    secret,
-                    reserved_until,
-                }) => json!({
-                    "result": "reserved", "sessionId": session_id, "secret": secret,
-                    "reservedUntil": reserved_until,
-                }),
-                SessionCallOutcome::Answered(SessionCreateApplication::ExistingOrRefused(
-                    reply,
-                )) => json!(reply),
-                SessionCallOutcome::Revoked => json!({ "result": "revoked" }),
-            })
+            Ok(call_reply(reply))
         }
         SessionCommand::Bind { request } => {
             let Some(admitted) = admit_fixture(&mut lender, &caller, now).await? else {
@@ -411,13 +411,18 @@ async fn seed(
         .bind(caller.enrollment_id.as_str()).bind(caller.machine_id.as_str())
         .bind(FIXED_TIME).bind(caller.enrollment_id.as_str()).bind(FIXED_TIME)
         .bind(FIXED_TIME).bind(FIXED_TIME).execute(transaction).await?;
+
+    query("INSERT INTO directory_workspaces (workspace_id,name,state,created_at,updated_at) VALUES ('019a3dce-2000-7000-8000-000000000004','Session workspace','active',?,?)")
+        .bind(FIXED_TIME).bind(FIXED_TIME).execute(transaction).await?;
+    query("INSERT INTO login_machine_allowances (allowance_id,machine_id,workspace_id,state,change_request_id,change_origin,created_at,updated_at) VALUES ('019a3dce-2000-7000-8000-000000000007',?,'019a3dce-2000-7000-8000-000000000004','active','019a3dce-2000-7000-8000-000000000007','automatic',0,0)")
+        .bind(caller.machine_id.as_str()).execute(transaction).await?;
     if !(0..=10_000).contains(&unrelated_sessions) {
         return Err(SessionCaseError::InvalidFixture);
     }
     if unrelated_sessions > 0 {
         query("WITH RECURSIVE fixture_seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM fixture_seq WHERE n < ?) INSERT INTO actor_identities (actor_id,actor_kind,created_at,updated_at) SELECT printf('019bc1c0-0000-7000-8000-%012x', n),'session',?,? FROM fixture_seq")
             .bind(unrelated_sessions).bind(FIXED_TIME).bind(FIXED_TIME).execute(transaction).await?;
-        query("WITH RECURSIVE fixture_seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM fixture_seq WHERE n < ?) INSERT INTO actor_sessions (actor_id,machine_id,enrollment_id,harness_session_id,create_operation_id,create_contents_digest,create_attempt,agent_program,session_kind,creator_kind,secret_hash,session_state,reserved_until,bound_at,created_at,updated_at) SELECT printf('019bc1c0-0000-7000-8000-%012x', n),?,?,printf('unrelated-%d', n),printf('019cc1c0-0000-7000-8000-%012x', n),'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',1,'codex','ordinary','operator','AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA','active',?,?,?,? FROM fixture_seq")
+        query("WITH RECURSIVE fixture_seq(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM fixture_seq WHERE n < ?) INSERT INTO actor_sessions (actor_id,machine_id,enrollment_id,harness_session_id,create_operation_id,create_contents_digest,create_attempt,agent_program,session_kind,creator_kind,secret_hash,session_state,reserved_until,bound_at,created_at,updated_at,workspace_id,project_id) SELECT printf('019bc1c0-0000-7000-8000-%012x', n),?,?,printf('unrelated-%d', n),printf('019cc1c0-0000-7000-8000-%012x', n),'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',1,'codex','ordinary','operator','AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA','active',?,?,?,?,'019a3dce-2000-7000-8000-000000000004','019a3dce-2000-7000-8000-000000000005' FROM fixture_seq")
             .bind(unrelated_sessions).bind(caller.machine_id.as_str()).bind(caller.enrollment_id.as_str())
             .bind("2026-11-22T10:10:00.000Z").bind(FIXED_TIME).bind(FIXED_TIME).bind(FIXED_TIME)
             .execute(transaction).await?;

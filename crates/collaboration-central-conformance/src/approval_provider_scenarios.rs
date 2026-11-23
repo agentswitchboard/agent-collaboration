@@ -1,4 +1,5 @@
 //! Real socket checks for Central's provider approvals and questions.
+use crate::session_project_fixture::{FIRST_PROJECT, FIRST_WORKSPACE, project_at};
 use crate::{
     ConformanceResult as Result,
     approval_link_scenarios::{
@@ -264,12 +265,7 @@ pub async fn create_bound(
             agent_program: fleet_identity_protocol::HarnessKind::Codex,
             session_kind,
             project: fleet_identity_protocol::StartProject::Named {
-                project_ref: fleet_identity_protocol::ProjectRef {
-                    workspace: "019a3dce-2000-7000-8000-000000000004".parse()?,
-                    project: "019a3dce-2000-7000-8000-000000000005"
-                        .to_owned()
-                        .try_into()?,
-                },
+                project_ref: project_at(FIRST_WORKSPACE, FIRST_PROJECT)?,
             },
         },
     )

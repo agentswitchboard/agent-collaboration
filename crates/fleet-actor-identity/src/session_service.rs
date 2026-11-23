@@ -4,25 +4,26 @@ use central_storage::StoreFailure;
 use fleet_identity_protocol::{
     BindFleetSession, BindFleetSessionReply, CreateFleetSession, CreateFleetSessionReply,
     CreateSessionKind, CreateSessionRefusal, EndFleetSessionReply, EnrollmentId,
-    PresentedSessionSecret, SessionCreator, SessionSecret,
+    PresentedSessionSecret, ProjectRef, SessionCreator, SessionSecret,
 };
 use fleet_lent_transaction::OrganizationTransaction;
 use fleet_machine_login::{
     SessionEnrollmentStatus, link_authority::ValidatedMachineConnection, read_session_enrollment,
 };
-use fleet_runtime_ports::workspace_decode_error::corrupt;
+use fleet_runtime_ports::{SessionProjectLookup, workspace_decode_error::corrupt};
 use sqlx_core::{
     arguments::IntoArguments, column::ColumnIndex, database::Database, decode::Decode,
     encode::Encode, types::Type,
 };
 use workspace_ids::{CentralSessionId, MachineId};
 
-use crate::session_repository::SessionRepository;
 use crate::{
     AddressAvailability, AuthenticatedSession, BoundSession, NewSessionAdmission,
-    RecordedSessionCreator, ScopedSession, SessionApply, SessionCreateApplication,
-    SessionCreatorAdmission, SessionEvent, SessionLifecycle, SessionMachineRefusal, SessionReceipt,
-    SessionReservation, SessionState,
+    RecordedSessionCreator, ScopedSession, SessionApply, SessionCreatorAdmission, SessionEvent,
+    SessionLifecycle, SessionMachineRefusal, SessionReceipt, SessionReservation, SessionState,
+};
+use crate::{
+    session_repository::SessionRepository, session_start_admission::admit_session_project,
 };
 
 const RESERVATION_DURATION_MILLIS: i64 = 600_000;
@@ -108,9 +109,10 @@ where
         &mut self,
         connection: &ValidatedMachineConnection,
         request: CreateFleetSession,
+        project_lookup: SessionProjectLookup,
         context: &mut Context<'_>,
         secrets: &mut impl SessionSecretSource,
-    ) -> Result<SessionCallOutcome<SessionCreateApplication>, SessionServiceError> {
+    ) -> Result<SessionCallOutcome<CreateFleetSessionReply>, SessionServiceError> {
         if self.repository.tx.organization_id() != connection.organization_id() {
             return Ok(SessionCallOutcome::Revoked);
         }
@@ -128,30 +130,22 @@ where
             Creator::Admitted(creator) => creator,
             Creator::NoSecret => {
                 return Ok(SessionCallOutcome::Answered(
-                    SessionCreateApplication::ExistingOrRefused(
-                        CreateFleetSessionReply::NoSecret {},
-                    ),
+                    CreateFleetSessionReply::NoSecret {},
                 ));
             }
             Creator::NoSuchSession => {
                 return Ok(SessionCallOutcome::Answered(
-                    SessionCreateApplication::ExistingOrRefused(
-                        CreateFleetSessionReply::NoSuchSession {},
-                    ),
+                    CreateFleetSessionReply::NoSuchSession {},
                 ));
             }
             Creator::SessionEnded => {
                 return Ok(SessionCallOutcome::Answered(
-                    SessionCreateApplication::ExistingOrRefused(
-                        CreateFleetSessionReply::SessionEnded {},
-                    ),
+                    CreateFleetSessionReply::SessionEnded {},
                 ));
             }
             Creator::WrongSecret => {
                 return Ok(SessionCallOutcome::Answered(
-                    SessionCreateApplication::ExistingOrRefused(
-                        CreateFleetSessionReply::WrongSecret {},
-                    ),
+                    CreateFleetSessionReply::WrongSecret {},
                 ));
             }
         };
@@ -164,8 +158,21 @@ where
             .map_err(|_| SessionServiceError::InvalidCreateContents)?;
         let historical = self.historical_end(caller, &prior).await?;
         let first = if prior == SessionState::Missing {
-            Some(Box::new(match creator.allows(&request.session_kind) {
-                Ok(()) => NewSessionAdmission::Permitted(SessionReservation {
+            let admission = match creator.allows(&request.session_kind) {
+                Ok(()) => {
+                    admit_session_project(
+                        self.repository.tx,
+                        &caller.machine_id,
+                        &request.project,
+                        creator.delegate_parent_project(&request.session_kind),
+                        project_lookup,
+                    )
+                    .await?
+                }
+                Err(reason) => Err(reason),
+            };
+            Some(match admission {
+                Ok(project) => NewSessionAdmission::Permitted(Box::new(SessionReservation {
                     session_id: CentralSessionId::try_from(context.ids.next_id().to_string())
                         .map_err(|_| SessionServiceError::InvalidSessionId)?,
                     machine_id: caller.machine_id.clone(),
@@ -176,13 +183,14 @@ where
                     agent_program: request.agent_program,
                     kind: request.session_kind,
                     reserved_until: reserve_until(context.now)?,
-                }),
+                    project,
+                })),
                 Err(reason) => NewSessionAdmission::Refused(reason),
-            }))
+            })
         } else {
             None
         };
-        let issue_secret = matches!(first.as_deref(), Some(NewSessionAdmission::Permitted(_)))
+        let issue_secret = matches!(first, Some(NewSessionAdmission::Permitted(_)))
             || matches!(prior.read_at(context.now, historical),
                 SessionState::Reserved(reserved) if reserved.allows_rotation(&digest, request.attempt));
         let candidate_secret = issue_secret
@@ -479,6 +487,7 @@ where
                         Ok(Creator::Admitted(CreatorScope::Session {
                             session_id: session_id.clone(),
                             kind: bound.reserved.reservation.kind,
+                            project: bound.reserved.reservation.project,
                         }))
                     }
                 }
@@ -500,6 +509,7 @@ enum CreatorScope {
     Session {
         session_id: CentralSessionId,
         kind: CreateSessionKind,
+        project: ProjectRef,
     },
 }
 
@@ -538,6 +548,21 @@ impl CreatorScope {
                 CreateSessionKind::Delegate { .. },
             ) => Err(CreateSessionRefusal::ParentNotValid {}),
         }
+    }
+
+    fn delegate_parent_project(&self, proposed: &CreateSessionKind) -> Option<&ProjectRef> {
+        let (
+            Self::Session {
+                session_id,
+                project,
+                ..
+            },
+            CreateSessionKind::Delegate { parent },
+        ) = (self, proposed)
+        else {
+            return None;
+        };
+        (parent == session_id).then_some(project)
     }
 
     fn identity(self) -> RecordedSessionCreator {

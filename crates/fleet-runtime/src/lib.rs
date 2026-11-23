@@ -8,6 +8,7 @@ mod due_batch_state;
 mod fleet_runtime;
 #[cfg(feature = "test-support")]
 mod pause_points;
+mod session_start_project;
 #[cfg(feature = "test-support")]
 mod test_faults;
 pub mod workspace_request_log;

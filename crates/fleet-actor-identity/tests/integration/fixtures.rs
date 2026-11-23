@@ -6,14 +6,14 @@ use std::{
 
 use central_engine_model::{Context, EngineTime, IdSource};
 use fleet_actor_identity::{
-    AuthenticatedSession, SessionAvailability, SessionCallOutcome, SessionCreateApplication,
-    SessionLookupScope, SessionSecretSource, SessionService, SessionServiceError,
+    AuthenticatedSession, SessionAvailability, SessionCallOutcome, SessionLookupScope,
+    SessionSecretSource, SessionService, SessionServiceError,
 };
 use fleet_contracts::{ClientId, MachineConnectionAttachment};
 use fleet_identity_protocol::{
-    BindFleetSession, BindFleetSessionReply, CreateFleetSession, CreateSessionKind,
-    EndFleetSession, EndFleetSessionReply, EnrollmentId, HarnessKind, OrganizationId,
-    PresentedSessionSecret, SessionCreator, SessionSecret, UnixSeconds,
+    BindFleetSession, BindFleetSessionReply, CreateFleetSession, CreateFleetSessionReply,
+    CreateSessionKind, EndFleetSession, EndFleetSessionReply, EnrollmentId, HarnessKind,
+    OrganizationId, PresentedSessionSecret, SessionCreator, SessionSecret, UnixSeconds,
 };
 use fleet_lent_transaction::{CentralTransaction, OrganizationTransaction};
 use fleet_machine_login::link_authority::{ValidatedMachineConnection, restore_fixture_link};
@@ -89,7 +89,7 @@ pub enum Operation {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum Receipt {
-    Create(SessionCallOutcome<SessionCreateApplication>),
+    Create(SessionCallOutcome<CreateFleetSessionReply>),
     Bind(SessionCallOutcome<BindFleetSessionReply>),
     End(SessionCallOutcome<EndFleetSessionReply>),
 }
@@ -130,6 +130,11 @@ impl SessionStoreFixture {
             .bind(caller.enrollment_id.as_str()).bind(id(3)).bind(caller.machine_id.as_str())
             .bind(id(4)).bind(FIXED_TIME).bind(caller.enrollment_id.as_str()).bind(FIXED_TIME)
             .bind(FIXED_TIME).bind(FIXED_TIME).execute(&mut connection).await.unwrap();
+
+        sqlx::query("INSERT INTO directory_workspaces (workspace_id,name,state,created_at,updated_at) VALUES ('019a3dce-2000-7000-8000-000000000004','Session workspace','active',?,?)")
+        .bind(FIXED_TIME).bind(FIXED_TIME).execute(&mut connection).await.unwrap();
+        sqlx::query("INSERT INTO login_machine_allowances (allowance_id,machine_id,workspace_id,state,change_request_id,change_origin,created_at,updated_at) VALUES ('019a3dce-2000-7000-8000-000000000007',?,'019a3dce-2000-7000-8000-000000000004','active','019a3dce-2000-7000-8000-000000000007','automatic',0,0)")
+        .bind(caller.machine_id.as_str()).execute(&mut connection).await.unwrap();
         connection.close().await.unwrap();
         Self {
             _root: root,
@@ -259,10 +264,30 @@ impl SessionStoreFixture {
                     ids: &mut self.ids,
                 };
                 let result = match operation {
-                    Operation::Create(request) => service
-                        .create(&admitted, request, &mut context, &mut self.secrets)
-                        .await
-                        .map(Receipt::Create),
+                    Operation::Create(request) => {
+                        let project_lookup = match &request.project {
+                            fleet_identity_protocol::StartProject::Named { project_ref } => {
+                                fleet_runtime_ports::SessionProjectLookup::Named {
+                                    workspace: project_ref.workspace.clone(),
+                                    project: project_ref.project.clone(),
+                                    result: Ok(true),
+                                }
+                            }
+                            fleet_identity_protocol::StartProject::SameAsParent {} => {
+                                fleet_runtime_ports::SessionProjectLookup::NotRead
+                            }
+                        };
+                        service
+                            .create(
+                                &admitted,
+                                request,
+                                project_lookup,
+                                &mut context,
+                                &mut self.secrets,
+                            )
+                            .await
+                            .map(Receipt::Create)
+                    }
                     Operation::Bind(request) => service
                         .bind(&admitted, request, &mut context)
                         .await
@@ -399,7 +424,7 @@ pub fn create(operation: u16, attempt: u64) -> CreateFleetSession {
 }
 
 pub fn reservation(receipt: Receipt) -> (workspace_ids::CentralSessionId, SessionSecret) {
-    let Receipt::Create(SessionCallOutcome::Answered(SessionCreateApplication::Reserved {
+    let Receipt::Create(SessionCallOutcome::Answered(CreateFleetSessionReply::Reserved {
         session_id,
         secret,
         ..

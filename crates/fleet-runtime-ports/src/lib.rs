@@ -5,6 +5,7 @@
 mod central_observer;
 mod central_store;
 mod issuer_key_source;
+mod session_project_lookup;
 mod signature_crypto;
 mod time_and_ids;
 mod workspace_stores;
@@ -13,6 +14,7 @@ pub use central_engine_model::{DueListKind, DueListQuery, DueRow, EngineTime};
 pub use central_observer::Observer;
 pub use central_store::CentralStore;
 pub use issuer_key_source::{IssuerKeySource, KeyFetchFailure, RawJwks};
+pub use session_project_lookup::SessionProjectLookup;
 pub use signature_crypto::{
     Ed25519Verification, Es256Verification, ProofJwk, SignatureValidity, VerifyFailure,
 };

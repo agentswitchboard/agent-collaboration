@@ -16,4 +16,7 @@ pub use machine_login_service::{
 };
 
 mod session_enrollment_reads;
-pub use session_enrollment_reads::{SessionEnrollmentStatus, read_session_enrollment};
+pub use session_enrollment_reads::{
+    SessionEnrollmentStatus, machine_can_start_in_workspace,
+    machine_can_start_in_workspace_in_transaction, read_session_enrollment,
+};

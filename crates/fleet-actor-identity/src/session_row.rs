@@ -4,7 +4,7 @@ use central_engine_model::{EngineTime, supported_time};
 use central_storage::{CorruptReason, StoreFailure};
 use fleet_identity_protocol::{
     AbandonedSessionCause, CreateSessionAttempt, CreateSessionDigest, CreateSessionKind,
-    EndedSessionCause, EnrollmentId, HarnessKind, SessionTime,
+    EndedSessionCause, EnrollmentId, HarnessKind, ProjectRef, SessionTime,
 };
 use fleet_runtime_ports::workspace_decode_error::corrupt;
 use workspace_ids::{CentralSessionId, MachineId, SessionId, SessionOperationId};
@@ -17,6 +17,8 @@ use crate::{
 #[derive(sqlx::FromRow)]
 pub(crate) struct StoredSessionRow {
     pub(super) actor_id: String,
+    pub(super) project_id: Option<String>,
+    pub(super) workspace_id: Option<String>,
     pub(super) machine_id: String,
     pub(super) enrollment_id: String,
     pub(super) harness_session_id: Option<String>,
@@ -84,6 +86,20 @@ impl StoredSessionRow {
             agent_program: decode_program(&self.agent_program)?,
             kind,
             reserved_until: decode_time(self.reserved_until)?,
+            project: ProjectRef {
+                project: parse(
+                    self.project_id
+                        .as_deref()
+                        .ok_or_else(|| corrupt("actor_sessions.project_id"))?,
+                    "actor_sessions.project_id",
+                )?,
+                workspace: parse(
+                    self.workspace_id
+                        .as_deref()
+                        .ok_or_else(|| corrupt("actor_sessions.workspace_id"))?,
+                    "actor_sessions.workspace_id",
+                )?,
+            },
         };
         let attempt = u64::try_from(self.create_attempt)
             .ok()

@@ -175,3 +175,47 @@ async fn workerd_central_fault_rolls_back_create_and_keeps_the_link_open() -> Re
     fixture.close().await?;
     observed
 }
+
+#[tokio::test]
+async fn workerd_session_projects_are_admitted_on_the_link_and_survive_reopen() -> Result<()> {
+    use collaboration_central_conformance::{
+        session_project_fixture::{FIRST_WORKSPACE, withdraw_session_allowance},
+        session_project_scenarios::{
+            admit_session_projects, assert_session_project_migration,
+            expect_allowance_withdrawal_refusal, record_session_projects,
+            send_project_create_before_withdrawal, session_project_migration,
+        },
+    };
+    use futures_util::StreamExt;
+
+    let fixture = Fixture::with_production_dispatcher().await?;
+    let observed: Result<()> = async {
+        let mut link = ConnectedLink::open(&fixture).await?;
+        let store = fixture.runtime();
+        let expected = admit_session_projects(&mut link.socket, &fixture.organization, async || {
+            Ok(store.read(session_mutation_records()).await?.rows)
+        }).await?;
+        assert_eq!(store.read(record_session_projects()).await?.rows, expected);
+        let point = "beforeSessionTransaction";
+        assert!(store.control::<bool>("hold-central", &point).await?);
+        let correlation = send_project_create_before_withdrawal(&mut link.socket, &fixture.organization).await?;
+        tokio::select! {
+            held = store.control::<bool>("until-held-central", &point) => assert!(held?),
+            _ = link.socket.next() => return Err("Create replied before the post-read barrier".into()),
+        }
+        let withdrawal = store.run_batch(withdraw_session_allowance(MACHINE_ID, FIRST_WORKSPACE)).await;
+        assert!(store.control::<bool>("release-central", &point).await?);
+        assert!(matches!(withdrawal?, BatchOutcome::Applied { .. }));
+        expect_allowance_withdrawal_refusal(&mut link.socket, &fixture.organization, &correlation).await?;
+        assert_eq!(store.read(record_session_projects()).await?.rows, expected);
+
+        link.close().await?;
+        fixture.host.reset_owners(&fixture.organization, &FIRST_WORKSPACE.parse()?).await;
+        let reopened = fixture.runtime();
+        assert_eq!(reopened.read(record_session_projects()).await?.rows, expected);
+        assert_session_project_migration(reopened.read(session_project_migration()).await?);
+        Ok(())
+    }.await;
+    fixture.close().await?;
+    observed
+}

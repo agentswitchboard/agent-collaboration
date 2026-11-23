@@ -116,3 +116,75 @@ impl StoredSessionEnrollmentRow {
         }
     }
 }
+
+/// Keep an inactive or absent allowance indistinguishable to the start caller.
+pub async fn machine_can_start_in_workspace(
+    host: &impl fleet_runtime_ports::CentralStore,
+    machine: &MachineId,
+    workspace: &workspace_ids::WorkspaceId,
+) -> Result<bool, StoreFailure> {
+    use central_storage::{SqlValue, Statement};
+    let outcome = host
+        .read(Statement {
+            sql: include_str!("queries/read_session_workspace_allowance.sql"),
+            args: vec![
+                SqlValue::Text(machine.as_str().to_owned()),
+                SqlValue::Text(workspace.as_str().to_owned()),
+            ],
+        })
+        .await?;
+    match outcome.rows.as_slice() {
+        [] => Ok(false),
+        [row] => match row.as_slice() {
+            [SqlValue::Text(state)] => decode_start_allowance(Some(state)),
+            _ => Err(corrupt("login_machine_allowances.state")),
+        },
+        _ => Err(corrupt("login_machine_allowances.state")),
+    }
+}
+
+/// Recheck the allowance on the same transaction that writes the reservation.
+pub async fn machine_can_start_in_workspace_in_transaction<Transaction: CentralTransaction>(
+    tx: &mut Transaction,
+    machine: &MachineId,
+    workspace: &workspace_ids::WorkspaceId,
+) -> Result<bool, StoreFailure>
+where
+    <Transaction::Database as Database>::Arguments: IntoArguments<Transaction::Database>,
+    String: Type<Transaction::Database>
+        + for<'q> Encode<'q, Transaction::Database>
+        + for<'r> Decode<'r, Transaction::Database>,
+    for<'r> &'r str: ColumnIndex<<Transaction::Database as Database>::Row>,
+{
+    #[derive(sqlx::FromRow)]
+    struct StoredStartAllowance {
+        state: String,
+    }
+
+    let machine = machine.as_str();
+    let workspace = workspace.as_str();
+    #[cfg(all(test, not(target_arch = "wasm32")))]
+    let _ = sqlx::query_file_as!(
+        StoredStartAllowance,
+        "src/queries/read_session_workspace_allowance.sql",
+        machine,
+        workspace
+    );
+    let stored = query_as::<_, StoredStartAllowance>(include_str!(
+        "queries/read_session_workspace_allowance.sql"
+    ))
+    .bind(machine.to_owned())
+    .bind(workspace.to_owned())
+    .fetch_optional(tx.executor())
+    .await
+    .map_err(lent_read_failure)?;
+    decode_start_allowance(stored.as_ref().map(|allowance| allowance.state.as_str()))
+}
+
+fn decode_start_allowance(state: Option<&str>) -> Result<bool, StoreFailure> {
+    match state {
+        Some("active") => Ok(true),
+        Some("withdrawn") | None => Ok(false),
+        Some(_) => Err(corrupt("login_machine_allowances.state")),
+    }
+}

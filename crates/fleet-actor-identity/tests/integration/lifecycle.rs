@@ -1,5 +1,4 @@
 use central_storage::{CorruptReason, StoreFailure};
-use fleet_actor_identity::SessionCreateApplication;
 use fleet_actor_identity::{
     LiveSessionFacts, SessionAvailability, SessionCallOutcome, SessionServiceError,
 };
@@ -31,7 +30,7 @@ async fn repeated_create_and_bind_reopen_one_immutable_identity() {
             .await
             .unwrap(),
         Receipt::Create(SessionCallOutcome::Answered(
-            SessionCreateApplication::ExistingOrRefused(CreateFleetSessionReply::Superseded {})
+            CreateFleetSessionReply::Superseded {}
         ))
     );
 
@@ -49,7 +48,7 @@ async fn repeated_create_and_bind_reopen_one_immutable_identity() {
             .await
             .unwrap(),
         Receipt::Create(SessionCallOutcome::Answered(
-            SessionCreateApplication::ExistingOrRefused(CreateFleetSessionReply::Superseded {})
+            CreateFleetSessionReply::Superseded {}
         ))
     );
     let bind = |harness: &str, presented| {
@@ -99,7 +98,7 @@ async fn repeated_create_and_bind_reopen_one_immutable_identity() {
         .await
         .unwrap();
     assert!(
-        matches!(opened, Receipt::Create(SessionCallOutcome::Answered(SessionCreateApplication::ExistingOrRefused(CreateFleetSessionReply::Active { session_id: id, .. }))) if id == session_id)
+        matches!(opened, Receipt::Create(SessionCallOutcome::Answered(CreateFleetSessionReply::Active { session_id: id, .. })) if id == session_id)
     );
     assert_eq!(
         store.facts(&session_id).await,
@@ -265,7 +264,7 @@ async fn authenticated_creator_is_checked_before_replay_and_only_that_session_ca
             .await
             .unwrap(),
         Receipt::Create(SessionCallOutcome::Answered(
-            SessionCreateApplication::ExistingOrRefused(CreateFleetSessionReply::NoSecret {})
+            CreateFleetSessionReply::NoSecret {}
         ))
     );
     assert_eq!(
@@ -282,7 +281,7 @@ async fn authenticated_creator_is_checked_before_replay_and_only_that_session_ca
             .await
             .unwrap(),
         Receipt::Create(SessionCallOutcome::Answered(
-            SessionCreateApplication::ExistingOrRefused(CreateFleetSessionReply::WrongSecret {})
+            CreateFleetSessionReply::WrongSecret {}
         ))
     );
     assert_eq!(
@@ -291,9 +290,9 @@ async fn authenticated_creator_is_checked_before_replay_and_only_that_session_ca
             .await
             .unwrap(),
         Receipt::Create(SessionCallOutcome::Answered(
-            SessionCreateApplication::ExistingOrRefused(CreateFleetSessionReply::Refused {
+            CreateFleetSessionReply::Refused {
                 reason: CreateSessionRefusal::ParentNotValid {}
-            })
+            }
         ))
     );
     let (child, child_secret) = reservation(
@@ -419,7 +418,7 @@ async fn authenticated_creator_is_checked_before_replay_and_only_that_session_ca
             .await
             .unwrap(),
         Receipt::Create(SessionCallOutcome::Answered(
-            SessionCreateApplication::ExistingOrRefused(CreateFleetSessionReply::SessionEnded {})
+            CreateFleetSessionReply::SessionEnded {}
         ))
     );
     let mut connection = store.open().await;

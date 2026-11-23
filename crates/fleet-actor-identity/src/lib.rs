@@ -11,6 +11,7 @@ mod session_row;
 mod session_service;
 pub use approval_chain_fact::{ApprovalChainFailure, ApprovalChainSession};
 
+mod session_start_admission;
 mod session_state;
 
 pub use authenticated_session::{AuthenticatedSession, ScopedSession};

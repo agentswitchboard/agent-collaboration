@@ -1,7 +1,15 @@
 //! Local Tokio machine-link integration fixtures.
 use crate::{OrganizationSignInLink, TokioWorkspaceHost, WorkspaceLink};
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
-use collaboration_central_conformance::{ConformanceResult as Result, signin_fixtures as signed};
+use central_storage::BatchOutcome;
+use collaboration_central_conformance::{
+    ConformanceResult as Result,
+    session_project_fixture::{
+        FIRST_PROJECT, FIRST_WORKSPACE, SECOND_PROJECT, SECOND_WORKSPACE, seed_session_project,
+        session_project_allowances,
+    },
+    signin_fixtures as signed,
+};
 use collaboration_central_core::SignInTrustSettings;
 use fleet_contracts::ProvisionOrganization;
 use fleet_contracts::{DeviceLoginDecision, MachineTokenDecision};
@@ -97,6 +105,32 @@ async fn open_machine_link_fixture(
     };
     let token =
         mint_enrolled_machine_token(&host, &organization, &enrollment_id, now_seconds).await?;
+    if !fixture_link_calls {
+        if !matches!(
+            runtime
+                .runtime()
+                .statement_host()
+                .run_batch(session_project_allowances(MACHINE_LINK_FIXTURE_MACHINE))
+                .await?,
+            BatchOutcome::Applied { .. }
+        ) {
+            return Err("fixture session allowances did not apply".into());
+        }
+        for (workspace, project) in [
+            (FIRST_WORKSPACE, FIRST_PROJECT),
+            (SECOND_WORKSPACE, SECOND_PROJECT),
+        ] {
+            if !matches!(
+                runtime
+                    .runtime()
+                    .batch_workspace(&workspace.parse()?, seed_session_project(project))
+                    .await?,
+                BatchOutcome::Applied { .. }
+            ) {
+                return Err("fixture workspace project did not apply".into());
+            }
+        }
+    }
     let signin_socket = root.path().join("signin.sock");
     let listener =
         tokio::net::TcpListener::bind(std::net::SocketAddr::from(([127, 0, 0, 1], 0))).await?;

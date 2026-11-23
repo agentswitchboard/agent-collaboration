@@ -315,7 +315,9 @@ where
             secret_hash,
             reserved_until,
             now.clone(),
-            now.clone()
+            now.clone(),
+            reservation.project.project.as_str().to_owned(),
+            reservation.project.workspace.as_str().to_owned()
         )?;
         if let Some(parent) = parent {
             change_one!(
