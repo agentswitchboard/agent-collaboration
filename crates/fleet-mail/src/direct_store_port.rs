@@ -96,7 +96,13 @@ pub type ApplyMark = CheckedDueUnit<Box<RejectedDirectMark>>;
 pub struct OwnedDirectStatus {
     pub message_id: MessageId,
     pub sender: ActorIdentityId,
-    pub now: Timestamp,
+    pub clock: Arc<dyn Clock>,
+    pub ids: Arc<dyn IdSource>,
+}
+
+pub struct AppliedDirectStatus {
+    pub status: MessageStatus,
+    pub ready: Option<MailDeliveryReady>,
 }
 
 pub struct DirectOfferLookup {
@@ -164,10 +170,10 @@ pub trait DirectMessageStore: Send + Sync {
         rejection: Box<RejectedDirectMark>,
         now: Timestamp,
     ) -> BoxFuture<'_, Result<Option<FailureRecord>, CheckedDueFailure>>;
-    fn read_status(
+    fn settle_and_read_status(
         &self,
         status: OwnedDirectStatus,
-    ) -> BoxFuture<'_, Result<MessageStatus, DirectReadFailure>>;
+    ) -> BoxFuture<'_, Result<AppliedDirectStatus, DirectWriteFailure>>;
     fn read_offer_page(
         &self,
         page: OfferPageLookup,

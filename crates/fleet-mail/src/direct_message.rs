@@ -1,4 +1,4 @@
-//! The six-state Central lifecycle of one direct message.
+//! Delivery evidence and deadline settlement for one Central direct message.
 use super::message_effects::{NotUuidV7, queue_message};
 use central_engine_model::{
     Context, EngineTime, EventTag, Machine, MachineKind, RefusalTag, StateTag, Transition,
@@ -15,79 +15,57 @@ pub(crate) struct DirectMessageSubject {
     pub(crate) sender_session: Option<SessionRef>,
     pub(crate) sender_request_id: RequestId,
     pub(crate) recipient: MachineId,
-    pub(crate) cutoff: Timestamp,
     pub(crate) mark: EngineTime,
-}
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(crate) struct SavedDelivery {
-    pub(crate) arrived_at: Timestamp,
-    pub(crate) waiting: Option<mail::WaitingReason>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum FinalReceipt {
     Seen { completed_at: Timestamp },
-    NotSeen { waiting: mail::WaitingReason },
     Refused { reason: mail::MessageRefusal },
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum DirectLifecycle {
     Queued,
-    Delivered(SavedDelivery),
-    PastTheMark(Option<SavedDelivery>),
+    Delivered {
+        arrived_at: Timestamp,
+    },
     Final {
         receipt: FinalReceipt,
-        saved: Option<SavedDelivery>,
+        arrived_at: Option<Timestamp>,
     },
 }
 
 impl DirectLifecycle {
-    pub(crate) fn project_message_status(
-        self,
-        cutoff: Timestamp,
-        now: Timestamp,
-    ) -> mail::MessageStatus {
+    pub(crate) fn project_message_status(self, deadline_passed: bool) -> mail::MessageStatus {
         use mail::MessageStatus;
-        let delivered = |observation: SavedDelivery, deadline_passed| MessageStatus::Delivered {
-            arrived_at: observation.arrived_at,
-            waiting: observation.waiting,
-            deadline_passed,
-        };
         match self {
-            Self::Queued => MessageStatus::Sent {
-                deadline_passed: now >= cutoff,
-            },
-            Self::Delivered(saved) => delivered(saved, now >= cutoff),
-            Self::PastTheMark(Some(saved)) => delivered(saved, true),
-            Self::PastTheMark(None) => MessageStatus::Sent {
-                deadline_passed: true,
+            Self::Queued => MessageStatus::Sent { deadline_passed },
+            Self::Delivered { arrived_at } => MessageStatus::Delivered {
+                arrived_at,
+                deadline_passed,
             },
             Self::Final { receipt, .. } => match receipt {
                 FinalReceipt::Seen { completed_at } => MessageStatus::Seen { completed_at },
-                FinalReceipt::NotSeen { waiting } => MessageStatus::NotSeen { waiting },
                 FinalReceipt::Refused { reason } => MessageStatus::Refused { reason },
             },
         }
     }
 
-    pub(crate) fn saved_delivery(self) -> Option<SavedDelivery> {
+    pub(crate) fn delivered_arrival(self) -> Option<Timestamp> {
         match self {
             Self::Queued => None,
-            Self::Delivered(saved) => Some(saved),
-            Self::PastTheMark(saved) | Self::Final { saved, .. } => saved,
+            Self::Delivered { arrived_at } => Some(arrived_at),
+            Self::Final { arrived_at, .. } => arrived_at,
         }
     }
 
     pub(crate) fn storage_tag(self) -> &'static str {
         match self {
             Self::Queued => "queued",
-            Self::Delivered(_) => "delivered",
-            Self::PastTheMark(_) => "pastTheMark",
+            Self::Delivered { .. } => "delivered",
             Self::Final { receipt, .. } => match receipt {
                 FinalReceipt::Seen { .. } => "seen",
-                FinalReceipt::NotSeen { .. } => "notSeen",
                 FinalReceipt::Refused { .. } => "refused",
             },
         }
@@ -98,6 +76,7 @@ impl DirectLifecycle {
 pub struct DirectReducerState {
     pub(crate) subject: DirectMessageSubject,
     pub(crate) lifecycle: DirectLifecycle,
+    pub(crate) deadline_settled_at: Option<Timestamp>,
 }
 
 impl StateTag for DirectReducerState {
@@ -123,7 +102,6 @@ impl EventTag for DirectMessageEvent {
             Self::Receipt(kind) => match kind {
                 mail::ReceiptKind::Delivered { .. } => "delivered",
                 mail::ReceiptKind::Seen { .. } => "seen",
-                mail::ReceiptKind::NotSeen { .. } => "notSeen",
                 mail::ReceiptKind::Refused { .. } => "refused",
             },
         }
@@ -182,42 +160,26 @@ type LifecycleChange = (DirectLifecycle, Option<mail::MessageOutcome>);
 
 /// Covered receipts short-circuit the applying adapter so a replay writes nothing.
 fn apply_receipt(
-    prior: DirectLifecycle,
+    prior: &DirectReducerState,
     receipt: mail::ReceiptKind,
 ) -> Result<LifecycleChange, DirectMessageRefusal> {
     use mail::{MessageOutcome, ReceiptKind};
 
     let final_receipt = match receipt {
-        ReceiptKind::Delivered {
-            arrived_at,
-            waiting,
-        } => {
-            let saved = SavedDelivery {
-                arrived_at,
-                waiting,
-            };
-            return match prior {
-                DirectLifecycle::Queued => Ok((DirectLifecycle::Delivered(saved), None)),
-                DirectLifecycle::PastTheMark(None) => {
-                    Ok((DirectLifecycle::PastTheMark(Some(saved)), None))
+        ReceiptKind::Delivered { arrived_at } => {
+            return match prior.lifecycle {
+                DirectLifecycle::Queued => Ok((DirectLifecycle::Delivered { arrived_at }, None)),
+                DirectLifecycle::Delivered { .. } | DirectLifecycle::Final { .. } => {
+                    Err(DirectMessageRefusal::AlreadyRecorded)
                 }
-                DirectLifecycle::Delivered(_)
-                | DirectLifecycle::PastTheMark(Some(_))
-                | DirectLifecycle::Final { .. } => Err(DirectMessageRefusal::AlreadyRecorded),
             };
         }
         ReceiptKind::Seen { completed_at } => FinalReceipt::Seen { completed_at },
-        ReceiptKind::NotSeen { waiting } => FinalReceipt::NotSeen { waiting },
         ReceiptKind::Refused { reason } => FinalReceipt::Refused { reason },
     };
 
-    let outcome = match prior {
-        DirectLifecycle::Queued | DirectLifecycle::Delivered(_) => match final_receipt {
-            FinalReceipt::Seen { .. } => None,
-            FinalReceipt::NotSeen { waiting } => Some(MessageOutcome::NotSeen { waiting }),
-            FinalReceipt::Refused { reason } => Some(MessageOutcome::Refused { reason }),
-        },
-        DirectLifecycle::PastTheMark(_) => None,
+    match prior.lifecycle {
+        DirectLifecycle::Queued | DirectLifecycle::Delivered { .. } => {}
         DirectLifecycle::Final { receipt, .. } => {
             return Err(if receipt == final_receipt {
                 DirectMessageRefusal::AlreadyRecorded
@@ -225,11 +187,18 @@ fn apply_receipt(
                 DirectMessageRefusal::AlreadySettled
             });
         }
+    }
+
+    let outcome = match (final_receipt, prior.deadline_settled_at) {
+        (FinalReceipt::Refused { reason }, None) => Some(MessageOutcome::Refused { reason }),
+        (FinalReceipt::Seen { .. }, None | Some(_)) | (FinalReceipt::Refused { .. }, Some(_)) => {
+            None
+        }
     };
     Ok((
         DirectLifecycle::Final {
             receipt: final_receipt,
-            saved: prior.saved_delivery(),
+            arrived_at: prior.lifecycle.delivered_arrival(),
         },
         outcome,
     ))
@@ -264,22 +233,23 @@ impl Machine for DirectMessage {
     {
         use mail::MessageOutcome;
 
-        let (lifecycle, outcome) = match event {
+        let (lifecycle, deadline_settled_at, outcome) = match event {
             DirectMessageEvent::Receipt(receipt) => {
-                apply_receipt(state.lifecycle, receipt).map_err(TransitionError::Domain)?
+                let (lifecycle, outcome) =
+                    apply_receipt(state, receipt).map_err(TransitionError::Domain)?;
+                (lifecycle, state.deadline_settled_at, outcome)
             }
             DirectMessageEvent::Due { occurrence } => {
-                if Self::next_due(state) != Some(occurrence) {
+                if Self::next_due(state) != Some(occurrence) || context.now < occurrence {
                     return Err(TransitionError::Stale);
                 }
-                let saved = state.lifecycle.saved_delivery();
-                let outcome = saved.map_or(MessageOutcome::DeliveryNotConfirmed, |delivery| {
-                    MessageOutcome::DeliveredSeenNotConfirmed {
-                        arrived_at: delivery.arrived_at,
-                        waiting: delivery.waiting,
-                    }
-                });
-                (DirectLifecycle::PastTheMark(saved), Some(outcome))
+                let outcome = state
+                    .lifecycle
+                    .delivered_arrival()
+                    .map_or(MessageOutcome::DeliveryNotConfirmed, |arrived_at| {
+                        MessageOutcome::DeliveredSeenNotConfirmed { arrived_at }
+                    });
+                (state.lifecycle, Some(context.now), Some(outcome))
             }
         };
         let effects = match outcome {
@@ -290,6 +260,7 @@ impl Machine for DirectMessage {
             DirectReducerState {
                 subject: state.subject.clone(),
                 lifecycle,
+                deadline_settled_at,
             },
             effects,
         ))
@@ -299,26 +270,52 @@ impl Machine for DirectMessage {
         const EDGES: &[Transition] = &[
             direct_transition_edge("queued", "delivered", "delivered", false),
             direct_transition_edge("queued", "seen", "seen", true),
-            direct_transition_edge("queued", "notSeen", "notSeen", true),
             direct_transition_edge("queued", "refused", "refused", true),
-            direct_transition_edge("queued", "due", "pastTheMark", false),
+            direct_transition_edge("queued", "due", "queued", false),
             direct_transition_edge("delivered", "seen", "seen", true),
-            direct_transition_edge("delivered", "notSeen", "notSeen", true),
             direct_transition_edge("delivered", "refused", "refused", true),
-            direct_transition_edge("delivered", "due", "pastTheMark", false),
-            direct_transition_edge("pastTheMark", "delivered", "pastTheMark", false),
-            direct_transition_edge("pastTheMark", "seen", "seen", true),
-            direct_transition_edge("pastTheMark", "notSeen", "notSeen", true),
-            direct_transition_edge("pastTheMark", "refused", "refused", true),
+            direct_transition_edge("delivered", "due", "delivered", false),
         ];
         EDGES
     }
 
     fn next_due(state: &DirectReducerState) -> Option<EngineTime> {
-        match state.lifecycle {
-            DirectLifecycle::Queued | DirectLifecycle::Delivered(_) => Some(state.subject.mark),
-            DirectLifecycle::PastTheMark(_) | DirectLifecycle::Final { .. } => None,
+        match (state.lifecycle, state.deadline_settled_at) {
+            (DirectLifecycle::Queued | DirectLifecycle::Delivered { .. }, None) => {
+                Some(state.subject.mark)
+            }
+            (DirectLifecycle::Queued | DirectLifecycle::Delivered { .. }, Some(_))
+            | (DirectLifecycle::Final { .. }, None | Some(_)) => None,
         }
+    }
+}
+
+/// On a receipt at or after the mark, decide the deadline outcome using
+/// the evidence already stored. A capped batch may not have visited it yet.
+pub(super) fn apply_message_event(
+    prior: &DirectReducerState,
+    event: DirectMessageEvent,
+    context: &mut Context<'_>,
+) -> Result<(DirectReducerState, Vec<DirectMessageEffect>), TransitionError<DirectMessageRefusal>> {
+    let Some(occurrence) = DirectMessage::next_due(prior).filter(|mark| *mark <= context.now)
+    else {
+        return DirectMessage::transition(prior, event, context);
+    };
+    if !matches!(event, DirectMessageEvent::Receipt(_)) {
+        return DirectMessage::transition(prior, event, context);
+    }
+    let (settled, effects) =
+        DirectMessage::transition(prior, DirectMessageEvent::Due { occurrence }, context)?;
+    match DirectMessage::transition(&settled, event, context) {
+        Ok((updated, later_effects)) => {
+            let mut committed_effects = effects;
+            committed_effects.extend(later_effects);
+            Ok((updated, committed_effects))
+        }
+        Err(TransitionError::Domain(DirectMessageRefusal::AlreadyRecorded)) => {
+            Ok((settled, effects))
+        }
+        Err(other) => Err(other),
     }
 }
 

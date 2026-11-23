@@ -212,15 +212,26 @@ pub(crate) async fn route_codex_sessions(
                         continue;
                     }
                     let cancellation_barrier=requested_session.as_ref().and_then(|session| sessions.cancellation_barrier(session));
-                    let setup=SetupTaskInputs { cancellation_barrier, known_session, backend_path:inputs.backend_path.clone(), schemas:Arc::clone(&inputs.schemas), generation:inputs.generation.clone(), params, create_new, operation_id, recorder:Arc::clone(&inputs.recorder), scratch_scopes:Arc::clone(&inputs.scratch_scopes) };
+                    let setup=SetupTaskInputs {
+                        cancellation_barrier,
+                        known_session,
+                        backend_path: inputs.backend_path.clone(),
+                        schemas: Arc::clone(&inputs.schemas),
+                        generation: inputs.generation.clone(),
+                        params,
+                        create_new,
+                        operation_id,
+                        recorder: Arc::clone(&inputs.recorder),
+                        scratch_scopes: Arc::clone(&inputs.scratch_scopes),
+                        generation_retirement: inputs.retired.clone(),
+                        session_presence: inputs.holder.session_presence(),
+                    };
                     if create_new {
                         let holder=Arc::clone(&inputs.holder);
-                        let retirement = inputs.retired.clone();
                         let (result_sender,result_receiver)=tokio::sync::oneshot::channel();
                         holder.host_tasks().spawn(async move {
                             let mut outcome=run_session_setup(setup).await;
-                            if let Some(mut binding)=outcome.binding.take() {
-                                binding.admission_retirement = Some(retirement);
+                            if let Some(binding)=outcome.binding.take() {
                                 holder.hold(binding);
                             }
                             let _sent=result_sender.send(outcome);

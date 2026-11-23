@@ -3,13 +3,16 @@ use crate::{
     direct_message::{
         DirectLifecycle, DirectMessage, DirectMessageEffect, DirectMessageEvent,
         DirectMessageRefusal, DirectMessageSubject, DirectReducerState, FinalReceipt,
+        apply_message_event,
     },
     direct_message_rows::enum_text,
     direct_recipient_admission::admit_enrolled_direct_recipient,
     direct_store_port::{AdmittedDirectSend, AdmittedReceipt, ApplyReceipt, DirectSendResult},
     direct_store_reads::{StoredDirectState, read_stored_direct_message},
     mail_write_failure::require_one_affected_row,
-    message_deadline::{delivery_window_ends_at, direct_receipt_mark, system_message_deadline},
+    message_deadline::{
+        delivery_window_ends_at, direct_deadline_occurrence, system_message_deadline,
+    },
     system_receipt_settlement::{SystemReceiptKind, settle_system_receipt},
 };
 use central_engine_model::{Context, Machine, TransitionError};
@@ -51,7 +54,7 @@ impl<A> DirectWriteOutcome<A> {
             alarm: None,
         }
     }
-    fn with_alarm_recompute(outcome: A) -> Self {
+    pub(super) fn with_alarm_recompute(outcome: A) -> Self {
         Self {
             outcome,
             alarm: Some(EngineAlarmPlan::Recompute),
@@ -138,7 +141,10 @@ where
             created_at: command.accepted_at,
             updated_at: command.accepted_at,
         };
-        let mark = direct_receipt_mark(command.sent_at, command.accepted_at);
+        let cutoff = delivery_window_ends_at(command.sent_at, command.accepted_at)
+            .ok_or_else(|| corrupt("mail_messages.delivery_window_ends_at"))?;
+        let mark = direct_deadline_occurrence(cutoff)
+            .ok_or_else(|| corrupt("mail_messages.cancel_due_at"))?;
         let timing = DueOwnerTiming::at(due_key(DueKind::DirectMessage, &message_id), mark)
             .map_err(|_| corrupt("mail_messages.cancel_due_at"))?;
         let result = insert_send!(
@@ -146,7 +152,7 @@ where
             message,
             mark,
             command.request.request_id,
-            delivery_window_ends_at(command.sent_at, command.accepted_at)
+            cutoff
         )
         .execute(tx.executor())
         .await?;
@@ -344,12 +350,12 @@ macro_rules! lifecycle_update {
             $row.failure,
             format_utc_millis($now),
             $row.arrived,
-            $row.waiting,
             $row.seen,
-            $row.not_seen,
+            $row.deadline_settled_at,
             ($prior).subject.id.to_string(),
             ($prior).subject.recipient.to_string(),
-            ($prior).lifecycle.storage_tag().to_owned()
+            ($prior).lifecycle.storage_tag().to_owned(),
+            ($prior).deadline_settled_at.map(format_utc_millis)
         )
     };
 }
@@ -390,12 +396,12 @@ where
             },
             sender_request_id: row.sender_request_id,
             recipient: row.recipient,
-            cutoff: row.cutoff,
             mark: row.mark,
         },
         lifecycle: row.lifecycle,
+        deadline_settled_at: row.deadline_settled_at,
     };
-    let (next, effects) = match DirectMessage::transition(
+    let (next, effects) = match apply_message_event(
         &state,
         event,
         &mut Context {
@@ -415,7 +421,7 @@ where
             | TransitionError::Domain(DirectMessageRefusal::InvalidIdentifier),
         ) => return Err(corrupt("mail_messages.transition").into()),
     };
-    let encoding = DirectStateUpdate::new(next.lifecycle)?;
+    let encoding = DirectStateUpdate::new(&next)?;
     let result = lifecycle_update!(bind_direct_mail_write, encoding, &state, now)
         .execute(tx.executor())
         .await?;
@@ -443,13 +449,9 @@ where
         .execute(tx.executor())
         .await?;
     let key = due_key(DueKind::DirectMessage, &state.subject.id);
-    let due = match next.lifecycle {
-        DirectLifecycle::Queued | DirectLifecycle::Delivered(_) => {
-            DueTableChange::PublishItem(DueOwnerTiming::at(key, state.subject.mark)?)
-        }
-        DirectLifecycle::PastTheMark(_) | DirectLifecycle::Final { .. } => {
-            DueTableChange::RemoveItem(key)
-        }
+    let due = match DirectMessage::next_due(&next) {
+        Some(mark) => DueTableChange::PublishItem(DueOwnerTiming::at(key, mark)?),
+        None => DueTableChange::RemoveItem(key),
     };
     apply_due_table_change(tx, &due, now).await?;
     Ok(AppliedTransition::Changed(ready))
@@ -466,34 +468,28 @@ struct DirectStateUpdate {
     tag: &'static str,
     failure: Option<String>,
     arrived: Option<String>,
-    waiting: Option<String>,
     seen: Option<String>,
-    not_seen: Option<String>,
+    deadline_settled_at: Option<String>,
 }
 impl DirectStateUpdate {
-    fn new(lifecycle: DirectLifecycle) -> Result<Self, StoreFailure> {
-        let mut encoded = Self {
-            tag: lifecycle.storage_tag(),
-            failure: None,
-            arrived: None,
-            waiting: None,
-            seen: None,
-            not_seen: None,
+    fn new(next: &DirectReducerState) -> Result<Self, StoreFailure> {
+        let (seen, failure) = match next.lifecycle {
+            DirectLifecycle::Queued | DirectLifecycle::Delivered { .. } => (None, None),
+            DirectLifecycle::Final { receipt, .. } => match receipt {
+                FinalReceipt::Seen { completed_at } => (Some(completed_at.to_rfc3339()), None),
+                FinalReceipt::Refused { reason } => (None, Some(enum_text(reason)?)),
+            },
         };
-        if let Some(saved) = lifecycle.saved_delivery() {
-            encoded.arrived = Some(saved.arrived_at.to_rfc3339());
-            encoded.waiting = saved.waiting.map(enum_text).transpose()?;
-        }
-        if let DirectLifecycle::Final { receipt, .. } = lifecycle {
-            match receipt {
-                FinalReceipt::Seen { completed_at } => {
-                    encoded.seen = Some(completed_at.to_rfc3339())
-                }
-                FinalReceipt::NotSeen { waiting } => encoded.not_seen = Some(enum_text(waiting)?),
-                FinalReceipt::Refused { reason } => encoded.failure = Some(enum_text(reason)?),
-            }
-        }
-        Ok(encoded)
+        Ok(Self {
+            tag: next.lifecycle.storage_tag(),
+            failure,
+            arrived: next
+                .lifecycle
+                .delivered_arrival()
+                .map(|arrived_at| arrived_at.to_rfc3339()),
+            seen,
+            deadline_settled_at: next.deadline_settled_at.map(format_utc_millis),
+        })
     }
 }
 

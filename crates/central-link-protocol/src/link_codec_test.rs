@@ -68,7 +68,7 @@ fn scoped_status_reads_round_trip_in_their_wire_directions() {
             json!({
                 "kind":"reply", "correlationId":id,
                 "result":{"kind":"workspace","reply":{"actors":[],"result":{
-                    "kind":"done","answer":{"kind":"messageStatus","status":{"kind":"delivered","arrivedAt":"2030-03-17T17:46:40Z","waiting":null,"deadlinePassed":false}}
+                    "kind":"done","answer":{"kind":"messageStatus","status":{"kind":"delivered","arrivedAt":"2030-03-17T17:46:40Z","deadlinePassed":false}}
                 }}}
             }),
         ),
@@ -174,11 +174,15 @@ fn welcome_reply_deliver_and_receipts_are_closed_and_directional() {
         ),
         (
             FrameDirection::ToCentral,
-            json!({"kind":"receipts","correlationId":id,"receipts":[{"messageId":id,"kind":{"kind":"delivered","arrivedAt":"2030-01-01T00:00:00Z","waiting":null}}]}),
+            json!({"kind":"receipts","correlationId":id,"receipts":[{"messageId":id,"kind":{"kind":"delivered","arrivedAt":"2030-01-01T00:00:00Z"}}]}),
         ),
         (
             FrameDirection::ToCentral,
             json!({"kind":"receipts","correlationId":id,"receipts":[{"messageId":id,"kind":{"kind":"refused","reason":"unknownSession"}}]}),
+        ),
+        (
+            FrameDirection::ToCentral,
+            json!({"kind":"receipts","correlationId":id,"receipts":[{"messageId":id,"kind":{"kind":"seen","completedAt":"2030-01-01T00:00:31Z"}}]}),
         ),
     ];
     for (direction, fixture) in fixtures {
@@ -342,7 +346,7 @@ fn the_hard_cut_refuses_ack_and_checks_the_receipt_batch_before_dispatch() {
     let ack = serde_json::json!({"kind":"ack","messageId":id,"answer":{"kind":"accepted"}});
     assert!(decode_text(&ack.to_string(), FrameDirection::ToCentral).is_err());
     let receipt = serde_json::json!({
-        "messageId":id,"kind":{"kind":"refused","reason":"sessionClosed"}
+        "messageId":id,"kind":{"kind":"refused","reason":"ambiguousSession"}
     });
     for count in [0, 1, MAX_RECEIPTS, MAX_RECEIPTS + 1] {
         let frame = serde_json::json!({
@@ -431,4 +435,27 @@ fn direct_delivery_rejects_storage_times_and_system_delivery_keeps_them() {
         .unwrap(),
         offer
     );
+}
+
+#[test]
+fn removed_direct_message_receipt_kinds_and_fields_fail_the_frame_decoder() {
+    let message_id = "019f0000-0000-7000-8000-000000000003";
+    let correlation_id = "019f0000-0000-7000-8000-000000000004";
+    let arrived_at = "2030-01-01T00:00:00Z";
+    for receipt_kind in [
+        json!({"kind":"notSeen","waiting":"busy"}),
+        json!({"kind":"delivered","arrivedAt":arrived_at,"waiting":"busy"}),
+        json!({"kind":"delivered","arrivedAt":arrived_at,"waiting":null}),
+        json!({"kind":"refused","reason":"sessionClosed"}),
+    ] {
+        let wire = json!({
+            "kind":"receipts",
+            "correlationId":correlation_id,
+            "receipts":[{"messageId":message_id,"kind":receipt_kind}],
+        });
+        assert!(
+            decode_text(&wire.to_string(), FrameDirection::ToCentral).is_err(),
+            "removed receipt vocabulary decoded: {wire}"
+        );
+    }
 }

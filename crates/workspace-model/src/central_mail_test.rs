@@ -1,6 +1,6 @@
 use super::{
     CentralMailOperation, CentralMailRequest, CentralMailResult, MessageBody, MessageDelivery,
-    MessageOutcome, MessageRefusal, MessageSender, MessageState, WaitingReason,
+    MessageOutcome, MessageRefusal, MessageSender, MessageState,
 };
 use serde_json::json;
 
@@ -196,10 +196,10 @@ fn a_delivery_outcome_body_has_closed_wire_names_and_refuses_unknown_outcomes() 
             json!({"kind": "refused", "reason": "unknownSession"}),
         ),
         (
-            MessageOutcome::NotSeen {
-                waiting: WaitingReason::Busy,
+            MessageOutcome::DeliveredSeenNotConfirmed {
+                arrived_at: "2030-01-01T00:00:00Z".parse().unwrap(),
             },
-            json!({"kind": "notSeen", "waiting": "busy"}),
+            json!({"kind": "deliveredSeenNotConfirmed", "arrivedAt": "2030-01-01T00:00:00Z"}),
         ),
     ];
     for (outcome, outcome_wire) in outcomes {
@@ -218,6 +218,8 @@ fn a_delivery_outcome_body_has_closed_wire_names_and_refuses_unknown_outcomes() 
     for outcome in [
         json!({"kind": "deliveredAfterAll"}),
         json!({"kind": "cancelled"}),
+        json!({"kind": "notSeen", "waiting": "busy"}),
+        json!({"kind": "deliveredSeenNotConfirmed", "arrivedAt": "2030-01-01T00:00:00Z", "waiting": null}),
     ] {
         assert!(
             serde_json::from_value::<MessageBody>(json!({
