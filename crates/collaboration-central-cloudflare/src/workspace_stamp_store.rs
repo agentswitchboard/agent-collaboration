@@ -11,7 +11,7 @@ use futures_util::future::BoxFuture;
 impl StampStore for CentralStatements {
     fn read_stamp(&self) -> BoxFuture<'_, Result<StoredStampRead, StoreFailure>> {
         Box::pin(SendFuture::new(async move {
-            read_stamp(&*self.connection).await
+            read_stamp(&**self.connection).await
         }))
     }
 

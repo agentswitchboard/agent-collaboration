@@ -21,6 +21,11 @@ use worker::{
 };
 
 enum IncomingRequests {
+    #[cfg(feature = "test-support")]
+    FixtureProbe {
+        correlation_id: CorrelationId,
+        request: central_link_protocol::fixture_central_probe::ProbeRequestEnvelope,
+    },
     Single(Box<LinkRequest>),
     Batch(LinkRequestBatch),
     Typed {
@@ -150,6 +155,20 @@ impl CentralObject {
         let frame = match central_link_protocol::decode_text(&text, FrameDirection::ToCentral) {
             Ok(frame) => frame,
             Err(ProtocolError::UnknownTypedCall { correlation_id }) => {
+                #[cfg(feature = "test-support")]
+                if let Ok((correlation_id, request)) =
+                    central_link_protocol::fixture_central_probe::decode_probe_call(&text)
+                {
+                    return self
+                        .handle_machine_request(
+                            &socket,
+                            IncomingRequests::FixtureProbe {
+                                correlation_id,
+                                request,
+                            },
+                        )
+                        .await;
+                }
                 return self
                     .handle_machine_request(
                         &socket,
@@ -250,6 +269,31 @@ impl CentralObject {
         requests: IncomingRequests,
     ) -> Result<()> {
         match requests {
+            #[cfg(feature = "test-support")]
+            IncomingRequests::FixtureProbe {
+                correlation_id,
+                request,
+            } => {
+                if runtime.fixture_link_calls_enabled() {
+                    self.dispatch_fixture_probe(
+                        runtime,
+                        &socket,
+                        &attachment,
+                        correlation_id,
+                        request,
+                    )
+                    .await
+                } else {
+                    self.dispatch_typed_machine_call(
+                        runtime,
+                        &socket,
+                        &attachment,
+                        correlation_id,
+                        None,
+                    )
+                    .await
+                }
+            }
             IncomingRequests::Typed {
                 correlation_id,
                 request,

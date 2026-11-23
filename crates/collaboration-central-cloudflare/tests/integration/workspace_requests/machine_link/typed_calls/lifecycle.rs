@@ -3,15 +3,15 @@
 use super::super::{fixture, renewal};
 use super::{
     ConnectedLink, Fixture, MACHINE_ID, Result, assert_mac_failure, assert_probe_answer,
-    central_probe, invoke_mac, mac_probe, reply_to_mac_probe, send, workerd_control_http_client,
+    central_probe, invoke_mac, mac_probe, reply_to_mac_probe, workerd_control_http_client,
 };
 use central_link_protocol::{
-    CentralLinkRpc, DataFrame, MachineLinkCloseCode, TypedCallResult,
-    test_calls::{CentralProbe, ProbeRequest},
+    MachineLinkCloseCode, TypedCallResult, fixture_central_probe::encode_probe_call,
+    test_calls::ProbeRequest,
 };
 use fleet_contracts::MachineTokenDecision;
 use fleet_rpc::Envelope;
-use futures_util::StreamExt;
+use futures_util::{SinkExt, StreamExt};
 use reqwest::StatusCode;
 use reqwest_websocket::Message;
 
@@ -93,17 +93,14 @@ async fn exercise_faulted_close(fixture: &Fixture) -> Result<()> {
                 .await?
         );
         renewal::advance(fixture, 1).await?;
-        send(
-            &mut link.socket,
-            &DataFrame::CallCentral {
-                correlation_id: "019f0000-0000-7000-8000-00000000d711".parse()?,
-                request: Box::new(CentralProbe::request(Envelope {
-                    target: MACHINE_ID.parse()?,
-                    body: ProbeRequest { sequence: 35 },
-                })),
+        let text = encode_probe_call(
+            "019f0000-0000-7000-8000-00000000d711".parse()?,
+            Envelope {
+                target: MACHINE_ID.parse()?,
+                body: ProbeRequest { sequence: 35 },
             },
-        )
-        .await?;
+        )?;
+        link.socket.send(Message::Text(text)).await?;
         let close = link.socket.next().await;
         assert!(
             matches!(close, Some(Ok(Message::Close { code, .. })) if

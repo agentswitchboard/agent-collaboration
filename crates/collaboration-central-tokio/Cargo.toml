@@ -10,9 +10,10 @@ publish.workspace = true
 workspace = true
 
 [features]
-test-support = ["dep:collaboration-central-conformance", "dep:reqwest-websocket", "dep:tempfile", "central-link-protocol/test-support", "fleet-engine/test-support", "fleet-runtime/test-support", "fleet-storage-schema/test-support", "collaboration-central-core/test-support", "router-clock/test-support"]
+test-support = ["central-link-call-composition/test-support", "dep:collaboration-central-conformance", "dep:reqwest-websocket", "dep:tempfile", "central-link-protocol/test-support", "fleet-engine/test-support", "fleet-runtime/test-support", "fleet-storage-schema/test-support", "collaboration-central-core/test-support", "router-clock/test-support"]
 
 [dependencies]
+central-link-call-composition.workspace = true
 fleet-lent-transaction.workspace = true
 fleet-signin.workspace = true
 fleet-mail.workspace = true
@@ -47,7 +48,7 @@ chrono.workspace = true
 collaboration-central-core = { version = "0.1.96", path = "../collaboration-central-core" }
 sqlx = { workspace = true, features = ["sqlite", "migrate"] }
 
-collaboration-central-conformance = { version = "0.1.96", path = "../collaboration-central-conformance", features = ["signin-test-support"], optional = true }
+collaboration-central-conformance = { version = "0.1.96", path = "../collaboration-central-conformance", features = ["signin-test-support", "session-link-test-support"], optional = true }
 reqwest-websocket = { version = "=0.5.1", optional = true }
 tempfile = { version = "3.27.0", optional = true }
 

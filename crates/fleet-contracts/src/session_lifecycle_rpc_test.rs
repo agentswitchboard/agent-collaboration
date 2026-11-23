@@ -1,9 +1,9 @@
-use super::{
-    BindFleetSession, BindFleetSessionReply, BindFleetSessionRpc, CreateFleetSession,
-    CreateFleetSessionReply, CreateFleetSessionRpc, EndFleetSession, EndFleetSessionReply,
-    EndFleetSessionRpc, OrganizationId, Rpc,
+use crate::{BindFleetSessionRpc, CreateFleetSessionRpc, EndFleetSessionRpc};
+use fleet_identity_protocol::{
+    BindFleetSession, BindFleetSessionReply, CreateFleetSession, CreateFleetSessionReply,
+    EndFleetSession, EndFleetSessionReply, OrganizationId,
 };
-use fleet_rpc::Envelope;
+use fleet_rpc::{Envelope, Rpc};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::{Value, json};
 

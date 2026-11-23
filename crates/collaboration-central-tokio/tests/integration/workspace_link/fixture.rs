@@ -14,10 +14,13 @@ pub(super) const OTHER_MACHINE: &str = "019f0000-0000-7000-8000-00000000ce02";
 pub(super) const OTHER_ORG: &str = "019f0000-0000-7000-8000-00000000ce03";
 
 pub(super) async fn start_fixture() -> Result<Fixture> {
-    let clock = Arc::new(ManualClock::starting_at(SyncTime::from_unix_millis(
-        signed::NOW_SECONDS * 1000,
-    ))?);
-    start_machine_link_fixture(clock).await
+    start_machine_link_fixture(signed_clock()?).await
+}
+
+pub(super) fn signed_clock() -> Result<Arc<ManualClock>> {
+    Ok(Arc::new(ManualClock::starting_at(
+        SyncTime::from_unix_millis(signed::NOW_SECONDS * 1000),
+    )?))
 }
 
 pub(super) async fn receive(socket: &mut WebSocket) -> Result<LinkFrame> {

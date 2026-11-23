@@ -1,6 +1,8 @@
 //! The closed Router–central wire vocabulary, without a runtime or storage driver.
 pub mod approval_rpc;
 mod correlation_id;
+#[cfg(any(test, feature = "test-support"))]
+pub mod fixture_central_probe;
 mod link_close;
 mod link_codec;
 mod link_delivery;
@@ -9,6 +11,7 @@ mod link_request;
 mod link_typed_calls;
 mod mac_call_address;
 mod request_status;
+pub mod session_lifecycle_rpc;
 mod typed_call_correlations;
 
 #[cfg(any(test, feature = "test-support"))]

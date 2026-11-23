@@ -42,7 +42,10 @@ export type CallOffer = {
 };
 
 export type CallStopCause = "callWithdrawn" |
-/**  The holder has already given the requester a final local refusal. */
+/**
+ *  The holder has selected a final local refusal for the requester; whether it
+ *  reached the provider is a separate observation.
+ */
 "holderRefusedLocally";
 
 export type CancelReason = { kind: "stopped"; cause: HolderStopCause } | { kind: "requesterGone" } | { kind: "sessionEnded" } | { kind: "enrollmentEnded" };
@@ -194,7 +197,10 @@ export type ProviderHolder = {
 export type ProviderStopCause = "turnStopped" | "askReplaced" |
 /**  The provider agent withdrew this waiting ask. */
 "askWithdrawn" | "sessionClosed" | "providerConnectionLost" |
-/**  The holder has already given the requester a final local refusal. */
+/**
+ *  The holder has selected a final local refusal for the requester; whether it
+ *  reached the provider is a separate observation.
+ */
 "holderRefusedLocally";
 
 export type QuestionAnswer = { kind: "answered"; fields: QuestionFieldAnswer[] } | { kind: "declined" };
