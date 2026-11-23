@@ -275,7 +275,7 @@ async fn a_crash_at_the_sender_notice_sink_replays_the_same_owed_notice() {
     fixture.lane.admitted.send_replace(None);
     let mut inbox = fixture.reopen().await;
     inbox
-        .record_delivery(&fixture.notice, InboxDecision::Accepted, START_MS)
+        .record_delivery(&fixture.notice, InboxDecision::Accepted, START_MS, None)
         .await
         .unwrap();
     inbox
@@ -325,14 +325,14 @@ async fn startup_drains_an_acknowledged_sender_notice_and_reconciles_lost_commit
         let mut prior = fixture.reopen().await;
         assert_eq!(
             prior
-                .record_delivery(&fixture.notice, InboxDecision::Accepted, START_MS)
+                .record_delivery(&fixture.notice, InboxDecision::Accepted, START_MS, None)
                 .await
                 .unwrap(),
             RecordDelivery::Inserted
         );
         assert_eq!(
             prior
-                .record_delivery(&fixture.notice, InboxDecision::Accepted, START_MS)
+                .record_delivery(&fixture.notice, InboxDecision::Accepted, START_MS, None)
                 .await
                 .unwrap(),
             RecordDelivery::Duplicate

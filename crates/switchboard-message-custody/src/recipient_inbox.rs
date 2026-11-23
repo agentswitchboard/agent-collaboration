@@ -154,6 +154,8 @@ pub enum InboxCustodyError {
     InvalidOffer,
     #[error("central offered a delivery addressed to machine {0}")]
     WrongMachine(MachineId),
+    #[error("delivery expiry is outside the supported clock range")]
+    ExpiryOutOfRange,
     #[error("inbox storage unavailable")]
     Store(#[from] InboxStoreError),
     #[error("the inbox could not read the earlier decision for message {0}")]
@@ -299,9 +301,9 @@ impl RecipientInbox {
         Ok(inbox_scan(scan, &mut self.operator_events))
     }
 
-    pub(crate) async fn prune_completed(&mut self) -> Result<(), InboxCustodyError> {
+    pub(crate) async fn prune_past_retention(&mut self) -> Result<(), InboxCustodyError> {
         let now_ms = self.clock.now().unix_millis();
-        let scan = self.store.prune_ended(now_ms).await?;
+        let scan = self.store.prune_past_retention(now_ms).await?;
         inbox_scan(scan, &mut self.operator_events);
         Ok(())
     }
@@ -400,13 +402,19 @@ impl RecipientInbox {
             },
             RecipientSessionAnswer::CouldNotTell => return Ok(InboxOfferResult::LookupDeferred),
         };
-        // Part A's store has no expiry column. Keep the duration until this
-        // boundary so Part C can supply the expiry when it owns session handoff.
-        let (message, _time_left) = offer.record_to_keep();
+        let (message, time_left) = offer.record_to_keep();
         let arrival_ms = offer.arrived_at().timestamp_millis();
+        let expires_at = time_left
+            .map(|duration| {
+                arrival_ms
+                    .checked_add(i64::from(u32::from(duration)))
+                    .and_then(Timestamp::from_timestamp_millis)
+                    .ok_or(InboxCustodyError::ExpiryOutOfRange)
+            })
+            .transpose()?;
         match self
             .store
-            .record_delivery(&message, decision, arrival_ms)
+            .record_delivery(&message, decision, arrival_ms, expires_at)
             .await?
         {
             // The store commits the first decision and its pending receipt together.

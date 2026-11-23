@@ -3,6 +3,8 @@ use crate::{MachineLocalStore, RowCorruptionReason};
 
 #[path = "inbox_corruption_test.rs"]
 mod corruption;
+#[path = "inbox_retention_test.rs"]
+mod retention;
 #[path = "inbox_timestamp_test.rs"]
 mod timestamps;
 use chrono::DateTime;
@@ -11,10 +13,14 @@ use router_clock::{ManualClock, RuntimeClock};
 use std::collections::{BTreeMap, BTreeSet};
 use std::time::Duration;
 use workspace_ids::MessageId;
-use workspace_model::central_mail::MessageRecord;
+use workspace_model::{Timestamp, central_mail::MessageRecord};
 
 fn clock_millis(clock: &ManualClock) -> i64 {
     clock.utc_now().timestamp_millis()
+}
+
+fn fixture_expiry(arrival_ms: i64) -> Option<Timestamp> {
+    Timestamp::from_timestamp_millis(arrival_ms.saturating_add(900_000))
 }
 
 fn message(index: u8) -> MessageRecord {
@@ -60,7 +66,7 @@ impl InboxTrial {
         let first_push = self.delivered.insert(message.message_id.clone());
         let recorded = self
             .store
-            .record_delivery(&message, decision(index), now)
+            .record_delivery(&message, decision(index), now, fixture_expiry(now))
             .await
             .unwrap();
         assert_eq!(matches!(recorded, RecordDelivery::Inserted), first_push);
@@ -120,7 +126,12 @@ async fn committed_inbox_receipt_survives_reopen_without_waiting_for_handoff() {
     let delivery = message(0);
 
     store
-        .record_delivery(&delivery, InboxDecision::Accepted, 1_000)
+        .record_delivery(
+            &delivery,
+            InboxDecision::Accepted,
+            1_000,
+            fixture_expiry(1_000),
+        )
         .await
         .unwrap();
     drop(store);
@@ -151,7 +162,10 @@ async fn committed_inbox_receipt_survives_reopen_without_waiting_for_handoff() {
         store.pending_handoffs().await.unwrap().expect_clean(),
         [delivery]
     );
-    assert_eq!(store.next_prune_at_ms().await.unwrap().expect_clean(), None);
+    assert_eq!(
+        store.next_prune_at_ms().await.unwrap().expect_clean(),
+        Some(1_000 + 60 * 24 * 60 * 60 * 1_000)
+    );
 }
 
 #[tokio::test]
@@ -171,7 +185,7 @@ async fn failed_insert_has_no_pending_receipt_and_a_retry_keeps_the_payload() {
 
     assert!(matches!(
         inbox
-            .record_delivery(&delivery, InboxDecision::Accepted, 0)
+            .record_delivery(&delivery, InboxDecision::Accepted, 0, fixture_expiry(0))
             .await,
         Err(InboxStoreError::Database(_))
     ));
@@ -198,7 +212,12 @@ async fn failed_insert_has_no_pending_receipt_and_a_retry_keeps_the_payload() {
         .unwrap();
     assert_eq!(
         inbox
-            .record_delivery(&delivery, InboxDecision::Accepted, 1_000)
+            .record_delivery(
+                &delivery,
+                InboxDecision::Accepted,
+                1_000,
+                fixture_expiry(1_000)
+            )
             .await
             .unwrap(),
         RecordDelivery::Inserted,
@@ -314,112 +333,22 @@ fn unconfirmed_receipt_replays_reach_one_settlement_without_repeating_handoff(tc
                 .await
                 .unwrap();
         assert_eq!(usize::try_from(rows).unwrap(), trial.delivered.len());
-        assert_eq!(retained_payloads, 0);
-    });
-}
-
-#[tokio::test]
-async fn inbox_prunes_only_completed_decisions_older_than_retention() {
-    let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("machine_local.sqlite");
-    let clock = ManualClock::new(DateTime::UNIX_EPOCH);
-    let mut store = InboxStore::new(MachineLocalStore::open(&path).await.unwrap());
-    let now = clock_millis(&clock);
-    for index in 0..3 {
+        let accepted = trial.handoffs.len();
         assert_eq!(
-            store
-                .record_delivery(&message(index), InboxDecision::Accepted, now)
-                .await
-                .unwrap(),
-            RecordDelivery::Inserted,
+            usize::try_from(retained_payloads).unwrap(),
+            accepted,
+            "hand-off retains each accepted message"
         );
-    }
-    for index in 0..2 {
-        store
-            .record_handoff(&message(index).message_id, now)
-            .await
-            .unwrap();
-    }
-    clock.advance(Duration::from_secs(60)).unwrap();
-    let confirmed_at = clock_millis(&clock);
-    let oldest = message(0);
-    store
-        .mark_receipt_confirmed(&oldest.message_id, confirmed_at)
-        .await
-        .unwrap();
-
-    clock.advance(Duration::from_secs(24 * 60 * 60)).unwrap();
-    let boundary = clock_millis(&clock);
-    assert_eq!(
-        store.next_prune_at_ms().await.unwrap().expect_clean(),
-        Some(boundary + 1)
-    );
-    store.prune_ended(boundary).await.unwrap().expect_clean();
-    assert_eq!(
-        store
-            .record_delivery(&oldest, InboxDecision::Accepted, boundary)
-            .await
-            .unwrap(),
-        RecordDelivery::Duplicate,
-        "the exact 24-hour boundary still retains the decision",
-    );
-    assert_eq!(
-        store
-            .receipt_for(&oldest.message_id)
-            .await
-            .unwrap()
-            .expect_clean()
-            .unwrap()
-            .received_at_ms,
-        now,
-    );
-    assert_eq!(
-        store.pending_receipts().await.unwrap().expect_clean().len(),
-        2
-    );
-
-    clock.advance(Duration::from_millis(1)).unwrap();
-    let after_boundary = clock_millis(&clock);
-    store
-        .prune_ended(after_boundary)
-        .await
-        .unwrap()
-        .expect_clean();
-    assert_eq!(
-        store
-            .receipt_for(&oldest.message_id)
-            .await
-            .unwrap()
-            .expect_clean(),
-        None
-    );
-    assert_eq!(store.next_prune_at_ms().await.unwrap().expect_clean(), None);
-
-    let mut database = MachineLocalStore::open(&path).await.unwrap();
-    let ids: Vec<String> =
-        sqlx::query_scalar("SELECT message_id FROM inbox_messages ORDER BY message_id")
-            .fetch_all(&mut database.connection)
-            .await
-            .unwrap();
-    assert_eq!(
-        ids,
-        [
-            message(1).message_id.as_str(),
-            message(2).message_id.as_str()
-        ]
-    );
-    assert_eq!(
-        store
-            .record_delivery(&oldest, InboxDecision::Accepted, after_boundary)
-            .await
-            .unwrap(),
-        RecordDelivery::Inserted,
-        "after pruning the same message ID is new to the store",
-    );
-    assert_eq!(
-        store.pending_handoffs().await.unwrap().expect_clean(),
-        [message(2), oldest]
-    );
+        assert!(
+            trial
+                .store
+                .pending_handoffs()
+                .await
+                .unwrap()
+                .expect_clean()
+                .is_empty()
+        );
+    });
 }
 
 #[tokio::test]
@@ -430,7 +359,7 @@ async fn inbox_rejects_unknown_state_and_a_payload_with_the_wrong_message_id() {
     let first = message(0);
     let mut store = InboxStore::new(MachineLocalStore::open(&path).await.unwrap());
     store
-        .record_delivery(&first, InboxDecision::Accepted, now)
+        .record_delivery(&first, InboxDecision::Accepted, now, fixture_expiry(now))
         .await
         .unwrap();
 
@@ -441,7 +370,7 @@ async fn inbox_rejects_unknown_state_and_a_payload_with_the_wrong_message_id() {
         .await
         .unwrap();
     let result = store
-        .record_delivery(&first, InboxDecision::Accepted, now)
+        .record_delivery(&first, InboxDecision::Accepted, now, fixture_expiry(now))
         .await;
     assert!(matches!(
         result,
@@ -452,7 +381,7 @@ async fn inbox_rejects_unknown_state_and_a_payload_with_the_wrong_message_id() {
     ));
 
     sqlx::query("UPDATE inbox_messages SET delivery_state_json = ?, message_json = ?")
-        .bind(r#"{"decision":{"kind":"accepted"},"receipt":{"kind":"pending"},"ended_at_ms":null}"#)
+        .bind(r#"{"decision":{"kind":"accepted"},"receipt":{"kind":"pending"},"handoff":{"kind":"pending"}}"#)
         .bind(serde_json::to_string(&message(1)).unwrap())
         .execute(&mut database.connection)
         .await

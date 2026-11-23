@@ -1,0 +1,12 @@
+{
+  "db_name": "SQLite",
+  "query": "UPDATE inbox_messages SET delivery_state_json = ?, updated_at = ? WHERE message_id = ?",
+  "describe": {
+    "columns": [],
+    "parameters": {
+      "Right": 3
+    },
+    "nullable": []
+  },
+  "hash": "84140616a16fb3a75f53fd4aa9b8e821015c0d8ba50d530f399255561b07431b"
+}

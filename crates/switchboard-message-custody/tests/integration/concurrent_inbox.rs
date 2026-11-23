@@ -215,7 +215,7 @@ async fn an_offline_intake_retry_does_not_delay_receipts_on_a_backwards_welcome(
         Timestamp::from_timestamp_millis(LOCAL_MARK_MS - 20_000).unwrap(),
     );
     inbox_store
-        .record_delivery(&owed, InboxDecision::Accepted, LOCAL_MARK_MS - 20_000)
+        .record_delivery(&owed, InboxDecision::Accepted, LOCAL_MARK_MS - 20_000, None)
         .await
         .unwrap();
     lane.push_event(LinkLaneEvent::Deliver {
@@ -314,6 +314,7 @@ async fn a_held_directory_does_not_block_status_deadlines_or_shutdown() {
                 reason: InboxRefusalReason::UnknownSession,
             },
             start_ms,
+            None,
         )
         .await
         .unwrap();

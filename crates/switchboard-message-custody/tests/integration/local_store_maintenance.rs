@@ -25,7 +25,7 @@ use super::{
 };
 
 const NOW_MS: i64 = 1_763_380_780_000;
-const DAY_MS: i64 = 24 * 60 * 60 * 1_000;
+const RETENTION_MS: i64 = 60 * 24 * 60 * 60 * 1_000;
 
 #[expect(
     clippy::unwrap_used,
@@ -63,19 +63,19 @@ async fn maintenance_progress<Output>(
 }
 
 #[tokio::test]
-async fn offline_inbox_retention_prunes_only_healthy_completed_rows() {
+async fn offline_inbox_retention_prunes_only_healthy_confirmed_rows() {
     let (root, custody, lane, clock) = limits_fixture().await;
     lane.admitted.send_replace(None);
     let database = root.path().join("machine_local.sqlite");
     let mut store = InboxStore::new(MachineLocalStore::open(&database).await.unwrap());
     let session = recipient_session();
-    let ended_ms = NOW_MS - DAY_MS + 99;
+    let arrived_ms = NOW_MS - RETENTION_MS + 100;
     let make_record = |id: &str| {
         MessageRecord::queued_central(
             id.parse().unwrap(),
             session.clone(),
             MessageBody::Notice { items: Vec::new() },
-            Timestamp::from_timestamp_millis(ended_ms).unwrap(),
+            Timestamp::from_timestamp_millis(arrived_ms).unwrap(),
         )
     };
     let refused = make_record("019f0000-0000-7000-8000-000000000f01");
@@ -88,17 +88,18 @@ async fn offline_inbox_retention_prunes_only_healthy_completed_rows() {
                 InboxDecision::Refused {
                     reason: InboxRefusalReason::UnknownSession,
                 },
-                ended_ms,
+                arrived_ms,
+                None,
             )
             .await
             .unwrap();
         store
-            .mark_receipt_confirmed(&message.message_id, ended_ms)
+            .mark_receipt_confirmed(&message.message_id, arrived_ms)
             .await
             .unwrap();
     }
     store
-        .record_delivery(&kept, InboxDecision::Accepted, ended_ms)
+        .record_delivery(&kept, InboxDecision::Accepted, arrived_ms, None)
         .await
         .unwrap();
     mutate_fixture_row(

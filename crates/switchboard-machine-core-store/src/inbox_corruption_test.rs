@@ -2,13 +2,11 @@ use super::{InboxStore, MachineLocalStore, message};
 use crate::{RowCorruption, RowCorruptionReason, StoreScan};
 use workspace_model::central_mail::MessageRecord;
 
-const COMPLETE: &str =
-    r#"{"decision":{"kind":"accepted"},"receipt":{"kind":"confirmed"},"ended_at_ms":0}"#;
+const COMPLETE: &str = r#"{"decision":{"kind":"accepted"},"receipt":{"kind":"confirmed"},"handoff":{"kind":"completed"}}"#;
 const PENDING: &str =
-    r#"{"decision":{"kind":"accepted"},"receipt":{"kind":"pending"},"ended_at_ms":null}"#;
-const BROKEN: &str =
-    r#"{"decision":{"kind":"accepted"},"receipt":{"kind":"pending"},"ended_at_ms":0}"#;
-const RETENTION: i64 = 24 * 60 * 60 * 1_000;
+    r#"{"decision":{"kind":"accepted"},"receipt":{"kind":"pending"},"handoff":{"kind":"pending"}}"#;
+const BROKEN: &str = r#"{"decision":{"kind":"accepted"},"receipt":{"kind":"pending"},"handoff":{"kind":"notRequired"}}"#;
+const RETENTION: i64 = 60 * 24 * 60 * 60 * 1_000;
 
 async fn plant_messages(
     database: &mut MachineLocalStore,
@@ -19,7 +17,7 @@ async fn plant_messages(
         let event = message(index);
         let corrupted = index % 2 == 0;
         let completed = with_completed_rows && !corrupted;
-        let payload = (!completed).then(|| serde_json::to_string(&event).unwrap());
+        let payload = serde_json::to_string(&event).unwrap();
         let state = if corrupted {
             BROKEN
         } else if completed {
@@ -49,7 +47,7 @@ fn expected_faults(messages: &[MessageRecord]) -> Vec<RowCorruption> {
         .step_by(2)
         .map(|message| RowCorruption {
             key: message.message_id.to_string(),
-            field: "delivery_state_json.ended_at_ms",
+            field: "delivery_state_json.handoff",
             reason: RowCorruptionReason::InconsistentState,
         })
         .collect()
@@ -97,12 +95,12 @@ async fn inbox_retention_removes_healthy_completed_rows_and_keeps_corrupt_custod
     let mut inbox = InboxStore::new(database);
 
     let next = inbox.next_prune_at_ms().await.unwrap();
-    assert_eq!(next.healthy, Some(RETENTION + 1));
+    assert_eq!(next.healthy, Some(RETENTION));
     assert_faults(next.corrupt_rows, &messages);
-    let scan = inbox.prune_ended(RETENTION + 1).await.unwrap();
+    let scan = inbox.prune_past_retention(RETENTION).await.unwrap();
     assert_eq!(scan.healthy, 2);
     assert_faults(scan.corrupt_rows, &messages);
-    let repeated = inbox.prune_ended(RETENTION + 1).await.unwrap();
+    let repeated = inbox.prune_past_retention(RETENTION).await.unwrap();
     assert_eq!(repeated.healthy, 0);
     assert_faults(repeated.corrupt_rows, &messages);
 
@@ -201,4 +199,77 @@ async fn non_integer_receipt_time_does_not_turn_into_a_healthy_delivery() {
             reason: RowCorruptionReason::InvalidStorageType,
         }]
     );
+}
+
+#[tokio::test]
+async fn corrupt_expiry_is_reported_and_kept_out_of_healthy_inbox_work() {
+    let root = tempfile::tempdir().unwrap();
+    let path = root.path().join("machine_local.sqlite");
+    let mut database = MachineLocalStore::open(&path).await.unwrap();
+    for index in 0..3 {
+        let event = message(index);
+        sqlx::query(
+            "INSERT INTO inbox_messages
+             (message_id, message_json, delivery_state_json, created_at, updated_at, expires_at)
+             VALUES (?, ?, ?, 0, 0, 60000)",
+        )
+        .bind(event.message_id.as_str())
+        .bind(serde_json::to_string(&event).unwrap())
+        .bind(COMPLETE)
+        .execute(&mut database.connection)
+        .await
+        .unwrap();
+    }
+    sqlx::query("UPDATE inbox_messages SET expires_at = ? WHERE message_id = ?")
+        .bind(i64::MAX)
+        .bind(message(0).message_id.as_str())
+        .execute(&mut database.connection)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE inbox_messages SET expires_at = 'invalid' WHERE message_id = ?")
+        .bind(message(1).message_id.as_str())
+        .execute(&mut database.connection)
+        .await
+        .unwrap();
+
+    let mut inbox = InboxStore::new(database);
+    let mut faults = Vec::new();
+    for (index, reason) in [
+        (0, RowCorruptionReason::TimestampOutOfRange),
+        (1, RowCorruptionReason::InvalidStorageType),
+    ] {
+        let id = message(index).message_id;
+        let scan = inbox.expiry_for(&id).await.unwrap();
+        let problem = RowCorruption {
+            key: id.to_string(),
+            field: "expires_at",
+            reason,
+        };
+        assert_eq!(
+            scan,
+            StoreScan {
+                healthy: None,
+                corrupt_rows: vec![problem]
+            },
+            "corrupt expires_at must be reported, never coerced"
+        );
+        faults.extend(scan.corrupt_rows);
+    }
+    let mut read = inbox.next_prune_at_ms().await.unwrap();
+    assert_eq!(read.healthy, Some(RETENTION));
+    read.corrupt_rows
+        .sort_by(|first, second| first.key.cmp(&second.key));
+    assert_eq!(read.corrupt_rows, faults);
+    let mut pruned = inbox.prune_past_retention(RETENTION).await.unwrap();
+    pruned
+        .corrupt_rows
+        .sort_by(|first, second| first.key.cmp(&second.key));
+    assert_eq!(pruned.healthy, 1);
+    assert_eq!(pruned.corrupt_rows, faults);
+    let mut reopened = MachineLocalStore::open(&path).await.unwrap();
+    let retained: i64 = sqlx::query_scalar("SELECT count(*) FROM inbox_messages")
+        .fetch_one(&mut reopened.connection)
+        .await
+        .unwrap();
+    assert_eq!(retained, 2);
 }

@@ -6,10 +6,11 @@ use serde::{Deserialize, Serialize};
 use sqlite_storage_maintenance::TransactionStart;
 use sqlx::SqliteConnection;
 use workspace_ids::MessageId;
-use workspace_model::central_mail::MessageRecord;
+use workspace_model::{Timestamp, central_mail::MessageRecord};
 
-const RETENTION_MILLIS: i64 = 24 * 60 * 60 * 1_000;
+const INBOX_RETENTION_MILLIS: i64 = 60 * 24 * 60 * 60 * 1_000;
 
+/// The inbox store reports failures to read or change durable custody.
 #[derive(Debug, thiserror::Error)]
 pub enum InboxStoreError {
     #[error("inbox timestamp {field} is out of range")]
@@ -39,6 +40,7 @@ impl From<RowCorruption> for InboxStoreError {
     }
 }
 
+/// The inbox store distinguishes the first insert from a repeated offer.
 #[derive(Debug, Eq, PartialEq)]
 pub enum RecordDelivery {
     Inserted,
@@ -58,6 +60,7 @@ pub enum InboxDecision {
     Refused { reason: InboxRefusalReason },
 }
 
+/// A recipient's durable reason for refusing a Central delivery.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum InboxRefusalReason {
@@ -65,6 +68,7 @@ pub enum InboxRefusalReason {
     AmbiguousSession,
 }
 
+/// The store supplies the recipient decision and its original arrival for Central's receipt.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InboxReceipt {
     pub message_id: MessageId,
@@ -77,7 +81,7 @@ pub struct InboxReceipt {
 struct InboxRowState {
     decision: InboxDecision,
     receipt: ReceiptConfirmation,
-    ended_at_ms: Option<i64>,
+    handoff: HandoffState,
 }
 
 /// Handoff and central's receipt confirmation are independent.
@@ -88,10 +92,19 @@ enum ReceiptConfirmation {
     Confirmed,
 }
 
+#[derive(Clone, Copy, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+enum HandoffState {
+    Pending,
+    Completed,
+    NotRequired,
+}
+
 struct StoredDelivery {
     message_id: MessageId,
     created_at: i64,
     message: Option<MessageRecord>,
+    expires_at: Option<Timestamp>,
     state: InboxRowState,
 }
 
@@ -103,18 +116,13 @@ impl StoredDelivery {
             received_at_ms: self.created_at,
         }
     }
-
-    fn end_if_complete(&mut self, now_ms: i64) {
-        if self.message.is_none() && self.state.receipt == ReceiptConfirmation::Confirmed {
-            self.state.ended_at_ms.get_or_insert(now_ms);
-        }
-    }
 }
 
 struct InboxRow {
     message_id: Vec<u8>,
     created_at: i64,
     updated_at: i64,
+    expires_at: Option<i64>,
     message_json: Option<Vec<u8>>,
     delivery_state_json: Vec<u8>,
     key_is_text: bool,
@@ -127,11 +135,13 @@ macro_rules! select_inbox_rows {
         sqlx::query_as!(
             InboxRow,
             r#"SELECT CAST(message_id AS BLOB) AS "message_id!: Vec<u8>", created_at, updated_at,
+                    CAST(expires_at AS INTEGER) AS "expires_at?: i64",
                     CAST(message_json AS BLOB) AS "message_json?: Vec<u8>",
                     CAST(delivery_state_json AS BLOB) AS "delivery_state_json!: Vec<u8>",
                     (typeof(message_id) = 'text') AS "key_is_text!: bool",
                     CASE WHEN typeof(created_at) <> 'integer' THEN 1
                          WHEN typeof(updated_at) <> 'integer' THEN 2
+                         WHEN typeof(expires_at) NOT IN ('integer', 'null') THEN 3
                          ELSE 0 END AS "integer_fault!: i64"
              FROM inbox_messages "# + $clause
             $(, $argument)*
@@ -160,6 +170,7 @@ impl InboxRow {
         let invalid_integer = match self.integer_fault {
             1 => Some("created_at"),
             2 => Some("updated_at"),
+            3 => Some("expires_at"),
             _ => None,
         };
         if let Some(field) = invalid_integer {
@@ -169,9 +180,16 @@ impl InboxRow {
             (self.created_at, "created_at"),
             (self.updated_at, "updated_at"),
         ] {
-            workspace_model::Timestamp::from_timestamp_millis(value)
+            Timestamp::from_timestamp_millis(value)
                 .ok_or_else(|| corrupt(field, TimestampOutOfRange))?;
         }
+        let expires_at = self
+            .expires_at
+            .map(|value| {
+                Timestamp::from_timestamp_millis(value)
+                    .ok_or_else(|| corrupt("expires_at", TimestampOutOfRange))
+            })
+            .transpose()?;
         let state: InboxRowState = serde_json::from_slice(&self.delivery_state_json)
             .map_err(|_| corrupt("delivery_state_json", InvalidJson))?;
         let message: Option<MessageRecord> = self
@@ -188,26 +206,31 @@ impl InboxRow {
                 return Err(corrupt("message_json", InconsistentState));
             }
         }
-        if state.ended_at_ms.is_some()
-            != (message.is_none() && state.receipt == ReceiptConfirmation::Confirmed)
-            || state
-                .ended_at_ms
-                .is_some_and(|ended| ended != self.updated_at)
-        {
-            return Err(corrupt(
-                "delivery_state_json.ended_at_ms",
-                InconsistentState,
-            ));
+        if !matches!(
+            (state.decision, state.handoff, message.is_some()),
+            (
+                InboxDecision::Accepted,
+                HandoffState::Pending | HandoffState::Completed,
+                true
+            ) | (
+                InboxDecision::Refused { .. },
+                HandoffState::NotRequired,
+                false
+            )
+        ) {
+            return Err(corrupt("delivery_state_json.handoff", InconsistentState));
         }
         Ok(StoredDelivery {
             message_id,
             created_at: self.created_at,
             message,
+            expires_at,
             state,
         })
     }
 }
 
+/// The Mac opens this store to keep Central deliveries and their custody state.
 pub struct InboxStore {
     store: MachineLocalStore,
 }
@@ -223,10 +246,38 @@ impl InboxStore {
         &mut self,
         message_id: &MessageId,
     ) -> Result<StoreScan<Option<InboxReceipt>>, InboxStoreError> {
+        self.project_delivery(message_id, |delivery| Some(delivery.into_receipt()))
+            .await
+    }
+
+    /// The original direct-message cutoff. System offers have no expiry.
+    /// A damaged row yields a diagnostic instead of an instant.
+    pub async fn expiry_for(
+        &mut self,
+        message_id: &MessageId,
+    ) -> Result<StoreScan<Option<Timestamp>>, InboxStoreError> {
+        self.project_delivery(message_id, |delivery| delivery.expires_at)
+            .await
+    }
+
+    /// A kept payload remains readable after hand-off until retention removes the row.
+    pub async fn message_for(
+        &mut self,
+        message_id: &MessageId,
+    ) -> Result<StoreScan<Option<MessageRecord>>, InboxStoreError> {
+        self.project_delivery(message_id, |delivery| delivery.message)
+            .await
+    }
+
+    async fn project_delivery<Value>(
+        &mut self,
+        message_id: &MessageId,
+        project: impl FnOnce(StoredDelivery) -> Option<Value>,
+    ) -> Result<StoreScan<Option<Value>>, InboxStoreError> {
         let row = read_delivery_row(&mut self.store.connection, message_id).await?;
         match row.map(InboxRow::decode).transpose() {
             Ok(delivery) => Ok(StoreScan {
-                healthy: delivery.map(StoredDelivery::into_receipt),
+                healthy: delivery.and_then(project),
                 corrupt_rows: Vec::new(),
             }),
             Err(corruption) => Ok(StoreScan {
@@ -236,34 +287,40 @@ impl InboxStore {
         }
     }
 
-    /// Commits the first decision and any retained payload in one transaction.
+    /// Commits the first decision, payload and expiry in one transaction.
     pub async fn record_delivery(
         &mut self,
         message: &MessageRecord,
         decision: InboxDecision,
-        now_ms: i64,
+        arrival_ms: i64,
+        expires_at: Option<Timestamp>,
     ) -> Result<RecordDelivery, InboxStoreError> {
-        validate_write_timestamp(now_ms, "created_at")?;
+        validate_write_timestamp(arrival_ms, "created_at")?;
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
         let recorded = match read_delivery(&mut transaction, &message.message_id).await? {
             None => {
+                let expires_at_ms = expires_at.map(|instant| instant.timestamp_millis());
                 let payload = (decision == InboxDecision::Accepted)
                     .then(|| serde_json::to_string(message))
                     .transpose()?;
                 let state = serde_json::to_string(&InboxRowState {
                     decision,
                     receipt: ReceiptConfirmation::Pending,
-                    ended_at_ms: None,
+                    handoff: match decision {
+                        InboxDecision::Accepted => HandoffState::Pending,
+                        InboxDecision::Refused { .. } => HandoffState::NotRequired,
+                    },
                 })?;
                 sqlx::query!(
                     "INSERT INTO inbox_messages
-                     (message_id, message_json, delivery_state_json, created_at, updated_at)
-                     VALUES (?, ?, ?, ?, ?)",
+                     (message_id, message_json, delivery_state_json, created_at, updated_at, expires_at)
+                     VALUES (?, ?, ?, ?, ?, ?)",
                     message.message_id.as_str(),
                     payload,
                     state,
-                    now_ms,
-                    now_ms,
+                    arrival_ms,
+                    arrival_ms,
+                    expires_at_ms,
                 )
                 .execute(&mut *transaction)
                 .await?;
@@ -285,10 +342,10 @@ impl InboxStore {
         let mut delivery = read_delivery(&mut transaction, message_id)
             .await?
             .ok_or_else(|| unexpected(message_id, "pending handoff"))?;
-        if delivery.message.take().is_none() {
+        if delivery.state.handoff != HandoffState::Pending {
             return Err(unexpected(message_id, "pending handoff"));
         }
-        delivery.end_if_complete(now_ms);
+        delivery.state.handoff = HandoffState::Completed;
         update_delivery(&mut transaction, &delivery, now_ms).await?;
         transaction.commit().await?;
         Ok(())
@@ -309,7 +366,6 @@ impl InboxStore {
             return Err(unexpected(message_id, "pending receipt"));
         }
         delivery.state.receipt = ReceiptConfirmation::Confirmed;
-        delivery.end_if_complete(now_ms);
         update_delivery(&mut transaction, &delivery, now_ms).await?;
         transaction.commit().await?;
         Ok(())
@@ -329,6 +385,7 @@ impl InboxStore {
             .collect::<StoreScan<Vec<_>>>()
             .map_healthy(|rows| {
                 rows.into_iter()
+                    .filter(|delivery| delivery.state.handoff == HandoffState::Pending)
                     .filter_map(|delivery| delivery.message)
                     .collect()
             }))
@@ -352,22 +409,26 @@ impl InboxStore {
             .collect())
     }
 
-    /// First time an ended row is eligible for pruning, in Unix milliseconds.
+    /// First time a receipt-confirmed row passes its arrival-based retention, in Unix milliseconds.
     pub async fn next_prune_at_ms(&mut self) -> Result<StoreScan<Option<i64>>, InboxStoreError> {
         let mut transaction = self.store.transaction(TransactionStart::Deferred).await?;
         let scan = retention_candidates(&mut transaction).await?;
         transaction.commit().await?;
         Ok(scan.map_healthy(|rows| {
             rows.into_iter()
-                .filter_map(|delivery| delivery.state.ended_at_ms)
+                .map(|delivery| delivery.created_at)
                 .min()
-                .and_then(|ended| ended.checked_add(RETENTION_MILLIS + 1))
+                .and_then(|arrival| arrival.checked_add(INBOX_RETENTION_MILLIS))
         }))
     }
 
-    pub async fn prune_ended(&mut self, now_ms: i64) -> Result<StoreScan<u64>, InboxStoreError> {
+    /// Prune rows at the arrival retention boundary once Central confirms the receipt.
+    pub async fn prune_past_retention(
+        &mut self,
+        now_ms: i64,
+    ) -> Result<StoreScan<u64>, InboxStoreError> {
         validate_write_timestamp(now_ms, "now_ms")?;
-        let cutoff = now_ms.saturating_sub(RETENTION_MILLIS);
+        let cutoff = now_ms.saturating_sub(INBOX_RETENTION_MILLIS);
         let mut transaction = self.store.transaction(TransactionStart::Immediate).await?;
         let StoreScan {
             healthy,
@@ -375,11 +436,7 @@ impl InboxStore {
         } = retention_candidates(&mut transaction).await?;
         let mut removed = 0;
         for delivery in healthy {
-            if delivery
-                .state
-                .ended_at_ms
-                .is_some_and(|ended| ended < cutoff)
-            {
+            if delivery.created_at <= cutoff {
                 removed += sqlx::query!(
                     "DELETE FROM inbox_messages WHERE message_id = ?",
                     delivery.message_id.as_str()
@@ -400,14 +457,18 @@ impl InboxStore {
 async fn retention_candidates(
     connection: &mut SqliteConnection,
 ) -> Result<StoreScan<Vec<StoredDelivery>>, InboxStoreError> {
-    // Include malformed JSON and incomplete completion markers so the row
-    // decoder can report corruption before any custody is removed.
-    Ok(select_inbox_rows!(
-            r#"WHERE CASE WHEN json_valid(delivery_state_json)
-               THEN json_type(delivery_state_json, '$.ended_at_ms') IS NOT 'null'
-                    OR (message_json IS NULL AND json_extract(delivery_state_json, '$.receipt.kind') = 'confirmed')
-               ELSE 1 END"#,
-    ).fetch_all(connection).await?.into_iter().map(InboxRow::decode).collect())
+    // Decode before filtering, so a malformed row is never removed or silently treated as pending.
+    let rows: StoreScan<Vec<_>> = select_inbox_rows!("")
+        .fetch_all(connection)
+        .await?
+        .into_iter()
+        .map(InboxRow::decode)
+        .collect();
+    Ok(rows.map_healthy(|rows| {
+        rows.into_iter()
+            .filter(|delivery| delivery.state.receipt == ReceiptConfirmation::Confirmed)
+            .collect()
+    }))
 }
 
 async fn read_delivery(
@@ -435,12 +496,9 @@ async fn update_delivery(
     delivery: &StoredDelivery,
     now_ms: i64,
 ) -> Result<(), InboxStoreError> {
-    let clear_message = delivery.message.is_none();
     let state = serde_json::to_string(&delivery.state)?;
     sqlx::query!(
-        "UPDATE inbox_messages SET message_json = CASE WHEN ? THEN NULL ELSE message_json END,
-            delivery_state_json = ?, updated_at = ? WHERE message_id = ?",
-        clear_message,
+        "UPDATE inbox_messages SET delivery_state_json = ?, updated_at = ? WHERE message_id = ?",
         state,
         now_ms,
         delivery.message_id.as_str(),
@@ -451,7 +509,7 @@ async fn update_delivery(
 }
 
 fn validate_write_timestamp(value: i64, field: &'static str) -> Result<(), InboxStoreError> {
-    workspace_model::Timestamp::from_timestamp_millis(value)
+    Timestamp::from_timestamp_millis(value)
         .map(|_| ())
         .ok_or(InboxStoreError::InvalidTimestamp { field })
 }
