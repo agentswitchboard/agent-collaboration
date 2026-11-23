@@ -1,5 +1,6 @@
 mod batch_limits;
 mod batch_replay;
+mod claim_ack_drain;
 mod claim_recovery;
 mod concurrent_inbox;
 mod custody_status;

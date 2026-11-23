@@ -14,7 +14,7 @@ use crate::{
     flush_marks::mark_in_window,
     orphan_recovery::{OrphanProbe, OrphanTurn, prepare_orphan_turn, settle_orphan_probe},
     outbox_dispatch::{BatchDispatchError, FlushReport, FrameWindow, PreparedWriteBatch},
-    outbox_flush::{FlushEvent, FlushTransitionError, RebasedMarks},
+    outbox_flush::{ClaimRecovery, FlushEvent, FlushTransitionError, RebasedMarks},
     outbox_work::OutboxWorkError,
 };
 
@@ -33,11 +33,22 @@ impl CustodyLink {
         };
         self.fence_mark_drain(&admitted);
         let observed_at = self.clock.monotonic_now();
+        let now = self.observe_shared_clock(admitted.clock_anchor, observed_at);
+        if self.schedule.draining_mark() != mark_in_window(now)
+            || self.schedule.draining_mark().is_none()
+        {
+            self.claim_recovery = ClaimRecovery::Clear;
+        }
+        if matches!(
+            self.claim_recovery,
+            ClaimRecovery::ParkedForScan | ClaimRecovery::ParkedForReturn
+        ) {
+            return Ok(None);
+        }
         if let Some(retry) = self.write_retry_at.filter(|retry| observed_at < *retry) {
             return Ok(Some(retry));
         }
         self.write_retry_at = None;
-        let now = self.observe_shared_clock(admitted.clock_anchor, observed_at);
         let earliest_due = self.read_due_for_mark(now).await?;
         self.apply_flush_event(FlushEvent::LinkConnected { now, earliest_due })?;
         Ok(self.schedule.armed_mark().map(|mark| {
@@ -72,7 +83,7 @@ impl CustodyLink {
         deferred: &BTreeSet<RequestId>,
     ) -> Result<OrphanTurn, OutboxWorkError> {
         let ready = can_probe.then(|| self.admitted_connection()).flatten();
-        prepare_orphan_turn(
+        let turn = prepare_orphan_turn(
             &mut self.outbox,
             &mut self.dispatcher,
             &mut self.startup_orphan_claims,
@@ -80,7 +91,11 @@ impl CustodyLink {
             self.clock.monotonic_now(),
             deferred,
         )
-        .await
+        .await?;
+        self.claim_recovery = self
+            .claim_recovery
+            .after_scan(self.dispatcher.owes_local_settlement());
+        Ok(turn)
     }
 
     pub(crate) fn has_startup_claim_inventory(&self) -> bool {
@@ -108,9 +123,16 @@ impl CustodyLink {
     }
 
     pub(crate) async fn retry_local_settlement(&mut self) -> FlushReport {
-        self.dispatcher
+        let report = self
+            .dispatcher
             .retry_local_settlements(&mut self.outbox)
-            .await
+            .await;
+        if self.claim_recovery == ClaimRecovery::ParkedForReturn
+            && !self.dispatcher.owes_local_settlement()
+        {
+            self.claim_recovery = ClaimRecovery::Clear;
+        }
+        report
     }
 
     /// Run the local deadline wake and return the exact typed endings for the caller to report.
@@ -193,6 +215,7 @@ impl CustodyLink {
         let prepared = match prepared {
             Ok(prepared) => prepared,
             Err(error) => {
+                self.claim_recovery = ClaimRecovery::ScanOwed;
                 self.defer_write_turn();
                 self.apply_flush_event(FlushEvent::BatchEnded {
                     earliest_due,
@@ -202,7 +225,9 @@ impl CustodyLink {
             }
         };
         let Some(batch) = prepared else {
-            self.release_flush_slot(report, false).await?;
+            self.claim_recovery = self.claim_recovery.park_after_empty();
+            self.release_flush_slot(report, self.claim_recovery != ClaimRecovery::Clear)
+                .await?;
             return Ok(None);
         };
         let cause = if self.admitted_connection().as_ref() != Some(&admitted) {
@@ -265,6 +290,7 @@ impl CustodyLink {
             self.schedule.stop_draining_mark();
             self.drain_connection = None;
             self.write_retry_at = None;
+            self.claim_recovery = ClaimRecovery::Clear;
         }
     }
 
@@ -273,6 +299,7 @@ impl CustodyLink {
             self.apply_flush_event(FlushEvent::LinkLost)?;
         }
         self.write_retry_at = None;
+        self.claim_recovery = ClaimRecovery::Clear;
         Ok(())
     }
 
@@ -357,7 +384,8 @@ impl CustodyLink {
         };
         self.apply_flush_event(FlushEvent::BatchEnded {
             earliest_due,
-            continue_mark: continue_mark && earliest_due.is_some(),
+            continue_mark: continue_mark
+                && (earliest_due.is_some() || self.claim_recovery != ClaimRecovery::Clear),
         })?;
         if let Err(error) = self.outbox.prune_ended_writes().await {
             report.issues.push(BatchDispatchError::Work(error));

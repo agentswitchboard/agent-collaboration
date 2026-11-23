@@ -11,6 +11,32 @@ use runtime_primitives::SyncTime;
 use std::collections::{BTreeMap, BTreeSet};
 use workspace_ids::RequestId;
 
+/// Custody records whether the open mark still owes recovery of a local claim.
+#[derive(Clone, Copy, Eq, PartialEq)]
+pub(crate) enum ClaimRecovery {
+    Clear,
+    ScanOwed,
+    ParkedForScan,
+    ParkedForReturn,
+}
+
+impl ClaimRecovery {
+    pub(crate) fn park_after_empty(self) -> Self {
+        match self {
+            Self::ScanOwed => Self::ParkedForScan,
+            other => other,
+        }
+    }
+
+    pub(crate) fn after_scan(self, owes_local_return: bool) -> Self {
+        match (self, owes_local_return) {
+            (Self::Clear | Self::ParkedForReturn, _) => self,
+            (_, false) => Self::Clear,
+            (_, true) => Self::ParkedForReturn,
+        }
+    }
+}
+
 /// Custody remembers which new receipts must be honored during a backward Welcome rebase.
 pub(crate) struct RebasedMarks {
     pub(crate) due_through: SyncTime,
