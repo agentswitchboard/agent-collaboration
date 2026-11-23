@@ -181,7 +181,7 @@ fn check_driver_features(graph: &ActiveFeatures) -> Result<(), FeaturePolicyErro
         (DRIVER, [].as_slice()),
         (CLIENT, &[]),
         ("central-link-protocol", &[]),
-        ("log", &["max_level_info"]),
+        ("log", &[]),
         (
             "hyper-rustls",
             &["http1", "http2", "ring", "tls12", "webpki-roots"],

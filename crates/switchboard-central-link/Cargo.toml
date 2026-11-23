@@ -15,8 +15,7 @@ http-body-util.workspace = true
 hyper.workspace = true
 hyper-rustls = { workspace = true, features = ["ring"] }
 hyper-util.workspace = true
-# Tungstenite 0.29 logs frame payloads at Trace and Close reasons at Debug.
-log = { workspace = true, features = ["max_level_info"] }
+log.workspace = true
 tokio.workspace = true
 tokio-tungstenite.workspace = true
 tower-service = "0.3.3"

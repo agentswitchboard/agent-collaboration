@@ -71,10 +71,6 @@ async fn refuse_renewal(fixture: &mut Fixture) -> WebSocketStream<TcpStream> {
 }
 
 #[tokio::test]
-#[expect(
-    clippy::panic,
-    reason = "The fixture must observe a second typed renewal on the original socket."
-)]
 async fn presented_token_expired_refreshes_and_renews_on_the_same_link() {
     use futures_util::FutureExt;
 

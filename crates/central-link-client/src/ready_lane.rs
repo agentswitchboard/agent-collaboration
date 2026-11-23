@@ -8,6 +8,7 @@ use central_link_protocol::{
 };
 use router_clock::ClockInstant;
 use tokio::sync::watch;
+use workspace_ids::RouterRunId;
 use workspace_model::{Caller, ResolvedSender, Timestamp};
 
 use crate::ConnectionAttempt;
@@ -19,20 +20,31 @@ pub struct WelcomeClockAnchor {
     pub observed_at: ClockInstant,
 }
 
-/// The socket owner publishes this only after registration and admission on this connection.
+/// The socket owner publishes this after Central welcomes and admits this connection.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ReadyConnection {
+pub struct AdmittedConnection {
     pub connection: ConnectionAttempt,
     pub clock_anchor: WelcomeClockAnchor,
 }
 
-/// A link user prepares one frame for the connection it observed as ready.
+/// The run gate publishes this after Central registers the run on the admitted connection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegisteredConnection {
+    pub connection: ConnectionAttempt,
+    pub clock_anchor: WelcomeClockAnchor,
+    pub router_run: RouterRunId,
+}
+
+/// A link user prepares a batch of writes for one connection, retaining each supplied request ID.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct WriteBatchCommand {
+    pub connection: ConnectionAttempt,
+    pub requests: LinkRequestBatch,
+}
+
+/// A link user prepares one single-answer frame for the connection it observed as admitted.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LinkLaneCommand {
-    WriteBatch {
-        connection: ConnectionAttempt,
-        requests: LinkRequestBatch,
-    },
     SubmitReceipts {
         connection: ConnectionAttempt,
         correlation_id: CorrelationId,
@@ -57,12 +69,27 @@ pub struct CorrelatedRequestReply {
     pub result: Box<ReplyPayload>,
 }
 
-/// The socket owner returns these replies after checking connection, correlation and result shape.
+/// The socket owner reports what it learned about an individual write on the batch's connection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WriteBatchMemberDisposition {
+    Answered { reply: CorrelatedRequestReply },
+    AnswerLost { correlation_id: CorrelationId },
+}
+
+/// The socket owner settles the batch frame and preserves each checked member reply across loss.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum WriteBatchDisposition {
+    /// The writer proves that no part of the batch frame started on the named connection.
+    NotReached,
+    /// The write started or may have started. There is one result per request, in batch order.
+    MemberResults {
+        members: Box<[WriteBatchMemberDisposition]>,
+    },
+}
+
+/// The socket owner checks the connection, correlation and shape of each single-frame reply.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LinkLaneReply {
-    WriteBatch {
-        replies: Vec<CorrelatedRequestReply>,
-    },
     ReceiptResults {
         correlation_id: CorrelationId,
         results: Vec<ReceiptResult>,
@@ -76,7 +103,7 @@ pub enum LinkLaneReply {
     },
 }
 
-/// The socket owner's knowledge of a handed-over frame when it settles the command.
+/// The socket owner's knowledge of a single-answer frame when it settles the command.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LinkLaneDisposition {
     /// The writer proves that this frame never started on its named connection.
@@ -87,11 +114,11 @@ pub enum LinkLaneDisposition {
     AnswerLost,
 }
 
-/// The socket owner stamps each delivery and each readiness change with its connection.
+/// The socket owner stamps message deliveries and admission changes with their connection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum LinkLaneEvent {
-    ConnectionReady(ReadyConnection),
-    ConnectionNotReady {
+    ConnectionAdmitted(AdmittedConnection),
+    ConnectionNotAdmitted {
         connection: ConnectionAttempt,
     },
     Deliver {
@@ -104,10 +131,20 @@ pub enum LinkLaneEvent {
 
 /// The socket owner supplies readiness, a command lane and an event stream to its link users.
 pub trait ReadyLinkLane: Send + Sync {
-    /// The current ready connection. The watch contains `None` while unavailable.
-    fn watch_readiness(&self) -> watch::Receiver<Option<ReadyConnection>>;
+    /// The currently admitted connection for message operations.
+    fn watch_admitted(&self) -> watch::Receiver<Option<AdmittedConnection>>;
 
-    /// Hand over one frame for its named connection and await the writer's final disposition.
+    /// The current connection for operations requiring a registered Router run.
+    fn watch_registered(&self) -> watch::Receiver<Option<RegisteredConnection>>;
+
+    /// Hand over a batch for its named connection and await its writer and per-member facts.
+    /// An unknown, repeated or foreign correlation settles no member.
+    fn submit_write_batch(
+        &self,
+        command: WriteBatchCommand,
+    ) -> Pin<Box<dyn Future<Output = WriteBatchDisposition> + Send + '_>>;
+
+    /// Hand over a single-answer frame for its named connection and await its disposition.
     fn submit_command(
         &self,
         command: LinkLaneCommand,
