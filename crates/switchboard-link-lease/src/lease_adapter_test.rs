@@ -346,3 +346,32 @@ async fn central_ended_cause_preserves_the_distinct_stored_reason() {
         }
     );
 }
+
+#[tokio::test]
+async fn a_queued_acquire_does_not_start_refresh_after_the_key_is_fenced() {
+    let mut fixture = Fixture::new();
+    let key = fixture.binding.key();
+    let (reply, result) = oneshot::channel();
+    fixture
+        .source
+        .commands
+        .send(LeaseCommand::Acquire {
+            key: key.clone(),
+            newer_than: None,
+            reply,
+        })
+        .unwrap();
+    fixture
+        .source
+        .state
+        .send_modify(|state| state.retirements.push(key));
+
+    tokio::select! {
+        result = result => assert_eq!(result.unwrap(), Err(LeaseFailure::EnrollmentEnded)),
+        request = fixture.refreshes.recv() => panic!("the queued acquire reached sign-in: {}", request.is_some()),
+    }
+    assert_eq!(
+        fixture.source.close().await.unwrap(),
+        UnfinishedLeaseWork::default()
+    );
+}

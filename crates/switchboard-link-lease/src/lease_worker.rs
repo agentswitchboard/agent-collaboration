@@ -132,6 +132,10 @@ fn dispatch<Store, Source>(
             if state.closed || reply.is_closed() {
                 return;
             }
+            if state.retirements.contains(&key) {
+                let _ = reply.send(Err(LeaseFailure::EnrollmentEnded));
+                return;
+            }
             let owner = Arc::clone(owner);
             let task_key = key.clone();
             let task = tasks.spawn(async move {
