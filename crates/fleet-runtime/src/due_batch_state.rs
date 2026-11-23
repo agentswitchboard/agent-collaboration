@@ -3,7 +3,6 @@ use central_storage::AlarmPublicationFailure;
 use std::sync::{
     Mutex, MutexGuard, PoisonError,
     atomic::{AtomicI64, Ordering},
-    pin::pin,
 };
 use tokio::sync::Notify;
 
@@ -124,7 +123,7 @@ impl DueBatchState {
     ) -> Result<Option<DueBatchClaim<'_>>, AlarmPublicationFailure> {
         let start = now.timestamp_millis();
         loop {
-            let mut released = pin!(self.claim_released.notified());
+            let mut released = std::pin::pin!(self.claim_released.notified());
             if matches!(trigger, DueBatchTrigger::Alarm) {
                 // Subscribe before checking the claim so its release cannot be missed.
                 released.as_mut().enable();
