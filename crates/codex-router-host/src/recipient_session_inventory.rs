@@ -11,10 +11,11 @@ use collaboration_runtime::UnmaterializedThreadHolder;
 use provider_session_machines::session_lifecycle_machine::SessionLifecycle;
 use sqlx::Row;
 use std::{future::Future, path::PathBuf, pin::Pin, sync::Arc};
-use switchboard_message_custody::recipient_sessions::{SessionInventory, SessionInventoryAnswer};
+use switchboard_message_custody::recipient_sessions::{
+    SessionId, SessionInventory, SessionInventoryAnswer,
+};
 use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
-use workspace_ids::SessionId;
 
 const UNAVAILABLE: SessionInventoryAnswer = SessionInventoryAnswer {
     at_least: 0,

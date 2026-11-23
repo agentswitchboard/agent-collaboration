@@ -16,11 +16,10 @@ use std::{
 };
 use switchboard_message_custody::recipient_sessions::{
     CombinedRecipientSessionDirectory, RecipientSessionAnswer, RecipientSessionDirectory,
-    SessionInventory,
+    SessionId, SessionInventory,
 };
 use switchboard_session_store::{ProviderOperationStore, ProviderSessionRecord};
 use tokio::sync::Mutex;
-use workspace_ids::SessionId;
 
 const SAVED: &str = "019f0000-0000-7000-8000-000000000031";
 const ABSENT: &str = "019f0000-0000-7000-8000-000000000032";

@@ -1,5 +1,5 @@
 use std::{future::Future, pin::Pin, sync::Arc};
-use workspace_ids::SessionId;
+pub use workspace_ids::SessionId;
 
 /// The session directory's answer about one addressed session on this Mac.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
