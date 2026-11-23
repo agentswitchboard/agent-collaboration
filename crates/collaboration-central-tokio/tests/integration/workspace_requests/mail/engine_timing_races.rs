@@ -7,7 +7,7 @@ use super::engine_event_support::*;
 use super::engine_probe_support::*;
 use central_storage::{AlarmPublication, CorruptReason, StoreCall, StoreFailure, StoreReply};
 use collaboration_central_core::{WorkspaceRuntime, engine_probe::ProbeEvent};
-use collaboration_central_tokio::ObjectStorage;
+use collaboration_central_tokio::{NativeDirectMessageStore, ObjectStorage};
 use fleet_contracts::AlarmNotPublished;
 use fleet_runtime::{ClockIds, FleetRuntime, PausePoint};
 use fleet_runtime_ports::{Clock, SyncTime, WorkspaceStores};
@@ -203,7 +203,8 @@ async fn a_claim_waits_for_a_publication_between_its_decision_and_its_write() {
     }
     fixture.host.close().await;
     let due_batches = Arc::new(fleet_runtime::DueBatchState::default());
-    let clock = SharedClock(fixture.shared_for_runtime());
+    let clock_handle = SharedClock(fixture.shared_for_runtime());
+    let clock: Arc<dyn Clock> = Arc::new(clock_handle.clone());
     let gate: Arc<Mutex<Option<DecisionGate>>> = Arc::default();
     let decide = fleet_runtime::engine_alarm_decider(due_batches.clone());
     let gated: central_storage::EngineAlarmDecider = Arc::new({
@@ -227,7 +228,7 @@ async fn a_claim_waits_for_a_publication_between_its_decision_and_its_write() {
             )),
             Arc::new(fleet_storage_schema::workspace_migrations::central_migrator()),
         )
-        .with_engine_publication(Arc::new(clock.clone()), gated),
+        .with_engine_publication(clock.clone(), gated),
     );
     let workspace = Arc::new(ObjectStorage::new(
         fixture
@@ -242,13 +243,13 @@ async fn a_claim_waits_for_a_publication_between_its_decision_and_its_write() {
             fixture.caller.organization_id().clone(),
             central.clone(),
             WorkspaceStore(workspace.clone()),
-            Arc::new(clock.clone()),
-            Arc::new(ClockIds::new(clock)),
+            clock.clone(),
+            Arc::new(ClockIds::new(clock_handle)),
             due_batches.clone(),
             Arc::new(|_| {}),
         ),
         central.clone(),
-        central.clone(),
+        Arc::new(NativeDirectMessageStore::new(central.clone(), clock)),
     ));
     fixture.set_utc(at(start, 4, 0, 0)).await;
     assert_eq!(

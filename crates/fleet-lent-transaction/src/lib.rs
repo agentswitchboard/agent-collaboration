@@ -12,6 +12,9 @@ pub trait CentralTransaction {
     fn executor(&mut self) -> impl Executor<'_, Database = Self::Database>;
 
     fn rows_affected(result: <Self::Database as Database>::QueryResult) -> u64;
+
+    /// Hosts can observe the completed receipt authority read in their test transactions.
+    fn after_receipt_enrollment_read(&mut self) {}
 }
 
 /// The Central host identifies the physical organization for the borrowed transaction.

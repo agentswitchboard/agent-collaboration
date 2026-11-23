@@ -10,6 +10,7 @@ mod idle_expiry;
 mod private_enrollment_invalidation;
 mod probe_diagnostic;
 mod receipt;
+mod receipt_enrollment_clock;
 mod receipt_frames;
 mod renewal;
 mod request_authority;

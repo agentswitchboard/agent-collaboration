@@ -11,7 +11,7 @@ mod sign_in_crypto;
 mod sign_in_trust;
 #[cfg(feature = "test-support")]
 pub use object_storage::ObjectStorage;
-pub use object_storage::StoreMigrations;
+pub use object_storage::{StoreMigrations, direct_mail::NativeDirectMessageStore};
 pub use sign_in_trust::NativeSignInTrust;
 mod workspace_host;
 pub use workspace_host::{TokioWorkspaceHost, TokioWorkspaceStores};
