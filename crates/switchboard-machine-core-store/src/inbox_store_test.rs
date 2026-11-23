@@ -1,5 +1,8 @@
 use super::{InboxDecision, InboxRefusalReason, InboxStore, InboxStoreError, RecordDelivery};
-use crate::MachineLocalStore;
+use crate::{MachineLocalStore, RowCorruptionReason};
+
+#[path = "inbox_corruption_test.rs"]
+mod corruption;
 use chrono::DateTime;
 use hegel::{TestCase, generators as gs};
 use router_clock::{ManualClock, RuntimeClock};
@@ -75,7 +78,7 @@ impl InboxTrial {
         if !self.connected {
             return;
         }
-        for receipt in self.store.pending_receipts().await.unwrap() {
+        for receipt in self.store.pending_receipts().await.unwrap().expect_clean() {
             if disconnect_before_receipt {
                 self.connected = false;
                 break;
@@ -121,22 +124,32 @@ async fn committed_inbox_receipt_survives_reopen_without_waiting_for_handoff() {
     drop(store);
     let mut store = InboxStore::new(MachineLocalStore::open(&path).await.unwrap());
 
-    let receipts = store.pending_receipts().await.unwrap();
+    let receipts = store.pending_receipts().await.unwrap().expect_clean();
     assert_eq!(receipts.len(), 1);
     assert_eq!(receipts[0].message_id, delivery.message_id);
     assert_eq!(receipts[0].decision, InboxDecision::Accepted);
     assert_eq!(receipts[0].received_at_ms, 1_000);
     assert_eq!(
-        store.pending_handoffs().await.unwrap(),
+        store.pending_handoffs().await.unwrap().expect_clean(),
         std::slice::from_ref(&delivery)
     );
     store
         .mark_receipt_confirmed(&delivery.message_id, 2_000)
         .await
         .unwrap();
-    assert!(store.pending_receipts().await.unwrap().is_empty());
-    assert_eq!(store.pending_handoffs().await.unwrap(), [delivery]);
-    assert_eq!(store.next_prune_at_ms().await.unwrap(), None);
+    assert!(
+        store
+            .pending_receipts()
+            .await
+            .unwrap()
+            .expect_clean()
+            .is_empty()
+    );
+    assert_eq!(
+        store.pending_handoffs().await.unwrap().expect_clean(),
+        [delivery]
+    );
+    assert_eq!(store.next_prune_at_ms().await.unwrap().expect_clean(), None);
 }
 
 #[tokio::test]
@@ -160,8 +173,22 @@ async fn failed_insert_has_no_pending_receipt_and_a_retry_keeps_the_payload() {
             .await,
         Err(InboxStoreError::Database(_))
     ));
-    assert!(inbox.pending_receipts().await.unwrap().is_empty());
-    assert!(inbox.pending_handoffs().await.unwrap().is_empty());
+    assert!(
+        inbox
+            .pending_receipts()
+            .await
+            .unwrap()
+            .expect_clean()
+            .is_empty()
+    );
+    assert!(
+        inbox
+            .pending_handoffs()
+            .await
+            .unwrap()
+            .expect_clean()
+            .is_empty()
+    );
 
     sqlx::query("DROP TRIGGER reject_first_delivery")
         .execute(&mut fault_connection.connection)
@@ -175,10 +202,13 @@ async fn failed_insert_has_no_pending_receipt_and_a_retry_keeps_the_payload() {
         RecordDelivery::Inserted,
     );
     assert_eq!(
-        inbox.pending_receipts().await.unwrap()[0].message_id,
+        inbox.pending_receipts().await.unwrap().expect_clean()[0].message_id,
         delivery.message_id
     );
-    assert_eq!(inbox.pending_handoffs().await.unwrap(), [delivery]);
+    assert_eq!(
+        inbox.pending_handoffs().await.unwrap().expect_clean(),
+        [delivery]
+    );
 }
 
 fn decision(index: u8) -> InboxDecision {
@@ -253,7 +283,15 @@ fn unconfirmed_receipt_replays_reach_one_settlement_without_repeating_handoff(tc
         }
         trial.reconnect().await;
         trial.flush(false).await;
-        assert!(trial.store.pending_receipts().await.unwrap().is_empty());
+        assert!(
+            trial
+                .store
+                .pending_receipts()
+                .await
+                .unwrap()
+                .expect_clean()
+                .is_empty()
+        );
         assert_eq!(trial.settled.len(), trial.delivered.len());
         for index in 0..4 {
             let id = message(index).message_id;
@@ -310,8 +348,11 @@ async fn inbox_prunes_only_completed_decisions_older_than_retention() {
 
     clock.advance(Duration::from_secs(24 * 60 * 60)).unwrap();
     let boundary = clock_millis(&clock);
-    assert_eq!(store.next_prune_at_ms().await.unwrap(), Some(boundary + 1));
-    store.prune_ended(boundary).await.unwrap();
+    assert_eq!(
+        store.next_prune_at_ms().await.unwrap().expect_clean(),
+        Some(boundary + 1)
+    );
+    store.prune_ended(boundary).await.unwrap().expect_clean();
     assert_eq!(
         store
             .record_delivery(&oldest, InboxDecision::Accepted, boundary)
@@ -325,17 +366,32 @@ async fn inbox_prunes_only_completed_decisions_older_than_retention() {
             .receipt_for(&oldest.message_id)
             .await
             .unwrap()
+            .expect_clean()
             .unwrap()
             .received_at_ms,
         now,
     );
-    assert_eq!(store.pending_receipts().await.unwrap().len(), 2);
+    assert_eq!(
+        store.pending_receipts().await.unwrap().expect_clean().len(),
+        2
+    );
 
     clock.advance(Duration::from_millis(1)).unwrap();
     let after_boundary = clock_millis(&clock);
-    store.prune_ended(after_boundary).await.unwrap();
-    assert_eq!(store.receipt_for(&oldest.message_id).await.unwrap(), None);
-    assert_eq!(store.next_prune_at_ms().await.unwrap(), None);
+    store
+        .prune_ended(after_boundary)
+        .await
+        .unwrap()
+        .expect_clean();
+    assert_eq!(
+        store
+            .receipt_for(&oldest.message_id)
+            .await
+            .unwrap()
+            .expect_clean(),
+        None
+    );
+    assert_eq!(store.next_prune_at_ms().await.unwrap().expect_clean(), None);
 
     let mut database = MachineLocalStore::open(&path).await.unwrap();
     let ids: Vec<String> =
@@ -359,7 +415,7 @@ async fn inbox_prunes_only_completed_decisions_older_than_retention() {
         "after pruning the same message ID is new to the store",
     );
     assert_eq!(
-        store.pending_handoffs().await.unwrap(),
+        store.pending_handoffs().await.unwrap().expect_clean(),
         [message(2), oldest]
     );
 }
@@ -399,47 +455,14 @@ async fn inbox_rejects_unknown_state_and_a_payload_with_the_wrong_message_id() {
         .execute(&mut database.connection)
         .await
         .unwrap();
-    let result = store.pending_handoffs().await;
-    assert!(matches!(
-        result,
-        Err(InboxStoreError::Corrupt {
+    let scan = store.pending_handoffs().await.unwrap();
+    assert!(scan.healthy.is_empty());
+    assert_eq!(
+        scan.corrupt_rows,
+        [crate::RowCorruption {
+            key: first.message_id.to_string(),
             field: "message_json.message_id",
-            ..
-        })
-    ));
-}
-
-#[tokio::test]
-async fn corrupt_completion_marker_cannot_prune_a_message_with_work_owed() {
-    let root = tempfile::tempdir().unwrap();
-    let path = root.path().join("machine_local.sqlite");
-    let mut database = MachineLocalStore::open(&path).await.unwrap();
-    let event = message(0);
-    let body = serde_json::to_string(&event).unwrap();
-    let state = r#"{"decision":{"kind":"accepted"},"receipt":{"kind":"pending"},"ended_at_ms":0}"#;
-    sqlx::query(
-        "INSERT INTO inbox_messages (message_id, message_json, delivery_state_json, created_at, updated_at)
-         VALUES (?, ?, ?, 0, 0)",
-    ).bind(event.message_id.as_str()).bind(&body).bind(state).execute(&mut database.connection).await.unwrap();
-    let mut inbox = InboxStore::new(database);
-
-    for result in [
-        inbox.next_prune_at_ms().await.map(|_| ()),
-        inbox.prune_ended(24 * 60 * 60 * 1000 + 1).await,
-    ] {
-        assert!(matches!(
-            result,
-            Err(InboxStoreError::Corrupt {
-                field: "delivery_state_json.ended_at_ms",
-                ..
-            })
-        ));
-    }
-    let mut reopened = MachineLocalStore::open(&path).await.unwrap();
-    let retained: (String, String) =
-        sqlx::query_as("SELECT message_json, delivery_state_json FROM inbox_messages")
-            .fetch_one(&mut reopened.connection)
-            .await
-            .unwrap();
-    assert_eq!(retained, (body, state.to_owned()));
+            reason: RowCorruptionReason::KeyMismatch,
+        }]
+    );
 }

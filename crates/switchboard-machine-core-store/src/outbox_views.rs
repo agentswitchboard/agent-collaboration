@@ -1,6 +1,6 @@
 //! Typed projections of the caller's own stored writes.
+use crate::OutboxAccepted;
 use crate::OutboxScope;
-use central_link_protocol::ReplyPayload;
 use serde::{Deserialize, Serialize};
 use workspace_ids::{RequestId, SessionRef};
 use workspace_model::{Caller, PostText, ThreadId, WorkspaceId, WorkspaceOperation};
@@ -81,7 +81,7 @@ pub enum PendingWriteState {
     /// Went out in a batch whose answer was lost; resent with the same id.
     SentAnswerLost { body: PostText },
     /// Central answered; the read layer drops it once it sees the created id.
-    Answered(ReplyPayload),
+    Answered(OutboxAccepted),
     /// The Router stopped trying to send it; its text is gone.
     Cancelled { reason: crate::OutboxCancellation },
 }
@@ -97,7 +97,7 @@ pub struct PendingWrite {
 /// How central answered a flushed write.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum OutgoingOutcome {
-    Answered(ReplyPayload),
+    Answered(OutboxAccepted),
     Refused(crate::OutboxRefusal),
 }
 

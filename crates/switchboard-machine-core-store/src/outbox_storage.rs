@@ -5,7 +5,7 @@
 use crate::outbox_store::StoredOutboxWrite;
 use crate::outbox_store::{ClaimedBatch, MacOutbox, NewOutboxItem, OutboxInsert, OutboxStoreError};
 use crate::{
-    EndedWrite, OutboxRequestStatus, OutboxWriteOutcome, OutgoingWrite, PendingWrite,
+    EndedWrite, OutboxRequestStatus, OutboxWriteOutcome, OutgoingWrite, PendingWrite, StoreScan,
     StoredSenderOutcome,
 };
 use crate::{MachineLocalStore, OutboxRequestKey};
@@ -42,12 +42,13 @@ pub trait OutboxStorage: Send {
         caller: &'call Caller,
         limit: u16,
     ) -> OutboxFuture<'call, Vec<OutgoingWrite>>;
-    fn delete_ended_before_retention(&mut self, now: i64) -> OutboxFuture<'_, u64>;
-    fn waiting(&mut self) -> OutboxFuture<'_, Vec<(i64, RequestId)>>;
+    fn delete_ended_before_retention(&mut self, now: i64) -> OutboxFuture<'_, StoreScan<u64>>;
+    #[cfg(test)]
+    fn waiting(&mut self) -> OutboxFuture<'_, StoreScan<Vec<(i64, RequestId)>>>;
     /// The earliest receipt mark among waiting writes.
-    fn earliest_waiting(&mut self) -> OutboxFuture<'_, Option<i64>>;
+    fn earliest_waiting(&mut self) -> OutboxFuture<'_, StoreScan<Option<i64>>>;
     /// The earliest expiry among waiting writes, even when the link is down.
-    fn earliest_deadline(&mut self) -> OutboxFuture<'_, Option<i64>>;
+    fn earliest_deadline(&mut self) -> OutboxFuture<'_, StoreScan<Option<i64>>>;
     /// Up to `limit` writes due by `mark` and before their deadline, oldest
     /// first by (created_at, request_id), moved to sent in one transaction
     /// that first ends every overdue waiting write (outbox_deadline).
@@ -56,9 +57,9 @@ pub trait OutboxStorage: Send {
         mark: i64,
         limit: u16,
         now: i64,
-    ) -> OutboxFuture<'_, ClaimedBatch>;
+    ) -> OutboxFuture<'_, StoreScan<ClaimedBatch>>;
     /// Ends every waiting write past its deadline.
-    fn end_overdue(&mut self, now: i64) -> OutboxFuture<'_, Vec<EndedWrite>>;
+    fn end_overdue(&mut self, now: i64) -> OutboxFuture<'_, StoreScan<Vec<EndedWrite>>>;
     /// Recover the original acceptance and retain the typed late delivery fact.
     /// True means the caller's pending inbox handoff can notify its sink.
     fn record_sender_delivery<'call>(
@@ -72,7 +73,7 @@ pub trait OutboxStorage: Send {
         caller: &'call Caller,
         request: &'call RequestId,
     ) -> OutboxFuture<'call, Option<StoredSenderOutcome>>;
-    fn sent_without_answer(&mut self) -> OutboxFuture<'_, Vec<RequestId>>;
+    fn sent_without_answer(&mut self) -> OutboxFuture<'_, StoreScan<Vec<RequestId>>>;
     #[cfg(test)]
     fn mark_sent<'call>(
         &'call mut self,
@@ -95,7 +96,7 @@ pub trait OutboxStorage: Send {
         &'call mut self,
         requests: &'call [RequestId],
         now: i64,
-    ) -> OutboxFuture<'call, Vec<EndedWrite>>;
+    ) -> OutboxFuture<'call, StoreScan<Vec<EndedWrite>>>;
 }
 
 /// The production outbox: machine_local.sqlite, through MacOutbox. A separate
@@ -158,20 +159,21 @@ impl OutboxStorage for MachineLocalOutbox {
                 .await
         })
     }
-    fn delete_ended_before_retention(&mut self, now: i64) -> OutboxFuture<'_, u64> {
+    fn delete_ended_before_retention(&mut self, now: i64) -> OutboxFuture<'_, StoreScan<u64>> {
         Box::pin(async move {
             MacOutbox::new(&mut self.store)
                 .delete_ended_before_retention(now)
                 .await
         })
     }
-    fn waiting(&mut self) -> OutboxFuture<'_, Vec<(i64, RequestId)>> {
+    #[cfg(test)]
+    fn waiting(&mut self) -> OutboxFuture<'_, StoreScan<Vec<(i64, RequestId)>>> {
         Box::pin(async move { MacOutbox::new(&mut self.store).waiting().await })
     }
-    fn earliest_waiting(&mut self) -> OutboxFuture<'_, Option<i64>> {
+    fn earliest_waiting(&mut self) -> OutboxFuture<'_, StoreScan<Option<i64>>> {
         Box::pin(async move { MacOutbox::new(&mut self.store).earliest_waiting().await })
     }
-    fn earliest_deadline(&mut self) -> OutboxFuture<'_, Option<i64>> {
+    fn earliest_deadline(&mut self) -> OutboxFuture<'_, StoreScan<Option<i64>>> {
         Box::pin(async move { MacOutbox::new(&mut self.store).earliest_deadline().await })
     }
     fn claim_next_batch(
@@ -179,14 +181,14 @@ impl OutboxStorage for MachineLocalOutbox {
         mark: i64,
         limit: u16,
         now: i64,
-    ) -> OutboxFuture<'_, ClaimedBatch> {
+    ) -> OutboxFuture<'_, StoreScan<ClaimedBatch>> {
         Box::pin(async move {
             MacOutbox::new(&mut self.store)
                 .claim_next_batch(mark, limit, now)
                 .await
         })
     }
-    fn end_overdue(&mut self, now: i64) -> OutboxFuture<'_, Vec<EndedWrite>> {
+    fn end_overdue(&mut self, now: i64) -> OutboxFuture<'_, StoreScan<Vec<EndedWrite>>> {
         Box::pin(async move { MacOutbox::new(&mut self.store).end_overdue(now).await })
     }
     fn record_sender_delivery<'call>(
@@ -212,7 +214,7 @@ impl OutboxStorage for MachineLocalOutbox {
                 .await
         })
     }
-    fn sent_without_answer(&mut self) -> OutboxFuture<'_, Vec<RequestId>> {
+    fn sent_without_answer(&mut self) -> OutboxFuture<'_, StoreScan<Vec<RequestId>>> {
         Box::pin(async move { MacOutbox::new(&mut self.store).sent_without_answer().await })
     }
     #[cfg(test)]
@@ -254,7 +256,7 @@ impl OutboxStorage for MachineLocalOutbox {
         &'call mut self,
         requests: &'call [RequestId],
         now: i64,
-    ) -> OutboxFuture<'call, Vec<EndedWrite>> {
+    ) -> OutboxFuture<'call, StoreScan<Vec<EndedWrite>>> {
         Box::pin(async move {
             MacOutbox::new(&mut self.store)
                 .return_unanswered(requests, now)

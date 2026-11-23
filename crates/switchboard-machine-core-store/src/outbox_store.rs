@@ -2,7 +2,7 @@
 //! time comes from the caller's injected clock; stored values are decoded
 //! through Rust types and an invalid row is refused, never coerced.
 use crate::{
-    LocalOutboxRefusal, MachineLocalStore, OutboxQueuedWrite, OutboxRequestStatus,
+    LocalOutboxRefusal, MachineLocalStore, OutboxQueuedWrite, OutboxRequestStatus, RowCorruption,
     outbox_item_state::OutboxItemState,
 };
 use sqlite_storage_maintenance::TransactionStart;
@@ -49,6 +49,15 @@ pub enum OutboxStoreError {
         request: RequestId,
         expected: &'static str,
     },
+}
+
+impl From<RowCorruption> for OutboxStoreError {
+    fn from(row: RowCorruption) -> Self {
+        Self::CorruptItem {
+            request_id: row.key,
+            field: row.field,
+        }
+    }
 }
 
 /// A write entering the outbox, with the mark its receipt promises.

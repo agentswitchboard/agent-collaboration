@@ -1,6 +1,8 @@
 //! The durable answer to a caller's outbox status query.
-use central_link_protocol::{ReplyPayload, RequestRefusal};
+use central_link_protocol::RequestRefusal;
 use serde::{Deserialize, Serialize};
+use workspace_ids::{MessageId, PostId};
+use workspace_model::{ActorView, ChangePosition};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,7 +23,7 @@ pub enum OutboxRequestStatus {
     NotFound,
     InOutbox { flush_at_ms: i64 },
     Sent,
-    Answered(ReplyPayload),
+    Answered(OutboxAccepted),
     Refused(OutboxRefusal),
     Ended { reason: OutboxCancellation },
 }
@@ -31,6 +33,25 @@ pub enum OutboxRequestStatus {
 pub enum OutboxCancellation {
     NotSentWithin15Minutes,
     NotConfirmedWithin15Minutes,
+}
+
+/// A successful write retained by the outbox.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(
+    tag = "kind",
+    rename_all = "camelCase",
+    rename_all_fields = "camelCase",
+    deny_unknown_fields
+)]
+pub enum OutboxAccepted {
+    ThreadPost {
+        post_id: PostId,
+        position: ChangePosition,
+        actors: Vec<ActorView>,
+    },
+    SendMessage {
+        message_id: MessageId,
+    },
 }
 
 /// An original request's owning store.

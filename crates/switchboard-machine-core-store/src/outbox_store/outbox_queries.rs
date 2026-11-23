@@ -9,7 +9,7 @@ use super::{
 use crate::OutboxRequestKey;
 use crate::{
     OutboxRequestStatus, OutgoingOutcome, OutgoingWrite, PendingWrite, PendingWriteState,
-    outbox_item_state::OutboxItemState,
+    StoreScan, outbox_item_state::OutboxItemState,
 };
 use workspace_ids::RequestId;
 use workspace_model::Caller;
@@ -37,12 +37,10 @@ impl MacOutbox<'_> {
     }
 
     /// The earliest expiry among waiting writes, even without a connection.
-    pub async fn earliest_deadline(&mut self) -> Result<Option<i64>, OutboxStoreError> {
+    pub async fn earliest_deadline(&mut self) -> Result<StoreScan<Option<i64>>, OutboxStoreError> {
         Ok(waiting_rows(&mut self.store.connection)
             .await?
-            .iter()
-            .map(|row| row.deadline_ms)
-            .min())
+            .map_healthy(|rows| rows.into_iter().map(|row| row.deadline_ms).min()))
     }
     /// The caller's own writes not yet resolved, oldest first: unsent, sent
     /// with a lost answer (or still in flight), and answered ones the read
@@ -161,36 +159,42 @@ impl MacOutbox<'_> {
 
     /// Writes waiting to be sent (never sent, or sent with a lost answer), with
     /// their receipt marks, to load the flush reducer.
-    pub async fn waiting(&mut self) -> Result<Vec<(i64, RequestId)>, OutboxStoreError> {
-        let mut results: Vec<_> = waiting_rows(&mut self.store.connection)
+    #[cfg(test)]
+    pub(crate) async fn waiting(
+        &mut self,
+    ) -> Result<StoreScan<Vec<(i64, RequestId)>>, OutboxStoreError> {
+        Ok(waiting_rows(&mut self.store.connection)
             .await?
-            .into_iter()
-            .map(|row| (row.flush_at_ms, row.request))
-            .collect();
-        results.sort();
-        Ok(results)
+            .map_healthy(|rows| {
+                let mut results: Vec<_> = rows
+                    .into_iter()
+                    .map(|row| (row.flush_at_ms, row.request))
+                    .collect();
+                results.sort();
+                results
+            }))
     }
 
     /// Claims without an answer, including ones recovered after reopen.
-    pub async fn sent_without_answer(&mut self) -> Result<Vec<RequestId>, OutboxStoreError> {
-        let mut requests: Vec<_> = read_rows_in_states(
+    pub async fn sent_without_answer(
+        &mut self,
+    ) -> Result<StoreScan<Vec<RequestId>>, OutboxStoreError> {
+        Ok(read_rows_in_states(
             &mut self.store.connection,
             OutboxItemState::Sent,
             OutboxItemState::Resent,
         )
         .await?
-        .into_iter()
-        .map(|row| row.request)
-        .collect();
-        requests.sort();
-        Ok(requests)
+        .map_healthy(|rows| {
+            let mut requests: Vec<_> = rows.into_iter().map(|row| row.request).collect();
+            requests.sort();
+            requests
+        }))
     }
 
-    pub async fn earliest_waiting(&mut self) -> Result<Option<i64>, OutboxStoreError> {
+    pub async fn earliest_waiting(&mut self) -> Result<StoreScan<Option<i64>>, OutboxStoreError> {
         Ok(waiting_rows(&mut self.store.connection)
             .await?
-            .iter()
-            .map(|row| row.flush_at_ms)
-            .min())
+            .map_healthy(|rows| rows.into_iter().map(|row| row.flush_at_ms).min()))
     }
 }

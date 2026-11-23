@@ -61,6 +61,14 @@ fn message(seed: u16, body: &str, flush_at: i64) -> NewOutboxItem {
     }
 }
 const FIFTEEN_MINUTES_MS: i64 = 15 * 60 * 1000;
+fn answer() -> crate::OutboxAccepted {
+    crate::OutboxAccepted::ThreadPost {
+        post_id: uuid_v7(60_004).parse().unwrap(),
+        position: ChangePosition::ZERO,
+        actors: Vec::new(),
+    }
+}
+
 fn reply() -> ReplyPayload {
     ReplyPayload::Workspace(WorkspaceReply {
         result: WorkspaceResult::Done(WorkspaceAnswer::Created {
@@ -87,7 +95,7 @@ pub(crate) async fn lifecycle_and_views(store: &mut dyn OutboxStorage) {
         OutboxInsert::Stored
     );
     assert_eq!(
-        store.waiting().await.unwrap(),
+        store.waiting().await.unwrap().expect_clean(),
         vec![
             (first.flush_at_ms, first.request.clone()),
             (second.flush_at_ms, second.request.clone())
@@ -103,7 +111,10 @@ pub(crate) async fn lifecycle_and_views(store: &mut dyn OutboxStorage) {
             .unwrap(),
         OutboxRequestStatus::Sent
     );
-    assert_eq!(store.sent_without_answer().await.unwrap(), ids(&[&first]));
+    assert_eq!(
+        store.sent_without_answer().await.unwrap().expect_clean(),
+        ids(&[&first])
+    );
     store
         .record_outcome(
             &first.request,
@@ -124,12 +135,12 @@ pub(crate) async fn lifecycle_and_views(store: &mut dyn OutboxStorage) {
         ids(&[&first, &second]),
         "pending keeps the order writes were stored"
     );
-    assert_eq!(pending[0].state, PendingWriteState::Answered(reply()));
+    assert_eq!(pending[0].state, PendingWriteState::Answered(answer()));
     assert!(
         matches!(&pending[1].state, PendingWriteState::Unsent { body } if body.as_str() == "second text")
     );
     assert_eq!(outgoing.len(), 1);
-    assert_eq!(outgoing[0].outcome, OutgoingOutcome::Answered(reply()));
+    assert_eq!(outgoing[0].outcome, OutgoingOutcome::Answered(answer()));
     assert_eq!(outgoing[0].answered_at_ms, MARK + 1_000);
     let views = format!("{pending:?}{outgoing:?}");
     assert!(
@@ -167,7 +178,7 @@ pub(crate) async fn replay_needs_the_same_caller_target_and_content(store: &mut 
     );
     assert_eq!(
         store.insert(&write, MARK + 2_000).await.unwrap(),
-        OutboxInsert::AlreadyStored(OutboxRequestStatus::Answered(reply()))
+        OutboxInsert::AlreadyStored(OutboxRequestStatus::Answered(answer()))
     );
     for conflicting in [&other_body, &other_workspace, &other_caller] {
         assert_eq!(
@@ -193,7 +204,8 @@ pub(crate) async fn returned_writes(store: &mut dyn OutboxStorage) {
     store
         .return_unanswered(&ids(&[&lost]), MARK + 1_000)
         .await
-        .unwrap();
+        .unwrap()
+        .expect_clean();
     store
         .return_not_transmitted(&not_transmitted.request, MARK + 1_000)
         .await
@@ -219,7 +231,7 @@ pub(crate) async fn returned_writes(store: &mut dyn OutboxStorage) {
         matches!(&pending[1].state, PendingWriteState::Unsent { body } if body.as_str() == "did not leave")
     );
     assert_eq!(pending.len(), 2, "a refused write is not pending");
-    assert_eq!(store.waiting().await.unwrap().len(), 2);
+    assert_eq!(store.waiting().await.unwrap().expect_clean().len(), 2);
     assert_eq!(
         store
             .request_status(&refused.caller, &refused.request)
@@ -248,11 +260,13 @@ pub(crate) async fn retention_prune(store: &mut dyn OutboxStorage) {
     let early = store
         .delete_ended_before_retention(MARK + SIXTY_DAYS_MS - 1)
         .await
-        .unwrap();
+        .unwrap()
+        .expect_clean();
     let due = store
         .delete_ended_before_retention(MARK + SIXTY_DAYS_MS)
         .await
-        .unwrap();
+        .unwrap()
+        .expect_clean();
 
     assert_eq!((early, due), (0, 1));
     assert_eq!(
@@ -322,7 +336,12 @@ pub(crate) async fn same_millisecond_writes_order_by_request_id(store: &mut dyn 
     store.insert(&lower, MARK - 1_000).await.unwrap();
 
     let pending = store.pending_for(&higher.caller).await.unwrap();
-    let claimed = store.claim_next_batch(MARK, 64, MARK).await.unwrap().writes;
+    let claimed = store
+        .claim_next_batch(MARK, 64, MARK)
+        .await
+        .unwrap()
+        .expect_clean()
+        .writes;
 
     assert_eq!(
         pending
@@ -353,11 +372,21 @@ pub(crate) async fn claim_takes_due_writes_oldest_first_up_to_the_limit(
         let stored_at = MARK - 10_000 + i64::try_from(offset).unwrap();
         store.insert(write, stored_at).await.unwrap();
     }
-    let earliest_before = store.earliest_waiting().await.unwrap();
+    let earliest_before = store.earliest_waiting().await.unwrap().expect_clean();
 
-    let claimed = store.claim_next_batch(MARK, 2, MARK).await.unwrap().writes;
-    let earliest_after = store.earliest_waiting().await.unwrap();
-    let rest = store.claim_next_batch(MARK, 64, MARK).await.unwrap().writes;
+    let claimed = store
+        .claim_next_batch(MARK, 2, MARK)
+        .await
+        .unwrap()
+        .expect_clean()
+        .writes;
+    let earliest_after = store.earliest_waiting().await.unwrap().expect_clean();
+    let rest = store
+        .claim_next_batch(MARK, 64, MARK)
+        .await
+        .unwrap()
+        .expect_clean()
+        .writes;
 
     assert_eq!(earliest_before, Some(MARK));
     assert_eq!(
@@ -383,7 +412,10 @@ pub(crate) async fn claim_takes_due_writes_oldest_first_up_to_the_limit(
         ids(&[&third]),
         "a write due on a later mark is not claimed early"
     );
-    assert_eq!(store.earliest_waiting().await.unwrap(), Some(MARK + 60_000));
+    assert_eq!(
+        store.earliest_waiting().await.unwrap().expect_clean(),
+        Some(MARK + 60_000)
+    );
 }
 
 async fn open() -> (tempfile::TempDir, MachineLocalOutbox) {

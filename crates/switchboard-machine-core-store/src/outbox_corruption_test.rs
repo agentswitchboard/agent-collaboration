@@ -1,7 +1,7 @@
-use super::{MARK, RETENTION_MS, accepted_reply, caller, item, open};
+use super::{MARK, RETENTION_MS, accepted_answer, caller, item, open};
 use crate::{
     MacOutbox, MachineLocalStore, NewOutboxItem, OutboxRequestKey, OutboxRequestStatus,
-    OutboxStoreError, StoredSenderOutcome,
+    OutboxStoreError, RowCorruption, RowCorruptionReason, StoredSenderOutcome,
 };
 use workspace_model::{Timestamp, central_mail::MessageOutcome};
 
@@ -45,9 +45,11 @@ fn body_free_payload(write: &NewOutboxItem) -> String {
     .to_string()
 }
 
-async fn rows(database: &mut MachineLocalStore) -> Vec<(String, String, Option<String>, i64)> {
+type RawOutboxSnapshot = (String, String, Option<String>, i64, String, i64);
+
+async fn rows(database: &mut MachineLocalStore) -> Vec<RawOutboxSnapshot> {
     sqlx::query_as(
-        "SELECT item_state, payload_json, outcome_json, expires_at_ms
+        "SELECT item_state, payload_json, outcome_json, expires_at_ms, request_id, updated_at
          FROM outbox_items ORDER BY request_id",
     )
     .fetch_all(&mut database.connection)
@@ -55,84 +57,240 @@ async fn rows(database: &mut MachineLocalStore) -> Vec<(String, String, Option<S
     .unwrap()
 }
 
-#[tokio::test]
-async fn invalid_completed_row_cannot_be_pruned() {
-    let root = tempfile::tempdir().unwrap();
-    let mut database = open(&root).await;
-    let valid = item(110, "first decision", MARK);
-    let broken = item(111, "loss sentinel", MARK);
-    plant_row(
-        &mut database,
-        &valid,
-        "answered",
-        body_free_payload(&valid),
-        Some(serde_json::to_string(&accepted_reply()).unwrap()),
-        DEADLINE,
-    )
-    .await;
-    plant_row(
-        &mut database,
-        &broken,
-        "answered",
-        body_free_payload(&broken),
-        None,
-        DEADLINE,
-    )
-    .await;
-    let before = rows(&mut database).await;
+const DAMAGED_DEADLINE: i64 = DEADLINE + 60_000;
 
-    assert!(matches!(
-        MacOutbox::new(&mut database).delete_ended_before_retention(MARK + RETENTION_MS).await,
-        Err(OutboxStoreError::CorruptItem { request_id, field: "outcome_json" })
-            if request_id == broken.request.as_str()
-    ));
-    assert_eq!(rows(&mut database).await, before);
+fn assert_corrupt_deadlines(corruption: Vec<RowCorruption>, writes: &[NewOutboxItem]) {
+    let keys: Vec<_> = writes
+        .iter()
+        .step_by(2)
+        .map(|write| write.request.as_str())
+        .collect();
+    assert_eq!(corruption.len(), keys.len());
+    for (row, key) in corruption.iter().zip(keys) {
+        assert_eq!(row.key, key);
+        assert_eq!(row.field, "expires_at_ms");
+        assert_eq!(
+            row.reason,
+            RowCorruptionReason::DeadlineMismatch {
+                expected_ms: DEADLINE,
+                stored_ms: DAMAGED_DEADLINE,
+            }
+        );
+    }
 }
 
-#[tokio::test]
-async fn invalid_deadlines_prevent_claim_retry_or_expiry_without_rewriting_rows() {
-    let root = tempfile::tempdir().unwrap();
-    let mut database = open(&root).await;
-    let valid = item(112, "first eligible", MARK);
-    let waiting = item(113, "invalid waiting deadline", MARK);
-    let sent = item(114, "invalid in-flight deadline", MARK);
-    for (write, state, deadline) in [
-        (&valid, "inOutbox", DEADLINE),
-        (&waiting, "inOutbox", DEADLINE + 60_000),
-        (&sent, "sent", DEADLINE + 60_000),
-    ] {
+async fn plant_interleaved_writes(
+    database: &mut MachineLocalStore,
+    state: &str,
+) -> Vec<NewOutboxItem> {
+    let mut writes = Vec::new();
+    for index in 0..7 {
+        // The final damaged row is past the mark as well as the claim limit.
+        let mark = if index == 6 { MARK + 60_000 } else { MARK };
+        let write = item(130 + index, "retained outbox body", mark);
+        let deadline = if index % 2 == 0 {
+            DAMAGED_DEADLINE
+        } else {
+            DEADLINE
+        };
         plant_row(
-            &mut database,
-            write,
+            database,
+            &write,
             state,
             serde_json::to_string(&write.payload).unwrap(),
             None,
             deadline,
         )
         .await;
+        writes.push(write);
     }
-    let before = rows(&mut database).await;
+    writes
+}
 
+async fn damaged_rows(database: &mut MachineLocalStore) -> Vec<RawOutboxSnapshot> {
+    rows(database)
+        .await
+        .into_iter()
+        .filter(|row| row.3 == DAMAGED_DEADLINE)
+        .collect()
+}
+
+#[tokio::test]
+async fn claim_fills_its_limit_with_healthy_rows_and_reports_every_damaged_candidate() {
+    let root = tempfile::tempdir().unwrap();
+    let mut database = open(&root).await;
+    let writes = plant_interleaved_writes(&mut database, "inOutbox").await;
+    let damaged = damaged_rows(&mut database).await;
     let mut outbox = MacOutbox::new(&mut database);
-    for result in [
-        outbox.claim_next_batch(MARK, 1, DEADLINE).await.map(|_| ()),
-        outbox.end_overdue(DEADLINE).await.map(|_| ()),
-        outbox.earliest_deadline().await.map(|_| ()),
-        outbox.sent_without_answer().await.map(|_| ()),
-        outbox
-            .return_unanswered(std::slice::from_ref(&sent.request), DEADLINE)
-            .await
-            .map(|_| ()),
-        outbox.return_not_transmitted(&sent.request, DEADLINE).await,
-    ] {
-        assert!(matches!(
-            result,
-            Err(OutboxStoreError::CorruptItem {
-                field: "expires_at_ms",
-                ..
-            })
-        ));
+
+    let first = outbox.claim_next_batch(MARK, 2, MARK).await.unwrap();
+    assert!(first.healthy.ended.is_empty());
+    assert_eq!(
+        first
+            .healthy
+            .writes
+            .iter()
+            .map(|write| &write.request)
+            .collect::<Vec<_>>(),
+        [&writes[1].request, &writes[3].request]
+    );
+    assert_corrupt_deadlines(first.corrupt_rows, &writes);
+    let next = outbox.claim_next_batch(MARK, 2, MARK).await.unwrap();
+    assert_eq!(
+        next.healthy
+            .writes
+            .iter()
+            .map(|write| &write.request)
+            .collect::<Vec<_>>(),
+        [&writes[5].request]
+    );
+    assert_corrupt_deadlines(next.corrupt_rows, &writes);
+    assert_eq!(damaged_rows(&mut database).await, damaged);
+}
+
+#[tokio::test]
+async fn expiry_ends_every_healthy_due_write_and_keeps_corrupt_rows_intact() {
+    let root = tempfile::tempdir().unwrap();
+    let mut database = open(&root).await;
+    let writes = plant_interleaved_writes(&mut database, "inOutbox").await;
+    let damaged = damaged_rows(&mut database).await;
+    let mut outbox = MacOutbox::new(&mut database);
+
+    let expired = outbox.end_overdue(DEADLINE).await.unwrap();
+    assert_eq!(
+        expired
+            .healthy
+            .iter()
+            .map(|write| &write.request_id)
+            .collect::<Vec<_>>(),
+        [&writes[1].request, &writes[3].request, &writes[5].request]
+    );
+    assert!(
+        expired
+            .healthy
+            .iter()
+            .all(|write| write.reason == crate::OutboxCancellation::NotSentWithin15Minutes)
+    );
+    assert_corrupt_deadlines(expired.corrupt_rows, &writes);
+    let repeated = outbox.end_overdue(DEADLINE).await.unwrap();
+    assert!(repeated.healthy.is_empty());
+    assert_corrupt_deadlines(repeated.corrupt_rows, &writes);
+    assert_eq!(damaged_rows(&mut database).await, damaged);
+}
+
+#[tokio::test]
+async fn scheduling_uses_healthy_marks_and_deadlines_despite_damaged_rows() {
+    let root = tempfile::tempdir().unwrap();
+    let mut database = open(&root).await;
+    let writes = plant_interleaved_writes(&mut database, "inOutbox").await;
+    let mut outbox = MacOutbox::new(&mut database);
+
+    let deadline = outbox.earliest_deadline().await.unwrap();
+    assert_eq!(deadline.healthy, Some(DEADLINE));
+    assert_corrupt_deadlines(deadline.corrupt_rows, &writes);
+    let mark = outbox.earliest_waiting().await.unwrap();
+    assert_eq!(mark.healthy, Some(MARK));
+    assert_corrupt_deadlines(mark.corrupt_rows, &writes);
+    let waiting = outbox.waiting().await.unwrap();
+    assert_eq!(
+        waiting.healthy,
+        [1, 3, 5].map(|index| (MARK, writes[index].request.clone()))
+    );
+    assert_corrupt_deadlines(waiting.corrupt_rows, &writes);
+}
+
+#[tokio::test]
+async fn orphan_recovery_returns_healthy_ids_around_corrupt_claims() {
+    let root = tempfile::tempdir().unwrap();
+    let mut database = open(&root).await;
+    let writes = plant_interleaved_writes(&mut database, "sent").await;
+    let recovery = MacOutbox::new(&mut database)
+        .sent_without_answer()
+        .await
+        .unwrap();
+    assert_eq!(
+        recovery.healthy,
+        [1, 3, 5].map(|index| writes[index].request.clone())
+    );
+    assert_corrupt_deadlines(recovery.corrupt_rows, &writes);
+}
+
+#[tokio::test]
+async fn unanswered_returns_continue_past_corrupt_claims() {
+    for now in [MARK, DEADLINE] {
+        let root = tempfile::tempdir().unwrap();
+        let mut database = open(&root).await;
+        let writes = plant_interleaved_writes(&mut database, "sent").await;
+        let damaged = damaged_rows(&mut database).await;
+        let mut outbox = MacOutbox::new(&mut database);
+
+        let ids: Vec<_> = writes.iter().map(|write| write.request.clone()).collect();
+        let returned = outbox.return_unanswered(&ids, now).await.unwrap();
+        assert_corrupt_deadlines(returned.corrupt_rows, &writes);
+        if now == DEADLINE {
+            assert_eq!(
+                returned
+                    .healthy
+                    .iter()
+                    .map(|write| &write.request_id)
+                    .collect::<Vec<_>>(),
+                [&writes[1].request, &writes[3].request, &writes[5].request]
+            );
+        } else {
+            assert!(returned.healthy.is_empty());
+            assert_eq!(outbox.waiting().await.unwrap().expect_clean().len(), 3);
+        }
+        assert_eq!(damaged_rows(&mut database).await, damaged);
     }
+}
+
+#[tokio::test]
+async fn retention_prunes_healthy_rows_around_inconsistent_terminal_rows() {
+    let root = tempfile::tempdir().unwrap();
+    let mut database = open(&root).await;
+    let mut corrupt_keys = Vec::new();
+    for index in 0..7 {
+        let write = item(140 + index, "terminal fixture", MARK);
+        let outcome = if index % 2 == 0 {
+            corrupt_keys.push(write.request.to_string());
+            None
+        } else {
+            Some(serde_json::to_string(&accepted_answer()).unwrap())
+        };
+        plant_row(
+            &mut database,
+            &write,
+            "answered",
+            body_free_payload(&write),
+            outcome,
+            DEADLINE,
+        )
+        .await;
+    }
+    let before: Vec<_> = rows(&mut database)
+        .await
+        .into_iter()
+        .filter(|row| row.2.is_none())
+        .collect();
+    let mut outbox = MacOutbox::new(&mut database);
+
+    let scanned = outbox
+        .delete_ended_before_retention(MARK + RETENTION_MS)
+        .await
+        .unwrap();
+    assert_eq!(scanned.healthy, 3);
+    assert_eq!(scanned.corrupt_rows.len(), 4);
+    for row in &scanned.corrupt_rows {
+        assert_eq!(row.field, "outcome_json");
+        assert_eq!(row.reason, RowCorruptionReason::InconsistentState);
+    }
+    let mut keys: Vec<_> = scanned
+        .corrupt_rows
+        .into_iter()
+        .map(|row| row.key)
+        .collect();
+    keys.sort();
+    assert_eq!(keys, corrupt_keys);
     assert_eq!(rows(&mut database).await, before);
 }
 
@@ -219,10 +377,7 @@ async fn corrupt_rows_are_hidden_from_foreign_status_and_sender_outcome_calls() 
 #[tokio::test]
 async fn row_decode_rejects_temporary_or_wrong_operation_settlements() {
     use central_link_protocol::ReplyPayload;
-    use workspace_model::{
-        WorkspaceReply, WorkspaceResult,
-        central_mail::{CentralMailAnswer, CentralMailResult},
-    };
+    use workspace_model::{WorkspaceReply, WorkspaceResult};
 
     let root = tempfile::tempdir().unwrap();
     let mut database = open(&root).await;
@@ -231,16 +386,18 @@ async fn row_decode_rejects_temporary_or_wrong_operation_settlements() {
     for (write, reply) in [
         (
             &transient,
-            ReplyPayload::Workspace(WorkspaceReply {
+            serde_json::to_string(&ReplyPayload::Workspace(WorkspaceReply {
                 result: WorkspaceResult::OutcomeUnknown,
                 actors: vec![],
-            }),
+            }))
+            .unwrap(),
         ),
         (
             &wrong_operation,
-            ReplyPayload::Mail(CentralMailResult::Done(CentralMailAnswer::Queued {
+            serde_json::to_string(&crate::OutboxAccepted::SendMessage {
                 message_id: super::uuid_v7(120).parse().unwrap(),
-            })),
+            })
+            .unwrap(),
         ),
     ] {
         plant_row(
@@ -248,7 +405,7 @@ async fn row_decode_rejects_temporary_or_wrong_operation_settlements() {
             write,
             "answered",
             body_free_payload(write),
-            Some(serde_json::to_string(&reply).unwrap()),
+            Some(reply),
             DEADLINE,
         )
         .await;
@@ -264,4 +421,51 @@ async fn row_decode_rejects_temporary_or_wrong_operation_settlements() {
             })
         ));
     }
+}
+
+#[tokio::test]
+async fn claim_advances_past_an_entire_damaged_scan_page() {
+    let root = tempfile::tempdir().unwrap();
+    let mut database = open(&root).await;
+    for seed in 200..328 {
+        let damaged = item(seed, "damaged scan page", MARK);
+        plant_row(
+            &mut database,
+            &damaged,
+            "inOutbox",
+            serde_json::to_string(&damaged.payload).unwrap(),
+            None,
+            DAMAGED_DEADLINE,
+        )
+        .await;
+    }
+    let healthy = item(328, "first healthy row on next page", MARK);
+    plant_row(
+        &mut database,
+        &healthy,
+        "inOutbox",
+        serde_json::to_string(&healthy.payload).unwrap(),
+        None,
+        DEADLINE,
+    )
+    .await;
+    let behind = item(329, "future corrupted row", MARK + 60_000);
+    plant_row(
+        &mut database,
+        &behind,
+        "inOutbox",
+        serde_json::to_string(&behind.payload).unwrap(),
+        None,
+        DAMAGED_DEADLINE,
+    )
+    .await;
+
+    let scan = MacOutbox::new(&mut database)
+        .claim_next_batch(MARK, 1, MARK)
+        .await
+        .unwrap();
+    assert_eq!(scan.healthy.writes.len(), 1);
+    assert_eq!(scan.healthy.writes[0].request, healthy.request);
+    assert_eq!(scan.corrupt_rows.len(), 129);
+    assert_eq!(scan.corrupt_rows[128].key, behind.request.to_string());
 }

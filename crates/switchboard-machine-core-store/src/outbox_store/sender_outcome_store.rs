@@ -4,17 +4,13 @@ use super::{
     outbox_rows::{StoredPayload, outbox_content, payload_content_digest, read_owned_outbox},
 };
 use crate::{
-    OutboxCancellation, OutboxRequestStatus, OutboxWriteTarget, StoredSenderOutcome,
-    outbox_item_state::OutboxItemState, outbox_receipt_profile::AnsweredWrite,
+    OutboxAccepted, OutboxCancellation, OutboxRequestStatus, OutboxWriteTarget,
+    StoredSenderOutcome, outbox_item_state::OutboxItemState, outbox_receipt_profile::AnsweredWrite,
     sender_outcome::OutcomePrecedence,
 };
-use central_link_protocol::ReplyPayload;
 use sqlite_storage_maintenance::TransactionStart;
 use workspace_ids::RequestId;
-use workspace_model::{
-    Caller,
-    central_mail::{CentralMailAnswer, CentralMailResult},
-};
+use workspace_model::Caller;
 
 impl MacOutbox<'_> {
     pub async fn record_sender_delivery(
@@ -104,22 +100,20 @@ fn confirmed_request(
     status: &OutboxRequestStatus,
     may_have_left: bool,
     notice: &StoredSenderOutcome,
-) -> Result<ReplyPayload, OutboxStoreError> {
+) -> Result<OutboxAccepted, OutboxStoreError> {
     match status {
-        OutboxRequestStatus::Answered(
-            reply @ ReplyPayload::Mail(CentralMailResult::Done(CentralMailAnswer::Queued {
-                message_id,
-            })),
-        ) if *message_id == notice.message_id => Ok(reply.clone()),
+        OutboxRequestStatus::Answered(reply @ OutboxAccepted::SendMessage { message_id })
+            if *message_id == notice.message_id =>
+        {
+            Ok(reply.clone())
+        }
         OutboxRequestStatus::Sent
         | OutboxRequestStatus::InOutbox { .. }
         | OutboxRequestStatus::Ended {
             reason: OutboxCancellation::NotConfirmedWithin15Minutes,
-        } if may_have_left => Ok(ReplyPayload::Mail(CentralMailResult::Done(
-            CentralMailAnswer::Queued {
-                message_id: notice.message_id.clone(),
-            },
-        ))),
+        } if may_have_left => Ok(OutboxAccepted::SendMessage {
+            message_id: notice.message_id.clone(),
+        }),
         _ => Err(mismatch(notice)),
     }
 }

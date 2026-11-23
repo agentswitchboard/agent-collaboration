@@ -22,14 +22,24 @@ pub(crate) async fn an_overdue_write_is_never_claimed_and_ends_with_its_reason(
     store
         .return_unanswered(&ids(&[&lost]), MARK + 1_000)
         .await
-        .unwrap();
+        .unwrap()
+        .expect_clean();
 
-    let early = store.claim_next_batch(MARK, 1, deadline - 1).await.unwrap();
+    let early = store
+        .claim_next_batch(MARK, 1, deadline - 1)
+        .await
+        .unwrap()
+        .expect_clean();
     store
         .return_unanswered(&ids(&[&unsent]), deadline - 1)
         .await
-        .unwrap();
-    let claimed = store.claim_next_batch(MARK, 64, deadline).await.unwrap();
+        .unwrap()
+        .expect_clean();
+    let claimed = store
+        .claim_next_batch(MARK, 64, deadline)
+        .await
+        .unwrap()
+        .expect_clean();
 
     assert_eq!(
         early
@@ -78,7 +88,7 @@ pub(crate) async fn an_overdue_write_is_never_claimed_and_ends_with_its_reason(
     );
     let never_left = message(73, "never left", MARK);
     store.insert(&never_left, stored_at).await.unwrap();
-    let ended_later = store.end_overdue(deadline).await.unwrap();
+    let ended_later = store.end_overdue(deadline).await.unwrap().expect_clean();
     assert_eq!(
         ended_later
             .iter()
@@ -121,7 +131,7 @@ pub(crate) async fn an_overdue_write_is_never_claimed_and_ends_with_its_reason(
         "the text is gone but its digest still tells a different write"
     );
     assert!(
-        store.waiting().await.unwrap().is_empty(),
+        store.waiting().await.unwrap().expect_clean().is_empty(),
         "ended writes no longer wait"
     );
     assert!(matches!(
@@ -153,11 +163,13 @@ pub(crate) async fn a_sent_write_past_its_deadline_ends_instead_of_returning(
     let ended = store
         .return_unanswered(&ids(&[&post, &fresh]), stored_at + FIFTEEN_MINUTES_MS)
         .await
-        .unwrap();
+        .unwrap()
+        .expect_clean();
     let overdue_waiting = store
         .end_overdue(stored_at + FIFTEEN_MINUTES_MS)
         .await
-        .unwrap();
+        .unwrap()
+        .expect_clean();
     let claimed = store
         .claim_next_batch(
             stored_at + FIFTEEN_MINUTES_MS + 60_000,
@@ -165,7 +177,8 @@ pub(crate) async fn a_sent_write_past_its_deadline_ends_instead_of_returning(
             stored_at + FIFTEEN_MINUTES_MS,
         )
         .await
-        .unwrap();
+        .unwrap()
+        .expect_clean();
 
     assert_eq!(
         ended
@@ -196,7 +209,7 @@ pub(crate) async fn a_sent_write_past_its_deadline_ends_instead_of_returning(
         ids(&[&fresh]),
         "the overdue post is never resent; the fresh one is"
     );
-    assert!(store.sent_without_answer().await.unwrap() == ids(&[&fresh]));
+    assert!(store.sent_without_answer().await.unwrap().expect_clean() == ids(&[&fresh]));
 }
 /// A direct message goes out with its row's creation stamp as sent_at,
 /// whatever the submitter wrote, and every replay carries the same value
@@ -210,15 +223,22 @@ pub(crate) async fn a_direct_message_goes_out_with_its_creation_stamp_as_sent_at
     store.insert(&direct, stored_at).await.unwrap();
     store.insert(&post, stored_at).await.unwrap();
 
-    let first = store.claim_next_batch(MARK, 64, MARK).await.unwrap().writes;
+    let first = store
+        .claim_next_batch(MARK, 64, MARK)
+        .await
+        .unwrap()
+        .expect_clean()
+        .writes;
     store
         .return_unanswered(&ids(&[&direct, &post]), MARK + 1_000)
         .await
-        .unwrap();
+        .unwrap()
+        .expect_clean();
     let replay = store
         .claim_next_batch(MARK + 60_000, 64, MARK + 60_000)
         .await
         .unwrap()
+        .expect_clean()
         .writes;
 
     let sent_at = |writes: &[StoredOutboxWrite]| {
@@ -256,7 +276,7 @@ pub(crate) async fn replay_keeps_the_original_request_id_and_deadline(
 
     store.insert(&write, created_at).await.unwrap();
     assert_eq!(
-        store.earliest_deadline().await.unwrap(),
+        store.earliest_deadline().await.unwrap().expect_clean(),
         Some(original_deadline)
     );
 
@@ -267,14 +287,15 @@ pub(crate) async fn replay_keeps_the_original_request_id_and_deadline(
             .return_unanswered(&request_ids, MARK + 1_000)
             .await
             .unwrap()
+            .expect_clean()
             .is_empty()
     );
     assert_eq!(
-        store.waiting().await.unwrap(),
+        store.waiting().await.unwrap().expect_clean(),
         [(MARK, write.request.clone())]
     );
     assert_eq!(
-        store.earliest_deadline().await.unwrap(),
+        store.earliest_deadline().await.unwrap().expect_clean(),
         Some(original_deadline)
     );
 
@@ -286,12 +307,13 @@ pub(crate) async fn replay_keeps_the_original_request_id_and_deadline(
     let ended = store
         .return_unanswered(&request_ids, original_deadline)
         .await
-        .unwrap();
+        .unwrap()
+        .expect_clean();
     assert_eq!(ended.len(), 1);
     assert_eq!(ended[0].request_id, write.request);
     assert_eq!(
         ended[0].reason,
         OutboxCancellation::NotConfirmedWithin15Minutes
     );
-    assert!(store.waiting().await.unwrap().is_empty());
+    assert!(store.waiting().await.unwrap().expect_clean().is_empty());
 }

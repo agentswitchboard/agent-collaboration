@@ -135,6 +135,7 @@ async fn transient_and_wrong_operation_replies_leave_the_claim_recoverable() {
         .claim_next_batch(MARK, 1, MARK)
         .await
         .unwrap()
+        .expect_clean()
         .writes
         .pop()
         .unwrap();
@@ -165,7 +166,7 @@ async fn transient_and_wrong_operation_replies_leave_the_claim_recoverable() {
         Err(OutboxStoreError::InvalidOutcome { .. })
     ));
     assert_eq!(
-        outbox.sent_without_answer().await.unwrap(),
+        outbox.sent_without_answer().await.unwrap().expect_clean(),
         std::slice::from_ref(&claim.request)
     );
     let waiting = outbox.pending_for(&write.caller).await.unwrap();
@@ -176,12 +177,73 @@ async fn transient_and_wrong_operation_replies_leave_the_claim_recoverable() {
             .return_unanswered(std::slice::from_ref(&claim.request), MARK + 1)
             .await
             .unwrap()
+            .expect_clean()
             .is_empty()
     );
     let replay = outbox
         .claim_next_batch(MARK, 1, MARK + 1)
         .await
         .unwrap()
+        .expect_clean()
         .writes;
     assert_eq!(replay, [claim]);
+}
+
+#[tokio::test]
+async fn accepted_post_uses_the_store_result_in_all_three_read_views() {
+    use crate::{OutboxAccepted, OutgoingOutcome, PendingWriteState};
+    use central_link_protocol::ReplyPayload;
+    use workspace_model::{
+        ChangePosition, ItemRef, WorkspaceAnswer, WorkspaceReply, WorkspaceResult,
+    };
+
+    let root = tempfile::tempdir().unwrap();
+    let mut database = open(&root).await;
+    let write = item(124, "post accepted with position", MARK);
+    let post_id = super::uuid_v7(125).parse().unwrap();
+    let position = ChangePosition::try_from(27).unwrap();
+    let reply = ReplyPayload::Workspace(WorkspaceReply {
+        result: WorkspaceResult::Done(WorkspaceAnswer::Created {
+            item: ItemRef::Post(post_id),
+            position,
+        }),
+        actors: vec![],
+    });
+    let mut outbox = MacOutbox::new(&mut database);
+    outbox.insert(&write, MARK).await.unwrap();
+    let claimed = outbox
+        .claim_next_batch(MARK, 1, MARK)
+        .await
+        .unwrap()
+        .expect_clean();
+    let claim = &claimed.writes[0];
+    let accepted = OutboxWriteOutcome::from_reply(&claim.payload, reply).unwrap();
+    outbox
+        .record_outcome(&claim.request, &accepted, MARK)
+        .await
+        .unwrap();
+
+    database.close().await.unwrap();
+    let mut reopened = open(&root).await;
+    let mut outbox = MacOutbox::new(&mut reopened);
+    let expected = OutboxAccepted::ThreadPost {
+        post_id: super::uuid_v7(125).parse().unwrap(),
+        position,
+        actors: vec![],
+    };
+    assert_eq!(
+        outbox
+            .request_status(&write.caller, &write.request)
+            .await
+            .unwrap(),
+        OutboxRequestStatus::Answered(expected.clone())
+    );
+    assert_eq!(
+        outbox.pending_for(&write.caller).await.unwrap()[0].state,
+        PendingWriteState::Answered(expected.clone())
+    );
+    assert_eq!(
+        outbox.outgoing_for(&write.caller, 1).await.unwrap()[0].outcome,
+        OutgoingOutcome::Answered(expected)
+    );
 }

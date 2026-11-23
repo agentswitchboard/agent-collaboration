@@ -13,6 +13,7 @@ mod outbox_storage;
 mod outbox_store;
 mod outbox_views;
 mod sender_outcome;
+mod store_scan;
 
 pub use inbox_store::{
     InboxDecision, InboxReceipt, InboxRefusalReason, InboxStore, InboxStoreError, RecordDelivery,
@@ -22,8 +23,8 @@ pub use machine_local_store::{MACHINE_LOCAL_DATABASE, MachineLocalStore, Machine
 pub use outbox_queued_write::OutboxQueuedWrite;
 pub use outbox_settlement::{InvalidOutboxOutcome, OutboxWriteOutcome};
 pub use outbox_status::{
-    LocalOutboxRefusal, OutboxCancellation, OutboxRefusal, OutboxRequestKey, OutboxRequestStatus,
-    OutboxScope,
+    LocalOutboxRefusal, OutboxAccepted, OutboxCancellation, OutboxRefusal, OutboxRequestKey,
+    OutboxRequestStatus, OutboxScope,
 };
 pub use outbox_storage::{MachineLocalOutbox, OutboxFuture, OutboxStorage};
 pub use outbox_store::{
@@ -33,5 +34,6 @@ pub use outbox_views::{
     EndedWrite, OutboxWriteTarget, OutgoingOutcome, OutgoingWrite, PendingWrite, PendingWriteState,
 };
 pub use sender_outcome::StoredSenderOutcome;
+pub use store_scan::{RowCorruption, RowCorruptionReason, StoreScan};
 
 pub(crate) use outbox_views::OutboxWriteContent;

@@ -64,6 +64,14 @@ fn item(seed: u16, body: &str, flush_at: i64) -> NewOutboxItem {
     }
 }
 
+fn accepted_answer() -> crate::OutboxAccepted {
+    crate::OutboxAccepted::ThreadPost {
+        post_id: uuid_v7(60_004).parse().unwrap(),
+        position: ChangePosition::ZERO,
+        actors: Vec::new(),
+    }
+}
+
 fn accepted_reply() -> ReplyPayload {
     ReplyPayload::Workspace(WorkspaceReply {
         result: WorkspaceResult::Done(WorkspaceAnswer::Created {
@@ -134,7 +142,7 @@ async fn a_write_moves_in_outbox_sent_accepted_and_survives_a_reopen() {
     assert_eq!(after_send, OutboxRequestStatus::Sent);
     assert_eq!(
         after_reopen,
-        OutboxRequestStatus::Answered(accepted_reply())
+        OutboxRequestStatus::Answered(accepted_answer())
     );
 }
 
@@ -234,7 +242,7 @@ async fn an_answer_or_refusal_drops_the_text_from_the_row_and_every_view() {
     assert_eq!(outgoing.len(), 2);
     assert_eq!(
         resubmitted,
-        OutboxInsert::AlreadyStored(OutboxRequestStatus::Answered(accepted_reply()))
+        OutboxInsert::AlreadyStored(OutboxRequestStatus::Answered(accepted_answer()))
     );
     assert_eq!(
         conflicting,
@@ -306,7 +314,8 @@ async fn ended_rows_read_as_cancelled_hold_no_text_and_are_pruned() {
     let pruned = MacOutbox::new(&mut store)
         .delete_ended_before_retention(MARK + RETENTION_MS + 1_000)
         .await
-        .unwrap();
+        .unwrap()
+        .expect_clean();
 
     assert_eq!(
         statuses,
@@ -406,11 +415,13 @@ async fn unanswered_writes_return_with_their_receipt_mark_and_refusals_are_kept(
     let unanswered = MacOutbox::new(&mut store)
         .sent_without_answer()
         .await
-        .unwrap();
+        .unwrap()
+        .expect_clean();
     MacOutbox::new(&mut store)
         .return_unanswered(std::slice::from_ref(&first.request), MARK + 70_000)
         .await
-        .unwrap();
+        .unwrap()
+        .expect_clean();
     let refusal = OutboxWriteOutcome::from_refusal(
         &second.payload,
         OutboxRefusal::Central(central_refusal()),
@@ -425,7 +436,11 @@ async fn unanswered_writes_return_with_their_receipt_mark_and_refusals_are_kept(
     expected_unanswered.sort();
     assert_eq!(unanswered, expected_unanswered);
     assert_eq!(
-        MacOutbox::new(&mut store).waiting().await.unwrap(),
+        MacOutbox::new(&mut store)
+            .waiting()
+            .await
+            .unwrap()
+            .expect_clean(),
         vec![(MARK, first.request.clone())]
     );
     assert_eq!(
@@ -501,7 +516,7 @@ async fn an_invalid_stored_row_is_refused_not_coerced() {
         .request_status(&write.caller, &write.request)
         .await;
     // An answered row that still holds the write's text is refused.
-    let answer = serde_json::to_string(&accepted_reply()).unwrap();
+    let answer = serde_json::to_string(&accepted_answer()).unwrap();
     sqlx::query("UPDATE outbox_items SET item_state = 'answered', outcome_json = ?")
         .bind(&answer)
         .execute(&mut store.connection)
