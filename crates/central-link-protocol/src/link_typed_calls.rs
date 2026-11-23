@@ -24,6 +24,8 @@ pub enum LinkCallRefusal {
     AuthorityLapsed {
         cause: MachineLinkCloseCode,
     },
+    /// The calling session's proof was refused. The machine link remains open.
+    SessionProofNotAccepted,
     /// Central rolled back or declined to apply the call. The link remains open.
     CentralFault,
 }
@@ -34,7 +36,10 @@ impl LinkCallRefusal {
     pub const fn authority_close(self) -> Option<MachineLinkCloseCode> {
         match self {
             Self::AuthorityLapsed { cause } => Some(cause),
-            Self::UnknownCall | Self::WrongTarget | Self::CentralFault => None,
+            Self::UnknownCall
+            | Self::WrongTarget
+            | Self::SessionProofNotAccepted
+            | Self::CentralFault => None,
         }
     }
 }
@@ -47,11 +52,13 @@ impl<'de> Deserialize<'de> for LinkCallRefusal {
             UnknownCall {},
             WrongTarget {},
             AuthorityLapsed { cause: MachineLinkCloseCode },
+            SessionProofNotAccepted {},
             CentralFault {},
         }
         Ok(match named_map(input)? {
             NamedRefusal::UnknownCall {} => Self::UnknownCall,
             NamedRefusal::WrongTarget {} => Self::WrongTarget,
+            NamedRefusal::SessionProofNotAccepted {} => Self::SessionProofNotAccepted,
             NamedRefusal::CentralFault {} => Self::CentralFault,
             NamedRefusal::AuthorityLapsed { cause } => Self::AuthorityLapsed { cause },
         })

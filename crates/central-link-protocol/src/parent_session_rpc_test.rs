@@ -154,3 +154,32 @@ fn the_notice_targets_only_its_session_and_has_a_closed_acknowledgement() {
         assert!(decode_text(&mismatched.to_string(), FrameDirection::ToCentral).is_err());
     }
 }
+
+#[test]
+fn rejected_session_proof_has_one_closed_refusal_and_keeps_the_link_open() {
+    use crate::LinkCallRefusal;
+    let wire = json!({
+        "kind":"centralCallReply", "correlationId":RECORD,
+        "result":{"kind":"refused", "reason":{"kind":"sessionProofNotAccepted"}}
+    });
+    let frame = decode_text(&wire.to_string(), FrameDirection::ToRouter).unwrap();
+    let LinkFrame::Data(DataFrame::CentralCallReply { result, .. }) = &frame else {
+        panic!("expected a Central refusal");
+    };
+    let TypedCallResult::Refused { reason } = &**result else {
+        panic!("expected a link refusal");
+    };
+    assert_eq!(*reason, LinkCallRefusal::SessionProofNotAccepted);
+    assert_eq!(reason.authority_close(), None);
+    let encoded = encode_text(&frame, FrameDirection::ToRouter).unwrap();
+    assert_eq!(serde_json::from_str::<Value>(&encoded).unwrap(), wire);
+
+    let validator =
+        jsonschema::validator_for(&serde_json::to_value(schemars::schema_for!(DataFrame)).unwrap())
+            .unwrap();
+    assert!(validator.is_valid(&wire));
+    let mut with_detail = wire;
+    with_detail["result"]["reason"]["cause"] = json!("sessionMissing");
+    assert!(!validator.is_valid(&with_detail));
+    assert!(decode_text(&with_detail.to_string(), FrameDirection::ToRouter).is_err());
+}

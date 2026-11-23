@@ -158,6 +158,7 @@ where
                 reason:
                     reason @ (LinkCallRefusal::UnknownCall
                     | LinkCallRefusal::WrongTarget
+                    | LinkCallRefusal::SessionProofNotAccepted
                     | LinkCallRefusal::CentralFault
                     | LinkCallRefusal::AuthorityLapsed { .. }),
             }) => {
