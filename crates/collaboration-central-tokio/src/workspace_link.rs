@@ -308,10 +308,28 @@ async fn serve_link(
             }
         };
         match frame {
-            // Negotiation is not enabled by the wire-types checkpoint.
-            LinkFrame::Data(DataFrame::MacCapabilities(_)) => {
-                writes.close(&mut socket, close_code::PROTOCOL, "invalid link frame");
-                return;
+            LinkFrame::Data(DataFrame::MacCapabilities(announcement)) => {
+                match registration
+                    .outbound_calls
+                    .announce_capabilities(announcement)
+                {
+                    Ok(Some(run)) => {
+                        if let Some(recovery) =
+                            runtime.recover_approval_endings(connection.clone(), run)
+                        {
+                            writes.schedule_completion(recovery);
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(_) => {
+                        writes.close(
+                            &mut socket,
+                            close_code::PROTOCOL,
+                            "duplicate Mac capabilities",
+                        );
+                        return;
+                    }
+                }
             }
             LinkFrame::Data(DataFrame::CallCentral {
                 correlation_id,
@@ -759,6 +777,19 @@ struct LinkWrites<'a> {
 }
 
 impl LinkWrites<'_> {
+    fn schedule_completion(&self, completion: collaboration_central_core::LinkCallCompletion) {
+        let stop = self.stop.clone();
+        let replaced = self.replaced.clone();
+        self.tasks.spawn(async move {
+            tokio::select! {
+                biased;
+                () = stop.cancelled() => {}
+                () = replaced.cancelled() => {}
+                () = completion => {}
+            }
+        });
+    }
+
     async fn send(&self, socket: &mut WebSocket, frame: &LinkFrame) -> bool {
         let Ok(text) = encode_text(frame, FrameDirection::ToRouter) else {
             return false;

@@ -157,7 +157,11 @@ where
                 Err(reason) => return Ok(refused(reason)),
             };
             let command = command(body);
-            let TypedCallCarrier::Approval { registered_run } = carrier else {
+            let TypedCallCarrier::Approval {
+                registered_run,
+                recover_after_registration,
+            } = carrier
+            else {
                 return Err(corrupt("typed_approval_call.physical_carrier"));
             };
             let run = match (&command, registered_run) {
@@ -195,8 +199,11 @@ where
             match applied {
                 Ok(HolderApplied::Answer { reply, offers }) => {
                     let reply = wrap(target, reply).ok_or(StoreFailure::AnswerLost)?;
-                    let registration =
-                        crate::approval_delivery::recover_after_registration(&reply, machine, run);
+                    let registration = if *recover_after_registration {
+                        crate::approval_delivery::recover_after_registration(&reply, machine, run)
+                    } else {
+                        None
+                    };
                     let delivery = crate::approval_delivery::ApprovalDelivery {
                         application: self.clone(),
                         transport,

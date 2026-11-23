@@ -213,6 +213,16 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         Ok(result)
     }
 
+    pub fn recover_approval_endings(
+        &self,
+        connection: crate::ValidatedMachineConnection,
+        run: workspace_ids::RouterRunId,
+    ) -> Option<LinkCallCompletion> {
+        self.link_call_dispatcher
+            .as_deref()?
+            .recover_approval_endings(connection, run)
+    }
+
     /// A missing request is a well-formed but unregistered frame header from the decoder.
     pub async fn dispatch_typed_central_call(
         &self,

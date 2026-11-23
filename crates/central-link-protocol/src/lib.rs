@@ -13,6 +13,7 @@ mod mac_call_address;
 mod mac_call_capabilities;
 mod request_status;
 pub mod session_lifecycle_rpc;
+mod socket_mac_call_capabilities;
 mod typed_call_correlations;
 
 #[cfg(any(test, feature = "test-support"))]
@@ -42,6 +43,7 @@ pub use mac_call_address::MacCallAddress;
 pub use mac_call_capabilities::{
     DuplicateMacCallKind, HandledMacCalls, MacCallKind, MacCapabilities,
 };
+pub use socket_mac_call_capabilities::{DuplicateMacCapabilities, SocketMacCallCapabilities};
 
 /// The receiving end of a machine-link frame.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

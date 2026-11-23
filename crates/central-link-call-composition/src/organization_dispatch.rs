@@ -184,6 +184,18 @@ where
         .fixture_decide(organization, decision)
     }
 
+    fn recover_approval_endings(
+        &self,
+        machine: ValidatedMachineConnection,
+        run: workspace_ids::RouterRunId,
+    ) -> Option<collaboration_central_core::LinkCallCompletion> {
+        crate::approval_delivery::ApprovalDelivery {
+            application: self.approvals.clone(),
+            transport: self.ending_transport.clone(),
+        }
+        .after_reply(vec![], Some((machine, run)))
+    }
+
     fn end_approval_enrollment(
         &self,
         organization: OrganizationId,

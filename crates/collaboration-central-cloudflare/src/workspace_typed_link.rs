@@ -125,6 +125,54 @@ fn address_agrees(
 }
 
 impl CentralObject {
+    pub(super) async fn announce_mac_capabilities(
+        &self,
+        runtime: &OrgRuntime,
+        socket: &WebSocket,
+        attachment: &MachineConnectionAttachment,
+        announcement: central_link_protocol::MacCapabilities,
+    ) -> worker::Result<()> {
+        let turn = runtime.runtime().take_central_turn_for_admission().await;
+        if !is_current_socket(&self.state, socket, attachment.machine_id()) {
+            return Ok(());
+        }
+        let Some(mut current) = SocketAttachment::read(socket)? else {
+            return self.close_machine_link(socket, 1008, Some("connection identity missing"));
+        };
+        if current.mac_capabilities.announce(announcement).is_err() {
+            return self.close_machine_link(socket, 1008, Some("duplicate Mac capabilities"));
+        }
+        current.save(socket)?;
+        drop(turn);
+        if current
+            .mac_capabilities
+            .handles(central_link_protocol::MacCallKind::DeliverEnding)
+            && let Some(run) = current.registered_run
+        {
+            match runtime
+                .restore_machine_link_request(&current.authority)
+                .await
+            {
+                Ok(collaboration_central_core::MachineLinkRequestAuthority::Admitted(machine)) => {
+                    if let Some(recovery) = runtime.recover_approval_endings(machine, run) {
+                        self.pending_mac_calls
+                            .run_socket_completion(&self.state, socket, recovery);
+                    }
+                }
+                Ok(collaboration_central_core::MachineLinkRequestAuthority::Refused(cause)) => {
+                    return self.close_machine_authority(socket, cause);
+                }
+                Ok(
+                    collaboration_central_core::MachineLinkRequestAuthority::TemporarilyUnavailable,
+                )
+                | Err(_) => {
+                    return self.close_machine_link(socket, 1011, Some("central unavailable"));
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub(super) async fn dispatch_typed_machine_call(
         &self,
         runtime: &OrgRuntime,
@@ -147,9 +195,14 @@ impl CentralObject {
             let Some(current) = SocketAttachment::read(socket)? else {
                 return self.close_machine_link(socket, 1008, Some("connection identity missing"));
             };
+            let recover_after_registration = current.registered_run.is_none()
+                && current
+                    .mac_capabilities
+                    .handles(central_link_protocol::MacCallKind::DeliverEnding);
             (
                 TypedCallCarrier::Approval {
                     registered_run: current.registered_run,
+                    recover_after_registration,
                 },
                 current.authority,
                 Some(turn),

@@ -1,7 +1,8 @@
 //! The admitted socket owns outbound calls, its run binding and the reply correlation table.
 use central_link_protocol::{
-    CorrelationId, DataFrame, FreshCorrelationId, LinkFrame, MAX_PENDING_TYPED_CALLS, MacCall,
-    MacCallAddress, MacCallReply, TypedCallCorrelations, TypedCallResult,
+    CorrelationId, DataFrame, DuplicateMacCapabilities, FreshCorrelationId, LinkFrame,
+    MAX_PENDING_TYPED_CALLS, MacCall, MacCallAddress, MacCallKind, MacCallReply, MacCapabilities,
+    SocketMacCallCapabilities, TypedCallCorrelations, TypedCallResult,
 };
 use collaboration_central_core::ValidatedMachineConnection;
 use fleet_identity_protocol::{EnrollmentId, OrganizationId};
@@ -18,6 +19,7 @@ type MacAnswer = TypedCallResult<MacCallReply>;
 struct ConnectionCallState {
     pending: TypedCallCorrelations<ReplyWaiter>,
     bound_run: Option<RouterRunId>,
+    capabilities: SocketMacCallCapabilities,
 }
 
 struct ConnectionCalls {
@@ -175,6 +177,7 @@ impl MacCallSender {
         request: MacCall,
         address: MacCallAddress,
     ) -> Result<PendingMacCall, CallFailure> {
+        self.calls.state().capabilities.admit_outbound(&request)?;
         // The same budget covers calls waiting to get on the wire and awaiting a reply.
         let slot = self
             .calls
@@ -217,14 +220,31 @@ impl MacCallReceiver {
         self.calls.state().bound_run.clone()
     }
 
+    pub(crate) fn announce_capabilities(
+        &self,
+        announcement: MacCapabilities,
+    ) -> Result<Option<RouterRunId>, DuplicateMacCapabilities> {
+        let mut state = self.calls.state();
+        state.capabilities.announce(announcement)?;
+        Ok(state
+            .bound_run
+            .as_ref()
+            .filter(|_| {
+                !self.calls.ended.is_cancelled()
+                    && state.capabilities.handles(MacCallKind::DeliverEnding)
+            })
+            .cloned())
+    }
+
+    pub(crate) fn should_recover_after_registration(&self) -> bool {
+        let state = self.calls.state();
+        state.bound_run.is_none() && state.capabilities.handles(MacCallKind::DeliverEnding)
+    }
+
+    /// Bind a successful registration on this physical socket.
     pub(crate) fn bind_run(&self, run: RouterRunId) {
         let mut state = self.calls.state();
-        if !self.calls.ended.is_cancelled()
-            && state
-                .bound_run
-                .as_ref()
-                .is_none_or(|current| current == &run)
-        {
+        if !self.calls.ended.is_cancelled() && state.bound_run.is_none() {
             state.bound_run = Some(run);
         }
     }

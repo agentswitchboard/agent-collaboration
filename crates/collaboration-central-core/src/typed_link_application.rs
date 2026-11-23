@@ -52,6 +52,7 @@ pub enum TypedCallCarrier {
     Session,
     Approval {
         registered_run: Option<workspace_ids::RouterRunId>,
+        recover_after_registration: bool,
     },
 }
 
@@ -78,6 +79,12 @@ pub trait CentralLinkDispatcher: Send + Sync {
     {
         Box::pin(async { Err(StoreFailure::Unavailable) })
     }
+
+    fn recover_approval_endings(
+        &self,
+        machine: ValidatedMachineConnection,
+        run: workspace_ids::RouterRunId,
+    ) -> Option<LinkCallCompletion>;
 
     fn end_approval_enrollment(
         &self,
