@@ -11,6 +11,10 @@ mod approval_holder_policy;
 
 #[path = "approval_ports_policy.rs"]
 mod approval_ports_policy;
+
+#[path = "central_link_dependency_policy.rs"]
+mod central_link_dependency_policy;
+
 #[path = "enrollment_dependency_policy.rs"]
 mod enrollment_dependency_policy;
 
@@ -223,6 +227,7 @@ fn collaboration_crate_layers_point_downward() -> Result<(), Box<dyn std::error:
     enrollment_shipping_policy::check_shipping(&root, &metadata)?;
     harness_stage_policy::check_declared(&metadata)?;
     harness_stage_policy::check_resolved(&metadata)?;
+    central_link_dependency_policy::check(&metadata)?;
     approval_ports_policy::check_declared(&metadata)?;
     approval_ports_policy::check_resolved(&metadata)?;
     machine_core_store_policy::check_declared(&metadata)?;
