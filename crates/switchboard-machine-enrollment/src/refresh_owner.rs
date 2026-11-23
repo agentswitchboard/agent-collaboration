@@ -87,7 +87,12 @@ pub enum LeaseConfigurationFault {
 }
 
 type LeaseResult = Result<AccessLease, LeaseUnavailable>;
-type RefreshFlight = Shared<BoxFuture<'static, (BindingGeneration, RefreshCompletion)>>;
+type RefreshFuture = Shared<BoxFuture<'static, (BindingGeneration, RefreshCompletion)>>;
+
+struct RefreshFlight {
+    key: EnrollmentKey,
+    future: RefreshFuture,
+}
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum StaleGrantRetry {
@@ -263,14 +268,20 @@ where
                     retry = StaleGrantRetry::Consumed;
                 }
                 if let Some(flight) = &state.flight {
-                    // The shared result records whether it is usable on its own generation.
-                    flight.clone()
+                    if flight.key != binding.key() {
+                        return Err(LeaseUnavailable::DifferentEnrollment);
+                    }
+                    flight.future.clone()
                 } else {
                     let next = generation
                         .binding_successor()
                         .ok_or(LeaseConfigurationFault::GenerationExhausted)?;
+                    let key = binding.key();
                     let flight = self.new_refresh(binding, next);
-                    state.flight = Some(flight.clone());
+                    state.flight = Some(RefreshFlight {
+                        key,
+                        future: flight.clone(),
+                    });
                     flight
                 }
             };
@@ -302,7 +313,7 @@ where
             if state
                 .flight
                 .as_ref()
-                .is_some_and(|active| active.ptr_eq(&flight))
+                .is_some_and(|active| active.future.ptr_eq(&flight))
             {
                 state.flight = None;
             }
@@ -432,7 +443,7 @@ where
         }
     }
 
-    fn new_refresh(&self, binding: EnrollmentBinding, next: BindingGeneration) -> RefreshFlight {
+    fn new_refresh(&self, binding: EnrollmentBinding, next: BindingGeneration) -> RefreshFuture {
         let inputs = Arc::clone(&self.inputs);
         let state = Arc::downgrade(&self.state);
         async move {
