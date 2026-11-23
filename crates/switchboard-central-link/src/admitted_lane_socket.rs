@@ -173,7 +173,12 @@ impl AdmittedSocketLane {
         }
     }
 
-    pub(super) fn deliver(&self, event: ClientEvent, permit: Option<EventPermit>) -> bool {
+    pub(super) fn deliver(
+        &self,
+        event: ClientEvent,
+        permit: Option<EventPermit>,
+        clock: &dyn RuntimeClock,
+    ) -> bool {
         let (
             Some(admitted),
             Some(permit),
@@ -191,6 +196,7 @@ impl AdmittedSocketLane {
         };
         permit.send(LinkLaneEvent::Deliver {
             connection: admitted.connection.clone(),
+            arrived_at: clock.utc_now(),
             offer,
             sender,
         });

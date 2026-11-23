@@ -4,7 +4,8 @@ use central_link_protocol::{DeliveryMessage, DirectOfferBody, DirectOfferMessage
 use router_clock::RuntimeClock;
 use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use switchboard_machine_core_store::{
-    InboxDecision, InboxRefusalReason, InboxStore, InboxStoreError, RecordDelivery,
+    InboxDecision, InboxOfferExpiry, InboxRefusalReason, InboxStore, InboxStoreError,
+    RecordDelivery,
 };
 use tokio::sync::Mutex;
 use workspace_ids::{MachineId, MessageId, SessionRef};
@@ -154,6 +155,8 @@ pub enum InboxCustodyError {
     InvalidOffer,
     #[error("central offered a delivery addressed to machine {0}")]
     WrongMachine(MachineId),
+    #[error("delivery expiry is outside the supported clock range")]
+    ExpiryOutOfRange,
     #[error("inbox storage unavailable")]
     Store(#[from] InboxStoreError),
     #[error("the inbox could not read the earlier decision for message {0}")]
@@ -194,17 +197,19 @@ impl RecipientInbox {
     pub async fn receive_offer(
         &mut self,
         incoming: central_link_client::ValidatedDeliveryOffer,
+        arrived_at: Timestamp,
     ) -> Result<InboxOfferResult, InboxCustodyError> {
-        let offer = self.start_offer(incoming)?;
+        let offer = self.start_offer(incoming, arrived_at)?;
         self.keep_or_retain(offer).await
     }
 
     pub(crate) fn start_offer(
         &mut self,
         incoming: central_link_client::ValidatedDeliveryOffer,
+        arrived_at: Timestamp,
     ) -> Result<InboxOffer, InboxCustodyError> {
         let (message, time_left) = incoming.into_parts();
-        let offer = InboxOffer::from_delivery(*message, time_left, self.clock.utc_now())?;
+        let offer = InboxOffer::from_delivery(*message, time_left, arrived_at)?;
         let target = offer.target_session();
         if target.machine_id != self.machine_id {
             return Err(InboxCustodyError::WrongMachine(target.machine_id.clone()));
@@ -299,9 +304,9 @@ impl RecipientInbox {
         Ok(inbox_scan(scan, &mut self.operator_events))
     }
 
-    pub(crate) async fn prune_completed(&mut self) -> Result<(), InboxCustodyError> {
+    pub(crate) async fn prune_past_retention(&mut self) -> Result<(), InboxCustodyError> {
         let now_ms = self.clock.now().unix_millis();
-        let scan = self.store.prune_ended(now_ms).await?;
+        let scan = self.store.prune_past_retention(now_ms).await?;
         inbox_scan(scan, &mut self.operator_events);
         Ok(())
     }
@@ -400,13 +405,20 @@ impl RecipientInbox {
             },
             RecipientSessionAnswer::CouldNotTell => return Ok(InboxOfferResult::LookupDeferred),
         };
-        // Part A's store has no expiry column. Keep the duration until this
-        // boundary so Part C can supply the expiry when it owns session handoff.
-        let (message, _time_left) = offer.record_to_keep();
+        let (message, time_left) = offer.record_to_keep();
         let arrival_ms = offer.arrived_at().timestamp_millis();
+        let expiry = match time_left {
+            Some(duration) => InboxOfferExpiry::DirectWithExpiry(
+                arrival_ms
+                    .checked_add(i64::from(u32::from(duration)))
+                    .and_then(Timestamp::from_timestamp_millis)
+                    .ok_or(InboxCustodyError::ExpiryOutOfRange)?,
+            ),
+            None => InboxOfferExpiry::SystemWithoutExpiry,
+        };
         match self
             .store
-            .record_delivery(&message, decision, arrival_ms)
+            .record_delivery(&message, decision, arrival_ms, expiry)
             .await?
         {
             // The store commits the first decision and its pending receipt together.
