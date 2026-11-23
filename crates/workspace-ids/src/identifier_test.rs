@@ -1,6 +1,6 @@
 use super::{
-    ApprovalRequestId, AreaId, MachineId, ProjectId, RouterRunId, SessionId, SessionOperationId,
-    SessionOperationIdError, SessionRef, WorkspaceId,
+    ApprovalRequestId, AreaId, CentralSessionId, MachineId, ProjectId, RouterRunId, SessionId,
+    SessionOperationId, SessionOperationIdError, SessionRef, WorkspaceId,
 };
 use serde::de::DeserializeOwned;
 use std::str::FromStr;
@@ -13,6 +13,11 @@ fn router_run_id_requires_canonical_uuid_v7() {
 #[test]
 fn approval_request_id_requires_canonical_uuid_v7() {
     assert_canonical_approval_id::<ApprovalRequestId>("ApprovalRequestId");
+}
+
+#[test]
+fn central_session_id_requires_canonical_uuid_v7() {
+    assert_canonical_approval_id::<CentralSessionId>("CentralSessionId");
 }
 
 fn assert_canonical_approval_id<Id: FromStr + DeserializeOwned>(identifier: &str) {
@@ -93,6 +98,7 @@ fn a_session_ref_is_the_machine_and_the_provider_session_with_no_endpoint() {
     assert_eq!(session.session_id.as_str(), "Codex thread 019a-anything");
     assert_eq!(serde_json::to_value(&session).unwrap(), wire);
     for bad in [
+        serde_json::json!(["01890f2e-7b4c-7cc0-98c4-000000000001", "s"]),
         serde_json::json!({"machineId": "550e8400-e29b-41d4-a716-446655440701", "sessionId": "s"}),
         serde_json::json!({"machineId": "01890f2e-7b4c-7cc0-98c4-000000000001", "sessionId": ""}),
         serde_json::json!({"machineId": "01890f2e-7b4c-7cc0-98c4-000000000001", "sessionId": "s", "endpoint": "codex"}),

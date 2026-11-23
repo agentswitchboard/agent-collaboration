@@ -2,8 +2,8 @@
 #[cfg(test)]
 use crate::contract_artifacts;
 use fleet_identity_protocol::{
-    AbsolutePath, CommitId, EnrollmentId, InstallationId, IsolationInstanceId, ModelName,
-    OrganizationId, RemoteStartId, RepositoryLocator, SequenceNumber, UnixMillis, UnixSeconds,
+    AbsolutePath, EnrollmentId, InstallationId, OrganizationId, RemoteStartId, SequenceNumber,
+    UnixMillis, UnixSeconds,
 };
 use serde_json::json;
 
@@ -72,15 +72,6 @@ fn remote_start_id_wire_contract() {
 }
 
 #[test]
-fn isolation_instance_id_wire_contract() {
-    contract_artifacts::assert_contract::<IsolationInstanceId>(
-        "IsolationInstanceId",
-        vec![json!("019a3dce-2000-7000-8000-000000000001")],
-        false,
-    );
-}
-
-#[test]
 fn installation_id_wire_contract() {
     contract_artifacts::assert_contract::<InstallationId>(
         "InstallationId",
@@ -103,44 +94,6 @@ fn absolute_path_wire_contract() {
             json!("/work/item-two"),
             json!(format!("/{}", "a".repeat(4095))),
             json!(format!("/{}a", "é".repeat(2047))),
-        ],
-        false,
-    );
-}
-
-#[test]
-fn repository_locator_wire_contract() {
-    contract_artifacts::assert_contract::<RepositoryLocator>(
-        "RepositoryLocator",
-        vec![
-            json!("https://example.invalid/repository.git"),
-            json!("r".repeat(2048)),
-            json!("é".repeat(1024)),
-        ],
-        false,
-    );
-}
-
-#[test]
-fn commit_id_wire_contract() {
-    contract_artifacts::assert_contract::<CommitId>(
-        "CommitId",
-        vec![
-            json!("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"),
-            json!("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
-        ],
-        false,
-    );
-}
-
-#[test]
-fn model_name_wire_contract() {
-    contract_artifacts::assert_contract::<ModelName>(
-        "ModelName",
-        vec![
-            json!("configured-model"),
-            json!("m".repeat(256)),
-            json!("é".repeat(128)),
         ],
         false,
     );

@@ -5,7 +5,7 @@ use approval_request_protocol::{
     StopRequest, decode_named_map,
 };
 use fleet_identity_protocol::{EnrollmentId, OrganizationId};
-use fleet_rpc::Rpc;
+use fleet_rpc::{IndependentReplyRpc, Rpc};
 use serde::{Deserialize, Serialize};
 use workspace_ids::MachineId;
 
@@ -69,6 +69,8 @@ macro_rules! bind_approval_rpc {
             type Request = $request;
             type Reply = $reply;
         }
+
+        impl IndependentReplyRpc for $marker {}
     };
 }
 
