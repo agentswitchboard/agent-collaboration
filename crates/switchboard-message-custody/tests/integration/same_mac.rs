@@ -11,7 +11,11 @@ use switchboard_message_custody::{
 };
 use workspace_model::central_mail::{CentralMailOperation, CentralMailRefusal, CentralMailResult};
 
-use super::{batch_limits::limits_fixture, outbox_timing::direct_message};
+use super::{
+    batch_limits::limits_fixture,
+    outbox_timing::direct_message,
+    worker_orphans::{flush_event, start_worker},
+};
 
 #[tokio::test]
 async fn local_and_remote_messages_share_the_minute_path_and_central_can_refuse_local() {
@@ -57,16 +61,15 @@ async fn local_and_remote_messages_share_the_minute_path_and_central_can_refuse_
     );
     assert!(lane.batch_commands().is_empty());
 
+    let (calls, stop, mut events, running) = start_worker(custody);
     let wake = ClockInstant::ZERO.after(Duration::from_secs(20));
-    let (report, ()) = tokio::join!(custody.flush_next(), async {
-        clock.not_due_check_now(wake).await;
-        assert!(
-            lane.batch_commands().is_empty(),
-            "no wire batch before the minute mark"
-        );
-        clock.advance(Duration::from_secs(20)).unwrap();
-    });
-    let report = report.unwrap().unwrap();
+    clock.not_due_check_now(wake).await;
+    assert!(
+        lane.batch_commands().is_empty(),
+        "no wire batch before the minute mark"
+    );
+    clock.advance(Duration::from_secs(20)).unwrap();
+    let report = flush_event(&mut events, "the same-Mac and remote message outcomes").await;
     assert!(report.issues.is_empty());
     assert_eq!(report.answered.len(), 2);
 
@@ -105,12 +108,12 @@ async fn local_and_remote_messages_share_the_minute_path_and_central_can_refuse_
         scope: RequestScope::Organization,
     };
     assert_eq!(
-        custody.request_status(local.caller, query).await,
+        calls.request_status(local.caller, query).await,
         CustodyRequestStatus::Refused(OutboxRefusal::Central(OutboxCentralRefusal::Mail(refusal)))
     );
     assert!(
-        custody
-            .waiting_for_session(&local_message.to)
+        calls
+            .waiting_for_session(local_message.to.clone())
             .await
             .unwrap()
             .is_empty(),
@@ -122,4 +125,6 @@ async fn local_and_remote_messages_share_the_minute_path_and_central_can_refuse_
             .unwrap(),
     );
     assert!(inbox.pending_receipts().await.unwrap().healthy.is_empty());
+    stop.send_replace(true);
+    running.await.unwrap();
 }

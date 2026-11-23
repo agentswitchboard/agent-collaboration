@@ -141,10 +141,7 @@ pub(crate) async fn settle_orphan_probe(
     let deadline = work.local_wake_at(probe.claim.deadline_ms);
     let reply = match *reply.result {
         RequestStatusAnswer::NotFound => {
-            if !cutoff_reported
-                && accepted_at < deadline
-                && work.has_settlement_time(probe.claim.deadline_ms)
-            {
+            if !cutoff_reported && accepted_at < deadline && work.before_elapsed_fence(deadline) {
                 dispatch
                     .return_recovered_claim(
                         work,
