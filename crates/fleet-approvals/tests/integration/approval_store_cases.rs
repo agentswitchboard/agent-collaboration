@@ -480,6 +480,47 @@ async fn a_page_times_out_only_its_rows_and_held_alarms_cannot_restore_waiting()
 }
 
 #[tokio::test]
+async fn destination_request_key_is_copied_on_insert_and_checked_on_decode() {
+    let (fixture, holder, requester) = fixture_with_owner().await;
+    let request = key(&holder.run, 1);
+    let raise = provider(&request, &requester, "Destination key");
+    assert!(matches!(
+        raise_and_commit(&fixture, &holder, &raise).await.0,
+        RaiseReply::Receipt { .. }
+    ));
+    assert_eq!(
+        fixture
+            .inspect_rows("SELECT request_id FROM approval_request_destinations")
+            .await,
+        [request.request_id.as_str()],
+    );
+
+    fixture
+        .alter_fixture("UPDATE approval_request_destinations SET request_id='019ac19f-aa00-7000-8000-00000000c925'")
+        .await;
+
+    // The holder replay selects the request by its own Id and decodes the
+    // destination via its physical row foreign key.
+    let (replay, evidence) = fixture
+        .apply(None, async |store| {
+            store
+                .apply_holder_command(
+                    &fleet_approvals::ApprovalHolderAdmission::for_fixture_scope(&holder),
+                    ApprovalHolderCommand::Raise(Box::new(raise.clone())),
+                )
+                .await
+        })
+        .await;
+    assert!(matches!(
+        replay,
+        Err(ApprovalApplyFailure::Store(StoreFailure::Corrupt {
+            reason: central_storage::CorruptReason::BadValue { ref column },
+        })) if column == "approval_request_destinations.scope"
+    ));
+    assert!(evidence.sql_writes.is_empty());
+}
+
+#[tokio::test]
 async fn stored_kind_state_and_ending_are_rejected_by_the_public_read() {
     let (fixture, holder, requester) = fixture_with_owner().await;
     let request = key(&holder.run, 1);
