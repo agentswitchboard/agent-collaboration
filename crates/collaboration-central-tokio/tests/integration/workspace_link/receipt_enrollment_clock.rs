@@ -128,7 +128,7 @@ async fn clock_move(fixture: &Fixture, boundary: AfterEnrollmentRead) -> Result<
             }
             let time = later.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
             vec![vec![
-                SqlValue::Text("failed".into()),
+                SqlValue::Text("refused".into()),
                 SqlValue::Text("unknownSession".into()),
                 SqlValue::Text(time.clone()),
                 SqlValue::Text(time),
