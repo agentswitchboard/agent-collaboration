@@ -10,7 +10,9 @@ autotests = false
 workspace = true
 
 [dependencies]
+serde.workspace = true
 state-machine-core.workspace = true
+switchboard-central-link.workspace = true
 thiserror.workspace = true
 url.workspace = true
 uuid = { version = "1.26.0", default-features = false }

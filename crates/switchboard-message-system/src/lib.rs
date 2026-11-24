@@ -6,6 +6,7 @@
 
 mod machine;
 mod protocol;
+mod status;
 mod teardown;
 mod transition_table;
 
@@ -15,4 +16,5 @@ pub use protocol::{
     Generation, LeaseStopResult, Metadata, OrganizationId, PairError, ReadId, StopBudgets,
     StopReport, StopResult, StopTarget, UnitPiece,
 };
+pub use status::{MessageSystemStatus, message_system_status};
 pub use teardown::{EnrollmentDuringDrain, QuiesceReason, Quiescing};

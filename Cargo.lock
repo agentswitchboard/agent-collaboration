@@ -6061,7 +6061,9 @@ name = "switchboard-message-system"
 version = "0.1.158"
 dependencies = [
  "hegeltest",
+ "serde",
  "state-machine-core",
+ "switchboard-central-link",
  "thiserror 2.0.18",
  "url",
  "uuid",
