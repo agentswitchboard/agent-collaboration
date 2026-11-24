@@ -135,7 +135,7 @@ impl<'store> MacOutbox<'store> {
         let request_id = item.request.as_str();
         let caller_json = serde_json::to_string(&item.caller)?;
         let payload_json = serde_json::to_string(&item.payload)?;
-        let state = outbox_row_machine::OutboxRowMachine::initial_tag().as_str();
+        let state = outbox_row_machine::OutboxRowMachine::INITIAL_STATE.as_str();
         let flush_at_ms = item.flush_at_ms;
         let mut transaction = self
             .store

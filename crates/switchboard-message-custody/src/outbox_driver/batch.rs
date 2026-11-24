@@ -13,15 +13,14 @@ use switchboard_machine_core_store::{StoredOutboxWrite, UnansweredOutboxClaim};
 use workspace_ids::RequestId;
 
 use crate::{
-    custody_operator::CustodyOperatorEvent,
-    flush_clock::send_fence_for_mark,
-    local_settlement::{AnswerAtCutoff, LocalSettlements, MemberReturn},
+    custody_operator::CustodyOperatorEvent, flush_clock::send_fence_for_mark,
     outbox_wire::request_for_write,
-    outbox_work::{FlushSelection, OutboxWork, OutboxWorkError},
 };
 
-pub use crate::flush_report::{
-    AppliedSenderNotice, BatchDispatchError, FlushReport, FlushedWriteAnswer,
+use super::{
+    report::{BatchDispatchError, FlushReport},
+    settlement::{AnswerAtCutoff, LocalSettlements, MemberReturn},
+    work::{FlushSelection, OutboxWork, OutboxWorkError},
 };
 
 /// The command and claim token prepared by the one batch dispatcher.

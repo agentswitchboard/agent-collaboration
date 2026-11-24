@@ -11,11 +11,11 @@ use switchboard_machine_core_store::{
 use workspace_ids::RequestId;
 use workspace_model::{Caller, WorkspaceOperation};
 
-use crate::{
-    custody_submission::accepted_reply,
-    flush_report::{BatchDispatchError, FlushReport, FlushedWriteAnswer},
-    outbox_settlement_map::outcome_from_link_reply,
-    outbox_work::OutboxWork,
+use crate::{custody_submission::accepted_reply, outbox_settlement_map::outcome_from_link_reply};
+
+use super::{
+    report::{BatchDispatchError, FlushReport, FlushedWriteAnswer},
+    work::OutboxWork,
 };
 
 /// The dispatcher retains either the checked reply or the actual departure evidence for one member.

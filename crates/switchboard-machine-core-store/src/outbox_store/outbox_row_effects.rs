@@ -6,7 +6,7 @@ use super::{
     outbox_rows::{corrupt_row, expect_one},
 };
 use crate::{EndedWrite, outbox_item_state::OutboxItemState};
-use state_machine_core::{StateMachine, TransitionError};
+use state_machine_core::{StateMachine, StateTag, TransitionError};
 use workspace_ids::RequestId;
 
 pub(super) enum RowTransition {
@@ -30,8 +30,8 @@ pub(super) async fn apply_row_event(
         Err(error) => return Err(store_error(&row.request, expected, error)),
     };
     let request = &row.request;
-    let next_tag = next.phase.item_state().as_str();
-    let previous_tag = row.phase.item_state().as_str();
+    let next_tag = next.state_tag();
+    let previous_tag = row.state_tag();
     let now_ms = next.updated_at_ms;
     let mut result = RowTransition::NoChange;
     for effect in effects {
@@ -156,8 +156,8 @@ async fn store_outcome(
         _ => return Err(corrupt_row(request_id, "outcome_json")),
     };
     let payload_json = serde_json::to_string(profile)?;
-    let to = next.phase.item_state().as_str();
-    let from = previous.phase.item_state().as_str();
+    let to = next.state_tag();
+    let from = previous.state_tag();
     let now_ms = next.updated_at_ms;
     let changed = sqlx::query!(
         "UPDATE outbox_items SET item_state = ?, outcome_json = ?, payload_json = ?,

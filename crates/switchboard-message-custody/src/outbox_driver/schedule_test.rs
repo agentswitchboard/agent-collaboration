@@ -1,7 +1,8 @@
-use super::{FlushEffect, FlushEvent, OutboxFlushState, SyncTime, transition};
+use super::{FlushEffect, FlushEvent, OutboxFlushState, OutboxSchedule, SyncTime, transition};
 use crate::flush_marks::{FLUSH_INTERVAL_MILLIS, FLUSH_JITTER_MILLIS};
 use central_link_protocol::MAX_LINK_REQUEST_BATCH_SIZE;
 use hegel::{TestCase, generators as gs};
+use state_machine_core::check_state_machine_transitions;
 use std::collections::BTreeMap;
 
 const START: i64 = 1_763_380_800_000 - 40_000;
@@ -59,9 +60,6 @@ impl FlushModel {
                 FlushEffect::WakeAt { mark } => {
                     assert_eq!(mark.unix_millis().rem_euclid(FLUSH_INTERVAL_MILLIS), 0);
                     self.armed_wake = Some(*mark);
-                }
-                FlushEffect::WakeAtLocalDeadline { .. } => {
-                    panic!("the minute schedule model does not request local deadline wakes");
                 }
             }
         }
@@ -278,38 +276,49 @@ fn a_write_past_its_mark_goes_on_the_next_open_mark_not_at_once() {
 }
 
 #[test]
-fn the_original_local_deadline_arms_offline_without_rounding_to_a_mark() {
-    let mut model = FlushModel::new();
-    let deadline = at(START + 900_000 + 123);
-    let (state, effects) = transition(
-        model.state.clone(),
-        FlushEvent::LocalDeadlineChanged {
-            deadline: Some(deadline),
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        effects,
-        [FlushEffect::WakeAtLocalDeadline {
-            deadline: Some(deadline)
-        }]
-    );
-
-    model.state = state;
-    model.store_next();
-    tc_link(&mut model, true);
-    tc_link(&mut model, false);
-    let (_, effects) = transition(
-        model.state,
-        FlushEvent::LocalDeadlineChanged {
-            deadline: Some(deadline),
-        },
-    )
-    .unwrap();
-    assert_eq!(
-        effects,
-        [FlushEffect::WakeAtLocalDeadline {
-            deadline: Some(deadline)
-        }]
-    );
+fn the_schedule_table_covers_every_phase_and_event() {
+    let mark = at(START + 40_000);
+    let next_mark = at(mark.unix_millis() + FLUSH_INTERVAL_MILLIS);
+    let closed = at(mark.unix_millis() + FLUSH_JITTER_MILLIS);
+    let disconnected = OutboxFlushState::default();
+    let connected = |earliest_due| FlushEvent::LinkConnected {
+        now: mark,
+        earliest_due,
+    };
+    let tick = |now, earliest_due| FlushEvent::Tick { now, earliest_due };
+    let end = |continue_mark, earliest_due| FlushEvent::BatchEnded {
+        earliest_due,
+        continue_mark,
+    };
+    let idle = transition(disconnected.clone(), connected(None)).unwrap().0;
+    let armed = transition(disconnected.clone(), connected(Some(mark)))
+        .unwrap()
+        .0;
+    let reserved = transition(armed.clone(), tick(mark, Some(mark))).unwrap().0;
+    let drain_open = transition(reserved.clone(), end(true, None)).unwrap().0;
+    let drain_armed = transition(reserved.clone(), end(true, Some(mark)))
+        .unwrap()
+        .0;
+    let states = [disconnected, idle, armed, reserved, drain_open, drain_armed];
+    let mut events = vec![
+        FlushEvent::LinkLost,
+        FlushEvent::DrainFenced,
+        FlushEvent::Stored { flush_at: mark },
+    ];
+    for due in [None, Some(mark), Some(next_mark)] {
+        events.extend([end(true, due), end(false, due)]);
+        for now in [mark, closed, next_mark] {
+            events.extend([
+                FlushEvent::LinkConnected {
+                    now,
+                    earliest_due: due,
+                },
+                tick(now, due),
+            ]);
+        }
+    }
+    let cases = states
+        .iter()
+        .flat_map(|state| events.iter().map(|event| (state.clone(), event.clone())));
+    check_state_machine_transitions::<OutboxSchedule>(cases).unwrap();
 }
