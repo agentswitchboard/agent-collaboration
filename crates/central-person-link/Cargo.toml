@@ -1,0 +1,16 @@
+[package]
+name = "central-person-link"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+autotests = false
+
+[lints]
+workspace = true
+
+[dependencies]
+fleet-signin.workspace = true
+fleet-identity-protocol = { path = "../fleet-identity-protocol", version = "0.1.158" }
+workspace-ids.workspace = true
+serde.workspace = true

@@ -22,6 +22,7 @@ fleet-machine-login.workspace = true
 fleet-rpc.workspace = true
 central-storage.workspace = true
 central-link-protocol.workspace = true
+central-person-link.workspace = true
 central-engine-model.workspace = true
 fleet-contracts.workspace = true
 fleet-engine.workspace = true

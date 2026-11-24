@@ -1,0 +1,178 @@
+//! Native socket wiring for the shared person-link service.
+
+use super::{
+    LinkState, Runtime, bearer_token,
+    link_io::{IncomingText, LinkWrites, configure_upgrade, receive_text},
+};
+use axum::{
+    extract::{
+        Path, State, WebSocketUpgrade,
+        ws::{CloseFrame, Message, WebSocket, close_code},
+    },
+    http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
+};
+use central_link_protocol::PersonLinkCloseCode;
+use collaboration_central_core::{
+    PersonConnectionState, PersonLinkAdmission, PersonLinkReply, PersonRevision,
+    PersonSocketAttachment, PersonSocketRegistration,
+};
+use fleet_identity_protocol::OrganizationId;
+use std::{
+    sync::{Arc, Mutex, OnceLock, PoisonError, Weak},
+    time::Duration,
+};
+use tokio_util::sync::CancellationToken;
+
+#[derive(Clone, Default)]
+pub(crate) struct PersonSockets(Arc<Mutex<Vec<Weak<PersonSocket>>>>);
+
+struct PersonSocket {
+    connection: Mutex<PersonConnectionState>,
+    reconnect: CancellationToken,
+}
+
+impl PersonSockets {
+    fn register(&self, attachment: PersonSocketAttachment) -> Arc<PersonSocket> {
+        let socket = Arc::new(PersonSocket {
+            connection: Mutex::new(PersonConnectionState::Admitted(attachment)),
+            reconnect: CancellationToken::new(),
+        });
+        let mut sockets = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        sockets.retain(|existing| existing.strong_count() > 0);
+        sockets.push(Arc::downgrade(&socket));
+        socket
+    }
+
+    pub(crate) fn close_affected(&self, revision: &PersonRevision) {
+        let mut sockets = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        sockets.retain(|existing| {
+            let Some(socket) = existing.upgrade() else {
+                return false;
+            };
+            if socket
+                .connection
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .observe_revision(revision)
+            {
+                socket.reconnect.cancel();
+            }
+            true
+        });
+    }
+}
+
+pub(super) async fn upgrade(
+    State(state): State<Arc<LinkState>>,
+    Path(organization): Path<String>,
+    headers: HeaderMap,
+    upgrade: WebSocketUpgrade,
+) -> Response {
+    let task = state.tasks.token();
+    if state.stop.is_cancelled() {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    }
+    let Some(token) = bearer_token(&headers) else {
+        return StatusCode::UNAUTHORIZED.into_response();
+    };
+    let Ok(organization) = OrganizationId::try_from(organization) else {
+        return StatusCode::BAD_REQUEST.into_response();
+    };
+    let Ok(runtime) = state.host.central(&organization).await else {
+        return StatusCode::SERVICE_UNAVAILABLE.into_response();
+    };
+    let attachment = match runtime.admit_person_link(token).await {
+        Ok(PersonLinkAdmission::Admitted(attachment)) => attachment,
+        Ok(PersonLinkAdmission::Refused) => return StatusCode::UNAUTHORIZED.into_response(),
+        Err(_) => return StatusCode::SERVICE_UNAVAILABLE.into_response(),
+    };
+    configure_upgrade(upgrade)
+        .on_upgrade(move |socket| async move {
+            let _task = task;
+            serve(socket, state, runtime, attachment).await;
+        })
+        .into_response()
+}
+
+async fn serve(
+    mut socket: WebSocket,
+    state: Arc<LinkState>,
+    runtime: Arc<Runtime>,
+    attachment: PersonSocketAttachment,
+) {
+    let registered = runtime
+        .register_person_socket(&attachment, || {
+            state.host.person_sockets.register(attachment.clone())
+        })
+        .await;
+    let unsubscribed = CancellationToken::new();
+    let closed_machine = OnceLock::new();
+    let writes = LinkWrites {
+        stop: &state.stop,
+        replaced: &unsubscribed,
+        authority_close: &closed_machine,
+        clock: state.host.link_clock(),
+        tasks: &state.tasks,
+        #[cfg(feature = "test-support")]
+        pauses: runtime.runtime().pause_points(),
+    };
+    let registered = match registered {
+        Ok(PersonSocketRegistration::Registered(registered)) => registered,
+        Ok(PersonSocketRegistration::Stale) => return reconnect(&mut socket, &writes).await,
+        Err(_) => {
+            return writes
+                .close(&mut socket, close_code::ERROR, "central unavailable")
+                .await;
+        }
+    };
+    loop {
+        let incoming = tokio::select! {
+            biased;
+            () = state.stop.cancelled() => return,
+            () = registered.reconnect.cancelled() => return reconnect(&mut socket, &writes).await,
+            incoming = socket.recv() => incoming,
+        };
+        let text = match receive_text(&mut socket, &writes, incoming).await {
+            IncomingText::Text(text) => text,
+            IncomingText::Control => continue,
+            IncomingText::Ended => return,
+        };
+        let current = registered
+            .connection
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .check_time(state.host.current_time().unix_millis())
+            .cloned();
+        let Some(attachment) = current else {
+            return reconnect(&mut socket, &writes).await;
+        };
+        match runtime.handle_person_link_text(&attachment, &text).await {
+            Ok(PersonLinkReply::Frame(frame)) => {
+                if !writes.send(&mut socket, &frame).await {
+                    return;
+                }
+            }
+            Ok(PersonLinkReply::Reconnect) => return reconnect(&mut socket, &writes).await,
+            Ok(PersonLinkReply::ProtocolViolation) => {
+                return writes
+                    .close(&mut socket, close_code::POLICY, "unsupported person frame")
+                    .await;
+            }
+            Err(_) => {
+                return writes
+                    .close(&mut socket, close_code::ERROR, "central unavailable")
+                    .await;
+            }
+        }
+    }
+}
+
+async fn reconnect(socket: &mut WebSocket, writes: &LinkWrites<'_>) {
+    const CLOSE_BUDGET: Duration = Duration::from_millis(250);
+    let frame = Message::Close(Some(CloseFrame {
+        code: PersonLinkCloseCode::Reconnect.code(),
+        reason: "reconnect".into(),
+    }));
+    let _ = router_clock::timeout(writes.clock, CLOSE_BUDGET, socket.send(frame)).await;
+}

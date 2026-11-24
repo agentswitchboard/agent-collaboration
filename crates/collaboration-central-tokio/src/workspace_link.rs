@@ -28,6 +28,8 @@ use tokio_util::{sync::CancellationToken, task::TaskTracker};
 
 #[path = "workspace_link_io.rs"]
 mod link_io;
+#[path = "workspace_person_socket.rs"]
+pub(crate) mod person_socket;
 #[path = "workspace_typed_link.rs"]
 mod typed_link;
 use link_io::{
@@ -63,6 +65,10 @@ impl WorkspaceLink {
     pub fn router(&self) -> Router {
         Router::new()
             .route("/v1/organizations/{organization}/link", get(upgrade_link))
+            .route(
+                "/v1/organizations/{organization}/person-link",
+                get(person_socket::upgrade),
+            )
             .with_state(self.state.clone())
     }
 

@@ -67,7 +67,31 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
             now,
         )
         .await?;
-        self.apply_revision_plan(plan).await
+        let pushed_person = match revision {
+            AuthorizationRevision::Person { person_id, .. } => person_id.as_str().parse().ok(),
+            AuthorizationRevision::Organization { .. } => None,
+        };
+        let applied = self.apply_revision_plan(plan).await?;
+        let revision_number = applied.acknowledged_revision.get();
+        let event = match revision {
+            AuthorizationRevision::Organization {
+                organization_id, ..
+            } => Some(central_person_link::PersonRevision::Organization {
+                organization: organization_id.clone(),
+                revision: revision_number,
+            }),
+            AuthorizationRevision::Person {
+                organization_id, ..
+            } => pushed_person.map(|person| central_person_link::PersonRevision::Person {
+                organization: organization_id.clone(),
+                person,
+                revision: revision_number,
+            }),
+        };
+        if let Some(event) = event {
+            (self.person_revision_committed)(event);
+        }
+        Ok(applied)
     }
 }
 impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {

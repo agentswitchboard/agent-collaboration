@@ -3,13 +3,25 @@ use crate::object_location::ObjectAddress;
 use fleet_identity_protocol::OrganizationId;
 use worker::{Env, Method, Request, Response, Result};
 
-pub(crate) fn organization(path: &str) -> Option<std::result::Result<OrganizationId, ()>> {
+pub(crate) enum LinkRoute {
+    Machine(OrganizationId),
+    Person(OrganizationId),
+}
+
+pub(crate) fn link_route(path: &str) -> Option<std::result::Result<LinkRoute, ()>> {
     let rest = path.strip_prefix("/v1/organizations/")?;
-    let id = rest.strip_suffix("/link")?;
+    let (id, constructor): (_, fn(OrganizationId) -> LinkRoute) =
+        if let Some(id) = rest.strip_suffix("/person-link") {
+            (id, LinkRoute::Person)
+        } else {
+            (rest.strip_suffix("/link")?, LinkRoute::Machine)
+        };
     Some(if id.contains('/') {
         Err(())
     } else {
-        id.to_owned().try_into().map_err(|_| ())
+        OrganizationId::try_from(id.to_owned())
+            .map(constructor)
+            .map_err(|_| ())
     })
 }
 
@@ -37,7 +49,7 @@ pub(crate) fn is_upgrade(request: &Request) -> Result<bool> {
 }
 
 pub(crate) async fn forward(request: Request, env: &Env) -> Result<Response> {
-    let Some(Ok(organization)) = organization(&request.path()) else {
+    let Some(Ok(route)) = link_route(&request.path()) else {
         return Response::error("invalid organization", 400);
     };
     if !is_upgrade(&request)? {
@@ -46,6 +58,9 @@ pub(crate) async fn forward(request: Request, env: &Env) -> Result<Response> {
     if bearer(&request)?.is_none() {
         return Response::error("machine token required", 401);
     }
+    let organization = match route {
+        LinkRoute::Machine(organization) | LinkRoute::Person(organization) => organization,
+    };
     let address = ObjectAddress::Central(organization);
     let mut forwarded = request.clone_mut()?;
     crate::cloudflare_transport::address_header(forwarded.headers_mut()?, &address)?;

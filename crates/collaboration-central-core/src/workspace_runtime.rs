@@ -15,6 +15,8 @@ pub struct WorkspaceRuntime<Host: CentralStore, Stores: WorkspaceStores> {
     pub(crate) stamp_store: Arc<dyn fleet_signin::stamp_store::StampStore>,
     pub(crate) mail_claim_retired: Arc<dyn Fn(fleet_contracts::MailClaimRetired) + Send + Sync>,
     pub(crate) mail_delivery_ready: Arc<dyn Fn(MailDeliveryReady) + Send + Sync>,
+    pub(crate) person_revision_committed:
+        Arc<dyn Fn(central_person_link::PersonRevision) + Send + Sync>,
     pub(crate) enrollment_invalidated:
         Arc<dyn Fn(fleet_contracts::EnrollmentInvalidation) + Send + Sync>,
     pub(crate) approval_delivery_completion:
@@ -53,6 +55,7 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
             mail_delivery_ready: Arc::new(|_| {}),
             mail_claim_retired: Arc::new(|_| {}),
             enrollment_invalidated: Arc::new(|_| {}),
+            person_revision_committed: Arc::new(|_| {}),
             #[cfg(feature = "test-support")]
             machine_restore_failure: Default::default(),
             #[cfg(feature = "test-support")]
@@ -122,6 +125,14 @@ impl<Host: CentralStore, Stores: WorkspaceStores> WorkspaceRuntime<Host, Stores>
         observer: Arc<dyn Fn(fleet_contracts::MailClaimRetired) + Send + Sync>,
     ) -> Self {
         self.mail_claim_retired = observer;
+        self
+    }
+
+    pub fn with_person_revision_observer(
+        mut self,
+        observer: Arc<dyn Fn(central_person_link::PersonRevision) + Send + Sync>,
+    ) -> Self {
+        self.person_revision_committed = observer;
         self
     }
 

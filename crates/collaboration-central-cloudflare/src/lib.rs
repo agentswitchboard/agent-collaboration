@@ -52,7 +52,7 @@ pub async fn main(
         Ok(response) => return Ok(response),
         Err(request) => request,
     };
-    if workspace_link_entry::organization(&request.path()).is_some() {
+    if workspace_link_entry::link_route(&request.path()).is_some() {
         return workspace_link_entry::forward(request, &env).await;
     }
     worker::Response::error("no such route", 404)

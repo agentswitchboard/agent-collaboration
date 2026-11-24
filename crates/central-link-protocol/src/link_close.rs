@@ -32,6 +32,20 @@ impl MachineLinkCloseCode {
     }
 }
 
+/// Reconnect with a fresh Sign-in token when person authority ends.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[repr(u16)]
+pub enum PersonLinkCloseCode {
+    Reconnect = 4104,
+}
+
+impl PersonLinkCloseCode {
+    #[must_use]
+    pub const fn code(self) -> u16 {
+        self as u16
+    }
+}
+
 #[cfg(test)]
 #[path = "link_close_test.rs"]
 mod tests;

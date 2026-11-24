@@ -11,6 +11,8 @@ mod fixture;
 mod idle_expiry;
 mod link_boundary;
 mod link_support;
+#[path = "workspace_link/person_admission.rs"]
+mod person_admission;
 mod private_enrollment_invalidation;
 mod receipt_enrollment_clock;
 mod receipt_frames;
