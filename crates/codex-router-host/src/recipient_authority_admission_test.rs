@@ -441,12 +441,14 @@ async fn managed_claude_stays_one_recipient_when_its_worker_is_registered() {
     assert_eq!(host.managed.lookup_session(&target).await, complete(1));
     assert_eq!(host.terminal.lookup_session(&target).await, complete(1));
 
-    let mut offer = pin!(host.inbox.expect_accepted(&target));
-    tokio::select! {
-        () = &mut offer => {}
-        (mut wire, request) = native.request() => {
-            native_reply(&mut wire, &request, loaded(&[])).await;
-            offer.await;
-        }
-    }
+    // The wrong build can refuse as soon as both Claude reads complete.
+    // Hold the managed row read until the native list reply is on the wire.
+    let provider_store = host.provider_store.clone();
+    let store_guard = provider_store.lock().await;
+    let release_managed_lookup = async {
+        let (mut wire, request) = native.request().await;
+        native_reply(&mut wire, &request, loaded(&[])).await;
+        drop(store_guard);
+    };
+    tokio::join!(host.inbox.expect_accepted(&target), release_managed_lookup);
 }
