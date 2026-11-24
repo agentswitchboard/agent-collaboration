@@ -1,8 +1,12 @@
-use super::{Fixture, ORGANIZATION};
+use super::{Fixture, ORGANIZATION, fixture::open_sign_in};
 use collaboration_central_conformance::{
     ConformanceResult,
-    signin_fixtures::person_link::{
-        PersonLinkFixture, check_person_link_admission, check_workspace_list,
+    signin_fixtures::{
+        NOW_SECONDS, Person,
+        person_link::{
+            PersonLinkFixture, check_person_link_admission, check_workspace_list,
+            person_link_bearer,
+        },
     },
 };
 
@@ -35,7 +39,7 @@ async fn workerd_person_upgrade_and_lifetime_rejects_machine_only_carrier() -> C
             async |seconds| super::renewal::advance(&fixture, seconds).await,
         )
         .await?;
-        check_empty_person_upgrade_response(&fixture, &person_url, None, 401).await
+        check_empty_person_upgrade_response(&fixture.client, &person_url, None, 401).await
     }
     .await;
     fixture.close().await?;
@@ -80,13 +84,36 @@ async fn workerd_private_person_link_404_rejects_leftover_upgrade_route() -> Con
     let fixture = Fixture::with_production_dispatcher().await?;
     let private_url = person_link_url(&fixture.host.signin_origin());
     let result = async {
-        check_empty_person_upgrade_response(&fixture, &private_url, None, 404).await?;
+        check_empty_person_upgrade_response(&fixture.client, &private_url, None, 404).await?;
         // Send a bearer as well, so a private route that only forwards bearer requests fails.
-        check_empty_person_upgrade_response(&fixture, &private_url, Some(&fixture.token), 404).await
+        check_empty_person_upgrade_response(
+            &fixture.client,
+            &private_url,
+            Some(&fixture.token),
+            404,
+        )
+        .await
     }
     .await;
     fixture.close().await?;
     result
+}
+
+#[tokio::test]
+async fn workerd_missing_keys_on_person_upgrade_rejects_unconfigured_verifier_build()
+-> ConformanceResult<()> {
+    let (host, _, _plan_root) = open_sign_in(None, false, true).await?;
+    let client = reqwest::Client::builder().no_proxy().build()?;
+    let person_url = person_link_url(host.public_origin());
+    let person = Person::owner(ORGANIZATION, NOW_SECONDS)?;
+    let bearer = person_link_bearer(&person, NOW_SECONDS, 100, 140)?;
+
+    check_empty_person_upgrade_response(&client, &person_url, None, 401).await?;
+    let upgrade =
+        check_empty_person_upgrade_response(&client, &person_url, Some(&bearer), 503).await;
+    host.assert_jwks_requests(0).await?;
+    host.close().await;
+    upgrade
 }
 
 fn person_link_url(origin: &str) -> String {
@@ -94,13 +121,12 @@ fn person_link_url(origin: &str) -> String {
 }
 
 async fn check_empty_person_upgrade_response(
-    fixture: &Fixture,
+    client: &reqwest::Client,
     url: &str,
     bearer: Option<&str>,
     expected: u16,
 ) -> ConformanceResult<()> {
-    let request = fixture
-        .client
+    let request = client
         .get(url)
         .header("connection", "Upgrade")
         .header("upgrade", "websocket")
@@ -112,10 +138,14 @@ async fn check_empty_person_upgrade_response(
     };
     let response = request.send().await?;
     if response.status().as_u16() != expected {
-        return Err(format!("{url}: expected HTTP {expected}, got {}", response.status()).into());
+        return Err(format!(
+            "person upgrade expected HTTP {expected}, got {}",
+            response.status()
+        )
+        .into());
     }
     if !response.bytes().await?.is_empty() {
-        return Err(format!("{url}: expected an empty HTTP {expected} response").into());
+        return Err(format!("person upgrade expected an empty HTTP {expected} response").into());
     }
     Ok(())
 }

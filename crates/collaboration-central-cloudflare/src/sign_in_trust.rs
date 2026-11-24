@@ -4,18 +4,25 @@ use crate::sign_in_crypto::{WorkerEd25519, WorkerEs256};
 use collaboration_central_core::{
     SignInTrustSettings,
     organization_authority::{SignInVerification, SignInVerifiers},
-    person_request::{PersonRequestPolicy, PersonRequestVerifier},
+    person_request::{
+        PersonRequestInput, PersonRequestPolicy, PersonRequestRefusal, PersonRequestVerifier,
+        VerifiedPersonRequest,
+    },
 };
+use fleet_contracts::FleetOrganizationStatementRefusal;
 use fleet_identity_protocol::OrganizationId;
 use fleet_runtime_ports::Clock;
 use fleet_runtime_ports::{IssuerKeySource, KeyFetchFailure, RawJwks};
 use fleet_signin::{
-    IssuerKeyCache, IssuerSignatureVerifier,
+    IssuerKeyCache, IssuerSignatureVerifier, StampVerification, StoredStampVerificationFailure,
     machine_token::{MachineTokenPolicy, MachineTokenVerifier},
     organization_authority::{
         FleetOrganizationStatementTrust, FleetOrganizationStatementVerifier, InvalidStampTrust,
+        StoredStatementFacts, VerifiedFleetOrganizationStatement,
     },
+    person_proof::CheckedPersonLink,
 };
+use futures_util::future::BoxFuture;
 use std::{future::Future, sync::Arc};
 use worker::{
     Env, Fetcher, Method, RequestInit, RequestRedirect,
@@ -36,6 +43,12 @@ struct WorkerSignInTrustSettings {
     service_id: Option<message_board::ServiceId>,
 }
 
+pub(crate) enum CloudflareSignInTrustLoad {
+    NotConfigured,
+    Ready(Arc<dyn SignInVerification>),
+    ConfiguredButUnavailable(UnavailableSignInVerification),
+}
+
 /// Retained by the host so fresh verifiers share the issuer's bounded key cache.
 pub(crate) struct CloudflareSignInTrust {
     settings: WorkerSignInTrustSettings,
@@ -46,7 +59,11 @@ pub(crate) struct CloudflareSignInTrust {
 impl CloudflareSignInTrust {
     /// A deployment with no sign-in configuration keeps ordinary central operation.
     /// Once any field is supplied, all required settings must be present and valid.
-    pub(crate) fn from_env(env: &Env) -> worker::Result<Option<Self>> {
+    pub(crate) fn from_env(
+        env: &Env,
+        organization: OrganizationId,
+        clock: Arc<dyn Clock>,
+    ) -> CloudflareSignInTrustLoad {
         let variable = |name: &str| {
             let present = js_sys::Reflect::has(env, &worker::wasm_bindgen::JsValue::from_str(name))
                 .map_err(|_| invalid_configuration())?;
@@ -57,13 +74,13 @@ impl CloudflareSignInTrust {
                 .map(|value| Some(value.to_string()))
                 .map_err(|_| invalid_configuration())
         };
-        let issuer = variable("CENTRAL_SIGN_IN_ISSUER")?;
-        let audience = variable("CENTRAL_SIGN_IN_AUDIENCE")?;
-        let admin_audience = variable("CENTRAL_ADMIN_AUDIENCE")?;
-        let person_link_audience = variable("CENTRAL_PERSON_LINK_AUDIENCE")?;
-        let machine_audience = variable("CENTRAL_MACHINE_AUDIENCE")?;
-        let public_origin = variable("CENTRAL_PUBLIC_ORIGIN")?;
-        let service_id = variable("CENTRAL_SIGN_IN_SERVICE_ID")?;
+        let issuer = variable("CENTRAL_SIGN_IN_ISSUER");
+        let audience = variable("CENTRAL_SIGN_IN_AUDIENCE");
+        let admin_audience = variable("CENTRAL_ADMIN_AUDIENCE");
+        let person_link_audience = variable("CENTRAL_PERSON_LINK_AUDIENCE");
+        let machine_audience = variable("CENTRAL_MACHINE_AUDIENCE");
+        let public_origin = variable("CENTRAL_PUBLIC_ORIGIN");
+        let service_id = variable("CENTRAL_SIGN_IN_SERVICE_ID");
         if [
             &issuer,
             &audience,
@@ -74,29 +91,46 @@ impl CloudflareSignInTrust {
             &service_id,
         ]
         .iter()
-        .all(|value| value.is_none())
+        .all(|value| matches!(value, Ok(None)))
         {
-            return Ok(None);
+            return CloudflareSignInTrustLoad::NotConfigured;
         }
-        let required = |value: Option<String>| {
-            value
-                .filter(|value| !value.is_empty() && !value.contains('\0'))
-                .ok_or_else(invalid_configuration)
+        let person_link_configured = !matches!(&person_link_audience, Ok(None));
+        let prepare = || {
+            let required = |value: Option<String>| {
+                value
+                    .filter(|value| !value.is_empty() && !value.contains('\0'))
+                    .ok_or_else(invalid_configuration)
+            };
+            let settings = WorkerSignInTrustSettings {
+                issuer: required(issuer?)?,
+                audience: required(audience?)?,
+                admin_audience: required(admin_audience?)?,
+                person_link_audience: person_link_audience?
+                    .map(|value| required(Some(value)))
+                    .transpose()?,
+                machine_audience: required(machine_audience?)?,
+                public_origin: required(public_origin?)?,
+                service_id: service_id?
+                    .map(message_board::ServiceId::try_from)
+                    .transpose()
+                    .map_err(|_| invalid_configuration())?,
+            };
+            Self::with_binding(env, settings)?
+                .for_organization(organization, clock)
+                .map_err(|InvalidStampTrust| invalid_configuration())
         };
-        let settings = WorkerSignInTrustSettings {
-            issuer: required(issuer)?,
-            audience: required(audience)?,
-            admin_audience: required(admin_audience)?,
-            person_link_audience: person_link_audience
-                .map(|value| required(Some(value)))
-                .transpose()?,
-            machine_audience: required(machine_audience)?,
-            public_origin: required(public_origin)?,
-            service_id: service_id
-                .map(message_board::ServiceId::try_from)
-                .transpose()
-                .map_err(|_| invalid_configuration())?,
-        };
+        match prepare() {
+            Ok(verification) => CloudflareSignInTrustLoad::Ready(verification),
+            Err(_) => {
+                CloudflareSignInTrustLoad::ConfiguredButUnavailable(UnavailableSignInVerification {
+                    person_link_configured,
+                })
+            }
+        }
+    }
+
+    fn with_binding(env: &Env, settings: WorkerSignInTrustSettings) -> worker::Result<Self> {
         if !SignInTrustSettings::is_valid_machine_audience(&settings.machine_audience) {
             return Err(invalid_configuration());
         }
@@ -116,15 +150,15 @@ impl CloudflareSignInTrust {
         let binding = env
             .service(SIGN_IN_KEYS_BINDING)
             .map_err(|_| invalid_configuration())?;
-        Ok(Some(Self {
+        Ok(Self {
             settings,
             keys: WorkerSignInKeys(SendWrapper::new(binding)),
             cache: Arc::default(),
-        }))
+        })
     }
 
     /// Bind trust to this org and the same clock its runtime uses for admission.
-    pub(crate) fn for_organization(
+    fn for_organization(
         &self,
         organization: OrganizationId,
         clock: Arc<dyn Clock>,
@@ -177,6 +211,56 @@ impl CloudflareSignInTrust {
             &self.cache,
             self.settings.person_link_audience.clone(),
         )))
+    }
+}
+
+pub(crate) struct UnavailableSignInVerification {
+    person_link_configured: bool,
+}
+
+impl StampVerification for UnavailableSignInVerification {
+    fn verify_statement<'a>(
+        &'a self,
+        _statement: &'a str,
+    ) -> BoxFuture<'a, Result<VerifiedFleetOrganizationStatement, FleetOrganizationStatementRefusal>>
+    {
+        Box::pin(std::future::ready(Err(
+            FleetOrganizationStatementRefusal::InvalidConfiguration,
+        )))
+    }
+
+    fn verify_stored_statement_facts<'a>(
+        &'a self,
+        _statement: &'a str,
+    ) -> BoxFuture<'a, Result<StoredStatementFacts, StoredStampVerificationFailure>> {
+        Box::pin(std::future::ready(Err(
+            StoredStampVerificationFailure::InvalidConfiguration,
+        )))
+    }
+}
+
+impl SignInVerification for UnavailableSignInVerification {
+    fn verify_person_link<'a>(
+        &'a self,
+        _token: &'a str,
+    ) -> BoxFuture<'a, Result<CheckedPersonLink, PersonRequestRefusal>> {
+        let refusal = if self.person_link_configured {
+            PersonRequestRefusal::VerificationUnavailable
+        } else {
+            PersonRequestRefusal::Audience
+        };
+        Box::pin(std::future::ready(Err(refusal)))
+    }
+
+    fn verify_person_request<'a>(
+        &'a self,
+        _input: &'a PersonRequestInput,
+    ) -> BoxFuture<'a, Result<VerifiedPersonRequest, PersonRequestRefusal>> {
+        Box::pin(std::future::ready(Err(PersonRequestRefusal::Policy)))
+    }
+
+    fn sign_in_service(&self) -> Option<message_board::ServiceId> {
+        None
     }
 }
 
