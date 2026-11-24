@@ -11,7 +11,8 @@ use std::{
 
 use central_link_client::{EnrollmentEnd, LinkLaneEvent, ReadyLinkLane};
 use central_link_protocol::{
-    DataFrame, FrameDirection, LinkFrame, MachineLinkCloseCode, TokenRenewalResult, decode_text,
+    DataFrame, FrameDirection, HandledMacCalls, LinkFrame, MacCapabilities, MachineLinkCloseCode,
+    TokenRenewalResult, decode_text,
 };
 use futures_util::{FutureExt, SinkExt, StreamExt};
 use router_clock::{ClockInstant, ManualClock};
@@ -40,6 +41,7 @@ use workspace_ids::MachineId;
 mod admitted_commands;
 mod credential_diagnostics;
 mod lease_boundaries;
+mod mac_capabilities;
 mod renewal_endings;
 mod settings_replay;
 mod transport_limits;
@@ -195,9 +197,19 @@ impl Fixture {
     }
 }
 
-async fn welcome(socket: &mut WebSocketStream<TcpStream>) {
+async fn send_welcome(socket: &mut WebSocketStream<TcpStream>) {
     let wire = r#"{"kind":"welcome","machineId":"01890f2e-7b4c-7cc0-98c4-000000000002","centralTime":"2030-01-01T00:00:00Z","effectiveExpiresAt":"2030-01-01T00:02:00Z"}"#;
     socket.send(Message::Text(wire.into())).await.unwrap();
+}
+
+async fn welcome(socket: &mut WebSocketStream<TcpStream>) {
+    send_welcome(socket).await;
+    assert_eq!(
+        decode_text(&text(socket).await, FrameDirection::ToCentral).unwrap(),
+        LinkFrame::Data(DataFrame::MacCapabilities(MacCapabilities {
+            handled_calls: HandledMacCalls::default(),
+        }))
+    );
 }
 
 #[expect(

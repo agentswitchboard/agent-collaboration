@@ -30,7 +30,7 @@ fn correlation(number: u8) -> CorrelationId {
     clippy::panic,
     reason = "The fixture must fail if its hand-built frame is not a request."
 )]
-fn mail_write(number: u8) -> LinkRequest {
+pub(super) fn mail_write(number: u8) -> LinkRequest {
     let wire = format!(
         r#"{{"kind":"request","request":{{"correlationId":"{}","caller":{{"kind":"session","value":{{"machineId":"01890f2e-7b4c-7cc0-98c4-000000000002","sessionId":"s"}}}},"payload":{{"kind":"mail","request":{{"requestId":"01890f2e-7b4c-7cc0-98c4-0000000000{number:02x}","operation":{{"kind":"setNoticeCadence","cadence":"m25"}}}}}}}}}}"#,
         String::from(correlation(number))
@@ -81,7 +81,7 @@ async fn admit(
     admitted
 }
 
-async fn send_answer(socket: &mut WebSocketStream<TcpStream>, frame: DataFrame) {
+pub(super) async fn send_answer(socket: &mut WebSocketStream<TcpStream>, frame: DataFrame) {
     let wire = encode_text(&LinkFrame::Data(frame), FrameDirection::ToRouter).unwrap();
     socket.send(Message::Text(wire.into())).await.unwrap();
 }

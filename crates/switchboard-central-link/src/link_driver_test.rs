@@ -301,7 +301,10 @@ fn correlated_reply_at_the_authority_boundary_cannot_settle_the_writer() {
         correlation_id,
         result: Box::new(RequestStatusAnswer::NotFound),
     });
-    assert!(driver.receive_frame(&attempt, reply, elapsed_tick(0), None, &mut lane, None));
+    assert!(matches!(
+        driver.receive_frame(&attempt, reply, elapsed_tick(0), None, &mut lane, None),
+        super::receive::SocketReceive::Continue
+    ));
     assert_eq!(
         disposition.try_recv(),
         Err(oneshot::error::TryRecvError::Empty),
@@ -383,10 +386,30 @@ async fn first_byte_to_disposition_stays_within_the_exported_limit_during_a_bloc
     .unwrap();
     peer.send(Message::Text(welcome.into())).await.unwrap();
     assert!(open.as_mut().now_or_never().is_none());
+    assert!(
+        lane.watch_admitted().borrow().is_none(),
+        "the lane must wait for the blocked capabilities flush"
+    );
+    assert_eq!(transport.crossed.load(Ordering::Relaxed), 1);
+    transport.remaining.store(1024, Ordering::Relaxed);
+    assert!(open.as_mut().now_or_never().is_none());
     assert!(matches!(
         lane.next_event().now_or_never(),
         Some(Some(LinkLaneEvent::ConnectionAdmitted(_)))
     ));
+    let first = futures_util::StreamExt::next(&mut peer)
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(matches!(
+        first,
+        Message::Text(wire) if matches!(
+            central_link_protocol::decode_text(wire.as_str(), FrameDirection::ToCentral),
+            Ok(LinkFrame::Data(DataFrame::MacCapabilities(_)))
+        )
+    ));
+    transport.crossed.store(0, Ordering::Relaxed);
+    transport.remaining.store(1, Ordering::Relaxed);
     let mut command = lane.request_status(RequestStatusCommand {
         connection: attempt.clone(),
         send_before: elapsed_tick(12),

@@ -1,4 +1,4 @@
-//! Send custody and the exclusive first-transport-write fence for user frames.
+//! Send custody and the exclusive first-transport-write fence for socket frames.
 
 use std::{
     future::{pending, poll_fn},
@@ -41,7 +41,7 @@ impl SendFence {
     }
 }
 
-pub(super) async fn write_user_frame(
+pub(super) async fn write_fenced_frame(
     socket: &mut (impl Sink<Message, Error = SocketError> + Unpin),
     wire: String,
     fence: SendFence,

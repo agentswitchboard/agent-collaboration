@@ -97,7 +97,7 @@ async fn sink_ready_at_exact_send_or_authority_fence_cannot_emit_a_byte() {
             case: SinkCase::ReadyAt(Duration::from_secs(3)),
             entered_send: false,
         };
-        let result = write_user_frame(
+        let result = write_fenced_frame(
             &mut sink,
             "test".to_owned(),
             SendFence {
@@ -127,7 +127,7 @@ async fn writer_discriminates_untouched_refusals_from_a_failed_flush() {
             case,
             entered_send: false,
         };
-        let result = write_user_frame(
+        let result = write_fenced_frame(
             &mut sink,
             "test".into(),
             SendFence {
@@ -159,7 +159,7 @@ async fn writer_readiness_timeout_keeps_the_frame_untouched() {
         case: SinkCase::Pending,
         entered_send: false,
     };
-    let mut write = Box::pin(write_user_frame(
+    let mut write = Box::pin(write_fenced_frame(
         &mut sink,
         "test".into(),
         SendFence {
@@ -277,7 +277,7 @@ impl BufferedFixture {
     }
 
     async fn check_started_flush_loss(mut self) {
-        let mut write = Box::pin(write_user_frame(
+        let mut write = Box::pin(write_fenced_frame(
             &mut self.socket,
             "test".into(),
             SendFence {
@@ -312,7 +312,7 @@ async fn buffered_zero_byte_frame_cannot_start_at_either_fence_or_flush_on_close
         ),
     ] {
         let mut fixture = BufferedFixture::new(0).await;
-        let mut write = Box::pin(write_user_frame(
+        let mut write = Box::pin(write_fenced_frame(
             &mut fixture.socket,
             "staged user frame".into(),
             SendFence {
