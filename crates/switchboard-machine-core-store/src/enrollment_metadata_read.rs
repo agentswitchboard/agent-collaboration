@@ -1,4 +1,4 @@
-//! Read-only enrollment metadata from an idle machine database.
+//! Read-only enrollment metadata from an existing machine database.
 
 use std::{fs, io, path::Path};
 
@@ -23,9 +23,9 @@ pub enum EnrollmentMetadataReadError {
     #[error("could not inspect the machine database")]
     Filesystem(#[from] io::Error),
     #[error(transparent)]
-    Query(#[from] EnrollmentMetadataQueryError),
-    #[error("the machine database still has a write-ahead log")]
-    PendingWal,
+    Query(EnrollmentMetadataQueryError),
+    #[error("the machine database is busy or locked. Try again")]
+    Busy(#[source] sqlx::Error),
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -36,7 +36,29 @@ pub enum EnrollmentMetadataQueryError {
     Corrupt(#[from] EnrollmentRowCorruption),
 }
 
-/// Observes an idle database without creating a database, journal or shared-memory file.
+impl From<EnrollmentMetadataQueryError> for EnrollmentMetadataReadError {
+    fn from(error: EnrollmentMetadataQueryError) -> Self {
+        match error {
+            EnrollmentMetadataQueryError::Sqlite(source) if is_sqlite_busy_or_locked(&source) => {
+                Self::Busy(source)
+            }
+            other => Self::Query(other),
+        }
+    }
+}
+
+fn is_sqlite_busy_or_locked(error: &sqlx::Error) -> bool {
+    const SQLITE_PRIMARY_CODE_MASK: u32 = 0xff;
+    const SQLITE_BUSY: u32 = 5;
+    const SQLITE_LOCKED: u32 = 6;
+    error
+        .as_database_error()
+        .and_then(|error| error.code())
+        .and_then(|code| code.parse::<u32>().ok())
+        .is_some_and(|code| matches!(code & SQLITE_PRIMARY_CODE_MASK, SQLITE_BUSY | SQLITE_LOCKED))
+}
+
+/// Observes an existing database without creating a database file or changing any rows.
 pub async fn read_machine_enrollment_row(
     database: &Path,
 ) -> Result<MachineEnrollmentMetadataRow, EnrollmentMetadataReadError> {
@@ -45,17 +67,14 @@ pub async fn read_machine_enrollment_row(
     }
     let mut wal = database.as_os_str().to_owned();
     wal.push("-wal");
-    if existing_file_size(Path::new(&wal))?.is_some_and(|size| size != 0) {
-        // The immutable reader could miss changes held in a WAL. The state
-        // owner must settle that log before this read can describe the row.
-        return Err(EnrollmentMetadataReadError::PendingWal);
-    }
-    // A plain read-only WAL connection can create sidecars. The caller owns
-    // the idle-root precondition for SQLite's immutable, no-lock reader.
+    let has_nonempty_wal = existing_file_size(Path::new(&wal))?.is_some_and(|size| size != 0);
+    // Use SQLite's WAL reader when committed changes may still be in the log.
+    // Without a log, the immutable reader avoids creating sidecar files.
     let options = SqliteConnectOptions::new()
         .filename(database)
+        .create_if_missing(false)
         .read_only(true)
-        .immutable(true);
+        .immutable(!has_nonempty_wal);
     let mut connection = SqliteConnection::connect_with(&options)
         .await
         .map_err(EnrollmentMetadataQueryError::from)?;

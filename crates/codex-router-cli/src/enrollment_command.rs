@@ -17,7 +17,7 @@ use crate::enrollment_status::ENROLLED_TEXT;
 pub(crate) const ENROLL_HELP: &str = "Usage: codex-router enroll --organization <uuid> --sign-in <https-origin>\n\
 Enroll this Mac in a Switchboard organization. Stop the debug Host before enrolling.\n";
 pub(crate) const STATUS_HELP: &str = "Usage: codex-router enrollment status\n\
-Show the enrollment stored on this Mac. Use an idle Router state directory.\n";
+Show the enrollment stored on this Mac. Works with the Host running or stopped.\n";
 
 /// The enroll command parses these values from the person's arguments.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -76,7 +76,7 @@ pub enum EnrollCommandError {
         "Enrollment was saved. The enrollment store could not close. Run enrollment status before trying again."
     )]
     StoreClose(#[source] EnrollmentStoreCloseError),
-    #[error("The Mac's stored enrollment could not be read. {0}.")]
+    #[error("The Mac's stored enrollment could not be read. Details: {0}.")]
     StatusRead(#[source] EnrollmentMetadataReadError),
 }
 

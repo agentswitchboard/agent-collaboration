@@ -46,6 +46,7 @@ fn enrollment_help_and_invalid_arguments_do_not_create_state() {
     let help =
         compiled_cli(home.path(), &["enrollment", "--help"], None).expect("run signed Router CLI");
     assert!(stdout(&help).contains("enrollment status"));
+    assert!(stdout(&help).contains("Works with the Host running or stopped."));
 
     let bad_arguments = compiled_cli(
         home.path(),
@@ -153,18 +154,9 @@ async fn compiled_status_reports_active_and_ended_rows_without_writing() {
     let mut store = MachineLocalStore::open(&database)
         .await
         .expect("fixture store");
-    let mut sealed = vec![0; 30];
-    sealed[0] = 1;
-    let active = StoredEnrollmentRow::Active {
-        generation: 1,
-        organization_id: ORGANIZATION.into(),
-        deployment: SIGN_IN.into(),
-        enrollment_id: ENROLLMENT.into(),
-        sealed,
-    };
     let applied = store
         .write_enrollment_row(&machine_id, 0, NOW_MS, |_| {
-            EnrollmentRowChange::<()>::Write(active)
+            EnrollmentRowChange::<()>::Write(active_row())
         })
         .await
         .expect("seed active enrollment");
@@ -185,16 +177,9 @@ async fn compiled_status_reports_active_and_ended_rows_without_writing() {
     let mut store = MachineLocalStore::open(&database)
         .await
         .expect("fixture store");
-    let ended = StoredEnrollmentRow::Ended {
-        generation: 2,
-        organization_id: ORGANIZATION.into(),
-        deployment: SIGN_IN.into(),
-        enrollment_id: ENROLLMENT.into(),
-        why: StoredEnrollmentEnd::Revoked {},
-    };
     let applied = store
         .write_enrollment_ending(&machine_id, 1, NOW_MS, |_| {
-            EnrollmentRowChange::<()>::Write(ended)
+            EnrollmentRowChange::<()>::Write(ended_row())
         })
         .await
         .expect("seed ended enrollment");
@@ -213,6 +198,108 @@ async fn compiled_status_reports_active_and_ended_rows_without_writing() {
     assert_eq!(files_in(&router_root).expect("read fixture state"), before);
 }
 
+#[tokio::test]
+async fn compiled_status_reads_current_enrollment_from_an_open_wal_without_writing() {
+    let home = tempfile::tempdir().expect("fixture home");
+    let root = default_fixture_root(home.path());
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(&root)
+        .expect("fixture Router root");
+    let machine_id = load_or_create_machine_id(&root, NOW_MS)
+        .await
+        .expect("fixture machine ID");
+    let database = root.join(MACHINE_LOCAL_DATABASE);
+    let wal = root.join(format!("{MACHINE_LOCAL_DATABASE}-wal"));
+    let mut store = MachineLocalStore::open(&database)
+        .await
+        .expect("fixture writer");
+    let checkpointed = fs::read(&database).expect("checkpointed machine database");
+
+    let written = store
+        .write_enrollment_row(&machine_id, 0, NOW_MS, |_| {
+            EnrollmentRowChange::<()>::Write(active_row())
+        })
+        .await
+        .expect("commit active enrollment");
+    assert_eq!(written, EnrollmentRowWrite::Applied);
+    let active_wal = fs::read(&wal).expect("active WAL");
+    assert!(!active_wal.is_empty());
+    assert_eq!(fs::read(&database).expect("machine database"), checkpointed);
+
+    let active =
+        compiled_cli(home.path(), &["enrollment", "status"], None).expect("run signed Router CLI");
+    assert_eq!(
+        stdout(&active),
+        format!(
+            "This Mac is enrolled.\nOrganization: {ORGANIZATION}\nSign-in: {SIGN_IN}\nThis is what the Mac has stored. It does not show whether the link to central is up.\n"
+        ),
+        "status must report the current active enrollment from the open WAL",
+    );
+    assert_eq!(fs::read(&database).expect("machine database"), checkpointed);
+    assert_eq!(fs::read(&wal).expect("active WAL"), active_wal);
+    assert_eq!(
+        store
+            .read_enrollment_row(&machine_id)
+            .await
+            .expect("active stored row"),
+        active_row()
+    );
+
+    let written = store
+        .write_enrollment_ending(&machine_id, 1, NOW_MS, |_| {
+            EnrollmentRowChange::<()>::Write(ended_row())
+        })
+        .await
+        .expect("commit ended enrollment");
+    assert_eq!(written, EnrollmentRowWrite::Applied);
+    let ended_wal = fs::read(&wal).expect("ended WAL");
+    assert!(ended_wal.len() > active_wal.len());
+    assert_eq!(fs::read(&database).expect("machine database"), checkpointed);
+
+    let ended =
+        compiled_cli(home.path(), &["enrollment", "status"], None).expect("run signed Router CLI");
+    assert_eq!(
+        stdout(&ended),
+        format!(
+            "This Mac's enrollment ended: the enrollment was revoked.\nOrganization: {ORGANIZATION}\n"
+        ),
+        "status must report the current ended enrollment from the open WAL",
+    );
+    assert_eq!(fs::read(&database).expect("machine database"), checkpointed);
+    assert_eq!(fs::read(&wal).expect("ended WAL"), ended_wal);
+    assert_eq!(
+        store
+            .read_enrollment_row(&machine_id)
+            .await
+            .expect("ended stored row"),
+        ended_row()
+    );
+    store.close().await.expect("close fixture writer");
+}
+
+fn active_row() -> StoredEnrollmentRow {
+    let mut sealed = vec![1];
+    sealed.resize(30, 0);
+    StoredEnrollmentRow::Active {
+        generation: 1,
+        organization_id: ORGANIZATION.into(),
+        deployment: SIGN_IN.into(),
+        enrollment_id: ENROLLMENT.into(),
+        sealed,
+    }
+}
+
+fn ended_row() -> StoredEnrollmentRow {
+    StoredEnrollmentRow::Ended {
+        generation: 2,
+        organization_id: ORGANIZATION.into(),
+        deployment: SIGN_IN.into(),
+        enrollment_id: ENROLLMENT.into(),
+        why: StoredEnrollmentEnd::Revoked {},
+    }
+}
+
 fn files_in(root: &Path) -> io::Result<Vec<(OsString, Vec<u8>)>> {
     let mut files = fs::read_dir(root)?
         .map(|entry| {
@@ -225,7 +312,7 @@ fn files_in(root: &Path) -> io::Result<Vec<(OsString, Vec<u8>)>> {
 }
 
 #[tokio::test]
-async fn compiled_status_refuses_unreadable_database_and_unsettled_wal() {
+async fn compiled_status_refuses_unreadable_database_and_corrupt_metadata() {
     let home = tempfile::tempdir().expect("fixture home");
     let root = default_fixture_root(home.path());
     fs::DirBuilder::new()
@@ -281,18 +368,6 @@ async fn compiled_status_refuses_unreadable_database_and_unsettled_wal() {
             EnrollmentMetadataQueryError::Corrupt(EnrollmentRowCorruption::Deployment)
         ))
     ));
-
-    fs::write(
-        root.join(format!("{MACHINE_LOCAL_DATABASE}-wal")),
-        b"pending WAL fixture",
-    )
-    .expect("unsettled WAL fixture");
-    let before = files_in(&root).expect("read fixture state");
-    assert_status_error(
-        &compiled_cli(home.path(), &["enrollment", "status"], None).expect("run signed Router CLI"),
-        "the machine database still has a write-ahead log",
-    );
-    assert_eq!(files_in(&root).expect("read fixture state"), before);
 }
 
 fn assert_status_error(output: &Output, expected: &str) {

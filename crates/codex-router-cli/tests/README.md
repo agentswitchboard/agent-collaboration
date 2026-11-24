@@ -7,7 +7,7 @@ cargo nextest run --locked --profile ci -p codex-router-cli --features keychain-
 ```
 
 `integration/main.rs` covers account and recovery commands, debug isolation and
-logging, compiled enrollment help, argument refusal and read-only status,
+logging, compiled enrollment help, argument refusal and read-only status with an open WAL,
 compiled Host lifecycle and proxy overload. The retired
 root-updater guard and its dedicated journeys were removed. `e2e/main.rs` covers
 one-off root conversion with real encrypted OpenAI and Claude credentials,

@@ -1,4 +1,4 @@
-//! Keychain-free observation of the enrollment metadata on an idle Mac.
+//! Keychain-free observation of the Mac's stored enrollment metadata.
 
 use std::path::Path;
 
