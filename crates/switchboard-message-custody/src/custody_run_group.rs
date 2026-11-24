@@ -8,6 +8,7 @@ use std::{
     task::Poll,
 };
 
+use crate::handover_notice::NoticeAuthority;
 use tokio::{
     sync::{Mutex, watch},
     task::{JoinHandle, JoinSet},
@@ -85,18 +86,25 @@ pub(super) struct CustodyRunState {
 }
 
 #[derive(Clone)]
-pub(super) struct CustodyStop(pub(super) watch::Sender<CustodyRunState>);
+pub(super) struct CustodyStop(
+    pub(super) watch::Sender<CustodyRunState>,
+    pub(super) Arc<NoticeAuthority>,
+);
 
 impl CustodyStop {
     pub(super) fn new() -> Self {
-        Self(watch::Sender::new(CustodyRunState::default()))
+        Self(
+            watch::Sender::new(CustodyRunState::default()),
+            Arc::new(NoticeAuthority::new()),
+        )
     }
 
-    fn request(&self) {
+    pub(super) fn request(&self) {
         self.stop_with(None);
     }
 
     fn stop_with(&self, failure: Option<CustodyRunFailure>) {
+        self.1.close();
         self.0.send_if_modified(|state| {
             let changed = !state.stopped || (state.first_failure.is_none() && failure.is_some());
             state.stopped = true;

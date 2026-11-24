@@ -217,7 +217,7 @@ impl OwnerTransition {
             })
     }
 
-    pub(super) fn admit_warm(&mut self, input: OwnerInput) -> OwnerResult {
+    pub(super) fn admit_idle_prompt(&mut self, input: OwnerInput) -> OwnerResult {
         self.require_live(input.generation)?;
         let blocker = self
             .prompt_blocker()

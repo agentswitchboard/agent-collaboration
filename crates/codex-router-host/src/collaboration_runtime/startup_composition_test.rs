@@ -2,6 +2,10 @@ use super::*;
 use router_clock::{ManualClock, RuntimeClock as _};
 use std::{os::unix::fs::PermissionsExt as _, sync::Arc};
 
+#[cfg(debug_assertions)]
+#[path = "message_startup_cases.rs"]
+mod message_startup_cases;
+
 #[tokio::test]
 async fn host_startup_keeps_journal_history_recent_on_the_injected_clock() {
     let root = tempfile::tempdir().expect("isolated Host root");
@@ -37,6 +41,7 @@ async fn host_startup_keeps_journal_history_recent_on_the_injected_clock() {
 
     let runtime = CollaborationRuntime::start_for_host_with_router_proxy_endpoint(
         HostCollaborationInputs {
+            message_roots: None,
             collaboration_runtime: CollaborationRuntimeInputs {
                 directory: root.path().to_path_buf(),
                 codex_home: root.path().join("codex-fixture"),

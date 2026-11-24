@@ -24,14 +24,14 @@ fn clock_millis(clock: &ManualClock) -> i64 {
     clock.utc_now().timestamp_millis()
 }
 
-fn fixture_expiry(arrival_ms: i64) -> InboxOfferExpiry {
+pub(super) fn fixture_expiry(arrival_ms: i64) -> InboxOfferExpiry {
     InboxOfferExpiry::DirectWithExpiry(
         Timestamp::from_timestamp_millis(arrival_ms.saturating_add(900_000))
             .unwrap_or(Timestamp::UNIX_EPOCH),
     )
 }
 
-fn message(index: u8) -> MessageRecord {
+pub(super) fn message(index: u8) -> MessageRecord {
     serde_json::from_value(serde_json::json!({
         "messageId": format!("01890f2e-7b4c-7cc0-98c4-{index:012x}"),
         "sender": { "kind": "central" },

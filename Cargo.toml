@@ -20,6 +20,7 @@ members = [
     "crates/switchboard-approval-holder",
     "crates/switchboard-session-start",
     "crates/switchboard-message-system",
+    "crates/switchboard-message-unit",
     "crates/switchboard-harness-contracts",
     "crates/switchboard-harness-shared-mechanics",
     "crates/switchboard-machine-enrollment",
@@ -117,6 +118,7 @@ switchboard-approval-holder = { path = "crates/switchboard-approval-holder", ver
 switchboard-approval-ports = { path = "crates/switchboard-approval-ports", version = "0.1.158" }
 switchboard-session-start = { path = "crates/switchboard-session-start", version = "0.1.158" }
 switchboard-message-system = { path = "crates/switchboard-message-system", version = "0.1.158" }
+switchboard-message-unit = { path = "crates/switchboard-message-unit", version = "0.1.158" }
 switchboard-harness-shared-mechanics = { path = "crates/switchboard-harness-shared-mechanics", version = "0.1.158" }
 switchboard-harness-contracts = { path = "crates/switchboard-harness-contracts", version = "0.1.158" }
 central-link-protocol = { path = "crates/central-link-protocol", version = "0.1.153" }

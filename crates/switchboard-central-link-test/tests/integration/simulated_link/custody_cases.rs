@@ -8,6 +8,9 @@ use std::{collections::VecDeque, sync::Arc, time::Duration};
 #[path = "cutoff_cases.rs"]
 mod cutoff_cases;
 
+#[path = "handover_cases.rs"]
+mod handover_cases;
+
 #[path = "loss_cases.rs"]
 mod loss_cases;
 
@@ -76,6 +79,14 @@ impl NetworkCustody {
         link: SimulatedLink,
         configure_inbox: impl FnOnce(&mut InboxStore) -> Control,
     ) -> (Self, Control) {
+        Self::setup_with_custody(link, configure_inbox, |custody| custody).await
+    }
+
+    async fn setup_with_custody<Control>(
+        link: SimulatedLink,
+        configure_inbox: impl FnOnce(&mut InboxStore) -> Control,
+        configure_custody: impl FnOnce(CustodyLink) -> CustodyLink,
+    ) -> (Self, Control) {
         let machine_id = MACHINE_LINK_FIXTURE_MACHINE.parse().unwrap();
         let session = SessionRef {
             machine_id,
@@ -106,7 +117,8 @@ impl NetworkCustody {
             ),
         );
         let (sender, events) = mpsc::unbounded_channel();
-        let (calls, custody_group) = custody_task(custody, Arc::new(RecordCustody(sender)));
+        let (calls, custody_group) =
+            custody_task(configure_custody(custody), Arc::new(RecordCustody(sender)));
         let case = Self {
             link,
             custody_clock,

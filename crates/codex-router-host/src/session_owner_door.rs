@@ -518,6 +518,14 @@ impl SessionOwnerAddress {
         self.calls.remember_approval(input, context);
     }
 
+    pub(crate) fn remember_notice(
+        &self,
+        input: session_event_model::InputId,
+        notice: crate::session_owner_notice::NoticeWriterTake,
+    ) {
+        self.calls.remember_notice(input, notice);
+    }
+
     pub(crate) async fn start_delivery(
         &self,
         input: OwnerInput,
