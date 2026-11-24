@@ -8,6 +8,7 @@ use provider_session_machines::session_lifecycle_machine::SessionLifecycle;
 use std::{future::Future, pin::Pin, sync::Arc};
 use switchboard_message_custody::recipient_sessions::{
     SessionId, SessionInventory, SessionInventoryAnswer, SessionInventoryPart,
+    SessionInventorySource,
 };
 use switchboard_session_store::ProviderOperationStore;
 use tokio::sync::Mutex;
@@ -47,7 +48,11 @@ impl ManagedProviderSessionInventory {
         })
     }
 
-    fn lookup_endpoint(&self, target: SessionRef) -> SessionInventoryPart<'_> {
+    fn lookup_endpoint(
+        &self,
+        target: SessionRef,
+        source: SessionInventorySource,
+    ) -> SessionInventoryPart<'_> {
         let owner_knows = self
             .supervisor
             .as_ref()
@@ -60,6 +65,7 @@ impl ManagedProviderSessionInventory {
             });
         let observed = SessionInventoryAnswer::AtLeast(usize::from(owner_knows));
         SessionInventoryPart {
+            source,
             observed,
             read: Box::pin(async move {
                 let Some(store) = &self.store else {
@@ -76,12 +82,15 @@ impl ManagedProviderSessionInventory {
     fn endpoint_parts(&self, session_id: &SessionId) -> Option<[SessionInventoryPart<'_>; 2]> {
         let session_id =
             collaboration_protocol::SessionId::try_from(session_id.as_str().to_owned()).ok()?;
-        Some(self.endpoints.each_ref().map(|endpoint| {
-            self.lookup_endpoint(SessionRef {
-                endpoint: endpoint.clone(),
-                session_id: session_id.clone(),
-            })
-        }))
+        let [claude, cursor] = &self.endpoints;
+        let target = |endpoint: &EndpointRef| SessionRef {
+            endpoint: endpoint.clone(),
+            session_id: session_id.clone(),
+        };
+        Some([
+            self.lookup_endpoint(target(claude), SessionInventorySource::ManagedClaude),
+            self.lookup_endpoint(target(cursor), SessionInventorySource::Independent),
+        ])
     }
 }
 
@@ -107,6 +116,7 @@ impl SessionInventory for ManagedProviderSessionInventory {
         match self.endpoint_parts(session_id) {
             Some(parts) => Vec::from(parts),
             None => vec![SessionInventoryPart {
+                source: SessionInventorySource::ManagedClaude,
                 observed: UNAVAILABLE,
                 read: Box::pin(std::future::ready(UNAVAILABLE)),
             }],

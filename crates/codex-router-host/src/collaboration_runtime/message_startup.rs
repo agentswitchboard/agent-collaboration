@@ -73,6 +73,18 @@ pub(super) fn v0_message_admission(
     })
 }
 
+#[cfg(test)]
+pub(crate) fn v0_message_admission_for_test(
+    machine_id: collaboration_protocol::message_tools::MachineId,
+    directory: Arc<dyn RecipientSessionDirectory>,
+    clock: Arc<dyn RuntimeClock>,
+) -> V0MessageAdmission {
+    V0MessageAdmission::new(
+        machine_id,
+        Arc::new(LocalMessageDirectory { directory, clock }),
+    )
+}
+
 pub(super) struct HostCustodyEvents;
 
 impl CustodyEventSink for HostCustodyEvents {
