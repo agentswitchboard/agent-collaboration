@@ -99,9 +99,9 @@ mod organization_authority_cache;
 )]
 mod organization_engine_admin_plans;
 #[cfg(feature = "test-support")]
-pub use engine_admin_fixture::{
-    EngineAdminControl, EngineAttemptAction, EngineAttemptFixture, fixture_engine_admin,
-};
+pub use engine_admin_fixture::{EngineAdminControl, fixture_engine_admin};
+#[cfg(feature = "test-support")]
+pub use engine_admin_types::EngineAttemptAction;
 mod organization_provisioning_plans;
 mod organization_signin_http;
 mod organization_signin_port;

@@ -4,7 +4,7 @@
 use super::support::*;
 use central_storage::{SqlValue, StoreFailure};
 use collaboration_central_core::WorkspaceCaller;
-use collaboration_central_core::{EngineAdminControl, EngineAttemptAction, EngineAttemptFixture};
+use collaboration_central_core::{EngineAdminControl, EngineAttemptAction};
 
 use router_clock::RuntimeClock;
 use serde_json::{Value, json};
@@ -339,11 +339,9 @@ impl EngineOrg {
         attempt: &str,
     ) -> Value {
         self.engine_admin(EngineAdminControl::Change {
-            command: EngineAttemptFixture {
-                operation_id: operation_id.parse().unwrap(),
-                attempt_id: attempt.parse().unwrap(),
-                person_id: signed::OWNER.parse().unwrap(),
-            },
+            operation_id: operation_id.parse().unwrap(),
+            attempt_id: attempt.parse().unwrap(),
+            person_id: signed::OWNER.parse().unwrap(),
             action,
         })
         .await

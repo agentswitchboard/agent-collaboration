@@ -13,6 +13,21 @@ pub(crate) struct EngineAttemptCommand {
     pub intent_digest: String,
 }
 
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "test-support", derive(Deserialize, Serialize))]
+#[cfg_attr(feature = "test-support", serde(rename_all = "camelCase"))]
+#[cfg_attr(
+    not(feature = "test-support"),
+    expect(
+        dead_code,
+        reason = "the person link does not expose engine repair yet"
+    )
+)]
+pub enum EngineAttemptAction {
+    Retry,
+    Discard,
+}
+
 /// The closed set of engine kinds an admin sees; test-support machines are hidden.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

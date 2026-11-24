@@ -261,6 +261,53 @@ async fn retry_wakes_an_idle_object_and_refuses_missing_and_failing_attempts() {
     engine.close().await;
 }
 
+#[tokio::test]
+async fn engine_retry_applying_guard_refuses_not_found() {
+    check_engine_applying_guard(EngineAttemptAction::Retry, "notFound").await;
+}
+
+#[tokio::test]
+async fn engine_discard_applying_guard_refuses_conflict() {
+    check_engine_applying_guard(EngineAttemptAction::Discard, "conflict").await;
+}
+
+async fn check_engine_applying_guard(action: EngineAttemptAction, reason: &str) {
+    let engine = EngineOrg::new().await;
+    let attempt = match action {
+        EngineAttemptAction::Retry => {
+            let (wakes, _, _) = retired_wakes(&engine, 1).await;
+            engine.attempt_id("wake_timer", &wakes[0]).await
+        }
+        // An absent attempt prepares a refusal and its retained answer, so
+        // discard reaches the outer applying batch instead of committing in the finisher.
+        EngineAttemptAction::Discard => engine.fresh(),
+    };
+    let operation = engine.fresh();
+    let fault = fleet_runtime::EngineCommitFault {
+        key: central_engine_model::InstanceKey(operation.clone()),
+        kind: fleet_runtime::EngineCommitFaultKind::GuardFailed,
+    };
+    let runtime = engine.runtime().await;
+    runtime.inject_engine_commit_fault(fault).await;
+    let reply = engine.change(action, &operation, &attempt).await;
+    assert!(
+        !runtime.engine_commit_fault_pending().await,
+        "the applying batch must consume the guard fault"
+    );
+    assert_eq!(reply, refused(reason), "guard refusal for {action:?}");
+    assert!(
+        engine
+            .rows(
+                "SELECT request_id FROM runtime_request_log WHERE request_id=?1",
+                vec![text(operation)],
+            )
+            .await
+            .is_empty(),
+        "the failed guard must not retain an answer"
+    );
+    engine.close().await;
+}
+
 /// An automation retired by rejected batches; its row stays readable.
 async fn retired_automation(engine: &EngineOrg) -> (String, String) {
     let first = next_mark(engine.now());

@@ -4,12 +4,13 @@
 use crate::{
     AdminRefusal, WorkspaceRuntime,
     engine_admin_types::{
-        EngineAdminResult, EngineAttemptCommand, EngineKindHealth, EngineRetiredItem,
+        EngineAdminResult, EngineAttemptAction, EngineAttemptCommand, EngineKindHealth,
+        EngineRetiredItem,
     },
     organization_admin_contract::RetainedOrganizationAdminAnswer,
     workspace_runtime::engine_admin_dispatch::KIND_REGISTRY,
 };
-use central_storage::{AlarmUpdate, GuardedStatement, StoreFailure};
+use central_storage::{AlarmUpdate, BatchOutcome, GuardedStatement, StatementBatch, StoreFailure};
 use fleet_engine::{AttemptRefusal, DiscardOutcome, FleetEngine};
 use fleet_runtime_ports::{CentralStore, WorkspaceStores};
 use fleet_runtime_ports::{
@@ -21,11 +22,11 @@ use workspace_model::{ActorIdentityId, Identity, RequestId, Timestamp};
 /// What the admin batch carries for one engine operation.
 pub(crate) struct EngineAdminPlan {
     pub result: EngineAdminResult,
-    pub statements: Vec<GuardedStatement>,
-    pub alarm: AlarmUpdate,
-    pub retained: Option<RetainedOrganizationAdminAnswer>,
+    statements: Vec<GuardedStatement>,
+    alarm: AlarmUpdate,
+    retained: Option<RetainedOrganizationAdminAnswer>,
     /// Discard already committed its batch through `handle`.
-    pub committed: bool,
+    committed: bool,
 }
 impl EngineAdminPlan {
     fn read(result: EngineAdminResult) -> Self {
@@ -174,9 +175,57 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
         Ok(OperationReceipt::Replay(plan))
     }
 
+    /// Applies a repair for the future person link call and is currently exercised through test support.
+    pub(crate) async fn apply_engine_attempt(
+        &self,
+        command: &EngineAttemptCommand,
+        action: EngineAttemptAction,
+    ) -> Result<EngineAdminResult, StoreFailure> {
+        let _turn = self.execution.take_central_turn().await;
+        let now = self.execution.now()?;
+        let mut statements = Vec::new();
+        let (planned, guard_failed) = match action {
+            EngineAttemptAction::Retry => {
+                let planned = self.prepare_engine_retry(command, now).await?;
+                // A concurrent retry deleted the record first.
+                (planned, AdminRefusal::NotFound)
+            }
+            EngineAttemptAction::Discard => {
+                let planned = self
+                    .prepare_engine_discard(command, &mut statements, now)
+                    .await?;
+                if planned.committed {
+                    return Ok(planned.result);
+                }
+                (planned, AdminRefusal::Conflict)
+            }
+        };
+        statements.extend(planned.statements);
+        match self
+            .execution
+            .statement_host()
+            .run_batch(StatementBatch {
+                statements,
+                alarm: planned.alarm,
+            })
+            .await?
+        {
+            BatchOutcome::Applied { .. } => match planned.retained {
+                Some(answer) => retained_engine_result(&answer.into_text()),
+                None => Ok(planned.result),
+            },
+            BatchOutcome::StatementRejected { .. } => Err(StoreFailure::Unavailable),
+            BatchOutcome::GuardFailed { .. } | BatchOutcome::ConstraintViolated { .. } => {
+                Ok(EngineAdminResult::Refused {
+                    reason: guard_failed,
+                })
+            }
+        }
+    }
+
     /// Retry: the guarded delete and its retained answer ride in the admin batch,
     /// which re-arms the alarm so an idle object wakes for the subject.
-    pub(crate) async fn prepare_engine_retry(
+    async fn prepare_engine_retry(
         &self,
         command: &EngineAttemptCommand,
         now: Timestamp,
@@ -226,7 +275,7 @@ impl<H: CentralStore, S: WorkspaceStores> WorkspaceRuntime<H, S> {
     /// Discard: the admission writes, the retained answer and the guarded delete
     /// commit with the subject's Discard transition; a refusal falls back to the
     /// ordinary admin batch with the refusal retained.
-    pub(crate) async fn prepare_engine_discard(
+    async fn prepare_engine_discard(
         &self,
         command: &EngineAttemptCommand,
         admission: &mut Vec<GuardedStatement>,
