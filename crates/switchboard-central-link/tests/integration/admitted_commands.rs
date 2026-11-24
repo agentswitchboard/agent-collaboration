@@ -799,6 +799,7 @@ async fn stalled_delivery_consumer_fault_preserves_held_offers_and_settles_comma
     let lane = fixture.inbox_events.lane.clone();
     let mut socket = fixture.accept().await;
     let admitted = admit(&mut fixture, &mut socket, &lane).await;
+    let before_offers = fixture.clock.wait_checkpoint();
     let ids = (1..=68)
         .map(|index| format!("01890f2e-7b4c-7cc0-98c4-{index:012x}"))
         .collect::<Vec<_>>();
@@ -806,7 +807,23 @@ async fn stalled_delivery_consumer_fault_preserves_held_offers_and_settles_comma
         let wire = DELIVER_FRAME.replace("01890f2e-7b4c-7cc0-98c4-000000000009", id);
         socket.send(Message::Text(wire.into())).await.unwrap();
     }
-    fixture.clock.not_due_check_now(tick(5)).await;
+    // The capabilities write also polls a five-second timer at tick zero.
+    // Wait for a live delivery-stall timer registered after admission.
+    fixture
+        .driver_polls
+        .wait_for(|_| {
+            fixture
+                .clock
+                .wait_registrations_since(before_offers)
+                .iter()
+                .any(|wait| {
+                    wait.deadline == tick(5)
+                        && wait.first_polled_at == Some(tick(0))
+                        && !wait.dropped
+                })
+        })
+        .await
+        .unwrap();
 
     let mut status = lane.request_status(status_command(&admitted, 70));
     let outbound = tokio::select! { wire = text(&mut socket) => wire, _ = &mut status => panic!("control write must run during pressure") };
