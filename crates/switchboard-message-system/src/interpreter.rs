@@ -265,12 +265,18 @@ impl Interpreter {
             Effect::PublishFront(front) => {
                 let door = match front {
                     Front::Refusing(reason) => Err(reason),
-                    Front::Forwarding(generation) => self
-                        .unit
-                        .as_ref()
-                        .filter(|(current, _)| *current == generation)
-                        .map(|(_, unit)| unit.front.clone())
-                        .ok_or(FrontRefusal::CouldNotStart),
+                    Front::Forwarding(requested) => match self.unit.as_ref() {
+                        Some((held, unit)) if *held == requested => Ok(unit.front.clone()),
+                        held => {
+                            tracing::error!(
+                                class = "forwarding_generation_mismatch",
+                                requested_generation = requested.0.get(),
+                                held_generation = ?held.map(|(generation, _)| generation.0.get()),
+                                "Mac message system could not publish the Supervisor's forwarding front"
+                            );
+                            Err(FrontRefusal::CouldNotStart)
+                        }
+                    },
                 };
                 let _ = self.front.send_replace(door);
             }
