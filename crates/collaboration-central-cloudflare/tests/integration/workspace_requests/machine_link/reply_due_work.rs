@@ -349,6 +349,10 @@ fn due_logs(fixture: &Fixture) -> Vec<String> {
 }
 
 #[tokio::test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "propagate fixture and transport errors while keeping assertion diffs for observed receipts and storage"
+)]
 async fn a_sent_worker_batch_member_keeps_the_drain_when_the_next_member_errors() -> Result<()> {
     use super::fixture::{receive, send, session_caller};
 

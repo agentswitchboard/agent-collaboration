@@ -1,6 +1,10 @@
 use super::*;
 
 #[tokio::test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "propagate fixture and transport errors while keeping assertion diffs for observed receipts and storage"
+)]
 async fn the_recorded_receipt_result_leaves_before_the_first_due_pass() -> Result<()> {
     use central_link_protocol::{
         DataFrame, LinkFrame, Receipt, ReceiptBatch, ReceiptKind, ReceiptResult,

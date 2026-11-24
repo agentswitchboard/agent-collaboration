@@ -1,6 +1,10 @@
 use super::*;
 
 #[tokio::test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "propagate fixture and transport errors while keeping assertion diffs for observed receipts and storage"
+)]
 async fn a_ready_public_reply_uses_the_host_turn_before_pass_two() -> Result<()> {
     for skip_yield in [false, true] {
         let fixture = start_fixture().await?;

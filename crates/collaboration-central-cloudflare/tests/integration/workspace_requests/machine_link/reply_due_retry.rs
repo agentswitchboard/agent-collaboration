@@ -1,6 +1,10 @@
 use super::*;
 
 #[tokio::test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "propagate fixture and transport errors while keeping assertion diffs for observed receipts and storage"
+)]
 async fn exact_retry_marks_schedule_no_worker_task_or_timer_during_lookahead() -> Result<()> {
     use central_storage::{AlarmUpdate, GuardedStatement, RowExpectation, StatementBatch};
     use workspace_model::{

@@ -1,6 +1,10 @@
 use super::*;
 
 #[tokio::test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "propagate fixture and transport errors while keeping assertion diffs for observed receipts and storage"
+)]
 async fn a_running_reply_drain_can_be_cut_after_one_commit_and_recovered_either_way() -> Result<()>
 {
     for recover_by_fresh_reply in [true, false] {
@@ -81,6 +85,10 @@ async fn a_running_reply_drain_can_be_cut_after_one_commit_and_recovered_either_
 }
 
 #[tokio::test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "propagate fixture and transport errors while keeping assertion diffs for observed receipts and storage"
+)]
 async fn the_deferred_drain_refuses_a_stamp_changed_after_the_reply() -> Result<()> {
     use central_storage::{AlarmUpdate, GuardedStatement, RowExpectation, StatementBatch};
 
@@ -146,6 +154,10 @@ async fn the_deferred_drain_refuses_a_stamp_changed_after_the_reply() -> Result<
 }
 
 #[tokio::test]
+#[expect(
+    clippy::panic_in_result_fn,
+    reason = "propagate fixture and transport errors while keeping assertion diffs for observed receipts and storage"
+)]
 async fn a_competing_reply_at_the_fourth_pass_and_a_fresh_reply_each_take_the_tail() -> Result<()> {
     for accept_before_release in [true, false] {
         let fixture = start_fixture().await?;
